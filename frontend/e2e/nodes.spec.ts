@@ -55,6 +55,17 @@ const REAL_NODE_ID   = `e2e-real-${RUN_ID}`;
 const SYNTH_NODE_ID  = `synth-e2e-${RUN_ID}`;
 const BULK_A_NODE_ID = `e2e-bulk-a-${RUN_ID}`;
 const BULK_B_NODE_ID = `e2e-bulk-b-${RUN_ID}`;
+const RESP_NODE_ID        = `e2e-resp-${RUN_ID}`;
+const FRAMES_NODE_ID      = `e2e-frames-${RUN_ID}`;
+const NOTIMESTAMP_NODE_ID = `e2e-notimestamp-${RUN_ID}`;
+
+// Every id this file registers. The teardown at the foot of the file retires
+// exactly these, so a registration added anywhere here must be added to this
+// list or it leaks for the life of the container.
+const REGISTERED_NODE_IDS = [
+  REAL_NODE_ID, SYNTH_NODE_ID, BULK_A_NODE_ID, BULK_B_NODE_ID,
+  RESP_NODE_ID, FRAMES_NODE_ID, NOTIMESTAMP_NODE_ID,
+];
 
 // Full geographic config sent with BULK_B — used to verify config propagation into analytics.
 const BULK_B_CONFIG = {
@@ -165,7 +176,7 @@ describeUnlessProd("Node registration — POST response and frame queuing", () =
   test.afterAll(async () => { await ctx?.dispose(); });
 
   test("response shape: {status:'ok', frames_queued:number, tracks:number}", async () => {
-    const res = await postDetections(ctx, `e2e-resp-${RUN_ID}`);
+    const res = await postDetections(ctx, RESP_NODE_ID);
     expect(res.status()).toBe(200);
     const body = await res.json();
     expect(body.status).toBe("ok");
@@ -176,7 +187,7 @@ describeUnlessProd("Node registration — POST response and frame queuing", () =
   });
 
   test("frame with a timestamp field is queued (frames_queued = 1)", async () => {
-    const nodeId = `e2e-frames-${RUN_ID}`;
+    const nodeId = FRAMES_NODE_ID;
     const res = await postDetections(ctx, nodeId, {
       frames: [{ timestamp: Date.now() / 1000, delay: [120.0], doppler: [1.5] }],
     });
@@ -186,7 +197,7 @@ describeUnlessProd("Node registration — POST response and frame queuing", () =
   });
 
   test("frame without a timestamp is NOT queued (frames_queued = 0 for that frame)", async () => {
-    const nodeId = `e2e-notimestamp-${RUN_ID}`;
+    const nodeId = NOTIMESTAMP_NODE_ID;
     // First POST registers the node. Second POST sends a frame without timestamp.
     await postDetections(ctx, nodeId); // register
     const res = await postDetections(ctx, nodeId, {
@@ -664,4 +675,47 @@ describeUnlessProd("Node registration — main integration suite", () => {
       }
     });
   });
+});
+
+// =============================================================================
+// Teardown: retire every node this worker registered.
+//
+// Nothing in the server evicts a registered node on its own, so without this
+// each run leaves its ids in the fleet registry and the associator's overlap
+// graph for the life of the container, and the O(n²) registration cost climbs
+// for every run after it (86cb5nxvw).
+//
+// fullyParallel gives each worker its own module instance and so its own
+// RUN_ID, and Playwright runs a file-scope afterAll once per worker after that
+// worker's last test here. This therefore retires exactly the ids this worker
+// minted, and cannot race a sibling worker's assertions.
+//
+// force=true because a registered node counts as live until something evicts
+// it. Staging confines force to the e2e- and synth-e2e- prefixes
+// (NODE_FORCE_RETIRE_PREFIXES), so this cannot reach a real board.
+//
+// Best-effort by construction: a failure here must never fail the run, since a
+// red suite rolls the deploy back (86cb5jnnf). The cost of a failed teardown is
+// the leak that exists today, which the next successful run clears.
+// =============================================================================
+test.afterAll(async () => {
+  if (env === "prod" || !API_KEY) return;
+
+  const ctx = await request.newContext();
+  try {
+    for (const nodeId of REGISTERED_NODE_IDS) {
+      try {
+        const res = await ctx.delete(
+          `${API}/api/admin/nodes/${nodeId}/state?force=true`,
+        );
+        if (!res.ok()) {
+          console.warn(`[teardown] ${nodeId}: HTTP ${res.status()}`);
+        }
+      } catch (err) {
+        console.warn(`[teardown] ${nodeId}: ${err}`);
+      }
+    }
+  } finally {
+    await ctx.dispose();
+  }
 });
