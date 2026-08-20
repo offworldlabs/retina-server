@@ -257,3 +257,15 @@ BLAH2_POLL_INTERVAL_S = 1.0  # blah2 API poll cadence (s)
 BLAH2_STALE_THRESHOLD_S = 10.0  # Ignore frames older than this (s)
 BLAH2_RECONNECT_DELAY_S = 5.0  # Backoff after failures (s)
 BLAH2_MAX_FAILURES = 5  # Failures before backing off
+
+# ── Node retirement ──────────────────────────────────────────────────────────
+# Comma-separated prefixes that may be force-retired via the admin route.
+# Empty, the default, imposes no restriction, which is what production wants: a
+# decommissioned receiver stays in connected_nodes until something retires it,
+# so retiring a real node needs force=true too, and a prefix test would refuse
+# the operator case the endpoint exists for.  Staging sets the test prefixes,
+# because that is where the E2E suite force-retires its own nodes and where a
+# mistaken sweep would cost something.
+NODE_FORCE_RETIRE_PREFIXES = tuple(
+    p.strip() for p in os.getenv("NODE_FORCE_RETIRE_PREFIXES", "").split(",") if p.strip()
+)

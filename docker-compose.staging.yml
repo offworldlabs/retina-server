@@ -43,6 +43,12 @@ services:
       # off RETINA_ENV. Staging has no OAuth configured, so without this line
       # the dashboard and every admin route start answering 401.
       - AUTH_ALLOW_ANONYMOUS_ADMIN=1
+      # The E2E suite retires the nodes it registers, which needs force because
+      # a registered node is live until something evicts it. Confining force to
+      # the suite's own prefixes means a bug in the teardown cannot reach a real
+      # board. Production leaves this unset, and so unrestricted, because a
+      # decommissioned receiver needs force too.
+      - NODE_FORCE_RETIRE_PREFIXES=e2e-,synth-e2e-
       # The simulation subsystem, likewise asked for by name rather than
       # inherited from what this environment is called. Staging runs a synthetic
       # fleet that POSTs through the ingest write path, and main.py mounts that

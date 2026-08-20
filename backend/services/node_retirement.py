@@ -24,6 +24,7 @@ data source mid-session.
 
 import logging
 
+from config import constants
 from core import state
 
 log = logging.getLogger(__name__)
@@ -31,6 +32,19 @@ log = logging.getLogger(__name__)
 
 class NodeStillConnected(Exception):
     """Raised when asked to retire a node that is currently active."""
+
+
+class ForceRetireNotAllowed(Exception):
+    """Raised when force-retiring a node id outside the configured allowlist.
+
+    Carries the prefixes so the caller can say what would have been accepted
+    without reading the configuration a second time.
+    """
+
+    def __init__(self, node_id: str, prefixes: tuple[str, ...]):
+        super().__init__(node_id)
+        self.node_id = node_id
+        self.prefixes = prefixes
 
 
 def live_node_ids() -> set[str]:
@@ -71,6 +85,12 @@ def retire_node(node_id: str, *, force: bool = False) -> dict:
     Returns a report of what was actually removed.  Raises NodeStillConnected
     if the node is active and ``force`` is not set.
     """
+    # Read off the module rather than imported by value, so a deployment's
+    # setting is what applies and tests can vary it.
+    allowed = constants.NODE_FORCE_RETIRE_PREFIXES
+    if force and allowed and not node_id.startswith(allowed):
+        raise ForceRetireNotAllowed(node_id, allowed)
+
     if not force and node_id in live_node_ids():
         raise NodeStillConnected(node_id)
 

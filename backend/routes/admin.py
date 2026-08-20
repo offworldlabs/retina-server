@@ -307,6 +307,11 @@ async def admin_retire_node(node_id: str, force: bool = False, admin=Depends(req
         report = node_retirement.retire_node(node_id, force=force)
     except node_retirement.NodeStillConnected as exc:
         raise HTTPException(409, f"Node {node_id} is connected; pass force=true to retire it anyway") from exc
+    except node_retirement.ForceRetireNotAllowed as exc:
+        raise HTTPException(
+            403,
+            f"force=true is restricted to node ids starting with {', '.join(exc.prefixes)}",
+        ) from exc
     log_event(
         "node",
         f"Retired node state for {node_id}",

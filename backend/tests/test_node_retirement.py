@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
+from config import constants  # noqa: E402
 from core import state  # noqa: E402
 from main import app  # noqa: E402
 from services import node_retirement  # noqa: E402
@@ -161,3 +162,39 @@ class TestAdminRoutes:
         assert r.status_code == 200
         assert "departed" in [x["node_id"] for x in r.json()["retired"]]
         assert client.get("/api/admin/nodes/stale").json()["count"] == 0
+
+
+class TestForceRetireAllowlist:
+    def test_force_is_unrestricted_when_no_prefixes_are_configured(self, fleet, monkeypatch):
+        """Production's posture: an operator retiring a decommissioned board
+        needs force, because nothing else ever evicts it from the registry."""
+        monkeypatch.setattr(constants, "NODE_FORCE_RETIRE_PREFIXES", ())
+        node_retirement.retire_node("live-node", force=True)
+        assert "live-node" not in state.connected_nodes
+
+    def test_force_is_refused_outside_the_allowlist(self, fleet, monkeypatch):
+        monkeypatch.setattr(constants, "NODE_FORCE_RETIRE_PREFIXES", ("e2e-",))
+        with pytest.raises(node_retirement.ForceRetireNotAllowed):
+            node_retirement.retire_node("live-node", force=True)
+        assert "live-node" in state.connected_nodes
+
+    def test_force_is_permitted_inside_the_allowlist(self, fleet, monkeypatch):
+        monkeypatch.setattr(constants, "NODE_FORCE_RETIRE_PREFIXES", ("e2e-",))
+        state.connected_nodes["e2e-bulk-a-abc"] = {"status": "active"}
+        node_retirement.retire_node("e2e-bulk-a-abc", force=True)
+        assert "e2e-bulk-a-abc" not in state.connected_nodes
+
+    def test_an_unforced_retire_is_never_restricted(self, fleet, monkeypatch):
+        """The allowlist gates force alone. Retiring a genuinely stale node
+        must keep working whatever the node is called."""
+        monkeypatch.setattr(constants, "NODE_FORCE_RETIRE_PREFIXES", ("e2e-",))
+        node_retirement.retire_node("departed")
+        assert "departed" not in state.node_analytics.trust_scores
+
+    def test_the_route_refuses_with_403_and_names_the_prefixes(self, client, fleet, monkeypatch):
+        monkeypatch.setattr(constants, "NODE_FORCE_RETIRE_PREFIXES", ("e2e-", "synth-e2e-"))
+        r = client.delete("/api/admin/nodes/live-node/state?force=true")
+
+        assert r.status_code == 403
+        assert "e2e-" in r.json()["detail"]
+        assert "live-node" in state.connected_nodes
