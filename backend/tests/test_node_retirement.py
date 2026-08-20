@@ -100,6 +100,33 @@ class TestRetireNode:
         node_retirement.retire_node("live-node", force=True)
         assert "live-node" not in state.node_analytics.trust_scores
 
+    def test_it_evicts_the_node_from_the_fleet_registry(self, fleet):
+        """connected_nodes is what /api/radar/nodes counts and what
+        live_node_ids reads, so a node left in it is neither forgotten nor
+        ever eligible for the stale sweep again."""
+        report = node_retirement.retire_node("live-node", force=True)
+
+        assert "live-node" not in state.connected_nodes
+        assert report["was_connected"] is True
+        assert "live-node" not in node_retirement.live_node_ids()
+
+    def test_a_retired_node_does_not_come_back_as_stale(self, fleet):
+        node_retirement.retire_node("live-node", force=True)
+        assert "live-node" not in node_retirement.stale_node_ids()
+
+    def test_it_evicts_the_cached_pipeline(self, fleet):
+        state.node_pipelines["departed"] = object()
+        report = node_retirement.retire_node("departed")
+
+        assert "departed" not in state.node_pipelines
+        assert report["pipeline_evicted"] is True
+
+    def test_retiring_a_node_that_was_never_registered_is_a_no_op(self, fleet):
+        report = node_retirement.retire_node("never-existed")
+
+        assert report["was_connected"] is False
+        assert report["pipeline_evicted"] is False
+
     def test_retire_stale_clears_everything_absent(self, fleet):
         result = node_retirement.retire_stale_nodes()
 

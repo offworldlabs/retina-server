@@ -1,7 +1,9 @@
 """Forget a node that has left the fleet.
 
 Every per-node store in the server is append-only in practice.  Registration
-adds; nothing removes.  A receiver that is decommissioned, renamed, or replaced
+adds, and this module is the only thing that removes: ``state.connected_nodes``
+in particular has no other eviction path at all, so a node absent from it is a
+node the fleet has genuinely forgotten.  A receiver that is decommissioned, renamed, or replaced
 by a different fleet layout therefore keeps its analytics, coverage polygon,
 custody chain and reputation for the life of the deployment, and every
 subsequent analytics pass, snapshot write and coverage save keeps paying for
@@ -63,7 +65,8 @@ def stale_node_ids() -> list[str]:
 
 
 def retire_node(node_id: str, *, force: bool = False) -> dict:
-    """Drop every trace of ``node_id``: analytics, coverage files, custody.
+    """Drop every trace of ``node_id``: fleet registry, analytics, coverage
+    files, custody, and the cached pipeline.
 
     Returns a report of what was actually removed.  Raises NodeStillConnected
     if the node is active and ``force`` is not set.
@@ -72,6 +75,18 @@ def retire_node(node_id: str, *, force: bool = False) -> dict:
         raise NodeStillConnected(node_id)
 
     report: dict = {"node_id": node_id}
+
+    # Evicted before analytics and the associator, not after.  Retirement is not
+    # atomic across the stores, so a frame arriving mid-call re-registers the node
+    # into whichever store has already been cleared.  In this order the survivor is
+    # a node visible on /api/radar/nodes with no geometry, which an operator can see
+    # and retire again; the reverse order strands geometry that no endpoint reports.
+    with state.connected_nodes_lock:
+        report["was_connected"] = state.connected_nodes.pop(node_id, None) is not None
+    # Otherwise this waits on the 2 h disconnect sweep in
+    # services.tasks.analytics_refresh, which would leave a retired node holding a
+    # cached pipeline built from config that no longer exists anywhere else.
+    report["pipeline_evicted"] = state.node_pipelines.pop(node_id, None) is not None
 
     analytics = getattr(state, "node_analytics", None)
     if analytics is not None:
