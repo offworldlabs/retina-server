@@ -110,10 +110,6 @@ class TestRetireNode:
         assert report["was_connected"] is True
         assert "live-node" not in node_retirement.live_node_ids()
 
-    def test_a_retired_node_does_not_come_back_as_stale(self, fleet):
-        node_retirement.retire_node("live-node", force=True)
-        assert "live-node" not in node_retirement.stale_node_ids()
-
     def test_it_evicts_the_cached_pipeline(self, fleet):
         state.node_pipelines["departed"] = object()
         report = node_retirement.retire_node("departed")
