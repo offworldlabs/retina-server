@@ -83,7 +83,8 @@ def retire_node(node_id: str, *, force: bool = False) -> dict:
     files, custody, and the cached pipeline.
 
     Returns a report of what was actually removed.  Raises NodeStillConnected
-    if the node is active and ``force`` is not set.
+    if the node is active and ``force`` is not set, or ForceRetireNotAllowed
+    if ``force`` is set but ``node_id`` falls outside the configured allowlist.
     """
     # Read off the module rather than imported by value, so a deployment's
     # setting is what applies and tests can vary it.
