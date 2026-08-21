@@ -9,6 +9,8 @@ retina_tracker YAML config stays separate (loaded at runtime via config.yaml).
 
 import os
 
+from core.env_parsing import parse_comma_list
+
 # ── Physics ──────────────────────────────────────────────────────────────────
 C_KM_US = 0.299792458  # Speed of light (km/µs)
 R_EARTH_KM = 6371.0  # Mean Earth radius (km)
@@ -257,21 +259,6 @@ BLAH2_POLL_INTERVAL_S = 1.0  # blah2 API poll cadence (s)
 BLAH2_STALE_THRESHOLD_S = 10.0  # Ignore frames older than this (s)
 BLAH2_RECONNECT_DELAY_S = 5.0  # Backoff after failures (s)
 BLAH2_MAX_FAILURES = 5  # Failures before backing off
-
-# ── Shared parsing ───────────────────────────────────────────────────────────
-
-
-def parse_comma_list(raw: str) -> tuple[str, ...]:
-    """Split a comma-separated list, stripping whitespace and dropping empty
-    segments.  A blank segment (a leading, trailing or doubled comma) would
-    otherwise become an entry that matches everything, e.g. a prefix that
-    matches every node id via ``str.startswith("")``.
-
-    Used for every list-valued environment variable, so the empty-segment rule
-    holds in one place: ``core.users`` parses AUTH_ADMIN_EMAILS through it too.
-    """
-    return tuple(p.strip() for p in raw.split(",") if p.strip())
-
 
 # ── Node retirement ──────────────────────────────────────────────────────────
 # Which node ids the admin route will force-retire.  Empty, the default,

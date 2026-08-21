@@ -171,12 +171,21 @@ class TestRetireNode:
             return real_retire(node_id, **kwargs)
 
         monkeypatch.setattr(node_retirement, "retire_node", reconnect_departed_first)
-        result = node_retirement.retire_stale_nodes()
+        try:
+            result = node_retirement.retire_stale_nodes()
 
-        assert result["skipped"] == ["departed"]
-        assert "also-departed" in [r["node_id"] for r in result["retired"]]
-        assert result["count"] == len(result["retired"])
-        assert "also-departed" not in state.node_analytics.trust_scores
+            assert [r["node_id"] for r in result["skipped"]] == ["departed"]
+            assert "also-departed" in [r["node_id"] for r in result["retired"]]
+            assert result["count"] == len(result["retired"])
+            assert result["failed"] == []
+            assert "also-departed" not in state.node_analytics.trust_scores
+        finally:
+            # The fleet fixture restores the other stores but not the analytics
+            # manager's, and it cleans only the two ids it created itself. This
+            # test adds a third, so a failing assertion above would otherwise
+            # leave it in trust_scores for every later test that reads the
+            # stale list.
+            state.node_analytics.retire_node("also-departed")
 
 
 class TestAdminRoutes:

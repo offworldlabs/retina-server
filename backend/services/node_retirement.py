@@ -20,9 +20,10 @@ when it returns; only a decision that the node is *gone* should discard it.
 ``retire_node`` is that decision, and it is irreversible — the coverage
 polygon in particular represents observation time that cannot be recreated.
 
-Retiring a node that is currently connected is refused: it would be undone by
-the next registration anyway, and it would strip the custody chain of a live
-data source mid-session.
+Retiring a node still held in the fleet registry is refused: it would be undone
+by the next registration anyway, and it would strip the custody chain of a live
+data source mid-session.  Held is registry presence rather than a live stream,
+so a receiver marked disconnected is still refused.
 """
 
 import logging
@@ -34,7 +35,11 @@ log = logging.getLogger(__name__)
 
 
 class NodeStillConnected(Exception):
-    """Raised when asked to retire a node that is currently active."""
+    """Raised when asked to retire a node still held in the fleet registry.
+
+    Held rather than streaming: an entry marked disconnected still counts,
+    because nothing has removed it and the next frame would restore it.
+    """
 
 
 class ForceRetireNotAllowed(Exception):
@@ -86,10 +91,12 @@ def retire_node(node_id: str, *, force: bool = False) -> dict:
     files, custody, and the cached pipeline.
 
     Returns a report of what was actually removed.  Raises NodeStillConnected
-    if the node is active and ``force`` is not set, or ForceRetireNotAllowed
-    if the node is active and ``force`` is set but ``node_id`` falls outside
-    the configured allowlist.  Neither applies to a node already absent from
-    the registry, which retires without ``force`` mattering either way.
+    if the node is still held in the fleet registry and ``force`` is not set,
+    or ForceRetireNotAllowed if it is held and ``force`` is set but ``node_id``
+    falls outside the configured allowlist.  Held means present in
+    ``state.connected_nodes`` whatever its status, so a receiver marked
+    disconnected still qualifies; neither exception applies to a node already
+    absent from the registry, which retires without ``force`` mattering.
     """
     report: dict = {"node_id": node_id}
 
@@ -110,8 +117,14 @@ def retire_node(node_id: str, *, force: bool = False) -> dict:
     # registering write comes from a frame-worker thread, so the GIL does not
     # close that window on its own.
     with state.connected_nodes_lock:
-        connected = node_id in state.connected_nodes
-        if connected:
+        # Presence in the registry, not the entry's status field.  A receiver
+        # dark for a week is still held here (check_node_health only marks it
+        # disconnected, and prune_synthetic_nodes only removes test-prefixed
+        # ids after seven days), so it still needs force and is still gated by
+        # the allowlist.  Reading this as "currently streaming" would put both
+        # the wrong nodes through the guard.
+        in_registry = node_id in state.connected_nodes
+        if in_registry:
             if not force:
                 raise NodeStillConnected(node_id)
             # The allowlist gates force only where force is actually doing
@@ -125,7 +138,7 @@ def retire_node(node_id: str, *, force: bool = False) -> dict:
             if allowed and not node_id.startswith(allowed):
                 raise ForceRetireNotAllowed(node_id, allowed)
         state.connected_nodes.pop(node_id, None)
-    report["was_connected"] = connected
+    report["was_connected"] = in_registry
     # Otherwise this waits on the 2 h disconnect sweep in
     # services.tasks.analytics_refresh, which would leave a retired node holding a
     # cached pipeline built from config that no longer exists anywhere else.
@@ -150,7 +163,7 @@ def retire_node(node_id: str, *, force: bool = False) -> dict:
         # now half retired: gone from /api/radar/nodes, still holding whatever
         # of analytics, associator geometry or custody didn't finish. It will
         # show up in stale_node_ids() until a retire-stale pass clears the rest.
-        log.exception("Node %s is half retired after this failure", node_id)
+        log.exception("Node %s is half retired after this failure; what went: %s", node_id, report)
         raise
 
     # The snapshot is written from these stores, so the next save already omits
@@ -162,20 +175,38 @@ def retire_node(node_id: str, *, force: bool = False) -> dict:
 def retire_stale_nodes() -> dict:
     """Retire every node held in state but absent from the fleet.
 
-    A node can register between the target list being computed and its turn
-    arriving, at which point it is no longer stale and retiring it unforced is
-    refused.  That is one node changing its mind, not a failed sweep, so it is
-    reported as skipped and the rest still run; letting it propagate would
-    abort partway and leave the caller unable to tell which nodes went.
+    Every node is attempted and every outcome is reported, because the sweep is
+    a batch: one node's problem is not a reason to abandon the rest, and an
+    exception escaping the loop would discard the record of everything already
+    retired in this pass, leaving the caller to re-derive it from
+    ``stale_node_ids``.  A node can register between the target list being
+    computed and its turn arriving, which is one node changing its mind rather
+    than a failure; anything else is a genuine fault, already logged with a
+    traceback by ``retire_node``, and is reported separately so the two are not
+    confused.
+
+    All three lists carry ``node_id``-keyed entries so a caller can treat them
+    the same way.
     """
-    retired, skipped = [], []
+    retired, skipped, failed = [], [], []
     for nid in stale_node_ids():
         try:
             retired.append(retire_node(nid))
         except NodeStillConnected:
-            skipped.append(nid)
+            log.info("Skipped %s: registered again before the sweep reached it", nid)
+            skipped.append({"node_id": nid, "reason": "registered again before its turn"})
+        except Exception as exc:
+            failed.append({"node_id": nid, "error": repr(exc)})
+    if skipped or failed:
+        log.warning(
+            "Retire-stale finished with %d retired, %d skipped, %d failed",
+            len(retired),
+            len(skipped),
+            len(failed),
+        )
     return {
         "retired": retired,
         "count": len(retired),
         "skipped": skipped,
+        "failed": failed,
     }

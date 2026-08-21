@@ -330,11 +330,19 @@ async def admin_retire_stale_nodes(admin=Depends(require_admin)):
     from services import node_retirement
 
     result = node_retirement.retire_stale_nodes()
+    # Skipped and failed nodes go in the event too. Recording only the retired
+    # ids would show a clean sweep in the log while the accumulation the
+    # operator ran it to clear is still there, with nothing saying why.
     log_event(
         "node",
-        f"Retired {result['count']} stale node(s)",
+        f"Retired {result['count']} stale node(s), skipped {len(result['skipped'])}, failed {len(result['failed'])}",
         "warning",
-        {"by": admin["email"], "nodes": [r["node_id"] for r in result["retired"]]},
+        {
+            "by": admin["email"],
+            "nodes": [r["node_id"] for r in result["retired"]],
+            "skipped": [r["node_id"] for r in result["skipped"]],
+            "failed": [r["node_id"] for r in result["failed"]],
+        },
     )
     return result
 

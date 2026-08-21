@@ -36,8 +36,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from config.constants import parse_comma_list
 from core import state
+from core.env_parsing import parse_comma_list
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from routes.admin import router as admin_router
 from routes.analytics import router as analytics_router
