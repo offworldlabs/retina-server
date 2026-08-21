@@ -18,6 +18,12 @@ os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("SOLVER_POOL", "0")
 # Needed so the /api/radar/detections auth guard is active in tests.
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
+# services.node_retirement reads this per call, so an ambient value would reach
+# the tests. Assigned rather than setdefault: a developer who has exported
+# staging's own value (e2e-,synth-e2e-) would otherwise fail every test that
+# force-retires the fixture's `live-node`, with nothing in the failure naming
+# the variable as the cause.
+os.environ["NODE_FORCE_RETIRE_PREFIXES"] = ""
 # The suite has no OAuth provider to log in against, so the route tests reach the
 # admin endpoints through core.users' anonymous-admin bypass. That bypass is an
 # explicit opt-in and no longer follows from RETINA_ENV=test, so ask for it here.

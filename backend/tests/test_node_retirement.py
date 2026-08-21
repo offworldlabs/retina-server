@@ -130,6 +130,25 @@ class TestRetireNode:
         assert report["was_connected"] is False
         assert report["pipeline_evicted"] is False
 
+    def test_a_failure_partway_re_raises_and_leaves_the_rest_retirable(self, fleet, monkeypatch):
+        """analytics.retire_node deletes files and can fail.  The registry is
+        already cleared by then, so the caller must see the error rather than
+        a report describing a retirement that only half happened."""
+
+        def boom(_node_id):
+            raise OSError("coverage file is not writable")
+
+        monkeypatch.setattr(state.node_analytics, "retire_node", boom)
+
+        with pytest.raises(OSError):
+            node_retirement.retire_node("live-node", force=True)
+
+        assert "live-node" not in state.connected_nodes
+        # Untouched, so the node is now stale and a retire-stale pass finishes
+        # what this call started.
+        assert "live-node" in state.node_analytics.trust_scores
+        assert "live-node" in node_retirement.stale_node_ids()
+
     def test_retire_stale_clears_everything_absent(self, fleet):
         result = node_retirement.retire_stale_nodes()
 
@@ -137,6 +156,27 @@ class TestRetireNode:
         assert "departed" in [r["node_id"] for r in result["retired"]]
         assert node_retirement.stale_node_ids() == []
         assert "live-node" in state.node_analytics.trust_scores
+
+    def test_retire_stale_skips_a_node_that_reconnected_and_finishes_the_rest(self, fleet, monkeypatch):
+        """A node registering between the target list and its turn is one node
+        changing its mind, not a failed sweep: it is reported and the rest
+        still run, rather than aborting partway with the caller unable to tell
+        which nodes went."""
+        state.node_analytics.register_node("also-departed", dict(_CFG))
+        real_retire = node_retirement.retire_node
+
+        def reconnect_departed_first(node_id, **kwargs):
+            if node_id == "departed":
+                state.connected_nodes["departed"] = {"status": "active"}
+            return real_retire(node_id, **kwargs)
+
+        monkeypatch.setattr(node_retirement, "retire_node", reconnect_departed_first)
+        result = node_retirement.retire_stale_nodes()
+
+        assert result["skipped"] == ["departed"]
+        assert "also-departed" in [r["node_id"] for r in result["retired"]]
+        assert result["count"] == len(result["retired"])
+        assert "also-departed" not in state.node_analytics.trust_scores
 
 
 class TestAdminRoutes:
@@ -204,6 +244,15 @@ class TestForceRetireAllowlist:
         assert r.status_code == 403
         assert "e2e-" in r.json()["detail"]
         assert "live-node" in state.connected_nodes
+
+    def test_force_on_a_node_already_absent_is_not_restricted(self, fleet, monkeypatch):
+        """The allowlist gates force only where force overrides the live-node
+        refusal.  `departed` is not in the registry, so it retires without
+        force mattering; refusing it would tell the operator to drop a flag
+        that changed nothing."""
+        monkeypatch.setenv("NODE_FORCE_RETIRE_PREFIXES", "e2e-")
+        node_retirement.retire_node("departed", force=True)
+        assert "departed" not in state.node_analytics.trust_scores
 
     def test_the_route_permits_a_force_retire_inside_the_allowlist(self, client, fleet, monkeypatch):
         """The combination the staging teardown depends on: a configured

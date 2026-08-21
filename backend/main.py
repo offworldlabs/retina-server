@@ -36,6 +36,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from config.constants import parse_comma_list
 from core import state
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from routes.admin import router as admin_router
@@ -276,17 +277,25 @@ app.add_middleware(LimitUploadSize, limits=NODE_BODY_LIMITS)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv(
-        "CORS_ORIGINS",
-        "http://localhost:5173,http://localhost:3000,http://localhost:5174,"
-        # testmap.retina.fm is deliberately absent: it is served by staging, so a
-        # production process falling back to this default should not treat it as
-        # a same-trust origin. Every deployed environment sets CORS_ORIGINS
-        # explicitly, so this list is the local-development default only.
-        "https://retina.fm,https://api.retina.fm,https://dash.retina.fm,"
-        "https://admin.retina.fm,"
-        "https://towers.retina.fm,https://map.retina.fm",
-    ).split(","),
+    # parse_comma_list rather than a bare split: a trailing comma or a space
+    # after a separator would otherwise yield an empty or padded origin, which
+    # matches no real Origin header, so an origin the operator believed they
+    # had allowed is refused with nothing logged.
+    allow_origins=list(
+        parse_comma_list(
+            os.getenv(
+                "CORS_ORIGINS",
+                "http://localhost:5173,http://localhost:3000,http://localhost:5174,"
+                # testmap.retina.fm is deliberately absent: it is served by staging, so a
+                # production process falling back to this default should not treat it as
+                # a same-trust origin. Every deployed environment sets CORS_ORIGINS
+                # explicitly, so this list is the local-development default only.
+                "https://retina.fm,https://api.retina.fm,https://dash.retina.fm,"
+                "https://admin.retina.fm,"
+                "https://towers.retina.fm,https://map.retina.fm",
+            )
+        )
+    ),
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-API-Key"],

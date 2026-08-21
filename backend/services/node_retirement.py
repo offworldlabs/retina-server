@@ -87,22 +87,22 @@ def retire_node(node_id: str, *, force: bool = False) -> dict:
 
     Returns a report of what was actually removed.  Raises NodeStillConnected
     if the node is active and ``force`` is not set, or ForceRetireNotAllowed
-    if ``force`` is set but ``node_id`` falls outside the configured allowlist.
+    if the node is active and ``force`` is set but ``node_id`` falls outside
+    the configured allowlist.  Neither applies to a node already absent from
+    the registry, which retires without ``force`` mattering either way.
     """
-    # Read at call time rather than imported by value, so a deployment's
-    # setting is what applies (see constants.force_retire_prefixes) and tests
-    # can vary it via the environment.
-    allowed = constants.force_retire_prefixes()
-    if force and allowed and not node_id.startswith(allowed):
-        raise ForceRetireNotAllowed(node_id, allowed)
-
     report: dict = {"node_id": node_id}
 
-    # Evicted before analytics and the associator, not after.  Retirement is not
-    # atomic across the stores, so a frame arriving mid-call re-registers the node
-    # into whichever store has already been cleared.  In this order the survivor is
-    # a node visible on /api/radar/nodes with no geometry, which an operator can see
-    # and retire again; the reverse order strands geometry that no endpoint reports.
+    # The registry is cleared before analytics and the associator, not after.
+    # Retirement is not atomic across the stores, so a frame arriving mid-call
+    # re-registers the node into whichever store has already been cleared.  We
+    # take the concurrent-frame case over the failure case: in this order the
+    # survivor is a node visible on /api/radar/nodes with no geometry, which an
+    # operator can see and retire again, where the reverse order strands
+    # geometry that no endpoint reports.  The cost is that a failure in the
+    # fallible work below (analytics deletes files) leaves the node already
+    # gone from the registry; that is rarer than a frame landing mid-call, and
+    # the except clause says what it left.
     #
     # The liveness check and the pop happen under the same lock acquisition.
     # A node registering between a separate check and pop would be retired
@@ -110,9 +110,22 @@ def retire_node(node_id: str, *, force: bool = False) -> dict:
     # registering write comes from a frame-worker thread, so the GIL does not
     # close that window on its own.
     with state.connected_nodes_lock:
-        if not force and node_id in state.connected_nodes:
-            raise NodeStillConnected(node_id)
-        report["was_connected"] = state.connected_nodes.pop(node_id, None) is not None
+        connected = node_id in state.connected_nodes
+        if connected:
+            if not force:
+                raise NodeStillConnected(node_id)
+            # The allowlist gates force only where force is actually doing
+            # something, namely overriding the refusal above.  A node already
+            # absent from the registry retires without force at all, so
+            # refusing it here would be a dead end rather than a safeguard:
+            # the operator would be told to drop a flag they need not have
+            # passed.  Read at call time so a deployment's setting is what
+            # applies; see constants.force_retire_prefixes.
+            allowed = constants.force_retire_prefixes()
+            if allowed and not node_id.startswith(allowed):
+                raise ForceRetireNotAllowed(node_id, allowed)
+        state.connected_nodes.pop(node_id, None)
+    report["was_connected"] = connected
     # Otherwise this waits on the 2 h disconnect sweep in
     # services.tasks.analytics_refresh, which would leave a retired node holding a
     # cached pipeline built from config that no longer exists anywhere else.
@@ -147,9 +160,22 @@ def retire_node(node_id: str, *, force: bool = False) -> dict:
 
 
 def retire_stale_nodes() -> dict:
-    """Retire every node held in state but absent from the fleet."""
-    targets = stale_node_ids()
+    """Retire every node held in state but absent from the fleet.
+
+    A node can register between the target list being computed and its turn
+    arriving, at which point it is no longer stale and retiring it unforced is
+    refused.  That is one node changing its mind, not a failed sweep, so it is
+    reported as skipped and the rest still run; letting it propagate would
+    abort partway and leave the caller unable to tell which nodes went.
+    """
+    retired, skipped = [], []
+    for nid in stale_node_ids():
+        try:
+            retired.append(retire_node(nid))
+        except NodeStillConnected:
+            skipped.append(nid)
     return {
-        "retired": [retire_node(nid) for nid in targets],
-        "count": len(targets),
+        "retired": retired,
+        "count": len(retired),
+        "skipped": skipped,
     }
