@@ -1,9 +1,11 @@
 """Retiring nodes that have left the fleet.
 
-Nothing in the server removes a node.  After a fleet layout change on staging,
-10 receivers that no longer existed were still held in analytics, custody and
+The per-node stores in the server accumulate without bound.  A fleet layout
+change on staging left 10 receivers still held in analytics, custody and
 reputation, still being iterated by the refresh task and still being written to
-disk on every save — the node count read 26 against 16 live.
+disk on every save, with the node count reading 26 against 16 live.  Pruning
+removes stale test-prefixed nodes from the fleet registry only after 7 days
+disconnected; retirement is the only path that clears every store.
 """
 
 import os
