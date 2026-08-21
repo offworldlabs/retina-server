@@ -701,7 +701,14 @@ describeUnlessProd("Node registration — main integration suite", () => {
 test.afterAll(async () => {
   if (env === "prod" || !API_KEY) return;
 
-  const ctx = await request.newContext();
+  let ctx: Ctx;
+  try {
+    ctx = await request.newContext();
+  } catch (err) {
+    console.warn(`[teardown] could not open a request context: ${err}`);
+    return;
+  }
+
   try {
     for (const nodeId of REGISTERED_NODE_IDS) {
       try {
@@ -716,6 +723,10 @@ test.afterAll(async () => {
       }
     }
   } finally {
-    await ctx.dispose();
+    try {
+      await ctx.dispose();
+    } catch (err) {
+      console.warn(`[teardown] could not dispose the request context: ${err}`);
+    }
   }
 });
