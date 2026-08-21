@@ -181,9 +181,10 @@ def retire_stale_nodes() -> dict:
     retired in this pass, leaving the caller to re-derive it from
     ``stale_node_ids``.  A node can register between the target list being
     computed and its turn arriving, which is one node changing its mind rather
-    than a failure; anything else is a genuine fault, already logged with a
-    traceback by ``retire_node``, and is reported separately so the two are not
-    confused.
+    than a failure; anything else is a genuine fault and is reported separately
+    so the two are not confused.  Callers that need a failure to be loud should
+    read ``failed``: the route turns it into a non-200, since a sweep where
+    nothing worked must not read as success.
 
     All three lists carry ``node_id``-keyed entries so a caller can treat them
     the same way.
@@ -194,8 +195,12 @@ def retire_stale_nodes() -> dict:
             retired.append(retire_node(nid))
         except NodeStillConnected:
             log.info("Skipped %s: registered again before the sweep reached it", nid)
-            skipped.append({"node_id": nid, "reason": "registered again before its turn"})
+            skipped.append({"node_id": nid})
         except Exception as exc:
+            # Logged here rather than relying on retire_node, which only logs
+            # what fails inside its own try block: anything raised before that
+            # would otherwise reach the caller as a bare repr with no stack.
+            log.exception("Retiring %s failed during the sweep", nid)
             failed.append({"node_id": nid, "error": repr(exc)})
     if skipped or failed:
         log.warning(

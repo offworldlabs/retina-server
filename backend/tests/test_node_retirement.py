@@ -16,8 +16,8 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
-from config import constants  # noqa: E402
 from core import state  # noqa: E402
+from core.env_parsing import parse_comma_list  # noqa: E402
 from main import app  # noqa: E402
 from services import node_retirement  # noqa: E402
 
@@ -157,6 +157,29 @@ class TestRetireNode:
         assert node_retirement.stale_node_ids() == []
         assert "live-node" in state.node_analytics.trust_scores
 
+    def test_retire_stale_records_a_failure_and_keeps_going(self, fleet, monkeypatch):
+        """A genuine fault on one node must not abandon the rest, and must be
+        reported separately from a node that merely re-registered."""
+        state.node_analytics.register_node("also-departed", dict(_CFG))
+        real_retire = node_retirement.retire_node
+
+        def fail_on_departed(node_id, **kwargs):
+            if node_id == "departed":
+                raise OSError("coverage file is not writable")
+            return real_retire(node_id, **kwargs)
+
+        monkeypatch.setattr(node_retirement, "retire_node", fail_on_departed)
+        try:
+            result = node_retirement.retire_stale_nodes()
+
+            assert [r["node_id"] for r in result["failed"]] == ["departed"]
+            assert "is not writable" in result["failed"][0]["error"]
+            assert result["skipped"] == []
+            # The rest of the sweep still ran.
+            assert "also-departed" in [r["node_id"] for r in result["retired"]]
+        finally:
+            state.node_analytics.retire_node("also-departed")
+
     def test_retire_stale_skips_a_node_that_reconnected_and_finishes_the_rest(self, fleet, monkeypatch):
         """A node registering between the target list and its turn is one node
         changing its mind, not a failed sweep: it is reported and the rest
@@ -211,6 +234,44 @@ class TestAdminRoutes:
         r = client.delete("/api/admin/nodes/live-node/state?force=true")
         assert r.status_code == 200
         assert "live-node" not in state.node_analytics.trust_scores
+
+    def test_a_sweep_that_retires_nothing_and_fails_returns_500(self, client, fleet, monkeypatch):
+        """The sweep keeps going past a failure, so the status code is the only
+        signal a caller driving this by exit status gets."""
+
+        def boom(_node_id, **_kwargs):
+            raise OSError("coverage file is not writable")
+
+        monkeypatch.setattr(node_retirement, "retire_node", boom)
+        r = client.post("/api/admin/nodes/retire-stale")
+
+        assert r.status_code == 500
+        body = r.json()
+        assert body["retired"] == []
+        # Membership rather than equality: earlier test modules leave their own
+        # ids in the analytics stores, which the fleet fixture does not clear,
+        # so the stale list is not just this fixture's nodes.
+        assert "departed" in [x["node_id"] for x in body["failed"]]
+
+    def test_a_sweep_that_partly_fails_returns_207(self, client, fleet, monkeypatch):
+        state.node_analytics.register_node("also-departed", dict(_CFG))
+        real_retire = node_retirement.retire_node
+
+        def fail_on_departed(node_id, **kwargs):
+            if node_id == "departed":
+                raise OSError("coverage file is not writable")
+            return real_retire(node_id, **kwargs)
+
+        monkeypatch.setattr(node_retirement, "retire_node", fail_on_departed)
+        try:
+            r = client.post("/api/admin/nodes/retire-stale")
+
+            assert r.status_code == 207
+            body = r.json()
+            assert [x["node_id"] for x in body["failed"]] == ["departed"]
+            assert "also-departed" in [x["node_id"] for x in body["retired"]]
+        finally:
+            state.node_analytics.retire_node("also-departed")
 
     def test_retire_stale_sweeps_and_reports(self, client, fleet):
         r = client.post("/api/admin/nodes/retire-stale")
@@ -280,17 +341,18 @@ class TestParseCommaList:
     """The allowlist tests above now set the environment variable rather than
     the parsed tuple, so they already exercise this via force_retire_prefixes.
     These stay as direct coverage of the split, strip and empty-segment
-    behaviour on its own."""
+    behaviour on its own, against the module that owns it rather than the
+    re-export config.constants happens to carry."""
 
     def test_a_normal_two_prefix_value(self):
-        assert constants.parse_comma_list("e2e-,synth-e2e-") == ("e2e-", "synth-e2e-")
+        assert parse_comma_list("e2e-,synth-e2e-") == ("e2e-", "synth-e2e-")
 
     def test_an_empty_string_yields_no_prefixes(self):
-        assert constants.parse_comma_list("") == ()
+        assert parse_comma_list("") == ()
 
     def test_whitespace_around_entries_is_stripped(self):
-        assert constants.parse_comma_list(" e2e- , synth-e2e- ") == ("e2e-", "synth-e2e-")
+        assert parse_comma_list(" e2e- , synth-e2e- ") == ("e2e-", "synth-e2e-")
 
     def test_a_trailing_comma_does_not_yield_an_empty_prefix(self):
         """An empty prefix would match every node id via str.startswith("")."""
-        assert constants.parse_comma_list("e2e-,") == ("e2e-",)
+        assert parse_comma_list("e2e-,") == ("e2e-",)

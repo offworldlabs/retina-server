@@ -17,7 +17,7 @@ _admin_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_na
 
 import orjson
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -336,7 +336,7 @@ async def admin_retire_stale_nodes(admin=Depends(require_admin)):
     log_event(
         "node",
         f"Retired {result['count']} stale node(s), skipped {len(result['skipped'])}, failed {len(result['failed'])}",
-        "warning",
+        "error" if result["failed"] else "warning",
         {
             "by": admin["email"],
             "nodes": [r["node_id"] for r in result["retired"]],
@@ -344,6 +344,14 @@ async def admin_retire_stale_nodes(admin=Depends(require_admin)):
             "failed": [r["node_id"] for r in result["failed"]],
         },
     )
+    if result["failed"]:
+        # The sweep keeps going past a failure, so the status code is the only
+        # thing telling a caller driving this by exit status that anything went
+        # wrong. 500 when nothing was retired at all, since that is a sweep
+        # that did not work; 207 when some went and some did not, so a partial
+        # result reads as neither success nor total failure. The body is the
+        # full result either way, so no record is lost.
+        return JSONResponse(status_code=500 if not result["retired"] else 207, content=result)
     return result
 
 
