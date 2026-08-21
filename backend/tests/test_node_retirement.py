@@ -36,11 +36,13 @@ def fleet():
         dict(state.node_identities),
         dict(state.chain_entries),
         dict(state.iq_commitments),
+        dict(state.node_pipelines),
     )
     state.connected_nodes.clear()
     state.node_identities.clear()
     state.chain_entries.clear()
     state.iq_commitments.clear()
+    state.node_pipelines.clear()
 
     state.connected_nodes["live-node"] = {"status": "active"}
     state.node_analytics.register_node("live-node", dict(_CFG))
@@ -60,6 +62,8 @@ def fleet():
     state.chain_entries.update(saved[2])
     state.iq_commitments.clear()
     state.iq_commitments.update(saved[3])
+    state.node_pipelines.clear()
+    state.node_pipelines.update(saved[4])
 
 
 class TestStaleDetection:
@@ -198,3 +202,22 @@ class TestForceRetireAllowlist:
         assert r.status_code == 403
         assert "e2e-" in r.json()["detail"]
         assert "live-node" in state.connected_nodes
+
+
+class TestParsePrefixList:
+    """Every allowlist test above monkeypatches the parsed tuple directly, so
+    this is the only coverage of the parse itself, the one coupling between
+    staging's compose value and the E2E teardown working at all."""
+
+    def test_a_normal_two_prefix_value(self):
+        assert constants._parse_prefix_list("e2e-,synth-e2e-") == ("e2e-", "synth-e2e-")
+
+    def test_an_empty_string_yields_no_prefixes(self):
+        assert constants._parse_prefix_list("") == ()
+
+    def test_whitespace_around_entries_is_stripped(self):
+        assert constants._parse_prefix_list(" e2e- , synth-e2e- ") == ("e2e-", "synth-e2e-")
+
+    def test_a_trailing_comma_does_not_yield_an_empty_prefix(self):
+        """An empty prefix would match every node id via str.startswith("")."""
+        assert constants._parse_prefix_list("e2e-,") == ("e2e-",)

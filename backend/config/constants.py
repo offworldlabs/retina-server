@@ -266,6 +266,15 @@ BLAH2_MAX_FAILURES = 5  # Failures before backing off
 # the operator case the endpoint exists for.  Staging sets the test prefixes,
 # because that is where the E2E suite force-retires its own nodes and where a
 # mistaken sweep would cost something.
-NODE_FORCE_RETIRE_PREFIXES = tuple(
-    p.strip() for p in os.getenv("NODE_FORCE_RETIRE_PREFIXES", "").split(",") if p.strip()
-)
+
+
+def _parse_prefix_list(raw: str) -> tuple[str, ...]:
+    """Split a comma-separated prefix list, stripping whitespace and dropping
+    empty segments.  A blank segment (a leading, trailing or doubled comma)
+    would otherwise become a prefix that matches every node id via
+    ``str.startswith("")``.
+    """
+    return tuple(p.strip() for p in raw.split(",") if p.strip())
+
+
+NODE_FORCE_RETIRE_PREFIXES = _parse_prefix_list(os.getenv("NODE_FORCE_RETIRE_PREFIXES", ""))

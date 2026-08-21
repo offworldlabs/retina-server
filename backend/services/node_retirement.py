@@ -1,15 +1,18 @@
 """Forget a node that has left the fleet.
 
-Every per-node store in the server is append-only in practice.  Registration
-adds, and this module is the only thing that removes: ``state.connected_nodes``
-in particular has no other eviction path at all, so a node absent from it is a
-node the fleet has genuinely forgotten.  A receiver that is decommissioned, renamed, or replaced
-by a different fleet layout therefore keeps its analytics, coverage polygon,
-custody chain and reputation for the life of the deployment, and every
-subsequent analytics pass, snapshot write and coverage save keeps paying for
-it.  Staging showed this directly after a layout change: 10 receivers that no
-longer existed were still being iterated and re-saved to disk, and the node
-count reported 26 against 16 live.
+Every per-node store in the server is append-only in practice.  Retirement is
+the only path that clears every one of them together.  A background sweep
+(``services.tasks.periodic.prune_synthetic_nodes``) also deletes a node from
+``state.connected_nodes``, but only that one store, only for the synth-,
+e2e- and test- prefixes, and only once it has sat disconnected for days;
+analytics, coverage polygon, custody chain, reputation and the cached
+pipeline all survive it.  A receiver that is decommissioned, renamed, or
+replaced by a different fleet layout therefore keeps every one of those
+until something retires it explicitly, and every subsequent analytics pass,
+snapshot write and coverage save keeps paying for it.  Staging showed this
+directly after a layout change: 10 receivers that no longer existed were
+still being iterated and re-saved to disk, and the node count reported 26
+against 16 live.
 
 This is an explicit operation, not a staleness sweep.  A real receiver offline
 for a week is still a real receiver whose accumulated coverage we want back

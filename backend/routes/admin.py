@@ -295,11 +295,14 @@ async def admin_list_stale_nodes(_admin=Depends(require_admin)):
 
 @router.delete("/nodes/{node_id}/state")
 async def admin_retire_node(node_id: str, force: bool = False, admin=Depends(require_admin)):
-    """Forget a node: analytics, coverage files, custody chain, reputation.
+    """Forget a node: fleet registry, analytics, coverage files, custody
+    chain, reputation and the cached pipeline.
 
     Irreversible — the coverage polygon represents observation time that cannot
-    be recreated.  Refuses a currently-connected node unless force=true, since
-    the next registration would undo it anyway.
+    be recreated.  Refuses a currently-connected node with 409 unless
+    force=true, since the next registration would undo it anyway.  force=true
+    is itself refused with 403 for a node id outside the configured
+    NODE_FORCE_RETIRE_PREFIXES allowlist, when one is set.
     """
     from services import node_retirement
 

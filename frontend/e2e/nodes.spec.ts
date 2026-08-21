@@ -50,7 +50,11 @@ const API_KEY = process.env.RADAR_API_KEY ?? "";
 // group is guaranteed not to run its hooks.
 const describeUnlessProd = env === "prod" ? test.describe.skip : test.describe;
 
-const RUN_ID = Date.now().toString(36);
+// Date.now().toString(36) alone can collide: two workers whose module load
+// lands in the same millisecond would share a RUN_ID. TEST_WORKER_INDEX is
+// set by Playwright in every worker process and read here at module load, so
+// appending it makes the id unique even on that collision.
+const RUN_ID = `${Date.now().toString(36)}-${process.env.TEST_WORKER_INDEX ?? "0"}`;
 const REAL_NODE_ID   = `e2e-real-${RUN_ID}`;
 const SYNTH_NODE_ID  = `synth-e2e-${RUN_ID}`;
 const BULK_A_NODE_ID = `e2e-bulk-a-${RUN_ID}`;
@@ -680,10 +684,14 @@ describeUnlessProd("Node registration — main integration suite", () => {
 // =============================================================================
 // Teardown: retire every node this worker registered.
 //
-// Nothing in the server evicts a registered node on its own, so without this
-// each run leaves its ids in the fleet registry and the associator's overlap
-// graph for the life of the container, and the O(n²) registration cost climbs
-// for every run after it (86cb5nxvw).
+// A background sweep (prune_synthetic_nodes) does evict old synth-/e2e-/test-
+// prefixed entries from the fleet registry on its own, but only that one
+// store, only after 7 days disconnected, on a 6-hourly cadence. It leaves the
+// associator's overlap geometry in place, which is what the O(n²)
+// registration cost is measured against, and its timescale is far longer
+// than a deploy cycle. Without this hook, each run leaves its ids in the
+// fleet registry and the overlap graph for the life of the container, and
+// the registration cost climbs for every run after it (86cb5nxvw).
 //
 // fullyParallel gives each worker its own module instance and so its own
 // RUN_ID, and Playwright runs a file-scope afterAll once per worker after that
@@ -699,11 +707,19 @@ describeUnlessProd("Node registration — main integration suite", () => {
 // the leak that exists today, which the next successful run clears.
 // =============================================================================
 test.afterAll(async () => {
+  // A hook timeout is raised by the test runner itself, not by any call this
+  // hook awaits, so none of the catch blocks below can intercept it: a
+  // timed-out hook fails the run regardless. The budget here has to be large
+  // enough that those guards, not the runner's default 30 s hook timeout, are
+  // what actually handle a wedged request.
+  test.setTimeout(120_000);
   if (env === "prod" || !API_KEY) return;
 
   let ctx: Ctx;
   try {
-    ctx = await request.newContext();
+    // Bounded per-request timeout: seven sequential deletes must not be able
+    // to exhaust the hook's own budget on one stuck request.
+    ctx = await request.newContext({ timeout: 10_000 });
   } catch (err) {
     console.warn(`[teardown] could not open a request context: ${err}`);
     return;
