@@ -117,6 +117,21 @@ class TestRetireNode:
         assert report["was_connected"] is True
         assert "live-node" not in node_retirement.live_node_ids()
 
+    def test_a_disconnected_node_is_still_held_and_still_refused(self, fleet):
+        """The refusal tests registry presence, not the entry's status field.
+        check_node_health only marks a dark receiver disconnected, and the
+        prune only removes test-prefixed ids after seven days, so it is still
+        held and still needs force.  Reading the check as "currently
+        streaming" would let every dark node through unforced."""
+        state.connected_nodes["dark-node"] = {"status": "disconnected"}
+        state.node_analytics.register_node("dark-node", dict(_CFG))
+        try:
+            with pytest.raises(node_retirement.NodeStillConnected):
+                node_retirement.retire_node("dark-node")
+            assert "dark-node" in state.connected_nodes
+        finally:
+            state.node_analytics.retire_node("dark-node")
+
     def test_it_evicts_the_cached_pipeline(self, fleet):
         state.node_pipelines["departed"] = object()
         report = node_retirement.retire_node("departed")
@@ -314,6 +329,18 @@ class TestForceRetireAllowlist:
         assert r.status_code == 403
         assert "e2e-" in r.json()["detail"]
         assert "live-node" in state.connected_nodes
+
+    def test_the_allowlist_gates_a_disconnected_node_too(self, fleet, monkeypatch):
+        """Force is needed for a dark receiver, since it is still held, so the
+        allowlist has to gate it as well.  A status-based check here would take
+        a real decommissioned board out from behind the guard entirely, which
+        is the case the guard exists for."""
+        monkeypatch.setenv("NODE_FORCE_RETIRE_PREFIXES", "e2e-")
+        state.connected_nodes["dark-node"] = {"status": "disconnected"}
+
+        with pytest.raises(node_retirement.ForceRetireNotAllowed):
+            node_retirement.retire_node("dark-node", force=True)
+        assert "dark-node" in state.connected_nodes
 
     def test_force_on_a_node_already_absent_is_not_restricted(self, fleet, monkeypatch):
         """The allowlist gates force only where force overrides the live-node

@@ -197,10 +197,12 @@ def retire_stale_nodes() -> dict:
             log.info("Skipped %s: registered again before the sweep reached it", nid)
             skipped.append({"node_id": nid})
         except Exception as exc:
-            # Logged here rather than relying on retire_node, which only logs
-            # what fails inside its own try block: anything raised before that
-            # would otherwise reach the caller as a bare repr with no stack.
-            log.exception("Retiring %s failed during the sweep", nid)
+            # No traceback here: retire_node has already logged one for
+            # everything that fails inside its own try block, which is every
+            # fallible thing it does, and a second stack per failed node
+            # doubles what an operator reads for one error.  This line exists
+            # to name the sweep as the context and to carry the id.
+            log.error("Retiring %s failed during the sweep: %r", nid, exc)
             failed.append({"node_id": nid, "error": repr(exc)})
     if skipped or failed:
         log.warning(
