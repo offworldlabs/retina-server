@@ -53,23 +53,28 @@ const describeUnlessProd = env === "prod" ? test.describe.skip : test.describe;
 // Date.now().toString(36) alone can collide: two workers whose module load
 // lands in the same millisecond would share a RUN_ID. TEST_WORKER_INDEX is
 // set by Playwright in every worker process and read here at module load, so
-// appending it makes the id unique even on that collision.
-const RUN_ID = `${Date.now().toString(36)}-${process.env.TEST_WORKER_INDEX ?? "0"}`;
-const REAL_NODE_ID   = `e2e-real-${RUN_ID}`;
-const SYNTH_NODE_ID  = `synth-e2e-${RUN_ID}`;
-const BULK_A_NODE_ID = `e2e-bulk-a-${RUN_ID}`;
-const BULK_B_NODE_ID = `e2e-bulk-b-${RUN_ID}`;
-const RESP_NODE_ID        = `e2e-resp-${RUN_ID}`;
-const FRAMES_NODE_ID      = `e2e-frames-${RUN_ID}`;
-const NOTIMESTAMP_NODE_ID = `e2e-notimestamp-${RUN_ID}`;
+// appending it makes the id unique even on that collision. || rather than ??:
+// an empty string is falsy but not nullish, and either way must fall through
+// to the "0" default or the collision this line exists to prevent returns.
+const RUN_ID = `${Date.now().toString(36)}-${process.env.TEST_WORKER_INDEX || "0"}`;
 
-// Every id this file registers. The teardown at the foot of the file retires
-// exactly these, so a registration added anywhere here must be added to this
-// list or it leaks for the life of the container.
-const REGISTERED_NODE_IDS = [
-  REAL_NODE_ID, SYNTH_NODE_ID, BULK_A_NODE_ID, BULK_B_NODE_ID,
-  RESP_NODE_ID, FRAMES_NODE_ID, NOTIMESTAMP_NODE_ID,
-];
+const REGISTERED_NODE_IDS: string[] = [];
+
+/** Mint a node id for this run and record it for the teardown at the foot of
+ *  the file, so a new registration cannot be added without being cleaned up. */
+function runNodeId(prefix: string): string {
+  const id = `${prefix}-${RUN_ID}`;
+  REGISTERED_NODE_IDS.push(id);
+  return id;
+}
+
+const REAL_NODE_ID   = runNodeId("e2e-real");
+const SYNTH_NODE_ID  = runNodeId("synth-e2e");
+const BULK_A_NODE_ID = runNodeId("e2e-bulk-a");
+const BULK_B_NODE_ID = runNodeId("e2e-bulk-b");
+const RESP_NODE_ID        = runNodeId("e2e-resp");
+const FRAMES_NODE_ID      = runNodeId("e2e-frames");
+const NOTIMESTAMP_NODE_ID = runNodeId("e2e-notimestamp");
 
 // Full geographic config sent with BULK_B — used to verify config propagation into analytics.
 const BULK_B_CONFIG = {

@@ -89,14 +89,12 @@ def retire_node(node_id: str, *, force: bool = False) -> dict:
     if the node is active and ``force`` is not set, or ForceRetireNotAllowed
     if ``force`` is set but ``node_id`` falls outside the configured allowlist.
     """
-    # Read off the module rather than imported by value, so a deployment's
-    # setting is what applies and tests can vary it.
-    allowed = constants.NODE_FORCE_RETIRE_PREFIXES
+    # Read at call time rather than imported by value, so a deployment's
+    # setting is what applies (see constants.force_retire_prefixes) and tests
+    # can vary it via the environment.
+    allowed = constants.force_retire_prefixes()
     if force and allowed and not node_id.startswith(allowed):
         raise ForceRetireNotAllowed(node_id, allowed)
-
-    if not force and node_id in live_node_ids():
-        raise NodeStillConnected(node_id)
 
     report: dict = {"node_id": node_id}
 
@@ -105,26 +103,42 @@ def retire_node(node_id: str, *, force: bool = False) -> dict:
     # into whichever store has already been cleared.  In this order the survivor is
     # a node visible on /api/radar/nodes with no geometry, which an operator can see
     # and retire again; the reverse order strands geometry that no endpoint reports.
+    #
+    # The liveness check and the pop happen under the same lock acquisition.
+    # A node registering between a separate check and pop would be retired
+    # without force, exactly what NodeStillConnected exists to prevent; the
+    # registering write comes from a frame-worker thread, so the GIL does not
+    # close that window on its own.
     with state.connected_nodes_lock:
+        if not force and node_id in state.connected_nodes:
+            raise NodeStillConnected(node_id)
         report["was_connected"] = state.connected_nodes.pop(node_id, None) is not None
     # Otherwise this waits on the 2 h disconnect sweep in
     # services.tasks.analytics_refresh, which would leave a retired node holding a
     # cached pipeline built from config that no longer exists anywhere else.
     report["pipeline_evicted"] = state.node_pipelines.pop(node_id, None) is not None
 
-    analytics = getattr(state, "node_analytics", None)
-    if analytics is not None:
-        report["analytics"] = analytics.retire_node(node_id)
+    try:
+        analytics = getattr(state, "node_analytics", None)
+        if analytics is not None:
+            report["analytics"] = analytics.retire_node(node_id)
 
-    associator = getattr(state, "node_associator", None)
-    if associator is not None and hasattr(associator, "unregister_node"):
-        report["overlap_zones_removed"] = associator.unregister_node(node_id)
+        associator = getattr(state, "node_associator", None)
+        if associator is not None and hasattr(associator, "unregister_node"):
+            report["overlap_zones_removed"] = associator.unregister_node(node_id)
 
-    report["custody"] = {
-        "identity": state.node_identities.pop(node_id, None) is not None,
-        "chain_entries": len(state.chain_entries.pop(node_id, []) or []),
-        "iq_commitments": len(state.iq_commitments.pop(node_id, []) or []),
-    }
+        report["custody"] = {
+            "identity": state.node_identities.pop(node_id, None) is not None,
+            "chain_entries": len(state.chain_entries.pop(node_id, []) or []),
+            "iq_commitments": len(state.iq_commitments.pop(node_id, []) or []),
+        }
+    except Exception:
+        # The registry and pipeline are already cleared above, so the node is
+        # now half retired: gone from /api/radar/nodes, still holding whatever
+        # of analytics, associator geometry or custody didn't finish. It will
+        # show up in stale_node_ids() until a retire-stale pass clears the rest.
+        log.exception("Node %s is half retired after this failure", node_id)
+        raise
 
     # The snapshot is written from these stores, so the next save already omits
     # the node; nothing needs to rewrite the file here.

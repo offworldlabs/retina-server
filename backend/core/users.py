@@ -21,6 +21,8 @@ from sqlalchemy import DateTime, Float, String, event, func
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from config.constants import parse_comma_list
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 _RETINA_ENV = os.getenv("RETINA_ENV", "").lower()
@@ -34,7 +36,7 @@ if not _jwt_from_env and _RETINA_ENV not in ("dev", "test"):
 JWT_SECRET = _jwt_from_env or "retina-dev-secret-change-me-in-prod-32b!"
 JWT_LIFETIME_SECONDS = 86400 * 7  # 7 days
 
-ADMIN_EMAILS: set[str] = {e.strip().lower() for e in os.getenv("AUTH_ADMIN_EMAILS", "").split(",") if e.strip()}
+ADMIN_EMAILS: set[str] = {e.lower() for e in parse_comma_list(os.getenv("AUTH_ADMIN_EMAILS", ""))}
 
 
 def _derive_auth_flags(env: Mapping[str, str]) -> tuple[bool, bool]:

@@ -258,23 +258,37 @@ BLAH2_STALE_THRESHOLD_S = 10.0  # Ignore frames older than this (s)
 BLAH2_RECONNECT_DELAY_S = 5.0  # Backoff after failures (s)
 BLAH2_MAX_FAILURES = 5  # Failures before backing off
 
-# ── Node retirement ──────────────────────────────────────────────────────────
-# Comma-separated prefixes that may be force-retired via the admin route.
-# Empty, the default, imposes no restriction, which is what production wants: a
-# decommissioned receiver stays in connected_nodes until something retires it,
-# so retiring a real node needs force=true too, and a prefix test would refuse
-# the operator case the endpoint exists for.  Staging sets the test prefixes,
-# because that is where the E2E suite force-retires its own nodes and where a
-# mistaken sweep would cost something.
+# ── Shared parsing ───────────────────────────────────────────────────────────
 
 
-def _parse_prefix_list(raw: str) -> tuple[str, ...]:
-    """Split a comma-separated prefix list, stripping whitespace and dropping
-    empty segments.  A blank segment (a leading, trailing or doubled comma)
-    would otherwise become a prefix that matches every node id via
-    ``str.startswith("")``.
+def parse_comma_list(raw: str) -> tuple[str, ...]:
+    """Split a comma-separated list, stripping whitespace and dropping empty
+    segments.  A blank segment (a leading, trailing or doubled comma) would
+    otherwise become an entry that matches everything, e.g. a prefix that
+    matches every node id via ``str.startswith("")``.
+
+    Used for every list-valued environment variable, so the empty-segment rule
+    holds in one place: ``core.users`` parses AUTH_ADMIN_EMAILS through it too.
     """
     return tuple(p.strip() for p in raw.split(",") if p.strip())
 
 
-NODE_FORCE_RETIRE_PREFIXES = _parse_prefix_list(os.getenv("NODE_FORCE_RETIRE_PREFIXES", ""))
+# ── Node retirement ──────────────────────────────────────────────────────────
+# Which node ids the admin route will force-retire.  Empty, the default,
+# imposes no restriction, which is what production wants: a decommissioned
+# receiver stays in connected_nodes until something retires it, so retiring a
+# real node needs force=true too, and a prefix test would refuse the operator
+# case the endpoint exists for.  Staging sets the test prefixes, because that
+# is where the E2E suite force-retires its own nodes and where a mistaken sweep
+# would cost something.
+
+
+def force_retire_prefixes() -> tuple[str, ...]:
+    """Node id prefixes that may be force-retired, read at call time.
+
+    Not bound at import: main.py calls load_dotenv() only after the route
+    imports, so an import-time read misses anything set in backend/.env and
+    the guard would resolve to unrestricted without saying so.  Retirement is
+    rare, so re-reading costs nothing.
+    """
+    return parse_comma_list(os.getenv("NODE_FORCE_RETIRE_PREFIXES", ""))

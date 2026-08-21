@@ -189,11 +189,14 @@ def test_rollback_ahead_sentinel_matches_alembics_wording(tmp_path):
     assert up.returncode == 0, up.stderr
 
     # An "older image": the same backend tree minus the newest revision. Only
-    # core/ (env.py imports core.users and core.nodes to build target_metadata)
+    # core/ (env.py imports core.users and core.nodes to build target_metadata),
+    # config/ (core.users imports config.constants for the admin-email parse)
     # and migrations/ are needed; core/__init__.py does not import its sibling
-    # modules eagerly, so copying the two files env.py touches is enough.
+    # modules eagerly, so copying the three directories env.py's import chain
+    # touches is enough.
     old_image = tmp_path / "old_image"
     shutil.copytree(BACKEND / "core", old_image / "core", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(BACKEND / "config", old_image / "config", ignore=shutil.ignore_patterns("__pycache__"))
     shutil.copytree(BACKEND / "migrations", old_image / "migrations", ignore=shutil.ignore_patterns("__pycache__"))
     # The newest revision, found rather than named: revisions are numbered
     # 000N_*.py so the last by filename is the head. Naming one here meant that

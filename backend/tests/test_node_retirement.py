@@ -174,18 +174,18 @@ class TestForceRetireAllowlist:
     def test_force_is_unrestricted_when_no_prefixes_are_configured(self, fleet, monkeypatch):
         """Production's posture: an operator retiring a decommissioned board
         needs force, because nothing else ever evicts it from the registry."""
-        monkeypatch.setattr(constants, "NODE_FORCE_RETIRE_PREFIXES", ())
+        monkeypatch.delenv("NODE_FORCE_RETIRE_PREFIXES", raising=False)
         node_retirement.retire_node("live-node", force=True)
         assert "live-node" not in state.connected_nodes
 
     def test_force_is_refused_outside_the_allowlist(self, fleet, monkeypatch):
-        monkeypatch.setattr(constants, "NODE_FORCE_RETIRE_PREFIXES", ("e2e-",))
+        monkeypatch.setenv("NODE_FORCE_RETIRE_PREFIXES", "e2e-")
         with pytest.raises(node_retirement.ForceRetireNotAllowed):
             node_retirement.retire_node("live-node", force=True)
         assert "live-node" in state.connected_nodes
 
     def test_force_is_permitted_inside_the_allowlist(self, fleet, monkeypatch):
-        monkeypatch.setattr(constants, "NODE_FORCE_RETIRE_PREFIXES", ("e2e-",))
+        monkeypatch.setenv("NODE_FORCE_RETIRE_PREFIXES", "e2e-")
         state.connected_nodes["e2e-bulk-a-abc"] = {"status": "active"}
         node_retirement.retire_node("e2e-bulk-a-abc", force=True)
         assert "e2e-bulk-a-abc" not in state.connected_nodes
@@ -193,33 +193,46 @@ class TestForceRetireAllowlist:
     def test_an_unforced_retire_is_never_restricted(self, fleet, monkeypatch):
         """The allowlist gates force alone. Retiring a genuinely stale node
         must keep working whatever the node is called."""
-        monkeypatch.setattr(constants, "NODE_FORCE_RETIRE_PREFIXES", ("e2e-",))
+        monkeypatch.setenv("NODE_FORCE_RETIRE_PREFIXES", "e2e-")
         node_retirement.retire_node("departed")
         assert "departed" not in state.node_analytics.trust_scores
 
     def test_the_route_refuses_with_403_and_names_the_prefixes(self, client, fleet, monkeypatch):
-        monkeypatch.setattr(constants, "NODE_FORCE_RETIRE_PREFIXES", ("e2e-", "synth-e2e-"))
+        monkeypatch.setenv("NODE_FORCE_RETIRE_PREFIXES", "e2e-,synth-e2e-")
         r = client.delete("/api/admin/nodes/live-node/state?force=true")
 
         assert r.status_code == 403
         assert "e2e-" in r.json()["detail"]
         assert "live-node" in state.connected_nodes
 
+    def test_the_route_permits_a_force_retire_inside_the_allowlist(self, client, fleet, monkeypatch):
+        """The combination the staging teardown depends on: a configured
+        allowlist plus a force-retire made through the admin route rather
+        than by calling retire_node directly."""
+        monkeypatch.setenv("NODE_FORCE_RETIRE_PREFIXES", "e2e-")
+        state.connected_nodes["e2e-bulk-a-abc"] = {"status": "active"}
 
-class TestParsePrefixList:
-    """Every allowlist test above monkeypatches the parsed tuple directly, so
-    this is the only coverage of the parse itself, the one coupling between
-    staging's compose value and the E2E teardown working at all."""
+        r = client.delete("/api/admin/nodes/e2e-bulk-a-abc/state?force=true")
+
+        assert r.status_code == 200
+        assert "e2e-bulk-a-abc" not in state.connected_nodes
+
+
+class TestParseCommaList:
+    """The allowlist tests above now set the environment variable rather than
+    the parsed tuple, so they already exercise this via force_retire_prefixes.
+    These stay as direct coverage of the split, strip and empty-segment
+    behaviour on its own."""
 
     def test_a_normal_two_prefix_value(self):
-        assert constants._parse_prefix_list("e2e-,synth-e2e-") == ("e2e-", "synth-e2e-")
+        assert constants.parse_comma_list("e2e-,synth-e2e-") == ("e2e-", "synth-e2e-")
 
     def test_an_empty_string_yields_no_prefixes(self):
-        assert constants._parse_prefix_list("") == ()
+        assert constants.parse_comma_list("") == ()
 
     def test_whitespace_around_entries_is_stripped(self):
-        assert constants._parse_prefix_list(" e2e- , synth-e2e- ") == ("e2e-", "synth-e2e-")
+        assert constants.parse_comma_list(" e2e- , synth-e2e- ") == ("e2e-", "synth-e2e-")
 
     def test_a_trailing_comma_does_not_yield_an_empty_prefix(self):
         """An empty prefix would match every node id via str.startswith("")."""
-        assert constants._parse_prefix_list("e2e-,") == ("e2e-",)
+        assert constants.parse_comma_list("e2e-,") == ("e2e-",)
