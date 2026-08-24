@@ -16,6 +16,13 @@ os.environ.setdefault("RETINA_ENV", "test")
 # and an unpicklable closure cannot be shipped to a pool child.  See the
 # _POOL_ENABLED comment in services/tasks/solver.py.
 os.environ.setdefault("SOLVER_POOL", "0")
+# No known-lane arming under pytest, for the same leaked-daemon reason: every
+# TestClient lifespan leaks solver worker threads that arm the known-lane hook
+# at thread start (_run_solver_worker), and with the shadow default those
+# daemons run passes concurrently with whatever test is asserting on
+# known_lane counters.  Tests that exercise the lane set the mode explicitly —
+# monkeypatch on core.state, or maybe_run_pass's mode argument.
+os.environ.setdefault("KNOWN_LANE_MODE", "off")
 # Needed so the /api/radar/detections auth guard is active in tests.
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 # services.node_retirement reads this per call, so an ambient value would reach
@@ -143,10 +150,12 @@ def _reset_module_state():
         alerting,
         feed_helpers,
         frame_processor,
+        known_claiming,
+        node_bias,
         tcp_handler,
         track_gates,
     )
-    from services.tasks import analytics_refresh, solver
+    from services.tasks import analytics_refresh, known_lane, solver
 
     for mod in (
         state,
@@ -155,9 +164,12 @@ def _reset_module_state():
         track_gates,
         feed_helpers,
         solver,
+        known_lane,
         analytics_refresh,
         alerting,
         tcp_handler,
+        known_claiming,
+        node_bias,
     ):
         mod._reset_for_tests()
     yield
