@@ -50,11 +50,31 @@ const API_KEY = process.env.RADAR_API_KEY ?? "";
 // group is guaranteed not to run its hooks.
 const describeUnlessProd = env === "prod" ? test.describe.skip : test.describe;
 
-const RUN_ID = Date.now().toString(36);
-const REAL_NODE_ID   = `e2e-real-${RUN_ID}`;
-const SYNTH_NODE_ID  = `synth-e2e-${RUN_ID}`;
-const BULK_A_NODE_ID = `e2e-bulk-a-${RUN_ID}`;
-const BULK_B_NODE_ID = `e2e-bulk-b-${RUN_ID}`;
+// Date.now().toString(36) alone can collide: two workers whose module load
+// lands in the same millisecond would share a RUN_ID. TEST_WORKER_INDEX is
+// set by Playwright in every worker process and read here at module load, so
+// appending it makes the id unique even on that collision. || rather than ??:
+// an empty string is falsy but not nullish, and either way must fall through
+// to the "0" default or the collision this line exists to prevent returns.
+const RUN_ID = `${Date.now().toString(36)}-${process.env.TEST_WORKER_INDEX || "0"}`;
+
+const REGISTERED_NODE_IDS: string[] = [];
+
+/** Mint a node id for this run and record it for the teardown at the foot of
+ *  the file, so a new registration cannot be added without being cleaned up. */
+function runNodeId(prefix: string): string {
+  const id = `${prefix}-${RUN_ID}`;
+  REGISTERED_NODE_IDS.push(id);
+  return id;
+}
+
+const REAL_NODE_ID   = runNodeId("e2e-real");
+const SYNTH_NODE_ID  = runNodeId("synth-e2e");
+const BULK_A_NODE_ID = runNodeId("e2e-bulk-a");
+const BULK_B_NODE_ID = runNodeId("e2e-bulk-b");
+const RESP_NODE_ID        = runNodeId("e2e-resp");
+const FRAMES_NODE_ID      = runNodeId("e2e-frames");
+const NOTIMESTAMP_NODE_ID = runNodeId("e2e-notimestamp");
 
 // Full geographic config sent with BULK_B — used to verify config propagation into analytics.
 const BULK_B_CONFIG = {
@@ -165,7 +185,7 @@ describeUnlessProd("Node registration — POST response and frame queuing", () =
   test.afterAll(async () => { await ctx?.dispose(); });
 
   test("response shape: {status:'ok', frames_queued:number, tracks:number}", async () => {
-    const res = await postDetections(ctx, `e2e-resp-${RUN_ID}`);
+    const res = await postDetections(ctx, RESP_NODE_ID);
     expect(res.status()).toBe(200);
     const body = await res.json();
     expect(body.status).toBe("ok");
@@ -176,7 +196,7 @@ describeUnlessProd("Node registration — POST response and frame queuing", () =
   });
 
   test("frame with a timestamp field is queued (frames_queued = 1)", async () => {
-    const nodeId = `e2e-frames-${RUN_ID}`;
+    const nodeId = FRAMES_NODE_ID;
     const res = await postDetections(ctx, nodeId, {
       frames: [{ timestamp: Date.now() / 1000, delay: [120.0], doppler: [1.5] }],
     });
@@ -186,7 +206,7 @@ describeUnlessProd("Node registration — POST response and frame queuing", () =
   });
 
   test("frame without a timestamp is NOT queued (frames_queued = 0 for that frame)", async () => {
-    const nodeId = `e2e-notimestamp-${RUN_ID}`;
+    const nodeId = NOTIMESTAMP_NODE_ID;
     // First POST registers the node. Second POST sends a frame without timestamp.
     await postDetections(ctx, nodeId); // register
     const res = await postDetections(ctx, nodeId, {
@@ -664,4 +684,70 @@ describeUnlessProd("Node registration — main integration suite", () => {
       }
     });
   });
+});
+
+// =============================================================================
+// Teardown: retire every node this worker registered.
+//
+// A background sweep (prune_synthetic_nodes) does evict old synth-/e2e-/test-
+// prefixed entries from the fleet registry on its own, but only that one
+// store, only after 7 days disconnected, on a 6-hourly cadence. It leaves the
+// associator's overlap geometry in place, which is what the O(n²)
+// registration cost is measured against, and its timescale is far longer
+// than a deploy cycle. Without this hook, each run leaves its ids in the
+// fleet registry and the overlap graph for the life of the container, and
+// the registration cost climbs for every run after it (86cb5nxvw).
+//
+// fullyParallel gives each worker its own module instance and so its own
+// RUN_ID, and Playwright runs a file-scope afterAll once per worker after that
+// worker's last test here. This therefore retires exactly the ids this worker
+// minted, and cannot race a sibling worker's assertions.
+//
+// force=true because a registered node counts as live until something evicts
+// it. Staging confines force to the e2e- and synth-e2e- prefixes
+// (NODE_FORCE_RETIRE_PREFIXES), so this cannot reach a real board.
+//
+// Best-effort by construction: a failure here must never fail the run, since a
+// red suite rolls the deploy back (86cb5jnnf). The cost of a failed teardown is
+// the leak that exists today, which the next successful run clears.
+// =============================================================================
+test.afterAll(async () => {
+  // A hook timeout is raised by the test runner itself, not by any call this
+  // hook awaits, so none of the catch blocks below can intercept it: a
+  // timed-out hook fails the run regardless. The budget here has to be large
+  // enough that those guards, not the runner's default 30 s hook timeout, are
+  // what actually handle a wedged request.
+  test.setTimeout(120_000);
+  if (env === "prod" || !API_KEY) return;
+
+  let ctx: Ctx;
+  try {
+    // Bounded per-request timeout: seven sequential deletes must not be able
+    // to exhaust the hook's own budget on one stuck request.
+    ctx = await request.newContext({ timeout: 10_000 });
+  } catch (err) {
+    console.warn(`[teardown] could not open a request context: ${err}`);
+    return;
+  }
+
+  try {
+    for (const nodeId of REGISTERED_NODE_IDS) {
+      try {
+        const res = await ctx.delete(
+          `${API}/api/admin/nodes/${nodeId}/state?force=true`,
+        );
+        if (!res.ok()) {
+          console.warn(`[teardown] ${nodeId}: HTTP ${res.status()}`);
+        }
+      } catch (err) {
+        console.warn(`[teardown] ${nodeId}: ${err}`);
+      }
+    }
+  } finally {
+    try {
+      await ctx.dispose();
+    } catch (err) {
+      console.warn(`[teardown] could not dispose the request context: ${err}`);
+    }
+  }
 });

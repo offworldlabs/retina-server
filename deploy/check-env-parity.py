@@ -80,6 +80,12 @@ ALLOWED_DIVERGENCE = (
     r"^services\.server\.environment\.CORS_ORIGINS$",
     r"^services\.server\.environment\.CSP_CONNECT_SRC$",
     r"^services\.server\.environment\.HOST_[A-Z_]+$",
+    # Staging alone runs an E2E suite that force-retires the nodes it
+    # registers, so staging alone confines what force can reach. Production
+    # leaves the variable unset and so unrestricted: a decommissioned real
+    # receiver needs force too, and the prune only clears the fleet registry
+    # entry, long after the fact. See backend/config/constants.py.
+    r"^services\.server\.environment\.NODE_FORCE_RETIRE_PREFIXES$",
     # AUTH_ALLOW_ANONYMOUS_ADMIN and SYNTHETIC_FLEET_ENABLED are deliberately
     # absent from this list: each is set to the same value in every environment,
     # so a difference is drift rather than a decision, and CI should fail if one

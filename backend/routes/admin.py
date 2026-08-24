@@ -17,7 +17,7 @@ _admin_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_na
 
 import orjson
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -295,11 +295,14 @@ async def admin_list_stale_nodes(_admin=Depends(require_admin)):
 
 @router.delete("/nodes/{node_id}/state")
 async def admin_retire_node(node_id: str, force: bool = False, admin=Depends(require_admin)):
-    """Forget a node: analytics, coverage files, custody chain, reputation.
+    """Forget a node: fleet registry, analytics, coverage files, custody
+    chain, reputation and the cached pipeline.
 
     Irreversible — the coverage polygon represents observation time that cannot
-    be recreated.  Refuses a currently-connected node unless force=true, since
-    the next registration would undo it anyway.
+    be recreated.  Refuses a currently-connected node with 409 unless
+    force=true, since the next registration would undo it anyway.  force=true
+    is itself refused with 403 for a node id outside the configured
+    NODE_FORCE_RETIRE_PREFIXES allowlist, when one is set.
     """
     from services import node_retirement
 
@@ -307,6 +310,11 @@ async def admin_retire_node(node_id: str, force: bool = False, admin=Depends(req
         report = node_retirement.retire_node(node_id, force=force)
     except node_retirement.NodeStillConnected as exc:
         raise HTTPException(409, f"Node {node_id} is connected; pass force=true to retire it anyway") from exc
+    except node_retirement.ForceRetireNotAllowed as exc:
+        raise HTTPException(
+            403,
+            f"force=true is restricted to node ids starting with {', '.join(exc.prefixes)}",
+        ) from exc
     log_event(
         "node",
         f"Retired node state for {node_id}",
@@ -322,12 +330,28 @@ async def admin_retire_stale_nodes(admin=Depends(require_admin)):
     from services import node_retirement
 
     result = node_retirement.retire_stale_nodes()
+    # Skipped and failed nodes go in the event too. Recording only the retired
+    # ids would show a clean sweep in the log while the accumulation the
+    # operator ran it to clear is still there, with nothing saying why.
     log_event(
         "node",
-        f"Retired {result['count']} stale node(s)",
-        "warning",
-        {"by": admin["email"], "nodes": [r["node_id"] for r in result["retired"]]},
+        f"Retired {result['count']} stale node(s), skipped {len(result['skipped'])}, failed {len(result['failed'])}",
+        "error" if result["failed"] else "warning",
+        {
+            "by": admin["email"],
+            "nodes": [r["node_id"] for r in result["retired"]],
+            "skipped": [r["node_id"] for r in result["skipped"]],
+            "failed": [r["node_id"] for r in result["failed"]],
+        },
     )
+    if result["failed"]:
+        # The sweep keeps going past a failure, so the status code is the only
+        # thing telling a caller driving this by exit status that anything went
+        # wrong. 500 when nothing was retired at all, since that is a sweep
+        # that did not work; 207 when some went and some did not, so a partial
+        # result reads as neither success nor total failure. The body is the
+        # full result either way, so no record is lost.
+        return JSONResponse(status_code=500 if not result["retired"] else 207, content=result)
     return result
 
 
