@@ -1,5 +1,5 @@
 #!/bin/bash
-# ── Tower Finder: Full Server Setup + Security Hardening ──────────────────────
+# ── retina-server: Full Server Setup + Security Hardening ──────────────────────
 # Run this on a fresh Ubuntu 24.04 DigitalOcean droplet as root.
 #
 # Usage:
@@ -43,7 +43,7 @@ esac
 hostnamectl set-hostname "retina-${RETINA_TARGET_ENV}"
 
 echo "══════════════════════════════════════════════════"
-echo "  Tower Finder — Server Setup & Hardening"
+echo "  retina-server — Server Setup & Hardening"
 echo "  Target environment: ${RETINA_TARGET_ENV}"
 echo "══════════════════════════════════════════════════"
 
@@ -120,9 +120,9 @@ systemctl enable --now docker
 
 # ── 4. Deploy application ────────────────────────────────────────────────────
 echo ""
-echo "→ Deploying Tower Finder..."
+echo "→ Deploying retina-server..."
 
-APP_DIR="${APP_DIR:-/opt/tower-finder}"
+APP_DIR="${APP_DIR:-/opt/retina-server}"
 
 if [ -d "$APP_DIR/.git" ]; then
     echo "  Repo exists, pulling latest..."
@@ -139,11 +139,11 @@ elif [ -f "$APP_DIR/docker-compose.yml" ]; then
 else
     echo "  Cloning repository..."
     # Canonical org repo. (The live boxes use the SSH remote
-    # git@github.com:offworldlabs/Tower-Finder.git, but a fresh droplet has no
+    # git@github.com:offworldlabs/retina-server.git, but a fresh droplet has no
     # deploy key yet, so clone over HTTPS; `git remote set-url` to SSH later if
     # you add a key.) Must NOT be a personal fork — this becomes `origin`, which
     # every subsequent CI `git fetch origin main` deploys from.
-    git clone --recursive https://github.com/offworldlabs/Tower-Finder.git "$APP_DIR"
+    git clone --recursive https://github.com/offworldlabs/retina-server.git "$APP_DIR"
     cd "$APP_DIR"
 fi
 

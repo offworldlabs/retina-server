@@ -9,6 +9,8 @@ retina_tracker YAML config stays separate (loaded at runtime via config.yaml).
 
 import os
 
+from core.env_parsing import parse_comma_list
+
 # ── Physics ──────────────────────────────────────────────────────────────────
 C_KM_US = 0.299792458  # Speed of light (km/µs)
 R_EARTH_KM = 6371.0  # Mean Earth radius (km)
@@ -265,3 +267,23 @@ BLAH2_POLL_INTERVAL_S = 1.0  # blah2 API poll cadence (s)
 BLAH2_STALE_THRESHOLD_S = 10.0  # Ignore frames older than this (s)
 BLAH2_RECONNECT_DELAY_S = 5.0  # Backoff after failures (s)
 BLAH2_MAX_FAILURES = 5  # Failures before backing off
+
+# ── Node retirement ──────────────────────────────────────────────────────────
+# Which node ids the admin route will force-retire.  Empty, the default,
+# imposes no restriction, which is what production wants: a decommissioned
+# receiver stays in connected_nodes until something retires it, so retiring a
+# real node needs force=true too, and a prefix test would refuse the operator
+# case the endpoint exists for.  Staging sets the test prefixes, because that
+# is where the E2E suite force-retires its own nodes and where a mistaken sweep
+# would cost something.
+
+
+def force_retire_prefixes() -> tuple[str, ...]:
+    """Node id prefixes that may be force-retired, read at call time.
+
+    Not bound at import: main.py calls load_dotenv() only after the route
+    imports, so an import-time read misses anything set in backend/.env and
+    the guard would resolve to unrestricted without saying so.  Retirement is
+    rare, so re-reading costs nothing.
+    """
+    return parse_comma_list(os.getenv("NODE_FORCE_RETIRE_PREFIXES", ""))

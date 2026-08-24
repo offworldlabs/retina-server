@@ -1,4 +1,4 @@
-# RETINA / Tower-Finder — developer onboarding
+# retina-server — developer onboarding
 
 Welcome. This repo powers RETINA, a passive-radar system: a network of receiver
 nodes detect aircraft by listening to reflections of broadcast transmitters
@@ -59,8 +59,8 @@ reports no checks at all; verify it from this repo's suite instead.
 Clone with submodules, then set up backend and front-ends.
 
 ```bash
-git clone --recursive https://github.com/offworldlabs/Tower-Finder.git
-cd Tower-Finder
+git clone --recursive https://github.com/offworldlabs/retina-server.git
+cd retina-server
 # already cloned without --recursive?
 git submodule update --init --recursive
 ```
@@ -104,6 +104,21 @@ backend on `:8000`. To reach the live-map surface locally, open
 There's a backend-free map sandbox at `/test-radar` (one node, one aircraft,
 one ellipse) for working on map rendering without the pipeline.
 
+### Full stack in Docker
+
+To run the built image exactly as the droplets do (nginx rendered from the
+shared template, plain HTTP), overlay the laptop compose file on the base:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
+```
+
+Serves `http://testmap.localhost:8080` (live map + synthetic fleet),
+`http://api.localhost:8080`, and towers/dash/admin on the same port — the
+endpoint list and the reasoning live in `docker-compose.local.yml`'s header.
+Always pass `--build`: the frontend bundle and backend are baked into the
+image, so a plain `up` silently reuses the previous build.
+
 ### See real data without running the pipeline
 
 The simulation fleet (`retina-simulation`) feeds testmap. Production runs no
@@ -115,12 +130,15 @@ drive a local backend with synthetic frames, see
 ### Working in a git worktree
 
 A fresh worktree has empty `libs/` directories and no venv of its own. Build one
-the way CI does, or pytest fails at conftest import on a missing `sqlalchemy`
-after silently creating an empty `.venv`:
+the way CI does, or pytest fails at conftest import on a missing `sqlalchemy`.
+
+`uv venv` first is not optional: `uv pip install` does not create an environment,
+it refuses with `No virtual environment found` and installs nothing.
 
 ```bash
 git submodule update --init
-cd backend && uv pip install -r requirements-dev.txt
+cd backend && uv venv --python 3.12 .venv
+uv pip install -r requirements-dev.txt
 uv pip install ../libs/retina-geolocator ../libs/retina-tracker \
   ../libs/retina-custody ../libs/retina-simulation ../libs/retina-analytics
 ```
@@ -129,7 +147,7 @@ uv pip install ../libs/retina-geolocator ../libs/retina-tracker \
 
 ```bash
 # backend
-cd backend && RETINA_ENV=test pytest
+cd backend && RETINA_ENV=test COVERAGE_CORE=sysmon pytest
 
 # frontend / dashboard
 cd frontend && npm run test && npm run typecheck && npm run lint
@@ -142,14 +160,31 @@ Trust pytest's **exit status**, not the tail of its output. The warnings block
 and the coverage footer both print after the summary line, so piping the run
 into `tail` loses the `N passed` and a passing-looking tail proves nothing.
 
-`RADAR_TCP_PORT` defaults to `3012` (`backend/main.py`) and the suite binds it.
-Two suites running at once, typically from two worktrees, give bogus route and
-health errors in whichever started second. Set the variable in one of them.
+Two suites can now run at once, from two worktrees, without interfering. They
+could not before: `backend/main.py` binds `RADAR_TCP_PORT` (default `3012`) in
+the app lifespan, and `tests/test_storage.py` wrote into the shared
+`backend/coverage_data/archive` and deleted its contents afterwards, so a second
+run got bogus route and health errors from the port and the occasional
+`FileNotFoundError` from the archive. `tests/conftest.py` now asks the kernel
+for an ephemeral port, and those tests use `tmp_path`. The database path has
+been per-pid for longer, for the same reason.
 
-Coverage under-reports. `[tool.coverage.run]` in `backend/pyproject.toml` sets no
-`concurrency`, so every line after an `await session.…` in a greenlet-backed path
-counts as unrun. Before concluding a module is untested, re-measure with
-`concurrency = ["thread", "greenlet"]`; the figure can move by tens of percent.
+This is also what lets CI run the suite under `pytest-xdist`; see the comment on
+the pytest step in `.github/workflows/ci.yml` for why it passes
+`--dist worksteal` and why the flags are not in `addopts`.
+
+`COVERAGE_CORE=sysmon` above is not decoration, and CI sets it too. Without it,
+coverage measures through `sys.settrace`, which is per execution context, so
+every line after an `await session.…` in a greenlet-backed path counts as unrun:
+`[tool.coverage.run]` in `backend/pyproject.toml` sets no `concurrency` to
+compensate. The async route modules are what this hits. sysmon measures through
+the PEP 669 interpreter-wide hooks instead, has no such blind spot, and is more
+than twice as fast (in CI, 225s to 95s). Drop the variable and you get a slower
+run and a lower figure than CI reports for the same commit.
+
+`concurrency = ["thread", "greenlet"]` is the other way to close the gap, and on
+the module it was checked against it recovers the same lines, but it is more than
+ten times slower than sysmon and there is no longer a reason to reach for it.
 
 ### Before you push
 
@@ -214,9 +249,10 @@ branch, open a PR, get it green, then merge.
   branch got no tests, no lint and no build while the lone green automated-review
   tick made the page read as passing. Stacked PRs opened since run the full matrix,
   but an older branch keeps the old workflow until it is rebased.
-- **The compose service is `tower-finder`, not `server`.** `docker compose logs
-  server` returns nothing and reads as an all-clear when the app is down. Check
-  `docker compose ps --services` first.
+- **The compose service is `server`, not `tower-finder`.** Naming a service that
+  does not exist fails with `no such service` on *stderr*, so a `grep` over the output
+  matches nothing and reads as a clean "no errors in the logs". Run `docker compose ps
+  --services` first and trust it over a remembered name.
 - **A new per-environment key needs an `env-parity` entry** or CI fails.
 
 ## Where to go next

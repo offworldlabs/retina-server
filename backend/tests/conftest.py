@@ -25,11 +25,26 @@ os.environ.setdefault("SOLVER_POOL", "0")
 os.environ.setdefault("KNOWN_LANE_MODE", "off")
 # Needed so the /api/radar/detections auth guard is active in tests.
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
+# services.node_retirement reads this per call, so an ambient value would reach
+# the tests. Assigned rather than setdefault: a developer who has exported
+# staging's own value (e2e-,synth-e2e-) would otherwise fail every test that
+# force-retires the fixture's `live-node`, with nothing in the failure naming
+# the variable as the cause.
+os.environ["NODE_FORCE_RETIRE_PREFIXES"] = ""
 # The suite has no OAuth provider to log in against, so the route tests reach the
 # admin endpoints through core.users' anonymous-admin bypass. That bypass is an
 # explicit opt-in and no longer follows from RETINA_ENV=test, so ask for it here.
 # Set before core.users is imported: AUTH_BYPASS is derived once, at import.
 os.environ.setdefault("AUTH_ALLOW_ANONYMOUS_ADMIN", "1")
+# main.py binds RADAR_TCP_PORT in the app lifespan, and the fourteen test files
+# using `with TestClient(app)` run that lifespan, so every process running the
+# suite tries to bind the same port. Port 0 asks the kernel for a free one
+# instead, which is safe because nothing reads the value back: RADAR_TCP_PORT is
+# read once in main.py and used only to bind. This is what lets xdist workers
+# run in parallel, and it retires the two-worktrees-at-once clash ONBOARDING
+# describes under "Running tests" for the same underlying reason as the
+# per-pid database path below.
+os.environ["RADAR_TCP_PORT"] = "0"
 # The arc-ux sim-ingest tests exercise routes main.py now mounts only behind
 # this flag (the compose overlays all set it); the mount-gate test itself spawns
 # child interpreters with an explicit env, so this parent-process default does
@@ -463,3 +478,33 @@ async def registered_node(node_session):
     await node_pipeline.register_with_pipeline(node_session, node)
     await node_session.commit()
     return token, _NODE_ID
+
+
+@pytest.fixture(autouse=True)
+def _restore_tower_config():
+    """Put every tower_ranking config setting back after each test.
+
+    apply_config() assigns the whole ranking configuration and reload_config()
+    the fallback reason, so a test that calls either without a fixture of its
+    own hands its config to every test that follows in the same worker, where
+    the failure lands far from its cause.
+
+    config_fallback_reason is cleared on the way in as well: services/health.py
+    reads it, another file asserts `compute_health_issues() == []`, and a module
+    imported at collection time can leave a reason behind before any fixture has
+    run.
+    """
+    from services import tower_ranking
+
+    saved = {name: getattr(tower_ranking, name) for name in tower_ranking.CONFIG_SETTINGS}
+    # Cleared going in and left cleared coming out, rather than restored: a
+    # module imported at collection time can leave a reason behind before any
+    # fixture has run, and putting it back afterwards would hand it to whatever
+    # inspects state between tests.
+    saved["config_fallback_reason"] = None
+    tower_ranking.config_fallback_reason = None
+    try:
+        yield
+    finally:
+        for name, value in saved.items():
+            setattr(tower_ranking, name, value)
