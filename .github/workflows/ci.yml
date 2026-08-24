@@ -968,8 +968,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     needs: [deploy-production]
-    # On the job rather than the smoke step, so the wait below and the checks
-    # it precedes cannot come to disagree about which host is production.
+    # On the job so the wait and the checks cannot disagree about the host.
     env:
       BASE_URL: https://api.retina.fm
     steps:
@@ -977,55 +976,34 @@ jobs:
       - name: Wait for production to answer through the edge
         timeout-minutes: 5
         run: |
-          # This step used to hold the deploy until the simulated fleet had
-          # reconnected at ≥10 active nodes. Production no longer runs one, and
-          # the only nodes left are real boards, so that assertion would now
-          # gate every production deploy — and, via the rollback step below, an
-          # automatic revert of a good build — on third-party hardware being
-          # online. Node health is a fleet-monitoring concern, not a deploy gate.
-          #
-          # What replaced it was a flat 60s sleep, and this replaces that. The
-          # deploy job has already confirmed /api/health, but from inside the
-          # container against localhost:8000, which proves the app process is up
-          # and says nothing about the path these tests take: Cloudflare, then
-          # nginx, then the app — and the deploy restarts nginx too. Poll that
-          # path rather than sleeping through it.
-          #
-          # Deliberately the default liveness mode rather than `?strict=1`:
-          # strict answers 503 for anything compute_health_issues() raises,
-          # including fleet conditions (node dropout, fleet miss rate) that no
-          # deploy causes and no rollback would fix.
-          #
-          # A 200 here is not evidence of warmup and nothing here treats it as
-          # such: services/health.py skips a task's staleness check until that
-          # task has recorded one success, so a cold server reports ok before
-          # the pipeline has ticked at all. Warmup is asserted by the checks
-          # below, which own their waits — the storage scan polls for 120s and
-          # the aircraft count is a WARN, not a gate.
-          #
-          # Three consecutive answers, so nginx replying from the outgoing
-          # container during the restart window cannot be read as the new one
-          # having settled.
-          #
-          # This step does not fail the job. On timeout it falls through to the
-          # smoke tests, which fail properly and roll production back; failing
-          # here would instead take that rollback off the table in the one case
-          # that needs it most, production not answering at all.
+          # Waits for the path these tests take. The deploy job confirmed
+          # /api/health inside the container on localhost:8000, which covers
+          # neither the edge nor nginx, and the deploy restarts nginx.
+          # Not a warmup gate: the checks below own their waits, and a 200 here
+          # could not serve as one anyway, as services/health.py skips a task's
+          # staleness check until that task has first succeeded.
+          # Nothing here asserts node counts: fleet health is not a deploy gate.
           DEADLINE=$((SECONDS + 90))
           STREAK=0
           while [ "$SECONDS" -lt "$DEADLINE" ]; do
+            # Liveness mode, not ?strict=1, which 503s on fleet conditions
+            # (node dropout, miss rate) that no deploy causes.
             BODY=$(curl -s --connect-timeout 5 --max-time 10 "${BASE_URL}/api/health" || true)
             case "$BODY" in
               *'"status"'*) STREAK=$((STREAK + 1)) ;;
               *)            STREAK=0 ;;
             esac
+            # Three running, so nginx answering from the outgoing container
+            # mid-restart cannot read as the new one.
             if [ "$STREAK" -ge 3 ]; then
               echo "Answering through the edge after ~${SECONDS}s: ${BODY}"
               exit 0
             fi
             sleep 2
           done
-          echo "::warning::${BASE_URL}/api/health did not answer three times running within 90s. Continuing to the smoke tests so they judge production rather than failing here, which would suppress the rollback."
+          # Must not fail the job: the smoke tests fail and roll production back,
+          # and failing here would suppress that when production is down.
+          echo "::warning::No answer from ${BASE_URL}/api/health three times running in 90s; letting the smoke tests judge."
       - name: Run production smoke tests
         id: smoke
         timeout-minutes: 15
