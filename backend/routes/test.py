@@ -187,12 +187,22 @@ def _build_dashboard_data() -> bytes:
                 # populated polygons means the prior is not reaching the grids.
                 "coverage_rebuilds": state.coverage_rebuilds,
                 "coverage_rebuild_nodes": state.coverage_rebuild_nodes,
+                # Nodes whose digest has moved but whose grids are still queued
+                # behind the per-cycle rebuild budget.  A depth that never
+                # returns to zero means the budget is below the fleet's trigger
+                # rate and constraints are converging slower than they move.
+                "coverage_rebuild_backlog": state.coverage_rebuild_backlog,
                 "queue_drops": state.solver_queue_drops,
                 # Items discarded unsolved after aging out in the queue.  The
                 # queue-full and too-slow failure modes are distinct: drops
                 # here with queue_drops at 0 means the drain rate collapsed,
                 # not the queue size.
                 "stale_drops": state.solver_stale_drops,
+                # Duplicate candidates for an aircraft already solved this
+                # window (see solver.py's _claim_resolve_slot).  Read it
+                # against stale_drops: skips are work correctly not done,
+                # stale drops are work lost.
+                "resolve_skips": state.solver_resolve_skips,
                 # Multinode entries replaced because a later solve consumed
                 # the same source tracks under a new key (fragmented re-solve).
                 "mn_superseded": state.mn_superseded,
@@ -901,6 +911,7 @@ def _solver_window_stats(minutes: float) -> dict:
             "n2_unconfirmed": state.n2_unconfirmed,
             "solver_trimmed": state.solver_trimmed,
             "stale_drops": state.solver_stale_drops,
+            "resolve_skips": state.solver_resolve_skips,
             "queue_drops": state.solver_queue_drops,
             "worker_errors": state.solver_worker_errors,
             "vel_untrusted_published": state.solver_vel_untrusted_published,
