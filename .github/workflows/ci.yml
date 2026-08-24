@@ -968,27 +968,45 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     needs: [deploy-production]
+    # On the job so the wait and the checks cannot disagree about the host.
+    env:
+      BASE_URL: https://api.retina.fm
     steps:
       - uses: actions/checkout@v4
-      - name: Let production settle
+      - name: Wait for production to answer through the edge
+        timeout-minutes: 5
         run: |
-          # This step used to hold the deploy until the simulated fleet had
-          # reconnected at ≥10 active nodes. Production no longer runs one, and
-          # the only nodes left are real boards, so that assertion would now
-          # gate every production deploy — and, via the rollback step below, an
-          # automatic revert of a good build — on third-party hardware being
-          # online. Node health is a fleet-monitoring concern, not a deploy gate.
-          #
-          # The wait itself is kept: the app was restarted moments ago and the
-          # smoke tests should not race its warmup. The deploy job has already
-          # confirmed /api/health.
-          echo "Waiting 60s for the app to settle before smoke tests..."
-          sleep 60
+          # Waits for the path these tests take. The deploy job confirmed
+          # /api/health inside the container on localhost:8000, which covers
+          # neither the edge nor nginx, and the deploy restarts nginx.
+          # Not a warmup gate: the checks below own their waits, and a 200 here
+          # could not serve as one anyway, as services/health.py skips a task's
+          # staleness check until that task has first succeeded.
+          # Nothing here asserts node counts: fleet health is not a deploy gate.
+          DEADLINE=$((SECONDS + 90))
+          STREAK=0
+          while [ "$SECONDS" -lt "$DEADLINE" ]; do
+            # Liveness mode, not ?strict=1, which 503s on fleet conditions
+            # (node dropout, miss rate) that no deploy causes.
+            BODY=$(curl -s --connect-timeout 5 --max-time 10 "${BASE_URL}/api/health" || true)
+            case "$BODY" in
+              *'"status"'*) STREAK=$((STREAK + 1)) ;;
+              *)            STREAK=0 ;;
+            esac
+            # Three running, so nginx answering from the outgoing container
+            # mid-restart cannot read as the new one.
+            if [ "$STREAK" -ge 3 ]; then
+              echo "Answering through the edge after ~${SECONDS}s: ${BODY}"
+              exit 0
+            fi
+            sleep 2
+          done
+          # Must not fail the job: the smoke tests fail and roll production back,
+          # and failing here would suppress that when production is down.
+          echo "::warning::No answer from ${BASE_URL}/api/health three times running in 90s; letting the smoke tests judge."
       - name: Run production smoke tests
         id: smoke
         timeout-minutes: 15
-        env:
-          BASE_URL: https://api.retina.fm
         run: |
           CURL="curl -s --connect-timeout 10 --max-time 60"
           PASS=0; FAIL=0
@@ -1047,7 +1065,7 @@ jobs:
       # smoke test means a bad build is live serving prod; revert to
       # last-known-good rather than leaving it up for a human to catch. The
       # condition is scoped to the smoke step's own outcome, so a failure in the
-      # settle step above fails the job for a human to inspect without
+      # wait step above fails the job for a human to inspect without
       # triggering an automatic rollback.
       - name: Rollback production on smoke-test failure
         if: failure() && steps.smoke.outcome == 'failure'
