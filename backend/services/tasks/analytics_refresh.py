@@ -10,7 +10,7 @@ import time
 import numpy as np
 import orjson
 
-from config.constants import ANALYTICS_REFRESH_INTERVAL_S, CLAIMED_DISPLAY_FRESH_S, as_num
+from config.constants import ANALYTICS_REFRESH_INTERVAL_S, CLAIMED_DISPLAY_FRESH_S, as_num, is_num
 from config.constants import (
     DELAY_MATCH_THRESHOLD_US as _DELAY_MATCH_THRESHOLD_US,
 )
@@ -925,9 +925,16 @@ def _refresh_node_verification(node_id: str):
         _alt_m = best_adsb.get("alt_m")
         _gs_kt = best_adsb.get("gs")
         _vel_ms = best_adsb.get("velocity")
-        # alt_baro alone carries the "ground" sentinel; a raise here loses the
-        # node's whole payload.  Numeric strings read as 0, as they do estate-wide.
-        truth_alt_m = as_num(_alt_ft) * 0.3048 if _alt_ft is not None else float(_alt_m) if _alt_m is not None else None
+        # A non-numeric alt_baro is tar1090's "ground" sentinel: on the surface,
+        # which is field elevation, not 0 m MSL.  It is no altitude truth, so the
+        # candidate falls through to the metric key and, failing that, out of the
+        # altitude stats — as an absent speed field does out of the velocity ones.
+        if is_num(_alt_ft):
+            truth_alt_m = _alt_ft * 0.3048
+        elif _alt_m is not None:
+            truth_alt_m = float(_alt_m)
+        else:
+            truth_alt_m = None
         truth_gs_ms = (
             float(_gs_kt) * 0.514444 if _gs_kt is not None else float(_vel_ms) if _vel_ms is not None else None
         )

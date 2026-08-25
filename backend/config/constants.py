@@ -21,13 +21,24 @@ FT_TO_M = 0.3048  # Feet → metres
 # ── Field coercion ───────────────────────────────────────────────────────────
 
 
+def is_num(v) -> bool:
+    """True when v is a finite number and arithmetic on it is meaningful.
+
+    The complement of as_num()'s fallback: a field this rejects carries no
+    measurement, so a truth comparison must drop the sample rather than score
+    against the substituted 0.0.
+    """
+    return isinstance(v, (int, float)) and math.isfinite(v)
+
+
 def as_num(v) -> float:
     """0.0 for anything that isn't a finite number (ADS-B's "ground", None, NaN).
 
     tar1090 reports alt_baro as the literal string "ground" for aircraft on the
-    ground.  Coerce before any arithmetic on a raw ADS-B field.
+    ground.  Coerce before any arithmetic on a raw ADS-B field.  Sound for a
+    solver seed; use is_num() where the value is compared against truth.
     """
-    return float(v) if isinstance(v, (int, float)) and math.isfinite(v) else 0.0
+    return float(v) if is_num(v) else 0.0
 
 
 # ── Association gates ────────────────────────────────────────────────────────

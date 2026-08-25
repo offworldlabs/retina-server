@@ -10,7 +10,7 @@ import orjson
 from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from fastapi.responses import Response
 
-from config.constants import FT_TO_M, as_num
+from config.constants import FT_TO_M, is_num
 from core import state
 from core.task_registry import get_stale_tasks
 from core.users import require_admin
@@ -303,15 +303,17 @@ async def validate_ground_truth(body: dict = Body(...), _key=Depends(_verify_sim
         if best_match:
             idx, sa = best_match
             matched_server_indices.add(idx)
-            # Truthiness is no guard: "ground", the on-deck sentinel, is truthy.
-            sa_alt_m = as_num(sa.get("alt_baro")) * FT_TO_M
-            alt_err_m = abs(gt_alt - sa_alt_m)
+            # "ground" means on the surface — field elevation, not 0 m MSL — so
+            # it is no altitude truth.  Null here rather than a fabricated error;
+            # the match still scores position.
+            _sa_alt = sa.get("alt_baro")
+            alt_err_m = abs(gt_alt - _sa_alt * FT_TO_M) if is_num(_sa_alt) else None
             matches.append(
                 {
                     "truth_id": gt.get("id"),
                     "server_hex": sa.get("hex"),
                     "position_error_km": round(best_dist, 2),
-                    "altitude_error_m": round(alt_err_m, 0),
+                    "altitude_error_m": round(alt_err_m, 0) if alt_err_m is not None else None,
                     "position_source": sa.get("position_source", "unknown"),
                     "has_adsb": gt.get("has_adsb", False),
                     "is_anomalous": gt.get("is_anomalous", False),
@@ -324,21 +326,28 @@ async def validate_ground_truth(body: dict = Body(...), _key=Depends(_verify_sim
 
     if matches:
         pos_errors = [m["position_error_km"] for m in matches]
-        alt_errors = [m["altitude_error_m"] for m in matches]
         avg_pos_err = sum(pos_errors) / len(pos_errors)
-        avg_alt_err = sum(alt_errors) / len(alt_errors)
         max_pos_err = max(pos_errors)
         accuracy_pct = len(matches) / len(truth_list) * 100
         sorted_pos = sorted(pos_errors)
         p50_pos = sorted_pos[len(sorted_pos) // 2]
         p95_pos = sorted_pos[int(len(sorted_pos) * 0.95)]
+    else:
+        avg_pos_err = max_pos_err = 0
+        p50_pos = p95_pos = 0
+        accuracy_pct = 0
+
+    # Denominator is the matches that HAD altitude truth, not all of them, so
+    # these stand apart from the position ones.  Null rather than 0 when none
+    # did: 0 m of altitude error reads as perfect accuracy.
+    alt_errors = [m["altitude_error_m"] for m in matches if m["altitude_error_m"] is not None]
+    if alt_errors:
+        avg_alt_err = sum(alt_errors) / len(alt_errors)
         sorted_alt = sorted(alt_errors)
         p50_alt = sorted_alt[len(sorted_alt) // 2]
         p95_alt = sorted_alt[int(len(sorted_alt) * 0.95)]
     else:
-        avg_pos_err = avg_alt_err = max_pos_err = 0
-        p50_pos = p95_pos = p50_alt = p95_alt = 0
-        accuracy_pct = 0
+        avg_alt_err = p50_alt = p95_alt = None
 
     # Per-position_source breakdown
     by_source: dict[str, list[float]] = {}
@@ -370,9 +379,10 @@ async def validate_ground_truth(body: dict = Body(...), _key=Depends(_verify_sim
             "median_position_error_km": round(p50_pos, 2),
             "p95_position_error_km": round(p95_pos, 2),
             "max_position_error_km": round(max_pos_err, 2),
-            "avg_altitude_error_m": round(avg_alt_err, 0),
-            "median_altitude_error_m": round(p50_alt, 0),
-            "p95_altitude_error_m": round(p95_alt, 0),
+            "n_altitude_samples": len(alt_errors),
+            "avg_altitude_error_m": round(avg_alt_err, 0) if avg_alt_err is not None else None,
+            "median_altitude_error_m": round(p50_alt, 0) if p50_alt is not None else None,
+            "p95_altitude_error_m": round(p95_alt, 0) if p95_alt is not None else None,
         },
         "by_source": source_breakdown,
         "matches": matches[:50],

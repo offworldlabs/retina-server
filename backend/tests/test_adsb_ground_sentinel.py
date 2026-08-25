@@ -189,8 +189,32 @@ _TX = (34.90, -82.20)
 _TARGET = (34.88, -82.35)
 
 
+_AIR_HEX = "air002"
+_AIR_TARGET = (35.05, -82.35)  # 82 µs of bistatic delay from _TARGET: no cross-matching
+_NODE_CFG = {"node_id": _VERIFY_NODE_ID, "rx_lat": _RX[0], "rx_lon": _RX[1], "tx_lat": _TX[0], "tx_lon": _TX[1]}
+
+
+def _verify_track(target, alt_m, speed_e=0.0):
+    return SimpleNamespace(
+        latest_delay_us=bistatic_delay_us(_TX[0], _TX[1], _RX[0], _RX[1], target[0], target[1]),
+        wall_clock_ts=time.time(),
+        lat=target[0],
+        lon=target[1],
+        vel_east=speed_e,
+        vel_north=0.0,
+        alt_m=alt_m,
+    )
+
+
 class TestGroundSentinelOffTheFramePath:
-    """Both consumers read alt_baro straight off a state.adsb_aircraft record."""
+    """Both consumers read alt_baro straight off a state.adsb_aircraft record.
+
+    "ground" is a position report, not an altitude one: the aircraft is at field
+    elevation, which is 313 m at Atlanta and 0 m nowhere in particular.  Scoring
+    the solver against 0 m MSL invents an error the size of the aerodrome, so a
+    grounded aircraft is dropped from the altitude comparison and kept for the
+    position and velocity ones.
+    """
 
     def test_node_verification_survives_a_grounded_truth_candidate(self):
         """float("ground") raises ValueError, and the caller's blanket except
@@ -205,26 +229,57 @@ class TestGroundSentinelOffTheFramePath:
             "track": 90,
             "last_seen_ms": int(now * 1000),
         }
-        track = SimpleNamespace(
-            latest_delay_us=bistatic_delay_us(_TX[0], _TX[1], _RX[0], _RX[1], _TARGET[0], _TARGET[1]),
-            wall_clock_ts=now,
-            lat=_TARGET[0],
-            lon=_TARGET[1],
-            vel_east=0.0,
-            vel_north=0.0,
-            alt_m=3000.0,
-        )
-        cfg = {"node_id": _VERIFY_NODE_ID, "rx_lat": _RX[0], "rx_lon": _RX[1], "tx_lat": _TX[0], "tx_lon": _TX[1]}
         with state.geo_aircraft_lock:
-            state.active_geo_aircraft["gnd-trk"] = (track, cfg)
+            state.active_geo_aircraft["gnd-trk"] = (_verify_track(_TARGET, 3000.0), _NODE_CFG)
 
         _refresh_node_verification(_VERIFY_NODE_ID)
 
         data = orjson.loads(state.latest_node_verification_bytes[_VERIFY_NODE_ID])
         assert data["n_matched"] == 1
         (m,) = data["tracks"]
-        assert m["truth_alt_m"] == 0.0
-        assert m["altitude_error_m"] == 3000.0
+        # No altitude truth: null, not the 3 000 m error that scoring against
+        # 0 m MSL produced.
+        assert m["truth_alt_m"] is None
+        assert m["altitude_error_m"] is None
+        assert data["altitude"]["n"] == 0
+        # Position and velocity truth are unaffected — the point of not dropping
+        # the record wholesale.
+        assert m["position_error_km"] < 0.1
+        assert m["truth_speed_ms"] == pytest.approx(61.7, abs=0.1)
+        assert data["velocity"]["n"] == 1
+
+    def test_node_verification_altitude_stats_come_from_the_airborne_match_alone(self):
+        """A grounded aircraft must not dilute the altitude stats, nor suppress them."""
+        now = int(time.time() * 1000)
+        state.adsb_aircraft[_HEX] = {
+            "hex": _HEX,
+            "lat": _TARGET[0],
+            "lon": _TARGET[1],
+            "alt_baro": "ground",
+            "gs": 0,
+            "last_seen_ms": now,
+        }
+        state.adsb_aircraft[_AIR_HEX] = {
+            "hex": _AIR_HEX,
+            "lat": _AIR_TARGET[0],
+            "lon": _AIR_TARGET[1],
+            "alt_baro": 33000,  # 10 058.4 m
+            "gs": 0,
+            "last_seen_ms": now,
+        }
+        with state.geo_aircraft_lock:
+            state.active_geo_aircraft["gnd-trk"] = (_verify_track(_TARGET, 3000.0), _NODE_CFG)
+            state.active_geo_aircraft["air-trk"] = (_verify_track(_AIR_TARGET, 10000.0), _NODE_CFG)
+
+        _refresh_node_verification(_VERIFY_NODE_ID)
+
+        data = orjson.loads(state.latest_node_verification_bytes[_VERIFY_NODE_ID])
+        assert data["n_matched"] == 2
+        by_hex = {m["matched_adsb_hex"]: m for m in data["tracks"]}
+        assert by_hex[_HEX]["altitude_error_m"] is None
+        assert by_hex[_AIR_HEX]["altitude_error_m"] == 58.0
+        assert data["altitude"]["n"] == 1
+        assert data["altitude"]["mean_m"] == 58.0
 
     async def test_validate_ground_truth_survives_a_grounded_aircraft(self, monkeypatch):
         """A truthiness test is no guard here — "ground" is truthy."""
@@ -238,4 +293,39 @@ class TestGroundSentinelOffTheFramePath:
         result = await validate_ground_truth(body=body, _key=None)
 
         assert result["validation"]["matched"] == 1
-        assert result["accuracy"]["avg_altitude_error_m"] == 1000
+        (m,) = result["matches"]
+        assert m["position_error_km"] == 0.0
+        # Null, not the 1 000 m of invented error, and not 0 — which would read
+        # as a perfect altitude solve.
+        assert m["altitude_error_m"] is None
+        assert result["accuracy"]["n_altitude_samples"] == 0
+        assert result["accuracy"]["avg_altitude_error_m"] is None
+        assert result["accuracy"]["median_altitude_error_m"] is None
+        assert result["accuracy"]["p95_altitude_error_m"] is None
+
+    async def test_validate_altitude_stats_come_from_the_airborne_match_alone(self, monkeypatch):
+        monkeypatch.setattr(
+            state,
+            "latest_aircraft_json",
+            {
+                "aircraft": [
+                    {"hex": _HEX, "lat": _TARGET[0], "lon": _TARGET[1], "alt_baro": "ground"},
+                    {"hex": _AIR_HEX, "lat": _AIR_TARGET[0], "lon": _AIR_TARGET[1], "alt_baro": 10000},
+                ]
+            },
+        )
+        body = {
+            "ground_truth": [
+                {"id": "gt-gnd", "lat": _TARGET[0], "lon": _TARGET[1], "alt_km": 1.0},
+                {"id": "gt-air", "lat": _AIR_TARGET[0], "lon": _AIR_TARGET[1], "alt_km": 3.0},
+            ]
+        }
+
+        result = await validate_ground_truth(body=body, _key=None)
+
+        assert result["validation"]["matched"] == 2
+        by_id = {m["truth_id"]: m for m in result["matches"]}
+        assert by_id["gt-gnd"]["altitude_error_m"] is None
+        assert by_id["gt-air"]["altitude_error_m"] == 48.0  # 10 000 ft = 3 048 m
+        assert result["accuracy"]["n_altitude_samples"] == 1
+        assert result["accuracy"]["avg_altitude_error_m"] == 48.0
