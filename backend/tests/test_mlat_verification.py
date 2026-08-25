@@ -331,6 +331,35 @@ class TestAdsbFallback:
         assert data["n_matched"] == 1
         assert data["tracks"][0]["truth_hex"] == "aabbcc"
 
+    def test_non_finite_feed_values_do_not_poison_the_truth_pool(self):
+        """json.loads parses a bare NaN, and an isinstance test admits it.
+
+        A NaN reaching the pool propagates through every comparison as NaN
+        without raising, so the published error figures go quietly non-numeric.
+        """
+        state.adsb_aircraft["aabbcc"] = {
+            "hex": "aabbcc",
+            "lat": 33.9,
+            "lon": -84.6,
+            "alt_baro": float("nan"),
+            "gs": float("inf"),
+            "track": 76.0,
+            "last_seen_ms": int(time.time() * 1000) - 5000,
+        }
+
+        r = _make_solve_result(33.9001, -84.6001)
+        state.multinode_tracks[_key(r)] = r
+
+        _refresh_mlat_verification()
+        data = orjson.loads(state.latest_mlat_verification_bytes)
+
+        assert data["n_matched"] == 1
+        track = data["tracks"][0]
+        assert math.isfinite(track["truth_alt_m"])
+        assert math.isfinite(track["altitude_error_m"])
+        assert math.isfinite(track["truth_speed_ms"])
+        assert math.isfinite(track["velocity_error_ms"])
+
 
 class TestExternalAdsbFallback:
     """external_adsb_cache is used as truth when live ADS-B and ground-truth trails are empty."""

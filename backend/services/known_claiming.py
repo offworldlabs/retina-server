@@ -113,8 +113,11 @@ def _gate_scale(age_s: float) -> float:
 
 
 def _tag_velocity(tag: dict) -> tuple[float, float]:
-    """(vel_east, vel_north) m/s from a node adsb entry's gs (kt) / track (deg),
-    the same conversion state._adsb_for_seeding applies to the cache."""
+    """(vel_east, vel_north) m/s from a node adsb entry's gs (kt) / track (deg).
+
+    Unlike the cache path, these are not coerced: no non-numeric gs or track has
+    been observed from a node.  86cb9t7c4 tracks closing that gap.
+    """
     gs_ms = (tag.get("gs", 0) or 0) * 0.514444
     trk = math.radians(tag.get("track", 0) or 0)
     return gs_ms * math.sin(trk), gs_ms * math.cos(trk)
