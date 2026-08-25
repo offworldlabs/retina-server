@@ -1,27 +1,18 @@
-"""Tower-finding, config, elevation, and health endpoints."""
+"""Tower-finding and elevation endpoints."""
 
-import json
 import logging
 import os
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, HTTPException, Query
 
 from clients.fcc import fetch_fcc_broadcast_systems
 from clients.maprad import fetch_broadcast_systems
-from core.runtime_config import write_runtime_file
-from core.users import require_admin
-from services.health import compute_health_issues
 from services.tower_ranking import (
-    _CONFIG_PATH,
     DEFAULT_LIMIT,
     DEFAULT_RADIUS_KM,
-    apply_config,
     parse_user_frequencies,
     process_and_rank,
-    reload_config,
-    validate_config,
 )
 
 router = APIRouter()
@@ -187,69 +178,6 @@ async def find_towers(
         },
         "count": len(towers),
     }
-
-
-@router.get("/api/health")
-async def health(strict: bool = Query(False)):
-    """Report server health.
-
-    Always 200 by default (liveness — used by the Docker healthcheck, which
-    must not restart the container on transient degradation). Pass ``strict=1``
-    for a readiness probe that returns 503 when degraded — use this for the
-    external uptime monitor. Alerting is owned by the health-monitor task, not
-    this endpoint, so health stays observable even when nothing polls it.
-    """
-    issues = compute_health_issues()
-    if issues:
-        # Details are logged (and alerted on by the monitor), never exposed on
-        # this unauthenticated endpoint.
-        logging.warning("Health check degraded: %s", ", ".join(i["type"] for i in issues))
-        if strict:
-            return JSONResponse({"status": "degraded"}, status_code=503)
-        return {"status": "degraded"}
-    return {"status": "ok"}
-
-
-@router.get("/api/config")
-async def get_config():
-    with open(_CONFIG_PATH) as f:
-        return json.load(f)
-
-
-@router.put("/api/config")
-async def update_config(body: dict, _admin=Depends(require_admin)):
-    # Sanity check: config should be a reasonable size
-    raw = json.dumps(body)
-    if len(raw) > 1_000_000:
-        raise HTTPException(status_code=413, detail="Config too large (max 1 MB)")
-
-    # Validate it, prove it applies, and only then write it. _CONFIG_PATH lives
-    # in a persistent docker volume and reload_config() runs at import, so a
-    # config that reaches disk without applying cleanly outlives both a restart
-    # and a redeploy, recoverable only by hand inside the volume. Writing last
-    # means the file only ever holds a config the running process has accepted,
-    # so there is no rollback to get wrong.
-    error = validate_config(body)
-    if error:
-        raise HTTPException(status_code=400, detail=f"Invalid config: {error}")
-
-    try:
-        apply_config(body)
-    except Exception as exc:
-        # validate_config has a gap. apply_config is all-or-nothing and the file
-        # is still untouched, so the running config is unchanged.
-        logging.exception("Config passed validation but would not apply")
-        raise HTTPException(status_code=400, detail=f"Config could not be applied: {exc}") from exc
-
-    try:
-        write_runtime_file(_CONFIG_PATH, json.dumps(body, indent=2))
-    except OSError as exc:
-        # The process has already taken this config but the file has not. Put
-        # the two back in step by re-reading whatever is actually on disk.
-        logging.exception("Config applied but could not be written")
-        reload_config()
-        raise HTTPException(status_code=500, detail=f"Config could not be written: {exc}") from exc
-    return {"status": "updated"}
 
 
 @router.get("/api/elevation")

@@ -399,6 +399,15 @@ async def get_node_config(_admin=Depends(require_admin)):
 
 @router.get("/config/towers")
 async def get_tower_config(_admin=Depends(require_admin)):
+    """The tower config overlay, or a live view of the transmitters in use.
+
+    Two response shapes, and the absent overlay is a supported state rather
+    than an error: the file verbatim, or ``{"_source": "live", "towers": ...}``
+    built from what connected nodes report. Callers must branch on ``_source``
+    (the dashboard's ConfigPage does) because the two share no keys. 404 here
+    would be the more obvious contract but a worse one, since the fallback is
+    the only tower view an operator has on a server holding no overlay.
+    """
     global _towers_config_cache
     fp = runtime_path("tower_config.json")
     if fp.exists():

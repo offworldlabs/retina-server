@@ -373,9 +373,9 @@ def test_an_unhandled_exception_outside_the_prefix_keeps_the_plain_text_500(node
     handler produces anything, which is a genuine unhandled exception rather
     than one raised on purpose for the test.
     """
-    import routes.towers
+    import routes.config
 
-    monkeypatch.setattr(routes.towers, "_CONFIG_PATH", "/nonexistent/does-not-exist.json")
+    monkeypatch.setattr(routes.config, "_CONFIG_PATH", "/nonexistent/does-not-exist.json")
 
     r = node_client.get("/api/config")
 

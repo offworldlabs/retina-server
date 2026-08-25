@@ -85,6 +85,30 @@ class TestConfig:
         body = r.json()
         assert "_source" in body or "ranking" in body or "towers" in body
 
+    def test_get_tower_config_falls_back_to_live_when_overlay_absent(self, client, tmp_path, monkeypatch):
+        """An absent overlay is a supported state, not a 404.
+
+        Pinned because the shape differs from the file's: a caller that stops
+        branching on `_source` breaks silently rather than loudly.
+        """
+        import routes.admin as admin_mod
+        from core.runtime_config import runtime_path
+
+        missing = tmp_path / "tower_config.json"
+        monkeypatch.setattr(
+            admin_mod,
+            "runtime_path",
+            lambda name: missing if name == "tower_config.json" else runtime_path(name),
+        )
+        monkeypatch.setattr(admin_mod, "_towers_config_cache", None)
+
+        r = client.get("/api/admin/config/towers")
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["_source"] == "live"
+        assert "towers" in body
+
     def test_config_history_returns_list(self, client):
         r = client.get("/api/admin/config/history")
         assert r.status_code == 200
