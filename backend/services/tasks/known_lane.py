@@ -14,8 +14,9 @@ known ADS-B aircraft BEFORE dark association and publishes them into
 detections directly.  Identity gives cross-node correspondence for free —
 two claims on the same hex ARE the same aircraft — so the delay-grid pairing
 machinery in retina_analytics.association is bypassed entirely, and every
-known target with >= 2 claiming nodes produces a solve attempt and an
-accuracy sample on EVERY pass, whatever the outcome.
+known target with >= 2 claiming nodes produces a solve attempt on EVERY
+pass, whatever the outcome — plus an accuracy sample, rationed per hex
+because the accuracy store is shared and capped (see _record_accuracy).
 
 FREE SOLVE INVARIANT: the ADS-B fix seeds the initial guess and pins the
 altitude, and does NOTHING else.  The solution is never regularized,
@@ -109,13 +110,23 @@ _PASS_MIN_INTERVAL_S = 2.0
 # distinct hex for the process lifetime.  Swept opportunistically per pass.
 _ATTEMPT_TTL_S = 600.0
 
+# Minimum spacing between accuracy samples for one hex — see _record_accuracy
+# for why the lane's samples, alone among the sources, have to be rationed.
+_ACCURACY_SAMPLE_INTERVAL_S = 10.0
+# Dict-level TTL for the throttle map, same reasoning as _ATTEMPT_TTL_S: hex
+# churn would otherwise grow it for the process lifetime.  Comfortably longer
+# than the interval it guards, so a live hex is never swept mid-window.
+_ACCURACY_TTL_S = 300.0
+
 # One pass at a time.  maybe_run_pass is called from every solver worker
 # thread's loop; a try-lock (never blocking) means a second worker skips the
 # pass instead of queueing behind it, and everything below the lock —
-# _last_pass_ts, _last_attempt_ts_ms — is single-writer by construction.
+# _last_pass_ts, _last_attempt_ts_ms, _last_sample_mono — is single-writer by
+# construction.
 _PASS_LOCK = threading.Lock()
 _last_pass_ts = 0.0
 _last_attempt_ts_ms: dict[str, int] = {}
+_last_sample_mono: dict[str, float] = {}
 
 
 def _reset_for_tests() -> None:
@@ -124,6 +135,7 @@ def _reset_for_tests() -> None:
     with _PASS_LOCK:
         _last_pass_ts = 0.0
         _last_attempt_ts_ms.clear()
+        _last_sample_mono.clear()
     with state.counters_lock:
         for name in _COUNTERS:
             setattr(state, name, 0)
@@ -243,16 +255,43 @@ def _build_solver_input(hexn: str, claims: dict[str, dict]) -> dict | None:
 
 
 def _record_accuracy(hexn: str, err_km: float, label: str, n_nodes: int, ts_s: float) -> None:
-    """Append one known-lane sample to the rolling accuracy store.
+    """Append one known-lane sample to the rolling accuracy store, at most one
+    per hex per _ACCURACY_SAMPLE_INTERVAL_S.
 
     Same store and base shape as track_gates._record_accuracy_sample, so
     _refresh_accuracy_stats bins it by position_source with no changes —
     known_lane_truth_match vs known_lane_ghost is the headline comparison —
     plus label/n_nodes as their own fields so later analysis can bin by
-    GDOP proxy without parsing them back out of the source string.  Recorded
-    on EVERY converged outcome, ghost included: a ghost's error is exactly
-    the datum the regular pipeline's displacement gate used to delete.
+    GDOP proxy without parsing them back out of the source string.
+
+    Every converged outcome is *classified*, ghost included (a ghost's error
+    is exactly the datum the regular pipeline's displacement gate used to
+    delete), but not every one is sampled.  state.accuracy_samples is a
+    single deque shared by every position source and capped at
+    ACCURACY_MAX_SAMPLES (5000), while this lane attempts a solve for every
+    claimed hex on every pass — on the test fleet that is ~8 samples/s, which
+    evicts the entire multinode_solve and single-node population within
+    minutes: /api/radar/accuracy's by_source breakdown degenerates to
+    known_lane_* alone, and health.py's trusted-accuracy probe is starved of
+    the sources it measures.  One sample per hex per window is still denser
+    than any other source, and it is ONLY the sample that is throttled —
+    counters and mlat_solve_history records stay per-attempt, so the lane's
+    own funnel and per-solve history are unchanged.
+
+    Called from the pass, so the throttle map is single-writer under
+    _PASS_LOCK like the dedup map beside it.
     """
+    now_mono = time.monotonic()
+    last = _last_sample_mono.get(hexn)
+    if last is not None and now_mono - last < _ACCURACY_SAMPLE_INTERVAL_S:
+        return
+    _last_sample_mono[hexn] = now_mono
+    # Opportunistic TTL sweep (see _ACCURACY_TTL_S), on the sampling path
+    # rather than per attempt: it runs at most once per hex per window.
+    cutoff = now_mono - _ACCURACY_TTL_S
+    for h in [h for h, ts in _last_sample_mono.items() if ts < cutoff]:
+        del _last_sample_mono[h]
+
     state.accuracy_samples.append(
         {
             "hex": hexn,
@@ -314,8 +353,9 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
 
     Every attempt leaves a record in state.mlat_solve_history (known_* rather
     than published/rejected_* outcomes, so the regular funnel's numbers stay
-    clean in shadow AND binding), and every CONVERGED attempt leaves an
-    accuracy sample.  Classification is the regular displacement gate's own
+    clean in shadow AND binding), and every CONVERGED attempt is classified
+    and offered to the accuracy store, which samples it at most once per hex
+    per window (see _record_accuracy).  Classification is the regular gate's own
     threshold applied to truth-at-solve-epoch — which is the initial guess by
     construction (the fix was dead-reckoned to exactly this epoch), so the
     record's displacement_km and the accuracy error are the same number.

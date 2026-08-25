@@ -189,11 +189,23 @@ def compute_health_issues() -> list[dict]:
     # the ADS-B fix verbatim, so it would score a near-zero error against ADS-B
     # truth without any solver having run, and enough of them would hold this
     # mean below the threshold while the real solves degraded.
+    # The two `known_lane_*` sources are excluded for that same reason and one
+    # of its own: a truth_match error is displacement from the ADS-B fix and is
+    # <= the lane's 2 km publish gate BY CONSTRUCTION, so a flood of them pins
+    # the mean low no matter what the real solves are doing; and a ghost sample
+    # describes an attempt that was never published, so it measures nothing a
+    # user can see on the map.
     try:
         if state.latest_accuracy_bytes and state.latest_accuracy_bytes != b"{}":
             acc = orjson.loads(state.latest_accuracy_bytes)
             by_source = acc.get("by_source") or {}
-            untrusted = {"single_node_ellipse_arc", "solver_single_node", "adsb_single_node"}
+            untrusted = {
+                "single_node_ellipse_arc",
+                "solver_single_node",
+                "adsb_single_node",
+                "known_lane_truth_match",
+                "known_lane_ghost",
+            }
             trusted = [
                 (st.get("n_samples", 0), st.get("mean_km", 0.0))
                 for src, st in by_source.items()
