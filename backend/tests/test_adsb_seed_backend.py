@@ -141,6 +141,30 @@ class TestAdsbForSeeding:
         assert e["vel_north"] == pytest.approx(0.0, abs=1e-6)
         assert e["timestamp_ms"] == 123456
 
+    def test_on_ground_sentinel_strings_coerce_to_zero(self):
+        # Real ADS-B feeds report alt_baro as the literal string "ground"
+        # for on-ground aircraft. One such record used to raise TypeError
+        # here on every frame for as long as it stayed live (and, before
+        # the frame_processor fail-open guard, took the whole frame down
+        # with it).
+        state.adsb_aircraft["gnd001"] = {
+            "hex": "gnd001",
+            "lat": 33.9,
+            "lon": -84.6,
+            "alt_baro": "ground",
+            "gs": None,
+            "track": "unknown",
+            "flight": "GND1",
+            "last_seen_ms": 42,
+        }
+        out = state._adsb_for_seeding()
+        e = out["gnd001"]
+        assert e["alt_m"] == 0.0
+        assert e["vel_east"] == 0.0
+        assert e["vel_north"] == 0.0
+        # Raw fields pass through untouched for downstream provenance.
+        assert e["alt_baro"] == "ground"
+
     def test_skips_invalid_latlon(self):
         state.adsb_aircraft["badll"] = {
             "hex": "badll",
@@ -212,6 +236,25 @@ class TestProcessOneFrameSolverQueue:
         s_in, _node_cfgs, _enqueued_at = state.solver_queue.get_nowait()
         assert s_in["adsb_hex"] == "abc123"
         assert s_in["n_nodes"] == 2
+
+    def test_claiming_failure_cannot_cost_the_frame(self, monkeypatch):
+        """The known lane fails open: an exception in claim_known_targets is
+        counted, and the frame continues down the dark lane instead of dying
+        in the frame worker (the alt_baro="ground" incident)."""
+        import services.frame_processor as fp
+
+        monkeypatch.setattr(state, "KNOWN_LANE_MODE", "shadow")
+
+        def _boom(node_id, frame):
+            raise TypeError("can't multiply sequence by non-int of type 'float'")
+
+        monkeypatch.setattr(fp, "claim_known_targets", _boom)
+        before = state.known_claims_errors
+
+        default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        process_one_frame("test-claim-fail-open", _make_frame(), default)
+
+        assert state.known_claims_errors == before + 1
 
     def test_empty_adsb_inputs_add_nothing(self, monkeypatch):
         monkeypatch.setattr(

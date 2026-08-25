@@ -33,6 +33,10 @@ from services.storage import archive_detections
 # collect frames in memory and flush them periodically from a background task.
 _archive_buffer: dict[str, list[dict]] = defaultdict(list)
 _archive_buffer_lock = threading.Lock()
+# Timestamp of the last logged known-lane claiming failure (list so the
+# frame workers can rebind it without a global statement); failures are
+# counted per-occurrence in known_claims_errors but logged at most 1/min.
+_last_claim_error_log = [0.0]
 _ARCHIVE_FLUSH_INTERVAL = ARCHIVE_FLUSH_INTERVAL_S
 _ARCHIVE_BATCH_MAX = ARCHIVE_BATCH_MAX
 # Hard cap on buffer growth when writes fail repeatedly. Beyond this we drop
@@ -333,10 +337,21 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # the node sent.
     _pframe = frame
     if state.KNOWN_LANE_MODE != "off" and frame.get("delay"):
-        _claimed = claim_known_targets(node_id, frame)
-        if _claimed and state.KNOWN_LANE_MODE == "binding":
-            _pframe = strip_claimed_detections(frame, _claimed)
-            state.bump_counter("known_claims_bound", len(_claimed))
+        # Fail open: the known lane is an overlay on the dark lane, and in
+        # shadow mode especially it must be unable to cost a frame.  Before
+        # this guard, one ADS-B record with alt_baro="ground" threw here and
+        # took every frame down with it until the record aged out.
+        try:
+            _claimed = claim_known_targets(node_id, frame)
+            if _claimed and state.KNOWN_LANE_MODE == "binding":
+                _pframe = strip_claimed_detections(frame, _claimed)
+                state.bump_counter("known_claims_bound", len(_claimed))
+        except Exception:
+            state.bump_counter("known_claims_errors")
+            now = time.time()
+            if now - _last_claim_error_log[0] > 60:
+                _last_claim_error_log[0] = now
+                logging.exception("known-lane claiming failed; frame continues on the dark lane")
     # Predictive ADS-B tagging for a node with no receiver of its own.
     # Never overwrites a node-provided list — the node's own correlation is
     # authoritative, and an absent list is the only case where the backend
