@@ -384,6 +384,9 @@ adsb_seed_frames_autotagged: int = 0
 known_claims_made: int = 0
 known_claim_contentions: int = 0
 known_claims_bound: int = 0
+# Path-2 candidates dropped because the node cannot see the dead-reckoned
+# position of the cached aircraft (outside its beam or beyond its footprint).
+known_claims_visibility_rejects: int = 0
 # Claiming-stage exceptions absorbed by frame_processor's fail-open guard.
 # Nonzero means the known lane is broken and silently contributing nothing.
 known_claims_errors: int = 0
@@ -590,7 +593,7 @@ def _reset_for_tests() -> None:
     global frames_dropped, frames_processed, solver_successes, solver_failures
     global adsb_seed_frames_autotagged
     global known_claims_made, known_claim_contentions, known_claims_bound
-    global known_claims_errors
+    global known_claims_errors, known_claims_visibility_rejects
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
     global coverage_rebuild_backlog
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
@@ -672,7 +675,7 @@ def _reset_for_tests() -> None:
         solver_successes = solver_failures = n2_unconfirmed = 0
         adsb_seed_frames_autotagged = 0
         known_claims_made = known_claim_contentions = known_claims_bound = 0
-        known_claims_errors = 0
+        known_claims_errors = known_claims_visibility_rejects = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
         coverage_rebuild_backlog = 0
         solver_stale_drops = 0

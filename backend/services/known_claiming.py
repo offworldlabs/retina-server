@@ -24,6 +24,12 @@ the allowance grows with fix age.  Dead-reckoning error is ~linear in coast
 time (a 10 m/s velocity error is ~450 m at the 45 s age cap, i.e. 1.5–3 µs of
 delay — comparable to the base gate itself), so a fixed gate is simultaneously
 too loose for a fresh fix and too tight for an old one.
+
+A path-2 candidate must also be somewhere the node can actually see.  Delay
+and Doppler are two numbers a wrong aircraft can match by coincidence, so a
+cached state whose dead-reckoned position falls outside the node's detection
+area is no candidate at all, whatever its residuals say.  Node tags (path 1)
+carry the node's own evidence that it saw the aircraft and stay ungated.
 """
 
 import logging
@@ -38,6 +44,7 @@ from retina_analytics.association import (
     CLAIM_DELAY_GATE_US,
     CLAIM_DOPPLER_GATE_HZ,
     CLAIM_MAX_DR_AGE_S,
+    _point_in_beam,
     claim_eligible,
     predict_observation,
 )
@@ -170,8 +177,9 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
          backend never overwrites a node-provided list), so it is not
          re-gated; the prediction is still computed so the record carries
          the residual the trust path needs.
-      2. Remaining detections × fresh cached ADS-B states, global one-to-one
-         via linear_sum_assignment under age-scaled gates.
+      2. Remaining detections × fresh cached ADS-B states whose dead-reckoned
+         position this node can see, global one-to-one via
+         linear_sum_assignment under age-scaled gates.
 
     Claims nothing without a registered geometry: the registry contract
     requires the predicted observation, and there is nothing to predict
@@ -230,6 +238,7 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
     free = [i for i in range(len(delays)) if i not in claimed_idx]
     if free:
         cands = []
+        visibility_rejects = 0
         for hexn, st in state._adsb_for_seeding().items():
             if hexn in claimed_hexes:
                 continue
@@ -242,6 +251,16 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
                 east_m=st.get("vel_east", 0.0) * age_s,
                 north_m=st.get("vel_north", 0.0) * age_s,
             )
+            # A false reject costs a claim the dark lane can still solve; a
+            # false accept puts a fix this node never saw into the known lane
+            # and charges its residual to the node's trust.  The asymmetry is
+            # why this is the associator's own visibility predicate applied
+            # whole (beam wedge, footprint, learned FOV, coverage prior)
+            # rather than a looser bespoke one — claiming and the dark lane
+            # must mean the same thing by "this node can see there".
+            if not _point_in_beam(dr_lat, dr_lon, geo):
+                visibility_rejects += 1
+                continue
             pred_d, pred_f = predict_observation(
                 geo,
                 dr_lat,
@@ -251,6 +270,11 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
                 st.get("vel_north", 0.0),
             )
             cands.append((hexn, st, pred_d, pred_f, _gate_scale(age_s)))
+
+        # Once per frame, not per candidate: one lock acquisition on a path
+        # that runs for every frame every node sends.
+        if visibility_rejects:
+            state.bump_counter("known_claims_visibility_rejects", visibility_rejects)
 
         if cands:
             cost = np.full((len(free), len(cands)), _GATE_INFEASIBLE)

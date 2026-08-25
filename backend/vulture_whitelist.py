@@ -193,6 +193,7 @@ adsb_seed_frames_autotagged
 known_claims_made
 known_claim_contentions
 known_claims_bound
+known_claims_visibility_rejects
 
 
 # ── Framework attributes (previously CI --ignore-names) ───────────────────────
