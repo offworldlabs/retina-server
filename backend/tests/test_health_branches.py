@@ -13,6 +13,7 @@ Covers the branches that are not exercised by test_towers_routes.py:
 
 import logging
 import os
+import queue
 
 import orjson
 import pytest
@@ -77,6 +78,12 @@ class TestHealthDegradedBranches:
                 return 6
 
             maxsize = 10
+
+            # Leaked solver worker daemons poll state.solver_queue while this
+            # stub is installed; without a get they die on AttributeError and
+            # the noise lands in whatever test runs next.
+            def get(self, timeout=None):
+                raise queue.Empty
 
         monkeypatch.setattr(state, "solver_queue", _StubQueue())
         _assert_degraded(client.get("/api/health"))

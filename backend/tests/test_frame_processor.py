@@ -4,6 +4,7 @@ Covers: process_one_frame, build_combined_aircraft_json, helper functions,
 archive buffering, get_or_create_node_pipeline.
 """
 
+import queue
 import time
 
 import pytest
@@ -260,11 +261,10 @@ class TestProcessOneFrame:
             "submit_tracks_round",
             lambda *a, **kw: AssociationRound(pairs=[], anchored_inputs=[anchored], claims=[]),
         )
-        while True:  # start from an empty queue so only this item is seen
-            try:
-                state.solver_queue.get_nowait()
-            except Exception:
-                break
+        # A private queue: leaked solver worker daemons poll state.solver_queue
+        # and would race this item away (test_solver_worker's rationale); it
+        # also guarantees only this frame's item is seen.
+        monkeypatch.setattr(state, "solver_queue", queue.Queue())
 
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         process_one_frame("test-anchor", _make_frame(), default)
