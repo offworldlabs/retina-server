@@ -80,7 +80,7 @@ own. Everything that reaches a solve passes through one gate stack
 | `solver_queue` size (`SOLVER_QUEUE_SIZE`) | 200 | `core/state.py:365-366` |
 | `FRAME_WORKERS` | 4 (compose sets 6) | `main.py:164`, `docker-compose.yml:54` |
 | `SOLVER_WORKERS` | 2 daemon threads + same-size process pool | `services/tasks/solver.py:31,67` |
-| `KNOWN_LANE_MODE` default | `shadow` | `core/state.py:72-74` |
+| `KNOWN_LANE_MODE` default | `binding` | `core/state.py:72-74` |
 
 ---
 
@@ -194,7 +194,8 @@ flowchart TD
 ```
 
 **Mode semantics** (`KNOWN_LANE_MODE`, read once at `core/state.py:72-74`,
-default `shadow`, unrecognized value also falls back to `shadow`):
+default `binding`; an unrecognized value falls back to `shadow`, not to the
+default — a typo should degrade to the inert mode, not the acting one):
 
 | Mode | Claiming | Frame the dark lane sees | Known-lane solver | Publication |
 |---|---|---|---|---|
@@ -510,6 +511,7 @@ flowchart TD
 | `solver_adsb_seed` | `track_gates.py:330` | single-node LM with fresh ADS-B fix |
 | `solver_single_node` | `track_gates.py:330` | single-node LM, no ADS-B |
 | `single_node_ellipse_arc` | `track_gates.py:378` | overwrites either when an ambiguity arc exists — displayed point is the arc midpoint |
+| `adsb_single_node` | `aircraft_feed.py:_claimed_single_node_entries` | exactly one node claiming the hex within `CLAIMED_DISPLAY_FRESH_S`; position is the claim's ADS-B fix, the entry carries the node's full ambiguity arc. Two or more claiming nodes emit nothing here — that is the known-lane solver's `mn-adsb-<hex>` |
 | `known_lane_truth_match` / `known_lane_ghost` | `known_lane.py:260` | accuracy-sample-only, not a feed entry |
 
 | Constant | Value | File:line |
@@ -518,8 +520,9 @@ flowchart TD
 | `CV_VEL_ADOPT_CHI2_MAX` | 5.0 | `config/constants.py:77` |
 | `MN_N2_MIN_SOLVES` | 2 | `config/constants.py:63` |
 | `MN_ONESHOT_TTL_S` | 5.0 s | `config/constants.py:66` |
-| `_DEDUP_SOURCE_RANK` order | multinode_solve 0 < solver_adsb_seed 1 < solver_single_node 2 < single_node_ellipse_arc 3 | `services/feed_helpers.py:34-39` |
-| Dedup proximity / altitude gate | 3.0 km / 2000 ft | `services/feed_helpers.py:45-46` |
+| `_DEDUP_SOURCE_RANK` order | multinode_solve 0 < adsb_single_node 1 < solver_adsb_seed 2 < solver_single_node 3 < single_node_ellipse_arc 4 | `services/feed_helpers.py:37-43` |
+| `CLAIMED_DISPLAY_FRESH_S` | 5.0 s | `config/constants.py:131-139` |
+| Dedup proximity / altitude gate | 3.0 km / 2000 ft | `services/feed_helpers.py:49-50` |
 | `AIRCRAFT_FLUSH_INTERVAL_S` | 1.0 s | `config/constants.py:167` |
 | `DISPLAY_STALE_TRACK_S` / `GATE_MAX_HOLD_S` | 15 s / 10 s | `config/constants.py:206,213` |
 
@@ -534,8 +537,9 @@ flowchart TD
 - **The bottom-up doppler gate is inert.** `doppler_gate_hz` in the dark
   lane's coarse pairing step is defined but the grid gate is delay-only in
   practice (`libs/retina-analytics/.../association.py:884`).
-- **Production runs with every mode flag off** except `KNOWN_LANE_MODE`
-  (default `shadow`). The in-repo statement of what each environment sets is
+- **Production runs with every mode flag off** except `KNOWN_LANE_MODE`, which
+  is `binding` everywhere by code default and is set in no environment's
+  `.env`. The in-repo statement of what each environment sets is
   [`architecture.md:94-110`](architecture.md#feature-gates); the actual
   values live in the gitignored `backend/.env` on each host, not in this
   repo.
