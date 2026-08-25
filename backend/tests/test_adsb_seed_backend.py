@@ -7,6 +7,7 @@ covered by the lib's test_adsb_seeding.py; these tests pin the backend
 plumbing around it, following test_frame_processor.py's conventions.
 """
 
+import queue
 import time
 import types
 
@@ -195,12 +196,10 @@ class TestAdsbForSeeding:
 
 
 class TestProcessOneFrameSolverQueue:
-    def _drain_queue(self):
-        while True:
-            try:
-                state.solver_queue.get_nowait()
-            except Exception:
-                break
+    # Each test swaps in a private queue: solver worker daemons leaked by
+    # TestClient lifespans elsewhere in the suite poll state.solver_queue and
+    # would otherwise race the enqueued item away (see test_solver_worker's
+    # private-queue rationale).
 
     def test_adsb_inputs_reach_the_solver_queue(self, monkeypatch):
         """adsb_inputs are already solver-input shaped (see
@@ -228,7 +227,7 @@ class TestProcessOneFrameSolverQueue:
             "submit_tracks_round",
             lambda *a, **kw: AssociationRound(pairs=[], anchored_inputs=[], claims=[], adsb_inputs=[seeded]),
         )
-        self._drain_queue()
+        monkeypatch.setattr(state, "solver_queue", queue.Queue())
 
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         process_one_frame("test-adsb-seed-queue", _make_frame(), default)
@@ -262,12 +261,12 @@ class TestProcessOneFrameSolverQueue:
             "submit_tracks_round",
             lambda *a, **kw: AssociationRound(pairs=[], anchored_inputs=[], claims=[], adsb_inputs=[]),
         )
-        self._drain_queue()
+        monkeypatch.setattr(state, "solver_queue", queue.Queue())
 
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         process_one_frame("test-adsb-seed-empty", _make_frame(), default)
 
-        with pytest.raises(Exception):
+        with pytest.raises(queue.Empty):
             state.solver_queue.get_nowait()
 
 
