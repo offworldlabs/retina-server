@@ -148,6 +148,11 @@ def _global_tracks_for_claiming():
     return out
 
 
+def _as_num(v) -> float:
+    """0.0 for anything that isn't a finite number ("ground", None, NaN)."""
+    return float(v) if isinstance(v, (int, float)) and math.isfinite(v) else 0.0
+
+
 def _adsb_for_seeding() -> dict[str, dict]:
     """Unlocked snapshot of currently-live ADS-B fixes, in the seeding
     provider contract InterNodeAssociator documents on adsb_provider.
@@ -163,13 +168,17 @@ def _adsb_for_seeding() -> dict[str, dict]:
         lat, lon = rec.get("lat"), rec.get("lon")
         if lat is None or lon is None or not (math.isfinite(lat) and math.isfinite(lon)):
             continue
-        gs_ms = (rec.get("gs", 0) or 0) * 0.514444
-        trk = math.radians(rec.get("track", 0) or 0)
+        # ADS-B ships non-numeric sentinels in numeric fields — alt_baro is
+        # the literal string "ground" for on-ground aircraft — so coerce
+        # before arithmetic; one such record would otherwise throw here on
+        # every frame for as long as it stays live.
+        gs_ms = _as_num(rec.get("gs")) * 0.514444
+        trk = math.radians(_as_num(rec.get("track")))
         out[hexn] = {
             "hex": hexn,
             "lat": lat,
             "lon": lon,
-            "alt_m": (rec.get("alt_baro", 0) or 0) * FT_TO_M,
+            "alt_m": _as_num(rec.get("alt_baro")) * FT_TO_M,
             "vel_east": gs_ms * math.sin(trk),
             "vel_north": gs_ms * math.cos(trk),
             "timestamp_ms": rec.get("last_seen_ms", 0),
@@ -375,6 +384,9 @@ adsb_seed_frames_autotagged: int = 0
 known_claims_made: int = 0
 known_claim_contentions: int = 0
 known_claims_bound: int = 0
+# Claiming-stage exceptions absorbed by frame_processor's fail-open guard.
+# Nonzero means the known lane is broken and silently contributing nothing.
+known_claims_errors: int = 0
 # n=2 solves withheld from the map because their track pairing has not (yet)
 # passed the constant-velocity fit.  Counted separately from solver_failures:
 # the solve succeeded, it simply has not earned publication, and a real target
@@ -578,6 +590,7 @@ def _reset_for_tests() -> None:
     global frames_dropped, frames_processed, solver_successes, solver_failures
     global adsb_seed_frames_autotagged
     global known_claims_made, known_claim_contentions, known_claims_bound
+    global known_claims_errors
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
     global coverage_rebuild_backlog
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
@@ -659,6 +672,7 @@ def _reset_for_tests() -> None:
         solver_successes = solver_failures = n2_unconfirmed = 0
         adsb_seed_frames_autotagged = 0
         known_claims_made = known_claim_contentions = known_claims_bound = 0
+        known_claims_errors = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
         coverage_rebuild_backlog = 0
         solver_stale_drops = 0
