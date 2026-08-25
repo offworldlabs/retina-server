@@ -57,6 +57,13 @@ export interface Aircraft {
   contributing_node_ids?: string[];
   ground_truth_hex?: string;
   ambiguity_arc?: [number, number][];
+  /** Seconds since the newest claim/detection behind this entry. */
+  seen?: number;
+  /**
+   * Age of the ADS-B fix this entry's lat/lon came from, one decimal.
+   * Present on `adsb_single_node` entries only.
+   */
+  adsb_fix_age_s?: number;
   recent_positions?: [number, number, number, number][];
   rssi?: number;
   snr?: number;

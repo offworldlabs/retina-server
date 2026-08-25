@@ -128,6 +128,16 @@ ADSB_VIEW_TAG_FRESH_N = 3
 # wipe that history mid-assessment on a brief feed dropout.
 KNOWN_CLAIMS_STALE_S = 120.0
 
+# How recent a claim must be to put its hex on the map as an `adsb_single_node`
+# entry.  Far tighter than the registry's own retention above, which exists to
+# keep a residual *trend* readable: this one answers "is that node detecting
+# this aircraft right now", and a claim older than a few frames is not evidence
+# of a live detection.  5 s matches CAL_DETECTION_FRESH_S (the same "a couple
+# of dropped frames" budget at the ~1 Hz frame cadence) and the horizon the
+# frontend fades a claimed arc over, so the arc and the icon vanish together
+# instead of one outliving the other.
+CLAIMED_DISPLAY_FRESH_S = 5.0
+
 # ── Default antenna parameters ───────────────────────────────────────────────
 YAGI_BEAM_WIDTH_DEG = 42.0  # Half-power beamwidth (°) of the fleet Yagis
 YAGI_MAX_RANGE_KM = 50.0  # Default Yagi max range (km)

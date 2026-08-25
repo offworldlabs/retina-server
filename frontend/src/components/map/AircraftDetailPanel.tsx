@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { fetchMlatAccuracy, fetchMlatVerification } from "../../api";
-import { POSITION_SOURCE_ARC_ONLY } from "./constants";
+import { POSITION_SOURCE_ARC_ONLY, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
 import { classifyHex, emergencySquawkLabel } from "./hexInfo";
 import { trailToCsv, downloadCsv } from "./trailExport";
 import { copyToClipboard, toast } from "./toast";
@@ -48,19 +48,22 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
   const isAmbiguityArc = ac.position_source === POSITION_SOURCE_ARC_ONLY;
   const isSolverOnly = ac.position_source === "solver_single_node";
   const isSolverAdsbSeed = ac.position_source === "solver_adsb_seed";
+  const isAdsbSingleNode = ac.position_source === POSITION_SOURCE_ADSB_SINGLE;
   const isDrone = ac.target_class === "drone";
   const sourceLabel = isMultinode
     ? `Multi-node (${ac.n_nodes}N)`
     : isAmbiguityArc
       ? "Single-node ellipse arc"
-      : isSolverAdsbSeed
-        ? "Solver (ADS-B seeded)"
-        : isSolverOnly
-          ? "Single-node solver (uncertain)"
-          : hasAdsb
-            ? "ADS-B"
-            : ac.type || "Unknown";
-  const sourceBadge = isMultinode ? "multinode" : isSolverAdsbSeed ? "adsb" : hasAdsb ? "adsb" : "other";
+      : isAdsbSingleNode
+        ? "ADS-B (single node)"
+        : isSolverAdsbSeed
+          ? "Solver (ADS-B seeded)"
+          : isSolverOnly
+            ? "Single-node solver (uncertain)"
+            : hasAdsb
+              ? "ADS-B"
+              : ac.type || "Unknown";
+  const sourceBadge = isMultinode ? "multinode" : isSolverAdsbSeed || isAdsbSingleNode ? "adsb" : hasAdsb ? "adsb" : "other";
   // Authoritative flag set by applyGroundTruthFixes — the old
   // `!ac.type && !ac.flight` heuristic classified ordinary radar tracks
   // (which usually have neither) as "Ground truth only".
@@ -187,6 +190,32 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
             />
           )}
         </div>
+
+        {/* Claimed single-node detection.  Identity/Position above already
+            carry the ADS-B side of this entry (hex, callsign, altitude, speed,
+            heading all come straight off the claim's adsb_fix), so this block
+            adds only what is unique to the claim: who is holding it, how old
+            the fix behind it is, and the raw measurement. */}
+        {isAdsbSingleNode && (
+          <div className="detail-section">
+            <div className="detail-section-title">Claimed detection</div>
+            <Field label="Claiming node" value={ac.node_id || "—"} />
+            <Field
+              label="ADS-B fix age"
+              value={ac.adsb_fix_age_s != null ? `${ac.adsb_fix_age_s}s` : "—"}
+            />
+            <Field label="Latest delay" value={ac.delay_us != null ? `${ac.delay_us} μs` : "—"} />
+            <Field label="Latest doppler" value={ac.doppler_hz != null ? `${ac.doppler_hz} Hz` : "—"} />
+            <Field
+              label="Note"
+              value={
+                <span style={{ color: "#94a3b8", fontStyle: "italic" }}>
+                  Position is the ADS-B fix; the arc is the delay locus from the claiming node
+                </span>
+              }
+            />
+          </div>
+        )}
 
         {/* Multi-node details */}
         {isMultinode && (

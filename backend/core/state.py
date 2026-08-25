@@ -61,15 +61,15 @@ if ADSB_SEED_MODE not in ("off", "shadow", "active"):
 # value is "binding" rather than the "active" every other mode flag uses:
 # a claim *binds* a detection to a transponder identity and removes it from
 # the dark pool — naming the mode after the mechanism keeps "is this claim
-# binding?" answerable by reading the flag.  Default "shadow", unlike its
-# siblings' "off": shadow is downstream-inert by construction (claims are
-# recorded, nothing is excluded), and the known_claims registry it feeds is
-# the interface the known-lane solver and the per-node trust residuals are
-# built on — defaulting off would ship both consumers blind.  For the same
-# reason an unrecognised value falls back to "shadow" (this flag's own
-# default), not "off": the degradation target is "the flag was never set",
-# and here that is shadow.
-KNOWN_LANE_MODE = os.getenv("KNOWN_LANE_MODE", "shadow").lower()
+# binding?" answerable by reading the flag.  Default "binding", unlike every
+# sibling's "off": the lane cleared its shadow soak, and the claims registry
+# it fills is now load-bearing for three consumers — the known-lane solver,
+# the per-node trust residuals, and the single-node ADS-B display section of
+# the feed (services/aircraft_feed.py), whose entries only make sense once a
+# claimed detection has actually left the dark pool.  An unrecognised value
+# still falls back to "shadow" rather than to this default: the degradation
+# target for a typo is the inert mode, not the acting one.
+KNOWN_LANE_MODE = os.getenv("KNOWN_LANE_MODE", "binding").lower()
 if KNOWN_LANE_MODE not in ("off", "shadow", "binding"):
     KNOWN_LANE_MODE = "shadow"
 

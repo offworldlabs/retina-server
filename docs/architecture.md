@@ -97,7 +97,7 @@ gitignored `backend/.env`; unset = the safe default):
 | `ASSOC_CLAIM_MODE` | `off/shadow/active` | `off` | `active` | top-down tracklet claiming from global tracks |
 | `FOV_MODE` | `off/shadow/active` | `off` | `active` | learned empirical FOV as association grid + solver beam gate |
 | `ADSB_SEED_MODE` | `off/shadow/active` | `off` | `active` | ADS-B-seeded detection assignment: verified lit tracklets leave dark pairing, re-emitted as `mn-adsb-*` seeded solves |
-| `KNOWN_LANE_MODE` | `off/shadow/binding` | `shadow` | `shadow` | identity-first known-target claiming: per-frame detections bound to live ADS-B hexes (`state.known_claims`) leave the dark pool before the tracker/association ever see them |
+| `KNOWN_LANE_MODE` | `off/shadow/binding` | `binding` | `binding` | identity-first known-target claiming: per-frame detections bound to live ADS-B hexes (`state.known_claims`) leave the dark pool before the tracker/association ever see them |
 | `TRACK_SMOOTHER` | `kf/ewma/off` | `kf` | `kf` | display smoothing for multinode tracks (`ewma` is the rollback) |
 
 `shadow` computes and counts a stage's verdicts (exposed in
@@ -105,9 +105,10 @@ gitignored `backend/.env`; unset = the safe default):
 before flipping `active`. Production currently sets none of the mode flags
 (all `off`). `KNOWN_LANE_MODE` differs from its siblings on both axes by
 design: its acting value is named `binding` (a claim *binds* a detection to a
-transponder identity), and it defaults to `shadow` rather than `off` because
-the claims registry shadow populates is what the known-lane solver and the
-per-node trust residuals consume.
+transponder identity), and it is the one flag whose default is the acting
+value, set in no environment's `.env` — it cleared its shadow soak, and three
+consumers now depend on the registry it fills (the known-lane solver, the
+per-node trust residuals, and the feed's `adsb_single_node` display section).
 
 ## State & storage
 

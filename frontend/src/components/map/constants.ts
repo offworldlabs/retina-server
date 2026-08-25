@@ -35,6 +35,26 @@ export const groundTruthKey = (hex) => GT_KEY_PREFIX + hex;
 // with the backend constant if it ever moves.
 export const POSITION_SOURCE_ARC_ONLY = "single_node_ellipse_arc";
 
+// position_source for an aircraft claimed by exactly ONE node: lat/lon is the
+// real ADS-B fix (not an estimate), and the entry carries that node's full
+// bistatic locus in ambiguity_arc for the frontend to trim.  Backend emits
+// this verbatim — keep in sync with the backend constant if it ever moves.
+export const POSITION_SOURCE_ADSB_SINGLE = "adsb_single_node";
+
+// Blue, deliberately outside the existing source palette (cyan #38bdf8
+// single-node, teal #2dd4bf ADS-B-seeded, violet #a78bfa multi-node) so a
+// claimed ADS-B target is distinguishable at a glance.  Shared by the icon,
+// the trimmed arc and the stats tally.
+export const ADSB_SINGLE_COLOR = "#3b82f6";
+
+// The claimed arc is drawn at a FIXED SCREEN LENGTH — a multiple of the plane
+// icon it sits under — rather than a fixed ground length.  The locus spans
+// tens of km, so any geographic length either vanishes at low zoom or swamps
+// the map at high zoom; pinning it to the icon keeps it readable as "the
+// locus runs this way through this target" at every zoom.  2.5 × the 18–30 px
+// altitude bands (icons.ts) gives a 45–75 px section.
+export const ADSB_SINGLE_ARC_ICON_MULTIPLE = 2.5;
+
 // Dead-reckoning elapsed cap (seconds) for arc-only tracks.  Their backend
 // position is pinned to the arc midpoint between delay updates, so a long
 // glide walks the anchor straight off the measured locus: with the generic

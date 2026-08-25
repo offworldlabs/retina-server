@@ -1,6 +1,6 @@
 import { useEffect, useRef, useMemo, useState, useCallback } from "react";
 import { PLANE_PATH, getAircraftColor } from "./icons";
-import { POSITION_SOURCE_ARC_ONLY } from "./constants";
+import { POSITION_SOURCE_ARC_ONLY, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
 import { classifyHex } from "./hexInfo";
 import { distanceKm } from "./distance";
 import { M_PER_FT } from "./units";
@@ -207,11 +207,13 @@ export default function AircraftListPanel({
                       ? `Multi·${ac.n_nodes}N`
                       : ac.position_source === POSITION_SOURCE_ARC_ONLY
                         ? "Arc·1N"
-                        : ac.position_source === "solver_single_node"
-                          ? "Solver·1N"
-                          : ac.position_source === "solver_adsb_seed"
-                            ? "Solver·ADS-B"
-                            : "Solver";
+                        : ac.position_source === POSITION_SOURCE_ADSB_SINGLE
+                          ? "ADS-B·1N"
+                          : ac.position_source === "solver_single_node"
+                            ? "Solver·1N"
+                            : ac.position_source === "solver_adsb_seed"
+                              ? "Solver·ADS-B"
+                              : "Solver";
                   const isDrone = ac.target_class === "drone";
                   // Highlight military / govt hex ranges with a small badge
                   // so enthusiasts can scan the list for non-civilian traffic.

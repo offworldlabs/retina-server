@@ -1,4 +1,5 @@
 import L from "leaflet";
+import { ADSB_SINGLE_COLOR, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
 
 // Top-down airplane SVG path (nose pointing up/north at 0°)
 export const PLANE_PATH =
@@ -43,8 +44,17 @@ export const ALTITUDE_LEGEND = [
 export function getAircraftColor(ac, colorByAlt = false) {
   if (colorByAlt && typeof ac.alt_baro === "number") return altitudeColor(ac.alt_baro);
   if (ac.multinode || ac.position_source === "multinode_solve") return "#a78bfa";
+  if (ac.position_source === POSITION_SOURCE_ADSB_SINGLE) return ADSB_SINGLE_COLOR;
   if (ac.position_source === "solver_adsb_seed") return "#2dd4bf";
   return "#38bdf8";
+}
+
+// Altitude → icon edge in px. Exported because the claimed-arc trim
+// (ClaimedArcs) scales its screen length off the icon it is centred on, and
+// the two must move together across a band crossing.
+export function aircraftIconSize(ac) {
+  const altFt = ac.alt_baro ?? 0;
+  return altFt > 35000 ? 30 : altFt > 20000 ? 26 : altFt > 5000 ? 22 : 18;
 }
 
 export function makeAircraftIcon(ac, showLabel, isSelected, colorByAlt = false) {
@@ -54,8 +64,7 @@ export function makeAircraftIcon(ac, showLabel, isSelected, colorByAlt = false) 
   // Nullish: FL0 (on the ground) is a value, not an absence.
   const alt = ac.alt_baro != null ? `FL${Math.round(ac.alt_baro / 100)}` : "";
 
-  const altFt = ac.alt_baro ?? 0;
-  const size = altFt > 35000 ? 30 : altFt > 20000 ? 26 : altFt > 5000 ? 22 : 18;
+  const size = aircraftIconSize(ac);
 
   const glow = isSelected
     ? "filter:drop-shadow(0 0 7px #fbbf24) drop-shadow(0 0 3px #fbbf24);"

@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { ADSB_SINGLE_COLOR, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
 import { M_PER_FT } from "./units";
 
 interface StatsOverlayProps {
@@ -24,6 +25,7 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
     let multinode = 0;
     let arcOnly = 0;
     let adsbSeed = 0;
+    let adsbSingle = 0;
     let solverOnly = 0;
     let drones = 0;
     let altSum = 0;
@@ -34,6 +36,7 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
       if (ac.multinode) multinode++;
       else if (ac.position_source === "single_node_ellipse_arc") arcOnly++;
       else if (ac.position_source === "solver_adsb_seed") adsbSeed++;
+      else if (ac.position_source === POSITION_SOURCE_ADSB_SINGLE) adsbSingle++;
       else if (ac.position_source === "solver_single_node") solverOnly++;
       if (ac.target_class === "drone") drones++;
       const alt = ac.alt_baro ?? (ac.alt_m ? ac.alt_m / M_PER_FT : null);
@@ -47,6 +50,7 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
       multinode,
       arcOnly,
       adsbSeed,
+      adsbSingle,
       solverOnly,
       drones,
       meanAltFt: altCount ? Math.round(altSum / altCount) : null,
@@ -101,6 +105,9 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
 
           <span style={{ color: "#94a3b8" }}>Solver+ADS‑B</span>
           <span><strong style={{ color: "#2dd4bf" }}>{stats.adsbSeed}</strong></span>
+
+          <span style={{ color: "#94a3b8" }}>ADS‑B·1N</span>
+          <span><strong style={{ color: ADSB_SINGLE_COLOR }}>{stats.adsbSingle}</strong></span>
 
           <span style={{ color: "#94a3b8" }}>Arc·1N</span>
           <span>{stats.arcOnly}</span>

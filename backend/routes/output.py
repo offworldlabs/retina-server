@@ -52,6 +52,8 @@ def _format_aircraft(ac: dict) -> dict:
         "target_class": ac.get("target_class"),
         "delay_us": ac.get("delay_us"),
         "doppler_hz": ac.get("doppler_hz"),
+        # Only ``adsb_single_node`` entries carry this; null everywhere else.
+        "adsb_fix_age_s": ac.get("adsb_fix_age_s"),
         "rms_delay": ac.get("rms_delay"),
         "rms_doppler": ac.get("rms_doppler"),
         "recent_positions": ac.get("recent_positions", []),
@@ -72,6 +74,7 @@ async def solver_aircraft(
     - ``solver_single_node`` — LM solver converged without ADS-B
     - ``single_node_ellipse_arc`` — solver did not converge; position is midpoint of bistatic delay ellipse arc
     - ``multinode_solve`` — position solved from ≥2 node detections (highest accuracy)
+    - ``adsb_single_node`` — exactly one node is claiming this transponder; position is the ADS-B fix itself, not a solve
 
     **Query params:**
     - ``real_only=true`` — filter to aircraft detected by real hardware nodes only (excludes simulated fleet)
@@ -279,6 +282,7 @@ _DOCS_HTML = """<!DOCTYPE html>
       <tr><td>target_class</td><td>string</td><td><code>aircraft</code>, <code>drone</code>, or null</td></tr>
       <tr><td>delay_us</td><td>float</td><td>Bistatic delay of latest detection (µs)</td></tr>
       <tr><td>doppler_hz</td><td>float</td><td>Doppler shift of latest detection (Hz)</td></tr>
+      <tr><td>adsb_fix_age_s</td><td>float</td><td>Age of the anchoring ADS-B fix (s) — <code>adsb_single_node</code> entries only, null otherwise</td></tr>
       <tr><td>rms_delay</td><td>float</td><td>RMS delay residual from LM solver (µs) — lower is better</td></tr>
       <tr><td>rms_doppler</td><td>float</td><td>RMS Doppler residual from LM solver (Hz)</td></tr>
       <tr><td>recent_positions</td><td>array</td><td>Last 60 [lat, lon, alt_ft, ts] positions</td></tr>
@@ -291,6 +295,7 @@ _DOCS_HTML = """<!DOCTYPE html>
       <tr><td>solver_single_node</td><td>LM solver converged without ADS-B seed.</td></tr>
       <tr><td>single_node_ellipse_arc</td><td>Solver did not converge. Position is midpoint of bistatic delay ellipse.</td></tr>
       <tr><td>multinode_solve</td><td>Solved from ≥2 node detections. Independent of ADS-B. Highest geometric accuracy.</td></tr>
+      <tr><td>adsb_single_node</td><td>Exactly one node is claiming this transponder. Position is the ADS-B fix verbatim; the radar contribution is the claiming node and its ambiguity arc, not the position.</td></tr>
     </table>
 
     <div class="example">
