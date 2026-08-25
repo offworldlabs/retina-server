@@ -10,7 +10,7 @@ import time
 import numpy as np
 import orjson
 
-from config.constants import ANALYTICS_REFRESH_INTERVAL_S
+from config.constants import ANALYTICS_REFRESH_INTERVAL_S, CLAIMED_DISPLAY_FRESH_S
 from config.constants import (
     DELAY_MATCH_THRESHOLD_US as _DELAY_MATCH_THRESHOLD_US,
 )
@@ -433,14 +433,24 @@ def _aircraft_in_beam(
 
 
 def _detected_hexes_for(node_id: str) -> set[str]:
-    """Lowercase ADS-B hexes the node's own tracker currently detects.
+    """Lowercase ADS-B hexes the node currently detects — from its own tracker
+    tracks, plus the hexes it holds a fresh claim on.
 
-    "Detected" means associated a real detection on the latest frame; a
-    coasting track is precisely NOT a detection, and counting it both
-    delayed disappearance events and credited miss-rate "detected" into
-    space the node cannot see.  Independent of the ADS-B in-range
+    For a tracker track, "detected" means associated a real detection on the
+    latest frame; a coasting track is precisely NOT a detection, and counting
+    it both delayed disappearance events and credited miss-rate "detected"
+    into space the node cannot see.  Independent of the ADS-B in-range
     comparison — read by the miss-rate calculation below and, under
     FOV_MODE shadow/active, by the disappearance detector.
+
+    A claim counts as a detection because under KNOWN_LANE_MODE=binding it is
+    the ONLY evidence left: the claiming stage strips a claimed detection
+    before the tracker ever sees the frame (frame_processor), so every ADS-B
+    aircraft the node is successfully detecting *and* claiming leaves no
+    track at all.  Scored on tracks alone the fleet miss rate reads ~100 % on
+    a healthy pipeline and health's high_miss_rate fires on it.  A claim IS
+    this node's detection of that aircraft; it simply no longer reaches the
+    tracker.
     """
     pipeline = state.node_pipelines.get(node_id)
     detected: set[str] = set()
@@ -465,6 +475,31 @@ def _detected_hexes_for(node_id: str) -> set[str]:
                 hex_val = getattr(track, "adsb_hex", None)
             if hex_val:
                 detected.add(hex_val.lower())
+
+    # Freshness is CLAIMED_DISPLAY_FRESH_S deliberately, not the registry's
+    # own far longer retention: it is the window the map already uses to draw
+    # a claimed aircraft, so "this node is detecting that aircraft" means the
+    # same thing in the miss rate as it does on the display.
+    fresh_cutoff_ms = (time.time() - CLAIMED_DISPLAY_FRESH_S) * 1000.0
+    for raw_hex, dq in list(state.known_claims.items()):
+        if not raw_hex or raw_hex.lower() in detected:
+            continue
+        # Newest-first: the deque is append-ordered, so the first fresh record
+        # from this node settles the hex, and the first record older than the
+        # cutoff means every remaining one is older still.  Defensive per
+        # entry — the registry is written concurrently by the frame workers.
+        for c in reversed(list(dq)):
+            if not isinstance(c, dict):
+                continue
+            try:
+                ts_ms = float(c["ts_ms"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if ts_ms < fresh_cutoff_ms:
+                break
+            if c.get("node_id") == node_id:
+                detected.add(raw_hex.lower())
+                break
     return detected
 
 

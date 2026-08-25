@@ -47,6 +47,45 @@ class TestComputeHealthIssues:
         monkeypatch.setattr(health.state, "latest_accuracy_bytes", payload)
         assert "solver_accuracy_degraded" not in {i["type"] for i in compute_health_issues()}
 
+    def test_known_lane_samples_do_not_flag_accuracy(self, monkeypatch):
+        # A known-lane flood is the failure mode this exclusion exists for:
+        # truth_match error is displacement from the ADS-B fix and is capped
+        # by the lane's publish gate, and a ghost was never published at all.
+        # Neither measures the solves users see, so on their own they must
+        # leave the probe with nothing trusted to score.
+        import orjson
+
+        payload = orjson.dumps(
+            {
+                "n_samples": 200,
+                "mean_km": 12.0,
+                "by_source": {
+                    "known_lane_truth_match": {"n_samples": 120, "mean_km": 11.0},
+                    "known_lane_ghost": {"n_samples": 80, "mean_km": 14.0},
+                },
+            }
+        )
+        monkeypatch.setattr(health.state, "latest_accuracy_bytes", payload)
+        assert "solver_accuracy_degraded" not in {i["type"] for i in compute_health_issues()}
+
+    def test_multinode_still_flags_alongside_known_lane_samples(self, monkeypatch):
+        # The exclusion must not deafen the probe: real solves degrading in
+        # the same payload still fire.
+        import orjson
+
+        payload = orjson.dumps(
+            {
+                "n_samples": 200,
+                "mean_km": 12.0,
+                "by_source": {
+                    "known_lane_truth_match": {"n_samples": 120, "mean_km": 1.0},
+                    "multinode_solve": {"n_samples": 80, "mean_km": 14.0},
+                },
+            }
+        )
+        monkeypatch.setattr(health.state, "latest_accuracy_bytes", payload)
+        assert "solver_accuracy_degraded" in {i["type"] for i in compute_health_issues()}
+
     def test_trusted_solve_degradation_flags_accuracy(self, monkeypatch):
         # Multi-node solves themselves degrade past 10 km → flag fires.
         import orjson

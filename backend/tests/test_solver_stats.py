@@ -275,6 +275,74 @@ class TestFovStatsPassthrough:
         }
 
 
+class TestKnownLaneAndClaimsPassthrough:
+    """The "known_lane" / "known_claims" blocks are straight passthroughs of
+    the since-boot counters the lane and the claiming stage bump — the only
+    way to read them short of attaching a debugger."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_known_lane_reflects_the_lane_counters(self):
+        # Bumped the way the lane itself bumps them, under counters_lock; the
+        # known_lane_* names are registered onto state by the lane's import.
+        for name, n in (
+            ("known_lane_attempts", 9),
+            ("known_lane_truth_match", 5),
+            ("known_lane_ghost", 3),
+            ("known_lane_no_converge", 1),
+            ("known_lane_published", 4),
+        ):
+            state.bump_counter(name, n)
+        out = _solver_window_stats(10.0)
+        assert out["known_lane"] == {
+            "mode": state.KNOWN_LANE_MODE,
+            "attempts": 9,
+            "truth_match": 5,
+            "ghost": 3,
+            "no_converge": 1,
+            "published": 4,
+        }
+
+    def test_known_claims_reflects_the_claiming_counters(self):
+        for name, n in (
+            ("known_claims_made", 20),
+            ("known_claim_contentions", 2),
+            ("known_claims_bound", 15),
+            ("known_claims_visibility_rejects", 6),
+            ("known_claims_errors", 1),
+        ):
+            state.bump_counter(name, n)
+        out = _solver_window_stats(10.0)
+        assert out["known_claims"] == {
+            "made": 20,
+            "contentions": 2,
+            "bound": 15,
+            "visibility_rejects": 6,
+            "errors": 1,
+        }
+
+    def test_both_blocks_zero_on_a_fresh_process(self):
+        out = _solver_window_stats(10.0)
+        assert out["known_lane"]["attempts"] == 0
+        assert out["known_lane"]["published"] == 0
+        assert out["known_claims"] == {
+            "made": 0,
+            "contentions": 0,
+            "bound": 0,
+            "visibility_rejects": 0,
+            "errors": 0,
+        }
+
+    def test_lane_counters_absent_from_state_read_as_zero(self, monkeypatch):
+        # The lane registers its counters at import and solver.py imports it
+        # lazily, so a process that never ran a worker has them missing —
+        # the payload must still build.
+        monkeypatch.delattr(state, "known_lane_attempts")
+        out = _solver_window_stats(10.0)
+        assert out["known_lane"]["attempts"] == 0
+
+
 class TestFragmentation:
     """Windowed, from published mlat_solve_history records — the acceptance
     metric top-down claiming exists to move: distinct published keys."""
@@ -372,6 +440,25 @@ class TestEndpoint:
             "would_pass",
             "would_reject",
             "neg_events",
+        }
+
+    def test_known_lane_and_known_claims_blocks_present(self):
+        resp = _client().get("/api/test/solver-stats")
+        data = resp.json()
+        assert data["known_lane"].keys() == {
+            "mode",
+            "attempts",
+            "truth_match",
+            "ghost",
+            "no_converge",
+            "published",
+        }
+        assert data["known_claims"].keys() == {
+            "made",
+            "contentions",
+            "bound",
+            "visibility_rejects",
+            "errors",
         }
 
     def test_minutes_clamp_low(self):

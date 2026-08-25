@@ -852,6 +852,26 @@ def _solver_window_stats(minutes: float) -> dict:
 
     precision_pct = round((live_tracks - ghost_tracks) / live_tracks * 100, 1) if live_tracks else 0.0
 
+    # ── known lane / claiming counters ──────────────────────────────────────
+    # One counters_lock acquisition for both blocks below, so the two are a
+    # single consistent snapshot rather than ten reads interleaved with the
+    # frame and solver workers bumping them.  The known_lane_* names are
+    # registered onto the state module by services/tasks/known_lane.py at
+    # import (see the counters block there), and solver.py imports that module
+    # lazily — so they are read through getattr with a zero default, which is
+    # what a process that has never run a solver worker reports.
+    with state.counters_lock:
+        kl_attempts = getattr(state, "known_lane_attempts", 0)
+        kl_truth_match = getattr(state, "known_lane_truth_match", 0)
+        kl_ghost = getattr(state, "known_lane_ghost", 0)
+        kl_no_converge = getattr(state, "known_lane_no_converge", 0)
+        kl_published = getattr(state, "known_lane_published", 0)
+        kc_made = state.known_claims_made
+        kc_contentions = state.known_claim_contentions
+        kc_bound = state.known_claims_bound
+        kc_visibility_rejects = state.known_claims_visibility_rejects
+        kc_errors = state.known_claims_errors
+
     return {
         "window_minutes": minutes,
         "attempts": attempts,
@@ -898,6 +918,33 @@ def _solver_window_stats(minutes: float) -> dict:
             "would_pass": state.fov_shadow_would_pass,
             "would_reject": state.fov_shadow_would_reject,
             "neg_events": state.fov_neg_events,
+        },
+        # Known-lane solver (KNOWN_LANE_MODE) — since-boot counters, same
+        # "cumulative regardless of mode" convention as claiming/consensus/fov
+        # above.  attempts is every claimed hex the lane tried; truth_match /
+        # ghost / no_converge partition those attempts by outcome (see
+        # services/tasks/known_lane.py); published is the truth_match subset
+        # binding mode actually put on the map, and stays zero in shadow.
+        "known_lane": {
+            "mode": state.KNOWN_LANE_MODE,
+            "attempts": kl_attempts,
+            "truth_match": kl_truth_match,
+            "ghost": kl_ghost,
+            "no_converge": kl_no_converge,
+            "published": kl_published,
+        },
+        # Claiming stage feeding the lane above (services/known_claiming.py),
+        # also since boot.  made counts every claim recorded in either mode;
+        # bound the detections binding actually removed from the dark pool, so
+        # made > 0 with bound == 0 is the shadow-soak signature.  errors
+        # nonzero means the claiming stage is throwing and the lane is
+        # silently contributing nothing.
+        "known_claims": {
+            "made": kc_made,
+            "contentions": kc_contentions,
+            "bound": kc_bound,
+            "visibility_rejects": kc_visibility_rejects,
+            "errors": kc_errors,
         },
         "fragmentation": {
             "distinct_keys": len(key_counts),

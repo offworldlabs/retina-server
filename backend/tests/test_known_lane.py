@@ -268,6 +268,68 @@ class TestClassification:
         assert rec["outcome"] == "known_no_converge"
 
 
+class TestAccuracySampleThrottle:
+    """state.accuracy_samples is shared and capped, and this lane attempts a
+    solve per claimed hex per pass — unthrottled it evicts every other
+    source's samples (see known_lane._record_accuracy).  Only the sample is
+    rationed: counters and history records stay per-attempt."""
+
+    def _reattempt(self, solve_fn, ts_ms):
+        """A second attempt on the same hex: the per-hex dedup needs a claim
+        newer than the last attempt's."""
+        _install(_mk_claims(["node_a", "node_b"], ts_ms=ts_ms))
+        return _run(solve_fn)
+
+    def test_second_attempt_within_the_window_is_not_sampled(self):
+        now_ms = int(time.time() * 1000)
+        _install(_mk_claims(["node_a", "node_b"], ts_ms=now_ms - 2000))
+        assert _run(_stub_solve()) == 1
+        assert self._reattempt(_stub_solve(), now_ms) == 1
+
+        # Both attempts counted and recorded; one sample between them.
+        assert state.known_lane_attempts == 2
+        assert state.known_lane_truth_match == 2
+        assert len(_known_records()) == 2
+        assert len(state.accuracy_samples) == 1
+
+    def test_distinct_hexes_are_throttled_independently(self):
+        _install(_mk_claims(["node_a", "node_b"]), hexn="abc123")
+        _install(_mk_claims(["node_a", "node_b"]), hexn="def456")
+        assert _run(_stub_solve()) == 2
+        assert {s["hex"] for s in state.accuracy_samples} == {"abc123", "def456"}
+
+    def test_same_hex_samples_again_once_the_window_elapses(self):
+        now_ms = int(time.time() * 1000)
+        _install(_mk_claims(["node_a", "node_b"], ts_ms=now_ms - 2000))
+        assert _run(_stub_solve()) == 1
+        # Age the throttle entry past the window (tests only), the same way
+        # TestMaybeRunPass forces the pass interval open.
+        known_lane._last_sample_mono[HEX] -= known_lane._ACCURACY_SAMPLE_INTERVAL_S + 1.0
+
+        assert self._reattempt(_stub_solve(), now_ms) == 1
+        assert len(state.accuracy_samples) == 2
+
+    def test_throttle_map_is_swept_of_dead_hexes(self):
+        # Hex churn must not grow the map for the process lifetime: an entry
+        # older than the TTL is dropped on the next sampling write.
+        known_lane._last_sample_mono["deadbee"] = time.monotonic() - known_lane._ACCURACY_TTL_S - 1.0
+        _install(_mk_claims(["node_a", "node_b"]))
+        _run(_stub_solve())
+        assert "deadbee" not in known_lane._last_sample_mono
+        assert HEX in known_lane._last_sample_mono
+
+    def test_unconverged_attempts_do_not_consume_the_window(self):
+        # No sample is offered for a non-converged attempt, so the next
+        # converged one on the same hex is still the window's first.
+        now_ms = int(time.time() * 1000)
+        _install(_mk_claims(["node_a", "node_b"], ts_ms=now_ms - 2000))
+        assert _run(_stub_solve(success=False)) == 1
+        assert not state.accuracy_samples
+
+        assert self._reattempt(_stub_solve(), now_ms) == 1
+        assert len(state.accuracy_samples) == 1
+
+
 class TestModeGating:
     def test_off_mode_does_nothing_at_all(self):
         state.KNOWN_LANE_MODE = "off"
