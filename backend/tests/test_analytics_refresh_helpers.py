@@ -6,8 +6,13 @@ Tests the pure helper functions:
 - _bistatic_angle_deg(ac_lat, ac_lon, tx_lat, tx_lon, rx_lat, rx_lon) -> angle in [0, 180]
 """
 
+import time
+import types
+from collections import deque
+
 import pytest
 
+from config.constants import CLAIMED_DISPLAY_FRESH_S
 from core import state
 from services.geo import haversine_km
 from services.tasks import analytics_refresh
@@ -967,9 +972,11 @@ class _StubTrack:
 class TestDetectedHexesFor:
     def setup_method(self):
         state.node_pipelines.clear()
+        state.known_claims.clear()
 
     def teardown_method(self):
         state.node_pipelines.clear()
+        state.known_claims.clear()
 
     def _pipeline(self, tracks):
         import types
@@ -1033,3 +1040,56 @@ class TestDetectedHexesFor:
         )
         state.node_pipelines["n1"] = self._pipeline([track])
         assert _detected_hexes_for("n1") == {"abc123"}
+
+
+class TestDetectedHexesFromClaims:
+    """Under KNOWN_LANE_MODE=binding a claimed detection never reaches the
+    tracker, so the claim is the node's only surviving evidence that it
+    detected that aircraft — see _detected_hexes_for."""
+
+    def setup_method(self):
+        state.node_pipelines.clear()
+        state.known_claims.clear()
+
+    def teardown_method(self):
+        state.node_pipelines.clear()
+        state.known_claims.clear()
+
+    def _claim(self, hexn, node_id="n1", age_s=0.0):
+        state.known_claims.setdefault(hexn, deque(maxlen=64)).append(
+            {"node_id": node_id, "ts_ms": int((time.time() - age_s) * 1000)}
+        )
+
+    def test_a_fresh_claim_from_this_node_counts_as_detected(self):
+        self._claim("abc123")
+        assert _detected_hexes_for("n1") == {"abc123"}
+
+    def test_a_stale_claim_does_not(self):
+        self._claim("abc123", age_s=CLAIMED_DISPLAY_FRESH_S + 1.0)
+        assert _detected_hexes_for("n1") == set()
+
+    def test_a_fresh_claim_from_another_node_does_not(self):
+        self._claim("abc123", node_id="n2")
+        assert _detected_hexes_for("n1") == set()
+
+    def test_this_node_is_found_behind_another_node_s_newer_claim(self):
+        # Mixed-node deque: the newest record belongs to n2, so n1's own
+        # fresh claim is only reached by scanning past it.
+        self._claim("abc123", node_id="n1", age_s=1.0)
+        self._claim("abc123", node_id="n2", age_s=0.0)
+        assert _detected_hexes_for("n1") == {"abc123"}
+
+    def test_hex_is_lowercased(self):
+        self._claim("ABC123")
+        assert _detected_hexes_for("n1") == {"abc123"}
+
+    def test_claims_and_tracker_tracks_are_unioned(self):
+        state.node_pipelines["n1"] = types.SimpleNamespace(
+            tracker=types.SimpleNamespace(tracks=[_StubTrack("tracked", n_missed=0)])
+        )
+        self._claim("claimed")
+        assert _detected_hexes_for("n1") == {"tracked", "claimed"}
+
+    def test_malformed_claim_entries_are_survived(self):
+        state.known_claims["abc123"] = deque([None, {"node_id": "n1"}, {"ts_ms": "not-a-number", "node_id": "n1"}])
+        assert _detected_hexes_for("n1") == set()

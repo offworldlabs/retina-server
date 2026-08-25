@@ -352,3 +352,64 @@ class TestMissedDetectionsHonoursConfiguredBeamWidth:
         snapshot = list(state.connected_nodes.items())
         _refresh_missed_detections(snapshot)
         assert state.latest_missed_detections["test-default-width"]["in_range"] == 1
+
+
+class TestMissedDetectionsCountsClaimsAsDetections:
+    """Binding mode strips a claimed detection before the tracker, so the
+    node's successful detections leave no track: scored on tracks alone every
+    claimed aircraft reads as missed and health fires high_miss_rate on a
+    healthy fleet. Pin that a fresh claim is scored as a detection instead."""
+
+    NODE = "test-claim-detects"
+    CFG = {
+        "rx_lat": 34.0,
+        "rx_lon": -82.0,
+        "tx_lat": 33.0,
+        "tx_lon": -82.0,
+        "beam_azimuth_deg": 0.0,
+        "beam_width_deg": 140.0,
+        "max_range_km": 200.0,
+    }
+
+    def _seed(self, claim_age_s):
+        import time
+        from collections import deque
+
+        from core import state
+
+        # Same in-beam aircraft the beam-width tests above use, and no
+        # pipeline at all for the node — the tracker knows nothing about it.
+        state.connected_nodes[self.NODE] = {"status": "active", "config": self.CFG}
+        state.adsb_aircraft["abc123"] = {
+            "lat": 34.23,
+            "lon": -81.70,
+            "last_seen_ms": int(time.time() * 1000),
+        }
+        state.known_claims["abc123"] = deque(
+            [{"node_id": self.NODE, "ts_ms": int((time.time() - claim_age_s) * 1000)}],
+            maxlen=64,
+        )
+        return list(state.connected_nodes.items())
+
+    def test_a_freshly_claimed_aircraft_is_detected_not_missed(self):
+        from core import state
+        from services.tasks.analytics_refresh import _refresh_missed_detections
+
+        _refresh_missed_detections(self._seed(claim_age_s=0.0))
+        entry = state.latest_missed_detections[self.NODE]
+        assert entry["in_range"] == 1
+        assert entry["detected"] == 1
+        assert entry["missed"] == 0
+        assert entry["miss_rate"] == 0.0
+        assert entry["missed_aircraft"] == []
+
+    def test_a_stale_claim_still_reads_as_missed(self):
+        from config.constants import CLAIMED_DISPLAY_FRESH_S
+        from core import state
+        from services.tasks.analytics_refresh import _refresh_missed_detections
+
+        _refresh_missed_detections(self._seed(claim_age_s=CLAIMED_DISPLAY_FRESH_S + 1.0))
+        entry = state.latest_missed_detections[self.NODE]
+        assert entry["detected"] == 0
+        assert entry["missed"] == 1
+        assert entry["miss_rate"] == 1.0
