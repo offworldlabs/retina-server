@@ -81,23 +81,8 @@ def _node_bias():
             _node_bias_mod = node_bias
         except ImportError:
             _node_bias_unavailable = True
-            _logger.info("services.node_bias not present — claim residuals unrecorded, no untrusted-hex filter")
+            _logger.info("services.node_bias not present — claim residuals unrecorded")
     return _node_bias_mod
-
-
-def _untrusted_hexes() -> frozenset:
-    """Hexes whose transponder data has been judged to lie (trust slice).
-
-    A lying transponder must never pull a detection out of the dark pool —
-    binding to it would hide the very target it is lying about — so these are
-    skipped as claim candidates on BOTH paths, node-tagged included: the
-    node's correlation is trusted about *which echo* matches the broadcast,
-    not about the broadcast being true.
-    """
-    nb = _node_bias()
-    if nb is None:
-        return frozenset()
-    return frozenset(normalize_hex_key(h) for h in nb.get_untrusted_hexes())
 
 
 def _reset_for_tests() -> None:
@@ -203,7 +188,6 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
 
     ts_ms = int(frame.get("timestamp", 0))
     frame_ts_s = ts_ms / 1000.0
-    untrusted = _untrusted_hexes()
 
     # (det_idx, hexn, adsb_fix, pred_delay_us, pred_doppler_hz)
     claims: list[tuple[int, str, dict, float, float]] = []
@@ -219,7 +203,7 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
             if not isinstance(tag, dict):
                 continue
             hexn = normalize_hex_key(tag.get("hex") or tag.get("icao"))
-            if not hexn or hexn in untrusted or hexn in claimed_hexes:
+            if not hexn or hexn in claimed_hexes:
                 continue
             lat, lon = tag.get("lat"), tag.get("lon")
             if lat is None or lon is None or not (math.isfinite(lat) and math.isfinite(lon)):
@@ -247,7 +231,7 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
     if free:
         cands = []
         for hexn, st in state._adsb_for_seeding().items():
-            if hexn in claimed_hexes or hexn in untrusted:
+            if hexn in claimed_hexes:
                 continue
             age_s = frame_ts_s - st.get("timestamp_ms", 0) / 1000.0
             if abs(age_s) > KNOWN_CLAIM_MAX_FIX_AGE_S:
