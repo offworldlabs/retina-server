@@ -231,26 +231,17 @@ async def radar_anomalies():
     all_types = log_type_counts + live_type_counts
     most_common = all_types.most_common(1)[0][0] if all_types else None
 
-    # Untrusted transponders (lying-hex demotions from claim residuals) ride
-    # on this payload rather than a new endpoint: a demoted hex IS an anomaly
-    # flag (node_bias also adds it to state.anomaly_hexes), so this is where
-    # its consumers already look.
-    untrusted = node_bias.untrusted_summary()
-
     payload = {
         "summary": {
             "active_count": len(active_hexes),
             "total_events": len(log_snapshot),
             "unique_hexes": len(unique_hexes),
             "most_common_type": most_common,
-            "untrusted_transponders": len(untrusted["untrusted_hexes"]),
         },
         "by_type": by_type,
         "timeline": timeline,
         "geographic_clusters": clusters[:50],
         "recent_events": log_snapshot,
-        "untrusted_hexes": untrusted["untrusted_hexes"],
-        "transponder_demotions": untrusted["demotions"],
     }
     return Response(
         content=orjson.dumps(payload, option=orjson.OPT_SERIALIZE_NUMPY),

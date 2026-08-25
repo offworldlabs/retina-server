@@ -326,11 +326,10 @@ class TestNodeBiasHook:
         assert kc._node_bias() is None
         assert kc._node_bias_unavailable is True
 
-    def _install_fake(self, monkeypatch, untrusted=frozenset(), recorder=None):
+    def _install_fake(self, monkeypatch, recorder=None):
         import services
 
         fake = types.SimpleNamespace(
-            get_untrusted_hexes=lambda: untrusted,
             record_claim_residual=recorder or (lambda *a: None),
         )
         monkeypatch.setitem(sys.modules, "services.node_bias", fake)
@@ -353,19 +352,6 @@ class TestNodeBiasHook:
         # Signed, measured minus predicted — bias direction matters downstream.
         assert d_res == pytest.approx(2.0)
         assert f_res == pytest.approx(-5.0)
-
-    def test_untrusted_hexes_are_skipped_on_both_paths(self, monkeypatch):
-        self._install_fake(monkeypatch, untrusted={"LIAR01", "liar02"})
-        geo = _register()
-        ts = int(time.time() * 1000)
-        _cache_state("liar01", ts)  # would gate perfectly on the assignment path
-        pd, pf = _stationary_pred(geo)
-        tag = {"hex": "liar02", "lat": _LAT, "lon": _LON, "alt_baro": 0, "gs": 0, "track": 0}
-
-        claimed = kc.claim_known_targets(_NODE_ID, _frame(ts, [pd, 999.0], [pf, 99.0], adsb=[None, tag]))
-
-        assert claimed == set()
-        assert state.known_claims == {}
 
 
 class TestStripAndGc:
