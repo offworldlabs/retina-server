@@ -355,12 +355,13 @@ class PassiveRadarPipeline:
         outside the solver's try, so a raw "ground" altitude or a null gs raises
         from inside the library and costs the whole frame.
         """
-        if not tag:
+        # A node can put anything in frame["adsb"][i]; nothing validates inside
+        # a frame, and the geolocator tolerates a non-dict where unpacking does not.
+        if not isinstance(tag, dict):
             return tag
-        # Only keys already present: the geolocator branches on `"gs" in adsb`,
-        # so adding one would change which velocity path it takes.
+        # Never add a key: the geolocator branches on `"gs" in adsb`.
         numeric = ("alt_baro", "gs", "track", "geom_rate")
-        return {**tag, **{k: as_num(v) for k, v in tag.items() if k in numeric}}
+        return {k: as_num(v) if k in numeric else v for k, v in tag.items()}
 
     def _geolocate_track_event(self, track_id, event):
         """Run LM solver on a track event to get lat/lon/alt/velocity."""

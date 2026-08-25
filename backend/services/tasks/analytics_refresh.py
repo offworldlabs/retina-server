@@ -10,7 +10,7 @@ import time
 import numpy as np
 import orjson
 
-from config.constants import ANALYTICS_REFRESH_INTERVAL_S, CLAIMED_DISPLAY_FRESH_S
+from config.constants import ANALYTICS_REFRESH_INTERVAL_S, CLAIMED_DISPLAY_FRESH_S, as_num
 from config.constants import (
     DELAY_MATCH_THRESHOLD_US as _DELAY_MATCH_THRESHOLD_US,
 )
@@ -925,7 +925,9 @@ def _refresh_node_verification(node_id: str):
         _alt_m = best_adsb.get("alt_m")
         _gs_kt = best_adsb.get("gs")
         _vel_ms = best_adsb.get("velocity")
-        truth_alt_m = float(_alt_ft) * 0.3048 if _alt_ft is not None else float(_alt_m) if _alt_m is not None else None
+        # alt_baro alone carries the "ground" sentinel; a raise here loses the
+        # node's whole payload.  Numeric strings read as 0, as they do estate-wide.
+        truth_alt_m = as_num(_alt_ft) * 0.3048 if _alt_ft is not None else float(_alt_m) if _alt_m is not None else None
         truth_gs_ms = (
             float(_gs_kt) * 0.514444 if _gs_kt is not None else float(_vel_ms) if _vel_ms is not None else None
         )
@@ -1273,7 +1275,7 @@ def _refresh_mlat_verification():
             # heading} (periodic.py) — NOT the tar1090 gs/alt_baro schema.
             # Reading gs/alt_baro here zeroed every external truth entry.
             gs_ms = float(entry["velocity"] if entry.get("velocity") is not None else (entry.get("gs") or 0) * 0.514444)
-            alt_m = float(entry["alt_m"] if entry.get("alt_m") is not None else (entry.get("alt_baro") or 0) * 0.3048)
+            alt_m = float(entry["alt_m"] if entry.get("alt_m") is not None else as_num(entry.get("alt_baro")) * 0.3048)
             adsb_truth_pool.append(
                 (
                     adsb_hex,

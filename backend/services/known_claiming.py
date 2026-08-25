@@ -51,7 +51,7 @@ from retina_analytics.association import (
 from retina_analytics.constants import offset_latlon_m
 from scipy.optimize import linear_sum_assignment
 
-from config.constants import FT_TO_M
+from config.constants import FT_TO_M, as_num
 from core import state
 from services.id_utils import normalize_hex_key
 
@@ -219,9 +219,9 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
             ve, vn = _tag_velocity(tag)
             # The node correlated this fix against this frame, so the fix is
             # taken as current — no dead-reckoning, fix_ts_ms = frame time.
-            pred_d, pred_f = predict_observation(
-                geo, lat, lon, (tag.get("alt_baro", 0) or 0) * FT_TO_M / 1000.0, ve, vn
-            )
+            # Raw node input: alt_baro is the string "ground" on the deck.
+            alt_km = as_num(tag.get("alt_baro")) * FT_TO_M / 1000.0
+            pred_d, pred_f = predict_observation(geo, lat, lon, alt_km, ve, vn)
             fix = {
                 "lat": lat,
                 "lon": lon,

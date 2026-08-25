@@ -2,11 +2,13 @@
 
 Import from here instead of scattering magic numbers through services.
 Values that are tunable per-deployment stay as env vars (FRAME_WORKERS,
-SOLVER_WORKERS, etc.) — this file is for compile-time constants only.
+SOLVER_WORKERS, etc.) — this file holds compile-time constants and the small
+pure helpers that operate on them.
 
 retina_tracker YAML config stays separate (loaded at runtime via config.yaml).
 """
 
+import math
 import os
 
 from core.env_parsing import parse_comma_list
@@ -15,6 +17,18 @@ from core.env_parsing import parse_comma_list
 C_KM_US = 0.299792458  # Speed of light (km/µs)
 R_EARTH_KM = 6371.0  # Mean Earth radius (km)
 FT_TO_M = 0.3048  # Feet → metres
+
+# ── Field coercion ───────────────────────────────────────────────────────────
+
+
+def as_num(v) -> float:
+    """0.0 for anything that isn't a finite number (ADS-B's "ground", None, NaN).
+
+    tar1090 reports alt_baro as the literal string "ground" for aircraft on the
+    ground.  Coerce before any arithmetic on a raw ADS-B field.
+    """
+    return float(v) if isinstance(v, (int, float)) and math.isfinite(v) else 0.0
+
 
 # ── Association gates ────────────────────────────────────────────────────────
 DELAY_MATCH_THRESHOLD_US = 15.0  # Bistatic delay tolerance for matching

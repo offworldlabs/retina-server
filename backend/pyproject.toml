@@ -35,8 +35,6 @@ omit = [
     "routes/test.py",
     # External API clients — require live network; tested via integration only:
     "clients/fcc.py",
-    # blah2 bridge — requires live blah2 hardware/daemon:
-    "services/blah2_bridge.py",
     # Pure TypedDict definitions — no runtime code to cover:
     "core/types.py",
 ]

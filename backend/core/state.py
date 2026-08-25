@@ -28,6 +28,7 @@ from config.constants import (
     N2_CONFIRM_MIN_EPOCHS,
     N2_CONFIRM_MIN_SPAN_S,
     TRACK_HISTORY_MAX,  # noqa: F401 — re-exported, used via state.TRACK_HISTORY_MAX
+    as_num,
 )
 
 # ── Coverage / analytics persistence ──────────────────────────────────────────
@@ -148,11 +149,6 @@ def _global_tracks_for_claiming():
     return out
 
 
-def _as_num(v) -> float:
-    """0.0 for anything that isn't a finite number ("ground", None, NaN)."""
-    return float(v) if isinstance(v, (int, float)) and math.isfinite(v) else 0.0
-
-
 def _adsb_for_seeding() -> dict[str, dict]:
     """Unlocked snapshot of currently-live ADS-B fixes, in the seeding
     provider contract InterNodeAssociator documents on adsb_provider.
@@ -172,13 +168,13 @@ def _adsb_for_seeding() -> dict[str, dict]:
         # the literal string "ground" for on-ground aircraft — so coerce
         # before arithmetic; one such record would otherwise throw here on
         # every frame for as long as it stays live.
-        gs_ms = _as_num(rec.get("gs")) * 0.514444
-        trk = math.radians(_as_num(rec.get("track")))
+        gs_ms = as_num(rec.get("gs")) * 0.514444
+        trk = math.radians(as_num(rec.get("track")))
         out[hexn] = {
             "hex": hexn,
             "lat": lat,
             "lon": lon,
-            "alt_m": _as_num(rec.get("alt_baro")) * FT_TO_M,
+            "alt_m": as_num(rec.get("alt_baro")) * FT_TO_M,
             "vel_east": gs_ms * math.sin(trk),
             "vel_north": gs_ms * math.cos(trk),
             "timestamp_ms": rec.get("last_seen_ms", 0),

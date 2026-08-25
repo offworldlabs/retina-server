@@ -10,6 +10,7 @@ import orjson
 from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from fastapi.responses import Response
 
+from config.constants import FT_TO_M, as_num
 from core import state
 from core.task_registry import get_stale_tasks
 from core.users import require_admin
@@ -302,7 +303,8 @@ async def validate_ground_truth(body: dict = Body(...), _key=Depends(_verify_sim
         if best_match:
             idx, sa = best_match
             matched_server_indices.add(idx)
-            sa_alt_m = sa.get("alt_baro", 0) * 0.3048 if sa.get("alt_baro") else 0
+            # Truthiness is no guard: "ground", the on-deck sentinel, is truthy.
+            sa_alt_m = as_num(sa.get("alt_baro")) * FT_TO_M
             alt_err_m = abs(gt_alt - sa_alt_m)
             matches.append(
                 {
