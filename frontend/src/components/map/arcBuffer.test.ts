@@ -81,6 +81,18 @@ describe("upsertArcEntries", () => {
     expect(buf[keys[0]].ambiguity_arc).toBe(ARC);
   });
 
+  it("refuses adsb_single_node entries — ClaimedArcs owns that locus", () => {
+    // These satisfy every other admission condition (arc, node_id, delay_us),
+    // so without the source guard the full locus would be laid over the short
+    // trimmed section ClaimedArcs already draws.
+    const buf = {};
+    upsertArcEntries(buf, [mkAc({ position_source: "adsb_single_node" })], 1000, MAX_AGE);
+    expect(Object.keys(buf)).toHaveLength(0);
+    // A normal single-node detection of the same aircraft still buffers.
+    upsertArcEntries(buf, [mkAc()], 1000, MAX_AGE);
+    expect(Object.keys(buf)).toHaveLength(1);
+  });
+
   it("refreshes ONE entry's fade clock when the same measurement is re-ingested", () => {
     const buf = {};
     // Five 1 Hz ingests of an unchanged measurement — the exact staging

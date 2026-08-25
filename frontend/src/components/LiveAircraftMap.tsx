@@ -45,6 +45,7 @@ import {
   Toolbar,
   PlaybackBar,
   DetectionArcs,
+  ClaimedArcs,
   InBeamDiagnostic,
 } from "./map";
 
@@ -527,7 +528,7 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels
       ? makeDroneIcon(ac, showLabels, isSelected)
       : makeAircraftIcon(ac, showLabels, isSelected, colorByAlt),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [ac.hex, isSelected, showLabels, colorByAlt, ac.flight, ac.target_class, altBand],
+    [ac.hex, isSelected, showLabels, colorByAlt, ac.flight, ac.target_class, altBand, ac.position_source],
   );
   const handlers = useMemo(() => ({ click: () => onSelect(ac.hex) }), [ac.hex, onSelect]);
   return <Marker ref={markerRef} position={[ac.lat, ac.lon]} icon={icon} eventHandlers={handlers} />;
@@ -541,6 +542,13 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels
   prev.ac.flight === next.ac.flight &&
   prev.ac.target_class === next.ac.target_class &&
   Math.floor((prev.ac.alt_baro ?? 0) / 5000) === Math.floor((next.ac.alt_baro ?? 0) / 5000) &&
+  // position_source drives the icon COLOUR (getAircraftColor), and a track can
+  // change source mid-flight — a claimed aircraft picking up a second node
+  // becomes a multinode solve, and vice versa.  Without this the icon kept its
+  // old colour until some unrelated key (callsign, altitude band, selection)
+  // happened to change.  Stable per track in the common case, so it costs no
+  // extra re-renders in steady state.
+  prev.ac.position_source === next.ac.position_source &&
   prev.onSelect === next.onSelect
 );
 
@@ -1978,6 +1986,13 @@ export default function LiveAircraftMap() {
             {/* Detection arcs — imperative Leaflet layer, 4Hz opacity fade, sourced from raw WS buffer */}
             {showArcs && (
               <DetectionArcs arcsBufferRef={arcsBufferRef} selectedHex={selectedHex} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} nodesByIdRef={nodesByIdRef} />
+            )}
+            {/* Claimed single-node ADS-B arcs — a screen-length section of the
+                 claiming node's locus, drawn under the plane icon. Shares the
+                 showArcs toggle: both answer "where does this node's delay
+                 measurement put the target". */}
+            {showArcs && (
+              <ClaimedArcs aircraftRef={visibleAircraftRef} onSelect={handleSelectAircraft} />
             )}
             {/* In-beam-no-detection diagnostic — red dashed lines from a node's RX to any
                  ADS-B aircraft sitting inside its beam that the node is NOT currently detecting. */}

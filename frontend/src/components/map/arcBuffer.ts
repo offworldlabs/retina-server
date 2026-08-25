@@ -19,6 +19,8 @@
 // guard (skip rather than overwrite, so an existing entry keeps fading from
 // its original ts).
 
+import { POSITION_SOURCE_ADSB_SINGLE } from "./constants";
+
 /** Quantization step for the delay portion of the buffer key (µs). */
 export const ARC_DELAY_KEY_QUANT_US = 0.1;
 
@@ -70,6 +72,7 @@ export function arcBufferKey(
  *   entry keeps fading from its original ts (original guard semantics).
  * - Entries older than `maxAgeMs` are pruned (they have already faded to
  *   zero opacity in the renderer); keeps the buffer bounded.
+ * - `adsb_single_node` entries are refused: their arc is owned by ClaimedArcs.
  */
 export function upsertArcEntries(
   buf: Record<string, ArcBufferEntry>,
@@ -81,6 +84,14 @@ export function upsertArcEntries(
     if (!Array.isArray(ac.ambiguity_arc) || ac.ambiguity_arc.length < 2 || !ac.node_id) {
       continue;
     }
+    // Single-node-claimed ADS-B entries carry a locus too, and they satisfy
+    // every condition above — but ClaimedArcs already draws a short section of
+    // it, trimmed to screen length and centred on the fix.  Buffering them
+    // here as well would lay the FULL ~100 km locus over that short section as
+    // a second, doppler-coloured, fading polyline.  Their lifecycle is
+    // present/absent with the feed entry, not afterglow, so they never belong
+    // in this buffer.
+    if (ac.position_source === POSITION_SOURCE_ADSB_SINGLE) continue;
     const delayUs =
       ac.delay_us != null && Number.isFinite(ac.delay_us) ? ac.delay_us : null;
     const key = arcBufferKey(ac.hex, ac.node_id, delayUs, nowMs);
