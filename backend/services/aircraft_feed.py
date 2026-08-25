@@ -15,6 +15,7 @@ from retina_tracker.track import TrackState
 
 from config.constants import (
     ARC_REFRESH_S,
+    CLAIMED_DISPLAY_FRESH_S,
     GT_REFRESH_S,
     MN_N2_MIN_SOLVES,
     MN_ONESHOT_TTL_S,
@@ -144,6 +145,102 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
     return entry
 
 
+def _claimed_single_node_entries(now: float) -> list[dict]:
+    """Feed entries for hexes exactly ONE node is currently claiming.
+
+    A claim (services/known_claiming.py) pairs a node's raw delay/Doppler
+    measurement with the ADS-B fix of the transponder it was bound to, and in
+    binding mode that detection leaves the dark pool — so nothing else in the
+    feed ever renders it.  Two or more claiming nodes are the known-lane
+    solver's case: it needs n>=2 and publishes its own ``mn-adsb-<hex>`` entry
+    on convergence, so emitting here as well would double-draw the aircraft.
+    One claiming node reaches nobody, which is what this section exists for.
+
+    The position is the ADS-B fix itself, not an estimate — the radar
+    contribution is the identity of the detecting node and the ambiguity arc,
+    which is why ``position_source`` names the anchor rather than a solver and
+    why health.py must not read these as radar solves.
+
+    The arc is rebuilt rather than memoised through ``_single_node_arc_cache``:
+    that cache is keyed (hex, node_id) on the *track's* latest delay, and the
+    same hex can carry a tracker track on the same node, so sharing the key
+    would make the two fingerprints evict each other every build.  A rebuild
+    costs one binary search per bearing for the handful of qualifying hexes —
+    less than section 5 already spends unconditionally, every build, on every
+    promoted track in the fleet.
+    """
+    fresh_cutoff_ms = (now - CLAIMED_DISPLAY_FRESH_S) * 1000.0
+    entries: list[dict] = []
+    for hexn, dq in list(state.known_claims.items()):
+        newest: dict | None = None
+        node_ids: set[str] = set()
+        for c in list(dq):
+            if not isinstance(c, dict):
+                continue
+            try:
+                ts_ms = float(c["ts_ms"])
+                node_id = c["node_id"]
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not node_id or ts_ms < fresh_cutoff_ms:
+                continue
+            node_ids.add(node_id)
+            if len(node_ids) > 1:
+                break
+            if newest is None or ts_ms > float(newest["ts_ms"]):
+                newest = c
+        if newest is None or len(node_ids) != 1:
+            continue
+
+        fix = newest.get("adsb_fix") or {}
+        lat, lon = fix.get("lat"), fix.get("lon")
+        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            continue
+        node_id = newest["node_id"]
+        delay_us = float(newest.get("delay_us") or 0.0)
+
+        # node_cfg is the geometry the arc is solved in; a node that has since
+        # disconnected leaves the entry without one, which is the same
+        # icon-only outcome as the builder declining.
+        pipeline = state.node_pipelines.get(node_id)
+        node_cfg = getattr(pipeline, "config", None)
+        arc = _build_single_node_arc(delay_us, node_cfg) if node_cfg else None
+
+        # The claim's own fix carries no callsign (it is copied from the frame's
+        # ADS-B block, which reports position and kinematics only).
+        _ae = state.adsb_aircraft.get(hexn)
+        flight = ((_ae.get("flight") if _ae else "") or "").strip() or None
+
+        fix_ts_ms = fix.get("fix_ts_ms") or 0
+        entries.append(
+            {
+                "hex": hexn,
+                "type": "adsb_icao",
+                "flight": flight,
+                "lat": lat,
+                "lon": lon,
+                "alt_baro": fix.get("alt_baro"),
+                "gs": fix.get("gs"),
+                "track": fix.get("track"),
+                "seen": round(max(0.0, now - float(newest["ts_ms"]) / 1000.0), 1),
+                "multinode": False,
+                "position_source": "adsb_single_node",
+                # Mandatory: the live/owner WS feeds drop any entry whose
+                # node_id is not in the connection's node set.
+                "node_id": node_id,
+                "delay_us": round(delay_us, 3),
+                "doppler_hz": round(float(newest.get("doppler_hz") or 0.0), 2),
+                # The FULL locus.  The frontend trims it to a fixed screen
+                # length around the icon; trimming here would bake one zoom
+                # level into the wire format.
+                "ambiguity_arc": arc,
+                "adsb_fix_age_s": (round(max(0.0, now - fix_ts_ms / 1000.0), 1) if fix_ts_ms else None),
+                "target_class": "aircraft",
+            }
+        )
+    return entries
+
+
 # How often to recompute detection arcs and GT snapshot (seconds).
 # Iterating 915 pipelines × 5000 tracks every second is the #1 GIL hog;
 # caching at 5 s cuts that penalty by 4/5.
@@ -271,6 +368,13 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         with state.anomaly_lock:
             state.anomaly_hexes.discard(multinode_hex_from_key(k))
         state.multinode_tracks.pop(k, None)
+
+    # 3b. Singly-claimed ADS-B targets — no seen_hex guard on purpose.  A
+    # partially-claimed aircraft can still carry a tracker track keyed by the
+    # same hex, and the ADS-B fix is the better of the two positions, so the
+    # collision is left for dedup to settle by source rank rather than decided
+    # here by append order.
+    aircraft.extend(_claimed_single_node_entries(now))
 
     # 4/4b. Stale-store GC — services.feed_gc.
     prune_stale_stores(now)

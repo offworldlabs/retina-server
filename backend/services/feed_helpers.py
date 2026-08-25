@@ -30,12 +30,16 @@ def _reset_for_tests() -> None:
 # ── Aircraft de-duplication ───────────────────────────────────────────────────
 # Preference when several entries describe one aircraft. A multinode fix is
 # constrained by >=2 receivers; a single-node ellipse arc is only an ambiguity
-# locus, so it loses.
+# locus, so it loses.  `adsb_single_node` sits second because its position IS
+# the transponder's own fix rather than any estimate derived from one node's
+# geometry — only a multi-receiver solve, which is independent of ADS-B
+# altogether, outranks it.
 _DEDUP_SOURCE_RANK = {
     "multinode_solve": 0,
-    "solver_adsb_seed": 1,
-    "solver_single_node": 2,
-    "single_node_ellipse_arc": 3,
+    "adsb_single_node": 1,
+    "solver_adsb_seed": 2,
+    "solver_single_node": 3,
+    "single_node_ellipse_arc": 4,
 }
 # Deliberately tighter than the 6 km solver association gate. Observed duplicate
 # spread is ~1 km, while real IFR separation is 5 nm (~9.3 km) laterally or

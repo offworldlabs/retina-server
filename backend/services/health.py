@@ -185,11 +185,15 @@ def compute_health_issues() -> list[dict]:
     # truth by construction (bistatic root ambiguity / poor GDOP); including
     # them made the overall mean read ~27 km on prod even though multi-node
     # accuracy is ~1 km, masking real solver regressions behind a constant flag.
+    # `adsb_single_node` is excluded from the other direction: its position is
+    # the ADS-B fix verbatim, so it would score a near-zero error against ADS-B
+    # truth without any solver having run, and enough of them would hold this
+    # mean below the threshold while the real solves degraded.
     try:
         if state.latest_accuracy_bytes and state.latest_accuracy_bytes != b"{}":
             acc = orjson.loads(state.latest_accuracy_bytes)
             by_source = acc.get("by_source") or {}
-            untrusted = {"single_node_ellipse_arc", "solver_single_node"}
+            untrusted = {"single_node_ellipse_arc", "solver_single_node", "adsb_single_node"}
             trusted = [
                 (st.get("n_samples", 0), st.get("mean_km", 0.0))
                 for src, st in by_source.items()
