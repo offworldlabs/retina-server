@@ -49,7 +49,6 @@ core/state.py — slice A owns that file.
 import logging
 import math
 import threading
-import time
 from collections import deque
 
 from retina_analytics.trust import AdsReportEntry, TrustScoreState
@@ -123,11 +122,6 @@ class _NodeBiasState:
 
 
 _node_bias: dict[str, _NodeBiasState] = {}
-
-
-def _now_ms() -> int:
-    """Wall clock in ms.  A function (not inline calls) so tests can advance it."""
-    return int(time.time() * 1000)
 
 
 # ── Interface contract (called by the claiming stage via guarded import) ─────
