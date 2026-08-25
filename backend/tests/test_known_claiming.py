@@ -83,13 +83,14 @@ class TestGlobalAssignment:
         the only complete matching (det0→B, det1→A) instead."""
         _register()
         ts = int(time.time() * 1000)
-        # Keyed by lat so the fake survives the (no-op, vel=0) dead-reckoning.
-        _cache_state("aaa111", ts, lat=10.0)
-        _cache_state("bbb222", ts, lat=20.0)
+        # Keyed by lat so the fake survives the (no-op, vel=0) dead-reckoning;
+        # both positions in beam, so the visibility gate keeps them candidates.
+        _cache_state("aaa111", ts, lat=34.88)
+        _cache_state("bbb222", ts, lat=34.90)
         monkeypatch.setattr(
             kc,
             "predict_observation",
-            lambda geo, lat, lon, alt_km, ve=0.0, vn=0.0, vu=0.0: (100.0, 0.0) if lat < 15 else (104.0, 20.0),
+            lambda geo, lat, lon, alt_km, ve=0.0, vn=0.0, vu=0.0: (100.0, 0.0) if lat < 34.89 else (104.0, 20.0),
         )
         # det0: A (0.5 µs, 2 Hz) score 0.13 / B (3.5, 18) score 1.07 — both feasible
         # det1: A (1.5, 6) score 0.39 / B (2.5, 26) — 26 Hz > 25 gate, infeasible
@@ -140,6 +141,77 @@ class TestGateVsFixAge:
     def test_past_the_age_cap_is_no_candidate_at_all(self):
         geo = _register()
         assert self._claim_at_age(geo, 50.0) == set()
+
+
+class TestVisibilityGate:
+    """Path 2 claims only what the node could have seen.  Detections sit
+    exactly on the prediction throughout, so the residual gates cannot be
+    what rejects them — visibility is."""
+
+    # Behind the node: 5.7 km out (well inside the 60 km footprint) on
+    # bearing 234°, against a 45° ± 45° wedge.
+    _BEHIND = (34.82, -82.45)
+    # On the beam axis (bearing 44°) but 199 km out — range, not bearing.
+    _BEYOND = (36.12, -80.85)
+
+    def _pred_at(self, geo, lat, lon):
+        return predict_observation(geo, lat, lon, _ALT_BARO_FT * FT_TO_M / 1000.0, 0.0, 0.0)
+
+    def test_out_of_beam_bearing_claims_nothing(self):
+        geo = _register()
+        ts = int(time.time() * 1000)
+        _cache_state("blind1", ts, lat=self._BEHIND[0], lon=self._BEHIND[1])
+        pd, pf = self._pred_at(geo, *self._BEHIND)
+
+        claimed = kc.claim_known_targets(_NODE_ID, _frame(ts, [pd], [pf]))
+
+        assert claimed == set()
+        assert state.known_claims == {}
+        assert state.known_claims_visibility_rejects == 1
+
+    def test_beyond_the_footprint_claims_nothing(self):
+        geo = _register()
+        ts = int(time.time() * 1000)
+        _cache_state("blind2", ts, lat=self._BEYOND[0], lon=self._BEYOND[1])
+        pd, pf = self._pred_at(geo, *self._BEYOND)
+
+        claimed = kc.claim_known_targets(_NODE_ID, _frame(ts, [pd], [pf]))
+
+        assert claimed == set()
+        assert state.known_claims == {}
+        assert state.known_claims_visibility_rejects == 1
+
+    def test_in_beam_candidate_still_claims(self):
+        """The gate rejects; it does not over-reject — and the counter starts
+        at zero after the tests above bumped it."""
+        geo = _register()
+        ts = int(time.time() * 1000)
+        _cache_state("seen01", ts)
+        pd, pf = _stationary_pred(geo)
+
+        assert kc.claim_known_targets(_NODE_ID, _frame(ts, [pd], [pf])) == {0}
+        assert state.known_claims_visibility_rejects == 0
+
+    def test_node_tag_is_not_visibility_gated(self):
+        """A node tag is the node's own evidence that it saw this aircraft.
+        A fix the backend's geometry calls invisible means a stale footprint
+        or a wrong beam azimuth, not a phantom claim."""
+        _register()
+        ts = int(time.time() * 1000)
+        tag = {
+            "hex": "tagblind",
+            "lat": self._BEHIND[0],
+            "lon": self._BEHIND[1],
+            "alt_baro": _ALT_BARO_FT,
+            "gs": 0,
+            "track": 0,
+        }
+
+        claimed = kc.claim_known_targets(_NODE_ID, _frame(ts, [50.0], [10.0], adsb=[tag]))
+
+        assert claimed == {0}
+        assert "tagblind" in state.known_claims
+        assert state.known_claims_visibility_rejects == 0
 
 
 class TestNodeTagPrecedence:
@@ -303,6 +375,7 @@ class TestRegistryContract:
         assert state.known_claims_made == 0
         assert state.known_claim_contentions == 0
         assert state.known_claims_bound == 0
+        assert state.known_claims_visibility_rejects == 0
 
 
 class TestNodeBiasHook:
