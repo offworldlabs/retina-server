@@ -51,8 +51,10 @@ guarantee — the same caveat `just deploy-test-status` already prints. The next
 prod is the reference environment: `deploy/check-env-parity.py` compares the other
 two against it in CI and fails on any difference not listed in its
 `ALLOWED_DIVERGENCE`. staging and test differ from prod deliberately on the
-simulator (prod runs none at all), hostnames, container names and resource
-limits, and on nothing else.
+simulator (prod runs none at all), hostnames, container names, resource limits,
+published ports, and staging's E2E force-retire prefixes. test alone also stays
+off the `retina-edge` network, because it runs no tower-finder-service. Anything
+else is drift, and fails the check.
 
 staging and test run the fleet 4x faster than production, on **half the cores** —
 production has 4, they have 2 — so per core it is 8x. The frame path copes (41 of
