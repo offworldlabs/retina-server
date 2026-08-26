@@ -1,0 +1,307 @@
+"""Deterministic per-node location fuzzing, applied at the serialization edge.
+
+A receiver node sits at someone's home.  Its true position is needed by the
+physics — bistatic delay, association, the solver all resolve geometry against
+it — and by nothing else.  This module is the single place that turns a true
+receiver position into the one an unauthenticated client is allowed to see.
+
+**Where this belongs.**  Call it at the boundary where bytes leave for a public
+client (a JSON payload, a websocket entry, an archive row), never upstream of
+it.  ``services/node_pipeline.py`` and everything it feeds must keep the true
+coordinates: fuzzing there would move the aircraft, not the operator.  TX sites
+are licensed broadcast towers and are never fuzzed.
+
+**The offset.**  ``HMAC-SHA256(salt, node_id)`` seeds a bearing uniform in
+[0, 360) and a displacement uniform in [NODE_FUZZ_MIN_KM, NODE_FUZZ_MAX_KM].
+The same node id under the same salt therefore yields the same offset forever,
+across processes and restarts — a node that wandered per boot would be
+averaged back to the truth by anyone logging the feed, which is the whole
+attack this defends against.  Keying on HMAC rather than a plain hash means
+the offset cannot be recomputed without the salt, so publishing the algorithm
+costs nothing.
+
+The displacement floor is what makes the region a donut rather than a disc.  A
+uniform disc puts a meaningful fraction of nodes within a couple of hundred
+metres of home; the floor guarantees every node is displaced by at least
+NODE_FUZZ_MIN_KM.  The bearing/radius pair is deliberately not area-uniform —
+uniformity over the annulus would concentrate nodes near the outer edge and
+give an attacker a prior worth having.
+
+**What this does not do.**  A single fuzzed anchor is not anonymity against an
+observer who can correlate many independent geometric channels over time.  It
+raises the cost of reading an operator's address off the map; it is not a
+guarantee.  Anything derived from the true position that is published
+unmodified (a range ring, a distance-to-detection, a polygon apex) hands the
+offset straight back, which is why callers translate those too.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import logging
+import math
+import secrets
+
+from config.constants import (
+    node_fuzz_max_km,
+    node_fuzz_min_km,
+    node_fuzz_mode,
+    node_fuzz_salt,
+)
+from core.runtime_config import RUNTIME_DIR, runtime_path, write_runtime_file
+from services.geo import KM_PER_DEG_LAT, km_per_deg_lon, offset_latlon
+
+logger = logging.getLogger(__name__)
+
+# Persisted fallback salt.  Lives beside the other runtime state rather than in
+# backend/config, because backend/config is the image's read-only template dir
+# and a salt written there would be lost on the next deploy — which would
+# silently re-randomise every node's offset.
+_SALT_FILE = "node_fuzz_salt"
+
+# Public coordinates are emitted at 4 decimals (~11 m).  Beyond that the digits
+# only describe the offset arithmetic, and a fuzzed coordinate quoted to 7
+# decimals invites the reader to believe it is a survey fix.
+_PUBLIC_DECIMALS = 4
+
+# (node_id, salt, min_km, max_km) → (east_km, north_km).  The salt and bounds
+# are in the key so a test (or a re-salted deployment) cannot read a stale
+# offset back out.  Bounded by the fleet size, which is bounded by the node
+# registry.
+_offset_cache: dict[tuple[str, str, float, float], tuple[float, float]] = {}
+
+# Resolved persisted salt, read once per process.
+_file_salt: str | None = None
+
+
+def _reset_for_tests() -> None:
+    """Drop the memoised offsets and salt.  Tests only."""
+    _offset_cache.clear()
+    global _file_salt
+    _file_salt = None
+
+
+def fuzz_enabled() -> bool:
+    """False only when NODE_FUZZ_MODE is explicitly "off"."""
+    return node_fuzz_mode() != "off"
+
+
+def location_uncertainty_km() -> float:
+    """Radius a client should draw to represent an honest published position.
+
+    The outer edge of the donut: the true receiver is somewhere within this
+    distance of the coordinate served, and the client is told so rather than
+    left to infer a precision that is not there.
+    """
+    return node_fuzz_max_km()
+
+
+def _persisted_salt() -> str:
+    """The runtime-dir salt, generating and storing one on first use.
+
+    A deployment that sets no NODE_FUZZ_SALT still needs offsets that survive a
+    restart, so the generated salt goes to disk immediately.  The file is read
+    back after writing, so if two processes ever race to create it they
+    converge on the same value instead of serving two different maps.
+    """
+    global _file_salt
+    if _file_salt is not None:
+        return _file_salt
+
+    path = runtime_path(_SALT_FILE)
+    try:
+        if not path.exists():
+            RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+            write_runtime_file(path, secrets.token_hex(32))
+            logger.info("public_location: generated node fuzz salt at %s", path)
+        _file_salt = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        # An unwritable runtime dir must not take the server down, but it must
+        # not fall back to serving true coordinates either.  A process-local
+        # salt keeps the map self-consistent for this process's lifetime; the
+        # log line is the signal that offsets will move on the next restart.
+        logger.exception("public_location: could not persist fuzz salt, using a process-local one")
+        _file_salt = secrets.token_hex(32)
+    return _file_salt
+
+
+def _salt() -> str:
+    """The HMAC salt in force: the configured one, else the persisted one."""
+    return node_fuzz_salt() or _persisted_salt()
+
+
+def public_offset_km(node_id: str | None) -> tuple[float, float]:
+    """Deterministic (east_km, north_km) displacement for one node.
+
+    (0.0, 0.0) when fuzzing is off.  A node id of None or "" is hashed as the
+    empty string rather than passed through unfuzzed: a missing id is a config
+    fault, and the safe reading of a config fault is "do not publish the truth".
+    """
+    if not fuzz_enabled():
+        return (0.0, 0.0)
+
+    key_id = node_id or ""
+    salt = _salt()
+    min_km = node_fuzz_min_km()
+    max_km = node_fuzz_max_km()
+    key = (key_id, salt, min_km, max_km)
+    cached = _offset_cache.get(key)
+    if cached is not None:
+        return cached
+
+    digest = hmac.new(salt.encode("utf-8"), key_id.encode("utf-8"), hashlib.sha256).digest()
+    # Two independent 64-bit draws out of the same digest: bytes 0-7 pick the
+    # bearing, bytes 8-15 the displacement.  Dividing by 2**64 lands in [0, 1),
+    # so the bearing never repeats 0° as 360° and the displacement never
+    # exceeds max_km.
+    bearing_deg = (int.from_bytes(digest[:8], "big") / 2**64) * 360.0
+    distance_km = min_km + (int.from_bytes(digest[8:16], "big") / 2**64) * (max_km - min_km)
+
+    bearing_rad = math.radians(bearing_deg)
+    offset = (distance_km * math.sin(bearing_rad), distance_km * math.cos(bearing_rad))
+    _offset_cache[key] = offset
+    return offset
+
+
+def public_latlon(lat, lon, node_id: str | None) -> tuple[float, float]:
+    """The coordinate to publish for a node sitting at (lat, lon).
+
+    Returns the inputs untouched — not even rounded — when fuzzing is off or
+    when either coordinate is not a usable number, so a disabled deployment and
+    a broken config are both exactly pass-through.
+    """
+    if not fuzz_enabled():
+        return (lat, lon)
+    if not _is_num(lat) or not _is_num(lon):
+        return (lat, lon)
+
+    east_km, north_km = public_offset_km(node_id)
+    fuzzed_lat, fuzzed_lon = offset_latlon(float(lat), float(lon), east_km, north_km)
+    return (round(fuzzed_lat, _PUBLIC_DECIMALS), round(fuzzed_lon, _PUBLIC_DECIMALS))
+
+
+def translate_polygon(
+    vertices,
+    node_id: str | None,
+    anchor_lat: float | None = None,
+):
+    """Rigidly shift a [[lat, lon], …] polygon by the node's offset.
+
+    Rigid is the point.  A coverage polygon drawn around a node has its apex at
+    the true receiver and its shape set by what that receiver has actually
+    heard; re-deriving the shape around the fuzzed anchor would leak the
+    difference between the two.  Every vertex therefore moves by the identical
+    (dlat, dlon), so the polygon carries no information about where the node
+    is relative to the fuzzed anchor — only the anchor itself moved.
+
+    ``anchor_lat`` is the latitude the longitude conversion is taken at; pass
+    the node's true latitude so the apex lands on exactly the coordinate
+    ``public_latlon`` publishes for the same node.  It defaults to the first
+    vertex's latitude, which for the coverage polygons in this codebase is the
+    apex, i.e. the receiver.
+
+    The result is not rounded: rounding each vertex independently would perturb
+    them by different amounts and break rigidity, and the vertices arrive
+    already rounded by whatever produced them.
+    """
+    if vertices is None:
+        return None
+    if not fuzz_enabled():
+        return list(vertices)
+
+    verts = list(vertices)
+    if not verts:
+        return verts
+
+    if anchor_lat is None:
+        anchor_lat = verts[0][0]
+    if not _is_num(anchor_lat):
+        return verts
+
+    east_km, north_km = public_offset_km(node_id)
+    dlat = north_km / KM_PER_DEG_LAT
+    dlon = east_km / km_per_deg_lon(float(anchor_lat))
+    return [[v[0] + dlat, v[1] + dlon] for v in verts]
+
+
+def fuzz_node_cfg(node_cfg: dict | None) -> dict | None:
+    """A copy of a node config whose rx_lat/rx_lon are the published ones.
+
+    For the serialization paths that hand a whole config to a geometry builder
+    (the ambiguity-arc builder, receiver.json).  Building the public artefact
+    from the public anchor is what keeps the two consistent: an arc solved
+    around the true receiver and drawn beside a fuzzed marker would let anyone
+    recover the receiver from the arc's focus.
+
+    TX is copied through untouched, so the published arc keeps the real
+    transmitter as its second focus and is a genuine ellipse for the same
+    measured bistatic range — just around the wrong receiver.
+    """
+    if node_cfg is None:
+        return None
+    if not fuzz_enabled():
+        return node_cfg
+
+    rx_lat, rx_lon = public_latlon(
+        node_cfg.get("rx_lat"),
+        node_cfg.get("rx_lon"),
+        node_cfg.get("node_id"),
+    )
+    return {**node_cfg, "rx_lat": rx_lat, "rx_lon": rx_lon}
+
+
+def public_node_summary(node_id: str | None, summary):
+    """One analytics per-node summary, rewritten for a public client.
+
+    Three things move, all of them derived from the receiver's true position:
+
+    * ``detection_area.rx`` becomes the published coordinate.  ``tx`` does not.
+    * ``empirical_coverage.polygon`` is translated rigidly by the same offset.
+      Its apex is the receiver at 5 decimals, so leaving it alone would publish
+      the truth beside the fuzzed marker and make the fuzz decorative.
+    * ``detection_area.furthest_detections`` is dropped entirely.  Each entry
+      is a real aircraft fix plus its distance from the true receiver, which is
+      a ranging circle per entry: three of them intersect at the receiver,
+      whatever the published anchor says.  No frontend or dashboard surface
+      reads it.
+
+    Returns copies — the analytics manager hands out its own cached summary
+    dicts, and mutating one would corrupt the state the pipeline reads.
+    """
+    if not fuzz_enabled() or not isinstance(summary, dict):
+        return summary
+
+    out = summary
+    rx_lat = None
+    area = out.get("detection_area")
+    if isinstance(area, dict):
+        area_out = {k: v for k, v in area.items() if k != "furthest_detections"}
+        rx = area.get("rx")
+        if isinstance(rx, dict):
+            rx_lat = rx.get("lat")
+            pub_lat, pub_lon = public_latlon(rx_lat, rx.get("lon"), node_id)
+            area_out["rx"] = {**rx, "lat": pub_lat, "lon": pub_lon}
+        out = {**out, "detection_area": area_out}
+
+    coverage = out.get("empirical_coverage")
+    if isinstance(coverage, dict) and coverage.get("polygon"):
+        out = {
+            **out,
+            "empirical_coverage": {
+                **coverage,
+                "polygon": translate_polygon(coverage["polygon"], node_id, anchor_lat=rx_lat),
+            },
+        }
+    return out
+
+
+def public_node_summaries(summaries: dict) -> dict:
+    """public_node_summary() across a {node_id: summary} map."""
+    if not fuzz_enabled():
+        return summaries
+    return {nid: public_node_summary(nid, summary) for nid, summary in summaries.items()}
+
+
+def _is_num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)

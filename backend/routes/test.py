@@ -17,6 +17,7 @@ from core.users import require_admin
 from services.frame_processor import resolve_ground_truth_hex
 from services.geo import haversine_km
 from services.id_utils import normalize_hex_key
+from services.public_location import public_latlon, translate_polygon
 from services.tasks import solver as solver_mod
 
 router = APIRouter()
@@ -1012,7 +1013,19 @@ async def mlat_accuracy():
 
 @router.get("/api/test/node/{node_id}/detection-range")
 async def node_detection_range(node_id: str):
-    """Return one node's empirical detection range and furthest detections."""
+    """Return one node's empirical detection range and coverage polygon.
+
+    Unauthenticated, so the receiver geometry here is the published geometry:
+    ``rx`` is the fuzzed coordinate and the polygon is translated rigidly by
+    the same offset, exactly as on /api/radar/analytics.
+
+    ``furthest_detections`` used to ride along and no longer does.  Each entry
+    was a real aircraft's lat/lon together with its distance from the true
+    receiver — a ranging circle per detection, three of which intersect at the
+    receiver regardless of what coordinate the payload claims.  That is a
+    sharper disclosure than the position field it sat next to, and no caller
+    (frontend, dashboard, or test) reads it.
+    """
     area = state.node_analytics.detection_areas.get(node_id)
     if not area:
         return Response(
@@ -1021,15 +1034,22 @@ async def node_detection_range(node_id: str):
             status_code=404,
         )
 
-    summary = area.summary()
+    summary = {k: v for k, v in area.summary().items() if k != "furthest_detections"}
+    rx = summary.get("rx") or {}
+    pub_lat, pub_lon = public_latlon(rx.get("lat"), rx.get("lon"), node_id)
+    summary["rx"] = {**rx, "lat": pub_lat, "lon": pub_lon}
 
-    # Empirical coverage polygon
+    # Empirical coverage polygon — apex is the true RX, so it moves with it.
     ecov = state.node_analytics.empirical_coverages.get(node_id)
     polygon = None
     if ecov:
-        polygon = ecov.to_polygon(
-            beam_azimuth_deg=area.beam_azimuth_deg,
-            beam_width_deg=area.beam_width_deg,
+        polygon = translate_polygon(
+            ecov.to_polygon(
+                beam_azimuth_deg=area.beam_azimuth_deg,
+                beam_width_deg=area.beam_width_deg,
+            ),
+            node_id,
+            anchor_lat=rx.get("lat"),
         )
 
     return Response(

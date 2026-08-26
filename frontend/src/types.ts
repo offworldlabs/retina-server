@@ -110,10 +110,21 @@ export interface AircraftFeedReturn {
 /** Radar node metadata from /api/radar/analytics (as shaped by useNodes) */
 export interface RadarNode {
   node_id: string;
-  /** Display position — privacy-fuzzed by ~400 m, stable per node_id. */
+  /**
+   * Receiver position as served. The backend displaces it deterministically
+   * per node (1–3 km by default) before it goes on the wire — see
+   * backend/services/public_location.py — so this is NOT the operator's true
+   * location and the client does no further fuzzing of its own.
+   */
   rx_lat: number;
   rx_lon: number;
-  /** True RX position, for geometry that must match the backend's curves. */
+  /**
+   * Legacy names, now holding the same served (fuzzed) coordinate as rx_lat/
+   * rx_lon. Kept because bistaticArc.ts and InBeamDiagnostic read them, and
+   * they still mean what they meant — "the anchor the backend's published
+   * curves are built around" — which is now the fuzzed one. No true receiver
+   * position reaches the browser.
+   */
   rx_lat_real: number;
   rx_lon_real: number;
   tx_lat: number;

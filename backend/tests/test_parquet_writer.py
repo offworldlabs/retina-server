@@ -217,7 +217,13 @@ def test_round_trip_via_storage_module(tmp_path: Path, monkeypatch):
 
 
 def test_schema_includes_geometry_and_rf_columns(tmp_path: Path):
-    """rx/tx geometry and RF config are fanned out into every row from node_cfg."""
+    """rx/tx geometry and RF config are fanned out into every row from node_cfg.
+
+    rx_lat/rx_lon are the PUBLISHED receiver coordinate, not the configured
+    one: the archive is downloadable raw, and a Parquet file pins a receiver
+    permanently.  See services/public_location.py and test_public_location.py.
+    tx stays verbatim — transmitters are licensed broadcast towers.
+    """
     frames = [_frame(timestamp_ms=1700000000000, n_dets=3)]
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
     cfg = {
@@ -254,7 +260,10 @@ def test_schema_includes_geometry_and_rf_columns(tmp_path: Path):
     } <= cols
 
     rows = table.to_pylist()
-    assert all(r["rx_lat"] == 33.939 for r in rows)
+    # One published coordinate for the whole file, and it is not the true one.
+    assert len({r["rx_lat"] for r in rows}) == 1
+    assert all(r["rx_lat"] != 33.939 for r in rows)
+    assert all(r["rx_lon"] != -84.652 for r in rows)
     assert all(r["tx_lon"] == -84.331 for r in rows)
     assert all(r["fc_hz"] == 195_000_000 for r in rows)
     assert all(r["fs_hz"] == 2_000_000 for r in rows)
