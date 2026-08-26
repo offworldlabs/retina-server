@@ -48,6 +48,11 @@ services:
       # Never set this on a deployed host; check-env-parity.py asserts prod and
       # staging still render TLS.
       - TLS_ENABLED=false
+      # The other thing a laptop cannot do: reach tower-finder-service, which is
+      # a separate stack on the external retina-edge network. Off, so /api/towers
+      # falls through to the local app instead of 502ing. Never set this on a
+      # deployed host; the SPA would serve a ranking the service no longer owns.
+      - TOWER_FINDER_ENABLED=false
       # The template needs a name for every vhost it renders. *.localhost is
       # reserved for loopback (RFC 6761), so these need no /etc/hosts entry.
       - HOST_MAIN=towers.localhost

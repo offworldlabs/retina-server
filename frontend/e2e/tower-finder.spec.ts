@@ -103,6 +103,11 @@ test.describe("Tower Finder — search form", () => {
   });
 });
 
+// Every test below stubs /api/towers, so none of them exercise which container
+// answers it. That routing (nginx proxies it to tower-finder-service, while its
+// siblings under /api/ stay with the app) is covered only by the
+// tower-finder-service seam section of deploy/staging-smoke-test.sh. This
+// suite passing says nothing about it, despite both jobs gating the deploy.
 test.describe("Tower Finder — search results", () => {
   test("returns tower results for a known US location", async ({ page }) => {
     // Mock the API to avoid dependency on live FCC data

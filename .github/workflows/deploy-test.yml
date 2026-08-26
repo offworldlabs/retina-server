@@ -149,8 +149,13 @@ jobs:
             # network (a scoped entry in deploy/check-env-parity.py records it).
             # Warn rather than abort: this droplet exists to rehearse arbitrary
             # changes, and most have nothing to do with tower search.
-            if ! docker network inspect retina-edge >/dev/null 2>&1; then
-              echo "::warning::retina-edge does not exist on $(hostname), so GET /api/towers will 502 here after this deploy. Everything else is unaffected. To fix: 'docker network create retina-edge', then dispatch tower-finder-service's deploy-test workflow onto this droplet."
+            # The network existing is not the binding condition: staging sat for
+            # weeks with retina-edge present and no server attached. What matters
+            # is that something is actually on it to answer.
+            EDGE_MEMBERS=$(docker network inspect retina-edge \
+              --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null || true)
+            if [ -z "${EDGE_MEMBERS// /}" ]; then
+              echo "::warning::No tower-finder-service reachable on retina-edge from $(hostname) (network missing or empty), so GET /api/towers will 502 here after this deploy. Everything else is unaffected. To fix: 'docker network create retina-edge' if absent, then dispatch tower-finder-service's deploy-test workflow onto this droplet."
             fi
 
             # ── Injection point 1 ─────────────────────────────────────────────

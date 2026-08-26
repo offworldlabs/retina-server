@@ -10,6 +10,13 @@ set -euo pipefail
 BASE_URL="https://staging-towers.retina.fm"
 API_URL="https://staging-api.retina.fm"
 DASH_URL="https://staging-dash.retina.fm"
+# Both vhosts are rooted at frontend/dist and so serve the tower finder too.
+# testmap is the public demo (prod parks the name as testmap-retired).
+MAP_URL="https://staging-map.retina.fm"
+TESTMAP_URL="https://testmap.retina.fm"
+# TOWER_CONTRACT_QUERY / TOWER_CONTRACT_ECHO: what a backend must echo back.
+# shellcheck source=deploy/tower-contract.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tower-contract.sh"
 CURL="curl -s --connect-timeout 10 --max-time 30"
 PASS=0
 FAIL=0
@@ -19,7 +26,9 @@ check() {
     printf "  %-40s " "$name"
     BODY=$($CURL "$url" 2>/dev/null) || { echo "FAIL (connection error)"; FAIL=$((FAIL+1)); return; }
 
-    if echo "$BODY" | grep -q "$expected"; then
+    # -F: every caller passes a literal, and an unescaped `.` in one would
+    # otherwise match a character it was never meant to.
+    if echo "$BODY" | grep -qF "$expected"; then
         echo "OK"
         PASS=$((PASS+1))
     else
@@ -63,11 +72,8 @@ check_json_field() {
     fi
 }
 
-# Status and body in ONE request, with fixed-string matching. Both matter here:
-# the tower endpoints fan out to the FCC and open-meteo APIs on every call, so
-# probing the same URL twice doubles this suite's exposure to a third-party
-# outage that would then block a deploy; and `check` above greps a REGEX, where
-# an expected value containing `.` silently matches more than it should.
+# Status and body from ONE request: these endpoints call the FCC and open-meteo
+# on every hit, and a second probe doubles what an outage there can block.
 check_proxied() {
     local name="$1" url="$2" expected code body resp
     shift 2
@@ -208,28 +214,17 @@ check_rate_limit "session endpoints rate limited"    "${BASE_URL}/api/auth/me"  
 
 echo ""
 echo "── tower-finder-service seam ──"
-# Sibling paths under /api/ on one vhost now resolve to different containers:
-# /api/towers leaves for tower-finder-service over retina-edge, everything else
-# stays with the local app. Both halves are asserted, since either one alone
-# looks healthy while the other is broken. A broken proxy 502s rather than 404s:
-# the server has dropped off retina-edge (deploy/check-env-parity.py compares
-# that) or the service stack is down.
-#
-# Whatever answers must echo the parameters that change the result, not just
-# return 200. FastAPI discards unknown query params silently, so a backend
-# missing one serves a cheerful 200 with the wrong ranking — which is how
-# `frequencies` went unnoticed on tower-finder.retina.fm for months. Add the
-# next such parameter here when it lands rather than trusting the status code.
-#
-# 1234.5 because parse_user_frequencies takes anything in 0 < v < 10000 and no
-# broadcast tower transmits there, so the echo cannot be some tower's own value.
-TOWERS_QUERY="lat=33.45&lon=-112.07&frequencies=1234.5"
-TOWERS_ECHO='"user_frequencies_mhz":[1234.5]'
-check_proxied "towers vhost /api/towers → service"  "${BASE_URL}/api/towers?${TOWERS_QUERY}" '"towers"' "$TOWERS_ECHO"
-check_proxied "api vhost /towers → service"         "${API_URL}/towers?${TOWERS_QUERY}"      '"towers"' "$TOWERS_ECHO"
-# The other half: a sibling /api/ path on the same vhost is still served by the
-# app. /api/radar/nodes has no counterpart on the service, so a 200 here can
-# only have come from the monolith.
+# EVERY vhost that routes to the service, not a sample: the defect this guards
+# against is one vhost silently missing the proxy, which a sample cannot see.
+# Keep this list in step with the towers-proxy.conf includes in the template.
+for target in "${BASE_URL}/api/towers" "${MAP_URL}/api/towers" \
+              "${TESTMAP_URL}/api/towers" "${API_URL}/towers"; do
+    check_proxied "${target#https://}" \
+        "${target}?${TOWER_CONTRACT_QUERY}" '"towers"' "$TOWER_CONTRACT_ECHO"
+done
+# The other half of the seam: a sibling /api/ path on the same vhost is still
+# served by the app. /api/radar/nodes has no counterpart on the service, so a
+# 200 here can only have come from the monolith.
 check_status  "sibling /api/ path stays on the app" "${BASE_URL}/api/radar/nodes"            "200"
 
 echo ""

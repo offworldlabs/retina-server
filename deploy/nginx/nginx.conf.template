@@ -71,7 +71,9 @@ server {
         # RETINA_INCLUDE snippets/claim-codes.conf
     }
 
+    # RETINA_IF TOWER_FINDER
     # RETINA_INCLUDE snippets/towers-proxy.conf
+    # RETINA_ENDIF
 
     # Frontend SPA at /towers as well as at the root
     location /towers {
@@ -124,10 +126,12 @@ server {
     # proxy would send. Exact match, or the prefix would also claim /towersfoo.
     # The rewrite must be explicit: proxy_pass with a variable does not
     # substitute the location prefix.
+    # RETINA_IF TOWER_FINDER
     location = /towers {
         rewrite ^/towers$ /api/towers break;
         # RETINA_INCLUDE snippets/tower-finder.conf
     }
+    # RETINA_ENDIF
 
     location / {
         # RETINA_INCLUDE snippets/api.conf
@@ -159,7 +163,9 @@ server {
         # RETINA_INCLUDE snippets/api.conf
     }
 
+    # RETINA_IF TOWER_FINDER
     # RETINA_INCLUDE snippets/towers-proxy.conf
+    # RETINA_ENDIF
 
     # RETINA_INCLUDE snippets/spa.conf
 }
@@ -189,7 +195,9 @@ server {
         # RETINA_INCLUDE snippets/api.conf
     }
 
+    # RETINA_IF TOWER_FINDER
     # RETINA_INCLUDE snippets/towers-proxy.conf
+    # RETINA_ENDIF
 
     # RETINA_INCLUDE snippets/spa.conf
 }

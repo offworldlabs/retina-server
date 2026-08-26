@@ -409,11 +409,25 @@ jobs:
             echo "E2E tests failed — rolling back production..."
             cd ${{ env.APP_DIR }} && bash deploy/rollback.sh
 
+  tower-service-contract:
+    name: tower-finder-service honours what we forward
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+      # Gates STAGING, not just production. staging serves testmap.retina.fm,
+      # the public demo, so a proxy that drops a parameter is user-visible there
+      # the moment staging deploys — before staging-smoke-tests has run and long
+      # before the production gate would notice.
+      - name: The service must honour /api/towers parameters before a vhost routes to it
+        run: bash deploy/tower-contract.sh
+
   deploy-staging:
     name: Deploy to staging
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [backend-tests, frontend-build, dashboard-build, docker-build, env-parity]
+    needs: [backend-tests, frontend-build, dashboard-build, docker-build, env-parity, tower-service-contract]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     concurrency:
       group: staging-deploy
