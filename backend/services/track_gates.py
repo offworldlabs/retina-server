@@ -34,11 +34,13 @@ from services.geo import (
     offset_latlon,
     offset_latlon_m,
 )
+from services.public_location import fuzz_enabled, fuzz_node_cfg
 
 
 def _reset_for_tests() -> None:
     """Restore this module's private state to boot values.  Tests only."""
     _single_node_arc_cache.clear()
+    _public_arc_cache.clear()
 
 
 # ── Multi-node result → tar1090-compatible dict ──────────────────────────────
@@ -243,6 +245,46 @@ def _cached_single_node_arc(ac_hex, track, node_cfg, touched_keys):
 
     arc = _build_single_node_arc(track, node_cfg)
     _single_node_arc_cache[key] = (fingerprint, arc)
+    return arc
+
+
+# The arc that goes on the wire, memoised exactly like the one above and keyed
+# the same way.  Two caches rather than one entry holding both, so the internal
+# arc is never built speculatively for a track whose arc is never serialized,
+# and so the build counts of the two paths stay separable.
+_public_arc_cache: dict[tuple[str, str | None], tuple[tuple, list | None]] = {}
+
+
+def _cached_public_arc(ac_hex, track, node_cfg, touched_keys):
+    """The ambiguity arc as a public client should see it.
+
+    The arc is an ellipse with the receiver and the transmitter at its foci, so
+    publishing the one the gates use hands over the true receiver: fit two arcs
+    from the same node and the second focus is the operator's house.  This
+    rebuilds the same locus — same measured bistatic range, same real
+    transmitter — around the PUBLISHED receiver instead, so the arcs a client
+    collects over a night intersect at the published point and nowhere else.
+
+    Deliberately a second builder call rather than a rewrite of the first: the
+    arc ``track_entry`` gates on, takes its midpoint from, and feeds to the
+    arc-motion log has to stay the true-geometry one, or the fuzz would move
+    aircraft instead of receivers.  With NODE_FUZZ_MODE=off this returns the
+    internal arc itself and costs nothing.
+    """
+    internal = _cached_single_node_arc(ac_hex, track, node_cfg, touched_keys)
+    if internal is None or not fuzz_enabled():
+        return internal
+
+    node_id = node_cfg.get("node_id")
+    key = (ac_hex, node_id)
+    delay_us = getattr(track, "latest_delay_us", None)
+    fingerprint = None if delay_us is None else round(delay_us, 3)
+    cached = _public_arc_cache.get(key)
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
+
+    arc = _build_single_node_arc(track, fuzz_node_cfg(node_cfg))
+    _public_arc_cache[key] = (fingerprint, arc)
     return arc
 
 
@@ -712,7 +754,13 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
         "category": "A3",
         "multinode": False,
         "position_source": position_source,
-        "ambiguity_arc": ambiguity_arc,
+        # The published arc, not the one the gates above ran on.  Whether an
+        # arc is emitted at all is still decided by the true-geometry arc — the
+        # RMS gate nulls it, the beam clip can decline to build it — so the
+        # rewrite below only changes the curve's geometry, never its presence.
+        "ambiguity_arc": (
+            _cached_public_arc(ac_hex, track, node_cfg, touched_arc_keys) if ambiguity_arc is not None else None
+        ),
         "solver_lat": solver_lat,
         "solver_lon": solver_lon,
         "rms_delay": rms_delay,

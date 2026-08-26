@@ -11,6 +11,7 @@ from retina_analytics.trust import AdsReportEntry
 
 from core import state
 from services import node_bias
+from services.public_location import public_node_summary
 
 _RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
 
@@ -29,6 +30,10 @@ async def radar_node_analytics(node_id: str):
     summary = state.node_analytics.get_node_summary(node_id)
     if summary.keys() == {"node_id"}:
         raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+    # Same blocks as the cached /api/radar/analytics payload, built fresh — so
+    # the same receiver-geometry rewrite has to happen here too, or this route
+    # is the hole the cached one closed.  See services/public_location.py.
+    summary = public_node_summary(node_id, summary)
     # Backend-computed bias estimate from claim residuals — same conditional
     # shape as the manager's own blocks: present only once the node has
     # residual history.  The trust block above already blends backend-fed
@@ -72,6 +77,19 @@ async def submit_adsb_report(
 
 @router.get("/api/radar/association/overlaps")
 async def association_overlaps():
+    """Which node pairs have an overlapping detection zone, and how big it is.
+
+    Serves no geometry, so nothing here is fuzzed and it stays public.  The
+    overlap zones are computed FROM node positions, but
+    ``NodeAssociator.get_overlap_summary()`` emits only the two node ids, a
+    grid-point count, the delay/Doppler gates and a has_overlap flag — no
+    coordinates, no grid, no extent.  ``registered_nodes`` is a list of ids.
+    A pair count and a gate width constrain the inter-node distance far too
+    loosely to locate either node, so admin-gating this would cost the map its
+    coverage layer and buy nothing.  If this payload ever grows a lat/lon (a
+    zone centroid, a bounding box, the grid itself), it has to be rebuilt from
+    published positions or moved behind require_admin before it ships.
+    """
     return Response(content=state.latest_overlaps_bytes, media_type="application/json")
 
 

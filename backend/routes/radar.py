@@ -15,6 +15,7 @@ from core import state
 from core.users import require_admin
 from pipeline.passive_radar import PassiveRadarPipeline
 from services import node_registration
+from services.public_location import public_latlon
 from services.tcp_handler import is_synthetic_node
 
 router = APIRouter()
@@ -229,6 +230,15 @@ async def load_detection_file(body: LoadFileRequest, _admin=Depends(require_admi
 
 @router.get("/api/radar/status")
 async def radar_status():
+    # Unauthenticated, and the config block quotes the default pipeline's
+    # receiver — so it quotes the published coordinate, like every other
+    # public surface.  Not in the original privacy sweep's list of sites; it
+    # is the same disclosure by the same route class, and nothing reads it.
+    _rx_lat, _rx_lon = public_latlon(
+        _default_pipeline.config["rx_lat"],
+        _default_pipeline.config["rx_lon"],
+        _default_pipeline.config.get("node_id"),
+    )
     return {
         "node_id": _default_pipeline.node_id,
         "total_tracks": len(_default_pipeline.tracker.tracks),
@@ -237,8 +247,8 @@ async def radar_status():
         "track_events": len(_default_pipeline.event_writer.get_events()),
         "external_adsb_cached": len(state.external_adsb_cache),
         "config": {
-            "rx_lat": _default_pipeline.config["rx_lat"],
-            "rx_lon": _default_pipeline.config["rx_lon"],
+            "rx_lat": _rx_lat,
+            "rx_lon": _rx_lon,
             "tx_lat": _default_pipeline.config["tx_lat"],
             "tx_lon": _default_pipeline.config["tx_lon"],
             "FC": _default_pipeline.config["FC"],

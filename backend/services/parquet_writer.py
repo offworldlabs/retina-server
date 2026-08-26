@@ -20,6 +20,8 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from services.public_location import public_latlon
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,6 +54,10 @@ SCHEMA = pa.schema(
         # they're cheap to fan out into every row (Parquet's per-column dictionary
         # encoding makes constants effectively free) and impossible to reconstruct
         # later if the node config drifts or the node is taken offline.
+        #
+        # rx_lat/rx_lon are the PUBLISHED receiver position, not the true one
+        # (see _flatten) — the archive is served raw to anyone.  tx_* are true:
+        # transmitters are licensed broadcast towers.
         ("rx_lat", pa.float64()),
         ("rx_lon", pa.float64()),
         ("rx_alt_ft", pa.float64()),
@@ -144,6 +150,14 @@ def _flatten(
         rx_lat = f_rx_lat if f_rx_lat is not None else cfg_rx_lat
         rx_lon = f_rx_lon if f_rx_lon is not None else cfg_rx_lon
         rx_alt = f_rx_alt if f_rx_alt is not None else cfg_rx_alt
+        # The archive is downloadable raw through /api/data/archive, so these
+        # rows are a public payload with a very long memory: a single Parquet
+        # file pins a receiver forever, and unlike a live feed it cannot be
+        # taken back once someone has it.  Write the published coordinate.
+        # Column names and dtypes are unchanged — a reader still finds rx_lat
+        # where it always was, it just no longer finds a house there.  The
+        # solver never reads the archive back, so nothing downstream degrades.
+        rx_lat, rx_lon = public_latlon(rx_lat, rx_lon, node_id)
         tx_lat = f_tx_lat if f_tx_lat is not None else cfg_tx_lat
         tx_lon = f_tx_lon if f_tx_lon is not None else cfg_tx_lon
         tx_alt = f_tx_alt if f_tx_alt is not None else cfg_tx_alt

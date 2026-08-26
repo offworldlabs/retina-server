@@ -286,8 +286,17 @@ class TestPipelineProcessFrame:
         assert isinstance(result["aircraft"], list)
 
     def test_generate_receiver_json(self):
+        """receiver.json carries the PUBLISHED receiver position.
+
+        tar1090 clients centre the map on it and the endpoint is
+        unauthenticated, so it is a serialization site like any other — see
+        services/public_location.py and test_public_location.py.  The pipeline
+        config keeps the truth.
+        """
         p = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         result = p.generate_receiver_json()
         assert "lat" in result
         assert "lon" in result
-        assert result["lat"] == DEFAULT_NODE_CONFIG["rx_lat"]
+        assert result["lat"] != DEFAULT_NODE_CONFIG["rx_lat"]
+        assert result["lon"] != DEFAULT_NODE_CONFIG["rx_lon"]
+        assert p.config["rx_lat"] == DEFAULT_NODE_CONFIG["rx_lat"]

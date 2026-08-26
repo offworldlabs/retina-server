@@ -18,6 +18,12 @@ from core import state
 from services.geo import bearing_deg, bistatic_delay_us, haversine_km, node_beam_params, point_in_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
+from services.public_location import (
+    fuzz_enabled,
+    location_uncertainty_km,
+    public_latlon,
+    public_node_summaries,
+)
 
 _analytics_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=1,
@@ -268,13 +274,40 @@ def _refresh_coverage_constraints(max_nodes: int = _COVERAGE_MAX_NODES_PER_CYCLE
     return rebuilt
 
 
+def _public_location_block(node_id: str, cfg: dict) -> dict:
+    """The ``location`` block of /api/radar/nodes, safe for a public client.
+
+    The receiver coordinate is the published one; ``rx_alt_ft`` is not touched,
+    because an altitude on its own places nobody — it is a terrain figure
+    shared by everyone on the same hill, and it is what the arc geometry needs.
+    TX is a licensed broadcast tower and stays true.
+
+    ``location_uncertainty_km`` is the radius the receiver is somewhere inside.
+    It is emitted whether or not fuzzing is on: a client that draws no disc
+    when the field is 0 is drawing the honest thing.
+    """
+    rx_lat, rx_lon = public_latlon(cfg.get("rx_lat"), cfg.get("rx_lon"), node_id)
+    return {
+        "rx_lat": rx_lat,
+        "rx_lon": rx_lon,
+        "rx_alt_ft": cfg.get("rx_alt_ft"),
+        "tx_lat": cfg.get("tx_lat"),
+        "tx_lon": cfg.get("tx_lon"),
+        "tx_alt_ft": cfg.get("tx_alt_ft"),
+        "location_uncertainty_km": location_uncertainty_km() if fuzz_enabled() else 0.0,
+    }
+
+
 def _refresh_analytics_and_nodes():
     """Heavy work: recompute analytics, nodes, and overlaps → store as bytes."""
     from services.tcp_handler import is_synthetic_node
 
-    # Analytics
+    # Analytics.  Both variants below are served to unauthenticated clients, so
+    # the receiver geometry in them is the published one — see
+    # services/public_location.public_node_summary for what moves and why.  The
+    # summaries the manager caches are left alone; this is a copy.
     analytics_data = {
-        "nodes": state.node_analytics.get_all_summaries(),
+        "nodes": public_node_summaries(state.node_analytics.get_all_summaries()),
         "cross_node": state.node_analytics.get_cross_node_analysis(),
     }
     state.latest_analytics_bytes = orjson.dumps(analytics_data, option=orjson.OPT_SERIALIZE_NUMPY)
@@ -307,14 +340,7 @@ def _refresh_analytics_and_nodes():
                     or info.get("config", {}).get("frequency")
                 ),
                 "sample_rate": (info.get("config", {}).get("Fs") or info.get("config", {}).get("fs_hz")),
-                "location": {
-                    "rx_lat": info.get("config", {}).get("rx_lat"),
-                    "rx_lon": info.get("config", {}).get("rx_lon"),
-                    "rx_alt_ft": info.get("config", {}).get("rx_alt_ft"),
-                    "tx_lat": info.get("config", {}).get("tx_lat"),
-                    "tx_lon": info.get("config", {}).get("tx_lon"),
-                    "tx_alt_ft": info.get("config", {}).get("tx_alt_ft"),
-                },
+                "location": _public_location_block(nid, info.get("config", {})),
             }
             for nid, info in _nodes_snapshot
         },

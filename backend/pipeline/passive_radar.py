@@ -47,6 +47,7 @@ from config.constants import (
     as_num,
 )
 from services.id_utils import passive_track_hex
+from services.public_location import public_latlon
 
 # ─── Node Configuration ─────────────────────────────────────────────
 DEFAULT_NODE_CONFIG = {
@@ -774,13 +775,24 @@ class PassiveRadarPipeline:
         }
 
     def generate_receiver_json(self) -> dict:
-        """Generate tar1090-compatible receiver.json for the RX site."""
+        """Generate tar1090-compatible receiver.json for the RX site.
+
+        Served unauthenticated at /api/radar/data/receiver.json, and tar1090
+        clients centre the map on it — so it carries the published receiver
+        position, not the true one.  self.config keeps the truth for the
+        pipeline; only this serialization moves.
+        """
+        lat, lon = public_latlon(
+            self.config["rx_lat"],
+            self.config["rx_lon"],
+            self.config.get("node_id"),
+        )
         return {
             "version": "retina-passive-radar",
             "refresh": 1000,
             "history": 0,
-            "lat": self.config["rx_lat"],
-            "lon": self.config["rx_lon"],
+            "lat": lat,
+            "lon": lon,
         }
 
 
