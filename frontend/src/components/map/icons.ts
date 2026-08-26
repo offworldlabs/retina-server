@@ -1,5 +1,5 @@
 import L from "leaflet";
-import { ADSB_SINGLE_COLOR, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
+import { ADSB_SINGLE_COLOR, DR_ICON_HIDE_DISTANCE_M, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
 
 // Top-down airplane SVG path (nose pointing up/north at 0°)
 export const PLANE_PATH =
@@ -43,10 +43,33 @@ export const ALTITUDE_LEGEND = [
 
 export function getAircraftColor(ac, colorByAlt = false) {
   if (colorByAlt && typeof ac.alt_baro === "number") return altitudeColor(ac.alt_baro);
-  if (ac.multinode || ac.position_source === "multinode_solve") return "#a78bfa";
+  // Multi-node splits on adsb_assisted (backend: the mn-adsb-* / mn-dark-* key
+  // prefix): a solve that knew the transponder is cyan, a dark one violet.
+  // See the palette note in constants.ts for why the lanes are coloured this way.
+  if (ac.multinode || ac.position_source === "multinode_solve")
+    return ac.adsb_assisted ? "#38bdf8" : "#a78bfa";
   if (ac.position_source === POSITION_SOURCE_ADSB_SINGLE) return ADSB_SINGLE_COLOR;
   if (ac.position_source === "solver_adsb_seed") return "#2dd4bf";
+  // Fallback, now sharing cyan with the assisted multi-node lane: the only
+  // source that lands here is the solver_single_node relic, which is rare
+  // enough that the collision is cheaper than a fourth shade.
   return "#38bdf8";
+}
+
+// Dead-reckoned drift (metres) since the last real solve.  ac.seen is the
+// backend's age-of-solve — it resets on every real solve and grows on the
+// re-broadcasts in between — and the _updatedAt term covers a WS gap since
+// the last ingest, which `seen` cannot know about.  gs is knots.
+export function drDriftM(ac, nowMs: number): number {
+  const ageS = (ac.seen ?? 0) + Math.max(0, (nowMs - (ac._updatedAt ?? nowMs)) / 1000);
+  return (ac.gs ?? 0) * 0.514444 * ageS;
+}
+
+/** True when the icon has dead-reckoned further than the drift budget and
+ *  must not be drawn.  The track itself stays alive — see
+ *  DR_ICON_HIDE_DISTANCE_M. */
+export function hideDrIcon(ac, nowMs: number): boolean {
+  return drDriftM(ac, nowMs) > DR_ICON_HIDE_DISTANCE_M;
 }
 
 // Altitude → icon edge in px. Exported because the claimed-arc trim

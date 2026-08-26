@@ -11,7 +11,7 @@ export {
   yagiSectorPositions,
 } from "./geo";
 export { mergeTrailPositions, sampleTrailPositions, buildTrailSegments } from "./trails";
-export { PLANE_PATH, getAircraftColor, altitudeColor, ALTITUDE_LEGEND, aircraftIconSize, makeAircraftIcon, makeDroneIcon, nodeIcon } from "./icons";
+export { PLANE_PATH, getAircraftColor, altitudeColor, ALTITUDE_LEGEND, aircraftIconSize, makeAircraftIcon, makeDroneIcon, nodeIcon, drDriftM, hideDrIcon } from "./icons";
 export { FitBounds, ViewportTracker, MapClickClear } from "./MapControls";
 export { useAircraftFeed, useNodes, useAuth } from "./hooks";
 export { default as NodeOwnerControl } from "./NodeOwnerControl";

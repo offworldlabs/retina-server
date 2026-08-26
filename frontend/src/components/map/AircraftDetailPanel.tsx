@@ -50,8 +50,11 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
   const isSolverAdsbSeed = ac.position_source === "solver_adsb_seed";
   const isAdsbSingleNode = ac.position_source === POSITION_SOURCE_ADSB_SINGLE;
   const isDrone = ac.target_class === "drone";
+  // The multi-node label names the LANE, not the node count — the count
+  // already has its own Nodes field below, while whether the solve carried a
+  // transponder tag (mn-adsb-* vs mn-dark-*) was invisible until adsb_assisted.
   const sourceLabel = isMultinode
-    ? `Multi-node (${ac.n_nodes}N)`
+    ? (ac.adsb_assisted ? "Multi-node (ADS-B assisted)" : "Multi-node (dark)")
     : isAmbiguityArc
       ? "Single-node ellipse arc"
       : isAdsbSingleNode

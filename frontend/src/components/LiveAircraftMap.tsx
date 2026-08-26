@@ -31,6 +31,7 @@ import {
   buildTrailSegments,
   makeAircraftIcon,
   makeDroneIcon,
+  hideDrIcon,
   nodeIcon,
   yagiSectorPositions,
   FitBounds,
@@ -63,7 +64,7 @@ import { arcNearestPoint } from "./map/arcErrors";
 import { detectingNodeIdsFor } from "./map/detections";
 import { ensureDebugPanes, DEBUG_PASSIVE_PANE, GT_CLICK_PANE } from "./map/panes";
 import { ARC_TOTAL_LIFE_MS } from "./map/constants";
-import { snapTrack, sweepStaleRadar } from "./map/trackStores";
+import { reconcileAdsbPairs, snapTrack, sweepStaleRadar } from "./map/trackStores";
 import StatsOverlay from "./map/StatsOverlay";
 import ShortcutHelp from "./map/ShortcutHelp";
 
@@ -528,7 +529,7 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels
       ? makeDroneIcon(ac, showLabels, isSelected)
       : makeAircraftIcon(ac, showLabels, isSelected, colorByAlt),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [ac.hex, isSelected, showLabels, colorByAlt, ac.flight, ac.target_class, altBand, ac.position_source],
+    [ac.hex, isSelected, showLabels, colorByAlt, ac.flight, ac.target_class, altBand, ac.position_source, ac.adsb_assisted],
   );
   const handlers = useMemo(() => ({ click: () => onSelect(ac.hex) }), [ac.hex, onSelect]);
   return <Marker ref={markerRef} position={[ac.lat, ac.lon]} icon={icon} eventHandlers={handlers} />;
@@ -542,13 +543,16 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels
   prev.ac.flight === next.ac.flight &&
   prev.ac.target_class === next.ac.target_class &&
   Math.floor((prev.ac.alt_baro ?? 0) / 5000) === Math.floor((next.ac.alt_baro ?? 0) / 5000) &&
-  // position_source drives the icon COLOUR (getAircraftColor), and a track can
-  // change source mid-flight — a claimed aircraft picking up a second node
-  // becomes a multinode solve, and vice versa.  Without this the icon kept its
-  // old colour until some unrelated key (callsign, altitude band, selection)
-  // happened to change.  Stable per track in the common case, so it costs no
-  // extra re-renders in steady state.
+  // position_source and adsb_assisted drive the icon COLOUR
+  // (getAircraftColor), and a track can change either mid-flight — a claimed
+  // aircraft picking up a second node becomes a multinode solve and vice
+  // versa, and a multinode solve loses its transponder tag when the ADS-B
+  // feed drops it (cyan → violet).  Without these the icon kept its old
+  // colour until some unrelated key (callsign, altitude band, selection)
+  // happened to change.  Both are stable per track in the common case, so
+  // they cost no extra re-renders in steady state.
   prev.ac.position_source === next.ac.position_source &&
+  prev.ac.adsb_assisted === next.ac.adsb_assisted &&
   prev.onSelect === next.onSelect
 );
 
@@ -1069,6 +1073,10 @@ export default function LiveAircraftMap() {
         _updatedAt: now,
       };
     }
+    // One icon per physical aircraft across a lane transition: the ICAO-keyed
+    // and mn<sha>-keyed entries for the same transponder are resolved down to
+    // the fresher solve here, rather than waiting out the 8 s sweep below.
+    reconcileAdsbPairs(aircraft, allStoresRef.current, now);
     // Drop stale entries no longer in the feed (skip truth-only — managed by their own effect)
     sweepStaleRadar(allStoresRef.current, now, STALE_AIRCRAFT_MS);
   }, [aircraft]);
@@ -1276,6 +1284,10 @@ export default function LiveAircraftMap() {
     () => filteredAircraft.filter((ac) => ac.hex === selectedHex || isAircraftInViewport(ac, viewport)),
     [filteredAircraft, selectedHex, viewport],
   );
+  // Wall clock for the drift gate (hideDrIcon), read ONCE per render rather
+  // than per aircraft — this component re-renders at the 2 Hz displayAircraft
+  // cadence, which is also the hide/revive latency.
+  const markerNow = Date.now();
   // Ref mirrors for the imperative layers: their effects read data inside
   // their own tick instead of keying on these 2 Hz array identities, which
   // used to tear every Leaflet object down twice a second.
@@ -2000,15 +2012,21 @@ export default function LiveAircraftMap() {
               <InBeamDiagnostic detectionsRef={detectionsRef} groundTruthRef={groundTruthRef} nodesByIdRef={nodesByIdRef} smoothRef={smoothRef} />
             )}
             {/* Aircraft position markers — radar-detected aircraft rendered as airplane icons.
-                 Color encodes confidence: purple=multinode, teal=ADS-B aided, cyan=single-node.
+                 Color encodes the lane the position came from: blue=single-node ADS-B,
+                 cyan=multi-node with ADS-B, violet=multi-node dark, teal=ADS-B-seeded solver.
                  Single-node arc-only tracks get NO plane marker: their lat/lon is just the
                  arc-midpoint estimate (the aircraft is somewhere along the visible arc), and
                  users mistook the icon position for the actual location.  The detection arc
                  rendered by DetectionArcs is their only map presence; selecting them from the
-                 list still highlights the arc and centers the map on the midpoint. */}
+                 list still highlights the arc and centers the map on the midpoint.
+                 A track that has dead-reckoned past DR_ICON_HIDE_DISTANCE_M loses its icon
+                 for the same reason — the drawn position is no longer evidence of where the
+                 aircraft is — but stays tracked everywhere else, so the next real solve
+                 brings the icon straight back. */}
             {visibleAircraft.map((ac) => {
               if (!validLatLon(ac.lat, ac.lon)) return null;
               if (ac.position_source === POSITION_SOURCE_ARC_ONLY) return null;
+              if (hideDrIcon(ac, markerNow)) return null;
               const isSelected = ac.hex === selectedHex;
               return (
                 <AircraftMarker
@@ -2023,11 +2041,14 @@ export default function LiveAircraftMap() {
               );
             })}
 
-            {/* Anomaly flag rings — pulsing red circle around flagged aircraft */}
+            {/* Anomaly flag rings — pulsing red circle around flagged aircraft.
+                 Follows the icon's drift gate: a ring with no plane inside it
+                 reads as a phantom target. */}
             {visibleAircraft
               .filter((ac) =>
                 anomalyHexesRef.current.has(ac.ground_truth_hex || ac.hex) &&
-                ac.lat && ac.lon
+                ac.lat && ac.lon &&
+                !hideDrIcon(ac, markerNow)
               )
               .map((ac) => (
                 <CircleMarker
