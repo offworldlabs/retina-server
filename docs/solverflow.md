@@ -169,9 +169,11 @@ flowchart TD
 
     path2 --> gFresh{"age_s <= KNOWN_CLAIM_MAX_FIX_AGE_S 45.0s"}
     gFresh -->|"no"| skip2["excluded"]:::inert
-    gFresh --> drpos["dead-reckon position<br/>to frame epoch"]
+    gFresh --> gScreen{"range prescreen: equirect sq-dist<br/>on REPORTED position vs<br/>effective_radius x 1.02 + v_max*age"}
+    gScreen -->|"outside"| visrej["known_claims_visibility_rejects"]:::inert
+    gScreen -->|"inside"| drpos["dead-reckon position<br/>to frame epoch"]
     drpos --> gVis{"geometric visibility gate<br/>_point_in_beam on DR position"}
-    gVis -->|"not visible"| visrej["known_claims_visibility_rejects"]:::inert
+    gVis -->|"not visible"| visrej
     gVis -->|"visible"| pred["predict_observation<br/>(expected delay/Doppler)"]
     pred --> gGate{"age-scaled cost gate<br/>d_gate=10.0us, f_gate=25.0Hz,<br/>scaled by 1+min(age,45)/45"}
     gGate -->|"infeasible"| infeasible["cost = 1.0e6, excluded<br/>by linear_sum_assignment"]:::inert
@@ -192,6 +194,16 @@ flowchart TD
     m1 --> solve["known-lane solver pass<br/>(3c)"]
     m2 --> solve
 ```
+
+The range prescreen is an optimization with no semantics of its own: its
+radius (`effective_radius_km × _SCREEN_MARGIN` plus `_V_MAX_MS × |age|` of
+possible aircraft motion, east-west scaled at the poleward edge of the screen,
+longitude delta wrapped at the antimeridian) is provably weaker than every
+branch of `_point_in_beam`, so it can only reject candidates the gate would
+also reject — a differential property test in `test_known_claiming.py`
+(`TestRangePrescreen`) holds the two paths verdict-identical. A prescreen
+failure increments the same `known_claims_visibility_rejects` counter as a
+gate failure: same event, same meaning, just caught cheaper.
 
 **Mode semantics** (`KNOWN_LANE_MODE`, read once at `core/state.py:72-74`,
 default `binding`; an unrecognized value falls back to `shadow`, not to the
@@ -261,6 +273,9 @@ LM's SNR weighting maps to a uniform weight of 1.0.
 |---|---|---|
 | `KNOWN_CLAIM_MAX_FIX_AGE_S` | 45.0 s | `known_claiming.py` (= `ADSB_SEED_MAX_DR_AGE_S`, `association.py:106`) |
 | Path 2 gates: `KNOWN_CLAIM_DELAY_GATE_US` / `KNOWN_CLAIM_DOPPLER_GATE_HZ` | 10.0 us / 25.0 Hz, age-scaled | `known_claiming.py` (= `ADSB_SEED_*`, `association.py:98,99`) |
+| Prescreen slack `_SCREEN_MARGIN` | 1.02 | `known_claiming.py:79` |
+| Prescreen speed bound `_V_MAX_MS` | 340.0 m/s | `association.py:205` |
+| `CLAIM_MAX_GLOBAL_TRACKS` (contention reference cap, newest-first) | 200 | `association.py:89`, applied in `known_claiming.py:_dark_global_projections` |
 | Contention gates: `CLAIM_DELAY_GATE_US` / `CLAIM_DOPPLER_GATE_HZ` | 10.0 us / 25.0 Hz | `libs/retina-analytics/.../association.py:73,77` |
 | `CLAIM_MAX_DR_AGE_S` (contention DR window) | 30.0 s | `association.py:80` |
 | `CLAIM_ELIGIBLE_MIN_N_NODES` / `MIN_SOLVE_COUNT` | 3 / 2 | `association.py:85,86` |
