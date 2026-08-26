@@ -1,6 +1,7 @@
 """Identifier utilities shared across service modules."""
 
 import hashlib
+import re
 
 
 def multinode_hex_from_key(key: str) -> str:
@@ -28,3 +29,19 @@ def normalize_hex_key(hex_code) -> str:
     uppercase key is a silent lookup miss, not an error.
     """
     return str(hex_code or "").strip().lower()
+
+
+_TRANSPONDER_HEX_RE = re.compile(r"~?[0-9a-f]{6}")
+
+
+def is_transponder_hex(hex_code) -> bool:
+    """True if ``hex_code`` (already normalized) is a plausible transponder id.
+
+    Six hex digits, with tar1090's ``~`` prefix allowed for non-ICAO TIS-B
+    addresses.  Anything else — notably a simulator object id like
+    ``obj-01373`` — must never enter the ADS-B world: a non-transponder id in
+    ``state.adsb_aircraft`` (or in a solve's ``adsb_hex``) puts a dark target
+    in the ADS-B lane, which starves the mn-dark-* track store and with it the
+    entire dark-claiming path.
+    """
+    return bool(_TRANSPONDER_HEX_RE.fullmatch(str(hex_code or "")))

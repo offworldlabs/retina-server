@@ -26,7 +26,7 @@ from services import track_filter
 # were consolidated into services.geo.
 from services.geo import bearing_deg, bistatic_differential_km, node_beam_params, offset_latlon_m
 from services.geo import haversine_km as _haversine_km
-from services.id_utils import multinode_hex_from_key, normalize_hex_key
+from services.id_utils import is_transponder_hex, multinode_hex_from_key, normalize_hex_key
 
 _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 
@@ -650,7 +650,12 @@ def multinode_key_decision(
          associates to it above (by proximity, or by anchor once a claim
          forms), so it stays stable.
     """
-    if adsb_hex:
+    # Transponder-shaped ids only.  adsb_hex is whatever upstream association
+    # produced, and a non-transponder id here (a simulator object id, a claim
+    # against a poisoned adsb_aircraft entry) would put a dark target in the
+    # ADS-B lane — adsb_assisted=true on the feed, and the mn-dark-* store
+    # (so the anchor and proximity branches below) starved forever.
+    if adsb_hex and is_transponder_hex(adsb_hex):
         return f"mn-adsb-{adsb_hex}", "adsb"
 
     lat, lon = result["lat"], result["lon"]

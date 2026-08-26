@@ -543,6 +543,11 @@ solver_fail_displacement: int = 0
 # tracks anomalous — but a rising rate here still means association regressed.
 position_jump_events: int = 0
 
+# Sim ADS-B pushes dropped for a non-transponder hex (e.g. a simulator object
+# id standing in for a transponder).  A nonzero value means an outdated fleet
+# is still pushing dark aircraft into the ADS-B path — see routes/sim_ingest.
+sim_adsb_push_rejected_hex: int = 0
+
 # Solver end-to-end latency (seconds from queue submission to solve completion)
 solver_last_latency_s: float = 0.0
 solver_total_latency_s: float = 0.0
@@ -641,6 +646,7 @@ def _reset_for_tests() -> None:
     global solver_fail_exception, solver_fail_unconverged, solver_fail_rms_delay
     global solver_fail_rms_doppler, solver_fail_beam, solver_fail_displacement
     global position_jump_events
+    global sim_adsb_push_rejected_hex
     global solver_last_latency_s, solver_total_latency_s, solver_total_solved
     global peak_connected_nodes
 
@@ -725,6 +731,7 @@ def _reset_for_tests() -> None:
         solver_fail_exception = solver_fail_unconverged = solver_fail_rms_delay = 0
         solver_fail_rms_doppler = solver_fail_beam = solver_fail_displacement = 0
         position_jump_events = 0
+        sim_adsb_push_rejected_hex = 0
         solver_total_solved = 0
         solver_last_latency_s = solver_total_latency_s = 0.0
         peak_connected_nodes = 0
