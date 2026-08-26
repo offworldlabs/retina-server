@@ -196,6 +196,18 @@ check        "…and the rewrite reached /api/towers" "${API_URL}/towers?lat=33.
 # served by the app. /api/radar/nodes has no counterpart on the service, so a
 # 200 here can only have come from the monolith.
 check_status "sibling /api/ path stays on the app"  "${BASE_URL}/api/radar/nodes"                  "200"
+# Whatever answers /api/towers must honour `frequencies`, the operator's
+# measured-spectrum hint. This is a gate, not an observation: FastAPI discards
+# unknown query params silently, so a backend without the parameter serves a
+# cheerful 200 containing the wrong ranking, and that is exactly how it went
+# unnoticed on tower-finder.retina.fm for months. Failing here skips
+# deploy-production (which `needs` this job), so the monolith keeps serving
+# towers until the service can do this too.
+#
+# 1234.5 rather than a real frequency: parse_user_frequencies accepts anything
+# in 0 < v < 10000, and no broadcast tower transmits there, so finding it in the
+# body proves the value round-tripped rather than matching some tower's own.
+check "/api/towers honours frequencies"             "${BASE_URL}/api/towers?lat=33.45&lon=-112.07&frequencies=1234.5" "1234.5"
 
 echo ""
 echo "── Detection archive (dash /data) ──"
