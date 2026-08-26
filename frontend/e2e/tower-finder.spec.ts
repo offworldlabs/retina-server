@@ -57,14 +57,32 @@ test.describe("Tower Finder — search form", () => {
     expect(validationMsg).not.toBe("");
   });
 
-  test("auto-detects US source for US coordinates", async ({ page }) => {
-    await page.getByLabel(/latitude/i).fill("37.7749");
-    await page.getByLabel(/longitude/i).fill("-122.4194");
-    // Source dropdown should switch to "us" — toHaveValue auto-waits for the useEffect
+  test("leaves source on auto and lets the server classify the coordinates", async ({ page }) => {
+    // The client used to guess the country from lat/lon bounding boxes and pin
+    // the dropdown, which sent "ca" for every US point above 42N. Detection now
+    // lives server-side against real border polygons, so the form's job is
+    // simply to stay out of the way and send "auto".
+    const towersRequest = page.waitForRequest((r) => r.url().includes("/api/towers"));
+    await page.route("**/api/towers**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ towers: [], query: { source: "us" } }),
+      });
+    });
+
+    // Waltham, MA — 42.387N, the latitude the old bounding box misread as Canada.
+    await page.getByLabel(/latitude/i).fill("42.38708028093612");
+    await page.getByLabel(/longitude/i).fill("-71.24905416622781");
+
     const sourceSelect = page.getByLabel(/source|country|region/i).first();
     if (await sourceSelect.isVisible()) {
-      await expect(sourceSelect).toHaveValue("us");
+      await expect(sourceSelect).toHaveValue("auto");
     }
+
+    await page.getByRole("button", { name: /search|find/i }).first().click();
+    const url = new URL((await towersRequest).url());
+    expect(url.searchParams.get("source")).toBe("auto");
   });
 
   test("auto-fetches elevation when lat/lon are entered", async ({ page }) => {
