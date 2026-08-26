@@ -132,13 +132,13 @@ def _reset_for_tests() -> None:
     services.track_gates, services.feed_helpers), all called by conftest.
     """
     global _prof_cpu, _prof_wall, _prof_n
-    global _prof_analytics, _prof_assoc, _prof_pipeline, _prof_archive
+    global _prof_analytics, _prof_assoc, _prof_known, _prof_pipeline, _prof_archive
     with _archive_buffer_lock:
         _archive_buffer.clear()
         _archive_inflight.clear()
     with _prof_lock:
         _prof_cpu = _prof_wall = 0.0
-        _prof_analytics = _prof_assoc = _prof_pipeline = _prof_archive = 0.0
+        _prof_analytics = _prof_assoc = _prof_known = _prof_pipeline = _prof_archive = 0.0
         _prof_n = 0
 
 
@@ -210,9 +210,14 @@ _prof_lock = threading.Lock()
 _prof_cpu = 0.0
 _prof_wall = 0.0
 _prof_n = 0
-# Sub-phase accumulators (thread CPU time)
+# Sub-phase accumulators (thread CPU time).  Disjoint by construction — every
+# one measures a region no other one covers, so their sum is comparable with
+# cpu=.  `known` used to be inside `pipeline`, which made the known lane's cost
+# invisible: a stage that runs for every frame every node sends was reported
+# only as part of the tracker's number.
 _prof_analytics = 0.0
 _prof_assoc = 0.0
+_prof_known = 0.0
 _prof_pipeline = 0.0
 _prof_archive = 0.0
 
@@ -294,7 +299,7 @@ def _node_track_views(pipeline: PassiveRadarPipeline) -> list[dict]:
 def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarPipeline):
     """CPU-heavy frame processing — never runs on the event loop."""
     global _prof_cpu, _prof_wall, _prof_n
-    global _prof_analytics, _prof_assoc, _prof_pipeline, _prof_archive
+    global _prof_analytics, _prof_assoc, _prof_known, _prof_pipeline, _prof_archive
     _t0_wall = time.monotonic()
     _t0_cpu = time.thread_time()
 
@@ -352,6 +357,11 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             if now - _last_claim_error_log[0] > 60:
                 _last_claim_error_log[0] = now
                 logging.exception("known-lane claiming failed; frame continues on the dark lane")
+    # Its own PERF bucket: the block above is a per-frame, per-node stage whose
+    # cost scales with the live ADS-B cache, and folding it into `pipeline`
+    # attributed it to the tracker.  Subtracted from _d_pipeline below so the
+    # two stay disjoint.
+    _d_known = time.thread_time() - _t3
     # Predictive ADS-B tagging for a node with no receiver of its own.
     # Never overwrites a node-provided list — the node's own correlation is
     # authoritative, and an absent list is the only case where the backend
@@ -372,7 +382,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
                 state.bump_counter("adsb_seed_frames_autotagged")
     pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
     pipeline.process_frame(_pframe)
-    _d_pipeline = time.thread_time() - _t3
+    _d_pipeline = time.thread_time() - _t3 - _d_known
 
     _t2 = time.thread_time()
     _ts_ms_assoc = frame.get("timestamp", 0)
@@ -445,7 +455,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
                 continue
             if not math.isfinite(_lat) or not math.isfinite(_lon):
                 continue
-            state.adsb_aircraft[_hex] = {
+            _rec = {
                 "hex": _hex,
                 "flight": _ae.get("flight", ""),
                 "lat": _lat,
@@ -455,6 +465,10 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
                 "track": _ae.get("track", 0),
                 "last_seen_ms": _ts_ms,
             }
+            # Derived once here, not per read — see state.adsb_derived_fields.
+            # Published only after it is complete: readers snapshot unlocked.
+            _rec.update(state.adsb_derived_fields(_rec))
+            state.adsb_aircraft[_hex] = _rec
         state.aircraft_dirty = True
 
     # Time the archive append + conditional flush — the phase that actually
@@ -477,6 +491,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
         _prof_wall += _dt_wall
         _prof_analytics += _d_analytics
         _prof_assoc += _d_assoc
+        _prof_known += _d_known
         _prof_pipeline += _d_pipeline
         _prof_archive += _d_archive
         _prof_n += 1
@@ -487,18 +502,21 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             _idle = (1 - _ac / _aw) * 100 if _aw > 0 else 0
             _a_an = _prof_analytics / _prof_n * 1000
             _a_as = _prof_assoc / _prof_n * 1000
+            _a_kn = _prof_known / _prof_n * 1000
             _a_pp = _prof_pipeline / _prof_n * 1000
             _a_sv = _prof_archive / _prof_n * 1000
             _n_snap = _prof_n
     if _log_now:
         logging.warning(
-            "PERF: %d frames  cpu=%.1f wall=%.1f idle%%=%.0f  [analytics=%.1f assoc=%.1f pipeline=%.1f archive=%.1f]ms",
+            "PERF: %d frames  cpu=%.1f wall=%.1f idle%%=%.0f  "
+            "[analytics=%.1f assoc=%.1f known=%.1f pipeline=%.1f archive=%.1f]ms",
             _n_snap,
             _ac,
             _aw,
             _idle,
             _a_an,
             _a_as,
+            _a_kn,
             _a_pp,
             _a_sv,
         )

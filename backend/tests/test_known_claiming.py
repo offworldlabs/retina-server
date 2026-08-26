@@ -6,12 +6,21 @@ registered per test, ADS-B states injected through state.adsb_aircraft or a
 monkeypatched provider, process_one_frame exercised with a captured pipeline.
 """
 
+import math
+import random
 import sys
 import time
 import types
 
 import pytest
-from retina_analytics.association import predict_observation
+from retina_analytics.association import (
+    _V_MAX_MS,
+    CLAIM_MAX_GLOBAL_TRACKS,
+    NodeGeometry,
+    _point_in_beam,
+    predict_observation,
+)
+from retina_analytics.constants import KM_PER_DEG_LAT, km_per_deg_lon, offset_latlon_m
 
 from config.constants import FT_TO_M
 from core import state
@@ -192,6 +201,22 @@ class TestVisibilityGate:
         assert kc.claim_known_targets(_NODE_ID, _frame(ts, [pd], [pf])) == {0}
         assert state.known_claims_visibility_rejects == 0
 
+    def test_prescreen_rejects_are_counted_as_visibility_rejects(self, monkeypatch):
+        """_BEYOND is far enough out that the range prescreen rejects it
+        before _point_in_beam is ever called.  The tally must not notice: a
+        prescreen reject and a gate reject are the same event, and the
+        published rate would otherwise change meaning without changing name."""
+        _register()
+        ts = int(time.time() * 1000)
+        _cache_state("blind3", ts, lat=self._BEYOND[0], lon=self._BEYOND[1])
+        calls = []
+        monkeypatch.setattr(kc, "_point_in_beam", lambda lat, lon, geo: calls.append(1) or True)
+
+        assert kc.claim_known_targets(_NODE_ID, _frame(ts, [50.0], [10.0])) == set()
+
+        assert calls == []  # the expensive half was not paid
+        assert state.known_claims_visibility_rejects == 1
+
     def test_node_tag_is_not_visibility_gated(self):
         """A node tag is the node's own evidence that it saw this aircraft.
         A fix the backend's geometry calls invisible means a stale footprint
@@ -279,6 +304,160 @@ class TestGroundSentinelInTags:
         assert "gnd002" in state.known_claims
 
 
+class _FakeFov:
+    """Duck-typed stand-in for an EmpiricalCoverageState, in the two methods
+    _point_in_beam calls.  Reaches FURTHER than the theoretical footprint —
+    the case the prescreen radius has to widen for, and the one a radius
+    taken from footprint_radius_km alone would silently truncate."""
+
+    def __init__(self, limit_km: float, lo_deg: float, hi_deg: float):
+        self._limit_km = limit_km
+        self._lo, self._hi = lo_deg, hi_deg
+
+    def max_limit_km(self) -> float:
+        return self._limit_km
+
+    def contains(self, bearing: float, dist_km: float) -> bool:
+        return dist_km <= self._limit_km and self._lo <= bearing % 360.0 <= self._hi
+
+
+def _geo(**over):
+    base = {
+        "node_id": "screen-node",
+        "rx_lat": 34.85,
+        "rx_lon": -82.40,
+        "rx_alt_km": 0.3048,
+        "tx_lat": 34.85,
+        "tx_lon": -82.40,
+        "tx_alt_km": 0.6096,
+        "fc_hz": 183e6,
+        "beam_azimuth_deg": 45.0,
+        "beam_width_deg": 90.0,
+        "max_range_km": 60.0,
+    }
+    base.update(over)
+    return NodeGeometry(**base)
+
+
+class TestRangePrescreen:
+    """The equirectangular range prescreen standing in front of the
+    visibility gate must be provably WEAKER than the gate — same verdict for
+    every candidate, same reject tally, just reached without paying
+    offset_latlon_m and _point_in_beam's haversine + bearing.
+
+    A prescreen that is even fractionally tighter than the gate silently
+    drops real claims into the dark lane, which nothing downstream can tell
+    from an aircraft the node genuinely could not see.  So this is a
+    differential test over a candidate cloud, not a handful of examples.
+    """
+
+    # Monostatic, bistatic (a long baseline moves the footprint's centre off
+    # the RX), a populated coverage_limit (shrink-only, so it can only make
+    # the gate tighter than the prescreen), and a learned FOV reaching past
+    # the theoretical footprint (the one case that widens it).
+    #
+    # high_latitude is deliberately beyond anything the fleet flies: a big
+    # footprint near the pole is where the prescreen's flat-earth projection
+    # is worst, and it is what pins the longitude scale to the POLEWARD edge
+    # of the screen rather than to rx_lat.  Taking it at rx_lat passes every
+    # other geometry here and over-rejects on this one.
+    #
+    # antimeridian pins the longitude-delta wrap: a node at 179.95E has close
+    # neighbours whose stored longitude is -179.x, so the raw difference reads
+    # ~359 degrees while the gate's haversine measures the short way round.
+    # Without the wrap the prescreen rejects most of the footprint's western
+    # half.
+    _GEOMETRIES = {
+        "monostatic": _geo(),
+        "bistatic": _geo(tx_lat=35.35, tx_lon=-81.90, max_bistatic_range_km=90.0),
+        "coverage_limit": _geo(coverage_limit=lambda bearing: 25.0 if 30.0 <= bearing <= 60.0 else None),
+        "fov": _geo(fov=_FakeFov(140.0, 10.0, 150.0)),
+        "high_latitude": _geo(rx_lat=80.0, rx_lon=18.0, tx_lat=80.0, tx_lon=18.0, max_range_km=400.0),
+        "antimeridian": _geo(rx_lat=52.0, rx_lon=179.95, tx_lat=52.0, tx_lon=179.95, max_range_km=120.0),
+    }
+
+    # Enough to cover the boundary densely: samples are drawn out to 1.5x the
+    # screen radius, so a systematic error of even a fraction of a percent in
+    # the prescreen puts candidates on the wrong side of it here.
+    _N = 10000
+
+    def _cloud(self, rng, geo, frame_ts_s):
+        """A live-like ADS-B cache: random bearing/range around the node, random
+        ground speed and track, random fix age within the claiming cap."""
+        reach_km = geo.effective_radius_km + _V_MAX_MS * kc.KNOWN_CLAIM_MAX_FIX_AGE_S / 1000.0
+        for i in range(self._N):
+            rng_km = rng.uniform(0.0, 1.5 * reach_km)
+            brg = math.radians(rng.uniform(0.0, 360.0))
+            lat = geo.rx_lat + (rng_km * math.cos(brg)) / KM_PER_DEG_LAT
+            lon = geo.rx_lon + (rng_km * math.sin(brg)) / km_per_deg_lon(geo.rx_lat)
+            # Stored the way a feed reports it, in [-180, 180): a cloud around
+            # a node near the antimeridian must actually straddle the seam, or
+            # the geometry above tests nothing.
+            lon = ((lon + 180.0) % 360.0) - 180.0
+            age_s = rng.uniform(-kc.KNOWN_CLAIM_MAX_FIX_AGE_S, kc.KNOWN_CLAIM_MAX_FIX_AGE_S)
+            rec = {
+                "hex": f"scr{i:05d}",
+                "flight": "SCR1",
+                "lat": lat,
+                "lon": lon,
+                # Up to _V_MAX_MS (340 m/s = 661 kt), the fastest the prescreen
+                # assumes a fix can have moved since it was reported.
+                "alt_baro": rng.uniform(0.0, 42000.0),
+                "gs": rng.uniform(0.0, 660.0),
+                "track": rng.uniform(0.0, 360.0),
+                "last_seen_ms": int((frame_ts_s - age_s) * 1000),
+            }
+            rec.update(state.adsb_derived_fields(rec))
+            state.adsb_aircraft[rec["hex"]] = rec
+
+    @pytest.mark.parametrize("name", sorted(_GEOMETRIES))
+    def test_prescreen_never_disagrees_with_the_gate(self, name, monkeypatch):
+        geo = self._GEOMETRIES[name]
+        state.node_associator.node_geometries[_NODE_ID] = geo
+        ts = int(time.time() * 1000)
+        frame_ts_s = ts / 1000.0
+        # String seed, not hash(name): str hashing is salted per interpreter,
+        # so a failure here has to be reproducible from the test id alone.
+        self._cloud(random.Random(f"prescreen-{name}"), geo, frame_ts_s)
+
+        # Reference: the gate on its own, applied exactly where the shipped
+        # loop applies it — to the dead-reckoned position, off the same
+        # snapshot the shipped loop reads.
+        expect_pass, expect_rejects = set(), 0
+        for hexn, st in state._adsb_for_seeding().items():
+            age_s = frame_ts_s - st["timestamp_ms"] / 1000.0
+            if abs(age_s) > kc.KNOWN_CLAIM_MAX_FIX_AGE_S:
+                continue
+            dr = offset_latlon_m(st["lat"], st["lon"], east_m=st["vel_east"] * age_s, north_m=st["vel_north"] * age_s)
+            if _point_in_beam(dr[0], dr[1], geo):
+                expect_pass.add(dr)
+            else:
+                expect_rejects += 1
+        # A cloud that is all-pass or all-reject would prove nothing.
+        assert expect_pass and expect_rejects
+
+        # Shipped path.  predict_observation is called once per candidate that
+        # survived BOTH the prescreen and the gate, so recording its argument
+        # is how the surviving set is read back out.  The detection is placed
+        # far outside every residual gate so nothing is claimed and the
+        # assignment stays trivial — visibility is the only thing under test.
+        survived = set()
+
+        def _record(_geo, lat, lon, *args, **kwargs):
+            survived.add((lat, lon))
+            return (1.0e9, 1.0e9)
+
+        monkeypatch.setattr(kc, "predict_observation", _record)
+        before = state.known_claims_visibility_rejects
+
+        assert kc.claim_known_targets(_NODE_ID, _frame(ts, [0.0], [0.0])) == set()
+
+        assert state.known_claims_visibility_rejects - before == expect_rejects
+        # The surviving candidates, not just how many: a prescreen that traded
+        # one wrong reject for one wrong pass would balance the tally.
+        assert survived == expect_pass
+
+
 class TestContention:
     def _global(self, key, ts_ms, n_nodes, solve_count):
         state.multinode_tracks[key] = {
@@ -320,6 +499,67 @@ class TestContention:
         kc.claim_known_targets(_NODE_ID, _frame(ts, [pd], [pf]))
 
         assert state.known_claims["cont02"][-1]["contested"] is False
+        assert state.known_claim_contentions == 0
+
+    def _fill_dark_globals(self, ts, n, lat, lon):
+        """n eligible dark globals, one per millisecond of fix age, oldest
+        first — so `key` order and timestamp order are the same and a test can
+        say which end of the cap a track lands on."""
+        for i in range(n):
+            self._global(f"mn-dark-bulk{i:04d}", ts - 20000 - (n - i), n_nodes=3, solve_count=5)
+            rec = state.multinode_tracks[f"mn-dark-bulk{i:04d}"]
+            rec["lat"], rec["lon"] = lat, lon
+
+    def test_projection_set_is_capped(self):
+        """_dark_global_projections calls the track provider directly rather
+        than through the associator, so it has to apply the library's own
+        CLAIM_MAX_GLOBAL_TRACKS truncation itself.  Uncapped, this is a
+        predict_observation per dark global per claiming frame."""
+        geo = _register()
+        ts = int(time.time() * 1000)
+        over = CLAIM_MAX_GLOBAL_TRACKS + 50
+        # Well away from the claim, so none of these contest by position.
+        self._fill_dark_globals(ts, over, lat=_LAT + 2.0, lon=_LON + 2.0)
+
+        projections = kc._dark_global_projections(geo, ts / 1000.0)
+
+        assert len(state.multinode_tracks) == over
+        assert len(projections) == CLAIM_MAX_GLOBAL_TRACKS
+
+    def test_contested_still_set_for_a_track_inside_the_cap(self):
+        """The cap keeps the newest fixes, matching _claim_round's ordering,
+        so a track fresh enough to contest is never truncated away."""
+        geo = _register()
+        ts = int(time.time() * 1000)
+        _cache_state("cont03", ts)
+        self._fill_dark_globals(ts, CLAIM_MAX_GLOBAL_TRACKS + 50, lat=_LAT + 2.0, lon=_LON + 2.0)
+        # Newest of all, and co-located with the claim: inside the cap, and
+        # gating against it.
+        self._global("mn-dark-fresh", ts - 1000, n_nodes=3, solve_count=5)
+        pd, pf = _stationary_pred(geo)
+
+        assert kc.claim_known_targets(_NODE_ID, _frame(ts, [pd], [pf])) == {0}
+
+        assert state.known_claims["cont03"][-1]["contested"] is True
+        assert state.known_claim_contentions == 1
+
+    def test_a_track_truncated_away_does_not_contest(self):
+        """The other half of the cap, and the one behaviour change in it: past
+        CLAIM_MAX_GLOBAL_TRACKS eligible dark globals, the oldest stop being
+        part of the contention reference set — the same trade _claim_round
+        already makes against the same constant."""
+        geo = _register()
+        ts = int(time.time() * 1000)
+        _cache_state("cont04", ts)
+        # Oldest of all, co-located with the claim: it WOULD contest, but the
+        # newer bulk fills the cap ahead of it.
+        self._global("mn-dark-oldest", ts - 25000, n_nodes=3, solve_count=5)
+        self._fill_dark_globals(ts, CLAIM_MAX_GLOBAL_TRACKS, lat=_LAT + 2.0, lon=_LON + 2.0)
+        pd, pf = _stationary_pred(geo)
+
+        assert kc.claim_known_targets(_NODE_ID, _frame(ts, [pd], [pf])) == {0}
+
+        assert state.known_claims["cont04"][-1]["contested"] is False
         assert state.known_claim_contentions == 0
 
 
@@ -364,6 +604,43 @@ class TestModesInProcessOneFrame:
         assert pframe is frame
         assert state.known_claims == {}
         assert state.known_claims_made == 0
+
+    def test_known_lane_gets_its_own_perf_bucket(self, monkeypatch):
+        """The known lane used to be timed inside `pipeline=`, which reported
+        a per-frame per-node stage as part of the tracker's cost.  The buckets
+        are disjoint, so `pipeline` must not also contain it."""
+        from services import frame_processor as fp
+
+        self._run(monkeypatch, "binding")
+        assert fp._prof_known > 0.0
+        assert fp._prof_pipeline >= 0.0
+        assert fp._prof_n == 1
+
+        fp._reset_for_tests()
+        self._run(monkeypatch, "off")
+        # Off mode never enters the block, so the bucket stays empty rather
+        # than absorbing the branch test.
+        assert fp._prof_known < 1e-4
+
+    def test_perf_line_carries_the_known_bucket(self, monkeypatch):
+        """The line is emitted once per 1000 frames, so it is otherwise only
+        seen in production logs — and a bucket added without a field in it is
+        exactly as invisible as no bucket at all."""
+        import logging
+
+        from services import frame_processor as fp
+
+        logged = []
+        monkeypatch.setattr(logging, "warning", lambda fmt, *args: logged.append((fmt, args)))
+        fp._prof_n = 999
+        self._run(monkeypatch, "binding")
+
+        assert len(logged) == 1
+        fmt, args = logged[0]
+        assert "known=%.1f" in fmt
+        # Every %-placeholder is fed: a mismatch here logs a traceback in
+        # production instead of a PERF line.
+        assert fmt.replace("%%", "") % args
 
 
 class TestRegistryContract:
