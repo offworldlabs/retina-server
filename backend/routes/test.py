@@ -866,6 +866,7 @@ def _solver_window_stats(minutes: float) -> dict:
         kl_ghost = getattr(state, "known_lane_ghost", 0)
         kl_no_converge = getattr(state, "known_lane_no_converge", 0)
         kl_published = getattr(state, "known_lane_published", 0)
+        kl_publish_errors = getattr(state, "known_lane_publish_errors", 0)
         kc_made = state.known_claims_made
         kc_contentions = state.known_claim_contentions
         kc_bound = state.known_claims_bound
@@ -925,6 +926,9 @@ def _solver_window_stats(minutes: float) -> dict:
         # ghost / no_converge partition those attempts by outcome (see
         # services/tasks/known_lane.py); published is the truth_match subset
         # binding mode actually put on the map, and stays zero in shadow.
+        # publish_errors nonzero means solves classified truth_match failed to
+        # reach the feed — it accounts for exactly the truth_match minus
+        # published discrepancy that otherwise only the logs can explain.
         "known_lane": {
             "mode": state.KNOWN_LANE_MODE,
             "attempts": kl_attempts,
@@ -932,6 +936,7 @@ def _solver_window_stats(minutes: float) -> dict:
             "ghost": kl_ghost,
             "no_converge": kl_no_converge,
             "published": kl_published,
+            "publish_errors": kl_publish_errors,
         },
         # Claiming stage feeding the lane above (services/known_claiming.py),
         # also since boot.  made counts every claim recorded in either mode;

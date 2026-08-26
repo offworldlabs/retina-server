@@ -7,6 +7,8 @@ Covers:
   passthrough, gap re-init, innovation-gate re-init, drop_key/reset
 - Covariance weighting (tight cov trusts the measurement more than loose)
   and ADS-B velocity preference over the solved CV fit
+- The Joseph covariance update's PSD invariant, and the sqrt clamp that
+  backs it up when a covariance arrives already poisoned
 - RMSE reduction on a seeded synthetic constant-velocity track
 - Exact agreement with a Stone-Soup reference Kalman filter (skipped if
   stonesoup is not installed — nothing else in this file depends on it)
@@ -358,6 +360,92 @@ class TestKFWeighting:
         x_old, _, _, _ = track_filter._kf_correct(x_expected, p_expected, zv, track_filter._H_VEL, r_vel_old)
 
         assert abs(e_actual) < abs(float(x_old[0]))
+
+
+class TestJosephCovariance:
+    """_kf_correct's covariance update must never return a negative variance.
+
+    The Joseph form is a SUM of two congruence transforms of PSD matrices, so
+    the property holds for any gain; the standard form it replaced is a
+    DIFFERENCE of two nearly-equal matrices and loses it to roundoff (see
+    _kf_correct).  The case below is one where that difference demonstrably
+    goes negative: a rank-one prior — position and velocity perfectly
+    correlated, the shape a CV filter fed nothing but position measurements
+    is driven toward — with position variance 1e8 m^2, plus a 1 m^2 ridge so
+    the prior is still strictly positive-definite, against a measurement
+    covariance of 1e-4 m^2.  Verified while writing this: the standard form
+    puts BOTH position diagonals negative (-0.44, -0.20 m^2) on the very
+    first update and the ridge only papers over it afterwards.  The
+    assertions stay on the current code — they pin the invariant, not the
+    old bug.
+    """
+
+    def test_repeated_ill_conditioned_updates_stay_psd_and_symmetric(self):
+        g = np.array([1e4, 100.0, 1e4, 100.0])  # sigma_pos 1e4 m, sigma_vel 100 m/s
+        p = np.outer(g, g) + np.eye(4)
+        x = np.zeros(4)
+        z = np.array([1000.0, -500.0])
+        r = np.eye(2) * 1e-4
+
+        for step in range(10):
+            x, p, _, _ = track_filter._kf_correct(x, p, z, track_filter._H_POS, r)
+            assert np.all(np.diag(p) >= 0.0), f"step {step}: negative variance in {np.diag(p)}"
+            assert np.allclose(p, p.T, rtol=0, atol=0), f"step {step}: asymmetric covariance"
+
+
+class TestPoisonedCovariance:
+    """kf_pos_sigma_m must be produced, never raised, from a filter entry whose
+    covariance is already negative on the diagonal — the state the pre-fix
+    standard-form update could leave behind, and the reason the sqrt in
+    _smooth_kf is clamped.
+
+    Poison magnitude matters here and is not arbitrary.  The predict step adds
+    dt^2 * P_vel + Q to each position variance before the update ever sees it
+    — ~1e6 m^2 at the 20 s cadence real solves arrive on — so a token -1e-9
+    is washed out entirely and never reaches the sqrt.  Both magnitudes are
+    exercised below: the small one for the end-to-end "does not throw", the
+    large one because it is what actually drives the clamp.
+    """
+
+    def setup_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def teardown_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    @staticmethod
+    def _seeded_key(key):
+        """Two solves, so the key has a live entry with a real covariance."""
+        track_filter.smooth_solve(make_result(35.0, -82.0, 1_000), key, None)
+        track_filter.smooth_solve(make_result(35.001, -82.0, 21_000), key, None)
+
+    @staticmethod
+    def _poison(key, value):
+        with track_filter._KF_LOCK:
+            entry = track_filter._KF_TRACKS[key]
+            entry.P[0, 0] = value
+            entry.P[2, 2] = value
+
+    def test_negative_covariance_diagonal_never_raises(self, monkeypatch):
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+
+        # Accumulated-roundoff scale: swamped by the predict step, so this
+        # asserts the path stays healthy, not that the clamp fired.
+        self._seeded_key("poison-small")
+        self._poison("poison-small", -1e-9)
+        out = track_filter.smooth_solve(make_result(35.0011, -82.0, 22_000), "poison-small", None)
+        assert out["smoother"] == "kf"
+        assert out["kf_pos_sigma_m"] >= 0
+
+        # Large enough to survive predict: without the clamp this call is the
+        # ValueError the droplet was throwing.
+        self._seeded_key("poison-large")
+        self._poison("poison-large", -1e6)
+        out = track_filter.smooth_solve(make_result(35.0011, -82.0, 22_000), "poison-large", None)
+        assert out["smoother"] == "kf"
+        assert out["kf_pos_sigma_m"] == 0.0  # clamped, not raised
 
 
 class TestRInflation:
