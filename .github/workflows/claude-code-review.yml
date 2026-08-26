@@ -1,14 +1,21 @@
 name: Claude Code Review
 
 on:
+  # No `ready_for_review`. Every push is reviewed, so undrafting could only
+  # re-review a diff that already has one, and under the collapse below that
+  # duplicate would fold the pass worth reading and replace it with an
+  # identical one.
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
+    types: [opened, synchronize, reopened]
+
+# A push mid-review must replace the running review rather than start a second
+# one beside it. The part-ticked comment a cancelled run leaves is folded by the
+# run that supersedes it, best-effort: a fold that fails leaves it expanded.
+# The fallback keeps the group distinct if a non-pull_request trigger is ever
+# added, since pull_request.number is empty for those.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   claude-review:
