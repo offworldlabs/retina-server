@@ -332,7 +332,29 @@ class TestPerNodeAnalyticsRoute:
         area = state.node_analytics.detection_areas[registered_node]
         assert area.rx_lat == _TRUE_RX_LAT
         assert area.rx_lon == _TRUE_RX_LON
-        assert state.node_analytics.get_node_summary(registered_node)["detection_area"]["furthest_detections"]
+        summary = state.node_analytics.get_node_summary(registered_node)
+        assert summary["detection_area"]["furthest_detections"]
+        # The uncertainty radius is a published qualifier, not internal state.
+        assert "location_uncertainty_km" not in summary["detection_area"]["rx"]
+
+    def test_uncertainty_travels_with_the_receiver_coordinate(self, client, registered_node):
+        """This payload, not /api/radar/nodes, is where the map reads positions.
+
+        The radius qualifies the coordinate it sits beside, so a client that
+        draws the node can draw the honest disc around it without a second
+        request — and without inferring a precision that is not there.
+        """
+        rx = client.get(f"/api/radar/analytics/{registered_node}").json()["detection_area"]["rx"]
+        assert rx["location_uncertainty_km"] == NODE_FUZZ_MAX_KM_DEFAULT
+
+    def test_uncertainty_is_absent_when_disabled(self, client, registered_node, monkeypatch):
+        # Nothing is displaced, so there is no uncertainty to declare and the
+        # summary passes through exactly as it did before Phase 1.
+        monkeypatch.setenv("NODE_FUZZ_MODE", "off")
+        pl._reset_for_tests()
+        rx = client.get(f"/api/radar/analytics/{registered_node}").json()["detection_area"]["rx"]
+        assert "location_uncertainty_km" not in rx
+        assert rx["lat"] == _TRUE_RX_LAT
 
 
 class TestDetectionRangeRoute:
@@ -366,6 +388,67 @@ class TestArchiveRows:
         _assert_displaced(cols["rx_lat"][0], cols["rx_lon"][0], "archive rx")
         assert cols["tx_lat"][0] == _TRUE_TX_LAT
         assert cols["tx_lon"][0] == _TRUE_TX_LON
+
+
+class TestGroundTruthTrailRoute:
+    """GET /api/test/ground-truth/{hex} — unauthenticated, any hex.
+
+    The endpoint exists to score solves against simulation ground truth, but it
+    served ``state.track_histories`` for whatever hex it was handed, and for a
+    single-node arc track that history is a run of boresight crossings in the
+    TRUE frame: rays from the operator's receiver, for real aircraft, on
+    production.  The feed's own entries are translated; this read straight past
+    that.  Without a ground-truth trail the response has no comparison left to
+    make, so it 404s rather than serving the trail alone.
+    """
+
+    HEX = "gtleak"
+    SOLVED = [[33.65, -84.95, 9000.0, 100.0], [33.66, -84.96, 9000.0, 110.0]]
+    # Far from SOLVED so resolve_ground_truth_hex's 8 km spatial fallback
+    # cannot quietly adopt it and turn the no-truth case into the truth case.
+    TRUTH = [[10.0, 10.0, 9000.0, 100.0]]
+
+    @pytest.fixture(autouse=True)
+    def _trails(self):
+        state.track_histories.clear()
+        state.ground_truth_trails.clear()
+        yield
+        state.track_histories.clear()
+        state.ground_truth_trails.clear()
+
+    def _seed_solved(self):
+        from collections import deque
+
+        state.track_histories[self.HEX] = deque([list(p) for p in self.SOLVED])
+
+    def _seed_truth(self):
+        from collections import deque
+
+        state.ground_truth_trails[self.HEX] = deque([list(p) for p in self.TRUTH])
+
+    def test_solved_trail_alone_is_not_served(self, client):
+        self._seed_solved()
+        assert client.get(f"/api/test/ground-truth/{self.HEX}").status_code == 404
+
+    def test_ground_truth_present_serves_the_comparison(self, client):
+        self._seed_solved()
+        self._seed_truth()
+        body = client.get(f"/api/test/ground-truth/{self.HEX}").json()
+        assert body["solved_trail"] == self.SOLVED
+        assert body["ground_truth_trail"] == self.TRUTH
+        assert body["position_error_km"] is not None
+
+    def test_disabled_serves_the_solved_trail_either_way(self, client, monkeypatch):
+        monkeypatch.setenv("NODE_FUZZ_MODE", "off")
+        pl._reset_for_tests()
+        self._seed_solved()
+        body = client.get(f"/api/test/ground-truth/{self.HEX}").json()
+        assert body["solved_trail"] == self.SOLVED
+        self._seed_truth()
+        assert client.get(f"/api/test/ground-truth/{self.HEX}").json()["solved_trail"] == self.SOLVED
+
+    def test_unknown_hex_still_404s(self, client):
+        assert client.get("/api/test/ground-truth/nosuch").status_code == 404
 
 
 class TestPublishedArc:

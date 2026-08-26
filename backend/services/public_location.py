@@ -225,6 +225,36 @@ def translate_polygon(
     return [[v[0] + dlat, v[1] + dlon] for v in verts]
 
 
+def public_point_delta(lat, node_id: str | None) -> tuple[float, float]:
+    """The (dlat, dlon) that carries a point from the true frame to the public one.
+
+    ``translate_polygon`` works this out for a whole vertex list; this is the
+    same arithmetic exposed for callers that hold one point at a time — the
+    single-node arc track's icon, its solver estimate and its position trail,
+    which have to move with the receiver without ever being handed the
+    receiver's coordinates.  ``lat`` is only the latitude the longitude
+    conversion is taken at, so passing the point's own latitude is right.
+
+    (0.0, 0.0) when fuzzing is off or ``lat`` is not a usable number, so a
+    caller can add the delta unconditionally and get an exact pass-through.
+
+    Deliberately unrounded, and deliberately not ``public_latlon``.  That
+    function snaps to 4 decimals because a fuzzed *node anchor* quoted to 7
+    invites the reader to believe it is a survey fix; an aircraft position is a
+    live estimate that the feed carries at 6 decimals everywhere else, and it
+    would be the only coordinate in the payload suddenly an order of magnitude
+    coarser than its neighbours.  Rounding the delta itself would be worse
+    still: every point of a trail would then move by a slightly different
+    amount, which is exactly the rigidity ``translate_polygon`` exists to
+    preserve.
+    """
+    if not fuzz_enabled() or not _is_num(lat):
+        return (0.0, 0.0)
+
+    east_km, north_km = public_offset_km(node_id)
+    return (north_km / KM_PER_DEG_LAT, east_km / km_per_deg_lon(float(lat)))
+
+
 def fuzz_node_cfg(node_cfg: dict | None) -> dict | None:
     """A copy of a node config whose rx_lat/rx_lon are the published ones.
 
@@ -256,7 +286,13 @@ def public_node_summary(node_id: str | None, summary):
 
     Three things move, all of them derived from the receiver's true position:
 
-    * ``detection_area.rx`` becomes the published coordinate.  ``tx`` does not.
+    * ``detection_area.rx`` becomes the published coordinate, and carries
+      ``location_uncertainty_km`` beside it.  The radius qualifies exactly that
+      coordinate, so it travels with it: the client is told the honest distance
+      the receiver may be from the point it was given, rather than left to infer
+      a precision that is not there.  (The map reads its node positions from
+      this payload, not from /api/radar/nodes, so the same field on the nodes
+      block never reached it.)  ``tx`` moves by neither.
     * ``empirical_coverage.polygon`` is translated rigidly by the same offset.
       Its apex is the receiver at 5 decimals, so leaving it alone would publish
       the truth beside the fuzzed marker and make the fuzz decorative.
@@ -281,7 +317,12 @@ def public_node_summary(node_id: str | None, summary):
         if isinstance(rx, dict):
             rx_lat = rx.get("lat")
             pub_lat, pub_lon = public_latlon(rx_lat, rx.get("lon"), node_id)
-            area_out["rx"] = {**rx, "lat": pub_lat, "lon": pub_lon}
+            area_out["rx"] = {
+                **rx,
+                "lat": pub_lat,
+                "lon": pub_lon,
+                "location_uncertainty_km": location_uncertainty_km(),
+            }
         out = {**out, "detection_area": area_out}
 
     coverage = out.get("empirical_coverage")

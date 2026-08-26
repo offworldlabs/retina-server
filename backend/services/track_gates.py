@@ -34,7 +34,7 @@ from services.geo import (
     offset_latlon,
     offset_latlon_m,
 )
-from services.public_location import fuzz_enabled, fuzz_node_cfg
+from services.public_location import fuzz_enabled, fuzz_node_cfg, public_point_delta
 
 
 def _reset_for_tests() -> None:
@@ -733,17 +733,77 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
             # the GT flag for every aircraft that also had a clean track.
             state.anomaly_hexes.discard(_flag_hex)
 
+    # ── True frame ends here ─────────────────────────────────────────────────
+    # Everything above ran on the true geometry, and has to: the gates, the
+    # hold, the arc-motion log, the history append, the jump check and the
+    # ground-truth match all compare this frame against stored true-frame
+    # values, and a translation applied upstream of any of them would have them
+    # comparing mixed frames — which is the fuzz moving aircraft instead of
+    # receivers.  ``resolve_ground_truth_hex`` is a spatial match against the
+    # simulator's truth table, so it is resolved here, before the shift.
+    _ground_truth_hex = resolve_ground_truth_hex(ac_hex, lat, lon)
+
+    # The published arc, not the one the gates above ran on.  Whether an arc is
+    # emitted at all is still decided by the true-geometry arc — the RMS gate
+    # nulls it, the beam clip can decline to build it — so the rewrite only
+    # changes the curve's geometry, never its presence.
+    _public_arc = _cached_public_arc(ac_hex, track, node_cfg, touched_arc_keys) if ambiguity_arc is not None else None
+
+    # ── Public frame: put the arc track's icon back on its own arc ────────────
+    # An arc track's position is not an estimate of where the aircraft is, it is
+    # the arc's boresight crossing — a point on a ray from the RECEIVER.  Serve
+    # it untranslated beside a fuzzed arc and the payload leaks twice over: the
+    # icon floats up to NODE_FUZZ_MAX_KM off the curve it is supposed to sit on,
+    # and a night of those crossings, from one node or several, intersects back
+    # at the operator's house whatever the published anchor says.
+    #
+    # The delta is measured between the two arcs' own midpoints rather than
+    # computed from the offset, so the icon lands EXACTLY on the served arc's
+    # crossing — the two curves are built by the same builder from the same
+    # measured delay, so their midpoints differ by the receiver shift and
+    # nothing else.  When there is no public arc to measure against (the RMS
+    # gate nulled the frame's arc, or the fuzzed anchor's beam clip declined to
+    # build one) we fall back to the node's deterministic offset, which is the
+    # same displacement to within the curvature between the two midpoints.
+    # Nothing is emitted in the true frame in either case.
+    #
+    # Only arc tracks move.  A solver_adsb_seed or multinode position is an
+    # aircraft estimate that stands on its own geometry, and shifting it would
+    # be inventing an error the solver did not make.
+    _dlat = 0.0
+    _dlon = 0.0
+    if position_source == "single_node_ellipse_arc" and fuzz_enabled():
+        if _public_arc and raw_midpoint_lat is not None:
+            _public_midpoint = _public_arc[len(_public_arc) // 2]
+            _dlat = _public_midpoint[0] - raw_midpoint_lat
+            _dlon = _public_midpoint[1] - raw_midpoint_lon
+        else:
+            _dlat, _dlon = public_point_delta(lat, node_cfg.get("node_id"))
+    _shift = _dlat != 0.0 or _dlon != 0.0
+
+    # One delta for every point of the trail, the same rigidity argument as
+    # translate_polygon: re-deriving each point against its own frame would
+    # publish the difference between the frames.  track_histories is keyed by
+    # hex across the whole fleet, so a trail can hold emits made while a
+    # different node's arc was the source; translating all of them by THIS
+    # entry's delta is deliberate — the trail stays rigid and stays consistent
+    # with the arc being drawn beside it now, which is the thing a viewer can
+    # actually check.  The stored history itself is untouched and stays true.
+    _recent_positions = list(state.track_histories.get(ac_hex, []))
+    if _shift:
+        _recent_positions = [[round(p[0] + _dlat, 6), round(p[1] + _dlon, 6), *p[2:]] for p in _recent_positions]
+
     return {
         "hex": ac_hex,
-        "ground_truth_hex": resolve_ground_truth_hex(ac_hex, lat, lon),
+        "ground_truth_hex": _ground_truth_hex,
         "type": "tisb_other",
         "flight": (track.adsb_hex or f"PR{abs(hash(track.track_id)) % 10000:04d}").strip(),
         "alt_baro": round(alt_ft),
         "alt_geom": round(alt_ft),
         "gs": gs,
         "track": heading,
-        "lat": lat,
-        "lon": lon,
+        "lat": round(lat + _dlat, 6) if _shift else lat,
+        "lon": round(lon + _dlon, 6) if _shift else lon,
         # Real age of the underlying fix, not 0.  Hardcoding 0 made a
         # frozen track claim to be fresh, so the frontend's
         # STALE_AIRCRAFT_MS and the health checks could never see it —
@@ -754,22 +814,20 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
         "category": "A3",
         "multinode": False,
         "position_source": position_source,
-        # The published arc, not the one the gates above ran on.  Whether an
-        # arc is emitted at all is still decided by the true-geometry arc — the
-        # RMS gate nulls it, the beam clip can decline to build it — so the
-        # rewrite below only changes the curve's geometry, never its presence.
-        "ambiguity_arc": (
-            _cached_public_arc(ac_hex, track, node_cfg, touched_arc_keys) if ambiguity_arc is not None else None
-        ),
-        "solver_lat": solver_lat,
-        "solver_lon": solver_lon,
+        "ambiguity_arc": _public_arc,
+        # Same shift as the icon.  solver_lat/lon is the raw LM estimate for
+        # this frame, and for an arc track it is the input the midpoint was
+        # taken from — leaving it in the true frame beside a translated icon
+        # would hand the delta straight back, one subtraction.
+        "solver_lat": round(solver_lat + _dlat, 6) if _shift else solver_lat,
+        "solver_lon": round(solver_lon + _dlon, 6) if _shift else solver_lon,
         "rms_delay": rms_delay,
         "rms_doppler": rms_doppler,
         "delay_us": round(getattr(track, "latest_delay_us", 0.0) or 0.0, 3),
         "doppler_hz": round(getattr(track, "latest_doppler_hz", 0.0) or 0.0, 2),
         "node_id": node_cfg.get("node_id"),
         "target_class": getattr(track, "target_class", None),
-        "recent_positions": list(state.track_histories.get(ac_hex, [])),
+        "recent_positions": _recent_positions,
         "is_anomalous": _is_anom,
         "anomaly_types": sorted(_anom_types) if _anom_types else [],
         "max_velocity_ms": round(_max_vel, 1),
