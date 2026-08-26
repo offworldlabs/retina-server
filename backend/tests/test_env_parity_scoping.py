@@ -38,20 +38,21 @@ class TestScoping:
 
 
 class TestEdgeNetworkEntry:
-    """The reason the scoping exists, pinned against a widening edit.
+    """Pinned against the entry coming back.
 
-    nginx proxies /api/towers over retina-edge. A staging server that dropped
-    off that network would 502 the route, and a blanket entry here is what
-    would stop CI noticing.
+    nginx proxies /api/towers over retina-edge, and every environment runs the
+    tower-finder-service stack now, so all three overlays must join the network
+    identically. A server that dropped off it would 502 the route; an allowlist
+    entry here — scoped or blanket — is what would stop CI noticing.
     """
 
     @pytest.mark.parametrize(
         "path",
         ["services.server.networks.retina-edge", "networks.retina-edge.external"],
     )
-    def test_edge_network_divergence_is_allowed_for_test_only(self, parity, path):
-        assert parity.allowed(path, "test")
-        assert not parity.allowed(path, "staging")
+    @pytest.mark.parametrize("env", ["test", "staging"])
+    def test_edge_network_divergence_is_not_allowed_anywhere(self, parity, path, env):
+        assert not parity.allowed(path, env)
 
 
 class TestScopeValidation:
