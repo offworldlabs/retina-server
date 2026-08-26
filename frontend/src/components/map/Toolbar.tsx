@@ -138,8 +138,13 @@ export default function Toolbar({
         <span className="legend-item">
           <span className="legend-dot" style={{ background: "#2dd4bf" }} /> Solver+ADS-B
         </span>
+        {/* Multi-node splits by lane, same shades getAircraftColor gives the
+            icons: a solve that carried a transponder tag vs a dark one. */}
         <span className="legend-item">
-          <span className="legend-dot" style={{ background: "#a78bfa" }} /> Multi
+          <span className="legend-dot" style={{ background: "#38bdf8" }} /> MLAT+ADS-B
+        </span>
+        <span className="legend-item">
+          <span className="legend-dot" style={{ background: "#a78bfa" }} /> MLAT dark
         </span>
         {showGroundTruth && (
           <span className="legend-item">

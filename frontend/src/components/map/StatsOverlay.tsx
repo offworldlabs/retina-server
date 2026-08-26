@@ -22,7 +22,11 @@ interface StatsOverlayProps {
 export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, onToggle }: StatsOverlayProps) {
   const stats = useMemo(() => {
     const total = aircraft.length;
-    let multinode = 0;
+    // Split by lane, matching the icon colours: an mn-adsb-* solve knew the
+    // transponder, an mn-dark-* one did not, and "how many of our solves are
+    // actually dark" is the number this panel exists to surface.
+    let mnAssisted = 0;
+    let mnDark = 0;
     let arcOnly = 0;
     let adsbSeed = 0;
     let adsbSingle = 0;
@@ -33,7 +37,7 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
     let maxGs = 0;
     let maxGsCallsign = "";
     for (const ac of aircraft) {
-      if (ac.multinode) multinode++;
+      if (ac.multinode) { if (ac.adsb_assisted) mnAssisted++; else mnDark++; }
       else if (ac.position_source === "single_node_ellipse_arc") arcOnly++;
       else if (ac.position_source === "solver_adsb_seed") adsbSeed++;
       else if (ac.position_source === POSITION_SOURCE_ADSB_SINGLE) adsbSingle++;
@@ -47,7 +51,8 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
     return {
       total,
       truth: truth.length,
-      multinode,
+      mnAssisted,
+      mnDark,
       arcOnly,
       adsbSeed,
       adsbSingle,
@@ -100,8 +105,11 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
           <span style={{ color: "#94a3b8" }}>Total</span>
           <span><strong>{stats.total}</strong>{stats.truth ? ` + ${stats.truth} truth` : ""}</span>
 
-          <span style={{ color: "#94a3b8" }}>Multi‑node</span>
-          <span><strong style={{ color: "#a78bfa" }}>{stats.multinode}</strong></span>
+          <span style={{ color: "#94a3b8" }}>MLAT+ADS‑B</span>
+          <span><strong style={{ color: "#38bdf8" }}>{stats.mnAssisted}</strong></span>
+
+          <span style={{ color: "#94a3b8" }}>MLAT dark</span>
+          <span><strong style={{ color: "#a78bfa" }}>{stats.mnDark}</strong></span>
 
           <span style={{ color: "#94a3b8" }}>Solver+ADS‑B</span>
           <span><strong style={{ color: "#2dd4bf" }}>{stats.adsbSeed}</strong></span>

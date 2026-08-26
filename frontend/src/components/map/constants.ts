@@ -41,10 +41,14 @@ export const POSITION_SOURCE_ARC_ONLY = "single_node_ellipse_arc";
 // this verbatim — keep in sync with the backend constant if it ever moves.
 export const POSITION_SOURCE_ADSB_SINGLE = "adsb_single_node";
 
-// Blue, deliberately outside the existing source palette (cyan #38bdf8
-// single-node, teal #2dd4bf ADS-B-seeded, violet #a78bfa multi-node) so a
-// claimed ADS-B target is distinguishable at a glance.  Shared by the icon,
-// the trimmed arc and the stats tally.
+// Three lanes, three colours (getAircraftColor, StatsOverlay, the trimmed arc):
+// this blue for a claimed single-node ADS-B target, cyan #38bdf8 for a
+// multi-node solve that carried a transponder tag (mn-adsb-*, adsb_assisted),
+// violet #a78bfa for a dark multi-node solve (mn-dark-*).  The two blues sit
+// next to each other because both lanes know the transponder identity; violet
+// is the odd one out because a dark solve does not.  Teal #2dd4bf stays on the
+// ADS-B-seeded solver source, and cyan doubles as the fallback colour for the
+// rare solver_single_node relic.
 export const ADSB_SINGLE_COLOR = "#3b82f6";
 
 // The claimed arc is drawn at a FIXED SCREEN LENGTH — a multiple of the plane
@@ -65,6 +69,19 @@ export const ADSB_SINGLE_ARC_ICON_MULTIPLE = 2.5;
 // render no plane icon, but the DR position still drives arc-rebuild
 // anchoring, list centering, and the smooth store.)
 export const ARC_DR_MAX_S = 10;
+
+// Dead-reckoning drift budget (metres) past which the plane ICON is hidden.
+// The backend keeps feeding an mn entry for 60 s after its last solve, dead-
+// reckoned the whole way, so a target whose solves stop is drawn kilometres
+// from where it actually is — the icon reads as a real target because nothing
+// about it looks stale.  2 km matches the known-lane publish displacement gate
+// (_MAX_DISPLACEMENT_KM) and sits under backend dedup's 3 km proximity gate, so
+// a second icon cannot appear at the true position while the drifted one is
+// still shown.  A healthy target (solves every 1–2 s) accrues ≤ ~600 m and
+// never trips it; at airliner speed the icon survives ~6–8 s of solve loss.
+// The TRACK stays alive — stores, trails, list, selection — so a new solve
+// revives the icon on the next 2 Hz render.
+export const DR_ICON_HIDE_DISTANCE_M = 2000;
 
 // Doppler colour gradient — dark blue (approaching) → light blue → cyan → light red → dark red (receding)
 // Centre stop is bright cyan so near-zero-doppler arcs are always visible on light basemaps.

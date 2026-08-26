@@ -61,6 +61,9 @@ def _reset_for_tests() -> None:
     _gt_last_ts = 0.0
 
 
+_MN_ADSB_PREFIX = "mn-adsb-"
+
+
 def multinode_to_aircraft(key: str, r: dict) -> dict:
     _solve_speed_ms = math.sqrt(r["vel_east"] ** 2 + r["vel_north"] ** 2)
     _solve_heading_deg = math.degrees(math.atan2(r["vel_east"], r["vel_north"])) % 360
@@ -135,6 +138,17 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
         "anomaly_types": sorted(_anom_types),
         "max_velocity_ms": round(max(_solve_speed_ms, r.get("max_velocity_ms", 0.0) or 0.0), 1),
     }
+    # Lane, straight off the key prefix (multinode_key_decision): an ADS-B-tagged
+    # solve — the regular pipeline's and every known-lane publish — keys
+    # mn-adsb-<icao hex>, a dark solve mn-dark-*.  The emitted hex is the sha of
+    # the key, so without this the frontend cannot tell the two lanes apart, and
+    # cannot pair an mn entry with the adsb_single_node entry for the same
+    # transponder.  The key is authoritative: r may be smoother output, which is
+    # not guaranteed to carry adsb_hex.
+    _assisted = key.startswith(_MN_ADSB_PREFIX)
+    entry["adsb_assisted"] = _assisted
+    if _assisted:
+        entry["adsb_hex"] = key[len(_MN_ADSB_PREFIX) :]
     if _gs_source_kf:
         entry["gs_source"] = "kf"
     if _vel_untrusted:

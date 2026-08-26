@@ -343,3 +343,55 @@ class TestVelTrustDisplay:
         assert "gs" in ac
         assert "track" in ac
         assert "vel_untrusted" not in ac
+
+
+class TestAdsbAssistedLane:
+    """The lane a multinode entry came from, exposed to the frontend.
+
+    The emitted hex is multinode_hex_from_key's sha, so mn-adsb-* and
+    mn-dark-* entries are indistinguishable on the wire without these fields
+    -- and the frontend cannot pair an mn entry with the adsb_single_node
+    entry for the same transponder.  The KEY is the source of truth: the
+    smoother's result dict is not guaranteed to carry adsb_hex.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+        yield
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+
+    def _build_mn(self):
+        from services.frame_processor import build_combined_aircraft_json
+
+        pipeline = types.SimpleNamespace(geolocated_tracks={}, config={})
+        result = build_combined_aircraft_json(pipeline)
+        mn = [a for a in result["aircraft"] if a.get("multinode")]
+        assert len(mn) == 1
+        return mn[0]
+
+    def test_adsb_keyed_entry_is_assisted_and_carries_the_hex(self):
+        state.multinode_tracks["mn-adsb-abc123"] = _mn_entry(age_s=1.0, vel_north=100.0)
+        ac = self._build_mn()
+        assert ac["adsb_assisted"] is True
+        assert ac["adsb_hex"] == "abc123"
+        # The displayed hex stays the synthetic one -- purely additive.
+        assert ac["hex"].startswith("mn")
+
+    def test_dark_keyed_entry_is_not_assisted_and_has_no_hex(self):
+        state.multinode_tracks["mn-dark-1"] = _mn_entry(age_s=1.0, vel_north=100.0)
+        ac = self._build_mn()
+        assert ac["adsb_assisted"] is False
+        assert "adsb_hex" not in ac
+
+    def test_result_adsb_hex_does_not_override_a_dark_key(self):
+        # A dark key whose result dict happens to carry adsb_hex (verification
+        # tagging) is still the dark lane -- the key decides, not the result.
+        entry = _mn_entry(age_s=1.0, vel_north=100.0)
+        entry["adsb_hex"] = "abc123"
+        state.multinode_tracks["mn-dark-1"] = entry
+        ac = self._build_mn()
+        assert ac["adsb_assisted"] is False
+        assert "adsb_hex" not in ac
