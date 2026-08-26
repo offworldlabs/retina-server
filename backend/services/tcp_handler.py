@@ -577,7 +577,7 @@ def _apply_synthetic_adsb(msg: dict, node_id: str):
         lon = entry.get("lon")
         if not valid_latlon(lat, lon) or not _math.isfinite(lat) or not _math.isfinite(lon):
             continue
-        state.adsb_aircraft[hex_code] = {
+        rec = {
             "hex": hex_code,
             "flight": entry.get("flight", ""),
             "lat": lat,
@@ -587,4 +587,9 @@ def _apply_synthetic_adsb(msg: dict, node_id: str):
             "track": entry.get("track", 0),
             "last_seen_ms": ts_ms,
         }
+        # Derived once here, not per read: the seeding provider is called for
+        # the whole cache once per frame per node.  Published only after it is
+        # complete — readers snapshot this dict unlocked.
+        rec.update(state.adsb_derived_fields(rec))
+        state.adsb_aircraft[hex_code] = rec
     state.aircraft_dirty = True
