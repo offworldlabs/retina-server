@@ -49,6 +49,20 @@ def _load_borders() -> None:
                 _geoms[source] = shape(feature["geometry"])
 
 
+def warm_borders() -> None:
+    """Parse the borders now, so no request pays for it.
+
+    Otherwise the first classify_region() call does it — ~1.5s of synchronous
+    JSON + shapely work on a 5 MB file, on the event loop, inside a request
+    handler, stalling every other request on that worker once per process.
+    Call this from application startup, where blocking costs nothing.
+
+    Idempotent, and not required: classify_region() still loads on demand if
+    this was never called (tests, scripts, a bare import).
+    """
+    _load_borders()
+
+
 def classify_region(lat: float, lon: float) -> str | None:
     """Return "us", "ca", "au", or None if the point falls in none of them."""
     _load_borders()
