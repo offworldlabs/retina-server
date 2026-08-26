@@ -156,7 +156,15 @@ async def lifespan(app: FastAPI):
 
     from services.region_lookup import warm_borders
 
-    await run_in_threadpool(warm_borders)
+    try:
+        await run_in_threadpool(warm_borders)
+    except Exception:
+        # Same policy as prime_pipeline_at_startup above: a missing or corrupt
+        # borders file costs /api/towers its region detection until the next
+        # restart (classify_region still loads on demand and surfaces the real
+        # error there); raising would abort the lifespan and take the whole
+        # API down with it.
+        logging.exception("Warming the border polygons failed; region lookup will load on demand")
 
     # Restore persisted state before accepting connections
     restored = restore_snapshot()
