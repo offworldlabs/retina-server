@@ -89,8 +89,11 @@ def resolve_flags(values: dict[str, str]) -> dict[str, bool]:
         else:
             raise RuntimeError(
                 f"{env_name}={values[env_name]!r} is not true or false. "
-                "Refusing to guess: the wrong guess either drops TLS on a "
-                "deployed host or demands a certificate a laptop does not have."
+                "Refusing to guess: every flag here decides what a deployed "
+                "environment serves, and both wrong answers are damaging "
+                "(TLS_ENABLED drops HTTPS or demands a certificate a laptop "
+                "does not have; TOWER_FINDER_ENABLED serves a stale ranking or "
+                "502s the tower search)."
             )
     return resolved
 

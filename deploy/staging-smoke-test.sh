@@ -72,32 +72,19 @@ check_json_field() {
     fi
 }
 
-# Status and body from ONE request: these endpoints call the FCC and open-meteo
-# on every hit, and a second probe doubles what an outage there can block.
-check_proxied() {
-    local name="$1" url="$2" expected code body resp
-    shift 2
+# The seam's assertion lives in tower-contract.sh so the gate and this suite
+# cannot drift; this only adapts it to the PASS/FAIL tally.
+check_contract() {
+    local name="$1" endpoint="$2" reason
     printf "  %-40s " "$name"
-    resp=$($CURL -w '\n%{http_code}' "$url" 2>/dev/null) || { echo "FAIL (connection error)"; FAIL=$((FAIL+1)); return; }
-    code=$(printf '%s' "$resp" | tail -n1)
-    body=$(printf '%s' "$resp" | sed '$d')
-
-    if [ "$code" != "200" ]; then
-        echo "FAIL (got $code, expected 200)"
-        echo "    Response: $(printf '%s' "$body" | head -c 200)"
+    if reason=$(assert_tower_contract "$endpoint"); then
+        echo "OK"
+        PASS=$((PASS+1))
+    else
+        echo "FAIL"
+        printf '    %s\n' "$reason"
         FAIL=$((FAIL+1))
-        return
     fi
-    for expected in "$@"; do
-        if ! printf '%s' "$body" | grep -qF "$expected"; then
-            echo "FAIL (200 but body lacks '$expected')"
-            echo "    Response: $(printf '%s' "$body" | head -c 200)"
-            FAIL=$((FAIL+1))
-            return
-        fi
-    done
-    echo "OK ($code)"
-    PASS=$((PASS+1))
 }
 
 check_header() {
@@ -216,11 +203,10 @@ echo ""
 echo "── tower-finder-service seam ──"
 # EVERY vhost that routes to the service, not a sample: the defect this guards
 # against is one vhost silently missing the proxy, which a sample cannot see.
-# Keep this list in step with the towers-proxy.conf includes in the template.
-for target in "${BASE_URL}/api/towers" "${MAP_URL}/api/towers" \
-              "${TESTMAP_URL}/api/towers" "${API_URL}/towers"; do
-    check_proxied "${target#https://}" \
-        "${target}?${TOWER_CONTRACT_QUERY}" '"towers"' "$TOWER_CONTRACT_ECHO"
+# test_towers_vhost_coverage.py asserts this list matches the template.
+for endpoint in "${BASE_URL}/api/towers" "${MAP_URL}/api/towers" \
+                "${TESTMAP_URL}/api/towers" "${API_URL}/towers"; do
+    check_contract "${endpoint#https://}" "$endpoint"
 done
 # The other half of the seam: a sibling /api/ path on the same vhost is still
 # served by the app. /api/radar/nodes has no counterpart on the service, so a
