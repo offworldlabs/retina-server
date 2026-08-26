@@ -1,4 +1,4 @@
-"""Tests for tower-finding, health, and helper functions."""
+"""Tests for tower-finding and helper functions."""
 
 import os
 import unittest.mock
@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
-from core import state  # noqa: E402
 from main import app  # noqa: E402
 
 
@@ -55,83 +54,6 @@ class TestDetectSource:
         assert _detect_source(48.85, 2.35) == "us"  # Paris → falls through to us
 
 
-# ── Health endpoint ──────────────────────────────────────────────────────────
-
-
-class TestHealth:
-    def test_health_ok(self, client):
-        r = client.get("/api/health")
-        assert r.status_code == 200
-        assert r.json()["status"] == "ok"
-
-    def test_health_degraded_stale_task(self, client):
-        import time
-
-        state.task_last_success["frame_processor"] = time.time() - 9999
-        try:
-            r = client.get("/api/health")
-            assert r.status_code == 200
-            body = r.json()
-            assert body["status"] == "degraded"
-            assert "issues" not in body  # details are logged, not exposed publicly
-        finally:
-            state.task_last_success.pop("frame_processor", None)
-
-    def test_health_strict_returns_503_when_degraded(self, client):
-        import time
-
-        state.task_last_success["frame_processor"] = time.time() - 9999
-        try:
-            r = client.get("/api/health?strict=1")
-            assert r.status_code == 503
-            assert r.json()["status"] == "degraded"
-        finally:
-            state.task_last_success.pop("frame_processor", None)
-
-    def test_health_strict_returns_200_when_ok(self, client):
-        r = client.get("/api/health?strict=1")
-        assert r.status_code == 200
-        assert r.json()["status"] == "ok"
-
-    def test_health_degraded_queue_saturated(self, client):
-        """Fill the frame queue past 90% to trigger saturation warning."""
-        import queue
-
-        orig_queue = state.frame_queue
-        # Create a small queue and fill it
-        small_q = queue.Queue(maxsize=10)
-        for i in range(10):
-            small_q.put(i)
-        state.frame_queue = small_q
-        try:
-            r = client.get("/api/health")
-            assert r.status_code == 200
-            body = r.json()
-            assert body["status"] == "degraded"
-            assert "issues" not in body  # details are logged, not exposed publicly
-        finally:
-            state.frame_queue = orig_queue
-
-    def test_health_degraded_disk_low(self, client):
-        """shutil.disk_usage returns <500 MB free → disk_low appended → degraded."""
-        import shutil
-
-        mock_disk = unittest.mock.MagicMock()
-        mock_disk.free = 100 * 1024 * 1024  # 100 MB < 500 MB threshold
-        with unittest.mock.patch.object(shutil, "disk_usage", return_value=mock_disk):
-            r = client.get("/api/health")
-        assert r.status_code == 200
-        assert r.json()["status"] == "degraded"
-
-    def test_health_disk_usage_exception_does_not_crash(self, client):
-        """shutil.disk_usage raises OSError → exception pass → endpoint still 200."""
-        import shutil
-
-        with unittest.mock.patch.object(shutil, "disk_usage", side_effect=OSError("no disk")):
-            r = client.get("/api/health")
-        assert r.status_code == 200
-
-
 # ── Tower search validation ──────────────────────────────────────────────────
 
 
@@ -148,23 +70,6 @@ class TestTowerSearch:
     def test_lat_out_of_range(self, client):
         r = client.get("/api/towers?lat=100&lon=0")
         assert r.status_code == 422
-
-
-# ── Config endpoints ─────────────────────────────────────────────────────────
-
-
-class TestTowerConfig:
-    def test_get_config(self, client):
-        r = client.get("/api/config")
-        assert r.status_code == 200
-
-    def test_update_config_too_large_returns_413(self, client):
-        """PUT /api/config with a body > 1 MB → 413 before writing to disk."""
-        huge_body = {"data": "x" * 1_100_000}
-        with unittest.mock.patch("routes.towers.require_admin", return_value=None):
-            r = client.put("/api/config", json=huge_body)
-        assert r.status_code == 413
-        assert "too large" in r.json()["detail"].lower()
 
 
 # ── /api/elevation ──────────────────────────────────────────────────────────

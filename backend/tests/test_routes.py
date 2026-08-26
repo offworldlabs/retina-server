@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
-import routes.towers as towers_mod  # noqa: E402
+import routes.config as config_mod  # noqa: E402
 from main import app  # noqa: E402
 from services.tower_ranking import _CONFIG_PATH  # noqa: E402
 
@@ -251,7 +251,7 @@ def isolated_config(tmp_path):
     Without this, a PUT that is wrongly accepted writes to the developer's
     runtime overlay — precisely the failure these tests exist to catch, so a
     regression would corrupt the workspace on its way to reporting itself.
-    routes.towers binds _CONFIG_PATH at import, so both references must move.
+    routes.config binds _CONFIG_PATH at import, so both references must move.
 
     Only the paths: the autouse fixture in conftest puts the settings themselves
     back after every test. Restores by assignment rather than through
@@ -263,12 +263,12 @@ def isolated_config(tmp_path):
 
     path = tmp_path / "tower_config.json"
     path.write_text(_CONFIG_PATH.read_text())
-    towers_mod._CONFIG_PATH = path
+    config_mod._CONFIG_PATH = path
     tower_ranking._CONFIG_PATH = path
     try:
         yield path
     finally:
-        towers_mod._CONFIG_PATH = _CONFIG_PATH
+        config_mod._CONFIG_PATH = _CONFIG_PATH
         tower_ranking._CONFIG_PATH = _CONFIG_PATH
 
 
@@ -348,7 +348,7 @@ class TestConfigValidation:
         def _boom(cfg):
             raise KeyError("max_km")
 
-        monkeypatch.setattr(towers_mod, "apply_config", _boom)
+        monkeypatch.setattr(config_mod, "apply_config", _boom)
 
         r = client.put("/api/config", json=good)
 

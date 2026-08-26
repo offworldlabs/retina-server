@@ -43,7 +43,9 @@ from routes.admin import router as admin_router
 from routes.analytics import router as analytics_router
 from routes.archive import router as archive_router
 from routes.auth import router as auth_router
+from routes.config import router as config_router
 from routes.custody import router as custody_router
+from routes.health import router as health_router
 from routes.node_responses import API_DESCRIPTION
 from routes.nodes import NODE_API_TAGS, NODE_BODY_LIMITS, install_error_handlers
 from routes.nodes import router as nodes_router
@@ -306,6 +308,8 @@ app.add_middleware(
 
 # ── Mount all routers ─────────────────────────────────────────────────────────
 for router in (
+    health_router,
+    config_router,
     towers_router,
     stats_router,
     radar_router,
