@@ -126,10 +126,27 @@ ALLOWED_DIVERGENCE = (
 # (environment, pattern) pair allowed in that one only. Scoping matters: a
 # divergence that is legitimate on one droplet is usually drift on another, and
 # a blanket entry stops the check looking anywhere.
-_ALLOWED = tuple(
-    (None, re.compile(entry)) if isinstance(entry, str) else (entry[0], re.compile(entry[1]))
-    for entry in ALLOWED_DIVERGENCE
-)
+
+
+def _compile_allowed(entries) -> tuple:
+    compiled = []
+    for entry in entries:
+        if isinstance(entry, str):
+            compiled.append((None, re.compile(entry)))
+            continue
+        scope, pattern = entry
+        # A scope that names no environment silently never fires, and one naming
+        # the reference can never fire either, since check_compose skips it.
+        # Both leave an entry that reads as a recorded decision and does nothing.
+        if scope not in OVERLAYS:
+            raise SystemExit(f"ALLOWED_DIVERGENCE: {scope!r} is not one of {sorted(OVERLAYS)}")
+        if scope == REFERENCE:
+            raise SystemExit(f"ALLOWED_DIVERGENCE: {scope!r} is the reference, so scoping to it is a no-op")
+        compiled.append((scope, re.compile(pattern)))
+    return tuple(compiled)
+
+
+_ALLOWED = _compile_allowed(ALLOWED_DIVERGENCE)
 
 # Hostname roles, mapped back to a common token before comparing the two
 # rendered nginx configs. Ordered longest-value-first at substitution time so

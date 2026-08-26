@@ -142,6 +142,17 @@ jobs:
               exit 1
             fi
 
+            # The shared nginx template proxies /api/towers to tower-finder-service
+            # over the external retina-edge network. This is the one environment
+            # that may not run that stack — its deploy job over there is
+            # workflow_dispatch only — and docker-compose.test.yml joins no such
+            # network (a scoped entry in deploy/check-env-parity.py records it).
+            # Warn rather than abort: this droplet exists to rehearse arbitrary
+            # changes, and most have nothing to do with tower search.
+            if ! docker network inspect retina-edge >/dev/null 2>&1; then
+              echo "::warning::retina-edge does not exist on $(hostname), so GET /api/towers will 502 here after this deploy. Everything else is unaffected. To fix: 'docker network create retina-edge', then dispatch tower-finder-service's deploy-test workflow onto this droplet."
+            fi
+
             # ── Injection point 1 ─────────────────────────────────────────────
             # Everything above is read-only. This is the NEGATIVE case: the
             # rollback job must decline to act, because the running stack was

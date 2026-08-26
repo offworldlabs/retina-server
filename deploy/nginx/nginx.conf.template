@@ -71,18 +71,7 @@ server {
         # RETINA_INCLUDE snippets/claim-codes.conf
     }
 
-    # Tower ranking is served by tower-finder-service, not the FastAPI app that
-    # answers the rest of /api/ on this vhost. Longer prefix than `location
-    # /api/` above, so nginx matches this first, the same layering the
-    # /api/auth/* ladder already relies on.
-    #
-    # The seam is the point: sibling paths under /api/ on this one host now
-    # resolve to different containers, so the FastAPI app is no longer the whole
-    # truth for it. No rewrite here, because the service serves this same
-    # /api/towers path.
-    location /api/towers {
-        # RETINA_INCLUDE snippets/tower-finder.conf
-    }
+    # RETINA_INCLUDE snippets/towers-proxy.conf
 
     # Frontend SPA at /towers as well as at the root
     location /towers {
@@ -131,16 +120,12 @@ server {
         # RETINA_INCLUDE snippets/claim-codes.conf
     }
 
-    # The clean public name for tower ranking. `/api/towers` on this vhost would
-    # render as /api/api/towers against the service, so the public path is
-    # /towers and the rewrite restores the service's own prefix. Explicit
-    # because proxy_pass with a variable does not substitute the location
-    # prefix. Longer than `location /` below, so it wins.
-    #
-    # Free to take: the other `location /towers` is on ${HOST_MAIN}, a different
-    # server block, where it serves the SPA.
-    location /towers {
-        rewrite ^/towers(.*)$ /api/towers$1 break;
+    # The public name for tower ranking; `/api/api/towers` is what a prefix
+    # proxy would send. Exact match, or the prefix would also claim /towersfoo.
+    # The rewrite must be explicit: proxy_pass with a variable does not
+    # substitute the location prefix.
+    location = /towers {
+        rewrite ^/towers$ /api/towers break;
         # RETINA_INCLUDE snippets/tower-finder.conf
     }
 
@@ -174,6 +159,8 @@ server {
         # RETINA_INCLUDE snippets/api.conf
     }
 
+    # RETINA_INCLUDE snippets/towers-proxy.conf
+
     # RETINA_INCLUDE snippets/spa.conf
 }
 
@@ -201,6 +188,8 @@ server {
     location /api/ {
         # RETINA_INCLUDE snippets/api.conf
     }
+
+    # RETINA_INCLUDE snippets/towers-proxy.conf
 
     # RETINA_INCLUDE snippets/spa.conf
 }

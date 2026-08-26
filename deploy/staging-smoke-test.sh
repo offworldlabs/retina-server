@@ -63,6 +63,37 @@ check_json_field() {
     fi
 }
 
+# Status and body in ONE request, with fixed-string matching. Both matter here:
+# the tower endpoints fan out to the FCC and open-meteo APIs on every call, so
+# probing the same URL twice doubles this suite's exposure to a third-party
+# outage that would then block a deploy; and `check` above greps a REGEX, where
+# an expected value containing `.` silently matches more than it should.
+check_proxied() {
+    local name="$1" url="$2" expected code body resp
+    shift 2
+    printf "  %-40s " "$name"
+    resp=$($CURL -w '\n%{http_code}' "$url" 2>/dev/null) || { echo "FAIL (connection error)"; FAIL=$((FAIL+1)); return; }
+    code=$(printf '%s' "$resp" | tail -n1)
+    body=$(printf '%s' "$resp" | sed '$d')
+
+    if [ "$code" != "200" ]; then
+        echo "FAIL (got $code, expected 200)"
+        echo "    Response: $(printf '%s' "$body" | head -c 200)"
+        FAIL=$((FAIL+1))
+        return
+    fi
+    for expected in "$@"; do
+        if ! printf '%s' "$body" | grep -qF "$expected"; then
+            echo "FAIL (200 but body lacks '$expected')"
+            echo "    Response: $(printf '%s' "$body" | head -c 200)"
+            FAIL=$((FAIL+1))
+            return
+        fi
+    done
+    echo "OK ($code)"
+    PASS=$((PASS+1))
+}
+
 check_header() {
     local name="$1" url="$2" header="$3"
     printf "  %-40s " "$name"
@@ -177,37 +208,29 @@ check_rate_limit "session endpoints rate limited"    "${BASE_URL}/api/auth/me"  
 
 echo ""
 echo "── tower-finder-service seam ──"
-# Two sibling paths under /api/ on ONE vhost now resolve to different
-# containers: /api/towers leaves for tower-finder-service over the retina-edge
-# network, everything else stays with the local FastAPI app. The app is no
-# longer the whole truth for this host, so assert both halves — a proxy that
-# works while the app is unreachable, or the reverse, would otherwise look fine
-# from either check alone.
+# Sibling paths under /api/ on one vhost now resolve to different containers:
+# /api/towers leaves for tower-finder-service over retina-edge, everything else
+# stays with the local app. Both halves are asserted, since either one alone
+# looks healthy while the other is broken. A broken proxy 502s rather than 404s:
+# the server has dropped off retina-edge (deploy/check-env-parity.py compares
+# that) or the service stack is down.
 #
-# These 502 rather than 404 when the seam breaks, because the failure is nginx
-# not reaching the upstream: either the server container has dropped off
-# retina-edge (deploy/check-env-parity.py compares that membership) or the
-# tower-finder-service stack is down.
-check_status "towers vhost /api/towers → service"   "${BASE_URL}/api/towers?lat=33.45&lon=-112.07" "200"
-check        "…and it really answers with towers"   "${BASE_URL}/api/towers?lat=33.45&lon=-112.07" "towers"
-check_status "api vhost /towers → service"          "${API_URL}/towers?lat=33.45&lon=-112.07"      "200"
-check        "…and the rewrite reached /api/towers" "${API_URL}/towers?lat=33.45&lon=-112.07"      "towers"
-# The other half of the seam: a sibling /api/ path on the same vhost is still
-# served by the app. /api/radar/nodes has no counterpart on the service, so a
-# 200 here can only have come from the monolith.
-check_status "sibling /api/ path stays on the app"  "${BASE_URL}/api/radar/nodes"                  "200"
-# Whatever answers /api/towers must honour `frequencies`, the operator's
-# measured-spectrum hint. This is a gate, not an observation: FastAPI discards
-# unknown query params silently, so a backend without the parameter serves a
-# cheerful 200 containing the wrong ranking, and that is exactly how it went
-# unnoticed on tower-finder.retina.fm for months. Failing here skips
-# deploy-production (which `needs` this job), so the monolith keeps serving
-# towers until the service can do this too.
+# Whatever answers must echo the parameters that change the result, not just
+# return 200. FastAPI discards unknown query params silently, so a backend
+# missing one serves a cheerful 200 with the wrong ranking — which is how
+# `frequencies` went unnoticed on tower-finder.retina.fm for months. Add the
+# next such parameter here when it lands rather than trusting the status code.
 #
-# 1234.5 rather than a real frequency: parse_user_frequencies accepts anything
-# in 0 < v < 10000, and no broadcast tower transmits there, so finding it in the
-# body proves the value round-tripped rather than matching some tower's own.
-check "/api/towers honours frequencies"             "${BASE_URL}/api/towers?lat=33.45&lon=-112.07&frequencies=1234.5" "1234.5"
+# 1234.5 because parse_user_frequencies takes anything in 0 < v < 10000 and no
+# broadcast tower transmits there, so the echo cannot be some tower's own value.
+TOWERS_QUERY="lat=33.45&lon=-112.07&frequencies=1234.5"
+TOWERS_ECHO='"user_frequencies_mhz":[1234.5]'
+check_proxied "towers vhost /api/towers → service"  "${BASE_URL}/api/towers?${TOWERS_QUERY}" '"towers"' "$TOWERS_ECHO"
+check_proxied "api vhost /towers → service"         "${API_URL}/towers?${TOWERS_QUERY}"      '"towers"' "$TOWERS_ECHO"
+# The other half: a sibling /api/ path on the same vhost is still served by the
+# app. /api/radar/nodes has no counterpart on the service, so a 200 here can
+# only have come from the monolith.
+check_status  "sibling /api/ path stays on the app" "${BASE_URL}/api/radar/nodes"            "200"
 
 echo ""
 echo "── Detection archive (dash /data) ──"
