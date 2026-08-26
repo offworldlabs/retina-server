@@ -303,7 +303,11 @@ async def blah2_bridge_task(node: Blah2Node):
                 frame = _convert_frame(raw, node.node_id)
                 if frame is not None:
                     ts_ms = raw.get("timestamp", 0)
-                    if ts_ms != last_ts:  # skip duplicate frames
+                    # Forward progress only: a repeat or a backwards clock step
+                    # would hand the tracker a non-positive dt.  _convert_frame's
+                    # staleness gate must stay above this one - it bounds a
+                    # regression stall to 2 * STALE_THRESHOLD_S rather than forever.
+                    if ts_ms > last_ts:
                         last_ts = ts_ms
                         # Update heartbeat timestamp
                         if node.node_id in state.connected_nodes:

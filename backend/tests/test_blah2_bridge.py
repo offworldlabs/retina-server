@@ -27,6 +27,10 @@ MINIMAL = {
 }
 
 
+async def _noop_register(_node):
+    """Bypass registration: it touches shared node state the ordering tests do not exercise."""
+
+
 def _write(tmp_path, payload):
     p = tmp_path / "blah2_nodes.json"
     p.write_text(json.dumps(payload))
@@ -221,3 +225,92 @@ class TestConvertFrame:
 
     def test_empty_frame_rejected(self):
         assert _convert_frame({"timestamp": 0, "delay": []}, "n1") is None
+
+
+# ── Frame ordering ────────────────────────────────────────────────────────────
+
+
+class _StopPolling(BaseException):
+    """Ends the bridge's infinite loop; BaseException so its `except Exception` misses it."""
+
+
+class TestFrameOrdering:
+    """Only forward timestamps reach the queue.
+
+    A repeat is a cached response and a lower one is a clock step backwards;
+    either would hand the tracker a non-positive dt.  Nothing between the queue
+    and `Tracker.process_frame` re-orders, so this guard is the only defence
+    against it on the bridge's path.
+    """
+
+    async def _enqueued_timestamps(self, monkeypatch, timestamps):
+        """Run the bridge over a scripted timestamp sequence; return what it queued."""
+        import asyncio
+
+        from core import state
+        from services import blah2_bridge
+
+        base_ms = int(time.time() * 1000)
+        raw_frames = [
+            {
+                "timestamp": base_ms + offset_ms,
+                "delay": [19.86],
+                "doppler": [-160.62],
+                "snr": [10.06],
+            }
+            for offset_ms in timestamps
+        ]
+
+        class _Response:
+            def __init__(self, payload):
+                self._payload = payload
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._payload
+
+        class _Client:
+            def __init__(self, *_, **__):
+                self._remaining = list(raw_frames)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_):
+                return False
+
+            async def get(self, _url):
+                if not self._remaining:
+                    raise _StopPolling
+                return _Response(self._remaining.pop(0))
+
+        monkeypatch.setattr(blah2_bridge.httpx, "AsyncClient", _Client)
+        monkeypatch.setattr(blah2_bridge, "_register_node", _noop_register)
+        monkeypatch.setattr(blah2_bridge, "POLL_INTERVAL_S", 0)
+        monkeypatch.setattr(state, "frame_queue", asyncio.Queue())
+
+        node = _build_node(MINIMAL)
+        with pytest.raises(_StopPolling):
+            await blah2_bridge.blah2_bridge_task(node)
+
+        queued = []
+        while not state.frame_queue.empty():
+            _node_id, frame = state.frame_queue.get_nowait()
+            queued.append(frame["timestamp"] - base_ms)
+        return queued
+
+    async def test_first_frame_passes(self, monkeypatch):
+        """`last_ts` starts at 0, so no special case is needed for the first frame."""
+        assert await self._enqueued_timestamps(monkeypatch, [0]) == [0]
+
+    async def test_repeat_dropped(self, monkeypatch):
+        assert await self._enqueued_timestamps(monkeypatch, [0, 0, 0]) == [0]
+
+    async def test_older_frame_dropped(self, monkeypatch):
+        assert await self._enqueued_timestamps(monkeypatch, [1000, 500]) == [1000]
+
+    async def test_newer_frame_after_older_still_passes(self, monkeypatch):
+        """An out-of-order frame must not wedge the node against later good ones."""
+        assert await self._enqueued_timestamps(monkeypatch, [1000, 500, 2000]) == [1000, 2000]

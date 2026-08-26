@@ -248,6 +248,37 @@ class TestNodeTagPrecedence:
         assert rec["pred_delay_us"] != 9999.0  # prediction recorded for the residual path
 
 
+class TestGroundSentinelInTags:
+    """A node tag is raw feed data, so alt_baro can be the string "ground"."""
+
+    def test_grounded_tag_still_claims(self):
+        _register()
+        ts = int(time.time() * 1000)
+        tag = {"hex": "gnd001", "lat": _LAT, "lon": _LON, "alt_baro": "ground", "gs": 0, "track": 0}
+
+        claimed = kc.claim_known_targets(_NODE_ID, _frame(ts, [50.0], [10.0], adsb=[tag]))
+
+        assert claimed == {0}
+        # Sea level for the prediction; the fix keeps the sentinel verbatim.
+        assert state.known_claims["gnd001"][-1]["adsb_fix"]["alt_baro"] == "ground"
+
+    def test_grounded_tag_does_not_silently_disable_the_lane(self, monkeypatch):
+        """The stage fails open, so a raise here is invisible except as a
+        counter tick and a claim that never happened."""
+        _register()
+        monkeypatch.setattr(state, "KNOWN_LANE_MODE", "shadow")
+        ts = int(time.time() * 1000)
+        tag = {"hex": "gnd002", "lat": _LAT, "lon": _LON, "alt_baro": "ground", "gs": 0, "track": 0}
+        errors_before = state.known_claims_errors
+
+        default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        monkeypatch.setattr(default, "process_frame", lambda f: None)
+        process_one_frame(_NODE_ID, _frame(ts, [50.0], [10.0], adsb=[tag]), default)
+
+        assert state.known_claims_errors == errors_before
+        assert "gnd002" in state.known_claims
+
+
 class TestContention:
     def _global(self, key, ts_ms, n_nodes, solve_count):
         state.multinode_tracks[key] = {

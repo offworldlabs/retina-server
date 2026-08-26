@@ -2,11 +2,13 @@
 
 Import from here instead of scattering magic numbers through services.
 Values that are tunable per-deployment stay as env vars (FRAME_WORKERS,
-SOLVER_WORKERS, etc.) — this file is for compile-time constants only.
+SOLVER_WORKERS, etc.) — this file holds compile-time constants and the small
+pure helpers that operate on them.
 
 retina_tracker YAML config stays separate (loaded at runtime via config.yaml).
 """
 
+import math
 import os
 
 from core.env_parsing import parse_comma_list
@@ -15,6 +17,29 @@ from core.env_parsing import parse_comma_list
 C_KM_US = 0.299792458  # Speed of light (km/µs)
 R_EARTH_KM = 6371.0  # Mean Earth radius (km)
 FT_TO_M = 0.3048  # Feet → metres
+
+# ── Field coercion ───────────────────────────────────────────────────────────
+
+
+def is_num(v) -> bool:
+    """True when v is a finite number and arithmetic on it is meaningful.
+
+    The complement of as_num()'s fallback: a field this rejects carries no
+    measurement, so a truth comparison must drop the sample rather than score
+    against the substituted 0.0.
+    """
+    return isinstance(v, (int, float)) and math.isfinite(v)
+
+
+def as_num(v) -> float:
+    """0.0 for anything that isn't a finite number (ADS-B's "ground", None, NaN).
+
+    tar1090 reports alt_baro as the literal string "ground" for aircraft on the
+    ground.  Coerce before any arithmetic on a raw ADS-B field.  Sound for a
+    solver seed; use is_num() where the value is compared against truth.
+    """
+    return float(v) if is_num(v) else 0.0
+
 
 # ── Association gates ────────────────────────────────────────────────────────
 DELAY_MATCH_THRESHOLD_US = 15.0  # Bistatic delay tolerance for matching
