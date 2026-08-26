@@ -17,7 +17,7 @@ from core.users import require_admin
 from services.frame_processor import resolve_ground_truth_hex
 from services.geo import haversine_km
 from services.id_utils import normalize_hex_key
-from services.public_location import public_latlon, translate_polygon
+from services.public_location import fuzz_enabled, public_latlon, translate_polygon
 from services.tasks import solver as solver_mod
 
 router = APIRouter()
@@ -406,6 +406,17 @@ async def get_ground_truth_trail(hex_code: str):
 
     if not gt_trail and not solved_trail:
         raise HTTPException(status_code=404, detail=f"No trail data for {hex_code}")
+
+    # No ground truth to compare against means the only thing left to serve is
+    # the solved trail, and for a single-node arc track that trail is a run of
+    # boresight crossings in the TRUE frame — rays from the operator's receiver,
+    # unauthenticated, for any hex a caller cares to name.  The feed's own
+    # entries are translated into the public frame; this endpoint reads
+    # state.track_histories directly and would be the way around that.  It
+    # exists to score solves against simulation ground truth, so without ground
+    # truth it has no job to do and 404s like any other empty comparison.
+    if fuzz_enabled() and not gt_trail:
+        raise HTTPException(status_code=404, detail=f"No ground truth trail for {hex_code}")
 
     position_error_km = None
     if gt_trail and solved_trail:

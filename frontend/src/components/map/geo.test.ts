@@ -6,6 +6,7 @@ import {
   bistaticRangeLimitKm,
   nearestPointOnPolyline,
   yagiSectorPositions,
+  uncertaintyDiscRadiusM,
 } from "./geo";
 
 describe("haversineDistanceKm", () => {
@@ -206,5 +207,24 @@ describe("nearestPointOnPolyline", () => {
       ...pts.map(([a, b]) => haversineDistanceKm(LAT, LON, a, b)),
     );
     expect(r.distKm).toBeLessThanOrEqual(vertexMin + 1e-9);
+  });
+});
+
+describe("uncertaintyDiscRadiusM", () => {
+  it("converts the declared km radius to metres", () => {
+    expect(uncertaintyDiscRadiusM(3)).toBe(3000);
+    expect(uncertaintyDiscRadiusM(1.5)).toBe(1500);
+  });
+
+  it("returns 0 when the feed declares no uncertainty, so no disc is drawn", () => {
+    expect(uncertaintyDiscRadiusM(0)).toBe(0);
+    expect(uncertaintyDiscRadiusM(null)).toBe(0);
+    expect(uncertaintyDiscRadiusM(undefined)).toBe(0);
+  });
+
+  it("refuses nonsense radii rather than drawing a disc from them", () => {
+    expect(uncertaintyDiscRadiusM(-3)).toBe(0);
+    expect(uncertaintyDiscRadiusM(NaN)).toBe(0);
+    expect(uncertaintyDiscRadiusM(Infinity)).toBe(0);
   });
 });

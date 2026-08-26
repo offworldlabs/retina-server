@@ -362,9 +362,14 @@ describeUnlessProd("Node registration — main integration suite", () => {
       expect(ageMs).toBeLessThan(5 * 60 * 1000); // < 5 minutes
     });
 
-    test("REAL_NODE location object has all 6 geographic sub-fields", () => {
+    test("REAL_NODE location object has all 7 geographic sub-fields", () => {
       const loc = nodesBody.nodes[REAL_NODE_ID].location as Record<string, unknown>;
-      for (const f of ["rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft"]) {
+      for (const f of [
+        "rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft",
+        // Declared alongside the coordinates since the receiver fuzzing
+        // landed: how far the published rx may sit from the true one.
+        "location_uncertainty_km",
+      ]) {
         expect(loc, `missing location field: ${f}`).toHaveProperty(f);
       }
     });

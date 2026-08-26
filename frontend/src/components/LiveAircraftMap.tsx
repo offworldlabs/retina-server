@@ -34,6 +34,7 @@ import {
   hideDrIcon,
   nodeIcon,
   yagiSectorPositions,
+  uncertaintyDiscRadiusM,
   FitBounds,
   ViewportTracker,
   MapClickClear,
@@ -697,18 +698,72 @@ const BasemapLayer = memo(function BasemapLayer({ url }) {
 const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelectNode }) {
   return visibleNodes.map((n) => {
     const isSynth = n.node_id?.startsWith("synth-");
+    // Every published rx coordinate is displaced by the backend; the disc is
+    // how the map admits it, at the radius the feed itself declares.  Not
+    // special-cased by node kind — a synthetic node that ever carries the
+    // field gets one too, because the disclosure follows the data.
+    const discRadiusM = uncertaintyDiscRadiusM(n.location_uncertainty_km);
+    // A soft blob, not a ring: a crisp edge would read as a surveyed
+    // boundary, and the true receiver is no likelier just inside the rim than
+    // at the centre.  The blur is a CSS filter (screen-space, so the edge
+    // stays soft at every zoom — a geographic blur would vanish when 3 km is
+    // sub-pixel).  interactive={false} leaves clicks to the glyph on top,
+    // which is also what keeps the node reachable at far zoom.
+    const disc = discRadiusM > 0 ? (
+      <Circle
+        center={[n.rx_lat, n.rx_lon]}
+        radius={discRadiusM}
+        pathOptions={{
+          className: "node-uncertainty-disc",
+          color: "#facc15",
+          weight: 0,
+          fillColor: "#facc15",
+          fillOpacity: 0.16,
+        }}
+        interactive={false}
+      />
+    ) : null;
+    const uncertaintyLine = discRadiusM > 0
+      ? <>Location approximate: &plusmn;{n.location_uncertainty_km} km<br /></>
+      : null;
     if (isSynth) {
       return (
-        <CircleMarker
-          key={`node-${n.node_id}`}
-          center={[n.rx_lat, n.rx_lon]}
-          radius={5}
-          pathOptions={{ color: "#facc15", fillColor: "#facc15", fillOpacity: 0.55, weight: 1.5 }}
-          bubblingMouseEvents={false}
+        <React.Fragment key={`node-${n.node_id}`}>
+          {disc}
+          <CircleMarker
+            center={[n.rx_lat, n.rx_lon]}
+            radius={5}
+            pathOptions={{ color: "#facc15", fillColor: "#facc15", fillOpacity: 0.55, weight: 1.5 }}
+            bubblingMouseEvents={false}
+            eventHandlers={{ click: () => onSelectNode(n.node_id) }}
+          >
+            <Popup>
+              <strong>{n.node_id}</strong><br />
+              {uncertaintyLine}
+              Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
+              {n.max_bistatic_range_km != null
+                ? <>Bistatic range: {n.max_bistatic_range_km} km<br /></>
+                : <>Range: {n.max_range_km} km<br /></>}
+              {n.empirical_polygon && n.empirical_polygon.length >= 3
+                ? <>Coverage: empirical, {n.empirical_n_points} calibration pts</>
+                : <>Coverage: theoretical ({n.empirical_n_points || 0} calibration pts)</>}
+            </Popup>
+          </CircleMarker>
+        </React.Fragment>
+      );
+    }
+    return (
+      <React.Fragment key={`node-${n.node_id}`}>
+        {disc}
+        <Marker
+          position={[n.rx_lat, n.rx_lon]}
+          icon={nodeIcon}
+          zIndexOffset={1000}
           eventHandlers={{ click: () => onSelectNode(n.node_id) }}
         >
           <Popup>
             <strong>{n.node_id}</strong><br />
+            {uncertaintyLine}
             Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
             {n.max_bistatic_range_km != null
               ? <>Bistatic range: {n.max_bistatic_range_km} km<br /></>
@@ -717,28 +772,8 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
               ? <>Coverage: empirical, {n.empirical_n_points} calibration pts</>
               : <>Coverage: theoretical ({n.empirical_n_points || 0} calibration pts)</>}
           </Popup>
-        </CircleMarker>
-      );
-    }
-    return (
-      <Marker
-        key={`node-${n.node_id}`}
-        position={[n.rx_lat, n.rx_lon]}
-        icon={nodeIcon}
-        zIndexOffset={1000}
-        eventHandlers={{ click: () => onSelectNode(n.node_id) }}
-      >
-        <Popup>
-          <strong>{n.node_id}</strong><br />
-          Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
-          {n.max_bistatic_range_km != null
-            ? <>Bistatic range: {n.max_bistatic_range_km} km<br /></>
-            : <>Range: {n.max_range_km} km<br /></>}
-          {n.empirical_polygon && n.empirical_polygon.length >= 3
-            ? <>Coverage: empirical, {n.empirical_n_points} calibration pts</>
-            : <>Coverage: theoretical ({n.empirical_n_points || 0} calibration pts)</>}
-        </Popup>
-      </Marker>
+        </Marker>
+      </React.Fragment>
     );
   });
 });
@@ -748,15 +783,30 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
   if (!showCoverage) return null;
   return visibleNodes.map((n) => {
     if (n.empirical_polygon && n.empirical_polygon.length >= 3) {
+      // Blurred edge as presentational honesty, not as the privacy mechanism:
+      // the coordinates underneath are already fuzzed server-side, and the
+      // polygon is approximate by construction anyway (a rigid translation of
+      // the calibrated shape onto a fuzzed anchor).  A 1.5 px stroke under the
+      // blur reads as a glow, i.e. as a boundary the data never established —
+      // so the outline goes and the fill alone carries the region.
       return (
         <Polygon
           key={`beam-${n.node_id}`}
           positions={n.empirical_polygon}
-          pathOptions={{ color: "#22c55e", fillColor: "#22c55e", fillOpacity: 0.12, weight: 1.5 }}
+          pathOptions={{
+            className: "coverage-fuzzy",
+            color: "#22c55e",
+            fillColor: "#22c55e",
+            fillOpacity: 0.14,
+            weight: 0,
+          }}
           interactive={false}
         />
       );
     }
+    // The theoretical fallback stays sharp on purpose: it is a declared model
+    // sector, already dashed to say so, and blurring it would conflate "we
+    // measured this, roughly" with "we never measured this at all".
     return (
       <Polygon
         key={`beam-${n.node_id}`}
@@ -1828,12 +1878,18 @@ export default function LiveAircraftMap() {
                       <Popup><strong>TX Tower</strong><br />{sn.tx_lat.toFixed(4)}, {sn.tx_lon.toFixed(4)}</Popup>
                     </CircleMarker>
                   )}
-                  {/* RX→TX baseline */}
-                  <Polyline
-                    positions={[[sn.rx_lat, sn.rx_lon], [sn.tx_lat, sn.tx_lon]]}
-                    pathOptions={{ color: "#f59e0b", weight: 1.5, opacity: 0.6, dashArray: "4 6" }}
-                    interactive={false}
-                  />
+                  {/* RX→TX baseline — connects the PUBLISHED rx anchor to the
+                      licensed transmitter, so it discloses nothing the feed
+                      doesn't.  Guarded like the TX marker above: without it a
+                      node whose tx defaults to (0, 0) drew a line to null
+                      island across half the map. */}
+                  {validLatLon(sn.tx_lat, sn.tx_lon) && (
+                    <Polyline
+                      positions={[[sn.rx_lat, sn.rx_lon], [sn.tx_lat, sn.tx_lon]]}
+                      pathOptions={{ color: "#f59e0b", weight: 1.5, opacity: 0.6, dashArray: "4 6" }}
+                      interactive={false}
+                    />
+                  )}
                   {/* Highlight arcs/markers for aircraft detected by this node */}
                   {nodeAircraft.map((ac) => {
                     if (Array.isArray(ac.ambiguity_arc) && ac.ambiguity_arc.length >= 2) {

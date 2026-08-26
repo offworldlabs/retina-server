@@ -285,12 +285,13 @@ export function useAircraftFeed(ownerOnly = false) {
   };
 }
 
-// The ±400 m client-side `nodeDisplayFuzz` that used to live here is gone.
-// It only ever moved the marker: the same payload also carried the true
-// coordinate for the arc rebuild, so anyone reading the network tab had the
-// receiver anyway. Fuzzing is now the backend's, applied where the bytes are
-// serialized (backend/services/public_location.py), which means the browser
-// never receives a true receiver position and has nothing left to hide.
+// Receiver anonymization is entirely the backend's, applied where the bytes
+// are serialized (backend/services/public_location.py): coordinates are
+// displaced 1–3 km deterministically per node before they go on the wire, so
+// no true receiver position reaches the browser and the client does no fuzzing
+// of its own. What the client does own is disclosing that: the feed declares
+// the outer displacement radius as location_uncertainty_km, and the map draws
+// it (see NodeMarkersLayer in LiveAircraftMap.tsx).
 
 /**
  * Fetch radar node positions for coverage zones.
@@ -342,17 +343,16 @@ export function useNodes() {
             if (Math.abs(rxLat) < 1e-6 && Math.abs(rxLon) < 1e-6) continue;
             nodeList.push({
               node_id: id,
-              // Already privacy-fuzzed by the backend; used as served.
+              // Already privacy-fuzzed by the backend; used as served. The
+              // backend builds its published arcs around this same anchor, so
+              // a client-side rebuild lands on the backend's curve.
               rx_lat: rxLat,
               rx_lon: rxLon,
-              // Same values, kept under the legacy `_real` names that
-              // bistaticArc.ts and InBeamDiagnostic still read. The backend
-              // now builds its published arcs around this same fuzzed anchor,
-              // so a client-side rebuild lands on the backend's curve — which
-              // is what these fields exist to guarantee. There is no true RX
-              // on the wire any more for them to hold.
-              rx_lat_real: rxLat,
-              rx_lon_real: rxLon,
+              // The backend's own declaration of how far it displaced the
+              // receiver. Absent when fuzzing is off, which resolves to 0 and
+              // suppresses the uncertainty disc rather than drawing one of
+              // zero radius.
+              location_uncertainty_km: da.rx.location_uncertainty_km ?? 0,
               tx_lat: da.tx.lat,
               tx_lon: da.tx.lon,
               // Node altitudes (m ASL) for the altitude-corrected arc

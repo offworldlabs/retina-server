@@ -119,14 +119,13 @@ export interface RadarNode {
   rx_lat: number;
   rx_lon: number;
   /**
-   * Legacy names, now holding the same served (fuzzed) coordinate as rx_lat/
-   * rx_lon. Kept because bistaticArc.ts and InBeamDiagnostic read them, and
-   * they still mean what they meant — "the anchor the backend's published
-   * curves are built around" — which is now the fuzzed one. No true receiver
-   * position reaches the browser.
+   * Outer radius (km) of the displacement the backend applied, as the backend
+   * declares it: the true receiver is somewhere within this distance of
+   * rx_lat/rx_lon. 0 when the feed carries no such declaration (fuzzing off),
+   * which the map reads as "draw no uncertainty disc" — a zero-radius disc
+   * would claim a precision the feed never promised.
    */
-  rx_lat_real: number;
-  rx_lon_real: number;
+  location_uncertainty_km: number;
   tx_lat: number;
   tx_lon: number;
   /**
