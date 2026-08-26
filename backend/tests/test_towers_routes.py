@@ -48,10 +48,21 @@ class TestDetectSource:
 
         assert _detect_source(64.2, -152.5) == "us"
 
-    def test_unknown_defaults_to_us(self):
+    def test_unsupported_region_rejected(self):
+        """Paris is in no supported region — 422 rather than silently served US data."""
+        from fastapi import HTTPException
+
         from routes.towers import _detect_source
 
-        assert _detect_source(48.85, 2.35) == "us"  # Paris → falls through to us
+        with pytest.raises(HTTPException) as exc:
+            _detect_source(48.85, 2.35)
+        assert exc.value.status_code == 422
+
+    def test_us_northern_tier_not_misclassified_as_canada(self):
+        """Waltham, MA (42.387N) — the old bounding box returned "ca" for anything above 42N."""
+        from routes.towers import _detect_source
+
+        assert _detect_source(42.38708028093612, -71.24905416622781) == "us"
 
 
 # ── Tower search validation ──────────────────────────────────────────────────

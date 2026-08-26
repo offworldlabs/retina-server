@@ -40,8 +40,17 @@ class TestDetectSource:
     def test_honolulu_us(self):
         assert _detect_source(21.3069, -157.8583) == "us"
 
-    def test_unknown_fallback_us(self):
-        assert _detect_source(0, 0) == "us"
+    def test_unsupported_region_rejected(self):
+        """Null Island is in no supported region — 422 rather than silently served US data."""
+        from fastapi import HTTPException
+
+        with pytest.raises(HTTPException) as exc:
+            _detect_source(0, 0)
+        assert exc.value.status_code == 422
+
+    def test_us_northern_tier_not_misclassified_as_canada(self):
+        """Waltham, MA (42.387N) — the old bounding box returned "ca" for anything above 42N."""
+        assert _detect_source(42.38708028093612, -71.24905416622781) == "us"
 
 
 # ── Broadcast band classification ────────────────────────────────────────────

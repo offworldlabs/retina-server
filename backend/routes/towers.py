@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from clients.fcc import fetch_fcc_broadcast_systems
 from clients.maprad import fetch_broadcast_systems
+from services.region_lookup import SUPPORTED_REGIONS, UNSUPPORTED_REGION_DETAIL, classify_region
 from services.tower_ranking import (
     DEFAULT_LIMIT,
     DEFAULT_RADIUS_KM,
@@ -24,17 +25,14 @@ API_KEY = os.getenv("MAPRAD_API_KEY", "")
 
 
 def _detect_source(lat: float, lon: float) -> str:
-    if -45 <= lat <= -10 and 112 <= lon <= 155:
-        return "au"
-    if 42 <= lat <= 84 and -141 <= lon <= -52:
-        return "ca"
-    if 24 <= lat < 49 and -125 <= lon <= -66:
-        return "us"
-    if 51 <= lat <= 72 and -180 <= lon <= -129:
-        return "us"
-    if 18 <= lat <= 23 and -161 <= lon <= -154:
-        return "us"
-    return "us"
+    region = classify_region(lat, lon)
+    if region is not None:
+        return region
+    # Deliberate stopgap: we only have tower data + an ATSC demod for the
+    # supported regions, so an unmapped location can't be served meaningfully.
+    # Edge-of-country false negatives are accepted for now; revisit when
+    # coverage and demod standards expand.
+    raise HTTPException(status_code=422, detail=UNSUPPORTED_REGION_DETAIL)
 
 
 async def _lookup_elevation(lat: float, lon: float) -> float | None:
@@ -84,8 +82,8 @@ async def find_towers(
     source = source.lower()
     if source == "auto":
         source = _detect_source(lat, lon)
-    if source not in ("us", "au", "ca"):
-        raise HTTPException(status_code=400, detail="Invalid source. Use: us, au, ca, auto")
+    if source not in SUPPORTED_REGIONS:
+        raise HTTPException(status_code=400, detail=f"Invalid source. Use: {', '.join(SUPPORTED_REGIONS)}, auto")
 
     effective_radius = radius_km if radius_km > 0 else DEFAULT_RADIUS_KM
     effective_limit = limit if limit > 0 else DEFAULT_LIMIT

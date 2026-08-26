@@ -1,5 +1,8 @@
 """Unit tests for tower helper functions: _detect_source and parse_user_frequencies."""
 
+import pytest
+from fastapi import HTTPException
+
 from routes.towers import _detect_source
 from services.tower_ranking import parse_user_frequencies
 
@@ -21,21 +24,49 @@ class TestDetectSource:
         """Atlanta is in the US mainland region."""
         assert _detect_source(33.7, -84.4) == "us"
 
+    # Both of these were round-number stand-ins that a bounding box happily
+    # accepted but that are actually open water — 61.0,-150.0 is Cook Inlet and
+    # 20.0,-157.0 is the channel west of Maui. Against real coastlines they
+    # resolve to no region, so they now name actual cities.
+
     def test_us_alaska(self):
-        """Alaska is in the US Alaska/Yukon region."""
-        assert _detect_source(61.0, -150.0) == "us"
+        """Anchorage is in the US Alaska region."""
+        assert _detect_source(61.2181, -149.9003) == "us"
 
     def test_us_hawaii(self):
-        """Hawaii is in the US Hawaii region."""
-        assert _detect_source(20.0, -157.0) == "us"
+        """Honolulu is in the US Hawaii region."""
+        assert _detect_source(21.3069, -157.8583) == "us"
 
-    def test_fallback_pacific_ocean(self):
-        """Middle of Pacific Ocean falls back to 'us'."""
-        assert _detect_source(0.0, 170.0) == "us"
+    def test_pacific_ocean_rejected(self):
+        """Middle of the Pacific is in no supported region — 422, not a silent 'us'."""
+        with pytest.raises(HTTPException) as exc:
+            _detect_source(0.0, 170.0)
+        assert exc.value.status_code == 422
 
-    def test_fallback_south_america(self):
-        """São Paulo (outside defined regions) falls back to 'us'."""
-        assert _detect_source(-23.5, -46.6) == "us"
+    def test_south_america_rejected(self):
+        """Sao Paulo is in no supported region — 422, not a silent 'us'."""
+        with pytest.raises(HTTPException) as exc:
+            _detect_source(-23.5, -46.6)
+        assert exc.value.status_code == 422
+
+    # ── Northern-tier regression: the bounding box this replaced returned "ca"
+    # for every US point at lat >= 42, which is all of New England, Michigan,
+    # Minnesota, Montana and the Pacific Northwest.
+
+    def test_waltham_ma_is_us(self):
+        """42.387N, -71.249W — the reported bug: Waltham, MA served Canadian data."""
+        assert _detect_source(42.38708028093612, -71.24905416622781) == "us"
+
+    def test_seattle_is_us(self):
+        assert _detect_source(47.6062, -122.3321) == "us"
+
+    def test_detroit_is_us(self):
+        """Detroit sits south of Windsor, Ontario — a real border inversion no bbox can express."""
+        assert _detect_source(42.3314, -83.0458) == "us"
+
+    def test_windsor_ontario_is_ca(self):
+        """The other side of that inversion: Windsor is north of Detroit and Canadian."""
+        assert _detect_source(42.3149, -83.0364) == "ca"
 
 
 # ── Frequency Parsing ────────────────────────────────────────────────────────
