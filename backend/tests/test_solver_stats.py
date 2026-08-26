@@ -292,9 +292,13 @@ class TestKnownLaneAndClaimsPassthrough:
             ("known_lane_ghost", 3),
             ("known_lane_no_converge", 1),
             ("known_lane_published", 4),
+            ("known_lane_publish_errors", 1),
         ):
             state.bump_counter(name, n)
         out = _solver_window_stats(10.0)
+        # publish_errors accounts for the truth_match minus published gap: 5
+        # classified truth_match, 4 on the map, 1 that threw on the way there
+        # (see known_lane._attempt's publish catch).
         assert out["known_lane"] == {
             "mode": state.KNOWN_LANE_MODE,
             "attempts": 9,
@@ -302,6 +306,7 @@ class TestKnownLaneAndClaimsPassthrough:
             "ghost": 3,
             "no_converge": 1,
             "published": 4,
+            "publish_errors": 1,
         }
 
     def test_known_claims_reflects_the_claiming_counters(self):
@@ -452,6 +457,7 @@ class TestEndpoint:
             "ghost",
             "no_converge",
             "published",
+            "publish_errors",
         }
         assert data["known_claims"].keys() == {
             "made",

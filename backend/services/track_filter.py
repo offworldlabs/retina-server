@@ -360,12 +360,24 @@ def _kf_correct(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """One linear Kalman measurement update.  Returns (x, P, innovation, S) —
     callers that need to gate on the innovation (the position update below)
-    get it for free instead of recomputing Hx twice."""
+    get it for free instead of recomputing Hx twice.
+
+    The covariance update is the JOSEPH stabilized form, and must stay that
+    way — the cheaper standard form (I - KH) @ P is algebraically identical
+    and numerically is not.  Joseph is a SUM of two congruence transforms of
+    PSD matrices ((I-KH) P (I-KH)^T and K R K^T), so it preserves
+    positive-semidefiniteness for ANY gain K given PSD P and R; the standard
+    form is a DIFFERENCE of two nearly-equal matrices and loses PSD to
+    roundoff on an ill-conditioned update.  2026-08-26 droplet: that loss put
+    a negative diagonal on the position covariance 6 times in ~6 h, each one
+    a math domain error out of _smooth_kf's sqrt below.
+    """
     y = z - h @ x
     s = h @ P @ h.T + r
     k = P @ h.T @ np.linalg.inv(s)
     x_new = x + k @ y
-    p_new = (np.eye(P.shape[0]) - k @ h) @ P
+    i_kh = np.eye(P.shape[0]) - k @ h
+    p_new = i_kh @ P @ i_kh.T + k @ r @ k.T
     p_new = (p_new + p_new.T) / 2.0  # symmetrize — guards against drift from repeated float ops
     return x_new, p_new, y, s
 
@@ -539,7 +551,10 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
         smoothed["lat"] = round(lat_s, 6)
         smoothed["lon"] = round(lon_s, 6)
         smoothed["smoother"] = "kf"
-        smoothed["kf_pos_sigma_m"] = round(math.sqrt(0.5 * (p_upd[0, 0] + p_upd[2, 2])), 1)
+        # Clamped: a sqrt of a float subtraction result must never be able to
+        # throw on this hot path — see _kf_correct for the roundoff mode this
+        # is the second line of defence against.
+        smoothed["kf_pos_sigma_m"] = round(math.sqrt(max(0.0, 0.5 * (p_upd[0, 0] + p_upd[2, 2]))), 1)
         logging.debug(
             "KF: key=%s dt=%.1f raw=(%.4f,%.4f) -> smooth=(%.4f,%.4f) sigma=%.1fm",
             track_key,

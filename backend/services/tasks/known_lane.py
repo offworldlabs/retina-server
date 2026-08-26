@@ -79,6 +79,7 @@ _COUNTERS = (
     "known_lane_ghost",
     "known_lane_no_converge",
     "known_lane_published",
+    "known_lane_publish_errors",
 )
 for _name in _COUNTERS:
     if not hasattr(state, _name):
@@ -391,9 +392,24 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
     _record_accuracy(hexn, err_km, label, n_nodes, s_in["timestamp_ms"] / 1000.0)
 
     published = mode == "binding" and label == "truth_match"
-    solve_key = _publish(hexn, s_in, result) if published else None
+    solve_key = None
     if published:
-        state.bump_counter("known_lane_published")
+        # A failing publish must cost this ONE hex its publish, never the
+        # pass: before this catch, an exception here escaped
+        # run_known_lane_pass's per-hex loop and was caught only by
+        # maybe_run_pass's outer try, so every hex still queued behind this
+        # one was silently skipped.  2026-08-26 droplet: six such aborts in
+        # ~6 h, all of them a math domain error out of the smoother (see
+        # track_filter._kf_correct).  known_lane_published still counts
+        # ACTUAL publishes only, and published/solve_key stay falsy below so
+        # the history record is honest about what reached the feed.
+        try:
+            solve_key = _publish(hexn, s_in, result)
+            state.bump_counter("known_lane_published")
+        except Exception:
+            logging.exception("Known-lane publish failed for %s", hexn)
+            state.bump_counter("known_lane_publish_errors")
+            published = False
 
     solver_mod._record_solve_history(
         f"known_{label}",

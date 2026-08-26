@@ -13,6 +13,8 @@ the displacement gate would have said.  Pinned here:
   record written on all three;
 - shadow mode records but never touches the live feed; binding publishes
   truth_match solves under the hex's own mn-adsb-* key (and never ghosts);
+- a publish that raises is contained to its own hex — counted, recorded as
+  unpublished, and never allowed to abort the rest of the pass;
 - claim selection: staleness window, single-node and contested claims produce
   no attempt, per-hex dedup makes an unchanged registry free;
 - graceful no-op when state.known_claims is absent (this branch's reality
@@ -34,6 +36,7 @@ from retina_geolocator.bistatic_models import bistatic_delay, bistatic_doppler  
 from retina_geolocator.multinode_solver import _lla_to_enu_km, solve_multinode  # noqa: E402
 
 from core import state  # noqa: E402
+from services import track_filter  # noqa: E402
 from services.tasks import known_lane  # noqa: E402
 from services.tasks import solver as solver_mod  # noqa: E402
 
@@ -403,6 +406,44 @@ class TestModeGating:
         assert entry["solve_count"] == 5
         assert entry["is_anomalous"] is True
         assert "supersonic" in entry["anomaly_types"]
+
+
+class TestPublishFailureContainment:
+    """A publish that raises costs one hex its publish, never the pass.
+
+    2026-08-26 droplet: the smoother threw `math domain error` on a negative
+    covariance diagonal (see track_filter._kf_correct), the exception escaped
+    run_known_lane_pass's per-hex loop, and maybe_run_pass's outer try caught
+    it — so every hex still queued behind the failing one was silently
+    skipped, six times in ~6 h.  The counter signature was
+    known_lane_truth_match minus known_lane_published, with nothing naming the
+    cause; known_lane_publish_errors is that name.
+    """
+
+    def test_a_failing_publish_does_not_skip_the_remaining_hexes(self, monkeypatch):
+        def raiser(result, track_key, adsb_hex, ewma_fn=None):
+            raise ValueError("math domain error")
+
+        # Patched where _publish LOOKS IT UP — known_lane holds the module,
+        # not the function, so the attribute on the module is the seam.
+        monkeypatch.setattr(track_filter, "smooth_solve", raiser)
+        _install(_mk_claims(["node_a", "node_b"]), hexn="abc123")
+        _install(_mk_claims(["node_a", "node_b"]), hexn="def456")
+
+        # Both hexes attempted: the second was not skipped by the first's
+        # failure, and nothing escaped to the caller.
+        assert _run(_stub_solve(), mode="binding") == 2
+
+        assert state.known_lane_truth_match == 2
+        assert state.known_lane_published == 0  # counts ACTUAL publishes only
+        assert state.known_lane_publish_errors == 2
+        assert not state.multinode_tracks
+        assert not state.track_archive_buffer
+
+        recs = _known_records()
+        assert len(recs) == 2
+        assert all(r["published"] is False for r in recs)
+        assert all(r["solve_key"] is None for r in recs)
 
 
 class TestClaimSelection:
