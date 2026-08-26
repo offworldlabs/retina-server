@@ -241,6 +241,10 @@ _WRITE_CASES = [
     ("ground", {"alt_baro": "ground", "gs": None, "track": "unknown"}),
 ]
 
+# The sim push endpoint rejects non-transponder hexes (id_utils.is_transponder_hex),
+# so its writer fixtures must look like real 24-bit addresses, not readable labels.
+_SIM_CASE_HEX = {name: f"a1b2c{i}" for i, (name, _kin) in enumerate(_WRITE_CASES)}
+
 
 class TestDerivedFieldsAtWriteTime:
     """Every path that writes state.adsb_aircraft stores the SI-unit fields
@@ -284,7 +288,7 @@ class TestDerivedFieldsAtWriteTime:
         # what is under test, not the gate in front of it.
         from routes.sim_ingest import sim_push_adsb_positions
 
-        hexn = f"sim{name}"
+        hexn = _SIM_CASE_HEX[name]
         entry = {"hex": hexn, "lat": 33.9, "lon": -84.6, **kin}
         await sim_push_adsb_positions(body={"ts_ms": 4242, "aircraft": [entry]}, _key=None)
 
