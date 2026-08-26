@@ -361,12 +361,19 @@ class TestRangePrescreen:
     # is worst, and it is what pins the longitude scale to the POLEWARD edge
     # of the screen rather than to rx_lat.  Taking it at rx_lat passes every
     # other geometry here and over-rejects on this one.
+    #
+    # antimeridian pins the longitude-delta wrap: a node at 179.95E has close
+    # neighbours whose stored longitude is -179.x, so the raw difference reads
+    # ~359 degrees while the gate's haversine measures the short way round.
+    # Without the wrap the prescreen rejects most of the footprint's western
+    # half.
     _GEOMETRIES = {
         "monostatic": _geo(),
         "bistatic": _geo(tx_lat=35.35, tx_lon=-81.90, max_bistatic_range_km=90.0),
         "coverage_limit": _geo(coverage_limit=lambda bearing: 25.0 if 30.0 <= bearing <= 60.0 else None),
         "fov": _geo(fov=_FakeFov(140.0, 10.0, 150.0)),
         "high_latitude": _geo(rx_lat=80.0, rx_lon=18.0, tx_lat=80.0, tx_lon=18.0, max_range_km=400.0),
+        "antimeridian": _geo(rx_lat=52.0, rx_lon=179.95, tx_lat=52.0, tx_lon=179.95, max_range_km=120.0),
     }
 
     # Enough to cover the boundary densely: samples are drawn out to 1.5x the
@@ -383,6 +390,10 @@ class TestRangePrescreen:
             brg = math.radians(rng.uniform(0.0, 360.0))
             lat = geo.rx_lat + (rng_km * math.cos(brg)) / KM_PER_DEG_LAT
             lon = geo.rx_lon + (rng_km * math.sin(brg)) / km_per_deg_lon(geo.rx_lat)
+            # Stored the way a feed reports it, in [-180, 180): a cloud around
+            # a node near the antimeridian must actually straddle the seam, or
+            # the geometry above tests nothing.
+            lon = ((lon + 180.0) % 360.0) - 180.0
             age_s = rng.uniform(-kc.KNOWN_CLAIM_MAX_FIX_AGE_S, kc.KNOWN_CLAIM_MAX_FIX_AGE_S)
             rec = {
                 "hex": f"scr{i:05d}",

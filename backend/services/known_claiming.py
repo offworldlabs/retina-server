@@ -297,7 +297,16 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
             # Squared comparison — the sqrt buys nothing a squared radius can't
             # answer, and this runs per cached aircraft per frame per node.
             dy = (st["lat"] - geo.rx_lat) * KM_PER_DEG_LAT
-            dx = (st["lon"] - geo.rx_lon) * screen_km_per_lon
+            # Wrapped to (-180, 180]: the raw difference reads ~359 degrees for
+            # a close neighbour across the antimeridian, which would fail the
+            # screen for a candidate the gate's haversine (which measures the
+            # short way round) passes.
+            dlon = st["lon"] - geo.rx_lon
+            if dlon > 180.0:
+                dlon -= 360.0
+            elif dlon < -180.0:
+                dlon += 360.0
+            dx = dlon * screen_km_per_lon
             screen_r_km = screen_r0_km + _V_MAX_MS * abs(age_s) / 1000.0
             if dx * dx + dy * dy > screen_r_km * screen_r_km:
                 # A prescreen failure IS a visibility reject — same event, same
