@@ -126,10 +126,16 @@ server {
     # proxy would send. Exact match, or the prefix would also claim /towersfoo.
     # The rewrite must be explicit: proxy_pass with a variable does not
     # substitute the location prefix.
+    #
+    # The rewrite comes LAST, after the include. `break` stops every remaining
+    # ngx_http_rewrite_module directive in this location, and `set` is one of
+    # them — so a rewrite placed first leaves $tfs_upstream empty and nginx
+    # answers 500 ("no host in upstream :8000") on this vhost alone. proxy_pass
+    # runs in the content phase and is unaffected by the order here.
     # RETINA_IF TOWER_FINDER
     location = /towers {
-        rewrite ^/towers$ /api/towers break;
         # RETINA_INCLUDE snippets/tower-finder.conf
+        rewrite ^/towers$ /api/towers break;
     }
     # RETINA_ENDIF
 
