@@ -19,11 +19,15 @@ jobs:
     #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
 
     runs-on: ubuntu-latest
+    # Reviews run to about ten minutes; this is the ceiling for one that hangs
+    # rather than a target, and it bounds a stalled gh call in the fold below.
+    timeout-minutes: 30
     permissions:
       contents: read
       pull-requests: write
       issues: write
       id-token: write
+      actions: read # Required to resolve a comment's run id to its workflow path, for the fold below
 
     steps:
       - name: Checkout repository
@@ -81,45 +85,78 @@ jobs:
           # this workflow, over a review that was never allowed to happen. Mirror
           # the action's own condition, comparing blob hashes, rather than reading
           # its log for a phrase that will change.
-          base=$(gh api "repos/${REPO}/contents/.github/workflows/claude-code-review.yml?ref=${DEFAULT_BRANCH}" --jq .sha 2>/dev/null || true)
+          # Keep the call's exit status: an error here is not the same thing as
+          # the file being absent, and swallowing both left the check below to
+          # fail with an error blaming the reviewer for a lookup that failed.
+          if base=$(gh api "repos/${REPO}/contents/.github/workflows/claude-code-review.yml?ref=${DEFAULT_BRANCH}" --jq .sha 2>/dev/null); then
+            :
+          else
+            base=""
+            echo "::warning::could not read this workflow from ${DEFAULT_BRANCH}, so the self-edit guard below did not run. If this step then fails having seen no review, that is the likely cause rather than anything it names."
+          fi
           here=$(git hash-object .github/workflows/claude-code-review.yml)
           if [ -n "${base}" ] && [ "${base}" != "${here}" ]; then
-            echo "::notice::This pull request edits the review workflow, so the action skipped itself and no review ran. That is its guard against a pull request editing its own reviewer, not a fault in this change. Reviews resume on the pull requests that follow this one onto ${DEFAULT_BRANCH}, and this one needs reviewing by hand."
+            echo "::notice::This pull request edits the review workflow, so the action skipped itself and no review ran. That is its guard against a pull request editing its own reviewer, not a fault in this change. Nothing supersedes the earlier comments either, so any left part-ticked by a cancelled run stay expanded here. Reviews resume on the pull requests that follow this one onto ${DEFAULT_BRANCH}, and this one needs reviewing by hand."
             exit 0
           fi
 
+          # One object per line, not one array per page. With --paginate the --jq
+          # filter runs once per page, so an array projection emits a separate
+          # array each time and json.load refuses the second one.
           gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments" \
-            --jq '[.[] | {body: .body, url: .html_url}]' > "${RUNNER_TEMP}/comments.json"
+            --jq '.[] | {body: .body, url: .html_url, node_id: .node_id, login: .user.login, type: .user.type}' > "${RUNNER_TEMP}/comments.jsonl"
           python - <<'PY'
           import json
           import os
           import re
+          import subprocess
 
+          BOT = "claude[bot]"
+          WORKFLOW = ".github/workflows/claude-code-review.yml"
+          REPO = os.environ["REPO"]
           run_id = os.environ["GITHUB_RUN_ID"]
-          with open(os.path.join(os.environ["RUNNER_TEMP"], "comments.json")) as fh:
-              comments = json.load(fh)
+
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "comments.jsonl")) as fh:
+              comments = [json.loads(line) for line in fh if line.strip()]
+
+          def prose(comment):
+              # Findings quote code, and a quoted checklist or run link belongs to
+              # whatever the finding quoted, not to the comment carrying it.
+              return re.sub(r"```.*?```", "", comment["body"] or "", flags=re.DOTALL)
+
+          def by_bot(comment):
+              return comment["type"] == "Bot" and comment["login"] == BOT
 
           # The action appends a "View job" link naming its own run before the step
           # returns, which is what ties a comment to this run rather than to an
-          # earlier review of the same pull request.
+          # earlier review of the same pull request. Authorship narrows it further:
+          # anyone may quote a run link, but only the reviewer posts the checklist.
           marker = f"/actions/runs/{run_id}"
-          mine = [c for c in comments if marker in (c["body"] or "")]
+          mine = [c for c in comments if by_bot(c) and marker in prose(c)]
+
+          if not mine:
+              # A renamed reviewer must not redden every pull request, but the
+              # fallback has to stay narrower than "any bot": a third party
+              # quoting this run's link would otherwise satisfy the gate.
+              mine = [
+                  c for c in comments
+                  if c["type"] == "Bot" and "claude" in (c["login"] or "").lower() and marker in prose(c)
+              ]
+              if mine:
+                  print(f"::warning::the review posted as {mine[-1]['login']}, not {BOT}. Update BOT in this workflow.")
 
           if not mine:
               raise SystemExit(
                   f"::error::The review posted no comment for run {run_id}. Every review is "
-                  "expected to leave a progress comment linking back to its own job, so either "
-                  "it failed before posting anything, or track_progress is no longer set on the "
-                  "step above and this check can no longer tell a finished review from an "
-                  "abandoned one."
+                  f"expected to leave a progress comment from {BOT} linking back to its own "
+                  "job, so either it failed before posting anything, track_progress is no "
+                  "longer set on the step above, or the reviewer no longer posts under that "
+                  "name. Until that is settled this check cannot tell a finished review from "
+                  "an abandoned one."
               )
 
           # Only ever one, but prefer the newest if the action's format ever changes.
-          body = mine[-1]["body"]
-          # Findings quote code, and a quoted checklist is not this run's checklist.
-          # A review of this check would otherwise fail on its own example.
-          prose = re.sub(r"```.*?```", "", body, flags=re.DOTALL)
-          unticked = re.findall(r"^\s*- \[ \] .*$", prose, re.MULTILINE)
+          unticked = re.findall(r"^\s*- \[ \] .*$", prose(mine[-1]), re.MULTILINE)
           if unticked:
               todo = "\n".join(unticked)
               print(f"Progress comment: {mine[-1]['url']}")
@@ -133,4 +170,103 @@ jobs:
               )
 
           print(f"Review completed: {mine[-1]['url']}")
+
+
+          def gh(*args):
+              # A stalled call must not hold the runner after the review above has
+              # already passed. A timeout is returned as an ordinary failure so it
+              # stays local to one comment, rather than raising past the loop and
+              # abandoning every comment after it.
+              try:
+                  return subprocess.run(["gh", *args], capture_output=True, text=True, timeout=60)
+              except subprocess.TimeoutExpired:
+                  return subprocess.CompletedProcess(args, 1, "", "timed out after 60s")
+              except OSError as exc:
+                  return subprocess.CompletedProcess(args, 1, "", f"could not run gh: {exc}")
+
+          def fold_superseded():
+              # Reviews run on every push, so a pull request three times round the
+              # loop otherwise reads as three reviews, two of them answered and stale.
+              owner, name = REPO.split("/")
+              # REST does not carry isMinimized, so ask once rather than re-folding
+              # every already-folded comment on every later run.
+              listed = gh(
+                  "api", "graphql",
+                  # `last`, not `first`: comments come back oldest-first, and it is
+                  # the recently folded ones that are worth knowing about.
+                  "-f", "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){comments(last:100){pageInfo{hasPreviousPage} nodes{id isMinimized}}}}}",
+                  "-f", f"owner={owner}", "-f", f"name={name}",
+                  "-F", f"number={os.environ['PR_NUMBER']}",
+                  "--jq", "{ids: [.data.repository.pullRequest.comments.nodes[] | select(.isMinimized) | .id], more: .data.repository.pullRequest.comments.pageInfo.hasPreviousPage}",
+              )
+              # An empty set only costs a redundant mutation, so every way of
+              # failing to read the list falls back to it rather than stopping.
+              folded_already = set()
+              if listed.returncode != 0:
+                  print(f"::warning::could not list folded comments, so each is re-attempted: {listed.stderr.strip()}")
+              else:
+                  try:
+                      page = json.loads(listed.stdout)
+                      folded_already = set(page["ids"])
+                      if page["more"]:
+                          print("::warning::past 100 comments here, so the older folded ones are re-attempted each run")
+                  except (ValueError, KeyError, TypeError) as exc:
+                      print(f"::warning::could not read the folded-comment list, so each is re-attempted: {exc!r}")
+
+              paths = {}
+              unresolved = set()
+
+              def origin_of(rid):
+                  # Reviews and @claude replies post as the same bot, so the author
+                  # alone cannot tell a superseded review from a conversation.
+                  if rid in paths:
+                      return paths[rid]
+                  done = gh("api", f"repos/{REPO}/actions/runs/{rid}", "--jq", ".path")
+                  if done.returncode != 0:
+                      # A failure is retried rather than cached, so a blip on one
+                      # comment cannot settle the answer for the rest of the run.
+                      # The warning is not, or a bad scope repeats it per comment.
+                      if rid not in unresolved:
+                          unresolved.add(rid)
+                          print(f"::warning::run {rid} would not resolve, so its comment stays expanded. Check the actions: read scope above: {done.stderr.strip()}")
+                      return None
+                  paths[rid] = done.stdout.strip()
+                  return paths[rid]
+
+              # Only the newest attempt is this run's live comment. A re-run keeps
+              # the run id and posts a fresh comment rather than editing the old
+              # one, so earlier attempts are superseded and fold with the rest.
+              mine_ids = {mine[-1]["node_id"]}
+              for c in comments:
+                  if c["node_id"] in mine_ids or c["node_id"] in folded_already:
+                      continue
+                  if not by_bot(c):
+                      # Only a bot that is not the reviewer is worth a line; the
+                      # human discussion on a pull request is not news.
+                      if c["type"] == "Bot":
+                          print(f"left expanded (bot {c['login']}, not {BOT}): {c['url']}")
+                      continue
+                  found = re.search(r"/actions/runs/(\d+)", prose(c))
+                  if not found:
+                      print(f"left expanded (no run link): {c['url']}")
+                      continue
+                  origin = origin_of(found.group(1))
+                  if origin != WORKFLOW:
+                      print(f"left expanded (run {found.group(1)} is {origin}): {c['url']}")
+                      continue
+                  done = gh(
+                      "api", "graphql",
+                      "-f", "query=mutation($id:ID!){minimizeComment(input:{subjectId:$id,classifier:OUTDATED}){clientMutationId}}",
+                      "-f", f"id={c['node_id']}",
+                  )
+                  if done.returncode == 0:
+                      print(f"folded: {c['url']}")
+                  else:
+                      print(f"::warning::could not fold {c['url']}: {done.stderr.strip()}")
+
+          # Folding is presentational, so it must never redden a review that passed.
+          try:
+              fold_superseded()
+          except Exception as exc:
+              print(f"::warning::folding superseded reviews failed, leaving them expanded: {exc!r}")
           PY
