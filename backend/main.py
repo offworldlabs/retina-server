@@ -147,6 +147,17 @@ async def lifespan(app: FastAPI):
 
     await prime_pipeline_at_startup()
 
+    # Parse the US/CA/AU border polygons before anything is served. The first
+    # classify_region() call otherwise does it inside a request handler, on the
+    # event loop, once per process — ~1.5s during which every other request on
+    # this worker, node ingest included, is stalled. In a thread so the loop
+    # stays free even here.
+    from fastapi.concurrency import run_in_threadpool
+
+    from services.region_lookup import warm_borders
+
+    await run_in_threadpool(warm_borders)
+
     # Restore persisted state before accepting connections
     restored = restore_snapshot()
 
