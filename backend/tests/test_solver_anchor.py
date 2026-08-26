@@ -137,6 +137,30 @@ class TestMultinodeKeyDecision:
         assert how == "minted"
         assert key.startswith("mn-dark-1000-")
 
+    def test_non_transponder_adsb_hex_cannot_take_the_adsb_branch(self):
+        """A simulator object id (or any non-transponder string) reaching
+        adsb_hex must fall through to the dark branches — keying mn-adsb-obj-*
+        put dark targets in the ADS-B lane and starved mn-dark-* entirely
+        (observed live 2026-08-26)."""
+        tracks = {"mn-dark-1": _anchor_track()}
+        key, how = solver_mod.multinode_key_decision(
+            tracks,
+            {"lat": LAT, "lon": LON, "timestamp_ms": int(time.time() * 1000)},
+            "obj-01373",
+            None,
+        )
+        assert how == "proximity"
+        assert key == "mn-dark-1"
+
+    def test_tisb_tilde_adsb_hex_still_takes_the_adsb_branch(self):
+        key, how = solver_mod.multinode_key_decision(
+            {},
+            {"lat": LAT, "lon": LON, "timestamp_ms": 1000},
+            "~abc123",
+            None,
+        )
+        assert (key, how) == ("mn-adsb-~abc123", "adsb")
+
 
 class TestProcessSolverItemAnchorHonoring:
     def setup_method(self):

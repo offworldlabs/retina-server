@@ -20,7 +20,7 @@ from core import state
 # consumers in routes.test.
 from routes.test import _verify_sim_key
 from services.geo import valid_latlon
-from services.id_utils import normalize_hex_key
+from services.id_utils import is_transponder_hex, normalize_hex_key
 
 router = APIRouter()
 
@@ -122,9 +122,18 @@ async def sim_push_adsb_positions(body: dict = Body(...), _key=Depends(_verify_s
         raise HTTPException(status_code=400, detail="aircraft list required")
 
     updated = 0
+    rejected = 0
     for ac in aircraft_list:
         hex_code = normalize_hex_key(ac.get("hex") or "")
         if not hex_code:
+            continue
+        # A dark object has no transponder, so nothing about it belongs in
+        # state.adsb_aircraft.  Older simulators push every aircraft here with
+        # the object id standing in for the hex; accepting those minted a fake
+        # transponder per dark target, every dark solve then keyed mn-adsb-*
+        # and the dark lane was permanently empty.
+        if not is_transponder_hex(hex_code):
+            rejected += 1
             continue
         lat = ac.get("lat")
         lon = ac.get("lon")
@@ -148,5 +157,7 @@ async def sim_push_adsb_positions(body: dict = Body(...), _key=Depends(_verify_s
 
     if updated:
         state.aircraft_dirty = True
+    if rejected:
+        state.bump_counter("sim_adsb_push_rejected_hex", rejected)
 
-    return {"status": "ok", "updated": updated}
+    return {"status": "ok", "updated": updated, "rejected_hex": rejected}
