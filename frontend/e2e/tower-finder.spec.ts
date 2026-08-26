@@ -80,7 +80,10 @@ test.describe("Tower Finder — search form", () => {
       await expect(sourceSelect).toHaveValue("auto");
     }
 
-    await page.getByRole("button", { name: /search|find/i }).first().click();
+    // The precise locator matters: the page also has a "Tower Search" TAB
+    // button that /search|find/i matched first, so this test spent its life
+    // re-clicking the active tab and timing out waiting for a request.
+    await page.locator("button[type='submit']").filter({ hasText: /Find Towers/i }).click();
     const url = new URL((await towersRequest).url());
     expect(url.searchParams.get("source")).toBe("auto");
   });
