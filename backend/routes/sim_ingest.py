@@ -130,7 +130,7 @@ async def sim_push_adsb_positions(body: dict = Body(...), _key=Depends(_verify_s
         lon = ac.get("lon")
         if not valid_latlon(lat, lon):
             continue
-        state.adsb_aircraft[hex_code] = {
+        rec = {
             "hex": hex_code,
             "flight": ac.get("flight", ""),
             "lat": lat,
@@ -140,6 +140,10 @@ async def sim_push_adsb_positions(body: dict = Body(...), _key=Depends(_verify_s
             "track": ac.get("track", 0),
             "last_seen_ms": ts_ms,
         }
+        # Derived once here, not per read — see state.adsb_derived_fields.
+        # Published only after it is complete: readers snapshot unlocked.
+        rec.update(state.adsb_derived_fields(rec))
+        state.adsb_aircraft[hex_code] = rec
         updated += 1
 
     if updated:

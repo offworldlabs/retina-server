@@ -123,10 +123,13 @@ def _global_tracks_for_claiming():
     Only mn-dark-* keys are claimable: an ADS-B-tagged track already has an
     external identity (a transponder hex) and must never be re-derived by
     top-down projection — mirrors "only dark tracks are claimable" at
-    solver.py's multinode_key_decision.  Eligibility
-    filtering, the DR-age cap and the CLAIM_MAX_GLOBAL_TRACKS truncation are
-    all applied by the LIB, not here — this stays a dumb snapshot so the
-    offline bench measures the shipped filtering.
+    solver.py's multinode_key_decision.  Eligibility filtering, the DR-age
+    cap and the CLAIM_MAX_GLOBAL_TRACKS truncation are applied by the
+    CONSUMER, not here — this stays a dumb snapshot so the offline bench
+    measures the shipped filtering.  For the associator's own claiming round
+    that consumer is the lib (association._claim_round); the known lane calls
+    this provider directly and so applies the same three itself (see
+    known_claiming._dark_global_projections).
     """
     out = []
     for key, rec in list(multinode_tracks.items()):
@@ -149,6 +152,37 @@ def _global_tracks_for_claiming():
     return out
 
 
+def adsb_derived_fields(rec: dict) -> dict:
+    """The SI-unit fields the seeding provider contract adds to a raw feed
+    record: metres of altitude and the ground-speed/track vector in m/s.
+
+    Called at WRITE time by every path that populates adsb_aircraft (the TCP
+    handler, the frame processor's non-TCP extraction, and the sim ingest
+    route) so _adsb_for_seeding does not re-derive them for the whole cache
+    on every read — the provider is called once per frame per node, the cache
+    holds the whole live fleet, and this is three trig calls and three
+    coercions per aircraft per call.
+
+    ADS-B ships non-numeric sentinels in numeric fields — alt_baro is the
+    literal string "ground" for on-ground aircraft — so coerce before
+    arithmetic; one such record would otherwise throw on every frame for as
+    long as it stayed live.
+    """
+    gs_ms = as_num(rec.get("gs")) * 0.514444
+    trk = math.radians(as_num(rec.get("track")))
+    return {
+        "alt_m": as_num(rec.get("alt_baro")) * FT_TO_M,
+        "vel_east": gs_ms * math.sin(trk),
+        "vel_north": gs_ms * math.cos(trk),
+        # Alias of last_seen_ms under the name the seeding provider contract
+        # uses.  Carried on the stored record rather than mapped on read so
+        # the snapshot below can hand out the record itself; last_seen_ms
+        # stays the field every other reader of adsb_aircraft looks at, and
+        # is still stamped where it always was.
+        "timestamp_ms": rec.get("last_seen_ms", 0),
+    }
+
+
 def _adsb_for_seeding() -> dict[str, dict]:
     """Unlocked snapshot of currently-live ADS-B fixes, in the seeding
     provider contract InterNodeAssociator documents on adsb_provider.
@@ -158,30 +192,33 @@ def _adsb_for_seeding() -> dict[str, dict]:
     this read loses at worst one entry to a stale round, not a corrupted
     one.  Dumb snapshot, no age filtering here — the LIB applies freshness
     and gating, so the offline bench measures the shipped filtering.
+
+    Shallow: the values are the stored records themselves, which every
+    consumer of this provider treats as read-only.  The derived fields are
+    already on them (see adsb_derived_fields), so the only per-call work is
+    dropping records with an unusable position.
     """
     out = {}
     for hexn, rec in list(adsb_aircraft.items()):
         lat, lon = rec.get("lat"), rec.get("lon")
         if lat is None or lon is None or not (math.isfinite(lat) and math.isfinite(lon)):
             continue
-        # ADS-B ships non-numeric sentinels in numeric fields — alt_baro is
-        # the literal string "ground" for on-ground aircraft — so coerce
-        # before arithmetic; one such record would otherwise throw here on
-        # every frame for as long as it stays live.
-        gs_ms = as_num(rec.get("gs")) * 0.514444
-        trk = math.radians(as_num(rec.get("track")))
+        if "alt_m" in rec:
+            out[hexn] = rec
+            continue
+        # Fallback for a record no writer derived — a write path that has not
+        # been updated, or state carried across a restart.  Degrades to the
+        # old per-read cost, never to a zero-velocity fix, which would dead-
+        # reckon a moving aircraft to a standstill and quietly lose its claims.
         out[hexn] = {
             "hex": hexn,
             "lat": lat,
             "lon": lon,
-            "alt_m": as_num(rec.get("alt_baro")) * FT_TO_M,
-            "vel_east": gs_ms * math.sin(trk),
-            "vel_north": gs_ms * math.cos(trk),
-            "timestamp_ms": rec.get("last_seen_ms", 0),
             "alt_baro": rec.get("alt_baro", 0),
             "gs": rec.get("gs", 0),
             "track": rec.get("track", 0),
             "flight": rec.get("flight", ""),
+            **adsb_derived_fields(rec),
         }
     return out
 

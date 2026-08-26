@@ -139,7 +139,14 @@ contract's own description. A breaking change raises `NODE_API_VERSION` in
 | `lon`      | float  | yes      |         | Longitude (-180 to 180)                 |
 | `altitude` | float  | no       | 0       | Receiver altitude in metres             |
 | `limit`    | int    | no       | 20      | Max towers to return (1–100)            |
-| `source`   | string | no       | au      | Data source: `au`, `us`, `ca`           |
+| `source`   | string | no       | auto    | Data source: `au`, `us`, `ca`, `auto`   |
+
+`auto` resolves the country by testing the coordinate against real border
+polygons (Natural Earth 1:10m, via `services/region_lookup.py`) rather than
+lat/lon bounding boxes, which cannot express a border that dips and bulges —
+Detroit sits south of Windsor, Ontario. A coordinate in none of the three
+supported countries returns **422**; it is not silently served US data. The
+trade-off is that points just offshore resolve to no region at all.
 
 **Response:**
 

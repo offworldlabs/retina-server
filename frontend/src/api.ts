@@ -8,7 +8,7 @@ let mlatVerificationCache: unknown = null;
 let mlatVerificationCacheTs = 0;
 let mlatVerificationInflight: Promise<unknown | null> | null = null;
 
-export async function fetchTowers(lat, lon, altitude = 0, limit = 20, source = "us", frequencies = []) {
+export async function fetchTowers(lat, lon, altitude = 0, limit = 20, source = "auto", frequencies = []) {
   const params = new URLSearchParams({
     lat: String(lat),
     lon: String(lon),
