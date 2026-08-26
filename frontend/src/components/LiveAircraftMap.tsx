@@ -2019,6 +2019,11 @@ export default function LiveAircraftMap() {
                  users mistook the icon position for the actual location.  The detection arc
                  rendered by DetectionArcs is their only map presence; selecting them from the
                  list still highlights the arc and centers the map on the midpoint.
+                 Unassociated solver_single_node tracks (an arc-less frame of the same
+                 single-node geometry) are hidden for the same reason: a lone node's LM solve
+                 is underdetermined, and drawing it as a plane painted short-lived ghost
+                 aircraft wherever clutter promoted a track.  They stay in the list as
+                 Solver·1N rows.
                  A track that has dead-reckoned past DR_ICON_HIDE_DISTANCE_M loses its icon
                  for the same reason — the drawn position is no longer evidence of where the
                  aircraft is — but stays tracked everywhere else, so the next real solve
@@ -2026,6 +2031,7 @@ export default function LiveAircraftMap() {
             {visibleAircraft.map((ac) => {
               if (!validLatLon(ac.lat, ac.lon)) return null;
               if (ac.position_source === POSITION_SOURCE_ARC_ONLY) return null;
+              if (ac.position_source === "solver_single_node") return null;
               if (hideDrIcon(ac, markerNow)) return null;
               const isSelected = ac.hex === selectedHex;
               return (

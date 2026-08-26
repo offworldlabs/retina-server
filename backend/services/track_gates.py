@@ -737,9 +737,22 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
         "hex": ac_hex,
         "ground_truth_hex": resolve_ground_truth_hex(ac_hex, lat, lon),
         "type": "tisb_other",
-        "flight": (track.adsb_hex or f"PR{abs(hash(track.track_id)) % 10000:04d}").strip(),
-        "alt_baro": round(alt_ft),
-        "alt_geom": round(alt_ft),
+        # No fabricated identity for an unassociated track: the synthetic
+        # PR#### callsign made a radar-only return render as a plausible
+        # aircraft, so clutter promotions read as real low-level traffic.
+        # An empty flight falls back to the hex everywhere downstream.
+        "flight": (track.adsb_hex or "").strip(),
+        # Altitude only when some ADS-B identity vouches for it: a fresh fix
+        # supplies it directly, and an ADS-B-hexed track with a stale/partial
+        # fix keeps the solver fallback (test_fresh_adsb_fallback pins that).
+        # For a track with no ADS-B identity at all, single-node bistatic
+        # geometry is underdetermined in altitude (passive_radar.py, solver
+        # notes), so track.alt_ft is essentially free — observed live from
+        # 165 ft to 50,768 ft on one node — and publishing it painted ghost
+        # aircraft on the deck.  Every consumer null-guards alt_baro (the
+        # tar1090 schema omits it when unknown).
+        "alt_baro": round(alt_ft) if (adsb or track.adsb_hex) else None,
+        "alt_geom": round(alt_ft) if (adsb or track.adsb_hex) else None,
         "gs": gs,
         "track": heading,
         "lat": lat,
