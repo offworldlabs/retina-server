@@ -105,16 +105,31 @@ ALLOWED_DIVERGENCE = (
     # simulator feeds nothing anyone depends on. If production ever runs a fleet
     # again, narrow this back to `\.environment\.FLEET_[A-Z_]+$`.
     r"^services\.fleet(\..*)?$",
-    # Production alone joins the external edge network that fronts
-    # tower-finder-service; staging has no such stack.
-    r"^services\.server\.networks(\..*)?$",
-    r"^networks(\..*)?$",
+    # The external edge network that fronts tower-finder-service. Production and
+    # staging both run that stack and both join it. The test droplet does not:
+    # that repo's `deploy-test` job is workflow_dispatch only, by design, so the
+    # network is absent there until someone rehearses a change on it, and
+    # `external: true` fails at `up` against a network that does not exist.
+    #
+    # Scoped to test alone so staging stays compared. nginx proxies /api/towers
+    # over this network, and a staging server that silently dropped off it would
+    # 502 that location; a blanket entry here would stop anyone finding out.
+    # Drop these two lines once the test droplet runs the stack.
+    ("test", r"^services\.server\.networks(\..*)?$"),
+    ("test", r"^networks(\..*)?$"),
     # Compose records the file list it was assembled from.
     r"^name$",
     r"^services\.[^.]+\.(build|image)\.?.*labels.*$",
 )
 
-_ALLOWED = tuple(re.compile(p) for p in ALLOWED_DIVERGENCE)
+# Entries are either a bare pattern, allowed in every environment, or a
+# (environment, pattern) pair allowed in that one only. Scoping matters: a
+# divergence that is legitimate on one droplet is usually drift on another, and
+# a blanket entry stops the check looking anywhere.
+_ALLOWED = tuple(
+    (None, re.compile(entry)) if isinstance(entry, str) else (entry[0], re.compile(entry[1]))
+    for entry in ALLOWED_DIVERGENCE
+)
 
 # Hostname roles, mapped back to a common token before comparing the two
 # rendered nginx configs. Ordered longest-value-first at substitution time so
@@ -172,9 +187,9 @@ def flatten(node, prefix: str = "") -> dict[str, object]:
     return flat
 
 
-def allowed(path: str) -> bool:
+def allowed(path: str, env: str) -> bool:
     bare = re.sub(r"\[\d+\]", "", path)
-    return any(p.search(path) or p.search(bare) for p in _ALLOWED)
+    return any((scope is None or scope == env) and (p.search(path) or p.search(bare)) for scope, p in _ALLOWED)
 
 
 def check_compose() -> list[str]:
@@ -187,7 +202,7 @@ def check_compose() -> list[str]:
             continue
         for path in sorted(set(reference) | set(tree)):
             in_ref, in_env = reference.get(path, "<absent>"), tree.get(path, "<absent>")
-            if in_ref == in_env or allowed(path):
+            if in_ref == in_env or allowed(path, env):
                 continue
             problems.append(
                 f"  {path}\n      {REFERENCE:<{_LABEL_WIDTH}}: {in_ref!r}\n      {env:<{_LABEL_WIDTH}}: {in_env!r}"

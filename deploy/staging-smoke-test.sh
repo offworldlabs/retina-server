@@ -176,6 +176,28 @@ check_rate_limit "credential endpoints rate limited" "${BASE_URL}/api/auth/login
 check_rate_limit "session endpoints rate limited"    "${BASE_URL}/api/auth/me"            30
 
 echo ""
+echo "── tower-finder-service seam ──"
+# Two sibling paths under /api/ on ONE vhost now resolve to different
+# containers: /api/towers leaves for tower-finder-service over the retina-edge
+# network, everything else stays with the local FastAPI app. The app is no
+# longer the whole truth for this host, so assert both halves — a proxy that
+# works while the app is unreachable, or the reverse, would otherwise look fine
+# from either check alone.
+#
+# These 502 rather than 404 when the seam breaks, because the failure is nginx
+# not reaching the upstream: either the server container has dropped off
+# retina-edge (deploy/check-env-parity.py compares that membership) or the
+# tower-finder-service stack is down.
+check_status "towers vhost /api/towers → service"   "${BASE_URL}/api/towers?lat=33.45&lon=-112.07" "200"
+check        "…and it really answers with towers"   "${BASE_URL}/api/towers?lat=33.45&lon=-112.07" "towers"
+check_status "api vhost /towers → service"          "${API_URL}/towers?lat=33.45&lon=-112.07"      "200"
+check        "…and the rewrite reached /api/towers" "${API_URL}/towers?lat=33.45&lon=-112.07"      "towers"
+# The other half of the seam: a sibling /api/ path on the same vhost is still
+# served by the app. /api/radar/nodes has no counterpart on the service, so a
+# 200 here can only have come from the monolith.
+check_status "sibling /api/ path stays on the app"  "${BASE_URL}/api/radar/nodes"                  "200"
+
+echo ""
 echo "── Detection archive (dash /data) ──"
 # The Data Explorer reads this endpoint. It returns an empty list for the first
 # hour after a deploy (ARCHIVE_FLUSH_INTERVAL_S), so assert the endpoint answers

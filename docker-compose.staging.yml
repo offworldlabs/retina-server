@@ -103,6 +103,12 @@ services:
         limits:
           cpus: "1.5"
           memory: 1600M
+    # nginx proxies /api/towers to tower-finder-service over this network, so
+    # the server has to be on it or that location 502s. Staging never joined it
+    # while only production ran the service; it runs one now.
+    networks:
+      - default
+      - retina-edge
 
   fleet:
     container_name: retina-staging-fleet
@@ -179,3 +185,10 @@ services:
         limits:
           cpus: "1.0"
           memory: 400M
+
+networks:
+  retina-edge:
+    # Created out of band on the droplet, and shared with the separately
+    # deployed tower-finder-service stack, which declares it external too.
+    # Neither stack creates or removes it.
+    external: true
