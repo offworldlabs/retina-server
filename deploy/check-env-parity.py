@@ -105,18 +105,12 @@ ALLOWED_DIVERGENCE = (
     # simulator feeds nothing anyone depends on. If production ever runs a fleet
     # again, narrow this back to `\.environment\.FLEET_[A-Z_]+$`.
     r"^services\.fleet(\..*)?$",
-    # The external edge network that fronts tower-finder-service. Production and
-    # staging both run that stack and both join it. The test droplet does not:
-    # that repo's `deploy-test` job is workflow_dispatch only, by design, so the
-    # network is absent there until someone rehearses a change on it, and
-    # `external: true` fails at `up` against a network that does not exist.
-    #
-    # Scoped to test alone so staging stays compared. nginx proxies /api/towers
-    # over this network, and a staging server that silently dropped off it would
-    # 502 that location; a blanket entry here would stop anyone finding out.
-    # Drop these two lines once the test droplet runs the stack.
-    ("test", r"^services\.server\.networks(\..*)?$"),
-    ("test", r"^networks(\..*)?$"),
+    # No entry for the external edge network that fronts tower-finder-service:
+    # every environment runs that stack now (the test droplet's came up
+    # 2026-08-26; its deploy job in that repo stays workflow_dispatch), so all
+    # three overlays join retina-edge identically and any difference is a
+    # server silently off the network — which 502s /api/towers, and is exactly
+    # what this check exists to catch.
     # Compose records the file list it was assembled from.
     r"^name$",
     r"^services\.[^.]+\.(build|image)\.?.*labels.*$",
