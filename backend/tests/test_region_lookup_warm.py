@@ -59,9 +59,7 @@ class TestWarmBorders:
         _clear_cache()
         region_lookup.warm_borders()
 
-        with unittest.mock.patch.object(
-            region_lookup, "shape", side_effect=AssertionError("re-parsed after warm-up")
-        ):
+        with unittest.mock.patch.object(region_lookup, "shape", side_effect=AssertionError("re-parsed after warm-up")):
             assert region_lookup.classify_region(42.38708028093612, -71.24905416622781) == "us"
             assert region_lookup.classify_region(48.8566, 2.3522) is None
 

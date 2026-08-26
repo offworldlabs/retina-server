@@ -42,11 +42,18 @@ def _load_borders() -> None:
             return
         with open(_BORDERS_PATH) as f:
             data = json.load(f)
+        loaded: dict[str, BaseGeometry] = {}
         for feature in data["features"]:
             admin = feature["properties"].get("ADMIN")
             source = _ADMIN_TO_SOURCE.get(admin)
             if source is not None:
-                _geoms[source] = shape(feature["geometry"])
+                loaded[source] = shape(feature["geometry"])
+        # Published complete or not at all: the fast path above reads _geoms
+        # without the lock, so filling it feature-by-feature would let a
+        # concurrent caller see {"us"} mid-parse, skip the load, and silently
+        # misclassify a Canadian point as unsupported. dict.update runs under
+        # one GIL hold, so readers see the border set whole or empty.
+        _geoms.update(loaded)
 
 
 def warm_borders() -> None:
