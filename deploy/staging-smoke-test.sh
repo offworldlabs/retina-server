@@ -10,6 +10,13 @@ set -euo pipefail
 BASE_URL="https://staging-towers.retina.fm"
 API_URL="https://staging-api.retina.fm"
 DASH_URL="https://staging-dash.retina.fm"
+# Both vhosts are rooted at frontend/dist and so serve the tower finder too.
+# testmap is the public demo (prod parks the name as testmap-retired).
+MAP_URL="https://staging-map.retina.fm"
+TESTMAP_URL="https://testmap.retina.fm"
+# TOWER_CONTRACT_QUERY / TOWER_CONTRACT_ECHO: what a backend must echo back.
+# shellcheck source=deploy/tower-contract.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tower-contract.sh"
 CURL="curl -s --connect-timeout 10 --max-time 30"
 PASS=0
 FAIL=0
@@ -19,7 +26,9 @@ check() {
     printf "  %-40s " "$name"
     BODY=$($CURL "$url" 2>/dev/null) || { echo "FAIL (connection error)"; FAIL=$((FAIL+1)); return; }
 
-    if echo "$BODY" | grep -q "$expected"; then
+    # -F: every caller passes a literal, and an unescaped `.` in one would
+    # otherwise match a character it was never meant to.
+    if echo "$BODY" | grep -qF "$expected"; then
         echo "OK"
         PASS=$((PASS+1))
     else
@@ -59,6 +68,21 @@ check_json_field() {
         PASS=$((PASS+1))
     else
         echo "FAIL ($VALUE < $min_value)"
+        FAIL=$((FAIL+1))
+    fi
+}
+
+# The seam's assertion lives in tower-contract.sh so the gate and this suite
+# cannot drift; this only adapts it to the PASS/FAIL tally.
+check_contract() {
+    local name="$1" endpoint="$2" reason
+    printf "  %-40s " "$name"
+    if reason=$(assert_tower_contract "$endpoint"); then
+        echo "OK"
+        PASS=$((PASS+1))
+    else
+        echo "FAIL"
+        printf '    %s\n' "$reason"
         FAIL=$((FAIL+1))
     fi
 }
@@ -174,6 +198,20 @@ check_header "HSTS on api subdomain"        "${API_URL}/api/health"  "strict-tra
 # credential limit — the one that matters — unasserted.
 check_rate_limit "credential endpoints rate limited" "${BASE_URL}/api/auth/login/google" 10
 check_rate_limit "session endpoints rate limited"    "${BASE_URL}/api/auth/me"            30
+
+echo ""
+echo "── tower-finder-service seam ──"
+# EVERY vhost that routes to the service, not a sample: the defect this guards
+# against is one vhost silently missing the proxy, which a sample cannot see.
+# test_towers_vhost_coverage.py asserts this list matches the template.
+for endpoint in "${BASE_URL}/api/towers" "${MAP_URL}/api/towers" \
+                "${TESTMAP_URL}/api/towers" "${API_URL}/towers"; do
+    check_contract "${endpoint#https://}" "$endpoint"
+done
+# The other half of the seam: a sibling /api/ path on the same vhost is still
+# served by the app. /api/radar/nodes has no counterpart on the service, so a
+# 200 here can only have come from the monolith.
+check_status  "sibling /api/ path stays on the app" "${BASE_URL}/api/radar/nodes"            "200"
 
 echo ""
 echo "── Detection archive (dash /data) ──"

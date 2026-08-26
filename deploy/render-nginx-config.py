@@ -69,7 +69,12 @@ _MAX_INCLUDE_DEPTH = 10
 # variable that sets them and the default when that variable is unset. Defaults
 # must be the SAFE branch: TLS defaults on so a missing variable can never
 # silently drop a deployed environment to plain HTTP.
-FLAGS = {"TLS": ("TLS_ENABLED", True)}
+# TOWER_FINDER defaults on for the same reason: every DEPLOYED environment
+# routes /api/towers to the service, so a missing variable must not quietly
+# leave one serving the monolith's divergent ranking. The laptop turns it off
+# because it runs no service and no retina-edge network, and would otherwise
+# 502 the tower search that works there today.
+FLAGS = {"TLS": ("TLS_ENABLED", True), "TOWER_FINDER": ("TOWER_FINDER_ENABLED", True)}
 
 
 def resolve_flags(values: dict[str, str]) -> dict[str, bool]:
@@ -84,8 +89,11 @@ def resolve_flags(values: dict[str, str]) -> dict[str, bool]:
         else:
             raise RuntimeError(
                 f"{env_name}={values[env_name]!r} is not true or false. "
-                "Refusing to guess: the wrong guess either drops TLS on a "
-                "deployed host or demands a certificate a laptop does not have."
+                "Refusing to guess: every flag here decides what a deployed "
+                "environment serves, and both wrong answers are damaging "
+                "(TLS_ENABLED drops HTTPS or demands a certificate a laptop "
+                "does not have; TOWER_FINDER_ENABLED serves a stale ranking or "
+                "502s the tower search)."
             )
     return resolved
 

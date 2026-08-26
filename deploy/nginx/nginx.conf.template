@@ -71,6 +71,10 @@ server {
         # RETINA_INCLUDE snippets/claim-codes.conf
     }
 
+    # RETINA_IF TOWER_FINDER
+    # RETINA_INCLUDE snippets/towers-proxy.conf
+    # RETINA_ENDIF
+
     # Frontend SPA at /towers as well as at the root
     location /towers {
         alias /app/frontend/dist;
@@ -118,6 +122,17 @@ server {
         # RETINA_INCLUDE snippets/claim-codes.conf
     }
 
+    # The public name for tower ranking; `/api/api/towers` is what a prefix
+    # proxy would send. Exact match, or the prefix would also claim /towersfoo.
+    # The rewrite must be explicit: proxy_pass with a variable does not
+    # substitute the location prefix.
+    # RETINA_IF TOWER_FINDER
+    location = /towers {
+        rewrite ^/towers$ /api/towers break;
+        # RETINA_INCLUDE snippets/tower-finder.conf
+    }
+    # RETINA_ENDIF
+
     location / {
         # RETINA_INCLUDE snippets/api.conf
     }
@@ -148,6 +163,10 @@ server {
         # RETINA_INCLUDE snippets/api.conf
     }
 
+    # RETINA_IF TOWER_FINDER
+    # RETINA_INCLUDE snippets/towers-proxy.conf
+    # RETINA_ENDIF
+
     # RETINA_INCLUDE snippets/spa.conf
 }
 
@@ -175,6 +194,10 @@ server {
     location /api/ {
         # RETINA_INCLUDE snippets/api.conf
     }
+
+    # RETINA_IF TOWER_FINDER
+    # RETINA_INCLUDE snippets/towers-proxy.conf
+    # RETINA_ENDIF
 
     # RETINA_INCLUDE snippets/spa.conf
 }
@@ -236,11 +259,9 @@ server {
     # RETINA_INCLUDE snippets/spa.conf
 }
 
-# ${HOST_LEGACY_REDIRECT} — standalone tower-finder-service (a separate compose
-# stack reached over the shared `retina-edge` docker network). Only production
-# runs that stack; on staging this vhost answers 502, which is expected and
-# harmless — keeping the block identical is what lets the parity check assert
-# the two rendered configs match.
+# ${HOST_LEGACY_REDIRECT} — standalone tower-finder-service, the name the fleet
+# calls. `retina-spectrum` reads it from retina-node's compose and nothing
+# overrides it, so this name cannot move without an OTA rollout.
 server {
     # RETINA_IF TLS
     listen 443 ssl;
@@ -255,14 +276,6 @@ server {
     # RETINA_INCLUDE snippets/security-headers-api.conf
 
     location / {
-        limit_req zone=api burst=60 nodelay;
-        # Resolve the upstream via Docker's embedded DNS at request time (note
-        # the variable) so this nginx still boots when the tower-finder-service
-        # stack is down — a missing upstream then 502s instead of failing boot.
-        resolver 127.0.0.11 valid=10s;
-        set $tfs_upstream tower-finder-service;
-        proxy_pass http://$tfs_upstream:8000;
-        # RETINA_INCLUDE snippets/proxy-common.conf
-        proxy_read_timeout 120s;
+        # RETINA_INCLUDE snippets/tower-finder.conf
     }
 }
