@@ -831,16 +831,16 @@ class TestWorldGate:
     def test_handshake_verdict_beats_the_prefix_rule(self):
         """A node whose CONFIG declared is_synthetic=True is a sim node even
         without a synthetic id prefix — the handshake honours the node's own
-        claim, and _node_world must agree with it."""
+        claim, and state.node_world must agree with it."""
         node_id = "oddly-named-sim-node"
         with state.connected_nodes_lock:
             state.connected_nodes[node_id] = {"is_synthetic": True}
         try:
-            assert kc._node_world(node_id) == "sim"
+            assert state.node_world(node_id) == "sim"
         finally:
             with state.connected_nodes_lock:
                 state.connected_nodes.pop(node_id, None)
 
     def test_unregistered_node_falls_back_to_the_prefix_rule(self):
-        assert kc._node_world("synth-GVL-0001") == "sim"
-        assert kc._node_world("radar3-retnode") == "real"
+        assert state.node_world("synth-GVL-0001") == "sim"
+        assert state.node_world("radar3-retnode") == "real"

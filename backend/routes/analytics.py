@@ -172,6 +172,7 @@ async def association_status():
             "tagged": getattr(_a, "adsb_tracklets_tagged", 0),
             "no_state": getattr(_a, "adsb_seed_no_state", 0),
             "gate_rejects": getattr(_a, "adsb_seed_gate_rejects", 0),
+            "world_rejects": getattr(_a, "adsb_seed_world_rejects", 0),
             "tracklets_excluded": getattr(_a, "adsb_tracklets_excluded", 0),
             "inputs_emitted": getattr(_a, "adsb_inputs_emitted", 0),
         },

@@ -446,6 +446,51 @@ class TestPredictiveAttach:
         assert frame["adsb"][0]["hex"] == "abc123"
         assert frame["adsb"][1] is None
 
+    def test_cross_world_state_is_not_attached(self, monkeypatch):
+        """The auto-tag pass is a cache-wide assignment for a node with no
+        receiver, so an other-world entry is a decoy its detections can bind
+        to on a delay/Doppler coincidence — filtered before the lib call,
+        which is node-agnostic."""
+        node_id = "test-predictive-world"  # test-* prefix → sim world
+        geo = self._register(node_id)
+
+        lat, lon, alt_km, ve, vn = 34.88, -82.35, 7.0, 180.0, -90.0
+        d0, f0 = predict_observation(geo, lat, lon, alt_km, ve, vn)
+        frame = _make_frame()
+        frame["delay"] = [d0]
+        frame["doppler"] = [f0]
+        frame.pop("adsb", None)
+
+        decoy = {
+            "hex": "a97cf2",
+            "lat": lat,
+            "lon": lon,
+            "alt_m": alt_km * 1000.0,
+            "vel_east": ve,
+            "vel_north": vn,
+            "timestamp_ms": frame["timestamp"],
+            "world": "real",
+        }
+        monkeypatch.setattr(state, "_adsb_for_seeding", lambda: {"a97cf2": decoy})
+        monkeypatch.setattr(state, "ADSB_SEED_MODE", "active")
+
+        process_one_frame(node_id, frame, PassiveRadarPipeline(DEFAULT_NODE_CONFIG))
+
+        assert "adsb" not in frame or frame["adsb"] is None
+
+        # Same state tagged with the node's own world attaches — the filter
+        # removes decoys, not the capability.
+        own = dict(decoy, world="sim")
+        monkeypatch.setattr(state, "_adsb_for_seeding", lambda: {"a97cf2": own})
+        frame2 = _make_frame()
+        frame2["delay"] = [d0]
+        frame2["doppler"] = [f0]
+        frame2.pop("adsb", None)
+        process_one_frame(node_id, frame2, PassiveRadarPipeline(DEFAULT_NODE_CONFIG))
+
+        assert frame2["adsb"] is not None
+        assert frame2["adsb"][0]["hex"] == "a97cf2"
+
     def test_existing_adsb_list_never_overwritten(self, monkeypatch):
         node_id = "test-predictive-existing"
         self._register(node_id)
@@ -499,6 +544,7 @@ class TestAdsbSeedStatusPayload:
                 "tagged",
                 "no_state",
                 "gate_rejects",
+                "world_rejects",
                 "tracklets_excluded",
                 "inputs_emitted",
             }
@@ -551,3 +597,11 @@ class TestWorldStamp:
         }
         process_one_frame("blah2-hw-node", frame, PassiveRadarPipeline(DEFAULT_NODE_CONFIG))
         assert state.adsb_aircraft["wrld04"]["world"] == "real"
+
+
+class TestSeedWorldWiring:
+    def test_associator_gets_the_state_world_resolver(self):
+        """One authority for the world question: the associator's seed gate
+        must consult the same resolver claiming and the auto-tag filter use,
+        or one consumer accepts what another rejects."""
+        assert state.node_associator.node_world_provider is state.node_world

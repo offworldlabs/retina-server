@@ -120,24 +120,6 @@ def _reset_for_tests() -> None:
     _node_bias_unavailable = False
 
 
-def _node_world(node_id: str) -> str:
-    """Which world this node's echoes come from: "sim" for synthetic/test
-    nodes, "real" for hardware.
-
-    The CONFIG handshake's verdict (which honours the node's own is_synthetic
-    claim) wins when the node is registered; a node that never completed the
-    TCP handshake — HTTP ingest, tests driving process_one_frame directly —
-    falls back to the same prefix rule the handshake defaults to."""
-    info = state.connected_nodes.get(node_id)
-    if info is not None and "is_synthetic" in info:
-        return "sim" if info["is_synthetic"] else "real"
-    # Function-local for the same reason analytics_refresh imports it this
-    # way: tcp_handler sits above the frame path in the import graph.
-    from services.tcp_handler import is_synthetic_node
-
-    return "sim" if is_synthetic_node(node_id) else "real"
-
-
 def _gate_scale(age_s: float) -> float:
     """Gate allowance multiplier for a fix age: 1.0 fresh, 2.0 at the age cap.
 
@@ -290,7 +272,7 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
         cands = []
         visibility_rejects = 0
         world_rejects = 0
-        node_world = _node_world(node_id)
+        node_world = state.node_world(node_id)
         # Prescreen constants, hoisted: geo is fixed for the whole loop, and
         # these cost a haversine and a cos each.  See the prescreen below.
         screen_r0_km = geo.effective_radius_km * _SCREEN_MARGIN
