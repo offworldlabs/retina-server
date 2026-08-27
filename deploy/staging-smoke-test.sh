@@ -251,7 +251,24 @@ check_status  "sibling /api/ path stays on the app" "${BASE_URL}/api/radar/nodes
 # `elevation_m` was the shared key of both implementations back when there were
 # two; the monolith's copy is deleted, so a 200 here can only be the service —
 # through the proxy on a vhost (dash) that had none before the dedup.
-check        "dash /api/elevation answers"  "${DASH_URL}/api/elevation?lat=33.45&lon=-112.07" "elevation_m"
+#
+# Via the shared helper rather than `check`, so this environment tolerates the
+# service's upstream provider being unavailable on the same terms production
+# does. Staging answered 200 on 2026-08-27 only because its droplet holds a
+# separate quota from production's; nothing here is immune to the same outage.
+printf "  %-40s " "dash /api/elevation answers"
+if REASON=$(assert_elevation_contract "${DASH_URL}/api/elevation"); then
+    EL_RC=0
+else
+    EL_RC=$?
+fi
+if [ "$EL_RC" = 0 ]; then
+    echo "OK"; PASS=$((PASS+1))
+elif [ "$EL_RC" = 2 ]; then
+    echo "WARN"; printf '    %s\n' "$REASON"; PASS=$((PASS+1))
+else
+    echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
+fi
 check_status "dash /api/config answers"     "${DASH_URL}/api/config"                          "200"
 # PUT is the half that genuinely changed hands: the monolith gated it on an
 # admin session, the service gates it on a bearer token, and only the service's

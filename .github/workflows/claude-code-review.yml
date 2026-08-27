@@ -84,25 +84,41 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          # Single definition: the guard below and the fold's origin check both need it.
+          WORKFLOW_PATH: .github/workflows/claude-code-review.yml
         run: |
           # The action refuses to run when this file differs from the copy on the
           # default branch, which stops a pull request rewriting its own reviewer
           # to reach the secrets. It skips, reports success, and reviews nothing.
           # Without this, the check below would fail every pull request that edits
-          # this workflow, over a review that was never allowed to happen. Mirror
-          # the action's own condition, comparing blob hashes, rather than reading
-          # its log for a phrase that will change.
-          # Keep the call's exit status: an error here is not the same thing as
-          # the file being absent, and swallowing both left the check below to
-          # fail with an error blaming the reviewer for a lookup that failed.
-          if base=$(gh api "repos/${REPO}/contents/.github/workflows/claude-code-review.yml?ref=${DEFAULT_BRANCH}" --jq .sha 2>/dev/null); then
-            :
-          else
-            base=""
-            echo "::warning::could not read this workflow from ${DEFAULT_BRANCH}, so the self-edit guard below did not run. If this step then fails having seen no review, that is the likely cause rather than anything it names."
+          # this workflow, over a review that was never allowed to happen.
+          #
+          # Ask what the pull request changes rather than comparing this file's
+          # content against the default branch: a branch cut before this file last
+          # changed still carries the old copy, and a content comparison reads that
+          # as an edit, skipping the check below on every stale branch.
+          #
+          # Names only. `gh pr diff` would fetch the whole patch to read them, and
+          # the API refuses to generate a diff at all once one grows large enough,
+          # which would stop the guard running on the bulk changes it most wants to
+          # see. First line is hasNextPage, the rest are paths, so position tells
+          # the two apart and no path can be mistaken for the flag.
+          files_query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){files(first:100){nodes{path} pageInfo{hasNextPage}}}}}'
+          changed=$(gh api graphql \
+            -f "query=${files_query}" \
+            -f "owner=${REPO%/*}" -f "name=${REPO#*/}" \
+            -F "number=${PR_NUMBER}" \
+            --jq '.data.repository.pullRequest.files | (.pageInfo.hasNextPage | tostring), .nodes[].path' \
+            2>"${RUNNER_TEMP}/guard.err") || {
+            # An unreadable list fails towards demanding a review: a pull request
+            # that did edit this file fails below rather than passing unreviewed.
+            changed=""
+            echo "::warning::could not list this pull request's changed files, so the self-edit guard did not run. If this step then fails having seen no review, that is the likely cause rather than anything it names: $(tr '\n' ' ' < "${RUNNER_TEMP}/guard.err")"
+          }
+          if [ "$(printf '%s\n' "${changed}" | head -1)" = "true" ]; then
+            echo "::warning::past 100 files here, so the self-edit guard only read the first 100 and may have missed an edit to this workflow"
           fi
-          here=$(git hash-object .github/workflows/claude-code-review.yml)
-          if [ -n "${base}" ] && [ "${base}" != "${here}" ]; then
+          if printf '%s\n' "${changed}" | tail -n +2 | grep -qxF "${WORKFLOW_PATH}"; then
             echo "::notice::This pull request edits the review workflow, so the action skipped itself and no review ran. That is its guard against a pull request editing its own reviewer, not a fault in this change. Nothing supersedes the earlier comments either, so any left part-ticked by a cancelled run stay expanded here. Reviews resume on the pull requests that follow this one onto ${DEFAULT_BRANCH}, and this one needs reviewing by hand."
             exit 0
           fi
@@ -119,7 +135,6 @@ jobs:
           import subprocess
 
           BOT = "claude[bot]"
-          WORKFLOW = ".github/workflows/claude-code-review.yml"
           REPO = os.environ["REPO"]
           run_id = os.environ["GITHUB_RUN_ID"]
 
@@ -194,6 +209,9 @@ jobs:
           def fold_superseded():
               # Reviews run on every push, so a pull request three times round the
               # loop otherwise reads as three reviews, two of them answered and stale.
+              # Read here, not at module scope: folding must never redden a review
+              # that passed, and only what runs inside this function is caught.
+              workflow = os.environ["WORKFLOW_PATH"]
               owner, name = REPO.split("/")
               # REST does not carry isMinimized, so ask once rather than re-folding
               # every already-folded comment on every later run.
@@ -258,7 +276,7 @@ jobs:
                       print(f"left expanded (no run link): {c['url']}")
                       continue
                   origin = origin_of(found.group(1))
-                  if origin != WORKFLOW:
+                  if origin != workflow:
                       print(f"left expanded (run {found.group(1)} is {origin}): {c['url']}")
                       continue
                   done = gh(
