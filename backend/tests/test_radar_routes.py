@@ -30,6 +30,9 @@ def _clean_radar_state():
     for node_id in list(state.connected_nodes.keys()):
         if node_id.startswith("test-") or node_id.startswith("http-") or node_id.startswith("bulk-"):
             state.connected_nodes.pop(node_id, None)
+    for node_id in list(state.node_pipelines.keys()):
+        if node_id.startswith("bulk-"):
+            state.node_pipelines.pop(node_id, None)
     state.rate_buckets.clear()
 
 
@@ -174,6 +177,145 @@ class TestRadarDetectionsBulk:
         body = r.json()
         assert body["frames_queued"] == 0
         assert body["nodes_registered"] == 1
+
+    def test_bulk_changed_config_re_registers_the_node(self, client):
+        """A node that moves must not keep its old geometry until a restart."""
+        from core import state
+
+        first = {
+            "nodes": [
+                {
+                    "node_id": "bulk-moving-node",
+                    "config": {"rx_lat": 33.9, "rx_lon": -84.6, "tx_lat": 34.0, "tx_lon": -84.7},
+                    "frames": [{"timestamp": 1, "delay": [1.0], "doppler": [2.0], "snr": [3.0]}],
+                }
+            ]
+        }
+        second = {
+            "nodes": [
+                {
+                    "node_id": "bulk-moving-node",
+                    "config": {"rx_lat": 40.0, "rx_lon": -84.6, "tx_lat": 34.0, "tx_lon": -84.7},
+                    "frames": [{"timestamp": 2, "delay": [1.0], "doppler": [2.0], "snr": [3.0]}],
+                }
+            ]
+        }
+
+        assert client.post("/api/radar/detections/bulk", json=first, headers=HEADERS_OK).json()["nodes_registered"] == 1
+
+        # The live TestClient runs frame_processor_loop, which can rebuild and
+        # re-cache the pipeline from the queued frame at any point after
+        # eviction. A sentinel keeps the check race-free: whichever way that
+        # race falls, the stale pipeline cannot still be the cached entry.
+        sentinel = object()
+        state.node_pipelines["bulk-moving-node"] = sentinel
+        r = client.post("/api/radar/detections/bulk", json=second, headers=HEADERS_OK)
+
+        assert r.json()["nodes_registered"] == 1
+        assert state.connected_nodes["bulk-moving-node"]["config"]["rx_lat"] == 40.0
+        assert state.connected_nodes["bulk-moving-node"]["config_hash"] != ""
+        assert state.node_pipelines.get("bulk-moving-node") is not sentinel
+
+    def test_bulk_unchanged_config_does_not_re_register(self, client):
+        body = {
+            "nodes": [
+                {
+                    "node_id": "bulk-still-node",
+                    "config": {"rx_lat": 33.9, "rx_lon": -84.6, "tx_lat": 34.0, "tx_lon": -84.7},
+                    "frames": [{"timestamp": 1, "delay": [1.0], "doppler": [2.0], "snr": [3.0]}],
+                }
+            ]
+        }
+
+        assert client.post("/api/radar/detections/bulk", json=body, headers=HEADERS_OK).json()["nodes_registered"] == 1
+        assert client.post("/api/radar/detections/bulk", json=body, headers=HEADERS_OK).json()["nodes_registered"] == 0
+
+    def test_bulk_missing_config_on_a_known_node_does_not_re_register(self, client):
+        """A follow-up batch that omits config entirely is silent about the
+        node's geometry, not a claim that its config is now the trivial
+        {"node_id": ...} dict. That trivial dict never hashes to match the
+        stored config, so it used to re-register the node on every config-less
+        call and evict its cached pipeline, silently falling it back to the
+        shared default receiver and transmitter."""
+        from core import state
+
+        node_id = "bulk-quiet-node"
+        first = {
+            "nodes": [
+                {
+                    "node_id": node_id,
+                    "config": {"rx_lat": 33.9, "rx_lon": -84.6, "tx_lat": 34.0, "tx_lon": -84.7},
+                    "frames": [{"timestamp": 1, "delay": [1.0], "doppler": [2.0], "snr": [3.0]}],
+                }
+            ]
+        }
+        second = {"nodes": [{"node_id": node_id}]}
+
+        assert client.post("/api/radar/detections/bulk", json=first, headers=HEADERS_OK).json()["nodes_registered"] == 1
+        stored_hash = state.connected_nodes[node_id]["config_hash"]
+
+        r = client.post("/api/radar/detections/bulk", json=second, headers=HEADERS_OK)
+
+        assert r.json()["nodes_registered"] == 0
+        assert state.connected_nodes[node_id]["config"]["rx_lat"] == 33.9
+        assert state.connected_nodes[node_id]["config_hash"] == stored_hash
+
+    def test_bulk_does_not_overwrite_a_node_registered_by_another_path(self, client):
+        """A caller holding RADAR_API_KEY must not be able to strip a live v1 or
+        TCP node's geometry by naming it in a bulk entry: only a node this
+        endpoint itself registered may be re-registered on a hash mismatch."""
+        from core import state
+
+        node_id = "bulk-not-mine"
+        with state.connected_nodes_lock:
+            state.connected_nodes[node_id] = {
+                "config_hash": "original-hash",
+                "config": {"rx_lat": 1.0, "rx_lon": 2.0},
+                "status": "active",
+                "last_heartbeat": "",
+                "peer": "v1",
+                "is_synthetic": False,
+                "capabilities": {"adsb_report": True},
+            }
+        body = {
+            "nodes": [
+                {
+                    "node_id": node_id,
+                    "config": {"rx_lat": 99.0, "rx_lon": 99.0},
+                    "frames": [{"timestamp": 1, "delay": [1.0], "doppler": [2.0], "snr": [3.0]}],
+                }
+            ]
+        }
+
+        r = client.post("/api/radar/detections/bulk", json=body, headers=HEADERS_OK)
+
+        assert r.status_code == 200
+        body = r.json()
+        assert body["nodes_registered"] == 0
+        assert body["frames_queued"] == 1
+        assert state.connected_nodes[node_id]["config"]["rx_lat"] == 1.0
+        assert state.connected_nodes[node_id]["config_hash"] == "original-hash"
+        assert state.connected_nodes[node_id]["peer"] == "v1"
+
+    def test_bulk_first_registration_of_a_new_node_is_unaffected(self, client):
+        """The gate must not block a node's first bulk registration, only a
+        re-registration of a node created elsewhere."""
+        body = {
+            "nodes": [
+                {
+                    "node_id": "bulk-fresh-node",
+                    "config": {"rx_lat": 5.0, "rx_lon": 6.0},
+                    "frames": [{"timestamp": 1, "delay": [1.0], "doppler": [2.0], "snr": [3.0]}],
+                }
+            ]
+        }
+
+        r = client.post("/api/radar/detections/bulk", json=body, headers=HEADERS_OK)
+
+        assert r.json()["nodes_registered"] == 1
+        from core import state
+
+        assert state.connected_nodes["bulk-fresh-node"]["peer"] == "http-bulk"
 
 
 # ── _check_rate_limit unit tests ─────────────────────────────────────────────
