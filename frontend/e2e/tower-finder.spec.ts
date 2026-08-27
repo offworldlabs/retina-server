@@ -88,6 +88,12 @@ test.describe("Tower Finder — search form", () => {
     expect(url.searchParams.get("source")).toBe("auto");
   });
 
+  // Unlike the /api/towers tests below, this one stubs nothing, so it is the
+  // only spec here that crosses the real seam: BASE is the main vhost, whose
+  // /api/elevation is proxied to tower-finder-service (snippets/towers-proxy.conf).
+  // It stays a liveness assertion rather than a shape one — both implementations
+  // return `elevation_m` and deploy/tower-contract.sh is what pins that. What
+  // this adds is that the browser's own request survives the proxy.
   test("auto-fetches elevation when lat/lon are entered", async ({ page }) => {
     // Set up response interceptor before triggering the network request
     const elevationResponse = page

@@ -438,6 +438,12 @@ jobs:
           {
             echo "QUERY_B64=$(printf '%s' "$TOWER_CONTRACT_QUERY" | base64 | tr -d '\n')"
             echo "ECHO_B64=$(printf '%s' "$TOWER_CONTRACT_ECHO" | base64 | tr -d '\n')"
+            # The config route the same include now forwards. Its shape check is
+            # a plain read of a file in the container, so it is deterministic
+            # here in a way the elevation one — which fans out to open-meteo —
+            # is not; elevation is left to the public-DNS step above, which has
+            # the retries for it.
+            echo "CFGKEYS_B64=$(printf '%s' "$TOWER_CONTRACT_CONFIG_KEYS" | base64 | tr -d '\n')"
           } >> "$GITHUB_ENV"
       - name: Assert staging's instance
         if: github.event_name == 'push'
@@ -445,16 +451,18 @@ jobs:
         env:
           QUERY_B64: ${{ env.QUERY_B64 }}
           ECHO_B64: ${{ env.ECHO_B64 }}
+          CFGKEYS_B64: ${{ env.CFGKEYS_B64 }}
         with:
           host: ${{ secrets.STAGING_HOST }}
           username: root
           key: ${{ secrets.STAGING_SSH_KEY }}
           command_timeout: 5m
-          envs: QUERY_B64,ECHO_B64
+          envs: QUERY_B64,ECHO_B64,CFGKEYS_B64
           script: |
             set -e
             QUERY=$(printf '%s' "$QUERY_B64" | base64 -d)
             WANT=$(printf '%s' "$ECHO_B64" | base64 -d)
+            CFGKEYS=$(printf '%s' "$CFGKEYS_B64" | base64 -d)
             if ! docker network inspect retina-edge >/dev/null 2>&1; then
               echo "::error::retina-edge does not exist on $(hostname), so nginx cannot reach tower-finder-service and every proxied /api/towers would 502. Bring that stack up before routing a vhost to it."
               exit 1
@@ -469,6 +477,20 @@ jobs:
               printf '%s\n' "$BODY" | head -c 300
               exit 1
             fi
+
+            # /api/config, forwarded by the same include on every vhost.
+            CFG=$(docker run --rm --network retina-edge curlimages/curl:latest \
+              -s -m 45 "http://tower-finder-service:8000/api/config") || {
+              echo "::error::tower-finder-service did not answer /api/config on retina-edge from $(hostname)."
+              exit 1
+            }
+            for key in $CFGKEYS; do
+              if ! printf '%s' "$CFG" | grep -qF "$key"; then
+                echo "::error::staging's tower-finder-service answered /api/config without ${key}. snippets/towers-proxy.conf forwards that route on every vhost, so pointing one at this instance would serve a config missing a key retina's callers read. First 300 bytes follow."
+                printf '%s\n' "$CFG" | head -c 300
+                exit 1
+              fi
+            done
             echo "staging's tower-finder-service honours the contract."
 
   deploy-staging:
@@ -1090,7 +1112,11 @@ jobs:
           check_status "GET /api/radar/analytics" "${BASE_URL}/api/radar/analytics"   "200"
           check_status "GET /api/test/dashboard"  "${BASE_URL}/api/test/dashboard"    "200"
           check_status "GET /api/test/mlat-verification" "${BASE_URL}/api/test/mlat-verification" "200"
-          check_status "GET /api/config"          "${BASE_URL}/api/config"            "200"
+          # BASE_URL is api.retina.fm, whose vhost defines no /api/config
+          # location — so this falls through `location /` to the monolith and is
+          # still the app's own tower_config.json, unaffected by the proxy
+          # dedup. The proxied copy is checked on the tower vhosts below.
+          check_status "GET /api/config (app)"    "${BASE_URL}/api/config"            "200"
           check_status "GET / (frontend)"         "https://towers.retina.fm/"         "200"
           check_status "GET /api/health (api.retina.fm)" "${BASE_URL}/api/health"     "200"
 
@@ -1101,9 +1127,29 @@ jobs:
           source deploy/tower-contract.sh
           for endpoint in https://towers.retina.fm/api/towers \
                           https://map.retina.fm/api/towers \
-                          https://api.retina.fm/towers; do
+                          https://api.retina.fm/towers \
+                          https://dash.retina.fm/api/towers \
+                          https://admin.retina.fm/api/towers; do
             printf "  %-40s " "${endpoint#https://}"
             if REASON=$(assert_tower_contract "$endpoint"); then
+              echo "OK"; PASS=$((PASS+1))
+            else
+              echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
+            fi
+          done
+
+          # The sibling routes the same include forwards. dash is the vhost that
+          # used to answer both from the monolith, so it is where a missing
+          # proxy would show up first; towers is the one a human looks at.
+          for endpoint in https://dash.retina.fm https://towers.retina.fm; do
+            printf "  %-40s " "${endpoint#https://}/api/elevation"
+            if REASON=$(assert_elevation_contract "${endpoint}/api/elevation"); then
+              echo "OK"; PASS=$((PASS+1))
+            else
+              echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
+            fi
+            printf "  %-40s " "${endpoint#https://}/api/config"
+            if REASON=$(assert_config_contract "${endpoint}/api/config"); then
               echo "OK"; PASS=$((PASS+1))
             else
               echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))

@@ -229,7 +229,9 @@ curl -sk https://localhost/api/admin/metrics | python3 -m json.tool
 ### `config_degraded` (sub-check of `health_degraded`)
 
 **Trigger:** `tower_config.json` could not be read, parsed or validated, so the process is running on something other than the file on disk.  
-**What it means:** the config on disk is **not** the config in effect. `GET /api/config` returns the file, which is the one being ignored, so the two disagree until this is fixed. Tower ranking still works, on whichever config the alert names.
+**What it means:** the config on disk is **not** the config in effect. The alert is about the **monolith's** `tower_config.json`, in retina's own volume.
+
+> **Since the tower routes were deduplicated to tower-finder-service:** `/api/config` on the tower, map, dash and admin vhosts is proxied to that service and returns **its** config, not the file this alert is about. To read the monolith's copy, use the API subdomain — `curl -s https://api.retina.fm/api/config` — which is the one vhost that still answers `/api/config` from the monolith (`location /` → `snippets/api.conf`). `GET /api/admin/config/towers` reads the same file on any vhost.
 
 The alert carries the reason and says what is in effect, which is one of two things:
 
@@ -253,7 +255,16 @@ docker compose logs backend | grep tower_config
 2. A field was renamed or removed in an image upgrade while the volume kept the old file. The volume survives `docker compose up -d --build`, so a redeploy does not clear it.
 3. The file is not readable, or not UTF-8.
 
-**Fix:** correct the file in the volume, then either `PUT /api/config` with a valid body (which validates before writing) or restart the service. The alert clears once a config loads cleanly.
+**Fix:** correct the file in the volume, then re-apply it with a valid body (both endpoints below validate before writing) or restart the service. The alert clears once a config loads cleanly.
+
+Use `PUT /api/admin/config/towers` — admin session auth, writes the same file, and reaches the monolith on **every** vhost:
+
+```bash
+curl -sk -X PUT https://dash.retina.fm/api/admin/config/towers \
+     -H 'Content-Type: application/json' --data @tower_config.json
+```
+
+`PUT https://api.retina.fm/api/config` (admin session) still works and writes the same file, but on any other vhost `PUT /api/config` now reaches tower-finder-service instead, where the gate is `Authorization: Bearer $TOWER_FINDER_ADMIN_TOKEN` rather than a session — it will answer **401** to a session-authenticated caller, and on success it writes the *service's* config, which does not clear this alert.
 
 ---
 
