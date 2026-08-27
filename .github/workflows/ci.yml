@@ -1153,8 +1153,21 @@ jobs:
           # proxy would show up first; towers is the one a human looks at.
           for endpoint in https://dash.retina.fm https://towers.retina.fm; do
             printf "  %-40s " "${endpoint#https://}/api/elevation"
+            # 2 is the service answering that its own upstream is unavailable.
+            # Passed, loudly: this job rolls production back on a failure, and a
+            # third party's rate limiter is not grounds for that. The routing
+            # this probe covers is asserted strictly by the config check below,
+            # through the same nginx include on the same vhost.
             if REASON=$(assert_elevation_contract "${endpoint}/api/elevation"); then
+              EL_RC=0
+            else
+              EL_RC=$?
+            fi
+            if [ "$EL_RC" = 0 ]; then
               echo "OK"; PASS=$((PASS+1))
+            elif [ "$EL_RC" = 2 ]; then
+              echo "WARN"; printf '    %s\n' "$REASON"; PASS=$((PASS+1))
+              echo "::warning::elevation is degraded on ${endpoint#https://}: the service's upstream provider is refusing lookups, so the search form's altitude prefill is down. Not a deploy fault and not rolled back. ClickUp 86cbaxrhp."
             else
               echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
             fi

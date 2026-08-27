@@ -113,8 +113,56 @@ _assert_json_keys() {
 }
 
 # assert_elevation_contract <endpoint-url>   e.g. https://host/api/elevation
+# Not _assert_json_keys, because two different things make this non-200 and only
+# one of them is ours. 0: shape honoured. 2: the request reached the service and
+# its own upstream is unavailable. 1: everything else.
+#
+# Elevation is the only one of the three routes that fans out to a third party,
+# and the service turns a refusal from it into a 502. On 2026-08-27 open-meteo's
+# daily quota ran out and these checks rolled production back over it, on a deploy
+# that was fine (ClickUp 86cbaxrhp). A third party's rate limiter must not be able
+# to do that, so a 502 warns and passes.
+#
+# Tolerating it costs no routing coverage. A tower-finder-service that is genuinely
+# down 502s /api/towers and /api/config as well, and both are asserted strictly on
+# these same vhosts through the same nginx include. Cloudflare replaces the body on
+# 5xx anyway, so the service's own {"detail": ...} never arrives here and the status
+# is all there is to judge by.
+#
+# 404 stays fatal, and is the regression this probe exists to catch: with no
+# `location /api/elevation` the request falls through `location /` to the app,
+# whose copy of the route went with the monolith's tower stack.
 assert_elevation_contract() {
-    _assert_json_keys "elevation" "${1}?${TOWER_CONTRACT_ELEVATION_QUERY}" "$TOWER_CONTRACT_ELEVATION_KEY"
+    local url="${1}?${TOWER_CONTRACT_ELEVATION_QUERY}" body code resp attempt
+    # Two attempts, as the siblings above: a blip must not read as a routing fault.
+    for attempt in 1 2; do
+        resp=$(curl -s --connect-timeout 10 --max-time "$TOWER_CONTRACT_MAX_TIME" \
+            -w '\n%{http_code}' "$url" 2>/dev/null) || {
+            [ "$attempt" = 1 ] && { sleep 5; continue; }
+            echo "elevation: unreachable after 2 attempts: ${url}"
+            return 1
+        }
+        code=$(printf '%s' "$resp" | tail -n1)
+        body=$(printf '%s' "$resp" | sed '$d')
+        [ "$code" = "200" ] && break
+        [ "$attempt" = 1 ] && { sleep 5; continue; }
+        if [ "$code" = "502" ]; then
+            echo "elevation: ${url} reached the service, which answered 502 because its own"
+            echo "upstream elevation provider refused it. Not a fault in this deploy; the"
+            echo "routing this checks is proven by /api/towers and /api/config alongside."
+            return 2
+        fi
+        echo "elevation: got HTTP ${code} from ${url}"
+        return 1
+    done
+
+    if ! printf '%s' "$body" | grep -qF "$TOWER_CONTRACT_ELEVATION_KEY"; then
+        echo "elevation: answered 200 without ${TOWER_CONTRACT_ELEVATION_KEY}. Callers read"
+        echo "that key; see deploy/tower-contract.sh. First 300 bytes of the response:"
+        printf '    %s\n' "$(printf '%s' "$body" | head -c 300)"
+        return 1
+    fi
+    return 0
 }
 
 # assert_config_contract <endpoint-url>      e.g. https://host/api/config
