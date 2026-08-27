@@ -15,6 +15,26 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
+# An abort partway through is the one outcome the caller cannot read: the lines
+# below announce each step before taking it, so a log that stops mid-rollback
+# looks like one that finished. Say so on the way out instead. Set once the
+# restore itself is done, so an unhealthy service after a completed rollback
+# (exit 1 at the foot of this file) stays distinct from never having rolled back
+# at all. 2026-08-27 is the case this exists for: SIGPIPE between the announce
+# and the revert, and CI reporting that a rollback had run.
+ROLLBACK_RESTORED=0
+on_exit() {
+    local rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    [ "$ROLLBACK_RESTORED" = 1 ] && return 0
+    echo
+    echo "ROLLBACK DID NOT COMPLETE (exit ${rc})."
+    echo "  Nothing above was undone: this host is still running the build the"
+    echo "  rollback was called on, and the source tree is where the deploy left"
+    echo "  it. The last line printed above is how far it got."
+}
+trap on_exit EXIT
+
 APP_DIR="${APP_DIR:-/opt/retina-server}"
 IMAGE_NAME="retina-server"
 FLEET_IMAGE_NAME="retina-server-fleet"
@@ -198,6 +218,10 @@ else
         docker compose up -d --build
     fi
 fi
+
+# Past every restore path, so a failure from here on is a rollback that ran and
+# left the service unhealthy, not one that aborted midway.
+ROLLBACK_RESTORED=1
 
 # ── Wait for health ──────────────────────────────────────────────────────────
 echo "Waiting for server to become healthy..."

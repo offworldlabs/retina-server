@@ -1,4 +1,4 @@
-"""deploy/rollback.sh's last-good-tag lookup, run against a scratch repository.
+"""deploy/rollback.sh, exercised against scratch repositories.
 
 The lookup is extracted from the script and executed under the script's own
 shell flags rather than reimplemented here, so these fail if the real line
@@ -111,3 +111,25 @@ def test_lookup_picks_the_newest_tag(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert result.stdout == "deploy-20260827-140211", f"got {result.stdout!r}"
+
+
+def test_an_abort_partway_says_the_rollback_did_not_complete(tmp_path):
+    """The 2026-08-27 failure was silent: the log's last line announced a
+    rollback that then aborted, so CI reported a failed step and nothing said
+    production had not moved. Any non-zero exit before the restore finishes has
+    to contradict that announcement itself.
+    """
+    result = subprocess.run(  # noqa: S603, S607
+        ["bash", str(ROLLBACK_SH)],
+        cwd=tmp_path,
+        env={"PATH": "/usr/bin:/bin", "APP_DIR": str(tmp_path / "absent")},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert "ROLLBACK DID NOT COMPLETE" in combined, (
+        f"an aborted rollback said nothing about not having completed:\n{combined}"
+    )
