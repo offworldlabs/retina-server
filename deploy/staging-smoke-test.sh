@@ -219,6 +219,21 @@ echo "── tower-finder-service seam ──"
 for endpoint in "${BASE_URL}/api/towers" "${MAP_URL}/api/towers" \
                 "${TESTMAP_URL}/api/towers" "${API_URL}/towers" \
                 "${DASH_URL}/api/towers" "${ADMIN_URL}/api/towers"; do
+    # staging-admin has an nginx vhost but deliberately no DNS record —
+    # docker-compose.staging.yml documents the trade: the origin cert is
+    # *.retina.fm so an unresolved name costs nothing, and keeping HOST_*
+    # the same shape across environments is what lets the parity check
+    # assert the rendered configs are identical. The admin seam is still
+    # asserted where it is reachable: prod smoke probes admin.retina.fm,
+    # and the parity check proves staging renders that identical vhost.
+    # Guarded on resolution rather than dropped, so the probe starts
+    # asserting the moment a record appears — and narrowly, so a real DNS
+    # outage on any other vhost still fails the run.
+    host="${endpoint#https://}"; host="${host%%/*}"
+    if [ "$host" = "staging-admin.retina.fm" ] && ! getent hosts "$host" >/dev/null 2>&1; then
+        printf "  %-40s SKIP (vhost has no DNS record by design)\n" "$host"
+        continue
+    fi
     check_contract "${endpoint#https://}" "$endpoint"
 done
 # The other half of the seam: a sibling /api/ path on the same vhost is still
