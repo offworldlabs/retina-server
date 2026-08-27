@@ -97,15 +97,30 @@ jobs:
           # content against the default branch: a branch cut before this file last
           # changed still carries the old copy, and a content comparison reads that
           # as an edit, skipping the check below on every stale branch.
-          if changed=$(gh pr diff "${PR_NUMBER}" -R "${REPO}" --name-only 2>/dev/null); then
-            if printf '%s\n' "${changed}" | grep -qxF "${WORKFLOW_PATH}"; then
-              echo "::notice::This pull request edits the review workflow, so the action skipped itself and no review ran. That is its guard against a pull request editing its own reviewer, not a fault in this change. Nothing supersedes the earlier comments either, so any left part-ticked by a cancelled run stay expanded here. Reviews resume on the pull requests that follow this one onto ${DEFAULT_BRANCH}, and this one needs reviewing by hand."
-              exit 0
-            fi
-          else
-            # Skipping the guard fails towards demanding a review: a pull request
+          #
+          # Names only. `gh pr diff` would fetch the whole patch to read them, and
+          # the API refuses to generate a diff at all once one grows large enough,
+          # which would stop the guard running on the bulk changes it most wants to
+          # see. First line is hasNextPage, the rest are paths, so position tells
+          # the two apart and no path can be mistaken for the flag.
+          files_query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){files(first:100){nodes{path} pageInfo{hasNextPage}}}}}'
+          changed=$(gh api graphql \
+            -f "query=${files_query}" \
+            -f "owner=${REPO%/*}" -f "name=${REPO#*/}" \
+            -F "number=${PR_NUMBER}" \
+            --jq '.data.repository.pullRequest.files | (.pageInfo.hasNextPage | tostring), .nodes[].path' \
+            2>"${RUNNER_TEMP}/guard.err") || {
+            # An unreadable list fails towards demanding a review: a pull request
             # that did edit this file fails below rather than passing unreviewed.
-            echo "::warning::could not list this pull request's changed files, so the self-edit guard did not run. If this step then fails having seen no review, that is the likely cause rather than anything it names."
+            changed=""
+            echo "::warning::could not list this pull request's changed files, so the self-edit guard did not run. If this step then fails having seen no review, that is the likely cause rather than anything it names: $(tr '\n' ' ' < "${RUNNER_TEMP}/guard.err")"
+          }
+          if [ "$(printf '%s\n' "${changed}" | head -1)" = "true" ]; then
+            echo "::warning::past 100 files here, so the self-edit guard only read the first 100 and may have missed an edit to this workflow"
+          fi
+          if printf '%s\n' "${changed}" | tail -n +2 | grep -qxF "${WORKFLOW_PATH}"; then
+            echo "::notice::This pull request edits the review workflow, so the action skipped itself and no review ran. That is its guard against a pull request editing its own reviewer, not a fault in this change. Nothing supersedes the earlier comments either, so any left part-ticked by a cancelled run stay expanded here. Reviews resume on the pull requests that follow this one onto ${DEFAULT_BRANCH}, and this one needs reviewing by hand."
+            exit 0
           fi
 
           # One object per line, not one array per page. With --paginate the --jq
@@ -120,7 +135,6 @@ jobs:
           import subprocess
 
           BOT = "claude[bot]"
-          WORKFLOW = os.environ["WORKFLOW_PATH"]
           REPO = os.environ["REPO"]
           run_id = os.environ["GITHUB_RUN_ID"]
 
@@ -195,6 +209,9 @@ jobs:
           def fold_superseded():
               # Reviews run on every push, so a pull request three times round the
               # loop otherwise reads as three reviews, two of them answered and stale.
+              # Read here, not at module scope: folding must never redden a review
+              # that passed, and only what runs inside this function is caught.
+              workflow = os.environ["WORKFLOW_PATH"]
               owner, name = REPO.split("/")
               # REST does not carry isMinimized, so ask once rather than re-folding
               # every already-folded comment on every later run.
@@ -259,7 +276,7 @@ jobs:
                       print(f"left expanded (no run link): {c['url']}")
                       continue
                   origin = origin_of(found.group(1))
-                  if origin != WORKFLOW:
+                  if origin != workflow:
                       print(f"left expanded (run {found.group(1)} is {origin}): {c['url']}")
                       continue
                   done = gh(
