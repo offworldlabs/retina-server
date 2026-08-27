@@ -399,20 +399,20 @@ async def get_node_config(_admin=Depends(require_admin)):
 
 @router.get("/config/towers")
 async def get_tower_config(_admin=Depends(require_admin)):
-    """The tower config overlay, or a live view of the transmitters in use.
+    """A live view of the transmitters the connected nodes are illuminated by.
 
-    Two response shapes, and the absent overlay is a supported state rather
-    than an error: the file verbatim, or ``{"_source": "live", "towers": ...}``
-    built from what connected nodes report. Callers must branch on ``_source``
-    (the dashboard's ConfigPage does) because the two share no keys. 404 here
-    would be the more obvious contract but a worse one, since the fallback is
-    the only tower view an operator has on a server holding no overlay.
+    One response shape now: ``{"_source": "live", "towers": ...}``, derived from
+    what nodes report over TCP. The overlay-file half of this endpoint went with
+    the monolith's tower stack — ranking config lives in tower-finder-service,
+    which owns its own copy and serves it at ``/api/config`` on every vhost. What
+    is left is monolith-owned data with no equivalent there, so it stays.
+
+    ``_source`` is still sent, and callers should still branch on it (the
+    dashboard's ConfigPage does): dropping the key would break them for no gain,
+    and the file shape may yet come back from the service side.
     """
     global _towers_config_cache
-    fp = runtime_path("tower_config.json")
-    if fp.exists():
-        return Response(content=fp.read_bytes(), media_type="application/json")
-    # Live fallback with TTL cache
+    # Live view with TTL cache
     now = time.time()
     if _towers_config_cache is not None and now - _towers_config_cache[0] < _CONFIG_LIVE_CACHE_TTL:
         return Response(content=_towers_config_cache[1], media_type="application/json")
@@ -454,38 +454,11 @@ async def update_node_config(body: ConfigUpdate, _admin=Depends(require_admin)):
     if fp.exists():
         history_fp = _CONFIG_DIR / f"nodes_{ts}.json"
         write_runtime_file(history_fp, fp.read_text(encoding="utf-8"))
-    # Atomic for the same reason as the tower config below: this is a runtime
-    # overlay in the same volume, and a truncated one outlives the request.
+    # Atomic because this is a runtime overlay in a persistent volume: a
+    # truncated write outlives the request that made it, and the next boot
+    # reads whatever is on disk.
     write_runtime_file(fp, json.dumps(body.config, indent=2))
     log_event("config", "Node config updated", "info")
-    return {"status": "ok", "saved_at": ts}
-
-
-@router.put("/config/towers")
-async def update_tower_config(body: ConfigUpdate, _admin=Depends(require_admin)):
-    global _towers_config_cache
-    # Same file as PUT /api/config, so the same gate applies. This handler does
-    # not reload, which makes an unusable config worse here than there: it sits
-    # on disk until a restart tries to load it, long after the operator who
-    # wrote it has gone.
-    from services.tower_ranking import validate_config
-
-    error = validate_config(body.config)
-    if error:
-        raise HTTPException(status_code=400, detail=f"Invalid config: {error}")
-
-    _towers_config_cache = None  # invalidate live cache
-    fp = runtime_path("tower_config.json")
-    fp.parent.mkdir(parents=True, exist_ok=True)
-    _CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    ts = int(time.time())
-    if fp.exists():
-        history_fp = _CONFIG_DIR / f"towers_{ts}.json"
-        write_runtime_file(history_fp, fp.read_text(encoding="utf-8"))
-    # Atomic: services/tower_ranking reads this file at import, so a reader must
-    # never catch it half-written.
-    write_runtime_file(fp, json.dumps(body.config, indent=2))
-    log_event("config", "Tower config updated", "info")
     return {"status": "ok", "saved_at": ts}
 
 

@@ -53,20 +53,23 @@ assert_tower_contract() {
 }
 
 # ── The other two deduplicated routes ────────────────────────────────────────
-# /api/towers was never the whole tower stack. /api/elevation and /api/config
-# exist in the monolith too (backend/routes/towers.py, backend/routes/config.py)
-# and every vhost that includes snippets/towers-proxy.conf now forwards all
-# three, so all three are part of what the service must honour before a vhost
-# points at it. They get a shape assertion rather than a parameter echo: neither
-# takes a ranking parameter, and what a caller can be broken by is the response
-# losing a key it reads.
+# /api/towers was never the whole tower stack. Every vhost that includes
+# snippets/towers-proxy.conf forwards /api/elevation and /api/config as well, so
+# all three are part of what the service must honour before a vhost points at
+# it. They get a shape assertion rather than a parameter echo: neither takes a
+# ranking parameter, and what a caller can be broken by is the response losing a
+# key it reads.
 #
-# The keys below are the ones BOTH implementations already return, so this pins
-# the shape retina's callers were written against, not one service's dialect.
+# The keys below were the ones BOTH implementations returned while retina still
+# had its own. That copy is deleted, so they now pin the shape retina's callers
+# were written against onto the only implementation left — which is what makes
+# asserting them worth more, not less: nothing else in this repo can catch the
+# service dropping a key those callers read.
 TOWER_CONTRACT_ELEVATION_QUERY="lat=33.45&lon=-112.07"
 TOWER_CONTRACT_ELEVATION_KEY='"elevation_m"'
-# Top-level keys of tower_config.json. backend/config/tower_config.json ships
-# exactly these four, and the service answers the same four.
+# Top-level keys of the ranking config. retina's own copy (which shipped exactly
+# these four) is gone with the monolith's tower stack; the service answers the
+# same four, and these are what retina's callers read.
 #
 # A space-separated STRING rather than an array, and the embedded double quotes
 # are data: each element is grepped with -F against the raw JSON, so `"ranking"`
@@ -115,12 +118,12 @@ assert_elevation_contract() {
 }
 
 # assert_config_contract <endpoint-url>      e.g. https://host/api/config
-# GET only. PUT is deliberately NOT asserted here: the two implementations do
-# not share a gate — the monolith wants an admin session, the service wants
-# `Authorization: Bearer $TOWER_FINDER_ADMIN_TOKEN` — so there is no single
-# request this file could send that both should accept. The staging smoke test
-# asserts the weaker property that actually matters, that an unauthenticated PUT
-# is refused either way.
+# GET only. PUT is deliberately NOT asserted here: it is gated on
+# `Authorization: Bearer $TOWER_FINDER_ADMIN_TOKEN`, and this file runs from CI
+# and from deploy gates that hold no such token — sending a write from a smoke
+# test would also mean writing the live ranking config to prove it is reachable.
+# The staging smoke test asserts the weaker property that actually matters, that
+# an unauthenticated PUT is refused.
 assert_config_contract() {
     # shellcheck disable=SC2086,SC2090  # intentional word split: one grep -F per key.
     _assert_json_keys "config" "$1" $TOWER_CONTRACT_CONFIG_KEYS

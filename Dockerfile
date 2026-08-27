@@ -93,8 +93,8 @@ RUN chmod +x /app/deploy/start.sh
 
 # Save a pristine copy of source-controlled config files outside the
 # /app/backend/config volume so they always reflect the current image.
-# tower_config.json / nodes_config.json are runtime-editable and stay in
-# the volume; constants.py is source code and must follow the image.
+# nodes_config.json is runtime-editable and stays in the volume; constants.py
+# is source code and must follow the image.
 #
 # blah2_nodes.json is runtime-editable too, but it also has to be *seedable*:
 # on an existing deployment the volume masks backend/config, so a copy shipped

@@ -28,7 +28,7 @@ RUNTIME_DIR = _BACKEND_DIR / "data" / "runtime"
 # invisible on an existing deployment, because the volume masks the directory.
 _IMAGE_DEFAULTS_DIR = _BACKEND_DIR.parent / "deploy" / "config-image" / "config"
 
-_RUNTIME_FILES = ("tower_config.json", "nodes_config.json", "blah2_nodes.json")
+_RUNTIME_FILES = ("nodes_config.json", "blah2_nodes.json")
 
 logger = logging.getLogger(__name__)
 
@@ -60,11 +60,13 @@ def write_runtime_file(path: Path, content: str) -> None:
     mix. The temp file is a sibling so the rename stays within one filesystem,
     which is what makes it atomic.
 
-    The temp name is unique per call, not just per target. Two endpoints write
-    tower_config.json, so with a shared name one caller's half-written temp file
-    could be renamed into place by the other, putting content on disk that
+    The temp name is unique per call, not just per target. Two endpoints used to
+    write tower_config.json, so with a shared name one caller's half-written temp
+    file could be renamed into place by the other, putting content on disk that
     neither caller validated, and each caller's cleanup would delete the other's
-    file out from under it. The cost of a unique name is that a process killed
+    file out from under it. That pair is gone with the tower stack, but the
+    property is cheap and the next shared target would reintroduce the race
+    silently. The cost of a unique name is that a process killed
     between the write and the rename leaves an orphan behind, where a shared
     name would have been reused by the next write; that is accepted, because an
     unreadable config is worse than a stray file.

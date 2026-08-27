@@ -165,19 +165,20 @@ check_status "GET /api/radar/nodes"         "${BASE_URL}/api/radar/nodes"   "200
 check_status "GET /api/radar/analytics"     "${BASE_URL}/api/radar/analytics" "200"
 check_status "GET /api/test/dashboard"      "${BASE_URL}/api/test/dashboard" "200"
 check_status "GET /api/test/mlat-verification" "${BASE_URL}/api/test/mlat-verification" "200"
-# NOTE: this one no longer reaches the app. BASE_URL is HOST_MAIN, which now
-# proxies /api/config to tower-finder-service — so this asserts the SERVICE's
-# ranking config is readable through the edge. The monolith's own copy, which is
-# what the config_degraded alert is about, is checked on API_URL below.
+# BASE_URL is HOST_MAIN, which proxies /api/config to tower-finder-service, so
+# this asserts the SERVICE's ranking config is readable through the edge. There
+# is no second copy to compare it against any more: the monolith's tower stack
+# was deleted with the proxy dedup.
 check_status "GET /api/config (service)"    "${BASE_URL}/api/config"        "200"
 
 echo ""
 echo "── Dedicated API subdomain (staging-api.retina.fm) ──"
 check_status "staging-api /api/health"      "${API_URL}/api/health"         "200"
-# The api vhost has no /api/config location, so this falls through `location /`
-# to the app — the one edge path left to the monolith's tower_config.json, and
-# the one docs/runbook.md sends an operator to.
-check_status "staging-api /api/config (app)" "${API_URL}/api/config"        "200"
+# Deliberately no /api/config check here: the api vhost has no /api/config
+# location, so the request falls through `location /` to the app, which no
+# longer implements the route (the monolith's tower stack went with the proxy
+# dedup). A 404 there is by design; the route is asserted on the tower vhosts,
+# where it is served.
 
 echo ""
 echo "── Dashboard subdomain (staging-dash.retina.fm) ──"
@@ -238,7 +239,8 @@ for endpoint in "${BASE_URL}/api/towers" "${MAP_URL}/api/towers" \
 done
 # The other half of the seam: a sibling /api/ path on the same vhost is still
 # served by the app. /api/radar/nodes has no counterpart on the service, so a
-# 200 here can only have come from the monolith.
+# 200 here can only have come from the monolith — the proxy must take the three
+# tower routes and nothing else.
 check_status  "sibling /api/ path stays on the app" "${BASE_URL}/api/radar/nodes"            "200"
 
 # The other two deduplicated routes, on a vhost that used to answer them from
@@ -246,18 +248,15 @@ check_status  "sibling /api/ path stays on the app" "${BASE_URL}/api/radar/nodes
 # only assertion about what the service must return, and /api/towers above is
 # where it is made.
 #
-# `elevation_m` is the shared key of both implementations, so this says the
-# route answers, not which one answered. What makes it a seam check is the
-# vhost: dash had no proxy before this, and the monolith would 200 here too —
-# so read it together with the /api/towers contract above, which cannot pass
-# from the monolith.
+# `elevation_m` was the shared key of both implementations back when there were
+# two; the monolith's copy is deleted, so a 200 here can only be the service —
+# through the proxy on a vhost (dash) that had none before the dedup.
 check        "dash /api/elevation answers"  "${DASH_URL}/api/elevation?lat=33.45&lon=-112.07" "elevation_m"
 check_status "dash /api/config answers"     "${DASH_URL}/api/config"                          "200"
-# PUT is the half that genuinely changed hands: the monolith gates it on an
-# admin session and the service on a bearer token, so an unauthenticated PUT
-# must still be refused after the move. 401 (the service's answer) or 403 (the
-# monolith's) — asserting only that neither one is open, since which of the two
-# is correct is exactly what the proxy decides and is asserted above.
+# PUT is the half that genuinely changed hands: the monolith gated it on an
+# admin session, the service gates it on a bearer token, and only the service's
+# handler is left. An unauthenticated PUT must still be refused. 401 or 403 both
+# pass: the point is that no path here is open, not which layer says no.
 printf "  %-40s " "unauthenticated PUT /api/config denied"
 PUT_CODE=$($CURL -o /dev/null -w "%{http_code}" -X PUT -H 'Content-Type: application/json' \
     -d '{}' "${DASH_URL}/api/config" 2>/dev/null) || PUT_CODE="000"

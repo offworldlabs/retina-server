@@ -3,9 +3,11 @@ info:
   title: RETINA node ingest
   version: 1.1.2
   description: |
-    Tower Finder's HTTP API. The paths under `/v1/nodes` are the RETINA node ingest
-    contract, generated from the server and versioned as a unit; everything else is
-    internal to the map, the dashboard and the admin surfaces.
+    The RETINA server's HTTP API. The paths under `/v1/nodes` are the RETINA node
+    ingest contract, generated from the server and versioned as a unit; everything
+    else is internal to the map, the dashboard and the admin surfaces. The tower
+    search this app was named for now lives in tower-finder-service, which every
+    vhost reaches directly through nginx.
 
     ## Error taxonomy
 

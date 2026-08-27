@@ -27,7 +27,7 @@ setup:
     uv venv .venv   # interpreter pinned by backend/.python-version (3.12, matches Dockerfile)
     uv pip install --python "{{py}}" -r requirements.txt -r requirements-dev.txt
     # The fleet (retina-simulation) depends on the other four libs — install all five
-    # editable together or imports fail. (README only needs two for tower search.)
+    # editable together or imports fail.
     uv pip install --python "{{py}}" \
         -e ../libs/retina-geolocator -e ../libs/retina-tracker \
         -e ../libs/retina-custody -e ../libs/retina-analytics \
@@ -190,7 +190,7 @@ up profile="local":
 
     echo
     echo "✓ up [{{profile}}].  Open →  http://testmap.localhost:5173/"
-    echo "  (plain localhost shows tower search — the testmap.* host selects the live map)"
+    echo "  (plain localhost shows the tower-search SPA — its API needs tower-finder-service; the testmap.* host selects the live map)"
     echo "  fleet [{{profile}}]: ${FLEET_NODES} nodes @ ${FLEET_INTERVAL}s/node.  Profiles: local | test (50 fps) | prod (12.5 fps)"
     echo "  logs: just logs    status: just status    stop: just down"
 

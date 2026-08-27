@@ -107,9 +107,13 @@ test.describe("Dashboard — admin API backing (no auth required)", () => {
     await ctx.dispose();
   });
 
+  // On DASH, not API: the dashboard vhost proxies /api/config to
+  // tower-finder-service (snippets/towers-proxy.conf), while the api vhost has
+  // no such location and the app behind it no longer implements the route — the
+  // monolith's tower stack went with the proxy dedup, so API would 404 here.
   test("GET /api/config returns a non-empty config object", async () => {
     const ctx = await playwrightRequest.newContext();
-    const res = await ctx.get(`${API}/api/config`);
+    const res = await ctx.get(`${DASH}/api/config`);
     expect(res.status()).toBe(200);
     const body = await res.json();
     expect(typeof body).toBe("object");

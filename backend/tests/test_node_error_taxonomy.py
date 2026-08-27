@@ -358,26 +358,30 @@ def test_the_rest_of_the_api_keeps_fastapis_shape(node_client):
     `detail`, so a global handler would have been a breaking change to callers
     that never asked for this contract.
     """
-    r = node_client.get("/api/towers")
+    r = node_client.get("/api/data/archive", params={"limit": 0})
 
     assert r.status_code == 422
     assert "detail" in r.json()
     assert "error" not in r.json()
 
 
-def test_an_unhandled_exception_outside_the_prefix_keeps_the_plain_text_500(node_client, monkeypatch):
+def test_an_unhandled_exception_outside_the_prefix_keeps_the_plain_text_500(node_client, monkeypatch, tmp_path):
     """The 5XX handler is scoped like the other two: everywhere else is untouched.
 
-    `GET /api/config` reads `_CONFIG_PATH` off disk with no scoping of its own;
-    pointing it at a file that cannot exist raises `FileNotFoundError` before the
-    handler produces anything, which is a genuine unhandled exception rather
-    than one raised on purpose for the test.
+    `GET /api/stats/summary` reads `_STATS_PATH` off disk with no scoping of its
+    own; pointing it at a directory makes the exists() check pass and the open()
+    raise `IsADirectoryError` before the handler produces anything, which is a
+    genuine unhandled exception rather than one raised on purpose for the test.
+
+    This used to ride on `GET /api/config`, which went with the monolith's tower
+    stack; the handler chosen here has the same property of failing inside its
+    own file read.
     """
-    import routes.config
+    import routes.stats
 
-    monkeypatch.setattr(routes.config, "_CONFIG_PATH", "/nonexistent/does-not-exist.json")
+    monkeypatch.setattr(routes.stats, "_STATS_PATH", str(tmp_path))
 
-    r = node_client.get("/api/config")
+    r = node_client.get("/api/stats/summary")
 
     assert r.status_code == 500
     assert r.headers["content-type"] == "text/plain; charset=utf-8"
