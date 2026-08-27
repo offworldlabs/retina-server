@@ -16,12 +16,26 @@ _TEMPLATE = _REPO / "deploy" / "nginx" / "nginx.conf.template"
 _SMOKE = _REPO / "deploy" / "staging-smoke-test.sh"
 
 # Hostname role -> the staging URL variable the smoke test probes it as.
+#
+# HOST_DASH and HOST_ADMIN joined the list when the tower routes were
+# deduplicated: their `location /api/` used to fall through to the monolith's
+# own copy of the tower stack, which had already diverged from the service's
+# (one Phoenix query, KAET 183.0 MHz on the tower vhosts and KSAZ-TV 195.0 MHz
+# on dash). They serve dashboard/dist and have no tower search UI, so they are
+# here for the routes rather than for a screen.
 _ROLE_TO_SMOKE_VAR = {
     "HOST_MAIN": "BASE_URL",
     "HOST_MAP": "MAP_URL",
     "HOST_TESTMAP": "TESTMAP_URL",
     "HOST_API": "API_URL",
+    "HOST_DASH": "DASH_URL",
+    "HOST_ADMIN": "ADMIN_URL",
 }
+
+# The paths towers-proxy.conf hands to the service. Every vhost that includes it
+# must forward all three: a vhost carrying only some of them is the split-brain
+# this file exists to catch, one route narrower.
+_PROXIED_PATHS = ("/api/towers", "/api/elevation", "/api/config")
 
 
 def _server_blocks(text: str) -> list[str]:
@@ -60,3 +74,42 @@ def test_the_smoke_test_probes_every_routed_vhost(routed_roles):
     expected = {_ROLE_TO_SMOKE_VAR[role] for role in routed_roles if role in _ROLE_TO_SMOKE_VAR}
     missing = expected - probed
     assert not missing, f"routed but never probed by the staging smoke test: {sorted(missing)}"
+
+
+def test_the_smoke_test_defines_every_url_it_is_expected_to_probe():
+    """A probe written against an unset variable expands to a bare path.
+
+    `set -u` would catch it, but only at the line — after every check above it
+    has already reported. Assert the definitions exist instead.
+    """
+    smoke = _SMOKE.read_text()
+    undefined = [var for var in _ROLE_TO_SMOKE_VAR.values() if not re.search(rf"^{var}=", smoke, re.M)]
+    assert not undefined, f"probed by _ROLE_TO_SMOKE_VAR but never assigned in the smoke test: {undefined}"
+
+
+def test_the_shared_snippet_proxies_every_deduplicated_path():
+    """One vhost include must carry the whole tower stack, not just the search.
+
+    /api/elevation and /api/config exist in BOTH implementations. Whichever the
+    vhost happens to reach is the answer it serves, so leaving one of them off
+    this snippet reopens the split-brain on that route alone — quieter than the
+    ranking one, because the shapes match and only the values differ.
+    """
+    snippet = (_TEMPLATE.parent / "snippets" / "towers-proxy.conf").read_text()
+    locations = set(re.findall(r"^location\s+(\S+)\s*\{", snippet, re.M))
+    missing = set(_PROXIED_PATHS) - locations
+    assert not missing, f"towers-proxy.conf does not proxy: {sorted(missing)}"
+
+
+def test_no_exact_match_location_outranks_the_proxied_paths():
+    """`location = /api/config` anywhere would beat this prefix and take the route back.
+
+    Prefix locations are ranked by length, so the /api/ fallback loses to these
+    — but an exact match outranks every prefix regardless of length, and would
+    silently restore the monolith on that one vhost.
+    """
+    text = _TEMPLATE.read_text()
+    for path in _PROXIED_PATHS:
+        assert not re.search(rf"location\s*=\s*{re.escape(path)}\b", text), (
+            f"an exact-match `location = {path}` outranks the towers-proxy prefix"
+        )

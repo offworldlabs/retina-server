@@ -233,6 +233,15 @@ server {
         # RETINA_INCLUDE snippets/api.conf
     }
 
+    # The dashboard vhost answers /api/ from the monolith, which still carries
+    # its own copy of the tower stack — so without this it served a DIFFERENT
+    # ranking from the tower vhosts for the same query. Included here even
+    # though this bundle has no tower search UI of its own: the routes are
+    # reachable, and one path must have one answer per environment.
+    # RETINA_IF TOWER_FINDER
+    # RETINA_INCLUDE snippets/towers-proxy.conf
+    # RETINA_ENDIF
+
     # RETINA_INCLUDE snippets/spa.conf
 }
 
@@ -261,6 +270,14 @@ server {
     location /api/ {
         # RETINA_INCLUDE snippets/api.conf
     }
+
+    # Same reason as ${HOST_DASH} above — and the admin bundle is the surface an
+    # operator reads config from, so it must not be the one showing the stale
+    # copy. Note the dashboard's own config screen calls /api/admin/config/*,
+    # which is NOT under any prefix here and still reaches the monolith.
+    # RETINA_IF TOWER_FINDER
+    # RETINA_INCLUDE snippets/towers-proxy.conf
+    # RETINA_ENDIF
 
     # RETINA_INCLUDE snippets/spa.conf
 }
