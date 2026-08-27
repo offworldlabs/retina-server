@@ -183,6 +183,27 @@ def adsb_derived_fields(rec: dict) -> dict:
     }
 
 
+def node_world(node_id: str) -> str:
+    """Which world this node's echoes come from: "sim" for synthetic/test
+    nodes, "real" for hardware.
+
+    The single authority for the question — known_claiming's world gate, the
+    associator's seed-verification gate (node_world_provider below) and the
+    frame processor's auto-tag filter all key on it, and two resolvers that
+    could disagree would let one consumer accept what another rejects.  The
+    CONFIG handshake's verdict (which honours the node's own is_synthetic
+    claim) wins when the node is registered; a node that never completed the
+    TCP handshake — HTTP ingest, tests — falls back to the same prefix rule
+    the handshake defaults to."""
+    info = connected_nodes.get(node_id)
+    if info is not None and "is_synthetic" in info:
+        return "sim" if info["is_synthetic"] else "real"
+    # Function-local: tcp_handler imports this module at import time.
+    from services.tcp_handler import is_synthetic_node
+
+    return "sim" if is_synthetic_node(node_id) else "real"
+
+
 def _adsb_for_seeding() -> dict[str, dict]:
     """Unlocked snapshot of currently-live ADS-B fixes, in the seeding
     provider contract InterNodeAssociator documents on adsb_provider.
@@ -258,6 +279,10 @@ node_associator = InterNodeAssociator(
     max_pairs_per_round=ASSOC_MAX_PAIRS_PER_ROUND,
     adsb_seed_mode=ADSB_SEED_MODE,
     adsb_provider=_adsb_for_seeding,
+    # The provider's snapshot mixes worlds (see node_world above); the
+    # associator's seed round refuses to verify a node's tag against a state
+    # from the other world.  Counted lib-side as adsb_seed_world_rejects.
+    node_world_provider=node_world,
 )
 
 # ── Per-node tracker pipelines (lazy-created per connecting node) ─────────────

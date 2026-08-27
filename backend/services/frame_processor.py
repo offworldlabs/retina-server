@@ -25,7 +25,7 @@ from services.geo import (
     valid_latlon,
 )
 from services.id_utils import normalize_hex_key as _normalize_hex_key
-from services.known_claiming import _node_world, claim_known_targets, strip_claimed_detections
+from services.known_claiming import claim_known_targets, strip_claimed_detections
 from services.storage import archive_detections
 
 # ── Archive batching ──────────────────────────────────────────────────────────
@@ -370,11 +370,19 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     if state.ADSB_SEED_MODE == "active" and not _pframe.get("adsb"):
         _geo = state.node_associator.node_geometries.get(node_id)
         if _geo is not None:
+            # Own-world states only: this is a cache-wide assignment for a
+            # node with no receiver, so every other-world entry is a decoy
+            # its detections can bind to on a delay/Doppler coincidence —
+            # the same failure known_claiming's world gate closes.  The lib
+            # call is node-agnostic, so the filter lives here with the node
+            # context.  Untagged states pass, matching the gates elsewhere.
+            _nw = state.node_world(node_id)
+            _states = {h: s for h, s in state._adsb_for_seeding().items() if s.get("world") in (None, _nw)}
             _tags = associate_detections_to_adsb(
                 _geo,
                 _pframe.get("delay", []),
                 _pframe.get("doppler", []),
-                state._adsb_for_seeding(),
+                _states,
                 _pframe.get("timestamp", 0),
             )
             if _tags is not None:
@@ -445,7 +453,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
         _ts_ms = int(time.time() * 1000)
         # Same world stamp the TCP fast-path applies — a blah2 node's list is
         # real traffic, a test frame's is simulated; claiming keys on it.
-        _world = _node_world(node_id)
+        _world = state.node_world(node_id)
         for _ae in _adsb_list:
             if not isinstance(_ae, dict):
                 continue
