@@ -30,6 +30,16 @@ and Doppler are two numbers a wrong aircraft can match by coincidence, so a
 cached state whose dead-reckoned position falls outside the node's detection
 area is no candidate at all, whatever its residuals say.  Node tags (path 1)
 carry the node's own evidence that it saw the aircraft and stay ungated.
+
+A path-2 candidate must also come from the node's own WORLD.  The ADS-B cache
+is fed by simulated aircraft and by real traffic (hardware receivers, the
+simulator's adsb.lol relay) alike, and when real traffic flies over the same
+footprint the simulated fleet occupies, the visibility gate passes it
+trivially — every real aircraft becomes a decoy the assignment can bind a
+synthetic echo to, and each such bind puts a plane icon on the map at a
+position no radar in either world measured.  Entries carry a "world" tag
+("sim"/"real") stamped where they are written; claiming skips candidates
+tagged with the other world and counts them (known_claims_world_rejects).
 """
 
 import logging
@@ -108,6 +118,24 @@ def _reset_for_tests() -> None:
     global _node_bias_mod, _node_bias_unavailable
     _node_bias_mod = None
     _node_bias_unavailable = False
+
+
+def _node_world(node_id: str) -> str:
+    """Which world this node's echoes come from: "sim" for synthetic/test
+    nodes, "real" for hardware.
+
+    The CONFIG handshake's verdict (which honours the node's own is_synthetic
+    claim) wins when the node is registered; a node that never completed the
+    TCP handshake — HTTP ingest, tests driving process_one_frame directly —
+    falls back to the same prefix rule the handshake defaults to."""
+    info = state.connected_nodes.get(node_id)
+    if info is not None and "is_synthetic" in info:
+        return "sim" if info["is_synthetic"] else "real"
+    # Function-local for the same reason analytics_refresh imports it this
+    # way: tcp_handler sits above the frame path in the import graph.
+    from services.tcp_handler import is_synthetic_node
+
+    return "sim" if is_synthetic_node(node_id) else "real"
 
 
 def _gate_scale(age_s: float) -> float:
@@ -261,6 +289,8 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
     if free:
         cands = []
         visibility_rejects = 0
+        world_rejects = 0
+        node_world = _node_world(node_id)
         # Prescreen constants, hoisted: geo is fixed for the whole loop, and
         # these cost a haversine and a cos each.  See the prescreen below.
         screen_r0_km = geo.effective_radius_km * _SCREEN_MARGIN
@@ -275,6 +305,20 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
         screen_km_per_lon = km_per_deg_lon(abs(geo.rx_lat) + screen_r_max_km / KM_PER_DEG_LAT)
         for hexn, st in state._adsb_for_seeding().items():
             if hexn in claimed_hexes:
+                continue
+            # World gate: a synthetic node's echoes can only ever be of
+            # simulated aircraft, and a hardware node's only of real ones, so
+            # a candidate from the other world is no candidate whatever its
+            # residuals say — delay/Doppler are two numbers a wrong aircraft
+            # matches by coincidence, and the visibility gate cannot help
+            # when real traffic is injected over the same footprint the
+            # simulated fleet flies in.  Untagged entries pass: no writer in
+            # this tree leaves world unset, so an untagged entry is prior
+            # state (tests, a not-yet-updated pusher) where rejecting would
+            # silently disable the lane rather than fail toward dark.
+            cand_world = st.get("world")
+            if cand_world is not None and cand_world != node_world:
+                world_rejects += 1
                 continue
             age_s = frame_ts_s - st.get("timestamp_ms", 0) / 1000.0
             if abs(age_s) > KNOWN_CLAIM_MAX_FIX_AGE_S:
@@ -343,6 +387,8 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
         # that runs for every frame every node sends.
         if visibility_rejects:
             state.bump_counter("known_claims_visibility_rejects", visibility_rejects)
+        if world_rejects:
+            state.bump_counter("known_claims_world_rejects", world_rejects)
 
         if cands:
             cost = np.full((len(free), len(cands)), _GATE_INFEASIBLE)

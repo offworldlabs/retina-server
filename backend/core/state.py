@@ -218,6 +218,9 @@ def _adsb_for_seeding() -> dict[str, dict]:
             "gs": rec.get("gs", 0),
             "track": rec.get("track", 0),
             "flight": rec.get("flight", ""),
+            # Carried so the degraded copy keeps claiming's world gate honest;
+            # absent on the source record stays absent (= ungated) here too.
+            **({"world": rec["world"]} if "world" in rec else {}),
             **adsb_derived_fields(rec),
         }
     return out
@@ -448,6 +451,11 @@ known_claims_bound: int = 0
 # Path-2 candidates dropped because the node cannot see the dead-reckoned
 # position of the cached aircraft (outside its beam or beyond its footprint).
 known_claims_visibility_rejects: int = 0
+# Path-2 candidates dropped because they belong to the other world — a
+# synthetic node offered a real aircraft (or a hardware node a simulated
+# one).  Sustained nonzero on a hardware-only deployment means mistagged
+# entries, not decoys.
+known_claims_world_rejects: int = 0
 # Claiming-stage exceptions absorbed by frame_processor's fail-open guard.
 # Nonzero means the known lane is broken and silently contributing nothing.
 known_claims_errors: int = 0
@@ -660,7 +668,7 @@ def _reset_for_tests() -> None:
     global frames_dropped, frames_processed, solver_successes, solver_failures
     global adsb_seed_frames_autotagged
     global known_claims_made, known_claim_contentions, known_claims_bound
-    global known_claims_errors, known_claims_visibility_rejects
+    global known_claims_errors, known_claims_visibility_rejects, known_claims_world_rejects
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
     global coverage_rebuild_backlog
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
@@ -746,6 +754,7 @@ def _reset_for_tests() -> None:
         adsb_seed_frames_autotagged = 0
         known_claims_made = known_claim_contentions = known_claims_bound = 0
         known_claims_errors = known_claims_visibility_rejects = 0
+        known_claims_world_rejects = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
         coverage_rebuild_backlog = 0
         solver_stale_drops = 0

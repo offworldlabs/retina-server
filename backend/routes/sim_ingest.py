@@ -115,11 +115,21 @@ async def sim_push_adsb_positions(body: dict = Body(...), _key=Depends(_verify_s
 
     This keeps each aircraft's position current at 1 Hz regardless of how many
     nodes happen to observe it in a given frame interval.
+
+    The optional body field "source" declares which world the positions belong
+    to: "real" for the simulator's adsb.lol relay of live traffic, anything
+    else (including absent — every simulator before the tag existed) for the
+    simulated fleet itself.  Claiming keys on the stored "world" tag so a
+    synthetic node cannot bind its echoes to a relayed real aircraft: with
+    both populations in one cache over one footprint, every real aircraft is
+    a decoy whose delay/Doppler a wrong echo matches by coincidence, and each
+    such bind put a plane icon on the map that no radar ever measured.
     """
     ts_ms = body.get("ts_ms", int(time.time() * 1000))
     aircraft_list = body.get("aircraft", [])
     if not isinstance(aircraft_list, list):
         raise HTTPException(status_code=400, detail="aircraft list required")
+    world = "real" if body.get("source") == "real" else "sim"
 
     updated = 0
     rejected = 0
@@ -148,6 +158,7 @@ async def sim_push_adsb_positions(body: dict = Body(...), _key=Depends(_verify_s
             "gs": ac.get("gs", 0),
             "track": ac.get("track", 0),
             "last_seen_ms": ts_ms,
+            "world": world,
         }
         # Derived once here, not per read — see state.adsb_derived_fields.
         # Published only after it is complete: readers snapshot unlocked.

@@ -895,6 +895,7 @@ def _solver_window_stats(minutes: float) -> dict:
         kc_contentions = state.known_claim_contentions
         kc_bound = state.known_claims_bound
         kc_visibility_rejects = state.known_claims_visibility_rejects
+        kc_world_rejects = state.known_claims_world_rejects
         kc_errors = state.known_claims_errors
 
     return {
@@ -973,6 +974,7 @@ def _solver_window_stats(minutes: float) -> dict:
             "contentions": kc_contentions,
             "bound": kc_bound,
             "visibility_rejects": kc_visibility_rejects,
+            "world_rejects": kc_world_rejects,
             "errors": kc_errors,
         },
         "fragmentation": {

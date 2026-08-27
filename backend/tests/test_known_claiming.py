@@ -53,7 +53,7 @@ def _register(node_id=_NODE_ID):
     return state.node_associator.node_geometries[node_id]
 
 
-def _cache_state(hexn, ts_ms, lat=_LAT, lon=_LON, alt_baro=_ALT_BARO_FT, gs=0, track=0):
+def _cache_state(hexn, ts_ms, lat=_LAT, lon=_LON, alt_baro=_ALT_BARO_FT, gs=0, track=0, world=None):
     state.adsb_aircraft[hexn] = {
         "hex": hexn,
         "lat": lat,
@@ -63,6 +63,9 @@ def _cache_state(hexn, ts_ms, lat=_LAT, lon=_LON, alt_baro=_ALT_BARO_FT, gs=0, t
         "track": track,
         "flight": "TST1",
         "last_seen_ms": ts_ms,
+        # None models an untagged entry (prior state, an old pusher) — the
+        # world gate must let those through, so most tests leave it unset.
+        **({"world": world} if world is not None else {}),
     }
 
 
@@ -760,3 +763,84 @@ class TestStripAndGc:
         prune_stale_stores(now)
         assert "fresh1" in state.known_claims
         assert "stale1" not in state.known_claims
+
+
+class TestWorldGate:
+    """Path-2 candidates must come from the claiming node's own world.
+
+    The cache mixes simulated transponders with real traffic (hardware
+    receivers, the simulator's adsb.lol relay) over one footprint, so the
+    visibility gate cannot tell a decoy from a candidate — measured live
+    2026-08-27: 35% of synthetic-node adsb_single_node icons were real
+    aircraft no simulated radar ever detected."""
+
+    def test_sim_node_skips_a_real_world_candidate(self):
+        geo = _register()  # test-* prefix → sim world
+        ts = int(time.time() * 1000)
+        _cache_state("decoy1", ts, world="real")
+        pd, pf = _stationary_pred(geo)
+
+        assert kc.claim_known_targets(_NODE_ID, _frame(ts, [pd], [pf])) == set()
+        assert state.known_claims == {}
+        assert state.known_claims_world_rejects == 1
+
+    def test_sim_node_claims_a_sim_world_candidate(self):
+        geo = _register()
+        ts = int(time.time() * 1000)
+        _cache_state("simown", ts, world="sim")
+        pd, pf = _stationary_pred(geo)
+
+        assert kc.claim_known_targets(_NODE_ID, _frame(ts, [pd], [pf])) == {0}
+        assert state.known_claims_world_rejects == 0
+
+    def test_real_node_skips_a_sim_world_candidate(self):
+        """The reverse direction: a hardware node's echoes are of real
+        aircraft, so a simulated transponder is no candidate for them."""
+        node_id = "hw-atl-1"  # no synthetic prefix → real world
+        geo = _register(node_id)
+        ts = int(time.time() * 1000)
+        _cache_state("simdec", ts, world="sim")
+        pd, pf = _stationary_pred(geo)
+
+        assert kc.claim_known_targets(node_id, _frame(ts, [pd], [pf])) == set()
+        assert state.known_claims_world_rejects == 1
+
+    def test_untagged_candidate_is_not_gated(self):
+        """No writer in this tree leaves world unset, so an untagged entry is
+        prior state or an old pusher — rejecting it would silently disable
+        the lane rather than fail toward dark."""
+        geo = _register()
+        ts = int(time.time() * 1000)
+        _cache_state("legacy", ts)  # no world key
+        pd, pf = _stationary_pred(geo)
+
+        assert kc.claim_known_targets(_NODE_ID, _frame(ts, [pd], [pf])) == {0}
+        assert state.known_claims_world_rejects == 0
+
+    def test_node_tag_is_not_world_gated(self):
+        """Path 1 stays ungated for the same reason it skips the visibility
+        gate: the tag is the node's own evidence, whatever the cache says."""
+        _register()
+        ts = int(time.time() * 1000)
+        _cache_state("tagged", ts, world="real")
+        tag = {"hex": "tagged", "lat": _LAT, "lon": _LON, "alt_baro": _ALT_BARO_FT, "gs": 0, "track": 0}
+
+        assert kc.claim_known_targets(_NODE_ID, _frame(ts, [50.0], [10.0], adsb=[tag])) == {0}
+        assert state.known_claims_world_rejects == 0
+
+    def test_handshake_verdict_beats_the_prefix_rule(self):
+        """A node whose CONFIG declared is_synthetic=True is a sim node even
+        without a synthetic id prefix — the handshake honours the node's own
+        claim, and _node_world must agree with it."""
+        node_id = "oddly-named-sim-node"
+        with state.connected_nodes_lock:
+            state.connected_nodes[node_id] = {"is_synthetic": True}
+        try:
+            assert kc._node_world(node_id) == "sim"
+        finally:
+            with state.connected_nodes_lock:
+                state.connected_nodes.pop(node_id, None)
+
+    def test_unregistered_node_falls_back_to_the_prefix_rule(self):
+        assert kc._node_world("synth-GVL-0001") == "sim"
+        assert kc._node_world("radar3-retnode") == "real"
