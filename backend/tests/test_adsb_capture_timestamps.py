@@ -282,26 +282,25 @@ class TestOpenSkyCaptureTime:
 
 
 class TestAdsbLolCaptureTime:
-    def test_seen_pos_is_resolved_to_an_absolute_capture_stamp(self, monkeypatch):
-        """tar1090's seen_pos is an age in seconds, not a timestamp."""
-        _stub_adsb_lol(monkeypatch, [_lol_ac(seen_pos=12.0)])
+    def test_the_rows_capture_time_is_carried_through(self, monkeypatch):
+        """The client resolves seen_pos against its own fetch; this reads it."""
+        captured_at = time.time() - 12.0
+        _stub_adsb_lol(monkeypatch, [_lol_ac(captured_at=captured_at)])
 
-        now = time.time()
         cache = asyncio.run(_fetch_adsb_lol(48.0, 16.0))
 
-        captured_s = cache["abc123"]["last_seen_ms"] / 1000
-        assert 11.0 < now - captured_s < 13.5, f"expected ~12 s of age, got {now - captured_s:.1f} s"
+        assert cache["abc123"]["last_seen_ms"] == int(captured_at * 1000)
 
-    def test_poll_time_stands_in_when_the_aircraft_carries_no_seen_pos(self, monkeypatch):
-        _stub_adsb_lol(monkeypatch, [_lol_ac(seen_pos=None)])
+    def test_poll_time_stands_in_when_the_row_carries_no_capture_time(self, monkeypatch):
+        _stub_adsb_lol(monkeypatch, [_lol_ac()])
 
         now = time.time()
         cache = asyncio.run(_fetch_adsb_lol(48.0, 16.0))
 
         assert abs(cache["abc123"]["last_seen_ms"] / 1000 - now) < 2.0
 
-    def test_the_client_passes_seen_pos_through(self):
-        """The client's whitelist drops any field it does not name."""
+    def test_the_client_resolves_seen_pos_at_fetch_time(self):
+        """An age is only meaningful against the fetch that produced the row."""
         payload = {"ac": [{"hex": "abc123", "lat": 48.0, "lon": 16.0, "seen_pos": 7.5}]}
         client = AdsbLolClient([{"name": "a", "lat": 48.0, "lon": 16.0}])
 
@@ -309,4 +308,4 @@ class TestAdsbLolCaptureTime:
             urlopen.return_value.__enter__.return_value.read.return_value = json.dumps(payload).encode()
             aircraft = client.fetch_area(client.areas[0])
 
-        assert aircraft[0]["seen_pos"] == 7.5
+        assert time.time() - aircraft[0]["captured_at"] == pytest.approx(7.5, abs=2.0)

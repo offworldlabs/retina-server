@@ -11,6 +11,8 @@ import logging
 import time
 import urllib.request
 
+from config.constants import is_num
+
 log = logging.getLogger(__name__)
 
 _BASE = "https://api.adsb.lol/v2"
@@ -61,6 +63,10 @@ class AdsbLolClient:
             req = urllib.request.Request(url, headers={"Accept": "application/json"})
             with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
                 data = json.loads(resp.read())
+            # Wall clock, not the monotonic `now` above: this leaves the rows as
+            # an absolute capture time, which is the only form that survives
+            # being served again from _last_good on a later, failed fetch.
+            fetched_at = time.time()
             aircraft = data.get("ac", [])
             result = []
             for ac in aircraft:
@@ -68,6 +74,12 @@ class AdsbLolClient:
                 lon_v = ac.get("lon")
                 if lat_v is None or lon_v is None:
                     continue
+                # tar1090's seen_pos is an age, meaningful only against the
+                # fetch that produced the row.  Resolve it here, where that
+                # fetch time is known: _last_good serves these rows again on a
+                # later failed fetch, and a relative age would read as fresh.
+                seen_pos = ac.get("seen_pos")
+                captured_at = fetched_at - seen_pos if is_num(seen_pos) else fetched_at
                 result.append(
                     {
                         "hex": ac.get("hex", ""),
@@ -77,10 +89,7 @@ class AdsbLolClient:
                         "alt_baro": ac.get("alt_baro") or 0,
                         "gs": ac.get("gs") or 0,
                         "track": ac.get("track") or 0,
-                        # Seconds since this position was measured, which is
-                        # what lets a consumer age the fix rather than assume
-                        # it is as fresh as the fetch.  Absent on some rows.
-                        "seen_pos": ac.get("seen_pos"),
+                        "captured_at": captured_at,  # epoch seconds
                         "squawk": ac.get("squawk", ""),
                         "category": ac.get("category", ""),
                         "type": ac.get("type", "adsb_icao"),

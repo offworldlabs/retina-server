@@ -17,7 +17,7 @@ import pytest
 from retina_analytics.reputation import NodeReputation
 from retina_analytics.trust import AdsReportEntry
 
-from config.constants import XVAL_MAX_AGE_S
+from config.constants import ADSB_TRUTH_INTERVAL_S, XVAL_MAX_AGE_S
 from core import state
 from services.tasks.periodic import _cross_validate_adsb_reports
 
@@ -141,19 +141,29 @@ class TestNullIsland:
 
 
 class TestOneVotePerSample:
-    def test_a_sample_is_not_re_penalised_on_the_next_cycle(self):
-        """The function rescans samples[-10:] every cycle.  Re-judging them
-        is what turns one bad fix into a block: the threshold is 0.2 from a
-        start of 1.0, and each mismatch costs 0.1."""
+    def test_a_sample_ages_out_before_the_next_cycle_could_rejudge_it(self):
+        """This rescans samples[-10:] every cycle, so re-judging is what would
+        turn one bad fix into a block (0.1 a time against a 0.2 threshold).
+        Nothing tracks which samples have been seen; the guarantee is that the
+        admission window is far shorter than the gap between cycles, so pin
+        that rather than the bookkeeping it replaces."""
         rep = _reputation()
         _truth(age_s=1.0)
         _report(*_CLAIM_FAR, age_s=1.0)
-
         _cross_validate_adsb_reports()
         after_first = rep.reputation
+
+        # The next cycle is ADSB_TRUTH_INTERVAL_S away at the very least.
+        _truth(age_s=1.0)
+        for sample in state.node_analytics.trust_scores[_NODE].samples:
+            sample.timestamp_ms -= int(ADSB_TRUTH_INTERVAL_S * 1000)
         _cross_validate_adsb_reports()
 
         assert rep.reputation == after_first
+
+    def test_the_window_is_shorter_than_the_cycle(self):
+        """The coupling the test above relies on, stated once."""
+        assert XVAL_MAX_AGE_S < ADSB_TRUTH_INTERVAL_S
 
     def test_a_new_divergent_sample_still_counts(self):
         """The de-duplication must not also mute genuinely new evidence."""

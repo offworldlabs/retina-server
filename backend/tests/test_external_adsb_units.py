@@ -13,9 +13,9 @@ import asyncio
 import pytest
 
 from clients.adsb_lol import AdsbLolClient
+from config.constants import KNOTS_TO_MS as _KNOTS_TO_MS
 from services.tasks.periodic import _fetch_adsb_lol, _opensky_entry
 
-_KNOTS_TO_MS = 0.514444
 # One speed, expressed the way each feed expresses it.
 _CRUISE_KNOTS = 450.0
 _CRUISE_MS = _CRUISE_KNOTS * _KNOTS_TO_MS

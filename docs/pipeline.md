@@ -185,16 +185,28 @@ When a geolocated track has an `adsb_hex` and there's a fresh ADS-B fix in
 ADS-B entries expire 60 s after the position was *captured*, which is the
 timestamp on the frame that carried it rather than the moment the backend
 stored it. The two differ under queue backlog, and it is the capture time that
-the staleness gates need. Where a frame carries no usable timestamp, or one
-more than `ADSB_CAPTURE_MAX_SKEW_S` from server time, receipt time stands in
-and `adsb_capture_ts_fallback` counts it. After expiry the aircraft falls back
-to the solver position.
+the staleness gates need. Where a frame carries no usable timestamp, receipt
+time stands in and `adsb_capture_ts_fallback` counts it. The bound is
+asymmetric: a frame may be `ADSB_CAPTURE_MAX_SKEW_S` behind server time,
+because backlog makes that honest, but only `ADSB_CAPTURE_MAX_LEAD_S` ahead,
+because a stamp in the future is never stale to any gate. After expiry the
+aircraft falls back to the solver position.
+
+Records also carry `recv_ms`, the server clock at the moment the position was
+stored. Rules that compare a fix against another server-stamped event need
+that one: `record_adsb_calibration` bounds the fix against the node's last
+detection, and comparing a node-clock stamp against a server-clock one would
+make that an NTP test rather than a co-timing test. Writes are guarded so a
+replayed or backlogged frame cannot walk `last_seen_ms` backwards.
 
 External truth (`state.external_adsb_cache`, polled from adsb.lol) is stamped
-the same way, from each feed's own position time, and stays servable for
-`EXTERNAL_ADSB_MAX_AGE_S`. Its entries are therefore tens of seconds old by
-construction and are refused by the tighter gates, calibration's 10 s among
-them.
+the same way, from each feed's own position time. `AdsbLolClient` resolves
+tar1090's `seen_pos` against its own fetch and publishes an absolute
+`captured_at`, so a row it serves again from its last-good cache during an
+outage keeps its real age. Entries stay servable for `EXTERNAL_ADSB_MAX_AGE_S`
+and are therefore tens of seconds old by construction, so the tighter gates
+refuse them, calibration's 10 s among them. Consumers scoring solves against
+them apply `EXTERNAL_TRUTH_MAX_AGE_S` instead, which is tighter again.
 
 ---
 

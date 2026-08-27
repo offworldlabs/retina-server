@@ -10,7 +10,13 @@ import time
 import numpy as np
 import orjson
 
-from config.constants import ANALYTICS_REFRESH_INTERVAL_S, CLAIMED_DISPLAY_FRESH_S, as_num, is_num
+from config.constants import (
+    ANALYTICS_REFRESH_INTERVAL_S,
+    CLAIMED_DISPLAY_FRESH_S,
+    EXTERNAL_TRUTH_MAX_AGE_S,
+    as_num,
+    is_num,
+)
 from config.constants import (
     DELAY_MATCH_THRESHOLD_US as _DELAY_MATCH_THRESHOLD_US,
 )
@@ -573,7 +579,7 @@ def _refresh_missed_detections(nodes_snapshot: list):
         adsb_snapshot.append((hex_code, lat, lon))
         seen_hexes.add(hex_code.lower())
 
-    for hex_code, entry in list(state.external_adsb_cache.items()):
+    for hex_code, entry in _external_truth_entries(now):
         lat = entry.get("lat")
         lon = entry.get("lon")
         if lat is None or lon is None:
@@ -841,6 +847,21 @@ def _velocity_accuracy() -> dict:
     return out
 
 
+def _external_truth_entries(now: float):
+    """External ADS-B entries young enough to be treated as truth.
+
+    The poller's prune bounds how long an entry survives, but it runs on the
+    fetch cadence, so between cycles the cache still holds entries far past
+    what a consumer scoring solves should accept.  Entries carry their own
+    capture time; this is the one place that reads it on their behalf.
+    """
+    for hex_code, entry in list(state.external_adsb_cache.items()):
+        ts_ms = entry.get("last_seen_ms")
+        if not ts_ms or abs(now - ts_ms / 1000) > EXTERNAL_TRUTH_MAX_AGE_S:
+            continue
+        yield hex_code, entry
+
+
 def _refresh_node_verification(node_id: str):
     """Compare one node's detections to ADS-B truth via bistatic delay matching."""
     node_tracks = []
@@ -879,7 +900,7 @@ def _refresh_node_verification(node_id: str):
         adsb_candidates.append((adsb_hex, entry))
         seen_adsb_hexes.add(adsb_hex)
 
-    for adsb_hex, entry in list(state.external_adsb_cache.items()):
+    for adsb_hex, entry in _external_truth_entries(now):
         if not _valid_latlon(entry.get("lat"), entry.get("lon")):
             continue
         if adsb_hex not in seen_adsb_hexes:
@@ -1319,13 +1340,12 @@ def _refresh_mlat_verification():
     # Fallback 2: OpenSky / external ADS-B snapshot — same pattern as
     # _refresh_node_verification().  Useful when the live ADS-B injector
     # is in its rate-limit backoff window (up to 300 s).
-    for adsb_hex, entry in list(state.external_adsb_cache.items()):
+    for adsb_hex, entry in _external_truth_entries(now):
         if not _valid_latlon(entry.get("lat"), entry.get("lon")):
             continue
         if adsb_hex not in seen_truth_hexes:
-            # external_adsb_cache schema is {lat, lon, alt_m, velocity,
-            # heading} (periodic.py) — NOT the tar1090 gs/alt_baro schema.
-            # Reading gs/alt_baro here zeroed every external truth entry.
+            # external_adsb_cache carries alt_m/velocity in SI (periodic.py),
+            # not the tar1090 alt_baro/gs schema this function otherwise reads.
             gs_ms = float(entry["velocity"] if entry.get("velocity") is not None else (entry.get("gs") or 0) * 0.514444)
             alt_m = float(entry["alt_m"] if entry.get("alt_m") is not None else as_num(entry.get("alt_baro")) * 0.3048)
             adsb_truth_pool.append(

@@ -292,13 +292,14 @@ OPENSKY_BUFFER_DEG = 1.0  # lat/lon margin for OpenSky bbox (degrees)
 # elapsed time.  Tight enough that the check only fires on samples captured near
 # a poll — widening it means dead-reckoning the entry first, not a bigger number.
 XVAL_MAX_AGE_S = 15.0
-# How far a node's frame timestamp may sit from ours before we stop believing
-# it and stamp receipt time instead.  A frame is genuinely older than its
-# arrival under queue backlog, and reporting that is the point, so the bound is
-# wide enough not to mistake backlog for skew.  Past it the node's clock is
-# broken rather than late: an unbelieved stamp costs the honesty this buys,
-# but a stamp minutes into the future is never stale to any gate at all.
+# How far behind us a node's frame timestamp may sit and still be believed.
+# Backlog makes a frame genuinely older than its arrival, and reporting that is
+# the point, so this is wide enough not to mistake backlog for a broken clock.
 ADSB_CAPTURE_MAX_SKEW_S = 300.0
+# How far ahead of us it may sit.  Tight, and deliberately not symmetric with
+# the above: a stamp in the future is not stale to any gate and never becomes
+# so, so only network and scheduling jitter is allowed for.
+ADSB_CAPTURE_MAX_LEAD_S = 2.0
 # How long an external ADS-B entry stays servable after its own capture time.
 # Derived, not chosen: a rate-limited poll cycle is already
 # ADSB_TRUTH_INTERVAL_S + ADSB_BACKOFF_S apart, so anything tighter would blank
@@ -306,6 +307,11 @@ ADSB_CAPTURE_MAX_SKEW_S = 300.0
 # is an upper bound on how long an outage can go on serving last-good data, not
 # a freshness claim: entries carry their true age and every consumer gates on it.
 EXTERNAL_ADSB_MAX_AGE_S = ADSB_TRUTH_INTERVAL_S + ADSB_BACKOFF_S + 180
+# Oldest external entry a consumer scoring solves will treat as truth.  Much
+# tighter than the retention bound above, which only says when the poller stops
+# holding an entry at all: at 250 m/s a 120 s fix is 30 km from the aircraft,
+# and verification reports the difference as node error.
+EXTERNAL_TRUTH_MAX_AGE_S = 120.0
 
 # ── Admin / ops ──────────────────────────────────────────────────────────────
 EVENT_LOG_MAX = 2000  # Event log buffer capacity

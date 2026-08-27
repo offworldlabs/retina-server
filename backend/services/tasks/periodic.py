@@ -12,10 +12,13 @@ from config.constants import (
     ARCHIVE_FLUSH_INTERVAL_S,
     ARCHIVE_LIFECYCLE_INTERVAL_S,
     EXTERNAL_ADSB_MAX_AGE_S,
+    FT_TO_M,
     KNOTS_TO_MS,
     OPENSKY_BUFFER_DEG,
     REPUTATION_INTERVAL_S,
     XVAL_MAX_AGE_S,
+    as_num,
+    is_num,
 )
 from core import state
 from services.frame_processor import flush_all_archive_buffers
@@ -23,15 +26,12 @@ from services.geo import haversine_km
 
 _opensky_client: httpx.AsyncClient | None = None
 _adsb_lol_client: object | None = None
-# node_id → newest sample timestamp already cross-validated, so a sample is
-# charged at most once.  In memory only: losing it on restart re-judges at
-# most the last ten samples, and the age gate discards them anyway.
-_xval_judged_through: dict[str, int] = {}
 
 
 def _reset_for_tests() -> None:
     """Restore this module's private state to boot values.  Tests only."""
-    _xval_judged_through.clear()
+    global _adsb_lol_client
+    _adsb_lol_client = None
 
 
 async def close_http_clients() -> None:
@@ -145,9 +145,8 @@ def prune_external_adsb_cache() -> int:
 
     Both fetch paths replace state.external_adsb_cache wholesale, so nothing
     else ever removes an entry: without this a stalled feed keeps serving its
-    last good snapshot for as long as the outage lasts.  Unstamped entries go
-    too — only a pre-upgrade snapshot has them, and an entry that cannot be
-    aged cannot be trusted.
+    last good snapshot for as long as the outage lasts.  An entry that cannot
+    be aged goes too, since nothing can judge it.
     """
     cutoff_ms = (time.time() - EXTERNAL_ADSB_MAX_AGE_S) * 1000
     stale = [
@@ -159,17 +158,26 @@ def prune_external_adsb_cache() -> int:
 
 
 async def _adsb_truth_cycle() -> bool:
-    """One fetch-then-age cycle.  Returns True if OpenSky rate-limited us.
+    """One fetch, then age, then cross-validate.  True if OpenSky rate-limited us.
 
-    The prune is outside the fetch deliberately: _fetch_external_adsb returns
-    early when no real node is connected, and those are exactly the runs after
-    which a stale cache would otherwise sit untouched.
+    Ageing and cross-validation sit outside the fetch, in a finally, for three
+    reasons: _fetch_external_adsb returns early when no real node is connected,
+    and those are exactly the runs after which a stale cache would otherwise sit
+    untouched; a fault inside cross-validation must not read as an OpenSky
+    failure and churn the connection pool; and it must run exactly once per
+    cycle, which is what lets the age gate below double as the guarantee that
+    no sample is judged twice.
     """
-    rate_limited = await _fetch_external_adsb()
-    dropped = prune_external_adsb_cache()
-    if dropped:
-        logging.debug("external ADS-B cache: dropped %d stale entries", dropped)
-    return rate_limited
+    try:
+        return await _fetch_external_adsb()
+    finally:
+        dropped = prune_external_adsb_cache()
+        if dropped:
+            logging.debug("external ADS-B cache: dropped %d stale entries", dropped)
+        try:
+            _cross_validate_adsb_reports()
+        except Exception:
+            logging.exception("ADS-B cross-validation failed")
 
 
 async def adsb_truth_fetcher():
@@ -186,6 +194,18 @@ async def adsb_truth_fetcher():
             logging.exception("External ADS-B fetch failed")
 
 
+def _capture_ms(captured: float, poll_ts: float) -> int:
+    """A feed's capture time as epoch ms, clamped to the poll.
+
+    A stamp ahead of the poll is never older than any budget, so it would sit
+    in the cache until a fetch happened to replace the whole dict, and reach
+    the cross-validator as current truth.  Feed values are input like any other.
+    """
+    if not is_num(captured) or captured > poll_ts:
+        return int(poll_ts * 1000)
+    return int(captured * 1000)
+
+
 def _opensky_entry(s: list, poll_ts: float) -> dict | None:
     """One OpenSky state vector as an external_adsb_cache entry, or None.
 
@@ -193,21 +213,18 @@ def _opensky_entry(s: list, poll_ts: float) -> dict | None:
     7 baro_altitude (m), 9 velocity (m/s), 10 true_track.
 
     time_position is when the position was measured, and is null for a row
-    whose last contact carried no position.  Only then does the poll stand in,
-    which is a bounded ADSB_TRUTH_INTERVAL_S of error rather than the
-    unbounded kind an unstamped entry used to carry downstream.
+    whose last contact carried no position; the poll stands in for those.
     """
     lon_val, lat_val, alt_val = s[5], s[6], s[7]
     if lat_val is None or lon_val is None:
         return None
-    ts_pos = s[3] if len(s) > 3 and s[3] else None
     return {
         "lat": lat_val,
         "lon": lon_val,
         "alt_m": alt_val or 0,
         "velocity": s[9] if len(s) > 9 else None,
         "heading": s[10] if len(s) > 10 else None,
-        "last_seen_ms": int((ts_pos if ts_pos is not None else poll_ts) * 1000),
+        "last_seen_ms": _capture_ms(s[3], poll_ts),
     }
 
 
@@ -246,6 +263,7 @@ async def _fetch_external_adsb() -> bool:
     opensky_failed = False
     rate_limited = False
     url = "https://opensky-network.org/api/states/all"
+    poll_ts = time.time()
     global _opensky_client
     if _opensky_client is None or _opensky_client.is_closed:
         _opensky_client = httpx.AsyncClient(timeout=15.0)
@@ -270,7 +288,6 @@ async def _fetch_external_adsb() -> bool:
             states = data.get("states", [])
             if states:
                 now_cache = {}
-                poll_ts = time.time()
                 for s in states:
                     icao = s[0] if s[0] else None
                     if not icao:
@@ -280,7 +297,6 @@ async def _fetch_external_adsb() -> bool:
                         now_cache[icao] = entry
                 state.external_adsb_cache = now_cache
                 logging.debug("OpenSky: cached %d aircraft positions", len(now_cache))
-                _cross_validate_adsb_reports()
                 return False
             opensky_failed = True
     except Exception:
@@ -297,11 +313,11 @@ async def _fetch_external_adsb() -> bool:
     # ── Fallback: adsb.lol ────────────────────────────────────────────────────
     if opensky_failed:
         try:
-            fallback_cache = await _fetch_adsb_lol(lat_center, lon_center)
-            if fallback_cache:
-                state.external_adsb_cache = fallback_cache
-                logging.debug("adsb.lol fallback: cached %d aircraft positions", len(fallback_cache))
-                _cross_validate_adsb_reports()
+            # Assigned even when empty: the client evicts its own last-good
+            # cache past _CACHE_MAX_AGE_S, and keeping the previous dict there
+            # would chain the two budgets instead of bounding them.
+            state.external_adsb_cache = await _fetch_adsb_lol(lat_center, lon_center)
+            logging.debug("adsb.lol fallback: cached %d aircraft positions", len(state.external_adsb_cache))
         except Exception:
             logging.warning("adsb.lol fallback also failed — external ADS-B cache may be stale")
 
@@ -311,7 +327,9 @@ async def _fetch_external_adsb() -> bool:
 async def _fetch_adsb_lol(lat: float, lon: float) -> dict:
     """Fetch aircraft positions from adsb.lol centered on lat/lon.
 
-    Returns {hex: {lat, lon, alt_m, velocity, heading}} matching external_adsb_cache format.
+    Returns {hex: {lat, lon, alt_m, velocity, heading, last_seen_ms}} in
+    external_adsb_cache format.  velocity is m/s; last_seen_ms is the
+    position's own capture time, which the client resolves per row.
     """
     from clients.adsb_lol import AdsbLolClient
 
@@ -323,30 +341,29 @@ async def _fetch_adsb_lol(lat: float, lon: float) -> dict:
     else:
         # Update area center so the rate-limit cache key stays consistent
         _adsb_lol_client.areas = [area]
-    aircraft = await loop.run_in_executor(None, _adsb_lol_client.fetch_all)
     poll_ts = time.time()
+    aircraft = await loop.run_in_executor(None, _adsb_lol_client.fetch_all)
     result = {}
     for ac in aircraft:
         h = (ac.get("hex") or "").lower()
         if not h:
             continue
-        alt_baro = ac.get("alt_baro", 0)
-        alt_m = alt_baro * 0.3048 if isinstance(alt_baro, (int, float)) else 0.0
-        # seen_pos is an age in seconds, so it resolves against the poll, not
-        # against the epoch.  The poll alone is the fallback — see _opensky_entry.
-        seen_pos = ac.get("seen_pos")
-        captured = poll_ts - seen_pos if isinstance(seen_pos, (int, float)) else poll_ts
+        # The client resolves seen_pos against its own fetch, so this is an
+        # absolute capture time and stays correct when a last-good row is
+        # served again on a later failed fetch.
+        captured = ac.get("captured_at")
+        if not is_num(captured):
+            captured = poll_ts
         # tar1090's gs is knots; this cache's velocity is m/s, which is what
-        # OpenSky writes and what both consumers read.  alt_baro on the line
-        # above has always been converted, so only the speed was missed.
+        # OpenSky writes and what both consumers read.
         gs = ac.get("gs")
         result[h] = {
             "lat": ac.get("lat", 0.0),
             "lon": ac.get("lon", 0.0),
-            "alt_m": alt_m,
-            "velocity": gs * KNOTS_TO_MS if isinstance(gs, (int, float)) else None,
+            "alt_m": as_num(ac.get("alt_baro")) * FT_TO_M,
+            "velocity": gs * KNOTS_TO_MS if is_num(gs) else None,
             "heading": ac.get("track"),
-            "last_seen_ms": int(captured * 1000),
+            "last_seen_ms": _capture_ms(captured, poll_ts),
         }
     return result
 
@@ -362,14 +379,14 @@ def _cross_validate_adsb_reports():
     - Both sides must be recent (XVAL_MAX_AGE_S).  The 10 km bar measures
       disagreement only while the two fixes describe nearly the same instant;
       across a poll interval an airliner outruns it honestly.
-    - A sample is judged once (_xval_judged_through).  This rescans the last
-      ten samples every cycle, so without it one bad fix is re-charged until
-      the node blocks.
     - (0, 0) is routes/analytics.py's default for an omitted position, not a
       claim to have seen an aircraft off West Africa.
 
-    Anything a gate rejects is left for a later cycle rather than judged on
-    worse evidence.
+    A sample is judged at most once because the age window (XVAL_MAX_AGE_S) is
+    far shorter than the interval between cycles, and _adsb_truth_cycle calls
+    this exactly once per cycle.  Both halves of that must hold: shortening the
+    cycle below the window, or calling this from the fetch again, would let one
+    bad fix be charged repeatedly until the node blocks.
     """
     if not state.external_adsb_cache:
         return
@@ -377,8 +394,6 @@ def _cross_validate_adsb_reports():
     for node_id, ts_state in state.node_analytics.trust_scores.items():
         if not ts_state.samples:
             continue
-        judged_through = _xval_judged_through.get(node_id, 0)
-        newest_judged = judged_through
         for sample in ts_state.samples[-10:]:
             if not sample.adsb_hex:
                 continue
@@ -392,10 +407,10 @@ def _cross_validate_adsb_reports():
                 continue
             if sample.adsb_lat == 0.0 and sample.adsb_lon == 0.0:
                 continue
+            # abs(), not a one-sided age: the stamp is node-supplied, and a
+            # future one would otherwise pass every freshness test forever.
             sample_ts_ms = getattr(sample, "timestamp_ms", 0) or 0
-            if sample_ts_ms <= judged_through:
-                continue
-            if now - sample_ts_ms / 1000 > XVAL_MAX_AGE_S:
+            if not sample_ts_ms or abs(now - sample_ts_ms / 1000) > XVAL_MAX_AGE_S:
                 continue
             ext = state.external_adsb_cache.get(sample.adsb_hex.lower())
             if ext is None:
@@ -403,7 +418,6 @@ def _cross_validate_adsb_reports():
             ext_ts_ms = ext.get("last_seen_ms")
             if not ext_ts_ms or now - ext_ts_ms / 1000 > XVAL_MAX_AGE_S:
                 continue
-            newest_judged = max(newest_judged, sample_ts_ms)
             dist_km = haversine_km(sample.adsb_lat, sample.adsb_lon, ext["lat"], ext["lon"])
             if dist_km > 10.0:
                 rep = state.node_analytics.reputations.get(node_id)
@@ -418,5 +432,3 @@ def _cross_validate_adsb_reports():
                         sample.adsb_hex,
                         dist_km,
                     )
-        if newest_judged > judged_through:
-            _xval_judged_through[node_id] = newest_judged

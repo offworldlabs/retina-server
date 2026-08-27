@@ -374,6 +374,7 @@ class TestExternalAdsbFallback:
             "lon": -84.6,
             "alt_baro": 32808,  # 10 000 m
             "gs": 388.0,  # ~200 m/s
+            "last_seen_ms": int(time.time() * 1000),
         }
 
         r = _make_solve_result(33.9001, -84.6001)
@@ -406,6 +407,7 @@ class TestExternalAdsbFallback:
             "lon": -84.6,
             "alt_baro": 32808,
             "gs": 0.0,
+            "last_seen_ms": int(time.time() * 1000),
         }
 
         r = _make_solve_result(33.9001, -84.6001)
@@ -1204,6 +1206,7 @@ class TestExternalAdsbTruthSchema:
             "alt_m": 10000.0,
             "velocity": 210.0,
             "heading": 90.0,
+            "last_seen_ms": int(time.time() * 1000),
         }
         r = _make_solve_result(33.9001, -84.6001, alt_m=10050.0, vel_east=200.0, vel_north=50.0)
         state.multinode_tracks[_key(r)] = r
