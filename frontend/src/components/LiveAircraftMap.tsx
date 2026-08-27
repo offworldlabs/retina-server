@@ -713,8 +713,8 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
       <Circle
         center={[n.rx_lat, n.rx_lon]}
         radius={discRadiusM}
+        className="node-uncertainty-disc"
         pathOptions={{
-          className: "node-uncertainty-disc",
           color: "#facc15",
           weight: 0,
           fillColor: "#facc15",
@@ -793,8 +793,14 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
         <Polygon
           key={`beam-${n.node_id}`}
           positions={n.empirical_polygon}
+          // className rides top-level, never inside pathOptions: react-leaflet
+          // applies pathOptions with setStyle() after the layer exists, but
+          // Leaflet only stamps options.className onto the element once, in
+          // Renderer._initPath at construction.  A class in pathOptions is
+          // therefore silently dropped and the blur below never applies —
+          // verified live.  Top-level props do reach the constructor options.
+          className="coverage-fuzzy"
           pathOptions={{
-            className: "coverage-fuzzy",
             color: "#22c55e",
             fillColor: "#22c55e",
             fillOpacity: 0.14,
@@ -1855,8 +1861,9 @@ export default function LiveAircraftMap() {
                   {hasEmpirical && (
                     <Polygon
                       positions={sn.empirical_polygon}
+                      // className stays top-level — see the CoverageLayer note
+                      className="coverage-fuzzy"
                       pathOptions={{
-                        className: "coverage-fuzzy",
                         color: "#22c55e",
                         fillColor: "#22c55e",
                         fillOpacity: 0.30,
@@ -1948,8 +1955,9 @@ export default function LiveAircraftMap() {
                     {hasEmpirical ? (
                       <Polygon
                         positions={cn.empirical_polygon}
+                        // className stays top-level — see the CoverageLayer note
+                        className="coverage-fuzzy"
                         pathOptions={{
-                          className: "coverage-fuzzy",
                           color: "#a78bfa",
                           fillColor: "#a78bfa",
                           fillOpacity: 0.18,
@@ -2140,12 +2148,13 @@ export default function LiveAircraftMap() {
                   key={`anomaly-${ac.hex}`}
                   center={[ac.lat, ac.lon]}
                   radius={16}
+                  // className stays top-level — see the CoverageLayer note
+                  className="anomaly-ring"
                   pathOptions={{
                     color: "#f43f5e",
                     weight: 2.5,
                     fillOpacity: 0,
                     dashArray: "5 5",
-                    className: "anomaly-ring",
                   }}
                   interactive={false}
                 />
