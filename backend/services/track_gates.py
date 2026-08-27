@@ -14,6 +14,7 @@ from config.constants import (
     ARC_ONLY_ANOMALY_ALLOWLIST,
     CAL_DETECTION_FRESH_S,
     DISPLAY_STALE_TRACK_S,
+    EXTERNAL_ADSB_MAX_AGE_S,
     GATE_MAX_HOLD_S,
 )
 from core import state
@@ -303,17 +304,29 @@ def _record_accuracy_sample(ac_hex: str, error_km: float, position_source: str, 
 def fresh_adsb(ac_hex: str, now: float):
     """Return ADS-B entry for ac_hex, or None if unavailable/stale.
 
-    Checks state.adsb_aircraft first (live feed, < 60 s).  Falls back to
-    state.external_adsb_cache (OpenSky snapshot) which the background
-    poller already refreshes periodically — no additional staleness guard
-    needed here.
+    Checks state.adsb_aircraft first (live feed, < 60 s), then falls back to
+    state.external_adsb_cache, whose entries are servable for
+    EXTERNAL_ADSB_MAX_AGE_S from their own capture time.
+
+    The returned fix carries that capture time, so it reads as the tens of
+    seconds old it actually is.  Callers gate on it themselves and mostly
+    gate tighter — record_adsb_calibration's CAL_MAX_ADSB_AGE_S is 10 s, so
+    an external fix is expected to be refused there.  That refusal is the
+    point: this path once reported `now`, and a fix up to a poll interval old
+    entered the learned FOV as if it were current.
     """
     entry = state.adsb_aircraft.get(ac_hex)
     if entry and now - entry.get("last_seen_ms", 0) / 1000 <= 60:
         return entry
-    # Fallback: external ADS-B truth sourced from OpenSky Network.
+    # Fallback: external ADS-B truth (adsb.lol, or OpenSky where authorised).
     ext = state.external_adsb_cache.get(ac_hex)
     if ext and ext.get("lat") and ext.get("lon"):
+        # An entry with no capture stamp cannot be aged, so it is not served.
+        # Unknown freshness read as freshness is the defect this closes, and
+        # the poller stamps every entry it writes.
+        ext_ts_ms = ext.get("last_seen_ms")
+        if not ext_ts_ms or now - ext_ts_ms / 1000 > EXTERNAL_ADSB_MAX_AGE_S:
+            return None
         alt_m = ext.get("alt_m") or 0
         vel = ext.get("velocity") or 0
         hdg = ext.get("heading") or 0
@@ -332,7 +345,7 @@ def fresh_adsb(ac_hex: str, now: float):
             "alt_baro": round(alt_ft_val),
             "gs": round(gs_val, 1),
             "track": round(hdg_val, 1),
-            "last_seen_ms": int(now * 1000),
+            "last_seen_ms": int(ext_ts_ms),
         }
     return None
 

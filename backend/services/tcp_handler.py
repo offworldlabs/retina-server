@@ -16,6 +16,7 @@ from retina_custody.hash_chain import HashChainEntry, HashChainVerifier
 from config.constants import CHAIN_ENTRIES_MAX_PER_NODE, IQ_COMMITMENTS_MAX_PER_NODE
 from core import state
 from services import node_registration
+from services.feed_helpers import adsb_capture_ts_ms
 from services.geo import valid_latlon
 from services.id_utils import normalize_hex_key
 
@@ -561,7 +562,7 @@ def _apply_synthetic_adsb(msg: dict, node_id: str):
     adsb_list = frame.get("adsb")
     if not adsb_list:
         return
-    ts_ms = int(_time.time() * 1000)
+    ts_ms = adsb_capture_ts_ms(frame, _time.time())
     # Which world these positions belong to, resolved once per message: the
     # CONFIG handshake's verdict when the node is registered (it honours the
     # node's own is_synthetic claim), the prefix rule otherwise.  Claiming

@@ -284,6 +284,27 @@ REPUTATION_INTERVAL_S = 60  # Reputation evaluator sleep (s)
 ADSB_TRUTH_INTERVAL_S = 120  # ADS-B truth fetcher sleep (s)
 ADSB_BACKOFF_S = 300  # Rate-limit backoff (s)
 OPENSKY_BUFFER_DEG = 1.0  # lat/lon margin for OpenSky bbox (degrees)
+# How old either side of an ADS-B cross-validation may be.  Applied to the
+# external entry and to the node's sample separately, so the worst skew between
+# them is twice this: at 250 m/s that is 7.5 km of honest motion against a
+# 10 km mismatch bar, which leaves the bar measuring disagreement rather than
+# elapsed time.  Tight enough that the check only fires on samples captured near
+# a poll — widening it means dead-reckoning the entry first, not a bigger number.
+XVAL_MAX_AGE_S = 15.0
+# How far a node's frame timestamp may sit from ours before we stop believing
+# it and stamp receipt time instead.  A frame is genuinely older than its
+# arrival under queue backlog, and reporting that is the point, so the bound is
+# wide enough not to mistake backlog for skew.  Past it the node's clock is
+# broken rather than late: an unbelieved stamp costs the honesty this buys,
+# but a stamp minutes into the future is never stale to any gate at all.
+ADSB_CAPTURE_MAX_SKEW_S = 300.0
+# How long an external ADS-B entry stays servable after its own capture time.
+# Derived, not chosen: a rate-limited poll cycle is already
+# ADSB_TRUTH_INTERVAL_S + ADSB_BACKOFF_S apart, so anything tighter would blank
+# the fallback during ordinary backoff.  The margin covers fetch latency.  This
+# is an upper bound on how long an outage can go on serving last-good data, not
+# a freshness claim: entries carry their true age and every consumer gates on it.
+EXTERNAL_ADSB_MAX_AGE_S = ADSB_TRUTH_INTERVAL_S + ADSB_BACKOFF_S + 180
 
 # ── Admin / ops ──────────────────────────────────────────────────────────────
 EVENT_LOG_MAX = 2000  # Event log buffer capacity

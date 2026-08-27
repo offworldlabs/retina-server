@@ -182,8 +182,19 @@ When a geolocated track has an `adsb_hex` and there's a fresh ADS-B fix in
 - `position_source` is set to `"adsb_associated"`.
 - No ambiguity arc is emitted — the position is already known precisely.
 
-ADS-B entries expire after 60 s. After expiry the aircraft falls back to the
-solver position.
+ADS-B entries expire 60 s after the position was *captured*, which is the
+timestamp on the frame that carried it rather than the moment the backend
+stored it. The two differ under queue backlog, and it is the capture time that
+the staleness gates need. Where a frame carries no usable timestamp, or one
+more than `ADSB_CAPTURE_MAX_SKEW_S` from server time, receipt time stands in
+and `adsb_capture_ts_fallback` counts it. After expiry the aircraft falls back
+to the solver position.
+
+External truth (`state.external_adsb_cache`, polled from adsb.lol) is stamped
+the same way, from each feed's own position time, and stays servable for
+`EXTERNAL_ADSB_MAX_AGE_S`. Its entries are therefore tens of seconds old by
+construction and are refused by the tighter gates, calibration's 10 s among
+them.
 
 ---
 

@@ -9,6 +9,7 @@ feed module can depend on them without cycles.
 import math
 from collections import deque
 
+from config.constants import ADSB_CAPTURE_MAX_SKEW_S
 from core import state
 from services.geo import enu_km, haversine_km
 from services.id_utils import normalize_hex_key
@@ -48,6 +49,25 @@ _DEDUP_SOURCE_RANK = {
 # leaves a cosmetic double; over-merging would hide real traffic.
 _DEDUP_PROXIMITY_KM = 3.0
 _DEDUP_ALT_GATE_FT = 2000.0
+
+
+def adsb_capture_ts_ms(frame: dict, now_s: float) -> int:
+    """When this frame's ADS-B positions were measured, in epoch ms.
+
+    `frame["timestamp"]` is the end of the node's capture window, which is what
+    every downstream staleness gate means by last_seen_ms.  Receipt time stands
+    in only where the frame carries no stamp, or carries one so far from ours
+    that the node's clock is wrong rather than its frame late — both counted, so
+    a fleet drifting into the fallback is visible rather than silent.
+
+    Frames arriving under backlog are the case this exists for: they are older
+    than their arrival, and saying so is what lets the 60 s gates reject them.
+    """
+    ts_ms = frame.get("timestamp")
+    if isinstance(ts_ms, (int, float)) and ts_ms > 0 and abs(now_s - ts_ms / 1000) <= ADSB_CAPTURE_MAX_SKEW_S:
+        return int(ts_ms)
+    state.bump_counter("adsb_capture_ts_fallback")
+    return int(now_s * 1000)
 
 
 def _looks_like_same_aircraft(a: dict, b: dict) -> bool:

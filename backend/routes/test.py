@@ -147,6 +147,10 @@ def _build_dashboard_data() -> bytes:
                 "frame_queue_utilization_pct": round(
                     state.frame_queue.qsize() / max(state.frame_queue.maxsize, 1) * 100, 1
                 ),
+                # Rises when a node's frames carry no usable capture timestamp,
+                # so its ADS-B positions are aged against our clock rather than
+                # its own.  A node-clock signal, not a feed one.
+                "adsb_capture_ts_fallback": state.adsb_capture_ts_fallback,
             },
             "chain_of_custody": {
                 "registered_keys": len(state.node_identities),

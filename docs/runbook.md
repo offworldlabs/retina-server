@@ -424,6 +424,10 @@ curl -sk https://localhost/api/radar/data/aircraft.json | python3 -c \
 
 If 0 aircraft: check `adsb_truth_fetcher` task in metrics (`task_last_success.adsb_truth_fetcher`). The external ADS-B source (`adsb.lol` or similar) may be down.
 
+An outage empties `external_adsb_cache` rather than freezing it: entries are dropped once they pass `EXTERNAL_ADSB_MAX_AGE_S` from their own capture time, so an empty cache means the feed has been unreachable for longer than that, not that a poll happened to fail. `external_adsb_cached` in `/api/radar/*` reports the current count.
+
+A rising `adsb_capture_ts_fallback` (in `server_health`, `/api/test/dashboard`) is a node-clock problem, not a feed problem: some node's frames carry no timestamp, or one more than `ADSB_CAPTURE_MAX_SKEW_S` from server time, so its ADS-B positions are being aged against our clock instead of its own.
+
 If aircraft exist but `multinode_tracks == 0`: check node count — multinode tracks require at least 2 active nodes with overlapping coverage.
 
 ---

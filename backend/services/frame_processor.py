@@ -450,7 +450,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # verification and accuracy pipelines can reference them.
     _adsb_list = frame.get("adsb")
     if _adsb_list:
-        _ts_ms = int(time.time() * 1000)
+        _ts_ms = adsb_capture_ts_ms(frame, time.time())
         # Same world stamp the TCP fast-path applies — a blah2 node's list is
         # real traffic, a test frame's is simulated; claiming keys on it.
         _world = state.node_world(node_id)
@@ -549,6 +549,7 @@ from services.feed_helpers import (  # noqa: E402,F401
     _estimate_velocity_ms_from_motion,
     _looks_like_same_aircraft,
     _record_arc_motion,
+    adsb_capture_ts_ms,
     append_track_history,
     dedup_aircraft,
     position_distance_km,
