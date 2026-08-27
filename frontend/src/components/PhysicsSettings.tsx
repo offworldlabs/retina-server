@@ -4,6 +4,7 @@ import "./PhysicsSettings.css";
 
 // One plane path — imported from the icon module the map itself uses.
 import { PLANE_PATH } from "./map/icons";
+import { withCartoKey } from "../utils/basemap";
 import {
   formatKm,
   formatPct,
@@ -816,7 +817,9 @@ export default function PhysicsSettings() {
                 zoomControl={false}
                 attributionControl={false}
               >
-                <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" />
+                <TileLayer
+                  url={withCartoKey("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png")}
+                />
                 {ac.map(a => (
                   <CircleMarker
                     key={a.hex}

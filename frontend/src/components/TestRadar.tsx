@@ -9,6 +9,7 @@ import {
   makeAircraftIcon,
   nodeIcon,
 } from "./map";
+import { withCartoKey } from "../utils/basemap";
 
 // Marietta GA — same coords as the production radar3-retnode site.
 const MARIETTA = { lat: 33.9526, lon: -84.5499 };
@@ -393,7 +394,7 @@ export default function TestRadar() {
           style={{ height: "100%", width: "100%" }}
         >
           <TileLayer
-            url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
+            url={withCartoKey("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png")}
             attribution=""
           />
 

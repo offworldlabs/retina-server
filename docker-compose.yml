@@ -18,7 +18,16 @@
 
 services:
   server:
-    build: .
+    build:
+      context: .
+      args:
+        # The CARTO basemap key, public by design — it ends up in the bundle,
+        # because the tile requests are the browser's. Resolved from ./.env,
+        # which every deploy rewrites from deploy/env.<env>.example and then
+        # tops up from the host's own /root/.secrets/carto.env. A host without
+        # that file interpolates to empty and builds anonymous tile URLs.
+        # Declared in the base file so every environment builds the same way.
+        VITE_CARTO_API_KEY: ${CARTO_API_KEY:-}
     # Pin an explicit image name so it is stable and independent of the Compose
     # project (directory) name. deploy/pre-deploy.sh + deploy/rollback.sh key the
     # rollback on `retina-server:latest`; without this, Compose builds an
