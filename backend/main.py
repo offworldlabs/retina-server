@@ -55,6 +55,7 @@ from routes.sim_ingest import synthetic_fleet_enabled
 from routes.stats import router as stats_router
 from routes.streaming import router as streaming_router
 from routes.test import router as test_router
+from services import detection_mirror
 from services.alerting import log_destination
 from services.background import (
     adsb_truth_fetcher,
@@ -196,6 +197,11 @@ async def lifespan(app: FastAPI):
                 except Exception:
                     logging.exception("State snapshot save failed")
 
+        # Unset DETECTION_MIRROR_URL leaves this unarmed, and mirror_task then
+        # returns at once, so the task list is the same shape in every
+        # environment.
+        detection_mirror.configure_from_env()
+
         tasks = [
             asyncio.create_task(server.serve_forever()),
             asyncio.create_task(reputation_evaluator()),
@@ -209,6 +215,7 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(analytics_refresh_task()),
             asyncio.create_task(coverage_constraints_task()),
             asyncio.create_task(storage_refresh_task()),
+            asyncio.create_task(detection_mirror.mirror_task()),
             *[asyncio.create_task(blah2_bridge_task(n)) for n in blah2_nodes],
             asyncio.create_task(health_monitor_task()),
             asyncio.create_task(heartbeat_task()),

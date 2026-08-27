@@ -44,8 +44,9 @@ from routes.node_schemas import (
     HeartbeatRequest,
     HeartbeatResponse,
 )
+from services import detection_mirror
 from services.node_auth import bearer_node, node_bearer_scheme
-from services.node_pipeline import register_with_pipeline, submit_frame
+from services.node_pipeline import pipeline_frame, register_with_pipeline, submit_frame
 from services.node_rate_limits import Refusal, token_rate_limiter
 
 logger = logging.getLogger(__name__)
@@ -104,34 +105,6 @@ async def _version_was_ever_issued(session: AsyncSession, node_id: str, version:
     return row.first() is not None
 
 
-def _pipeline_frame(frame: DetectionFrame) -> dict:
-    """The wire frame in the shape services/blah2_bridge.py puts on the queue.
-
-    `timestamp` is milliseconds because that is what the queue's readers expect.
-    `delay` needs no conversion: it is microseconds on the wire, where the bridge
-    has to convert from kilometres.
-
-    `adsb_hex` travels under its own key rather than the bridge's `adsb`, which
-    frame_processor reads as position reports. The contract's array is an
-    association and carries no lat/lon, so filing it there would be filing an
-    empty position for every detection.
-
-    `seq` and `boot_id` are carried rather than dropped at the boundary: they are
-    the pair the server counts loss against, and only meaningful together, since
-    `seq` restarts from zero with the process.
-    """
-    return {
-        "timestamp": int(frame.t * 1000),
-        "delay": list(frame.delay),
-        "doppler": list(frame.doppler),
-        "snr": list(frame.snr),
-        "adsb_hex": list(frame.adsb_hex),
-        "seq": frame.seq,
-        "boot_id": frame.boot_id,
-        "config_version": frame.config_version,
-    }
-
-
 # A node streams at up to 2 Hz and the condition below clears on its next
 # heartbeat, so an unthrottled warning would be a hundred lines about a fault
 # that was fixing itself. One line a minute per node says the same thing.
@@ -181,8 +154,11 @@ def _file_frame(node_id: str, frame: DetectionFrame) -> int:
         state.bump_counter("frames_dropped")
         _warn_unregistered(node_id)
         return 0
-    if not submit_frame(node_id, _pipeline_frame(frame)):
+    if not submit_frame(node_id, pipeline_frame(frame)):
         return 0
+    # After acceptance, and given the wire model rather than the dict just
+    # queued: that dict is stamped and mutated by the frame workers.
+    detection_mirror.offer(node_id, frame)
     return len(frame.delay)
 
 
