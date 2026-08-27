@@ -110,7 +110,7 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
           });
           line.on("click", (e) => {
             L.DomEvent.stopPropagation(e);
-            if (entry.hex) onSelectRef.current?.(entry.hex, false);
+            if (entry.hex) onSelectRef.current?.(entry.hex);
             if (entry.node_id) onSelectNodeRef.current?.(entry.node_id);
           });
           line.addTo(map);

@@ -45,7 +45,7 @@ export function isPointInViewport(lat, lon, viewport, pad = VIEWPORT_PAD_DEG) {
 
 export function getFocusPoints(aircraft, nodes, selectedHex) {
   if (selectedHex) {
-    // When focusing a selected aircraft, return ONLY the anchor point so
+    // On an explicit Fit with an aircraft selected, return ONLY the anchor so
     // FitBounds takes the setView(anchor, currentZoom) branch — fitting the
     // bounds to the full ambiguity arc geometry instead zooms the camera
     // down to street level on a ~2 km arc, leaving the aircraft barely

@@ -79,7 +79,10 @@ async def solver_aircraft(
     **Query params:**
     - ``real_only=true`` — filter to aircraft detected by real hardware nodes only (excludes simulated fleet)
     """
-    data = state.latest_aircraft_json
+    # Unauthenticated, so it reads the redacted feed: a node whose owner
+    # registered it private is absent here for the same reason it is absent
+    # from the websocket payloads (services/publication.py).
+    data = state.latest_aircraft_json_public
     now = time.time()
 
     if real_only:

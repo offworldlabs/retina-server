@@ -600,7 +600,55 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
         if (0 < _jdt < 120 and _jdist_m / _jdt > 1029.0) or _jdist_m > 30_000.0:
             _position_jump = True
 
-    append_track_history(ac_hex, lat, lon, alt_ft, now)
+    # ── Public frame: put the arc track's icon back on its own arc ────────────
+    # Resolved here, ahead of the dict build it feeds, because the history
+    # append below needs it: the trail is accumulated in both frames, each point
+    # carrying the delta that was in force on its own frame (see
+    # state.track_histories_public).  Safe to sit this early — the block reads
+    # only the arc builders, ``raw_midpoint_*``, ``position_source``, ``lat``
+    # and ``node_cfg``, every one of them already final, and writes nothing but
+    # local names.  The true-frame consumers that follow — the speed-gate
+    # reference, the gs/heading estimator, resolve_ground_truth_hex — still see
+    # the untranslated ``lat``/``lon``.
+    #
+    # The published arc, not the one the gates above ran on.  Whether an arc is
+    # emitted at all is still decided by the true-geometry arc — the RMS gate
+    # nulls it, the beam clip can decline to build it — so the rewrite only
+    # changes the curve's geometry, never its presence.
+    _public_arc = _cached_public_arc(ac_hex, track, node_cfg, touched_arc_keys) if ambiguity_arc is not None else None
+
+    # An arc track's position is not an estimate of where the aircraft is, it is
+    # the arc's boresight crossing — a point on a ray from the RECEIVER.  Serve
+    # it untranslated beside a fuzzed arc and the payload leaks twice over: the
+    # icon floats up to NODE_FUZZ_MAX_KM off the curve it is supposed to sit on,
+    # and a night of those crossings, from one node or several, intersects back
+    # at the operator's house whatever the published anchor says.
+    #
+    # The delta is measured between the two arcs' own midpoints rather than
+    # computed from the offset, so the icon lands EXACTLY on the served arc's
+    # crossing — the two curves are built by the same builder from the same
+    # measured delay, so their midpoints differ by the receiver shift and
+    # nothing else.  When there is no public arc to measure against (the RMS
+    # gate nulled the frame's arc, or the fuzzed anchor's beam clip declined to
+    # build one) we fall back to the node's deterministic offset, which is the
+    # same displacement to within the curvature between the two midpoints.
+    # Nothing is emitted in the true frame in either case.
+    #
+    # Only arc tracks move.  A solver_adsb_seed or multinode position is an
+    # aircraft estimate that stands on its own geometry, and shifting it would
+    # be inventing an error the solver did not make.
+    _dlat = 0.0
+    _dlon = 0.0
+    if position_source == "single_node_ellipse_arc" and fuzz_enabled():
+        if _public_arc and raw_midpoint_lat is not None:
+            _public_midpoint = _public_arc[len(_public_arc) // 2]
+            _dlat = _public_midpoint[0] - raw_midpoint_lat
+            _dlon = _public_midpoint[1] - raw_midpoint_lon
+        else:
+            _dlat, _dlon = public_point_delta(lat, node_cfg.get("node_id"))
+    _shift = _dlat != 0.0 or _dlon != 0.0
+
+    append_track_history(ac_hex, lat, lon, alt_ft, now, public_lat=lat + _dlat, public_lon=lon + _dlon)
     # Refresh the speed-gate reference on every emit (dedup-free) so the
     # next frame's gate sees the true emit-to-emit interval.
     state.track_last_emit[ac_hex] = [lat, lon, now]
@@ -734,64 +782,27 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
             state.anomaly_hexes.discard(_flag_hex)
 
     # ── True frame ends here ─────────────────────────────────────────────────
-    # Everything above ran on the true geometry, and has to: the gates, the
-    # hold, the arc-motion log, the history append, the jump check and the
-    # ground-truth match all compare this frame against stored true-frame
-    # values, and a translation applied upstream of any of them would have them
-    # comparing mixed frames — which is the fuzz moving aircraft instead of
-    # receivers.  ``resolve_ground_truth_hex`` is a spatial match against the
-    # simulator's truth table, so it is resolved here, before the shift.
+    # Every value carried this far is the true geometry, and has to be: the
+    # gates, the hold, the arc-motion log, the speed-gate reference, the jump
+    # check and the ground-truth match all compare this frame against stored
+    # true-frame values, and a translation applied upstream of any of them
+    # would have them comparing mixed frames — which is the fuzz moving
+    # aircraft instead of receivers.  The public delta is resolved earlier than
+    # this line only because the history append needs it, and it writes nothing
+    # any of them read.  ``resolve_ground_truth_hex`` is a spatial match
+    # against the simulator's truth table, so it is resolved here, before the
+    # shift is applied to anything served.
     _ground_truth_hex = resolve_ground_truth_hex(ac_hex, lat, lon)
 
-    # The published arc, not the one the gates above ran on.  Whether an arc is
-    # emitted at all is still decided by the true-geometry arc — the RMS gate
-    # nulls it, the beam clip can decline to build it — so the rewrite only
-    # changes the curve's geometry, never its presence.
-    _public_arc = _cached_public_arc(ac_hex, track, node_cfg, touched_arc_keys) if ambiguity_arc is not None else None
-
-    # ── Public frame: put the arc track's icon back on its own arc ────────────
-    # An arc track's position is not an estimate of where the aircraft is, it is
-    # the arc's boresight crossing — a point on a ray from the RECEIVER.  Serve
-    # it untranslated beside a fuzzed arc and the payload leaks twice over: the
-    # icon floats up to NODE_FUZZ_MAX_KM off the curve it is supposed to sit on,
-    # and a night of those crossings, from one node or several, intersects back
-    # at the operator's house whatever the published anchor says.
-    #
-    # The delta is measured between the two arcs' own midpoints rather than
-    # computed from the offset, so the icon lands EXACTLY on the served arc's
-    # crossing — the two curves are built by the same builder from the same
-    # measured delay, so their midpoints differ by the receiver shift and
-    # nothing else.  When there is no public arc to measure against (the RMS
-    # gate nulled the frame's arc, or the fuzzed anchor's beam clip declined to
-    # build one) we fall back to the node's deterministic offset, which is the
-    # same displacement to within the curvature between the two midpoints.
-    # Nothing is emitted in the true frame in either case.
-    #
-    # Only arc tracks move.  A solver_adsb_seed or multinode position is an
-    # aircraft estimate that stands on its own geometry, and shifting it would
-    # be inventing an error the solver did not make.
-    _dlat = 0.0
-    _dlon = 0.0
-    if position_source == "single_node_ellipse_arc" and fuzz_enabled():
-        if _public_arc and raw_midpoint_lat is not None:
-            _public_midpoint = _public_arc[len(_public_arc) // 2]
-            _dlat = _public_midpoint[0] - raw_midpoint_lat
-            _dlon = _public_midpoint[1] - raw_midpoint_lon
-        else:
-            _dlat, _dlon = public_point_delta(lat, node_cfg.get("node_id"))
-    _shift = _dlat != 0.0 or _dlon != 0.0
-
-    # One delta for every point of the trail, the same rigidity argument as
-    # translate_polygon: re-deriving each point against its own frame would
-    # publish the difference between the frames.  track_histories is keyed by
-    # hex across the whole fleet, so a trail can hold emits made while a
-    # different node's arc was the source; translating all of them by THIS
-    # entry's delta is deliberate — the trail stays rigid and stays consistent
-    # with the arc being drawn beside it now, which is the thing a viewer can
-    # actually check.  The stored history itself is untouched and stays true.
-    _recent_positions = list(state.track_histories.get(ac_hex, []))
-    if _shift:
-        _recent_positions = [[round(p[0] + _dlat, 6), round(p[1] + _dlon, 6), *p[2:]] for p in _recent_positions]
+    # The accumulated public-frame trail, served as it was stored.  Phase 2
+    # translated a copy of the true history by THIS frame's delta; that kept
+    # the trail rigid but retro-dated today's receiver shift onto points emitted
+    # under a different node — or under no arc at all — which is a claim the
+    # data does not support.  Each point now carries the delta that was in force
+    # when it was emitted (appended above, see state.track_histories_public), so
+    # the trail is honest point by point and the newest point still lands
+    # exactly on the arc drawn beside it.  Nothing here reads the true store.
+    _recent_positions = list(state.track_histories_public.get(ac_hex, []))
 
     return {
         "hex": ac_hex,

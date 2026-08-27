@@ -152,6 +152,7 @@ def _reset_module_state():
         frame_processor,
         known_claiming,
         node_bias,
+        publication,
         tcp_handler,
         track_gates,
     )
@@ -170,6 +171,7 @@ def _reset_module_state():
         tcp_handler,
         known_claiming,
         node_bias,
+        publication,
     ):
         mod._reset_for_tests()
     yield

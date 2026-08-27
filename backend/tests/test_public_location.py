@@ -9,6 +9,7 @@ payloads a stranger can fetch: no true receiver coordinate anywhere in them.
 import math
 import os
 
+import orjson
 import pytest
 from fastapi.testclient import TestClient
 
@@ -177,6 +178,56 @@ class TestTranslatePolygon:
         assert pl.translate_polygon([], "node-a") == []
 
 
+class TestPublicCrossNode:
+    """The cross-node block: suggestions are dropped, the rest survives."""
+
+    _CROSS = {
+        "pair_overlaps": [{"node_a": "n1", "node_b": "n2", "overlap_ratio": 0.4, "n_bins": 12}],
+        "coverage_suggestions": [
+            {
+                "direction": "N",
+                "bearing_deg": 0,
+                # 80 km due north of the mean of the fleet's TRUE receivers —
+                # this point plus its own bearing gives that mean back.
+                "test_point": {"lat": 35.57123, "lon": -82.40123},
+                "gap_km": 80.0,
+                "strategy": "densification",
+            }
+        ],
+        "blocked_nodes": ["n9"],
+    }
+
+    def test_suggestions_are_emptied(self):
+        assert pl.public_cross_node(self._CROSS)["coverage_suggestions"] == []
+
+    def test_overlaps_and_blocked_nodes_survive(self):
+        out = pl.public_cross_node(self._CROSS)
+        assert out["pair_overlaps"] == self._CROSS["pair_overlaps"]
+        assert out["blocked_nodes"] == self._CROSS["blocked_nodes"]
+
+    def test_the_input_is_not_mutated(self):
+        """The manager hands out its own cached dict; mutating it would corrupt state."""
+        out = pl.public_cross_node(self._CROSS)
+        assert out is not self._CROSS
+        assert len(self._CROSS["coverage_suggestions"]) == 1
+
+    def test_the_shape_is_unchanged(self):
+        """A consumer that indexes the key must still find it, not a KeyError."""
+        assert pl.public_cross_node(self._CROSS).keys() == self._CROSS.keys()
+
+    def test_no_test_point_survives_anywhere(self):
+        """The property, not the mechanism: no aggregate geometry in the output."""
+        assert "test_point" not in orjson.dumps(pl.public_cross_node(self._CROSS)).decode()
+
+    def test_pass_through_when_disabled(self, monkeypatch):
+        monkeypatch.setenv("NODE_FUZZ_MODE", "off")
+        pl._reset_for_tests()
+        assert pl.public_cross_node(self._CROSS) is self._CROSS
+
+    def test_a_non_dict_is_returned_unchanged(self):
+        assert pl.public_cross_node(None) is None
+
+
 class TestFuzzDisabled:
     @pytest.fixture(autouse=True)
     def _off(self, monkeypatch):
@@ -296,6 +347,21 @@ class TestNodesPayload:
         block = _public_location_block(_NODE_ID, _NODE_CFG)
         assert block["location_uncertainty_km"] == 0.0
         assert block["rx_lat"] == _TRUE_RX_LAT
+
+
+class TestCachedAnalyticsPayload:
+    """The /api/radar/analytics bytes the refresh task builds.
+
+    The unit test above pins public_cross_node; this pins that the refresh task
+    actually calls it, on both the full and the real-only variant.
+    """
+
+    def test_suggestions_are_empty_in_both_variants(self, registered_node):
+        from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
+
+        _refresh_analytics_and_nodes()
+        for raw in (state.latest_analytics_bytes, state.latest_analytics_real_bytes):
+            assert orjson.loads(raw)["cross_node"]["coverage_suggestions"] == []
 
 
 class TestPerNodeAnalyticsRoute:

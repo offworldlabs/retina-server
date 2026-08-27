@@ -48,6 +48,7 @@ from config.constants import (
 )
 from services.id_utils import passive_track_hex
 from services.public_location import public_latlon
+from services.publication import is_private
 
 # ─── Node Configuration ─────────────────────────────────────────────
 DEFAULT_NODE_CONFIG = {
@@ -781,12 +782,22 @@ class PassiveRadarPipeline:
         clients centre the map on it — so it carries the published receiver
         position, not the true one.  self.config keeps the truth for the
         pipeline; only this serialization moves.
+
+        Like /api/radar/status this document describes exactly one node, so
+        publication is a yes/no on that node rather than a filter.  A private
+        node's coordinate is withheld rather than moved: tar1090's receiver.json
+        exists to say where to point the map, and there is no honest answer to
+        that for a node that is not being published.  Nulls rather than a
+        missing pair, so a reader that indexes the keys does not fault.
         """
-        lat, lon = public_latlon(
-            self.config["rx_lat"],
-            self.config["rx_lon"],
-            self.config.get("node_id"),
-        )
+        if is_private(self.config.get("node_id")):
+            lat, lon = None, None
+        else:
+            lat, lon = public_latlon(
+                self.config["rx_lat"],
+                self.config["rx_lon"],
+                self.config.get("node_id"),
+            )
         return {
             "version": "retina-passive-radar",
             "refresh": 1000,

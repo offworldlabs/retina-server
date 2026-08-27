@@ -70,6 +70,31 @@ SCHEMA = pa.schema(
 )
 
 
+# Schema metadata stamped on every file this module writes, saying which frame
+# the rx_lat/rx_lon columns are in.  A file is otherwise indistinguishable from
+# one written before the fuzz existed — the columns, dtypes and magnitudes are
+# identical — so the archive backfill (scripts/backfill_archive_fuzz.py) has no
+# way to tell "already published" from "still true", and applying the offset
+# to a file that already carries it displaces the node twice.  Written as
+# Parquet key-value metadata rather than a column: it is a fact about the file,
+# it costs a few bytes once instead of once per row, and every reader that does
+# not know about it is unaffected.
+RX_FRAME_KEY = b"retina.rx_frame"
+RX_FRAME_PUBLISHED = b"published"
+PUBLISHED_SCHEMA = SCHEMA.with_metadata({RX_FRAME_KEY: RX_FRAME_PUBLISHED})
+
+
+def is_rx_published(schema) -> bool:
+    """Whether a parquet/arrow schema is stamped as carrying published rx.
+
+    Absence is not proof of a true-frame file — nothing stamped files written
+    between the fuzz landing and this marker landing — which is why the
+    backfill script offers a timestamp guard as well.  Presence is proof.
+    """
+    meta = getattr(schema, "metadata", None) or {}
+    return meta.get(RX_FRAME_KEY) == RX_FRAME_PUBLISHED
+
+
 def _safe_float(arr, i: int) -> float | None:
     if i >= len(arr):
         return None
@@ -221,7 +246,10 @@ def write_detections_parquet(
     if not cols["frame_ts_ms"]:
         return None
 
-    table = pa.table(cols, schema=SCHEMA)
+    # PUBLISHED_SCHEMA, not SCHEMA: _flatten already wrote the published rx
+    # above, and the stamp is what lets a later reader — the backfill in
+    # particular — know that without having to guess.
+    table = pa.table(cols, schema=PUBLISHED_SCHEMA)
 
     key = f"year={write_ts:%Y}/month={write_ts:%m}/day={write_ts:%d}/node_id={node_id}/part-{write_ts:%H%M%S}.parquet"
     out_path = Path(base_dir) / key

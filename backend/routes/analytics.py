@@ -12,6 +12,7 @@ from retina_analytics.trust import AdsReportEntry
 from core import state
 from services import node_bias
 from services.public_location import public_node_summary
+from services.publication import is_private
 
 _RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
 
@@ -27,6 +28,12 @@ async def radar_analytics(real_only: bool = False):
 
 @router.get("/api/radar/analytics/{node_id}")
 async def radar_node_analytics(node_id: str):
+    # A node whose owner registered it private is 404 here, not 403: the two
+    # answers differ only in whether they confirm the node exists, and this
+    # route is reachable by anyone with a node id to try.  Same status the
+    # cached listing produces by omission, so the two surfaces agree.
+    if is_private(node_id):
+        raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
     summary = state.node_analytics.get_node_summary(node_id)
     if summary.keys() == {"node_id"}:
         raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
@@ -182,7 +189,9 @@ async def radar_anomalies():
         active_hexes = set(state.anomaly_hexes)
 
     # --- Live anomaly types from aircraft.json ---
-    live_aircraft = state.latest_aircraft_json.get("aircraft", [])
+    # The redacted feed: this route is unauthenticated, and an anomaly count is
+    # still a statement about a private node's detections.
+    live_aircraft = state.latest_aircraft_json_public.get("aircraft", [])
     live_type_counts: Counter = Counter()
     for ac in live_aircraft:
         if ac.get("is_anomalous"):
