@@ -137,8 +137,8 @@ def validate_config(payload: dict[str, Any]) -> dict[str, Any]:
     # is a bug upstream rather than a state worth representing.
     for lat_field, lon_field in (("rx_lat", "rx_lon"), ("tx_lat", "tx_lon")):
         if (out[lat_field] is None) != (out[lon_field] is None):
-            missing = lat_field if out[lat_field] is None else lon_field
-            raise ConfigInvalid(missing, "latitude and longitude must be given together")
+            unpaired = lat_field if out[lat_field] is None else lon_field
+            raise ConfigInvalid(unpaired, "latitude and longitude must be given together")
 
     if (
         out["rx_lat"] is not None
@@ -160,8 +160,8 @@ def position_status(config: dict[str, Any]) -> str:
     has to recombine. Keyed on latitude and longitude alone: a node with a
     position and no altitude is positioned.
     """
-    has_rx = config.get("rx_lat") is not None
-    has_tx = config.get("tx_lat") is not None
+    has_rx = config.get("rx_lat") is not None and config.get("rx_lon") is not None
+    has_tx = config.get("tx_lat") is not None and config.get("tx_lon") is not None
     if has_rx and has_tx:
         return "positioned"
     if has_rx:

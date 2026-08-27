@@ -369,8 +369,9 @@ def test_the_field_named_is_always_a_string():
         ({"tx_lat": None, "tx_lon": None}, "missing_tx"),
         ({"rx_lat": None, "rx_lon": None, "tx_lat": None, "tx_lon": None}, "missing_both"),
         ({"rx_alt_ft": None, "tx_alt_ft": None}, "positioned"),
+        ({"rx_alt_ft": None}, "positioned"),
     ],
-    ids=["full", "no-rx", "no-tx", "neither", "no-altitude"],
+    ids=["full", "no-rx", "no-tx", "neither", "no-altitude", "one-altitude"],
 )
 def test_null_coordinates_are_accepted(overrides, expected):
     out = validate_config(dict(VALID, **overrides))
@@ -410,13 +411,29 @@ def test_baseline_check_is_skipped_when_a_side_is_null():
     assert out["tx_lat"] is None
 
 
-def test_degenerate_baseline_still_rejected_when_both_present():
+def test_an_out_of_range_coordinate_is_reported_before_a_missing_pair():
+    """The bounds loop runs before the pair rule, so an out-of-range rx_lat is
+    reported as out-of-range, not as an unpaired coordinate, even though its
+    own pair (rx_lon) is null in the same payload."""
     with pytest.raises(ConfigInvalid) as excinfo:
-        validate_config(dict(VALID, tx_lat=VALID["rx_lat"], tx_lon=VALID["rx_lon"]))
-    assert excinfo.value.field == "tx_lat"
-
-
-def test_out_of_range_coordinate_still_rejected():
-    with pytest.raises(ConfigInvalid) as excinfo:
-        validate_config(dict(VALID, rx_lat=91.0))
+        validate_config(dict(VALID, rx_lat=91.0, rx_lon=None))
     assert excinfo.value.field == "rx_lat"
+    assert excinfo.value.reason == "out of range"
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {},
+        {"node_id": "x"},
+        {"rx_lat": 1.0},
+    ],
+    ids=["empty", "unrelated-keys-only", "latitude-without-longitude"],
+)
+def test_position_status_on_a_config_that_never_saw_validate_config(config):
+    """Task 4 calls position_status on connected_nodes configs directly, which
+    never necessarily passed through validate_config: a legacy node's config
+    can carry no geometry keys at all, and a bulk-ingested one can carry a
+    lone coordinate. A side with only one of its two coordinates places
+    nothing, so all three of these read as missing_both."""
+    assert position_status(config) == "missing_both"
