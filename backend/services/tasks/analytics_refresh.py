@@ -302,6 +302,7 @@ def _public_location_block(node_id: str, cfg: dict) -> dict:
 
 def _refresh_analytics_and_nodes():
     """Heavy work: recompute analytics, nodes, and overlaps → store as bytes."""
+    from services.node_config import position_status
     from services.tcp_handler import is_synthetic_node
 
     # Analytics.  Both variants below are served to unauthenticated clients, so
@@ -363,6 +364,7 @@ def _refresh_analytics_and_nodes():
                 ),
                 "sample_rate": (info.get("config", {}).get("Fs") or info.get("config", {}).get("fs_hz")),
                 "location": _public_location_block(nid, info.get("config", {})),
+                "position_status": position_status(info.get("config", {})),
             }
             for nid, info in _published_nodes
         },
