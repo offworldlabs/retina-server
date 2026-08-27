@@ -53,12 +53,15 @@ class NodeConfig(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     node_id: Mapped[str] = mapped_column(String(32), ForeignKey("nodes.node_id"), index=True)
     version: Mapped[int] = mapped_column(Integer)
-    rx_lat: Mapped[float] = mapped_column(Float)
-    rx_lon: Mapped[float] = mapped_column(Float)
-    rx_alt_ft: Mapped[float] = mapped_column(Float)
-    tx_lat: Mapped[float] = mapped_column(Float)
-    tx_lon: Mapped[float] = mapped_column(Float)
-    tx_alt_ft: Mapped[float] = mapped_column(Float)
+    # Nullable since contract 1.1.3: an owner cannot always supply the geometry
+    # at setup, and such a node is carried without being placed. Latitude and
+    # longitude are validated as a pair; altitude stands alone.
+    rx_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rx_lon: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rx_alt_ft: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tx_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tx_lon: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tx_alt_ft: Mapped[float | None] = mapped_column(Float, nullable=True)
     tx_callsign: Mapped[str] = mapped_column(String(32))
     fc_hz: Mapped[float] = mapped_column(Float)
     fs_hz: Mapped[float] = mapped_column(Float)

@@ -233,3 +233,35 @@ def test_the_compared_fields_are_every_geometry_column():
     assert set(_CONFIG_FIELDS) == set(validate_config(dict(CONFIG)))
     assert len(_CONFIG_FIELDS) == 15
     assert set(CHANGES) == set(_CONFIG_FIELDS)
+
+
+async def test_a_null_position_round_trips(node_session):
+    """node_configs.node_id is a foreign key, so the row it hangs off has to
+    exist first, the same as the `node` fixture gives every other test here."""
+    node_session.add(Node(node_id="test-null-pos", node_ref=mint_node_ref(), board_model="raspberrypi5-4gb"))
+    await node_session.flush()
+
+    row = NodeConfig(
+        node_id="test-null-pos",
+        version=1,
+        rx_lat=None,
+        rx_lon=None,
+        rx_alt_ft=None,
+        tx_lat=34.90,
+        tx_lon=-82.45,
+        tx_alt_ft=1200.0,
+        tx_callsign="WSPA",
+        fc_hz=195e6,
+        fs_hz=2.4e6,
+        beam_width_deg=None,
+        beam_azimuth_deg=None,
+        max_range_km=150.0,
+        cpi_s=0.5,
+        delay_tolerance_us=10.0,
+        doppler_tolerance_hz=5.0,
+    )
+    node_session.add(row)
+    await node_session.commit()
+    stored = await node_session.get(NodeConfig, row.id)
+    assert stored.rx_lat is None
+    assert stored.tx_lat == 34.90

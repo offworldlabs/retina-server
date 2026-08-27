@@ -44,7 +44,12 @@ NODE_PATH_PREFIX = "/v1/nodes"
 #
 # Publishing NodeConfig would be the minor bump, since that is the one thing
 # here a client cannot already do (86cb6d7he).
-NODE_API_VERSION = "1.1.2"
+#
+# 1.1.3 makes the six coordinate fields of NodeConfig nullable, so a node whose
+# owner cannot supply the geometry can still register. A patch rather than a
+# minor bump for the same reason as above: NodeConfig is not published, so the
+# document gains no field and no capability a client can read (86cb6d7he).
+NODE_API_VERSION = "1.1.3"
 
 # No tag here: each sub-router carries the contract's own grouping, since those
 # are what a generated client is built around.
