@@ -84,27 +84,28 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          # Single definition: the guard below and the fold's origin check both need it.
+          WORKFLOW_PATH: .github/workflows/claude-code-review.yml
         run: |
           # The action refuses to run when this file differs from the copy on the
           # default branch, which stops a pull request rewriting its own reviewer
           # to reach the secrets. It skips, reports success, and reviews nothing.
           # Without this, the check below would fail every pull request that edits
-          # this workflow, over a review that was never allowed to happen. Mirror
-          # the action's own condition, comparing blob hashes, rather than reading
-          # its log for a phrase that will change.
-          # Keep the call's exit status: an error here is not the same thing as
-          # the file being absent, and swallowing both left the check below to
-          # fail with an error blaming the reviewer for a lookup that failed.
-          if base=$(gh api "repos/${REPO}/contents/.github/workflows/claude-code-review.yml?ref=${DEFAULT_BRANCH}" --jq .sha 2>/dev/null); then
-            :
+          # this workflow, over a review that was never allowed to happen.
+          #
+          # Ask what the pull request changes rather than comparing this file's
+          # content against the default branch: a branch cut before this file last
+          # changed still carries the old copy, and a content comparison reads that
+          # as an edit, skipping the check below on every stale branch.
+          if changed=$(gh pr diff "${PR_NUMBER}" -R "${REPO}" --name-only 2>/dev/null); then
+            if printf '%s\n' "${changed}" | grep -qxF "${WORKFLOW_PATH}"; then
+              echo "::notice::This pull request edits the review workflow, so the action skipped itself and no review ran. That is its guard against a pull request editing its own reviewer, not a fault in this change. Nothing supersedes the earlier comments either, so any left part-ticked by a cancelled run stay expanded here. Reviews resume on the pull requests that follow this one onto ${DEFAULT_BRANCH}, and this one needs reviewing by hand."
+              exit 0
+            fi
           else
-            base=""
-            echo "::warning::could not read this workflow from ${DEFAULT_BRANCH}, so the self-edit guard below did not run. If this step then fails having seen no review, that is the likely cause rather than anything it names."
-          fi
-          here=$(git hash-object .github/workflows/claude-code-review.yml)
-          if [ -n "${base}" ] && [ "${base}" != "${here}" ]; then
-            echo "::notice::This pull request edits the review workflow, so the action skipped itself and no review ran. That is its guard against a pull request editing its own reviewer, not a fault in this change. Nothing supersedes the earlier comments either, so any left part-ticked by a cancelled run stay expanded here. Reviews resume on the pull requests that follow this one onto ${DEFAULT_BRANCH}, and this one needs reviewing by hand."
-            exit 0
+            # Skipping the guard fails towards demanding a review: a pull request
+            # that did edit this file fails below rather than passing unreviewed.
+            echo "::warning::could not list this pull request's changed files, so the self-edit guard did not run. If this step then fails having seen no review, that is the likely cause rather than anything it names."
           fi
 
           # One object per line, not one array per page. With --paginate the --jq
@@ -119,7 +120,7 @@ jobs:
           import subprocess
 
           BOT = "claude[bot]"
-          WORKFLOW = ".github/workflows/claude-code-review.yml"
+          WORKFLOW = os.environ["WORKFLOW_PATH"]
           REPO = os.environ["REPO"]
           run_id = os.environ["GITHUB_RUN_ID"]
 
