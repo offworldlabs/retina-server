@@ -45,12 +45,17 @@ def test_positionless_node_is_counted_but_not_placed():
 
 
 def test_positionless_node_builds_no_solver_pipeline():
-    """The never-solve half, pinned rather than left to a truthiness accident.
+    """The never-solve half: a positionless node builds no solver pipeline.
 
-    get_or_create_node_pipeline gates on `if cfg.get("rx_lat") and
-    cfg.get("tx_lat")`, so today a null is excluded only because it is falsy.
-    That check is due to become an `is not None` test under 86cbavanm, which
-    would start building pipelines for positionless nodes unless this holds it.
+    Holds today because get_or_create_node_pipeline's guard at
+    frame_processor.py:171, `if cfg.get("rx_lat") and cfg.get("tx_lat")`,
+    falls through to the shared default pipeline only because None is falsy:
+    a known truthiness bug, 86cbavanm.
+
+    Worth pinning because a correct repair to `is not None` preserves this
+    fall-through, but a repair that tests key presence (`"rx_lat" in cfg`)
+    instead of value nullity does not: the key is present, carrying None, so
+    pipeline construction proceeds and raises a TypeError.
     """
     from services.frame_processor import get_or_create_node_pipeline
 
