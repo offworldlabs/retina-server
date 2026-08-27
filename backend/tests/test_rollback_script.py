@@ -47,11 +47,7 @@ def _repo(tmp_path: Path) -> Path:
 
 def _lookup_line() -> str:
     """The LAST_GOOD assignment exactly as it stands in rollback.sh."""
-    lines = [
-        ln.strip()
-        for ln in ROLLBACK_SH.read_text().splitlines()
-        if re.match(r"\s*LAST_GOOD=", ln)
-    ]
+    lines = [ln.strip() for ln in ROLLBACK_SH.read_text().splitlines() if re.match(r"\s*LAST_GOOD=", ln)]
     assert len(lines) == 1, f"expected one LAST_GOOD assignment, found {len(lines)}"
     return lines[0]
 
@@ -71,11 +67,13 @@ def test_lookup_survives_a_listing_larger_than_a_pipe_buffer(tmp_path):
         ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
     ).stdout.strip()
     # One batch, because 8000 `git tag` invocations is a slow test.
-    batch = "".join(
-        f"create refs/tags/deploy-{i:08d}-000000 {head}\n" for i in range(BULK_TAG_COUNT)
-    )
+    batch = "".join(f"create refs/tags/deploy-{i:08d}-000000 {head}\n" for i in range(BULK_TAG_COUNT))
     subprocess.run(  # noqa: S603, S607
-        ["git", "update-ref", "--stdin"], cwd=repo, input=batch, text=True, check=True,
+        ["git", "update-ref", "--stdin"],
+        cwd=repo,
+        input=batch,
+        text=True,
+        check=True,
         capture_output=True,
     )
 
@@ -102,9 +100,18 @@ def test_lookup_picks_the_newest_tag(tmp_path):
         ("deploy-20260501-120000", "2026-05-01T12:00:00Z"),
     ):
         _git(
-            repo, "tag", "-a", name, "-m", name,
-            env={"PATH": "/usr/bin:/bin", "GIT_COMMITTER_DATE": when,
-                 "GIT_COMMITTER_NAME": "Test", "GIT_COMMITTER_EMAIL": "test@example.com"},
+            repo,
+            "tag",
+            "-a",
+            name,
+            "-m",
+            name,
+            env={
+                "PATH": "/usr/bin:/bin",
+                "GIT_COMMITTER_DATE": when,
+                "GIT_COMMITTER_NAME": "Test",
+                "GIT_COMMITTER_EMAIL": "test@example.com",
+            },
         )
 
     result = _run_lookup(repo)

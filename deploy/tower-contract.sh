@@ -203,8 +203,19 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 
     for check in elevation config; do
         printf 'Asserting %s/api/%s honours the shape our callers read... ' "$BASE" "$check"
+        # 2 is elevation's own upstream being unavailable, never config's. This
+        # gate decides whether a vhost may be pointed at this instance, which a
+        # third party's rate limiter has no bearing on.
         if REASON=$("assert_${check}_contract" "${BASE}/api/${check}"); then
+            CHECK_RC=0
+        else
+            CHECK_RC=$?
+        fi
+        if [ "$CHECK_RC" = 0 ]; then
             echo "OK"
+        elif [ "$CHECK_RC" = 2 ]; then
+            echo "DEGRADED"
+            printf '%s\n' "$REASON"
         else
             echo "FAILED"
             printf '%s\n' "$REASON"
