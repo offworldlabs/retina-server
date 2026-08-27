@@ -86,50 +86,53 @@ export default function ConfigPage() {
               ? isLiveNodes ? `Live Node Config (${nodeConfig.total} nodes)` : "nodes_config.json"
               : isLiveTowers ? `Live Tower Config (${towerConfig.total} towers)` : "tower_config.json"}
           </h3>
-          <div style={{ display: "flex", gap: 8 }}>
-            {editing ? (
-              <>
-                <button
-                  className="btn btn-primary btn-sm"
-                  disabled={saving}
-                  onClick={async () => {
-                    try {
-                      const parsed = JSON.parse(editText);
-                      setSaving(true);
-                      if (activeTab === "nodes") {
+          {/* Towers is view-only: the live view is derived from what nodes
+              report, not editable data, and the ranking config an operator
+              would want to edit lives in tower-finder-service (PUT /api/config
+              on any tower vhost). The PUT route this tab's Save used to call
+              was deleted with the monolith tower stack — and saving was
+              already broken whenever no overlay file existed, because the
+              live view never validated as tower config. */}
+          {activeTab === "nodes" && (
+            <div style={{ display: "flex", gap: 8 }}>
+              {editing ? (
+                <>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    disabled={saving}
+                    onClick={async () => {
+                      try {
+                        const parsed = JSON.parse(editText);
+                        setSaving(true);
                         await api.adminUpdateNodeConfig(parsed);
                         setNodeConfig(parsed);
-                      } else {
-                        await api.adminUpdateTowerConfig(parsed);
-                        setTowerConfig(parsed);
+                        setEditing(false);
+                      } catch (err) {
+                        alert("Invalid JSON: " + err.message);
+                      } finally {
+                        setSaving(false);
                       }
-                      setEditing(false);
-                    } catch (err) {
-                      alert("Invalid JSON: " + err.message);
-                    } finally {
-                      setSaving(false);
-                    }
+                    }}
+                  >
+                    {saving ? "Saving…" : "Save"}
+                  </button>
+                  <button className="btn btn-secondary btn-sm" onClick={() => setEditing(false)}>
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  className="btn btn-outline btn-sm"
+                  onClick={() => {
+                    setEditText(JSON.stringify(nodeConfig, null, 2));
+                    setEditing(true);
                   }}
                 >
-                  {saving ? "Saving…" : "Save"}
+                  Edit
                 </button>
-                <button className="btn btn-secondary btn-sm" onClick={() => setEditing(false)}>
-                  Cancel
-                </button>
-              </>
-            ) : (
-              <button
-                className="btn btn-outline btn-sm"
-                onClick={() => {
-                  const cfg = activeTab === "nodes" ? nodeConfig : towerConfig;
-                  setEditText(JSON.stringify(cfg, null, 2));
-                  setEditing(true);
-                }}
-              >
-                Edit
-              </button>
-            )}
-          </div>
+              )}
+            </div>
+          )}
         </div>
         <div className="card-body">
           {editing ? (
