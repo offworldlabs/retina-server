@@ -4,6 +4,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { PositionStatusBadge } from "../../components/PositionStatusBadge";
 
 export default function OverviewPage() {
   const [nodes, setNodes] = useState([]);
@@ -43,6 +44,7 @@ export default function OverviewPage() {
 
   const nodeList = Array.isArray(nodes) ? nodes : [];
   const onlineCount = nodeList.filter((n) => n.status !== "disconnected" && n.status != null).length;
+  const needsAttention = nodeList.filter((n) => n.position_status && n.position_status !== "positioned");
   // detection_area.n_detections is the most reliably populated counter
   const totalFrameDetections = nodeList.reduce(
     (s, n) => s + (n._analytics?.metrics?.total_detections || n._analytics?.detection_area?.n_detections || 0),
@@ -81,6 +83,38 @@ export default function OverviewPage() {
           <div className="stat-value">{nodeList.length}</div>
         </div>
       </div>
+
+      {needsAttention.length > 0 && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header">
+            <h3>Needs Attention</h3>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              Recording detections normally, awaiting a position to appear on the map
+            </span>
+          </div>
+          <div className="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>Node</th>
+                  <th>Position</th>
+                </tr>
+              </thead>
+              <tbody>
+                {needsAttention.map((node) => {
+                  const id = node.node_id || node.id;
+                  return (
+                    <tr key={id} style={{ cursor: "pointer" }} onClick={() => navigate(`/nodes/${id}`)}>
+                      <td style={{ color: "var(--accent)" }}>{node.name || id}</td>
+                      <td><PositionStatusBadge status={node.position_status} /></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {chartData.length > 0 && (
         <div className="card" style={{ marginBottom: 24 }}>

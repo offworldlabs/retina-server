@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
+import { PositionStatusBadge } from "../../components/PositionStatusBadge";
 
 const PAGE_SIZE = 25;
 
@@ -87,6 +88,7 @@ export default function NodeManagementPage() {
                 <span className={`badge ${online ? "online" : "offline"}`}>
                   {online ? "Online" : "Offline"}
                 </span>
+                <PositionStatusBadge status={node.position_status} />
                 {node.name || id}
               </div>
               <div className="node-meta">

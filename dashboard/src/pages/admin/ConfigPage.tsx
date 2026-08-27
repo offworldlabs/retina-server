@@ -1,7 +1,20 @@
 import { useState, useEffect } from "react";
 import { api } from "../../api/client";
+import { PositionStatusBadge } from "../../components/PositionStatusBadge";
+import type { PositionStatus } from "../../types";
 
 const PAGE_SIZE = 25;
+
+// /api/admin/config/nodes predates position_status and does not carry it;
+// derive it from the same rx/tx lat+lon fields this table already shows.
+function derivePositionStatus(n: { rx_lat?: number; rx_lon?: number; tx_lat?: number; tx_lon?: number }): PositionStatus {
+  const hasRx = n.rx_lat != null && n.rx_lon != null;
+  const hasTx = n.tx_lat != null && n.tx_lon != null;
+  if (hasRx && hasTx) return "positioned";
+  if (hasRx) return "missing_tx";
+  if (hasTx) return "missing_rx";
+  return "missing_both";
+}
 
 export default function ConfigPage() {
   const [nodeConfig, setNodeConfig] = useState(null);
@@ -183,7 +196,10 @@ export default function ConfigPage() {
                         {pagedNodes.map(([id, n]: [string, any]) => (
                           <tr key={id}>
                             <td style={{ fontFamily: "monospace", fontSize: 12 }}>{id}</td>
-                            <td><span className={`badge ${n.status === "active" ? "online" : "offline"}`}>{n.status || "—"}</span></td>
+                            <td>
+                              <span className={`badge ${n.status === "active" ? "online" : "offline"}`}>{n.status || "—"}</span>
+                              <PositionStatusBadge status={derivePositionStatus(n)} />
+                            </td>
                             <td>{n.rx_lat != null ? n.rx_lat.toFixed(4) : "—"}</td>
                             <td>{n.rx_lon != null ? n.rx_lon.toFixed(4) : "—"}</td>
                             <td>{n.tx_lat != null ? n.tx_lat.toFixed(4) : "—"}</td>

@@ -4,6 +4,13 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import type { PositionStatus } from "../../types";
+
+const POSITION_FIX_HINT: Record<Exclude<PositionStatus, "positioned">, string> = {
+  missing_rx: "Add its receiver position in the node configuration.",
+  missing_tx: "Add its illuminator position in the node configuration.",
+  missing_both: "Add its receiver and illuminator positions in the node configuration.",
+};
 
 export default function NodeDetailPage() {
   const { nodeId } = useParams();
@@ -133,6 +140,26 @@ export default function NodeDetailPage() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* Position completeness is orthogonal to the node's liveness (`status`):
+          a positionless node can be actively detecting and perfectly healthy. */}
+      {nodeInfo?.position_status && nodeInfo.position_status !== "positioned" && (
+        <div
+          style={{
+            marginBottom: 24,
+            padding: "12px 16px",
+            borderRadius: 8,
+            border: "1px solid var(--warning)",
+            background: "var(--warning-light)",
+            fontSize: 13,
+          }}
+        >
+          <strong>Position not configured.</strong> This node is recording
+          detections normally. It only needs a position before it can appear
+          on the map or contribute to solves.{" "}
+          {POSITION_FIX_HINT[nodeInfo.position_status as Exclude<PositionStatus, "positioned">]}
         </div>
       )}
 

@@ -63,6 +63,11 @@ export interface RadarNode {
   empirical_n_points: number;
 }
 
+/** Which ends of a node's bistatic pair have coordinates. Orthogonal to a
+ *  node's `status` (liveness): a node can be actively detecting and still
+ *  be anything but "positioned". */
+export type PositionStatus = "positioned" | "missing_rx" | "missing_tx" | "missing_both";
+
 /* ---- Dashboard / fleet ---- */
 
 export interface FleetDashboard {
