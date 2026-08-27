@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from services.node_config import ConfigInvalid, validate_config
+from services.node_config import ConfigInvalid, position_status, validate_config
 
 VALID = {
     "rx_lat": 51.42,
@@ -356,3 +356,67 @@ def test_the_field_named_is_always_a_string():
     with pytest.raises(ConfigInvalid) as excinfo:
         validate_config([1, 2])
     assert isinstance(excinfo.value.field, str)
+
+
+# --- Nullable coordinates ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "overrides,expected",
+    [
+        ({}, "positioned"),
+        ({"rx_lat": None, "rx_lon": None}, "missing_rx"),
+        ({"tx_lat": None, "tx_lon": None}, "missing_tx"),
+        ({"rx_lat": None, "rx_lon": None, "tx_lat": None, "tx_lon": None}, "missing_both"),
+        ({"rx_alt_ft": None, "tx_alt_ft": None}, "positioned"),
+    ],
+    ids=["full", "no-rx", "no-tx", "neither", "no-altitude"],
+)
+def test_null_coordinates_are_accepted(overrides, expected):
+    out = validate_config(dict(VALID, **overrides))
+    for key, value in overrides.items():
+        assert out[key] is value
+    assert position_status(out) == expected
+
+
+@pytest.mark.parametrize(
+    "overrides,field",
+    [
+        ({"rx_lat": None}, "rx_lat"),
+        ({"rx_lon": None}, "rx_lon"),
+        ({"tx_lat": None}, "tx_lat"),
+        ({"tx_lon": None}, "tx_lon"),
+    ],
+)
+def test_half_a_position_is_rejected(overrides, field):
+    with pytest.raises(ConfigInvalid) as excinfo:
+        validate_config(dict(VALID, **overrides))
+    assert excinfo.value.field == field
+    assert excinfo.value.reason == "latitude and longitude must be given together"
+
+
+def test_a_missing_key_is_still_an_error():
+    payload = dict(VALID)
+    del payload["rx_lat"]
+    with pytest.raises(ConfigInvalid) as excinfo:
+        validate_config(payload)
+    assert excinfo.value.reason == "missing"
+
+
+def test_baseline_check_is_skipped_when_a_side_is_null():
+    # Identical rx and tx would be a degenerate baseline, but with no tx there
+    # is no baseline to be degenerate.
+    out = validate_config(dict(VALID, tx_lat=None, tx_lon=None))
+    assert out["tx_lat"] is None
+
+
+def test_degenerate_baseline_still_rejected_when_both_present():
+    with pytest.raises(ConfigInvalid) as excinfo:
+        validate_config(dict(VALID, tx_lat=VALID["rx_lat"], tx_lon=VALID["rx_lon"]))
+    assert excinfo.value.field == "tx_lat"
+
+
+def test_out_of_range_coordinate_still_rejected():
+    with pytest.raises(ConfigInvalid) as excinfo:
+        validate_config(dict(VALID, rx_lat=91.0))
+    assert excinfo.value.field == "rx_lat"
