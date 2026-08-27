@@ -10,7 +10,9 @@
 # every other environment; *.localhost resolves to 127.0.0.1 without a hosts entry
 # on macOS and most Linux):
 #   http://testmap.localhost:8080  → live radar map, synthetic fleet
-#   http://towers.localhost:8080   → tower search (also plain localhost:8080)
+#   http://towers.localhost:8080   → tower search SPA (also plain localhost:8080).
+#                                    Its API needs tower-finder-service running;
+#                                    see TOWER_FINDER_ENABLED below.
 #   http://api.localhost:8080      → API + WebSocket
 #   http://dash.localhost:8080     → dashboard
 #
@@ -49,9 +51,20 @@ services:
       # staging still render TLS.
       - TLS_ENABLED=false
       # The other thing a laptop cannot do: reach tower-finder-service, which is
-      # a separate stack on the external retina-edge network. Off, so /api/towers
-      # falls through to the local app instead of 502ing. Never set this on a
-      # deployed host; the SPA would serve a ranking the service no longer owns.
+      # a separate stack on the external retina-edge network. Off, so nginx does
+      # not render a proxy to an upstream that is not there and 502 on it.
+      #
+      # This flag controls the nginx proxy and nothing else. There is no local
+      # fallback behind it any more: the monolith's own tower stack was deleted
+      # once every deployed vhost was proxied to the service, so with the flag
+      # off, /api/towers, /api/elevation and /api/config are 404s and the tower
+      # search SPA on towers.localhost cannot function. To work on the tower
+      # search locally, run tower-finder-service (its own repo and container)
+      # and point this stack at it — do not expect this one to answer.
+      #
+      # Never set this true on a deployed host without the service reachable,
+      # and never false on one: a deployed vhost with the proxy off now serves
+      # 404s rather than a stale ranking.
       - TOWER_FINDER_ENABLED=false
       # The template needs a name for every vhost it renders. *.localhost is
       # reserved for loopback (RFC 6761), so these need no /etc/hosts entry.

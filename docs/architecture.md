@@ -13,6 +13,8 @@ only by subdomain, resolved client-side in `frontend/src/utils/domains.ts`:
   staging droplet rather than production.
 - **map** (`map.retina.fm`) — production live map, real radar nodes only.
 - **Tower Finder** — `/api/towers` illuminator search (the original feature).
+  The SPA is this repo's; the API is proxied to tower-finder-service, which owns
+  the only implementation since the monolith's copy was deleted.
 - **dashboard** (`dashboard/`, separate SPA) — admin: node ownership, claim
   codes, MLAT verification, metrics. Auth required.
 
@@ -50,8 +52,9 @@ are in [`arc-display.md`](arc-display.md).
 
 ## Backend components
 
-- **`routes/`** — HTTP + WebSocket endpoints (towers, radar, streaming, auth,
-  admin, analytics, test, output).
+- **`routes/`** — HTTP + WebSocket endpoints (radar, streaming, auth, admin,
+  analytics, nodes, test, output). No tower routes: nginx sends those to
+  tower-finder-service.
 - **`services/frame_processor.py`** — frame ingest: turns detection frames into
   per-node tracks. Split satellites: `aircraft_feed.py` (combined aircraft JSON
   assembly), `track_gates.py` (per-track gates, dead-reckoning, anomaly flags,

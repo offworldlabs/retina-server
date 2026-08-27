@@ -21,7 +21,7 @@ One FastAPI backend serves several React front-ends, distinguished by subdomain:
 | **testmap** | Live aircraft map fed by the simulation fleet (synthetic nodes) — the main dev/demo surface. `testmap.retina.fm` is served by the **staging** droplet, the only environment still running a fleet. |
 | **map** | Production live map showing only real radar nodes. |
 | **dashboard** | Admin app (auth required): node ownership, claim codes, MLAT verification, metrics. |
-| **Tower Finder** | The original `/api/towers` illuminator search. |
+| **Tower Finder** | The original illuminator search. The SPA is here; the `/api/towers`, `/api/elevation` and `/api/config` API is **tower-finder-service** (separate repo and container), which nginx proxies to on every vhost. This backend no longer implements it. |
 
 Receiver nodes connect over TCP and stream detection frames. The pipeline
 (tracker → geolocator) turns frames into aircraft positions, broadcast to the
@@ -240,7 +240,10 @@ branch, open a PR, get it green, then merge.
 - **Submodules.** After pulling, run `git submodule update --init --recursive`
   if `libs/` looks stale or imports fail.
 - **Surfaces are hostname-driven.** `localhost` shows tower search; you need a
-  `*map.localhost` hostname to get the live map and its default tab.
+  `*map.localhost` hostname to get the live map and its default tab. The tower
+  search SPA there has no API unless you also run tower-finder-service: the
+  laptop overlay sets `TOWER_FINDER_ENABLED=false`, and nothing in this repo
+  answers `/api/towers` any more.
 - **Config vs runtime config.** `backend/config/` is image-only (baked into the
   Docker image); runtime-editable overrides live under `data/runtime/`. See the
   runbook for the volume-shadowing gotcha.

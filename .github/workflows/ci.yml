@@ -1112,11 +1112,13 @@ jobs:
           check_status "GET /api/radar/analytics" "${BASE_URL}/api/radar/analytics"   "200"
           check_status "GET /api/test/dashboard"  "${BASE_URL}/api/test/dashboard"    "200"
           check_status "GET /api/test/mlat-verification" "${BASE_URL}/api/test/mlat-verification" "200"
-          # BASE_URL is api.retina.fm, whose vhost defines no /api/config
-          # location — so this falls through `location /` to the monolith and is
-          # still the app's own tower_config.json, unaffected by the proxy
-          # dedup. The proxied copy is checked on the tower vhosts below.
-          check_status "GET /api/config (app)"    "${BASE_URL}/api/config"            "200"
+          # No /api/config check on BASE_URL (api.retina.fm): that vhost defines
+          # no /api/config location, so the request falls through `location /`
+          # to the app — which no longer implements the route. The monolith's
+          # tower stack was deleted once every /api/ vhost was proxied to
+          # tower-finder-service, so this would now be a 404 by design. The
+          # route is checked where it is actually served, on the tower vhosts
+          # below.
           check_status "GET / (frontend)"         "https://towers.retina.fm/"         "200"
           check_status "GET /api/health (api.retina.fm)" "${BASE_URL}/api/health"     "200"
 

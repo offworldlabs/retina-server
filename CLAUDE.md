@@ -2,7 +2,8 @@
 
 FastAPI backend and React front-ends for the RETINA passive-radar network.
 
-- [`README.md`](README.md): what this is, quick start, the tower-search API.
+- [`README.md`](README.md): what this is, quick start, and where the tower-search
+  API went (tower-finder-service — not this backend).
 - [`ONBOARDING.md`](ONBOARDING.md): clone to running stack, tests, how code ships,
   and the things that will bite you. Read it before changing anything here.
 - [`docs/`](docs/): architecture, pipeline, runbook, alerting, simulation, arc display.

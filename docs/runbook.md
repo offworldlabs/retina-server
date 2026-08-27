@@ -226,45 +226,37 @@ curl -sk https://localhost/api/admin/metrics | python3 -m json.tool
 
 ---
 
-### `config_degraded` (sub-check of `health_degraded`)
+### `config_degraded` — retired
 
-**Trigger:** `tower_config.json` could not be read, parsed or validated, so the process is running on something other than the file on disk.  
-**What it means:** the config on disk is **not** the config in effect. The alert is about the **monolith's** `tower_config.json`, in retina's own volume.
+This alert no longer exists. It fired when the monolith's `tower_config.json`
+could not be read, parsed or validated, so the process was running on something
+other than the file on disk. The monolith's tower stack (the ranking engine, the
+config file and both endpoints that wrote it) was deleted once nginx began
+proxying the whole tower stack to **tower-finder-service**, so there is nothing
+left here to degrade.
 
-> **Since the tower routes were deduplicated to tower-finder-service:** `/api/config` on the tower, map, dash and admin vhosts is proxied to that service and returns **its** config, not the file this alert is about. To read the monolith's copy, use the API subdomain — `curl -s https://api.retina.fm/api/config` — which is the one vhost that still answers `/api/config` from the monolith (`location /` → `snippets/api.conf`). `GET /api/admin/config/towers` reads the same file on any vhost.
-
-The alert carries the reason and says what is in effect, which is one of two things:
-
-- `tower_config.json unusable, running on defaults (KeyError: 'max_km')` — the overlay was rejected and the
-  defaults that ship with the image were applied. The reason in brackets is why the overlay was rejected.
-- `tower_config.json unusable, the shipped defaults are unusable too (...), keeping the settings already in
-  effect (overlay: ...)` — both were rejected, so nothing changed: the process is still on whatever it last
-  loaded, which after a live reload is the operator's own previous config and only at startup is the in-code
-  defaults. Two reasons are given, the defaults' first and the overlay's in the tail.
-
-The second is the rarer and the more serious: a config shipped inside the image was rejected, so it cannot be
-inspected or corrected from the droplet. Treat it as an image or validator problem, not an operator one.
-
-**Check what the process actually loaded:**
-```bash
-docker compose logs backend | grep tower_config
-```
-
-**Common causes:**
-1. The overlay was edited by hand inside the volume and is no longer valid. The endpoints validate on write, so a config that arrives this way is the usual source.
-2. A field was renamed or removed in an image upgrade while the volume kept the old file. The volume survives `docker compose up -d --build`, so a redeploy does not clear it.
-3. The file is not readable, or not UTF-8.
-
-**Fix:** correct the file in the volume, then re-apply it with a valid body (both endpoints below validate before writing) or restart the service. The alert clears once a config loads cleanly.
-
-Use `PUT /api/admin/config/towers` — admin session auth, writes the same file, and reaches the monolith on **every** vhost:
+Tower ranking config now lives in tower-finder-service — its own repo, its own
+container, its own volume — and is read and written through that service:
 
 ```bash
-curl -sk -X PUT https://dash.retina.fm/api/admin/config/towers \
+# read (any vhost that answers /api/, all of which proxy this route)
+curl -s https://towers.retina.fm/api/config
+
+# write — bearer token, not an admin session
+curl -s -X PUT https://towers.retina.fm/api/config \
+     -H "Authorization: Bearer $TOWER_FINDER_ADMIN_TOKEN" \
      -H 'Content-Type: application/json' --data @tower_config.json
 ```
 
-`PUT https://api.retina.fm/api/config` (admin session) still works and writes the same file, but on any other vhost `PUT /api/config` now reaches tower-finder-service instead, where the gate is `Authorization: Bearer $TOWER_FINDER_ADMIN_TOKEN` rather than a session — it will answer **401** to a session-authenticated caller, and on success it writes the *service's* config, which does not clear this alert.
+If a bad config reaches that service, it is that service's health surface and
+runbook that report it, not retina's. `api.retina.fm` has no `/api/config`
+location and no longer falls through to an app handler, so `/api/config` there
+is a **404** by design — use a tower vhost.
+
+`GET /api/admin/config/towers` still exists and is unrelated to the ranking
+config: it is a live view, built from what the connected nodes report, of the
+transmitters actually being used as illuminators. Its file-overlay branch and its
+`PUT` went with the tower stack.
 
 ---
 
@@ -293,7 +285,7 @@ top -bn1 | head -8
 
 **Trigger:** A background task hasn't reported success within its expected interval.
 
-The health check only monitors these three tasks (defined in `critical_tasks` in `routes/towers.py`):
+The health check only monitors these three tasks (defined in `_CRITICAL_TASKS` in `services/health.py`):
 
 | Task | Expected interval | Stale after |
 |---|---|---|
