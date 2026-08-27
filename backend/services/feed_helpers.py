@@ -119,17 +119,53 @@ def dedup_aircraft(aircraft: list[dict]) -> list[dict]:
     return out
 
 
-def append_track_history(hex_code: str, lat: float, lon: float, alt_ft: float, ts: float):
-    """Append a position to the rolling track history for a hex."""
+def append_track_history(
+    hex_code: str,
+    lat: float,
+    lon: float,
+    alt_ft: float,
+    ts: float,
+    public_lat: float | None = None,
+    public_lon: float | None = None,
+):
+    """Append a position to the rolling track histories for a hex.
+
+    Two stores, written in lockstep: ``state.track_histories`` in the true
+    frame for every internal consumer, and ``state.track_histories_public`` in
+    the frame a client is served.  ``public_lat``/``public_lon`` default to the
+    true values, so a caller that has no translation to apply — a multinode
+    solve, an ADS-B fix, anything with fuzzing off — gets two identical stores
+    without having to say so.
+
+    The dedup runs on the TRUE position only, and decides for both.  Deduping
+    each store separately would let them drift apart in length, and the served
+    trail is read by index against nothing else; keeping one decision keeps
+    index i the same emit in both.  It is also the right frame to judge in:
+    "has this aircraft moved" is a question about the aircraft, and the
+    published delta changes between frames for reasons that have nothing to do
+    with the target.
+    """
     if hex_code not in state.track_histories:
         state.track_histories[hex_code] = deque(maxlen=state.TRACK_HISTORY_MAX)
+    if hex_code not in state.track_histories_public:
+        state.track_histories_public[hex_code] = deque(maxlen=state.TRACK_HISTORY_MAX)
     hist = state.track_histories[hex_code]
     if hist:
         dlat = abs(hist[-1][0] - lat)
         dlon = abs(hist[-1][1] - lon)
         if dlat < 0.00005 and dlon < 0.00005:
             return
-    hist.append([round(lat, 6), round(lon, 6), round(alt_ft, 0), round(ts, 1)])
+    alt_r = round(alt_ft, 0)
+    ts_r = round(ts, 1)
+    hist.append([round(lat, 6), round(lon, 6), alt_r, ts_r])
+    state.track_histories_public[hex_code].append(
+        [
+            round(lat if public_lat is None else public_lat, 6),
+            round(lon if public_lon is None else public_lon, 6),
+            alt_r,
+            ts_r,
+        ]
+    )
 
 
 # Minimum displacement (metres) before a new arc-motion sample is appended.

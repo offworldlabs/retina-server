@@ -21,9 +21,11 @@ from services.id_utils import multinode_hex_from_key
 from services.public_location import (
     fuzz_enabled,
     location_uncertainty_km,
+    public_cross_node,
     public_latlon,
     public_node_summaries,
 )
+from services.publication import private_node_ids, public_summaries
 
 _analytics_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=1,
@@ -306,9 +308,13 @@ def _refresh_analytics_and_nodes():
     # the receiver geometry in them is the published one — see
     # services/public_location.public_node_summary for what moves and why.  The
     # summaries the manager caches are left alone; this is a copy.
+    # ...and a node whose owner registered it private is not in them at all:
+    # public_summaries drops it before public_node_summaries rewrites what is
+    # left.  Two separate promises, applied in the order they compose — there
+    # is nothing to translate for a node that is not being published.
     analytics_data = {
-        "nodes": public_node_summaries(state.node_analytics.get_all_summaries()),
-        "cross_node": state.node_analytics.get_cross_node_analysis(),
+        "nodes": public_node_summaries(public_summaries(state.node_analytics.get_all_summaries())),
+        "cross_node": public_cross_node(state.node_analytics.get_cross_node_analysis()),
     }
     state.latest_analytics_bytes = orjson.dumps(analytics_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
@@ -324,6 +330,22 @@ def _refresh_analytics_and_nodes():
     # Nodes — snapshot once to avoid RuntimeError from concurrent TCP handler mutations
     with state.connected_nodes_lock:
         _nodes_snapshot = list(state.connected_nodes.items())
+    # /api/radar/nodes is unauthenticated and this block is the whole of it:
+    # name, peer, RF config and a location.  A private node is omitted from the
+    # map entirely rather than listed with its location blanked — an entry that
+    # says "a node exists here, details withheld" is still a disclosure, and the
+    # counts below are taken from the same filtered snapshot so the totals do
+    # not silently reinstate it.  ``_private`` is read once for the whole
+    # rebuild so a mid-loop cache expiry cannot split the payload across two
+    # answers.
+    #
+    # A separate list, not a narrowing of _nodes_snapshot: the snapshot is also
+    # what drives _refresh_missed_detections and _evict_stale_pipelines further
+    # down, and those are internal bookkeeping that must keep seeing the whole
+    # fleet — a private node whose pipeline stopped being evicted would leak a
+    # pipeline per node for the process lifetime.
+    _private = private_node_ids()
+    _published_nodes = [(nid, info) for nid, info in _nodes_snapshot if nid not in _private]
     nodes_data = {
         "nodes": {
             nid: {
@@ -342,11 +364,11 @@ def _refresh_analytics_and_nodes():
                 "sample_rate": (info.get("config", {}).get("Fs") or info.get("config", {}).get("fs_hz")),
                 "location": _public_location_block(nid, info.get("config", {})),
             }
-            for nid, info in _nodes_snapshot
+            for nid, info in _published_nodes
         },
-        "connected": sum(1 for _, n in _nodes_snapshot if n.get("status") not in ("disconnected",)),
-        "total": len(_nodes_snapshot),
-        "synthetic": sum(1 for _, n in _nodes_snapshot if n.get("is_synthetic")),
+        "connected": sum(1 for _, n in _published_nodes if n.get("status") not in ("disconnected",)),
+        "total": len(_published_nodes),
+        "synthetic": sum(1 for _, n in _published_nodes if n.get("is_synthetic")),
     }
     state.latest_nodes_bytes = orjson.dumps(nodes_data, option=orjson.OPT_SERIALIZE_NUMPY)
 

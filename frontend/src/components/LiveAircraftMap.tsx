@@ -1474,15 +1474,12 @@ export default function LiveAircraftMap() {
     }
   }
 
-  const handleSelectAircraft = useCallback((hex, shouldFocus = true) => {
-    setSelectedHex((prev) => {
-      const next = prev === hex ? null : hex;
-      // Only zoom when selecting a new aircraft, not when deselecting.
-      // Arc clicks pass shouldFocus=false so the camera stays put — yanking
-      // the viewport on every trail click is disorienting.
-      if (next !== null && shouldFocus) setFocusNonce((n) => n + 1);
-      return next;
-    });
+  // Selecting never moves the camera, from any entry point — icon, ground-truth
+  // dot, arc, list row.  A click on an aircraft asks to inspect it, not to
+  // relocate the viewport the user set; the map moves only on the initial fit,
+  // the Toolbar "Fit" button, the owner-mode switch and opt-in Follow.
+  const handleSelectAircraft = useCallback((hex) => {
+    setSelectedHex((prev) => (prev === hex ? null : hex));
   }, []);
 
   const handleSelectNode = useCallback((nodeId) => {
@@ -1847,15 +1844,31 @@ export default function LiveAircraftMap() {
               const nodeAircraft = radarAircraft.filter((ac) => ac.node_id === selectedNodeId);
               return (
                 <>
-                  {/* Empirical detection area — shown when calibration data is available (green solid) */}
+                  {/* Empirical detection area — soft-edged and strokeless for the
+                      same reason as the always-on CoverageLayer (see the note
+                      there): the region is measured but approximate, so no
+                      outline may assert an edge the calibration never fixed.
+                      Selecting a node must not sharpen what the always-on layer
+                      deliberately blurs.  The fill carries the prominence the
+                      dropped 2 px stroke used to: 0.30 against the always-on
+                      0.14, and the two simply stack when coverage is on. */}
                   {hasEmpirical && (
                     <Polygon
                       positions={sn.empirical_polygon}
-                      pathOptions={{ color: "#22c55e", fillColor: "#22c55e", fillOpacity: 0.22, weight: 2 }}
+                      pathOptions={{
+                        className: "coverage-fuzzy",
+                        color: "#22c55e",
+                        fillColor: "#22c55e",
+                        fillOpacity: 0.30,
+                        weight: 0,
+                      }}
                       interactive={false}
                     />
                   )}
-                  {/* Theoretical Yagi cone — faint reference behind empirical; full highlight when no empirical data */}
+                  {/* Theoretical Yagi cone — stays sharp and dashed like the
+                      always-on fallback: a declared model sector must not borrow
+                      the blurred edge that means "measured, roughly".  Faint
+                      reference behind empirical; full highlight when no empirical data */}
                   <Polygon
                     positions={conePositions}
                     pathOptions={{
@@ -1927,11 +1940,21 @@ export default function LiveAircraftMap() {
                 const hasEmpirical = Array.isArray(cn.empirical_polygon) && cn.empirical_polygon.length >= 3;
                 return (
                   <React.Fragment key={`contrib-group-${nid}`}>
-                    {/* Coverage area — empirical polygon or Yagi sector */}
+                    {/* Coverage area — the empirical polygon carries the same soft,
+                        strokeless edge as the always-on CoverageLayer (see the note
+                        there); the Yagi fallback below stays sharp and dashed because
+                        it is a declared model, not a measurement.  Fill raised to 0.18
+                        to replace the prominence of the dropped 1.5 px stroke. */}
                     {hasEmpirical ? (
                       <Polygon
                         positions={cn.empirical_polygon}
-                        pathOptions={{ color: "#a78bfa", fillColor: "#a78bfa", fillOpacity: 0.10, weight: 1.5 }}
+                        pathOptions={{
+                          className: "coverage-fuzzy",
+                          color: "#a78bfa",
+                          fillColor: "#a78bfa",
+                          fillOpacity: 0.18,
+                          weight: 0,
+                        }}
                         interactive={false}
                       />
                     ) : (

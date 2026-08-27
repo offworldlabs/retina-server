@@ -375,7 +375,15 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         if ac["hex"] not in seen_hex:
             seen_hex.add(ac["hex"])
             append_track_history(ac["hex"], ac["lat"], ac["lon"], ac["alt_baro"], now)
-            ac["recent_positions"] = list(state.track_histories.get(ac["hex"], []))
+            # A multinode position is an aircraft estimate standing on its own
+            # geometry, so this frame's append lands identically in both stores
+            # — but the TRAIL behind it need not.  The same hex can have been
+            # an arc-only track under one node minutes ago, and those points
+            # are boresight crossings in the true frame: a ray from the
+            # operator's receiver.  Serving the public store hands over the
+            # trail as each point was published, rather than re-exposing the
+            # frames this aircraft happened to spend on one node's arc.
+            ac["recent_positions"] = list(state.track_histories_public.get(ac["hex"], []))
             ac["ground_truth_hex"] = resolve_ground_truth_hex(ac["hex"], ac["lat"], ac["lon"])
             aircraft.append(ac)
     for k in stale_mn:

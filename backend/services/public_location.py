@@ -337,6 +337,42 @@ def public_node_summary(node_id: str | None, summary):
     return out
 
 
+def public_cross_node(cross_node: dict) -> dict:
+    """The cross-node analysis block, rewritten for a public client.
+
+    ``coverage_suggestions`` goes to ``[]``.  Each entry carries a
+    ``test_point`` at 5 decimals, one for each of eight fixed compass bearings
+    at a fixed 80 km radius from the MEAN of the fleet's true receiver
+    positions — so a single entry, read with its own ``bearing_deg``, gives
+    that mean back exactly.  For a small deployment the mean is one or two
+    operators' homes; for a large one it is a hard anchor to fit every other
+    channel against.
+
+    Dropped rather than translated, unlike everything else in this module.  A
+    fuzzed anchor works because there is one node behind it and its offset is
+    deterministic; an aggregate has no single offset to apply.  Recomputing the
+    suggestions from the published anchors would produce a different set — the
+    published positions are scattered by up to NODE_FUZZ_MAX_KM in independent
+    directions, so the gaps they imply are not the gaps the fleet actually has
+    — and a wrong siting recommendation served as a right one is worse than no
+    recommendation.
+
+    The other two keys stay.  ``pair_overlaps`` is node ids plus delay-bin
+    statistics with no coordinates (the same argument routes/analytics.py's
+    overlaps docstring makes at length), and ``blocked_nodes`` is a list of
+    node ids.
+
+    Nothing in the frontend reads the suggestions today, so this costs the
+    product nothing now.  They exist for network planning, which is an
+    authenticated concern: when there is a planning surface behind
+    ``require_admin`` it can serve the true ones from
+    ``get_cross_node_analysis()`` directly, which is where they still live.
+    """
+    if not fuzz_enabled() or not isinstance(cross_node, dict):
+        return cross_node
+    return {**cross_node, "coverage_suggestions": []}
+
+
 def public_node_summaries(summaries: dict) -> dict:
     """public_node_summary() across a {node_id: summary} map."""
     if not fuzz_enabled():

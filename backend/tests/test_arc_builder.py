@@ -1421,6 +1421,7 @@ class TestArcTrackIsTranslated:
         state.track_last_emit.clear()
         state.track_gate_hold.clear()
         state.track_histories.clear()
+        state.track_histories_public.clear()
         state.track_arc_motion.clear()
         state.adsb_aircraft.clear()
         state.external_adsb_cache.clear()
@@ -1432,6 +1433,7 @@ class TestArcTrackIsTranslated:
         state.track_last_emit.clear()
         state.track_gate_hold.clear()
         state.track_histories.clear()
+        state.track_histories_public.clear()
         state.track_arc_motion.clear()
         state.adsb_aircraft.clear()
         state.external_adsb_cache.clear()
@@ -1514,33 +1516,73 @@ class TestArcTrackIsTranslated:
         assert list(state.track_histories[self.HEX][-1][:2]) == [true_lat, true_lon]
         assert (ac["lat"], ac["lon"]) != (true_lat, true_lon)
 
-    def test_recent_positions_are_rigidly_translated(self):
-        # Seed a trail of true-frame emits, as a live track accumulates.
-        state.track_histories[self.HEX] = __import__("collections").deque(
-            [
-                [33.600000, -84.900000, 9000.0, 100.0],
-                [33.610000, -84.910000, 9000.0, 110.0],
-                [33.620000, -84.920000, 9000.0, 120.0],
-            ],
-            maxlen=state.TRACK_HISTORY_MAX,
-        )
-        stored_before = [list(p) for p in state.track_histories[self.HEX]]
+    def test_recent_positions_are_served_from_the_public_store(self):
+        """Every served trail point is public; the true store is untouched.
+
+        Phase 2 served a copy of the true history translated by THIS frame's
+        delta.  The trail is now accumulated in both frames as it is emitted,
+        so an older point keeps the shift that was in force when it was made —
+        a hex is an arc track under one node in one frame and a multinode solve
+        in the next, and retro-shifting yesterday's points by today's delta
+        claims a receiver relationship they never had.
+        """
+        from collections import deque
+
+        true_trail = [
+            [33.600000, -84.900000, 9000.0, 100.0],
+            [33.610000, -84.910000, 9000.0, 110.0],
+            [33.620000, -84.920000, 9000.0, 120.0],
+        ]
+        # Deliberately NOT this node's offset: these points stand for emits made
+        # under some earlier frame's delta, and the assertion below is that they
+        # are served exactly as stored rather than re-derived.
+        public_trail = [
+            [33.650000, -84.940000, 9000.0, 100.0],
+            [33.660000, -84.950000, 9000.0, 110.0],
+            [33.670000, -84.960000, 9000.0, 120.0],
+        ]
+        state.track_histories[self.HEX] = deque([list(p) for p in true_trail], maxlen=state.TRACK_HISTORY_MAX)
+        state.track_histories_public[self.HEX] = deque([list(p) for p in public_trail], maxlen=state.TRACK_HISTORY_MAX)
         self._put()
         ac = self._build()
 
         emitted = ac["recent_positions"]
         stored_after = [list(p) for p in state.track_histories[self.HEX]]
-        assert len(emitted) == len(stored_after)
-        # The stored history is untouched: the emit appended this frame's true
-        # midpoint and rewrote nothing that was already there.
-        assert stored_after[: len(stored_before)] == stored_before
+        public_after = [list(p) for p in state.track_histories_public[self.HEX]]
 
-        deltas = {(round(e[0] - s[0], 5), round(e[1] - s[1], 5)) for e, s in zip(emitted, stored_after, strict=True)}
-        assert len(deltas) == 1, f"trail is not rigid: {deltas}"
-        # Same delta the icon moved by — trail and icon cannot disagree.
-        assert deltas == {(round(ac["lat"] - stored_after[-1][0], 5), round(ac["lon"] - stored_after[-1][1], 5))}
+        # One append, both stores: index i is the same emit in each.
+        assert len(emitted) == len(stored_after) == len(public_after)
+        # The true store is untouched behind the new point.
+        assert stored_after[: len(true_trail)] == true_trail
+        # What is served is the public store, verbatim — no per-call rewrite.
+        assert emitted == public_after
+        # Not one served point is the true one.
+        for served, true_point in zip(emitted, stored_after, strict=True):
+            assert (served[0], served[1]) != (true_point[0], true_point[1])
+        # The older points kept their own delta rather than acquiring this
+        # frame's, which is the whole reason the store exists.
+        assert emitted[: len(public_trail)] == public_trail
+        # The newest point is this frame's emit under this frame's delta — the
+        # same one the icon moved by, so trail and icon cannot disagree.
+        assert emitted[-1][:2] == [ac["lat"], ac["lon"]]
         # Altitude and timestamp ride along untouched.
         assert [p[2:] for p in emitted] == [p[2:] for p in stored_after]
+
+    def test_the_true_store_never_receives_the_public_position(self):
+        """The two stores are appended together and disagree by the shift.
+
+        The pair is what routes/test.py's ground-truth scoring and the gates
+        stand on: one write must not quietly become the other.
+        """
+        track = self._put()
+        ac = self._build()
+        true_lat, true_lon = (round(v, 6) for v in self._true_midpoint(track))
+
+        assert list(state.track_histories[self.HEX][-1][:2]) == [true_lat, true_lon]
+        assert list(state.track_histories_public[self.HEX][-1][:2]) == [ac["lat"], ac["lon"]]
+        assert (ac["lat"], ac["lon"]) != (true_lat, true_lon)
+        # Same alt/ts on both sides — only the position moves.
+        assert list(state.track_histories[self.HEX][-1][2:]) == list(state.track_histories_public[self.HEX][-1][2:])
 
     def test_solver_position_is_translated_for_arc_tracks(self):
         track = self._put()

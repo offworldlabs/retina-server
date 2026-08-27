@@ -75,8 +75,10 @@ class TestAircraftWSInitialSnapshot:
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "")
 
         payload = {"aircraft": [{"hex": "d00d", "lat": 1, "lon": 2}], "now": 1.0}
-        # latest_aircraft_json is a dict guard; latest_aircraft_json_bytes is the body
-        monkeypatch.setattr(state, "latest_aircraft_json", payload)
+        # The public pair: latest_aircraft_json_public is the dict guard,
+        # latest_aircraft_json_bytes is its serialization and the body sent.
+        # The unredacted latest_aircraft_json belongs to the owner feed.
+        monkeypatch.setattr(state, "latest_aircraft_json_public", payload)
         monkeypatch.setattr(state, "latest_aircraft_json_bytes", orjson.dumps(payload))
 
         with client.websocket_connect("/ws/aircraft") as ws:
@@ -88,7 +90,7 @@ class TestAircraftWSInitialSnapshot:
         from routes import streaming as streaming_mod
 
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "")
-        monkeypatch.setattr(state, "latest_aircraft_json", {})
+        monkeypatch.setattr(state, "latest_aircraft_json_public", {})
         # If we don't call receive, the socket will just stay open; close it.
         with client.websocket_connect("/ws/aircraft"):
             pass

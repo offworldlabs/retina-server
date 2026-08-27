@@ -308,7 +308,26 @@ KNOWN_CLAIMS_PER_HEX_MAX = 64
 known_claims: dict[str, deque] = {}
 
 # ── Track history: rolling position buffer per aircraft hex ───────────────────
+# The TRUE frame.  Everything internal compares against it — the speed gate's
+# reference, the arc-motion log, the jump check, routes/test.py's ground-truth
+# scoring — so it has to stay the geometry the pipeline actually solved.
 track_histories: dict[str, deque] = {}
+
+# ── Track history, public frame: the same trail as a client may see it ────────
+# Same keys, same shape, same bound, appended in lockstep with track_histories
+# (services/feed_helpers.append_track_history writes both or neither, so index i
+# is the same emit in both stores).  Each point was translated by the delta in
+# force on ITS OWN frame, which is what makes this store worth keeping rather
+# than retro-translating the true trail at serialization time: an arc track's
+# emitted position is a boresight crossing — a ray from the receiver — and a
+# night of those, served untranslated, intersects at the operator's house
+# whatever anchor the map draws.  A hex can be an arc track under one node in
+# one frame and a multinode solve in the next, so the trail is only honest if
+# each point carries the shift that was true when it was made.
+#
+# With NODE_FUZZ_MODE=off the two stores hold identical values and serving this
+# one is exactly serving the other.
+track_histories_public: dict[str, deque] = {}
 
 # ── Last emitted position per hex, for the speed gate ─────────────────────────
 # Updated EVERY emit (not deduped) so the gate's dt reflects actual emit cadence
@@ -372,7 +391,16 @@ ws_live_clients: set[WebSocket] = set()  # real-node-only aircraft (map.retina.f
 # ids it owns, so broadcast can send a payload filtered to just that owner's
 # nodes (true data isolation, not a client-side view filter).
 ws_owner_clients: dict[WebSocket, set[str]] = {}
+# The whole fleet, unredacted.  Only the per-owner feed and internal/admin
+# readers may use it: it still contains nodes whose owners registered them
+# private, because the owner filter has to see an entry before it can decide
+# the caller owns it.
 latest_aircraft_json: dict = {"now": 0, "aircraft": [], "messages": 0}
+# The same feed with private nodes' contributions removed
+# (services/publication.public_aircraft_payload) — what every unauthenticated
+# surface serves.  latest_aircraft_json_bytes is its serialization, so the two
+# always agree; the dict form exists for the routes that need to look inside.
+latest_aircraft_json_public: dict = {"now": 0, "aircraft": [], "messages": 0}
 latest_aircraft_json_bytes: bytes = b'{"now":0,"aircraft":[],"messages":0}'
 aircraft_dirty: bool = False
 latest_real_aircraft_json_bytes: bytes = b'{"now":0,"aircraft":[],"messages":0}'
@@ -623,6 +651,7 @@ def _reset_for_tests() -> None:
     which handed one test's detection_arcs/ground_truth to the next.
     """
     global aircraft_dirty, latest_aircraft_json, latest_aircraft_json_bytes
+    global latest_aircraft_json_public
     global latest_real_aircraft_json_bytes, latest_analytics_bytes
     global latest_analytics_real_bytes, latest_nodes_bytes, latest_overlaps_bytes
     global latest_accuracy_bytes
@@ -658,6 +687,7 @@ def _reset_for_tests() -> None:
         adsb_aircraft,
         known_claims,
         track_histories,
+        track_histories_public,
         track_last_emit,
         track_gate_hold,
         track_arc_motion,
@@ -694,6 +724,7 @@ def _reset_for_tests() -> None:
 
     aircraft_dirty = False
     latest_aircraft_json = {"now": 0, "aircraft": [], "messages": 0}
+    latest_aircraft_json_public = {"now": 0, "aircraft": [], "messages": 0}
     latest_aircraft_json_bytes = b'{"now":0,"aircraft":[],"messages":0}'
     latest_real_aircraft_json_bytes = b'{"now":0,"aircraft":[],"messages":0}'
     latest_analytics_bytes = (

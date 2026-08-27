@@ -33,6 +33,14 @@ def _clean_state():
 
 
 class TestSolverAircraft:
+    """GET /api/v1/solver/aircraft — unauthenticated, so it reads the redacted feed.
+
+    The fixtures below seed ``latest_aircraft_json_public`` rather than
+    ``latest_aircraft_json``: the two differ by exactly the nodes whose owners
+    registered them private, and this route is on the public side of that split
+    (services/publication.py, services/tasks/aircraft_flush.broadcast_aircraft).
+    """
+
     def test_solver_aircraft_empty(self, client):
         r = client.get("/api/v1/solver/aircraft")
         assert r.status_code == 200
@@ -42,7 +50,7 @@ class TestSolverAircraft:
         assert "timestamp" in body
 
     def test_solver_aircraft_with_data(self, client):
-        state.latest_aircraft_json = {
+        state.latest_aircraft_json_public = {
             "aircraft": [
                 {"hex": "ABC123", "lat": 33.45, "lon": -112.07, "node_id": "n1", "multinode": False},
                 {"hex": "DEF456", "lat": 34.0, "lon": -111.0, "node_id": "n2", "multinode": False},
@@ -55,13 +63,13 @@ class TestSolverAircraft:
             assert body["count"] == 2
             assert body["aircraft"][0]["hex"] == "ABC123"
         finally:
-            state.latest_aircraft_json = {}
+            state.latest_aircraft_json_public = {}
 
     def test_solver_aircraft_real_only(self, client):
         """real_only=true filters to aircraft from non-synthetic nodes."""
         state.connected_nodes["real-node-1"] = {"is_synthetic": False, "status": "active"}
         state.connected_nodes["synth-node-1"] = {"is_synthetic": True, "status": "active"}
-        state.latest_aircraft_json = {
+        state.latest_aircraft_json_public = {
             "aircraft": [
                 {"hex": "REAL01", "lat": 33.45, "lon": -112.07, "node_id": "real-node-1", "multinode": False},
                 {"hex": "SYNTH01", "lat": 34.0, "lon": -111.0, "node_id": "synth-node-1", "multinode": False},
@@ -75,12 +83,12 @@ class TestSolverAircraft:
             assert body["count"] == 1
             assert body["aircraft"][0]["hex"] == "REAL01"
         finally:
-            state.latest_aircraft_json = {}
+            state.latest_aircraft_json_public = {}
 
     def test_solver_aircraft_multinode_real(self, client):
         """Multinode aircraft with at least one real contributing node passes real_only filter."""
         state.connected_nodes["real-node-1"] = {"is_synthetic": False, "status": "active"}
-        state.latest_aircraft_json = {
+        state.latest_aircraft_json_public = {
             "aircraft": [
                 {
                     "hex": "MULTI01",
@@ -97,7 +105,7 @@ class TestSolverAircraft:
             assert r.status_code == 200
             assert r.json()["count"] == 1
         finally:
-            state.latest_aircraft_json = {}
+            state.latest_aircraft_json_public = {}
 
 
 # ── Format aircraft ─────────────────────────────────────────────────────────
