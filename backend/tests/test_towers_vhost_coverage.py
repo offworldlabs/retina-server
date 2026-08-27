@@ -21,8 +21,8 @@ _SMOKE = _REPO / "deploy" / "staging-smoke-test.sh"
 # deduplicated: their `location /api/` used to fall through to the monolith's
 # own copy of the tower stack, which had already diverged from the service's
 # (one Phoenix query, KAET 183.0 MHz on the tower vhosts and KSAZ-TV 195.0 MHz
-# on dash). They serve dashboard/dist and have no tower search UI, so they are
-# here for the routes rather than for a screen.
+# on dash). That copy has since been deleted. They serve dashboard/dist and have
+# no tower search UI, so they are here for the routes rather than for a screen.
 _ROLE_TO_SMOKE_VAR = {
     "HOST_MAIN": "BASE_URL",
     "HOST_MAP": "MAP_URL",
@@ -33,8 +33,10 @@ _ROLE_TO_SMOKE_VAR = {
 }
 
 # The paths towers-proxy.conf hands to the service. Every vhost that includes it
-# must forward all three: a vhost carrying only some of them is the split-brain
-# this file exists to catch, one route narrower.
+# must forward all three. This used to guard against a split-brain (each route
+# answered by whichever implementation the vhost happened to reach); now that the
+# monolith's copy is deleted, a route missing from the snippet is a 404 on that
+# vhost instead — louder, but still only visible in production.
 _PROXIED_PATHS = ("/api/towers", "/api/elevation", "/api/config")
 
 
@@ -90,10 +92,10 @@ def test_the_smoke_test_defines_every_url_it_is_expected_to_probe():
 def test_the_shared_snippet_proxies_every_deduplicated_path():
     """One vhost include must carry the whole tower stack, not just the search.
 
-    /api/elevation and /api/config exist in BOTH implementations. Whichever the
-    vhost happens to reach is the answer it serves, so leaving one of them off
-    this snippet reopens the split-brain on that route alone — quieter than the
-    ranking one, because the shapes match and only the values differ.
+    /api/elevation and /api/config have no implementation left in this repo, so a
+    route dropped from this snippet is not served at all on that vhost: the
+    request falls through `location /` to an app that no longer has the handler
+    and answers 404.
     """
     snippet = (_TEMPLATE.parent / "snippets" / "towers-proxy.conf").read_text()
     locations = set(re.findall(r"^location\s+(\S+)\s*\{", snippet, re.M))
@@ -106,7 +108,9 @@ def test_no_exact_match_location_outranks_the_proxied_paths():
 
     Prefix locations are ranked by length, so the /api/ fallback loses to these
     — but an exact match outranks every prefix regardless of length, and would
-    silently restore the monolith on that one vhost.
+    take the route off the service on that one vhost. With the monolith's copy
+    deleted there is nothing behind it to answer, so the result is a 404 rather
+    than a stale ranking.
     """
     text = _TEMPLATE.read_text()
     for path in _PROXIED_PATHS:

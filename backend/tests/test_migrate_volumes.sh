@@ -29,7 +29,7 @@ seed_source() {
     docker run --rm -v "$SRC_VOL":/v alpine sh -c '
         mkdir -p /v/runtime
         echo hello > /v/state_snapshot.json
-        echo world > /v/runtime/tower_config.json
+        echo world > /v/runtime/nodes_config.json
         chown -R 999:999 /v'
 }
 
@@ -41,7 +41,7 @@ bash "$SCRIPT" "$OLD" "$NEW" "$VOL"
 docker run --rm -v "$DST_VOL":/v alpine sh -c '
   set -e
   [ "$(cat /v/state_snapshot.json)" = "hello" ] || { echo "FAIL: content"; exit 1; }
-  [ "$(cat /v/runtime/tower_config.json)" = "world" ] || { echo "FAIL: nested content"; exit 1; }
+  [ "$(cat /v/runtime/nodes_config.json)" = "world" ] || { echo "FAIL: nested content"; exit 1; }
   [ "$(stat -c %u /v/state_snapshot.json)" = "999" ] || { echo "FAIL: uid not preserved"; exit 1; }
   echo PASS'
 
@@ -88,7 +88,7 @@ docker run --rm -v "$DST_VOL":/v alpine sh -c 'truncate -s 2 /v/state_snapshot.j
 assert_verify_fails "truncated file in destination"
 
 reset_pair
-docker run --rm -v "$DST_VOL":/v alpine sh -c 'rm /v/runtime/tower_config.json'
+docker run --rm -v "$DST_VOL":/v alpine sh -c 'rm /v/runtime/nodes_config.json'
 assert_verify_fails "dropped file in destination"
 
 reset_pair

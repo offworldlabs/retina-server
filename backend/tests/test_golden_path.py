@@ -14,7 +14,6 @@ Exercises the complete data flow a production node goes through:
     → GET /api/test/dashboard      → node counted, pipeline tracks counted
     → GET /api/radar/nodes         → 200, parseable JSON
     → GET /api/radar/analytics     → 200, parseable JSON
-    → GET /api/config              → 200, has required keys
 
 This test does NOT mock internal state — it drives the real code paths so
 that any wiring regression between layers is immediately visible.
@@ -345,42 +344,30 @@ class TestGoldenPath_Layer3_HttpApi:
         data = r.json()
         assert isinstance(data, dict)
 
-    def test_config_has_required_keys(self, client):
-        r = client.get("/api/config")
-        assert r.status_code == 200
-        cfg = r.json()
-        for key in ("ranking", "receiver", "broadcast_bands"):
-            assert key in cfg, f"Config missing required key: {key!r}"
-
     def test_aircraft_json_parseable(self, client):
         r = client.get("/api/radar/data/aircraft.json")
         assert r.status_code == 200
         data = r.json()
         assert "aircraft" in data
 
-    def test_unauthenticated_config_write_rejected(self, client):
-        """PUT /api/config without admin JWT is rejected when auth is enabled.
+    def test_unauthenticated_admin_write_rejected(self, client):
+        """PUT /api/admin/config/nodes without an admin JWT is rejected when auth is on.
 
         In the test suite AUTH_BYPASS=True, because conftest sets
         AUTH_ALLOW_ANONYMOUS_ADMIN=1 and no OAuth keys are configured, so auth is
         intentionally bypassed.  We simulate a production-like environment by
         patching AUTH_BYPASS to False and verify the guard rejects the request.
+
+        This used to be PUT /api/config, whose handler went with the monolith's
+        tower stack (that route is tower-finder-service's now, behind its own
+        bearer-token gate). The property under test is retina's admin gate, so it
+        moved to a write that retina still owns rather than being dropped.
         """
-        from pathlib import Path
-
         import core.users as _users
-        from services.tower_ranking import _CONFIG_PATH
 
-        # Snapshot the real config file so we can restore it even if auth bypasses.
-        _cfg_path = Path(_CONFIG_PATH)
-        _original = _cfg_path.read_bytes()
-        try:
-            with patch.object(_users, "AUTH_BYPASS", False):
-                r = client.put("/api/config", json={"golden_path_test": True})
-            # Without a valid JWT the server must refuse the write.
-            assert r.status_code in (401, 403), f"Expected 401/403 with auth enforced; got {r.status_code}"
-        finally:
-            _cfg_path.write_bytes(_original)
+        with patch.object(_users, "AUTH_BYPASS", False):
+            r = client.put("/api/admin/config/nodes", json={"config": {"golden_path_test": True}})
+        assert r.status_code in (401, 403), f"Expected 401/403 with auth enforced; got {r.status_code}"
 
 
 class TestGoldenPath_Layer4_FullStack:
@@ -456,6 +443,6 @@ class TestGoldenPath_Layer4_FullStack:
             assert dashboard["pipeline"]["node_pipelines"] >= 1, "Step 4 failed: pipeline not visible in dashboard"
 
             # All API endpoints return 200
-            for path in ("/api/radar/nodes", "/api/radar/analytics", "/api/radar/data/aircraft.json", "/api/config"):
+            for path in ("/api/radar/nodes", "/api/radar/analytics", "/api/radar/data/aircraft.json"):
                 r = client.get(path)
                 assert r.status_code == 200, f"Step 4 failed: {path} returned {r.status_code}"

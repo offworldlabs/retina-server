@@ -1,6 +1,6 @@
 """Additional branch coverage for the /api/health endpoint.
 
-Covers the branches that are not exercised by test_towers_routes.py:
+Covers the branches that are not exercised by tests/test_health_routes.py:
   - solver_queue_drops > 0
   - solver_queue_high
   - solver_latency_high

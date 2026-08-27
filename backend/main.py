@@ -43,7 +43,6 @@ from routes.admin import router as admin_router
 from routes.analytics import router as analytics_router
 from routes.archive import router as archive_router
 from routes.auth import router as auth_router
-from routes.config import router as config_router
 from routes.custody import router as custody_router
 from routes.health import router as health_router
 from routes.node_responses import API_DESCRIPTION
@@ -56,7 +55,6 @@ from routes.sim_ingest import synthetic_fleet_enabled
 from routes.stats import router as stats_router
 from routes.streaming import router as streaming_router
 from routes.test import router as test_router
-from routes.towers import router as towers_router
 from services.alerting import log_destination
 from services.background import (
     adsb_truth_fetcher,
@@ -170,25 +168,6 @@ async def lifespan(app: FastAPI):
     from services.node_pipeline import prime_pipeline_at_startup
 
     await prime_pipeline_at_startup()
-
-    # Parse the US/CA/AU border polygons before anything is served. The first
-    # classify_region() call otherwise does it inside a request handler, on the
-    # event loop, once per process — ~1.5s during which every other request on
-    # this worker, node ingest included, is stalled. In a thread so the loop
-    # stays free even here.
-    from fastapi.concurrency import run_in_threadpool
-
-    from services.region_lookup import warm_borders
-
-    try:
-        await run_in_threadpool(warm_borders)
-    except Exception:
-        # Same policy as prime_pipeline_at_startup above: a missing or corrupt
-        # borders file costs /api/towers its region detection until the next
-        # restart (classify_region still loads on demand and surfaces the real
-        # error there); raising would abort the lifespan and take the whole
-        # API down with it.
-        logging.exception("Warming the border polygons failed; region lookup will load on demand")
 
     # Restore persisted state before accepting connections
     restored = restore_snapshot()
@@ -352,8 +331,6 @@ app.add_middleware(
 # ── Mount all routers ─────────────────────────────────────────────────────────
 for router in (
     health_router,
-    config_router,
-    towers_router,
     stats_router,
     radar_router,
     analytics_router,
