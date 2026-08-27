@@ -17,6 +17,7 @@ from core.env_parsing import parse_comma_list
 C_KM_US = 0.299792458  # Speed of light (km/µs)
 R_EARTH_KM = 6371.0  # Mean Earth radius (km)
 FT_TO_M = 0.3048  # Feet → metres
+KNOTS_TO_MS = 0.514444  # Knots → metres per second
 
 # ── Field coercion ───────────────────────────────────────────────────────────
 

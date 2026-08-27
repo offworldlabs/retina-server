@@ -12,6 +12,7 @@ from config.constants import (
     ARCHIVE_FLUSH_INTERVAL_S,
     ARCHIVE_LIFECYCLE_INTERVAL_S,
     EXTERNAL_ADSB_MAX_AGE_S,
+    KNOTS_TO_MS,
     OPENSKY_BUFFER_DEG,
     REPUTATION_INTERVAL_S,
     XVAL_MAX_AGE_S,
@@ -335,11 +336,15 @@ async def _fetch_adsb_lol(lat: float, lon: float) -> dict:
         # against the epoch.  The poll alone is the fallback — see _opensky_entry.
         seen_pos = ac.get("seen_pos")
         captured = poll_ts - seen_pos if isinstance(seen_pos, (int, float)) else poll_ts
+        # tar1090's gs is knots; this cache's velocity is m/s, which is what
+        # OpenSky writes and what both consumers read.  alt_baro on the line
+        # above has always been converted, so only the speed was missed.
+        gs = ac.get("gs")
         result[h] = {
             "lat": ac.get("lat", 0.0),
             "lon": ac.get("lon", 0.0),
             "alt_m": alt_m,
-            "velocity": ac.get("gs"),
+            "velocity": gs * KNOTS_TO_MS if isinstance(gs, (int, float)) else None,
             "heading": ac.get("track"),
             "last_seen_ms": int(captured * 1000),
         }
