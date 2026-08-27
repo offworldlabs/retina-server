@@ -12,11 +12,21 @@ from core import state
 from services.node_config import position_status
 
 _CONFIG = {
-    "rx_lat": None, "rx_lon": None, "rx_alt_ft": None,
-    "tx_lat": None, "tx_lon": None, "tx_alt_ft": None,
-    "tx_callsign": "WSPA", "fc_hz": 195e6, "fs_hz": 2.4e6,
-    "beam_width_deg": None, "beam_azimuth_deg": None, "max_range_km": 150.0,
-    "cpi_s": 0.5, "delay_tolerance_us": 10.0, "doppler_tolerance_hz": 5.0,
+    "rx_lat": None,
+    "rx_lon": None,
+    "rx_alt_ft": None,
+    "tx_lat": None,
+    "tx_lon": None,
+    "tx_alt_ft": None,
+    "tx_callsign": "WSPA",
+    "fc_hz": 195e6,
+    "fs_hz": 2.4e6,
+    "beam_width_deg": None,
+    "beam_azimuth_deg": None,
+    "max_range_km": 150.0,
+    "cpi_s": 0.5,
+    "delay_tolerance_us": 10.0,
+    "doppler_tolerance_hz": 5.0,
 }
 
 
@@ -42,10 +52,7 @@ def test_positionless_node_is_counted_but_not_placed():
 
     assert node_id in state.node_analytics.metrics
     assert "detection_area" not in state.node_analytics.get_node_summary(node_id)
-    assert all(
-        node_id not in (z["node_a"], z["node_b"])
-        for z in state.node_associator.get_overlap_summary()
-    )
+    assert all(node_id not in (z["node_a"], z["node_b"]) for z in state.node_associator.get_overlap_summary())
 
     # A metrics entry alone doesn't show frames are counted, which is the
     # promise this feature makes to the owner of a node we cannot place.
@@ -71,8 +78,12 @@ def test_positionless_node_builds_no_solver_pipeline():
     node_id = "test-null-3"
     with state.connected_nodes_lock:
         state.connected_nodes[node_id] = {
-            "config": dict(_CONFIG), "config_hash": "", "status": "active",
-            "last_heartbeat": None, "peer": "test", "is_synthetic": False,
+            "config": dict(_CONFIG),
+            "config_hash": "",
+            "status": "active",
+            "last_heartbeat": None,
+            "peer": "test",
+            "is_synthetic": False,
             "capabilities": {},
         }
 
@@ -92,8 +103,12 @@ def test_position_status_reaches_the_nodes_payload():
     node_id = "test-null-2"
     with state.connected_nodes_lock:
         state.connected_nodes[node_id] = {
-            "config": dict(_CONFIG), "config_hash": "", "status": "active",
-            "last_heartbeat": None, "peer": "test", "is_synthetic": False,
+            "config": dict(_CONFIG),
+            "config_hash": "",
+            "status": "active",
+            "last_heartbeat": None,
+            "peer": "test",
+            "is_synthetic": False,
             "capabilities": {},
         }
     _refresh_analytics_and_nodes()
