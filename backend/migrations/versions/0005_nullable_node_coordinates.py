@@ -12,11 +12,10 @@ down_revision = "0004"
 branch_labels = None
 depends_on = None
 
-# Widening only: code predating this revision still supplies all six coordinates
-# on every insert and still reads the columns it always read. The downgrade
-# below is the part that can fail, and that is a separate question from whether
-# older code can serve against this schema.
-rollback_safety = "additive"
+# A downgrade cannot express a null, and code predating 1.1.3 has no
+# null-handling for these six columns, so a rollback across this revision must
+# be surfaced to a human rather than served as safe.
+rollback_safety = "destructive"
 
 _COLUMNS = ("rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft")
 

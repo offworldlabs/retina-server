@@ -262,6 +262,10 @@ async def test_a_null_position_round_trips(node_session):
     )
     node_session.add(row)
     await node_session.commit()
-    stored = await node_session.get(NodeConfig, row.id)
-    assert stored.rx_lat is None
-    assert stored.tx_lat == 34.90
+
+    # expire_on_commit=False leaves row fully populated from what was just
+    # constructed, so get()/select() hand it back unread; refresh() is what
+    # actually re-queries the columns.
+    await node_session.refresh(row)
+    assert row.rx_lat is None
+    assert row.tx_lat == 34.90
