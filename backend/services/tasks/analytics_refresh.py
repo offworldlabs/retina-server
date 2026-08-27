@@ -18,6 +18,7 @@ from core import state
 from services.geo import bearing_deg, bistatic_delay_us, haversine_km, node_beam_params, point_in_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
+from services.node_config import position_status
 from services.public_location import (
     fuzz_enabled,
     location_uncertainty_km,
@@ -302,7 +303,6 @@ def _public_location_block(node_id: str, cfg: dict) -> dict:
 
 def _refresh_analytics_and_nodes():
     """Heavy work: recompute analytics, nodes, and overlaps → store as bytes."""
-    from services.node_config import position_status
     from services.tcp_handler import is_synthetic_node
 
     # Analytics.  Both variants below are served to unauthenticated clients, so

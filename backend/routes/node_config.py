@@ -158,12 +158,6 @@ async def _hand_to_pipeline(session: AsyncSession, node: Node, version: int) -> 
     retried. The version is committed, so the node row already reads it, and the next
     identical resend finds nothing changed and never reaches here. The alert is
     therefore the whole of the recovery path, which is why it carries the version.
-
-    One failure is live rather than hypothetical: retina-analytics reads
-    `config.get("beam_width_deg", 41)`, so an explicit null passes its default by, and
-    the unchanged-geometry comparison in association.py then subtracts it. Every node
-    in the fleet sends a null width under contract 1.1.1. Tracked in 86cb5dakr, with
-    the ordering above; neither is this endpoint's to fix.
     """
     from services.alerting import send_alert
 

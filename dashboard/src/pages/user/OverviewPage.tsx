@@ -89,7 +89,7 @@ export default function OverviewPage() {
           <div className="card-header">
             <h3>Needs Attention</h3>
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-              Recording detections normally, awaiting a position to appear on the map
+              Detections counted and archived, awaiting a position to appear on the map or contribute to solves
             </span>
           </div>
           <div className="table-wrapper">

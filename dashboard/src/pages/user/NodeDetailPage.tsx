@@ -156,9 +156,9 @@ export default function NodeDetailPage() {
             fontSize: 13,
           }}
         >
-          <strong>Position not configured.</strong> This node is recording
-          detections normally. It only needs a position before it can appear
-          on the map or contribute to solves.{" "}
+          <strong>Position not configured.</strong> Detections from this node
+          are counted and archived. It needs a position before they can be
+          placed on the map or contribute to solves.{" "}
           {POSITION_FIX_HINT[nodeInfo.position_status as Exclude<PositionStatus, "positioned">]}
         </div>
       )}

@@ -12,7 +12,7 @@ database.
 """
 
 import math
-from typing import Any
+from typing import Any, Literal
 
 # About 0.11 m. Below this the receiver and illuminator are the same point as far as
 # the solver is concerned, whatever the node believes it measured.
@@ -153,15 +153,30 @@ def validate_config(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def position_status(config: dict[str, Any]) -> str:
+PositionStatus = Literal["positioned", "missing_rx", "missing_tx", "missing_both"]
+
+
+def _is_placed(lat: Any, lon: Any) -> bool:
+    """A pair given as a real position: not absent, and not the (0, 0) sentinel.
+
+    The same rule lives in services.geo.valid_latlon and in
+    retina_analytics.constants.has_full_geometry. Not shared from either: this
+    module is a leaf that takes a dict and returns a dict, and must stay
+    importable with neither retina_analytics nor a database on the path.
+    valid_latlon pulls in retina_analytics.constants, which would break that.
+    """
+    return lat is not None and lon is not None and not (float(lat) == 0.0 and float(lon) == 0.0)
+
+
+def position_status(config: dict[str, Any]) -> PositionStatus:
     """Which ends of the bistatic pair this config places.
 
     One value for consumers to branch on, rather than four fields each of them
     has to recombine. Keyed on latitude and longitude alone: a node with a
     position and no altitude is positioned.
     """
-    has_rx = config.get("rx_lat") is not None and config.get("rx_lon") is not None
-    has_tx = config.get("tx_lat") is not None and config.get("tx_lon") is not None
+    has_rx = _is_placed(config.get("rx_lat"), config.get("rx_lon"))
+    has_tx = _is_placed(config.get("tx_lat"), config.get("tx_lon"))
     if has_rx and has_tx:
         return "positioned"
     if has_rx:

@@ -381,6 +381,24 @@ def test_null_coordinates_are_accepted(overrides, expected):
 
 
 @pytest.mark.parametrize(
+    "overrides,expected",
+    [
+        ({"rx_lat": 0.0, "rx_lon": 0.0}, "missing_rx"),
+        ({"tx_lat": 0.0, "tx_lon": 0.0}, "missing_tx"),
+        ({"rx_lat": 0.0}, "positioned"),
+        ({"tx_lon": 0.0}, "positioned"),
+    ],
+    ids=["rx-null-island", "tx-null-island", "rx-on-the-equator", "tx-on-the-prime-meridian"],
+)
+def test_position_status_treats_the_zero_pair_as_absent(overrides, expected):
+    """(0, 0) is the legacy broken-config sentinel, not a real position in the
+    Gulf of Guinea, matching has_full_geometry in retina-analytics. A single
+    zero axis is still a real coordinate, so it must not read as absent."""
+    out = validate_config(dict(VALID, **overrides))
+    assert position_status(out) == expected
+
+
+@pytest.mark.parametrize(
     "overrides,field",
     [
         ({"rx_lat": None}, "rx_lat"),

@@ -34,11 +34,17 @@ _CONFIG = {
 # test below registers through it, so cleanup can't be derived from it.
 _NODE_IDS = ("test-null-1", "test-null-2", "test-null-3")
 
+# A single node can't discriminate the overlap guard: with nobody to pair
+# against, no zone forms whether or not the guard excludes it. Ten can: were
+# has_full_geometry not excluding them, all ten would collapse onto the same
+# undefined geometry and pair into every one of the 45 possible zones.
+_OVERLAP_IDS = [f"test-null-overlap-{i}" for i in range(10)]
+
 
 @pytest.fixture(autouse=True)
 def _clean():
     yield
-    for node_id in _NODE_IDS:
+    for node_id in (*_NODE_IDS, *_OVERLAP_IDS):
         state.connected_nodes.pop(node_id, None)
         state.node_pipelines.pop(node_id, None)
         state.node_associator.unregister_node(node_id)
@@ -52,12 +58,20 @@ def test_positionless_node_is_counted_but_not_placed():
 
     assert node_id in state.node_analytics.metrics
     assert "detection_area" not in state.node_analytics.get_node_summary(node_id)
-    assert all(node_id not in (z["node_a"], z["node_b"]) for z in state.node_associator.get_overlap_summary())
 
     # A metrics entry alone doesn't show frames are counted, which is the
     # promise this feature makes to the owner of a node we cannot place.
     assert state.node_analytics.record_detection_frame(node_id, {"timestamp": 1.0, "detections": []}) is True
     assert state.node_analytics.metrics[node_id].total_frames == 1
+
+
+def test_ten_positionless_nodes_form_no_overlap_zones():
+    for node_id in _OVERLAP_IDS:
+        state.node_analytics.register_node(node_id, dict(_CONFIG))
+        state.node_associator.register_node(node_id, dict(_CONFIG))
+
+    wanted = set(_OVERLAP_IDS)
+    assert sum(1 for pair in state.node_associator.overlap_zones if wanted & set(pair)) == 0
 
 
 def test_positionless_node_builds_no_solver_pipeline():

@@ -331,13 +331,15 @@ export function useNodes() {
           const da = (info as any).detection_area;
           const ec = (info as any).empirical_coverage;
           if (da) {
-            // Skip null-island nodes (rx=(0,0)) that result from backend
-            // register_node() defaulting missing rx/tx coords to 0.  These
-            // show up after HTTP-registration without a config block
-            // (notably e2e bulk tests) and render as a stray marker in the
-            // Atlantic Ocean.  Use a small epsilon so we still allow a real
-            // node legitimately near the equator/prime-meridian, but
-            // dismiss the exact-zero default sentinel.
+            // Defence in depth, not the primary guard: the analytics library
+            // only builds a detection_area when has_full_geometry(config) is
+            // true, and that already rejects the exact rx=(0,0) sentinel, so
+            // a null-island node should never reach here with one. Kept in
+            // case some other path ever hands us a detection_area without
+            // going through that check. Use a small epsilon so we still allow
+            // a real node legitimately near the equator/prime meridian, but
+            // dismiss the exact-zero sentinel that would otherwise render as
+            // a stray marker in the Gulf of Guinea.
             const rxLat = da.rx.lat;
             const rxLon = da.rx.lon;
             if (Math.abs(rxLat) < 1e-6 && Math.abs(rxLon) < 1e-6) continue;
