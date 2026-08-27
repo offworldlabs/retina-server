@@ -44,6 +44,7 @@ from routes.node_schemas import (
     HeartbeatRequest,
     HeartbeatResponse,
 )
+from services import detection_mirror
 from services.node_auth import bearer_node, node_bearer_scheme
 from services.node_pipeline import pipeline_frame, register_with_pipeline, submit_frame
 from services.node_rate_limits import Refusal, token_rate_limiter
@@ -155,6 +156,9 @@ def _file_frame(node_id: str, frame: DetectionFrame) -> int:
         return 0
     if not submit_frame(node_id, pipeline_frame(frame)):
         return 0
+    # After acceptance, and given the wire model rather than the dict just
+    # queued: that dict is stamped and mutated by the frame workers.
+    detection_mirror.offer(node_id, frame)
     return len(frame.delay)
 
 
