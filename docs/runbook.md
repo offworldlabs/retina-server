@@ -86,6 +86,25 @@ Only `test-towers`, `test-api`, `test-map` and `test-dash` have DNS and certific
 coverage on the test droplet. Its other three vhosts render but are unreachable by
 design.
 
+### Real node detections on the test droplet
+
+Production forwards each accepted v1 detection frame to the test droplet's
+`/api/radar/detections/bulk`, so real nodes appear there beside the synthetic
+fleet. It is one-way: nodes talk only to production, and nothing the test
+droplet returns reaches a board.
+
+Turn it off by unsetting `DETECTION_MIRROR_URL` on production and redeploying.
+
+The mirror drops rather than retrying, so an unreachable test droplet costs
+mirrored frames and nothing else. It logs `detection mirror failing` on the
+transition and once a minute after that, and raises a `detection_mirror` admin
+event on each transition. Silence in the admin event log with frames still
+arriving on production means it is working; confirm it positively by checking
+that the real node ids appear in the test droplet's `/api/radar/analytics`.
+
+Real receiver and transmitter geometry now lands on a droplet running
+`AUTH_ALLOW_ANONYMOUS_ADMIN=1`.
+
 ---
 
 ## Server basics
