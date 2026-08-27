@@ -24,6 +24,11 @@ MAX_RANGE_KM="${FLEET_MAX_RANGE_KM:-0}"
 CONCURRENCY="${FLEET_CONCURRENCY:-50}"
 CONNECT_RETRIES="${FLEET_CONNECT_RETRIES:-3}"
 VALIDATE="${FLEET_VALIDATE:-false}"
+# Opt-in relay of real adsb.lol traffic over the metro area. Off by default:
+# the relay's decoy transponders are what the claiming stage used to bind
+# synthetic echoes to — the ghost planes on the map. Only set this once the
+# server tags/gates claiming by world (known_claims_world_rejects counter).
+REAL_ADSB="${FLEET_REAL_ADSB:-false}"
 N_CLUSTER="${FLEET_N_CLUSTER:-16}"
 N_CLUSTERS="${FLEET_N_CLUSTERS:-1}"
 # ring | dual | scatter — see generator.py --layout.  The orchestrator reads the
@@ -147,6 +152,9 @@ ARGS="${ARGS} --ground-truth-path /app/data/ground_truth.json"
 ARGS="${ARGS} --validation-url ${VALIDATION_URL}"
 if [ "${VALIDATE}" = "true" ]; then
     ARGS="${ARGS} --validate"
+fi
+if [ "${REAL_ADSB}" = "true" ]; then
+    ARGS="${ARGS} --real-adsb"
 fi
 
 # Launch fleet orchestrator

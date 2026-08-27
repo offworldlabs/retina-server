@@ -315,6 +315,7 @@ class TestKnownLaneAndClaimsPassthrough:
             ("known_claim_contentions", 2),
             ("known_claims_bound", 15),
             ("known_claims_visibility_rejects", 6),
+            ("known_claims_world_rejects", 3),
             ("known_claims_errors", 1),
         ):
             state.bump_counter(name, n)
@@ -324,6 +325,7 @@ class TestKnownLaneAndClaimsPassthrough:
             "contentions": 2,
             "bound": 15,
             "visibility_rejects": 6,
+            "world_rejects": 3,
             "errors": 1,
         }
 
@@ -336,6 +338,7 @@ class TestKnownLaneAndClaimsPassthrough:
             "contentions": 0,
             "bound": 0,
             "visibility_rejects": 0,
+            "world_rejects": 0,
             "errors": 0,
         }
 
@@ -464,6 +467,7 @@ class TestEndpoint:
             "contentions",
             "bound",
             "visibility_rejects",
+            "world_rejects",
             "errors",
         }
 

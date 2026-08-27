@@ -25,7 +25,7 @@ from services.geo import (
     valid_latlon,
 )
 from services.id_utils import normalize_hex_key as _normalize_hex_key
-from services.known_claiming import claim_known_targets, strip_claimed_detections
+from services.known_claiming import _node_world, claim_known_targets, strip_claimed_detections
 from services.storage import archive_detections
 
 # ── Archive batching ──────────────────────────────────────────────────────────
@@ -443,6 +443,9 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     _adsb_list = frame.get("adsb")
     if _adsb_list:
         _ts_ms = int(time.time() * 1000)
+        # Same world stamp the TCP fast-path applies — a blah2 node's list is
+        # real traffic, a test frame's is simulated; claiming keys on it.
+        _world = _node_world(node_id)
         for _ae in _adsb_list:
             if not isinstance(_ae, dict):
                 continue
@@ -464,6 +467,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
                 "gs": _ae.get("gs", 0),
                 "track": _ae.get("track", 0),
                 "last_seen_ms": _ts_ms,
+                "world": _world,
             }
             # Derived once here, not per read — see state.adsb_derived_fields.
             # Published only after it is complete: readers snapshot unlocked.

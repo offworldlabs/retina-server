@@ -503,3 +503,51 @@ class TestAdsbSeedStatusPayload:
                 "inputs_emitted",
             }
             assert body["adsb_seed"]["mode"] == state.node_associator.adsb_seed_mode
+
+
+class TestWorldStamp:
+    """Both frame-list writers stamp which world the positions belong to, by
+    the reporting node's class — claiming keys on it (see known_claiming's
+    world gate).  The sim-ingest route's stamp is covered with that route's
+    tests in test_sim_ingest.py."""
+
+    def test_tcp_writer_stamps_sim_for_a_synthetic_node(self):
+        from services.tcp_handler import _apply_synthetic_adsb
+
+        entry = {"hex": "wrld01", "lat": 33.9, "lon": -84.6}
+        _apply_synthetic_adsb({"data": {"timestamp": 1000, "adsb": [entry]}}, "synth-world")
+        assert state.adsb_aircraft["wrld01"]["world"] == "sim"
+
+    def test_tcp_writer_stamps_real_for_a_hardware_node(self):
+        from services.tcp_handler import _apply_synthetic_adsb
+
+        entry = {"hex": "wrld02", "lat": 33.9, "lon": -84.6}
+        _apply_synthetic_adsb({"data": {"timestamp": 1000, "adsb": [entry]}}, "radar3-retnode")
+        assert state.adsb_aircraft["wrld02"]["world"] == "real"
+
+    def test_tcp_writer_honours_the_handshake_verdict(self):
+        """A registered node's CONFIG verdict beats the prefix rule — a node
+        may declare is_synthetic itself under any id."""
+        from services.tcp_handler import _apply_synthetic_adsb
+
+        with state.connected_nodes_lock:
+            state.connected_nodes["oddname"] = {"is_synthetic": True}
+        try:
+            entry = {"hex": "wrld03", "lat": 33.9, "lon": -84.6}
+            _apply_synthetic_adsb({"data": {"timestamp": 1000, "adsb": [entry]}}, "oddname")
+            assert state.adsb_aircraft["wrld03"]["world"] == "sim"
+        finally:
+            with state.connected_nodes_lock:
+                state.connected_nodes.pop("oddname", None)
+
+    def test_frame_processor_writer_stamps_by_node_class(self):
+        entry = {"hex": "wrld04", "lat": 33.9, "lon": -84.6}
+        frame = {
+            "timestamp": int(time.time() * 1000),
+            "delay": [50.0],
+            "doppler": [10.0],
+            "snr": [20.0],
+            "adsb": [entry],
+        }
+        process_one_frame("blah2-hw-node", frame, PassiveRadarPipeline(DEFAULT_NODE_CONFIG))
+        assert state.adsb_aircraft["wrld04"]["world"] == "real"

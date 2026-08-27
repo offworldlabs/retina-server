@@ -287,3 +287,26 @@ class TestAdsbPush:
         assert r.status_code == 200
         assert r.json() == {"status": "ok", "updated": 0, "rejected_hex": 1}
         assert state.adsb_aircraft == {}
+
+    def test_untagged_push_is_sim_world(self, client):
+        """Every simulator before the source tag existed pushes without it,
+        and what they push is the synthetic fleet — claiming must keep
+        treating those as simulated aircraft."""
+        self._push(client, "a1b2c3")
+        assert state.adsb_aircraft["a1b2c3"]["world"] == "sim"
+
+    def test_source_real_push_is_real_world(self, client):
+        """The adsb.lol relay declares source=real; claiming then refuses to
+        bind a synthetic node's echoes to these — each such bind was a ghost
+        plane icon at a position no radar in either world measured."""
+        r = client.post(
+            "/api/sim/adsb/push",
+            headers=_KEY,
+            json={
+                "ts_ms": int(time.time() * 1000),
+                "source": "real",
+                "aircraft": [{"hex": "a97cf2", "lat": 34.84, "lon": -82.35, "alt_baro": 1500}],
+            },
+        )
+        assert r.json()["updated"] == 1
+        assert state.adsb_aircraft["a97cf2"]["world"] == "real"
