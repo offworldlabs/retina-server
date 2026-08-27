@@ -21,12 +21,12 @@ afterEach(() => {
 describe("withCartoKey", () => {
   it("appends the key to Carto URLs", async () => {
     const f = await withKey("k123");
-    expect(f(CARTO)).toBe(`${CARTO}?api_key=k123`);
+    expect(f(CARTO)).toBe(`${CARTO}?key=k123`);
   });
 
   it("leaves the URL untouched when no key was built in", async () => {
-    // The deployed default on any host without a key: identical to what
-    // shipped before this module existed.
+    // A host without a key gets CARTO's watermarked tiles — the status quo
+    // before this module existed, and a visible degradation, not a failure.
     const f = await withKey("");
     expect(f(CARTO)).toBe(CARTO);
   });
@@ -44,6 +44,6 @@ describe("withCartoKey", () => {
 
   it("uses & when the URL already carries a query", async () => {
     const f = await withKey("k123");
-    expect(f(`${CARTO}?foo=1`)).toBe(`${CARTO}?foo=1&api_key=k123`);
+    expect(f(`${CARTO}?foo=1`)).toBe(`${CARTO}?foo=1&key=k123`);
   });
 });

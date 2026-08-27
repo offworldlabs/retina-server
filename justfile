@@ -365,8 +365,8 @@ deploy-test:
     # example is committed and therefore keyless, and the droplet's own
     # /root/.secrets/carto.env carries the CARTO basemap key that
     # docker-compose.yml interpolates into the frontend build arg. Guarded so a
-    # droplet that was never given a key builds anonymous tiles rather than
-    # failing here.
+    # droplet that was never given a key builds watermarked tiles rather
+    # than failing here.
     ssh "{{host_test}}" "cd {{app_test}} && cp deploy/env.test.example .env && if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; fi && docker compose up -d --build"
     # Ask uvicorn directly, inside the container, exactly as the compose
     # healthcheck does. Going through nginx on plain HTTP would only prove the

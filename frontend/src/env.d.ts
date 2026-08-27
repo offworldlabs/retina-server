@@ -5,10 +5,10 @@ declare module "*.css" {}
 interface ImportMetaEnv {
   readonly VITE_ENABLE_TEST_RADAR?: string;
   /**
-   * CARTO basemap key, baked into the bundle at build time. Optional: unset
-   * means the anonymous tile endpoints, which is what shipped before this
-   * existed. See utils/basemap.ts for why a bundled key is the supported
-   * shape for this one.
+   * CARTO basemap key, baked into the bundle at build time. Unset means
+   * unkeyed tile URLs, which CARTO serves stamped "API KEY REQUIRED". See
+   * utils/basemap.ts for why a bundled key is the supported shape for this
+   * one.
    */
   readonly VITE_CARTO_API_KEY?: string;
 }

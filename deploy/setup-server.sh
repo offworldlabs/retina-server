@@ -196,7 +196,7 @@ systemctl --no-pager status retina-firewall.service | head -5 || true
 cp deploy/env."${RETINA_TARGET_ENV}".example .env
 # Top up with this host's own CARTO basemap key — see the note in
 # deploy/env.<env>.example. Guarded rather than chained with &&: a host
-# with no key must build anonymous tiles, not fail its deploy.
+# with no key must build watermarked tiles, not fail its deploy.
 if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; fi
 
 # Create backend/.env with API keys. Hostnames, CORS and every other
