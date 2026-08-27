@@ -20,21 +20,25 @@ _CONFIG = {
 }
 
 
+# Enumerated explicitly rather than scanned from connected_nodes: not every
+# test below registers through it, so cleanup can't be derived from it.
+_NODE_IDS = ("test-null-1", "test-null-2", "test-null-3")
+
+
 @pytest.fixture(autouse=True)
 def _clean():
     yield
-    for node_id in list(state.connected_nodes):
-        if node_id.startswith("test-null-"):
-            state.connected_nodes.pop(node_id, None)
-            state.node_pipelines.pop(node_id, None)
-            state.node_associator.unregister_node(node_id)
-            state.node_analytics.retire_node(node_id)
+    for node_id in _NODE_IDS:
+        state.connected_nodes.pop(node_id, None)
+        state.node_pipelines.pop(node_id, None)
+        state.node_associator.unregister_node(node_id)
+        state.node_analytics.retire_node(node_id)
 
 
 def test_positionless_node_is_counted_but_not_placed():
     node_id = "test-null-1"
-    state.node_analytics.register_node(node_id, _CONFIG)
-    state.node_associator.register_node(node_id, _CONFIG)
+    state.node_analytics.register_node(node_id, dict(_CONFIG))
+    state.node_associator.register_node(node_id, dict(_CONFIG))
 
     assert node_id in state.node_analytics.metrics
     assert "detection_area" not in state.node_analytics.get_node_summary(node_id)
@@ -42,6 +46,11 @@ def test_positionless_node_is_counted_but_not_placed():
         node_id not in (z["node_a"], z["node_b"])
         for z in state.node_associator.get_overlap_summary()
     )
+
+    # A metrics entry alone doesn't show frames are counted, which is the
+    # promise this feature makes to the owner of a node we cannot place.
+    assert state.node_analytics.record_detection_frame(node_id, {"timestamp": 1.0, "detections": []}) is True
+    assert state.node_analytics.metrics[node_id].total_frames == 1
 
 
 def test_positionless_node_builds_no_solver_pipeline():
@@ -62,7 +71,7 @@ def test_positionless_node_builds_no_solver_pipeline():
     node_id = "test-null-3"
     with state.connected_nodes_lock:
         state.connected_nodes[node_id] = {
-            "config": _CONFIG, "config_hash": "", "status": "active",
+            "config": dict(_CONFIG), "config_hash": "", "status": "active",
             "last_heartbeat": None, "peer": "test", "is_synthetic": False,
             "capabilities": {},
         }
@@ -83,7 +92,7 @@ def test_position_status_reaches_the_nodes_payload():
     node_id = "test-null-2"
     with state.connected_nodes_lock:
         state.connected_nodes[node_id] = {
-            "config": _CONFIG, "config_hash": "", "status": "active",
+            "config": dict(_CONFIG), "config_hash": "", "status": "active",
             "last_heartbeat": None, "peer": "test", "is_synthetic": False,
             "capabilities": {},
         }
