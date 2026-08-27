@@ -77,7 +77,7 @@ const ClaimedArcs = memo(function ClaimedArcs({ aircraftRef, onSelect }) {
           });
           line.on("click", (e) => {
             L.DomEvent.stopPropagation(e);
-            onSelectRef.current?.(hex, false);
+            onSelectRef.current?.(hex);
           });
           line.addTo(map);
           polyMap.set(hex, { line });

@@ -110,12 +110,22 @@ export interface AircraftFeedReturn {
 /** Radar node metadata from /api/radar/analytics (as shaped by useNodes) */
 export interface RadarNode {
   node_id: string;
-  /** Display position — privacy-fuzzed by ~400 m, stable per node_id. */
+  /**
+   * Receiver position as served. The backend displaces it deterministically
+   * per node (1–3 km by default) before it goes on the wire — see
+   * backend/services/public_location.py — so this is NOT the operator's true
+   * location and the client does no further fuzzing of its own.
+   */
   rx_lat: number;
   rx_lon: number;
-  /** True RX position, for geometry that must match the backend's curves. */
-  rx_lat_real: number;
-  rx_lon_real: number;
+  /**
+   * Outer radius (km) of the displacement the backend applied, as the backend
+   * declares it: the true receiver is somewhere within this distance of
+   * rx_lat/rx_lon. 0 when the feed carries no such declaration (fuzzing off),
+   * which the map reads as "draw no uncertainty disc" — a zero-radius disc
+   * would claim a precision the feed never promised.
+   */
+  location_uncertainty_km: number;
   tx_lat: number;
   tx_lon: number;
   /**

@@ -3,8 +3,8 @@
 # Run this on a fresh Ubuntu 24.04 DigitalOcean droplet as root.
 #
 # Usage:
-#   MAPRAD_API_KEY=... RADAR_API_KEY=... bash setup-server.sh                      # prod
-#   RETINA_TARGET_ENV=test MAPRAD_API_KEY=... RADAR_API_KEY=... bash setup-server.sh
+#   RADAR_API_KEY=... bash setup-server.sh                      # prod
+#   RETINA_TARGET_ENV=test RADAR_API_KEY=... bash setup-server.sh
 #
 # Prerequisites:
 #   - SSH access as root
@@ -17,7 +17,6 @@ set -euo pipefail
 # Secrets come from the environment, not argv: keeps them out of `ps` output and
 # shell history, and is order-independent (no positional-arg swap footgun). The
 # `:?` form aborts with the given message if the var is unset or empty.
-: "${MAPRAD_API_KEY:?set MAPRAD_API_KEY (Maprad tower API key)}"
 : "${RADAR_API_KEY:?set RADAR_API_KEY (ingest key: the prod backend enforces X-API-Key on ingest and the fleet reads it from backend/.env, so its pushes 401 without a match)}"
 
 # Which environment this box becomes. It selects nothing but the compose overlay
@@ -195,6 +194,10 @@ systemctl --no-pager status retina-firewall.service | head -5 || true
 # bare `docker compose up` starts the shared base alone, which start.sh refuses
 # to boot because RETINA_ENV is unset.
 cp deploy/env."${RETINA_TARGET_ENV}".example .env
+# Top up with this host's own CARTO basemap key — see the note in
+# deploy/env.<env>.example. Guarded rather than chained with &&: a host
+# with no key must build watermarked tiles, not fail its deploy.
+if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; fi
 
 # Create backend/.env with API keys. Hostnames, CORS and every other
 # per-environment value now live in the compose overlay (docker-compose.prod.yml
@@ -222,7 +225,6 @@ if [ -f backend/.env ]; then
     echo "  If this box needs the keys passed to this script, merge them yourself."
 else
     {
-        echo "MAPRAD_API_KEY=${MAPRAD_API_KEY}"
         echo "RADAR_API_KEY=${RADAR_API_KEY}"
         echo "JWT_SECRET=$(openssl rand -hex 32)"
     } > backend/.env

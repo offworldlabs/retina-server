@@ -38,18 +38,20 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundT
 
       const smooth = smoothRef?.current || {};
 
-      // Pre-resolve the node list once per tick.  Two fixes in one:
-      // 1. Use the REAL rx position when the payload carries it — rx_lat/lon
-      //    are privacy-fuzzed by ~400 m, which biased edge-of-beam decisions
-      //    (DetectionArcs already uses the _real fields for the same reason).
-      // 2. Precompute a bounding-box radius so the O(truth × nodes) loop
-      //    below rejects distant pairs with two comparisons instead of a
-      //    haversine + bearing — enabling this layer on a dense testmap used
-      //    to hang the tab.
+      // Pre-resolve the node list once per tick, so the O(truth × nodes) loop
+      // below rejects distant pairs with two comparisons instead of a
+      // haversine + bearing — enabling this layer on a dense testmap used to
+      // hang the tab.
+      //
+      // rx_lat/rx_lon are the server-published coordinates, displaced from the
+      // operator's true position by the backend; no true receiver position
+      // reaches the browser. The backend derives its own published beam
+      // geometry from the same anchor, so in-beam rays drawn from it agree
+      // with the served arcs by construction.
       const nodeList = [];
       for (const [nodeId, node] of Object.entries(nodes)) {
-        const rxLat = node.rx_lat_real ?? node.rx_lat;
-        const rxLon = node.rx_lon_real ?? node.rx_lon;
+        const rxLat = node.rx_lat;
+        const rxLon = node.rx_lon;
         const { beam_azimuth_deg: azimuth, beam_width_deg: beamWidth, max_range_km: maxRange } = node;
         if (rxLat == null || rxLon == null || azimuth == null || beamWidth == null || maxRange == null) continue;
         const reachKm = maxRange * MAX_RANGE_FACTOR;

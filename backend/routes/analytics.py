@@ -11,6 +11,8 @@ from retina_analytics.trust import AdsReportEntry
 
 from core import state
 from services import node_bias
+from services.public_location import public_node_summary
+from services.publication import is_private
 
 _RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
 
@@ -26,9 +28,19 @@ async def radar_analytics(real_only: bool = False):
 
 @router.get("/api/radar/analytics/{node_id}")
 async def radar_node_analytics(node_id: str):
+    # A node whose owner registered it private is 404 here, not 403: the two
+    # answers differ only in whether they confirm the node exists, and this
+    # route is reachable by anyone with a node id to try.  Same status the
+    # cached listing produces by omission, so the two surfaces agree.
+    if is_private(node_id):
+        raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
     summary = state.node_analytics.get_node_summary(node_id)
     if summary.keys() == {"node_id"}:
         raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+    # Same blocks as the cached /api/radar/analytics payload, built fresh — so
+    # the same receiver-geometry rewrite has to happen here too, or this route
+    # is the hole the cached one closed.  See services/public_location.py.
+    summary = public_node_summary(node_id, summary)
     # Backend-computed bias estimate from claim residuals — same conditional
     # shape as the manager's own blocks: present only once the node has
     # residual history.  The trust block above already blends backend-fed
@@ -72,6 +84,19 @@ async def submit_adsb_report(
 
 @router.get("/api/radar/association/overlaps")
 async def association_overlaps():
+    """Which node pairs have an overlapping detection zone, and how big it is.
+
+    Serves no geometry, so nothing here is fuzzed and it stays public.  The
+    overlap zones are computed FROM node positions, but
+    ``NodeAssociator.get_overlap_summary()`` emits only the two node ids, a
+    grid-point count, the delay/Doppler gates and a has_overlap flag — no
+    coordinates, no grid, no extent.  ``registered_nodes`` is a list of ids.
+    A pair count and a gate width constrain the inter-node distance far too
+    loosely to locate either node, so admin-gating this would cost the map its
+    coverage layer and buy nothing.  If this payload ever grows a lat/lon (a
+    zone centroid, a bounding box, the grid itself), it has to be rebuilt from
+    published positions or moved behind require_admin before it ships.
+    """
     return Response(content=state.latest_overlaps_bytes, media_type="application/json")
 
 
@@ -147,6 +172,7 @@ async def association_status():
             "tagged": getattr(_a, "adsb_tracklets_tagged", 0),
             "no_state": getattr(_a, "adsb_seed_no_state", 0),
             "gate_rejects": getattr(_a, "adsb_seed_gate_rejects", 0),
+            "world_rejects": getattr(_a, "adsb_seed_world_rejects", 0),
             "tracklets_excluded": getattr(_a, "adsb_tracklets_excluded", 0),
             "inputs_emitted": getattr(_a, "adsb_inputs_emitted", 0),
         },
@@ -164,7 +190,9 @@ async def radar_anomalies():
         active_hexes = set(state.anomaly_hexes)
 
     # --- Live anomaly types from aircraft.json ---
-    live_aircraft = state.latest_aircraft_json.get("aircraft", [])
+    # The redacted feed: this route is unauthenticated, and an anomaly count is
+    # still a statement about a private node's detections.
+    live_aircraft = state.latest_aircraft_json_public.get("aircraft", [])
     live_type_counts: Counter = Counter()
     for ac in live_aircraft:
         if ac.get("is_anomalous"):

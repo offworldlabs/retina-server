@@ -409,11 +409,95 @@ jobs:
             echo "E2E tests failed — rolling back production..."
             cd ${{ env.APP_DIR }} && bash deploy/rollback.sh
 
+  tower-service-contract:
+    name: tower-finder-service honours what we forward
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Deliberately NOT restricted to main. This gate exists to stop the change
+    # landing before the service can serve it, and a job that only runs after
+    # the merge reports that too late to prevent one.
+    steps:
+      - uses: actions/checkout@v4
+      # Production's instance answers on a name with public DNS, so it can be
+      # checked from anywhere, including on a pull request.
+      - name: Production's instance
+        run: bash deploy/tower-contract.sh https://tower-finder.retina.fm/api/towers
+
+      # Staging's is a DIFFERENT container, and staging is what deploys first.
+      # Checking production's instead would pass while staging's still drops the
+      # parameter, on testmap.retina.fm, which is the public demo. It has no
+      # public DNS (staging-tower-finder.retina.fm does not resolve), so the only
+      # way to reach it before our own deploy puts a vhost in front is from
+      # inside the droplet, over the same retina-edge network nginx will use.
+      #
+      # base64 so the JSON fragment survives the trip without quoting games.
+      - name: Staging's instance, over retina-edge
+        if: github.event_name == 'push'
+        run: |
+          source deploy/tower-contract.sh
+          {
+            echo "QUERY_B64=$(printf '%s' "$TOWER_CONTRACT_QUERY" | base64 | tr -d '\n')"
+            echo "ECHO_B64=$(printf '%s' "$TOWER_CONTRACT_ECHO" | base64 | tr -d '\n')"
+            # The config route the same include now forwards. Its shape check is
+            # a plain read of a file in the container, so it is deterministic
+            # here in a way the elevation one — which fans out to open-meteo —
+            # is not; elevation is left to the public-DNS step above, which has
+            # the retries for it.
+            echo "CFGKEYS_B64=$(printf '%s' "$TOWER_CONTRACT_CONFIG_KEYS" | base64 | tr -d '\n')"
+          } >> "$GITHUB_ENV"
+      - name: Assert staging's instance
+        if: github.event_name == 'push'
+        uses: appleboy/ssh-action@v1
+        env:
+          QUERY_B64: ${{ env.QUERY_B64 }}
+          ECHO_B64: ${{ env.ECHO_B64 }}
+          CFGKEYS_B64: ${{ env.CFGKEYS_B64 }}
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: root
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          command_timeout: 5m
+          envs: QUERY_B64,ECHO_B64,CFGKEYS_B64
+          script: |
+            set -e
+            QUERY=$(printf '%s' "$QUERY_B64" | base64 -d)
+            WANT=$(printf '%s' "$ECHO_B64" | base64 -d)
+            CFGKEYS=$(printf '%s' "$CFGKEYS_B64" | base64 -d)
+            if ! docker network inspect retina-edge >/dev/null 2>&1; then
+              echo "::error::retina-edge does not exist on $(hostname), so nginx cannot reach tower-finder-service and every proxied /api/towers would 502. Bring that stack up before routing a vhost to it."
+              exit 1
+            fi
+            BODY=$(docker run --rm --network retina-edge curlimages/curl:latest \
+              -s -m 45 "http://tower-finder-service:8000/api/towers?${QUERY}") || {
+              echo "::error::tower-finder-service did not answer on retina-edge from $(hostname)."
+              exit 1
+            }
+            if ! printf '%s' "$BODY" | grep -qF "$WANT"; then
+              echo "::error::staging's tower-finder-service answered without ${WANT}. Either \`frequencies\` is not implemented there yet (ClickUp 86capx9mv scope item 2), or it is implemented under a different key or JSON shape. First 300 bytes follow."
+              printf '%s\n' "$BODY" | head -c 300
+              exit 1
+            fi
+
+            # /api/config, forwarded by the same include on every vhost.
+            CFG=$(docker run --rm --network retina-edge curlimages/curl:latest \
+              -s -m 45 "http://tower-finder-service:8000/api/config") || {
+              echo "::error::tower-finder-service did not answer /api/config on retina-edge from $(hostname)."
+              exit 1
+            }
+            for key in $CFGKEYS; do
+              if ! printf '%s' "$CFG" | grep -qF "$key"; then
+                echo "::error::staging's tower-finder-service answered /api/config without ${key}. snippets/towers-proxy.conf forwards that route on every vhost, so pointing one at this instance would serve a config missing a key retina's callers read. First 300 bytes follow."
+                printf '%s\n' "$CFG" | head -c 300
+                exit 1
+              fi
+            done
+            echo "staging's tower-finder-service honours the contract."
+
   deploy-staging:
     name: Deploy to staging
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [backend-tests, frontend-build, dashboard-build, docker-build, env-parity]
+    needs: [backend-tests, frontend-build, dashboard-build, docker-build, env-parity, tower-service-contract]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     concurrency:
       group: staging-deploy
@@ -504,6 +588,10 @@ jobs:
             # file by hand only creates a way to get it wrong. A rebuilt droplet,
             # a restored snapshot or a hand-mangled file now self-heals here.
             cp deploy/env.staging.example .env
+            # Top up with this host's own CARTO basemap key — see the note in
+            # deploy/env.<env>.example. Guarded rather than chained with &&: a host
+            # with no key must build watermarked tiles, not fail its deploy.
+            if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; fi
             docker compose down --timeout 30
             # Cap build cache at ~10GB (LRU eviction) rather than wiping it all:
             # keeps recent layers so incremental builds stay fast, and bounds
@@ -796,6 +884,10 @@ jobs:
             # exists. pre-deploy.sh above has already taken its snapshot against
             # the previous config, which is what a rollback needs to restore.
             cp deploy/env.prod.example .env
+            # Top up with this host's own CARTO basemap key — see the note in
+            # deploy/env.<env>.example. Guarded rather than chained with &&: a host
+            # with no key must build watermarked tiles, not fail its deploy.
+            if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; fi
 
             pip3 install -e libs/retina-custody/ --break-system-packages --ignore-installed -q
             pip3 install -e libs/retina-simulation/ --break-system-packages -q
@@ -1028,9 +1120,51 @@ jobs:
           check_status "GET /api/radar/analytics" "${BASE_URL}/api/radar/analytics"   "200"
           check_status "GET /api/test/dashboard"  "${BASE_URL}/api/test/dashboard"    "200"
           check_status "GET /api/test/mlat-verification" "${BASE_URL}/api/test/mlat-verification" "200"
-          check_status "GET /api/config"          "${BASE_URL}/api/config"            "200"
+          # No /api/config check on BASE_URL (api.retina.fm): that vhost defines
+          # no /api/config location, so the request falls through `location /`
+          # to the app — which no longer implements the route. The monolith's
+          # tower stack was deleted once every /api/ vhost was proxied to
+          # tower-finder-service, so this would now be a 404 by design. The
+          # route is checked where it is actually served, on the tower vhosts
+          # below.
           check_status "GET / (frontend)"         "https://towers.retina.fm/"         "200"
           check_status "GET /api/health (api.retina.fm)" "${BASE_URL}/api/health"     "200"
+
+          # The tower-finder seam, on production's OWN vhost names: prod parks
+          # testmap as testmap-retired, so its routed set is not staging's and
+          # staging passing says nothing about it. Same assertion as the staging
+          # suite, from the same file.
+          source deploy/tower-contract.sh
+          for endpoint in https://towers.retina.fm/api/towers \
+                          https://map.retina.fm/api/towers \
+                          https://api.retina.fm/towers \
+                          https://dash.retina.fm/api/towers \
+                          https://admin.retina.fm/api/towers; do
+            printf "  %-40s " "${endpoint#https://}"
+            if REASON=$(assert_tower_contract "$endpoint"); then
+              echo "OK"; PASS=$((PASS+1))
+            else
+              echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
+            fi
+          done
+
+          # The sibling routes the same include forwards. dash is the vhost that
+          # used to answer both from the monolith, so it is where a missing
+          # proxy would show up first; towers is the one a human looks at.
+          for endpoint in https://dash.retina.fm https://towers.retina.fm; do
+            printf "  %-40s " "${endpoint#https://}/api/elevation"
+            if REASON=$(assert_elevation_contract "${endpoint}/api/elevation"); then
+              echo "OK"; PASS=$((PASS+1))
+            else
+              echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
+            fi
+            printf "  %-40s " "${endpoint#https://}/api/config"
+            if REASON=$(assert_config_contract "${endpoint}/api/config"); then
+              echo "OK"; PASS=$((PASS+1))
+            else
+              echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
+            fi
+          done
 
           # Wait for storage scan (background du task, 202 = still scanning)
           printf "  %-40s " "GET /api/admin/storage"

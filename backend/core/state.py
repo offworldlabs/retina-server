@@ -28,6 +28,7 @@ from config.constants import (
     N2_CONFIRM_MIN_EPOCHS,
     N2_CONFIRM_MIN_SPAN_S,
     TRACK_HISTORY_MAX,  # noqa: F401 — re-exported, used via state.TRACK_HISTORY_MAX
+    as_num,
 )
 
 # ── Coverage / analytics persistence ──────────────────────────────────────────
@@ -122,10 +123,13 @@ def _global_tracks_for_claiming():
     Only mn-dark-* keys are claimable: an ADS-B-tagged track already has an
     external identity (a transponder hex) and must never be re-derived by
     top-down projection — mirrors "only dark tracks are claimable" at
-    solver.py's multinode_key_decision.  Eligibility
-    filtering, the DR-age cap and the CLAIM_MAX_GLOBAL_TRACKS truncation are
-    all applied by the LIB, not here — this stays a dumb snapshot so the
-    offline bench measures the shipped filtering.
+    solver.py's multinode_key_decision.  Eligibility filtering, the DR-age
+    cap and the CLAIM_MAX_GLOBAL_TRACKS truncation are applied by the
+    CONSUMER, not here — this stays a dumb snapshot so the offline bench
+    measures the shipped filtering.  For the associator's own claiming round
+    that consumer is the lib (association._claim_round); the known lane calls
+    this provider directly and so applies the same three itself (see
+    known_claiming._dark_global_projections).
     """
     out = []
     for key, rec in list(multinode_tracks.items()):
@@ -148,9 +152,56 @@ def _global_tracks_for_claiming():
     return out
 
 
-def _as_num(v) -> float:
-    """0.0 for anything that isn't a finite number ("ground", None, NaN)."""
-    return float(v) if isinstance(v, (int, float)) and math.isfinite(v) else 0.0
+def adsb_derived_fields(rec: dict) -> dict:
+    """The SI-unit fields the seeding provider contract adds to a raw feed
+    record: metres of altitude and the ground-speed/track vector in m/s.
+
+    Called at WRITE time by every path that populates adsb_aircraft (the TCP
+    handler, the frame processor's non-TCP extraction, and the sim ingest
+    route) so _adsb_for_seeding does not re-derive them for the whole cache
+    on every read — the provider is called once per frame per node, the cache
+    holds the whole live fleet, and this is three trig calls and three
+    coercions per aircraft per call.
+
+    ADS-B ships non-numeric sentinels in numeric fields — alt_baro is the
+    literal string "ground" for on-ground aircraft — so coerce before
+    arithmetic; one such record would otherwise throw on every frame for as
+    long as it stayed live.
+    """
+    gs_ms = as_num(rec.get("gs")) * 0.514444
+    trk = math.radians(as_num(rec.get("track")))
+    return {
+        "alt_m": as_num(rec.get("alt_baro")) * FT_TO_M,
+        "vel_east": gs_ms * math.sin(trk),
+        "vel_north": gs_ms * math.cos(trk),
+        # Alias of last_seen_ms under the name the seeding provider contract
+        # uses.  Carried on the stored record rather than mapped on read so
+        # the snapshot below can hand out the record itself; last_seen_ms
+        # stays the field every other reader of adsb_aircraft looks at, and
+        # is still stamped where it always was.
+        "timestamp_ms": rec.get("last_seen_ms", 0),
+    }
+
+
+def node_world(node_id: str) -> str:
+    """Which world this node's echoes come from: "sim" for synthetic/test
+    nodes, "real" for hardware.
+
+    The single authority for the question — known_claiming's world gate, the
+    associator's seed-verification gate (node_world_provider below) and the
+    frame processor's auto-tag filter all key on it, and two resolvers that
+    could disagree would let one consumer accept what another rejects.  The
+    CONFIG handshake's verdict (which honours the node's own is_synthetic
+    claim) wins when the node is registered; a node that never completed the
+    TCP handshake — HTTP ingest, tests — falls back to the same prefix rule
+    the handshake defaults to."""
+    info = connected_nodes.get(node_id)
+    if info is not None and "is_synthetic" in info:
+        return "sim" if info["is_synthetic"] else "real"
+    # Function-local: tcp_handler imports this module at import time.
+    from services.tcp_handler import is_synthetic_node
+
+    return "sim" if is_synthetic_node(node_id) else "real"
 
 
 def _adsb_for_seeding() -> dict[str, dict]:
@@ -162,30 +213,36 @@ def _adsb_for_seeding() -> dict[str, dict]:
     this read loses at worst one entry to a stale round, not a corrupted
     one.  Dumb snapshot, no age filtering here — the LIB applies freshness
     and gating, so the offline bench measures the shipped filtering.
+
+    Shallow: the values are the stored records themselves, which every
+    consumer of this provider treats as read-only.  The derived fields are
+    already on them (see adsb_derived_fields), so the only per-call work is
+    dropping records with an unusable position.
     """
     out = {}
     for hexn, rec in list(adsb_aircraft.items()):
         lat, lon = rec.get("lat"), rec.get("lon")
         if lat is None or lon is None or not (math.isfinite(lat) and math.isfinite(lon)):
             continue
-        # ADS-B ships non-numeric sentinels in numeric fields — alt_baro is
-        # the literal string "ground" for on-ground aircraft — so coerce
-        # before arithmetic; one such record would otherwise throw here on
-        # every frame for as long as it stays live.
-        gs_ms = _as_num(rec.get("gs")) * 0.514444
-        trk = math.radians(_as_num(rec.get("track")))
+        if "alt_m" in rec:
+            out[hexn] = rec
+            continue
+        # Fallback for a record no writer derived — a write path that has not
+        # been updated, or state carried across a restart.  Degrades to the
+        # old per-read cost, never to a zero-velocity fix, which would dead-
+        # reckon a moving aircraft to a standstill and quietly lose its claims.
         out[hexn] = {
             "hex": hexn,
             "lat": lat,
             "lon": lon,
-            "alt_m": _as_num(rec.get("alt_baro")) * FT_TO_M,
-            "vel_east": gs_ms * math.sin(trk),
-            "vel_north": gs_ms * math.cos(trk),
-            "timestamp_ms": rec.get("last_seen_ms", 0),
             "alt_baro": rec.get("alt_baro", 0),
             "gs": rec.get("gs", 0),
             "track": rec.get("track", 0),
             "flight": rec.get("flight", ""),
+            # Carried so the degraded copy keeps claiming's world gate honest;
+            # absent on the source record stays absent (= ungated) here too.
+            **({"world": rec["world"]} if "world" in rec else {}),
+            **adsb_derived_fields(rec),
         }
     return out
 
@@ -222,6 +279,10 @@ node_associator = InterNodeAssociator(
     max_pairs_per_round=ASSOC_MAX_PAIRS_PER_ROUND,
     adsb_seed_mode=ADSB_SEED_MODE,
     adsb_provider=_adsb_for_seeding,
+    # The provider's snapshot mixes worlds (see node_world above); the
+    # associator's seed round refuses to verify a node's tag against a state
+    # from the other world.  Counted lib-side as adsb_seed_world_rejects.
+    node_world_provider=node_world,
 )
 
 # ── Per-node tracker pipelines (lazy-created per connecting node) ─────────────
@@ -275,7 +336,26 @@ KNOWN_CLAIMS_PER_HEX_MAX = 64
 known_claims: dict[str, deque] = {}
 
 # ── Track history: rolling position buffer per aircraft hex ───────────────────
+# The TRUE frame.  Everything internal compares against it — the speed gate's
+# reference, the arc-motion log, the jump check, routes/test.py's ground-truth
+# scoring — so it has to stay the geometry the pipeline actually solved.
 track_histories: dict[str, deque] = {}
+
+# ── Track history, public frame: the same trail as a client may see it ────────
+# Same keys, same shape, same bound, appended in lockstep with track_histories
+# (services/feed_helpers.append_track_history writes both or neither, so index i
+# is the same emit in both stores).  Each point was translated by the delta in
+# force on ITS OWN frame, which is what makes this store worth keeping rather
+# than retro-translating the true trail at serialization time: an arc track's
+# emitted position is a boresight crossing — a ray from the receiver — and a
+# night of those, served untranslated, intersects at the operator's house
+# whatever anchor the map draws.  A hex can be an arc track under one node in
+# one frame and a multinode solve in the next, so the trail is only honest if
+# each point carries the shift that was true when it was made.
+#
+# With NODE_FUZZ_MODE=off the two stores hold identical values and serving this
+# one is exactly serving the other.
+track_histories_public: dict[str, deque] = {}
 
 # ── Last emitted position per hex, for the speed gate ─────────────────────────
 # Updated EVERY emit (not deduped) so the gate's dt reflects actual emit cadence
@@ -339,7 +419,16 @@ ws_live_clients: set[WebSocket] = set()  # real-node-only aircraft (map.retina.f
 # ids it owns, so broadcast can send a payload filtered to just that owner's
 # nodes (true data isolation, not a client-side view filter).
 ws_owner_clients: dict[WebSocket, set[str]] = {}
+# The whole fleet, unredacted.  Only the per-owner feed and internal/admin
+# readers may use it: it still contains nodes whose owners registered them
+# private, because the owner filter has to see an entry before it can decide
+# the caller owns it.
 latest_aircraft_json: dict = {"now": 0, "aircraft": [], "messages": 0}
+# The same feed with private nodes' contributions removed
+# (services/publication.public_aircraft_payload) — what every unauthenticated
+# surface serves.  latest_aircraft_json_bytes is its serialization, so the two
+# always agree; the dict form exists for the routes that need to look inside.
+latest_aircraft_json_public: dict = {"now": 0, "aircraft": [], "messages": 0}
 latest_aircraft_json_bytes: bytes = b'{"now":0,"aircraft":[],"messages":0}'
 aircraft_dirty: bool = False
 latest_real_aircraft_json_bytes: bytes = b'{"now":0,"aircraft":[],"messages":0}'
@@ -387,6 +476,11 @@ known_claims_bound: int = 0
 # Path-2 candidates dropped because the node cannot see the dead-reckoned
 # position of the cached aircraft (outside its beam or beyond its footprint).
 known_claims_visibility_rejects: int = 0
+# Path-2 candidates dropped because they belong to the other world — a
+# synthetic node offered a real aircraft (or a hardware node a simulated
+# one).  Sustained nonzero on a hardware-only deployment means mistagged
+# entries, not decoys.
+known_claims_world_rejects: int = 0
 # Claiming-stage exceptions absorbed by frame_processor's fail-open guard.
 # Nonzero means the known lane is broken and silently contributing nothing.
 known_claims_errors: int = 0
@@ -510,6 +604,11 @@ solver_fail_displacement: int = 0
 # tracks anomalous — but a rising rate here still means association regressed.
 position_jump_events: int = 0
 
+# Sim ADS-B pushes dropped for a non-transponder hex (e.g. a simulator object
+# id standing in for a transponder).  A nonzero value means an outdated fleet
+# is still pushing dark aircraft into the ADS-B path — see routes/sim_ingest.
+sim_adsb_push_rejected_hex: int = 0
+
 # Solver end-to-end latency (seconds from queue submission to solve completion)
 solver_last_latency_s: float = 0.0
 solver_total_latency_s: float = 0.0
@@ -585,6 +684,7 @@ def _reset_for_tests() -> None:
     which handed one test's detection_arcs/ground_truth to the next.
     """
     global aircraft_dirty, latest_aircraft_json, latest_aircraft_json_bytes
+    global latest_aircraft_json_public
     global latest_real_aircraft_json_bytes, latest_analytics_bytes
     global latest_analytics_real_bytes, latest_nodes_bytes, latest_overlaps_bytes
     global latest_accuracy_bytes
@@ -593,7 +693,7 @@ def _reset_for_tests() -> None:
     global frames_dropped, frames_processed, solver_successes, solver_failures
     global adsb_seed_frames_autotagged
     global known_claims_made, known_claim_contentions, known_claims_bound
-    global known_claims_errors, known_claims_visibility_rejects
+    global known_claims_errors, known_claims_visibility_rejects, known_claims_world_rejects
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
     global coverage_rebuild_backlog
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
@@ -608,6 +708,7 @@ def _reset_for_tests() -> None:
     global solver_fail_exception, solver_fail_unconverged, solver_fail_rms_delay
     global solver_fail_rms_doppler, solver_fail_beam, solver_fail_displacement
     global position_jump_events
+    global sim_adsb_push_rejected_hex
     global solver_last_latency_s, solver_total_latency_s, solver_total_solved
     global peak_connected_nodes
 
@@ -619,6 +720,7 @@ def _reset_for_tests() -> None:
         adsb_aircraft,
         known_claims,
         track_histories,
+        track_histories_public,
         track_last_emit,
         track_gate_hold,
         track_arc_motion,
@@ -655,6 +757,7 @@ def _reset_for_tests() -> None:
 
     aircraft_dirty = False
     latest_aircraft_json = {"now": 0, "aircraft": [], "messages": 0}
+    latest_aircraft_json_public = {"now": 0, "aircraft": [], "messages": 0}
     latest_aircraft_json_bytes = b'{"now":0,"aircraft":[],"messages":0}'
     latest_real_aircraft_json_bytes = b'{"now":0,"aircraft":[],"messages":0}'
     latest_analytics_bytes = (
@@ -676,6 +779,7 @@ def _reset_for_tests() -> None:
         adsb_seed_frames_autotagged = 0
         known_claims_made = known_claim_contentions = known_claims_bound = 0
         known_claims_errors = known_claims_visibility_rejects = 0
+        known_claims_world_rejects = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
         coverage_rebuild_backlog = 0
         solver_stale_drops = 0
@@ -692,6 +796,7 @@ def _reset_for_tests() -> None:
         solver_fail_exception = solver_fail_unconverged = solver_fail_rms_delay = 0
         solver_fail_rms_doppler = solver_fail_beam = solver_fail_displacement = 0
         position_jump_events = 0
+        sim_adsb_push_rejected_hex = 0
         solver_total_solved = 0
         solver_last_latency_s = solver_total_latency_s = 0.0
         peak_connected_nodes = 0

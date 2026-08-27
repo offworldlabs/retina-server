@@ -285,33 +285,13 @@ export function useAircraftFeed(ownerOnly = false) {
   };
 }
 
-/**
- * Returns a deterministic [dLat, dLon] privacy offset for a node's RX display location.
- * Uses a simple djb2-derived hash of the node_id string so the same node always gets
- * the same offset (stable display), but the true operator location cannot be read from
- * the map. Max offset ≈ ±400 m (0.0036°).
- */
-function nodeDisplayFuzz(nodeId) {
-  // Murmur-style hash — two independent seeds for lat and lon.
-  // Avoids collisions between sequential IDs like node_001 / node_002.
-  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
-  for (let i = 0; i < nodeId.length; i++) {
-    const c = nodeId.charCodeAt(i);
-    h1 = Math.imul(h1 ^ c, 2654435761);
-    h2 = Math.imul(h2 ^ c, 1597334677);
-  }
-  // Avalanche finaliser
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
-  h1 = Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  h1 ^= h1 >>> 16;
-  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
-  h2 = Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 ^= h2 >>> 16;
-  // Normalise to [-1, 1) and scale to ±0.0036° ≈ ±400 m
-  const n1 = ((h1 >>> 0) / 0x100000000) * 2 - 1;
-  const n2 = ((h2 >>> 0) / 0x100000000) * 2 - 1;
-  return [n1 * 0.0036, n2 * 0.0036];
-}
+// Receiver anonymization is entirely the backend's, applied where the bytes
+// are serialized (backend/services/public_location.py): coordinates are
+// displaced 1–3 km deterministically per node before they go on the wire, so
+// no true receiver position reaches the browser and the client does no fuzzing
+// of its own. What the client does own is disclosing that: the feed declares
+// the outer displacement radius as location_uncertainty_km, and the map draws
+// it (see NodeMarkersLayer in LiveAircraftMap.tsx).
 
 /**
  * Fetch radar node positions for coverage zones.
@@ -361,20 +341,18 @@ export function useNodes() {
             const rxLat = da.rx.lat;
             const rxLon = da.rx.lon;
             if (Math.abs(rxLat) < 1e-6 && Math.abs(rxLon) < 1e-6) continue;
-            // Deterministic privacy fuzz for RX location — same node_id always gets the
-            // same offset so the map is stable, but the true operator location cannot be
-            // read directly from the display. ±~400m radius (≈0.0036°).
-            const [dLat, dLon] = nodeDisplayFuzz(id);
             nodeList.push({
               node_id: id,
-              rx_lat: rxLat + dLat,
-              rx_lon: rxLon + dLon,
-              // Unfuzzed coords for client-side bistatic-arc rebuild — the
-              // backend builds the arc from the true RX, so fuzzing the
-              // rebuild inputs would offset the arc by ~400 m perpendicular
-              // to the locus relative to the backend's curve.
-              rx_lat_real: rxLat,
-              rx_lon_real: rxLon,
+              // Already privacy-fuzzed by the backend; used as served. The
+              // backend builds its published arcs around this same anchor, so
+              // a client-side rebuild lands on the backend's curve.
+              rx_lat: rxLat,
+              rx_lon: rxLon,
+              // The backend's own declaration of how far it displaced the
+              // receiver. Absent when fuzzing is off, which resolves to 0 and
+              // suppresses the uncertainty disc rather than drawing one of
+              // zero radius.
+              location_uncertainty_km: da.rx.location_uncertainty_km ?? 0,
               tx_lat: da.tx.lat,
               tx_lon: da.tx.lon,
               // Node altitudes (m ASL) for the altitude-corrected arc

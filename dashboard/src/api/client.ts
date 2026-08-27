@@ -81,11 +81,6 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ config }),
     }),
-  adminUpdateTowerConfig: (config) =>
-    request("/api/admin/config/towers", {
-      method: "PUT",
-      body: JSON.stringify({ config }),
-    }),
   adminConfigHistory: () => request("/api/admin/config/history"),
   adminStorage: () => request("/api/admin/storage"),
   adminMetrics: () => request("/api/admin/metrics"),

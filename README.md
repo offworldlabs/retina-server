@@ -3,8 +3,8 @@
 This repo powers RETINA, a passive-radar system: receiver nodes detect aircraft
 from reflections of broadcast transmitters, and the backend turns those
 detections into live tracks shown on a web map. "Tower Finder" — the original
-illuminator-search feature documented below — is one of several surfaces (along
-with the live map and the admin dashboard).
+illuminator-search feature — is one of several surfaces (along with the live map
+and the admin dashboard), and is the one whose API now lives in its own service.
 
 > **New here?** Start with [`ONBOARDING.md`](ONBOARDING.md) for the full picture
 > and local setup, and [`docs/architecture.md`](docs/architecture.md) for how the
@@ -12,9 +12,15 @@ with the live map and the admin dashboard).
 
 ## Tower Finder feature
 
-Web application and API that helps passive radar operators find suitable broadcast tower illuminators near their location.
+Web application that helps passive radar operators find suitable broadcast tower
+illuminators near their location: given coordinates, it returns nearby FM/VHF/UHF
+transmitters ranked by suitability for passive radar use.
 
-Given geographic coordinates, the system queries the [Maprad.io](https://maprad.io) transmitter database for nearby FM/VHF/UHF broadcast towers, then filters and ranks them by suitability for passive radar use.
+This repo owns the SPA (`frontend/`) and the nginx routing. The search API itself
+(`/api/towers`, plus `/api/elevation` and `/api/config`) is served by
+**tower-finder-service**, a separate repo and container that every vhost is
+proxied to; the monolith's own copy of that stack was deleted once the proxy went
+live, so there is one implementation and one ranking answer.
 
 ## Project Structure
 
@@ -71,9 +77,10 @@ or just the API on its own:
 cd backend && .venv/bin/uvicorn main:app --reload
 ```
 
-The API runs at `http://localhost:8000`. Interactive docs at `/docs`. Add your
-Maprad.io API key to `backend/.env` for tower search; the live map does not need
-it.
+The API runs at `http://localhost:8000`. Interactive docs at `/docs`. The tower
+search is not part of this process: run tower-finder-service (its own repo and
+container) if you need `/api/towers`, `/api/elevation` or `/api/config` locally.
+The live map and the dashboard do not need it.
 
 #### Database migrations
 
@@ -131,59 +138,21 @@ the routes as `x-retry` and `x-terminal`, and the vocabulary is defined in the
 contract's own description. A breaking change raises `NODE_API_VERSION` in
 `backend/routes/nodes.py`.
 
-### `GET /api/towers`
+### `GET /api/towers`, `GET /api/elevation`, `GET|PUT /api/config`
 
-| Parameter  | Type   | Required | Default | Description                             |
-|------------|--------|----------|---------|-----------------------------------------|
-| `lat`      | float  | yes      |         | Latitude (-90 to 90)                    |
-| `lon`      | float  | yes      |         | Longitude (-180 to 180)                 |
-| `altitude` | float  | no       | 0       | Receiver altitude in metres             |
-| `limit`    | int    | no       | 20      | Max towers to return (1–100)            |
-| `source`   | string | no       | au      | Data source: `au`, `us`, `ca`           |
+Answered by **tower-finder-service**, not by this backend. nginx proxies all
+three to that service on every vhost that answers `/api/` (see
+`deploy/nginx/snippets/towers-proxy.conf` and the `TOWER_FINDER` conditional in
+`deploy/nginx/nginx.conf.template`); this repo keeps the SPA that calls them and
+the routing, and no longer keeps a second implementation of the search, the
+ranking engine or the Maprad/FCC clients. Parameters, response shape and the
+ranking rules are documented in the tower-finder-service repo, which owns them.
 
-**Response:**
-
-```json
-{
-  "towers": [
-    {
-      "rank": 1,
-      "callsign": "ATN6",
-      "name": "ABC Tower 221 Pacific Highway GORE HILL",
-      "state": "NSW",
-      "frequency_mhz": 177.5,
-      "band": "VHF",
-      "latitude": -33.820079,
-      "longitude": 151.185,
-      "distance_km": 5.9,
-      "bearing_deg": 337.5,
-      "bearing_cardinal": "NNW",
-      "received_power_dbm": -7.7,
-      "distance_class": "Too Close",
-      "eirp_dbm": 79.1,
-      "licence_type": "Broadcasting",
-      "licence_subtype": "Commercial Television"
-    }
-  ],
-  "query": { "latitude": -33.8688, "longitude": 151.2093, "altitude_m": 0, "radius_km": 80, "source": "au" },
-  "count": 20
-}
-```
-
-## How Ranking Works
-
-1. Fetch all FM, VHF and UHF transmitters within 80 km from Maprad.io
-2. Discard towers whose estimated received power is below −95 dBm
-3. Classify each tower by band (VHF / UHF / FM) and distance suitability:
-   - **Too Close** (< 8 km) — direct signal may overwhelm the receiver
-   - **Ideal** (8–30 km) — best bistatic geometry
-   - **Good** (30–60 km) — workable
-   - **Far** (> 60 km) — fallback only
-4. Rank by: band preference (VHF → UHF → FM) → distance class → signal strength
-5. Return top N results
+The contract those routes must honour before a vhost is pointed at the service
+is asserted by `deploy/tower-contract.sh`, run from CI and from the smoke tests.
 
 ## Tech Stack
 
 - **Backend:** Python 3.11+, FastAPI, httpx
 - **Frontend:** React 18, Vite, Leaflet
-- **Data source:** Maprad.io GraphQL API (ACMA RRL, FCC ULS, ISED SMS)
+- **Tower search:** tower-finder-service (Maprad.io GraphQL, ACMA RRL, FCC ULS, ISED SMS)

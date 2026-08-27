@@ -4,12 +4,15 @@ Two regressions live here, found via staging probes where arc tracks drew
 loci built from delays frozen for 20-40 s while the target's true delay slid
 ~1 µs/s (multi-km apparent position error):
 
-1. get_recent_detections() returns newest-first, but the solver path read
-   geo_detections[-1] — the OLDEST detection in the window — as "latest".
+1. get_recent_detections() returns oldest-first — it builds its result
+   newest-first and reverses before returning — but the solver path read
+   geo_detections[0] as "latest", which is the OLDEST detection in the window.
 2. latest_delay_us was only written when the (rate-limited, sometimes
    failing) LM solver produced a fresh GeolocatedTrack; between runs the
    published delay never moved even though every frame delivered new
    detections.
+
+Fixtures here are ordered oldest-first, matching get_recent_detections().
 """
 
 from unittest.mock import patch
@@ -22,10 +25,10 @@ _NODE_CONFIG = {**DEFAULT_NODE_CONFIG, "node_id": "delay-fresh-node"}
 
 
 def _event(track_id, detections, adsb_hex=None):
-    """Materialized event dict, detections given newest-first."""
+    """Materialized event dict, detections given oldest-first."""
     return {
         "track_id": track_id,
-        "timestamp": detections[0]["timestamp"],
+        "timestamp": detections[-1]["timestamp"],
         "length": len(detections),
         "detections": detections,
         "adsb_hex": adsb_hex,
@@ -36,8 +39,8 @@ def _event(track_id, detections, adsb_hex=None):
     }
 
 
-def _det(ts_ms, delay_us, doppler_hz=10.0):
-    return {"timestamp": ts_ms, "delay": delay_us, "doppler": doppler_hz, "snr": 15.0, "adsb": None}
+def _det(ts_ms, delay_us, doppler_hz=10.0, adsb=None):
+    return {"timestamp": ts_ms, "delay": delay_us, "doppler": doppler_hz, "snr": 15.0, "adsb": adsb}
 
 
 @pytest.fixture()
@@ -47,8 +50,8 @@ def pipe():
 
 class TestSolvedTrackUsesNewestDetection:
     def test_latest_delay_is_newest_not_oldest(self, pipe):
-        # Newest-first, like get_recent_detections(): 70 µs is the fresh one.
-        dets = [_det(3000, 70.0, doppler_hz=25.0), _det(2000, 60.0), _det(1000, 50.0)]
+        # Oldest-first, like get_recent_detections(): 70 µs is the fresh one.
+        dets = [_det(1000, 50.0), _det(2000, 60.0), _det(3000, 70.0, doppler_hz=25.0)]
         fake_solution = {
             "success": True,
             "state": [1.0, 1.0, 5.0, 100.0, 0.0, 0.0],
@@ -84,7 +87,7 @@ class TestDelayRefreshBetweenSolves:
             patch("pipeline.passive_radar.generate_initial_guess", return_value=[1.0, 1.0, 5.0, 0.0, 0.0, 0.0]),
         ):
             # min_detections gate: pad the seed event to 3 detections.
-            seed = [_det(1000, delay_us), _det(900, delay_us), _det(800, delay_us)]
+            seed = [_det(800, delay_us), _det(900, delay_us), _det(1000, delay_us)]
             pipe.geolocated_tracks[track_id] = pipe._geolocate_track_event(track_id, _event(track_id, seed))
         assert pipe.geolocated_tracks[track_id].latest_delay_us == delay_us
         pipe._geo_last_solve[track_id] = time.monotonic()  # rate limit active
@@ -95,6 +98,31 @@ class TestDelayRefreshBetweenSolves:
         pipe._run_geolocation()
         assert pipe.geolocated_tracks["trk-2"].latest_delay_us == 71.5
         assert pipe.geolocated_tracks["trk-2"].latest_doppler_hz == -4.0
+
+    def test_materialized_multi_detection_event_takes_the_newest(self, pipe):
+        """A single-detection event cannot tell [0] from [-1]; this one can."""
+        self._seed_existing(pipe, "trk-2m", 60.0)
+        pipe.event_writer.write_event(
+            "trk-2m",
+            5000,
+            3,
+            [_det(3000, 50.0), _det(4000, 60.0), _det(5000, 71.5, doppler_hz=-4.0)],
+        )
+        pipe._run_geolocation()
+        assert pipe.geolocated_tracks["trk-2m"].latest_delay_us == 71.5
+        assert pipe.geolocated_tracks["trk-2m"].latest_doppler_hz == -4.0
+
+    def test_identity_evidence_comes_from_the_newest_detection(self, pipe):
+        """last_detection_adsb_hex authorises calibration points, so it must not lag."""
+        self._seed_existing(pipe, "trk-2i", 60.0)
+        pipe.event_writer.write_event(
+            "trk-2i",
+            5000,
+            2,
+            [_det(4000, 60.0, adsb={"hex": "oldhex"}), _det(5000, 71.5, adsb={"hex": "newhex"})],
+        )
+        pipe._run_geolocation()
+        assert pipe.geolocated_tracks["trk-2i"].last_detection_adsb_hex == "newhex"
 
     def test_lazy_event_refreshes_delay_via_track_ref(self, pipe):
         self._seed_existing(pipe, "trk-3", 60.0)

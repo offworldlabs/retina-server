@@ -660,6 +660,19 @@
   animation: anomaly-pulse 1.5s ease-in-out infinite;
 }
 
+/* Node location-uncertainty disc and empirical coverage region — both are
+   approximate areas, and both say so with a soft edge.  Screen-space blur is
+   deliberate: it keeps the edge equally soft at every zoom, where a blur in
+   map units would sharpen as you zoom out and disappear once the shape is a
+   few pixels wide.  Values are in px and were picked against the disc's 1–3 km
+   radius: enough to kill the rim, not so much that the shape stops reading. */
+.node-uncertainty-disc {
+  filter: blur(5px);
+}
+.coverage-fuzzy {
+  filter: blur(3.5px);
+}
+
 /* km labels on truth-vs-track error lines.  Permanent tooltips (their lines
    render on pointer-events:none canvases, so there is nothing to hover) —
    restyle Leaflet's white tooltip box into a small unobtrusive chip. */

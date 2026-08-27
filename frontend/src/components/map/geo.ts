@@ -45,7 +45,7 @@ export function isPointInViewport(lat, lon, viewport, pad = VIEWPORT_PAD_DEG) {
 
 export function getFocusPoints(aircraft, nodes, selectedHex) {
   if (selectedHex) {
-    // When focusing a selected aircraft, return ONLY the anchor point so
+    // On an explicit Fit with an aircraft selected, return ONLY the anchor so
     // FitBounds takes the setView(anchor, currentZoom) branch — fitting the
     // bounds to the full ambiguity arc geometry instead zooms the camera
     // down to street level on a ~2 km arc, leaving the aircraft barely
@@ -250,4 +250,16 @@ export function nearestPointOnPolyline(
  *  silently dropped those. */
 export function validLatLon(lat: number | null | undefined, lon: number | null | undefined): boolean {
   return lat != null && lon != null && !(lat === 0 && lon === 0);
+}
+
+
+/** Leaflet `Circle` radius (metres) for a node's location-uncertainty disc,
+ *  from the backend-declared radius in km.  0 means "draw nothing": the feed
+ *  omits location_uncertainty_km when fuzzing is off, and a zero-radius disc
+ *  would assert a precision the feed never promised.  Absent, non-finite and
+ *  negative values collapse to the same 0 — the disc is a claim about the
+ *  data, so it is only drawn on a figure the server actually stated. */
+export function uncertaintyDiscRadiusM(uncertaintyKm: number | null | undefined): number {
+  if (uncertaintyKm == null || !Number.isFinite(uncertaintyKm) || uncertaintyKm <= 0) return 0;
+  return uncertaintyKm * 1000;
 }

@@ -10,7 +10,7 @@ import time
 import numpy as np
 import orjson
 
-from config.constants import ANALYTICS_REFRESH_INTERVAL_S, CLAIMED_DISPLAY_FRESH_S
+from config.constants import ANALYTICS_REFRESH_INTERVAL_S, CLAIMED_DISPLAY_FRESH_S, as_num, is_num
 from config.constants import (
     DELAY_MATCH_THRESHOLD_US as _DELAY_MATCH_THRESHOLD_US,
 )
@@ -18,6 +18,14 @@ from core import state
 from services.geo import bearing_deg, bistatic_delay_us, haversine_km, node_beam_params, point_in_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
+from services.public_location import (
+    fuzz_enabled,
+    location_uncertainty_km,
+    public_cross_node,
+    public_latlon,
+    public_node_summaries,
+)
+from services.publication import private_node_ids, public_summaries
 
 _analytics_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=1,
@@ -268,14 +276,45 @@ def _refresh_coverage_constraints(max_nodes: int = _COVERAGE_MAX_NODES_PER_CYCLE
     return rebuilt
 
 
+def _public_location_block(node_id: str, cfg: dict) -> dict:
+    """The ``location`` block of /api/radar/nodes, safe for a public client.
+
+    The receiver coordinate is the published one; ``rx_alt_ft`` is not touched,
+    because an altitude on its own places nobody — it is a terrain figure
+    shared by everyone on the same hill, and it is what the arc geometry needs.
+    TX is a licensed broadcast tower and stays true.
+
+    ``location_uncertainty_km`` is the radius the receiver is somewhere inside.
+    It is emitted whether or not fuzzing is on: a client that draws no disc
+    when the field is 0 is drawing the honest thing.
+    """
+    rx_lat, rx_lon = public_latlon(cfg.get("rx_lat"), cfg.get("rx_lon"), node_id)
+    return {
+        "rx_lat": rx_lat,
+        "rx_lon": rx_lon,
+        "rx_alt_ft": cfg.get("rx_alt_ft"),
+        "tx_lat": cfg.get("tx_lat"),
+        "tx_lon": cfg.get("tx_lon"),
+        "tx_alt_ft": cfg.get("tx_alt_ft"),
+        "location_uncertainty_km": location_uncertainty_km() if fuzz_enabled() else 0.0,
+    }
+
+
 def _refresh_analytics_and_nodes():
     """Heavy work: recompute analytics, nodes, and overlaps → store as bytes."""
     from services.tcp_handler import is_synthetic_node
 
-    # Analytics
+    # Analytics.  Both variants below are served to unauthenticated clients, so
+    # the receiver geometry in them is the published one — see
+    # services/public_location.public_node_summary for what moves and why.  The
+    # summaries the manager caches are left alone; this is a copy.
+    # ...and a node whose owner registered it private is not in them at all:
+    # public_summaries drops it before public_node_summaries rewrites what is
+    # left.  Two separate promises, applied in the order they compose — there
+    # is nothing to translate for a node that is not being published.
     analytics_data = {
-        "nodes": state.node_analytics.get_all_summaries(),
-        "cross_node": state.node_analytics.get_cross_node_analysis(),
+        "nodes": public_node_summaries(public_summaries(state.node_analytics.get_all_summaries())),
+        "cross_node": public_cross_node(state.node_analytics.get_cross_node_analysis()),
     }
     state.latest_analytics_bytes = orjson.dumps(analytics_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
@@ -291,6 +330,22 @@ def _refresh_analytics_and_nodes():
     # Nodes — snapshot once to avoid RuntimeError from concurrent TCP handler mutations
     with state.connected_nodes_lock:
         _nodes_snapshot = list(state.connected_nodes.items())
+    # /api/radar/nodes is unauthenticated and this block is the whole of it:
+    # name, peer, RF config and a location.  A private node is omitted from the
+    # map entirely rather than listed with its location blanked — an entry that
+    # says "a node exists here, details withheld" is still a disclosure, and the
+    # counts below are taken from the same filtered snapshot so the totals do
+    # not silently reinstate it.  ``_private`` is read once for the whole
+    # rebuild so a mid-loop cache expiry cannot split the payload across two
+    # answers.
+    #
+    # A separate list, not a narrowing of _nodes_snapshot: the snapshot is also
+    # what drives _refresh_missed_detections and _evict_stale_pipelines further
+    # down, and those are internal bookkeeping that must keep seeing the whole
+    # fleet — a private node whose pipeline stopped being evicted would leak a
+    # pipeline per node for the process lifetime.
+    _private = private_node_ids()
+    _published_nodes = [(nid, info) for nid, info in _nodes_snapshot if nid not in _private]
     nodes_data = {
         "nodes": {
             nid: {
@@ -307,20 +362,13 @@ def _refresh_analytics_and_nodes():
                     or info.get("config", {}).get("frequency")
                 ),
                 "sample_rate": (info.get("config", {}).get("Fs") or info.get("config", {}).get("fs_hz")),
-                "location": {
-                    "rx_lat": info.get("config", {}).get("rx_lat"),
-                    "rx_lon": info.get("config", {}).get("rx_lon"),
-                    "rx_alt_ft": info.get("config", {}).get("rx_alt_ft"),
-                    "tx_lat": info.get("config", {}).get("tx_lat"),
-                    "tx_lon": info.get("config", {}).get("tx_lon"),
-                    "tx_alt_ft": info.get("config", {}).get("tx_alt_ft"),
-                },
+                "location": _public_location_block(nid, info.get("config", {})),
             }
-            for nid, info in _nodes_snapshot
+            for nid, info in _published_nodes
         },
-        "connected": sum(1 for _, n in _nodes_snapshot if n.get("status") not in ("disconnected",)),
-        "total": len(_nodes_snapshot),
-        "synthetic": sum(1 for _, n in _nodes_snapshot if n.get("is_synthetic")),
+        "connected": sum(1 for _, n in _published_nodes if n.get("status") not in ("disconnected",)),
+        "total": len(_published_nodes),
+        "synthetic": sum(1 for _, n in _published_nodes if n.get("is_synthetic")),
     }
     state.latest_nodes_bytes = orjson.dumps(nodes_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
@@ -925,7 +973,16 @@ def _refresh_node_verification(node_id: str):
         _alt_m = best_adsb.get("alt_m")
         _gs_kt = best_adsb.get("gs")
         _vel_ms = best_adsb.get("velocity")
-        truth_alt_m = float(_alt_ft) * 0.3048 if _alt_ft is not None else float(_alt_m) if _alt_m is not None else None
+        # A non-numeric alt_baro is tar1090's "ground" sentinel: on the surface,
+        # which is field elevation, not 0 m MSL.  It is no altitude truth, so the
+        # candidate falls through to the metric key and, failing that, out of the
+        # altitude stats — as an absent speed field does out of the velocity ones.
+        if is_num(_alt_ft):
+            truth_alt_m = _alt_ft * 0.3048
+        elif _alt_m is not None:
+            truth_alt_m = float(_alt_m)
+        else:
+            truth_alt_m = None
         truth_gs_ms = (
             float(_gs_kt) * 0.514444 if _gs_kt is not None else float(_vel_ms) if _vel_ms is not None else None
         )
@@ -1241,13 +1298,10 @@ def _refresh_mlat_verification():
         age_s = now - entry.get("last_seen_ms", 0) / 1000
         if age_s > 60:
             continue
-        # tar1090 convention: alt_baro is the string "ground" for aircraft on
-        # the ground — a bare multiply raised TypeError and killed the whole
-        # refresh cycle, leaving /api/test/mlat-accuracy permanently empty.
-        _gs_raw = entry.get("gs", 0) or 0
-        _alt_raw = entry.get("alt_baro", 0) or 0
-        gs_ms = (_gs_raw if isinstance(_gs_raw, (int, float)) else 0.0) * 0.514444
-        alt_m = (_alt_raw if isinstance(_alt_raw, (int, float)) else 0.0) * 0.3048
+        # Raw feed values: tar1090 sends alt_baro as the string "ground" on the
+        # deck, and json.loads parses a bare NaN, which an isinstance test admits.
+        gs_ms = as_num(entry.get("gs")) * 0.514444
+        alt_m = as_num(entry.get("alt_baro")) * 0.3048
         adsb_truth_pool.append(
             (
                 adsb_hex,
@@ -1273,7 +1327,7 @@ def _refresh_mlat_verification():
             # heading} (periodic.py) — NOT the tar1090 gs/alt_baro schema.
             # Reading gs/alt_baro here zeroed every external truth entry.
             gs_ms = float(entry["velocity"] if entry.get("velocity") is not None else (entry.get("gs") or 0) * 0.514444)
-            alt_m = float(entry["alt_m"] if entry.get("alt_m") is not None else (entry.get("alt_baro") or 0) * 0.3048)
+            alt_m = float(entry["alt_m"] if entry.get("alt_m") is not None else as_num(entry.get("alt_baro")) * 0.3048)
             adsb_truth_pool.append(
                 (
                     adsb_hex,

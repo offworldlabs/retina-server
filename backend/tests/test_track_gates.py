@@ -287,3 +287,37 @@ class TestFixDetectionSkewGate:
 
         assert captured["fix_ts"] == pytest.approx(now - 1.0, abs=0.01)
         assert captured["detection_ts"] == pytest.approx(now - 1.0, abs=0.01)
+
+
+class TestUnassociatedEntryHonesty:
+    """No fabricated aircraft attributes for a radar-only track.
+
+    Single-node bistatic geometry is underdetermined in altitude, so
+    track.alt_ft is essentially free (observed live 2026-08-26: 165 ft to
+    50,768 ft on one node), and the synthetic PR#### callsign made clutter
+    promotions render as plausible low-level traffic.  Altitude and callsign
+    are published only when ADS-B vouches for them.
+    """
+
+    def test_unassociated_track_publishes_no_altitude_or_callsign(self, node):
+        now = time.time()
+        track = _make_track(n_detections=3, last_detection_age_s=1.0, now=now)
+        track.adsb_hex = None
+        entry = track_gates.track_entry("pr1234", track, dict(_NODE_CFG), now, set())
+
+        assert entry is not None
+        assert entry["position_source"] == "solver_single_node"
+        assert entry["alt_baro"] is None
+        assert entry["alt_geom"] is None
+        # Empty, not a synthetic PR#### — the frontend falls back to the hex.
+        assert entry["flight"] == ""
+
+    def test_adsb_backed_track_keeps_altitude_and_identity(self, node):
+        now = time.time()
+        _adsb_fix(now)
+        track = _make_track(n_detections=3, last_detection_age_s=1.0, now=now)
+        entry = track_gates.track_entry(HEX, track, dict(_NODE_CFG), now, set())
+
+        assert entry["alt_baro"] == 30000
+        assert entry["alt_geom"] == 30000
+        assert entry["flight"] == HEX

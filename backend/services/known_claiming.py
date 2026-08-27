@@ -30,6 +30,16 @@ and Doppler are two numbers a wrong aircraft can match by coincidence, so a
 cached state whose dead-reckoned position falls outside the node's detection
 area is no candidate at all, whatever its residuals say.  Node tags (path 1)
 carry the node's own evidence that it saw the aircraft and stay ungated.
+
+A path-2 candidate must also come from the node's own WORLD.  The ADS-B cache
+is fed by simulated aircraft and by real traffic (hardware receivers, the
+simulator's adsb.lol relay) alike, and when real traffic flies over the same
+footprint the simulated fleet occupies, the visibility gate passes it
+trivially — every real aircraft becomes a decoy the assignment can bind a
+synthetic echo to, and each such bind puts a plane icon on the map at a
+position no radar in either world measured.  Entries carry a "world" tag
+("sim"/"real") stamped where they are written; claiming skips candidates
+tagged with the other world and counts them (known_claims_world_rejects).
 """
 
 import logging
@@ -38,20 +48,22 @@ from collections import deque
 
 import numpy as np
 from retina_analytics.association import (
+    _V_MAX_MS,
     ADSB_SEED_DELAY_GATE_US,
     ADSB_SEED_DOPPLER_GATE_HZ,
     ADSB_SEED_MAX_DR_AGE_S,
     CLAIM_DELAY_GATE_US,
     CLAIM_DOPPLER_GATE_HZ,
     CLAIM_MAX_DR_AGE_S,
+    CLAIM_MAX_GLOBAL_TRACKS,
     _point_in_beam,
     claim_eligible,
     predict_observation,
 )
-from retina_analytics.constants import offset_latlon_m
+from retina_analytics.constants import KM_PER_DEG_LAT, km_per_deg_lon, offset_latlon_m
 from scipy.optimize import linear_sum_assignment
 
-from config.constants import FT_TO_M
+from config.constants import FT_TO_M, as_num
 from core import state
 from services.id_utils import normalize_hex_key
 
@@ -68,6 +80,13 @@ KNOWN_CLAIM_MAX_FIX_AGE_S = ADSB_SEED_MAX_DR_AGE_S
 # detection is the normal case (clutter, dark targets), not an error.  Any
 # real score is <= 2.0 by construction, so >= this means "not assigned".
 _GATE_INFEASIBLE = 1.0e6
+
+# Slack on the path-2 range prescreen's radius, so the cheap test can only ever
+# be looser than the visibility gate it stands in front of, never tighter.  2%
+# against a projection error that is a third-order term in the angular
+# separation (well under 0.1% at any range this gate passes) — the margin is
+# not tuned to the error, it is large enough that the error cannot reach it.
+_SCREEN_MARGIN = 1.02
 
 _logger = logging.getLogger(__name__)
 
@@ -113,8 +132,11 @@ def _gate_scale(age_s: float) -> float:
 
 
 def _tag_velocity(tag: dict) -> tuple[float, float]:
-    """(vel_east, vel_north) m/s from a node adsb entry's gs (kt) / track (deg),
-    the same conversion state._adsb_for_seeding applies to the cache."""
+    """(vel_east, vel_north) m/s from a node adsb entry's gs (kt) / track (deg).
+
+    Unlike the cache path, these are not coerced: no non-numeric gs or track has
+    been observed from a node.  86cb9t7c4 tracks closing that gap.
+    """
     gs_ms = (tag.get("gs", 0) or 0) * 0.514444
     trk = math.radians(tag.get("track", 0) or 0)
     return gs_ms * math.sin(trk), gs_ms * math.cos(trk)
@@ -125,14 +147,24 @@ def _dark_global_projections(geo, frame_ts_s: float) -> list[tuple[float, float]
     this node, dead-reckoned to frame time — the contention reference set.
 
     Reuses the top-down claiming machinery verbatim (claim_eligible, the
-    CLAIM_* gates' DR-age cap, the same projection) so "gates against a dark
-    track" means exactly what it means in _claim_round: a claim is contested
-    when ASSOC_CLAIM_MODE's claimer would ALSO have taken this detection.
+    CLAIM_MAX_GLOBAL_TRACKS cap, the CLAIM_* gates' DR-age cap, the same
+    projection) so "gates against a dark track" means exactly what it means
+    in _claim_round: a claim is contested when ASSOC_CLAIM_MODE's claimer
+    would ALSO have taken this detection.
     """
     out = []
-    for g in state._global_tracks_for_claiming():
-        if not claim_eligible(g):
-            continue
+    # state._global_tracks_for_claiming is a dumb snapshot; the eligibility
+    # filter and the CLAIM_MAX_GLOBAL_TRACKS truncation are the LIBRARY's, and
+    # this call site reaches the provider directly rather than through the
+    # associator — so it has to apply them itself or the reference set (and
+    # this loop's predict_observation count) is unbounded in the dark-global
+    # population.  Newest fix first, exactly _claim_round's ordering, so the
+    # two paths cap to the same 200 tracks rather than to two different ones.
+    for g in sorted(
+        (g for g in state._global_tracks_for_claiming() if claim_eligible(g)),
+        key=lambda g: g.get("timestamp_ms", 0),
+        reverse=True,
+    )[:CLAIM_MAX_GLOBAL_TRACKS]:
         dt = frame_ts_s - g.get("timestamp_ms", 0) / 1000.0
         if not (0.0 <= dt <= CLAIM_MAX_DR_AGE_S):
             continue
@@ -219,9 +251,9 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
             ve, vn = _tag_velocity(tag)
             # The node correlated this fix against this frame, so the fix is
             # taken as current — no dead-reckoning, fix_ts_ms = frame time.
-            pred_d, pred_f = predict_observation(
-                geo, lat, lon, (tag.get("alt_baro", 0) or 0) * FT_TO_M / 1000.0, ve, vn
-            )
+            # Raw node input: alt_baro is the string "ground" on the deck.
+            alt_km = as_num(tag.get("alt_baro")) * FT_TO_M / 1000.0
+            pred_d, pred_f = predict_observation(geo, lat, lon, alt_km, ve, vn)
             fix = {
                 "lat": lat,
                 "lon": lon,
@@ -239,11 +271,73 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
     if free:
         cands = []
         visibility_rejects = 0
+        world_rejects = 0
+        node_world = state.node_world(node_id)
+        # Prescreen constants, hoisted: geo is fixed for the whole loop, and
+        # these cost a haversine and a cos each.  See the prescreen below.
+        screen_r0_km = geo.effective_radius_km * _SCREEN_MARGIN
+        screen_r_max_km = screen_r0_km + _V_MAX_MS * KNOWN_CLAIM_MAX_FIX_AGE_S / 1000.0
+        # km per degree of longitude at the highest |latitude| any candidate
+        # inside the screen could sit at, not at rx_lat: cos shrinks away from
+        # the equator, so this is the SMALLEST scale factor in play and the
+        # east-west term can only ever be understated.  Understating widens
+        # the screen, which is the safe direction; using rx_lat would overstate
+        # it for a candidate poleward of the node and could reject one the gate
+        # would have passed.
+        screen_km_per_lon = km_per_deg_lon(abs(geo.rx_lat) + screen_r_max_km / KM_PER_DEG_LAT)
         for hexn, st in state._adsb_for_seeding().items():
             if hexn in claimed_hexes:
                 continue
+            # World gate: a synthetic node's echoes can only ever be of
+            # simulated aircraft, and a hardware node's only of real ones, so
+            # a candidate from the other world is no candidate whatever its
+            # residuals say — delay/Doppler are two numbers a wrong aircraft
+            # matches by coincidence, and the visibility gate cannot help
+            # when real traffic is injected over the same footprint the
+            # simulated fleet flies in.  Untagged entries pass: no writer in
+            # this tree leaves world unset, so an untagged entry is prior
+            # state (tests, a not-yet-updated pusher) where rejecting would
+            # silently disable the lane rather than fail toward dark.
+            cand_world = st.get("world")
+            if cand_world is not None and cand_world != node_world:
+                world_rejects += 1
+                continue
             age_s = frame_ts_s - st.get("timestamp_ms", 0) / 1000.0
             if abs(age_s) > KNOWN_CLAIM_MAX_FIX_AGE_S:
+                continue
+            # Range prescreen on the REPORTED position, ahead of the DR offset
+            # and _point_in_beam's haversine + bearing.  Provably weaker than
+            # the gate, so it can only reject what the gate rejects too:
+            #   * every branch of _point_in_beam starts by failing anything
+            #     farther from rx than effective_radius_km (footprint widened
+            #     to the learned FOV's reach) and only tightens from there, so
+            #     that radius is the gate's hard ceiling;
+            #   * the gate tests the DEAD-RECKONED position, which sits at most
+            #     _V_MAX_MS * |age_s| from the reported one — no aircraft in
+            #     this system exceeds that speed (association._V_MAX_MS is the
+            #     library's own ceiling on a physically possible velocity);
+            #   * equirectangular distance overstates the great-circle one only
+            #     by a third-order term in the angular separation (well under
+            #     0.1% at these ranges) once the longitude scale is taken at the
+            #     poleward end as above, and _SCREEN_MARGIN leaves 2% on top.
+            # Squared comparison — the sqrt buys nothing a squared radius can't
+            # answer, and this runs per cached aircraft per frame per node.
+            dy = (st["lat"] - geo.rx_lat) * KM_PER_DEG_LAT
+            # Wrapped to (-180, 180]: the raw difference reads ~359 degrees for
+            # a close neighbour across the antimeridian, which would fail the
+            # screen for a candidate the gate's haversine (which measures the
+            # short way round) passes.
+            dlon = st["lon"] - geo.rx_lon
+            if dlon > 180.0:
+                dlon -= 360.0
+            elif dlon < -180.0:
+                dlon += 360.0
+            dx = dlon * screen_km_per_lon
+            screen_r_km = screen_r0_km + _V_MAX_MS * abs(age_s) / 1000.0
+            if dx * dx + dy * dy > screen_r_km * screen_r_km:
+                # A prescreen failure IS a visibility reject — same event, same
+                # tally, so the published rate keeps meaning what it did.
+                visibility_rejects += 1
                 continue
             dr_lat, dr_lon = offset_latlon_m(
                 st["lat"],
@@ -275,6 +369,8 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
         # that runs for every frame every node sends.
         if visibility_rejects:
             state.bump_counter("known_claims_visibility_rejects", visibility_rejects)
+        if world_rejects:
+            state.bump_counter("known_claims_world_rejects", world_rejects)
 
         if cands:
             cost = np.full((len(free), len(cands)), _GATE_INFEASIBLE)

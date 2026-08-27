@@ -51,8 +51,13 @@ guarantee — the same caveat `just deploy-test-status` already prints. The next
 prod is the reference environment: `deploy/check-env-parity.py` compares the other
 two against it in CI and fails on any difference not listed in its
 `ALLOWED_DIVERGENCE`. staging and test differ from prod deliberately on the
-simulator (prod runs none at all), hostnames, container names and resource
-limits, and on nothing else.
+simulator (prod runs none at all), hostnames, container names, resource limits,
+published ports, and staging's E2E force-retire prefixes. All three join the
+`retina-edge` network, where nginx reaches each droplet's own
+tower-finder-service stack for `GET /api/towers`; test's instance deploys by
+workflow_dispatch from that repo rather than on its merges, and
+`deploy-test.yml` warns at pre-flight if nothing is on the network to answer.
+Anything else is drift, and fails the check.
 
 staging and test run the fleet 4x faster than production, on **half the cores** —
 production has 4, they have 2 — so per core it is 8x. The frame path copes (41 of
@@ -221,34 +226,37 @@ curl -sk https://localhost/api/admin/metrics | python3 -m json.tool
 
 ---
 
-### `config_degraded` (sub-check of `health_degraded`)
+### `config_degraded` — retired
 
-**Trigger:** `tower_config.json` could not be read, parsed or validated, so the process is running on something other than the file on disk.  
-**What it means:** the config on disk is **not** the config in effect. `GET /api/config` returns the file, which is the one being ignored, so the two disagree until this is fixed. Tower ranking still works, on whichever config the alert names.
+This alert no longer exists. It fired when the monolith's `tower_config.json`
+could not be read, parsed or validated, so the process was running on something
+other than the file on disk. The monolith's tower stack (the ranking engine, the
+config file and both endpoints that wrote it) was deleted once nginx began
+proxying the whole tower stack to **tower-finder-service**, so there is nothing
+left here to degrade.
 
-The alert carries the reason and says what is in effect, which is one of two things:
+Tower ranking config now lives in tower-finder-service — its own repo, its own
+container, its own volume — and is read and written through that service:
 
-- `tower_config.json unusable, running on defaults (KeyError: 'max_km')` — the overlay was rejected and the
-  defaults that ship with the image were applied. The reason in brackets is why the overlay was rejected.
-- `tower_config.json unusable, the shipped defaults are unusable too (...), keeping the settings already in
-  effect (overlay: ...)` — both were rejected, so nothing changed: the process is still on whatever it last
-  loaded, which after a live reload is the operator's own previous config and only at startup is the in-code
-  defaults. Two reasons are given, the defaults' first and the overlay's in the tail.
-
-The second is the rarer and the more serious: a config shipped inside the image was rejected, so it cannot be
-inspected or corrected from the droplet. Treat it as an image or validator problem, not an operator one.
-
-**Check what the process actually loaded:**
 ```bash
-docker compose logs backend | grep tower_config
+# read (any vhost that answers /api/, all of which proxy this route)
+curl -s https://towers.retina.fm/api/config
+
+# write — bearer token, not an admin session
+curl -s -X PUT https://towers.retina.fm/api/config \
+     -H "Authorization: Bearer $TOWER_FINDER_ADMIN_TOKEN" \
+     -H 'Content-Type: application/json' --data @tower_config.json
 ```
 
-**Common causes:**
-1. The overlay was edited by hand inside the volume and is no longer valid. The endpoints validate on write, so a config that arrives this way is the usual source.
-2. A field was renamed or removed in an image upgrade while the volume kept the old file. The volume survives `docker compose up -d --build`, so a redeploy does not clear it.
-3. The file is not readable, or not UTF-8.
+If a bad config reaches that service, it is that service's health surface and
+runbook that report it, not retina's. `api.retina.fm` has no `/api/config`
+location and no longer falls through to an app handler, so `/api/config` there
+is a **404** by design — use a tower vhost.
 
-**Fix:** correct the file in the volume, then either `PUT /api/config` with a valid body (which validates before writing) or restart the service. The alert clears once a config loads cleanly.
+`GET /api/admin/config/towers` still exists and is unrelated to the ranking
+config: it is a live view, built from what the connected nodes report, of the
+transmitters actually being used as illuminators. Its file-overlay branch and its
+`PUT` went with the tower stack.
 
 ---
 
@@ -277,7 +285,7 @@ top -bn1 | head -8
 
 **Trigger:** A background task hasn't reported success within its expected interval.
 
-The health check only monitors these three tasks (defined in `critical_tasks` in `routes/towers.py`):
+The health check only monitors these three tasks (defined in `_CRITICAL_TASKS` in `services/health.py`):
 
 | Task | Expected interval | Stale after |
 |---|---|---|

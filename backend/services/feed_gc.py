@@ -59,6 +59,12 @@ def prune_stale_stores(now: float) -> None:
     ]
     for h in stale_th:
         state.track_histories.pop(h, None)
+        # The public-frame twin ages out on the true store's verdict, not its
+        # own: the two are appended in lockstep, so a separate staleness test
+        # would only ever be a chance to disagree — and a public trail that
+        # outlived its true counterpart would keep being served for a hex
+        # nothing else in the process still knows about.
+        state.track_histories_public.pop(h, None)
         # NOTE: do NOT prune track_last_emit here.  track_histories ages out
         # via the ~5 m dedup even when the track is still actively emitting
         # the same arc midpoint.  Clearing the speed-gate reference would

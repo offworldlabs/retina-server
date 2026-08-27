@@ -20,6 +20,8 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from services.public_location import public_latlon
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,6 +54,10 @@ SCHEMA = pa.schema(
         # they're cheap to fan out into every row (Parquet's per-column dictionary
         # encoding makes constants effectively free) and impossible to reconstruct
         # later if the node config drifts or the node is taken offline.
+        #
+        # rx_lat/rx_lon are the PUBLISHED receiver position, not the true one
+        # (see _flatten) — the archive is served raw to anyone.  tx_* are true:
+        # transmitters are licensed broadcast towers.
         ("rx_lat", pa.float64()),
         ("rx_lon", pa.float64()),
         ("rx_alt_ft", pa.float64()),
@@ -62,6 +68,31 @@ SCHEMA = pa.schema(
         ("fs_hz", pa.float64()),
     ]
 )
+
+
+# Schema metadata stamped on every file this module writes, saying which frame
+# the rx_lat/rx_lon columns are in.  A file is otherwise indistinguishable from
+# one written before the fuzz existed — the columns, dtypes and magnitudes are
+# identical — so the archive backfill (scripts/backfill_archive_fuzz.py) has no
+# way to tell "already published" from "still true", and applying the offset
+# to a file that already carries it displaces the node twice.  Written as
+# Parquet key-value metadata rather than a column: it is a fact about the file,
+# it costs a few bytes once instead of once per row, and every reader that does
+# not know about it is unaffected.
+RX_FRAME_KEY = b"retina.rx_frame"
+RX_FRAME_PUBLISHED = b"published"
+PUBLISHED_SCHEMA = SCHEMA.with_metadata({RX_FRAME_KEY: RX_FRAME_PUBLISHED})
+
+
+def is_rx_published(schema) -> bool:
+    """Whether a parquet/arrow schema is stamped as carrying published rx.
+
+    Absence is not proof of a true-frame file — nothing stamped files written
+    between the fuzz landing and this marker landing — which is why the
+    backfill script offers a timestamp guard as well.  Presence is proof.
+    """
+    meta = getattr(schema, "metadata", None) or {}
+    return meta.get(RX_FRAME_KEY) == RX_FRAME_PUBLISHED
 
 
 def _safe_float(arr, i: int) -> float | None:
@@ -144,6 +175,14 @@ def _flatten(
         rx_lat = f_rx_lat if f_rx_lat is not None else cfg_rx_lat
         rx_lon = f_rx_lon if f_rx_lon is not None else cfg_rx_lon
         rx_alt = f_rx_alt if f_rx_alt is not None else cfg_rx_alt
+        # The archive is downloadable raw through /api/data/archive, so these
+        # rows are a public payload with a very long memory: a single Parquet
+        # file pins a receiver forever, and unlike a live feed it cannot be
+        # taken back once someone has it.  Write the published coordinate.
+        # Column names and dtypes are unchanged — a reader still finds rx_lat
+        # where it always was, it just no longer finds a house there.  The
+        # solver never reads the archive back, so nothing downstream degrades.
+        rx_lat, rx_lon = public_latlon(rx_lat, rx_lon, node_id)
         tx_lat = f_tx_lat if f_tx_lat is not None else cfg_tx_lat
         tx_lon = f_tx_lon if f_tx_lon is not None else cfg_tx_lon
         tx_alt = f_tx_alt if f_tx_alt is not None else cfg_tx_alt
@@ -207,7 +246,10 @@ def write_detections_parquet(
     if not cols["frame_ts_ms"]:
         return None
 
-    table = pa.table(cols, schema=SCHEMA)
+    # PUBLISHED_SCHEMA, not SCHEMA: _flatten already wrote the published rx
+    # above, and the stamp is what lets a later reader — the backfill in
+    # particular — know that without having to guess.
+    table = pa.table(cols, schema=PUBLISHED_SCHEMA)
 
     key = f"year={write_ts:%Y}/month={write_ts:%m}/day={write_ts:%d}/node_id={node_id}/part-{write_ts:%H%M%S}.parquet"
     out_path = Path(base_dir) / key

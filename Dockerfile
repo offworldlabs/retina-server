@@ -17,6 +17,14 @@ COPY frontend/package.json frontend/package-lock.json ./
 # re-resolve and rewrite the lockfile.
 RUN npm ci --legacy-peer-deps --no-audit --no-fund
 COPY frontend/ ./
+# The CARTO basemap key, baked into the bundle by Vite. Declared here rather
+# than at the top of the stage so that changing it re-runs this build step
+# alone and leaves the `npm ci` layer cached. The empty default matters: a host
+# that has no key (or a plain `docker build`) produces unkeyed URLs, and so
+# CARTO's watermarked tiles — which is exactly what shipped before this arg
+# existed.
+ARG VITE_CARTO_API_KEY=""
+ENV VITE_CARTO_API_KEY=${VITE_CARTO_API_KEY}
 RUN npm run build
 
 # ── Stage 1b: Build dashboard ───────────────────────────────────────────────
@@ -93,8 +101,8 @@ RUN chmod +x /app/deploy/start.sh
 
 # Save a pristine copy of source-controlled config files outside the
 # /app/backend/config volume so they always reflect the current image.
-# tower_config.json / nodes_config.json are runtime-editable and stay in
-# the volume; constants.py is source code and must follow the image.
+# nodes_config.json is runtime-editable and stays in the volume; constants.py
+# is source code and must follow the image.
 #
 # blah2_nodes.json is runtime-editable too, but it also has to be *seedable*:
 # on an existing deployment the volume masks backend/config, so a copy shipped

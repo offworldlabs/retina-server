@@ -142,6 +142,26 @@ jobs:
               exit 1
             fi
 
+            # The shared nginx template proxies /api/towers to tower-finder-service
+            # over the external retina-edge network, which docker-compose.test.yml
+            # now joins like the other environments. `external: true` makes a
+            # missing network fail `up` outright, so create it here (idempotent —
+            # the same one-time-setup command that repo's README gives every
+            # droplet) rather than abort a deploy that has nothing to do with
+            # tower search.
+            docker network create retina-edge 2>/dev/null || true
+            # The network existing is not the binding condition: staging sat for
+            # weeks with retina-edge present and no server attached. What matters
+            # is that something is actually on it to answer — and that stack's
+            # deploy job over there is workflow_dispatch only, so it can lag.
+            # Warn rather than abort: this droplet exists to rehearse arbitrary
+            # changes, and most have nothing to do with tower search.
+            EDGE_MEMBERS=$(docker network inspect retina-edge \
+              --format '{{range .Containers}}{{.Name}} {{end}}' 2>/dev/null || true)
+            if [ -z "${EDGE_MEMBERS// /}" ]; then
+              echo "::warning::Nothing is on retina-edge from $(hostname), so GET /api/towers will 502 here after this deploy. Everything else is unaffected. To fix: dispatch tower-finder-service's deploy-test workflow onto this droplet."
+            fi
+
             # ── Injection point 1 ─────────────────────────────────────────────
             # Everything above is read-only. This is the NEGATIVE case: the
             # rollback job must decline to act, because the running stack was
@@ -170,6 +190,10 @@ jobs:
             git submodule update --init --recursive
 
             cp deploy/env.test.example .env
+            # Top up with this host's own CARTO basemap key — see the note in
+            # deploy/env.<env>.example. Guarded rather than chained with &&: a host
+            # with no key must build watermarked tiles, not fail its deploy.
+            if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; fi
 
             pip3 install -e libs/retina-custody/ --break-system-packages --ignore-installed -q
             pip3 install -e libs/retina-simulation/ --break-system-packages -q

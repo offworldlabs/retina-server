@@ -57,16 +57,43 @@ test.describe("Tower Finder — search form", () => {
     expect(validationMsg).not.toBe("");
   });
 
-  test("auto-detects US source for US coordinates", async ({ page }) => {
-    await page.getByLabel(/latitude/i).fill("37.7749");
-    await page.getByLabel(/longitude/i).fill("-122.4194");
-    // Source dropdown should switch to "us" — toHaveValue auto-waits for the useEffect
+  test("leaves source on auto and lets the server classify the coordinates", async ({ page }) => {
+    // The client used to guess the country from lat/lon bounding boxes and pin
+    // the dropdown, which sent "ca" for every US point above 42N. Detection now
+    // lives server-side against real border polygons, so the form's job is
+    // simply to stay out of the way and send "auto".
+    const towersRequest = page.waitForRequest((r) => r.url().includes("/api/towers"));
+    await page.route("**/api/towers**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ towers: [], query: { source: "us" } }),
+      });
+    });
+
+    // Waltham, MA — 42.387N, the latitude the old bounding box misread as Canada.
+    await page.getByLabel(/latitude/i).fill("42.38708028093612");
+    await page.getByLabel(/longitude/i).fill("-71.24905416622781");
+
     const sourceSelect = page.getByLabel(/source|country|region/i).first();
     if (await sourceSelect.isVisible()) {
-      await expect(sourceSelect).toHaveValue("us");
+      await expect(sourceSelect).toHaveValue("auto");
     }
+
+    // The precise locator matters: the page also has a "Tower Search" TAB
+    // button that /search|find/i matched first, so this test spent its life
+    // re-clicking the active tab and timing out waiting for a request.
+    await page.locator("button[type='submit']").filter({ hasText: /Find Towers/i }).click();
+    const url = new URL((await towersRequest).url());
+    expect(url.searchParams.get("source")).toBe("auto");
   });
 
+  // Unlike the /api/towers tests below, this one stubs nothing, so it is the
+  // only spec here that crosses the real seam: BASE is the main vhost, whose
+  // /api/elevation is proxied to tower-finder-service (snippets/towers-proxy.conf).
+  // It stays a liveness assertion rather than a shape one — both implementations
+  // return `elevation_m` and deploy/tower-contract.sh is what pins that. What
+  // this adds is that the browser's own request survives the proxy.
   test("auto-fetches elevation when lat/lon are entered", async ({ page }) => {
     // Set up response interceptor before triggering the network request
     const elevationResponse = page
@@ -103,6 +130,11 @@ test.describe("Tower Finder — search form", () => {
   });
 });
 
+// Every test below stubs /api/towers, so none of them exercise which container
+// answers it. That routing (nginx proxies it to tower-finder-service, while its
+// siblings under /api/ stay with the app) is covered only by the
+// tower-finder-service seam section of deploy/staging-smoke-test.sh. This
+// suite passing says nothing about it, despite both jobs gating the deploy.
 test.describe("Tower Finder — search results", () => {
   test("returns tower results for a known US location", async ({ page }) => {
     // Mock the API to avoid dependency on live FCC data

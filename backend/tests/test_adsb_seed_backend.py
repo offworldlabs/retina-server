@@ -7,6 +7,7 @@ covered by the lib's test_adsb_seeding.py; these tests pin the backend
 plumbing around it, following test_frame_processor.py's conventions.
 """
 
+import math
 import queue
 import time
 import types
@@ -16,6 +17,7 @@ from fastapi.testclient import TestClient
 from retina_analytics.association import AssociationRound, predict_observation
 from retina_tracker.track import TrackState
 
+from config.constants import FT_TO_M
 from core import state
 from main import app
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
@@ -195,6 +197,139 @@ class TestAdsbForSeeding:
         assert list(out.keys()) == ["lower1"]
 
 
+def _legacy_derived(rec: dict) -> dict:
+    """The derivation _adsb_for_seeding used to run per read, transcribed.
+
+    The reference every writer's stored record is checked against, so a
+    change to state.adsb_derived_fields has to be a deliberate one rather
+    than something that slips through because both sides moved together.
+    """
+
+    def as_num(v):
+        return float(v) if isinstance(v, (int, float)) and math.isfinite(v) else 0.0
+
+    gs_ms = as_num(rec.get("gs")) * 0.514444
+    trk = math.radians(as_num(rec.get("track")))
+    return {
+        "alt_m": as_num(rec.get("alt_baro")) * FT_TO_M,
+        "vel_east": gs_ms * math.sin(trk),
+        "vel_north": gs_ms * math.cos(trk),
+    }
+
+
+def _assert_derived(hexn: str, raw: dict) -> None:
+    """The stored record carries the derived fields, and both it and the
+    seeding snapshot agree with the pre-move formula."""
+    rec = state.adsb_aircraft[hexn]
+    want = _legacy_derived(raw)
+    for key, value in want.items():
+        assert rec[key] == pytest.approx(value, rel=1e-12, abs=1e-12), key
+    assert rec["timestamp_ms"] == rec["last_seen_ms"]
+
+    seeded = state._adsb_for_seeding()[hexn]
+    for key, value in want.items():
+        assert seeded[key] == pytest.approx(value, rel=1e-12, abs=1e-12), key
+    assert seeded["timestamp_ms"] == rec["last_seen_ms"]
+
+
+# gs/track present, gs/track absent, and the alt_baro="ground" sentinel that
+# once took every frame down for as long as the record stayed live — the three
+# shapes a live feed actually sends.
+_WRITE_CASES = [
+    ("moving", {"alt_baro": 35000, "gs": 250, "track": 90}),
+    ("nokin", {}),
+    ("ground", {"alt_baro": "ground", "gs": None, "track": "unknown"}),
+]
+
+# The sim push endpoint rejects non-transponder hexes (id_utils.is_transponder_hex),
+# so its writer fixtures must look like real 24-bit addresses, not readable labels.
+_SIM_CASE_HEX = {name: f"a1b2c{i}" for i, (name, _kin) in enumerate(_WRITE_CASES)}
+
+
+class TestDerivedFieldsAtWriteTime:
+    """Every path that writes state.adsb_aircraft stores the SI-unit fields
+    the seeding provider hands out, so the provider does not re-derive them
+    for the whole live fleet on every frame.
+
+    One test per writer: a writer that forgets falls back to the old cost on
+    read (covered below), which is invisible in behaviour and would otherwise
+    only ever show up as a profile regression.
+    """
+
+    @pytest.mark.parametrize("name,kin", _WRITE_CASES)
+    def test_tcp_handler_writer(self, name, kin):
+        from services.tcp_handler import _apply_synthetic_adsb
+
+        hexn = f"tcp{name}"
+        entry = {"hex": hexn, "lat": 33.9, "lon": -84.6, **kin}
+        _apply_synthetic_adsb({"data": {"timestamp": 1000, "adsb": [entry]}}, "synth-derived")
+
+        _assert_derived(hexn, entry)
+
+    @pytest.mark.parametrize("name,kin", _WRITE_CASES)
+    def test_frame_processor_writer(self, name, kin):
+        hexn = f"fp{name}"
+        entry = {"hex": hexn, "lat": 33.9, "lon": -84.6, **kin}
+        frame = {
+            "timestamp": int(time.time() * 1000),
+            "delay": [50.0],
+            "doppler": [10.0],
+            "snr": [20.0],
+            "adsb": [entry],
+        }
+        process_one_frame("node-derived", frame, PassiveRadarPipeline(DEFAULT_NODE_CONFIG))
+
+        _assert_derived(hexn, entry)
+
+    @pytest.mark.parametrize("name,kin", _WRITE_CASES)
+    async def test_sim_ingest_writer(self, name, kin):
+        # Called past the router so the test does not need the synthetic-fleet
+        # mount gate open (see test_sim_ingest_mount.py) — the write path is
+        # what is under test, not the gate in front of it.
+        from routes.sim_ingest import sim_push_adsb_positions
+
+        hexn = _SIM_CASE_HEX[name]
+        entry = {"hex": hexn, "lat": 33.9, "lon": -84.6, **kin}
+        await sim_push_adsb_positions(body={"ts_ms": 4242, "aircraft": [entry]}, _key=None)
+
+        _assert_derived(hexn, entry)
+        assert state.adsb_aircraft[hexn]["timestamp_ms"] == 4242
+
+    @pytest.mark.parametrize("name,kin", _WRITE_CASES)
+    def test_record_without_derived_fields_falls_back_on_read(self, name, kin):
+        """A record no writer derived — state carried across a restart, or a
+        write path that has not been updated — still seeds correctly.
+
+        The failure this guards is silent and expensive: a missing vel_east /
+        vel_north reads as 0.0, which dead-reckons a moving aircraft to a
+        standstill and loses its claims rather than raising anything.
+        """
+        hexn = f"stale{name}"
+        raw = {
+            "hex": hexn,
+            "lat": 33.9,
+            "lon": -84.6,
+            "alt_baro": kin.get("alt_baro", 0),
+            "gs": kin.get("gs", 0),
+            "track": kin.get("track", 0),
+            "flight": "STALE1",
+            "last_seen_ms": 99,
+        }
+        state.adsb_aircraft[hexn] = dict(raw)
+
+        seeded = state._adsb_for_seeding()[hexn]
+
+        for key, value in _legacy_derived(raw).items():
+            assert seeded[key] == pytest.approx(value, rel=1e-12, abs=1e-12), key
+        assert seeded["timestamp_ms"] == 99
+        # Raw fields still pass through for downstream provenance, and the
+        # fallback must not write the derived fields back into live state —
+        # adsb_aircraft is read unlocked by other threads.
+        assert seeded["alt_baro"] == raw["alt_baro"]
+        assert seeded["flight"] == "STALE1"
+        assert "alt_m" not in state.adsb_aircraft[hexn]
+
+
 class TestProcessOneFrameSolverQueue:
     # Each test swaps in a private queue: solver worker daemons leaked by
     # TestClient lifespans elsewhere in the suite poll state.solver_queue and
@@ -311,6 +446,51 @@ class TestPredictiveAttach:
         assert frame["adsb"][0]["hex"] == "abc123"
         assert frame["adsb"][1] is None
 
+    def test_cross_world_state_is_not_attached(self, monkeypatch):
+        """The auto-tag pass is a cache-wide assignment for a node with no
+        receiver, so an other-world entry is a decoy its detections can bind
+        to on a delay/Doppler coincidence — filtered before the lib call,
+        which is node-agnostic."""
+        node_id = "test-predictive-world"  # test-* prefix → sim world
+        geo = self._register(node_id)
+
+        lat, lon, alt_km, ve, vn = 34.88, -82.35, 7.0, 180.0, -90.0
+        d0, f0 = predict_observation(geo, lat, lon, alt_km, ve, vn)
+        frame = _make_frame()
+        frame["delay"] = [d0]
+        frame["doppler"] = [f0]
+        frame.pop("adsb", None)
+
+        decoy = {
+            "hex": "a97cf2",
+            "lat": lat,
+            "lon": lon,
+            "alt_m": alt_km * 1000.0,
+            "vel_east": ve,
+            "vel_north": vn,
+            "timestamp_ms": frame["timestamp"],
+            "world": "real",
+        }
+        monkeypatch.setattr(state, "_adsb_for_seeding", lambda: {"a97cf2": decoy})
+        monkeypatch.setattr(state, "ADSB_SEED_MODE", "active")
+
+        process_one_frame(node_id, frame, PassiveRadarPipeline(DEFAULT_NODE_CONFIG))
+
+        assert "adsb" not in frame or frame["adsb"] is None
+
+        # Same state tagged with the node's own world attaches — the filter
+        # removes decoys, not the capability.
+        own = dict(decoy, world="sim")
+        monkeypatch.setattr(state, "_adsb_for_seeding", lambda: {"a97cf2": own})
+        frame2 = _make_frame()
+        frame2["delay"] = [d0]
+        frame2["doppler"] = [f0]
+        frame2.pop("adsb", None)
+        process_one_frame(node_id, frame2, PassiveRadarPipeline(DEFAULT_NODE_CONFIG))
+
+        assert frame2["adsb"] is not None
+        assert frame2["adsb"][0]["hex"] == "a97cf2"
+
     def test_existing_adsb_list_never_overwritten(self, monkeypatch):
         node_id = "test-predictive-existing"
         self._register(node_id)
@@ -364,7 +544,64 @@ class TestAdsbSeedStatusPayload:
                 "tagged",
                 "no_state",
                 "gate_rejects",
+                "world_rejects",
                 "tracklets_excluded",
                 "inputs_emitted",
             }
             assert body["adsb_seed"]["mode"] == state.node_associator.adsb_seed_mode
+
+
+class TestWorldStamp:
+    """Both frame-list writers stamp which world the positions belong to, by
+    the reporting node's class — claiming keys on it (see known_claiming's
+    world gate).  The sim-ingest route's stamp is covered with that route's
+    tests in test_sim_ingest.py."""
+
+    def test_tcp_writer_stamps_sim_for_a_synthetic_node(self):
+        from services.tcp_handler import _apply_synthetic_adsb
+
+        entry = {"hex": "wrld01", "lat": 33.9, "lon": -84.6}
+        _apply_synthetic_adsb({"data": {"timestamp": 1000, "adsb": [entry]}}, "synth-world")
+        assert state.adsb_aircraft["wrld01"]["world"] == "sim"
+
+    def test_tcp_writer_stamps_real_for_a_hardware_node(self):
+        from services.tcp_handler import _apply_synthetic_adsb
+
+        entry = {"hex": "wrld02", "lat": 33.9, "lon": -84.6}
+        _apply_synthetic_adsb({"data": {"timestamp": 1000, "adsb": [entry]}}, "radar3-retnode")
+        assert state.adsb_aircraft["wrld02"]["world"] == "real"
+
+    def test_tcp_writer_honours_the_handshake_verdict(self):
+        """A registered node's CONFIG verdict beats the prefix rule — a node
+        may declare is_synthetic itself under any id."""
+        from services.tcp_handler import _apply_synthetic_adsb
+
+        with state.connected_nodes_lock:
+            state.connected_nodes["oddname"] = {"is_synthetic": True}
+        try:
+            entry = {"hex": "wrld03", "lat": 33.9, "lon": -84.6}
+            _apply_synthetic_adsb({"data": {"timestamp": 1000, "adsb": [entry]}}, "oddname")
+            assert state.adsb_aircraft["wrld03"]["world"] == "sim"
+        finally:
+            with state.connected_nodes_lock:
+                state.connected_nodes.pop("oddname", None)
+
+    def test_frame_processor_writer_stamps_by_node_class(self):
+        entry = {"hex": "wrld04", "lat": 33.9, "lon": -84.6}
+        frame = {
+            "timestamp": int(time.time() * 1000),
+            "delay": [50.0],
+            "doppler": [10.0],
+            "snr": [20.0],
+            "adsb": [entry],
+        }
+        process_one_frame("blah2-hw-node", frame, PassiveRadarPipeline(DEFAULT_NODE_CONFIG))
+        assert state.adsb_aircraft["wrld04"]["world"] == "real"
+
+
+class TestSeedWorldWiring:
+    def test_associator_gets_the_state_world_resolver(self):
+        """One authority for the world question: the associator's seed gate
+        must consult the same resolver claiming and the auto-tag filter use,
+        or one consumer accepts what another rejects."""
+        assert state.node_associator.node_world_provider is state.node_world

@@ -194,6 +194,11 @@ known_claims_made
 known_claim_contentions
 known_claims_bound
 known_claims_visibility_rejects
+known_claims_world_rejects
+
+# Same string-keyed bump_counter shape, from routes/sim_ingest.py's
+# transponder-hex gate on /api/sim/adsb/push.
+sim_adsb_push_rejected_hex
 
 
 # ── Framework attributes (previously CI --ignore-names) ───────────────────────

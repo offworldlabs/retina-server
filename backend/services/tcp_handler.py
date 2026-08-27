@@ -562,6 +562,14 @@ def _apply_synthetic_adsb(msg: dict, node_id: str):
     if not adsb_list:
         return
     ts_ms = int(_time.time() * 1000)
+    # Which world these positions belong to, resolved once per message: the
+    # CONFIG handshake's verdict when the node is registered (it honours the
+    # node's own is_synthetic claim), the prefix rule otherwise.  Claiming
+    # refuses to bind a node's echoes to a candidate from the other world —
+    # see known_claiming's module docstring for the decoy failure this stops.
+    info = state.connected_nodes.get(node_id)
+    is_synth = info["is_synthetic"] if info is not None and "is_synthetic" in info else is_synthetic_node(node_id)
+    world = "sim" if is_synth else "real"
     for entry in adsb_list:
         if not isinstance(entry, dict):
             continue
@@ -577,7 +585,7 @@ def _apply_synthetic_adsb(msg: dict, node_id: str):
         lon = entry.get("lon")
         if not valid_latlon(lat, lon) or not _math.isfinite(lat) or not _math.isfinite(lon):
             continue
-        state.adsb_aircraft[hex_code] = {
+        rec = {
             "hex": hex_code,
             "flight": entry.get("flight", ""),
             "lat": lat,
@@ -586,5 +594,11 @@ def _apply_synthetic_adsb(msg: dict, node_id: str):
             "gs": entry.get("gs", 0),
             "track": entry.get("track", 0),
             "last_seen_ms": ts_ms,
+            "world": world,
         }
+        # Derived once here, not per read: the seeding provider is called for
+        # the whole cache once per frame per node.  Published only after it is
+        # complete — readers snapshot this dict unlocked.
+        rec.update(state.adsb_derived_fields(rec))
+        state.adsb_aircraft[hex_code] = rec
     state.aircraft_dirty = True

@@ -240,3 +240,73 @@ class TestSimulationConfig:
         assert r.status_code == 200
         r = client.put("/api/simulation/config", json={"max_range_km": 400})
         assert r.status_code == 200
+
+
+class TestAdsbPush:
+    """The transponder-hex gate on /api/sim/adsb/push.
+
+    Older fleets push every aircraft here with the object id standing in for
+    the hex (orchestrator._push_adsb_live).  Accepting those minted a fake
+    transponder per dark target: every dark solve then claimed against it,
+    keyed mn-adsb-obj-*, and the dark lane (mn-dark-* store, violet icons,
+    the whole claiming path) was permanently empty — measured live 2026-08-26
+    as 15008/15008 multinode samples adsb_assisted with zero dark tracks.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_adsb(self):
+        state.adsb_aircraft.clear()
+        yield
+        state.adsb_aircraft.clear()
+
+    def _push(self, client, hex_code):
+        return client.post(
+            "/api/sim/adsb/push",
+            headers=_KEY,
+            json={
+                "ts_ms": int(time.time() * 1000),
+                "aircraft": [{"hex": hex_code, "lat": 34.85, "lon": -82.4, "alt_baro": 31000}],
+            },
+        )
+
+    def test_icao_hex_accepted(self, client):
+        r = self._push(client, "A1B2C3")
+        assert r.status_code == 200
+        assert r.json() == {"status": "ok", "updated": 1, "rejected_hex": 0}
+        assert "a1b2c3" in state.adsb_aircraft
+
+    def test_tisb_tilde_hex_accepted(self, client):
+        """tar1090's non-ICAO TIS-B addresses (~ prefix) are real transponder
+        traffic and must keep working."""
+        r = self._push(client, "~a1b2c3")
+        assert r.json()["updated"] == 1
+        assert "~a1b2c3" in state.adsb_aircraft
+
+    def test_object_id_rejected(self, client):
+        r = self._push(client, "obj-01373")
+        assert r.status_code == 200
+        assert r.json() == {"status": "ok", "updated": 0, "rejected_hex": 1}
+        assert state.adsb_aircraft == {}
+
+    def test_untagged_push_is_sim_world(self, client):
+        """Every simulator before the source tag existed pushes without it,
+        and what they push is the synthetic fleet — claiming must keep
+        treating those as simulated aircraft."""
+        self._push(client, "a1b2c3")
+        assert state.adsb_aircraft["a1b2c3"]["world"] == "sim"
+
+    def test_source_real_push_is_real_world(self, client):
+        """The adsb.lol relay declares source=real; claiming then refuses to
+        bind a synthetic node's echoes to these — each such bind was a ghost
+        plane icon at a position no radar in either world measured."""
+        r = client.post(
+            "/api/sim/adsb/push",
+            headers=_KEY,
+            json={
+                "ts_ms": int(time.time() * 1000),
+                "source": "real",
+                "aircraft": [{"hex": "a97cf2", "lat": 34.84, "lon": -82.35, "alt_baro": 1500}],
+            },
+        )
+        assert r.json()["updated"] == 1
+        assert state.adsb_aircraft["a97cf2"]["world"] == "real"

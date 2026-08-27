@@ -20,7 +20,7 @@ from core import state
 # consumers in routes.test.
 from routes.test import _verify_sim_key
 from services.geo import valid_latlon
-from services.id_utils import normalize_hex_key
+from services.id_utils import is_transponder_hex, normalize_hex_key
 
 router = APIRouter()
 
@@ -115,22 +115,41 @@ async def sim_push_adsb_positions(body: dict = Body(...), _key=Depends(_verify_s
 
     This keeps each aircraft's position current at 1 Hz regardless of how many
     nodes happen to observe it in a given frame interval.
+
+    The optional body field "source" declares which world the positions belong
+    to: "real" for the simulator's adsb.lol relay of live traffic, anything
+    else (including absent — every simulator before the tag existed) for the
+    simulated fleet itself.  Claiming keys on the stored "world" tag so a
+    synthetic node cannot bind its echoes to a relayed real aircraft: with
+    both populations in one cache over one footprint, every real aircraft is
+    a decoy whose delay/Doppler a wrong echo matches by coincidence, and each
+    such bind put a plane icon on the map that no radar ever measured.
     """
     ts_ms = body.get("ts_ms", int(time.time() * 1000))
     aircraft_list = body.get("aircraft", [])
     if not isinstance(aircraft_list, list):
         raise HTTPException(status_code=400, detail="aircraft list required")
+    world = "real" if body.get("source") == "real" else "sim"
 
     updated = 0
+    rejected = 0
     for ac in aircraft_list:
         hex_code = normalize_hex_key(ac.get("hex") or "")
         if not hex_code:
+            continue
+        # A dark object has no transponder, so nothing about it belongs in
+        # state.adsb_aircraft.  Older simulators push every aircraft here with
+        # the object id standing in for the hex; accepting those minted a fake
+        # transponder per dark target, every dark solve then keyed mn-adsb-*
+        # and the dark lane was permanently empty.
+        if not is_transponder_hex(hex_code):
+            rejected += 1
             continue
         lat = ac.get("lat")
         lon = ac.get("lon")
         if not valid_latlon(lat, lon):
             continue
-        state.adsb_aircraft[hex_code] = {
+        rec = {
             "hex": hex_code,
             "flight": ac.get("flight", ""),
             "lat": lat,
@@ -139,10 +158,17 @@ async def sim_push_adsb_positions(body: dict = Body(...), _key=Depends(_verify_s
             "gs": ac.get("gs", 0),
             "track": ac.get("track", 0),
             "last_seen_ms": ts_ms,
+            "world": world,
         }
+        # Derived once here, not per read — see state.adsb_derived_fields.
+        # Published only after it is complete: readers snapshot unlocked.
+        rec.update(state.adsb_derived_fields(rec))
+        state.adsb_aircraft[hex_code] = rec
         updated += 1
 
     if updated:
         state.aircraft_dirty = True
+    if rejected:
+        state.bump_counter("sim_adsb_push_rejected_hex", rejected)
 
-    return {"status": "ok", "updated": updated}
+    return {"status": "ok", "updated": updated, "rejected_hex": rejected}

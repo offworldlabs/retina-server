@@ -153,8 +153,16 @@ test.describe("API admin endpoints", () => {
     }
   });
 
-  test("GET /api/config returns tower config with valid shape", async () => {
-    const res = await ctx.get(`${API}/api/config`);
+  // Deliberately on the frontend host, not API: /api/config is served by
+  // tower-finder-service through nginx, and only on the vhosts that include
+  // snippets/towers-proxy.conf. The api vhost is not one of them — it has no
+  // /api/config location and the app behind it no longer implements the route
+  // (the monolith's tower stack was deleted with the proxy dedup), so asking
+  // API for it is a 404 by design. deploy/tower-contract.sh owns the assertion
+  // about what that config must contain; this one only says it is reachable
+  // through the edge.
+  test("GET /api/config is served through the edge with valid shape", async () => {
+    const res = await ctx.get(`${hosts.frontend}/api/config`);
     expect(res.status()).toBe(200);
 
     const body = await res.json();

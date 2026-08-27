@@ -105,16 +105,42 @@ ALLOWED_DIVERGENCE = (
     # simulator feeds nothing anyone depends on. If production ever runs a fleet
     # again, narrow this back to `\.environment\.FLEET_[A-Z_]+$`.
     r"^services\.fleet(\..*)?$",
-    # Production alone joins the external edge network that fronts
-    # tower-finder-service; staging has no such stack.
-    r"^services\.server\.networks(\..*)?$",
-    r"^networks(\..*)?$",
+    # No entry for the external edge network that fronts tower-finder-service:
+    # every environment runs that stack now (the test droplet's came up
+    # 2026-08-26; its deploy job in that repo stays workflow_dispatch), so all
+    # three overlays join retina-edge identically and any difference is a
+    # server silently off the network — which 502s /api/towers, and is exactly
+    # what this check exists to catch.
     # Compose records the file list it was assembled from.
     r"^name$",
     r"^services\.[^.]+\.(build|image)\.?.*labels.*$",
 )
 
-_ALLOWED = tuple(re.compile(p) for p in ALLOWED_DIVERGENCE)
+# Entries are either a bare pattern, allowed in every environment, or a
+# (environment, pattern) pair allowed in that one only. Scoping matters: a
+# divergence that is legitimate on one droplet is usually drift on another, and
+# a blanket entry stops the check looking anywhere.
+
+
+def _compile_allowed(entries) -> tuple:
+    compiled = []
+    for entry in entries:
+        if isinstance(entry, str):
+            compiled.append((None, re.compile(entry)))
+            continue
+        scope, pattern = entry
+        # A scope that names no environment silently never fires, and one naming
+        # the reference can never fire either, since check_compose skips it.
+        # Both leave an entry that reads as a recorded decision and does nothing.
+        if scope not in OVERLAYS:
+            raise SystemExit(f"ALLOWED_DIVERGENCE: {scope!r} is not one of {sorted(OVERLAYS)}")
+        if scope == REFERENCE:
+            raise SystemExit(f"ALLOWED_DIVERGENCE: {scope!r} is the reference, so scoping to it is a no-op")
+        compiled.append((scope, re.compile(pattern)))
+    return tuple(compiled)
+
+
+_ALLOWED = _compile_allowed(ALLOWED_DIVERGENCE)
 
 # Hostname roles, mapped back to a common token before comparing the two
 # rendered nginx configs. Ordered longest-value-first at substitution time so
@@ -172,9 +198,9 @@ def flatten(node, prefix: str = "") -> dict[str, object]:
     return flat
 
 
-def allowed(path: str) -> bool:
+def allowed(path: str, env: str) -> bool:
     bare = re.sub(r"\[\d+\]", "", path)
-    return any(p.search(path) or p.search(bare) for p in _ALLOWED)
+    return any((scope is None or scope == env) and (p.search(path) or p.search(bare)) for scope, p in _ALLOWED)
 
 
 def check_compose() -> list[str]:
@@ -187,7 +213,7 @@ def check_compose() -> list[str]:
             continue
         for path in sorted(set(reference) | set(tree)):
             in_ref, in_env = reference.get(path, "<absent>"), tree.get(path, "<absent>")
-            if in_ref == in_env or allowed(path):
+            if in_ref == in_env or allowed(path, env):
                 continue
             problems.append(
                 f"  {path}\n      {REFERENCE:<{_LABEL_WIDTH}}: {in_ref!r}\n      {env:<{_LABEL_WIDTH}}: {in_env!r}"

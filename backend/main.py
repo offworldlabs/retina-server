@@ -43,7 +43,6 @@ from routes.admin import router as admin_router
 from routes.analytics import router as analytics_router
 from routes.archive import router as archive_router
 from routes.auth import router as auth_router
-from routes.config import router as config_router
 from routes.custody import router as custody_router
 from routes.health import router as health_router
 from routes.node_responses import API_DESCRIPTION
@@ -56,7 +55,6 @@ from routes.sim_ingest import synthetic_fleet_enabled
 from routes.stats import router as stats_router
 from routes.streaming import router as streaming_router
 from routes.test import router as test_router
-from routes.towers import router as towers_router
 from services.alerting import log_destination
 from services.background import (
     adsb_truth_fetcher,
@@ -112,6 +110,30 @@ _test_mod.init(radar_pipeline)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # The anonymous-admin bypass, said out loud once per boot.
+    #
+    # AUTH_ALLOW_ANONYMOUS_ADMIN=1 is set in every environment while OAuth is
+    # unconfigured, so the flag has stopped being noticed — and it is not one
+    # guard among several, it is the whole of the admin boundary
+    # (core.users._derive_auth_flags, tests/test_auth.py).  The public surfaces
+    # go to some length to publish displaced receiver positions and to withhold
+    # private nodes entirely; the admin surfaces behind that boundary serve the
+    # true ones, and while this is set they serve them to anyone who asks.
+    #
+    # A log line, not a refusal: turning it off here would take every
+    # environment's admin access with it, and the default is deliberately not
+    # this module's to change.  WARNING level so it survives the default
+    # LOG_LEVEL and lands in the deploy's own logs rather than only in a
+    # developer's terminal.
+    from core.users import AUTH_BYPASS
+
+    if AUTH_BYPASS:
+        logging.warning(
+            "AUTH_ALLOW_ANONYMOUS_ADMIN=1: every caller is an anonymous admin. The admin API "
+            "serves TRUE node locations, which the public map is built to withhold — treat this "
+            "deployment as publishing operator addresses to anyone who finds an admin route."
+        )
+
     # Start runtime coverage if COVERAGE_ENABLED=1
     _start_coverage()
 
@@ -309,8 +331,6 @@ app.add_middleware(
 # ── Mount all routers ─────────────────────────────────────────────────────────
 for router in (
     health_router,
-    config_router,
-    towers_router,
     stats_router,
     radar_router,
     analytics_router,

@@ -42,7 +42,10 @@ async def websocket_aircraft(ws: WebSocket):
     state.ws_clients.add(ws)
     logging.info("WebSocket client connected (%d total)", len(state.ws_clients))
     try:
-        if state.latest_aircraft_json.get("aircraft"):
+        # Probed and sent from the public pair, which is what
+        # latest_aircraft_json_bytes serialises: this socket is unauthenticated,
+        # and the unredacted dict beside it belongs to the owner feed below.
+        if state.latest_aircraft_json_public.get("aircraft"):
             await ws.send_text(state.latest_aircraft_json_bytes.decode())
         while True:
             await ws.receive_text()
@@ -130,7 +133,9 @@ async def sse_aircraft_stream():
     async def _generate():
         last_hash = ""
         while True:
-            data = state.latest_aircraft_json
+            # Unauthenticated, so both the change probe and the body come from
+            # the public pair.
+            data = state.latest_aircraft_json_public
             current_hash = str(data.get("now", 0))
             if current_hash != last_hash:
                 yield b"data: " + state.latest_aircraft_json_bytes + b"\n\n"

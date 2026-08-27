@@ -21,7 +21,7 @@ One FastAPI backend serves several React front-ends, distinguished by subdomain:
 | **testmap** | Live aircraft map fed by the simulation fleet (synthetic nodes) — the main dev/demo surface. `testmap.retina.fm` is served by the **staging** droplet, the only environment still running a fleet. |
 | **map** | Production live map showing only real radar nodes. |
 | **dashboard** | Admin app (auth required): node ownership, claim codes, MLAT verification, metrics. |
-| **Tower Finder** | The original `/api/towers` illuminator search. |
+| **Tower Finder** | The original illuminator search. The SPA is here; the `/api/towers`, `/api/elevation` and `/api/config` API is **tower-finder-service** (separate repo and container), which nginx proxies to on every vhost. This backend no longer implements it. |
 
 Receiver nodes connect over TCP and stream detection frames. The pipeline
 (tracker → geolocator) turns frames into aircraft positions, broadcast to the
@@ -234,13 +234,27 @@ branch, open a PR, get it green, then merge.
 
 ## Things that will bite you
 
+- **The CARTO basemap key lives on the droplet, not in this repo.** Every
+  deploy appends `/root/.secrets/carto.env` to `./.env` after copying
+  `deploy/env.<env>.example`, and `docker-compose.yml` interpolates it into the
+  frontend's `VITE_CARTO_API_KEY` build arg. The file is one line,
+  `CARTO_API_KEY=<key>`; create it on a new droplet with
+  `install -d -m 700 /root/.secrets` and a `printf` into
+  `/root/.secrets/carto.env` (`chmod 600`). It is deliberately not in
+  `backend/.env` — Compose reads build args from `./.env` alone, never from an
+  `env_file` — and deliberately not committed, because this repo is public and
+  a key in its history outlives every rotation. A host without the file still
+  deploys; its maps just come back stamped "API KEY REQUIRED".
 - **All backend state is in-memory.** A restart loses connected nodes and live
   tracks; state is snapshotted to disk every 60s and restored on boot. Don't
   assume persistence.
 - **Submodules.** After pulling, run `git submodule update --init --recursive`
   if `libs/` looks stale or imports fail.
 - **Surfaces are hostname-driven.** `localhost` shows tower search; you need a
-  `*map.localhost` hostname to get the live map and its default tab.
+  `*map.localhost` hostname to get the live map and its default tab. The tower
+  search SPA there has no API unless you also run tower-finder-service: the
+  laptop overlay sets `TOWER_FINDER_ENABLED=false`, and nothing in this repo
+  answers `/api/towers` any more.
 - **Config vs runtime config.** `backend/config/` is image-only (baked into the
   Docker image); runtime-editable overrides live under `data/runtime/`. See the
   runbook for the volume-shadowing gotcha.

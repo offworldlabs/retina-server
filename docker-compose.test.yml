@@ -86,6 +86,14 @@ services:
         limits:
           cpus: "3.0"
           memory: 3G
+    # nginx proxies /api/towers to tower-finder-service over this network, same
+    # as staging and production. This droplet runs that stack too now (its
+    # deploy job there is workflow_dispatch; the co-located checkout lives at
+    # /opt/tower-finder-service), so the divergence check-env-parity.py used to
+    # record for test alone is gone.
+    networks:
+      - default
+      - retina-edge
 
   fleet:
     container_name: retina-test-fleet
@@ -161,3 +169,10 @@ services:
         limits:
           cpus: "1.0"
           memory: 400M
+
+networks:
+  retina-edge:
+    # Created out of band on the droplet, and shared with the separately
+    # deployed tower-finder-service stack, which declares it external too.
+    # Neither stack creates or removes it.
+    external: true

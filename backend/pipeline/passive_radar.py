@@ -44,8 +44,11 @@ from config.constants import (
     FT_TO_M,
     GEO_INTERVAL_S,
     PRUNE_INTERVAL_S,
+    as_num,
 )
 from services.id_utils import passive_track_hex
+from services.public_location import public_latlon
+from services.publication import is_private
 
 # ─── Node Configuration ─────────────────────────────────────────────
 DEFAULT_NODE_CONFIG = {
@@ -346,6 +349,22 @@ class PassiveRadarPipeline:
             self.geo_config.velocity_bounds = list(_DRONE_VELOCITY_BOUNDS)
             self.geo_config.initial_altitude_m = _DRONE_INITIAL_ALT_M
 
+    @staticmethod
+    def _coerced_adsb(tag):
+        """Numeric fields of an inline ADS-B tag, safe for the geolocator.
+
+        Everything the geolocator reads off a detection it multiplies bare and
+        outside the solver's try, so a raw "ground" altitude or a null gs raises
+        from inside the library and costs the whole frame.
+        """
+        # A node can put anything in frame["adsb"][i]; nothing validates inside
+        # a frame, and the geolocator tolerates a non-dict where unpacking does not.
+        if not isinstance(tag, dict):
+            return tag
+        # Never add a key: the geolocator branches on `"gs" in adsb`.
+        numeric = ("alt_baro", "gs", "track", "geom_rate")
+        return {k: as_num(v) if k in numeric else v for k, v in tag.items()}
+
     def _geolocate_track_event(self, track_id, event):
         """Run LM solver on a track event to get lat/lon/alt/velocity."""
         # Resolve lazy detection reference if needed (only for tracks that
@@ -369,7 +388,7 @@ class PassiveRadarPipeline:
                     delay=d["delay"],
                     doppler=d["doppler"],
                     snr=d.get("snr", 0),
-                    adsb=d.get("adsb"),
+                    adsb=self._coerced_adsb(d.get("adsb")),
                 )
             )
 
@@ -392,12 +411,18 @@ class PassiveRadarPipeline:
                     # select_initial_guess() always starts from fresh coordinates.
                     geo_track.adsb_initialized = True
                     if geo_track.detections:
+                        # Detections are oldest-first: this fix lands on the
+                        # window's oldest epoch, so the guess carries its lag.
                         geo_track.detections[0].adsb = {
                             "lat": _adsb["lat"],
                             "lon": _adsb["lon"],
-                            "alt_baro": _adsb.get("alt_baro", 0),
-                            "gs": _adsb.get("gs", 0),
-                            "track": _adsb.get("track", 0),
+                            # Coerced here, not downstream: the geolocator
+                            # multiplies all three raw, outside the solver's
+                            # try, so a "ground" altitude or a null gs kills
+                            # the frame from inside the library.
+                            "alt_baro": as_num(_adsb.get("alt_baro")),
+                            "gs": as_num(_adsb.get("gs")),
+                            "track": as_num(_adsb.get("track")),
                         }
 
         # Generate initial guess
@@ -482,12 +507,11 @@ class PassiveRadarPipeline:
             n_detections=len(geo_detections),
             timestamp_ms=event["timestamp"],
             adsb_hex=event.get("adsb_hex"),
-            # get_recent_detections() is newest-first, so the freshest
-            # measurement is [0] — [-1] was the OLDEST in the window, which
-            # published an ambiguity arc up to a full track-history behind
-            # the target.
-            latest_delay_us=geo_detections[0].delay if geo_detections else None,
-            latest_doppler_hz=geo_detections[0].doppler if geo_detections else None,
+            # get_recent_detections() returns oldest-first, so the freshest
+            # measurement is [-1].  This builds the ambiguity arc, which is the
+            # displayed position for single-node tracks.
+            latest_delay_us=geo_detections[-1].delay if geo_detections else None,
+            latest_doppler_hz=geo_detections[-1].doppler if geo_detections else None,
             target_class=target_class,
             is_anomalous=is_anomalous,
             anomaly_types=anomaly_types,
@@ -537,12 +561,12 @@ class PassiveRadarPipeline:
             existing = self.geolocated_tracks.get(track_id)
 
             # Newest measurement carried by this event (detections are stored
-            # newest-first).  Used to keep the published delay fresh below and
+            # oldest-first).  Used to keep the published delay fresh below and
             # to seed the ADS-B bootstrap path so a first-encounter entry
             # never publishes delay_us=0.
             _dets = event.get("detections")
             if _dets:
-                _newest = _dets[0]  # newest-first
+                _newest = _dets[-1]
             else:
                 _ref = event.get("_track_ref")
                 _recent = _ref.get_recent_detections(n=1) if _ref is not None else []
@@ -583,7 +607,7 @@ class PassiveRadarPipeline:
                 if adsb:
                     _gs_ms = (adsb.get("gs", 0) or 0) * 0.514444
                     _trk = math.radians(adsb.get("track", 0) or 0)
-                    existing.alt_m = (adsb.get("alt_baro", 0) or 0) * FT_TO_M
+                    existing.alt_m = as_num(adsb.get("alt_baro")) * FT_TO_M
                     existing.vel_east = _gs_ms * math.sin(_trk)
                     existing.vel_north = _gs_ms * math.cos(_trk)
                     existing.last_update_ms = event["timestamp"]
@@ -638,7 +662,7 @@ class PassiveRadarPipeline:
                             track_id=track_id,
                             lat=adsb["lat"],
                             lon=adsb["lon"],
-                            alt_m=(adsb.get("alt_baro", 0) or 0) * FT_TO_M,
+                            alt_m=as_num(adsb.get("alt_baro")) * FT_TO_M,
                             vel_east=_gs_ms * math.sin(_trk),
                             vel_north=_gs_ms * math.cos(_trk),
                             vel_up=0.0,
@@ -752,13 +776,34 @@ class PassiveRadarPipeline:
         }
 
     def generate_receiver_json(self) -> dict:
-        """Generate tar1090-compatible receiver.json for the RX site."""
+        """Generate tar1090-compatible receiver.json for the RX site.
+
+        Served unauthenticated at /api/radar/data/receiver.json, and tar1090
+        clients centre the map on it — so it carries the published receiver
+        position, not the true one.  self.config keeps the truth for the
+        pipeline; only this serialization moves.
+
+        Like /api/radar/status this document describes exactly one node, so
+        publication is a yes/no on that node rather than a filter.  A private
+        node's coordinate is withheld rather than moved: tar1090's receiver.json
+        exists to say where to point the map, and there is no honest answer to
+        that for a node that is not being published.  Nulls rather than a
+        missing pair, so a reader that indexes the keys does not fault.
+        """
+        if is_private(self.config.get("node_id")):
+            lat, lon = None, None
+        else:
+            lat, lon = public_latlon(
+                self.config["rx_lat"],
+                self.config["rx_lon"],
+                self.config.get("node_id"),
+            )
         return {
             "version": "retina-passive-radar",
             "refresh": 1000,
             "history": 0,
-            "lat": self.config["rx_lat"],
-            "lon": self.config["rx_lon"],
+            "lat": lat,
+            "lon": lon,
         }
 
 

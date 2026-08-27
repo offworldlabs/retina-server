@@ -36,8 +36,10 @@ from services.id_utils import (
     normalize_hex_key,
     passive_track_hex,
 )
+from services.public_location import fuzz_node_cfg
 from services.track_gates import (
     _build_single_node_arc,
+    _public_arc_cache,
     _single_node_arc_cache,
     track_entry,
 )
@@ -218,7 +220,10 @@ def _claimed_single_node_entries(now: float) -> list[dict]:
         # icon-only outcome as the builder declining.
         pipeline = state.node_pipelines.get(node_id)
         node_cfg = getattr(pipeline, "config", None)
-        arc = _build_single_node_arc(delay_us, node_cfg) if node_cfg else None
+        # Built around the PUBLISHED receiver: this arc goes straight onto the
+        # wire, and an ellipse drawn from the true one names the operator's
+        # house at its focus.  Same delay, same real transmitter.
+        arc = _build_single_node_arc(delay_us, fuzz_node_cfg(node_cfg)) if node_cfg else None
 
         # The claim's own fix carries no callsign (it is copied from the frame's
         # ADS-B block, which reports position and kinematics only).
@@ -370,7 +375,15 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         if ac["hex"] not in seen_hex:
             seen_hex.add(ac["hex"])
             append_track_history(ac["hex"], ac["lat"], ac["lon"], ac["alt_baro"], now)
-            ac["recent_positions"] = list(state.track_histories.get(ac["hex"], []))
+            # A multinode position is an aircraft estimate standing on its own
+            # geometry, so this frame's append lands identically in both stores
+            # — but the TRAIL behind it need not.  The same hex can have been
+            # an arc-only track under one node minutes ago, and those points
+            # are boresight crossings in the true frame: a ray from the
+            # operator's receiver.  Serving the public store hands over the
+            # trail as each point was published, rather than re-exposing the
+            # frames this aircraft happened to spend on one node's arc.
+            ac["recent_positions"] = list(state.track_histories_public.get(ac["hex"], []))
             ac["ground_truth_hex"] = resolve_ground_truth_hex(ac["hex"], ac["lat"], ac["lon"])
             aircraft.append(ac)
     for k in stale_mn:
@@ -443,7 +456,9 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
                 delay_us = latest.get("delay", 0)
                 if delay_us <= 0:
                     continue
-                arc = _build_single_node_arc(delay_us, node_cfg)
+                # detection_arcs ships verbatim to every websocket client, so
+                # this is a published arc: fuzzed receiver focus, true TX.
+                arc = _build_single_node_arc(delay_us, fuzz_node_cfg(node_cfg))
                 if not arc or len(arc) < 2:
                     continue
                 pending_arcs.append(
@@ -480,6 +495,11 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     # or it is not.  An empty touched set (no arc tracks this build) prunes all.
     for _stale_key in [k for k in _single_node_arc_cache if k not in _touched_arc_keys]:
         del _single_node_arc_cache[_stale_key]
+    # The published-arc memo is keyed identically and filled from the same
+    # touched set, so it is evicted on the same rule — otherwise it would be
+    # the one unbounded cache on this path.
+    for _stale_key in [k for k in _public_arc_cache if k not in _touched_arc_keys]:
+        del _public_arc_cache[_stale_key]
 
     # Collapse multiple entries describing one aircraft. Runs last, after all
     # three sections have appended, so a multinode solve can displace a

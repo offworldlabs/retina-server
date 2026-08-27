@@ -1,6 +1,5 @@
-"""Tests for HTTP API routes — health, detections, config, metrics, WebSocket auth."""
+"""Tests for HTTP API routes — health, detections, tower-usage stats, WebSocket auth."""
 
-import json
 import os
 import time
 
@@ -11,9 +10,7 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
-import routes.config as config_mod  # noqa: E402
 from main import app  # noqa: E402
-from services.tower_ranking import _CONFIG_PATH  # noqa: E402
 
 
 @pytest.fixture()
@@ -139,16 +136,6 @@ class TestCORS:
         assert "PATCH" not in allow_methods
 
 
-# ── Config ────────────────────────────────────────────────────────────────────
-
-
-class TestConfig:
-    def test_get_config(self, client):
-        r = client.get("/api/config")
-        assert r.status_code == 200
-        assert isinstance(r.json(), dict)
-
-
 # ── Receiver / aircraft JSON ─────────────────────────────────────────────────
 
 
@@ -191,219 +178,6 @@ class TestWebSocketAuth:
         monkeypatch.setattr(streaming_mod, "_WS_AUTH_TOKEN", "secret-token-123")
         with client.websocket_connect("/ws/aircraft?token=secret-token-123"):
             pass
-
-
-# ── Config (detailed) ────────────────────────────────────────────────────────
-
-
-class TestConfigDetailed:
-    def test_config_has_ranking(self, client):
-        r = client.get("/api/config")
-        cfg = r.json()
-        assert "ranking" in cfg
-        assert "band_priority" in cfg["ranking"]
-        assert "distance_classes" in cfg["ranking"]
-        assert "sort_order" in cfg["ranking"]
-
-    def test_config_has_receiver(self, client):
-        r = client.get("/api/config")
-        assert "receiver" in r.json()
-
-    def test_config_has_broadcast_bands(self, client):
-        r = client.get("/api/config")
-        assert "broadcast_bands" in r.json()
-
-
-# ── Config PUT + reload ──────────────────────────────────────────────────────
-
-
-class TestConfigReload:
-    def test_put_and_reload(self, client):
-        r = client.get("/api/config")
-        cfg = r.json()
-
-        new_cfg = json.loads(json.dumps(cfg))
-        new_cfg["ranking"]["band_priority"]["FM"] = 0
-        new_cfg["ranking"]["band_priority"]["VHF"] = 2
-
-        r2 = client.put("/api/config", json=new_cfg)
-        assert r2.status_code == 200
-        assert r2.json().get("status") == "updated"
-
-        reloaded = client.get("/api/config").json()
-        assert reloaded["ranking"]["band_priority"]["FM"] == 0
-        assert reloaded["ranking"]["band_priority"]["VHF"] == 2
-
-        # Restore original
-        r3 = client.put("/api/config", json=cfg)
-        assert r3.status_code == 200
-        restored = client.get("/api/config").json()
-        assert restored["ranking"]["band_priority"]["VHF"] == cfg["ranking"]["band_priority"]["VHF"]
-
-
-# ── Config validation ────────────────────────────────────────────────────────
-
-
-@pytest.fixture()
-def isolated_config(tmp_path):
-    """Point the config endpoints at a scratch overlay, seeded from the real one.
-
-    Without this, a PUT that is wrongly accepted writes to the developer's
-    runtime overlay — precisely the failure these tests exist to catch, so a
-    regression would corrupt the workspace on its way to reporting itself.
-    routes.config binds _CONFIG_PATH at import, so both references must move.
-
-    Only the paths: the autouse fixture in conftest puts the settings themselves
-    back after every test. Restores by assignment rather than through
-    monkeypatch, whose undo() would revert the test's own patches, and rather
-    than by calling reload_config(), which teardown would run through whatever
-    the test patched.
-    """
-    from services import tower_ranking
-
-    path = tmp_path / "tower_config.json"
-    path.write_text(_CONFIG_PATH.read_text())
-    config_mod._CONFIG_PATH = path
-    tower_ranking._CONFIG_PATH = path
-    try:
-        yield path
-    finally:
-        config_mod._CONFIG_PATH = _CONFIG_PATH
-        tower_ranking._CONFIG_PATH = _CONFIG_PATH
-
-
-class TestConfigValidation:
-    """A bad PUT must be rejected before it reaches disk.
-
-    The runtime overlay is a named docker volume, so a config that lands on
-    disk survives restart and redeploy. Rejecting after the write, or not at
-    all, leaves recovery to manual surgery inside the volume.
-    """
-
-    def test_rejects_distance_class_missing_max_km(self, client, isolated_config):
-        # The exact shape that used to brick startup: valid JSON, wrong shape.
-        # reload_config() indexes dc["max_km"] directly, so the app raised
-        # KeyError at import and never came up again.
-        before = isolated_config.read_text()
-        bad = json.loads(before)
-        del bad["ranking"]["distance_classes"][0]["max_km"]
-
-        r = client.put("/api/config", json=bad)
-
-        assert r.status_code == 400
-        assert "max_km" in r.json()["detail"]
-        assert isolated_config.read_text() == before
-
-    def test_rejects_non_object_section(self, client, isolated_config):
-        before = isolated_config.read_text()
-        bad = json.loads(before)
-        bad["receiver"] = "6 dBi"
-
-        r = client.put("/api/config", json=bad)
-
-        assert r.status_code == 400
-        assert isolated_config.read_text() == before
-
-    def test_rejects_distance_classes_not_a_list(self, client, isolated_config):
-        before = isolated_config.read_text()
-        bad = json.loads(before)
-        bad["ranking"]["distance_classes"] = {"label": "Ideal", "min_km": 8, "max_km": 30}
-
-        r = client.put("/api/config", json=bad)
-
-        assert r.status_code == 400
-        assert isolated_config.read_text() == before
-
-    def test_accepts_a_valid_config(self, client, isolated_config):
-        good = json.loads(isolated_config.read_text())
-        good["search"]["default_radius_km"] = 42
-
-        r = client.put("/api/config", json=good)
-
-        assert r.status_code == 200
-        assert json.loads(isolated_config.read_text())["search"]["default_radius_km"] == 42
-
-    def test_rejects_a_nan_value(self, client, isolated_config):
-        # Valid JSON to Python's parser, and NaN compares False against every
-        # bound, so this is the shape that gets past a naive numeric check.
-        before = isolated_config.read_text()
-        bad = json.loads(before)
-        bad["search"]["default_limit"] = float("nan")
-
-        r = client.put("/api/config", json=bad)
-
-        assert r.status_code == 400
-        assert isolated_config.read_text() == before
-
-    def test_apply_failure_leaves_the_file_untouched(self, client, isolated_config, monkeypatch):
-        """The validator-gap path: validation passes, applying it does not.
-
-        Nothing may reach disk. reload_config() falls soft at import, so a
-        rejected config left on the volume would quietly become the config the
-        next boot ignores in favour of defaults.
-        """
-        before = isolated_config.read_text()
-        good = json.loads(before)
-
-        def _boom(cfg):
-            raise KeyError("max_km")
-
-        monkeypatch.setattr(config_mod, "apply_config", _boom)
-
-        r = client.put("/api/config", json=good)
-
-        assert r.status_code == 400
-        assert "could not be applied" in r.json()["detail"]
-        assert isolated_config.read_text() == before
-
-    def test_write_leaves_no_temp_file_behind(self, client, isolated_config):
-        good = json.loads(isolated_config.read_text())
-
-        r = client.put("/api/config", json=good)
-
-        assert r.status_code == 200
-        assert list(isolated_config.parent.glob(".*.tmp")) == []
-
-
-# ── Elevation ─────────────────────────────────────────────────────────────────
-
-
-class TestElevation:
-    @pytest.mark.external
-    def test_sydney_elevation(self, client):
-        r = client.get("/api/elevation", params={"lat": -33.8688, "lon": 151.2093})
-        assert r.status_code == 200
-        body = r.json()
-        assert "elevation_m" in body
-        assert isinstance(body["elevation_m"], (int, float))
-        assert 0 <= body["elevation_m"] <= 200
-
-    @pytest.mark.external
-    def test_denver_elevation(self, client):
-        r = client.get("/api/elevation", params={"lat": 39.7392, "lon": -104.9903})
-        assert r.status_code == 200
-        assert r.json()["elevation_m"] > 1500
-
-    def test_invalid_lat_returns_422(self, client):
-        r = client.get("/api/elevation", params={"lat": 999, "lon": 0})
-        assert r.status_code == 422
-
-
-# ── Towers parameter validation ──────────────────────────────────────────────
-
-
-class TestTowersValidation:
-    def test_missing_lat_lon_returns_422(self, client):
-        r = client.get("/api/towers")
-        assert r.status_code == 422
-
-    def test_lat_out_of_range_returns_422(self, client):
-        r = client.get("/api/towers", params={"lat": 999, "lon": 0})
-        assert r.status_code == 422
-
-    def test_invalid_source_returns_400(self, client):
-        r = client.get("/api/towers", params={"lat": 0, "lon": 0, "source": "xx"})
-        assert r.status_code == 400
 
 
 # ── Tower usage statistics ───────────────────────────────────────────────────

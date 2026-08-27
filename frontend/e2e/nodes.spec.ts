@@ -85,6 +85,22 @@ const BULK_B_CONFIG = {
   max_range_km: 50,
 };
 
+// Receiver positions are fuzzed at the serialization edge whenever
+// NODE_FUZZ_MODE is not "off" (which is the default): the published rx sits in
+// a donut around the truth, rounded to 4 decimals, and the payload declares
+// the donut's outer radius as location_uncertainty_km beside it. TX sites are
+// licensed broadcast towers and are never fuzzed. The suite asserts that
+// honest-fuzz contract instead of expecting the true coordinates back.
+const KM_PER_DEG_LAT = 111.32;
+function kmBetween(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const dLatKm = (lat1 - lat2) * KM_PER_DEG_LAT;
+  const dLonKm = (lon1 - lon2) * KM_PER_DEG_LAT * Math.cos((lat1 * Math.PI) / 180);
+  return Math.hypot(dLatKm, dLonKm);
+}
+// Rounding each published coordinate to 4 decimals can move the point a few
+// metres past the declared radius; allow that on top of the uncertainty.
+const FUZZ_ROUNDING_SLACK_KM = 0.05;
+
 // latest_nodes_bytes and latest_overlaps_bytes are rebuilt in the same 30 s background
 // function. Add a 5 s buffer over the full cycle.
 const CACHE_TIMEOUT_MS = 35_000;
@@ -362,9 +378,14 @@ describeUnlessProd("Node registration — main integration suite", () => {
       expect(ageMs).toBeLessThan(5 * 60 * 1000); // < 5 minutes
     });
 
-    test("REAL_NODE location object has all 6 geographic sub-fields", () => {
+    test("REAL_NODE location object has all 7 geographic sub-fields", () => {
       const loc = nodesBody.nodes[REAL_NODE_ID].location as Record<string, unknown>;
-      for (const f of ["rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft"]) {
+      for (const f of [
+        "rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft",
+        // Declared alongside the coordinates since the receiver fuzzing
+        // landed: how far the published rx may sit from the true one.
+        "location_uncertainty_km",
+      ]) {
         expect(loc, `missing location field: ${f}`).toHaveProperty(f);
       }
     });
@@ -384,8 +405,17 @@ describeUnlessProd("Node registration — main integration suite", () => {
 
     test("BULK_B location in nodes registry reflects the full geo config", () => {
       const loc = nodesBody.nodes[BULK_B_NODE_ID].location as Record<string, number | null>;
-      expect(loc.rx_lat).toBeCloseTo(BULK_B_CONFIG.rx_lat, 4);
-      expect(loc.rx_lon).toBeCloseTo(BULK_B_CONFIG.rx_lon, 4);
+      const unc = loc.location_uncertainty_km ?? 0;
+      if (unc > 0) {
+        // Fuzzing on: the published receiver must sit within the uncertainty
+        // it declares, and off the true point (the donut has a floor).
+        const d = kmBetween(loc.rx_lat!, loc.rx_lon!, BULK_B_CONFIG.rx_lat, BULK_B_CONFIG.rx_lon);
+        expect(d).toBeLessThanOrEqual(unc + FUZZ_ROUNDING_SLACK_KM);
+        expect(d).toBeGreaterThan(0);
+      } else {
+        expect(loc.rx_lat).toBeCloseTo(BULK_B_CONFIG.rx_lat, 4);
+        expect(loc.rx_lon).toBeCloseTo(BULK_B_CONFIG.rx_lon, 4);
+      }
       expect(loc.tx_lat).toBeCloseTo(BULK_B_CONFIG.tx_lat, 4);
       expect(loc.tx_lon).toBeCloseTo(BULK_B_CONFIG.tx_lon, 4);
     });
@@ -487,12 +517,24 @@ describeUnlessProd("Node registration — main integration suite", () => {
     test("detection_area block is present with all expected geometry keys", () => {
       const da = analyticsBody.detection_area as Record<string, unknown>;
       expect(da).toBeDefined();
-      for (const k of [
+      const rx = da.rx as Record<string, unknown> | undefined;
+      const fuzzed = ((rx?.location_uncertainty_km as number) ?? 0) > 0;
+      const keys = [
         "node_id", "rx", "tx", "beam_azimuth_deg", "beam_width_deg", "max_range_km",
         "n_detections", "observed_delay_range_us", "observed_doppler_range_hz",
-        "estimated_max_range_km", "furthest_detections",
-      ]) {
+        "estimated_max_range_km",
+      ];
+      if (!fuzzed) keys.push("furthest_detections");
+      for (const k of keys) {
         expect(da, `detection_area missing key: ${k}`).toHaveProperty(k);
+      }
+      if (fuzzed) {
+        // Redacted at the serialization edge: each entry pairs a real fix
+        // with its distance from the TRUE receiver — a ranging circle that
+        // intersects back to the address the fuzz exists to hide.
+        expect(da, "furthest_detections must be redacted when fuzzing").not.toHaveProperty(
+          "furthest_detections",
+        );
       }
     });
 
@@ -515,6 +557,13 @@ describeUnlessProd("Node registration — main integration suite", () => {
 
     test("detection_area.furthest_detections is an empty array for a fresh node", () => {
       const da = analyticsBody.detection_area as Record<string, unknown>;
+      const rx = da.rx as Record<string, unknown> | undefined;
+      if (((rx?.location_uncertainty_km as number) ?? 0) > 0) {
+        // Redacted wholesale when receiver fuzzing is on — see the geometry
+        // keys test above.
+        expect(da).not.toHaveProperty("furthest_detections");
+        return;
+      }
       expect(Array.isArray(da.furthest_detections)).toBe(true);
       expect((da.furthest_detections as unknown[]).length).toBe(0);
     });
@@ -556,8 +605,15 @@ describeUnlessProd("Node registration — main integration suite", () => {
       expect(bulkBStatus).toBe(200);
       const da = bulkBAnalytics.detection_area as Record<string, Record<string, number>>;
       expect(da).toBeDefined();
-      expect(da.rx.lat).toBeCloseTo(BULK_B_CONFIG.rx_lat, 4);
-      expect(da.rx.lon).toBeCloseTo(BULK_B_CONFIG.rx_lon, 4);
+      const unc = da.rx.location_uncertainty_km ?? 0;
+      if (unc > 0) {
+        const d = kmBetween(da.rx.lat, da.rx.lon, BULK_B_CONFIG.rx_lat, BULK_B_CONFIG.rx_lon);
+        expect(d).toBeLessThanOrEqual(unc + FUZZ_ROUNDING_SLACK_KM);
+        expect(d).toBeGreaterThan(0);
+      } else {
+        expect(da.rx.lat).toBeCloseTo(BULK_B_CONFIG.rx_lat, 4);
+        expect(da.rx.lon).toBeCloseTo(BULK_B_CONFIG.rx_lon, 4);
+      }
       expect(da.tx.lat).toBeCloseTo(BULK_B_CONFIG.tx_lat, 4);
       expect(da.tx.lon).toBeCloseTo(BULK_B_CONFIG.tx_lon, 4);
     });

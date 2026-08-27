@@ -9,6 +9,7 @@ export {
   getAircraftGeometryPoints,
   getFocusPoints,
   yagiSectorPositions,
+  uncertaintyDiscRadiusM,
 } from "./geo";
 export { mergeTrailPositions, sampleTrailPositions, buildTrailSegments } from "./trails";
 export { PLANE_PATH, getAircraftColor, altitudeColor, ALTITUDE_LEGEND, aircraftIconSize, makeAircraftIcon, makeDroneIcon, nodeIcon, drDriftM, hideDrIcon } from "./icons";

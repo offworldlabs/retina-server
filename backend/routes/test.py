@@ -10,12 +10,14 @@ import orjson
 from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from fastapi.responses import Response
 
+from config.constants import FT_TO_M, is_num
 from core import state
 from core.task_registry import get_stale_tasks
 from core.users import require_admin
 from services.frame_processor import resolve_ground_truth_hex
 from services.geo import haversine_km
 from services.id_utils import normalize_hex_key
+from services.public_location import fuzz_enabled, public_latlon, translate_polygon
 from services.tasks import solver as solver_mod
 
 router = APIRouter()
@@ -302,14 +304,17 @@ async def validate_ground_truth(body: dict = Body(...), _key=Depends(_verify_sim
         if best_match:
             idx, sa = best_match
             matched_server_indices.add(idx)
-            sa_alt_m = sa.get("alt_baro", 0) * 0.3048 if sa.get("alt_baro") else 0
-            alt_err_m = abs(gt_alt - sa_alt_m)
+            # "ground" means on the surface — field elevation, not 0 m MSL — so
+            # it is no altitude truth.  Null here rather than a fabricated error;
+            # the match still scores position.
+            _sa_alt = sa.get("alt_baro")
+            alt_err_m = abs(gt_alt - _sa_alt * FT_TO_M) if is_num(_sa_alt) else None
             matches.append(
                 {
                     "truth_id": gt.get("id"),
                     "server_hex": sa.get("hex"),
                     "position_error_km": round(best_dist, 2),
-                    "altitude_error_m": round(alt_err_m, 0),
+                    "altitude_error_m": round(alt_err_m, 0) if alt_err_m is not None else None,
                     "position_source": sa.get("position_source", "unknown"),
                     "has_adsb": gt.get("has_adsb", False),
                     "is_anomalous": gt.get("is_anomalous", False),
@@ -322,21 +327,28 @@ async def validate_ground_truth(body: dict = Body(...), _key=Depends(_verify_sim
 
     if matches:
         pos_errors = [m["position_error_km"] for m in matches]
-        alt_errors = [m["altitude_error_m"] for m in matches]
         avg_pos_err = sum(pos_errors) / len(pos_errors)
-        avg_alt_err = sum(alt_errors) / len(alt_errors)
         max_pos_err = max(pos_errors)
         accuracy_pct = len(matches) / len(truth_list) * 100
         sorted_pos = sorted(pos_errors)
         p50_pos = sorted_pos[len(sorted_pos) // 2]
         p95_pos = sorted_pos[int(len(sorted_pos) * 0.95)]
+    else:
+        avg_pos_err = max_pos_err = 0
+        p50_pos = p95_pos = 0
+        accuracy_pct = 0
+
+    # Denominator is the matches that HAD altitude truth, not all of them, so
+    # these stand apart from the position ones.  Null rather than 0 when none
+    # did: 0 m of altitude error reads as perfect accuracy.
+    alt_errors = [m["altitude_error_m"] for m in matches if m["altitude_error_m"] is not None]
+    if alt_errors:
+        avg_alt_err = sum(alt_errors) / len(alt_errors)
         sorted_alt = sorted(alt_errors)
         p50_alt = sorted_alt[len(sorted_alt) // 2]
         p95_alt = sorted_alt[int(len(sorted_alt) * 0.95)]
     else:
-        avg_pos_err = avg_alt_err = max_pos_err = 0
-        p50_pos = p95_pos = p50_alt = p95_alt = 0
-        accuracy_pct = 0
+        avg_alt_err = p50_alt = p95_alt = None
 
     # Per-position_source breakdown
     by_source: dict[str, list[float]] = {}
@@ -368,9 +380,10 @@ async def validate_ground_truth(body: dict = Body(...), _key=Depends(_verify_sim
             "median_position_error_km": round(p50_pos, 2),
             "p95_position_error_km": round(p95_pos, 2),
             "max_position_error_km": round(max_pos_err, 2),
-            "avg_altitude_error_m": round(avg_alt_err, 0),
-            "median_altitude_error_m": round(p50_alt, 0),
-            "p95_altitude_error_m": round(p95_alt, 0),
+            "n_altitude_samples": len(alt_errors),
+            "avg_altitude_error_m": round(avg_alt_err, 0) if avg_alt_err is not None else None,
+            "median_altitude_error_m": round(p50_alt, 0) if p50_alt is not None else None,
+            "p95_altitude_error_m": round(p95_alt, 0) if p95_alt is not None else None,
         },
         "by_source": source_breakdown,
         "matches": matches[:50],
@@ -393,6 +406,17 @@ async def get_ground_truth_trail(hex_code: str):
 
     if not gt_trail and not solved_trail:
         raise HTTPException(status_code=404, detail=f"No trail data for {hex_code}")
+
+    # No ground truth to compare against means the only thing left to serve is
+    # the solved trail, and for a single-node arc track that trail is a run of
+    # boresight crossings in the TRUE frame — rays from the operator's receiver,
+    # unauthenticated, for any hex a caller cares to name.  The feed's own
+    # entries are translated into the public frame; this endpoint reads
+    # state.track_histories directly and would be the way around that.  It
+    # exists to score solves against simulation ground truth, so without ground
+    # truth it has no job to do and 404s like any other empty comparison.
+    if fuzz_enabled() and not gt_trail:
+        raise HTTPException(status_code=404, detail=f"No ground truth trail for {hex_code}")
 
     position_error_km = None
     if gt_trail and solved_trail:
@@ -871,6 +895,7 @@ def _solver_window_stats(minutes: float) -> dict:
         kc_contentions = state.known_claim_contentions
         kc_bound = state.known_claims_bound
         kc_visibility_rejects = state.known_claims_visibility_rejects
+        kc_world_rejects = state.known_claims_world_rejects
         kc_errors = state.known_claims_errors
 
     return {
@@ -949,6 +974,7 @@ def _solver_window_stats(minutes: float) -> dict:
             "contentions": kc_contentions,
             "bound": kc_bound,
             "visibility_rejects": kc_visibility_rejects,
+            "world_rejects": kc_world_rejects,
             "errors": kc_errors,
         },
         "fragmentation": {
@@ -1000,7 +1026,19 @@ async def mlat_accuracy():
 
 @router.get("/api/test/node/{node_id}/detection-range")
 async def node_detection_range(node_id: str):
-    """Return one node's empirical detection range and furthest detections."""
+    """Return one node's empirical detection range and coverage polygon.
+
+    Unauthenticated, so the receiver geometry here is the published geometry:
+    ``rx`` is the fuzzed coordinate and the polygon is translated rigidly by
+    the same offset, exactly as on /api/radar/analytics.
+
+    ``furthest_detections`` used to ride along and no longer does.  Each entry
+    was a real aircraft's lat/lon together with its distance from the true
+    receiver — a ranging circle per detection, three of which intersect at the
+    receiver regardless of what coordinate the payload claims.  That is a
+    sharper disclosure than the position field it sat next to, and no caller
+    (frontend, dashboard, or test) reads it.
+    """
     area = state.node_analytics.detection_areas.get(node_id)
     if not area:
         return Response(
@@ -1009,15 +1047,22 @@ async def node_detection_range(node_id: str):
             status_code=404,
         )
 
-    summary = area.summary()
+    summary = {k: v for k, v in area.summary().items() if k != "furthest_detections"}
+    rx = summary.get("rx") or {}
+    pub_lat, pub_lon = public_latlon(rx.get("lat"), rx.get("lon"), node_id)
+    summary["rx"] = {**rx, "lat": pub_lat, "lon": pub_lon}
 
-    # Empirical coverage polygon
+    # Empirical coverage polygon — apex is the true RX, so it moves with it.
     ecov = state.node_analytics.empirical_coverages.get(node_id)
     polygon = None
     if ecov:
-        polygon = ecov.to_polygon(
-            beam_azimuth_deg=area.beam_azimuth_deg,
-            beam_width_deg=area.beam_width_deg,
+        polygon = translate_polygon(
+            ecov.to_polygon(
+                beam_azimuth_deg=area.beam_azimuth_deg,
+                beam_width_deg=area.beam_width_deg,
+            ),
+            node_id,
+            anchor_lat=rx.get("lat"),
         )
 
     return Response(

@@ -41,6 +41,21 @@ _NODE_CFG = {
 }
 
 
+def _true_emit(hex_code):
+    """The position the gates produced, read back from the true frame.
+
+    An arc track's emitted lat/lon is the PUBLIC one: the icon is translated
+    onto the published arc at the dict boundary so it cannot be used to
+    triangulate the receiver.  The gates themselves run entirely in the true
+    frame, and ``state.track_last_emit`` is refreshed with the final true-frame
+    position on every emit — so that is the value a gate assertion has to read.
+    (That the two are separate is itself the invariant; see
+    TestArcTrackIsTranslated.)
+    """
+    lat, lon, _ts = state.track_last_emit[hex_code]
+    return (lat, lon)
+
+
 # ─── _bearing_deg tests ──────────────────────────────────────────────────────
 
 
@@ -601,8 +616,7 @@ class TestGatePreservesArc:
         # Arc suppressed — the measurement is the thing the gate distrusts.
         assert ac["ambiguity_arc"] is None
         # Position reverted to last good emit, unchanged from before.
-        assert ac["lat"] == self.PREV_LAT
-        assert ac["lon"] == self.PREV_LON
+        assert _true_emit(self.HEX) == (self.PREV_LAT, self.PREV_LON)
         assert ac["position_source"] == "single_node_ellipse_arc"
 
     def test_clean_rms_keeps_arc_and_new_position(self):
@@ -638,8 +652,7 @@ class TestGatePreservesArc:
         assert ac["ambiguity_arc"] is not None
         assert len(ac["ambiguity_arc"]) >= 2
         # Position reverted to last good emit.
-        assert ac["lat"] == self.PREV_LAT
-        assert ac["lon"] == self.PREV_LON
+        assert _true_emit(self.HEX) == (self.PREV_LAT, self.PREV_LON)
         assert ac["position_source"] == "single_node_ellipse_arc"
 
 
@@ -742,7 +755,7 @@ class TestGateHoldIsBounded:
         ac = self._build()
         assert ac is not None
         # First held frame still reverts, exactly as before.
-        assert (ac["lat"], ac["lon"]) == (self.PREV_LAT, self.PREV_LON)
+        assert _true_emit(self.HEX) == (self.PREV_LAT, self.PREV_LON)
         # ...but now records when the hold started, so it can be bounded.
         assert self.HEX in state.track_gate_hold
 
@@ -771,9 +784,10 @@ class TestGateHoldIsBounded:
         self._setup(rms_delay=12.5, hold_age_s=5.0)
         ac = self._build()
         assert ac is not None
-        assert (ac["lat"], ac["lon"]) != (self.PREV_LAT, self.PREV_LON)
+        _lat, _lon = _true_emit(self.HEX)
+        assert (_lat, _lon) != (self.PREV_LAT, self.PREV_LON)
         # vel_north is +50 m/s, so it must have moved north of the anchor.
-        assert ac["lat"] > self.PREV_LAT
+        assert _lat > self.PREV_LAT
 
     def test_hold_clears_when_gate_stops_firing(self):
         self._setup(rms_delay=12.5, hold_age_s=3.0)
@@ -1368,6 +1382,275 @@ class TestArcCacheIntegration:
         calls = _spy_build_count(monkeypatch)
         self._build()  # fleet unchanged -> every arc is a cache hit
         assert calls["n"] == 0
+
+
+# ─── Arc-track positions are served in the public frame ─────────────────────
+
+
+class TestArcTrackIsTranslated:
+    """An arc track's icon must sit on the arc the client is actually shown.
+
+    The emitted position of a single_node_ellipse_arc track is not an estimate
+    of the aircraft — it is the arc's boresight crossing, a point on a ray from
+    the RECEIVER.  Phase 1 rebuilt the served arc around the fuzzed receiver but
+    left the icon, the solver estimate and the position trail on the true one,
+    which leaked twice: the icon floated off its own curve by the whole offset,
+    and a run of those crossings intersects back at the operator's house.  All
+    three now move by one rigid delta at the dict boundary, and nothing upstream
+    of it sees the shift.
+    """
+
+    HEX = "fuzzarc"
+    SALT = "test-salt-for-arc-translation"
+
+    @pytest.fixture(autouse=True)
+    def _fuzz_on(self, monkeypatch):
+        import services.public_location as pl
+        import services.track_gates as tg
+
+        monkeypatch.setenv("NODE_FUZZ_MODE", "on")
+        monkeypatch.setenv("NODE_FUZZ_SALT", self.SALT)
+        monkeypatch.delenv("NODE_FUZZ_MIN_KM", raising=False)
+        monkeypatch.delenv("NODE_FUZZ_MAX_KM", raising=False)
+        pl._reset_for_tests()
+        # Both arc caches are keyed on (hex, node_id) and fingerprinted on the
+        # delay only, so a cached public arc would survive a change of salt or
+        # mode and quietly answer for the wrong configuration.
+        tg._reset_for_tests()
+        state.active_geo_aircraft.clear()
+        state.track_last_emit.clear()
+        state.track_gate_hold.clear()
+        state.track_histories.clear()
+        state.track_histories_public.clear()
+        state.track_arc_motion.clear()
+        state.adsb_aircraft.clear()
+        state.external_adsb_cache.clear()
+        state.multinode_tracks.clear()
+        yield
+        pl._reset_for_tests()
+        tg._reset_for_tests()
+        state.active_geo_aircraft.clear()
+        state.track_last_emit.clear()
+        state.track_gate_hold.clear()
+        state.track_histories.clear()
+        state.track_histories_public.clear()
+        state.track_arc_motion.clear()
+        state.adsb_aircraft.clear()
+        state.external_adsb_cache.clear()
+        state.multinode_tracks.clear()
+
+    # South-west of the RX, inside the auto-computed beam (see TestGatePreservesArc).
+    NOW_LAT, NOW_LON = 33.65, -84.95
+
+    def _put(self, *, rms_delay=1.2, delay_us=80.0, hexid=None):
+        import time as _time
+
+        from pipeline.passive_radar import GeolocatedTrack
+
+        hexid = hexid or self.HEX
+        track = GeolocatedTrack(
+            track_id=f"t-{hexid}",
+            lat=self.NOW_LAT,
+            lon=self.NOW_LON,
+            alt_m=3000,
+            vel_east=100.0,
+            vel_north=50.0,
+            vel_up=0.0,
+            rms_delay=rms_delay,
+            rms_doppler=1.0,
+            n_detections=10,
+            timestamp_ms=int(_time.time() * 1000),
+            adsb_hex=None,
+            latest_delay_us=delay_us,
+            target_class="aircraft",
+        )
+        track.wall_clock_ts = _time.time()
+        state.active_geo_aircraft[hexid] = (track, dict(_NODE_CFG))
+        return track
+
+    def _build(self, hexid=None):
+        import types
+
+        pipeline = types.SimpleNamespace(geolocated_tracks={}, config=dict(_NODE_CFG))
+        result = _fp.build_combined_aircraft_json(pipeline)
+        return next((a for a in result["aircraft"] if a["hex"] == (hexid or self.HEX)), None)
+
+    def _true_midpoint(self, track):
+        arc = _build_single_node_arc(track, dict(_NODE_CFG))
+        assert arc, "fixture geometry must produce a true arc"
+        return arc[len(arc) // 2]
+
+    def test_icon_sits_on_the_published_arc(self):
+        track = self._put()
+        ac = self._build()
+        assert ac is not None
+        assert ac["position_source"] == "single_node_ellipse_arc"
+        served = ac["ambiguity_arc"]
+        assert served, "a clean frame must still publish an arc"
+        midpoint = served[len(served) // 2]
+        # The whole point of measuring the delta between the two arcs' own
+        # midpoints rather than deriving it: the icon lands exactly on the
+        # crossing of the curve the viewer is looking at.
+        assert ac["lat"] == pytest.approx(midpoint[0], abs=1e-6)
+        assert ac["lon"] == pytest.approx(midpoint[1], abs=1e-6)
+        # ...and that is not where the true arc crosses.
+        assert (ac["lat"], ac["lon"]) != tuple(round(v, 6) for v in self._true_midpoint(track))
+
+    def test_icon_is_displaced_by_about_the_node_offset(self):
+        from config.constants import NODE_FUZZ_MAX_KM_DEFAULT, NODE_FUZZ_MIN_KM_DEFAULT
+        from services.geo import haversine_km
+
+        track = self._put()
+        ac = self._build()
+        true_lat, true_lon = self._true_midpoint(track)
+        moved_km = haversine_km(true_lat, true_lon, ac["lat"], ac["lon"])
+        assert NODE_FUZZ_MIN_KM_DEFAULT <= moved_km <= NODE_FUZZ_MAX_KM_DEFAULT
+
+    def test_internal_state_stays_in_the_true_frame(self):
+        track = self._put()
+        ac = self._build()
+        true_lat, true_lon = (round(v, 6) for v in self._true_midpoint(track))
+        # The gates, the hold, the jump check and the arc-motion log all read
+        # these; a translated value here would have them comparing frames.
+        assert _true_emit(self.HEX) == (true_lat, true_lon)
+        assert list(state.track_histories[self.HEX][-1][:2]) == [true_lat, true_lon]
+        assert (ac["lat"], ac["lon"]) != (true_lat, true_lon)
+
+    def test_recent_positions_are_served_from_the_public_store(self):
+        """Every served trail point is public; the true store is untouched.
+
+        Phase 2 served a copy of the true history translated by THIS frame's
+        delta.  The trail is now accumulated in both frames as it is emitted,
+        so an older point keeps the shift that was in force when it was made —
+        a hex is an arc track under one node in one frame and a multinode solve
+        in the next, and retro-shifting yesterday's points by today's delta
+        claims a receiver relationship they never had.
+        """
+        from collections import deque
+
+        true_trail = [
+            [33.600000, -84.900000, 9000.0, 100.0],
+            [33.610000, -84.910000, 9000.0, 110.0],
+            [33.620000, -84.920000, 9000.0, 120.0],
+        ]
+        # Deliberately NOT this node's offset: these points stand for emits made
+        # under some earlier frame's delta, and the assertion below is that they
+        # are served exactly as stored rather than re-derived.
+        public_trail = [
+            [33.650000, -84.940000, 9000.0, 100.0],
+            [33.660000, -84.950000, 9000.0, 110.0],
+            [33.670000, -84.960000, 9000.0, 120.0],
+        ]
+        state.track_histories[self.HEX] = deque([list(p) for p in true_trail], maxlen=state.TRACK_HISTORY_MAX)
+        state.track_histories_public[self.HEX] = deque([list(p) for p in public_trail], maxlen=state.TRACK_HISTORY_MAX)
+        self._put()
+        ac = self._build()
+
+        emitted = ac["recent_positions"]
+        stored_after = [list(p) for p in state.track_histories[self.HEX]]
+        public_after = [list(p) for p in state.track_histories_public[self.HEX]]
+
+        # One append, both stores: index i is the same emit in each.
+        assert len(emitted) == len(stored_after) == len(public_after)
+        # The true store is untouched behind the new point.
+        assert stored_after[: len(true_trail)] == true_trail
+        # What is served is the public store, verbatim — no per-call rewrite.
+        assert emitted == public_after
+        # Not one served point is the true one.
+        for served, true_point in zip(emitted, stored_after, strict=True):
+            assert (served[0], served[1]) != (true_point[0], true_point[1])
+        # The older points kept their own delta rather than acquiring this
+        # frame's, which is the whole reason the store exists.
+        assert emitted[: len(public_trail)] == public_trail
+        # The newest point is this frame's emit under this frame's delta — the
+        # same one the icon moved by, so trail and icon cannot disagree.
+        assert emitted[-1][:2] == [ac["lat"], ac["lon"]]
+        # Altitude and timestamp ride along untouched.
+        assert [p[2:] for p in emitted] == [p[2:] for p in stored_after]
+
+    def test_the_true_store_never_receives_the_public_position(self):
+        """The two stores are appended together and disagree by the shift.
+
+        The pair is what routes/test.py's ground-truth scoring and the gates
+        stand on: one write must not quietly become the other.
+        """
+        track = self._put()
+        ac = self._build()
+        true_lat, true_lon = (round(v, 6) for v in self._true_midpoint(track))
+
+        assert list(state.track_histories[self.HEX][-1][:2]) == [true_lat, true_lon]
+        assert list(state.track_histories_public[self.HEX][-1][:2]) == [ac["lat"], ac["lon"]]
+        assert (ac["lat"], ac["lon"]) != (true_lat, true_lon)
+        # Same alt/ts on both sides — only the position moves.
+        assert list(state.track_histories[self.HEX][-1][2:]) == list(state.track_histories_public[self.HEX][-1][2:])
+
+    def test_solver_position_is_translated_for_arc_tracks(self):
+        track = self._put()
+        ac = self._build()
+        assert ac["solver_lat"] != round(track.lat, 6)
+        assert ac["solver_lon"] != round(track.lon, 6)
+        # Exactly the icon's delta: solver_lat/lon is the estimate the midpoint
+        # was taken from, so a different shift would recover the difference.
+        assert ac["solver_lat"] - round(track.lat, 6) == pytest.approx(ac["lat"] - _true_emit(self.HEX)[0], abs=2e-6)
+
+    def test_solver_position_untouched_for_an_adsb_seed_track(self):
+        import time as _time
+
+        # No usable delay means no arc, so position_source stays
+        # solver_adsb_seed — an aircraft estimate standing on its own geometry,
+        # not a ray from the receiver, and therefore never translated.
+        track = self._put(delay_us=0.0)
+        state.adsb_aircraft[self.HEX] = {
+            "hex": self.HEX,
+            "lat": self.NOW_LAT,
+            "lon": self.NOW_LON,
+            "alt_baro": 10000,
+            "gs": 400.0,
+            "track": 90.0,
+            "last_seen_ms": int(_time.time() * 1000),
+        }
+        ac = self._build()
+        assert ac is not None
+        assert ac["position_source"] == "solver_adsb_seed"
+        assert ac["solver_lat"] == round(track.lat, 6)
+        assert ac["solver_lon"] == round(track.lon, 6)
+        assert ac["recent_positions"] == [list(p) for p in state.track_histories[self.HEX]]
+
+    def test_rms_gate_nulled_arc_still_moves_the_icon(self):
+        import time as _time
+
+        from config.constants import NODE_FUZZ_MAX_KM_DEFAULT, NODE_FUZZ_MIN_KM_DEFAULT
+        from services.geo import haversine_km
+
+        # The RMS gate nulls the frame's arc, so there is no public arc to
+        # measure a delta against — the fallback derives it from the node's
+        # offset instead.  A frame with no arc must not be a frame that serves
+        # the true position.
+        self._put(rms_delay=12.5)
+        state.track_last_emit[self.HEX] = [33.70, -84.85, _time.time() - 120.0]
+        ac = self._build()
+        assert ac is not None
+        assert ac["ambiguity_arc"] is None
+        true_lat, true_lon = _true_emit(self.HEX)
+        assert (ac["lat"], ac["lon"]) != (true_lat, true_lon)
+        moved_km = haversine_km(true_lat, true_lon, ac["lat"], ac["lon"])
+        assert NODE_FUZZ_MIN_KM_DEFAULT <= moved_km <= NODE_FUZZ_MAX_KM_DEFAULT
+
+    def test_fuzz_off_emits_the_true_midpoint(self, monkeypatch):
+        import services.public_location as pl
+        import services.track_gates as tg
+
+        monkeypatch.setenv("NODE_FUZZ_MODE", "off")
+        pl._reset_for_tests()
+        tg._reset_for_tests()
+
+        track = self._put()
+        ac = self._build()
+        true_lat, true_lon = (round(v, 6) for v in self._true_midpoint(track))
+        assert (ac["lat"], ac["lon"]) == (true_lat, true_lon)
+        assert (ac["solver_lat"], ac["solver_lon"]) == (round(track.lat, 6), round(track.lon, 6))
+        assert ac["recent_positions"] == [list(p) for p in state.track_histories[self.HEX]]
+        assert ac["ambiguity_arc"] == _build_single_node_arc(track, dict(_NODE_CFG))
 
 
 if __name__ == "__main__":

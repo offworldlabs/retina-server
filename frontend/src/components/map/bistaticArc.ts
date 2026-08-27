@@ -15,16 +15,16 @@
 // raw-measurement picture, not a bug.
 
 export interface NodeGeometry {
+  /**
+   * The server-published receiver coordinate. It is displaced from the
+   * operator's true position by the backend (backend/services/public_location.py)
+   * and no true receiver position reaches the browser — but the backend builds
+   * its own published arcs around this same anchor, so an arc rebuilt here
+   * lands on the served curve by construction. There is nothing more accurate
+   * to reach for.
+   */
   rx_lat: number;
   rx_lon: number;
-  /**
-   * Optional un-fuzzed RX coordinates. The display layer applies a ~400 m
-   * privacy fuzz to rx_lat/rx_lon for the visible marker; when present, the
-   * arc rebuilder uses these true coords so the curve aligns with the
-   * backend-computed locus (which uses the real RX position).
-   */
-  rx_lat_real?: number | null;
-  rx_lon_real?: number | null;
   tx_lat: number;
   tx_lon: number;
   /**
@@ -92,9 +92,7 @@ export function buildBistaticArc(
   node: NodeGeometry,
 ): [number, number][] | null {
   if (!delayUs || delayUs <= 0) return null;
-  const rx_lat = node.rx_lat_real ?? node.rx_lat;
-  const rx_lon = node.rx_lon_real ?? node.rx_lon;
-  const { tx_lat, tx_lon } = node;
+  const { rx_lat, rx_lon, tx_lat, tx_lon } = node;
   if (rx_lat == null || rx_lon == null || tx_lat == null || tx_lon == null) {
     return null;
   }

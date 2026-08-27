@@ -1,5 +1,5 @@
 #!/bin/bash
-# ── DOCKER-USER boundary: 80 and 443 reachable only from Cloudflare ──────────
+# ── DOCKER-USER boundary: the HTTP(S) ports reachable only from Cloudflare ──
 # ufw cannot do this. nginx runs in a container with published ports, and Docker
 # publishes a port by writing DNAT rules into nat/PREROUTING and filter rules
 # into its own DOCKER chain off FORWARD. ufw's rules live in INPUT, which those
@@ -19,6 +19,14 @@
 # Port 80 is narrowed to Cloudflare rather than closed: every server block in the
 # nginx template listens on it, including the redirect vhost.
 #
+# Port 8443 is tower-finder-service's own edge (its compose publishes it on
+# every droplet). Cloudflare reaches it once the Origin Rule for the fleet's
+# hostname rewrites the destination port; nothing else should. The edge already
+# refuses peers without a Cloudflare client certificate at the application
+# layer (403) — this rule is the packet-layer half of the same boundary, the
+# one retina's own 443 gets from `ssl_verify_client on`. Droplet-local deploy
+# probes are unaffected: every rule below is scoped to the external interface.
+#
 # Every rule here is scoped to the external interface with `-i`. DOCKER-USER
 # hangs off FORWARD, which carries container→internet egress as well as inbound
 # traffic to published ports; see resolve_external_if below for why an
@@ -29,7 +37,11 @@
 set -euo pipefail
 
 RANGES="${1:-$(dirname "$0")/cloudflare-ranges.txt}"
-PORTS="80,443"
+# Changing this list does nothing on a live droplet by itself: deploys fetch
+# the file but only boot re-runs the unit. Apply it with
+# `systemctl restart retina-firewall.service` on each droplet after the change
+# lands there.
+PORTS="80,443,8443"
 TAG="retina-cf-boundary"
 
 if [ ! -f "$RANGES" ]; then

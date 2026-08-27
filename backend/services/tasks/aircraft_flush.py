@@ -11,6 +11,7 @@ import orjson
 from config.constants import AIRCRAFT_FLUSH_INTERVAL_S
 from core import state
 from services.frame_processor import build_combined_aircraft_json
+from services.publication import public_aircraft_payload
 
 _TAR1090_DATA_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
@@ -59,11 +60,37 @@ def _build_real_only_payload(aircraft_data: dict) -> bytes:
 
 
 async def broadcast_aircraft(aircraft_data: dict, aircraft_bytes: bytes):
-    """Push updated aircraft data to all connected WebSocket clients."""
-    state.latest_aircraft_json = aircraft_data
-    state.latest_aircraft_json_bytes = aircraft_bytes
+    """Push updated aircraft data to all connected WebSocket clients.
 
-    real_bytes = _build_real_only_payload(aircraft_data)
+    This is where the public and owner paths part company.  ``aircraft_data`` is
+    the whole fleet as built; ``public_data`` is the same feed with nodes whose
+    owners registered them ``private`` taken out of it (services/publication.py).
+    Every unauthenticated surface reads the public one — the full and real-only
+    websockets, /api/radar/aircraft, the SSE stream — and the per-owner feed
+    below reads the unredacted one, because an owner's own private node is
+    precisely what that feed exists to show them.  Splitting here rather than
+    inside build_combined_aircraft_json is what makes that possible: the filter
+    has to be able to see an entry before deciding the caller may have it.
+
+    Both are stored on state, because a websocket that connects between flushes
+    is served its opening snapshot from there (routes/streaming.py) and must get
+    the same payload the broadcast would have given it.
+
+    Redacting nothing returns the identical object, so the common case reuses
+    the bytes the flush already serialised rather than paying for a second
+    orjson pass at 1 Hz.
+    """
+    public_data = public_aircraft_payload(aircraft_data)
+    if public_data is aircraft_data:
+        public_bytes = aircraft_bytes
+    else:
+        public_bytes = orjson.dumps(public_data, option=orjson.OPT_SERIALIZE_NUMPY)
+
+    state.latest_aircraft_json = aircraft_data
+    state.latest_aircraft_json_public = public_data
+    state.latest_aircraft_json_bytes = public_bytes
+
+    real_bytes = _build_real_only_payload(public_data)
     state.latest_real_aircraft_json_bytes = real_bytes
 
     if state.ws_live_clients:
@@ -98,9 +125,12 @@ async def broadcast_aircraft(aircraft_data: dict, aircraft_bytes: bytes):
 
     if not state.ws_clients:
         return
-    gt_full = aircraft_data.get("ground_truth") or {}
+    # The full feed (map + simulation fleet) is unauthenticated, so it is built
+    # from the redacted payload like every other public surface — "full" here
+    # means "not filtered to real nodes", not "not filtered at all".
+    gt_full = public_data.get("ground_truth") or {}
     gt_slim = {hex_code: [positions[-1]] for hex_code, positions in gt_full.items() if positions}
-    slim_data = {**aircraft_data, "ground_truth": gt_slim}
+    slim_data = {**public_data, "ground_truth": gt_slim}
     payload = orjson.dumps(slim_data, option=orjson.OPT_SERIALIZE_NUMPY).decode()
     stale = set()
     for ws in list(state.ws_clients):
@@ -129,12 +159,21 @@ async def aircraft_flush_task(default_pipeline):
             def _build_and_serialize():
                 data = build_combined_aircraft_json(default_pipeline)
                 data_bytes = orjson.dumps(data, option=orjson.OPT_SERIALIZE_NUMPY)
+                # The on-disk copy is the tar1090 file layout, i.e. a document
+                # meant to be handed to a viewer — so it gets the redacted
+                # payload, not the one the owner feed reads.  Nothing routes to
+                # it today; that is a reason to write the safe version now
+                # rather than to leave a true one for whoever points a webserver
+                # at this directory later.  The second dump only happens when
+                # some node is actually private.
+                public = public_aircraft_payload(data)
+                disk_bytes = data_bytes if public is data else orjson.dumps(public, option=orjson.OPT_SERIALIZE_NUMPY)
                 aircraft_path = os.path.join(_TAR1090_DATA_DIR, "aircraft.json")
                 # tmp + os.replace: an in-place truncating write let any
                 # HTTP/tar1090 reader observe a half-written file.
                 tmp_path = aircraft_path + ".tmp"
                 with open(tmp_path, "wb") as f:
-                    f.write(data_bytes)
+                    f.write(disk_bytes)
                 os.replace(tmp_path, aircraft_path)
                 return data, data_bytes
 

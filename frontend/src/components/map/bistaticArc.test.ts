@@ -21,8 +21,8 @@ const NODE: NodeGeometry = {
  * midpoint latitude, point inversion uses the RX latitude per enuToLla).
  */
 function differentialAt(node: NodeGeometry, lat: number, lon: number): number {
-  const rxLat = node.rx_lat_real ?? node.rx_lat;
-  const rxLon = node.rx_lon_real ?? node.rx_lon;
+  const rxLat = node.rx_lat;
+  const rxLon = node.rx_lon;
   const cosMid = Math.max(
     0.1,
     Math.cos((((rxLat + node.tx_lat) / 2) * Math.PI) / 180),
