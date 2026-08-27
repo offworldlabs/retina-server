@@ -311,3 +311,38 @@ async def test_a_full_queue_drops_the_frame_and_bumps_the_counter(monkeypatch):
     assert submit_frame(NODE_ID, {"timestamp": 1, "delay": [], "doppler": [], "snr": []}) is False
 
     assert state.frames_dropped == before + 1
+
+
+def test_pipeline_frame_converts_the_wire_shape():
+    """Seconds to milliseconds, and `adsb_hex` under its own key rather than `adsb`."""
+    from routes.node_schemas import DetectionFrame
+    from services.node_pipeline import pipeline_frame
+
+    out = pipeline_frame(
+        DetectionFrame(
+            t=1753900000.123,
+            seq=918273,
+            boot_id="k3n8v2qp71ab",
+            config_version=1,
+            delay=[12.4, 30.1],
+            doppler=[-118.0, 44.5],
+            snr=[14.2, 9.8],
+            adsb_hex=["4ca1f2", None],
+        )
+    )
+
+    assert out["timestamp"] == 1753900000123
+    assert out["delay"] == [12.4, 30.1]
+    assert out["doppler"] == [-118.0, 44.5]
+    assert out["snr"] == [14.2, 9.8]
+    assert out["adsb_hex"] == ["4ca1f2", None]
+    assert "adsb" not in out
+    assert (out["seq"], out["boot_id"], out["config_version"]) == (918273, "k3n8v2qp71ab", 1)
+
+
+def test_the_route_uses_the_shared_conversion():
+    """One conversion, not two that can drift apart."""
+    from routes import node_stream
+    from services import node_pipeline
+
+    assert node_stream.pipeline_frame is node_pipeline.pipeline_frame

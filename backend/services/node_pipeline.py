@@ -9,6 +9,7 @@ downstream knowing the difference.
 import hashlib
 import json
 import logging
+from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,6 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core import state
 from core.nodes import Node, NodeConfig
 from services import node_registration
+
+if TYPE_CHECKING:
+    from routes.node_schemas import DetectionFrame
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +63,44 @@ async def _pipeline_config(session: AsyncSession, node_id: str) -> dict:
     return config
 
 
+def pipeline_frame(frame: "DetectionFrame") -> dict:
+    """The wire frame in the shape services/blah2_bridge.py puts on the queue.
+
+    `timestamp` is milliseconds because that is what the queue's readers expect.
+    `delay` needs no conversion: it is microseconds on the wire, where the bridge
+    has to convert from kilometres.
+
+    `adsb_hex` travels under its own key rather than the bridge's `adsb`, which
+    frame_processor reads as position reports. The contract's array is an
+    association and carries no lat/lon, so filing it there would be filing an
+    empty position for every detection.
+
+    `seq` and `boot_id` are carried rather than dropped at the boundary: they are
+    the pair the server counts loss against, and only meaningful together, since
+    `seq` restarts from zero with the process.
+    """
+    return {
+        "timestamp": int(frame.t * 1000),
+        "delay": list(frame.delay),
+        "doppler": list(frame.doppler),
+        "snr": list(frame.snr),
+        "adsb_hex": list(frame.adsb_hex),
+        "seq": frame.seq,
+        "boot_id": frame.boot_id,
+        "config_version": frame.config_version,
+    }
+
+
+def config_hash(config: dict) -> str:
+    """The registry's config fingerprint. Shared so the ingest paths agree."""
+    return hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()[:16]
+
+
 async def register_with_pipeline(session: AsyncSession, node: Node) -> None:
     config = await _pipeline_config(session, node.node_id)
-    config_hash = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()[:16]
     with state.connected_nodes_lock:
         state.connected_nodes[node.node_id] = {
-            "config_hash": config_hash,
+            "config_hash": config_hash(config),
             "config": config,
             "status": "active",
             "last_heartbeat": "",

@@ -209,6 +209,15 @@ ARCHIVE_FLUSH_INTERVAL_S = 3600
 ARCHIVE_BATCH_MAX = 10000  # Safety cap; should not normally trigger
 TRACK_ARCHIVE_FLUSH_INTERVAL_S = 60  # Multi-node solver track archive flush cadence
 
+# ── Detection mirror (production forwards accepted v1 frames elsewhere) ──────
+DETECTION_MIRROR_FLUSH_INTERVAL_S = 1.0  # One batched POST per second
+# Ten flush intervals at the contract's ceiling (12 nodes at 2 Hz = 24 frames/s).
+# Deliberately small: the mirror sheds rather than accumulating a backlog when
+# the receiving environment is unreachable.
+DETECTION_MIRROR_QUEUE_MAX = 240
+DETECTION_MIRROR_TIMEOUT_S = 2.0  # Bounds a hung receiver
+DETECTION_MIRROR_LOG_INTERVAL_S = 60.0  # Throttle for the drop/failure line
+
 # ── Archive lifecycle (R2 offload + local disk cleanup) ──────────────────────
 ARCHIVE_OFFLOAD_AGE_DAYS = 1  # Upload to R2 after this many days
 # Must be > ARCHIVE_OFFLOAD_AGE_DAYS. Files land in R2 after 1 day, then local
