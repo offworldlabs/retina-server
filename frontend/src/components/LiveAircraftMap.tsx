@@ -53,6 +53,7 @@ import {
 
 import { fetchMlatVerification, fetchMlatHistory } from "../api";
 import { defaultsGroundTruthOff } from "../utils/domains";
+import { withCartoKey } from "../utils/basemap";
 import { usePersistedState } from "./map/usePersistedState";
 import { parseHash, useHashWriter, encodeLayers, decodeLayers } from "./map/useUrlHashState";
 import { useKeyboardShortcuts } from "./map/useKeyboardShortcuts";
@@ -1794,13 +1795,13 @@ export default function LiveAircraftMap() {
           >
             <BasemapLayer
               key={tileTheme}
-              url={
+              url={withCartoKey(
                 tileTheme === "positron"
                   ? "https://{s}.basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}{r}.png"
                   : tileTheme === "osm"
                     ? "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-                    : "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-              }
+                    : "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
+              )}
             />
 
             <ViewportTracker onChange={handleViewportChange} />

@@ -234,6 +234,17 @@ branch, open a PR, get it green, then merge.
 
 ## Things that will bite you
 
+- **The CARTO basemap key lives on the droplet, not in this repo.** Every
+  deploy appends `/root/.secrets/carto.env` to `./.env` after copying
+  `deploy/env.<env>.example`, and `docker-compose.yml` interpolates it into the
+  frontend's `VITE_CARTO_API_KEY` build arg. The file is one line,
+  `CARTO_API_KEY=<key>`; create it on a new droplet with
+  `install -d -m 700 /root/.secrets` and a `printf` into
+  `/root/.secrets/carto.env` (`chmod 600`). It is deliberately not in
+  `backend/.env` — Compose reads build args from `./.env` alone, never from an
+  `env_file` — and deliberately not committed, because this repo is public and
+  a key in its history outlives every rotation. A host without the file still
+  deploys; its maps just come back stamped "API KEY REQUIRED".
 - **All backend state is in-memory.** A restart loses connected nodes and live
   tracks; state is snapshotted to disk every 60s and restored on boot. Don't
   assume persistence.

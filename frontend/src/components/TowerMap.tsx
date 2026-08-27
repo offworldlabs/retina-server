@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { MapContainer, TileLayer, Marker, Popup, Circle, useMap } from "react-leaflet";
 import L from "leaflet";
 import "./TowerMap.css";
+import { withCartoKey } from "../utils/basemap";
 
 // Fix default icon paths (Leaflet + bundlers issue)
 delete L.Icon.Default.prototype._getIconUrl;
@@ -80,7 +81,7 @@ export default function TowerMap({ towers, userLocation, highlighted }) {
     <div className="map-wrap">
       <MapContainer center={center} zoom={4} className="map-container">
         <TileLayer
-          url="https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
+          url={withCartoKey("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png")}
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>'
         />
 

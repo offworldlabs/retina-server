@@ -588,6 +588,10 @@ jobs:
             # file by hand only creates a way to get it wrong. A rebuilt droplet,
             # a restored snapshot or a hand-mangled file now self-heals here.
             cp deploy/env.staging.example .env
+            # Top up with this host's own CARTO basemap key — see the note in
+            # deploy/env.<env>.example. Guarded rather than chained with &&: a host
+            # with no key must build watermarked tiles, not fail its deploy.
+            if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; fi
             docker compose down --timeout 30
             # Cap build cache at ~10GB (LRU eviction) rather than wiping it all:
             # keeps recent layers so incremental builds stay fast, and bounds
@@ -880,6 +884,10 @@ jobs:
             # exists. pre-deploy.sh above has already taken its snapshot against
             # the previous config, which is what a rollback needs to restore.
             cp deploy/env.prod.example .env
+            # Top up with this host's own CARTO basemap key — see the note in
+            # deploy/env.<env>.example. Guarded rather than chained with &&: a host
+            # with no key must build watermarked tiles, not fail its deploy.
+            if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; fi
 
             pip3 install -e libs/retina-custody/ --break-system-packages --ignore-installed -q
             pip3 install -e libs/retina-simulation/ --break-system-packages -q

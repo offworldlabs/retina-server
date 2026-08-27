@@ -361,7 +361,13 @@ deploy-test:
     # health gate below timing out after 120s saying nothing about the cause.
     # The example file is already on the droplet by now, so just use it.
     echo "→ rebuilding on {{host_test}}"
-    ssh "{{host_test}}" "cd {{app_test}} && cp deploy/env.test.example .env && docker compose up -d --build"
+    # The .env top-up mirrors what CI does on staging and production: the
+    # example is committed and therefore keyless, and the droplet's own
+    # /root/.secrets/carto.env carries the CARTO basemap key that
+    # docker-compose.yml interpolates into the frontend build arg. Guarded so a
+    # droplet that was never given a key builds watermarked tiles rather
+    # than failing here.
+    ssh "{{host_test}}" "cd {{app_test}} && cp deploy/env.test.example .env && if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; fi && docker compose up -d --build"
     # Ask uvicorn directly, inside the container, exactly as the compose
     # healthcheck does. Going through nginx on plain HTTP would only prove the
     # template's HTTP->HTTPS redirect works: it answers 301, and curl -sf treats a

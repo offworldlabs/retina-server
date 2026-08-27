@@ -194,6 +194,10 @@ systemctl --no-pager status retina-firewall.service | head -5 || true
 # bare `docker compose up` starts the shared base alone, which start.sh refuses
 # to boot because RETINA_ENV is unset.
 cp deploy/env."${RETINA_TARGET_ENV}".example .env
+# Top up with this host's own CARTO basemap key — see the note in
+# deploy/env.<env>.example. Guarded rather than chained with &&: a host
+# with no key must build watermarked tiles, not fail its deploy.
+if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; fi
 
 # Create backend/.env with API keys. Hostnames, CORS and every other
 # per-environment value now live in the compose overlay (docker-compose.prod.yml

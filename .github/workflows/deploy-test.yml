@@ -190,6 +190,10 @@ jobs:
             git submodule update --init --recursive
 
             cp deploy/env.test.example .env
+            # Top up with this host's own CARTO basemap key — see the note in
+            # deploy/env.<env>.example. Guarded rather than chained with &&: a host
+            # with no key must build watermarked tiles, not fail its deploy.
+            if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; fi
 
             pip3 install -e libs/retina-custody/ --break-system-packages --ignore-installed -q
             pip3 install -e libs/retina-simulation/ --break-system-packages -q
