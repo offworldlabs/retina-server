@@ -25,8 +25,19 @@ from services.frame_processor import (
     process_one_frame,
     resolve_ground_truth_hex,
 )
+from tests.node_helpers import register_test_node
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+# A placed node, for the paths process_one_frame only enters for one.
+_PLACED_CFG = {
+    "rx_lat": 34.0,
+    "rx_lon": -84.0,
+    "tx_lat": 33.8,
+    "tx_lon": -83.8,
+    "fc_hz": 195e6,
+    "max_range_km": 150.0,
+}
 
 
 def _make_frame(ts: int = None, n: int = 3) -> dict:
@@ -200,14 +211,14 @@ class TestGetOrCreateNodePipeline:
         assert p is None
 
     def test_null_altitudes_default_rather_than_reach_the_geolocator_as_none(self):
-        """rx_alt_ft/tx_alt_ft are independently nullable; `cfg.get(key, default)`
-        does not apply the default when the key is present with value None, and
-        PassiveRadarPipeline._init_geolocator multiplies the altitude by
-        FT_TO_M unconditionally, so a null here must resolve before construction
-        rather than reach it."""
+        """PassiveRadarPipeline._init_geolocator multiplies the altitude by
+        FT_TO_M unconditionally, so a null altitude must be resolved before it
+        gets here. Registration is what resolves it, so the node is registered
+        rather than written straight into connected_nodes."""
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
-        state.connected_nodes["test-null-altitude"] = {
-            "config": {
+        register_test_node(
+            "test-null-altitude",
+            {
                 "rx_lat": 34.0,
                 "rx_lon": -84.0,
                 "rx_alt_ft": None,
@@ -215,7 +226,7 @@ class TestGetOrCreateNodePipeline:
                 "tx_lon": -83.8,
                 "tx_alt_ft": None,
             },
-        }
+        )
         p = get_or_create_node_pipeline("test-null-altitude", default)
         assert p.config["rx_alt_ft"] == 900
         assert p.config["tx_alt_ft"] == 1200
@@ -227,9 +238,13 @@ class TestGetOrCreateNodePipeline:
 class TestProcessOneFrame:
     def test_process_valid_frame(self):
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        register_test_node("test-proc", _PLACED_CFG)
         frame = _make_frame()
         # Should not raise
         process_one_frame("test-proc", frame, default)
+        # The node's own pipeline saw the frame; an unregistered node would
+        # have had none and the whole per-node half would have been skipped.
+        assert state.node_pipelines["test-proc"].config["rx_lat"] == 34.0
 
     def test_sets_aircraft_dirty_with_adsb(self):
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
@@ -292,14 +307,7 @@ class TestProcessOneFrame:
 
         # A positioned node: process_one_frame only reaches submit_tracks_round
         # (where the stub above is installed) for a node it can place.
-        state.connected_nodes["test-anchor"] = {
-            "config": {
-                "rx_lat": 34.0,
-                "rx_lon": -84.0,
-                "tx_lat": 33.8,
-                "tx_lon": -83.8,
-            },
-        }
+        register_test_node("test-anchor", _PLACED_CFG)
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         process_one_frame("test-anchor", _make_frame(), default)
 

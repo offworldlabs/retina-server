@@ -10,6 +10,8 @@ needs a node with a configuration row attached.
 """
 
 import asyncio
+import hashlib
+import json
 import logging
 from datetime import UTC, datetime
 
@@ -24,7 +26,9 @@ from core import state
 from core.nodes import Node, NodeConfig
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from services.frame_processor import get_or_create_node_pipeline
+from services.node_config import position_status
 from services.node_pipeline import (
+    _pipeline_config,
     prime_pipeline,
     prime_pipeline_at_startup,
     register_with_pipeline,
@@ -107,6 +111,48 @@ async def test_the_pipeline_config_carries_the_defaults_blah2_bridge_supplies(no
     assert config["doppler_min"] == -300
     assert config["doppler_max"] == 300
     assert config["min_doppler"] == 15
+
+
+async def test_a_row_with_no_position_registers_unplaced_with_resolved_altitudes(node_session):
+    """The row keeps its honest nulls; the in-memory copy does not.
+
+    A null altitude reaches PassiveRadarPipeline and the multinode solver as a
+    multiplicand, so registration resolves it. A null coordinate stays null and
+    the node is carried unplaced."""
+    unplaced = await _seed(
+        node_session,
+        NODE_ID,
+        rx_lat=None,
+        rx_lon=None,
+        rx_alt_ft=None,
+        tx_lat=None,
+        tx_lon=None,
+        tx_alt_ft=None,
+    )
+
+    await register_with_pipeline(node_session, unplaced)
+
+    config = state.connected_nodes[NODE_ID]["config"]
+    assert position_status(config) == "missing_both"
+    assert config["rx_alt_ft"] == 900.0
+    assert config["tx_alt_ft"] == 1200.0
+    assert get_or_create_node_pipeline(NODE_ID, PassiveRadarPipeline(DEFAULT_NODE_CONFIG)) is None
+
+
+async def test_the_config_hash_is_computed_before_canonicalisation(node_session):
+    """The TCP heartbeat compares a node's own hash against the stored one, so
+    canonicalisation must not move it: the whole fleet would report config drift
+    on the deploy that introduced it."""
+    node = await _seed(node_session, NODE_ID, rx_alt_ft=None, tx_alt_ft=None)
+    row_config = await _pipeline_config(node_session, NODE_ID)
+    expected = hashlib.sha256(json.dumps(row_config, sort_keys=True).encode()).hexdigest()[:16]
+
+    await register_with_pipeline(node_session, node)
+
+    entry = state.connected_nodes[NODE_ID]
+    assert entry["config_hash"] == expected
+    stored = hashlib.sha256(json.dumps(entry["config"], sort_keys=True).encode()).hexdigest()[:16]
+    assert stored != expected, "the two forms must differ here, or this pins nothing"
 
 
 async def test_an_aimed_node_keeps_the_azimuth_it_was_configured_with(node_session):

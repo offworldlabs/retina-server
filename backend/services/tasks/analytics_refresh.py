@@ -1585,19 +1585,15 @@ def _refresh_mlat_verification():
         max_bistatic_deg: float | None = None
         for cid in r.get("contributing_node_ids", []):
             cfg = node_cfg_snap.get(cid, {})
-            t_tx_lat = cfg.get("tx_lat")
-            t_tx_lon = cfg.get("tx_lon")
-            t_rx_lat = cfg.get("rx_lat")
-            t_rx_lon = cfg.get("rx_lon")
-            if not all((t_tx_lat, t_tx_lon, t_rx_lat, t_rx_lon)):
+            if position_status(cfg) != "positioned":
                 continue
             ang = _bistatic_angle_deg(
                 solver_lat,
                 solver_lon,
-                float(t_tx_lat),
-                float(t_tx_lon),
-                float(t_rx_lat),
-                float(t_rx_lon),
+                cfg["tx_lat"],
+                cfg["tx_lon"],
+                cfg["rx_lat"],
+                cfg["rx_lon"],
             )
             if max_bistatic_deg is None or ang > max_bistatic_deg:
                 max_bistatic_deg = ang

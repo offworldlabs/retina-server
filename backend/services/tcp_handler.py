@@ -18,6 +18,7 @@ from core import state
 from services import node_registration
 from services.geo import valid_latlon
 from services.id_utils import normalize_hex_key
+from services.node_config import canonical_config
 
 # Optional shared token for node authentication. If not set, any node can connect.
 _RADAR_NODE_TOKEN: str | None = os.getenv("RADAR_NODE_TOKEN")
@@ -250,13 +251,18 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                         logging.warning("Radar TCP: rejected CONFIG from %s: %s", node_id, cfg_err)
                         await _send_msg(writer, {"type": "CONFIG_NACK", "error": cfg_err})
                         continue
+                    # config_hash stays the node's own, computed over what it
+                    # sent: the heartbeat drift check compares against it.
+                    canonical = canonical_config(config_payload)
                     is_synth = msg.get("is_synthetic", is_synthetic_node(node_id))
                     _was_disconnected = state.connected_nodes.get(node_id, {}).get("status") == "disconnected"
-                    _config_changed = state.connected_nodes.get(node_id, {}).get("config") != config_payload
+                    # Both sides canonical, or every reconnect would look like a
+                    # config change and evict the node's pipeline.
+                    _config_changed = state.connected_nodes.get(node_id, {}).get("config") != canonical
                     with state.connected_nodes_lock:
                         state.connected_nodes[node_id] = {
                             "config_hash": config_hash,
-                            "config": config_payload,
+                            "config": canonical,
                             "status": "active",
                             "last_heartbeat": datetime.now(timezone.utc).isoformat(),
                             "peer": str(peer),
@@ -307,7 +313,7 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                             "server_capabilities": SERVER_CAPABILITIES,
                         },
                     )
-                    await node_registration.register_node(node_id, config_payload)
+                    await node_registration.register_node(node_id, canonical)
                     continue
 
                 # ── REGISTER_KEY (chain of custody) ────────────────

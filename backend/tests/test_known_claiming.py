@@ -26,7 +26,8 @@ from config.constants import FT_TO_M
 from core import state
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from services import known_claiming as kc
-from services.frame_processor import process_one_frame
+from services.frame_processor import get_or_create_node_pipeline, process_one_frame
+from tests.node_helpers import register_test_node
 
 _NODE_CFG = {
     "rx_lat": 34.85,
@@ -595,20 +596,18 @@ class TestModesInProcessOneFrame:
     that: the original frame (archive, ADS-B extraction) stays whole."""
 
     def _run(self, monkeypatch, mode):
-        _register()
+        register_test_node(_NODE_ID, _NODE_CFG)
         monkeypatch.setattr(state, "KNOWN_LANE_MODE", mode)
         ts = int(time.time() * 1000)
         tag = {"hex": "bind01", "lat": _LAT, "lon": _LON, "alt_baro": _ALT_BARO_FT, "gs": 0, "track": 0}
         frame = _frame(ts, [50.0, 52.0], [10.0, 15.0], adsb=[tag, None])
 
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        # The node's own pipeline, built from its own geometry, is what
+        # process_one_frame hands the frame to; `default` never sees it.
         seen = []
-        monkeypatch.setattr(default, "process_frame", lambda f: seen.append(f))
-        # Pre-seed the pipeline cache: get_or_create_node_pipeline no longer
-        # falls back to `default` for a node it holds no connected_nodes
-        # config for (_register only registers it with the associator), so
-        # this stands in for the node's own, already-built pipeline.
-        state.node_pipelines[_NODE_ID] = default
+        node_pipeline = get_or_create_node_pipeline(_NODE_ID, default)
+        monkeypatch.setattr(node_pipeline, "process_frame", lambda f: seen.append(f))
         process_one_frame(_NODE_ID, frame, default)
         return frame, seen[0]
 

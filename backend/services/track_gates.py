@@ -34,6 +34,7 @@ from services.geo import (
     offset_latlon,
     offset_latlon_m,
 )
+from services.node_config import position_status
 from services.public_location import fuzz_enabled, fuzz_node_cfg, public_point_delta
 
 
@@ -108,12 +109,14 @@ def _build_single_node_arc(
     if delay_us is None or delay_us <= 0:
         return None
 
-    rx_lat = node_cfg.get("rx_lat")
-    rx_lon = node_cfg.get("rx_lon")
-    tx_lat = node_cfg.get("tx_lat")
-    tx_lon = node_cfg.get("tx_lon")
-    if None in (rx_lat, rx_lon, tx_lat, tx_lon):
+    # An arc has foci at both ends of the baseline, so a node missing either
+    # end draws nothing.
+    if position_status(node_cfg) != "positioned":
         return None
+    rx_lat = node_cfg["rx_lat"]
+    rx_lon = node_cfg["rx_lon"]
+    tx_lat = node_cfg["tx_lat"]
+    tx_lon = node_cfg["tx_lon"]
 
     # One source of truth for what the node can see — the same resolution
     # rules (broadside default, zero-width means missing, bistatic limit)

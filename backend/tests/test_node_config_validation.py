@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from services.node_config import ConfigInvalid, position_status, validate_config
+from services.node_config import ConfigInvalid, canonical_config, position_status, validate_config
 
 VALID = {
     "rx_lat": 51.42,
@@ -393,9 +393,12 @@ def test_null_coordinates_are_accepted(overrides, expected):
 def test_position_status_treats_the_zero_pair_as_absent(overrides, expected):
     """(0, 0) is the legacy broken-config sentinel, not a real position in the
     Gulf of Guinea, matching has_full_geometry in retina-analytics. A single
-    zero axis is still a real coordinate, so it must not read as absent."""
+    zero axis is still a real coordinate, so it must not read as absent.
+
+    validate_config keeps the pair as sent, because the durable row records
+    what the node claimed; canonical_config is what collapses it."""
     out = validate_config(dict(VALID, **overrides))
-    assert position_status(out) == expected
+    assert position_status(canonical_config(out)) == expected
 
 
 @pytest.mark.parametrize(
@@ -455,7 +458,7 @@ def test_position_status_on_a_config_that_never_saw_validate_config(config):
     bulk-ingested one can carry a lone coordinate. A side with only one of its
     two coordinates places nothing, so all three of these read as
     missing_both."""
-    assert position_status(config) == "missing_both"
+    assert position_status(canonical_config(config)) == "missing_both"
 
 
 @pytest.mark.parametrize("field", ["rx_lat", "rx_lon", "tx_lat", "tx_lon"])
@@ -470,11 +473,171 @@ def test_position_status_on_a_config_that_never_saw_validate_config(config):
     ],
 )
 def test_a_non_numeric_coordinate_reads_as_not_placed_rather_than_raising(field, value):
-    """A connected_nodes config is unvalidated JSON, so a garbage value can sit
-    in any coordinate slot: float("") and float([]) both raise, and bool is a
-    subclass of int, so a naive isinstance(x, (int, float)) check would accept
-    True as a latitude. position_status must read past all of that as merely
-    unplaced, not raise."""
-    config = {"rx_lat": 51.42, "rx_lon": -0.91, "tx_lat": 51.37, "tx_lon": -0.88, field: value}
+    """A config arriving over the wire is unvalidated JSON, so a garbage value
+    can sit in any coordinate slot: float("") and float([]) both raise, and
+    bool is a subclass of int, so a naive isinstance(x, (int, float)) check
+    would accept True as a latitude. canonical_config must read past all of
+    that as merely unplaced, not raise."""
+    config = canonical_config({"rx_lat": 51.42, "rx_lon": -0.91, "tx_lat": 51.37, "tx_lon": -0.88, field: value})
     side = "rx" if field.startswith("rx") else "tx"
     assert position_status(config) == f"missing_{side}"
+
+
+# --- canonical_config ----------------------------------------------------------------
+
+
+def test_canonical_config_leaves_the_input_dict_alone():
+    raw = {"rx_lat": "51.42", "rx_lon": "-0.91", "rx_alt_ft": None, "node_id": "n1"}
+    before = dict(raw)
+    canonical_config(raw)
+    assert raw == before
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [None, "config", 7, [], ("rx_lat", 1.0)],
+    ids=["none", "string", "int", "list", "tuple"],
+)
+def test_canonical_config_never_raises_on_a_non_dict(raw):
+    assert canonical_config(raw) == {}
+
+
+def test_non_geometry_keys_pass_through_unchanged():
+    raw = {"tx_callsign": "WSPA", "fc_hz": 195e6, "beam_azimuth_deg": None, "capabilities": {"adsb": True}}
+    out = canonical_config(raw)
+    for key, value in raw.items():
+        assert out[key] == value
+
+
+def test_the_legacy_flat_spelling_becomes_the_rx_pair():
+    """services.tcp_handler accepts lat/lon, so a node sending it is placed and
+    must read as placed. The flat keys do not survive alongside the folded ones."""
+    out = canonical_config({"lat": 51.42, "lon": -0.91})
+    assert (out["rx_lat"], out["rx_lon"]) == (51.42, -0.91)
+    assert "lat" not in out and "lon" not in out
+    assert position_status(out) == "missing_tx"
+
+
+def test_an_explicit_null_rx_is_not_overruled_by_a_stray_legacy_lat():
+    """rx_lat present and null is a positionless registration, which the flat
+    spelling must not undo: the fold keys on the canonical key being absent."""
+    out = canonical_config({"rx_lat": None, "rx_lon": None, "lat": 51.42, "lon": -0.91})
+    assert out["rx_lat"] is None and out["rx_lon"] is None
+    assert position_status(out) == "missing_both"
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        pytest.param(51.42, 51.42, id="float"),
+        pytest.param(51, 51.0, id="int"),
+        pytest.param("51.42", 51.42, id="numeric-string"),
+        pytest.param("-0.91", -0.91, id="negative-numeric-string"),
+        pytest.param("abc", None, id="non-numeric-string"),
+        pytest.param("", None, id="empty-string"),
+        pytest.param(True, None, id="bool-true"),
+        pytest.param(False, None, id="bool-false"),
+        pytest.param(None, None, id="null"),
+        pytest.param([], None, id="list"),
+        pytest.param(float("nan"), None, id="nan"),
+        pytest.param(float("inf"), None, id="infinity"),
+        pytest.param(float("-inf"), None, id="negative-infinity"),
+        pytest.param(10**400, None, id="int-too-large-for-a-float"),
+    ],
+)
+def test_a_coordinate_becomes_a_float_or_none(value, expected):
+    """10**400 has no float representation: float() raises OverflowError on it
+    rather than returning inf, and JSON puts no ceiling on an integer literal."""
+    out = canonical_config({"rx_lat": value, "rx_lon": value})
+    if expected is None:
+        assert out["rx_lat"] is None and out["rx_lon"] is None
+    else:
+        assert out["rx_lat"] == expected and isinstance(out["rx_lat"], float)
+
+
+@pytest.mark.parametrize("present", ["rx_lat", "rx_lon", "tx_lat", "tx_lon"])
+def test_half_a_pair_nulls_the_other_half(present):
+    out = canonical_config({present: 51.42})
+    for field in ("rx_lat", "rx_lon", "tx_lat", "tx_lon"):
+        assert out[field] is None
+    assert position_status(out) == "missing_both"
+
+
+def test_an_unusable_axis_nulls_its_partner():
+    out = canonical_config({"rx_lat": float("nan"), "rx_lon": -0.91, "tx_lat": 51.37, "tx_lon": -0.88})
+    assert out["rx_lat"] is None and out["rx_lon"] is None
+    assert (out["tx_lat"], out["tx_lon"]) == (51.37, -0.88)
+    assert position_status(out) == "missing_rx"
+
+
+@pytest.mark.parametrize(
+    "overrides,expected",
+    [
+        pytest.param({"rx_lat": 0.0, "rx_lon": 0.0}, "missing_rx", id="rx-null-island"),
+        pytest.param({"tx_lat": 0.0, "tx_lon": 0.0}, "missing_tx", id="tx-null-island"),
+        pytest.param({"rx_lat": 0.0}, "positioned", id="rx-on-the-equator"),
+        pytest.param({"rx_lon": 0.0}, "positioned", id="rx-on-the-prime-meridian"),
+        pytest.param({"tx_lat": 0.0}, "positioned", id="tx-on-the-equator"),
+        pytest.param({"tx_lon": 0.0}, "positioned", id="tx-on-the-prime-meridian"),
+    ],
+)
+def test_the_zero_pair_collapses_but_a_single_zero_axis_survives(overrides, expected):
+    """(0, 0) was the only representable "unknown" while the columns were
+    NOT NULL. The equator and the prime meridian are legitimate on their own."""
+    placed = {"rx_lat": 51.42, "rx_lon": -0.91, "tx_lat": 51.37, "tx_lon": -0.88}
+    out = canonical_config(dict(placed, **overrides))
+    assert position_status(out) == expected
+    if expected == "positioned":
+        for field, value in overrides.items():
+            assert out[field] == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(None, id="null"),
+        pytest.param("abc", id="non-numeric-string"),
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(True, id="bool"),
+        pytest.param(10**400, id="int-too-large-for-a-float"),
+    ],
+)
+def test_an_unusable_altitude_becomes_the_default(value):
+    out = canonical_config({"rx_alt_ft": value, "tx_alt_ft": value})
+    assert out["rx_alt_ft"] == 900.0
+    assert out["tx_alt_ft"] == 1200.0
+
+
+def test_an_absent_altitude_becomes_the_default():
+    out = canonical_config({})
+    assert out["rx_alt_ft"] == 900.0
+    assert out["tx_alt_ft"] == 1200.0
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        pytest.param(0.0, 0.0, id="sea-level"),
+        pytest.param(-40, -40.0, id="below-sea-level"),
+        pytest.param("1250", 1250.0, id="numeric-string"),
+    ],
+)
+def test_a_usable_altitude_is_kept_as_a_float(value, expected):
+    """Zero is a real altitude, so a truthiness fallback cannot resolve these."""
+    out = canonical_config({"rx_alt_ft": value, "tx_alt_ft": value})
+    assert out["rx_alt_ft"] == expected and isinstance(out["rx_alt_ft"], float)
+    assert out["tx_alt_ft"] == expected and isinstance(out["tx_alt_ft"], float)
+
+
+def test_a_validated_config_survives_canonicalisation_unchanged():
+    """The ordinary case: nothing about a well-formed config moves."""
+    out = canonical_config(validate_config(dict(VALID)))
+    for field in ("rx_lat", "rx_lon", "tx_lat", "tx_lon", "rx_alt_ft", "tx_alt_ft"):
+        assert out[field] == float(VALID[field])
+    assert position_status(out) == "positioned"
+
+
+def test_canonicalising_twice_changes_nothing():
+    raw = {"lat": "51.42", "lon": "-0.91", "tx_lat": 0.0, "tx_lon": 0.0, "rx_alt_ft": None}
+    once = canonical_config(raw)
+    assert canonical_config(once) == once

@@ -26,6 +26,7 @@ from services.frame_processor import (
     confirmed_track_views,
     process_one_frame,
 )
+from tests.node_helpers import register_test_node
 
 _NODE_CFG = {
     "rx_lat": 34.85,
@@ -366,8 +367,7 @@ class TestProcessOneFrameSolverQueue:
 
         # A positioned node: process_one_frame only reaches submit_tracks_round
         # (where the stub above is installed) for a node it can place.
-        with state.connected_nodes_lock:
-            state.connected_nodes["test-adsb-seed-queue"] = {"config": dict(_NODE_CFG)}
+        register_test_node("test-adsb-seed-queue", _NODE_CFG)
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         process_one_frame("test-adsb-seed-queue", _make_frame(), default)
 
@@ -389,10 +389,14 @@ class TestProcessOneFrameSolverQueue:
         monkeypatch.setattr(fp, "claim_known_targets", _boom)
         before = state.known_claims_errors
 
+        # Placed, so the dark lane the frame is meant to continue down is
+        # actually there to continue down.
+        register_test_node("test-claim-fail-open", _NODE_CFG)
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         process_one_frame("test-claim-fail-open", _make_frame(), default)
 
         assert state.known_claims_errors == before + 1
+        assert "test-claim-fail-open" in state.node_pipelines
 
     def test_empty_adsb_inputs_add_nothing(self, monkeypatch):
         monkeypatch.setattr(
@@ -402,6 +406,8 @@ class TestProcessOneFrameSolverQueue:
         )
         monkeypatch.setattr(state, "solver_queue", queue.Queue())
 
+        # Placed, so the round the stub above returns is really consulted.
+        register_test_node("test-adsb-seed-empty", _NODE_CFG)
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         process_one_frame("test-adsb-seed-empty", _make_frame(), default)
 

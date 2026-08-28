@@ -174,6 +174,9 @@ def get_or_create_node_pipeline(
     if pipeline is not None:
         return pipeline
 
+    # Canonical: every config in connected_nodes goes in through
+    # services.node_config.canonical_config, so a placed node has four float
+    # coordinates and two float altitudes, and no default is applied here.
     cfg = state.connected_nodes.get(node_id, {}).get("config", {})
     if position_status(cfg) == "positioned":
         pipeline_cfg = {
@@ -182,13 +185,10 @@ def get_or_create_node_pipeline(
             "FC": cfg.get("fc_hz", cfg.get("FC", 195_000_000)),
             "rx_lat": cfg["rx_lat"],
             "rx_lon": cfg["rx_lon"],
-            # Independently nullable: `.get(key, default)` would not apply the
-            # default to an explicit null, and a real altitude of 0.0 (sea
-            # level) rules out `or` as well.
-            "rx_alt_ft": 900 if cfg.get("rx_alt_ft") is None else cfg["rx_alt_ft"],
+            "rx_alt_ft": cfg["rx_alt_ft"],
             "tx_lat": cfg["tx_lat"],
             "tx_lon": cfg["tx_lon"],
-            "tx_alt_ft": 1200 if cfg.get("tx_alt_ft") is None else cfg["tx_alt_ft"],
+            "tx_alt_ft": cfg["tx_alt_ft"],
             "doppler_min": cfg.get("doppler_min", -300),
             "doppler_max": cfg.get("doppler_max", 300),
             "min_doppler": cfg.get("min_doppler", 15),

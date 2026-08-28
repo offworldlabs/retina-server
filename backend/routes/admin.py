@@ -423,7 +423,8 @@ async def get_tower_config(_admin=Depends(require_admin)):
         cfg = info.get("config", {})
         tx_lat = cfg.get("tx_lat")
         tx_lon = cfg.get("tx_lon")
-        if tx_lat and tx_lon:
+        # A transmitter on the equator or the prime meridian is a real tower.
+        if tx_lat is not None and tx_lon is not None:
             key = f"{tx_lat:.4f},{tx_lon:.4f}"
             if key not in towers:
                 towers[key] = {
