@@ -11,12 +11,14 @@ region that caused it and the rest of the fleet still gets its answer.
 
 import asyncio
 import logging
+import time
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 
+from config.constants import KNOTS_TO_MS
 from core import state
 from services.adsb_regions import Region, regions_for_nodes
 from services.tasks import periodic
@@ -36,9 +38,15 @@ def _connect(positions):
         }
 
 
-def _state_vector(icao, lat, lon, alt=3000.0, velocity=220.0, heading=90.0):
-    """An OpenSky state vector. The fetcher reads indices 0, 5, 6, 7, 9 and 10."""
-    return [icao, "TEST123 ", "United States", 0, 0, lon, lat, alt, False, velocity, heading]
+def _state_vector(icao, lat, lon, alt=3000.0, velocity=220.0, heading=90.0, captured=None):
+    """An OpenSky state vector. The fetcher reads indices 0, 3, 5, 6, 7, 9 and 10.
+
+    Index 3 is time_position, which the entry's `last_seen_ms` is taken from, so
+    it defaults to now: 0 is a real epoch-0 stamp and would make every vector
+    built here stale before any age gate saw it.
+    """
+    captured = time.time() if captured is None else captured
+    return [icao, "TEST123 ", "United States", captured, captured, lon, lat, alt, False, velocity, heading]
 
 
 class _StubResponse:
@@ -278,9 +286,10 @@ class TestOpenSkyFetch:
     @pytest.mark.asyncio
     async def test_states_are_parsed_and_stamped_opensky(self):
         regions = regions_for_nodes([ATLANTA])
-        payload = {"states": [_state_vector("abc123", 33.9, -84.3, alt=3000.0, velocity=220.0, heading=90.0)]}
+        captured = time.time() - 30.0
+        vector = _state_vector("abc123", 33.9, -84.3, alt=3000.0, velocity=220.0, heading=90.0, captured=captured)
 
-        with _stub_opensky([_StubResponse(200, payload)]):
+        with _stub_opensky([_StubResponse(200, {"states": [vector]})]):
             cache, covered, credit_refused, _ = await periodic._fetch_opensky(regions)
 
         assert covered == {regions[0].name}
@@ -291,6 +300,7 @@ class TestOpenSkyFetch:
             "alt_m": 3000.0,
             "velocity": 220.0,
             "heading": 90.0,
+            "last_seen_ms": int(captured * 1000),
             "source": "opensky",
         }
 
@@ -710,15 +720,25 @@ class TestAdsbLolFetch:
     @pytest.mark.asyncio
     async def test_aircraft_are_converted_and_stamped_adsb_lol(self):
         regions = regions_for_nodes([ATLANTA])
-        aircraft = [{"hex": "ABC123", "lat": 33.9, "lon": -84.3, "alt_baro": 10000, "gs": 420, "track": 90}]
-        stub = _StubLolClient(aircraft, {regions[0].name: True})
+        captured_at = time.time() - 12.0
+        row = {"hex": "ABC123", "lat": 33.9, "lon": -84.3, "alt_baro": 10000, "gs": 420, "track": 90}
+        stub = _StubLolClient([row | {"captured_at": captured_at}], {regions[0].name: True})
 
         with _stub_lol(stub):
             cache, covered = await periodic._fetch_adsb_lol(regions)
 
         assert covered == {regions[0].name}
-        assert cache["abc123"]["source"] == "adsb_lol"
-        assert cache["abc123"]["alt_m"] == pytest.approx(3048.0)
+        # Feet and knots on the wire, metres and m/s in the cache, and the row's
+        # own capture time rather than the poll's.
+        assert cache["abc123"] == {
+            "lat": 33.9,
+            "lon": -84.3,
+            "alt_m": pytest.approx(3048.0),
+            "velocity": pytest.approx(420 * KNOTS_TO_MS),
+            "heading": 90,
+            "last_seen_ms": int(captured_at * 1000),
+            "source": "adsb_lol",
+        }
 
     @pytest.mark.asyncio
     async def test_areas_are_named_for_their_region_so_the_client_cache_keys_line_up(self):

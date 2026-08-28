@@ -447,6 +447,10 @@ If the logs carry `ADS-B region cap`: the fleet is spread across more query regi
 
 If the logs carry `configure a detection range past the ... query margin`: a node's `max_range_km` reaches further than the padding every query region carries (`ADSB_NODE_RANGE_MARGIN_KM`), so aircraft in the outer part of that node's coverage are never asked for and its detections there cross-validate against nothing. The line names the largest configured range and the margin. Either correct the node's config, if the range is not real, or raise the margin, which widens every box and so raises the OpenSky credits each cycle costs.
 
+An outage empties `external_adsb_cache` rather than freezing it: entries are dropped once they pass `EXTERNAL_ADSB_MAX_AGE_S` from their own capture time, so an empty cache means the feed has been unreachable for longer than that, not that a poll happened to fail. `external_adsb_cached` in `/api/radar/*` reports the current count.
+
+A rising `adsb_capture_ts_fallback` (in `server_health`, `/api/test/dashboard`) is a node-clock problem, not a feed problem: some node's frames carry no timestamp, or one more than `ADSB_CAPTURE_MAX_SKEW_S` from server time, so its ADS-B positions are being aged against our clock instead of its own.
+
 If aircraft exist but `multinode_tracks == 0`: check node count — multinode tracks require at least 2 active nodes with overlapping coverage.
 
 ---

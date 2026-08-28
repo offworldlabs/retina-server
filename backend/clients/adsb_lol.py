@@ -14,11 +14,18 @@ import urllib.error
 import urllib.request
 from collections.abc import Mapping
 
+from config.constants import is_num
+
 log = logging.getLogger(__name__)
 
 _BASE = "https://api.adsb.lol/v2"
 _TIMEOUT = 8  # seconds
 _MIN_POLL_INTERVAL = 5.0  # seconds between requests per area
+# How long an area's last good result may stand in for a failed fetch.  Serving
+# it across a blip is the point; serving it across an outage republishes hours-old
+# aircraft as current truth, and the caller's own expiry cannot see far enough
+# down to stop that.
+_CACHE_MAX_AGE_S = 600.0
 
 # adsb.lol returns 403 "User-Agent too generic; include valid contact info" for
 # a generic or absent UA, so every request must carry real contact info here.
@@ -38,6 +45,7 @@ class AdsbLolClient:
         self._last_poll: dict[str, float] = {}
         self._cache: dict[str, list[dict]] = {}
         self.last_status: dict[str, bool] = {}
+        self._cache_ts: dict[str, float] = {}  # area → time.monotonic() of its last good fetch
         self._areas: list[dict] = []
         self.areas = areas
 
@@ -74,15 +82,26 @@ class AdsbLolClient:
             del self._last_poll[stale]
         for stale in set(self._cache) - kept:
             del self._cache[stale]
+        for stale in set(self._cache_ts) - kept:
+            del self._cache_ts[stale]
         for stale in set(self.last_status) - kept:
             del self.last_status[stale]
+
+    def _last_good(self, name: str) -> list[dict]:
+        """This area's last good result, while it is still young enough to serve."""
+        ts = self._cache_ts.get(name)
+        if ts is None or time.monotonic() - ts > _CACHE_MAX_AGE_S:
+            self._cache.pop(name, None)
+            self._cache_ts.pop(name, None)
+            return []
+        return self._cache.get(name, [])
 
     def fetch_area(self, area: dict) -> list[dict]:
         """Fetch aircraft for a single area. Returns list of aircraft dicts."""
         name = area["name"]
         now = time.monotonic()
         if now - self._last_poll.get(name, 0) < _MIN_POLL_INTERVAL:
-            return self._cache.get(name, [])
+            return self._last_good(name)
 
         lat = area["lat"]
         lon = area["lon"]
@@ -91,6 +110,10 @@ class AdsbLolClient:
 
         try:
             data = self._get(url)
+            # Wall clock, not the monotonic `now` above: this leaves the rows as
+            # an absolute capture time, which is the only form that survives
+            # being served again from _last_good on a later, failed fetch.
+            fetched_at = time.time()
             aircraft = data.get("ac", [])
             result = []
             for ac in aircraft:
@@ -98,6 +121,12 @@ class AdsbLolClient:
                 lon_v = ac.get("lon")
                 if lat_v is None or lon_v is None:
                     continue
+                # tar1090's seen_pos is an age, meaningful only against the
+                # fetch that produced the row.  Resolve it here, where that
+                # fetch time is known: _last_good serves these rows again on a
+                # later failed fetch, and a relative age would read as fresh.
+                seen_pos = ac.get("seen_pos")
+                captured_at = fetched_at - seen_pos if is_num(seen_pos) else fetched_at
                 result.append(
                     {
                         "hex": ac.get("hex", ""),
@@ -107,6 +136,7 @@ class AdsbLolClient:
                         "alt_baro": ac.get("alt_baro") or 0,
                         "gs": ac.get("gs") or 0,
                         "track": ac.get("track") or 0,
+                        "captured_at": captured_at,  # epoch seconds
                         "squawk": ac.get("squawk", ""),
                         "category": ac.get("category", ""),
                         "type": ac.get("type", "adsb_icao"),
@@ -115,13 +145,14 @@ class AdsbLolClient:
                     }
                 )
             self._cache[name] = result
+            self._cache_ts[name] = now
             self._last_poll[name] = now
             self.last_status[name] = True
             return result
         except Exception as e:
             log.debug("adsb.lol fetch failed for %s: %s", name, e)
             self.last_status[name] = False
-            return self._cache.get(name, [])
+            return self._last_good(name)
 
     def _get(self, url: str) -> dict:
         """One GET, retrying once after a 429.

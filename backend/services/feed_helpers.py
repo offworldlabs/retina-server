@@ -9,6 +9,7 @@ feed module can depend on them without cycles.
 import math
 from collections import deque
 
+from config.constants import ADSB_CAPTURE_MAX_LEAD_S, ADSB_CAPTURE_MAX_SKEW_S, is_num
 from core import state
 from services.geo import enu_km, haversine_km
 from services.id_utils import normalize_hex_key
@@ -48,6 +49,45 @@ _DEDUP_SOURCE_RANK = {
 # leaves a cosmetic double; over-merging would hide real traffic.
 _DEDUP_PROXIMITY_KM = 3.0
 _DEDUP_ALT_GATE_FT = 2000.0
+
+
+def adsb_capture_ts_ms(frame: dict, now_s: float) -> int:
+    """When this frame's ADS-B positions were measured, in epoch ms.
+
+    `frame["timestamp"]` is the end of the node's capture window, which is what
+    every downstream staleness gate means by last_seen_ms.  Receipt time stands
+    in where the frame carries no usable stamp, counted so a fleet drifting into
+    the fallback is visible rather than silent.
+
+    The bound is deliberately asymmetric.  A frame genuinely older than its
+    arrival is the case this exists for, so the past is allowed the width of a
+    real backlog; the future is allowed only clock jitter, because a stamp ahead
+    of us is not stale to any gate at any point and never becomes so.
+    """
+    ts_ms = frame.get("timestamp")
+    if is_num(ts_ms) and ts_ms > 0:
+        offset_s = now_s - ts_ms / 1000
+        if -ADSB_CAPTURE_MAX_LEAD_S <= offset_s <= ADSB_CAPTURE_MAX_SKEW_S:
+            return int(ts_ms)
+    state.bump_counter("adsb_capture_ts_fallback")
+    return int(now_s * 1000)
+
+
+def adsb_store(hex_code: str, rec: dict) -> bool:
+    """Publish one ADS-B record, unless a newer fix for that hex is already in.
+
+    last_seen_ms is a capture time now, so writes no longer arrive in stamp
+    order: the TCP path stores every message immediately and stores the queued
+    frame again a queue-latency later, and several nodes report one aircraft
+    into a store keyed by hex alone.  Without this guard a replayed or
+    backlogged frame walks the stamp backwards and feed_gc evicts an aircraft
+    that is being reported right now.
+    """
+    existing = state.adsb_aircraft.get(hex_code)
+    if existing is not None and existing.get("last_seen_ms", 0) > rec.get("last_seen_ms", 0):
+        return False
+    state.adsb_aircraft[hex_code] = rec
+    return True
 
 
 def _looks_like_same_aircraft(a: dict, b: dict) -> bool:

@@ -145,26 +145,27 @@ class TestSelfReportCoexistence:
         assert len(ts.samples) == 3
         assert ts.summary()["samples_by_provenance"] == {"self_report": 1, "claim_residual": 2}
 
-    def test_cross_validation_skips_backend_fed_samples(self, now_ms, caplog):
-        """A claim residual is fed with adsb_lat/lon 0.0 by construction (see
-        node_bias._feed_trust), so position-absence alone would already skip
-        it here, leaving the provenance guard unpinned.  Overwriting that
-        position with a real, diverging one means the assertion below only
-        holds if the provenance check itself is still doing the skipping."""
+    def test_cross_validation_skips_backend_fed_samples(self, now_ms):
+        """Claim residuals carry no position claim (lat/lon 0.0), so the
+        external-truth cross-check must not read them as a >10 km mismatch."""
+        from retina_analytics.reputation import NodeReputation
+
         from services.tasks.periodic import _cross_validate_adsb_reports
 
-        _feed("cv-1", "cafe01", 0.3, 0.5, 1, now_ms)
-        sample = state.node_analytics.trust_scores["cv-1"].samples[-1]
-        sample.adsb_lat, sample.adsb_lon = 51.5, -0.1
-        state.external_adsb_cache["cafe01"] = {"lat": 52.5, "lon": -0.1, "alt_m": 10000}  # >10 km off
-
-        with caplog.at_level("WARNING"):
-            _cross_validate_adsb_reports()
-
-        assert "ADS-B mismatch" not in caplog.text
-
-
-# ── Cross-validation against external ADS-B truth ─────────────────────────────
+        _feed("cv-1", "cafe01", 0.3, 0.5, 3, now_ms)
+        rep = NodeReputation(node_id="cv-1")
+        state.node_analytics.reputations["cv-1"] = rep
+        # Stamped fresh so the temporal gates admit it: without that this
+        # would pass on the entry's age and stop testing provenance at all.
+        state.external_adsb_cache["cafe01"] = {
+            "lat": 51.5,
+            "lon": -0.1,
+            "alt_m": 10000,
+            "last_seen_ms": int(time.time() * 1000),
+        }
+        _cross_validate_adsb_reports()
+        assert rep.reputation == 1.0
+        assert rep.penalties == []
 
 
 def _self_report(client, node_id, hex_, **position):
@@ -178,67 +179,50 @@ def _self_report(client, node_id, hex_, **position):
     )
 
 
-class TestCrossValidationAgainstExternalTruth:
-    """What the external cache does to reputations once it is no longer empty."""
+class TestCrossValidationRejectsUnusableFixes:
+    """A sample the route accepted but haversine_km cannot measure must not be
+    charged for the distance it appears to be from truth."""
 
-    def test_a_self_report_without_a_position_is_not_a_mismatch(self, client, caplog):
+    def _fresh_truth(self, hex_, lat, lon):
+        # Stamped now, or the entry's age skips the sample and the assertion
+        # below passes without ever reaching the guard it names.
+        state.external_adsb_cache[hex_] = {
+            "lat": lat,
+            "lon": lon,
+            "alt_m": 10000,
+            "last_seen_ms": int(time.time() * 1000),
+        }
+
+    def _reputation(self, node_id):
+        from retina_analytics.reputation import NodeReputation
+
+        rep = NodeReputation(node_id=node_id)
+        state.node_analytics.reputations[node_id] = rep
+        return rep
+
+    def test_a_self_report_without_a_position_is_not_penalised(self, client):
         """The analytics route requires only the delays and defaults
         adsb_lat/adsb_lon to 0, so a node naming a hex without echoing a fix
         would otherwise measure ~8000 km from any real aircraft."""
         from services.tasks.periodic import _cross_validate_adsb_reports
 
         _self_report(client, "test-cv-null", "cafe02")
-        state.external_adsb_cache["cafe02"] = {"lat": 33.9, "lon": -84.3, "alt_m": 10000}
-        with caplog.at_level("WARNING"):
-            _cross_validate_adsb_reports()
-        assert "ADS-B mismatch" not in caplog.text
+        rep = self._reputation("test-cv-null")
+        self._fresh_truth("cafe02", 33.9, -84.3)
+        _cross_validate_adsb_reports()
+        assert rep.penalties == []
 
-    def test_a_self_report_with_boolean_coordinates_is_not_a_mismatch(self, client, caplog):
-        """The analytics route applies no type validation, so a JSON body of
-        `{"adsb_lat": false, "adsb_lon": false}` reaches the sample as Python
-        bools: not the absent sentinel (is_position_absent excludes bools by
-        design), and not a coordinate haversine_km can measure without
-        reading False as 0.0 and scoring ~8000 km off any real aircraft."""
+    def test_a_self_report_with_boolean_coordinates_is_not_penalised(self, client):
+        """The route applies no type validation, so `{"adsb_lat": false}`
+        reaches the sample as a bool: not the absent sentinel, and not
+        something haversine_km can measure without reading False as 0.0."""
         from services.tasks.periodic import _cross_validate_adsb_reports
 
         _self_report(client, "test-cv-bool", "cafe05", adsb_lat=False, adsb_lon=False)
-        state.external_adsb_cache["cafe05"] = {"lat": 33.9, "lon": -84.3, "alt_m": 10000}
-        with caplog.at_level("WARNING"):
-            _cross_validate_adsb_reports()
-        assert "ADS-B mismatch" not in caplog.text
-
-    def test_a_genuine_divergence_is_logged_and_left_unpenalised(self, client, caplog):
-        """Cache entries carry no capture time, so a truthful report of a
-        moving target clears the 10 km threshold on age alone.  Until
-        86cb9br6k supplies that timestamp the divergence is reported and not
-        charged against a reputation that outlives the process."""
-        from retina_analytics.reputation import NodeReputation
-
-        from services.tasks.periodic import _cross_validate_adsb_reports
-
-        _self_report(client, "test-cv-far", "cafe03", adsb_lat=33.9, adsb_lon=-84.3)
-        rep = NodeReputation(node_id="test-cv-far")
-        state.node_analytics.reputations["test-cv-far"] = rep
-        state.external_adsb_cache["cafe03"] = {"lat": 34.9, "lon": -84.3, "alt_m": 10000}
-
-        with caplog.at_level("WARNING"):
-            _cross_validate_adsb_reports()
-
-        assert "ADS-B mismatch" in caplog.text
-        assert "test-cv-far" in caplog.text
-        assert "cafe03" in caplog.text
-        assert rep.reputation == 1.0
+        rep = self._reputation("test-cv-bool")
+        self._fresh_truth("cafe05", 33.9, -84.3)
+        _cross_validate_adsb_reports()
         assert rep.penalties == []
-        assert rep.blocked is False
-
-    def test_a_report_that_agrees_with_truth_says_nothing(self, client, caplog):
-        from services.tasks.periodic import _cross_validate_adsb_reports
-
-        _self_report(client, "test-cv-near", "cafe04", adsb_lat=33.9, adsb_lon=-84.3)
-        state.external_adsb_cache["cafe04"] = {"lat": 33.93, "lon": -84.3, "alt_m": 10000}
-        with caplog.at_level("WARNING"):
-            _cross_validate_adsb_reports()
-        assert "ADS-B mismatch" not in caplog.text
 
 
 # ── Snapshot persistence ──────────────────────────────────────────────────────

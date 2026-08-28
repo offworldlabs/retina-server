@@ -450,7 +450,9 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # verification and accuracy pipelines can reference them.
     _adsb_list = frame.get("adsb")
     if _adsb_list:
-        _ts_ms = int(time.time() * 1000)
+        _recv_s = time.time()
+        _ts_ms = adsb_capture_ts_ms(frame, _recv_s)
+        _recv_ms = int(_recv_s * 1000)
         # Same world stamp the TCP fast-path applies — a blah2 node's list is
         # real traffic, a test frame's is simulated; claiming keys on it.
         _world = state.node_world(node_id)
@@ -475,12 +477,13 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
                 "gs": _ae.get("gs", 0),
                 "track": _ae.get("track", 0),
                 "last_seen_ms": _ts_ms,
+                "recv_ms": _recv_ms,  # server clock; see the TCP path
                 "world": _world,
             }
             # Derived once here, not per read — see state.adsb_derived_fields.
             # Published only after it is complete: readers snapshot unlocked.
             _rec.update(state.adsb_derived_fields(_rec))
-            state.adsb_aircraft[_hex] = _rec
+            adsb_store(_hex, _rec)
         state.aircraft_dirty = True
 
     # Time the archive append + conditional flush — the phase that actually
@@ -549,6 +552,8 @@ from services.feed_helpers import (  # noqa: E402,F401
     _estimate_velocity_ms_from_motion,
     _looks_like_same_aircraft,
     _record_arc_motion,
+    adsb_capture_ts_ms,
+    adsb_store,
     append_track_history,
     dedup_aircraft,
     position_distance_km,

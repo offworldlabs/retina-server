@@ -13,7 +13,13 @@ from config.constants import (
     ADSB_TRUTH_INTERVAL_S,
     ARCHIVE_FLUSH_INTERVAL_S,
     ARCHIVE_LIFECYCLE_INTERVAL_S,
+    EXTERNAL_ADSB_MAX_AGE_S,
+    FT_TO_M,
+    KNOTS_TO_MS,
     REPUTATION_INTERVAL_S,
+    XVAL_MAX_AGE_S,
+    as_num,
+    is_num,
 )
 from core import state
 from services.adsb_regions import Box, Region, is_position_absent, is_usable, regions_for_nodes
@@ -140,19 +146,99 @@ async def prune_synthetic_nodes():
             logging.exception("Node pruning failed")
 
 
+def _reset_for_tests() -> None:
+    """Restore this module's private state to boot values.  Tests only."""
+    global _adsb_lol_client
+    _adsb_lol_client = None
+
+
+def prune_external_adsb_cache() -> int:
+    """Drop external ADS-B entries past EXTERNAL_ADSB_MAX_AGE_S.  Returns the count.
+
+    Both fetch paths replace state.external_adsb_cache wholesale, so nothing
+    else ever removes an entry: without this a stalled feed keeps serving its
+    last good snapshot for as long as the outage lasts.  An entry that cannot
+    be aged goes too, since nothing can judge it.
+    """
+    cutoff_ms = (time.time() - EXTERNAL_ADSB_MAX_AGE_S) * 1000
+    stale = [
+        h for h, e in state.external_adsb_cache.items() if not e.get("last_seen_ms") or e["last_seen_ms"] < cutoff_ms
+    ]
+    for h in stale:
+        state.external_adsb_cache.pop(h, None)
+    return len(stale)
+
+
+async def _adsb_truth_cycle() -> bool:
+    """One fetch, then age, then cross-validate.  True if OpenSky rate-limited us.
+
+    Ageing and cross-validation sit outside the fetch, in a finally, for three
+    reasons: _fetch_external_adsb returns early when no real node is connected,
+    and those are exactly the runs after which a stale cache would otherwise sit
+    untouched; a fault inside cross-validation must not read as an OpenSky
+    failure and churn the connection pool; and it must run exactly once per
+    cycle, which is what lets the age gate below double as the guarantee that
+    no sample is judged twice.
+    """
+    try:
+        return await _fetch_external_adsb()
+    finally:
+        dropped = prune_external_adsb_cache()
+        if dropped:
+            logging.debug("external ADS-B cache: dropped %d stale entries", dropped)
+        try:
+            _cross_validate_adsb_reports()
+        except Exception:
+            logging.exception("ADS-B cross-validation failed")
+
+
+def _capture_ms(captured: float, poll_ts: float) -> int:
+    """A feed's capture time as epoch ms, clamped to the poll.
+
+    A stamp ahead of the poll is never older than any budget, so it would sit
+    in the cache until a fetch happened to replace the whole dict, and reach
+    the cross-validator as current truth.  Feed values are input like any other.
+    """
+    if not is_num(captured) or captured > poll_ts:
+        return int(poll_ts * 1000)
+    return int(captured * 1000)
+
+
 async def adsb_truth_fetcher():
     backoff = 0
     while True:
         await asyncio.sleep(ADSB_TRUTH_INTERVAL_S + backoff)
         backoff = 0
         try:
-            rate_limited = await _fetch_external_adsb()
-            if rate_limited:
+            if await _adsb_truth_cycle():
                 backoff = ADSB_BACKOFF_S
             state.task_last_success["adsb_truth_fetcher"] = time.time()
         except Exception:
             state.task_error_counts["adsb_truth_fetcher"] += 1
             logging.exception("External ADS-B fetch failed")
+
+
+def _opensky_entry(s: list, poll_ts: float) -> dict | None:
+    """One OpenSky state vector as an external_adsb_cache entry, or None.
+
+    Index map, from /states/all: 3 time_position, 5 longitude, 6 latitude,
+    7 baro_altitude (m), 9 velocity (m/s), 10 true_track.
+
+    time_position is when the position was measured, and is null for a row
+    whose last contact carried no position; the poll stands in for those.
+    """
+    lon_val, lat_val, alt_val = s[5], s[6], s[7]
+    if lat_val is None or lon_val is None:
+        return None
+    return {
+        "lat": lat_val,
+        "lon": lon_val,
+        "alt_m": alt_val or 0,
+        "velocity": s[9] if len(s) > 9 else None,
+        "heading": s[10] if len(s) > 10 else None,
+        "last_seen_ms": _capture_ms(s[3], poll_ts),
+        "source": "opensky",
+    }
 
 
 async def _fetch_external_adsb() -> bool:
@@ -268,7 +354,6 @@ async def _fetch_external_adsb() -> bool:
             sorted(covered) or "none",
             sorted(lol_covered) or "none",
         )
-        _cross_validate_adsb_reports()
     else:
         logging.warning("External ADS-B: every region failed on both providers — cache left stale")
     # Both halves must speak of the same region, or a gap the credit budget had
@@ -447,6 +532,7 @@ async def _fetch_opensky_box(client, label: str, box: Box) -> tuple[dict | None,
     # iterates into characters that the vector guard below skips one by one,
     # which would pass an undocumented payload off as quiet airspace and rob the
     # box of the fallback.
+    poll_ts = time.time()
     try:
         payload = resp.json()
         if not isinstance(payload, dict) or "states" not in payload:
@@ -466,19 +552,15 @@ async def _fetch_opensky_box(client, label: str, box: Box) -> tuple[dict | None,
             if not isinstance(s, (list, tuple)) or len(s) < 8:
                 continue
             icao = s[0]
-            lon_val, lat_val, alt_val = s[5], s[6], s[7]
+            lon_val, lat_val = s[5], s[6]
             if not isinstance(icao, str) or not icao or lat_val is None or lon_val is None:
                 continue
-            # Lowercased to match adsb.lol's keys: the cross-provider dedup and
-            # every cache lookup assume one case for both.
-            box_cache[icao.lower()] = {
-                "lat": lat_val,
-                "lon": lon_val,
-                "alt_m": alt_val or 0,
-                "velocity": s[9] if len(s) > 9 else None,
-                "heading": s[10] if len(s) > 10 else None,
-                "source": "opensky",
-            }
+            entry = _opensky_entry(s, poll_ts)
+            if entry is None:
+                continue
+            # Lowercased to match adsb.lol's keys: the cross-provider dedup
+            # and every cache lookup assume one case for both.
+            box_cache[icao.lower()] = entry
     except Exception:
         logging.warning("OpenSky sent an unreadable 200 for %s — leaving it to the fallback", label)
         return None, False, False
@@ -502,6 +584,7 @@ async def _fetch_adsb_lol(regions: list[Region]) -> tuple[dict, set[str]]:
         _adsb_lol_client = AdsbLolClient(areas)
     else:
         _adsb_lol_client.areas = areas
+    poll_ts = time.time()
     aircraft = await loop.run_in_executor(None, _adsb_lol_client.fetch_all)
 
     status = _adsb_lol_client.last_status
@@ -515,29 +598,50 @@ async def _fetch_adsb_lol(regions: list[Region]) -> tuple[dict, set[str]]:
         h = (ac.get("hex") or "").lower()
         if not h:
             continue
-        alt_baro = ac.get("alt_baro", 0)
-        alt_m = alt_baro * 0.3048 if isinstance(alt_baro, (int, float)) else 0.0
+        # The client resolves seen_pos against its own fetch, so this is an
+        # absolute capture time and stays correct when a last-good row is
+        # served again on a later failed fetch.
+        captured = ac.get("captured_at")
+        if not is_num(captured):
+            captured = poll_ts
+        # tar1090's gs is knots; this cache's velocity is m/s, which is what
+        # OpenSky writes and what both consumers read.
+        gs = ac.get("gs")
         result[h] = {
             "lat": ac.get("lat", 0.0),
             "lon": ac.get("lon", 0.0),
-            "alt_m": alt_m,
-            "velocity": ac.get("gs"),
+            "alt_m": as_num(ac.get("alt_baro")) * FT_TO_M,
+            "velocity": gs * KNOTS_TO_MS if is_num(gs) else None,
             "heading": ac.get("track"),
+            "last_seen_ms": _capture_ms(captured, poll_ts),
             "source": "adsb_lol",
         }
     return result, covered
 
 
 def _cross_validate_adsb_reports():
-    """Log nodes whose ADS-B reports diverge from external truth.
+    """Penalise nodes whose ADS-B reports diverge from external truth.
 
-    Observation only.  A penalty needs the capture timestamp 86cb9br6k adds to
-    each cache entry: without it the comparison is against a fix of unknown age
-    (up to a whole fetch interval), and an aircraft at 200 m/s outruns the 10 km
-    threshold inside that window, so a truthful node reads as a mismatch.
+    The penalty here is severe and sticky: 0.1 a time against a block
+    threshold of 0.2 from a start of 1.0, persisted by state_snapshot, and
+    apply_reward is a no-op while blocked.  So every gate below exists to keep
+    a truthful node out of it, and each is load bearing:
+
+    - Both sides must be recent (XVAL_MAX_AGE_S).  The 10 km bar measures
+      disagreement only while the two fixes describe nearly the same instant;
+      across a poll interval an airliner outruns it honestly.
+    - (0, 0) is routes/analytics.py's default for an omitted position, not a
+      claim to have seen an aircraft off West Africa.
+
+    A sample is judged at most once because the age window (XVAL_MAX_AGE_S) is
+    far shorter than the interval between cycles, and _adsb_truth_cycle calls
+    this exactly once per cycle.  Both halves of that must hold: shortening the
+    cycle below the window, or calling this from the fetch again, would let one
+    bad fix be charged repeatedly until the node blocks.
     """
     if not state.external_adsb_cache:
         return
+    now = time.time()
     for node_id, ts_state in state.node_analytics.trust_scores.items():
         if not ts_state.samples:
             continue
@@ -552,25 +656,34 @@ def _cross_validate_adsb_reports():
             # reported.
             if sample.provenance != "self_report":
                 continue
-            # A self-report may name a hex without echoing a position: the
-            # analytics route requires neither adsb_lat nor adsb_lon and
-            # defaults both to 0.
             if is_position_absent(sample.adsb_lat, sample.adsb_lon):
                 continue
-            # The route applies no type validation, so adsb_lat/adsb_lon can
-            # carry a bool or any other non-coordinate JSON value -- not the
-            # absent sentinel, but not something haversine_km can measure
-            # against either.
+            # A bool is neither the sentinel nor a coordinate haversine_km
+            # can measure: it would read as 0.0 and score ~8000 km off.
             if not is_usable(sample.adsb_lat, sample.adsb_lon):
+                continue
+            # abs(), not a one-sided age: the stamp is node-supplied, and a
+            # future one would otherwise pass every freshness test forever.
+            sample_ts_ms = getattr(sample, "timestamp_ms", 0) or 0
+            if not sample_ts_ms or abs(now - sample_ts_ms / 1000) > XVAL_MAX_AGE_S:
                 continue
             ext = state.external_adsb_cache.get(sample.adsb_hex.lower())
             if ext is None:
                 continue
+            ext_ts_ms = ext.get("last_seen_ms")
+            if not ext_ts_ms or now - ext_ts_ms / 1000 > XVAL_MAX_AGE_S:
+                continue
             dist_km = haversine_km(sample.adsb_lat, sample.adsb_lon, ext["lat"], ext["lon"])
             if dist_km > 10.0:
-                logging.warning(
-                    "Node %s ADS-B mismatch for %s: %.1f km off",
-                    node_id,
-                    sample.adsb_hex,
-                    dist_km,
-                )
+                rep = state.node_analytics.reputations.get(node_id)
+                if rep:
+                    rep.apply_penalty(
+                        0.1,
+                        f"ADS-B position mismatch: {sample.adsb_hex} reported {dist_km:.1f}km from external truth",
+                    )
+                    logging.warning(
+                        "Node %s ADS-B mismatch for %s: %.1f km off",
+                        node_id,
+                        sample.adsb_hex,
+                        dist_km,
+                    )

@@ -64,7 +64,11 @@ async def submit_adsb_report(
         raise HTTPException(status_code=400, detail=f"Missing: {missing}")
 
     entry = AdsReportEntry(
-        timestamp_ms=body.get("timestamp_ms", 0),
+        # Server-stamped when the node omits it: the field is optional by
+        # contract, and cross-validation gates on the sample's age, so a
+        # default of 0 would exclude that node's reports from the check
+        # entirely rather than merely dating them coarsely.
+        timestamp_ms=body.get("timestamp_ms") or int(time.time() * 1000),
         predicted_delay=body["predicted_delay"],
         predicted_doppler=body.get("predicted_doppler", 0),
         measured_delay=body["measured_delay"],

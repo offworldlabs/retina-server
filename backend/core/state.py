@@ -463,6 +463,11 @@ solver_failures: int = 0
 # node reported no list of its own) — see frame_processor.process_one_frame's
 # predictive-tagging block.
 adsb_seed_frames_autotagged: int = 0
+# Frames whose ADS-B positions had to be stamped with receipt time because the
+# frame carried no timestamp, or one too far from ours to believe.  A rising
+# count means some node's clock is wrong and its positions are being aged
+# against ours — see services.feed_helpers.adsb_capture_ts_ms.
+adsb_capture_ts_fallback: int = 0
 # Known-lane claiming (KNOWN_LANE_MODE) — see services/known_claiming.py.
 # made counts every claim recorded (shadow AND binding); contentions the
 # subset whose detection also gated against an established dark global's
@@ -691,7 +696,7 @@ def _reset_for_tests() -> None:
     global latest_mlat_accuracy_bytes, latest_mlat_verification_bytes
     global latest_storage_bytes, simulation_config
     global frames_dropped, frames_processed, solver_successes, solver_failures
-    global adsb_seed_frames_autotagged
+    global adsb_seed_frames_autotagged, adsb_capture_ts_fallback
     global known_claims_made, known_claim_contentions, known_claims_bound
     global known_claims_errors, known_claims_visibility_rejects, known_claims_world_rejects
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
@@ -776,7 +781,7 @@ def _reset_for_tests() -> None:
     with counters_lock:
         frames_dropped = frames_processed = 0
         solver_successes = solver_failures = n2_unconfirmed = 0
-        adsb_seed_frames_autotagged = 0
+        adsb_seed_frames_autotagged = adsb_capture_ts_fallback = 0
         known_claims_made = known_claim_contentions = known_claims_bound = 0
         known_claims_errors = known_claims_visibility_rejects = 0
         known_claims_world_rejects = 0
