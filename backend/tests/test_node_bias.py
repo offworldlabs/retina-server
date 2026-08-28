@@ -168,6 +168,63 @@ class TestSelfReportCoexistence:
         assert rep.penalties == []
 
 
+def _self_report(client, node_id, hex_, **position):
+    """Post one self-reported sample through the live analytics route."""
+    body = {"node_id": node_id, "predicted_delay": 100.0, "measured_delay": 100.5, "adsb_hex": hex_}
+    body.update(position)
+    return client.post(
+        "/api/radar/analytics/adsb-report",
+        json=body,
+        headers={"X-API-Key": "test-key-abc123"},
+    )
+
+
+class TestCrossValidationRejectsUnusableFixes:
+    """A sample the route accepted but haversine_km cannot measure must not be
+    charged for the distance it appears to be from truth."""
+
+    def _fresh_truth(self, hex_, lat, lon):
+        # Stamped now, or the entry's age skips the sample and the assertion
+        # below passes without ever reaching the guard it names.
+        state.external_adsb_cache[hex_] = {
+            "lat": lat,
+            "lon": lon,
+            "alt_m": 10000,
+            "last_seen_ms": int(time.time() * 1000),
+        }
+
+    def _reputation(self, node_id):
+        from retina_analytics.reputation import NodeReputation
+
+        rep = NodeReputation(node_id=node_id)
+        state.node_analytics.reputations[node_id] = rep
+        return rep
+
+    def test_a_self_report_without_a_position_is_not_penalised(self, client):
+        """The analytics route requires only the delays and defaults
+        adsb_lat/adsb_lon to 0, so a node naming a hex without echoing a fix
+        would otherwise measure ~8000 km from any real aircraft."""
+        from services.tasks.periodic import _cross_validate_adsb_reports
+
+        _self_report(client, "test-cv-null", "cafe02")
+        rep = self._reputation("test-cv-null")
+        self._fresh_truth("cafe02", 33.9, -84.3)
+        _cross_validate_adsb_reports()
+        assert rep.penalties == []
+
+    def test_a_self_report_with_boolean_coordinates_is_not_penalised(self, client):
+        """The route applies no type validation, so `{"adsb_lat": false}`
+        reaches the sample as a bool: not the absent sentinel, and not
+        something haversine_km can measure without reading False as 0.0."""
+        from services.tasks.periodic import _cross_validate_adsb_reports
+
+        _self_report(client, "test-cv-bool", "cafe05", adsb_lat=False, adsb_lon=False)
+        rep = self._reputation("test-cv-bool")
+        self._fresh_truth("cafe05", 33.9, -84.3)
+        _cross_validate_adsb_reports()
+        assert rep.penalties == []
+
+
 # ── Snapshot persistence ──────────────────────────────────────────────────────
 
 

@@ -3,35 +3,41 @@
 import asyncio
 import logging
 import time
+from typing import NamedTuple
 
 import httpx
 
 from config.constants import (
     ADSB_BACKOFF_S,
+    ADSB_NODE_RANGE_MARGIN_KM,
     ADSB_TRUTH_INTERVAL_S,
     ARCHIVE_FLUSH_INTERVAL_S,
     ARCHIVE_LIFECYCLE_INTERVAL_S,
     EXTERNAL_ADSB_MAX_AGE_S,
     FT_TO_M,
     KNOTS_TO_MS,
-    OPENSKY_BUFFER_DEG,
     REPUTATION_INTERVAL_S,
     XVAL_MAX_AGE_S,
     as_num,
     is_num,
 )
 from core import state
+from services.adsb_regions import Box, Region, is_position_absent, is_usable, regions_for_nodes
 from services.frame_processor import flush_all_archive_buffers
 from services.geo import haversine_km
 
+_OPENSKY_URL = "https://opensky-network.org/api/states/all"
+
+# Simultaneous OpenSky requests.  A task apiece would make the burst size track
+# ADSB_MAX_REGIONS_PER_CYCLE (sized for a different provider) and the boxes each
+# region splits into, which is what per-second limiters and connection-rate
+# defences react to; a fixed four holds the burst shape whatever those become.
+# It bounds requests rather than regions, so a split region takes two of the
+# four slots and the phase deepens by a wave instead of doubling the burst.
+_OPENSKY_MAX_CONCURRENT = 4
+
 _opensky_client: httpx.AsyncClient | None = None
 _adsb_lol_client: object | None = None
-
-
-def _reset_for_tests() -> None:
-    """Restore this module's private state to boot values.  Tests only."""
-    global _adsb_lol_client
-    _adsb_lol_client = None
 
 
 async def close_http_clients() -> None:
@@ -140,6 +146,12 @@ async def prune_synthetic_nodes():
             logging.exception("Node pruning failed")
 
 
+def _reset_for_tests() -> None:
+    """Restore this module's private state to boot values.  Tests only."""
+    global _adsb_lol_client
+    _adsb_lol_client = None
+
+
 def prune_external_adsb_cache() -> int:
     """Drop external ADS-B entries past EXTERNAL_ADSB_MAX_AGE_S.  Returns the count.
 
@@ -180,6 +192,18 @@ async def _adsb_truth_cycle() -> bool:
             logging.exception("ADS-B cross-validation failed")
 
 
+def _capture_ms(captured: float, poll_ts: float) -> int:
+    """A feed's capture time as epoch ms, clamped to the poll.
+
+    A stamp ahead of the poll is never older than any budget, so it would sit
+    in the cache until a fetch happened to replace the whole dict, and reach
+    the cross-validator as current truth.  Feed values are input like any other.
+    """
+    if not is_num(captured) or captured > poll_ts:
+        return int(poll_ts * 1000)
+    return int(captured * 1000)
+
+
 async def adsb_truth_fetcher():
     backoff = 0
     while True:
@@ -192,18 +216,6 @@ async def adsb_truth_fetcher():
         except Exception:
             state.task_error_counts["adsb_truth_fetcher"] += 1
             logging.exception("External ADS-B fetch failed")
-
-
-def _capture_ms(captured: float, poll_ts: float) -> int:
-    """A feed's capture time as epoch ms, clamped to the poll.
-
-    A stamp ahead of the poll is never older than any budget, so it would sit
-    in the cache until a fetch happened to replace the whole dict, and reach
-    the cross-validator as current truth.  Feed values are input like any other.
-    """
-    if not is_num(captured) or captured > poll_ts:
-        return int(poll_ts * 1000)
-    return int(captured * 1000)
 
 
 def _opensky_entry(s: list, poll_ts: float) -> dict | None:
@@ -225,15 +237,23 @@ def _opensky_entry(s: list, poll_ts: float) -> dict | None:
         "velocity": s[9] if len(s) > 9 else None,
         "heading": s[10] if len(s) > 10 else None,
         "last_seen_ms": _capture_ms(s[3], poll_ts),
+        "source": "opensky",
     }
 
 
 async def _fetch_external_adsb() -> bool:
-    """Fetch aircraft positions for cross-validation.
+    """Fetch aircraft positions for cross-validation, one query region per node cluster.
 
-    Primary source: OpenSky Network.
-    Fallback: adsb.lol (free, no auth required) when OpenSky rate-limits or fails.
-    Returns True if OpenSky was rate-limited (HTTP 429), False otherwise.
+    OpenSky is asked for every region; adsb.lol (free, no auth) is asked for
+    whichever regions OpenSky did not cover, so a bad region costs only itself.
+    The cache is replaced whenever at least one query genuinely answered — an
+    empty answer from a working query included — and left stale only when none
+    did.
+
+    Returns True only if OpenSky reported credit exhaustion (HTTP 429) *and* a
+    region went uncovered because of it.  The caller turns True into a 300 s
+    backoff on top of the cycle, which a cycle whose truth arrived complete has
+    not earned.
     """
     active_nodes = [
         info
@@ -249,100 +269,330 @@ async def _fetch_external_adsb() -> bool:
 
     real_nodes = [n for n in active_nodes if not n.get("is_synthetic", False)]
     source_nodes = real_nodes if real_nodes else active_nodes
-    lats = [n["config"].get("rx_lat", 0) for n in source_nodes]
-    lons = [n["config"].get("rx_lon", 0) for n in source_nodes]
-    if not lats or all(la == 0 for la in lats):
+    positions = []
+    half_positioned = 0
+    over_margin: list[float] = []
+    for n in source_nodes:
+        lat, lon = n["config"].get("rx_lat"), n["config"].get("rx_lon")
+        # Half a fix is no fix.  Substituting 0.0 for the missing half puts the
+        # node on the prime meridian off West Africa, which is_usable cannot
+        # tell from a real position, so it would claim a query region over empty
+        # ocean every cycle.  Whatever the config does hold goes through
+        # unaltered for regions_for_nodes to judge.
+        if lat is None or lon is None:
+            if lat is not None or lon is not None:
+                half_positioned += 1
+            continue
+        positions.append((lat, lon))
+        # The margin every region is padded by is an assumption about the fleet's
+        # configuration; node_config accepts max_range_km up to 1000 km. A node
+        # beyond the margin detects aircraft its region never asks for, so the
+        # shortfall is named here rather than left as silently thin truth.
+        max_range_km = n["config"].get("max_range_km")
+        if isinstance(max_range_km, (int, float)) and not isinstance(max_range_km, bool):
+            if max_range_km > ADSB_NODE_RANGE_MARGIN_KM:
+                over_margin.append(float(max_range_km))
+    if half_positioned:
+        logging.warning(
+            "ADS-B truth: %d node(s) carry only one of rx_lat/rx_lon — treated as unpositioned",
+            half_positioned,
+        )
+    if over_margin:
+        logging.warning(
+            "ADS-B truth: %d node(s) configure a detection range past the %.0f km query margin "
+            "(largest %.0f km) — the outer part of their coverage gets no truth",
+            len(over_margin),
+            ADSB_NODE_RANGE_MARGIN_KM,
+            max(over_margin),
+        )
+
+    regions = regions_for_nodes(positions)
+    if not regions:
+        # HTTP-ingest nodes are registered with `{"node_id": ...}` as their
+        # whole config, which passes the truthiness filter above and carries
+        # neither coordinate, so an all-HTTP fleet lands on this branch.
+        logging.warning(
+            "ADS-B truth: %d active node(s) but none carries a position — nothing to query",
+            len(source_nodes),
+        )
         return False
+    logging.debug(
+        "ADS-B truth: %d region(s) %s, %d OpenSky credit(s)",
+        len(regions),
+        [r.name for r in regions],
+        sum(r.opensky_credits() for r in regions),
+    )
 
-    lamin, lamax = min(lats) - OPENSKY_BUFFER_DEG, max(lats) + OPENSKY_BUFFER_DEG
-    lomin, lomax = min(lons) - OPENSKY_BUFFER_DEG, max(lons) + OPENSKY_BUFFER_DEG
-    lat_center = (lamin + lamax) / 2
-    lon_center = (lomin + lomax) / 2
+    cache, covered, credit_refused, opensky_answered = await _fetch_opensky(regions)
+    # `opensky_answered` holds for a box that answered with no aircraft too, so
+    # quiet airspace replaces the cache below rather than leaving it stale.  It
+    # must come from OpenSky's own boxes and never from the merged cache:
+    # adsb.lol serves its own stale per-area cache for an area that failed, and
+    # that is what must never pass as a fresh answer.
+    uncovered = [r for r in regions if r.name not in covered]
+    lol_covered: set[str] = set()
+    if uncovered:
+        try:
+            lol_cache, lol_covered = await _fetch_adsb_lol(uncovered)
+        except Exception:
+            logging.warning("adsb.lol fetch failed outright — %d region(s) uncovered", len(uncovered))
+        else:
+            # First writer wins, so an aircraft both providers saw keeps the
+            # entry whose "source" names who actually supplied those figures.
+            for adsb_hex, entry in lol_cache.items():
+                cache.setdefault(adsb_hex, entry)
 
-    # ── Try OpenSky first ─────────────────────────────────────────────────────
-    opensky_failed = False
-    rate_limited = False
-    url = "https://opensky-network.org/api/states/all"
-    poll_ts = time.time()
+    if opensky_answered or lol_covered:
+        # An empty result from a fetch that worked means the sky is empty
+        # there, so the cache must be replaced even so: keeping the old one
+        # would let a stale answer masquerade as a fresh one.
+        state.external_adsb_cache = cache
+        logging.info(
+            "External ADS-B: cached %d aircraft from %d region(s); OpenSky %s, adsb.lol %s",
+            len(cache),
+            len(regions),
+            sorted(covered) or "none",
+            sorted(lol_covered) or "none",
+        )
+    else:
+        logging.warning("External ADS-B: every region failed on both providers — cache left stale")
+    # Both halves must speak of the same region, or a gap the credit budget had
+    # nothing to do with (a transport error the fallback also missed) charges
+    # the cycle a 300 s backoff.  A refused region is never in `covered`, so the
+    # only question left is whether the fallback then covered it.
+    return any(name not in lol_covered for name in credit_refused)
+
+
+async def _fetch_opensky(regions: list[Region]) -> tuple[dict, set[str], set[str], bool]:
+    """Fetch every region's boxes. Returns (cache, covered, credit-refused, anything answered).
+
+    The last of those is not derivable from the others, and the caller's cache
+    replacement turns on it: a region with one box answered and its sibling
+    failed is deliberately kept out of `covered` so it still reaches the
+    fallback, and a box that answered with no aircraft adds nothing to the
+    cache.  Both are answers, and a fresh "nothing here" must replace the cache
+    rather than leave the last cycle's aircraft standing.
+
+    Small boxes around each cluster rather than one spanning the fleet: OpenSky
+    charges credits by box area, so the fleet-wide box costs 4 a request
+    against 1 for a box around a single cluster.  Credits are charged per
+    request, not per second, so the requests go out concurrently (bounded by
+    _OPENSKY_MAX_CONCURRENT): asked in turn, a black-holing OpenSky costs one
+    timeout per request of wall clock before the fallback is even reached.
+
+    The refused set names regions, not a bare count, because the caller's
+    backoff is only earned where the same region that was refused credit also
+    went uncovered by the fallback.
+
+    Every failure mode is per-region: a region is either in the covered set or
+    it is not, and the caller sends the rest to adsb.lol.  No region may cost
+    another its answer, since `regions_for_nodes` orders deterministically and
+    one persistently bad region would otherwise starve the same part of the
+    fleet on every cycle.  The cache holds whatever came back, an uncovered
+    region's part included; the covered set alone decides who goes to the
+    fallback.
+    """
     global _opensky_client
+    # Built once for the whole batch, which the requests below then share: a
+    # region rebuilding it mid-flight would pull it from under its siblings.
     if _opensky_client is None or _opensky_client.is_closed:
         _opensky_client = httpx.AsyncClient(timeout=15.0)
+    client = _opensky_client
+
+    limit = asyncio.Semaphore(_OPENSKY_MAX_CONCURRENT)
+    results = await asyncio.gather(*(_fetch_opensky_region(client, region, limit) for region in regions))
+
+    cache: dict = {}
+    covered: set[str] = set()
+    credit_refused: set[str] = set()
+    transport_errors = 0
+    answered = 0
+    for region, result in zip(regions, results, strict=True):
+        if result.limited:
+            credit_refused.add(region.name)
+        transport_errors += result.transport_errors
+        answered += result.answered
+        cache.update(result.cache)
+        if result.covered:
+            covered.add(region.name)
+
+    requests = sum(len(region.boxes) for region in regions)
+    if requests and transport_errors == requests and _opensky_client is client:
+        # Only a client every one of whose requests failed at the transport is
+        # suspect; a minority failure is the network's, and rebuilding over it
+        # costs a fresh handshake per request next cycle while the rest were
+        # being served.  It must be closed before the reference is dropped, or
+        # its connection pool leaks once per poll for the whole of an outage.
+        _opensky_client = None
+        try:
+            await client.aclose()
+        except Exception:
+            pass
+
+    return cache, covered, credit_refused, answered > 0
+
+
+class _RegionFetch(NamedTuple):
+    """One region's OpenSky result. `answered` is how many of its boxes returned a payload."""
+
+    cache: dict
+    covered: bool
+    limited: bool
+    transport_errors: int
+    answered: int
+
+
+async def _fetch_opensky_region(client, region: Region, limit: asyncio.Semaphore) -> _RegionFetch:
+    """One region's aircraft, a request per box.
+
+    A region is covered only where every one of its boxes was, so a part-answered
+    region still goes to the fallback whole.  What the boxes that did answer
+    returned is kept regardless: the truth cache carries no completeness
+    contract, its consumers gating on a delay window and a position match, so
+    sparse truth is thinner rather than wrong, and it is worth more than nothing
+    where the fallback fails as well.
+
+    The semaphore is taken per request, not per region, so a split region
+    deepens the phase rather than widening the burst.
+    """
+
+    async def _one(label: str, box: Box):
+        async with limit:
+            return await _fetch_opensky_box(client, label, box)
+
+    n = len(region.boxes)
+    # A split region's two failures must not read as one region failing twice.
+    if n == 1:
+        labels = [region.name]
+    else:
+        labels = [f"{region.name} box {i}/{n}" for i in range(1, n + 1)]
+    results = await asyncio.gather(*(_one(label, box) for label, box in zip(labels, region.boxes, strict=True)))
+
+    cache: dict = {}
+    limited = False
+    transport_errors = 0
+    answered = 0
+    for box_cache, box_limited, box_transport_error in results:
+        limited = limited or box_limited
+        transport_errors += int(box_transport_error)
+        if box_cache is None:
+            continue
+        answered += 1
+        cache.update(box_cache)
+    # _region_from_members always yields at least one box, so the first clause
+    # guards the type rather than that path: a Region assembled any other way
+    # with no boxes has been asked nothing, and must reach the fallback rather
+    # than pass as covered on an empty cache.
+    covered = answered > 0 and answered == len(results)
+    return _RegionFetch(cache, covered, limited, transport_errors, answered)
+
+
+async def _fetch_opensky_box(client, label: str, box: Box) -> tuple[dict | None, bool, bool]:
+    """One box's aircraft. Returns (cache, or None if unanswered; rate-limited; transport error).
+
+    Every failure is caught here, which is what confines it to the box that
+    caused it: the caller merges whatever came back and hands the regions that
+    are short of a box to the fallback.
+    """
     try:
-        resp = await _opensky_client.get(
-            url,
+        resp = await client.get(
+            _OPENSKY_URL,
             params={
-                "lamin": lamin,
-                "lamax": lamax,
-                "lomin": lomin,
-                "lomax": lomax,
+                "lamin": box.lamin,
+                "lamax": box.lamax,
+                "lomin": box.lomin,
+                "lomax": box.lomax,
             },
         )
-        if resp.status_code == 429:
-            logging.debug("OpenSky rate-limited (429) — trying adsb.lol fallback")
-            rate_limited = True
-            opensky_failed = True
-        elif resp.status_code != 200:
-            opensky_failed = True
-        else:
-            data = resp.json()
-            states = data.get("states", [])
-            if states:
-                now_cache = {}
-                for s in states:
-                    icao = s[0] if s[0] else None
-                    if not icao:
-                        continue
-                    entry = _opensky_entry(s, poll_ts)
-                    if entry is not None:
-                        now_cache[icao] = entry
-                state.external_adsb_cache = now_cache
-                logging.debug("OpenSky: cached %d aircraft positions", len(now_cache))
-                return False
-            opensky_failed = True
     except Exception:
-        # Close before dropping the reference: discarding the client leaked
-        # its connection pool once per poll for the whole of an outage.
-        _dead_client, _opensky_client = _opensky_client, None
-        if _dead_client is not None:
-            try:
-                await _dead_client.aclose()
-            except Exception:
-                pass
-        opensky_failed = True
+        logging.warning("OpenSky unreachable for %s — leaving it to the fallback", label)
+        return None, False, True
 
-    # ── Fallback: adsb.lol ────────────────────────────────────────────────────
-    if opensky_failed:
-        try:
-            # Assigned even when empty: the client evicts its own last-good
-            # cache past _CACHE_MAX_AGE_S, and keeping the previous dict there
-            # would chain the two budgets instead of bounding them.
-            state.external_adsb_cache = await _fetch_adsb_lol(lat_center, lon_center)
-            logging.debug("adsb.lol fallback: cached %d aircraft positions", len(state.external_adsb_cache))
-        except Exception:
-            logging.warning("adsb.lol fallback also failed — external ADS-B cache may be stale")
+    if resp.status_code == 429:
+        # Credit exhaustion, not a policy block.  The budget is per account and
+        # IP rather than per box, so the sibling requests already in flight meet
+        # it too; what keeps a spent budget from being hammered is the caller's
+        # backoff between cycles, not anything one request can do about the
+        # others.  The response says when the budget refills, which is worth
+        # more than that fixed guess (86cb9m6wc).
+        logging.info(
+            "OpenSky out of credits for %s (retry after %ss)",
+            label,
+            resp.headers.get("X-Rate-Limit-Retry-After-Seconds"),
+        )
+        return None, True, False
+    if resp.status_code != 200:
+        logging.warning("OpenSky %d for %s", resp.status_code, label)
+        return None, False, False
 
-    return rate_limited
+    # A 200 answers the box only where it carries the documented object: an HTML
+    # interstitial, a bare list, an absent `states` or one of any type but list
+    # leaves the box unanswered rather than crashing the fetch.  `states` is
+    # judged on its type and never on truthiness, because a string is truthy and
+    # iterates into characters that the vector guard below skips one by one,
+    # which would pass an undocumented payload off as quiet airspace and rob the
+    # box of the fallback.
+    poll_ts = time.time()
+    try:
+        payload = resp.json()
+        if not isinstance(payload, dict) or "states" not in payload:
+            raise TypeError("not an OpenSky state-vector object")
+        states = payload["states"]
+        if states is None:
+            states = []  # nullable in the schema: quiet airspace, not a fault
+        if not isinstance(states, list):
+            raise TypeError("states is not a list")
+        box_cache = {}
+        for s in states:
+            # One rule for both halves of the schema: a vector must be long
+            # enough to hold the fields read below and name its icao24 as a
+            # string.  Either failing costs only that vector, so a single
+            # malformed entry never sends an otherwise good region to the
+            # fallback and discards the aircraft around it.
+            if not isinstance(s, (list, tuple)) or len(s) < 8:
+                continue
+            icao = s[0]
+            lon_val, lat_val = s[5], s[6]
+            if not isinstance(icao, str) or not icao or lat_val is None or lon_val is None:
+                continue
+            entry = _opensky_entry(s, poll_ts)
+            if entry is None:
+                continue
+            # Lowercased to match adsb.lol's keys: the cross-provider dedup
+            # and every cache lookup assume one case for both.
+            box_cache[icao.lower()] = entry
+    except Exception:
+        logging.warning("OpenSky sent an unreadable 200 for %s — leaving it to the fallback", label)
+        return None, False, False
+
+    return box_cache, False, False
 
 
-async def _fetch_adsb_lol(lat: float, lon: float) -> dict:
-    """Fetch aircraft positions from adsb.lol centered on lat/lon.
+async def _fetch_adsb_lol(regions: list[Region]) -> tuple[dict, set[str]]:
+    """Fetch aircraft for every region. Returns (cache, covered names).
 
-    Returns {hex: {lat, lon, alt_m, velocity, heading, last_seen_ms}} in
-    external_adsb_cache format.  velocity is m/s; last_seen_ms is the
-    position's own capture time, which the client resolves per row.
+    Coverage is named per region rather than reported as a bare success flag,
+    so the caller can log each provider's real reach: partial coverage here is
+    the normal case, and the summary log is read as what the cache holds.
     """
     from clients.adsb_lol import AdsbLolClient
 
     global _adsb_lol_client
     loop = asyncio.get_running_loop()
-    area = {"name": "auto", "lat": lat, "lon": lon, "radius_nm": 200}
+    areas = [r.as_area() for r in regions]
     if _adsb_lol_client is None:
-        _adsb_lol_client = AdsbLolClient([area])
+        _adsb_lol_client = AdsbLolClient(areas)
     else:
-        # Update area center so the rate-limit cache key stays consistent
-        _adsb_lol_client.areas = [area]
+        _adsb_lol_client.areas = areas
     poll_ts = time.time()
     aircraft = await loop.run_in_executor(None, _adsb_lol_client.fetch_all)
+
+    status = _adsb_lol_client.last_status
+    covered = {r.name for r in regions if status.get(r.name, False)}
+    failed = [r.name for r in regions if r.name not in covered]
+    if failed:
+        logging.warning("adsb.lol: %d of %d regions failed: %s", len(failed), len(regions), ", ".join(failed))
+
     result = {}
     for ac in aircraft:
         h = (ac.get("hex") or "").lower()
@@ -364,8 +614,9 @@ async def _fetch_adsb_lol(lat: float, lon: float) -> dict:
             "velocity": gs * KNOTS_TO_MS if is_num(gs) else None,
             "heading": ac.get("track"),
             "last_seen_ms": _capture_ms(captured, poll_ts),
+            "source": "adsb_lol",
         }
-    return result
+    return result, covered
 
 
 def _cross_validate_adsb_reports():
@@ -405,7 +656,11 @@ def _cross_validate_adsb_reports():
             # reported.
             if sample.provenance != "self_report":
                 continue
-            if sample.adsb_lat == 0.0 and sample.adsb_lon == 0.0:
+            if is_position_absent(sample.adsb_lat, sample.adsb_lon):
+                continue
+            # A bool is neither the sentinel nor a coordinate haversine_km
+            # can measure: it would read as 0.0 and score ~8000 km off.
+            if not is_usable(sample.adsb_lat, sample.adsb_lon):
                 continue
             # abs(), not a one-sided age: the stamp is node-supplied, and a
             # future one would otherwise pass every freshness test forever.

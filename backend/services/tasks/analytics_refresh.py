@@ -1344,8 +1344,9 @@ def _refresh_mlat_verification():
         if not _valid_latlon(entry.get("lat"), entry.get("lon")):
             continue
         if adsb_hex not in seen_truth_hexes:
-            # external_adsb_cache carries alt_m/velocity in SI (periodic.py),
-            # not the tar1090 alt_baro/gs schema this function otherwise reads.
+            # external_adsb_cache carries alt_m/velocity in SI and names its
+            # provider in source (periodic.py), not the tar1090 alt_baro/gs
+            # schema this function otherwise reads.
             gs_ms = float(entry["velocity"] if entry.get("velocity") is not None else (entry.get("gs") or 0) * 0.514444)
             alt_m = float(entry["alt_m"] if entry.get("alt_m") is not None else as_num(entry.get("alt_baro")) * 0.3048)
             adsb_truth_pool.append(

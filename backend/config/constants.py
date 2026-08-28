@@ -293,7 +293,22 @@ GT_REFRESH_S = 5.0  # Ground-truth snapshot refresh cadence (s)
 REPUTATION_INTERVAL_S = 60  # Reputation evaluator sleep (s)
 ADSB_TRUTH_INTERVAL_S = 120  # ADS-B truth fetcher sleep (s)
 ADSB_BACKOFF_S = 300  # Rate-limit backoff (s)
-OPENSKY_BUFFER_DEG = 1.0  # lat/lon margin for OpenSky bbox (degrees)
+
+# ── External ADS-B query regions ─────────────────────────────────────────────
+ADSB_CELL_SPACING_KM = 400.0  # Lattice cell size for grouping nodes into queries
+# Padding every query region carries around its members, sized against the
+# fleet's configured max_range_km (140 at the widest).  An assumption about the
+# fleet, not a bound from the contract: node_config accepts max_range_km up to
+# 1000, and a node configured past this margin detects aircraft the query never
+# asks for, so the truth fetcher logs the shortfall rather than under-covering
+# it silently.  Raising this raises every box's area and so its OpenSky credits.
+ADSB_NODE_RANGE_MARGIN_KM = 150.0
+# A query must reach a node anywhere in its cell plus that node's detection
+# range, so radius >= spacing/sqrt(2) + margin = 283 + 150 = 433 km = 234 nm.
+# That is the ceiling; real groups are tighter because geometry comes from the
+# members, not the cell.  Stays under adsb.lol's 250 nm schema cap.
+ADSB_MAX_REGIONS_PER_CYCLE = 8  # adsb.lol's measured burst bucket
+
 # How old either side of an ADS-B cross-validation may be.  Applied to the
 # external entry and to the node's sample separately, so the worst skew between
 # them is twice this: at 250 m/s that is 7.5 km of honest motion against a

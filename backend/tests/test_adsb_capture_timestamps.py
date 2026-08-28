@@ -16,6 +16,7 @@ import pytest
 from clients.adsb_lol import AdsbLolClient
 from config.constants import ADSB_CAPTURE_MAX_SKEW_S, EXTERNAL_ADSB_MAX_AGE_S
 from core import state
+from services.adsb_regions import regions_for_nodes
 from services.calibration import record_adsb_calibration
 from services.feed_helpers import adsb_capture_ts_ms
 from services.frame_processor import process_one_frame
@@ -29,6 +30,7 @@ from services.tcp_handler import _apply_synthetic_adsb
 from services.track_gates import fresh_adsb
 
 _HEX = "aa1234"
+_VIENNA = (48.0, 16.0)
 
 
 def _lol_ac(**over):
@@ -42,8 +44,21 @@ def _stub_adsb_lol(monkeypatch, aircraft):
     """Serve `aircraft` from the adsb.lol client without touching the network."""
     import services.tasks.periodic as periodic
 
+    def fetch_all(self):
+        # The real client records a verdict per configured area, and the caller
+        # reads exactly that to decide which regions it covered.
+        for area in self.areas:
+            self.last_status[area["name"]] = True
+        return aircraft
+
     monkeypatch.setattr(periodic, "_adsb_lol_client", None, raising=False)
-    monkeypatch.setattr(AdsbLolClient, "fetch_all", lambda self: aircraft)
+    monkeypatch.setattr(AdsbLolClient, "fetch_all", fetch_all)
+
+
+def _lol_cache():
+    """The cache half of one fetch over the region covering `_VIENNA`."""
+    cache, _covered = asyncio.run(_fetch_adsb_lol(regions_for_nodes([_VIENNA])))
+    return cache
 
 
 def _ext(captured_s: float | None, **over):
@@ -287,15 +302,13 @@ class TestAdsbLolCaptureTime:
         captured_at = time.time() - 12.0
         _stub_adsb_lol(monkeypatch, [_lol_ac(captured_at=captured_at)])
 
-        cache = asyncio.run(_fetch_adsb_lol(48.0, 16.0))
-
-        assert cache["abc123"]["last_seen_ms"] == int(captured_at * 1000)
+        assert _lol_cache()["abc123"]["last_seen_ms"] == int(captured_at * 1000)
 
     def test_poll_time_stands_in_when_the_row_carries_no_capture_time(self, monkeypatch):
         _stub_adsb_lol(monkeypatch, [_lol_ac()])
 
         now = time.time()
-        cache = asyncio.run(_fetch_adsb_lol(48.0, 16.0))
+        cache = _lol_cache()
 
         assert abs(cache["abc123"]["last_seen_ms"] / 1000 - now) < 2.0
 

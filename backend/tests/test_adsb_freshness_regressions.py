@@ -5,6 +5,7 @@ are cases where making freshness honest broke something that had been relying,
 silently, on every ADS-B stamp coming off the server clock.
 """
 
+import asyncio
 import time
 
 import pytest
@@ -13,6 +14,7 @@ from retina_analytics.trust import AdsReportEntry
 
 from clients.adsb_lol import AdsbLolClient
 from core import state
+from services.adsb_regions import regions_for_nodes
 from services.calibration import record_adsb_calibration
 from services.feed_helpers import adsb_capture_ts_ms
 from services.tasks.periodic import _cross_validate_adsb_reports, _fetch_adsb_lol
@@ -20,6 +22,28 @@ from services.tcp_handler import _apply_synthetic_adsb
 from services.track_gates import fresh_adsb
 
 _HEX = "cafe01"
+_VIENNA = (48.0, 16.0)
+
+
+def _stub_adsb_lol(monkeypatch, aircraft):
+    """Serve `aircraft` from the adsb.lol client without touching the network."""
+    import services.tasks.periodic as periodic
+
+    def fetch_all(self):
+        # The real client records a verdict per configured area, and the caller
+        # reads exactly that to decide which regions it covered.
+        for area in self.areas:
+            self.last_status[area["name"]] = True
+        return aircraft
+
+    monkeypatch.setattr(periodic, "_adsb_lol_client", None, raising=False)
+    monkeypatch.setattr(AdsbLolClient, "fetch_all", fetch_all)
+
+
+def _lol_cache():
+    """The cache half of one fetch over the region covering `_VIENNA`."""
+    cache, _covered = asyncio.run(_fetch_adsb_lol(regions_for_nodes([_VIENNA])))
+    return cache
 
 
 @pytest.fixture(autouse=True)
@@ -45,14 +69,9 @@ class TestLastGoodRowsKeepTheirOriginalAge:
         """
         captured_at = time.time() - 540.0
         row = {"hex": _HEX, "lat": 48.0, "lon": 16.0, "gs": 400.0, "track": 90.0, "captured_at": captured_at}
-        monkeypatch.setattr(AdsbLolClient, "fetch_all", lambda self: [row])
-        import services.tasks.periodic as periodic
+        _stub_adsb_lol(monkeypatch, [row])
 
-        monkeypatch.setattr(periodic, "_adsb_lol_client", None, raising=False)
-
-        import asyncio
-
-        cache = asyncio.run(_fetch_adsb_lol(48.0, 16.0))
+        cache = _lol_cache()
 
         age_s = time.time() - cache[_HEX]["last_seen_ms"] / 1000
         assert 539.0 < age_s < 542.0, f"expected the row's true age, got {age_s:.1f} s"
@@ -251,16 +270,11 @@ class TestNonFiniteFeedValuesDoNotBlankTheCache:
     def test_a_nan_capture_time_drops_one_row_not_the_poll(self, monkeypatch):
         """json.loads accepts a bare NaN, and int(nan) raises — which took the
         whole fetch down and left the previous cache frozen behind it."""
-        import asyncio
-
         good = {"hex": "aaaa01", "lat": 48.0, "lon": 16.0, "gs": 400.0, "captured_at": time.time()}
         bad = {"hex": "bbbb02", "lat": 48.1, "lon": 16.1, "gs": float("nan"), "captured_at": float("nan")}
-        monkeypatch.setattr(AdsbLolClient, "fetch_all", lambda self: [good, bad])
-        import services.tasks.periodic as periodic
+        _stub_adsb_lol(monkeypatch, [good, bad])
 
-        monkeypatch.setattr(periodic, "_adsb_lol_client", None, raising=False)
-
-        cache = asyncio.run(_fetch_adsb_lol(48.0, 16.0))
+        cache = _lol_cache()
 
         assert "aaaa01" in cache
         assert cache.get("bbbb02", {}).get("velocity") is None
