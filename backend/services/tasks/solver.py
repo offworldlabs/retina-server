@@ -27,6 +27,7 @@ from services import track_filter
 from services.geo import bearing_deg, bistatic_differential_km, node_beam_params, offset_latlon_m
 from services.geo import haversine_km as _haversine_km
 from services.id_utils import is_transponder_hex, multinode_hex_from_key, normalize_hex_key
+from services.node_config import position_status
 
 _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 
@@ -1521,6 +1522,15 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             for nid in contributing_ids:
                 cfg = node_cfgs.get(nid)
                 if not cfg:
+                    continue
+                # A receiver is enough: the range circle and the bearing wedge
+                # are both about it, and the bistatic branch below tests its
+                # transmitter separately. Gated at all because node_cfgs is an
+                # unfiltered snapshot of every connected node and nothing from
+                # submit_tracks_round to here checks placement, so a node
+                # re-registered without its position while its retained tracks
+                # were being paired arrives here unplaced.
+                if position_status(cfg) not in ("positioned", "missing_tx"):
                     continue
                 p = node_beam_params(cfg)
                 rx_lat, rx_lon = p["rx_lat"], p["rx_lon"]

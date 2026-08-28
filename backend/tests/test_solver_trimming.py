@@ -18,6 +18,7 @@ fact.
 import time
 
 from core import state
+from services.node_config import canonical_config
 from services.tasks import solver as solver_mod
 
 LAT, LON = 35.0, -82.0
@@ -598,6 +599,37 @@ class TestBeamGateNSplit(_TrimmingTestBase):
         assert rec["outcome"] == "rejected_beam"
         failure = rec["beam_failures"][0]
         assert failure["rule"] == "range"
+
+    def test_a_node_with_no_receiver_is_skipped_rather_than_gated_on(self):
+        """node_cfgs is an unfiltered snapshot of every connected node, and
+        nothing between submit_tracks_round and the beam gate checks placement,
+        so a node re-registered without its position while its retained tracks
+        were being paired arrives here unplaced. There is no receiver to measure
+        a range or a bearing from, so it contributes no verdict at all rather
+        than a range computed against a stand-in coordinate."""
+        s_in = {
+            "n_nodes": 2,
+            "measurements": [
+                {"node_id": "n1", "delay_us": 10.0, "doppler_hz": 1.0, "snr": 15.0},
+                {"node_id": "unplaced", "delay_us": 12.0, "doppler_hz": 2.0, "snr": 14.0},
+            ],
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        cfgs = {
+            "n1": {"rx_lat": 35.0, "rx_lon": -82.0, "max_range_km": 500.0},
+            # Canonical form of a node that declared no position: the keys are
+            # present and null, so a `.get(key, 0)` default cannot rescue it.
+            "unplaced": canonical_config({"rx_lat": None, "rx_lon": None, "max_range_km": 5.0}),
+        }
+
+        def solve_fn(_s_in, _cfgs):
+            return _stub_result(["n1", "unplaced"], rms_delay=1.0, lat=35.1, lon=-82.0, n_nodes=2)
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        # n1 passes its range test and the unplaced node is skipped, so the
+        # solve survives. Without the gate this raises TypeError instead.
+        assert result is not None and result["success"]
 
 
 class _StubFov:
