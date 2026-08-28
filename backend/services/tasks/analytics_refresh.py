@@ -602,8 +602,8 @@ def _refresh_missed_detections(nodes_snapshot: list):
         # Resolved the same way every module resolves it: explicit aim, else
         # broadside off the RX→TX baseline (Yagi sits perpendicular to it),
         # else omnidirectional; width falls back to the shared YAGI default.
-        # tx_lat/tx_lon are already known truthy from the `all(...)` check
-        # above, so beam_azimuth can't come back None here.
+        # The position_status gate above admits only a node with both ends
+        # placed, so beam_azimuth cannot come back None here.
         params = node_beam_params(cfg)
         beam_width = params["beam_width_deg"]
         max_range = params["max_range_km"]

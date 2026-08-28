@@ -26,7 +26,7 @@ from services.geo import (
 )
 from services.id_utils import normalize_hex_key as _normalize_hex_key
 from services.known_claiming import claim_known_targets, strip_claimed_detections
-from services.node_config import ALTITUDE_DEFAULT_FT, position_status
+from services.node_config import position_status, resolve_altitudes
 from services.storage import archive_detections
 
 # ── Archive batching ──────────────────────────────────────────────────────────
@@ -144,23 +144,6 @@ def _reset_for_tests() -> None:
 
 
 # ── Node configs helper ──────────────────────────────────────────────────────
-
-
-def resolve_altitudes(cfg: dict) -> dict:
-    """``cfg`` with a null altitude replaced by its terrain default.
-
-    The geometry boundary. canonical_config keeps a declared null null, because
-    publication and the archive must not carry an invented figure; the geodesy
-    below cannot take one, so it is resolved here and nowhere earlier.
-
-    Keyed on None, not falsiness: a receiver at 0 ft is at sea level, not
-    unsurveyed, and `or` would silently lift it to 900.
-    """
-    resolved = dict(cfg)
-    for field, default in ALTITUDE_DEFAULT_FT.items():
-        if resolved.get(field) is None:
-            resolved[field] = default
-    return resolved
 
 
 def get_node_configs() -> dict[str, dict]:

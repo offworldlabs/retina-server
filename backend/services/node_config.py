@@ -168,8 +168,30 @@ _LEGACY_COORDINATES = (("rx_lat", "lat"), ("rx_lon", "lon"))
 # publication or the Parquet archive must carry the altitude the node declared,
 # nulls included, because nothing downstream could later tell a working figure
 # apart from a survey and archive rows are not correctable once published.
-# services.frame_processor.resolve_altitudes is the only caller.
+# resolve_altitudes below is the only caller.
 ALTITUDE_DEFAULT_FT = {"rx_alt_ft": 900.0, "tx_alt_ft": 1200.0}
+
+
+def resolve_altitudes(cfg: dict) -> dict:
+    """``cfg`` with a null altitude replaced by its terrain default.
+
+    The geometry boundary, and the counterpart to canonical_config: that keeps
+    a declared null null, because publication and the archive must not carry an
+    invented figure, and this resolves it for the geodesy, which cannot take
+    one. Apply it at every door into geometry and nowhere earlier, so that one
+    missing altitude cannot become 900 ft in one subsystem and 0 ft in another.
+
+    Keyed on None, not falsiness: a receiver at 0 ft is at sea level, not
+    unsurveyed, and ``or`` would silently lift it to 900.
+
+    Copies, so resolving cannot write the working figure back into the dict
+    that publication and the archive read.
+    """
+    resolved = dict(cfg)
+    for field, default in ALTITUDE_DEFAULT_FT.items():
+        if resolved.get(field) is None:
+            resolved[field] = default
+    return resolved
 
 
 def _finite_float(value: Any) -> float | None:
