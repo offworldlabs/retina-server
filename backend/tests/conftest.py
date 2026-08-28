@@ -163,7 +163,7 @@ def _reset_module_state():
         tcp_handler,
         track_gates,
     )
-    from services.tasks import analytics_refresh, known_lane, solver
+    from services.tasks import analytics_refresh, known_lane, periodic, solver
 
     for mod in (
         state,
@@ -179,6 +179,7 @@ def _reset_module_state():
         known_claiming,
         node_bias,
         publication,
+        periodic,
     ):
         mod._reset_for_tests()
     yield

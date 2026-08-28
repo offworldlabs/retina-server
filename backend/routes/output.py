@@ -155,12 +155,12 @@ async def ground_truth_aircraft():
 
 @router.get("/api/v1/ground-truth/real")
 async def ground_truth_real():
-    """Return real ground truth aircraft positions from OpenSky Network.
+    """Return real ground truth aircraft positions from the external ADS-B feed.
 
-    The server polls OpenSky every 2 minutes and caches positions for
-    aircraft within ±1° of all real hardware nodes.  This provides an
-    independent position source to validate solver output against known
-    ADS-B transponder data.
+    The server polls adsb.lol (or OpenSky where authorised) every 2 minutes and
+    caches positions for aircraft within ±1° of all real hardware nodes.  This
+    provides an independent position source to validate solver output against
+    known ADS-B transponder data.
 
     Each entry contains:
     - ``hex`` — ICAO 24-bit address
@@ -168,6 +168,7 @@ async def ground_truth_real():
     - ``alt_m`` — barometric altitude (metres)
     - ``velocity`` — ground speed (m/s)
     - ``heading`` — track angle (degrees)
+    - ``captured_at`` — when the position was measured (epoch seconds)
 
     **Usage:** Compare solver output from ``/api/v1/solver/aircraft?real_only=true``
     against these positions to measure geolocation accuracy on real traffic.
@@ -183,6 +184,11 @@ async def ground_truth_real():
                 "alt_m": entry.get("alt_m"),
                 "velocity": entry.get("velocity"),
                 "heading": entry.get("heading"),
+                # Per-entry, because the envelope timestamp is when this
+                # response was built and these positions are older than that
+                # by design.  A caller measuring solver accuracy against them
+                # cannot age them otherwise.
+                "captured_at": (entry.get("last_seen_ms") or 0) / 1000.0,
             }
         )
 
@@ -190,6 +196,9 @@ async def ground_truth_real():
         {
             "timestamp": now,
             "count": len(aircraft_out),
+            # Still names OpenSky for every entry whatever fed it.  Correcting
+            # that needs the per-entry provenance field 86cb9btw9 owns; this is
+            # a published field, so it does not change on the way past.
             "source": "opensky_network",
             "aircraft": aircraft_out,
         },

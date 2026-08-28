@@ -17,6 +17,7 @@ from core.env_parsing import parse_comma_list
 C_KM_US = 0.299792458  # Speed of light (km/µs)
 R_EARTH_KM = 6371.0  # Mean Earth radius (km)
 FT_TO_M = 0.3048  # Feet → metres
+KNOTS_TO_MS = 0.514444  # Knots → metres per second
 
 # ── Field coercion ───────────────────────────────────────────────────────────
 
@@ -293,6 +294,33 @@ REPUTATION_INTERVAL_S = 60  # Reputation evaluator sleep (s)
 ADSB_TRUTH_INTERVAL_S = 120  # ADS-B truth fetcher sleep (s)
 ADSB_BACKOFF_S = 300  # Rate-limit backoff (s)
 OPENSKY_BUFFER_DEG = 1.0  # lat/lon margin for OpenSky bbox (degrees)
+# How old either side of an ADS-B cross-validation may be.  Applied to the
+# external entry and to the node's sample separately, so the worst skew between
+# them is twice this: at 250 m/s that is 7.5 km of honest motion against a
+# 10 km mismatch bar, which leaves the bar measuring disagreement rather than
+# elapsed time.  Tight enough that the check only fires on samples captured near
+# a poll — widening it means dead-reckoning the entry first, not a bigger number.
+XVAL_MAX_AGE_S = 15.0
+# How far behind us a node's frame timestamp may sit and still be believed.
+# Backlog makes a frame genuinely older than its arrival, and reporting that is
+# the point, so this is wide enough not to mistake backlog for a broken clock.
+ADSB_CAPTURE_MAX_SKEW_S = 300.0
+# How far ahead of us it may sit.  Tight, and deliberately not symmetric with
+# the above: a stamp in the future is not stale to any gate and never becomes
+# so, so only network and scheduling jitter is allowed for.
+ADSB_CAPTURE_MAX_LEAD_S = 2.0
+# How long an external ADS-B entry stays servable after its own capture time.
+# Derived, not chosen: a rate-limited poll cycle is already
+# ADSB_TRUTH_INTERVAL_S + ADSB_BACKOFF_S apart, so anything tighter would blank
+# the fallback during ordinary backoff.  The margin covers fetch latency.  This
+# is an upper bound on how long an outage can go on serving last-good data, not
+# a freshness claim: entries carry their true age and every consumer gates on it.
+EXTERNAL_ADSB_MAX_AGE_S = ADSB_TRUTH_INTERVAL_S + ADSB_BACKOFF_S + 180
+# Oldest external entry a consumer scoring solves will treat as truth.  Much
+# tighter than the retention bound above, which only says when the poller stops
+# holding an entry at all: at 250 m/s a 120 s fix is 30 km from the aircraft,
+# and verification reports the difference as node error.
+EXTERNAL_TRUTH_MAX_AGE_S = 120.0
 
 # ── Admin / ops ──────────────────────────────────────────────────────────────
 EVENT_LOG_MAX = 2000  # Event log buffer capacity

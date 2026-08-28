@@ -65,6 +65,10 @@ def _base_ext(alt_m=3048.0, velocity=257.222, heading=45.0):
         "alt_m": alt_m,
         "velocity": velocity,
         "heading": heading,
+        # The poller stamps every entry with its capture time, and an unstamped
+        # one is withheld rather than served — so these unit-conversion cases
+        # need a real stamp to reach the code they exercise.
+        "last_seen_ms": int(time.time() * 1000),
     }
 
 

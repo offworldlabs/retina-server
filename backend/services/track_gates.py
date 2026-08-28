@@ -14,6 +14,7 @@ from config.constants import (
     ARC_ONLY_ANOMALY_ALLOWLIST,
     CAL_DETECTION_FRESH_S,
     DISPLAY_STALE_TRACK_S,
+    EXTERNAL_ADSB_MAX_AGE_S,
     GATE_MAX_HOLD_S,
 )
 from core import state
@@ -33,6 +34,7 @@ from services.geo import (
     node_beam_params,
     offset_latlon,
     offset_latlon_m,
+    valid_latlon,
 )
 from services.public_location import fuzz_enabled, fuzz_node_cfg, public_point_delta
 
@@ -303,17 +305,25 @@ def _record_accuracy_sample(ac_hex: str, error_km: float, position_source: str, 
 def fresh_adsb(ac_hex: str, now: float):
     """Return ADS-B entry for ac_hex, or None if unavailable/stale.
 
-    Checks state.adsb_aircraft first (live feed, < 60 s).  Falls back to
-    state.external_adsb_cache (OpenSky snapshot) which the background
-    poller already refreshes periodically — no additional staleness guard
-    needed here.
+    Checks state.adsb_aircraft first (live feed, < 60 s), then falls back to
+    state.external_adsb_cache, whose entries are servable for
+    EXTERNAL_ADSB_MAX_AGE_S from their own capture time.
+
+    The returned fix carries that capture time, so callers gate on its real
+    age, and most gate tighter: record_adsb_calibration's CAL_MAX_ADSB_AGE_S
+    is 10 s, so an external fix is expected to be refused there.
     """
     entry = state.adsb_aircraft.get(ac_hex)
     if entry and now - entry.get("last_seen_ms", 0) / 1000 <= 60:
         return entry
-    # Fallback: external ADS-B truth sourced from OpenSky Network.
+    # Fallback: external ADS-B truth (adsb.lol, or OpenSky where authorised).
     ext = state.external_adsb_cache.get(ac_hex)
-    if ext and ext.get("lat") and ext.get("lon"):
+    if ext and valid_latlon(ext.get("lat"), ext.get("lon")):
+        # An entry with no capture stamp cannot be aged, so it is not served.
+        # abs(), so a stamp ahead of us is refused rather than immortal.
+        ext_ts_ms = ext.get("last_seen_ms")
+        if not ext_ts_ms or abs(now - ext_ts_ms / 1000) > EXTERNAL_ADSB_MAX_AGE_S:
+            return None
         alt_m = ext.get("alt_m") or 0
         vel = ext.get("velocity") or 0
         hdg = ext.get("heading") or 0
@@ -332,7 +342,7 @@ def fresh_adsb(ac_hex: str, now: float):
             "alt_baro": round(alt_ft_val),
             "gs": round(gs_val, 1),
             "track": round(hdg_val, 1),
-            "last_seen_ms": int(now * 1000),
+            "last_seen_ms": int(ext_ts_ms),
         }
     return None
 
@@ -716,7 +726,12 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
         # supplies both timestamps and trusts the one rule to enforce it.
         _det_tag = getattr(track, "last_detection_adsb_hex", None)
         _det_ts = getattr(track, "last_detection_wall_ts", 0.0)
-        _fix_ts = (adsb.get("last_seen_ms", 0) or 0) / 1000.0
+        # Two stamps, two jobs.  The skew rule pins the fix to the detection
+        # event, and the detection stamp is server wall clock, so it needs the
+        # server-clock one or it becomes an NTP test on the node.  The age gate
+        # wants the capture time, which is the whole point of last_seen_ms.
+        _fix_age_s = now - (adsb.get("last_seen_ms", 0) or 0) / 1000.0
+        _fix_ts = (adsb.get("recv_ms") or adsb.get("last_seen_ms", 0) or 0) / 1000.0
         _detection_fresh = (
             now - _det_ts <= CAL_DETECTION_FRESH_S
             and getattr(track, "n_detections", 0) >= 3
@@ -728,7 +743,7 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
                 [nid],
                 adsb_lat,
                 adsb_lon,
-                age_s=now - _fix_ts,
+                age_s=_fix_age_s,
                 fix_ts=_fix_ts,
                 detection_ts=_det_ts,
             )

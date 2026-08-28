@@ -155,7 +155,14 @@ class TestSelfReportCoexistence:
         _feed("cv-1", "cafe01", 0.3, 0.5, 3, now_ms)
         rep = NodeReputation(node_id="cv-1")
         state.node_analytics.reputations["cv-1"] = rep
-        state.external_adsb_cache["cafe01"] = {"lat": 51.5, "lon": -0.1, "alt_m": 10000}
+        # Stamped fresh so the temporal gates admit it: without that this
+        # would pass on the entry's age and stop testing provenance at all.
+        state.external_adsb_cache["cafe01"] = {
+            "lat": 51.5,
+            "lon": -0.1,
+            "alt_m": 10000,
+            "last_seen_ms": int(time.time() * 1000),
+        }
         _cross_validate_adsb_reports()
         assert rep.reputation == 1.0
         assert rep.penalties == []
