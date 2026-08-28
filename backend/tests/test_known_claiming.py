@@ -431,7 +431,7 @@ class TestRangePrescreen:
         state.node_associator.node_geometries[_NODE_ID] = geo
         # coverage_limit/fov are callables the config dict has no way to carry,
         # so this builds NodeGeometry directly rather than through
-        # register_node — which is also claim_known_targets's other source of
+        # register_node, which is also claim_known_targets's other source of
         # "is this node positioned"; without an entry here every geometry
         # variant would read as unplaced regardless of its own coordinates.
         state.node_associator.node_configs[_NODE_ID] = {

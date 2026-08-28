@@ -379,8 +379,8 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # association directly, so there is no inert way to shadow this.
     if state.ADSB_SEED_MODE == "active" and not _pframe.get("adsb"):
         _geo = state.node_associator.node_geometries.get(node_id)
-        # A geometry exists even for a node this server cannot place — see
-        # get_or_create_node_pipeline's docstring — so presence alone is not
+        # A geometry exists even for a node this server cannot place (see
+        # get_or_create_node_pipeline's docstring), so presence alone is not
         # enough; the node must also be positioned.
         _cfg = state.node_associator.node_configs.get(node_id, {})
         if _geo is not None and position_status(_cfg) == "positioned":
@@ -404,7 +404,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
                 state.bump_counter("adsb_seed_frames_autotagged")
     # None for a node this server cannot place (see get_or_create_node_pipeline):
     # its frame is still counted above by record_detection_frame, but it is
-    # not geolocated, tracked, associated or handed to the solver — there is
+    # not geolocated, tracked, associated or handed to the solver: there is
     # no geometry to place any of that against.
     pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
     if pipeline is not None:

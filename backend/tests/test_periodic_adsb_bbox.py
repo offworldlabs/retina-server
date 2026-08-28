@@ -1,4 +1,4 @@
-"""_fetch_external_adsb's bounding box — services/tasks/periodic.py."""
+"""_fetch_external_adsb's bounding box, in services/tasks/periodic.py."""
 
 import asyncio
 

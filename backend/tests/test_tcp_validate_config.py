@@ -348,7 +348,7 @@ class TestExplicitNullIsPositionless:
         assert "missing lat/lon" in result
 
     def test_flat_lat_lon_null_is_not_treated_as_positionless(self):
-        """The positionless carve-out is for rx_lat/rx_lon specifically — the
+        """The positionless carve-out is for rx_lat/rx_lon specifically: the
         legacy lat/lon flat form predates this feature and still means
         missing when null."""
         config = {"lat": None, "lon": None}
