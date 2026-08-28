@@ -449,9 +449,32 @@ def test_an_out_of_range_coordinate_is_reported_before_a_missing_pair():
     ids=["empty", "unrelated-keys-only", "latitude-without-longitude"],
 )
 def test_position_status_on_a_config_that_never_saw_validate_config(config):
-    """Task 4 calls position_status on connected_nodes configs directly, which
-    never necessarily passed through validate_config: a legacy node's config
-    can carry no geometry keys at all, and a bulk-ingested one can carry a
-    lone coordinate. A side with only one of its two coordinates places
-    nothing, so all three of these read as missing_both."""
+    """_refresh_analytics_and_nodes calls position_status on connected_nodes
+    configs directly, which never necessarily passed through validate_config:
+    a legacy node's config can carry no geometry keys at all, and a
+    bulk-ingested one can carry a lone coordinate. A side with only one of its
+    two coordinates places nothing, so all three of these read as
+    missing_both."""
     assert position_status(config) == "missing_both"
+
+
+@pytest.mark.parametrize("field", ["rx_lat", "rx_lon", "tx_lat", "tx_lon"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("abc", id="string"),
+        pytest.param("", id="empty-string"),
+        pytest.param([], id="list"),
+        pytest.param(True, id="bool-true"),
+        pytest.param(False, id="bool-false"),
+    ],
+)
+def test_a_non_numeric_coordinate_reads_as_not_placed_rather_than_raising(field, value):
+    """A connected_nodes config is unvalidated JSON, so a garbage value can sit
+    in any coordinate slot: float("") and float([]) both raise, and bool is a
+    subclass of int, so a naive isinstance(x, (int, float)) check would accept
+    True as a latitude. position_status must read past all of that as merely
+    unplaced, not raise."""
+    config = {"rx_lat": 51.42, "rx_lon": -0.91, "tx_lat": 51.37, "tx_lon": -0.88, field: value}
+    side = "rx" if field.startswith("rx") else "tx"
+    assert position_status(config) == f"missing_{side}"

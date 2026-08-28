@@ -191,10 +191,34 @@ class TestGetOrCreateNodePipeline:
         p2 = get_or_create_node_pipeline("test-cached", default)
         assert p1 is p2
 
-    def test_falls_back_to_default(self):
+    def test_returns_none_for_a_node_with_no_usable_position(self):
+        """Not a fall-back to `default`: solving an unplaceable node's frames
+        against the shared pipeline's fixed geometry would geolocate them at
+        somebody else's receiver and illuminator."""
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         p = get_or_create_node_pipeline("test-noconfig", default)
-        assert p is default
+        assert p is None
+
+    def test_null_altitudes_default_rather_than_reach_the_geolocator_as_none(self):
+        """rx_alt_ft/tx_alt_ft are independently nullable; `cfg.get(key, default)`
+        does not apply the default when the key is present with value None, and
+        PassiveRadarPipeline._init_geolocator multiplies the altitude by
+        FT_TO_M unconditionally, so a null here must resolve before construction
+        rather than reach it."""
+        default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        state.connected_nodes["test-null-altitude"] = {
+            "config": {
+                "rx_lat": 34.0,
+                "rx_lon": -84.0,
+                "rx_alt_ft": None,
+                "tx_lat": 33.8,
+                "tx_lon": -83.8,
+                "tx_alt_ft": None,
+            },
+        }
+        p = get_or_create_node_pipeline("test-null-altitude", default)
+        assert p.config["rx_alt_ft"] == 900
+        assert p.config["tx_alt_ft"] == 1200
 
 
 # ── Frame processing ─────────────────────────────────────────────────────────
@@ -266,6 +290,16 @@ class TestProcessOneFrame:
         # also guarantees only this frame's item is seen.
         monkeypatch.setattr(state, "solver_queue", queue.Queue())
 
+        # A positioned node: process_one_frame only reaches submit_tracks_round
+        # (where the stub above is installed) for a node it can place.
+        state.connected_nodes["test-anchor"] = {
+            "config": {
+                "rx_lat": 34.0,
+                "rx_lon": -84.0,
+                "tx_lat": 33.8,
+                "tx_lon": -83.8,
+            },
+        }
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         process_one_frame("test-anchor", _make_frame(), default)
 

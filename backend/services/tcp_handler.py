@@ -58,17 +58,25 @@ SERVER_CAPABILITIES = {
 
 def _validate_node_config(config: dict) -> str | None:
     """Return an error message if the node config is invalid, else None."""
-    # Accept both flat lat/lon and rx_lat/rx_lon forms
-    lat = config.get("rx_lat", config.get("lat"))
-    lon = config.get("rx_lon", config.get("lon"))
-    if lat is None or lon is None:
-        return "missing lat/lon (expected rx_lat/rx_lon or lat/lon)"
-    try:
-        lat, lon = float(lat), float(lon)
-    except (TypeError, ValueError):
-        return f"non-numeric lat/lon: {lat!r}, {lon!r}"
-    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
-        return f"lat/lon out of range: {lat}, {lon}"
+    # rx_lat/rx_lon present and explicitly null is a positionless
+    # registration, not a missing one: dict.get's single-default form cannot
+    # tell that apart from the keys being absent, which still falls back to
+    # the legacy flat lat/lon form.
+    _explicit_positionless = (
+        "rx_lat" in config and "rx_lon" in config and config["rx_lat"] is None and config["rx_lon"] is None
+    )
+    if not _explicit_positionless:
+        # Accept both flat lat/lon and rx_lat/rx_lon forms
+        lat = config.get("rx_lat", config.get("lat"))
+        lon = config.get("rx_lon", config.get("lon"))
+        if lat is None or lon is None:
+            return "missing lat/lon (expected rx_lat/rx_lon or lat/lon)"
+        try:
+            lat, lon = float(lat), float(lon)
+        except (TypeError, ValueError):
+            return f"non-numeric lat/lon: {lat!r}, {lon!r}"
+        if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+            return f"lat/lon out of range: {lat}, {lon}"
     bw = config.get("beam_width_deg")
     if bw is not None:
         try:

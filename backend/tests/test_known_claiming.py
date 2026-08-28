@@ -128,6 +128,18 @@ class TestGlobalAssignment:
         assert claimed == set()
         assert state.known_claims == {}
 
+    def test_positionless_node_claims_nothing(self):
+        """register_node still builds a NodeGeometry for a node missing a
+        coordinate (rx_lat/rx_lon coerced to 0.0), so `geo is not None` alone
+        would admit it; the node must also read as positioned."""
+        node_id = "test-known-claiming-positionless"
+        state.node_associator.register_node(node_id, dict(_NODE_CFG, rx_lat=None, rx_lon=None))
+        ts = int(time.time() * 1000)
+        _cache_state("aaa111", ts)
+        claimed = kc.claim_known_targets(node_id, _frame(ts, [50.0], [10.0]))
+        assert claimed == set()
+        assert state.known_claims == {}
+
 
 class TestGateVsFixAge:
     """The allowance doubles linearly toward the 45 s age cap: a residual the
@@ -417,6 +429,17 @@ class TestRangePrescreen:
     def test_prescreen_never_disagrees_with_the_gate(self, name, monkeypatch):
         geo = self._GEOMETRIES[name]
         state.node_associator.node_geometries[_NODE_ID] = geo
+        # coverage_limit/fov are callables the config dict has no way to carry,
+        # so this builds NodeGeometry directly rather than through
+        # register_node — which is also claim_known_targets's other source of
+        # "is this node positioned"; without an entry here every geometry
+        # variant would read as unplaced regardless of its own coordinates.
+        state.node_associator.node_configs[_NODE_ID] = {
+            "rx_lat": geo.rx_lat,
+            "rx_lon": geo.rx_lon,
+            "tx_lat": geo.tx_lat,
+            "tx_lon": geo.tx_lon,
+        }
         ts = int(time.time() * 1000)
         frame_ts_s = ts / 1000.0
         # String seed, not hash(name): str hashing is salted per interpreter,
@@ -581,6 +604,11 @@ class TestModesInProcessOneFrame:
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         seen = []
         monkeypatch.setattr(default, "process_frame", lambda f: seen.append(f))
+        # Pre-seed the pipeline cache: get_or_create_node_pipeline no longer
+        # falls back to `default` for a node it holds no connected_nodes
+        # config for (_register only registers it with the associator), so
+        # this stands in for the node's own, already-built pipeline.
+        state.node_pipelines[_NODE_ID] = default
         process_one_frame(_NODE_ID, frame, default)
         return frame, seen[0]
 

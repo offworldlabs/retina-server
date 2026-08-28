@@ -26,6 +26,7 @@ from services.geo import (
 )
 from services.id_utils import normalize_hex_key as _normalize_hex_key
 from services.known_claiming import claim_known_targets, strip_claimed_detections
+from services.node_config import position_status
 from services.storage import archive_detections
 
 # ── Archive batching ──────────────────────────────────────────────────────────
@@ -162,23 +163,32 @@ def get_node_configs() -> dict[str, dict]:
 def get_or_create_node_pipeline(
     node_id: str,
     default_pipeline: PassiveRadarPipeline,
-) -> PassiveRadarPipeline:
+) -> PassiveRadarPipeline | None:
+    """The node's own pipeline, built from its config and cached from then on.
+
+    None for a node this server cannot place: solving its frames against
+    default_pipeline's fixed geometry would geolocate them at somebody else's
+    receiver and illuminator and publish them under this node's id.
+    """
     pipeline = state.node_pipelines.get(node_id)
     if pipeline is not None:
         return pipeline
 
     cfg = state.connected_nodes.get(node_id, {}).get("config", {})
-    if cfg.get("rx_lat") and cfg.get("tx_lat"):
+    if position_status(cfg) == "positioned":
         pipeline_cfg = {
             "node_id": node_id,
             "Fs": cfg.get("fs_hz", cfg.get("Fs", 2_000_000)),
             "FC": cfg.get("fc_hz", cfg.get("FC", 195_000_000)),
             "rx_lat": cfg["rx_lat"],
             "rx_lon": cfg["rx_lon"],
-            "rx_alt_ft": cfg.get("rx_alt_ft", 900),
+            # Independently nullable: `.get(key, default)` would not apply the
+            # default to an explicit null, and a real altitude of 0.0 (sea
+            # level) rules out `or` as well.
+            "rx_alt_ft": 900 if cfg.get("rx_alt_ft") is None else cfg["rx_alt_ft"],
             "tx_lat": cfg["tx_lat"],
             "tx_lon": cfg["tx_lon"],
-            "tx_alt_ft": cfg.get("tx_alt_ft", 1200),
+            "tx_alt_ft": 1200 if cfg.get("tx_alt_ft") is None else cfg["tx_alt_ft"],
             "doppler_min": cfg.get("doppler_min", -300),
             "doppler_max": cfg.get("doppler_max", 300),
             "min_doppler": cfg.get("min_doppler", 15),
@@ -196,7 +206,7 @@ def get_or_create_node_pipeline(
         state.node_pipelines[node_id] = pipeline
         return pipeline
 
-    return default_pipeline
+    return None
 
 
 # ── Per-frame processing (runs in thread pool) ───────────────────────────────
@@ -369,7 +379,11 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # association directly, so there is no inert way to shadow this.
     if state.ADSB_SEED_MODE == "active" and not _pframe.get("adsb"):
         _geo = state.node_associator.node_geometries.get(node_id)
-        if _geo is not None:
+        # A geometry exists even for a node this server cannot place — see
+        # get_or_create_node_pipeline's docstring — so presence alone is not
+        # enough; the node must also be positioned.
+        _cfg = state.node_associator.node_configs.get(node_id, {})
+        if _geo is not None and position_status(_cfg) == "positioned":
             # Own-world states only: this is a cache-wide assignment for a
             # node with no receiver, so every other-world entry is a decoy
             # its detections can bind to on a delay/Doppler coincidence —
@@ -388,60 +402,66 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             if _tags is not None:
                 _pframe["adsb"] = _tags
                 state.bump_counter("adsb_seed_frames_autotagged")
+    # None for a node this server cannot place (see get_or_create_node_pipeline):
+    # its frame is still counted above by record_detection_frame, but it is
+    # not geolocated, tracked, associated or handed to the solver — there is
+    # no geometry to place any of that against.
     pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
-    pipeline.process_frame(_pframe)
+    if pipeline is not None:
+        pipeline.process_frame(_pframe)
     _d_pipeline = time.thread_time() - _t3 - _d_known
 
     _t2 = time.thread_time()
-    _ts_ms_assoc = frame.get("timestamp", 0)
-    # Track-level association.  The detection-level path it replaced now lives
-    # in retina_analytics.detection_association, reachable only from the
-    # offline bench, which keeps it as the A/B baseline.
-    _track_views = _node_track_views(pipeline)
-    # Feed the per-node distinct-track counters — total_tracks /
-    # geolocated_tracks were exported (and read by the admin API) but never
-    # written anywhere.
-    state.node_analytics.record_node_tracks(
-        node_id,
-        (v["track_id"] for v in _track_views),
-        list(pipeline.geolocated_tracks.keys()),
-    )
-    round_ = state.node_associator.submit_tracks_round(
-        node_id,
-        _track_views,
-        _ts_ms_assoc,
-    )
-    # anchored_inputs (top-down claiming, ASSOC_CLAIM_MODE=active) and
-    # adsb_inputs (ADS-B seeding, ADSB_SEED_MODE=active) are already in
-    # solver-input shape — see _claim_round / _adsb_seed_round — so they
-    # join the bottom-up pairs' formatted output directly.  Both empty in
-    # off/shadow mode.
-    solver_inputs = (
-        (state.node_associator.format_track_pairs_for_solver(round_.pairs) if round_.pairs else [])
-        + round_.anchored_inputs
-        + round_.adsb_inputs
-    )
-    if solver_inputs:
-        node_cfgs = get_node_configs()
-        for s_in in solver_inputs:
-            if s_in["n_nodes"] < 2:
-                continue
-            try:
-                state.solver_queue.put_nowait((s_in, node_cfgs, time.time()))
-            except Exception:
-                state.bump_counter("solver_queue_drops")
-                if state.solver_queue_drops % 100 == 1:
-                    logging.warning(
-                        "Solver queue full — dropped %d candidates total",
-                        state.solver_queue_drops,
-                    )
-                    from services.alerting import send_alert
+    if pipeline is not None:
+        _ts_ms_assoc = frame.get("timestamp", 0)
+        # Track-level association.  The detection-level path it replaced now lives
+        # in retina_analytics.detection_association, reachable only from the
+        # offline bench, which keeps it as the A/B baseline.
+        _track_views = _node_track_views(pipeline)
+        # Feed the per-node distinct-track counters — total_tracks /
+        # geolocated_tracks were exported (and read by the admin API) but never
+        # written anywhere.
+        state.node_analytics.record_node_tracks(
+            node_id,
+            (v["track_id"] for v in _track_views),
+            list(pipeline.geolocated_tracks.keys()),
+        )
+        round_ = state.node_associator.submit_tracks_round(
+            node_id,
+            _track_views,
+            _ts_ms_assoc,
+        )
+        # anchored_inputs (top-down claiming, ASSOC_CLAIM_MODE=active) and
+        # adsb_inputs (ADS-B seeding, ADSB_SEED_MODE=active) are already in
+        # solver-input shape — see _claim_round / _adsb_seed_round — so they
+        # join the bottom-up pairs' formatted output directly.  Both empty in
+        # off/shadow mode.
+        solver_inputs = (
+            (state.node_associator.format_track_pairs_for_solver(round_.pairs) if round_.pairs else [])
+            + round_.anchored_inputs
+            + round_.adsb_inputs
+        )
+        if solver_inputs:
+            node_cfgs = get_node_configs()
+            for s_in in solver_inputs:
+                if s_in["n_nodes"] < 2:
+                    continue
+                try:
+                    state.solver_queue.put_nowait((s_in, node_cfgs, time.time()))
+                except Exception:
+                    state.bump_counter("solver_queue_drops")
+                    if state.solver_queue_drops % 100 == 1:
+                        logging.warning(
+                            "Solver queue full — dropped %d candidates total",
+                            state.solver_queue_drops,
+                        )
+                        from services.alerting import send_alert
 
-                    send_alert(
-                        "solver_queue_drops",
-                        f"Solver queue full — {state.solver_queue_drops} candidates dropped",
-                        {"total_drops": state.solver_queue_drops},
-                    )
+                        send_alert(
+                            "solver_queue_drops",
+                            f"Solver queue full — {state.solver_queue_drops} candidates dropped",
+                            {"total_drops": state.solver_queue_drops},
+                        )
     _d_assoc = time.thread_time() - _t2
 
     # ADS-B extraction: TCP handler runs _apply_synthetic_adsb for synth nodes

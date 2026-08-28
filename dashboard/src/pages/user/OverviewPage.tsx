@@ -4,7 +4,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
-import { PositionStatusBadge } from "../../components/PositionStatusBadge";
+import { PositionStatusBadge, POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
 
 export default function OverviewPage() {
   const [nodes, setNodes] = useState([]);
@@ -89,7 +89,7 @@ export default function OverviewPage() {
           <div className="card-header">
             <h3>Needs Attention</h3>
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-              Detections counted and archived, awaiting a position to appear on the map or contribute to solves
+              {POSITION_STATUS_EXPLANATION}
             </span>
           </div>
           <div className="table-wrapper">

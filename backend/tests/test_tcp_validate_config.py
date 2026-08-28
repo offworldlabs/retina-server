@@ -323,3 +323,35 @@ class TestEdgeCases:
         config = {"lat": 4.0e1, "lon": -7.4e1}
         result = _validate_node_config(config)
         assert result is None
+
+
+class TestExplicitNullIsPositionless:
+    """rx_lat/rx_lon present with an explicit null is a positionless
+    registration, distinct from the keys being absent."""
+
+    def test_explicit_null_rx_lat_rx_lon_is_accepted(self):
+        config = {"rx_lat": None, "rx_lon": None}
+        assert _validate_node_config(config) is None
+
+    def test_other_fields_are_still_validated(self):
+        config = {"rx_lat": None, "rx_lon": None, "beam_width_deg": "invalid"}
+        result = _validate_node_config(config)
+        assert result is not None
+        assert "non-numeric beam_width_deg" in result
+
+    def test_rx_lat_null_alone_is_still_missing(self):
+        """Only rx_lon absent, not null: a genuinely absent key is still
+        rejected, matching test_only_rx_lat_present."""
+        config = {"rx_lat": None}
+        result = _validate_node_config(config)
+        assert result is not None
+        assert "missing lat/lon" in result
+
+    def test_flat_lat_lon_null_is_not_treated_as_positionless(self):
+        """The positionless carve-out is for rx_lat/rx_lon specifically — the
+        legacy lat/lon flat form predates this feature and still means
+        missing when null."""
+        config = {"lat": None, "lon": None}
+        result = _validate_node_config(config)
+        assert result is not None
+        assert "missing lat/lon" in result

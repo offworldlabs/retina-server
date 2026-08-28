@@ -165,8 +165,8 @@ export default function RFEnvironmentPage() {
               <tr><td style={{ color: "var(--text-muted)" }}>Average SNR</td><td>{(metrics.avg_snr || 0).toFixed(2)} dB</td></tr>
               <tr><td style={{ color: "var(--text-muted)" }}>Total Frames Processed</td><td>{(metrics.total_frames || 0).toLocaleString()}</td></tr>
               <tr><td style={{ color: "var(--text-muted)" }}>Detection Rate</td><td>{metrics.total_frames ? ((metrics.total_detections / metrics.total_frames) * 100).toFixed(1) + "%" : "—"}</td></tr>
-              <tr><td style={{ color: "var(--text-muted)" }}>RX Location</td><td>{location.rx_lat && location.rx_lon ? `${location.rx_lat.toFixed(4)}, ${location.rx_lon.toFixed(4)}` : "—"}</td></tr>
-              <tr><td style={{ color: "var(--text-muted)" }}>TX Location</td><td>{location.tx_lat && location.tx_lon ? `${location.tx_lat.toFixed(4)}, ${location.tx_lon.toFixed(4)}` : "—"}</td></tr>
+              <tr><td style={{ color: "var(--text-muted)" }}>RX Location</td><td>{location.rx_lat != null && location.rx_lon != null ? `${location.rx_lat.toFixed(4)}, ${location.rx_lon.toFixed(4)}` : "—"}</td></tr>
+              <tr><td style={{ color: "var(--text-muted)" }}>TX Location</td><td>{location.tx_lat != null && location.tx_lon != null ? `${location.tx_lat.toFixed(4)}, ${location.tx_lon.toFixed(4)}` : "—"}</td></tr>
             </tbody>
           </table>
         </div>

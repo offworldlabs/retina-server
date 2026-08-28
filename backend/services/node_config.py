@@ -156,16 +156,25 @@ def validate_config(payload: dict[str, Any]) -> dict[str, Any]:
 PositionStatus = Literal["positioned", "missing_rx", "missing_tx", "missing_both"]
 
 
+def _is_num(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
 def _is_placed(lat: Any, lon: Any) -> bool:
-    """A pair given as a real position: not absent, and not the (0, 0) sentinel.
+    """A pair given as a real position: a usable number in both slots, and
+    not the (0, 0) sentinel.
 
     The same rule lives in services.geo.valid_latlon and in
     retina_analytics.constants.has_full_geometry. Not shared from either: this
     module is a leaf that takes a dict and returns a dict, and must stay
     importable with neither retina_analytics nor a database on the path.
     valid_latlon pulls in retina_analytics.constants, which would break that.
+
+    A config straight out of connected_nodes is unvalidated JSON rather than
+    validate_config's output, so lat/lon may be any type; _is_num keeps a
+    non-numeric value reading as not placed rather than raising.
     """
-    return lat is not None and lon is not None and not (float(lat) == 0.0 and float(lon) == 0.0)
+    return _is_num(lat) and _is_num(lon) and not (lat == 0.0 and lon == 0.0)
 
 
 def position_status(config: dict[str, Any]) -> PositionStatus:

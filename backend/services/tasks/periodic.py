@@ -17,6 +17,7 @@ from config.constants import (
 from core import state
 from services.frame_processor import flush_all_archive_buffers
 from services.geo import haversine_km
+from services.node_config import position_status
 
 _opensky_client: httpx.AsyncClient | None = None
 _adsb_lol_client: object | None = None
@@ -164,10 +165,14 @@ async def _fetch_external_adsb() -> bool:
 
     real_nodes = [n for n in active_nodes if not n.get("is_synthetic", False)]
     source_nodes = real_nodes if real_nodes else active_nodes
-    lats = [n["config"].get("rx_lat", 0) for n in source_nodes]
-    lons = [n["config"].get("rx_lon", 0) for n in source_nodes]
-    if not lats or all(la == 0 for la in lats):
+    # rx_lat/rx_lon only: this box centres the fetch on receivers, so a node
+    # missing just its illuminator still has a usable one.
+    source_nodes = [n for n in source_nodes if position_status(n["config"]) in ("positioned", "missing_tx")]
+    if not source_nodes:
         return False
+
+    lats = [n["config"]["rx_lat"] for n in source_nodes]
+    lons = [n["config"]["rx_lon"] for n in source_nodes]
 
     lamin, lamax = min(lats) - OPENSKY_BUFFER_DEG, max(lats) + OPENSKY_BUFFER_DEG
     lomin, lomax = min(lons) - OPENSKY_BUFFER_DEG, max(lons) + OPENSKY_BUFFER_DEG

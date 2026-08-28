@@ -592,12 +592,12 @@ def _refresh_missed_detections(nodes_snapshot: list):
         if info.get("status") == "disconnected":
             continue
         cfg = info.get("config", {})
+        if position_status(cfg) != "positioned":
+            continue
         rx_lat = cfg.get("rx_lat")
         rx_lon = cfg.get("rx_lon")
         tx_lat = cfg.get("tx_lat")
         tx_lon = cfg.get("tx_lon")
-        if not all((rx_lat, rx_lon, tx_lat, tx_lon)):
-            continue
 
         # Resolved the same way every module resolves it: explicit aim, else
         # broadside off the RX→TX baseline (Yagi sits perpendicular to it),
@@ -925,12 +925,12 @@ def _refresh_node_verification(node_id: str):
         if not measured_delay_us or measured_delay_us <= 0:
             continue
 
-        tx_lat = cfg.get("tx_lat") or 0.0
-        tx_lon = cfg.get("tx_lon") or 0.0
-        rx_lat = cfg.get("rx_lat") or 0.0
-        rx_lon = cfg.get("rx_lon") or 0.0
-        if not tx_lat or not rx_lat:
+        if position_status(cfg) != "positioned":
             continue
+        tx_lat = cfg.get("tx_lat")
+        tx_lon = cfg.get("tx_lon")
+        rx_lat = cfg.get("rx_lat")
+        rx_lon = cfg.get("rx_lon")
 
         solver_lat = getattr(track, "lat", 0.0) or 0.0
         solver_lon = getattr(track, "lon", 0.0) or 0.0

@@ -77,15 +77,10 @@ def test_ten_positionless_nodes_form_no_overlap_zones():
 def test_positionless_node_builds_no_solver_pipeline():
     """The never-solve half: a positionless node builds no solver pipeline.
 
-    Holds today because get_or_create_node_pipeline's guard at
-    frame_processor.py:171, `if cfg.get("rx_lat") and cfg.get("tx_lat")`,
-    falls through to the shared default pipeline only because None is falsy:
-    a known truthiness bug, 86cbavanm.
-
-    Worth pinning because a correct repair to `is not None` preserves this
-    fall-through, but a repair that tests key presence (`"rx_lat" in cfg`)
-    instead of value nullity does not: the key is present, carrying None, so
-    pipeline construction proceeds and raises a TypeError.
+    get_or_create_node_pipeline returns None rather than falling back to the
+    shared default pipeline: solving this node's frames against the default's
+    fixed geometry would geolocate them at somebody else's receiver and
+    illuminator, and publish them under this node's id.
     """
     from services.frame_processor import get_or_create_node_pipeline
 
@@ -101,11 +96,8 @@ def test_positionless_node_builds_no_solver_pipeline():
             "capabilities": {},
         }
 
-    # It falls back to the shared default rather than returning None, so assert
-    # identity against a sentinel: a node-specific pipeline would be a new
-    # object, and would also register itself in state.node_pipelines.
-    sentinel = object()
-    assert get_or_create_node_pipeline(node_id, sentinel) is sentinel
+    default = object()
+    assert get_or_create_node_pipeline(node_id, default) is None
     assert node_id not in state.node_pipelines
 
 

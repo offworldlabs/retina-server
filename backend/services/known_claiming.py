@@ -66,6 +66,7 @@ from scipy.optimize import linear_sum_assignment
 from config.constants import FT_TO_M, as_num
 from core import state
 from services.id_utils import normalize_hex_key
+from services.node_config import position_status
 
 # Same base constants as the seeding path: the comparison is the identical
 # "measurement vs dead-reckoned ADS-B fix" shape, so a different base gate
@@ -213,10 +214,11 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
          position this node can see, global one-to-one via
          linear_sum_assignment under age-scaled gates.
 
-    Claims nothing without a registered geometry: the registry contract
-    requires the predicted observation, and there is nothing to predict
-    with.  Fail toward dark, the same discipline every ADS-B doubt-case in
-    this pipeline follows.
+    Claims nothing without a positioned node: predict_observation needs both
+    ends of the bistatic pair, and a node this server cannot place has
+    nothing to predict against, whatever its geometry entry coerced an
+    unplaced coordinate to.  Fail toward dark, the same discipline every
+    ADS-B doubt-case in this pipeline follows.
     """
     delays = frame.get("delay") or []
     dopplers = frame.get("doppler") or []
@@ -224,6 +226,8 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
         return set()
     geo = state.node_associator.node_geometries.get(node_id)
     if geo is None:
+        return set()
+    if position_status(state.node_associator.node_configs.get(node_id, {})) != "positioned":
         return set()
 
     ts_ms = int(frame.get("timestamp", 0))

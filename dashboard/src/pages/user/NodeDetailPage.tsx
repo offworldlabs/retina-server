@@ -4,6 +4,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
 import type { PositionStatus } from "../../types";
 
 const POSITION_FIX_HINT: Record<Exclude<PositionStatus, "positioned">, string> = {
@@ -156,9 +157,8 @@ export default function NodeDetailPage() {
             fontSize: 13,
           }}
         >
-          <strong>Position not configured.</strong> Detections from this node
-          are counted and archived. It needs a position before they can be
-          placed on the map or contribute to solves.{" "}
+          <strong>Position not configured.</strong>{" "}
+          {POSITION_STATUS_EXPLANATION}{" "}
           {POSITION_FIX_HINT[nodeInfo.position_status as Exclude<PositionStatus, "positioned">]}
         </div>
       )}

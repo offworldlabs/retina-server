@@ -161,13 +161,11 @@ def _file_frame(node_id: str, frame: DetectionFrame) -> int:
     not at all: the count is the array length or nothing.
 
     A node absent from `state.connected_nodes` is declined rather than queued.
-    frame_processor has no geometry for such a node and falls back to the
-    process-wide default pipeline, so the frame would be solved against
-    somebody else's receiver and transmitter and reach the map as a plausible
-    detection in the wrong place, while the ack claimed it was accepted.
-    Declining costs at most one heartbeat interval of this node's data, and the
-    next beat restores it by re-registering the node. Queueing costs
-    correctness, silently, which is the worse trade.
+    This server holds no configuration for such a node at all, so there is no
+    config_hash to check staleness against and nothing to place, count or
+    attribute the frame under. Declining costs at most one heartbeat interval
+    of this node's data, and the next beat restores it by re-registering the
+    node. Queueing costs correctness, silently, which is the worse trade.
 
     Recovery deliberately does not happen here. It needs a database read and a
     write to the registries, and this is the path that runs at the fleet's frame

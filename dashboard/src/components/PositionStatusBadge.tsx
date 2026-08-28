@@ -6,7 +6,9 @@ const LABELS: Record<Exclude<PositionStatus, "positioned">, string> = {
   missing_tx: "No illuminator position",
 };
 
-const TITLE =
+// Shared with NodeDetailPage's banner (verbatim) and OverviewPage's section
+// header (paraphrased there until it started drifting from this wording).
+export const POSITION_STATUS_EXPLANATION =
   "Detections from this node are counted and archived. It needs a " +
   "position before they can be placed on the map or contribute to solves.";
 
@@ -19,7 +21,7 @@ export function PositionStatusBadge({ status }: { status: PositionStatus }) {
   // than an empty chip.
   if (!label) return null;
   return (
-    <span className="badge warning" style={{ marginLeft: 8 }} title={TITLE}>
+    <span className="badge warning" style={{ marginLeft: 8 }} title={POSITION_STATUS_EXPLANATION}>
       {label}
     </span>
   );
