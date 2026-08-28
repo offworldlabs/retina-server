@@ -161,8 +161,10 @@ _COORDINATE_PAIRS = (("rx_lat", "rx_lon"), ("tx_lat", "tx_lon"))
 _LEGACY_COORDINATES = (("rx_lat", "lat"), ("rx_lon", "lon"))
 
 # Terrain figures, not measurements. pipeline.passive_radar and
-# retina_geolocator.multinode_solver both multiply an altitude by a metre
-# conversion the moment they are handed one, so neither may ever see a null.
+# retina_geolocator.multinode_solver each multiply an altitude by a metre
+# conversion the moment they are handed one, so neither may ever see a null;
+# retina_analytics.association takes one too, spelled `or 0`, which survives a
+# null by silently reading it as sea level.
 #
 # Applied at the geometry boundary, never on the way in: a config that reaches
 # publication or the Parquet archive must carry the altitude the node declared,
