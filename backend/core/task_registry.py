@@ -16,7 +16,17 @@ TASK_EXPECTED_INTERVAL_S: dict[str, int] = {
     "archive_lifecycle": 3600,
     "reputation_evaluator": 120,
     "prune_synthetic_nodes": 21600,  # Every 6 hours
-    "adsb_truth_fetcher": 300,
+    # A cycle is 120 s of sleep, plus 300 s more after an OpenSky 429 that cost
+    # a region its coverage (86cb9m6wc), plus the fetch itself.  OpenSky is
+    # asked once per box and a region straddling the antimeridian is two boxes,
+    # so the 8-region cap is at worst 16 requests; four go out at a time, so
+    # that phase is four 15 s timeouts deep = 60 s.  The fallback then costs
+    # 7 x 5 s of request spacing = 35 s, plus per area whichever of its two
+    # alternative paths is dearer: a 429 (returns promptly, then 10 s backoff +
+    # 8 s retry timeout = 18 s) or a timeout (8 s, no retry).  Taking the
+    # larger, 8 x 18 = 144 s.  So 60 + 35 + 144 = 239 s of fetch, 659 s all
+    # told.  Alerting at 2x leaves room above that.
+    "adsb_truth_fetcher": 400,
     "solver": 120,
     "storage_refresh": 720,  # expected every 300 s; alert if >2× late
     "track_archive_flush": 180,  # flush every 60 s; alert if >3× late

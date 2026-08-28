@@ -395,6 +395,15 @@ class TestRegionsForNodes:
         regions = regions_for_nodes([ATLANTA, (0.0, 0.0)])
         assert len(regions) == 1
 
+    def test_the_absence_test_is_one_predicate_the_whole_backend_shares(self):
+        # Re-implementing it per site is how two copies drift apart; the truth
+        # fetcher's own (0, 0) check must be this exact function.
+        from services.tasks import periodic
+
+        assert periodic.is_position_absent is is_position_absent
+        assert is_position_absent(0.0, 0.0) is True
+        assert is_position_absent(0.0, 45.0) is False
+        assert is_position_absent(45.0, 0.0) is False
 
     def test_only_the_exact_origin_pair_reads_as_absent(self):
         # (0, 0) is the sentinel for "no position configured", not a real

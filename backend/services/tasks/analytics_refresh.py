@@ -1324,7 +1324,7 @@ def _refresh_mlat_verification():
             continue
         if adsb_hex not in seen_truth_hexes:
             # external_adsb_cache schema is {lat, lon, alt_m, velocity,
-            # heading} (periodic.py) — NOT the tar1090 gs/alt_baro schema.
+            # heading, source} (periodic.py) — NOT the tar1090 gs/alt_baro schema.
             # Reading gs/alt_baro here zeroed every external truth entry.
             gs_ms = float(entry["velocity"] if entry.get("velocity") is not None else (entry.get("gs") or 0) * 0.514444)
             alt_m = float(entry["alt_m"] if entry.get("alt_m") is not None else as_num(entry.get("alt_baro")) * 0.3048)

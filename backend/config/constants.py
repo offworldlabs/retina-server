@@ -292,7 +292,6 @@ GT_REFRESH_S = 5.0  # Ground-truth snapshot refresh cadence (s)
 REPUTATION_INTERVAL_S = 60  # Reputation evaluator sleep (s)
 ADSB_TRUTH_INTERVAL_S = 120  # ADS-B truth fetcher sleep (s)
 ADSB_BACKOFF_S = 300  # Rate-limit backoff (s)
-OPENSKY_BUFFER_DEG = 1.0  # lat/lon margin for OpenSky bbox (degrees)
 
 # ── External ADS-B query regions ─────────────────────────────────────────────
 ADSB_CELL_SPACING_KM = 400.0  # Lattice cell size for grouping nodes into queries

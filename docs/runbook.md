@@ -443,6 +443,10 @@ curl -sk https://localhost/api/radar/data/aircraft.json | python3 -c \
 
 If 0 aircraft: check `adsb_truth_fetcher` task in metrics (`task_last_success.adsb_truth_fetcher`). The external ADS-B source (`adsb.lol` or similar) may be down.
 
+If the logs carry `ADS-B region cap`: the fleet is spread across more query regions than `ADSB_MAX_REGIONS_PER_CYCLE` allows, and the named regions went unqueried, so their nodes have no external truth this cycle. The line lists what was dropped and how many nodes each held. The remedy is raising the cap (and checking the providers tolerate the extra requests), not removing nodes: the cap bounds request count, so shedding a node only helps if it happened to be the last one in its region.
+
+If the logs carry `configure a detection range past the ... query margin`: a node's `max_range_km` reaches further than the padding every query region carries (`ADSB_NODE_RANGE_MARGIN_KM`), so aircraft in the outer part of that node's coverage are never asked for and its detections there cross-validate against nothing. The line names the largest configured range and the margin. Either correct the node's config, if the range is not real, or raise the margin, which widens every box and so raises the OpenSky credits each cycle costs.
+
 If aircraft exist but `multinode_tracks == 0`: check node count — multinode tracks require at least 2 active nodes with overlapping coverage.
 
 ---
