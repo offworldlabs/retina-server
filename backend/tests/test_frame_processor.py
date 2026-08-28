@@ -23,6 +23,7 @@ from services.frame_processor import (
     normalize_hex_key,
     position_distance_km,
     process_one_frame,
+    resolve_altitudes,
     resolve_ground_truth_hex,
 )
 from tests.node_helpers import register_test_node
@@ -164,6 +165,40 @@ class TestGetNodeConfigs:
         state.connected_nodes["test-cfg-2"] = {"status": "active"}
         configs = get_node_configs()
         assert "test-cfg-2" not in configs
+
+    def test_resolves_a_null_altitude(self):
+        """The solver's snapshot feeds retina_geolocator, which multiplies an
+        altitude by a metre conversion the moment it is handed one."""
+        state.connected_nodes["test-cfg-3"] = {
+            "config": {"rx_lat": 33.9, "rx_lon": -84.6, "rx_alt_ft": None, "tx_alt_ft": None},
+            "status": "active",
+        }
+        configs = get_node_configs()
+        assert configs["test-cfg-3"]["rx_alt_ft"] == 900.0
+        assert configs["test-cfg-3"]["tx_alt_ft"] == 1200.0
+
+    def test_leaves_the_stored_config_alone(self):
+        """resolve_altitudes copies. Defaulting in place would write the
+        working figure back into the dict publication and the archive read."""
+        stored = {"rx_lat": 33.9, "rx_lon": -84.6, "rx_alt_ft": None}
+        state.connected_nodes["test-cfg-4"] = {"config": stored, "status": "active"}
+        get_node_configs()
+        assert stored["rx_alt_ft"] is None
+
+
+class TestResolveAltitudes:
+    def test_sea_level_survives(self):
+        """0 ft is a real altitude, not an absent one: a truthiness fallback
+        would silently lift every sea-level receiver to 900 ft."""
+        assert resolve_altitudes({"rx_alt_ft": 0.0})["rx_alt_ft"] == 0.0
+
+    def test_a_null_takes_the_terrain_default(self):
+        resolved = resolve_altitudes({"rx_alt_ft": None, "tx_alt_ft": None})
+        assert resolved["rx_alt_ft"] == 900.0
+        assert resolved["tx_alt_ft"] == 1200.0
+
+    def test_an_absent_altitude_takes_the_terrain_default(self):
+        assert resolve_altitudes({})["rx_alt_ft"] == 900.0
 
 
 # ── Pipeline factory ─────────────────────────────────────────────────────────

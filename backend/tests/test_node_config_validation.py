@@ -602,16 +602,20 @@ def test_the_zero_pair_collapses_but_a_single_zero_axis_survives(overrides, expe
         pytest.param(10**400, id="int-too-large-for-a-float"),
     ],
 )
-def test_an_unusable_altitude_becomes_the_default(value):
+def test_an_unusable_altitude_becomes_null(value):
+    """Null, not the terrain default. These configs reach publication and the
+    Parquet archive, where an invented 900 ft is indistinguishable from a
+    survey and the rows cannot be corrected once published. Geometry resolves
+    the null at its own boundary — see frame_processor.resolve_altitudes."""
     out = canonical_config({"rx_alt_ft": value, "tx_alt_ft": value})
-    assert out["rx_alt_ft"] == 900.0
-    assert out["tx_alt_ft"] == 1200.0
+    assert out["rx_alt_ft"] is None
+    assert out["tx_alt_ft"] is None
 
 
-def test_an_absent_altitude_becomes_the_default():
+def test_an_absent_altitude_becomes_null():
     out = canonical_config({})
-    assert out["rx_alt_ft"] == 900.0
-    assert out["tx_alt_ft"] == 1200.0
+    assert out["rx_alt_ft"] is None
+    assert out["tx_alt_ft"] is None
 
 
 @pytest.mark.parametrize(

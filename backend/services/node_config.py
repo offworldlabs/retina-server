@@ -163,7 +163,13 @@ _LEGACY_COORDINATES = (("rx_lat", "lat"), ("rx_lon", "lon"))
 # Terrain figures, not measurements. pipeline.passive_radar and
 # retina_geolocator.multinode_solver both multiply an altitude by a metre
 # conversion the moment they are handed one, so neither may ever see a null.
-_ALTITUDE_DEFAULT_FT = {"rx_alt_ft": 900.0, "tx_alt_ft": 1200.0}
+#
+# Applied at the geometry boundary, never on the way in: a config that reaches
+# publication or the Parquet archive must carry the altitude the node declared,
+# nulls included, because nothing downstream could later tell a working figure
+# apart from a survey and archive rows are not correctable once published.
+# services.frame_processor.resolve_altitudes is the only caller.
+ALTITUDE_DEFAULT_FT = {"rx_alt_ft": 900.0, "tx_alt_ft": 1200.0}
 
 
 def _finite_float(value: Any) -> float | None:
@@ -200,12 +206,20 @@ def canonical_config(raw: Any) -> dict[str, Any]:
       null, unusable, half a pair, and the exact (0, 0) sentinel that was the
       only representable "unknown" while the columns were NOT NULL. A single
       zero axis is a real coordinate and survives.
-    - ``rx_alt_ft`` and ``tx_alt_ft`` are floats, always present.
+    - ``rx_alt_ft`` and ``tx_alt_ft`` are each a float or None, always present.
+      None is the honest answer and is left standing here; geometry resolves it
+      through ``frame_processor.resolve_altitudes`` at the two boundaries that
+      cannot take a null.
     - the legacy flat ``lat``/``lon`` fold into ``rx_lat``/``rx_lon`` and are
       gone from the result.
     - every other key passes through unchanged.
 
     Never raises, for any input, including a non-dict.
+
+    Corrects, never invents. Every transformation above turns an unusable value
+    into the null it already meant, or a coordinate into the number it already
+    was, so the result is safe to publish and to archive as well as to solve on
+    — which is why there is one shape here and not a canonical/declared pair.
 
     Called wherever a config enters shared in-process state, so downstream code
     may read a coordinate as a number or a null and nothing else. The durable
@@ -231,9 +245,8 @@ def canonical_config(raw: Any) -> dict[str, Any]:
         config[lat_field] = lat
         config[lon_field] = lon
 
-    for field, default in _ALTITUDE_DEFAULT_FT.items():
-        altitude = _finite_float(config.get(field))
-        config[field] = default if altitude is None else altitude
+    for field in ALTITUDE_DEFAULT_FT:
+        config[field] = _finite_float(config.get(field))
 
     return config
 

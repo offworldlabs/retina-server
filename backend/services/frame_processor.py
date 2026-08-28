@@ -26,7 +26,7 @@ from services.geo import (
 )
 from services.id_utils import normalize_hex_key as _normalize_hex_key
 from services.known_claiming import claim_known_targets, strip_claimed_detections
-from services.node_config import position_status
+from services.node_config import ALTITUDE_DEFAULT_FT, position_status
 from services.storage import archive_detections
 
 # ── Archive batching ──────────────────────────────────────────────────────────
@@ -146,14 +146,36 @@ def _reset_for_tests() -> None:
 # ── Node configs helper ──────────────────────────────────────────────────────
 
 
+def resolve_altitudes(cfg: dict) -> dict:
+    """``cfg`` with a null altitude replaced by its terrain default.
+
+    The geometry boundary. canonical_config keeps a declared null null, because
+    publication and the archive must not carry an invented figure; the geodesy
+    below cannot take one, so it is resolved here and nowhere earlier.
+
+    Keyed on None, not falsiness: a receiver at 0 ft is at sea level, not
+    unsurveyed, and `or` would silently lift it to 900.
+    """
+    resolved = dict(cfg)
+    for field, default in ALTITUDE_DEFAULT_FT.items():
+        if resolved.get(field) is None:
+            resolved[field] = default
+    return resolved
+
+
 def get_node_configs() -> dict[str, dict]:
+    """Every connected node's config, altitudes resolved.
+
+    The solver's snapshot: retina_geolocator multiplies an altitude by a metre
+    conversion as soon as it is handed one, so a null must not reach it.
+    """
     configs = {}
     with state.connected_nodes_lock:
         snapshot = list(state.connected_nodes.items())
     for nid, info in snapshot:
         cfg = info.get("config")
         if cfg:
-            configs[nid] = cfg
+            configs[nid] = resolve_altitudes(cfg)
     return configs
 
 
@@ -176,8 +198,9 @@ def get_or_create_node_pipeline(
 
     # Canonical: every config in connected_nodes goes in through
     # services.node_config.canonical_config, so a placed node has four float
-    # coordinates and two float altitudes, and no default is applied here.
-    cfg = state.connected_nodes.get(node_id, {}).get("config", {})
+    # coordinates. Altitude is resolved here, at the boundary, because
+    # passive_radar subscripts it and converts it to metres.
+    cfg = resolve_altitudes(state.connected_nodes.get(node_id, {}).get("config", {}))
     if position_status(cfg) == "positioned":
         pipeline_cfg = {
             "node_id": node_id,
