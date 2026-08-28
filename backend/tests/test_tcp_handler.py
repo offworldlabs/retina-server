@@ -164,8 +164,10 @@ class TestHandshake:
 
     def test_the_stored_config_is_canonical(self):
         """_validate_node_config accepts the legacy flat spelling, so a node
-        sending it is placed and must read as placed everywhere downstream. The
-        handler stores the canonical form: folded, coerced, altitudes resolved."""
+        sending it is placed and must read as placed everywhere downstream —
+        the archive included, which is a permanent record. The handler stores
+        the canonical form: folded and coerced, with the declared altitude left
+        alone for geometry to resolve at its own boundary."""
         reader = MockStreamReader(
             [
                 _make_hello("test-node-1"),
@@ -184,7 +186,7 @@ class TestHandshake:
         assert (config["rx_lat"], config["rx_lon"]) == (33.94, -84.65)
         assert "lat" not in config and "lon" not in config
         assert config["tx_lat"] is None and config["tx_lon"] is None
-        assert config["rx_alt_ft"] == 900.0 and config["tx_alt_ft"] == 1200.0
+        assert config["rx_alt_ft"] is None and config["tx_alt_ft"] is None
         assert position_status(config) == "missing_tx"
 
     def test_config_ack_sent(self):
