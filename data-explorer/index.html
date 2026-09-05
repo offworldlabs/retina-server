@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Retina · Data Explorer</title>
+<meta name="description" content="Browse, preview and bulk-fetch archived detection files from the Retina passive radar network.">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand"><span class="brand-mark">R</span><span class="brand-text">Retina <span class="sep">·</span> Data Explorer</span></div>
+  <nav class="topnav" id="topnav"><!-- sibling-host links, filled by app.js --></nav>
+</header>
+
+<main class="content">
+  <div class="page-header">
+    <h1>Data Explorer</h1>
+    <p>Browse, preview and fetch archived detection files from the network. Public and unauthenticated —
+       every file listed here is served straight from <code class="mono">/api/data/archive</code>.</p>
+  </div>
+
+  <!-- Shown only when the requested range reaches back past what the server still lists. -->
+  <div class="notice" id="horizonNotice" hidden>
+    <span aria-hidden="true">&#9888;</span><div id="horizonText"></div>
+  </div>
+  <!-- Shown when the nodes API itself fails; the file listing still works without it. -->
+  <div class="notice error" id="nodesNotice" hidden>
+    <span aria-hidden="true">&#9888;</span>
+    <div><b>Node metadata unavailable.</b> <span id="nodesErr"></span>
+      Files still list below, without positions or the location filter.
+      <button class="btn btn-secondary btn-sm" id="nodesRetry">Retry</button></div>
+  </div>
+
+  <div class="stats-grid" id="stats"></div>
+
+  <!-- ── Filters ── -->
+  <section class="card">
+    <div class="card-header"><h3>Filters</h3>
+      <button class="btn btn-secondary btn-sm" id="reset">Reset</button>
+    </div>
+    <div class="card-body">
+      <div class="filter-bar">
+        <div class="fgroup">
+          <label id="msLabelFor">Nodes</label>
+          <div class="ms">
+            <button class="ms-toggle" id="msToggle" aria-haspopup="true" aria-expanded="false">
+              <span id="msLabel">All nodes</span><span class="muted" aria-hidden="true">&#9662;</span></button>
+            <div class="ms-panel" id="msPanel">
+              <input type="search" id="msSearch" placeholder="Search node id…" aria-label="Search node id">
+              <div class="ms-list" id="msList"></div>
+              <div class="ms-actions">
+                <button class="btn btn-secondary btn-sm" data-msact="all">All</button>
+                <button class="btn btn-secondary btn-sm" data-msact="real" id="msReal" hidden>Real only</button>
+                <button class="btn btn-secondary btn-sm" data-msact="none">None</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="fgroup">
+          <label for="from">Date range (UTC)</label>
+          <div class="frow">
+            <input type="date" id="from"><span class="muted" aria-hidden="true">→</span><input type="date" id="to">
+          </div>
+        </div>
+
+        <div class="fgroup">
+          <label>Quick</label>
+          <div class="chipset" id="quick">
+            <button class="chip" data-days="1">24h</button>
+            <button class="chip on" data-days="3">3d</button>
+            <button class="chip" data-days="7">7d</button>
+            <button class="chip" data-days="14">14d</button>
+          </div>
+        </div>
+
+        <div class="fgroup">
+          <label for="todFrom">Time of day (UTC)</label>
+          <div class="frow">
+            <input type="time" id="todFrom" value="00:00"><span class="muted" aria-hidden="true">→</span><input type="time" id="todTo" value="23:59">
+          </div>
+        </div>
+
+        <div class="fgroup">
+          <label for="nearLat">Near (published node position)</label>
+          <div class="near">
+            <input type="number" id="nearLat" placeholder="lat" step="0.0001" min="-90" max="90" aria-label="centre latitude">
+            <input type="number" id="nearLon" placeholder="lon" step="0.0001" min="-180" max="180" aria-label="centre longitude">
+            <span class="muted" aria-hidden="true">&plusmn;</span>
+            <input type="number" class="km" id="nearKm" value="50" min="2" step="1" title="radius, km" aria-label="radius in km"><span class="muted">km</span>
+            <button class="btn btn-secondary btn-sm" id="geoToggle">Map</button>
+            <button class="btn btn-secondary btn-sm" id="nearClear" disabled>Clear</button>
+          </div>
+        </div>
+
+        <div class="fgroup">
+          <label for="minSize">Min size</label>
+          <select id="minSize">
+            <option value="0">any</option>
+            <option value="102400">≥ 100 KB</option>
+            <option value="307200">≥ 300 KB</option>
+            <option value="524288">≥ 500 KB</option>
+          </select>
+        </div>
+      </div>
+      <div class="urlbar"><span>Shareable:</span><code id="shareUrl"></code>
+        <button class="btn btn-secondary btn-sm" id="copyUrl">Copy</button></div>
+    </div>
+    <div class="geo" id="geo" hidden>
+      <div class="geo-wrap"><svg id="geoSvg" viewBox="0 0 900 300" role="img" aria-label="Published node positions"></svg></div>
+      <div class="geo-foot">
+        <span><b>Published</b> receiver positions, fuzzed by up to <span id="geoUnc">1</span>&nbsp;km
+          (<code class="mono">location_uncertainty_km</code> from <code class="mono">/api/radar/nodes</code>); keep the radius well above that.</span>
+        <span>Click the map to set the centre &middot; click a node to centre on it.</span>
+        <span class="chipset" id="geoMode"><button class="chip on" data-mode="fit">Fit all nodes</button><button class="chip" data-mode="centre">Around centre</button></span>
+        <span>Nodes with no published position never match a location filter.</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Availability ── -->
+  <section class="card">
+    <div class="card-header"><h3>Availability &mdash; one bar per archived hour</h3>
+      <div class="frow">
+        <span class="muted tl-range" id="tlRange"></span>
+        <button class="btn btn-secondary btn-sm" id="tlClear">Clear range</button>
+      </div>
+    </div>
+    <div class="tl-host" id="timeline"><div class="tl-loading">Loading availability timeline&hellip;</div></div>
+    <div class="hm-legend">
+      <span class="swatches"><span class="sw real"></span> <span id="swRealLabel">node</span></span>
+      <span class="swatches" id="swSynthWrap" hidden><span class="sw synth"></span> synth node</span>
+      <span class="swatches"><span class="sw range"></span> selected range</span>
+      <span>Drag along the <b>top strip</b> to set the date range &middot; click a <b>date label</b> to focus that day
+        &middot; drag the middle to pan &middot; wheel or &#9650;&#9660; to zoom (hour &rarr; month).
+        The component draws at most 3 rows.<span id="tlAggHint" hidden> Pick up to 3 nodes for one row each.</span></span>
+    </div>
+  </section>
+
+  <!-- ── Results ── -->
+  <section class="card">
+    <div class="card-header"><h3>Results</h3>
+      <div class="frow">
+        <span class="muted tl-range" id="resultCount"></span>
+        <button class="btn btn-secondary btn-sm" id="expandAll">Expand all</button>
+        <button class="btn btn-secondary btn-sm" id="collapseAll">Collapse all</button>
+        <button class="btn btn-primary btn-sm" id="selectAll">Select all matching</button>
+      </div>
+    </div>
+    <div class="colhead">
+      <span></span><span data-sort="key">File</span><span data-sort="span">Coverage (UTC, est.)</span>
+      <span data-sort="size">Size</span><span>Actions</span>
+    </div>
+    <div id="results"></div>
+  </section>
+</main>
+
+<!-- ── Selection basket ── -->
+<div class="basket">
+  <div class="basket-bar">
+    <div class="basket-count"><span id="bCount">0</span> files selected &middot; <span id="bBytes">0 B</span>
+      <span class="muted" id="bJsonBytes"></span></div>
+    <div class="spacer"></div>
+    <button class="btn btn-secondary btn-sm" id="bToggle">Show manifest</button>
+    <button class="btn btn-secondary btn-sm" id="bCurl" disabled>Copy curl</button>
+    <button class="btn btn-secondary btn-sm" id="bClear">Clear</button>
+  </div>
+  <div class="basket-body" id="bBody">
+    <div>
+      <textarea id="manifest" readonly placeholder="Tick files above — their download URLs appear here." aria-label="Manifest of download URLs"></textarea>
+      <div class="hint">A plain <b>.txt of URLs</b>. Each answers <code class="mono">application/json</code> —
+        the archived Parquet reconstructed into the legacy per-frame JSON, roughly <b>9&times;</b> the stored size.
+        There is no <code class="mono">Content-Disposition</code>, so name the output yourself (the curl block does).</div>
+    </div>
+    <div>
+      <div class="sec" style="margin-top:0">Fetch</div>
+      <div class="codeblock" id="bCmd">&mdash;</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Preview drawer ── -->
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <div><h3 id="dTitle">&mdash;</h3><div class="mono muted dkey" id="dKey"></div></div>
+    <button class="btn btn-secondary btn-sm" id="dClose">Close</button>
+  </div>
+  <div class="drawer-body" id="dBody"></div>
+  <div class="drawer-foot">
+    <a class="btn btn-primary btn-sm" id="dOpen" target="_blank" rel="noopener">Open JSON</a>
+    <div class="spacer"></div>
+    <button class="btn btn-secondary btn-sm" id="dAdd">Add to basket</button>
+  </div>
+</aside>
+
+<!-- @edsc/timeline (NASA Earthdata Search, Apache-2.0) ships as a CommonJS bundle and its four
+     externals as UMD globals. The page vhost's CSP is `script-src 'self'`, so all five are
+     vendored under vendor/ rather than pulled from a CDN — see vendor/NOTICE.md. -->
+<script src="vendor/react.production.min.js"></script>
+<script src="vendor/react-dom.production.min.js"></script>
+<script src="vendor/lodash.min.js"></script>
+<script src="vendor/classnames.min.js"></script>
+<script>
+var module = { exports: {} };
+function require(n) {
+  return { react: window.React, "react-dom": window.ReactDOM, lodash: window._, classnames: window.classNames }[n];
+}
+</script>
+<script src="vendor/edsc-timeline-1.1.9.js"></script>
+<script>
+(function () {
+  var host = document.getElementById("timeline");
+  try {
+    var EDSCTimeline = module.exports && (module.exports.default || module.exports);
+    if (typeof EDSCTimeline !== "function" && typeof EDSCTimeline !== "object") {
+      throw new Error("bundle did not export a component");
+    }
+    host.innerHTML = "";
+    var root = ReactDOM.createRoot(host);
+    window.__tl = { render: function (props) { root.render(React.createElement(EDSCTimeline, props)); } };
+  } catch (e) {
+    host.innerHTML = '<div class="tl-loading err">Could not load the availability timeline (' +
+      ((e && e.message) || e) + '). The results list below still works.</div>';
+  }
+  window.__tlReady = true;
+  window.dispatchEvent(new Event("timeline-ready"));
+})();
+</script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -86,6 +86,10 @@ COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
 # Built dashboard
 COPY --from=dashboard-build /app/dashboard/dist /app/dashboard/dist
 
+# Data explorer — static, no build step and no npm, so it is copied straight
+# from the source tree rather than out of a builder stage.
+COPY data-explorer/ /app/data-explorer/
+
 # Rate-limit zones — http{} context, identical in every environment.
 COPY deploy/nginx-security.conf /etc/nginx/conf.d/security.conf
 

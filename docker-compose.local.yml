@@ -73,9 +73,10 @@ services:
       - HOST_MAP=map.localhost
       - HOST_DASH=dash.localhost
       - HOST_ADMIN=admin.localhost
+      - HOST_DATA=data.localhost
       - HOST_TESTMAP=testmap.localhost
       - HOST_LEGACY_REDIRECT=tower-finder.localhost
-      - CORS_ORIGINS=http://towers.localhost:8080,http://api.localhost:8080,http://map.localhost:8080,http://testmap.localhost:8080,http://dash.localhost:8080
+      - CORS_ORIGINS=http://towers.localhost:8080,http://api.localhost:8080,http://map.localhost:8080,http://testmap.localhost:8080,http://dash.localhost:8080,http://data.localhost:8080
       # The published port is part of the origin, so these carry :8080 where the
       # deployed values do not. ws:// rather than wss:// for the same reason the
       # TLS branch is off. The old hand-written config dropped the CSP entirely to
