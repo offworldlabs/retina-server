@@ -5,6 +5,12 @@ physics — bistatic delay, association, the solver all resolve geometry against
 it — and by nothing else.  This module is the single place that turns a true
 receiver position into the one an unauthenticated client is allowed to see.
 
+**One offset per site, not per node.**  The identity hashed is the node's
+site: receivers configured at the same coordinates share an offset and are
+published at one point, because two independent offsets around one house are
+two samples of it and an attacker intersects them.  services/node_sites.py
+resolves that identity and explains what the intersection costs.
+
 **Where this belongs.**  Call it at the boundary where bytes leave for a public
 client (a JSON payload, a websocket entry, an archive row), never upstream of
 it.  ``services/node_pipeline.py`` and everything it feeds must keep the true
@@ -65,6 +71,7 @@ from config.constants import (
 )
 from core.runtime_config import RUNTIME_DIR, runtime_path, write_runtime_file
 from services.geo import KM_PER_DEG_LAT, km_per_deg_lon, offset_latlon
+from services.node_sites import site_identity
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +86,9 @@ _SALT_FILE = "node_fuzz_salt"
 # decimals invites the reader to believe it is a survey fix.
 _PUBLIC_DECIMALS = 4
 
-# (node_id, salt, min_km, max_km) → (east_km, north_km).  The salt and bounds
-# are in the key so a test (or a re-salted deployment) cannot read a stale
-# offset back out.  Bounded by the fleet size, which is bounded by the node
+# (hmac message, salt, min_km, max_km) → (east_km, north_km).  The salt and
+# bounds are in the key so a test (or a re-salted deployment) cannot read a
+# stale offset back out.  Bounded by the fleet size, which is bounded by the node
 # registry.
 _offset_cache: dict[tuple[str, str, float, float], tuple[float, float]] = {}
 
@@ -162,10 +169,17 @@ def _salt() -> str:
 def _frame_message(node_id: str, min_km: float, max_km: float) -> str:
     """The HMAC message for one node under one pair of bounds.
 
-    The bare node id in the original frame, so that frame's offsets are exactly
-    what they have always been; the id plus a canonical label for the bounds in
-    any other, so every change of bounds lands the fleet in a frame unrelated
-    to the one it left (see the module docstring on why that matters).
+    The identity is the node's SITE, not the node: nodes configured at the same
+    coordinates resolve to one id and therefore to one offset, so a shared
+    receive site is published as one point rather than as two samples of itself
+    (services/node_sites.py).  A node alone at its coordinates resolves to its
+    own id, which is what it has always keyed on.
+
+    The bare identity in the original frame, so that frame's offsets are
+    exactly what they have always been; the identity plus a canonical label for
+    the bounds in any other, so every change of bounds lands the fleet in a
+    frame unrelated to the one it left (see the module docstring on why that
+    matters).
 
     The label is formatted to a fixed precision rather than interpolated raw:
     "1", "1.0" and "1.000" are the same donut and must not be three frames, or
@@ -173,9 +187,10 @@ def _frame_message(node_id: str, min_km: float, max_km: float) -> str:
     decimals is a millimetre of donut radius — far below anything a deployment
     would mean to express, and far above float noise.
     """
+    identity = site_identity(node_id)
     if (min_km, max_km) == _ORIGINAL_FRAME:
-        return node_id
-    return f"{node_id}{_FRAME_SEP}{min_km:.6f}:{max_km:.6f}"
+        return identity
+    return f"{identity}{_FRAME_SEP}{min_km:.6f}:{max_km:.6f}"
 
 
 def public_offset_km(node_id: str | None) -> tuple[float, float]:
@@ -192,12 +207,16 @@ def public_offset_km(node_id: str | None) -> tuple[float, float]:
     salt = _salt()
     min_km = node_fuzz_min_km()
     max_km = node_fuzz_max_km()
-    key = (key_id, salt, min_km, max_km)
+    # Keyed on the resolved message, not on the node id: a node's site identity
+    # can change under it — the first time a site-mate's configuration is seen,
+    # say — and a cache keyed on the id would keep serving the offset from
+    # before it had one.
+    message = _frame_message(key_id, min_km, max_km)
+    key = (message, salt, min_km, max_km)
     cached = _offset_cache.get(key)
     if cached is not None:
         return cached
 
-    message = _frame_message(key_id, min_km, max_km)
     digest = hmac.new(salt.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).digest()
     # Two independent 64-bit draws out of the same digest: bytes 0-7 pick the
     # bearing, bytes 8-15 the displacement.  Dividing by 2**64 lands in [0, 1),
