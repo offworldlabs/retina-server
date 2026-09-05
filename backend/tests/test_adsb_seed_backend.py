@@ -605,3 +605,32 @@ class TestSeedWorldWiring:
         must consult the same resolver claiming and the auto-tag filter use,
         or one consumer accepts what another rejects."""
         assert state.node_associator.node_world_provider is state.node_world
+
+    def test_a_sim_and_a_real_node_over_one_footprint_get_no_overlap_zone(self):
+        """The same resolver, one level down: bottom-up pairing must not build
+        a grid across worlds either.  Registering a synthetic node and a
+        hardware node on overlapping coverage used to leave a zone whose only
+        possible pairing was a simulated echo against a real one — which is how
+        real node ids reached the synthetic fleet's dark solves."""
+        _a = state.node_associator
+        try:
+            _a.register_node("synth-GVL-9001", dict(_NODE_CFG))
+            _a.register_node("hw-9001", dict(_NODE_CFG, rx_lat=34.86, rx_lon=-82.36))
+
+            assert _a.overlap_zones == {}
+            assert _a._neighbors.get("synth-GVL-9001", set()) == set()
+            assert _a.assoc_world_skipped_pairs == 1
+        finally:
+            state._reset_for_tests()
+
+    def test_two_synthetic_nodes_over_one_footprint_still_pair(self):
+        """The gate is the world difference, not the registration."""
+        _a = state.node_associator
+        try:
+            _a.register_node("synth-GVL-9001", dict(_NODE_CFG))
+            _a.register_node("synth-GVL-9002", dict(_NODE_CFG, rx_lat=34.86, rx_lon=-82.36))
+
+            assert _a.overlap_zones
+            assert _a.assoc_world_skipped_pairs == 0
+        finally:
+            state._reset_for_tests()
