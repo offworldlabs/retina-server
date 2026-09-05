@@ -918,6 +918,25 @@ def multinode_key_decision(
     return f"mn-dark-{result.get('timestamp_ms', 0)}-{lat:.3f}-{lon:.3f}", "minted", None
 
 
+def _forget_mn_key(old_key: str) -> None:
+    """Erase every trace of ``old_key`` from the multinode stores.
+
+    The four stores are the entry itself, its anomaly hex (the feed reads that
+    set independently of multinode_tracks, so an entry popped without it keeps
+    flagging a hex nothing renders), the smoother's position history, and the
+    Kalman state.  Both removal paths — supersession and the orphan rule —
+    have to erase all four or the next key minted at the same place inherits
+    the dead one's filter.  Caller holds _MN_TRACKS_LOCK; _MN_POS_HISTORY_LOCK
+    is taken inside, which is the lock order everywhere else in this module.
+    """
+    state.multinode_tracks.pop(old_key, None)
+    with state.anomaly_lock:
+        state.anomaly_hexes.discard(multinode_hex_from_key(old_key))
+    with _MN_POS_HISTORY_LOCK:
+        _MN_POS_HISTORY.pop(old_key, None)
+    track_filter.drop_key(old_key)
+
+
 def _supersession_match(
     old_key: str,
     old_r: dict,
@@ -1499,6 +1518,7 @@ def _record_solve_history(
     follow_key: str | None = None,
     superseded_keys: list[str] | None = None,
     superseded_blocked: int | None = None,
+    orphaned_keys: list[str] | None = None,
     extra: dict | None = None,
 ) -> None:
     """Append one solve outcome to state.mlat_solve_history.
@@ -1529,6 +1549,13 @@ def _record_solve_history(
     (see _supersession_match), and how many entries shared a source track id
     with it but were refused.  Both are publish-path only, for the same reason
     key_how is — nothing before the gates has run supersession.
+
+    ``orphaned_keys`` is the same list for the orphan rule
+    (dark_follow.find_orphans): entries popped not because they were matched
+    to this aircraft but because this publish took over the evidence they were
+    built from.  Recorded separately from superseded_keys because the two
+    answer different questions about the same removal, and the flag's whole
+    purpose is to be measurable in the history.
 
     ``extra`` merges caller-supplied fields (trim metadata, beam-rejection
     diagnostics) into the record.  Applied before the GT stamp so it can
@@ -1623,6 +1650,10 @@ def _record_solve_history(
         # every reject — supersession runs only on the publish path.
         "superseded_keys": list(superseded_keys or []),
         "superseded_blocked": int(superseded_blocked or 0),
+        # The orphan rule's verdict (dark_follow.find_orphans): entries this
+        # publish retired for having no evidence left of their own.  Always
+        # empty with DARK_FOLLOW_ORPHAN_MODE off, which is the default.
+        "orphaned_keys": list(orphaned_keys or []),
         "solve_count": r.get("solve_count"),
         "source_track_ids": list(r.get("source_track_ids") or []),
         "vel_source": r.get("vel_source"),
@@ -2403,18 +2434,41 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
                             _superseded_blocked += 1
                             state.bump_counter("mn_superseded_blocked")
                             continue
-                        state.multinode_tracks.pop(old_key, None)
-                        with state.anomaly_lock:
-                            state.anomaly_hexes.discard(multinode_hex_from_key(old_key))
-                        with _MN_POS_HISTORY_LOCK:
-                            _MN_POS_HISTORY.pop(old_key, None)
-                        track_filter.drop_key(old_key)
+                        _forget_mn_key(old_key)
                         max_superseded_count = max(max_superseded_count, old_r.get("solve_count", 0))
                         _superseded_keys.append(old_key)
                         state.bump_counter("mn_superseded")
 
                 result["solve_count"] = max(prev.get("solve_count", 0) if prev else 0, max_superseded_count) + 1
                 state.multinode_tracks[key] = result
+
+                # The orphan rule (DARK_FOLLOW_ORPHAN_MODE=on, off by
+                # default).  Supersession above only pops an entry it can
+                # positively match to THIS aircraft; a fragment it refuses on
+                # that test but whose whole evidence this publish just
+                # consumed is left drifting to its own expiry.  find_orphans
+                # names those, and only for an established dark key — see it
+                # for the predicate and state.DARK_FOLLOW_ORPHAN_MODE for the
+                # replay numbers that keep it flagged.  It runs after the
+                # store above because the counts it judges by are the ones
+                # this publish just wrote.
+                _orphaned_keys = dark_follow.find_orphans(
+                    state.multinode_tracks,
+                    key,
+                    result["source_track_ids"],
+                    (result.get("timestamp_ms") or 0) / 1000.0,
+                    result["solve_count"],
+                    int(result.get("n_nodes") or 0),
+                )
+                for old_key in _orphaned_keys:
+                    _forget_mn_key(old_key)
+                    # Cooldown as well as removal: the follow lane's target
+                    # list is TTL-cached for a second, so the entry popped
+                    # above can still be followed out of that cache and put
+                    # its own key straight back.  drop_target is what makes
+                    # the retirement stick across the next rebuild.
+                    dark_follow.drop_target(old_key, f"orphaned by {key}")
+                    state.bump_counter("dark_follow_orphaned")
                 if trim_meta:
                     state.bump_counter("solver_trimmed")
         if _shadow_key is not None:
@@ -2448,6 +2502,7 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             key_dist_km=_key_dist_km,
             superseded_keys=_superseded_keys,
             superseded_blocked=_superseded_blocked,
+            orphaned_keys=_orphaned_keys,
             extra=_extra,
         )
     elif result is not None:

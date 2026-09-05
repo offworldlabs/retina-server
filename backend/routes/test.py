@@ -1192,6 +1192,14 @@ def _solver_window_stats(minutes: float) -> dict:
             # fault.
             "mn_superseded": state.mn_superseded,
             "mn_superseded_blocked": state.mn_superseded_blocked,
+            # The other removal path, and the reason it sits here rather than
+            # with the follow-lane funnel below: the orphan rule
+            # (dark_follow.find_orphans, DARK_FOLLOW_ORPHAN_MODE=on, off by
+            # default) retires fragment keys supersession refused, so it is
+            # read against mn_superseded_blocked above and against
+            # dark_keys_minted — a rule that removes keys without minting
+            # fewer is costing correct frames for nothing.
+            "dark_follow_orphaned": state.dark_follow_orphaned,
         },
         "counters": {
             "successes": state.solver_successes,

@@ -50,6 +50,17 @@ Modes (state.DARK_FOLLOW_MODE), same three-way shape as KNOWN_LANE_MODE:
              follows: a bottom-up solve may not join a key this lane published
              on in the last DARK_FOLLOW_OWN_S — see that constant for the
              measurement, and recently_followed for the reader.
+
+THE ORPHAN RULE (DARK_FOLLOW_ORPHAN_MODE, default off).  Ownership stops a
+fragment key from being JOINED; it does not remove one that already exists.
+Since supersession stopped popping another aircraft's key on a bare shared
+source-track id, such a fragment simply lives out its 30 s expiry beside the
+real track.  find_orphans is the narrow case where that is provably wasted
+map: an established followed key publishes a solve built from the very node
+tracks a younger key was last built from, so the younger key has no evidence
+of its own left and can be retired now.  Off by default and separately
+flagged — see state.DARK_FOLLOW_ORPHAN_MODE for the replay numbers that say
+the benefit is small enough to want measuring live rather than assuming.
 """
 
 import logging
@@ -127,6 +138,22 @@ DARK_FOLLOW_OWN_S = float(os.getenv("DARK_FOLLOW_OWN_S", "6.0"))
 # the 6 km proximity gate on purpose — this is a "these are the same target"
 # radius, not an association gate.
 DARK_FOLLOW_SHADOW_KM = float(os.getenv("DARK_FOLLOW_SHADOW_KM", "2.0"))
+
+# ── Orphan rule ──────────────────────────────────────────────────────────────
+# How far back find_orphans will look for a key to retire.  The map's own dark
+# expiry is 30 s, so a key older than this is already on its way off the
+# display and popping it buys nothing; and the shared source-track ids are
+# evidence about ONE aircraft only while both solves are talking about the same
+# few seconds of the sky — a node track id reused half a minute later is a
+# different pass of a different target.
+DARK_FOLLOW_ORPHAN_WINDOW_S = float(os.getenv("DARK_FOLLOW_ORPHAN_WINDOW_S", "30.0"))
+# Shared source-track ids required before a key may be orphaned.  One shared id
+# is the signal supersession already learned not to trust on its own (74 of 178
+# live track ids appeared in published solves of more than one ground-truth
+# aircraft), so a single overlap is contamination far more often than identity.
+# Two, plus the majority test in find_orphans, is the cheapest statement that
+# the older key's evidence has actually moved rather than merely touched.
+_ORPHAN_MIN_SHARED = 2
 
 # Consecutive rejected follow-solves that drop a key.  Two, not one: a single
 # reject is routinely a bad epoch (one node's contaminated measurement trips
@@ -219,6 +246,18 @@ def mode() -> str:
     return m if m in ("off", "shadow", "binding") else "off"
 
 
+def orphan_mode() -> str:
+    """The orphan rule's flag, defensively — ``mode``'s shape and its reason.
+
+    Two values, off|on: the rule has no observable shadow (it either retires a
+    key or it does not), so a third mode would be indistinguishable from off.
+    Anything unreadable is off, because an unreadable flag must never be the
+    one that deletes a track.
+    """
+    m = getattr(state, "DARK_FOLLOW_ORPHAN_MODE", "off")
+    return m if m in ("off", "on") else "off"
+
+
 def drop_target(key: str, reason: str) -> None:
     """Stop following ``key`` for DARK_FOLLOW_COOLDOWN_S.
 
@@ -293,6 +332,73 @@ def recently_followed(key: str, now_s: float, within_s: float = DARK_FOLLOW_OWN_
     with _FOLLOWED_LOCK:
         last = _last_follow_publish.get(key)
     return last is not None and abs(now_s - last) <= within_s
+
+
+def find_orphans(
+    tracks: dict,
+    key: str,
+    new_ids,
+    ts_s: float,
+    solve_count: int,
+    n_nodes: int,
+) -> list[str]:
+    """Dark keys with no evidence of their own left, given this publish.
+
+    ``key`` has just published a solve built from ``new_ids`` (its source
+    track ids) at measurement epoch ``ts_s``, with the solve_count and n_nodes
+    the entry now carries.  Any OTHER dark key whose last solve was built
+    mostly from those same node tracks is a fragment of the aircraft ``key``
+    is following: the detections that made it are accounted for elsewhere now,
+    and nothing is left to refresh it before it expires.
+
+    Deliberately asymmetric — only an ESTABLISHED key may orphan, and only a
+    key with no more solves behind it may be orphaned.  The shared-id signal
+    says the two entries were built from overlapping evidence; it does not say
+    which of them is the aircraft.  The follow lane's own eligibility bar
+    (DARK_FOLLOW_MIN_SOLVES / DARK_FOLLOW_MIN_NODES — the same one that decides
+    what may be followed at all) is what breaks the tie, and it points at the
+    survivor rather than at whichever solve happened to arrive second.
+
+    Binding only, for the same reason the ownership check is: this is a
+    statement about who owns a key, and in shadow the lane publishes nothing,
+    so it owns nothing and has no standing to retire anyone else's key.
+
+    Caller holds solver._MN_TRACKS_LOCK — ``tracks`` is read here and the
+    caller pops from it under the same lock.  Pure otherwise: nothing in this
+    module is written, so the caller decides what removal means.
+    """
+    if orphan_mode() != "on" or mode() != "binding":
+        return []
+    if not key.startswith("mn-dark-"):
+        return []
+    ids = set(new_ids or ())
+    if not ids:
+        return []
+    if solve_count < DARK_FOLLOW_MIN_SOLVES or n_nodes < DARK_FOLLOW_MIN_NODES:
+        return []
+    out: list[str] = []
+    for other, rec in tracks.items():
+        if other == key or not other.startswith("mn-dark-"):
+            continue
+        old_ids = set(rec.get("source_track_ids") or ())
+        if not old_ids:
+            continue
+        age_s = ts_s - (rec.get("timestamp_ms") or 0) / 1000.0
+        if not (0.0 < age_s <= DARK_FOLLOW_ORPHAN_WINDOW_S):
+            continue
+        shared = len(ids & old_ids)
+        if shared < _ORPHAN_MIN_SHARED or shared * 2 < len(old_ids):
+            continue
+        if int(rec.get("solve_count") or 0) > solve_count:
+            continue
+        # A key the lane is itself refreshing is not an orphan whatever its
+        # inputs look like: it has a live source of evidence that is not in
+        # ``tracks`` at all, and retiring it would be the lane deleting its
+        # own target.
+        if recently_followed(other, ts_s):
+            continue
+        out.append(other)
+    return out
 
 
 def _in_cooldown(key: str, now_mono: float) -> bool:

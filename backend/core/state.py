@@ -88,6 +88,21 @@ DARK_FOLLOW_MODE = os.getenv("DARK_FOLLOW_MODE", "shadow").lower()
 if DARK_FOLLOW_MODE not in ("off", "shadow", "binding"):
     DARK_FOLLOW_MODE = "shadow"
 
+# The orphan rule (see dark_follow.find_orphans): retire a younger dark key the
+# instant an established followed key publishes a solve built from the same
+# node tracks that younger key was last built from.  Two-way flag, not the
+# three-way one above, because there is no useful shadow: the rule's only
+# effect IS the removal.  Default off, and the default is the point — offline
+# replay over three 20-min captures found the benefit small and two-sided
+# (cap17: 7 of 38 ghost keys retired, 0-34 ghost frames removed against 13-21
+# correct frames lost; cap15: 5 ghost frames removed against 21 correct frames
+# lost), so it ships as something to measure live rather than as a behaviour
+# change.  Same defensive parsing as every other lane flag: a value this
+# process cannot read leaves the rule inert.
+DARK_FOLLOW_ORPHAN_MODE = os.getenv("DARK_FOLLOW_ORPHAN_MODE", "off").lower()
+if DARK_FOLLOW_ORPHAN_MODE not in ("off", "on"):
+    DARK_FOLLOW_ORPHAN_MODE = "off"
+
 node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR, fov_mode=FOV_MODE)
 
 
@@ -533,6 +548,13 @@ dark_follow_claims: int = 0
 dark_follow_inputs: int = 0
 dark_follow_published: int = 0
 dark_follow_dropped: int = 0
+# Dark keys retired by the orphan rule (DARK_FOLLOW_ORPHAN_MODE=on) — a
+# fragment whose evidence a followed key has taken over, popped now instead of
+# left drifting to its 30 s expiry.  Beside dropped because both are the lane
+# removing a key, but they mean opposite things: dropped is the lane giving up
+# a key it was following, orphaned is the lane taking one away from the
+# bottom-up lane.
+dark_follow_orphaned: int = 0
 # Bottom-up dark solves refused at keying because the follow lane owns the key
 # they landed on (solver.multinode_key_decision's "shadowed" verdict, binding
 # mode only).  They passed every gate, so they are counted in solver_successes
@@ -781,7 +803,8 @@ def _reset_for_tests() -> None:
     global known_claims_made, known_claim_contentions, known_claims_bound
     global known_claims_errors, known_claims_visibility_rejects, known_claims_world_rejects
     global dark_follow_targets, dark_follow_claims, dark_follow_inputs
-    global dark_follow_published, dark_follow_dropped, dark_bottomup_shadowed
+    global dark_follow_published, dark_follow_dropped, dark_follow_orphaned
+    global dark_bottomup_shadowed
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
     global coverage_rebuild_backlog
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
@@ -872,7 +895,7 @@ def _reset_for_tests() -> None:
         known_claims_errors = known_claims_visibility_rejects = 0
         known_claims_world_rejects = 0
         dark_follow_targets = dark_follow_claims = dark_follow_inputs = 0
-        dark_follow_published = dark_follow_dropped = 0
+        dark_follow_published = dark_follow_dropped = dark_follow_orphaned = 0
         dark_bottomup_shadowed = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
         coverage_rebuild_backlog = 0

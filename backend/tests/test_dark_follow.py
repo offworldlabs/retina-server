@@ -843,3 +843,225 @@ class TestShadowedSolveIsARejection:
         # Two rejects in a row is exactly what drops a followed key.  It is
         # still a target, so the guard never saw them.
         assert [t["key"] for t in dark_follow.follow_targets()] == [_KEY]
+
+
+class TestOrphanRule:
+    """dark_follow.find_orphans: which OTHER dark keys a publish leaves with no
+    evidence of their own.
+
+    Off by default, and the tests say so first.  Offline replay of this exact
+    predicate over three 20-min captures found the benefit small and two-sided
+    (cap17: 7 of 38 ghost keys retired, 0-34 ghost frames removed against 13-21
+    correct frames lost), so what is pinned here is the predicate, not a
+    claim that turning it on is an improvement.
+    """
+
+    _TS_MS = 3_000_000
+    _TS_S = _TS_MS / 1000.0
+    _A = "mn-dark-established"
+    _B = "mn-dark-fragment"
+
+    def setup_method(self):
+        dark_follow._reset_for_tests()
+
+    def teardown_method(self):
+        dark_follow._reset_for_tests()
+
+    def _arm(self, monkeypatch, orphan="on", mode="binding"):
+        monkeypatch.setattr(state, "DARK_FOLLOW_MODE", mode)
+        monkeypatch.setattr(state, "DARK_FOLLOW_ORPHAN_MODE", orphan)
+
+    def _tracks(self, key=_B, ids=("t1", "t2", "t9"), age_s=5.0, solve_count=2):
+        """One older dark entry, two of whose three source tracks the publish
+        below is about to take over."""
+        return {
+            key: {
+                "lat": _LAT,
+                "lon": _LON,
+                "timestamp_ms": self._TS_MS - int(age_s * 1000),
+                "n_nodes": 3,
+                "solve_count": solve_count,
+                "source_track_ids": list(ids),
+            }
+        }
+
+    def _find(self, tracks, new_ids=("t1", "t2", "t3"), solve_count=6, n_nodes=3):
+        return dark_follow.find_orphans(tracks, self._A, list(new_ids), self._TS_S, solve_count, n_nodes)
+
+    def test_the_flag_is_off_by_default(self, monkeypatch):
+        self._arm(monkeypatch, orphan="off")
+        assert self._find(self._tracks()) == []
+
+    def test_an_unreadable_flag_is_off(self, monkeypatch):
+        self._arm(monkeypatch, orphan="ON PLEASE")
+        assert dark_follow.orphan_mode() == "off"
+        assert self._find(self._tracks()) == []
+
+    @pytest.mark.parametrize("mode", ["shadow", "off"])
+    def test_the_inert_follow_modes_orphan_nothing(self, monkeypatch, mode):
+        """Ownership of a key only exists where the lane publishes on it."""
+        self._arm(monkeypatch, mode=mode)
+        assert self._find(self._tracks()) == []
+
+    def test_a_fragment_whose_evidence_moved_is_orphaned(self, monkeypatch):
+        self._arm(monkeypatch)
+        assert self._find(self._tracks()) == [self._B]
+
+    def test_one_shared_id_of_three_is_not_enough(self, monkeypatch):
+        """A single shared track id is the signal supersession already learned
+        not to trust — see _ORPHAN_MIN_SHARED."""
+        self._arm(monkeypatch)
+        assert self._find(self._tracks(ids=("t1", "t8", "t9"))) == []
+
+    def test_two_shared_ids_of_five_is_not_a_majority(self, monkeypatch):
+        self._arm(monkeypatch)
+        assert self._find(self._tracks(ids=("t1", "t2", "t7", "t8", "t9"))) == []
+
+    def test_a_key_newer_than_the_solve_is_not_orphaned(self, monkeypatch):
+        """Out-of-order arrival: the other entry is evidence about a LATER
+        instant, so this publish has not taken anything from it."""
+        self._arm(monkeypatch)
+        assert self._find(self._tracks(age_s=-2.0)) == []
+
+    def test_a_key_past_the_window_is_not_orphaned(self, monkeypatch):
+        self._arm(monkeypatch)
+        assert self._find(self._tracks(age_s=dark_follow.DARK_FOLLOW_ORPHAN_WINDOW_S + 5.0)) == []
+
+    def test_a_better_established_key_is_never_orphaned(self, monkeypatch):
+        """The shared ids do not say which entry is the aircraft; solve counts
+        are the tie-break, and they must point the other way."""
+        self._arm(monkeypatch)
+        assert self._find(self._tracks(solve_count=9)) == []
+
+    def test_a_recently_followed_key_is_not_an_orphan(self, monkeypatch):
+        """The lane is refreshing it from evidence that is not in `tracks` at
+        all, so its source ids do not describe everything it has."""
+        self._arm(monkeypatch)
+        dark_follow.note_follow_publish(self._B, self._TS_S - 2.0)
+        assert self._find(self._tracks()) == []
+
+    def test_an_unestablished_publisher_orphans_nothing(self, monkeypatch):
+        self._arm(monkeypatch)
+        assert self._find(self._tracks(), solve_count=dark_follow.DARK_FOLLOW_MIN_SOLVES - 1) == []
+        assert self._find(self._tracks(), n_nodes=dark_follow.DARK_FOLLOW_MIN_NODES - 1) == []
+
+    def test_an_adsb_key_is_never_orphaned(self, monkeypatch):
+        """The rule is about the dark lane's own fragmentation; an ADS-B entry
+        is keyed by a transponder and owns itself."""
+        self._arm(monkeypatch)
+        assert self._find(self._tracks(key="mn-adsb-a1b2c3")) == []
+
+    def test_a_publish_on_an_adsb_key_orphans_nothing(self, monkeypatch):
+        self._arm(monkeypatch)
+        tracks = self._tracks()
+        assert dark_follow.find_orphans(tracks, "mn-adsb-a1b2c3", ["t1", "t2", "t3"], self._TS_S, 6, 3) == []
+
+    def test_a_solve_with_no_provenance_orphans_nothing(self, monkeypatch):
+        self._arm(monkeypatch)
+        assert self._find(self._tracks(), new_ids=()) == []
+
+
+class TestOrphanRuleInTheSolver:
+    """The rule where it actually runs: the publish path, under
+    _MN_TRACKS_LOCK, beside supersession."""
+
+    _FRAG = "mn-dark-fragment"
+
+    def setup_method(self):
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+        dark_follow._reset_for_tests()
+
+    def teardown_method(self):
+        solver_mod._reset_for_tests()
+        dark_follow._reset_for_tests()
+
+    def _entries(self, ts_ms):
+        """The followed track at the reference position, and 20 km away a
+        younger fragment built from two of the same node tracks.
+
+        The distance matters: supersession's spatial branch must NOT match the
+        fragment (or this test would pass with the rule deleted), and its
+        source ids are not a subset of the solve's, so the identical-inputs
+        branch refuses it too.  What is left is exactly the population the
+        orphan rule exists for.
+        """
+        frag_lat, frag_lon = offset_latlon_m(_LAT, _LON, east_m=0.0, north_m=20_000.0)
+        state.multinode_tracks[_KEY] = {
+            "lat": _LAT,
+            "lon": _LON,
+            "alt_m": _ALT_M,
+            "vel_east": 0.0,
+            "vel_north": 0.0,
+            "n_nodes": 3,
+            "solve_count": 5,
+            "timestamp_ms": ts_ms - 1000,
+            "source_track_ids": ["t1", "t2", "t3"],
+            "contributing_node_ids": [_NODE_ID],
+        }
+        state.multinode_tracks[self._FRAG] = {
+            "lat": frag_lat,
+            "lon": frag_lon,
+            "alt_m": _ALT_M,
+            "vel_east": 0.0,
+            "vel_north": 0.0,
+            "n_nodes": 3,
+            "solve_count": 2,
+            "timestamp_ms": ts_ms - 5000,
+            "source_track_ids": ["t1", "t2", "t9"],
+            "contributing_node_ids": [_NODE_ID],
+        }
+
+    def _solve_fn(self, ts_ms):
+        def fn(_s_in, _cfgs):
+            return {
+                "success": True,
+                "lat": _LAT,
+                "lon": _LON,
+                "alt_m": _ALT_M,
+                "vel_east": 0.0,
+                "vel_north": 0.0,
+                "rms_delay": 1.0,
+                "rms_doppler": 5.0,
+                "n_nodes": 3,
+                "n_measurements": 3,
+                "timestamp_ms": ts_ms,
+                "contributing_node_ids": ["n1", "n2", "n3"],
+            }
+
+        return fn
+
+    def _run(self, monkeypatch, orphan):
+        monkeypatch.setattr(state, "DARK_FOLLOW_MODE", "binding")
+        monkeypatch.setattr(state, "DARK_FOLLOW_ORPHAN_MODE", orphan)
+        ts_ms = int(time.time() * 1000)
+        self._entries(ts_ms)
+        solver_mod._process_solver_item(
+            ({"n_nodes": 3, "track_ids": ["t1", "t2", "t3"]}, {}, time.time()),
+            self._solve_fn(ts_ms),
+        )
+        return state.mlat_solve_history[-1]
+
+    def test_the_publish_retires_the_fragment(self, monkeypatch):
+        rec = self._run(monkeypatch, "on")
+
+        assert rec["outcome"] == "published"
+        assert rec["solve_key"] == _KEY
+        assert list(state.multinode_tracks) == [_KEY]
+        assert state.dark_follow_orphaned == 1
+        # Removed, not superseded: supersession refused this entry, which is
+        # the whole reason the rule has something to do.
+        assert rec["superseded_keys"] == []
+        assert rec["orphaned_keys"] == [self._FRAG]
+        # And it goes into follow cooldown, so the lane cannot immediately
+        # re-follow the entry this publish just replaced.
+        assert dark_follow._in_cooldown(self._FRAG, time.monotonic())
+        assert state.dark_follow_dropped == 1
+
+    def test_the_flag_off_leaves_the_fragment_alone(self, monkeypatch):
+        rec = self._run(monkeypatch, "off")
+
+        assert rec["outcome"] == "published"
+        assert self._FRAG in state.multinode_tracks
+        assert state.dark_follow_orphaned == 0
+        assert rec["orphaned_keys"] == []
