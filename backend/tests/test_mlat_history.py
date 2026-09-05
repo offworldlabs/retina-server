@@ -538,3 +538,100 @@ class TestGtIdentityBinding:
         }
         rec = self._record(adsb_hex="aaa111")
         assert rec["gt_source"] == "adsb"
+
+
+class TestPerLaneDeques:
+    """The known lane writes to its own deque; every reader merges the two.
+
+    One shared deque made the 8 000-record cap a race rather than a retention
+    rule: the known lane attempts a solve per claimed hex per pass and on the
+    test fleet wrote ~4 200 records per 10 min against the dark lane's ~265,
+    so a dark record was evicted by known-lane volume in ~18 min even though
+    both endpoints accept a 35 min window and the solver age-prunes at 35.
+    """
+
+    def setup_method(self):
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+
+    def teardown_method(self):
+        solver_mod._reset_for_tests()
+
+    def _client(self):
+        from main import app
+
+        return TestClient(app)
+
+    def test_regular_records_go_to_the_regular_deque(self):
+        solver_mod._process_solver_item((dict(_CONFIRMED_N2), {}, time.time()), _solve_fn())
+        assert len(state.mlat_solve_history) == 1
+        assert not state.mlat_solve_history_known
+
+    def test_known_lane_records_go_to_the_known_deque(self):
+        solver_mod._record_solve_history(
+            "known_truth_match",
+            {"n_nodes": 2, "adsb_hex": "abc123", "initial_guess": {"lat": LAT, "lon": LON}},
+            {"success": True, "lat": LAT, "lon": LON, "n_nodes": 2},
+            extra={"known_lane": True, "label": "truth_match", "published": False},
+        )
+        assert len(state.mlat_solve_history_known) == 1
+        assert not state.mlat_solve_history
+
+    def test_known_lane_volume_cannot_evict_dark_records(self, monkeypatch):
+        """The failure the split fixes, at 1/1000 scale: a flood of known-lane
+        records past the cap leaves the dark record untouched."""
+        monkeypatch.setattr(state, "mlat_solve_history", deque(maxlen=8))
+        monkeypatch.setattr(state, "mlat_solve_history_known", deque(maxlen=8))
+        solver_mod._process_solver_item((dict(_CONFIRMED_N2), {}, time.time()), _solve_fn())
+        for _ in range(40):
+            solver_mod._record_solve_history(
+                "known_truth_match",
+                {"n_nodes": 2, "adsb_hex": "abc123", "initial_guess": {"lat": LAT, "lon": LON}},
+                {"success": True, "lat": LAT, "lon": LON, "n_nodes": 2},
+                extra={"known_lane": True, "label": "truth_match", "published": False},
+            )
+        assert len(state.mlat_solve_history) == 1
+        assert state.mlat_solve_history[0]["outcome"] == "published"
+        assert len(state.mlat_solve_history_known) == 8
+
+    def test_all_query_merges_both_lanes_in_ts_order(self):
+        solver_mod._record_solve_history(
+            "known_truth_match",
+            {"n_nodes": 2, "adsb_hex": "abc123", "initial_guess": {"lat": LAT, "lon": LON}},
+            {"success": True, "lat": LAT, "lon": LON, "n_nodes": 2},
+            extra={"known_lane": True, "label": "truth_match", "published": False},
+        )
+        solver_mod._process_solver_item((dict(_CONFIRMED_N2), {}, time.time()), _solve_fn())
+        data = self._client().get("/api/test/mlat-history?all=1").json()
+        assert data["n_records"] == 2
+        assert {r["outcome"] for r in data["records"]} == {"published", "known_truth_match"}
+        # ?all=1 is newest-first; the known record was written first.
+        assert [r["ts_ms"] for r in data["records"]] == sorted((r["ts_ms"] for r in data["records"]), reverse=True)
+
+    def test_hex_lookup_finds_a_known_lane_publish(self):
+        """The known lane publishes under mn-adsb-*, so its records are
+        reachable by marker hex exactly as before the split."""
+        key = "mn-adsb-abc123"
+        solver_mod._record_solve_history(
+            "known_truth_match",
+            {"n_nodes": 2, "adsb_hex": "abc123", "initial_guess": {"lat": LAT, "lon": LON}},
+            {"success": True, "lat": LAT, "lon": LON, "n_nodes": 2},
+            solve_key=key,
+            raw_lat=LAT,
+            raw_lon=LON,
+            extra={"known_lane": True, "label": "truth_match", "published": True},
+        )
+        data = self._client().get(f"/api/test/mlat-history?hex={multinode_hex_from_key(key)}").json()
+        assert data["n_solves"] == 1
+        assert data["solves"][0]["solve_key"] == key
+
+    def test_window_effective_minutes_reports_the_oldest_record_held(self):
+        solver_mod._process_solver_item((dict(_CONFIRMED_N2), {}, time.time()), _solve_fn())
+        state.mlat_solve_history[0]["ts_ms"] -= int(6 * 60 * 1000)
+        data = self._client().get("/api/test/mlat-history?all=1&minutes=35").json()
+        assert data["window_minutes"] == 35.0
+        assert 5.9 <= data["window_effective_minutes"] <= 6.1
+
+    def test_window_effective_minutes_is_zero_on_an_empty_store(self):
+        data = self._client().get("/api/test/mlat-history?all=1").json()
+        assert data["window_effective_minutes"] == 0.0

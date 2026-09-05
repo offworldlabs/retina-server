@@ -1314,7 +1314,10 @@ def _record_solve_history(
         rec["vel_err_ms"] = round(math.hypot(ve - gt_ve, vn - gt_vn), 1)
     else:
         rec["vel_err_ms"] = None
-    buf = state.mlat_solve_history
+    # Route by lane: the known lane's per-hex-per-pass volume would otherwise
+    # evict dark records from the shared cap long before they aged out (see
+    # state.mlat_solve_history_known).  Readers merge the two.
+    buf = state.mlat_solve_history_known if rec.get("known_lane") else state.mlat_solve_history
     buf.append(rec)
     # Age-prune from the left; append/popleft are atomic, and a racing second
     # writer at worst re-checks an already-fresh head.

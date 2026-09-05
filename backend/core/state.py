@@ -309,6 +309,20 @@ track_archive_buffer: deque[dict] = deque(maxlen=10000)
 MLAT_HISTORY_MAX = 8000
 mlat_solve_history: deque = deque(maxlen=MLAT_HISTORY_MAX)
 
+# The known lane's own records, same shape and same cap, in a SEPARATE deque.
+# One shared deque made the cap a race between the lanes rather than a
+# retention rule: the known lane attempts a solve per claimed hex per pass and
+# on the test fleet wrote ~4 200 records per 10 min against the dark lane's
+# ~265, so the 8 000-record cap held barely ~18 min of history even though
+# /api/test/mlat-history and /api/test/solver-stats both accept a 35 min
+# window and the solver age-prunes at 35 min.  A dark record was therefore
+# evicted by known-lane volume long before it aged out, and a caller asking
+# for 35 min got a silently truncated answer.  Split, each lane gets the full
+# age window at its own rate; readers merge the two (routes/test.py's
+# _merged_solve_history) so nothing that used to be visible disappeared, and
+# report window_effective_minutes so any remaining truncation is legible.
+mlat_solve_history_known: deque = deque(maxlen=MLAT_HISTORY_MAX)
+
 # ── ADS-B positions reported inside detection frames ──────────────────────────
 adsb_aircraft: dict[str, dict] = {}
 
@@ -755,6 +769,7 @@ def _reset_for_tests() -> None:
     anomaly_log.clear()
     track_archive_buffer.clear()
     mlat_solve_history.clear()
+    mlat_solve_history_known.clear()
     accuracy_samples.clear()
     mlat_samples.clear()
     for q in (frame_queue, solver_queue):
