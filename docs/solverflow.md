@@ -382,13 +382,30 @@ The centerpiece: every candidate from either lane, once dequeued from
 any gate stops the chain, bumps a counter, and (from 6.5 onward) writes a
 named record to solve history.
 
+**6.2 claims on publication, not on admission.** The suppression rule is
+"this aircraft is already on the map at this width, at every track it is
+built from" — so `_resolve_slot_covered` only *reads* the claims, and
+`_record_resolve_slot` takes them from the publish path, with the
+**post-trim survivors** (`result["source_track_ids"]`, rebuilt from the
+surviving `track_ids_by_node`). Claiming on admission instead meant a
+candidate that never reached the map still blacked out every later candidate
+sharing any of its track ids for the full 12 s — including *other aircraft's*,
+since tracker track ids are shared across the association candidates of
+different aircraft (the same finding behind `_supersession_match`'s spatial
+guard; see Caveats). Live that ran at ~1 537 skips per 646 dark attempts per
+30 min: more candidates suppressed than solved, by a factor of two. The price
+of the split is that the check no longer claims under the same lock, so two
+workers can now both solve duplicates that arrived together; that costs one
+extra solve and is resolved downstream by keying and supersession, which
+handle exactly this case already.
+
 ```mermaid
 flowchart TD
     deq["Dequeue (s_in, node_cfgs, enqueued_at)"]
     deq --> g61{"6.1 Staleness<br/>age_s > _SOLVER_MAX_QUEUE_AGE_S 45.0s?"}
     g61 -->|"yes"| f61["solver_stale_drops<br/>(no history record)"]:::inert
-    g61 -->|"no"| g62{"6.2 Re-solve suppression<br/>_claim_resolve_slot False?"}
-    g62 -->|"yes"| f62["solver_resolve_skips"]:::inert
+    g61 -->|"no"| g62{"6.2 Re-solve suppression<br/>_resolve_slot_covered (pure)?"}
+    g62 -->|"yes"| f62["solver_resolve_skips (+_dark)<br/>+ skip record with blockers"]:::inert
     g62 -->|"no"| g63["6.3 Solve dispatch:<br/>no guess -> bare solve_fn;<br/>n>=3 -> consensus? then<br/>_solve_best_altitude (sweep);<br/>n=2 -> _solve_best_altitude_n2<br/>(single altitude)"]
     g63 -->|"exception"| f63["solver_failures +<br/>solver_fail_exception,<br/>result=None"]:::inert
     g63 --> g64{"6.4 Trim & resolve (recovery):<br/>guess AND n>=4 AND<br/>rms_delay > 3.0us?"}
@@ -464,7 +481,7 @@ flowchart TD
 | Constant | Value | Defined in |
 |---|---|---|
 | `_SOLVER_MAX_QUEUE_AGE_S` (6.1) | 45.0 s | `services/tasks/solver.py` |
-| `SOLVER_RESOLVE_INTERVAL_S` (6.2) | 12 s (0 disables) | `services/tasks/solver.py` (`_SOLVER_RESOLVE_INTERVAL_S`) |
+| `SOLVER_RESOLVE_INTERVAL_S` (6.2) | 12 s (0 disables) | `services/tasks/solver.py` (`_SOLVER_RESOLVE_INTERVAL_S`, `_resolve_slot_covered`, `_record_resolve_slot`) |
 | `_TRIM_MAX_ROUNDS` / `_TRIM_RESID_FACTOR` / `_TRIM_MIN_NODES` (6.4) | 4 / 1.5 / 3 | `services/tasks/solver.py` |
 | `SOLVER_RMS_DELAY_MAX_US` (6.5) | 3.0 us | `services/tasks/solver.py` (`_SOLVER_RMS_DELAY_MAX_US`) |
 | `_SOLVER_RMS_DOPPLER_MAX_HZ` (6.6) | 200.0 Hz (hardcoded) | `services/tasks/solver.py` |
@@ -509,7 +526,8 @@ flowchart TD
     popped --> store["state.multinode_tracks[key] = result"]
     blocked --> store
     store --> archive["track-archive buffer append"]
-    archive --> histpub["_record_solve_history: published"]
+    archive --> claimslot["_record_resolve_slot:<br/>claim the POST-TRIM survivors<br/>for _SOLVER_RESOLVE_INTERVAL_S"]
+    claimslot --> histpub["_record_solve_history: published"]
 
     histpub --> feed["build_combined_aircraft_json<br/>(1 Hz flush)"]
     feed --> gN2{"n=2 display gate:<br/>solve_count < MN_N2_MIN_SOLVES 2?"}
@@ -573,7 +591,7 @@ are all the DARK lane; `lane_split` gives the per-lane record counts and
 | Block | Says | Watch for |
 |---|---|---|
 | `contamination` | Of the dark records that matched ground truth, how many carried a node that could not see the aircraft (`foreign_node_ids` on the record; verdict is the associator's own `_point_in_beam`, the same gate known-lane claiming uses) | `pct` is the live version of the offline ~60 % the cluster-splitting work exists to move. Records with no GT match, or no registered geometry for any contributing node, are **out of the denominator** — abstention, not innocence |
-| `resolve_skips` | Candidates the re-solve suppression refused in this window, from `state.solver_resolve_skips_recent`, with the claims that blocked each one | `attempts_ratio` is all-lane skips over DARK attempts (live baseline ~2.4). The deque holds 500 entries against ~50 skips/min, so read `window_effective_minutes` before reading `total` as a window count |
+| `resolve_skips` | Candidates the re-solve suppression refused in this window, from `state.solver_resolve_skips_recent`, with the claims that blocked each one | `attempts_ratio` is all-lane skips over DARK attempts. It read ~2.4 while 6.2 claimed on admission; with the claim on publication it should sit at or below 0.5. The deque holds 500 entries against a live rate of tens per minute, so read `window_effective_minutes` before reading `total` as a window count |
 | `counters.resolve_skips_dark` | Dark share of the since-boot skip counter | — |
 | `counters.node_frames_rate_limited` | Frames `NODE_FRAME_MIN_INTERVAL_S` refused before the tracker saw them (Gate B in §2) | Not the same event as `/api/admin/metrics`' `frames_dropped`, which is `frame_queue` saturation and normally reads zero |
 

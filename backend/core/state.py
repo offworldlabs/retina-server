@@ -544,12 +544,15 @@ solver_queue_drops: int = 0
 solver_stale_drops: int = 0
 
 # Candidates dequeued and skipped because every single-node track they carry
-# was already solved within _SOLVER_RESOLVE_INTERVAL_S at no fewer nodes (see
-# solver.py's _claim_resolve_slot).  Association is per-node and rate-limited
-# per node, so one aircraft arrives as one candidate per node that can see it;
-# this counts the copies that were never worth solving.  High against
-# solver_successes is normal and is the mechanism working — it is
-# solver_stale_drops that means work was lost.
+# was already PUBLISHED within _SOLVER_RESOLVE_INTERVAL_S at no fewer nodes
+# (see solver.py's _resolve_slot_covered).  Association is per-node and
+# rate-limited per node, so one aircraft arrives as one candidate per node
+# that can see it; this counts the copies that were never worth solving.  High
+# against solver_successes is normal and is the mechanism working — it is
+# solver_stale_drops that means work was lost.  Read it against
+# solver_successes, not against attempts: while the claim was taken on
+# ADMISSION rather than on publication, a rejected candidate blacked out every
+# later one sharing a track id and this counter ran at ~2.4x attempts.
 solver_resolve_skips: int = 0
 
 # The dark-lane share of the counter above, split out because the two lanes
