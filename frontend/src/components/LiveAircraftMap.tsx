@@ -31,7 +31,7 @@ import {
   buildTrailSegments,
   makeAircraftIcon,
   makeDroneIcon,
-  hideDrIcon,
+  drIconState,
   getAircraftColor,
   solveUncertaintyRadiusM,
   nodeIcon,
@@ -516,7 +516,7 @@ const MlatSolveHistoryLayer = memo(function MlatSolveHistoryLayer({ solves }) {
       (selection, labels, callsign, altitude band, type).  lat/lon/track/gs are updated
       imperatively at 60fps via markerRegistry → marker.setLatLng() in the RAF loop,
       completely bypassing React reconcile. ── */
-const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels, colorByAlt, onSelect, markerRegistry }) {
+const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, isStale, showLabels, colorByAlt, onSelect, markerRegistry }) {
   const altBand = Math.floor((ac.alt_baro ?? 0) / 5000);
   const markerRef = useRef(null);
 
@@ -531,9 +531,9 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels
   const icon = useMemo(
     () => ac.target_class === "drone"
       ? makeDroneIcon(ac, showLabels, isSelected)
-      : makeAircraftIcon(ac, showLabels, isSelected, colorByAlt),
+      : makeAircraftIcon(ac, showLabels, isSelected, colorByAlt, isStale),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [ac.hex, isSelected, showLabels, colorByAlt, ac.flight, ac.target_class, altBand, ac.position_source, ac.adsb_assisted],
+    [ac.hex, isSelected, isStale, showLabels, colorByAlt, ac.flight, ac.target_class, altBand, ac.position_source, ac.adsb_assisted],
   );
   const handlers = useMemo(() => ({ click: () => onSelect(ac.hex) }), [ac.hex, onSelect]);
   return <Marker ref={markerRef} position={[ac.lat, ac.lon]} icon={icon} eventHandlers={handlers} />;
@@ -541,6 +541,10 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels
   // Skip re-render when ONLY position/velocity changed — those are patched live
   // by the RAF loop via marker.setLatLng() without touching React at all.
   prev.isSelected === next.isSelected &&
+  // isStale swaps the icon between the solid and the degraded "stale solve"
+  // rendering, so it has to defeat the memo like isSelected does.  It flips at
+  // most twice per solve gap, not per frame.
+  prev.isStale === next.isStale &&
   prev.showLabels === next.showLabels &&
   prev.colorByAlt === next.colorByAlt &&
   prev.ac.hex === next.ac.hex &&
@@ -632,11 +636,14 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftR
       passive pane, ref-driven so the 2 Hz display array does not tear the
       circles down and rebuild them twice a second, updated on a 500 ms tick.
 
-      Hidden whenever hideDrIcon() hides the aircraft itself — a disc with no
-      plane inside it reads as a phantom target. ── */
+      Follows the icon exactly (drIconState): drawn whenever an icon is drawn,
+      degraded "stale solve" icons included, and dropped when the icon is.  A
+      disc with no plane inside it reads as a phantom target; a stale plane with
+      no disc hides the one number that says how little the position is worth.
+      ── */
 const _uncertaintyCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: DEBUG_PASSIVE_PANE }) : null;
 
-const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircraftRef, colorByAlt }) {
+const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircraftRef, colorByAlt, selectedHexRef }) {
   const map = useMap();
   const circlesRef = useRef(new Map()); // hex → L.circle
 
@@ -650,7 +657,9 @@ const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircr
         if (!ac.hex) continue;
         if (ac.position_source !== "multinode_solve") continue;
         if (!validLatLon(ac.lat, ac.lon)) continue;
-        if (hideDrIcon(ac, markerNow)) continue;
+        // Ref, not a prop: keying this effect on selectedHex would tear every
+        // disc down and rebuild it on each selection change.
+        if (drIconState(ac, markerNow, ac.hex === selectedHexRef?.current) === "hidden") continue;
         const radius = solveUncertaintyRadiusM(ac, markerNow);
         // 0 = the feed never stated a sigma for this solve; draw nothing
         // rather than assert a precision it did not promise.
@@ -696,7 +705,7 @@ const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircr
       for (const circle of circles.values()) circle.remove();
       circles.clear();
     };
-  }, [map, visibleAircraftRef, colorByAlt]);
+  }, [map, visibleAircraftRef, colorByAlt, selectedHexRef]);
 
   return null;
 });
@@ -1206,6 +1215,13 @@ export default function LiveAircraftMap() {
         _key: ac.hex,
         _fixLat: ac.lat,
         _fixLon: ac.lon,
+        // Last ground speed the feed actually stated for this track.  The
+        // backend deletes `gs` from entries whose velocity it stopped trusting,
+        // and the drift budget needs *some* speed for those (icons.drGsKt) —
+        // an absent gs is not a stationary aircraft.  Deliberately NOT merged
+        // back into `gs`: the 60 fps dead-reckoning projection must keep using
+        // only what the feed stands behind.
+        _lastGsKt: typeof ac.gs === "number" ? ac.gs : prev?._lastGsKt,
         // Only reset the position-anchor timestamp when the fix actually moved.
         // If the server re-broadcasts the same lat/lon (between solve cycles),
         // preserve _fixTs so dead-reckoning keeps projecting forward.
@@ -1433,8 +1449,10 @@ export default function LiveAircraftMap() {
   // used to tear every Leaflet object down twice a second.
   const visibleAircraftRef = useRef(visibleAircraft);
   const radarAircraftRef = useRef(radarAircraft);
+  const selectedHexRef = useRef(selectedHex);
   useEffect(() => { visibleAircraftRef.current = visibleAircraft; }, [visibleAircraft]);
   useEffect(() => { radarAircraftRef.current = radarAircraft; }, [radarAircraft]);
+  useEffect(() => { selectedHexRef.current = selectedHex; }, [selectedHex]);
 
   // No viewport filter — the L.canvas renderer handles off-screen dots natively.
   // Removing the filter means:
@@ -2150,7 +2168,7 @@ export default function LiveAircraftMap() {
 
             {/* 95% position-uncertainty disc around each multi-node solve. */}
             {showUncertainty && (
-              <SolveUncertaintyLayer visibleAircraftRef={visibleAircraftRef} colorByAlt={colorByAlt} />
+              <SolveUncertaintyLayer visibleAircraftRef={visibleAircraftRef} colorByAlt={colorByAlt} selectedHexRef={selectedHexRef} />
             )}
 
             {/* Selected trail — gradient fade; dashed for arc-type tracks */}
@@ -2202,21 +2220,27 @@ export default function LiveAircraftMap() {
                  is underdetermined, and drawing it as a plane painted short-lived ghost
                  aircraft wherever clutter promoted a track.  They stay in the list as
                  Solver·1N rows.
-                 A track that has dead-reckoned past DR_ICON_HIDE_DISTANCE_M loses its icon
-                 for the same reason — the drawn position is no longer evidence of where the
-                 aircraft is — but stays tracked everywhere else, so the next real solve
-                 brings the icon straight back. */}
+                 A track that has dead-reckoned past its lane's drift budget is handled by
+                 drIconState: the assisted lane, which re-solves every ~3 s, loses its icon —
+                 the drawn position is no longer evidence of where the aircraft is — while a
+                 DARK solve keeps a degraded "stale solve" icon, because 12 s between solves
+                 is its normal cadence and hiding it would claim the track was never solved.
+                 A selected aircraft always keeps an icon (degraded if over budget), matching
+                 the viewport cull's selected-hex bypass.  Either way the track stays tracked
+                 everywhere else, so the next real solve restores the solid icon. */}
             {visibleAircraft.map((ac) => {
               if (!validLatLon(ac.lat, ac.lon)) return null;
               if (ac.position_source === POSITION_SOURCE_ARC_ONLY) return null;
               if (ac.position_source === "solver_single_node") return null;
-              if (hideDrIcon(ac, markerNow)) return null;
               const isSelected = ac.hex === selectedHex;
+              const drState = drIconState(ac, markerNow, isSelected);
+              if (drState === "hidden") return null;
               return (
                 <AircraftMarker
                   key={`icon-${ac.hex}`}
                   ac={ac}
                   isSelected={isSelected}
+                  isStale={drState === "stale"}
                   showLabels={showLabels}
                   colorByAlt={colorByAlt}
                   onSelect={handleSelectAircraft}
@@ -2232,7 +2256,7 @@ export default function LiveAircraftMap() {
               .filter((ac) =>
                 anomalyHexesRef.current.has(ac.ground_truth_hex || ac.hex) &&
                 ac.lat && ac.lon &&
-                !hideDrIcon(ac, markerNow)
+                drIconState(ac, markerNow, ac.hex === selectedHex) !== "hidden"
               )
               .map((ac) => (
                 <CircleMarker

@@ -1,5 +1,11 @@
 import L from "leaflet";
-import { ADSB_SINGLE_COLOR, DR_ICON_HIDE_DISTANCE_M, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
+import {
+  ADSB_SINGLE_COLOR,
+  DR_ICON_HIDE_DISTANCE_DARK_M,
+  DR_ICON_HIDE_DISTANCE_M,
+  DR_UNKNOWN_GS_KT,
+  POSITION_SOURCE_ADSB_SINGLE,
+} from "./constants";
 
 // Top-down airplane SVG path (nose pointing up/north at 0°)
 export const PLANE_PATH =
@@ -56,20 +62,77 @@ export function getAircraftColor(ac, colorByAlt = false) {
   return "#38bdf8";
 }
 
+/** True for any multi-node solve, either lane. */
+export function isMultinodeSolve(ac): boolean {
+  return !!ac && (!!ac.multinode || ac.position_source === "multinode_solve");
+}
+
+/** True for a DARK multi-node solve (backend key prefix mn-dark-*).  Same rule
+ *  as the violet branch of getAircraftColor, including "absent flag is dark". */
+export function isDarkMultinodeSolve(ac): boolean {
+  return isMultinodeSolve(ac) && !ac.adsb_assisted;
+}
+
+/** Drift budget in metres for this entry's lane — the dark lane gets a bigger
+ *  one because the solver will not re-solve it inside 12 s.  See the
+ *  DR_ICON_HIDE_DISTANCE_M block in constants.ts. */
+export function drIconBudgetM(ac): number {
+  return isDarkMultinodeSolve(ac) ? DR_ICON_HIDE_DISTANCE_DARK_M : DR_ICON_HIDE_DISTANCE_M;
+}
+
+/** Ground speed in knots to dead-reckon this entry with.
+ *
+ *  An ABSENT gs is not a slow aircraft.  The backend deletes gs from entries
+ *  whose velocity it does not trust, so reading the absence as 0 kt made those
+ *  entries un-hideable while trustworthy fast ones were hidden — the gate
+ *  exactly inverted.  Fall back to the last speed the feed did state for this
+ *  track (carried on the fix as _lastGsKt by LiveAircraftMap), then to a
+ *  conservative cruise figure.  Non-solver lanes keep the old 0: their position
+ *  is a real fix, not a projection, so there is nothing to be conservative
+ *  about. */
+export function drGsKt(ac): number {
+  const gs = ac?.gs;
+  if (typeof gs === "number" && Number.isFinite(gs)) return gs;
+  const last = ac?._lastGsKt;
+  if (typeof last === "number" && Number.isFinite(last)) return last;
+  return isMultinodeSolve(ac) ? DR_UNKNOWN_GS_KT : 0;
+}
+
 // Dead-reckoned drift (metres) since the last real solve.  ac.seen is the
 // backend's age-of-solve — it resets on every real solve and grows on the
 // re-broadcasts in between — and the _updatedAt term covers a WS gap since
 // the last ingest, which `seen` cannot know about.  gs is knots.
 export function drDriftM(ac, nowMs: number): number {
   const ageS = (ac.seen ?? 0) + Math.max(0, (nowMs - (ac._updatedAt ?? nowMs)) / 1000);
-  return (ac.gs ?? 0) * 0.514444 * ageS;
+  return drGsKt(ac) * 0.514444 * ageS;
 }
 
-/** True when the icon has dead-reckoned further than the drift budget and
- *  must not be drawn.  The track itself stays alive — see
- *  DR_ICON_HIDE_DISTANCE_M. */
+/** True when the icon has dead-reckoned further than its lane's drift budget.
+ *  What that means for rendering is drIconState's business — the track itself
+ *  always stays alive.  See DR_ICON_HIDE_DISTANCE_M. */
 export function hideDrIcon(ac, nowMs: number): boolean {
-  return drDriftM(ac, nowMs) > DR_ICON_HIDE_DISTANCE_M;
+  return drDriftM(ac, nowMs) > drIconBudgetM(ac);
+}
+
+/** How this entry's icon should be drawn given its drift:
+ *
+ *  - "normal" — inside its lane's budget, an ordinary icon.
+ *  - "stale"  — over budget, but drawn in the degraded style anyway.  A DARK
+ *               multi-node solve lands here because 12 s between solves is its
+ *               normal cadence, not a fault: hiding it would say "not solved"
+ *               about a track that was solved.  A SELECTED aircraft lands here
+ *               too, matching the viewport cull's selected-hex bypass — asking
+ *               to look at a track and being shown nothing is worse than being
+ *               shown a marker that admits it is stale.
+ *  - "hidden" — over budget on a lane that re-solves every few seconds, so the
+ *               drawn position is no longer evidence of anything.
+ */
+export type DrIconState = "normal" | "stale" | "hidden";
+
+export function drIconState(ac, nowMs: number, isSelected = false): DrIconState {
+  if (!hideDrIcon(ac, nowMs)) return "normal";
+  if (isSelected || isDarkMultinodeSolve(ac)) return "stale";
+  return "hidden";
 }
 
 // Altitude → icon edge in px. Exported because the claimed-arc trim
@@ -80,7 +143,15 @@ export function aircraftIconSize(ac) {
   return altFt > 35000 ? 30 : altFt > 20000 ? 26 : altFt > 5000 ? 22 : 18;
 }
 
-export function makeAircraftIcon(ac, showLabel, isSelected, colorByAlt = false) {
+/**
+ * `isStale` draws the SAME lane-coloured aircraft, hollowed out: the body drops
+ * to a 15% wash, the outline becomes the lane colour dashed instead of solid
+ * white, and the whole marker sits at 55% opacity with no drop shadow.  It
+ * reads at a glance as "this outline is where the solve says it would be",
+ * which is the honest claim for a track past its drift budget — and it is not
+ * the same picture as an absent icon, which claims nothing was solved.
+ */
+export function makeAircraftIcon(ac, showLabel, isSelected, colorByAlt = false, isStale = false) {
   const track = ac.track ?? 0;
   const color = getAircraftColor(ac, colorByAlt);
   const label = ac.flight?.trim() || ac.hex?.slice(-6)?.toUpperCase() || "";
@@ -91,14 +162,20 @@ export function makeAircraftIcon(ac, showLabel, isSelected, colorByAlt = false) 
 
   const glow = isSelected
     ? "filter:drop-shadow(0 0 7px #fbbf24) drop-shadow(0 0 3px #fbbf24);"
-    : "filter:drop-shadow(0 2px 5px rgba(0,0,0,0.85));";
+    : isStale
+      ? ""
+      : "filter:drop-shadow(0 2px 5px rgba(0,0,0,0.85));";
+
+  const bodyAttrs = isStale
+    ? `fill="${color}" fill-opacity="0.15" stroke="${color}" stroke-width="1.6" stroke-dasharray="3 2.5"`
+    : `fill="${color}" stroke="rgba(255,255,255,0.7)" stroke-width="1.2"`;
 
   // pointer-events: only the visible SVG + label are clickable.  The outer
   // 90×44 container would otherwise grab clicks in its empty 90% area —
   // particularly bad when icons are smaller (low-altitude).
   const svgHtml = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 32 32"
     style="display:block;pointer-events:auto;transform:rotate(${track}deg);${glow}">
-    <path fill="${color}" stroke="rgba(255,255,255,0.7)" stroke-width="1.2" stroke-linejoin="round"
+    <path ${bodyAttrs} stroke-linejoin="round"
       d="${PLANE_PATH}"/>
   </svg>`;
 
@@ -107,9 +184,11 @@ export function makeAircraftIcon(ac, showLabel, isSelected, colorByAlt = false) 
       ? `<div class="aircraft-label" style="pointer-events:auto;">${label}${alt ? `<span class="aircraft-alt"> ${alt}</span>` : ""}</div>`
       : "";
 
+  // The stale class is also the hook the RAF rotation loop and any future CSS
+  // need; ac-hex-<hex> must stay on the element (see makeDroneIcon's note).
   return L.divIcon({
-    className: `aircraft-marker ac-hex-${ac.hex}`,
-    html: `<div style="display:flex;flex-direction:column;align-items:center;pointer-events:none;">${svgHtml}${labelHtml}</div>`,
+    className: `aircraft-marker ac-hex-${ac.hex}${isStale ? " aircraft-marker-stale" : ""}`,
+    html: `<div title="${isStale ? "Stale solve — dead-reckoned past the drift budget" : ""}" style="display:flex;flex-direction:column;align-items:center;pointer-events:none;${isStale ? "opacity:0.55;" : ""}">${svgHtml}${labelHtml}</div>`,
     iconSize: [90, 44],
     iconAnchor: [45, Math.round(size / 2)],
   });
