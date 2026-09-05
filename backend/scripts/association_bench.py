@@ -69,6 +69,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # superseded detection path that --mode detection measures as the baseline, so
 # constructing it unconditionally leaves --mode track unaffected.
 import retina_analytics.association as _assoc_module  # noqa: E402
+from retina_analytics.association import predict_observation  # noqa: E402
 from retina_analytics.detection_association import DetectionAssociator  # noqa: E402
 from retina_analytics.manager import NodeAnalyticsManager  # noqa: E402
 from retina_geolocator.consensus import solve_consensus  # noqa: E402
@@ -246,6 +247,121 @@ def _frame_to_detections(frame: dict) -> list[dict]:
             det["adsb"] = adsb_list[i]
         dets.append(det)
     return dets
+
+
+# ── Contamination scoring (truth side-channel) ───────────────────────────
+# How far a detection may sit from an aircraft's noiseless (delay, doppler)
+# and still be attributed to it.  The simulator's own measurement noise is
+# gauss(0, 0.1-0.2 us) in delay and gauss(0, 2-4 Hz) in Doppler
+# (world.generate_detections_for_node), so these are ~5 sigma: wide enough
+# that a real echo is never mistaken for clutter, tight enough that clutter
+# — uniform over tens of us — almost never lands on an aircraft.
+_TRUTH_DELAY_GATE_US = 1.0
+_TRUTH_DOPPLER_GATE_HZ = 25.0
+# Sentinel for "this measurement matched two different aircraft equally
+# well".  Neither foreign nor own — excluded from the numerator so an
+# ambiguity in the scorer is never reported as a contamination.
+_TRUTH_AMBIGUOUS = "?ambiguous"
+
+
+def _index_detection_truth(det_truth: dict, geo, node_id: str, frame: dict, aircraft: list) -> None:
+    """Record which aircraft produced each detection in one node's frame.
+
+    Truth side-channel, for the CONTAMINATION metric only: it is built from
+    the frame BEFORE _strip_adsb and never reaches association, so the blind
+    discipline is intact.  It cannot be read off the frame's own ``adsb``
+    list either — the simulator appends None there for every aircraft with
+    has_adsb False, and dark aircraft are exactly the population this metric
+    exists to score.  So each detection is instead matched back to the
+    aircraft whose noiseless observation it is nearest.
+
+    Keyed on the (delay, doppler) floats themselves because that is the only
+    handle the metric gets downstream: a solver input's measurement carries
+    its track's latest delay/doppler verbatim (history[-1] -> the detection
+    dict -> here), and the simulator rounds both to 2 dp, so the equality is
+    exact rather than approximate.
+    """
+    delays = frame.get("delay") or []
+    if not delays:
+        return
+    dopplers = frame.get("doppler") or []
+    preds = []
+    for ac in aircraft:
+        d_us, f_hz = predict_observation(
+            geo,
+            ac.lat,
+            ac.lon,
+            ac.alt_km,
+            ac.vel_east * 1000.0,
+            ac.vel_north * 1000.0,
+            ac.vel_up * 1000.0,
+        )
+        preds.append((d_us, f_hz, ac.object_id))
+    for d, f in zip(delays, dopplers):
+        best = best2 = None
+        for d_us, f_hz, oid in preds:
+            dd, df = abs(d - d_us), abs(f - f_hz)
+            if dd > _TRUTH_DELAY_GATE_US or df > _TRUTH_DOPPLER_GATE_HZ:
+                continue
+            # Normalised so the two axes are comparable at their own gates.
+            cost = (dd / _TRUTH_DELAY_GATE_US) ** 2 + (df / _TRUTH_DOPPLER_GATE_HZ) ** 2
+            if best is None or cost < best[0]:
+                best, best2 = (cost, oid), best
+            elif best2 is None or cost < best2[0]:
+                best2 = (cost, oid)
+        if best is None:
+            continue  # clutter: left absent, which the scorer reads as foreign
+        oid = best[1]
+        if best2 is not None and best2[0] < 4.0 * best[0]:
+            oid = _TRUTH_AMBIGUOUS
+        key = (node_id, float(d), float(f))
+        prev = det_truth.get(key)
+        # The same (node, delay, doppler) recurring for a different aircraft
+        # later in the run would silently relabel an earlier measurement, so
+        # a collision demotes the key rather than overwriting it.
+        det_truth[key] = oid if (prev is None or prev == oid) else _TRUTH_AMBIGUOUS
+
+
+def _score_contamination(res: Result, s_in: dict, det_truth: dict, truth: list) -> None:
+    """Count the nodes in one solver input that are not looking at its aircraft.
+
+    The input's own aircraft is the plurality of its measurements' true
+    aircraft — the honest reading of "what is this candidate mostly about",
+    and the one that does not assume the (possibly contaminated) initial
+    guess is anywhere near a target.  Ties are broken by the nearest ground
+    truth to the initial guess, which is the criterion the ghost/matched
+    split already uses.
+
+    A node is foreign when its measurement belongs to a different aircraft,
+    or to no aircraft at all (clutter that survived the tracker's M-of-N and
+    the delay grid).  Ambiguous attributions are counted in neither.
+    """
+    oids = [
+        det_truth.get((m["node_id"], float(m["delay_us"]), float(m["doppler_hz"])), None)
+        for m in s_in.get("measurements") or []
+    ]
+    if not oids:
+        return
+    counts = Counter(o for o in oids if o is not None and o != _TRUTH_AMBIGUOUS)
+    if not counts:
+        return
+    top_n = max(counts.values())
+    contenders = sorted(o for o, c in counts.items() if c == top_n)
+    if len(contenders) > 1:
+        guess = s_in.get("initial_guess") or {}
+        contenders.sort(
+            key=lambda o: min(
+                (_haversine_km(guess.get("lat", 0.0), guess.get("lon", 0.0), a, b) for a, b, oid, _ in truth if oid == o),
+                default=float("inf"),
+            )
+        )
+    own = contenders[0]
+    foreign = sum(1 for o in oids if o != own and o != _TRUTH_AMBIGUOUS)
+    res.inputs_scored += 1
+    res.input_nodes += len(oids)
+    res.foreign_nodes += foreign
+    if foreign:
+        res.inputs_contaminated += 1
 
 
 def _strip_adsb(frame: dict) -> dict:
@@ -482,6 +598,9 @@ class Result:
     gate_accepted: int = 0
     gate_unfitted: int = 0
     gate_superseded: int = 0
+    # Position clusters that held two different tracks of one node and were
+    # split into one solver input each, straight off the associator.
+    cluster_splits: int = 0
     # Deferred mode only: what the *solver-side* n=2 gate did.  In production the
     # associator emits unscored pairings and this gate is the one that runs, so
     # without these the shipped configuration's selection is invisible.
@@ -530,6 +649,20 @@ class Result:
     distinct_keys: int = 0
     keys_real: int = 0
     keys_ghost: int = 0
+
+    # ── Candidate contamination (--mode track) ────────────────────────────
+    # Scored on every solver input association emits, BEFORE the solve and
+    # before every downstream gate: the question is what association handed
+    # the solver, not what survived it.  A contaminated input is one whose
+    # measurements do not all belong to the same aircraft — the failure the
+    # cluster-merge rework targets, and the one the ghost rate cannot see
+    # (a two-aircraft merge usually still solves within MATCH_KM of one of
+    # them, so it counts as matched while carrying 4-5 km of position
+    # error).  See _score_contamination.
+    inputs_scored: int = 0
+    inputs_contaminated: int = 0
+    foreign_nodes: int = 0
+    input_nodes: int = 0
 
     # Stone-Soup GOSPA/SIAP scalars for this one run (--ss-metrics), or None
     # when it was off, stonesoup wasn't available, or the recorder had
@@ -634,6 +767,11 @@ class Result:
         "distinct_keys",
         "keys_real",
         "keys_ghost",
+        "inputs_scored",
+        "inputs_contaminated",
+        "foreign_nodes",
+        "input_nodes",
+        "cluster_splits",
     )
     _EXTEND_FIELDS = (
         "errors_km",
@@ -684,6 +822,14 @@ class Result:
     @property
     def ghost_pct(self):
         return 100.0 * self.ghosts / self.total if self.total else 0.0
+
+    @property
+    def contaminated_inputs_pct(self):
+        return 100.0 * self.inputs_contaminated / self.inputs_scored if self.inputs_scored else 0.0
+
+    @property
+    def foreign_nodes_per_input(self):
+        return self.foreign_nodes / self.inputs_scored if self.inputs_scored else 0.0
 
 
 def build_scene(
@@ -789,6 +935,7 @@ def run(
     ss_metric_dt=5.0,
     ss_hold_s=12.0,
     smoother_legs=None,
+    cluster_opts=None,
 ) -> Result:
     import random
 
@@ -861,12 +1008,17 @@ def run(
     # emits unscored pairings and the solver worker fits and arbitrates.  The
     # two are different code paths, so they need separate baselines.
     deferred = mode == "track" and cv_fit_mode == "deferred"
+    # The cluster-merge knobs are passed only when the caller overrode them,
+    # so a plain run measures whatever the library currently ships rather than
+    # freezing today's defaults into the bench.
+    _cluster_kwargs = {k: v for k, v in (cluster_opts or {}).items() if v is not None}
     assoc = DetectionAssociator(
         grid_step_km=3.0,
         cv_fit=(fit_constant_velocity if (mode == "track" and not deferred) else None),
         cv_chi2_max=chi2_max,
         cv_min_span_s=min_span_s,
         cv_exclusive=exclusive,
+        **_cluster_kwargs,
     )
     n2_gate = DeferredN2Gate(chi2_max, claim_ttl_s=claim_ttl_s, claim_policy=claim_policy) if deferred else None
     # One tracker per node, driven by every frame — mirrors
@@ -915,6 +1067,10 @@ def run(
     _BENCH_MN_MAX_AGE_MS = 60_000
 
     res = Result()
+    # (node_id, delay_us, doppler_hz) -> the aircraft that produced that
+    # detection.  Truth side-channel for the contamination metric only, built
+    # from the un-stripped frame below — see _index_detection_truth.
+    det_truth: dict = {}
     _all_keys_seen: set = set()
     _keys_real: set = set()
     _keys_ghost: set = set()
@@ -960,6 +1116,10 @@ def run(
         for nid in due_nodes:
             next_send[nid] += frame_interval
             frame = world.generate_detections_for_node(nid, ts_ms)
+            if mode == "track":
+                # Before _strip_adsb, and never fed to association: the
+                # contamination metric's truth channel.
+                _index_detection_truth(det_truth, assoc.node_geometries[nid], nid, frame, world.aircraft)
             if fov_analytics is not None:
                 # The truth channel, not the (possibly blind) association
                 # stream below -- a real node's ADS-B calibration reaches
@@ -1001,6 +1161,11 @@ def run(
                 res.cluster_sizes[(_k, len(s_in.get("track_ids") or []))] += 1
                 if s_in.get("n_nodes", 0) < 2:
                     continue
+                if mode == "track":
+                    # Scored here, ahead of the solve and every gate below:
+                    # this measures what association emitted, which is the
+                    # thing the cluster-merge rework changes.
+                    _score_contamination(res, s_in, det_truth, truth)
                 try:
                     _t0 = time.perf_counter()
                     out = solve_fn(s_in, node_cfgs)
@@ -1153,6 +1318,7 @@ def run(
     res.gate_accepted = assoc.track_pairs_accepted
     res.gate_unfitted = assoc.track_pairs_unfitted
     res.gate_superseded = assoc.track_pairs_superseded
+    res.cluster_splits = getattr(assoc, "cluster_splits", 0)
     res.claims_matched = assoc.claims_matched
     res.claim_conflicts = assoc.claim_conflicts
     res.anchored_inputs = assoc.anchored_inputs_emitted
@@ -1329,6 +1495,15 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
             f"  solves faster than any real aircraft ({truth_max_kt:.0f} kt): "
             f"{over} ({100 * over / len(r.speeds_kt):.0f}%)"
         )
+    if r.inputs_scored:
+        print(
+            f"  CONTAMINATION: {r.inputs_contaminated}/{r.inputs_scored} solver inputs carry a foreign node"
+            f"  -> {r.contaminated_inputs_pct:5.1f}%   "
+            f"foreign nodes/input {r.foreign_nodes_per_input:.2f}"
+            f"  ({r.foreign_nodes}/{r.input_nodes} nodes)"
+        )
+    if r.cluster_splits:
+        print(f"  cluster splits (same-node track conflict): {r.cluster_splits}")
     if r.gate_gated:
         print(
             f"  CV gate: {r.gate_gated} pairings past the delay grid  "
@@ -1498,6 +1673,33 @@ def main():
         help="track mode: disable one-to-one hypothesis selection "
         "(each pairing then answers only to the chi2 threshold)",
     )
+    # Cluster-merge knobs (track mode).  Each defaults to None, meaning "leave
+    # the library's own default alone", so the bench does not silently pin a
+    # value the library later changes — and so a sweep leg reads as exactly
+    # the deviation it is testing.
+    p.add_argument(
+        "--merge-dist-km",
+        type=float,
+        default=None,
+        help="track mode: how close two pairings must be to merge into one "
+        "solver input (association._MERGE_DIST_KM)",
+    )
+    p.add_argument(
+        "--pair-vel-exclusive",
+        choices=("on", "off"),
+        default=None,
+        help="track mode, deferred only: drop a pairing whose implied velocity "
+        "contradicts a better-scoring pairing that claims the same track",
+    )
+    p.add_argument(
+        "--merge-vel-consistent",
+        choices=("on", "off"),
+        default=None,
+        help="track mode: require implied-velocity agreement, not just "
+        "proximity, before two pairings are merged into one cluster",
+    )
+    p.add_argument("--pair-vel-dv-ms", type=float, default=None, help="velocity-conflict speed threshold (m/s)")
+    p.add_argument("--pair-vel-dtheta-deg", type=float, default=None, help="velocity-conflict heading threshold (deg)")
     p.add_argument("--min-aircraft", type=int, default=10, help="matches FLEET_AIRCRAFT lower bound")
     p.add_argument("--max-aircraft", type=int, default=20)
     p.add_argument("--metro-traffic-frac", type=float, default=0.85, help="matches FLEET_METRO_TRAFFIC_FRAC")
@@ -1568,6 +1770,14 @@ def main():
     )
     args = p.parse_args()
 
+    cluster_opts = {
+        "merge_dist_km": args.merge_dist_km,
+        "pair_vel_exclusive": None if args.pair_vel_exclusive is None else args.pair_vel_exclusive == "on",
+        "merge_vel_consistent": None if args.merge_vel_consistent is None else args.merge_vel_consistent == "on",
+        "pair_vel_dv_ms": args.pair_vel_dv_ms,
+        "pair_vel_dtheta_deg": args.pair_vel_dtheta_deg,
+    }
+
     # --ss-metrics auto/on/off resolution.  "on" without stonesoup installed
     # is a hard error (the user explicitly asked for numbers this image
     # cannot produce); "auto" degrades quietly except for one notice line so
@@ -1622,6 +1832,7 @@ def main():
         + f", fov={args.fov}"
         + f", ss-metrics={'on' if ss_metrics_enabled else 'off'}"
         + (f", smoother-legs={','.join(lbl for lbl, _, _ in smoother_legs)}" if smoother_legs else "")
+        + "".join(f", {k.replace('_', '-')}={v}" for k, v in sorted(cluster_opts.items()) if v is not None)
     )
 
     # chi2 only means anything in track mode; keep one pass otherwise.
@@ -1632,6 +1843,7 @@ def main():
                 solve_fn = _ESTIMATORS[estimator_name]
                 rates, solve_rates, reals, fakes, speed_errs = [], [], [], [], []
                 n2_rates = []
+                contam_rates, foreign_rates, med_errs = [], [], []
                 agg = Result()
                 last = None
                 for k in range(args.repeat):
@@ -1666,6 +1878,7 @@ def main():
                         ss_metric_dt=args.ss_metric_dt,
                         ss_hold_s=args.ss_hold_s,
                         smoother_legs=smoother_legs,
+                        cluster_opts=cluster_opts,
                     )
                     agg.merge(last, tag=f"s{args.seed + k}")
                     # Track-level is the comparable metric — solve-level and
@@ -1678,6 +1891,9 @@ def main():
                     fakes.append(len(last.ghost_tracks))
                     if last.speed_err_ms:
                         speed_errs.append(statistics.median(last.speed_err_ms))
+                    contam_rates.append(last.contaminated_inputs_pct)
+                    foreign_rates.append(last.foreign_nodes_per_input)
+                    med_errs.append(statistics.median(last.errors_km) if last.errors_km else float("nan"))
                 label = f"assoc_interval={interval:g}s"
                 if chi2_max is not None:
                     label += f"  chi2/dof<={chi2_max:g}"
@@ -1700,6 +1916,22 @@ def main():
                         f"({', '.join(f'{x:.0f}%' for x in n2_rates)})"
                     )
                     print(f"    by solve: {', '.join(f'{x:.1f}%' for x in solve_rates)}")
+                    if any(contam_rates):
+                        print(
+                            f"    contaminated inputs per seed: "
+                            f"{', '.join(f'{x:.0f}%' for x in contam_rates)}"
+                            f"   mean {statistics.mean(contam_rates):.1f}%"
+                        )
+                        print(
+                            f"    foreign nodes/input per seed: "
+                            f"{', '.join(f'{x:.2f}' for x in foreign_rates)}"
+                            f"   mean {statistics.mean(foreign_rates):.2f}"
+                        )
+                        print(
+                            f"    median matched error per seed: "
+                            f"{', '.join(f'{x:.2f}' for x in med_errs)} km"
+                            f"   real tracks {', '.join(str(x) for x in reals)}"
+                        )
                     if speed_errs:
                         print(
                             f"    median speed error per seed: "
