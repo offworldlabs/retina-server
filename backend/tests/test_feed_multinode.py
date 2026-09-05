@@ -485,3 +485,98 @@ class TestSolveUncertaintyFields:
         ac = self._build_mn()
         assert ac["pos_sigma_vel_ms"] == pytest.approx(round(lv[2], 1), abs=0.05)
         assert ac["pos_sigma_vel_ms"] != pytest.approx(25.0)
+
+
+class TestMultinodeEntryFailureIsolation:
+    """One bad multinode key must cost one aircraft, not the whole feed.
+
+    The 2026-09-05 droplet failure went through here: a track whose filter
+    covariance had gone non-PSD made learned_velocity raise, and because the
+    per-entry work sat inline in build_combined_aircraft_json's loop the
+    exception propagated out of the flush task ("Aircraft flush failed") and
+    dropped the ENTIRE tick's payload -- every other aircraft with it, 91
+    times in 40 minutes.  track_filter now stops that covariance ever
+    forming; this is the second line of defence, which has to hold for any
+    future per-entry bug, not just that one.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        from services import aircraft_feed
+
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+        track_filter.reset()
+        aircraft_feed._reset_for_tests()
+        yield
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+        track_filter.reset()
+        aircraft_feed._reset_for_tests()
+
+    def _build(self):
+        from services.frame_processor import build_combined_aircraft_json
+
+        pipeline = types.SimpleNamespace(geolocated_tracks={}, config={})
+        return build_combined_aircraft_json(pipeline)
+
+    def test_one_raising_entry_does_not_abort_the_build(self, monkeypatch, caplog):
+        from services import aircraft_feed
+
+        good_a, bad, good_b = "mn-dark-good-a", "mn-dark-bad", "mn-dark-good-b"
+        for i, key in enumerate((good_a, bad, good_b)):
+            # Spread them out: co-located entries are collapsed by
+            # dedup_aircraft, which would hide the very thing under test.
+            entry = _mn_entry(age_s=5.0, vel_north=100.0)
+            entry["lat"] = LAT + 0.1 * i
+            state.multinode_tracks[key] = entry
+
+        real_learned_velocity = track_filter.learned_velocity
+
+        def _boom(track_key):
+            # Exactly the failure the droplet saw, raised from exactly the
+            # function it was raised from.
+            if track_key == bad:
+                raise ValueError("math domain error")
+            return real_learned_velocity(track_key)
+
+        monkeypatch.setattr(aircraft_feed.track_filter, "learned_velocity", _boom)
+
+        with caplog.at_level("ERROR"):
+            result = self._build()
+
+        mn_hexes = {a["hex"] for a in result["aircraft"] if a.get("multinode")}
+        from services.id_utils import multinode_hex_from_key
+
+        # The two healthy aircraft are still served ...
+        assert multinode_hex_from_key(good_a) in mn_hexes
+        assert multinode_hex_from_key(good_b) in mn_hexes
+        # ... and only the sick one is missing.
+        assert multinode_hex_from_key(bad) not in mn_hexes
+        # Logged once, naming the key, so this is diagnosable rather than silent.
+        assert sum("Multinode feed entry failed" in r.message for r in caplog.records) == 1
+        assert bad in caplog.text
+
+    def test_repeated_failures_are_rate_limited_to_one_log_line(self, monkeypatch, caplog):
+        from services import aircraft_feed
+
+        bad = "mn-dark-bad"
+        state.multinode_tracks[bad] = _mn_entry(age_s=5.0, vel_north=100.0)
+
+        def _boom(track_key):
+            raise ValueError("math domain error")
+
+        monkeypatch.setattr(aircraft_feed.track_filter, "learned_velocity", _boom)
+
+        with caplog.at_level("ERROR"):
+            for _ in range(20):
+                # Re-stamp: the entry would otherwise age past the 60 s expiry
+                # only after many more ticks, but keeping it fresh makes the
+                # 20 failures unambiguous.
+                state.multinode_tracks[bad] = _mn_entry(age_s=5.0, vel_north=100.0)
+                self._build()
+
+        # 20 failures inside one _MN_ENTRY_FAIL_LOG_INTERVAL_S window ->
+        # exactly one line, not 20.
+        assert sum("Multinode feed entry failed" in r.message for r in caplog.records) == 1
+        assert aircraft_feed._mn_entry_fail_count == 20
