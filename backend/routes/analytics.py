@@ -125,6 +125,14 @@ async def association_status():
     return {
         "registered_nodes": len(_a.node_geometries),
         "overlap_zones": len(_a.overlap_zones),
+        # Node pairs that got no grid because the two nodes are in different
+        # worlds (node_world above).  Read next to overlap_zones: on a fleet
+        # of 50 synthetic nodes over the same city as 8 receivers it is the
+        # 400 sim/real pairs whose grids could only ever have paired a
+        # simulated echo with a real one.  Counted per pair considered, so it
+        # keeps rising as nodes re-register — zero means the fleet is single-
+        # world (or untagged), not that the gate is off.
+        "assoc_world_skipped_pairs": getattr(_a, "assoc_world_skipped_pairs", 0),
         # Confirmed single-node tracks each node last submitted; these are what
         # pairings are drawn from.
         "pending_tracks": {nid: len(tracks) for nid, tracks in list(_a._pending_tracks.items())},
