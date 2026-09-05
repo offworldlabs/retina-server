@@ -544,11 +544,23 @@ solver_stale_drops: int = 0
 solver_resolve_skips: int = 0
 
 # Multinode entries removed because a later solve shared a source single-node
-# track under a different track key (the age-scaled proximity match in
-# multinode_key_decision missed).  One aircraft is one set of source tracks,
-# so the earlier entry is replaced immediately rather than coexisting with the
-# new one until its own 60 s expiry.
+# track with them AND the spatial/identical-inputs guard in solver.py's
+# _supersession_match agreed they are the same aircraft — the age-scaled
+# proximity match in multinode_key_decision having missed.  The earlier entry
+# is replaced immediately rather than coexisting with the new one until its
+# own 60 s expiry.
 mn_superseded: int = 0
+
+# Entries that shared a source single-node track with a new solve but were
+# NOT popped, because _supersession_match refused them: dead-reckoned too far
+# from the new solve to be the same aircraft, and not an identical-inputs
+# merge.  Tracker track ids are genuinely shared between association
+# candidates for different aircraft, so this is the counter that says how
+# often the shared-id test alone would have destroyed a live neighbour's key.
+# Read it against mn_superseded: blocked >> superseded means the shared-id
+# signal is mostly noise on this deployment, which is what it was measured to
+# be (36 of 44 supersessions popped another aircraft's key before the guard).
+mn_superseded_blocked: int = 0
 
 # Solves published after node-trimming recovered them from the rms_delay
 # gate at n>=4 (see solver.py's _trim_and_resolve).  Counted once per
@@ -740,7 +752,7 @@ def _reset_for_tests() -> None:
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
     global coverage_rebuild_backlog
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
-    global mn_superseded, solver_trimmed
+    global mn_superseded, mn_superseded_blocked, solver_trimmed
     global solver_consensus_selected, solver_consensus_filtered
     global solver_consensus_fallback, solver_consensus_shadow
     global solver_anchor_hits, solver_anchor_fallbacks, solver_anchored_published
@@ -830,7 +842,7 @@ def _reset_for_tests() -> None:
         coverage_rebuild_backlog = 0
         solver_stale_drops = 0
         solver_resolve_skips = 0
-        mn_superseded = 0
+        mn_superseded = mn_superseded_blocked = 0
         solver_trimmed = 0
         solver_consensus_selected = solver_consensus_filtered = 0
         solver_consensus_fallback = solver_consensus_shadow = 0
