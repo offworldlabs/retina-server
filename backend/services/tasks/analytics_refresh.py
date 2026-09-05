@@ -24,6 +24,7 @@ from core import state
 from services.geo import bearing_deg, bistatic_delay_us, haversine_km, node_beam_params, point_in_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
+from services.node_sites import log_colocation_audit
 from services.public_location import (
     fuzz_enabled,
     location_uncertainty_km,
@@ -309,6 +310,18 @@ def _public_location_block(node_id: str, cfg: dict) -> dict:
 def _refresh_analytics_and_nodes():
     """Heavy work: recompute analytics, nodes, and overlaps → store as bytes."""
     from services.tcp_handler import is_synthetic_node
+
+    # Co-located receivers share one fuzz offset, and the pairs that ALMOST
+    # qualify — one site whose two configurations disagree by a few metres — are
+    # published as two independent samples of that site.  Nothing else would
+    # ever say so, so the audit rides the refresh that already walks the fleet;
+    # it logs only when its answer changes.  Pointless with the fuzz off, where
+    # every coordinate is the true one anyway.
+    if fuzz_enabled():
+        try:
+            log_colocation_audit()
+        except Exception:
+            logging.exception("Co-location audit failed")
 
     # Analytics.  Both variants below are served to unauthenticated clients, so
     # the receiver geometry in them is the published one — see

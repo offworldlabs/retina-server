@@ -443,6 +443,23 @@ def node_fuzz_max_km() -> float:
     return max(value, node_fuzz_min_km())
 
 
+# Two receivers closer than this that are NOT configured at the same
+# coordinates are almost certainly one site entered twice.  services/
+# node_sites.py groups on exact equality and reports these instead of merging
+# them — see that module on why proximity must not decide a node's offset.
+# 150 m is comfortably wider than the scatter between two typed-in fixes for
+# one roof and far narrower than the gap between two operators' houses.
+NODE_FUZZ_SITE_AUDIT_KM_DEFAULT = 0.15
+
+
+def node_fuzz_site_audit_km() -> float:
+    """Distance under which two differently-configured nodes are flagged (km)."""
+    try:
+        return float(os.getenv("NODE_FUZZ_SITE_AUDIT_KM") or NODE_FUZZ_SITE_AUDIT_KM_DEFAULT)
+    except ValueError:
+        return NODE_FUZZ_SITE_AUDIT_KM_DEFAULT
+
+
 def node_fuzz_salt() -> str:
     """HMAC salt from the environment, or "" when the deployment sets none.
 
