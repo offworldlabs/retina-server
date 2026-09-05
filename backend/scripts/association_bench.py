@@ -322,7 +322,7 @@ def _index_detection_truth(det_truth: dict, geo, node_id: str, frame: dict, airc
         det_truth[key] = oid if (prev is None or prev == oid) else _TRUTH_AMBIGUOUS
 
 
-def _score_contamination(res: Result, s_in: dict, det_truth: dict, truth: list) -> None:
+def _score_contamination(res: Result, s_in: dict, det_truth: dict, truth: list) -> int | None:
     """Count the nodes in one solver input that are not looking at its aircraft.
 
     The input's own aircraft is the plurality of its measurements' true
@@ -335,16 +335,23 @@ def _score_contamination(res: Result, s_in: dict, det_truth: dict, truth: list) 
     A node is foreign when its measurement belongs to a different aircraft,
     or to no aircraft at all (clutter that survived the tracker's M-of-N and
     the delay grid).  Ambiguous attributions are counted in neither.
+
+    Returns the foreign-node count, so the caller can score the same input
+    again at the publish point (see the PUBLISHED counters on Result: the
+    candidate-level rate has a denominator the association layer itself moves,
+    and a change that emits more, cleaner candidates reads as a regression on
+    it while being an improvement on what actually reaches the map).  None
+    when nothing could be attributed at all.
     """
     oids = [
         det_truth.get((m["node_id"], float(m["delay_us"]), float(m["doppler_hz"])))
         for m in s_in.get("measurements") or []
     ]
     if not oids:
-        return
+        return None
     counts = Counter(o for o in oids if o is not None and o != _TRUTH_AMBIGUOUS)
     if not counts:
-        return
+        return None
     top_n = max(counts.values())
     contenders = sorted(o for o, c in counts.items() if c == top_n)
     if len(contenders) > 1:
@@ -366,6 +373,7 @@ def _score_contamination(res: Result, s_in: dict, det_truth: dict, truth: list) 
     res.foreign_nodes += foreign
     if foreign:
         res.inputs_contaminated += 1
+    return foreign
 
 
 def _strip_adsb(frame: dict) -> dict:
@@ -667,6 +675,16 @@ class Result:
     inputs_contaminated: int = 0
     foreign_nodes: int = 0
     input_nodes: int = 0
+    # The same score restricted to inputs that cleared every gate and bound
+    # to a real aircraft — what actually reached the map.  Reported next to
+    # the candidate rate because the two answer different questions: the
+    # candidate rate's denominator is the number of candidates association
+    # chooses to emit, so splitting one contaminated cluster into several
+    # clean ones plus the false pairing it was hiding *raises* it while
+    # lowering this one.
+    published_inputs: int = 0
+    published_contaminated: int = 0
+    published_foreign_nodes: int = 0
 
     # Stone-Soup GOSPA/SIAP scalars for this one run (--ss-metrics), or None
     # when it was off, stonesoup wasn't available, or the recorder had
@@ -775,6 +793,9 @@ class Result:
         "inputs_contaminated",
         "foreign_nodes",
         "input_nodes",
+        "published_inputs",
+        "published_contaminated",
+        "published_foreign_nodes",
         "cluster_splits",
     )
     _EXTEND_FIELDS = (
@@ -834,6 +855,14 @@ class Result:
     @property
     def foreign_nodes_per_input(self):
         return self.foreign_nodes / self.inputs_scored if self.inputs_scored else 0.0
+
+    @property
+    def published_contaminated_pct(self):
+        return 100.0 * self.published_contaminated / self.published_inputs if self.published_inputs else 0.0
+
+    @property
+    def published_foreign_per_solve(self):
+        return self.published_foreign_nodes / self.published_inputs if self.published_inputs else 0.0
 
 
 def build_scene(
@@ -1165,11 +1194,13 @@ def run(
                 res.cluster_sizes[(_k, len(s_in.get("track_ids") or []))] += 1
                 if s_in.get("n_nodes", 0) < 2:
                     continue
+                _foreign = None
                 if mode == "track":
                     # Scored here, ahead of the solve and every gate below:
                     # this measures what association emitted, which is the
-                    # thing the cluster-merge rework changes.
-                    _score_contamination(res, s_in, det_truth, truth)
+                    # thing the cluster-merge rework changes.  Re-scored at
+                    # the publish point further down, on the same number.
+                    _foreign = _score_contamination(res, s_in, det_truth, truth)
                 try:
                     _t0 = time.perf_counter()
                     out = solve_fn(s_in, node_cfgs)
@@ -1273,6 +1304,17 @@ def run(
                     (_keys_real if d <= MATCH_KM else _keys_ghost).add(_key)
                 if d <= MATCH_KM:
                     res.matched += 1
+                    if _foreign is not None:
+                        # Same input, scored again now that every gate has
+                        # accepted it and it has bound to a real aircraft:
+                        # this is the population the live audit sampled (45%
+                        # of published dark solves carried a foreign node),
+                        # and unlike the candidate rate its denominator is
+                        # not something association can inflate.
+                        res.published_inputs += 1
+                        res.published_foreign_nodes += _foreign
+                        if _foreign:
+                            res.published_contaminated += 1
                     res.errors_km.append(d)
                     res.n_nodes_matched[nn] += 1
                     # Broken out because the whole dual-site hypothesis is
@@ -1505,6 +1547,12 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
             f"  -> {r.contaminated_inputs_pct:5.1f}%   "
             f"foreign nodes/input {r.foreign_nodes_per_input:.2f}"
             f"  ({r.foreign_nodes}/{r.input_nodes} nodes)"
+        )
+    if r.published_inputs:
+        print(
+            f"  CONTAMINATION (published): {r.published_contaminated}/{r.published_inputs} matched solves"
+            f"  -> {r.published_contaminated_pct:5.1f}%   "
+            f"foreign nodes/solve {r.published_foreign_per_solve:.2f}"
         )
     if r.cluster_splits:
         print(f"  cluster splits (same-node track conflict): {r.cluster_splits}")
@@ -1846,7 +1894,7 @@ def main():
                 solve_fn = _ESTIMATORS[estimator_name]
                 rates, solve_rates, reals, fakes, speed_errs = [], [], [], [], []
                 n2_rates = []
-                contam_rates, foreign_rates, med_errs = [], [], []
+                contam_rates, foreign_rates, med_errs, pub_contam_rates = [], [], [], []
                 agg = Result()
                 last = None
                 for k in range(args.repeat):
@@ -1896,6 +1944,7 @@ def main():
                         speed_errs.append(statistics.median(last.speed_err_ms))
                     contam_rates.append(last.contaminated_inputs_pct)
                     foreign_rates.append(last.foreign_nodes_per_input)
+                    pub_contam_rates.append(last.published_contaminated_pct)
                     med_errs.append(statistics.median(last.errors_km) if last.errors_km else float("nan"))
                 label = f"assoc_interval={interval:g}s"
                 if chi2_max is not None:
@@ -1929,6 +1978,11 @@ def main():
                             f"    foreign nodes/input per seed: "
                             f"{', '.join(f'{x:.2f}' for x in foreign_rates)}"
                             f"   mean {statistics.mean(foreign_rates):.2f}"
+                        )
+                        print(
+                            f"    published contaminated per seed: "
+                            f"{', '.join(f'{x:.0f}%' for x in pub_contam_rates)}"
+                            f"   mean {statistics.mean(pub_contam_rates):.1f}%"
                         )
                         print(
                             f"    median matched error per seed: "
