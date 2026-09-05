@@ -21,6 +21,8 @@ import {
   GT_PRUNE_GRACE_MS,
   POSITION_SOURCE_ARC_ONLY,
   ARC_DR_MAX_S,
+  MLAT_HISTORY_REFRESH_MS,
+  newSolveArrived,
   groundTruthKey,
   applyGroundTruthFixes,
   pruneGroundTruthFixes,
@@ -1520,12 +1522,16 @@ export default function LiveAircraftMap() {
     : null;
 
   // Per-solve history for the selected MLAT track (debug): fetched once per
-  // selection + refreshed on the backend's ~30 s recording cadence.  Tagged
-  // with the hex it was fetched for so a selection change never shows the
-  // previous track's solves while the new fetch is in flight.
+  // selection, then polled every MLAT_HISTORY_REFRESH_MS.  Tagged with the hex
+  // it was fetched for so a selection change never shows the previous track's
+  // solves while the new fetch is in flight.
   const selectedMnHex =
     selectedAc?.position_source === "multinode_solve" ? selectedAc.hex : null;
+  const selectedMnSeen = selectedMnHex ? selectedAc?.seen ?? null : null;
   const [mlatHistory, setMlatHistory] = useState(null);
+  // The poll's loader, published for the `seen` watcher below to call. A ref
+  // rather than a dependency so a refetch never restarts the interval.
+  const reloadMlatHistoryRef = useRef(null);
   useEffect(() => {
     if (!selectedMnHex) {
       setMlatHistory(null);
@@ -1537,10 +1543,27 @@ export default function LiveAircraftMap() {
         if (!cancelled && d && d.hex === selectedMnHex) setMlatHistory(d);
       });
     };
+    reloadMlatHistoryRef.current = load;
     load();
-    const interval = setInterval(load, 30000);
-    return () => { cancelled = true; clearInterval(interval); };
+    const interval = setInterval(load, MLAT_HISTORY_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      reloadMlatHistoryRef.current = null;
+    };
   }, [selectedMnHex]);
+
+  // A fall in `seen` is the feed announcing a fresh solve for this track — the
+  // one event worth a fetch off the poll's schedule (see newSolveArrived).
+  // Dark solves arrive every 1-3 s while a track is held, faster than the
+  // poll, and the dots are the surface someone selected the aircraft to read.
+  const prevMnSeenRef = useRef({ hex: null, seen: null });
+  useEffect(() => {
+    const prev = prevMnSeenRef.current;
+    const next = { hex: selectedMnHex, seen: selectedMnSeen };
+    prevMnSeenRef.current = next;
+    if (newSolveArrived(prev, next)) reloadMlatHistoryRef.current?.();
+  }, [selectedMnHex, selectedMnSeen]);
 
   // Nodes with a live detection of the selected simulated object — read from
   // the detection-presence oracle (per-aircraft signals ∪ the detecting_nodes

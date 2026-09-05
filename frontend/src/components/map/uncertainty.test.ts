@@ -50,11 +50,13 @@ describe("solveSigmaM", () => {
     );
   });
 
-  it("stops growing at the 60 s dead-reckoning cap", () => {
+  it("stops growing at the dead-reckoning cap", () => {
+    // The cap tracks the backend's dark-lane entry expiry (MN_DARK_EXPIRY_S).
+    expect(UNCERTAINTY_DR_CAP_S).toBe(30);
     const ac = mn({ pos_sigma_m: 200, pos_sigma_vel_ms: 25 });
     const atCap = solveSigmaM(ac, UNCERTAINTY_DR_CAP_S);
     expect(solveSigmaM(ac, 600)).toBe(atCap);
-    expect(atCap).toBeCloseTo(Math.sqrt(200 * 200 + 1500 * 1500), 6);
+    expect(atCap).toBeCloseTo(Math.sqrt(200 * 200 + 750 * 750), 6);
   });
 
   it("clamps a negative age to the solve epoch", () => {
@@ -106,21 +108,21 @@ describe("solveUncertaintyRadiusM", () => {
     ).toBeCloseTo(UNCERTAINTY_K95 * 200, 6);
   });
 
-  it("grows while dead-reckoning, then holds at the 60 s cap", () => {
+  it("grows while dead-reckoning, then holds at the cap", () => {
     const ac = mn({ pos_sigma_m: 200, pos_sigma_vel_ms: 25, _updatedAt: NOW - 10_000 });
     const fresh = solveUncertaintyRadiusM(mn({ pos_sigma_m: 200, pos_sigma_vel_ms: 25 }), NOW);
     const aged = solveUncertaintyRadiusM(ac, NOW);
     expect(aged).toBeGreaterThan(fresh);
     // Past the cap the radius stops moving.
-    const at60 = solveUncertaintyRadiusM(
-      mn({ pos_sigma_m: 200, pos_sigma_vel_ms: 25, _updatedAt: NOW - 60_000 }),
+    const atCap = solveUncertaintyRadiusM(
+      mn({ pos_sigma_m: 200, pos_sigma_vel_ms: 25, _updatedAt: NOW - UNCERTAINTY_DR_CAP_S * 1000 }),
       NOW,
     );
     const at300 = solveUncertaintyRadiusM(
       mn({ pos_sigma_m: 200, pos_sigma_vel_ms: 25, _updatedAt: NOW - 300_000 }),
       NOW,
     );
-    expect(at300).toBe(at60);
+    expect(at300).toBe(atCap);
   });
 
   it("caps the radius at 10 km", () => {

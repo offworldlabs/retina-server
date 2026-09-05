@@ -510,11 +510,13 @@ flowchart TD
     archive --> histpub["_record_solve_history: published"]
 
     histpub --> feed["build_combined_aircraft_json<br/>(1 Hz flush)"]
-    feed --> gN2{"n=2 display gate:<br/>solve_count < MN_N2_MIN_SOLVES 2?"}
+    feed --> gExpiry{"entry expiry:<br/>mn-adsb-* age_s > 60s,<br/>mn-dark-* age_s ><br/>MN_DARK_EXPIRY_S 30.0s?"}
+    gExpiry -->|"yes"| dropExpired["popped from<br/>state.multinode_tracks,<br/>anomaly hex discarded"]:::inert
+    gExpiry -->|"no"| gN2{"n=2 display gate:<br/>solve_count < MN_N2_MIN_SOLVES 2?"}
     gN2 -->|"yes"| retainN2["retained, not rendered"]:::inert
     gN2 -->|"no"| gOneshot{"n>=3 one-shot:<br/>solve_count==1 AND<br/>age_s > MN_ONESHOT_TTL_S 15.0s?"}
     gOneshot -->|"yes"| dropOneshot["not rendered"]:::inert
-    gOneshot -->|"no"| dr["dead reckoning,<br/>capped 30s"]
+    gOneshot -->|"no"| dr["dead reckoning,<br/>capped MN_DR_CAP_S 15.0s,<br/>then holds"]
     dr --> dedup["dedup_aircraft:<br/>rank by _DEDUP_SOURCE_RANK,<br/>3.0km / 2000ft gate"]
     dedup --> out["aircraft.json + WebSocket -> map"]
 
@@ -540,6 +542,8 @@ flowchart TD
 | `CV_VEL_ADOPT_CHI2_MAX` | 5.0 | `config/constants.py:77` |
 | `MN_N2_MIN_SOLVES` | 2 | `config/constants.py:63` |
 | `MN_ONESHOT_TTL_S` | 15.0 s | `config/constants.py:66` |
+| `MN_DR_CAP_S` (dead-reckoning horizon past the last solve; the entry then holds its last DR'd point) | 15.0 s | `config/constants.py` |
+| `MN_DARK_EXPIRY_S` (entry expiry, `mn-dark-*` only — `mn-adsb-*` keeps 60 s) | 30.0 s | `config/constants.py` |
 | `_DEDUP_SOURCE_RANK` order | multinode_solve 0 < adsb_single_node 1 < solver_adsb_seed 2 < solver_single_node 3 < single_node_ellipse_arc 4 | `services/feed_helpers.py:37-43` |
 | `CLAIMED_DISPLAY_FRESH_S` | 5.0 s | `config/constants.py:131-139` |
 | Dedup proximity / altitude gate | 3.0 km / 2000 ft | `services/feed_helpers.py:49-50` |
@@ -565,6 +569,21 @@ flowchart TD
   `mn_superseded` / `mn_superseded_blocked` in `/api/test/solver-stats`
   (`fragmentation`) and `superseded_keys` / `superseded_blocked` on each
   published `mlat_solve_history` record are how this is watched.
+- **A displayed dark entry is only as good as its solve age, and the budgets
+  say so.** Measured on the test droplet over 20 minutes (dark multinode feed
+  entries against ground truth): median position error 1.05 km under 3 s of
+  solve age, 1.21 km at 3–8 s, 1.50 km at 8–15 s, 2.02 km at 15–30 s (7% more
+  than 5 km off), and 3.99 km at 30–60 s (12% of all displayed dark entries,
+  32% more than 5 km off). `MN_DR_CAP_S` (15 s) and `MN_DARK_EXPIRY_S` (30 s)
+  are cut at that curve's two knees. Both were looser — a 30 s cap and a flat
+  60 s expiry — from when the solver refused to re-solve the same tracks inside
+  `SOLVER_RESOLVE_INTERVAL_S` = 12 s and the extra window bought coverage; a
+  dark aircraft now re-solves every 1–3 s while it is tracked, so a 15 s gap is
+  a lost track rather than a cadence gap and extrapolating it only invents
+  motion. `mn-adsb-*` entries keep the 60 s expiry: a transponder hex anchors
+  them, so the same gap is the ADS-B feed breathing. The frontend's matching
+  budgets are `DR_ICON_HIDE_DISTANCE_DARK_M` (3 km) and `UNCERTAINTY_DR_CAP_S`
+  (30 s).
 - **Node-trust residuals are measure-only.** `node_bias.py` computes them but
   nothing in the solver consumes them yet (`node_bias.py:33-40` docstring).
 - **`docs/pipeline.md` §3 is stale.** It predates the known lane and the
