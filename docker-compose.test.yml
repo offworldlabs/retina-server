@@ -56,6 +56,10 @@ services:
       - DARK_FOLLOW_MODE=binding
       # Test-only experiment (cap16): follow a dark key after 2 solves instead of 3.
       - DARK_FOLLOW_MIN_SOLVES=2
+      # Test-only experiment (cap18): expire an unrefreshed dark key after 20 s, not 30 —
+      # orphan fragments left behind by the tighter supersession gate were 14% of dark
+      # entries in cap17, most older than 10 s; followed keys refresh every ~2 s.
+      - MN_DARK_EXPIRY_S=20
       # Anonymous admin, asked for explicitly since ClickUp 86cb49d29 took it
       # off RETINA_ENV. No OAuth is configured here either.
       - AUTH_ALLOW_ANONYMOUS_ADMIN=1
