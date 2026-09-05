@@ -42,6 +42,10 @@ services:
       # Overnight dark-solver run 2026-09-05: exercise the free-altitude
       # multistart solve (feat/free-altitude-solve) on this droplet only.
       - SOLVER_ALT_MODE=free
+      # The fleet sends each node at ~1 Hz with jitter; a 1.0 s per-node
+      # minimum interval was refusing ~12 of its 37 frames/s (counter
+      # node_frames_rate_limited), starving the trackers to ~0.5 Hz.
+      - NODE_FRAME_MIN_INTERVAL_S=0.5
       # Anonymous admin, asked for explicitly since ClickUp 86cb49d29 took it
       # off RETINA_ENV. No OAuth is configured here either.
       - AUTH_ALLOW_ANONYMOUS_ADMIN=1
