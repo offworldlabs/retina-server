@@ -777,3 +777,292 @@ class TestDarkAccuracySamples:
             extra={"known_lane": True, "label": "truth_match", "published": True},
         )
         assert not state.accuracy_samples
+
+
+def _register_geo(node_id, beam_azimuth_deg, rx_lat=LAT, rx_lon=LON, max_range_km=50.0):
+    """Register one node geometry with the associator, aimed as given.
+
+    The contamination stamp asks the associator's own visibility predicate,
+    so a test node has to exist there rather than in a config dict.
+    """
+    from retina_analytics.association import NodeGeometry
+
+    geo = NodeGeometry(
+        node_id=node_id,
+        rx_lat=rx_lat,
+        rx_lon=rx_lon,
+        rx_alt_km=0.0,
+        tx_lat=rx_lat + 0.5,
+        tx_lon=rx_lon + 0.5,
+        tx_alt_km=0.3,
+        beam_azimuth_deg=beam_azimuth_deg,
+        beam_width_deg=41.0,
+        max_range_km=max_range_km,
+    )
+    state.node_associator.node_geometries[node_id] = geo
+    return geo
+
+
+class TestForeignNodeStamp:
+    """A dark record matched to ground truth says which of its own nodes
+    could not have seen that aircraft.
+
+    Cluster contamination — a solver candidate assembled from tracks of two
+    different aircraft — is the dark lane's largest known defect, and until
+    now it was measurable only offline.  The verdict is the associator's own
+    visibility predicate, the same one known-lane claiming gates on.
+    """
+
+    def setup_method(self):
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+
+    def teardown_method(self):
+        solver_mod._reset_for_tests()
+
+    def _run(self, contributing=("n_in", "n_out"), **extra):
+        return solver_mod._process_solver_item(
+            (dict(_CONFIRMED_N2), {}, time.time()),
+            _solve_fn(contributing_node_ids=list(contributing), **extra),
+        )
+
+    def test_a_node_aimed_away_is_named_foreign(self):
+        # Ground truth sits due north of both nodes; n_in is aimed at it and
+        # n_out at the opposite bearing.
+        _put_gt(lat=LAT + 0.05, lon=LON)
+        _register_geo("n_in", beam_azimuth_deg=0.0)
+        _register_geo("n_out", beam_azimuth_deg=180.0)
+        self._run()
+        rec = state.mlat_solve_history[0]
+        assert rec["gt_hex"] == "abc123"
+        assert rec["foreign_node_ids"] == ["n_out"]
+        assert rec["contaminated"] is True
+
+    def test_all_nodes_in_cone_is_not_contaminated(self):
+        _put_gt(lat=LAT + 0.05, lon=LON)
+        _register_geo("n_in", beam_azimuth_deg=0.0)
+        _register_geo("n_out", beam_azimuth_deg=10.0)
+        self._run()
+        rec = state.mlat_solve_history[0]
+        assert rec["foreign_node_ids"] == []
+        assert rec["contaminated"] is False
+
+    def test_a_node_out_of_range_is_foreign(self):
+        """Range, not only bearing: the predicate applies whole."""
+        _put_gt(lat=LAT + 0.05, lon=LON)
+        _register_geo("n_in", beam_azimuth_deg=0.0)
+        _register_geo("n_out", beam_azimuth_deg=0.0, max_range_km=1.0)
+        self._run()
+        assert state.mlat_solve_history[0]["foreign_node_ids"] == ["n_out"]
+
+    def test_trimmed_nodes_are_judged_too(self):
+        """A node dropped by _trim_and_resolve is exactly the contamination
+        this measures — excluding it would hide every case trimming already
+        rescued."""
+        _put_gt(lat=LAT + 0.05, lon=LON)
+        _register_geo("n_in", beam_azimuth_deg=0.0)
+        _register_geo("n_trimmed", beam_azimuth_deg=180.0)
+        solver_mod._record_solve_history(
+            "published",
+            dict(_CONFIRMED_N2),
+            {"success": True, "lat": LAT, "lon": LON, "n_nodes": 2, "contributing_node_ids": ["n_in"]},
+            solve_key="mn-dark-1",
+            raw_lat=LAT,
+            raw_lon=LON,
+            extra={"trimmed_node_ids": ["n_trimmed"], "trim_rounds": 1},
+        )
+        assert state.mlat_solve_history[0]["foreign_node_ids"] == ["n_trimmed"]
+
+    def test_no_ground_truth_means_no_stamp(self):
+        _register_geo("n_in", beam_azimuth_deg=0.0)
+        _register_geo("n_out", beam_azimuth_deg=180.0)
+        self._run()
+        rec = state.mlat_solve_history[0]
+        assert "foreign_node_ids" not in rec
+        assert "contaminated" not in rec
+
+    def test_unregistered_nodes_are_not_stamped_clean(self):
+        """Nothing judgeable is an abstention, not innocence."""
+        _put_gt(lat=LAT + 0.05, lon=LON)
+        self._run()
+        rec = state.mlat_solve_history[0]
+        assert rec["gt_hex"] == "abc123"
+        assert "foreign_node_ids" not in rec
+
+    def test_an_adsb_record_is_not_stamped(self):
+        """Dark lane only — the tagged lane's identity is not in doubt."""
+        _put_gt(lat=LAT + 0.05, lon=LON)
+        _register_geo("n_in", beam_azimuth_deg=0.0)
+        _register_geo("n_out", beam_azimuth_deg=180.0)
+        s_in = dict(_CONFIRMED_N2, adsb_hex="abc123")
+        solver_mod._process_solver_item(
+            (s_in, {}, time.time()),
+            _solve_fn(contributing_node_ids=["n_in", "n_out"]),
+        )
+        assert "foreign_node_ids" not in state.mlat_solve_history[0]
+
+
+class TestLaneFilterAndPerLaneCap:
+    """?lane= and ?limit= on /api/test/mlat-history.
+
+    The flat records[:1000] cap made the response a race between lanes: the
+    known lane writes ~16x the dark lane's volume, so a 30 min request held
+    only the newest ~6 min of dark records and the rest of the window read as
+    a quiet period.  The cap is now per lane.
+    """
+
+    def setup_method(self):
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+
+    def teardown_method(self):
+        solver_mod._reset_for_tests()
+
+    def _client(self):
+        from main import app
+
+        return TestClient(app)
+
+    def _dark(self, n=1):
+        for _ in range(n):
+            solver_mod._record_solve_history(
+                "published",
+                {"n_nodes": 3},
+                {"success": True, "lat": LAT, "lon": LON, "n_nodes": 3},
+                solve_key="mn-dark-1",
+                raw_lat=LAT,
+                raw_lon=LON,
+            )
+
+    def _known(self, n=1):
+        for _ in range(n):
+            solver_mod._record_solve_history(
+                "known_truth_match",
+                {"n_nodes": 2, "adsb_hex": "abc123", "initial_guess": {"lat": LAT, "lon": LON}},
+                {"success": True, "lat": LAT, "lon": LON, "n_nodes": 2},
+                extra={"known_lane": True, "label": "truth_match", "published": False},
+            )
+
+    def _adsb(self, n=1):
+        for _ in range(n):
+            solver_mod._record_solve_history(
+                "published",
+                {"n_nodes": 3, "adsb_hex": "abc123"},
+                {"success": True, "lat": LAT, "lon": LON, "n_nodes": 3},
+                solve_key="mn-adsb-abc123",
+                raw_lat=LAT,
+                raw_lon=LON,
+            )
+
+    def test_default_lane_is_all_and_counts_every_lane(self):
+        self._dark()
+        self._known()
+        self._adsb()
+        data = self._client().get("/api/test/mlat-history?all=1").json()
+        assert data["lane"] == "all"
+        assert data["lane_counts"] == {"dark": 1, "known": 1, "adsb": 1}
+        assert data["n_records"] == 3
+
+    def test_lane_dark_returns_only_dark_records(self):
+        self._dark(2)
+        self._known(3)
+        self._adsb(1)
+        data = self._client().get("/api/test/mlat-history?all=1&lane=dark").json()
+        assert data["n_records"] == 2
+        assert data["lane_counts"] == {"dark": 2, "known": 0, "adsb": 0}
+        assert all(r["solve_key"] == "mn-dark-1" for r in data["records"])
+
+    def test_lane_known_returns_only_known_records(self):
+        self._dark(2)
+        self._known(3)
+        data = self._client().get("/api/test/mlat-history?all=1&lane=known").json()
+        assert data["n_records"] == 3
+        assert all(r["known_lane"] for r in data["records"])
+
+    def test_unknown_lane_is_rejected(self):
+        assert self._client().get("/api/test/mlat-history?all=1&lane=bogus").status_code == 400
+
+    def test_known_volume_cannot_evict_dark_records_from_the_response(self):
+        """The bug the per-lane cap fixes, at 1/500 scale."""
+        self._dark(2)
+        self._known(20)
+        data = self._client().get("/api/test/mlat-history?all=1&limit=2").json()
+        # 2 dark + 2 known survive the cap; the flat cap would have returned
+        # the 2 newest records overall, both known.
+        lanes = [("known" if r.get("known_lane") else "dark") for r in data["records"]]
+        assert sorted(lanes) == ["dark", "dark", "known", "known"]
+        # n_records / lane_counts stay pre-cap so truncation is legible.
+        assert data["n_records"] == 22
+        assert data["lane_counts"] == {"dark": 2, "known": 20, "adsb": 0}
+
+    def test_limit_is_clamped_to_the_maximum(self):
+        self._dark(3)
+        data = self._client().get("/api/test/mlat-history?all=1&limit=99999").json()
+        assert len(data["records"]) == 3
+
+    def test_hex_lookup_reports_the_lane_block_too(self):
+        self._dark()
+        rec = state.mlat_solve_history[0]
+        data = self._client().get(f"/api/test/mlat-history?hex={rec['solver_hex']}").json()
+        assert data["lane"] == "all"
+        assert data["lane_counts"]["dark"] == 1
+
+
+class TestResolveSkipDump:
+    """?kind=resolve_skips dumps the solver's skip deque.
+
+    A skip is not a solve outcome and must not be written into the
+    solve-history deques: on the live fleet skips outrun dark records roughly
+    two to one and would evict exactly the records an investigation needs.
+    """
+
+    def setup_method(self):
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+
+    def teardown_method(self):
+        solver_mod._reset_for_tests()
+
+    def _client(self):
+        from main import app
+
+        return TestClient(app)
+
+    def _skip(self, track_ids=("a1", "b1"), n_nodes=3, **s_in):
+        now = time.time()
+        s = dict(_CONFIRMED_N2, n_nodes=n_nodes, track_ids=list(track_ids), **s_in)
+        solver_mod._record_resolve_slot(list(track_ids), n_nodes, now)
+        covered, blocking = solver_mod._resolve_slot_covered(dict(s), now)
+        assert covered is True
+        solver_mod._record_resolve_skip(dict(s), now, blocking)
+
+    def test_skip_records_the_blocking_claim(self):
+        self._skip()
+        data = self._client().get("/api/test/mlat-history?kind=resolve_skips").json()
+        assert data["kind"] == "resolve_skips"
+        assert data["n_records"] == 1
+        rec = data["records"][0]
+        assert rec["lane"] == "dark"
+        assert rec["track_ids"] == ["a1", "b1"]
+        assert rec["n_nodes"] == 3
+        assert {b["track_id"] for b in rec["blocking"]} == {"a1", "b1"}
+        assert all(b["held_n"] == 3 for b in rec["blocking"])
+
+    def test_skips_do_not_land_in_the_solve_history(self):
+        self._skip()
+        assert not state.mlat_solve_history
+        assert not state.mlat_solve_history_known
+
+    def test_lane_filter_applies_to_skips(self):
+        self._skip(track_ids=("a1", "b1"))
+        self._skip(track_ids=("a2", "b2"), adsb_hex="abc123")
+        assert self._client().get("/api/test/mlat-history?kind=resolve_skips&lane=dark").json()["n_records"] == 1
+        assert self._client().get("/api/test/mlat-history?kind=resolve_skips&lane=adsb").json()["n_records"] == 1
+        assert self._client().get("/api/test/mlat-history?kind=resolve_skips").json()["lane_counts"] == {
+            "dark": 1,
+            "known": 0,
+            "adsb": 1,
+        }
+
+    def test_unknown_kind_is_rejected(self):
+        assert self._client().get("/api/test/mlat-history?kind=bogus").status_code == 400

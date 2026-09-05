@@ -38,6 +38,7 @@ def _reset_state():
     state.n2_unconfirmed = 0
     state.solver_stale_drops = 0
     state.solver_resolve_skips = 0
+    state.solver_resolve_skips_dark = 0
     state.multinode_tracks.clear()
     state.task_last_success.clear()
 
@@ -334,56 +335,153 @@ class TestResolveSuppression:
     emits its own candidate for it inside one association window.  Solving all
     of them starves aircraft that have no solve at all — the queue ages out
     behind work whose result is superseded the moment it lands.
+
+    The claim that suppresses a duplicate is taken on PUBLICATION
+    (_record_resolve_slot), not on admission: the rule is "this aircraft is
+    already on the map at this width", and only a publish puts it there.
+    _resolve_slot_covered is the pure test run before the solve.
     """
 
     def _s_in(self, track_ids, n_nodes=2):
         return dict(_CONFIRMED_N2, n_nodes=n_nodes, track_ids=list(track_ids))
 
-    def test_a_second_copy_of_the_same_tracks_is_skipped(self):
-        now = time.time()
-        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"]), now) is True
-        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"]), now) is False
+    def _covered(self, track_ids, n_nodes=2, now=None):
+        return solver_mod._resolve_slot_covered(self._s_in(track_ids, n_nodes), now or time.time())[0]
 
-    def test_a_candidate_carrying_an_unsolved_track_runs(self):
+    def _publish(self, track_ids, n_nodes=2, now=None):
+        solver_mod._record_resolve_slot(list(track_ids), n_nodes, now or time.time())
+
+    def test_a_second_copy_of_a_published_candidate_is_skipped(self):
+        now = time.time()
+        assert self._covered(["a1", "b1"], now=now) is False
+        self._publish(["a1", "b1"], now=now)
+        assert self._covered(["a1", "b1"], now=now) is True
+
+    def test_the_check_alone_claims_nothing(self):
+        """The whole point of the split: a candidate that is admitted and then
+        rejected by the gate stack must leave no trace."""
+        now = time.time()
+        assert self._covered(["a1", "b1"], now=now) is False
+        assert self._covered(["a1", "b1"], now=now) is False
+
+    def test_a_candidate_carrying_an_unpublished_track_runs(self):
         """An aircraft entering coverage must never be suppressed."""
         now = time.time()
-        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"]), now) is True
-        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b2"]), now) is True
+        self._publish(["a1", "b1"], now=now)
+        assert self._covered(["a1", "b2"], now=now) is False
 
     def test_a_wider_view_of_the_same_tracks_runs(self):
         now = time.time()
-        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"], n_nodes=2), now) is True
-        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"], n_nodes=5), now) is True
+        self._publish(["a1", "b1"], n_nodes=2, now=now)
+        assert self._covered(["a1", "b1"], n_nodes=5, now=now) is False
 
     def test_a_narrower_view_after_a_wider_one_is_skipped(self):
         now = time.time()
-        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"], n_nodes=5), now) is True
-        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"], n_nodes=2), now) is False
+        self._publish(["a1", "b1"], n_nodes=5, now=now)
+        assert self._covered(["a1", "b1"], n_nodes=2, now=now) is True
 
-    def test_a_narrow_admission_does_not_lower_the_bar(self):
+    def test_a_narrow_publish_does_not_lower_the_bar(self):
         """The window holds the widest claim, not the most recent one."""
         now = time.time()
-        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"], n_nodes=5), now) is True
-        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b2"], n_nodes=2), now) is True
-        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"], n_nodes=3), now) is False
+        self._publish(["a1", "b1"], n_nodes=5, now=now)
+        self._publish(["a1", "b2"], n_nodes=2, now=now)
+        assert self._covered(["a1", "b1"], n_nodes=3, now=now) is True
 
     def test_claims_expire(self):
         now = time.time()
-        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"]), now) is True
+        self._publish(["a1", "b1"], now=now)
         later = now + solver_mod._SOLVER_RESOLVE_INTERVAL_S + 1.0
-        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"]), later) is True
+        assert self._covered(["a1", "b1"], now=later) is False
 
     def test_an_input_without_track_provenance_always_runs(self):
         """Detection-level inputs carry no track ids — nothing to match on."""
         now = time.time()
-        assert solver_mod._claim_resolve_slot({"n_nodes": 2}, now) is True
-        assert solver_mod._claim_resolve_slot({"n_nodes": 2}, now) is True
+        assert solver_mod._resolve_slot_covered({"n_nodes": 2}, now)[0] is False
+        solver_mod._record_resolve_slot(None, 2, now)
+        assert solver_mod._resolve_slot_covered({"n_nodes": 2}, now)[0] is False
 
     def test_zero_interval_disables_suppression(self, monkeypatch):
         monkeypatch.setattr(solver_mod, "_SOLVER_RESOLVE_INTERVAL_S", 0.0)
         now = time.time()
-        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"]), now) is True
-        assert solver_mod._claim_resolve_slot(self._s_in(["a1", "b1"]), now) is True
+        self._publish(["a1", "b1"], now=now)
+        assert self._covered(["a1", "b1"], now=now) is False
+
+    def test_the_check_names_every_blocking_claim(self):
+        now = time.time()
+        self._publish(["a1", "b1"], n_nodes=4, now=now)
+        covered, blocking = solver_mod._resolve_slot_covered(self._s_in(["a1", "b1"], n_nodes=3), now)
+        assert covered is True
+        assert {b["track_id"]: b["held_n"] for b in blocking} == {"a1": 4, "b1": 4}
+
+    def test_an_admitted_candidate_reports_no_blockers(self):
+        covered, blocking = solver_mod._resolve_slot_covered(self._s_in(["a1", "b1"]), time.time())
+        assert (covered, blocking) == (False, [])
+
+    def _solve_fn(self, calls, rms_delay=0.5, lat=37.5, lon=-122.1):
+        def fn(s_in, cfgs):
+            calls.append(s_in)
+            return {
+                "success": True,
+                "lat": lat,
+                "lon": lon,
+                "alt_m": 9000.0,
+                "rms_delay": rms_delay,
+                "rms_doppler": 5.0,
+                "timestamp_ms": int(time.time() * 1000),
+                "contributing_node_ids": ["n1", "n2"],
+                "n_nodes": s_in.get("n_nodes", 2),
+            }
+
+        return fn
+
+    def test_a_rejected_candidate_does_not_block_an_identical_twin(self, monkeypatch):
+        """The bug this split exists to fix.  A candidate the gate stack sank
+        put nothing on the map, so the next copy of the same aircraft is its
+        first real chance — and used to be blacked out for the full 12 s."""
+        _reset_state()
+        monkeypatch.setattr(state, "node_analytics", _StubAnalytics())
+        calls: list = []
+        s_in = self._s_in(["a1", "b1"])
+
+        # rms_delay past the gate: solves, then rejected, publishes nothing.
+        solver_mod._process_solver_item((dict(s_in), {}, time.time()), self._solve_fn(calls, rms_delay=10.0))
+        assert state.solver_fail_rms_delay == 1
+        assert not state.multinode_tracks
+
+        solver_mod._process_solver_item((dict(s_in), {}, time.time()), self._solve_fn(calls))
+        assert len(calls) == 2, "the twin must not be suppressed by a reject"
+        assert state.multinode_tracks
+        assert state.solver_resolve_skips == 0
+
+    def test_a_subset_for_another_aircraft_survives_a_rejected_superset(self, monkeypatch):
+        """Tracker track ids are shared across the candidates of DIFFERENT
+        aircraft, so a contaminated superset that the gates sank used to take
+        every clean subset behind it down with it — including its neighbour's
+        only candidate."""
+        _reset_state()
+        monkeypatch.setattr(state, "node_analytics", _StubAnalytics())
+        calls: list = []
+        superset = self._s_in(["a1", "b1", "c1"], n_nodes=3)
+        solver_mod._process_solver_item((superset, {}, time.time()), self._solve_fn(calls, rms_delay=10.0))
+        assert not state.multinode_tracks
+
+        # The neighbour: fewer nodes, sharing one contaminated track id.
+        subset = self._s_in(["a1", "b1"], n_nodes=2)
+        solver_mod._process_solver_item((subset, {}, time.time()), self._solve_fn(calls))
+        assert len(calls) == 2
+        assert state.multinode_tracks
+
+    def test_only_the_published_width_is_claimed(self, monkeypatch):
+        """A publish claims at the width it published, so a later narrower
+        copy is suppressed and a wider one still runs."""
+        _reset_state()
+        monkeypatch.setattr(state, "node_analytics", _StubAnalytics())
+        calls: list = []
+        solver_mod._process_solver_item((self._s_in(["a1", "b1"], n_nodes=3), {}, time.time()), self._solve_fn(calls))
+        assert state.multinode_tracks
+        now = time.time()
+        assert self._covered(["a1", "b1"], n_nodes=2, now=now) is True
+        assert self._covered(["a1", "b1"], n_nodes=4, now=now) is False
 
     def test_a_skipped_item_never_reaches_the_solver(self, monkeypatch):
         _reset_state()
@@ -407,6 +505,8 @@ class TestResolveSuppression:
         solver_mod._process_solver_item((s_in, {}, time.time()), solve_fn)
         assert len(solve_calls) == 1
         assert state.solver_successes == 1
+        # The first item PUBLISHED, which is what makes the second redundant.
+        assert state.multinode_tracks
 
         assert solver_mod._process_solver_item((dict(s_in), {}, time.time()), solve_fn) is None
         assert len(solve_calls) == 1, "the duplicate must not be solved"
@@ -414,6 +514,50 @@ class TestResolveSuppression:
         # Skipping is not a failure and not a lost item: neither counter moves.
         assert state.solver_failures == 0
         assert state.solver_stale_drops == 0
+
+    def test_a_skip_is_recorded_with_the_claim_that_blocked_it(self):
+        """The counter alone cannot say WHOSE claim suppressed a candidate,
+        and tracker track ids are shared between different aircraft — so a
+        skip that suppressed a duplicate and one that suppressed a neighbour
+        looked identical.  The deque carries the blocking claims."""
+        _reset_state()
+        state.solver_resolve_skips_recent.clear()
+        now = time.time()
+        s_in = dict(self._s_in(["a1", "b1"], n_nodes=4), initial_guess={"lat": 35.0, "lon": -82.0})
+        solver_mod._record_resolve_slot(["a1", "b1"], 4, now)
+        covered, blocking = solver_mod._resolve_slot_covered(dict(s_in), now)
+        assert covered is True
+        solver_mod._record_resolve_skip(dict(s_in), now, blocking)
+
+        assert state.solver_resolve_skips == 1
+        assert state.solver_resolve_skips_dark == 1
+        assert len(state.solver_resolve_skips_recent) == 1
+        rec = state.solver_resolve_skips_recent[0]
+        assert rec["lane"] == "dark"
+        assert rec["track_ids"] == ["a1", "b1"]
+        assert rec["n_nodes"] == 4
+        assert rec["guess_lat"] == 35.0
+        assert {b["track_id"]: b["held_n"] for b in rec["blocking"]} == {"a1": 4, "b1": 4}
+
+    def test_a_tagged_candidate_is_counted_but_not_as_dark(self):
+        _reset_state()
+        state.solver_resolve_skips_recent.clear()
+        now = time.time()
+        s_in = dict(self._s_in(["a1"], n_nodes=3), adsb_hex="abc123")
+        solver_mod._record_resolve_skip(s_in, now, [])
+        assert state.solver_resolve_skips == 1
+        assert state.solver_resolve_skips_dark == 0
+        assert state.solver_resolve_skips_recent[0]["lane"] == "adsb"
+
+    def test_skips_never_enter_the_solve_history(self):
+        """One skip per solve-history record would evict the solves the same
+        investigation needs — live, skips outrun dark records two to one."""
+        _reset_state()
+        state.mlat_solve_history.clear()
+        s_in = self._s_in(["a1", "b1"])
+        solver_mod._record_resolve_skip(s_in, time.time(), [])
+        assert not state.mlat_solve_history
+        assert not state.mlat_solve_history_known
 
 
 class TestSolveBestAltitude:
