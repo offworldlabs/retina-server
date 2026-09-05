@@ -827,3 +827,76 @@ class TestFovGateActive(_TrimmingTestBase):
         assert state.fov_shadow_agree == 1
         assert state.fov_shadow_would_pass == 0
         assert state.fov_shadow_would_reject == 0
+
+
+class TestTrimmedTracksAreNotClaimed(_TrimmingTestBase):
+    """A trimmed node's tracks must not take a re-solve claim.
+
+    The claim says "this aircraft is on the map at this width".  A node
+    dropped for a bad residual contributed nothing to the published position
+    and its track was probably a different aircraft's — claiming it would
+    suppress that aircraft's own candidate on the strength of a measurement
+    this solve threw away.
+    """
+
+    _FULL = ["n1", "n2", "n3", "n4", "bad"]
+    _TRIM = ["n1", "n2", "n3", "n4"]
+
+    def test_the_dropped_nodes_track_is_left_unclaimed(self):
+        table = {
+            frozenset(self._FULL): _stub_result(
+                self._FULL,
+                rms_delay=8.0,
+                per_node={"n1": 0.5, "n2": 0.5, "n3": 0.5, "n4": 0.5, "bad": 12.0},
+            ),
+            frozenset(self._TRIM): _stub_result(
+                self._TRIM,
+                rms_delay=0.8,
+                per_node={"n1": 0.3, "n2": 0.3, "n3": 0.3, "n4": 0.3},
+            ),
+        }
+        s_in = _s_in(
+            self._FULL,
+            track_ids=["t1", "t2", "t3", "t4", "tbad"],
+            track_ids_by_node={
+                "n1": ["t1"],
+                "n2": ["t2"],
+                "n3": ["t3"],
+                "n4": ["t4"],
+                "bad": ["tbad"],
+            },
+        )
+        result = self._run(s_in, _stub_solve_fn(table))
+        assert result is not None and result["success"]
+        assert result["source_track_ids"] == ["t1", "t2", "t3", "t4"]
+        assert set(solver_mod._RECENT_SOLVES) == {"t1", "t2", "t3", "t4"}
+
+    def test_a_candidate_built_on_the_dropped_track_still_runs(self):
+        """The other half of the same claim: whoever "tbad" really belongs to
+        keeps its slot."""
+        table = {
+            frozenset(self._FULL): _stub_result(
+                self._FULL,
+                rms_delay=8.0,
+                per_node={"n1": 0.5, "n2": 0.5, "n3": 0.5, "n4": 0.5, "bad": 12.0},
+            ),
+            frozenset(self._TRIM): _stub_result(
+                self._TRIM,
+                rms_delay=0.8,
+                per_node={"n1": 0.3, "n2": 0.3, "n3": 0.3, "n4": 0.3},
+            ),
+        }
+        s_in = _s_in(
+            self._FULL,
+            track_ids=["t1", "t2", "t3", "t4", "tbad"],
+            track_ids_by_node={
+                "n1": ["t1"],
+                "n2": ["t2"],
+                "n3": ["t3"],
+                "n4": ["t4"],
+                "bad": ["tbad"],
+            },
+        )
+        self._run(s_in, _stub_solve_fn(table))
+        neighbour = {"n_nodes": 2, "track_ids": ["tbad", "tother"]}
+        assert solver_mod._resolve_slot_covered(neighbour, time.time())[0] is False

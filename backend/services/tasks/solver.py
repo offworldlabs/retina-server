@@ -986,6 +986,34 @@ _SOLVER_MAX_QUEUE_AGE_S = 45.0
 # Sized against the map, not the association cadence: multinode_tracks expire
 # at 60 s, so refreshing an aircraft every 12 s leaves four solves' worth of
 # margin.  0 disables the suppression entirely.
+#
+# The claim is recorded ON PUBLICATION, not on admission, and from the
+# POST-TRIM survivors.  Claiming on admission made a candidate that never
+# reached the map suppress every later candidate sharing any of its track ids
+# for the full window — including other aircraft's, since tracker track ids
+# are shared across the association candidates of different aircraft (74 of
+# 178 ids in a 6 min live window appeared in solves of more than one
+# ground-truth aircraft; the same finding that forced _supersession_match's
+# spatial guard).  A rejected candidate, or a contaminated superset that the
+# gates sank, therefore blacked out the clean subsets behind it for 12 s and
+# nothing was refreshed at all.  Live that cost ~1 537 skips per 646 dark
+# attempts per 30 min — more candidates suppressed than solved, by a factor
+# of two.  The rule this suppression is FOR is "an aircraft already on the map
+# at this width does not need re-solving yet", and only a publication puts an
+# aircraft on the map.
+#
+# Two consequences, both accepted deliberately:
+#   * the check no longer claims under the same lock, so two workers can now
+#     both solve duplicates of one aircraft that arrived together.  The pair
+#     costs one extra solve and is resolved downstream by keying and
+#     supersession, which already handle exactly this; the alternative is the
+#     starvation above.
+#   * trimmed nodes' track ids are NOT claimed (_filter_s_in_to_nodes rebuilds
+#     track_ids from the surviving track_ids_by_node, so result's
+#     source_track_ids are the survivors).  A node dropped for a bad residual
+#     was probably another aircraft's — claiming its track would suppress that
+#     aircraft's own candidate on the strength of a measurement this solve
+#     threw away.
 _SOLVER_RESOLVE_INTERVAL_S = float(os.getenv("SOLVER_RESOLVE_INTERVAL_S", "12"))
 _RECENT_SOLVES: dict[str, tuple[float, int]] = {}  # track_id → (solved_at, n_nodes)
 _RECENT_SOLVES_LOCK = threading.Lock()
@@ -1003,61 +1031,60 @@ def _sweep_recent_solves(now_s: float) -> None:
         del _RECENT_SOLVES[tid]
 
 
-def _claim_resolve_slot(s_in, now_s: float) -> bool:
-    """False when this candidate re-solves tracks another candidate just took.
+def _resolve_slot_covered(s_in, now_s: float) -> tuple[bool, list[dict]]:
+    """Is every track this candidate carries already ON THE MAP at this width?
 
-    Records the claim as a side effect, under one lock with the test, so two
-    workers cannot both admit the same aircraft's duplicates.  An input with no
-    track provenance (detection-level, or an anchored input carrying none) is
-    always admitted — there is nothing to match it against.
+    Pure: it reads the claims and mutates nothing, so a candidate that is
+    admitted here and then rejected by the gate stack leaves no trace.  The
+    claim is made afterwards by _record_resolve_slot, from the publish path
+    only — see the block comment above for why, and for what the loss of
+    atomic test-and-claim costs.
+
+    Returns (covered, blocking).  ``blocking`` is the claims that covered it,
+    for the skip record; it is empty whenever ``covered`` is False.  An input
+    with no track provenance (detection-level, or an anchored input carrying
+    none) is never covered — there is nothing to match it against.
     """
     if _SOLVER_RESOLVE_INTERVAL_S <= 0 or not isinstance(s_in, dict):
-        return True
+        return False, []
     track_ids = s_in.get("track_ids")
     if not track_ids:
-        return True
+        return False, []
     n_nodes = int(s_in.get("n_nodes") or 0)
     cutoff = now_s - _SOLVER_RESOLVE_INTERVAL_S
+    blocking: list[dict] = []
     with _RECENT_SOLVES_LOCK:
-        covered = True
         for tid in track_ids:
             held = _RECENT_SOLVES.get(tid)
             if held is None or held[0] <= cutoff or held[1] < n_nodes:
-                covered = False
-                break
-        if covered:
-            return False
-        for tid in track_ids:
-            held = _RECENT_SOLVES.get(tid)
-            # Keep the widest claim of the window: a narrow candidate admitted
-            # after a wide one must not lower the bar the next copy is tested
-            # against.
-            held_nodes = held[1] if held is not None and held[0] > cutoff else 0
-            _RECENT_SOLVES[tid] = (now_s, max(n_nodes, held_nodes))
-        _sweep_recent_solves(now_s)
-    return True
+                return False, []
+            blocking.append({"track_id": tid, "held_ts": round(held[0], 3), "held_n": held[1]})
+    return True, blocking
 
 
-def _resolve_slot_blockers(track_ids, now_s: float) -> list[dict]:
-    """The live claims covering ``track_ids``, for a skip record.
+def _record_resolve_slot(track_ids, n_nodes: int, now_s: float) -> None:
+    """Record that ``track_ids`` are covered by a PUBLISHED solve at n_nodes.
 
-    Read-only, and taken after the refusal rather than during it: the check
-    itself must stay one atomic test-and-claim, and a skip is rare enough
-    (relative to the queue drain rate) that a second lock acquisition on that
-    path costs nothing.  Any claim that moves between the two is a claim the
-    diagnosis would have wanted to name anyway.
+    Called from the publish path alone, with the post-trim survivors
+    (``result["source_track_ids"]``).  Nothing else may call it: a claim is a
+    statement that this aircraft is on the map, and a rejected solve puts
+    nothing there.
     """
+    if _SOLVER_RESOLVE_INTERVAL_S <= 0 or not track_ids:
+        return
+    n_nodes = int(n_nodes or 0)
     cutoff = now_s - _SOLVER_RESOLVE_INTERVAL_S
-    out: list[dict] = []
     with _RECENT_SOLVES_LOCK:
         for tid in track_ids:
             held = _RECENT_SOLVES.get(tid)
-            if held is not None and held[0] > cutoff:
-                out.append({"track_id": tid, "held_ts": round(held[0], 3), "held_n": held[1]})
-    return out
+            # Keep the widest claim of the window: a narrow publish after a
+            # wide one must not lower the bar the next copy is tested against.
+            held_nodes = held[1] if held is not None and held[0] > cutoff else 0
+            _RECENT_SOLVES[tid] = (now_s, max(n_nodes, held_nodes))
+        _sweep_recent_solves(now_s)
 
 
-def _record_resolve_skip(s_in, now_s: float, blocking: list[dict] | None = None) -> None:
+def _record_resolve_skip(s_in, now_s: float, blocking: list[dict]) -> None:
     """Count and remember one resolve-slot refusal.
 
     The counter alone could not answer the question the suppression rule
@@ -1089,7 +1116,7 @@ def _record_resolve_skip(s_in, now_s: float, blocking: list[dict] | None = None)
             "lane": "dark" if dark else "adsb",
             "track_ids": track_ids,
             "n_nodes": int(s.get("n_nodes") or 0),
-            "blocking": _resolve_slot_blockers(track_ids, now_s) if blocking is None else blocking,
+            "blocking": blocking,
             "guess_lat": round(float(ig["lat"]), 6) if ig.get("lat") else None,
             "guess_lon": round(float(ig["lon"]), 6) if ig.get("lon") else None,
         }
@@ -1850,8 +1877,9 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
     # and a copy that queued before its twin was solved can only be recognised
     # once it reaches a worker.
     _now_s = time.time()
-    if not _claim_resolve_slot(s_in, _now_s):
-        _record_resolve_skip(s_in, _now_s)
+    _covered, _blocking = _resolve_slot_covered(s_in, _now_s)
+    if _covered:
+        _record_resolve_skip(s_in, _now_s, _blocking)
         return None
     n_nodes = s_in.get("n_nodes", 0) if isinstance(s_in, dict) else 0
     consensus_meta: dict | None = None
@@ -2417,6 +2445,12 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
         archive_record = dict(result)
         archive_record["solve_ts_ms"] = int(time.time() * 1000)
         state.track_archive_buffer.append(archive_record)
+        # The re-solve claim, taken here and nowhere else: this aircraft is now
+        # on the map at this width, which is the only thing that makes a
+        # duplicate not worth solving.  Survivors only — source_track_ids is
+        # rebuilt from the post-trim node set.  Outside _MN_TRACKS_LOCK on
+        # purpose, so _RECENT_SOLVES_LOCK is never nested inside it.
+        _record_resolve_slot(result.get("source_track_ids"), result.get("n_nodes"), time.time())
         _record_solve_history(
             "published",
             s_in,

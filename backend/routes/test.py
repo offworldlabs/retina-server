@@ -210,7 +210,7 @@ def _build_dashboard_data() -> bytes:
                 # not the queue size.
                 "stale_drops": state.solver_stale_drops,
                 # Duplicate candidates for an aircraft already solved this
-                # window (see solver.py's _claim_resolve_slot).  Read it
+                # window (see solver.py's _resolve_slot_covered).  Read it
                 # against stale_drops: skips are work correctly not done,
                 # stale drops are work lost.
                 "resolve_skips": state.solver_resolve_skips,
