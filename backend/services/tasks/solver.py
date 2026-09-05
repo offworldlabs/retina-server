@@ -645,6 +645,46 @@ _MN_ASSOC_MAX_DIST_CAP_KM = 12.0
 # Never associate to an entry the map has already dropped (the 60 s expiry in
 # frame_processor.build_combined_aircraft_json).
 _MN_ASSOC_MAX_AGE_S = 60.0
+
+# ── Supersession gate ────────────────────────────────────────────────────────
+# Supersession is DESTRUCTIVE in a way keying is not.  Keying to the wrong
+# entry writes one bad position that the next solve corrects; superseding the
+# wrong entry deletes a live aircraft's key outright, with its Kalman state,
+# its position history and its follow-lane identity, and that aircraft's next
+# solve mints a fresh key and restarts from nothing.  So the same evidence that
+# is good enough to key is NOT good enough to pop, and this gate is tighter
+# than _MN_ASSOC_MAX_DIST_KM on purpose.
+#
+# Measured over three 20 min ground-truth captures on the test deployment
+# (2026-09-05, 129 supersessions): 63 of the 129 popped a DIFFERENT ground-truth
+# aircraft's key.  The shape is always the same — three dark aircraft 5-6 km
+# apart inside the same nodes' cones, a 3-4 node solve of B carrying 4.5-10 km
+# of position error landing inside the 6 km gate of A's established key (up to
+# 71 solves old) and popping it, after which A is drawn 5+ km off for several
+# seconds under a brand-new key.  For well-covered dark aircraft this is now
+# the dominant miss.
+#
+# 4 km is where the replay puts the knee.  Replaying the recorded 129
+# supersessions offline: base 4 km AND |dalt| <= 1000 m gives 7 cross-aircraft
+# pops (from 56), 33 same-aircraft pops (from 64) and 1 pop by a bad new solve
+# (from 12).  Distance alone at 3 km is worse on every axis that matters
+# (9 / 41 / 3), and altitude alone at the old 6 km base leaves 8 cross-aircraft
+# pops while keeping 26 same-aircraft ones — cheaper, but it does not close the
+# neighbour-pop hole this exists for.  The 4 km base still grows with entry age
+# through _mn_assoc_gate_km, so an old entry is not judged by a dt=0 number.
+_MN_SUPERSEDE_BASE_KM = 4.0
+# ...and the altitude half of the same gate.  Horizontal error is what a bad
+# multinode solve has a lot of; altitude is the axis on which two aircraft in
+# the same sector actually differ, and the one a wrong solve does not usually
+# reproduce.  In the same captures, cross-aircraft pops sat at a median
+# |daltitude| of ~2.7 km between the old entry and the new solve while
+# same-aircraft pops sat at ~0.4 km, and the same-aircraft pops that did exceed
+# 1 km were almost all bad solves (new solve error > 2 km) — pops worth losing.
+# Fail-open when either altitude is missing, like the rest of the pipeline's
+# optional fields: an entry with no altitude is judged on distance alone rather
+# than being made unpoppable.
+_MN_SUPERSEDE_MAX_ALT_DIFF_M = 1000.0
+
 # Guards the read-modify-write in _process_solver_item.  Solver workers run
 # _N_SOLVER_WORKERS-way concurrently, and two threads associating the same
 # aircraft at once would each miss the other's entry and mint two tracks — the
@@ -865,6 +905,7 @@ def _supersession_match(
     ts_ms: float,
     learned_vel_fn=track_filter.learned_velocity,
     max_age_s: float = _MN_ASSOC_MAX_AGE_S,
+    alt_m: float | None = None,
 ) -> tuple[bool, float | None]:
     """Is the existing entry ``old_key`` the same aircraft as this new solve?
 
@@ -887,26 +928,50 @@ def _supersession_match(
     Replayed over those 139 live solves, this guard cuts mints 47 -> 22 and
     cross-aircraft pops 36 -> 7.
 
-    Two ways to match, either sufficient:
+    Nor is proximity on its own: on three 20 min ground-truth captures
+    (2026-09-05, 129 supersessions) 63 popped a different ground-truth
+    aircraft, almost always a 3-4 node solve of B with 4.5-10 km of position
+    error landing inside neighbour A's 6 km gate and deleting A's established
+    key.  So this predicate is gated tighter than the keying rule on BOTH
+    axes — _MN_SUPERSEDE_BASE_KM (4 km, still age-scaled) and
+    _MN_SUPERSEDE_MAX_ALT_DIFF_M (1000 m) carry those measurements — because a
+    wrong pop costs a live aircraft's key while a refusal costs one deferred
+    merge.  Replayed over those 129: cross-aircraft pops 56 -> 7, pops by a
+    bad new solve 12 -> 1, at the price of 64 -> 33 same-aircraft merges.
+
+    Two ways to match, either sufficient — and BOTH subject to the altitude
+    gate, which is fail-open when either side has no altitude:
 
       (a) SPATIAL.  Dead-reckon ``old_r`` forward to this solve's timestamp
-          and ask whether it lands within the same age-scaled gate the keying
-          rule uses (_mn_assoc_gate_km).  Same DR as multinode_key_decision —
-          _entry_dr_velocity + offset_latlon_m, so the entry is judged where
-          the feed DRAWS it — and measured against the solve's RAW position,
-          which is what that gate was tuned against.  The dt window is the
-          keying rule's: an entry older than ``max_age_s`` is past the map's
-          own expiry, and a negative dt (the entry stamped after this solve,
-          out-of-order arrival) is never dead-reckoned backwards to
-          manufacture a match.
+          and ask whether it lands within the age-scaled gate
+          (_mn_assoc_gate_km) grown from _MN_SUPERSEDE_BASE_KM.  Same DR as
+          multinode_key_decision — _entry_dr_velocity + offset_latlon_m, so
+          the entry is judged where the feed DRAWS it — and measured against
+          the solve's RAW position, which is what that gate was tuned
+          against.  The dt window is the keying rule's: an entry older than
+          ``max_age_s`` is past the map's own expiry, and a negative dt (the
+          entry stamped after this solve, out-of-order arrival) is never
+          dead-reckoned backwards to manufacture a match.
 
       (b) IDENTICAL INPUTS.  ``old_r``'s source track ids are non-empty and a
           subset of this solve's.  Built from the same measurements, so the
-          same aircraft by construction, however far apart the two solves
-          converged — this is the anchor-merge case, where a bottom-up
-          fragment minted from exactly these tracks is absorbed into the
-          anchor.  A merely OVERLAPPING set is not enough: overlap is the
-          contamination described above.
+          same aircraft by construction — this is the anchor-merge case,
+          where a bottom-up fragment minted from exactly these tracks is
+          absorbed into the anchor.  A merely OVERLAPPING set is not enough:
+          overlap is the contamination described above.
+
+          Bounded, though, at twice the branch (a) gate and by the same
+          altitude test.  Identical inputs converging many kilometres and
+          thousands of metres apart is a multi-modal solve — the same
+          measurements admitting two solutions — not one aircraft seen twice,
+          and picking the wrong mode still costs a key.  Branch (b) fired 7
+          times in those captures: 4 were cross-aircraft (dead-reckoned 6.2,
+          6.3, 9.0 and 16.5 km apart, |daltitude| 10764, 1596, 1033 and 739 m)
+          and only one of the 3 same-aircraft ones was a legitimate merge
+          (1.8 km, 31 m).  The real anchor-merge case is always close, so the
+          bound costs it nothing.  A dt window that never opened leaves
+          ``dr_dist_km`` unknown, and an unknown distance cannot fail a
+          distance bound — the ids still have to be a subset.
 
     Returns (matched, dr_dist_km).  dr_dist_km is the dead-reckoned distance
     in km when it could be computed (the dt window held and the entry has a
@@ -914,6 +979,18 @@ def _supersession_match(
     multinode_key_decision returns its dist_km: after the fact it is the only
     way to tell a tight merge from a rescued far one.
     """
+    # The altitude half of the gate, applied to both branches below.  Missing
+    # or non-finite on either side is "unknown", and unknown passes — an entry
+    # that never carried an altitude must stay poppable on distance alone.
+    old_alt, new_alt = old_r.get("alt_m"), alt_m
+    alt_ok = (
+        old_alt is None
+        or new_alt is None
+        or not math.isfinite(old_alt)
+        or not math.isfinite(new_alt)
+        or abs(new_alt - old_alt) <= _MN_SUPERSEDE_MAX_ALT_DIFF_M
+    )
+
     dr_dist_km: float | None = None
     dt = ts_ms / 1000.0 - float(old_r.get("timestamp_ms") or 0) / 1000.0
     if 0.0 <= dt <= max_age_s:
@@ -927,11 +1004,16 @@ def _supersession_match(
                 north_m=vel_north_ms * dt,
             )
             dr_dist_km = _haversine_km(raw_lat, raw_lon, p_lat, p_lon)
-            if dr_dist_km <= _mn_assoc_gate_km(dt):
+            if alt_ok and dr_dist_km <= _mn_assoc_gate_km(dt, _MN_SUPERSEDE_BASE_KM):
                 return True, dr_dist_km
 
     old_ids = set(old_r.get("source_track_ids") or ())
-    if old_ids and old_ids.issubset(new_ids):
+    if (
+        alt_ok
+        and old_ids
+        and old_ids.issubset(new_ids)
+        and (dr_dist_km is None or dr_dist_km <= 2.0 * _mn_assoc_gate_km(dt, _MN_SUPERSEDE_BASE_KM))
+    ):
         return True, dr_dist_km
     return False, dr_dist_km
 
@@ -2249,6 +2331,13 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             # silent — the shared-id signal is mostly contamination and the
             # panel has to be able to see that.
             #
+            # Proximity alone was not enough either: a later ground-truth
+            # capture (2026-09-05) found 63 of 129 supersessions still popping
+            # a neighbour, a solve of one aircraft with kilometres of error
+            # landing inside another's gate.  The predicate now runs on the
+            # tighter _MN_SUPERSEDE_BASE_KM and an altitude gate — see its
+            # docstring — which is why the solve's own alt_m goes in here.
+            #
             # Unchanged by anchor honoring: `old_key == key: continue` below
             # already protects an anchor from superseding itself, and a
             # proximity-minted fragment built from exactly the anchor's source
@@ -2266,10 +2355,23 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
                         continue
                     if not new_ids.intersection(old_r.get("source_track_ids") or ()):
                         continue
-                    matched, _ = _supersession_match(old_key, old_r, new_ids, _raw_lat, _raw_lon, _ts_ms)
+                    matched, _ = _supersession_match(
+                        old_key, old_r, new_ids, _raw_lat, _raw_lon, _ts_ms, alt_m=result.get("alt_m")
+                    )
                     if not matched:
                         _superseded_blocked += 1
                         state.bump_counter("mn_superseded_blocked")
+                        # Split out the refusals the altitude gate alone made:
+                        # re-asking with the altitudes withheld (which the
+                        # predicate fails open on) is the same question minus
+                        # that test.  Worth separating because the two
+                        # refusals mean different things — a distance refusal
+                        # is a neighbour far away, an altitude one is a
+                        # neighbour the solve landed right on top of, and only
+                        # the second says how much of the new gate's work is
+                        # being done by altitude.
+                        if _supersession_match(old_key, old_r, new_ids, _raw_lat, _raw_lon, _ts_ms)[0]:
+                            state.bump_counter("mn_superseded_blocked_alt")
                         continue
                     state.multinode_tracks.pop(old_key, None)
                     with state.anomaly_lock:

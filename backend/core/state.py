@@ -562,6 +562,16 @@ mn_superseded: int = 0
 # be (36 of 44 supersessions popped another aircraft's key before the guard).
 mn_superseded_blocked: int = 0
 
+# The subset of mn_superseded_blocked that the altitude half of the gate
+# refused on its own — the entry dead-reckoned close enough to be popped, but
+# its altitude and the new solve's differed by more than
+# _MN_SUPERSEDE_MAX_ALT_DIFF_M.  These are the neighbour-pops proximity alone
+# could never see: a bad solve of aircraft B landing on top of aircraft A's
+# key, which on the captures this gate was measured against was the dominant
+# way a well-covered dark aircraft lost its identity.  Read it against
+# mn_superseded_blocked to see how much of the guard's work altitude is doing.
+mn_superseded_blocked_alt: int = 0
+
 # Solves published after node-trimming recovered them from the rms_delay
 # gate at n>=4 (see solver.py's _trim_and_resolve).  Counted once per
 # publish, not per trim round — this is "how many map markers exist because
@@ -752,7 +762,7 @@ def _reset_for_tests() -> None:
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
     global coverage_rebuild_backlog
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
-    global mn_superseded, mn_superseded_blocked, solver_trimmed
+    global mn_superseded, mn_superseded_blocked, mn_superseded_blocked_alt, solver_trimmed
     global solver_consensus_selected, solver_consensus_filtered
     global solver_consensus_fallback, solver_consensus_shadow
     global solver_anchor_hits, solver_anchor_fallbacks, solver_anchored_published
@@ -842,7 +852,7 @@ def _reset_for_tests() -> None:
         coverage_rebuild_backlog = 0
         solver_stale_drops = 0
         solver_resolve_skips = 0
-        mn_superseded = mn_superseded_blocked = 0
+        mn_superseded = mn_superseded_blocked = mn_superseded_blocked_alt = 0
         solver_trimmed = 0
         solver_consensus_selected = solver_consensus_filtered = 0
         solver_consensus_fallback = solver_consensus_shadow = 0

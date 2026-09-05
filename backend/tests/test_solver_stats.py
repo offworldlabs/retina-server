@@ -473,6 +473,7 @@ class TestFragmentation:
             "dark_keys_proximity": 0,
             "mn_superseded": 0,
             "mn_superseded_blocked": 0,
+            "mn_superseded_blocked_alt": 0,
         }
 
     def test_dark_key_decision_counters_are_surfaced(self):
@@ -492,12 +493,16 @@ class TestFragmentation:
         spatial/identical-inputs guard refused (solver.py's
         _supersession_match).  They belong beside the key decisions: a wrong
         pop deletes a live aircraft's key and its next solve reappears above
-        as another dark_keys_minted."""
+        as another dark_keys_minted.  The _alt split says how many of the
+        refusals were altitude's doing — close enough to pop, kilometres
+        apart vertically, which is the neighbour-pop signature."""
         state.mn_superseded = 3
         state.mn_superseded_blocked = 29
+        state.mn_superseded_blocked_alt = 12
         out = _solver_window_stats(10.0)
         assert out["fragmentation"]["mn_superseded"] == 3
         assert out["fragmentation"]["mn_superseded_blocked"] == 29
+        assert out["fragmentation"]["mn_superseded_blocked_alt"] == 12
 
     def test_dark_key_decision_counters_reset_with_state(self):
         state.solver_key_minted_dark = 4
@@ -557,6 +562,7 @@ class TestEndpoint:
             "dark_keys_proximity",
             "mn_superseded",
             "mn_superseded_blocked",
+            "mn_superseded_blocked_alt",
         }
         assert data["fov"].keys() == {
             "mode",
