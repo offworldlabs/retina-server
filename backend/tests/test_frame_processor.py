@@ -731,6 +731,109 @@ class TestDedupAircraft:
         assert dedup_aircraft(one) == one
 
 
+# ─── Regression: the ground-truth resolver is a hint, not evidence ───────────
+# resolve_ground_truth_hex is a nearest-trail-end lookup in 2-D within 8 km, so
+# it ignores altitude: a dark aircraft 1-2 km from an airliner but 7,100 ft
+# below it was handed the airliner's ground_truth_hex, and dedup then hid its
+# own fresh 8-node solve.  Same-rank ties also used to fall back to list order,
+# i.e. the oldest key in state.multinode_tracks, so a stale n=2 solve beat a
+# fresh one for the same target.
+
+
+class TestDedupMultinodeSplitAndFreshness:
+    def _mn(self, hex_code, lat, lon, alt=30000, gt=None, node=None, n_nodes=None, seen=None):
+        e = {
+            "hex": hex_code,
+            "position_source": "multinode_solve",
+            "lat": lat,
+            "lon": lon,
+            "alt_baro": alt,
+        }
+        if gt is not None:
+            e["ground_truth_hex"] = gt
+        if node is not None:
+            e["node_id"] = node
+        if n_nodes is not None:
+            e["n_nodes"] = n_nodes
+        if seen is not None:
+            e["seen"] = seen
+        return e
+
+    def test_altitude_separated_multinode_entries_both_survive(self):
+        """The live case: ~1 km apart laterally, 7000 ft apart vertically."""
+        out = dedup_aircraft(
+            [
+                self._mn("mn0000000001", 34.900, -82.000, alt=30000, gt="t1", n_nodes=4),
+                self._mn("mn0000000002", 34.909, -82.000, alt=23000, gt="t1", n_nodes=8),
+            ]
+        )
+        assert len(out) == 2
+        assert {ac["hex"] for ac in out} == {"mn0000000001", "mn0000000002"}
+
+    def test_fresher_higher_node_solve_wins_the_tie(self):
+        """Both are the same aircraft, so one survives — the better solve."""
+        out = dedup_aircraft(
+            [
+                self._mn("mn0000000001", 34.9000, -82.0, gt="t1", node="node-a", n_nodes=3, seen=12.0),
+                self._mn("mn0000000002", 34.9045, -82.0, alt=30100, gt="t1", node="node-b", n_nodes=8, seen=1.5),
+            ]
+        )
+        assert len(out) == 1
+        assert out[0]["hex"] == "mn0000000002"
+        assert set(out[0]["contributing_node_ids"]) == {"node-a", "node-b"}
+
+    def test_equal_node_count_breaks_on_freshness(self):
+        out = dedup_aircraft(
+            [
+                self._mn("mn0000000001", 34.9000, -82.0, gt="t1", n_nodes=5, seen=9.0),
+                self._mn("mn0000000002", 34.9045, -82.0, alt=30100, gt="t1", n_nodes=5, seen=1.0),
+            ]
+        )
+        assert len(out) == 1
+        assert out[0]["hex"] == "mn0000000002"
+
+    def test_distant_arc_still_collapses_under_the_solve(self):
+        """An arc is a boresight crossing, not a position: distance from the
+        aircraft that produced it proves nothing, so it still collapses."""
+        out = dedup_aircraft(
+            [
+                {
+                    "hex": "abf380",
+                    "position_source": "single_node_ellipse_arc",
+                    "lat": 34.954,  # ~6 km north
+                    "lon": -82.0,
+                    "alt_baro": 30000,
+                    "ground_truth_hex": "t1",
+                    "node_id": "node-a",
+                },
+                self._mn("mn0000000001", 34.900, -82.0, gt="t1", node="node-b", n_nodes=6),
+            ]
+        )
+        assert len(out) == 1
+        assert out[0]["position_source"] == "multinode_solve"
+        assert set(out[0]["contributing_node_ids"]) == {"node-a", "node-b"}
+
+    def test_proximity_path_unchanged_apart_from_the_tie_break(self):
+        """Real hardware has no ground_truth_hex: same grouping as before, but
+        the better solve now wins instead of whichever was listed first."""
+        merged = dedup_aircraft(
+            [
+                self._mn("mn0000000001", 34.900, -82.0, n_nodes=2, seen=8.0),
+                self._mn("mn0000000002", 34.909, -82.0, alt=30100, n_nodes=7, seen=1.0),
+            ]
+        )
+        assert len(merged) == 1
+        assert merged[0]["hex"] == "mn0000000002"
+
+        split = dedup_aircraft(
+            [
+                self._mn("mn0000000001", 34.900, -82.0, alt=30000, n_nodes=2),
+                self._mn("mn0000000002", 34.909, -82.0, alt=25000, n_nodes=7),
+            ]
+        )
+        assert len(split) == 2
+
+
 # ─── Regression: despawned simulated aircraft must not linger ────────────────
 
 
