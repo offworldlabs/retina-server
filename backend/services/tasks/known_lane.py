@@ -330,7 +330,7 @@ def _publish(hexn: str, s_in: dict, result: dict) -> str:
     result["vel_untrusted"] = bool(result.get("vz_saturated")) or int(result.get("n_nodes") or 0) <= 3
 
     with solver_mod._MN_TRACKS_LOCK:
-        key, _how = solver_mod.multinode_key_decision(state.multinode_tracks, result, hexn, None)
+        key, _how, _dist_km = solver_mod.multinode_key_decision(state.multinode_tracks, result, hexn, None)
         smoothed = track_filter.smooth_solve(result, key, hexn, ewma_fn=solver_mod._ewma_smooth_track)
         prev = state.multinode_tracks.get(key)
         if prev:

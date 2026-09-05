@@ -604,10 +604,44 @@ def _ewma_smooth_track(result: dict, track_key: str, adsb_hex: str | None) -> di
 # overlapping icons that drifted apart and then tripped the position-mismatch
 # and supersonic anomaly detectors.
 
-# Dark-target association gate.  retina_analytics.association uses the same 6 km
-# (_MERGE_DIST_KM) for within-round clustering, so this keeps the cross-round
-# gate no tighter than the one already applied per round.
+# Dark-target association gate, at dt=0.  retina_analytics.association uses the
+# same 6 km (_MERGE_DIST_KM) for within-round clustering, so this keeps the
+# cross-round gate no tighter than the one already applied per round.
 _MN_ASSOC_MAX_DIST_KM = 6.0
+
+# ...and how that gate GROWS with the age of the entry being matched against.
+#
+# The proximity branch does not compare two simultaneous positions: it compares
+# this solve against an existing entry dead-reckoned forward over dt seconds.
+# The error in that prediction is dominated by the velocity it was dead-reckoned
+# with, which is measured (aircraft_feed.py's DR block, 2026-08-09, n=93) at a
+# median 127 m/s vector error — 0.13 km of extra uncertainty per second of age,
+# on top of the ~1–2 km the solve positions themselves carry (published dark
+# solves: 0.98 km median GT error, p90 2.5–7.9 km).  A flat 6 km therefore
+# judges a 2 s-old entry far too loosely and a 40 s-old one far too tightly.
+#
+# Measured on this deployment (26 min): 57 dark key births, only 3 of them
+# while the same aircraft already had a live key — so simultaneous duplicates
+# are not the problem, sequential re-keying is.  Classified by distance from the
+# new key to the nearest dark entry alive in the previous frame, 11 of the 57
+# landed at 6–10 km with that predecessor then disappearing within 10 s: the
+# same target, re-keyed purely because its predecessor's dead-reckoned position
+# had drifted past the flat 6 km.  Those 11 are what this slope is for.  The
+# 23 at 10–20 km and the 20 with nothing within 20 km are out of its reach by
+# construction, and deliberately so.
+#
+# 0.13 km/s is the measured velocity error itself, not a multiple of it: one
+# sigma of DR drift, added to a 6 km base that already covers the solve error.
+# 6 km at dt=0, ~9.9 km at 30 s, and the cap from ~46 s to the 60 s age limit.
+_MN_ASSOC_DRIFT_KM_PER_S = 0.13
+# Ceiling on the grown gate.  Simulated aircraft are deconflicted to >=5 km
+# horizontally at spawn (retina_simulation.world), and two real targets closer
+# than a few km are not separable by this pipeline anyway — but a gate that
+# grew unbounded would eventually swallow a genuinely different aircraft in
+# the same sector.  12 km = twice the flat gate: past the 6–10 km band the
+# measurement puts the re-keys in, short of the 10–20 km band where the same
+# measurement shows predecessors that mostly lived on (13 of 23).
+_MN_ASSOC_MAX_DIST_CAP_KM = 12.0
 # Never associate to an entry the map has already dropped (the 60 s expiry in
 # frame_processor.build_combined_aircraft_json).
 _MN_ASSOC_MAX_AGE_S = 60.0
@@ -616,6 +650,42 @@ _MN_ASSOC_MAX_AGE_S = 60.0
 # aircraft at once would each miss the other's entry and mint two tracks — the
 # very duplication this exists to prevent.
 _MN_TRACKS_LOCK = threading.Lock()
+
+
+def _mn_assoc_gate_km(dt_s: float, base_km: float = _MN_ASSOC_MAX_DIST_KM) -> float:
+    """Proximity gate for an entry last solved ``dt_s`` seconds ago.
+
+    ``base_km + _MN_ASSOC_DRIFT_KM_PER_S * dt``, capped at
+    _MN_ASSOC_MAX_DIST_CAP_KM — the constants above carry the measurement.
+    The cap is floored at ``base_km`` so a caller widening the base (tests,
+    the bench) can never end up with a gate tighter than the one it asked for.
+    """
+    return min(base_km + _MN_ASSOC_DRIFT_KM_PER_S * max(dt_s, 0.0), max(_MN_ASSOC_MAX_DIST_CAP_KM, base_km))
+
+
+def _entry_dr_velocity(key: str, entry: dict, learned_vel_fn) -> tuple[float, float]:
+    """(vel_east_ms, vel_north_ms) to dead-reckon an existing entry with.
+
+    The same choice services/aircraft_feed.py makes for the position it
+    DRAWS — the KF's learned velocity when the filter has state for this key,
+    the raw solved velocity otherwise, and the raw one unconditionally under
+    TRACK_DR_SOURCE=solve.  Deliberately shared semantics: if the key decision
+    dead-reckoned an entry somewhere other than where the feed draws it, a
+    solve could match an entry that is not under it on the map (or fail to
+    match one that is), and the two would disagree about the same aircraft.
+
+    ``learned_vel_fn`` is injected (defaulting to track_filter.learned_velocity
+    at the call site) so this stays testable without KF state, and so the
+    offline bench — which has no filter — takes the fallback naturally rather
+    than through a mode flag.  learned_velocity takes _KF_LOCK, a leaf lock;
+    the established solver.py -> track_filter order is what the caller already
+    uses for smooth_solve under _MN_TRACKS_LOCK.
+    """
+    if learned_vel_fn is not None and (os.getenv("TRACK_DR_SOURCE", "kf") or "kf").strip().lower() != "solve":
+        lv = learned_vel_fn(key)
+        if lv is not None:
+            return float(lv[0]), float(lv[1])
+    return float(entry.get("vel_east") or 0.0), float(entry.get("vel_north") or 0.0)
 
 
 def _collect_track_anomalies(s_in, result: dict) -> None:
@@ -665,16 +735,32 @@ def multinode_key_decision(
     anchor_key: str | None,
     max_dist_km: float = _MN_ASSOC_MAX_DIST_KM,
     max_age_s: float = _MN_ASSOC_MAX_AGE_S,
-) -> tuple[str, str]:
-    """The keying rule itself, pure and clock-free — the multinode-track
-    analogue of claim_decision.  Extracted so the offline bench measures the
-    SHIPPED rule by construction (the same reason claim_decision is imported
+    learned_vel_fn=track_filter.learned_velocity,
+) -> tuple[str, str, float | None]:
+    """The keying rule itself, clock-free — the multinode-track analogue of
+    claim_decision.  Extracted so the offline bench measures the SHIPPED rule
+    by construction (the same reason claim_decision is imported
     at association_bench.py's top-of-file import), and so _process_solver_item can observe
     which branch fired for the anchor counters below.
 
+    Clock-free but no longer strictly pure: the proximity scan asks the KF
+    for each candidate's learned velocity (``learned_vel_fn``, injectable and
+    defaulting to the real accessor) and reads TRACK_DR_SOURCE, both so its
+    dead-reckoning matches the position the feed draws — see
+    _entry_dr_velocity.  Every time-of-day still arrives in `result` and
+    `tracks`, so the rule remains replayable against recorded data.  The DR
+    horizon deliberately is NOT clamped to the feed's 30 s display cap: that
+    cap limits how far a stale marker may slide across the map, while what
+    this scan needs is the best available estimate of where the aircraft
+    actually is, and the max_age_s window already bounds dt.
+
     Caller holds _MN_TRACKS_LOCK — it reads `tracks` and the caller writes
-    back into it under the same lock.  Returns (key, how) with
-    how in {"adsb", "anchor", "proximity", "minted"}.
+    back into it under the same lock.  Returns (key, how, dist_km) with
+    how in {"adsb", "anchor", "proximity", "minted"}; dist_km is how far this
+    solve landed from the entry it was keyed onto (dead-reckoned, for the
+    proximity branch) and None where nothing was matched — "adsb" and
+    "minted".  The caller stamps both onto the solve-history record, which is
+    the only way to tell a re-key apart from a fragment after the fact.
 
     Order:
       1. ADS-B-tagged solves key on the transponder hex — unconditional, and
@@ -691,11 +777,15 @@ def multinode_key_decision(
          still landed near the claimed track is legitimate, while one that
          converged somewhere else entirely is not honored just because a
          claim was attempted.
-      3. Existing DR proximity scan, moved verbatim from the pre-claiming
-         track-key logic (now this function): only dark tracks are claimable — an untagged
+      3. DR proximity scan: only dark tracks are claimable — an untagged
          solve must never steal the identity of an ADS-B-tagged aircraft
          that happens to be nearby — dead-reckoned forward so a fast target
-         is not rejected purely for having moved since its last solve.
+         is not rejected purely for having moved since its last solve.  The
+         gate each candidate is judged against grows with ITS OWN age
+         (_mn_assoc_gate_km), because that is what the dead-reckoning error
+         does; candidates compete on distance normalised by their own gate,
+         so a fresh close entry beats an old far one rather than the scan
+         simply taking whichever is nearer in kilometres.
       4. Mint.  This key only needs to be unique at birth; every later solve
          associates to it above (by proximity, or by anchor once a claim
          forms), so it stays stable.
@@ -706,18 +796,33 @@ def multinode_key_decision(
     # ADS-B lane — adsb_assisted=true on the feed, and the mn-dark-* store
     # (so the anchor and proximity branches below) starved forever.
     if adsb_hex and is_transponder_hex(adsb_hex):
-        return f"mn-adsb-{adsb_hex}", "adsb"
+        return f"mn-adsb-{adsb_hex}", "adsb", None
 
     lat, lon = result["lat"], result["lon"]
 
+    # The anchor branch keeps the FLAT gate.  It is not a dead-reckoning
+    # question: the claim named this entry as the aircraft this solve is of,
+    # and the distance check exists only to refuse an anchor whose solve
+    # converged somewhere else entirely.  Nothing here is predicting where the
+    # anchor drifted to, so there is no drift term to allow for.
     if anchor_key and anchor_key.startswith("mn-dark-") and anchor_key in tracks:
         anchor = tracks[anchor_key]
         a_lat, a_lon = anchor.get("lat"), anchor.get("lon")
-        if a_lat is not None and a_lon is not None and _haversine_km(lat, lon, a_lat, a_lon) <= max_dist_km:
-            return anchor_key, "anchor"
+        if a_lat is not None and a_lon is not None:
+            a_dist = _haversine_km(lat, lon, a_lat, a_lon)
+            if a_dist <= max_dist_km:
+                return anchor_key, "anchor", a_dist
 
     ts_s = result.get("timestamp_ms", 0) / 1000.0
-    best_key, best_dist = None, max_dist_km
+    # Candidates compete on d / gate_km, not on d: an entry solved 2 s ago at
+    # 5 km is a worse match than one solved 40 s ago at 8 km only if you
+    # ignore that the second one's position is a 40 s extrapolation.  A score
+    # < 1.0 is inside that candidate's own gate; the initial 1.0 is therefore
+    # the "no candidate" sentinel and keeps the old strict-inequality
+    # behaviour at exactly the gate distance.
+    best_key: str | None = None
+    best_score = 1.0
+    best_dist: float | None = None
 
     for key, prev in tracks.items():
         # Only dark tracks are claimable; an untagged solve must never steal the
@@ -732,20 +837,23 @@ def multinode_key_decision(
             continue
         # Dead-reckon the existing track forward before measuring, so a fast
         # target is not rejected purely for having moved since its last solve.
+        # Same velocity the feed draws this entry with (_entry_dr_velocity).
+        vel_east_ms, vel_north_ms = _entry_dr_velocity(key, prev, learned_vel_fn)
         p_lat, p_lon = offset_latlon_m(
             p_lat,
             p_lon,
-            east_m=prev.get("vel_east", 0.0) * dt,
-            north_m=prev.get("vel_north", 0.0) * dt,
+            east_m=vel_east_ms * dt,
+            north_m=vel_north_ms * dt,
         )
         d = _haversine_km(lat, lon, p_lat, p_lon)
-        if d < best_dist:
-            best_key, best_dist = key, d
+        score = d / _mn_assoc_gate_km(dt, max_dist_km)
+        if score < best_score:
+            best_key, best_score, best_dist = key, score, d
 
     if best_key is not None:
-        return best_key, "proximity"
+        return best_key, "proximity", best_dist
     # No claimant — a genuinely new target.
-    return f"mn-dark-{result.get('timestamp_ms', 0)}-{lat:.3f}-{lon:.3f}", "minted"
+    return f"mn-dark-{result.get('timestamp_ms', 0)}-{lat:.3f}-{lon:.3f}", "minted", None
 
 
 # Maximum age (seconds) of a solver queue item before it is discarded without
@@ -1206,6 +1314,8 @@ def _record_solve_history(
     raw_lon: float | None = None,
     displacement_km: float | None = None,
     chi2_per_dof: float | None = None,
+    key_how: str | None = None,
+    key_dist_km: float | None = None,
     extra: dict | None = None,
 ) -> None:
     """Append one solve outcome to state.mlat_solve_history.
@@ -1215,6 +1325,12 @@ def _record_solve_history(
     position actually stored in multinode_tracks.  Rejected solves have no
     track key (it is minted after the gates), so ``solver_hex`` is None for
     them and lookup by map ID returns published records plus nearby rejects.
+
+    ``key_how``/``key_dist_km`` are multinode_key_decision's verdict for this
+    solve — which branch produced solve_key, and how far the solve landed from
+    the entry it was keyed onto.  Only the publish path has run the keying
+    rule, so both are None on every reject (the key is minted after the
+    gates, which is also why solver_hex is None there).
 
     ``extra`` merges caller-supplied fields (trim metadata, beam-rejection
     diagnostics) into the record.  Applied before the GT stamp so it can
@@ -1281,6 +1397,18 @@ def _record_solve_history(
         # and a reject's against the cap that killed it — the two lanes are
         # judged differently and the record has to say which applied.
         "displacement_cap_km": _MAX_DISPLACEMENT_KM_DARK if _dark else _MAX_DISPLACEMENT_KM,
+        # How this solve got its key, and how far it was from the entry it
+        # was keyed onto (see multinode_key_decision).  Fragmentation is a
+        # question about key DECISIONS, and until now the history recorded
+        # only the key that came out: a minted key and a re-key onto an
+        # existing one were indistinguishable after the fact, so the
+        # age-scaled proximity gate could not be measured against the flat
+        # one it replaced.  key_dist_km is the dead-reckoned distance for a
+        # proximity match, the flat anchor distance for an anchor hit, and
+        # None where nothing was matched (adsb, minted) or the record never
+        # reached keying at all (every reject).
+        "key_how": key_how,
+        "key_dist_km": round(float(key_dist_km), 3) if key_dist_km is not None else None,
         "solve_count": r.get("solve_count"),
         "source_track_ids": list(r.get("source_track_ids") or []),
         "vel_source": r.get("vel_source"),
@@ -1914,7 +2042,22 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             # _MN_POS_HISTORY_LOCK (inside the smoother) is never taken in
             # reverse anywhere.
             _anchor_key = s_in.get("anchor_key") if isinstance(s_in, dict) else None
-            key, _key_how = multinode_key_decision(state.multinode_tracks, result, _adsb_hex, _anchor_key)
+            key, _key_how, _key_dist_km = multinode_key_decision(state.multinode_tracks, result, _adsb_hex, _anchor_key)
+            # Dark-lane key births vs re-keys.  The fragmentation question is
+            # "how often does one aircraft get a second key", and the only
+            # place that is decided is right here — solver_successes counts
+            # solves, distinct_keys counts survivors, neither counts the
+            # decision.  Dark only: the ADS-B lane keys off the transponder
+            # hex unconditionally and has no decision to observe.  Anchor
+            # hits are deliberately in neither counter; solver_anchor_hits
+            # already carries them, and double-counting them here would make
+            # minted + proximity stop summing to the dark decisions this
+            # gate actually made.
+            if key.startswith("mn-dark-"):
+                if _key_how == "minted":
+                    state.bump_counter("solver_key_minted_dark")
+                elif _key_how == "proximity":
+                    state.bump_counter("solver_key_proximity_dark")
             if _anchor_key:
                 # Only an anchored solver input (top-down claiming, active
                 # mode) ever sets s_in["anchor_key"] — this whole block is
@@ -1947,8 +2090,8 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
 
             # Supersession: one aircraft is one set of source tracks.  A later
             # solve that consumes any of the same single-node tracks under a
-            # DIFFERENT key is the same aircraft re-solved past the 6 km match
-            # radius (multinode_key_decision), not a second one — replace the
+            # DIFFERENT key is the same aircraft re-solved past the proximity
+            # match radius (multinode_key_decision), not a second one — replace the
             # earlier entry instead of letting it keep rendering for up to
             # 60 s beside the new one.  solve_count carries forward so the
             # re-solved aircraft does not fall back under the n=2 gate below.
@@ -1995,6 +2138,8 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             raw_lon=_raw_lon,
             chi2_per_dof=s_in.get("chi2_per_dof") if isinstance(s_in, dict) else None,
             displacement_km=_disp_km,
+            key_how=_key_how,
+            key_dist_km=_key_dist_km,
             extra=_extra,
         )
     elif result is not None:

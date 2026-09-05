@@ -1040,7 +1040,7 @@ def run(
                 # block runs (after every gate above, before GT matching).
                 if mode == "track":
                     _anchor_key = s_in.get("anchor_key")
-                    _key, _how = multinode_key_decision(bench_mn, out, None, _anchor_key)
+                    _key, _how, _dist_km = multinode_key_decision(bench_mn, out, None, _anchor_key)
                     if _anchor_key:
                         res.anchored_published += 1
                         if _how != "anchor":

@@ -297,6 +297,76 @@ class TestDisplacementCapByLane:
         assert rec["displacement_cap_km"] == 3.0
 
 
+class TestKeyDecisionObservability:
+    """key_how / key_dist_km on the history record, and the dark key-decision
+    counters behind them.
+
+    Fragmentation is decided in multinode_key_decision and nowhere else, but
+    until these fields existed the record kept only the key that came OUT: a
+    freshly minted key and a re-key onto a live entry were indistinguishable
+    after the fact, so neither the flat 6 km gate nor the age-scaled one that
+    replaced it could be measured against live traffic.  key_dist_km is the
+    other half — a re-key at 1 km and one at 9 km are very different claims
+    about the same aircraft.
+    """
+
+    # 1 km of latitude in degrees, so a separation can be stated in km.
+    KM_DEG = 1.0 / 111.32
+    ADSB_HEX = "a1b2c3"
+
+    def setup_method(self):
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+
+    def teardown_method(self):
+        solver_mod._reset_for_tests()
+
+    def _run(self, s_in, solve_fn):
+        return solver_mod._process_solver_item((dict(s_in), {}, time.time()), solve_fn)
+
+    def test_first_dark_solve_is_recorded_as_a_mint(self):
+        self._run(_CONFIRMED_N2, _solve_fn())
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "published"
+        assert rec["key_how"] == "minted"
+        # Nothing was matched, so there is no distance to report.
+        assert rec["key_dist_km"] is None
+        assert state.solver_key_minted_dark == 1
+        assert state.solver_key_proximity_dark == 0
+
+    def test_a_second_solve_nearby_is_recorded_as_a_re_key(self):
+        self._run(_CONFIRMED_N2, _solve_fn())
+        self._run(_CONFIRMED_N2, _solve_fn(lat=LAT + 3.0 * self.KM_DEG))
+        # One aircraft, one entry — the point of the whole rule.
+        assert len(state.multinode_tracks) == 1
+        rec = state.mlat_solve_history[-1]
+        assert rec["key_how"] == "proximity"
+        assert rec["key_dist_km"] == pytest.approx(3.0, abs=0.3)
+        assert state.solver_key_minted_dark == 1
+        assert state.solver_key_proximity_dark == 1
+
+    def test_adsb_lane_records_its_branch_and_no_distance(self):
+        """The ADS-B lane keys off the transponder hex unconditionally — a
+        branch, but not a decision, and not this gate's business."""
+        self._run(dict(_CONFIRMED_N2, adsb_hex=self.ADSB_HEX), _solve_fn())
+        rec = state.mlat_solve_history[-1]
+        assert rec["solve_key"] == f"mn-adsb-{self.ADSB_HEX}"
+        assert rec["key_how"] == "adsb"
+        assert rec["key_dist_km"] is None
+        assert state.solver_key_minted_dark == 0
+        assert state.solver_key_proximity_dark == 0
+
+    def test_a_reject_carries_neither_field(self):
+        """The key is minted after the gates, so a rejected solve never ran
+        the keying rule — the same reason solver_hex is None there."""
+        self._run(_CONFIRMED_N2, _solve_fn(rms_delay=10.0))
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_rms_delay"
+        assert rec["key_how"] is None
+        assert rec["key_dist_km"] is None
+        assert state.solver_key_minted_dark == 0
+
+
 class TestEndpoint:
     def setup_method(self):
         state._reset_for_tests()

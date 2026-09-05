@@ -493,7 +493,7 @@ flowchart TD
     lock --> ident{"multinode_key_decision"}
     ident -->|"1. adsb_hex present"| kADSB["mn-adsb-hex"]
     ident -->|"2. anchor_key mn-dark-*,<br/>live, within 6.0km"| kAnchor["reuse anchor key"]
-    ident -->|"3. DR proximity scan,<br/>0<=dt<=60s, best<6km"| kDR["reuse nearest mn-dark-*"]
+    ident -->|"3. DR proximity scan,<br/>0<=dt<=60s, best d/gate_km<br/>gate = 6.0 + 0.13*dt km, cap 12.0"| kDR["reuse best-scoring mn-dark-*"]
     ident -->|"4. none match"| kMint["mint mn-dark-ts-lat-lon"]
 
     kADSB --> smooth["track_filter.smooth_solve<br/>(TRACK_SMOOTHER: kf/ewma/off)"]
@@ -531,7 +531,8 @@ flowchart TD
 
 | Constant | Value | File:line |
 |---|---|---|
-| `_MN_ASSOC_MAX_DIST_KM` / `_MN_ASSOC_MAX_AGE_S` (identity step 2/3) | 6.0 km / 60.0 s | `services/tasks/solver.py:560,563` |
+| `_MN_ASSOC_MAX_DIST_KM` / `_MN_ASSOC_MAX_AGE_S` (identity step 2/3) | 6.0 km / 60.0 s | `services/tasks/solver.py` |
+| `_MN_ASSOC_DRIFT_KM_PER_S` / `_MN_ASSOC_MAX_DIST_CAP_KM` (step 3 only — the gate grows with the matched entry's age) | 0.13 km/s / 12.0 km | `services/tasks/solver.py` |
 | `CV_VEL_ADOPT_CHI2_MAX` | 5.0 | `config/constants.py:77` |
 | `MN_N2_MIN_SOLVES` | 2 | `config/constants.py:63` |
 | `MN_ONESHOT_TTL_S` | 5.0 s | `config/constants.py:66` |

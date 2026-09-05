@@ -395,7 +395,29 @@ class TestFragmentation:
             "published": 0,
             "solves_per_key": {"median": None, "p90": None},
             "anchored_pct": 0.0,
+            "dark_keys_minted": 0,
+            "dark_keys_proximity": 0,
         }
+
+    def test_dark_key_decision_counters_are_surfaced(self):
+        """Key births vs re-keys, from the state counters solver.py bumps in
+        the publish path.  Since boot, not windowed — the four keys above
+        count what SURVIVED the decisions inside the window, these count the
+        decisions themselves, and the panel needs both to tell a fragmenting
+        lane from a busy one."""
+        state.solver_key_minted_dark = 4
+        state.solver_key_proximity_dark = 11
+        out = _solver_window_stats(10.0)
+        assert out["fragmentation"]["dark_keys_minted"] == 4
+        assert out["fragmentation"]["dark_keys_proximity"] == 11
+
+    def test_dark_key_decision_counters_reset_with_state(self):
+        state.solver_key_minted_dark = 4
+        state.solver_key_proximity_dark = 11
+        state._reset_for_tests()
+        out = _solver_window_stats(10.0)
+        assert out["fragmentation"]["dark_keys_minted"] == 0
+        assert out["fragmentation"]["dark_keys_proximity"] == 0
 
 
 class TestEmptyState:
@@ -441,6 +463,8 @@ class TestEndpoint:
             "published",
             "solves_per_key",
             "anchored_pct",
+            "dark_keys_minted",
+            "dark_keys_proximity",
         }
         assert data["fov"].keys() == {
             "mode",
