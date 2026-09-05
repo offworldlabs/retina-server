@@ -257,6 +257,8 @@ class TestConsensusAndCounters:
         state.solver_consensus_fallback = 9
         state.solver_consensus_shadow = 10
         state.solver_vel_untrusted_published = 11
+        state.solver_resolve_skips_dark = 9
+        state.node_frames_rate_limited = 13
         out = _solver_window_stats(10.0)
         assert out["counters"] == {
             "successes": 5,
@@ -265,7 +267,9 @@ class TestConsensusAndCounters:
             "solver_trimmed": 3,
             "stale_drops": 4,
             "resolve_skips": 12,
+            "resolve_skips_dark": 9,
             "queue_drops": 6,
+            "node_frames_rate_limited": 13,
             "worker_errors": 0,
             "vel_untrusted_published": 11,
         }
@@ -788,3 +792,118 @@ class TestLiveStateSnapshots:
         state.multinode_tracks["mn-dark-1"] = {"lat": 35.0, "lon": -82.0}
         state.adsb_aircraft["real1"] = _MutatingFix({"lat": 35.009, "lon": -82.0, "last_seen_ms": now_ms})
         assert _solver_window_stats(10.0)["ghosts"]["ghost_tracks"] == 0
+
+
+def _skip_rec(lane="dark", age_s=0.0, track_ids=("a1",), n_nodes=3):
+    return {
+        "ts_ms": int((time.time() - age_s) * 1000),
+        "lane": lane,
+        "track_ids": list(track_ids),
+        "n_nodes": n_nodes,
+        "blocking": [{"track_id": track_ids[0], "held_ts": time.time() - age_s, "held_n": n_nodes}],
+        "guess_lat": None,
+        "guess_lon": None,
+    }
+
+
+class TestResolveSkipBlock:
+    """Resolve-slot skips are windowed from their own deque, not from the
+    since-boot counter, so they can be read against the attempts in the same
+    window — the ratio the claim-on-publish fix is judged on."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_totals_split_by_lane(self):
+        for _ in range(3):
+            state.solver_resolve_skips_recent.append(_skip_rec("dark"))
+        state.solver_resolve_skips_recent.append(_skip_rec("adsb"))
+        out = _solver_window_stats(10.0)["resolve_skips"]
+        assert out["total"] == 4
+        assert out["dark"] == 3
+
+    def test_window_excludes_old_skips(self):
+        state.solver_resolve_skips_recent.append(_skip_rec(age_s=20 * 60))
+        state.solver_resolve_skips_recent.append(_skip_rec(age_s=1))
+        assert _solver_window_stats(10.0)["resolve_skips"]["total"] == 1
+
+    def test_attempts_ratio_is_skips_over_dark_attempts(self):
+        for _ in range(4):
+            state.solver_resolve_skips_recent.append(_skip_rec())
+        state.mlat_solve_history.append(_rec("published"))
+        state.mlat_solve_history.append(_rec("rejected_beam"))
+        out = _solver_window_stats(10.0)
+        assert out["attempts"] == 2
+        assert out["resolve_skips"]["attempts_ratio"] == 2.0
+
+    def test_attempts_ratio_is_none_without_attempts(self):
+        state.solver_resolve_skips_recent.append(_skip_rec())
+        assert _solver_window_stats(10.0)["resolve_skips"]["attempts_ratio"] is None
+
+    def test_window_effective_minutes_exposes_a_truncated_deque(self):
+        """The deque is 500 entries against ~50 skips/min live, so a long
+        window IS truncated here even when the solve stores cover it."""
+        state.solver_resolve_skips_recent.append(_skip_rec(age_s=6 * 60))
+        out = _solver_window_stats(30.0)["resolve_skips"]
+        assert 5.9 <= out["window_effective_minutes"] <= 6.1
+
+    def test_a_skip_is_not_an_attempt_or_a_reject(self):
+        """Skips must not leak into the funnel — they never reached a solve."""
+        for _ in range(5):
+            state.solver_resolve_skips_recent.append(_skip_rec())
+        out = _solver_window_stats(10.0)
+        assert out["attempts"] == 0
+        assert out["rejects"]["total"] == 0
+
+
+def _gt_rec(foreign=(), **kw):
+    """A dark record carrying the contamination stamp."""
+    rec = _rec("published", **kw)
+    rec["gt_hex"] = "abc123"
+    rec["foreign_node_ids"] = list(foreign)
+    rec["contaminated"] = bool(foreign)
+    return rec
+
+
+class TestContaminationBlock:
+    """Live cluster contamination: of the dark records that matched ground
+    truth, how many carried a node that could not see the aircraft."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_pct_and_mean_over_judged_records(self):
+        state.mlat_solve_history.append(_gt_rec(foreign=["n1"]))
+        state.mlat_solve_history.append(_gt_rec(foreign=["n1", "n2"]))
+        state.mlat_solve_history.append(_gt_rec(foreign=[]))
+        state.mlat_solve_history.append(_gt_rec(foreign=[]))
+        out = _solver_window_stats(10.0)["contamination"]
+        assert out["records_with_gt"] == 4
+        assert out["contaminated"] == 2
+        assert out["pct"] == 50.0
+        assert out["foreign_nodes_per_record"] == 0.75
+
+    def test_unstamped_records_are_out_of_the_denominator(self):
+        """No GT match, or no judgeable node geometry, is an abstention — not
+        a clean record."""
+        state.mlat_solve_history.append(_gt_rec(foreign=["n1"]))
+        state.mlat_solve_history.append(_rec("published"))
+        out = _solver_window_stats(10.0)["contamination"]
+        assert out["records_with_gt"] == 1
+        assert out["pct"] == 100.0
+
+    def test_empty_window_abstains_rather_than_reporting_zero(self):
+        out = _solver_window_stats(10.0)["contamination"]
+        assert out == {
+            "records_with_gt": 0,
+            "contaminated": 0,
+            "pct": None,
+            "foreign_nodes_per_record": None,
+        }
+
+    def test_known_lane_records_are_not_counted(self):
+        """Dark lane only, like every other block in the funnel."""
+        rec = _gt_rec(foreign=["n1"])
+        rec["known_lane"] = True
+        state.mlat_solve_history_known.append(rec)
+        assert _solver_window_stats(10.0)["contamination"]["records_with_gt"] == 0
