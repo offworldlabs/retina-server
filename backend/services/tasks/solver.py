@@ -13,6 +13,7 @@ from concurrent.futures.process import BrokenProcessPool
 
 from config.constants import (
     ARC_ONLY_ANOMALY_ALLOWLIST,
+    ASSOC_GRID_STEP_KM,
     CV_VEL_ADOPT_CHI2_MAX,
     N2_CONFIRM_CHI2_MAX,
     N2_TRACK_ASSOCIATION,
@@ -188,11 +189,15 @@ _SOLVER_RMS_DOPPLER_MAX_HZ = 200.0
 # 15–50 km from the true position, meaning they are ≥12 km from an
 # initial_guess that was placed near the truth.
 #
-# Threshold: with the ADS-B position override in find_associations(),
-# the initial_guess is within ~100 m of the true aircraft position.
-# Displacement from initial_guess therefore approximates the position error.
-# With σ_delay = 0.1 µs the displacement = GDOP × 0.1 × 0.3 km.
-# 2.0 km → GDOP ≤ 67 (reasonable bistatic geometry).
+# The cap is per-lane, because the anchor's own uncertainty is: what the
+# gate actually measures is |solve − anchor|, and that is only a proxy for
+# position error when the anchor is trustworthy.
+#
+# ADS-B-anchored inputs (_is_dark_solver_input false).  With the ADS-B
+# position override in find_associations(), the initial_guess is within
+# ~100 m of the true aircraft position, so displacement from it approximates
+# the position error directly.  With σ_delay = 0.1 µs the displacement =
+# GDOP × 0.1 × 0.3 km, so 2.0 km → GDOP ≤ 67 (reasonable bistatic geometry).
 # Mirror-point ghosts land 15–50 km away and are safely rejected.
 #
 # Originally N=2-only because that's where mirror-points dominate. Production
@@ -203,7 +208,51 @@ _SOLVER_RMS_DOPPLER_MAX_HZ = 200.0
 # convergence (wrong-frame association, local-minimum trap), while N=2 was
 # pre-filtered. Generalising the gate to every N puts the comparison on the
 # same footing — bad N≥3 solves are now rejected on the same criterion.
+#
+# This constant has a second consumer: known_lane.py labels its solves
+# truth_match/ghost against it (there the distance is to a known ADS-B fix,
+# so the ADS-B-anchored reading is the right one).  Retune it with that in
+# mind — the dark cap below is the one to move for dark-lane recall.
 _MAX_DISPLACEMENT_KM = 2.0
+
+
+# DARK inputs (_is_dark_solver_input true — no usable transponder identity on
+# the solver input).  The ~100 m premise above does not hold: nothing
+# overrode the guess with a transponder position, so the anchor is a
+# quantised ASSOC_GRID_STEP_KM (3 km) lattice point, averaged over a
+# candidate cluster up to the association layer's merge radius (6 km) wide.
+# The anchor's own uncertainty is therefore of order the grid step, and
+# judging a dark solve at 2 km measures the anchor, not the solve.
+#
+# Live (2026-09, 10 min): displacement was 41% of dark-lane solver attempts
+# (109/265).  Of 31 recent dark rejected_displacement records carrying a
+# ground-truth stamp, median GT error was 2.1 km and 20/31 were under 3 km —
+# only 1/31 was ≥ 10 km (a real ghost) — against a displacement_km median of
+# 3.26 km (min 2.06, 23/31 ≤ 4 km).  Published dark solves sit at a 0.98 km
+# GT-error median, so most of what the 2 km cap killed was of a quality
+# comparable to what it passed.
+#
+# Default 6.0 km = 2 × ASSOC_GRID_STEP_KM: one grid step for the
+# quantisation, one for the cluster-merge spread.  This widens the allowance
+# for anchor uncertainty, not for bad convergence — mirror points and
+# wrong-frame solves land 15–50 km out and are still rejected with room to
+# spare.  The env override is an absolute km value, not a grid multiple, so
+# live tuning does not have to reason about the association grid.
+def _dark_displacement_cap_km() -> float:
+    """Resolve the dark-lane displacement cap from the environment.
+
+    A function rather than an inline ``float(os.getenv(...))`` (the
+    _SOLVER_RMS_DELAY_MAX_US idiom) only because the default is derived
+    from ASSOC_GRID_STEP_KM rather than being a literal — and so a test can
+    exercise the env plumbing without reimporting this module.
+    """
+    raw = os.getenv("SOLVER_MAX_DISPLACEMENT_KM_DARK")
+    if raw:
+        return float(raw)
+    return max(_MAX_DISPLACEMENT_KM, 2.0 * ASSOC_GRID_STEP_KM)
+
+
+_MAX_DISPLACEMENT_KM_DARK = _dark_displacement_cap_km()
 
 # An n=2 solve is published only once its track pairing has justified itself.
 #
@@ -1132,6 +1181,21 @@ def _gt_for_record(adsb_hex, lat: float, lon: float, ts_s: float) -> dict:
     return dict(_GT_NO_MATCH)
 
 
+def _is_dark_solver_input(s_in) -> bool:
+    """True when a solver input carries no usable ADS-B identity.
+
+    The same predicate multinode_key_decision mints keys with: an id that is
+    not transponder-shaped (a simulator object id, a claim against a poisoned
+    adsb_aircraft entry) is not an ADS-B anchor, so it must be judged as dark
+    rather than inherit the ADS-B lane's tight displacement cap on a guess
+    that nothing overrode.  Keeping the two in step is what makes
+    displacement_cap_km on a history record agree with the mn-dark-/mn-adsb-
+    lane the same solve is keyed into.
+    """
+    hx = s_in.get("adsb_hex") if isinstance(s_in, dict) else None
+    return not (hx and is_transponder_hex(hx))
+
+
 def _record_solve_history(
     outcome: str,
     s_in,
@@ -1165,7 +1229,7 @@ def _record_solve_history(
     ig = s.get("initial_guess") or {}
     if displacement_km is None and raw_lat is not None and ig.get("lat") and ig.get("lon"):
         displacement_km = _haversine_km(float(ig["lat"]), float(ig["lon"]), float(raw_lat), float(raw_lon))
-    _dark = solve_key.startswith("mn-dark-") if solve_key else not s.get("adsb_hex")
+    _dark = solve_key.startswith("mn-dark-") if solve_key else _is_dark_solver_input(s)
     _sigma_m = solve_sigma_m(r, dark=_dark)
     rec = {
         "ts_ms": now_ms,
@@ -1210,6 +1274,13 @@ def _record_solve_history(
         "guess_lon": round(float(ig["lon"]), 6) if ig.get("lon") else None,
         "guess_alt_km": ig.get("alt_km"),
         "displacement_km": round(displacement_km, 3) if displacement_km is not None else None,
+        # Which displacement cap judged this solve (see _MAX_DISPLACEMENT_KM
+        # and _MAX_DISPLACEMENT_KM_DARK).  Stamped on every record, not only
+        # rejected_displacement, so /api/test/mlat-history can read a
+        # published solve's displacement against the cap that let it through
+        # and a reject's against the cap that killed it — the two lanes are
+        # judged differently and the record has to say which applied.
+        "displacement_cap_km": _MAX_DISPLACEMENT_KM_DARK if _dark else _MAX_DISPLACEMENT_KM,
         "solve_count": r.get("solve_count"),
         "source_track_ids": list(r.get("source_track_ids") or []),
         "vel_source": r.get("vel_source"),
@@ -1638,13 +1709,19 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
                 extra=_beam_extra,
             )
             return None
-        # Reject if the solution drifted more than _MAX_DISPLACEMENT_KM from
-        # its sanity anchor. For N=2 this catches mirror-point ghosts (false
-        # bistatic ellipse intersection 15-50 km away). For N≥3 it catches
-        # solves where the inter-node associator bound a wrong frame and the
-        # LM converged on a non-target position — production stats showed
-        # those were the dominant source of the per-N inversion in
-        # /api/test/mlat-accuracy.
+        # Reject if the solution drifted more than the lane's displacement
+        # cap from its sanity anchor. For N=2 this catches mirror-point
+        # ghosts (false bistatic ellipse intersection 15-50 km away). For N≥3
+        # it catches solves where the inter-node associator bound a wrong
+        # frame and the LM converged on a non-target position — production
+        # stats showed those were the dominant source of the per-N inversion
+        # in /api/test/mlat-accuracy.
+        #
+        # The cap is chosen by LANE, not by anchor label: an ADS-B-anchored
+        # input is judged at _MAX_DISPLACEMENT_KM because its guess was
+        # overridden onto a transponder fix, a dark one at the wider
+        # _MAX_DISPLACEMENT_KM_DARK because its guess is a 3 km-lattice grid
+        # point.  Both constants' comments carry the measurement.
         #
         # The anchor is the association guess by default (that mis-
         # association protection).  But for a consensus-vetted solve
@@ -1653,14 +1730,16 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
         # corroborated centroid replaces guess-proximity as the sanity
         # reference instead.  Measured in the first live active-mode window:
         # 131 displacement kills, 80 of them <3 km from truth and 110
-        # consensus-selected, median centroid offset 3.04 km against this
-        # same 2 km cap — the gate was anchored to the contaminated guess
-        # consensus+LM exist to correct, so it was killing the corrections
+        # consensus-selected, median centroid offset 3.04 km against the
+        # then-uniform 2 km cap — the gate was anchored to the contaminated
+        # guess consensus+LM exist to correct, so it was killing the corrections
         # rather than the mis-associations.  shadow mode and every
         # fallback_* outcome keep the guess anchor: consensus either never
         # ran against this solve's input or was not acted on, so its
         # centroid is not a vetted reference here.
         _disp_km: float | None = None
+        _dark_input = _is_dark_solver_input(s_in)
+        _disp_cap_km = _MAX_DISPLACEMENT_KM_DARK if _dark_input else _MAX_DISPLACEMENT_KM
         if "initial_guess" in s_in:
             _ig = s_in["initial_guess"]
             _anchor_lat, _anchor_lon = _ig.get("lat"), _ig.get("lon")
@@ -1678,19 +1757,27 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
                     result["lat"],
                     result["lon"],
                 )
-                if _disp_km > _MAX_DISPLACEMENT_KM:
+                if _disp_km > _disp_cap_km:
                     logging.debug(
-                        "n=%d result rejected: %.1f km from %s "
-                        "(lat=%.3f lon=%.3f) — likely mirror or wrong-frame "
-                        "convergence",
+                        "n=%d result rejected: %.1f km from %s (%s lane cap "
+                        "%.1f km, lat=%.3f lon=%.3f) — likely mirror or "
+                        "wrong-frame convergence",
                         n_nodes,
                         _disp_km,
                         "consensus centroid" if _anchor_label == "consensus" else "initial_guess",
+                        "dark" if _dark_input else "adsb",
+                        _disp_cap_km,
                         result["lat"],
                         result["lon"],
                     )
                     state.bump_counter("solver_failures")
                     state.bump_counter("solver_fail_displacement")
+                    # Subset of the line above, not an alternative to it: the
+                    # aggregate keeps its old meaning for anything reading it,
+                    # and the dark split is what tells us live whether raising
+                    # the dark cap actually moved the rejects it was raised for.
+                    if _dark_input:
+                        state.bump_counter("solver_fail_displacement_dark")
                     _record_solve_history(
                         "rejected_displacement",
                         s_in,

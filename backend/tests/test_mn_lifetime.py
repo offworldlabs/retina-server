@@ -205,7 +205,9 @@ class TestFeedGates:
         assert len(self._mn_aircraft()) == 1
 
     def test_n3_one_shot_past_ttl_is_not_rendered_but_not_expired(self):
-        state.multinode_tracks["k"] = _mn_entry(n_nodes=3, age_s=6.0, solve_count=1)
+        # Past MN_ONESHOT_TTL_S (15 s) but well inside the 60 s entry expiry,
+        # so this exercises the display gate and not staleness.
+        state.multinode_tracks["k"] = _mn_entry(n_nodes=3, age_s=20.0, solve_count=1)
         assert self._mn_aircraft() == []
         assert "k" in state.multinode_tracks
 

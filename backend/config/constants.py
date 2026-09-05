@@ -89,7 +89,18 @@ N2_TRACK_HISTORY_MAX = 20  # Per-node track samples fed to the fit
 MN_N2_MIN_SOLVES = int(os.getenv("MN_N2_MIN_SOLVES", "2"))
 # One-shot display lifetime for n>=3 solves, seconds.  A track confirmed by
 # a second solve gets the normal 60 s entry expiry / 30 s DR cap.
-MN_ONESHOT_TTL_S = float(os.getenv("MN_ONESHOT_TTL_S", "5.0"))
+#
+# The window has to outlive the wait for the confirmation it is waiting for,
+# or it is not a preview window — it is a guaranteed disappearance.  A second
+# solve can only come from a later association round, and association is
+# rate-limited per node at ASSOC_MIN_INTERVAL_S = 30 s; live, the dark solve
+# cadence is a 9 s median and a 25 s p90.  At 5 s the great majority of
+# genuine n>=3 one-shots blinked out before the round that would have
+# confirmed them ever ran, which reads on the map as flicker, not as caution.
+# 15 s covers the median and most of the p90 while still being well short of
+# the 60 s entry expiry, so an unconfirmed one-shot is still withdrawn long
+# before a confirmed track would be.
+MN_ONESHOT_TTL_S = float(os.getenv("MN_ONESHOT_TTL_S", "15.0"))
 
 # Quality gate for adopting the constant-velocity fit's velocity into a
 # published solve, in place of the single-epoch Doppler solution (see

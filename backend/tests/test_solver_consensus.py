@@ -397,19 +397,23 @@ class TestFilterHelperProvenance:
 class TestDisplacementAnchor(_ConsensusTestBase):
     """Live-measured (first active-mode window): 131 displacement kills, 80
     of them <3 km from truth and 110 consensus-selected, median centroid
-    offset 3.04 km against the 2 km cap — the gate was anchored to the
-    contaminated association guess consensus+LM exist to correct, so it was
-    killing the corrections rather than the mis-associations.  For a
-    consensus-selected solve the gate now measures against the corroborated
-    centroid instead; shadow mode and every fallback_* outcome keep the
-    guess anchor — consensus either never ran against this input or was
-    not acted on, so its centroid is not a vetted reference there.
+    offset 3.04 km against the then-uniform 2 km cap — the gate was
+    anchored to the contaminated association guess consensus+LM exist to
+    correct, so it was killing the corrections rather than the
+    mis-associations.  For a consensus-selected solve the gate now measures
+    against the corroborated centroid instead; shadow mode and every
+    fallback_* outcome keep the guess anchor — consensus either never ran
+    against this input or was not acted on, so its centroid is not a vetted
+    reference there.
     """
 
     FULL = ["n1", "n2", "n3", "n4"]
-    # ~5 km north of the guess (LAT, LON) — comfortably past the 2 km cap
-    # from the guess, and comfortably inside it from itself.
-    CENTROID_LAT = LAT + 5.0 / 111.32
+    # 2 km north of the DARK displacement cap, measured from the guess (LAT,
+    # LON) — comfortably past whatever cap judges _s_in (which carries no
+    # adsb_hex, so it is a dark input), and ~0 km from itself.  Written
+    # against the constant rather than a literal so retuning the dark cap
+    # cannot silently turn these anchor tests into no-ops.
+    CENTROID_LAT = LAT + (solver_mod._MAX_DISPLACEMENT_KM_DARK + 2.0) / 111.32
     CENTROID_LON = LON
     # Far from both the guess and the centroid above (~106-111 km either
     # way) — unambiguously rejects regardless of which anchor is in play.
@@ -434,8 +438,8 @@ class TestDisplacementAnchor(_ConsensusTestBase):
             lon=self.CENTROID_LON,
         )
         # Solve lands ON the centroid: ~0 km from it (well under the cap),
-        # ~5 km from the guess (over the cap) — only publishes if the gate
-        # is measuring against the centroid.
+        # past the cap from the guess — only publishes if the gate is
+        # measuring against the centroid.
         table = self._table_at(self.FULL, self.CENTROID_LAT, self.CENTROID_LON)
 
         result = self._run(
@@ -481,7 +485,8 @@ class TestDisplacementAnchor(_ConsensusTestBase):
             lon=self.CENTROID_LON,
         )
         # Shadow never filters — the LM sees (and solves) the full,
-        # unfiltered set, landing on the centroid: ~5 km from the guess.
+        # unfiltered set, landing on the centroid: past the cap from the
+        # guess.
         table = self._table_at(self.FULL, self.CENTROID_LAT, self.CENTROID_LON)
 
         result = self._run(
@@ -500,7 +505,7 @@ class TestDisplacementAnchor(_ConsensusTestBase):
     def test_fallback_abstained_keeps_guess_anchor(self, monkeypatch):
         monkeypatch.setattr(solver_mod, "_CONSENSUS_MODE", "active")
         # select_fn abstains (returns None) -> fallback to the unfiltered
-        # input, landing on the centroid: ~5 km from the guess.
+        # input, landing on the centroid: past the cap from the guess.
         table = self._table_at(self.FULL, self.CENTROID_LAT, self.CENTROID_LON)
 
         result = self._run(
