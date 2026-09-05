@@ -856,6 +856,86 @@ def multinode_key_decision(
     return f"mn-dark-{result.get('timestamp_ms', 0)}-{lat:.3f}-{lon:.3f}", "minted", None
 
 
+def _supersession_match(
+    old_key: str,
+    old_r: dict,
+    new_ids: set,
+    raw_lat: float,
+    raw_lon: float,
+    ts_ms: float,
+    learned_vel_fn=track_filter.learned_velocity,
+    max_age_s: float = _MN_ASSOC_MAX_AGE_S,
+) -> tuple[bool, float | None]:
+    """Is the existing entry ``old_key`` the same aircraft as this new solve?
+
+    The second half of the supersession rule in _process_solver_item.  The
+    caller has already established the two cheap conditions — a different key,
+    and at least one shared source track id — and this decides whether the
+    shared id means anything.  Clock-free with an injectable
+    ``learned_vel_fn``, for the same reasons multinode_key_decision is:
+    unit-testable without KF state or the whole publish path.
+
+    Sharing a source track id is NOT on its own evidence of same-aircraft.
+    Single-node tracker tracks are genuinely shared between the association
+    candidates of DIFFERENT aircraft (a 6 min live window: 74 of 178 track ids
+    appeared in published solves of more than one ground-truth aircraft), so
+    the bare shared-id rule this replaces popped another aircraft's key 36
+    times in 44 supersessions, 41 of them beyond the association gate and 43
+    of them under 15 s old.  The victim's next solve then found no key and
+    minted a fresh one — dark keys churning at 7.4/min with a 7 s median
+    lifetime, against 2.4/min and 33 s before the dark publish rate rose.
+    Replayed over those 139 live solves, this guard cuts mints 47 -> 22 and
+    cross-aircraft pops 36 -> 7.
+
+    Two ways to match, either sufficient:
+
+      (a) SPATIAL.  Dead-reckon ``old_r`` forward to this solve's timestamp
+          and ask whether it lands within the same age-scaled gate the keying
+          rule uses (_mn_assoc_gate_km).  Same DR as multinode_key_decision —
+          _entry_dr_velocity + offset_latlon_m, so the entry is judged where
+          the feed DRAWS it — and measured against the solve's RAW position,
+          which is what that gate was tuned against.  The dt window is the
+          keying rule's: an entry older than ``max_age_s`` is past the map's
+          own expiry, and a negative dt (the entry stamped after this solve,
+          out-of-order arrival) is never dead-reckoned backwards to
+          manufacture a match.
+
+      (b) IDENTICAL INPUTS.  ``old_r``'s source track ids are non-empty and a
+          subset of this solve's.  Built from the same measurements, so the
+          same aircraft by construction, however far apart the two solves
+          converged — this is the anchor-merge case, where a bottom-up
+          fragment minted from exactly these tracks is absorbed into the
+          anchor.  A merely OVERLAPPING set is not enough: overlap is the
+          contamination described above.
+
+    Returns (matched, dr_dist_km).  dr_dist_km is the dead-reckoned distance
+    in km when it could be computed (the dt window held and the entry has a
+    position), None otherwise — reported for the same reason
+    multinode_key_decision returns its dist_km: after the fact it is the only
+    way to tell a tight merge from a rescued far one.
+    """
+    dr_dist_km: float | None = None
+    dt = ts_ms / 1000.0 - float(old_r.get("timestamp_ms") or 0) / 1000.0
+    if 0.0 <= dt <= max_age_s:
+        p_lat, p_lon = old_r.get("lat"), old_r.get("lon")
+        if p_lat is not None and p_lon is not None:
+            vel_east_ms, vel_north_ms = _entry_dr_velocity(old_key, old_r, learned_vel_fn)
+            p_lat, p_lon = offset_latlon_m(
+                p_lat,
+                p_lon,
+                east_m=vel_east_ms * dt,
+                north_m=vel_north_ms * dt,
+            )
+            dr_dist_km = _haversine_km(raw_lat, raw_lon, p_lat, p_lon)
+            if dr_dist_km <= _mn_assoc_gate_km(dt):
+                return True, dr_dist_km
+
+    old_ids = set(old_r.get("source_track_ids") or ())
+    if old_ids and old_ids.issubset(new_ids):
+        return True, dr_dist_km
+    return False, dr_dist_km
+
+
 # Maximum age (seconds) of a solver queue item before it is discarded without
 # solving.  Items older than this are already stale — the multinode_tracks
 # expiry is 60 s, and a solve itself can take a few seconds — so spending CPU
@@ -1354,6 +1434,8 @@ def _record_solve_history(
     chi2_per_dof: float | None = None,
     key_how: str | None = None,
     key_dist_km: float | None = None,
+    superseded_keys: list[str] | None = None,
+    superseded_blocked: int | None = None,
     extra: dict | None = None,
 ) -> None:
     """Append one solve outcome to state.mlat_solve_history.
@@ -1369,6 +1451,12 @@ def _record_solve_history(
     the entry it was keyed onto.  Only the publish path has run the keying
     rule, so both are None on every reject (the key is minted after the
     gates, which is also why solver_hex is None there).
+
+    ``superseded_keys``/``superseded_blocked`` are the other side of that
+    decision: which existing entries this publish popped as the same aircraft
+    (see _supersession_match), and how many entries shared a source track id
+    with it but were refused.  Both are publish-path only, for the same reason
+    key_how is — nothing before the gates has run supersession.
 
     ``extra`` merges caller-supplied fields (trim metadata, beam-rejection
     diagnostics) into the record.  Applied before the GT stamp so it can
@@ -1447,6 +1535,12 @@ def _record_solve_history(
         # reached keying at all (every reject).
         "key_how": key_how,
         "key_dist_km": round(float(key_dist_km), 3) if key_dist_km is not None else None,
+        # Supersession's verdict for this publish (see _supersession_match):
+        # the entries it popped as this same aircraft, and the count of
+        # entries that shared a source track id but were refused.  Empty/0 on
+        # every reject — supersession runs only on the publish path.
+        "superseded_keys": list(superseded_keys or []),
+        "superseded_blocked": int(superseded_blocked or 0),
         "solve_count": r.get("solve_count"),
         "source_track_ids": list(r.get("source_track_ids") or []),
         "vel_source": r.get("vel_source"),
@@ -2131,27 +2225,51 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             # history record so a bad map marker can be traced to its inputs.
             result["source_track_ids"] = sorted(s_in.get("track_ids") or []) if isinstance(s_in, dict) else []
 
-            # Supersession: one aircraft is one set of source tracks.  A later
-            # solve that consumes any of the same single-node tracks under a
-            # DIFFERENT key is the same aircraft re-solved past the proximity
-            # match radius (multinode_key_decision), not a second one — replace the
-            # earlier entry instead of letting it keep rendering for up to
-            # 60 s beside the new one.  solve_count carries forward so the
-            # re-solved aircraft does not fall back under the n=2 gate below.
+            # Supersession: an earlier entry that is THIS aircraft, under a
+            # key the proximity match (multinode_key_decision) missed, is
+            # replaced now rather than left rendering beside the new one for
+            # up to 60 s.  solve_count carries forward so the re-solved
+            # aircraft does not fall back under the n=2 gate below.
+            #
+            # A shared source track id is the cheap filter, not the rule.  The
+            # premise this block used to carry — "one aircraft is one set of
+            # source tracks" — is false: single-node tracker tracks are shared
+            # between the association candidates of DIFFERENT aircraft (74 of
+            # 178 track ids in a 6 min live window appeared in published solves
+            # of more than one ground-truth aircraft), so popping on the shared
+            # id alone destroyed a live neighbour's key 36 times in 44
+            # supersessions — 41 of them beyond the association gate, 43 under
+            # 15 s old — and the victim's next solve minted a fresh key (dark
+            # keys churning at 7.4/min with a 7 s median lifetime).  Now
+            # _supersession_match has to agree: the old entry dead-reckons
+            # into the gate, or its inputs are a subset of this solve's.
+            # Replayed over the same solves that cuts mints 47 -> 22 and
+            # cross-aircraft pops 36 -> 7.  Refusals are counted
+            # (mn_superseded_blocked), not
+            # silent — the shared-id signal is mostly contamination and the
+            # panel has to be able to see that.
             #
             # Unchanged by anchor honoring: `old_key == key: continue` below
             # already protects an anchor from superseding itself, and a
-            # proximity-minted fragment sharing the anchor's source tracks
-            # merging INTO the anchor (old_key != key, key == anchor_key) is
-            # exactly the fragmentation-collapse this whole feature exists
-            # for — not a bug to guard against.
+            # proximity-minted fragment built from exactly the anchor's source
+            # tracks merging INTO the anchor (old_key != key, key ==
+            # anchor_key) is the identical-inputs branch (b) of the predicate —
+            # exactly the fragmentation-collapse this whole feature exists for.
             max_superseded_count = 0
+            _superseded_keys: list[str] = []
+            _superseded_blocked = 0
             if result["source_track_ids"]:
                 new_ids = set(result["source_track_ids"])
+                _ts_ms = result.get("timestamp_ms") or 0
                 for old_key, old_r in list(state.multinode_tracks.items()):
                     if old_key == key:
                         continue
                     if not new_ids.intersection(old_r.get("source_track_ids") or ()):
+                        continue
+                    matched, _ = _supersession_match(old_key, old_r, new_ids, _raw_lat, _raw_lon, _ts_ms)
+                    if not matched:
+                        _superseded_blocked += 1
+                        state.bump_counter("mn_superseded_blocked")
                         continue
                     state.multinode_tracks.pop(old_key, None)
                     with state.anomaly_lock:
@@ -2160,6 +2278,7 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
                         _MN_POS_HISTORY.pop(old_key, None)
                     track_filter.drop_key(old_key)
                     max_superseded_count = max(max_superseded_count, old_r.get("solve_count", 0))
+                    _superseded_keys.append(old_key)
                     state.bump_counter("mn_superseded")
 
             result["solve_count"] = max(prev.get("solve_count", 0) if prev else 0, max_superseded_count) + 1
@@ -2183,6 +2302,8 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             displacement_km=_disp_km,
             key_how=_key_how,
             key_dist_km=_key_dist_km,
+            superseded_keys=_superseded_keys,
+            superseded_blocked=_superseded_blocked,
             extra=_extra,
         )
     elif result is not None:

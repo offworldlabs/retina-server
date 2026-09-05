@@ -471,6 +471,8 @@ class TestFragmentation:
             "anchored_pct": 0.0,
             "dark_keys_minted": 0,
             "dark_keys_proximity": 0,
+            "mn_superseded": 0,
+            "mn_superseded_blocked": 0,
         }
 
     def test_dark_key_decision_counters_are_surfaced(self):
@@ -484,6 +486,18 @@ class TestFragmentation:
         out = _solver_window_stats(10.0)
         assert out["fragmentation"]["dark_keys_minted"] == 4
         assert out["fragmentation"]["dark_keys_proximity"] == 11
+
+    def test_supersession_counters_are_surfaced(self):
+        """Entries popped as the same aircraft against shared-id entries the
+        spatial/identical-inputs guard refused (solver.py's
+        _supersession_match).  They belong beside the key decisions: a wrong
+        pop deletes a live aircraft's key and its next solve reappears above
+        as another dark_keys_minted."""
+        state.mn_superseded = 3
+        state.mn_superseded_blocked = 29
+        out = _solver_window_stats(10.0)
+        assert out["fragmentation"]["mn_superseded"] == 3
+        assert out["fragmentation"]["mn_superseded_blocked"] == 29
 
     def test_dark_key_decision_counters_reset_with_state(self):
         state.solver_key_minted_dark = 4
@@ -541,6 +555,8 @@ class TestEndpoint:
             "anchored_pct",
             "dark_keys_minted",
             "dark_keys_proximity",
+            "mn_superseded",
+            "mn_superseded_blocked",
         }
         assert data["fov"].keys() == {
             "mode",

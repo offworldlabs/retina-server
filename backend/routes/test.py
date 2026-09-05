@@ -1172,6 +1172,18 @@ def _solver_window_stats(minutes: float) -> dict:
             # the windowed version when one is needed.
             "dark_keys_minted": state.solver_key_minted_dark,
             "dark_keys_proximity": state.solver_key_proximity_dark,
+            # Supersession, also since boot: entries popped because a new
+            # solve was judged to be the same aircraft (solver.py's
+            # _supersession_match), against entries that shared a source
+            # track id with it and were refused.  These belong beside the key
+            # decisions because they are the other half of the same
+            # fragmentation loop — a wrong pop deletes a live aircraft's key
+            # and its next solve shows up above as another dark_keys_minted.
+            # Tracker track ids are shared across candidates for different
+            # aircraft, so a large blocked count is the guard working, not a
+            # fault.
+            "mn_superseded": state.mn_superseded,
+            "mn_superseded_blocked": state.mn_superseded_blocked,
         },
         "counters": {
             "successes": state.solver_successes,

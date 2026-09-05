@@ -415,10 +415,15 @@ class TestProcessSolverItemAnchorHonoring:
         assert rec["anchor_key"] == "mn-dark-anchor-4"
 
     def test_supersession_merges_a_proximity_minted_fragment_into_the_anchor(self):
-        """A fragment sharing the anchor's source tracks, minted earlier
-        under a different key (bottom-up path, missed the 6 km match), is
-        absorbed into the anchor when the anchor's own solve arrives —
-        never the reverse: the anchor's key is what survives."""
+        """A fragment built from EXACTLY the anchor's source tracks, minted
+        earlier under a different key (bottom-up path, missed the 6 km
+        match), is absorbed into the anchor when the anchor's own solve
+        arrives — never the reverse: the anchor's key is what survives.
+
+        111 km away, so nothing spatial rescues it: this is
+        _supersession_match's identical-inputs branch, and the reason that
+        branch exists.  Same measurements in, same aircraft, however far
+        apart the two solves converged."""
         state.multinode_tracks["mn-dark-anchor-5"] = _anchor_track(source_track_ids=["t1", "t2"])
         state.multinode_tracks["mn-dark-fragment"] = _anchor_track(
             lat=LAT + 1.0, solve_count=1, source_track_ids=["t1", "t2"]
@@ -431,8 +436,30 @@ class TestProcessSolverItemAnchorHonoring:
         assert "mn-dark-anchor-5" in state.multinode_tracks
         assert "mn-dark-fragment" not in state.multinode_tracks
         assert state.mn_superseded == 1
+        assert state.mn_superseded_blocked == 0
         # solve_count carries forward through the merge.
         assert state.multinode_tracks["mn-dark-anchor-5"]["solve_count"] == 3
+
+    def test_supersession_refuses_a_far_fragment_that_only_partially_shares_inputs(self):
+        """The other half of the test above, and the whole point of the
+        guard: an entry 111 km away that shares ONE tracker track with this
+        solve rather than being built from a subset of its inputs is a
+        different aircraft whose candidate happened to carry a common track.
+        It keeps its key; the refusal is counted."""
+        state.multinode_tracks["mn-dark-anchor-7"] = _anchor_track(source_track_ids=["t1", "t2"])
+        state.multinode_tracks["mn-dark-neighbour"] = _anchor_track(
+            lat=LAT + 1.0, solve_count=1, source_track_ids=["t1", "t9"]
+        )
+
+        s_in = dict(_CONFIRMED_N2, anchor_key="mn-dark-anchor-7", track_ids=["t1", "t2"])
+        item = (s_in, {}, time.time())
+        solver_mod._process_solver_item(item, _solve_fn())
+
+        assert "mn-dark-anchor-7" in state.multinode_tracks
+        assert "mn-dark-neighbour" in state.multinode_tracks
+        assert state.multinode_tracks["mn-dark-neighbour"]["solve_count"] == 1
+        assert state.mn_superseded == 0
+        assert state.mn_superseded_blocked == 1
 
     def test_anchored_n2_without_cv_epochs_is_withheld(self):
         """Regression pin: an anchored n=2 input MUST carry cv_epochs (built

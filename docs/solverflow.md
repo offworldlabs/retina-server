@@ -501,15 +501,18 @@ flowchart TD
     kDR --> smooth
     kMint --> smooth
     smooth --> latch["anomaly latch vs previous entry"]
-    latch --> supersede["Supersession: other key sharing<br/>a source track id popped,<br/>EWMA/KF state dropped,<br/>solve_count carried forward"]
-    supersede --> store["state.multinode_tracks[key] = result"]
+    latch --> supersede{"Supersession: other key sharing<br/>a source track id —<br/>_supersession_match?"}
+    supersede -->|"DR into gate_km,<br/>or its ids subset this solve's"| popped["entry popped,<br/>EWMA/KF state dropped,<br/>solve_count carried forward<br/>(mn_superseded)"]
+    supersede -->|"neither"| blocked["kept — shared id is<br/>cross-aircraft contamination<br/>(mn_superseded_blocked)"]:::inert
+    popped --> store["state.multinode_tracks[key] = result"]
+    blocked --> store
     store --> archive["track-archive buffer append"]
     archive --> histpub["_record_solve_history: published"]
 
     histpub --> feed["build_combined_aircraft_json<br/>(1 Hz flush)"]
     feed --> gN2{"n=2 display gate:<br/>solve_count < MN_N2_MIN_SOLVES 2?"}
     gN2 -->|"yes"| retainN2["retained, not rendered"]:::inert
-    gN2 -->|"no"| gOneshot{"n>=3 one-shot:<br/>solve_count==1 AND<br/>age_s > MN_ONESHOT_TTL_S 5.0s?"}
+    gN2 -->|"no"| gOneshot{"n>=3 one-shot:<br/>solve_count==1 AND<br/>age_s > MN_ONESHOT_TTL_S 15.0s?"}
     gOneshot -->|"yes"| dropOneshot["not rendered"]:::inert
     gOneshot -->|"no"| dr["dead reckoning,<br/>capped 30s"]
     dr --> dedup["dedup_aircraft:<br/>rank by _DEDUP_SOURCE_RANK,<br/>3.0km / 2000ft gate"]
@@ -533,9 +536,10 @@ flowchart TD
 |---|---|---|
 | `_MN_ASSOC_MAX_DIST_KM` / `_MN_ASSOC_MAX_AGE_S` (identity step 2/3) | 6.0 km / 60.0 s | `services/tasks/solver.py` |
 | `_MN_ASSOC_DRIFT_KM_PER_S` / `_MN_ASSOC_MAX_DIST_CAP_KM` (step 3 only — the gate grows with the matched entry's age) | 0.13 km/s / 12.0 km | `services/tasks/solver.py` |
+| Supersession gate (`_supersession_match`) — the same age-scaled `_mn_assoc_gate_km` and `_MN_ASSOC_MAX_AGE_S` as step 3, applied to the solve's RAW position | 6.0 + 0.13·dt km, cap 12.0 / 60.0 s | `services/tasks/solver.py` |
 | `CV_VEL_ADOPT_CHI2_MAX` | 5.0 | `config/constants.py:77` |
 | `MN_N2_MIN_SOLVES` | 2 | `config/constants.py:63` |
-| `MN_ONESHOT_TTL_S` | 5.0 s | `config/constants.py:66` |
+| `MN_ONESHOT_TTL_S` | 15.0 s | `config/constants.py:66` |
 | `_DEDUP_SOURCE_RANK` order | multinode_solve 0 < adsb_single_node 1 < solver_adsb_seed 2 < solver_single_node 3 < single_node_ellipse_arc 4 | `services/feed_helpers.py:37-43` |
 | `CLAIMED_DISPLAY_FRESH_S` | 5.0 s | `config/constants.py:131-139` |
 | Dedup proximity / altitude gate | 3.0 km / 2000 ft | `services/feed_helpers.py:49-50` |
@@ -546,6 +550,21 @@ flowchart TD
 
 ## Caveats
 
+- **A shared source track id does not identify an aircraft.** Single-node
+  tracker track ids are reused across the association candidates of different
+  aircraft: in a 6-minute live window, 74 of 178 track ids appeared in
+  published solves of more than one ground-truth aircraft. Supersession
+  therefore treats the shared id only as a cheap prefilter and requires
+  `_supersession_match` to agree — the old entry dead-reckons inside the
+  age-scaled gate, or its source track ids are a non-empty subset of the new
+  solve's (identical inputs, which is the anchor-merge case). Before that
+  guard, 36 of 44 supersessions popped a different aircraft's key and dark
+  keys churned at 7.4/min with a 7 s median lifetime (2.4/min and 33 s before
+  the dark publish rate rose); replayed over the same 139 live solves the
+  guard cuts mints 47 → 22 and cross-aircraft pops 36 → 7.
+  `mn_superseded` / `mn_superseded_blocked` in `/api/test/solver-stats`
+  (`fragmentation`) and `superseded_keys` / `superseded_blocked` on each
+  published `mlat_solve_history` record are how this is watched.
 - **Node-trust residuals are measure-only.** `node_bias.py` computes them but
   nothing in the solver consumes them yet (`node_bias.py:33-40` docstring).
 - **`docs/pipeline.md` §3 is stale.** It predates the known lane and the
