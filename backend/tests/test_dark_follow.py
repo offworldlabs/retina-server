@@ -18,7 +18,10 @@ it lands back on the same track.  Pinned here:
 - binding mode removing the claimed detections from the frame the dark lane
   sees (frame_processor);
 - the ghost guard: two rejected follow-solves drop the key for the cooldown,
-  including when the verdicts arrive through _record_solve_history.
+  including when the verdicts arrive through _record_solve_history;
+- key ownership in binding mode: a bottom-up solve may not join a key the lane
+  just published on, is refused outright inside DARK_FOLLOW_SHADOW_KM, and
+  those refusals are invisible to the guard.
 
 Style follows test_known_claiming.py (registered associator geometry, frames
 built around a real predicted observation) and test_solver_anchor.py.
@@ -626,3 +629,217 @@ class TestAnchorDeadReckoning:
             anchor_dr=True,
         )
         assert how != "anchor"
+
+
+class TestKeyOwnership:
+    """A key the follow lane just published on is not the bottom-up lane's to
+    join.
+
+    Binding mode only, and the reason is measured rather than aesthetic: 21% of
+    bottom-up proximity joins on test landed on a key belonging to a DIFFERENT
+    aircraft, and same-aircraft re-key distances (p50 1.5 km) overlap the
+    wrong-aircraft ones entirely, so no tighter spatial gate separates them.
+    See dark_follow.DARK_FOLLOW_OWN_S.
+    """
+
+    _TS_MS = 2_000_000
+    _TS_S = _TS_MS / 1000.0
+
+    def setup_method(self):
+        dark_follow._reset_for_tests()
+
+    def teardown_method(self):
+        dark_follow._reset_for_tests()
+
+    def _tracks(self, dt_s=1.0):
+        """One live dark entry at the reference position, last solved dt_s ago
+        and not moving — so the distance below is exactly the offset."""
+        return {
+            _KEY: {
+                "lat": _LAT,
+                "lon": _LON,
+                "vel_east": 0.0,
+                "vel_north": 0.0,
+                "timestamp_ms": self._TS_MS - int(dt_s * 1000),
+                "n_nodes": 3,
+                "solve_count": 5,
+            }
+        }
+
+    def _result(self, north_km):
+        lat, lon = offset_latlon_m(_LAT, _LON, east_m=0.0, north_m=north_km * 1000.0)
+        return {"lat": lat, "lon": lon, "timestamp_ms": self._TS_MS}
+
+    def _decide(self, north_km, anchor_key=None, dt_s=1.0):
+        return solver_mod.multinode_key_decision(
+            self._tracks(dt_s),
+            self._result(north_km),
+            None,
+            anchor_key,
+            learned_vel_fn=lambda _k: None,
+        )
+
+    def test_a_solve_next_to_a_freshly_followed_key_is_shadowed(self, monkeypatch):
+        monkeypatch.setattr(state, "DARK_FOLLOW_MODE", "binding")
+        dark_follow.note_follow_publish(_KEY, self._TS_S - 2.0)
+        key, how, dist = self._decide(1.0)
+        assert (key, how) == (_KEY, "shadowed")
+        assert dist == pytest.approx(1.0, abs=0.05)
+
+    def test_a_solve_further_out_mints_rather_than_joining(self, monkeypatch):
+        """4 km is well inside the 6 km proximity gate — without ownership
+        this solve joins the followed key, which is the bug.  It gets its own
+        key instead: too far to be the same aircraft, and never the followed
+        one's."""
+        monkeypatch.setattr(state, "DARK_FOLLOW_MODE", "binding")
+        dark_follow.note_follow_publish(_KEY, self._TS_S - 2.0)
+        key, how, _dist = self._decide(4.0)
+        assert how == "minted"
+        assert key != _KEY
+
+    def test_ownership_expires(self, monkeypatch):
+        """Past DARK_FOLLOW_OWN_S the lane has stopped answering for the key
+        (three missed follow-solve intervals), so the bottom-up lane may have
+        it back."""
+        monkeypatch.setattr(state, "DARK_FOLLOW_MODE", "binding")
+        dark_follow.note_follow_publish(_KEY, self._TS_S - 20.0)
+        key, how, _dist = self._decide(1.0)
+        assert (key, how) == (_KEY, "proximity")
+
+    @pytest.mark.parametrize("mode", ["shadow", "off"])
+    def test_the_inert_modes_key_exactly_as_before(self, monkeypatch, mode):
+        monkeypatch.setattr(state, "DARK_FOLLOW_MODE", mode)
+        dark_follow.note_follow_publish(_KEY, self._TS_S - 2.0)
+        key, how, _dist = self._decide(1.0)
+        assert (key, how) == (_KEY, "proximity")
+
+    def test_the_follow_lanes_own_solve_still_lands_on_its_key(self, monkeypatch):
+        """Ownership is a rule about BOTTOM-UP solves.  The follow lane's own
+        solves are anchored and return from the anchor branch, which never
+        reaches the proximity scan — otherwise the lane would shadow itself
+        off the map."""
+        monkeypatch.setattr(state, "DARK_FOLLOW_MODE", "binding")
+        dark_follow.note_follow_publish(_KEY, self._TS_S - 2.0)
+        key, how, dist = self._decide(1.0, anchor_key=_KEY)
+        assert (key, how) == (_KEY, "anchor")
+        assert dist == pytest.approx(1.0, abs=0.05)
+
+    def test_an_n2_solve_cannot_join_a_followed_n3_key(self, monkeypatch):
+        """The population the ownership rule is aimed at: an n=2 bottom-up
+        solve, whose own position error is ~2.4 km median, arriving at a key
+        the follow lane is refreshing from n>=3 measurements."""
+        monkeypatch.setattr(state, "DARK_FOLLOW_MODE", "binding")
+        dark_follow.note_follow_publish(_KEY, self._TS_S - 2.0)
+        result = self._result(1.5)
+        result["n_nodes"] = 2
+        key, how, _dist = solver_mod.multinode_key_decision(
+            self._tracks(),
+            result,
+            None,
+            None,
+            learned_vel_fn=lambda _k: None,
+        )
+        assert (key, how) == (_KEY, "shadowed")
+
+
+class TestShadowedSolveIsARejection:
+    """What the solver worker does with a "shadowed" verdict: record it, count
+    it, and touch nothing else."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+        dark_follow._reset_for_tests()
+
+    def teardown_method(self):
+        solver_mod._reset_for_tests()
+        dark_follow._reset_for_tests()
+
+    def _entry(self, ts_ms):
+        return {
+            "success": True,
+            "lat": _LAT,
+            "lon": _LON,
+            "alt_m": _ALT_M,
+            "vel_east": 0.0,
+            "vel_north": 0.0,
+            "n_nodes": 3,
+            "solve_count": 5,
+            "timestamp_ms": ts_ms - 1000,
+            "contributing_node_ids": [_NODE_ID],
+        }
+
+    def _solve_fn(self, ts_ms, north_km):
+        lat, lon = offset_latlon_m(_LAT, _LON, east_m=0.0, north_m=north_km * 1000.0)
+
+        def fn(_s_in, _cfgs):
+            return {
+                "success": True,
+                "lat": lat,
+                "lon": lon,
+                "alt_m": _ALT_M,
+                "vel_east": 0.0,
+                "vel_north": 0.0,
+                "rms_delay": 1.0,
+                "rms_doppler": 5.0,
+                "n_nodes": 3,
+                "n_measurements": 3,
+                "timestamp_ms": ts_ms,
+                "contributing_node_ids": ["n1", "n2", "n3"],
+            }
+
+        return fn
+
+    def _run(self, monkeypatch, north_km=1.0, follow_age_s=2.0):
+        monkeypatch.setattr(state, "DARK_FOLLOW_MODE", "binding")
+        ts_ms = int(time.time() * 1000)
+        state.multinode_tracks[_KEY] = self._entry(ts_ms)
+        dark_follow.note_follow_publish(_KEY, ts_ms / 1000.0 - follow_age_s)
+        solver_mod._process_solver_item(
+            ({"n_nodes": 3}, {}, time.time()),
+            self._solve_fn(ts_ms, north_km),
+        )
+        return ts_ms
+
+    def test_the_solve_is_recorded_counted_and_not_published(self, monkeypatch):
+        ts_ms = self._run(monkeypatch)
+        assert state.dark_bottomup_shadowed == 1
+        # The followed entry is byte-for-byte what it was: no new position, no
+        # solve_count bump, no smoothing, and no second key minted beside it.
+        assert list(state.multinode_tracks) == [_KEY]
+        assert state.multinode_tracks[_KEY] == self._entry(ts_ms)
+        assert len(state.mlat_solve_history) == 1
+        rec = state.mlat_solve_history[0]
+        assert rec["outcome"] == "shadowed_by_follow"
+        assert rec["follow_key"] == _KEY
+        assert rec["key_how"] == "shadowed"
+        assert rec["key_dist_km"] == pytest.approx(1.0, abs=0.05)
+        # A reject has no key of its own, shadowed or otherwise.
+        assert rec["solve_key"] is None
+        assert rec["lat"] is None
+
+    def test_a_solve_the_lane_does_not_own_still_publishes(self, monkeypatch):
+        """The same solve with the ownership window expired — the control that
+        says the assertions above are about ownership and not about the
+        harness."""
+        self._run(monkeypatch, follow_age_s=30.0)
+        assert state.dark_bottomup_shadowed == 0
+        assert state.mlat_solve_history[0]["outcome"] == "published"
+
+    def test_refusals_never_reach_the_follow_ghost_guard(self, monkeypatch):
+        """A shadowed record names a followed key but was not produced BY the
+        follow lane, so the guard must not hear about it — otherwise the
+        bottom-up lane's refusals would drop the very track that refused
+        them, twice in a row being enough."""
+        _kf(monkeypatch)
+        ts_ms = self._run(monkeypatch)
+        state.multinode_tracks[_KEY] = self._entry(ts_ms)
+        dark_follow.note_follow_publish(_KEY, ts_ms / 1000.0 - 2.0)
+        solver_mod._process_solver_item(
+            ({"n_nodes": 3}, {}, time.time()),
+            self._solve_fn(ts_ms, 1.0),
+        )
+        assert state.dark_bottomup_shadowed == 2
+        # Two rejects in a row is exactly what drops a followed key.  It is
+        # still a target, so the guard never saw them.
+        assert [t["key"] for t in dark_follow.follow_targets()] == [_KEY]

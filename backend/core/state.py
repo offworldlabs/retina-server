@@ -533,6 +533,12 @@ dark_follow_claims: int = 0
 dark_follow_inputs: int = 0
 dark_follow_published: int = 0
 dark_follow_dropped: int = 0
+# Bottom-up dark solves refused at keying because the follow lane owns the key
+# they landed on (solver.multinode_key_decision's "shadowed" verdict, binding
+# mode only).  They passed every gate, so they are counted in solver_successes
+# too — this is the difference between a success and a publication on the dark
+# lane, and the matching rejects.by_reason entry is "shadowed_by_follow".
+dark_bottomup_shadowed: int = 0
 # n=2 solves withheld from the map because their track pairing has not (yet)
 # passed the constant-velocity fit.  Counted separately from solver_failures:
 # the solve succeeded, it simply has not earned publication, and a real target
@@ -775,7 +781,7 @@ def _reset_for_tests() -> None:
     global known_claims_made, known_claim_contentions, known_claims_bound
     global known_claims_errors, known_claims_visibility_rejects, known_claims_world_rejects
     global dark_follow_targets, dark_follow_claims, dark_follow_inputs
-    global dark_follow_published, dark_follow_dropped
+    global dark_follow_published, dark_follow_dropped, dark_bottomup_shadowed
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
     global coverage_rebuild_backlog
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
@@ -867,6 +873,7 @@ def _reset_for_tests() -> None:
         known_claims_world_rejects = 0
         dark_follow_targets = dark_follow_claims = dark_follow_inputs = 0
         dark_follow_published = dark_follow_dropped = 0
+        dark_bottomup_shadowed = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
         coverage_rebuild_backlog = 0
         solver_stale_drops = 0

@@ -1212,6 +1212,13 @@ def _solver_window_stats(minutes: float) -> dict:
             "dark_follow_inputs": state.dark_follow_inputs,
             "dark_follow_published": state.dark_follow_published,
             "dark_follow_dropped": state.dark_follow_dropped,
+            # The other side of the lane: bottom-up dark solves refused at
+            # keying because the follow lane owns the key they landed on.  It
+            # belongs beside the funnel because it is the same trade — the
+            # lane keeps a key only if it also stops the bottom-up lane from
+            # corrupting it — and the matching per-solve records are the
+            # "shadowed_by_follow" entries in rejects.by_reason.
+            "dark_bottomup_shadowed": state.dark_bottomup_shadowed,
         },
     }
 

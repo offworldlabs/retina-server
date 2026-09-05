@@ -757,11 +757,14 @@ def multinode_key_decision(
 
     Caller holds _MN_TRACKS_LOCK — it reads `tracks` and the caller writes
     back into it under the same lock.  Returns (key, how, dist_km) with
-    how in {"adsb", "anchor", "proximity", "minted"}; dist_km is how far this
-    solve landed from the entry it was keyed onto (dead-reckoned, for the
-    proximity branch) and None where nothing was matched — "adsb" and
-    "minted".  The caller stamps both onto the solve-history record, which is
-    the only way to tell a re-key apart from a fragment after the fact.
+    how in {"adsb", "anchor", "proximity", "shadowed", "minted"}; dist_km is
+    how far this solve landed from the entry it was keyed onto (dead-reckoned,
+    for the proximity and shadowed branches) and None where nothing was
+    matched — "adsb" and "minted".  The caller stamps both onto the
+    solve-history record, which is the only way to tell a re-key apart from a
+    fragment after the fact.  "shadowed" is the one verdict that is NOT a key:
+    it names the followed key this solve was refused in favour of, and the
+    caller must treat it as a rejection (see _process_solver_item).
 
     Order:
       1. ADS-B-tagged solves key on the transponder hex — unconditional, and
@@ -787,6 +790,18 @@ def multinode_key_decision(
          does; candidates compete on distance normalised by their own gate,
          so a fresh close entry beats an old far one rather than the scan
          simply taking whichever is nearer in kilometres.
+
+         KEY OWNERSHIP (DARK_FOLLOW_MODE=binding only).  A key the follow
+         lane published on within dark_follow.DARK_FOLLOW_OWN_S is removed
+         from this scan's candidates entirely, and if the nearest such key is
+         within DARK_FOLLOW_SHADOW_KM the solve is refused ("shadowed")
+         instead of keyed at all.  The follow lane already supplies every
+         solve an established track needs, so a bottom-up solve arriving at
+         one of its keys is either a duplicate — competing with the anchored
+         solve and dragging the filter — or a different aircraft stealing the
+         key; 21% of proximity joins measured on test were the latter.  See
+         dark_follow.DARK_FOLLOW_OWN_S for why a tighter gate cannot separate
+         the two.
       4. Mint.  This key only needs to be unique at birth; every later solve
          associates to it above (by proximity, or by anchor once a claim
          forms), so it stays stable.
@@ -848,6 +863,13 @@ def multinode_key_decision(
     best_key: str | None = None
     best_score = 1.0
     best_dist: float | None = None
+    # Key ownership: the nearest key the follow lane is currently answering
+    # for, and how far this solve landed from it.  Only collected for a
+    # bottom-up solve in binding mode — an anchored or ADS-B solve names the
+    # aircraft it is of, and neither branch above reaches this scan.
+    shadow_scan = not anchor_key and dark_follow.mode() == "binding"
+    shadow_key: str | None = None
+    shadow_dist: float | None = None
 
     for key, prev in tracks.items():
         # Only dark tracks are claimable; an untagged solve must never steal the
@@ -871,10 +893,25 @@ def multinode_key_decision(
             north_m=vel_north_ms * dt,
         )
         d = _haversine_km(lat, lon, p_lat, p_lon)
+        # A key the follow lane just published on is not joinable bottom-up,
+        # whatever the distance says — see dark_follow.DARK_FOLLOW_OWN_S for
+        # the measurement.  It still competes to SHADOW this solve below, so
+        # the scan has to remember the nearest one rather than skipping it.
+        if shadow_scan and dark_follow.recently_followed(key, ts_s, dark_follow.DARK_FOLLOW_OWN_S):
+            if shadow_dist is None or d < shadow_dist:
+                shadow_key, shadow_dist = key, d
+            continue
         score = d / _mn_assoc_gate_km(dt, max_dist_km)
         if score < best_score:
             best_key, best_score, best_dist = key, score, d
 
+    # Close enough to a followed key that this solve is the same aircraft the
+    # follow lane is already solving: refuse it outright rather than mint a
+    # second key for a target that already has one.  Farther away it falls
+    # through to the non-followed candidates and, failing those, mints — the
+    # one thing it may never do is join the followed key.
+    if shadow_key is not None and shadow_dist <= dark_follow.DARK_FOLLOW_SHADOW_KM:
+        return shadow_key, "shadowed", shadow_dist
     if best_key is not None:
         return best_key, "proximity", best_dist
     # No claimant — a genuinely new target.
@@ -1459,6 +1496,7 @@ def _record_solve_history(
     chi2_per_dof: float | None = None,
     key_how: str | None = None,
     key_dist_km: float | None = None,
+    follow_key: str | None = None,
     superseded_keys: list[str] | None = None,
     superseded_blocked: int | None = None,
     extra: dict | None = None,
@@ -1475,7 +1513,16 @@ def _record_solve_history(
     solve — which branch produced solve_key, and how far the solve landed from
     the entry it was keyed onto.  Only the publish path has run the keying
     rule, so both are None on every reject (the key is minted after the
-    gates, which is also why solver_hex is None there).
+    gates, which is also why solver_hex is None there) — with one exception:
+    a ``shadowed_by_follow`` reject IS the keying rule's verdict, and carries
+    key_how/key_dist_km plus ``follow_key`` naming the followed key it was
+    refused in favour of.
+
+    ``follow_key`` overrides the input's own follow_key for the record only.
+    The ghost guard below is deliberately NOT fed from it: the guard judges
+    solves the FOLLOW lane produced, and a shadowed record is a bottom-up
+    solve that merely names a followed key — feeding it there would let the
+    bottom-up lane's refusals drop the very track that refused them.
 
     ``superseded_keys``/``superseded_blocked`` are the other side of that
     decision: which existing entries this publish popped as the same aircraft
@@ -1521,7 +1568,7 @@ def _record_solve_history(
         # carries — and follow_key names the track that predicted it.
         "lane": s.get("lane"),
         "guess_source": s.get("guess_source"),
-        "follow_key": s.get("follow_key"),
+        "follow_key": follow_key or s.get("follow_key"),
         "raw_lat": round(float(raw_lat), 6) if raw_lat is not None else None,
         "raw_lon": round(float(raw_lon), 6) if raw_lon is not None else None,
         "lat": round(float(r["lat"]), 6) if outcome == "published" else None,
@@ -1586,7 +1633,10 @@ def _record_solve_history(
     }
     if extra:
         rec.update(extra)
-    _follow_key = rec.get("follow_key")
+    # The INPUT's follow_key, not the record's: a shadowed_by_follow reject
+    # names a followed key it was refused in favour of, and that key's guard
+    # must not hear about a solve the follow lane never made.
+    _follow_key = s.get("follow_key")
     if _follow_key:
         # The dark-follow ghost guard (services/dark_follow.py) needs a verdict
         # for every follow-solve, and this is the one place all of them pass
@@ -1599,6 +1649,14 @@ def _record_solve_history(
         dark_follow.record_outcome(_follow_key, bool(rec.get("follow_ok", outcome == "published")))
         if outcome == "published":
             state.bump_counter("dark_follow_published")
+            # ...and the lane now owns the key it published on, for
+            # DARK_FOLLOW_OWN_S.  Stamped with the MEASUREMENT epoch, because
+            # the reader (multinode_key_decision) compares it against another
+            # solve's measurement epoch and is deliberately clock-free.  The
+            # key published on, not the anchor: on the rare anchor fallback
+            # the lane's solve went somewhere else, and that is the entry it
+            # is now refreshing.
+            dark_follow.note_follow_publish(solve_key or _follow_key, rec["measurement_ts_ms"] / 1000.0)
     if raw_lat is not None and raw_lon is not None:
         meas_ts_s = (rec["measurement_ts_ms"] or now_ms) / 1000.0
         rec.update(_gt_for_record(rec["adsb_hex"], float(raw_lat), float(raw_lon), meas_ts_s))
@@ -2237,117 +2295,140 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
                 # the distance check it must be judged by.
                 anchor_dr=bool(isinstance(s_in, dict) and s_in.get("follow_key")),
             )
-            # Dark-lane key births vs re-keys.  The fragmentation question is
-            # "how often does one aircraft get a second key", and the only
-            # place that is decided is right here — solver_successes counts
-            # solves, distinct_keys counts survivors, neither counts the
-            # decision.  Dark only: the ADS-B lane keys off the transponder
-            # hex unconditionally and has no decision to observe.  Anchor
-            # hits are deliberately in neither counter; solver_anchor_hits
-            # already carries them, and double-counting them here would make
-            # minted + proximity stop summing to the dark decisions this
-            # gate actually made.
-            if key.startswith("mn-dark-"):
-                if _key_how == "minted":
-                    state.bump_counter("solver_key_minted_dark")
-                elif _key_how == "proximity":
-                    state.bump_counter("solver_key_proximity_dark")
-            if _anchor_key:
-                # s_in["anchor_key"] is set by exactly two producers: top-down
-                # claiming in active mode, and a dark-follow input in binding
-                # mode (services/dark_follow.py).  Both are off by default, so
-                # this block stays inert by construction with no mode read
-                # here.  The counters do not split the two, deliberately: they
-                # measure the same thing either way — how often an anchor
-                # named the track the solve actually landed on — and
-                # follow_key on the history record separates them after the
-                # fact for anyone who needs it.
-                state.bump_counter("solver_anchored_published")
-                state.bump_counter("solver_anchor_hits" if _key_how == "anchor" else "solver_anchor_fallbacks")
-            # Raw solve position, before smoothing — the history record keeps
-            # both so display-side drift can be separated from solver error.
-            _raw_lat, _raw_lon = result["lat"], result["lon"]
-            # Multi-epoch averaging cuts single-frame noise by ~√K.  Originally
-            # n=2-with-ADS-B only — production showed dark targets (where MLAT
-            # is the only position source) were the one population left raw.
-            # Smoothing now runs through the env-gated KF in
-            # services/track_filter.py, with this module's EWMA kept as the
-            # TRACK_SMOOTHER=ewma fallback.
-            result = track_filter.smooth_solve(result, key, _adsb_hex, ewma_fn=_ewma_smooth_track)
-            prev = state.multinode_tracks.get(key)
-            if prev:
-                # Latch: a tracker flag raised on an earlier solve holds for
-                # the multinode track's lifetime (≤60 s expiry) even if the
-                # contributing track has since despawned or gone quiet.
-                result["is_anomalous"] = bool(result.get("is_anomalous")) or bool(prev.get("is_anomalous"))
-                result["anomaly_types"] = sorted(
-                    set(result.get("anomaly_types", [])) | set(prev.get("anomaly_types", []))
-                )
-            # Source-track identity: the single-node track ids this solve was
-            # built from.  Used below for supersession and carried into the
-            # history record so a bad map marker can be traced to its inputs.
-            result["source_track_ids"] = sorted(s_in.get("track_ids") or []) if isinstance(s_in, dict) else []
+            # Key ownership (DARK_FOLLOW_MODE=binding).  A bottom-up solve
+            # that landed on a key the follow lane is answering for is not
+            # keyed at all: it is either a duplicate of the anchored solve
+            # already refreshing that key or a different aircraft about to
+            # steal it, and both drag the entry and its filter.  The verdict
+            # is taken here, under the same lock as the decision, so nothing
+            # about the entry can change between deciding and refusing; the
+            # record and the counter are emitted outside it, as every other
+            # outcome's are.
+            _shadow_key = key if _key_how == "shadowed" else None
+            if _shadow_key is None:
+                # Dark-lane key births vs re-keys.  The fragmentation question is
+                # "how often does one aircraft get a second key", and the only
+                # place that is decided is right here — solver_successes counts
+                # solves, distinct_keys counts survivors, neither counts the
+                # decision.  Dark only: the ADS-B lane keys off the transponder
+                # hex unconditionally and has no decision to observe.  Anchor
+                # hits are deliberately in neither counter; solver_anchor_hits
+                # already carries them, and double-counting them here would make
+                # minted + proximity stop summing to the dark decisions this
+                # gate actually made.
+                if key.startswith("mn-dark-"):
+                    if _key_how == "minted":
+                        state.bump_counter("solver_key_minted_dark")
+                    elif _key_how == "proximity":
+                        state.bump_counter("solver_key_proximity_dark")
+                if _anchor_key:
+                    # s_in["anchor_key"] is set by exactly two producers: top-down
+                    # claiming in active mode, and a dark-follow input in binding
+                    # mode (services/dark_follow.py).  Both are off by default, so
+                    # this block stays inert by construction with no mode read
+                    # here.  The counters do not split the two, deliberately: they
+                    # measure the same thing either way — how often an anchor
+                    # named the track the solve actually landed on — and
+                    # follow_key on the history record separates them after the
+                    # fact for anyone who needs it.
+                    state.bump_counter("solver_anchored_published")
+                    state.bump_counter("solver_anchor_hits" if _key_how == "anchor" else "solver_anchor_fallbacks")
+                # Raw solve position, before smoothing — the history record keeps
+                # both so display-side drift can be separated from solver error.
+                _raw_lat, _raw_lon = result["lat"], result["lon"]
+                # Multi-epoch averaging cuts single-frame noise by ~√K.  Originally
+                # n=2-with-ADS-B only — production showed dark targets (where MLAT
+                # is the only position source) were the one population left raw.
+                # Smoothing now runs through the env-gated KF in
+                # services/track_filter.py, with this module's EWMA kept as the
+                # TRACK_SMOOTHER=ewma fallback.
+                result = track_filter.smooth_solve(result, key, _adsb_hex, ewma_fn=_ewma_smooth_track)
+                prev = state.multinode_tracks.get(key)
+                if prev:
+                    # Latch: a tracker flag raised on an earlier solve holds for
+                    # the multinode track's lifetime (≤60 s expiry) even if the
+                    # contributing track has since despawned or gone quiet.
+                    result["is_anomalous"] = bool(result.get("is_anomalous")) or bool(prev.get("is_anomalous"))
+                    result["anomaly_types"] = sorted(
+                        set(result.get("anomaly_types", [])) | set(prev.get("anomaly_types", []))
+                    )
+                # Source-track identity: the single-node track ids this solve was
+                # built from.  Used below for supersession and carried into the
+                # history record so a bad map marker can be traced to its inputs.
+                result["source_track_ids"] = sorted(s_in.get("track_ids") or []) if isinstance(s_in, dict) else []
 
-            # Supersession: an earlier entry that is THIS aircraft, under a
-            # key the proximity match (multinode_key_decision) missed, is
-            # replaced now rather than left rendering beside the new one for
-            # up to 60 s.  solve_count carries forward so the re-solved
-            # aircraft does not fall back under the n=2 gate below.
-            #
-            # A shared source track id is the cheap filter, not the rule.  The
-            # premise this block used to carry — "one aircraft is one set of
-            # source tracks" — is false: single-node tracker tracks are shared
-            # between the association candidates of DIFFERENT aircraft (74 of
-            # 178 track ids in a 6 min live window appeared in published solves
-            # of more than one ground-truth aircraft), so popping on the shared
-            # id alone destroyed a live neighbour's key 36 times in 44
-            # supersessions — 41 of them beyond the association gate, 43 under
-            # 15 s old — and the victim's next solve minted a fresh key (dark
-            # keys churning at 7.4/min with a 7 s median lifetime).  Now
-            # _supersession_match has to agree: the old entry dead-reckons
-            # into the gate, or its inputs are a subset of this solve's.
-            # Replayed over the same solves that cuts mints 47 -> 22 and
-            # cross-aircraft pops 36 -> 7.  Refusals are counted
-            # (mn_superseded_blocked), not
-            # silent — the shared-id signal is mostly contamination and the
-            # panel has to be able to see that.
-            #
-            # Unchanged by anchor honoring: `old_key == key: continue` below
-            # already protects an anchor from superseding itself, and a
-            # proximity-minted fragment built from exactly the anchor's source
-            # tracks merging INTO the anchor (old_key != key, key ==
-            # anchor_key) is the identical-inputs branch (b) of the predicate —
-            # exactly the fragmentation-collapse this whole feature exists for.
-            max_superseded_count = 0
-            _superseded_keys: list[str] = []
-            _superseded_blocked = 0
-            if result["source_track_ids"]:
-                new_ids = set(result["source_track_ids"])
-                _ts_ms = result.get("timestamp_ms") or 0
-                for old_key, old_r in list(state.multinode_tracks.items()):
-                    if old_key == key:
-                        continue
-                    if not new_ids.intersection(old_r.get("source_track_ids") or ()):
-                        continue
-                    matched, _ = _supersession_match(old_key, old_r, new_ids, _raw_lat, _raw_lon, _ts_ms)
-                    if not matched:
-                        _superseded_blocked += 1
-                        state.bump_counter("mn_superseded_blocked")
-                        continue
-                    state.multinode_tracks.pop(old_key, None)
-                    with state.anomaly_lock:
-                        state.anomaly_hexes.discard(multinode_hex_from_key(old_key))
-                    with _MN_POS_HISTORY_LOCK:
-                        _MN_POS_HISTORY.pop(old_key, None)
-                    track_filter.drop_key(old_key)
-                    max_superseded_count = max(max_superseded_count, old_r.get("solve_count", 0))
-                    _superseded_keys.append(old_key)
-                    state.bump_counter("mn_superseded")
+                # Supersession: an earlier entry that is THIS aircraft, under a
+                # key the proximity match (multinode_key_decision) missed, is
+                # replaced now rather than left rendering beside the new one for
+                # up to 60 s.  solve_count carries forward so the re-solved
+                # aircraft does not fall back under the n=2 gate below.
+                #
+                # A shared source track id is the cheap filter, not the rule.  The
+                # premise this block used to carry — "one aircraft is one set of
+                # source tracks" — is false: single-node tracker tracks are shared
+                # between the association candidates of DIFFERENT aircraft (74 of
+                # 178 track ids in a 6 min live window appeared in published solves
+                # of more than one ground-truth aircraft), so popping on the shared
+                # id alone destroyed a live neighbour's key 36 times in 44
+                # supersessions — 41 of them beyond the association gate, 43 under
+                # 15 s old — and the victim's next solve minted a fresh key (dark
+                # keys churning at 7.4/min with a 7 s median lifetime).  Now
+                # _supersession_match has to agree: the old entry dead-reckons
+                # into the gate, or its inputs are a subset of this solve's.
+                # Replayed over the same solves that cuts mints 47 -> 22 and
+                # cross-aircraft pops 36 -> 7.  Refusals are counted
+                # (mn_superseded_blocked), not
+                # silent — the shared-id signal is mostly contamination and the
+                # panel has to be able to see that.
+                #
+                # Unchanged by anchor honoring: `old_key == key: continue` below
+                # already protects an anchor from superseding itself, and a
+                # proximity-minted fragment built from exactly the anchor's source
+                # tracks merging INTO the anchor (old_key != key, key ==
+                # anchor_key) is the identical-inputs branch (b) of the predicate —
+                # exactly the fragmentation-collapse this whole feature exists for.
+                max_superseded_count = 0
+                _superseded_keys: list[str] = []
+                _superseded_blocked = 0
+                if result["source_track_ids"]:
+                    new_ids = set(result["source_track_ids"])
+                    _ts_ms = result.get("timestamp_ms") or 0
+                    for old_key, old_r in list(state.multinode_tracks.items()):
+                        if old_key == key:
+                            continue
+                        if not new_ids.intersection(old_r.get("source_track_ids") or ()):
+                            continue
+                        matched, _ = _supersession_match(old_key, old_r, new_ids, _raw_lat, _raw_lon, _ts_ms)
+                        if not matched:
+                            _superseded_blocked += 1
+                            state.bump_counter("mn_superseded_blocked")
+                            continue
+                        state.multinode_tracks.pop(old_key, None)
+                        with state.anomaly_lock:
+                            state.anomaly_hexes.discard(multinode_hex_from_key(old_key))
+                        with _MN_POS_HISTORY_LOCK:
+                            _MN_POS_HISTORY.pop(old_key, None)
+                        track_filter.drop_key(old_key)
+                        max_superseded_count = max(max_superseded_count, old_r.get("solve_count", 0))
+                        _superseded_keys.append(old_key)
+                        state.bump_counter("mn_superseded")
 
-            result["solve_count"] = max(prev.get("solve_count", 0) if prev else 0, max_superseded_count) + 1
-            state.multinode_tracks[key] = result
-            if trim_meta:
-                state.bump_counter("solver_trimmed")
+                result["solve_count"] = max(prev.get("solve_count", 0) if prev else 0, max_superseded_count) + 1
+                state.multinode_tracks[key] = result
+                if trim_meta:
+                    state.bump_counter("solver_trimmed")
+        if _shadow_key is not None:
+            state.bump_counter("dark_bottomup_shadowed")
+            _record_solve_history(
+                "shadowed_by_follow",
+                s_in,
+                result,
+                follow_key=_shadow_key,
+                key_how=_key_how,
+                key_dist_km=_key_dist_km,
+                extra=_extra,
+            )
+            return result
         # Append a snapshot to the track-archive buffer for Parquet persistence.
         # solve_ts_ms records when the solve completed (server wallclock) so
         # analysts can measure end-to-end latency vs. result["timestamp_ms"].
