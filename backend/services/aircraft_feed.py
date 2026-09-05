@@ -414,7 +414,18 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
 
     # 3. Multi-node solver
     stale_mn = []
-    for key, r in list(state.multinode_tracks.items()):
+    # Snapshot and evict under the solver's track lock: the solver worker
+    # iterates state.multinode_tracks inside multinode_key_decision while
+    # holding it, and a pop from this thread mid-iteration raised
+    # "dictionary changed size during iteration" live (2026-09-05) once the
+    # dark expiry fell to 30 s and the follow lane raised the publish rate.
+    # Lazy import: solver.py is the lock's owner and importing it at module
+    # level here would create a cycle through the task modules.
+    from services.tasks import solver as _solver_mod
+
+    with _solver_mod._MN_TRACKS_LOCK:
+        _mn_snapshot = list(state.multinode_tracks.items())
+    for key, r in _mn_snapshot:
         age_s = now - r.get("timestamp_ms", 0) / 1000
         # Lane-aware expiry, on the same key-prefix truth multinode_to_aircraft
         # reads adsb_assisted off.  An assisted entry is anchored to a
@@ -474,7 +485,8 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         # without bound — enough to trip the anomaly_flood health check.
         with state.anomaly_lock:
             state.anomaly_hexes.discard(multinode_hex_from_key(k))
-        state.multinode_tracks.pop(k, None)
+        with _solver_mod._MN_TRACKS_LOCK:
+            state.multinode_tracks.pop(k, None)
 
     # 3b. Singly-claimed ADS-B targets — no seen_hex guard on purpose.  A
     # partially-claimed aircraft can still carry a tracker track keyed by the
