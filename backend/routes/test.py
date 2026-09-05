@@ -734,7 +734,8 @@ def _window_effective_minutes(records: list[dict], minutes: float) -> float:
 
 
 def _record_lane(rec: dict) -> str:
-    """Which solver lane produced one history record: "known", "dark" or "adsb".
+    """Which solver lane produced one history record: "known", "dark_follow",
+    "dark" or "adsb".
 
     ``known_lane`` is stamped by known_lane._attempt via ``extra``.  For the
     regular pipeline the authority is the minted track key (mn-dark-* vs
@@ -742,9 +743,16 @@ def _record_lane(rec: dict) -> str:
     key exists, so it falls back to the same predicate that key decision uses
     — whether the solver input carried a transponder-shaped identity, which is
     also what picked its displacement cap.
+
+    ``lane`` is checked before the key, because a dark-follow record
+    (services/dark_follow.py) is keyed mn-dark-* by design — it is the same
+    aircraft the dark lane tracks, reached top-down — and would otherwise land
+    in the bottom-up funnel whose attempts and rejects it is not one of.
     """
     if rec.get("known_lane"):
         return "known"
+    if rec.get("lane") == "dark_follow":
+        return "dark_follow"
     key = rec.get("solve_key")
     if key:
         return "dark" if key.startswith("mn-dark-") else "adsb"
@@ -882,7 +890,7 @@ def _solver_window_stats(minutes: float) -> dict:
     effective_minutes = _window_effective_minutes(merged, minutes)
     all_records = [r for r in merged if r["ts_ms"] >= cutoff_ms]
 
-    lane_split = {"dark": 0, "adsb": 0, "known": 0}
+    lane_split = {"dark": 0, "adsb": 0, "known": 0, "dark_follow": 0}
     records: list[dict] = []
     known_records: list[dict] = []
     for r in all_records:
@@ -1195,6 +1203,22 @@ def _solver_window_stats(minutes: float) -> dict:
             "queue_drops": state.solver_queue_drops,
             "worker_errors": state.solver_worker_errors,
             "vel_untrusted_published": state.solver_vel_untrusted_published,
+            # Dark track following (services/dark_follow.py), since boot except
+            # targets, which is a live gauge of the current pseudo-state list.
+            # The funnel is targets -> claims -> inputs -> published; dropped is
+            # the ghost guard's tally of keys it stopped following.
+            "dark_follow_targets": state.dark_follow_targets,
+            "dark_follow_claims": state.dark_follow_claims,
+            "dark_follow_inputs": state.dark_follow_inputs,
+            "dark_follow_published": state.dark_follow_published,
+            "dark_follow_dropped": state.dark_follow_dropped,
+            # The other side of the lane: bottom-up dark solves refused at
+            # keying because the follow lane owns the key they landed on.  It
+            # belongs beside the funnel because it is the same trade — the
+            # lane keeps a key only if it also stops the bottom-up lane from
+            # corrupting it — and the matching per-solve records are the
+            # "shadowed_by_follow" entries in rejects.by_reason.
+            "dark_bottomup_shadowed": state.dark_bottomup_shadowed,
         },
     }
 
