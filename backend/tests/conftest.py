@@ -155,6 +155,7 @@ def _reset_module_state():
     from services import (
         aircraft_feed,
         alerting,
+        dark_follow,
         feed_helpers,
         frame_processor,
         known_claiming,
@@ -177,6 +178,7 @@ def _reset_module_state():
         alerting,
         tcp_handler,
         known_claiming,
+        dark_follow,
         node_bias,
         publication,
         periodic,

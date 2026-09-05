@@ -37,6 +37,7 @@ def _rec(
     adsb_hex=None,
     known_lane=False,
     displacement_km=None,
+    lane=None,
 ):
     return {
         "ts_ms": int((time.time() - age_s) * 1000),
@@ -48,6 +49,7 @@ def _rec(
         "adsb_hex": adsb_hex,
         "known_lane": known_lane,
         "displacement_km": displacement_km,
+        "lane": lane,
     }
 
 
@@ -261,6 +263,11 @@ class TestConsensusAndCounters:
         state.node_frames_rate_limited = 13
         state.tracks_stale_skipped = 13
         state.solver_epoch_align_skipped = 14
+        state.dark_follow_targets = 13
+        state.dark_follow_claims = 14
+        state.dark_follow_inputs = 15
+        state.dark_follow_published = 16
+        state.dark_follow_dropped = 17
         out = _solver_window_stats(10.0)
         assert out["counters"] == {
             "successes": 5,
@@ -276,6 +283,11 @@ class TestConsensusAndCounters:
             "node_frames_rate_limited": 13,
             "worker_errors": 0,
             "vel_untrusted_published": 11,
+            "dark_follow_targets": 13,
+            "dark_follow_claims": 14,
+            "dark_follow_inputs": 15,
+            "dark_follow_published": 16,
+            "dark_follow_dropped": 17,
         }
         assert out["consensus"]["selected"] == 7
         assert out["consensus"]["filtered"] == 8
@@ -528,7 +540,7 @@ class TestEmptyState:
         assert out["position_error_km"] == {"median": None, "p90": None, "n": 0}
         assert out["ghosts"]["live_tracks"] == 0
         assert out["ghosts"]["precision_pct"] is None
-        assert out["lane_split"] == {"dark": 0, "adsb": 0, "known": 0}
+        assert out["lane_split"] == {"dark": 0, "adsb": 0, "known": 0, "dark_follow": 0}
         assert out["window_effective_minutes"] == 0.0
 
 
@@ -626,7 +638,7 @@ class TestLaneSplit:
             _push(_rec("known_truth_match", known_lane=True, displacement_km=0.5))
         _push(_rec("known_ghost", known_lane=True, displacement_km=8.0))
         out = _solver_window_stats(10.0)
-        assert out["lane_split"] == {"dark": 2, "adsb": 0, "known": 4}
+        assert out["lane_split"] == {"dark": 2, "adsb": 0, "known": 4, "dark_follow": 0}
         assert out["attempts"] == 2
         assert out["published"]["total"] == 1
         assert out["rejects"] == {"total": 1, "by_reason": {"displacement": 1}}
@@ -634,12 +646,24 @@ class TestLaneSplit:
         assert "known_truth_match" not in out["rejects"]["by_reason"]
         assert "known_ghost" not in out["rejects"]["by_reason"]
 
+    def test_follow_records_leave_the_dark_funnel(self):
+        """A dark-follow solve (services/dark_follow.py) is keyed mn-dark-* by
+        design — it is the same aircraft, reached top-down — so only the
+        ``lane`` stamp keeps it out of a bottom-up funnel it is not part of."""
+        _push(_rec("published", solve_key="mn-dark-1"))
+        _push(_rec("published", solve_key="mn-dark-2", lane="dark_follow"))
+        _push(_rec("rejected_displacement", lane="dark_follow"))
+        out = _solver_window_stats(10.0)
+        assert out["lane_split"] == {"dark": 1, "adsb": 0, "known": 0, "dark_follow": 2}
+        assert out["attempts"] == 1
+        assert out["rejects"]["total"] == 0
+
     def test_adsb_lane_records_are_counted_but_not_funnelled(self):
         _push(_rec("published", solve_key="mn-adsb-a1b2c3"))
         _push(_rec("rejected_displacement", adsb_hex="a1b2c3"))
         _push(_rec("published", solve_key="mn-dark-1"))
         out = _solver_window_stats(10.0)
-        assert out["lane_split"] == {"dark": 1, "adsb": 2, "known": 0}
+        assert out["lane_split"] == {"dark": 1, "adsb": 2, "known": 0, "dark_follow": 0}
         assert out["attempts"] == 1
         assert out["rejects"]["total"] == 0
 

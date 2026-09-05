@@ -51,6 +51,9 @@ services:
       # mean nodes/candidate 3.7 -> 2.5, 14,573 skips/20 min.  With epoch
       # alignment correcting the delay along its Doppler, 8 s is safe.
       - TRACK_MAX_STALE_S=8
+      # Dark track-following lane (feat/dark-track-following): binding here so the
+      # test droplet measures continuity; main defaults to shadow.
+      - DARK_FOLLOW_MODE=binding
       # Anonymous admin, asked for explicitly since ClickUp 86cb49d29 took it
       # off RETINA_ENV. No OAuth is configured here either.
       - AUTH_ALLOW_ANONYMOUS_ADMIN=1

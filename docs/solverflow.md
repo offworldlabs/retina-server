@@ -34,7 +34,9 @@ flowchart LR
 
 Solid arrows are the live path. Dashed arrows and the grey style mark branches
 that exist in code but are switched off in production today (inline CV fit,
-the bottom-up doppler gate, every mode flag except `KNOWN_LANE_MODE`). Diamonds
+the bottom-up doppler gate, every mode flag except `KNOWN_LANE_MODE` and
+`DARK_FOLLOW_MODE`, the latter in `shadow` — it claims, solves and records, but
+publishes nothing and takes nothing away from the dark lane). Diamonds
 are gates; a failed gate either drops the item or routes it to a fallback —
 labeled on the arrow.
 
@@ -288,6 +290,127 @@ LM's SNR weighting maps to a uniform weight of 1.0.
 | `_CLAIM_MAX_AGE_S` / `_CLAIM_SPREAD_S` | 45.0 s / 5.0 s | `known_lane.py` |
 | `_ATTEMPT_TTL_S` | 600 s | `known_lane.py` |
 | `_MAX_DISPLACEMENT_KM` (truth_match cutoff) | 2.0 km | `services/tasks/solver.py` |
+
+### 3d. Dark track following (`DARK_FOLLOW_MODE`)
+
+The same inversion, applied to aircraft that have **no transponder**. Where the
+known lane claims detections against a dead-reckoned ADS-B fix, this lane
+claims them against an established `mn-dark-*` track's Kalman state — the only
+identity a dark aircraft has. It exists for two measured problems in the
+bottom-up dark lane (§4):
+
+- **Continuity.** Consecutive solves of one aircraft less than 5 s apart land
+  on a different key 15% of the time, any gap in solving re-mints the key from
+  scratch, and neighbours 3 km apart can share one. The key is chosen *after*
+  the solve, by proximity (`multinode_key_decision`), so it is a guess.
+- **The initial guess.** Nothing tells the solver where the aircraft is
+  expected to be; a dark input starts from a quantised 3 km grid centroid.
+
+Following fixes both at once, because the pseudo-state that predicts the
+observation is also the key: the follow input carries `anchor_key` = the
+followed key, and `multinode_key_decision`'s anchor branch keys the solve back
+onto the same track. Continuity is then *by construction* rather than by the
+proximity scan happening to pick the right neighbour.
+
+Node-track ids were the obvious cheaper mechanism and are not safe: attaching
+each solve to the newest key sharing a `source_track_ids` entry linked the
+**wrong aircraft 12%** of the time in a dense metro cluster — the same reason
+`_supersession_match` (§6) stopped trusting a bare shared id.
+
+```mermaid
+flowchart TD
+    build["dark_follow.follow_targets()<br/>rebuilt at most 1/s, TTL-cached"]
+    build --> gkey{"key starts mn-dark-?"}
+    gkey -->|"no"| skip0["ADS-B tracks are never followed"]:::inert
+    gkey --> gcool{"in cooldown?"}
+    gcool -->|"yes"| skip1["dropped key, waiting out<br/>DARK_FOLLOW_COOLDOWN_S"]:::inert
+    gcool --> gelig{"age <= MAX_AGE_S 20s<br/>AND solve_count >= 3<br/>AND n_nodes >= 3"}
+    gelig -->|"no"| skip2["not established enough"]:::inert
+    gelig --> gkf{"track_filter.learned_velocity<br/>has state?"}
+    gkf -->|"no"| skip3["nothing to dead-reckon with"]:::inert
+    gkf --> gsig{"vel sigma <= 60 m/s?"}
+    gsig -->|"no"| drop["drop_target + cooldown<br/>dark_follow_dropped"]:::inert
+    gsig -->|"yes"| target["pseudo-state:<br/>lat/lon/alt, KF velocity,<br/>pos+vel sigma, world"]
+
+    target --> claim["known_claiming path 3,<br/>per frame per node"]
+    claim --> gfree{"detections left by<br/>ADS-B paths 1+2?"}
+    gfree -->|"none"| skip4["ADS-B always wins"]:::inert
+    gfree --> gworld{"same world as the node?"}
+    gworld --> gvis{"_point_in_beam on the<br/>dead-reckoned position"}
+    gvis --> gate{"Hungarian one-to-one under<br/>widened gates (below)"}
+    gate -->|"infeasible"| skip5["stays in the dark pool"]:::inert
+    gate -->|"claimed"| rec["state.known_claims[mn-dark-key]<br/>dark_follow: True, follow_fix<br/>dark_follow_claims"]
+
+    rec --> mode{"DARK_FOLLOW_MODE"}
+    mode -->|"off"| m0["no targets built at all"]:::inert
+    mode -->|"shadow"| m1["frame untouched;<br/>pass solves + records<br/>outcome dark_follow_shadow"]
+    mode -->|"binding"| m2["strip_claimed_detections;<br/>input onto solver_queue"]
+
+    m2 --> gates["normal dark gate stack (§5)<br/>anchor_dr keying, KF smoothing,<br/>published under the SAME key"]
+    m1 --> guard{"solve rejected?"}
+    gates --> guard
+    guard -->|"2 in a row"| drop
+    guard -->|"published"| streakclear["streak cleared"]
+
+    classDef inert fill:#eee,stroke:#999,color:#888,stroke-dasharray: 4 3
+```
+
+**The widened gates** (`dark_follow.follow_gates`). A dark pseudo-state carries
+its own uncertainty, where an ADS-B fix is treated as truth, so the claim gate
+is the known lane's gate **plus** that uncertainty projected into observation
+space:
+
+```
+d_gate_us = 10.0 * _gate_scale(dt) + 2 * (pos_sigma_m + vel_sigma_ms * dt) / c_m_per_us
+f_gate_hz = 25.0 * _gate_scale(dt) + 2 * vel_sigma_ms * fc_hz / c_m_per_s
+```
+
+A position error of `s` metres moves the bistatic range by at most `2s` (the
+target can be displaced toward both transmitter and receiver); a velocity error
+of `u` m/s moves the bistatic Doppler by at most `2u/λ`. Both are worst-case
+projections — the true geometry factor is a cosine ≤ 1 — which is the safe
+direction for a gate. Both are capped (40 µs / 100 Hz, 4× the base gates): past
+there the prediction is not constraining anything and the aircraft should be
+re-found bottom-up.
+
+**The ghost lock-in guard** is load-bearing, not tidiness. Following is a
+positive feedback loop — the solve keeps the key alive, the key keeps claiming
+detections, and in binding mode those detections never reach the lane that
+would disagree. A followed key is therefore dropped for
+`DARK_FOLLOW_COOLDOWN_S` on **two consecutive rejected follow-solves** or a
+velocity sigma past the ceiling, and the bottom-up lane has to re-find it.
+Every follow-solve outcome reaches the guard through one hook in
+`solver._record_solve_history` (published, every `rejected_*`, unconverged, and
+the shadow pass's own record).
+
+**Anchor dead-reckoning.** The anchor branch's flat 6 km check compares the
+solve against where the entry was last *stored*. For a follow input that is
+wrong by construction — its guess IS a prediction of where the anchor drifted
+to — and the numbers bite: the dark displacement cap is 6.0 km and the flat
+anchor gate is 6.0 km, so a solve at the edge of the gate that let it through
+is at the edge of the gate that must key it, before any drift is added; at the
+lane's 20 s staleness limit a 270 m/s target adds 5.4 km more. Follow inputs
+therefore pass `anchor_dr=True`, which dead-reckons the anchor and applies the
+proximity scan's own age-scaled gate. Every other anchored input is unchanged.
+
+| Constant | Value | File |
+|---|---|---|
+| `DARK_FOLLOW_MODE` | `shadow` (env) | `core/state.py` |
+| `DARK_FOLLOW_MAX_AGE_S` | 20 s (env) | `services/dark_follow.py` |
+| `DARK_FOLLOW_MIN_SOLVES` / `DARK_FOLLOW_MIN_NODES` | 3 / 3 | `services/dark_follow.py` |
+| `DARK_FOLLOW_MAX_VEL_SIGMA_MS` | 60 m/s (env) | `services/dark_follow.py` |
+| `DARK_FOLLOW_INTERVAL_S` | 2.0 s (env) | `services/dark_follow.py` |
+| `DARK_FOLLOW_COOLDOWN_S` | 30 s (env) | `services/dark_follow.py` |
+| `_MAX_CONSECUTIVE_REJECTS` | 2 | `services/dark_follow.py` |
+| `_TARGETS_TTL_S` (pseudo-state cache) | 1.0 s | `services/dark_follow.py` |
+| Gate caps `_MAX_DELAY_GATE_US` / `_MAX_DOPPLER_GATE_HZ` | 40 µs / 100 Hz | `services/dark_follow.py` |
+
+Observability: `/api/test/solver-stats` `counters` carries the funnel
+`dark_follow_targets` (a live gauge) → `dark_follow_claims` →
+`dark_follow_inputs` → `dark_follow_published`, plus `dark_follow_dropped`.
+Records are classified `lane: "dark_follow"` in `lane_split` and kept out of
+the bottom-up dark funnel, and each carries `guess_source: "prediction"` and
+`follow_key`.
 
 ---
 

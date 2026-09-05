@@ -21,7 +21,7 @@ from config.constants import (
     N2_TRACK_ASSOCIATION,
 )
 from core import state
-from services import track_filter
+from services import dark_follow, track_filter
 
 # Beam-coverage geometry, used to reject solver results whose range or (at
 # n=2) bearing fall outside a contributing node's detection area.  This
@@ -912,6 +912,7 @@ def multinode_key_decision(
     max_dist_km: float = _MN_ASSOC_MAX_DIST_KM,
     max_age_s: float = _MN_ASSOC_MAX_AGE_S,
     learned_vel_fn=track_filter.learned_velocity,
+    anchor_dr: bool = False,
 ) -> tuple[str, str, float | None]:
     """The keying rule itself, clock-free — the multinode-track analogue of
     claim_decision.  Extracted so the offline bench measures the SHIPPED rule
@@ -975,21 +976,45 @@ def multinode_key_decision(
         return f"mn-adsb-{adsb_hex}", "adsb", None
 
     lat, lon = result["lat"], result["lon"]
+    ts_s = result.get("timestamp_ms", 0) / 1000.0
 
     # The anchor branch keeps the FLAT gate.  It is not a dead-reckoning
     # question: the claim named this entry as the aircraft this solve is of,
     # and the distance check exists only to refuse an anchor whose solve
     # converged somewhere else entirely.  Nothing here is predicting where the
     # anchor drifted to, so there is no drift term to allow for.
+    #
+    # ...unless the caller says otherwise (anchor_dr).  A dark-follow input
+    # (services/dark_follow.py) breaks that premise by construction: its guess
+    # IS a prediction of where the anchor drifted to, so its solve is compared
+    # against an entry the follow lane already knows to be stale.  The numbers
+    # make it more than a nicety — the dark displacement cap is 6.0 km and the
+    # flat anchor gate is 6.0 km, so a solve at the edge of the gate that let
+    # it through is at the edge of the gate that must key it, before any drift
+    # is added; at the follow lane's 20 s staleness limit a 270 m/s target adds
+    # another 5.4 km of it.  Without this the anchor would be refused exactly
+    # when the aircraft is moving fastest, and the solve would fall through to
+    # the proximity scan the whole lane exists to stop relying on.  Same DR and
+    # same age-scaled gate as that scan, so "near the anchor" means one thing.
     if anchor_key and anchor_key.startswith("mn-dark-") and anchor_key in tracks:
         anchor = tracks[anchor_key]
         a_lat, a_lon = anchor.get("lat"), anchor.get("lon")
         if a_lat is not None and a_lon is not None:
+            a_gate_km = max_dist_km
+            a_dt = ts_s - anchor.get("timestamp_ms", 0) / 1000.0
+            if anchor_dr and 0.0 < a_dt <= max_age_s:
+                a_vel_east, a_vel_north = _entry_dr_velocity(anchor_key, anchor, learned_vel_fn)
+                a_lat, a_lon = offset_latlon_m(
+                    a_lat,
+                    a_lon,
+                    east_m=a_vel_east * a_dt,
+                    north_m=a_vel_north * a_dt,
+                )
+                a_gate_km = _mn_assoc_gate_km(a_dt, max_dist_km)
             a_dist = _haversine_km(lat, lon, a_lat, a_lon)
-            if a_dist <= max_dist_km:
+            if a_dist <= a_gate_km:
                 return anchor_key, "anchor", a_dist
 
-    ts_s = result.get("timestamp_ms", 0) / 1000.0
     # Candidates compete on d / gate_km, not on d: an entry solved 2 s ago at
     # 5 km is a worse match than one solved 40 s ago at 8 km only if you
     # ignore that the second one's position is a 40 s extrapolation.  A score
@@ -1808,6 +1833,16 @@ def _record_solve_history(
         # windowed fragmentation breakdown can see what fraction of ALL
         # attempts (not just successful ones) were anchor-carrying.
         "anchor_key": s.get("anchor_key"),
+        # Lane provenance, carried by the solver input rather than inferred
+        # from the key: a dark-follow solve (services/dark_follow.py) lands on
+        # an mn-dark-* key and would otherwise be indistinguishable from the
+        # bottom-up solves whose funnel it is not part of.  guess_source says
+        # what the initial guess WAS — "prediction" for a followed track,
+        # absent for the association grid centroid every other dark input
+        # carries — and follow_key names the track that predicted it.
+        "lane": s.get("lane"),
+        "guess_source": s.get("guess_source"),
+        "follow_key": s.get("follow_key"),
         "raw_lat": round(float(raw_lat), 6) if raw_lat is not None else None,
         "raw_lon": round(float(raw_lon), 6) if raw_lon is not None else None,
         "lat": round(float(r["lat"]), 6) if outcome == "published" else None,
@@ -1872,6 +1907,19 @@ def _record_solve_history(
     }
     if extra:
         rec.update(extra)
+    _follow_key = rec.get("follow_key")
+    if _follow_key:
+        # The dark-follow ghost guard (services/dark_follow.py) needs a verdict
+        # for every follow-solve, and this is the one place all of them pass
+        # through — published, every rejected_* gate, unconverged, and the
+        # shadow pass's own record.  Following a track is a feedback loop (the
+        # solve keeps the key alive, the key keeps claiming detections), so a
+        # key that stops earning its solves has to be droppable from OUTSIDE
+        # that loop.  A shadow record carries its own verdict in follow_ok:
+        # it never reached the gates, so "did it publish" says nothing.
+        dark_follow.record_outcome(_follow_key, bool(rec.get("follow_ok", outcome == "published")))
+        if outcome == "published":
+            state.bump_counter("dark_follow_published")
     if raw_lat is not None and raw_lon is not None:
         meas_ts_s = (rec["measurement_ts_ms"] or now_ms) / 1000.0
         rec.update(_gt_for_record(rec["adsb_hex"], float(raw_lat), float(raw_lon), meas_ts_s))
@@ -2541,7 +2589,16 @@ def _process_solver_item(
             # _MN_POS_HISTORY_LOCK (inside the smoother) is never taken in
             # reverse anywhere.
             _anchor_key = s_in.get("anchor_key") if isinstance(s_in, dict) else None
-            key, _key_how, _key_dist_km = multinode_key_decision(state.multinode_tracks, result, _adsb_hex, _anchor_key)
+            key, _key_how, _key_dist_km = multinode_key_decision(
+                state.multinode_tracks,
+                result,
+                _adsb_hex,
+                _anchor_key,
+                # Only the follow lane's anchor is a stale position by
+                # construction — see the anchor branch for why that changes
+                # the distance check it must be judged by.
+                anchor_dr=bool(isinstance(s_in, dict) and s_in.get("follow_key")),
+            )
             # Dark-lane key births vs re-keys.  The fragmentation question is
             # "how often does one aircraft get a second key", and the only
             # place that is decided is right here — solver_successes counts
@@ -2558,9 +2615,15 @@ def _process_solver_item(
                 elif _key_how == "proximity":
                     state.bump_counter("solver_key_proximity_dark")
             if _anchor_key:
-                # Only an anchored solver input (top-down claiming, active
-                # mode) ever sets s_in["anchor_key"] — this whole block is
-                # inert off/shadow, by construction, with no mode read here.
+                # s_in["anchor_key"] is set by exactly two producers: top-down
+                # claiming in active mode, and a dark-follow input in binding
+                # mode (services/dark_follow.py).  Both are off by default, so
+                # this block stays inert by construction with no mode read
+                # here.  The counters do not split the two, deliberately: they
+                # measure the same thing either way — how often an anchor
+                # named the track the solve actually landed on — and
+                # follow_key on the history record separates them after the
+                # fact for anyone who needs it.
                 state.bump_counter("solver_anchored_published")
                 state.bump_counter("solver_anchor_hits" if _key_how == "anchor" else "solver_anchor_fallbacks")
             # Raw solve position, before smoothing — the history record keeps
@@ -2738,11 +2801,12 @@ def _run_solver_worker():
     # coverage collector lock hard enough to stall test_mlat_history's
     # trail-race stress test (~50 daemons caught inside the mode check in a
     # single py-spy snapshot).
-    known_lane_armed = known_lane._mode() != "off"
+    known_lane_armed = known_lane.lanes_armed()
     while True:
         _solver_worker_iteration()
         if known_lane_armed:
-            # Known-lane pass (identity-first claims → per-hex solves).
+            # Known-lane pass (identity-first claims → per-hex solves), plus
+            # the dark-follow pass behind the same lock and interval.
             # Ridden on the worker loop rather than its own thread so the
             # solve compute stays on the threads that already own the solver
             # locks and pool; interval- and concurrency-gated inside, and it

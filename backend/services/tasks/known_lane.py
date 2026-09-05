@@ -41,6 +41,17 @@ Modes (state.KNOWN_LANE_MODE, owned by slice A; absent means "off"):
             published: a displaced solve under a real hex is a wrong map
             marker, the same reason the regular displacement gate exists.
 
+A SECOND PASS lives here too: the dark-follow lane (DARK_FOLLOW_MODE, see
+services/dark_follow.py) applies the same inversion to aircraft that have no
+transponder, using an established mn-dark-* track's Kalman state where this
+lane uses an ADS-B fix.  It shares this module's registry reader, pass lock and
+interval — the two passes read the same ``state.known_claims`` and differ only
+in which kind of claim they select — but not its solve path: a follow solve
+goes onto the normal solver queue so the dark gate stack judges it, whereas a
+known-lane solve is deliberately free of that stack (see the free-solve
+invariant above).  ``run_dark_follow_pass`` and ``_build_follow_solver_input``
+carry the detail.
+
 Neither ``state.known_claims`` nor ``state.KNOWN_LANE_MODE`` exists on this
 branch — slice A owns core/state.py — so every access goes through getattr
 with an inert default, and the counters below are registered onto the state
@@ -55,7 +66,7 @@ import time
 
 from config.constants import FT_TO_M
 from core import state
-from services import track_filter
+from services import dark_follow, track_filter
 from services.geo import haversine_km, offset_latlon_m
 from services.id_utils import normalize_hex_key
 
@@ -128,6 +139,13 @@ _PASS_LOCK = threading.Lock()
 _last_pass_ts = 0.0
 _last_attempt_ts_ms: dict[str, int] = {}
 _last_sample_mono: dict[str, float] = {}
+# Dark-follow pass bookkeeping, per followed key: when it last produced a
+# follow-solve (monotonic, the DARK_FOLLOW_INTERVAL_S rate limit) and the claim
+# epoch that solve was built from (the same "no newer claim, no new solve"
+# dedup _last_attempt_ts_ms gives the ADS-B pass).  Both single-writer under
+# _PASS_LOCK, like the maps above.
+_last_follow_mono: dict[str, float] = {}
+_last_follow_ts_ms: dict[str, int] = {}
 
 
 def _reset_for_tests() -> None:
@@ -137,6 +155,8 @@ def _reset_for_tests() -> None:
         _last_pass_ts = 0.0
         _last_attempt_ts_ms.clear()
         _last_sample_mono.clear()
+        _last_follow_mono.clear()
+        _last_follow_ts_ms.clear()
     with state.counters_lock:
         for name in _COUNTERS:
             setattr(state, name, 0)
@@ -157,7 +177,7 @@ def _num(v, fallback=0.0) -> float:
         return float(fallback)
 
 
-def _select_claims(dq, now_ms: int) -> dict[str, dict]:
+def _select_claims(dq, now_ms: int, follow: bool = False) -> dict[str, dict]:
     """Newest usable claim per node from one hex's deque, or {} if fewer than
     two nodes survive.
 
@@ -168,10 +188,19 @@ def _select_claims(dq, now_ms: int) -> dict[str, dict]:
     is slice A's, written concurrently, and this reader must survive any
     single bad entry.  Nodes whose newest claim trails the newest overall by
     more than _CLAIM_SPREAD_S are dropped rather than failing the whole hex.
+
+    ``follow`` selects which KIND of claim: the dark-follow claims a key's
+    deque holds (DARK_FOLLOW_MODE, see services/dark_follow.py) or the ADS-B
+    ones a hex's does.  The two never share a deque in practice — a registry
+    entry is keyed either by transponder hex or by mn-dark-* key — but the
+    filter is explicit rather than implied by the key shape, so a stray entry
+    can only be ignored, never solved by the wrong lane.
     """
     best: dict[str, dict] = {}
     for c in list(dq):
         if not isinstance(c, dict):
+            continue
+        if bool(c.get("dark_follow")) is not follow:
             continue
         try:
             ts_ms = int(c["ts_ms"])
@@ -499,6 +528,216 @@ def run_known_lane_pass(solve_fn, node_cfgs: dict | None = None, mode: str | Non
     return attempts
 
 
+def _build_follow_solver_input(key: str, claims: dict[str, dict]) -> dict | None:
+    """Shape one followed dark track's claims into a solver input.
+
+    _build_solver_input's shape, with the dark pseudo-state (see
+    services/dark_follow.py) supplying what the ADS-B fix supplies there: the
+    initial guess is the KF prediction dead-reckoned to the newest claim's
+    epoch, and the velocity seed is the KF's learned velocity.  Two fields the
+    ADS-B lane has no use for carry the rest of the point of this lane:
+
+      anchor_key — the followed key itself.  multinode_key_decision's anchor
+      branch honours it (it is mn-dark-*, it is live, and the solve started
+      from this track's own prediction so it lands inside the branch's flat
+      _MN_ASSOC_MAX_DIST_KM check by construction), so the solve keys onto the
+      SAME track it was predicted from.  That is continuity by construction
+      rather than by the proximity scan happening to pick the right neighbour
+      — the failure the measurements behind this lane are of.
+
+      track_ids — deliberately empty.  A follow input is detection-level: its
+      correspondence came from the prediction, not from a tracker pairing, so
+      there is no provenance to record.  The empty set is also what admits it
+      past _claim_resolve_slot (an input with no track provenance has nothing
+      to be a duplicate of) and what keeps it out of supersession, which must
+      not pop a neighbour on a track id this solve never used.
+
+    ``lane``/``guess_source``/``follow_key`` ride through to the history record
+    (solver._record_solve_history stamps all three) so the lane is separable in
+    /api/test/solver-stats without inferring it from the key.
+
+    A CONSEQUENCE WORTH KNOWING: with no cv_epochs on the input, an n=2 follow
+    solve cannot pass the n=2 confirmation gate and is always withheld, so the
+    lane publishes at n>=3 only.  Left that way on purpose — at n=2 the solver
+    fits five unknowns to four measurements and returns a zero residual for a
+    WRONG claim exactly as it does for a right one, which is the same blindness
+    the gate exists for and is not made safer by the claim having come from a
+    prediction.  A follow target already needs n>=3 to be followed at all; this
+    just means it needs three claiming nodes as well.
+    """
+    newest = max(claims.values(), key=lambda c: int(c["ts_ms"]))
+    newest_ts_ms = int(newest["ts_ms"])
+    fix = newest.get("follow_fix")
+    if not isinstance(fix, dict):
+        return None
+    lat, lon = fix.get("lat"), fix.get("lon")
+    if lat is None or lon is None:
+        return None
+
+    vel_east = _num(fix.get("vel_east"))
+    vel_north = _num(fix.get("vel_north"))
+    # Normally zero: the newest claim's prediction was made at its own frame
+    # epoch, which is this epoch.  Kept for the same reason the ADS-B path
+    # keeps it — the claim record is written by another thread and the epoch it
+    # names is the only thing that says when the prediction was true.
+    dt_s = (newest_ts_ms - int(_num(fix.get("fix_ts_ms"), newest_ts_ms))) / 1000.0
+    guess_lat, guess_lon = offset_latlon_m(
+        float(lat),
+        float(lon),
+        east_m=vel_east * dt_s,
+        north_m=vel_north * dt_s,
+    )
+
+    return {
+        "initial_guess": {
+            "lat": guess_lat,
+            "lon": guess_lon,
+            "alt_km": _num(fix.get("alt_km")),
+        },
+        "initial_velocity": {
+            "vel_east_ms": vel_east,
+            "vel_north_ms": vel_north,
+        },
+        "measurements": [
+            {
+                "node_id": nid,
+                "delay_us": float(c["delay_us"]),
+                "doppler_hz": float(c["doppler_hz"]),
+                "snr": _num(c.get("snr")),
+            }
+            for nid, c in sorted(claims.items())
+        ],
+        "n_nodes": len(claims),
+        "timestamp_ms": newest_ts_ms,
+        "anchor_key": key,
+        "track_ids": [],
+        "lane": "dark_follow",
+        "guess_source": "prediction",
+        "follow_key": key,
+    }
+
+
+def _follow_shadow_attempt(key: str, s_in: dict, node_cfgs: dict, solve_fn) -> None:
+    """Solve one follow input without touching the feed, and record it.
+
+    Shadow's whole job is to answer "would this lane have helped?", which needs
+    the solve to actually run — the claim alone says nothing about whether the
+    prediction was right.  Classified against the dark displacement cap, the
+    same number the binding path's gate would judge it by, so the shadow record
+    and a binding reject mean the same thing; the verdict also feeds the ghost
+    guard, which would otherwise be inert for the whole soak.
+    """
+    try:
+        result = solve_fn(s_in, node_cfgs)
+    except Exception:
+        logging.exception("Dark-follow shadow solve failed for %s", key)
+        result = None
+
+    ok = False
+    disp_km = None
+    if result and result.get("success"):
+        ig = s_in["initial_guess"]
+        disp_km = haversine_km(float(ig["lat"]), float(ig["lon"]), float(result["lat"]), float(result["lon"]))
+        ok = disp_km <= solver_mod._MAX_DISPLACEMENT_KM_DARK
+    solver_mod._record_solve_history(
+        "dark_follow_shadow",
+        s_in,
+        result if isinstance(result, dict) else None,
+        displacement_km=disp_km,
+        extra={"shadow": True, "published": False, "follow_ok": ok},
+    )
+
+
+def run_dark_follow_pass(solve_fn, node_cfgs: dict | None = None, mode: str | None = None) -> int:
+    """One pass over the dark-follow claims; returns the inputs produced.
+
+    A followed key is solved when it has fresh follow-claims from >= 2 nodes at
+    compatible timestamps (_select_claims, follow=True), a claim newer than its
+    last follow-solve, and its DARK_FOLLOW_INTERVAL_S rate limit has elapsed.
+    In binding mode the input goes onto state.solver_queue and is processed by
+    the normal dark path — the same gate stack, keying, KF smoothing and
+    history records every bottom-up solve gets, which is the point: this lane
+    changes where a solve STARTS and which key it lands on, not what a solve
+    has to survive.  In shadow it is solved and recorded here instead, because
+    anything reaching the queue would publish.
+
+    ``mode`` overrides state.DARK_FOLLOW_MODE for this pass, for the same
+    reason run_known_lane_pass takes the override: a solver worker daemon
+    leaked into the test process would otherwise race the test for the per-key
+    rate limit.
+    """
+    if mode is None:
+        mode = dark_follow.mode()
+    elif mode not in ("off", "shadow", "binding"):
+        mode = "off"
+    if mode == "off":
+        return 0
+    claims_by_key = getattr(state, "known_claims", None)
+    if not claims_by_key:
+        return 0
+
+    now_ms = int(time.time() * 1000)
+    now_mono = time.monotonic()
+    inputs = 0
+    for key, dq in list(claims_by_key.items()):
+        if not isinstance(key, str) or not key.startswith("mn-dark-"):
+            continue
+        last_mono = _last_follow_mono.get(key)
+        if last_mono is not None and now_mono - last_mono < dark_follow.DARK_FOLLOW_INTERVAL_S:
+            continue
+        claims = _select_claims(dq, now_ms, follow=True)
+        if not claims:
+            continue
+        if node_cfgs is None:
+            from services.frame_processor import get_node_configs
+
+            node_cfgs = get_node_configs()
+        # A node whose config has gone (disconnected since the claim) cannot be
+        # solved with: the LM needs its geometry.  Drop the node rather than
+        # the key — the remaining nodes are still a solve if there are two.
+        claims = {nid: c for nid, c in claims.items() if nid in node_cfgs}
+        if len(claims) < 2:
+            continue
+        newest_ts = max(int(c["ts_ms"]) for c in claims.values())
+        if _last_follow_ts_ms.get(key, -1) >= newest_ts:
+            continue
+        s_in = _build_follow_solver_input(key, claims)
+        if s_in is None:
+            continue
+        # Stamped before the solve, as the ADS-B pass does: a solve that raises
+        # must not be retried against the same claims on every pass forever.
+        _last_follow_mono[key] = now_mono
+        _last_follow_ts_ms[key] = newest_ts
+        cfgs = {nid: node_cfgs[nid] for nid in claims}
+        state.bump_counter("dark_follow_inputs")
+        inputs += 1
+        if mode == "binding":
+            try:
+                state.solver_queue.put_nowait((s_in, cfgs, time.time()))
+            except Exception:
+                state.bump_counter("solver_queue_drops")
+        else:
+            _follow_shadow_attempt(key, s_in, cfgs, solve_fn)
+
+    # Opportunistic TTL sweep of both dedup maps — keys churn for the process
+    # lifetime, the same reason _ATTEMPT_TTL_S exists.
+    cutoff_ms = now_ms - _ATTEMPT_TTL_S * 1000.0
+    for k in [k for k, ts in _last_follow_ts_ms.items() if ts < cutoff_ms]:
+        del _last_follow_ts_ms[k]
+        _last_follow_mono.pop(k, None)
+    return inputs
+
+
+def lanes_armed() -> bool:
+    """True when either lane in this module has something to do.
+
+    The solver worker arms its per-iteration pass call on this ONCE, at thread
+    start (see _run_solver_worker for why an off lane must not cost the idle
+    loop even a mode read).
+    """
+    return _mode() != "off" or dark_follow.mode() != "off"
+
+
 def maybe_run_pass(solve_fn, mode: str | None = None) -> None:
     """Interval- and mode-gated pass entry point for the solver worker loop.
 
@@ -508,11 +747,13 @@ def maybe_run_pass(solve_fn, mode: str | None = None) -> None:
     rather than queue, and the interval check lives under the same lock so
     two workers cannot both pass it in the same window.  ``mode`` is the
     same test-only override run_known_lane_pass documents; the worker loop
-    always passes nothing and reads the live flag.
+    always passes nothing and reads the live flag.  It applies to the ADS-B
+    pass only — the dark-follow pass reads its own flag, so a test that arms
+    one lane explicitly does not silently arm the other.
     """
     global _last_pass_ts
     try:
-        if (mode if mode is not None else _mode()) == "off":
+        if (mode if mode is not None else _mode()) == "off" and dark_follow.mode() == "off":
             return
         if not _PASS_LOCK.acquire(blocking=False):
             return
@@ -522,6 +763,11 @@ def maybe_run_pass(solve_fn, mode: str | None = None) -> None:
                 return
             _last_pass_ts = now
             run_known_lane_pass(solve_fn, mode=mode)
+            # Second, and under the same lock and interval: the two passes read
+            # the same registry, and the follow pass's per-key rate limit is
+            # single-writer for exactly the reason the ADS-B pass's dedup map
+            # is.  Its own mode flag decides whether it does anything.
+            run_dark_follow_pass(solve_fn)
         finally:
             _PASS_LOCK.release()
     except Exception:
