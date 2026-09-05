@@ -420,13 +420,15 @@ class TestProcessSolverItemAnchorHonoring:
         match), is absorbed into the anchor when the anchor's own solve
         arrives — never the reverse: the anchor's key is what survives.
 
-        111 km away, so nothing spatial rescues it: this is
-        _supersession_match's identical-inputs branch, and the reason that
-        branch exists.  Same measurements in, same aircraft, however far
-        apart the two solves converged."""
+        7 km away, past the 4.65 km spatial gate at dt=5 s and inside the
+        9.3 km bound branch (b) is allowed: this is _supersession_match's
+        identical-inputs branch, and the reason that branch exists.  Same
+        measurements in, same aircraft — but only within that bound, since
+        identical inputs converging far apart is a multi-modal solve rather
+        than one aircraft seen twice."""
         state.multinode_tracks["mn-dark-anchor-5"] = _anchor_track(source_track_ids=["t1", "t2"])
         state.multinode_tracks["mn-dark-fragment"] = _anchor_track(
-            lat=LAT + 1.0, solve_count=1, source_track_ids=["t1", "t2"]
+            lat=_north_of(7.0)[0], solve_count=1, source_track_ids=["t1", "t2"]
         )
 
         s_in = dict(_CONFIRMED_N2, anchor_key="mn-dark-anchor-5", track_ids=["t1", "t2"])

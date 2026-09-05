@@ -1182,8 +1182,14 @@ def _solver_window_stats(minutes: float) -> dict:
             # Tracker track ids are shared across candidates for different
             # aircraft, so a large blocked count is the guard working, not a
             # fault.
+            # ...and, of the refusals, the ones the altitude half of the gate
+            # made on its own: close enough to pop, thousands of metres apart
+            # vertically.  That is the neighbour-pop signature (a bad solve of
+            # one aircraft landing on another's key), so this is the counter
+            # that says whether the altitude test is earning its place.
             "mn_superseded": state.mn_superseded,
             "mn_superseded_blocked": state.mn_superseded_blocked,
+            "mn_superseded_blocked_alt": state.mn_superseded_blocked_alt,
         },
         "counters": {
             "successes": state.solver_successes,
