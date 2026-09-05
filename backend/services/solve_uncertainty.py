@@ -81,12 +81,15 @@ _VEL_DEFAULT_MS = float(os.getenv("SOLVE_SIGMA_VEL_DEFAULT_MS", "25"))
 _SIGMA_MIN_M = 50.0
 _SIGMA_MAX_M = 5000.0
 
-# Velocity-sigma clamp band and the growth horizon.  Past 60 s the frontend
-# stops dead-reckoning entirely, so growing the disc further would describe
-# a position nothing is drawing.
+# Velocity-sigma clamp band and the growth horizon.  Past the horizon the
+# frontend stops dead-reckoning entirely, so growing the disc further would
+# describe a position nothing is drawing.  It tracks the frontend's
+# UNCERTAINTY_DR_CAP_S, which in turn tracks MN_DARK_EXPIRY_S: a dark entry no
+# longer reaches 60 s at all, so the old 60 s horizon described entries that
+# cannot exist.
 _VEL_MIN_MS = 5.0
 _VEL_MAX_MS = 150.0
-_GROWTH_MAX_AGE_S = 60.0
+_GROWTH_MAX_AGE_S = 30.0
 
 
 def _floor_m(n_nodes: int) -> float:
@@ -152,13 +155,13 @@ def grown_sigma_m(sigma_m: float, vel_sigma_ms: float, age_s: float) -> float:
     Position error at the solve epoch and velocity error over the coast are
     independent, so their variances add:
 
-        sigma(t) = sqrt( sigma_solve^2 + (sigma_v * min(t, 60))^2 )
+        sigma(t) = sqrt( sigma_solve^2 + (sigma_v * min(t, _GROWTH_MAX_AGE_S))^2 )
 
-    Age is clamped to [0, 60]: negative is a clock artefact, and past 60 s the
-    frontend has stopped dead-reckoning, so a bigger disc would not correspond
-    to anything on screen.  The frontend's own uncertainty.ts is the mirror of
-    this function; this one exists for backend callers and for the tests that
-    pin the two to the same shape.
+    Age is clamped to [0, _GROWTH_MAX_AGE_S]: negative is a clock artefact, and
+    past the horizon the frontend has stopped dead-reckoning, so a bigger disc
+    would not correspond to anything on screen.  The frontend's own
+    uncertainty.ts is the mirror of this function; this one exists for backend
+    callers and for the tests that pin the two to the same shape.
     """
     t = min(max(age_s, 0.0), _GROWTH_MAX_AGE_S)
     return float(math.sqrt(sigma_m**2 + (vel_sigma_ms * t) ** 2))

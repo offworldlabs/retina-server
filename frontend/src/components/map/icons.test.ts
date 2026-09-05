@@ -139,15 +139,17 @@ describe("lane-aware drift budget", () => {
     expect(isDarkMultinodeSolve(null)).toBe(false);
   });
 
-  it("keeps a dark solve inside budget across one 12 s re-solve floor", () => {
+  it("keeps a dark solve inside budget across a missed solve", () => {
     // 450 kt for 12 s is ~2.8 km: over the 2 km budget the old gate applied to
-    // every lane, comfortably inside the dark one.  This is the 48%-hidden bug.
+    // every lane, still inside the dark one.  This is the 48%-hidden bug.
     expect(hideDrIcon({ ...dark(), seen: 12 }, NOW)).toBe(false);
     expect(hideDrIcon({ ...assisted(), seen: 12 }, NOW)).toBe(true);
   });
 
   it("still trips the dark budget on a long enough gap", () => {
-    // 450 kt for 30 s is ~6.9 km — past 6 km.
+    // 450 kt for 15 s is ~3.5 km — past the 3 km dark budget.  Under the old
+    // 6 km one this same entry was drawn as an ordinary live target.
+    expect(hideDrIcon({ ...dark(), seen: 15 }, NOW)).toBe(true);
     expect(hideDrIcon({ ...dark(), seen: 30 }, NOW)).toBe(true);
   });
 });

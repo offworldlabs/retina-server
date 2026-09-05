@@ -121,16 +121,19 @@ class TestGrownSigma:
     def test_zero_age_is_the_solve_sigma(self):
         assert su.grown_sigma_m(650.0, 25.0, 0.0) == pytest.approx(650.0)
 
-    def test_growth_is_capped_at_60s(self):
-        at_60 = su.grown_sigma_m(180.0, 25.0, 60.0)
-        assert su.grown_sigma_m(180.0, 25.0, 600.0) == pytest.approx(at_60)
-        assert at_60 == pytest.approx(math.sqrt(180.0**2 + 1500.0**2))
+    def test_growth_is_capped_at_the_growth_horizon(self):
+        # The horizon mirrors the frontend's UNCERTAINTY_DR_CAP_S (30 s),
+        # which in turn mirrors MN_DARK_EXPIRY_S.
+        assert su._GROWTH_MAX_AGE_S == 30.0
+        at_cap = su.grown_sigma_m(180.0, 25.0, su._GROWTH_MAX_AGE_S)
+        assert su.grown_sigma_m(180.0, 25.0, 600.0) == pytest.approx(at_cap)
+        assert at_cap == pytest.approx(math.sqrt(180.0**2 + 750.0**2))
 
     def test_negative_age_does_not_shrink_or_grow(self):
         assert su.grown_sigma_m(650.0, 25.0, -5.0) == pytest.approx(650.0)
 
     def test_growth_is_monotonic_up_to_the_cap(self):
-        seq = [su.grown_sigma_m(210.0, 30.0, t) for t in (0.0, 5.0, 20.0, 59.0)]
+        seq = [su.grown_sigma_m(210.0, 30.0, t) for t in (0.0, 5.0, 20.0, 29.0)]
         assert seq == sorted(seq)
         assert seq[0] < seq[-1]
 

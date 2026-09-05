@@ -22,9 +22,16 @@ import type { Aircraft } from "../../types";
 /** Rayleigh 95% radius factor (k_50 = 1.177 CEP, k_68 = 1.510). */
 export const UNCERTAINTY_K95 = 2.4477;
 
-/** Dead-reckoning growth is capped here: past 60 s the icon itself is stale
- *  and a disc that kept growing would just be a claim about nothing. */
-export const UNCERTAINTY_DR_CAP_S = 60;
+/** Dead-reckoning growth is capped here: past this the icon itself is stale
+ *  and a disc that kept growing would just be a claim about nothing.
+ *
+ *  30 s, down from 60 s, to match the backend's dark-lane entry expiry
+ *  (`MN_DARK_EXPIRY_S`): a dark entry no longer survives to 60 s at all, so
+ *  the second half of the old growth curve described entries that cannot
+ *  exist.  Assisted entries do live to 60 s, but they are anchored to a
+ *  transponder fix rather than extrapolated, so growing their disc past the
+ *  point the dark budget stops is not the honest reading either. */
+export const UNCERTAINTY_DR_CAP_S = 30;
 
 /** Hard ceiling on the drawn radius.  A degenerate solve (near-parallel
  *  baselines) can report an astronomically large formal sigma; without a cap
@@ -58,7 +65,7 @@ export function solveAgeS(ac: UncertaintyEntry | null | undefined, nowMs: number
 
 /**
  * Per-axis position sigma in metres at age `ageS`:
- * `sqrt(pos_sigma_m² + (pos_sigma_vel_ms · min(age, 60))²)`.
+ * `sqrt(pos_sigma_m² + (pos_sigma_vel_ms · min(age, UNCERTAINTY_DR_CAP_S))²)`.
  *
  * Returns null when the entry carries no usable `pos_sigma_m` — an older
  * backend, or a solve whose node count was unknown.  A missing or non-finite
