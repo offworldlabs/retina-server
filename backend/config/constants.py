@@ -84,6 +84,19 @@ N2_CONFIRM_MIN_SPAN_S = 12.0  # Observation span before a pairing is fitted
 N2_CONFIRM_MIN_EPOCHS = 4  # Floor on samples; span is the real gate
 N2_TRACK_HISTORY_MAX = 20  # Per-node track samples fed to the fit
 
+# How old a track's newest REAL detection may be before the track stops being
+# offered to association (see services/frame_processor.confirmed_track_views).
+# A COASTING track is kept alive for N_DELETE=10 frames after its last
+# association, and at the fleet's 0.74-1 Hz per-node cadence that is up to ~13 s
+# of dead reckoning.  confirmed_track_views hands association the track's last
+# real sample, and association hands the solver that sample as if it were
+# current — so an aircraft that has flown out of a node's beam keeps
+# contributing a seconds-old delay to n>=3 solves.  Measured on the test
+# droplet: 230 out of-cone nodes survived into published dark solves in 20 min,
+# median 4 deg outside the beam edge (p90 22 deg) and 1.8 km beyond max range,
+# and they are the nodes the rms trim then throws away.  0 disables the filter.
+TRACK_MAX_STALE_S = float(os.getenv("TRACK_MAX_STALE_S", "3.0"))
+
 # A 2-node track needs this many solves before it renders a plane; 1
 # disables the gate.  One-shot n=2 solves were the dominant ghost source.
 MN_N2_MIN_SOLVES = int(os.getenv("MN_N2_MIN_SOLVES", "2"))

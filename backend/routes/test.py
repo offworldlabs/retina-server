@@ -214,6 +214,13 @@ def _build_dashboard_data() -> bytes:
                 # against stale_drops: skips are work correctly not done,
                 # stale drops are work lost.
                 "resolve_skips": state.solver_resolve_skips,
+                # Confirmed tracks withheld from association because their
+                # newest real detection had aged past TRACK_MAX_STALE_S, and
+                # solver inputs the epoch alignment could not correct because a
+                # measurement carried no sample time (see frame_processor's
+                # confirmed_track_views and solver's align_measurement_epochs).
+                "tracks_stale_skipped": state.tracks_stale_skipped,
+                "epoch_align_skipped": state.solver_epoch_align_skipped,
                 # Multinode entries replaced because a later solve consumed
                 # the same source tracks under a new key (fragmented re-solve).
                 "mn_superseded": state.mn_superseded,
@@ -1320,6 +1327,8 @@ def _solver_window_stats(minutes: float) -> dict:
             # Dark share of the line above.  The windowed version, with the
             # blocking claims, is the "resolve_skips" block further up.
             "resolve_skips_dark": state.solver_resolve_skips_dark,
+            "tracks_stale_skipped": state.tracks_stale_skipped,
+            "epoch_align_skipped": state.solver_epoch_align_skipped,
             "queue_drops": state.solver_queue_drops,
             # Frames the per-node rate limiter refused before the tracker ever
             # saw them (tcp_handler's NODE_FRAME_MIN_INTERVAL_S).  Not the

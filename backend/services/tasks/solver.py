@@ -299,6 +299,91 @@ _N2_CONFIRM_CHI2_MAX = N2_CONFIRM_CHI2_MAX
 # It lived here while the frame path had its own, looser, unstated one.
 
 
+# ── Measurement epoch alignment ──────────────────────────────────────────────
+# The solver's residual model evaluates every measurement against ONE target
+# state: the measurement set is assumed simultaneous.  It is not.  Each node
+# samples on its own free-running cadence (~0.74-1 Hz on the fleet), so the
+# delays in one solver input were captured at times spread over up to a frame
+# interval, and association hands over each track's newest sample regardless of
+# when that was.  A 250 m/s target moves ~250 m per second of skew, which shows
+# up as up to ~1 us of bistatic delay error per second — charged in full to the
+# 3 us rms_delay gate, where it is indistinguishable from a contaminated node
+# and drives the trim to throw away legitimately in-cone nodes.
+#
+# The correction is closed-form and needs nothing the measurement does not
+# already carry.  Writing d_tx / d_rx for the TX->target and target->RX ranges,
+# the bistatic delay is (d_tx + d_rx - baseline)/c and the bistatic Doppler is
+# (fc/c)(v_tx + v_rx), where v_tx / v_rx are the target's velocity components
+# along the unit vectors pointing FROM the target TOWARD the TX and the RX
+# (retina_geolocator.multinode_solver._residual_function; the simulator's
+# _bistatic_delay / _bistatic_doppler in retina_simulation.world use the
+# identical convention).  Moving toward a site shortens that leg, so
+# d(d_tx)/dt = -v_tx and d(d_rx)/dt = -v_rx, and therefore
+#
+#     d(delay_us)/dt = -(v_tx + v_rx) / C_KM_US
+#                    = -doppler_hz * (C_KM_S / fc_hz) / C_KM_US
+#                    = -doppler_hz * 1e6 / fc_hz
+#
+# i.e. positive Doppler is a closing target and its delay is DECREASING.  The
+# unit test test_epoch_alignment.py checks the sign against a target flown
+# through the simulator's own geometry helpers at two times, rather than
+# against this derivation.
+_DELAY_RATE_HZ_TO_US_PER_S = 1e6
+
+
+def align_measurement_epochs(s_in: dict, node_cfgs: dict) -> tuple[dict, dict]:
+    """Dead-reckon every measurement's delay onto the newest one's epoch.
+
+    Pure: returns a new solver input (shallow copy, fresh measurement dicts)
+    and a metadata dict for the history record; *s_in* is never mutated, so a
+    caller can drop the result and keep the untouched input.
+
+    Alignment is all-or-nothing per input.  A partially aligned set is worse
+    than an unaligned one — the residual model has no way to know which
+    measurements share an epoch, so mixing corrected and uncorrected delays
+    just moves the error onto a different node.  Any measurement missing t_s
+    or doppler_hz, or whose node has no config to read fc_hz from, therefore
+    skips the whole input and counts solver_epoch_align_skipped.
+
+    Returns (s_in, meta) where meta carries epoch_aligned and, when it ran,
+    epoch_skew_s — the widest gap the correction closed.
+    """
+    meas = s_in.get("measurements") or []
+    if len(meas) < 2:
+        return s_in, {"epoch_aligned": False}
+
+    rates = []
+    for m in meas:
+        t_s = m.get("t_s")
+        doppler = m.get("doppler_hz")
+        cfg = node_cfgs.get(m.get("node_id")) or {}
+        # Same fallback chain the geolocator uses when it builds its NodeSetup,
+        # so a node whose config spells the carrier "FC" aligns on exactly the
+        # frequency the solve will predict against.
+        fc_hz = cfg.get("fc_hz", cfg.get("FC"))
+        if t_s is None or doppler is None or not fc_hz:
+            state.bump_counter("solver_epoch_align_skipped")
+            return s_in, {"epoch_aligned": False}
+        rates.append((float(t_s), -float(doppler) * _DELAY_RATE_HZ_TO_US_PER_S / float(fc_hz)))
+
+    # The newest sample, not the input's timestamp_ms: t0 has to be a time some
+    # measurement was actually taken, or every delay is extrapolated and the
+    # freshest node — the one that needed no correction — acquires an error.
+    t0 = max(t for t, _ in rates)
+    skew_s = t0 - min(t for t, _ in rates)
+
+    aligned = dict(s_in)
+    aligned["measurements"] = [
+        {**m, "delay_us": float(m["delay_us"]) + rate * (t0 - t_s)} for m, (t_s, rate) in zip(meas, rates)
+    ]
+    if "timestamp_ms" in aligned:
+        # The set now describes t0, so everything downstream that ages this
+        # solve (multinode expiry, the dead-reckoning gates, the history
+        # record's measurement_ts_ms) should date it from t0 too.
+        aligned["timestamp_ms"] = int(round(t0 * 1000.0))
+    return aligned, {"epoch_aligned": True, "epoch_skew_s": round(skew_s, 3)}
+
+
 def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn, layers_km: list[float], metric: str) -> dict | None:
     """Try each altitude layer; return the result with lowest value of `metric`.
 
@@ -1980,6 +2065,13 @@ def _process_solver_item(
         _record_resolve_skip(s_in, _now_s, _blocking)
         return None
     n_nodes = s_in.get("n_nodes", 0) if isinstance(s_in, dict) else 0
+    # Before anything reads a delay: the nodes did not sample simultaneously,
+    # and every gate below (rms_delay first among them) assumes they did.  Runs
+    # ahead of consensus and the altitude sweep so both judge the same aligned
+    # numbers the published solve is fitted to.
+    epoch_meta: dict = {"epoch_aligned": False}
+    if state.SOLVER_EPOCH_ALIGN and isinstance(s_in, dict):
+        s_in, epoch_meta = align_measurement_epochs(s_in, node_cfgs)
     consensus_meta: dict | None = None
     try:
         if "initial_guess" not in s_in:
@@ -2037,6 +2129,10 @@ def _process_solver_item(
             _extra["alt_start_rms_us"] = [None if v is None else round(float(v), 3) for v in result["rms_by_start"]]
         if result.get("z_saturated"):
             _extra["z_saturated"] = True
+        # Always stamped, aligned or not: "this solve was not aligned" is the
+        # fact /api/test/mlat-history needs to separate a residual the
+        # correction could not have helped from one it was applied to.
+        _extra.update(epoch_meta)
         _extra = _extra or None
 
         rms_delay = result.get("rms_delay", 0) or 0

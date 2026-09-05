@@ -113,6 +113,18 @@ if SOLVER_ALT_MODE not in ("sweep", "free"):
 # side of it, and finding that out should not need a code change.
 SOLVER_FREE_ALT_STARTS = max(1, int(os.getenv("SOLVER_FREE_ALT_STARTS", "1")))
 
+# Measurement epoch alignment (see services/tasks/solver.align_measurement_epochs).
+# on/off rather than the off/shadow/active triple its neighbours use: there is
+# nothing to shadow — the correction is a closed-form dead-reckoning of each
+# delay along its own measured Doppler, so a dry run would produce the same
+# number the acting run applies and observe nothing extra.  Default "on",
+# because leaving it off is the bug: nodes sample at independent phases and the
+# solver treats their measurements as simultaneous, so a 250 m/s target charges
+# up to ~1 us of delay error per second of skew (measured ~0.3 us rms at 2 s
+# skew on the fleet) straight to the 3 us rms gate.  The flag exists so the
+# alignment can be turned off live without a rollback if it ever misbehaves.
+SOLVER_EPOCH_ALIGN = os.getenv("SOLVER_EPOCH_ALIGN", "on").strip().lower() != "off"
+
 node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR, fov_mode=FOV_MODE)
 
 
@@ -574,6 +586,21 @@ coverage_rebuild_nodes: int = 0
 # fleet's trigger rate — constraints are then converging slower than the
 # coverage they follow, which no rebuild counter can show.
 coverage_rebuild_backlog: int = 0
+
+# Confirmed tracks withheld from association because their newest REAL
+# detection was older than TRACK_MAX_STALE_S at the frame being processed —
+# see services/frame_processor.confirmed_track_views.  These are aircraft that
+# have left a node's beam and whose track is dead-reckoning toward deletion;
+# their last real sample used to reach the solver as a current measurement.
+tracks_stale_skipped: int = 0
+
+# Solver inputs whose measurements could not be aligned to a common epoch
+# because at least one lacked t_s, doppler_hz, or a node config with fc_hz —
+# see services/tasks/solver.align_measurement_epochs.  Counted only when
+# SOLVER_EPOCH_ALIGN is on; a nonzero value against solver_successes says how
+# much of the fleet is still emitting untimed measurements.
+solver_epoch_align_skipped: int = 0
+
 solver_queue_drops: int = 0
 # Queue items discarded unsolved because they aged past _SOLVER_MAX_QUEUE_AGE_S
 # waiting for a worker.  Was only a DEBUG log, which staging does not emit —
@@ -821,7 +848,7 @@ def _reset_for_tests() -> None:
     global known_claims_made, known_claim_contentions, known_claims_bound
     global known_claims_errors, known_claims_visibility_rejects, known_claims_world_rejects
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
-    global coverage_rebuild_backlog
+    global coverage_rebuild_backlog, tracks_stale_skipped, solver_epoch_align_skipped
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
     global solver_resolve_skips_dark
     global mn_superseded, mn_superseded_blocked, solver_trimmed
@@ -913,6 +940,7 @@ def _reset_for_tests() -> None:
         known_claims_world_rejects = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
         coverage_rebuild_backlog = 0
+        tracks_stale_skipped = solver_epoch_align_skipped = 0
         solver_stale_drops = 0
         solver_resolve_skips = solver_resolve_skips_dark = 0
         mn_superseded = mn_superseded_blocked = 0
