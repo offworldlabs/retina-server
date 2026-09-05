@@ -12,6 +12,7 @@ from collections import deque
 import pytest
 from fastapi.testclient import TestClient
 
+from config.constants import ASSOC_GRID_STEP_KM
 from core import state
 from services.id_utils import multinode_hex_from_key
 from services.tasks import solver as solver_mod
@@ -178,6 +179,122 @@ class TestRecording:
         assert state.mlat_solve_history
         state._reset_for_tests()
         assert not state.mlat_solve_history
+
+
+class TestDisplacementCapByLane:
+    """The displacement gate's cap is chosen by LANE, not by anchor label.
+
+    What the gate measures is |solve - anchor|, which only stands in for
+    position error while the anchor is trustworthy.  An ADS-B-anchored input
+    has its guess overridden onto a transponder fix (~100 m), so 2 km is a
+    statement about the solve.  A dark input's guess is a quantised 3 km
+    association-grid point averaged over a cluster up to 6 km wide, so at
+    2 km the gate was measuring the anchor: live, displacement was 41% of
+    dark-lane attempts and the median rejected dark solve sat 2.1 km from
+    ground truth, against a 0.98 km median for the ones it published.
+
+    Mirror-point and wrong-frame ghosts land 15-50 km out and are still
+    rejected by the wider dark cap — see test_displacement_reject_records_
+    distance above, which is a dark input 111 km from its guess.
+    """
+
+    # 1 km of latitude in degrees, so a displacement can be stated in km.
+    KM_DEG = 1.0 / 111.32
+    # Transponder-shaped, so is_transponder_hex accepts it and the input is
+    # ADS-B-anchored.  "obj-01373" below is the simulator object id that must
+    # NOT buy the tight cap.
+    ADSB_HEX = "a1b2c3"
+    OBJ_ID = "obj-01373"
+
+    def setup_method(self):
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+
+    def teardown_method(self):
+        solver_mod._reset_for_tests()
+
+    def _run_displaced(self, km, adsb_hex=None):
+        """Solve at (LAT, LON) whose guess sits ``km`` south of it."""
+        s_in = dict(_CONFIRMED_N2)
+        s_in["initial_guess"] = {"lat": LAT - km * self.KM_DEG, "lon": LON, "alt_km": 9.0}
+        if adsb_hex is not None:
+            s_in["adsb_hex"] = adsb_hex
+        result = solver_mod._process_solver_item((s_in, {}, time.time()), _solve_fn())
+        assert len(state.mlat_solve_history) == 1
+        return result, state.mlat_solve_history[0]
+
+    def test_default_dark_cap_is_two_grid_steps(self):
+        assert solver_mod._MAX_DISPLACEMENT_KM_DARK == 2.0 * ASSOC_GRID_STEP_KM
+        assert solver_mod._MAX_DISPLACEMENT_KM == 2.0
+
+    def test_dark_solve_inside_the_dark_cap_is_published(self):
+        """4 km: past the ADS-B cap, inside the dark one.  This is the case
+        the change exists for — 23 of 31 live dark rejects were <= 4 km."""
+        result, rec = self._run_displaced(4.0)
+        assert result is not None and result["success"]
+        assert rec["outcome"] == "published"
+        assert rec["displacement_km"] == pytest.approx(4.0, abs=0.05)
+
+    def test_dark_solve_past_the_dark_cap_is_rejected(self):
+        result, rec = self._run_displaced(7.0)
+        assert result is None
+        assert rec["outcome"] == "rejected_displacement"
+        assert rec["displacement_km"] == pytest.approx(7.0, abs=0.05)
+
+    def test_non_transponder_id_is_judged_dark(self):
+        """A simulator object id is not an ADS-B anchor: nothing overrode the
+        guess with a transponder fix, so it gets the dark cap — the same
+        predicate multinode_key_decision keys it into mn-dark-* with."""
+        result, rec = self._run_displaced(4.0, adsb_hex=self.OBJ_ID)
+        assert result is not None
+        assert rec["outcome"] == "published"
+        assert rec["displacement_cap_km"] == solver_mod._MAX_DISPLACEMENT_KM_DARK
+
+    def test_adsb_anchored_solve_keeps_the_tight_cap(self):
+        """The same 4 km displacement that publishes dark still rejects here:
+        the ADS-B override put this guess within ~100 m of truth, so 4 km of
+        drift is the solve being wrong, not the anchor."""
+        result, rec = self._run_displaced(4.0, adsb_hex=self.ADSB_HEX)
+        assert result is None
+        assert rec["outcome"] == "rejected_displacement"
+
+    def test_history_record_carries_the_cap_that_judged_it(self):
+        _, dark_rec = self._run_displaced(4.0)
+        assert dark_rec["displacement_cap_km"] == solver_mod._MAX_DISPLACEMENT_KM_DARK
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+        _, adsb_rec = self._run_displaced(4.0, adsb_hex=self.ADSB_HEX)
+        assert adsb_rec["displacement_cap_km"] == solver_mod._MAX_DISPLACEMENT_KM
+
+    def test_dark_reject_bumps_the_dark_counter_as_well(self):
+        """The dark counter is a SUBSET of the aggregate, never a substitute:
+        anything already reading solver_fail_displacement keeps its meaning
+        across the lane split."""
+        self._run_displaced(7.0)
+        assert state.solver_fail_displacement == 1
+        assert state.solver_fail_displacement_dark == 1
+        assert state.solver_failures == 1
+
+    def test_adsb_reject_leaves_the_dark_counter_alone(self):
+        self._run_displaced(4.0, adsb_hex=self.ADSB_HEX)
+        assert state.solver_fail_displacement == 1
+        assert state.solver_fail_displacement_dark == 0
+
+    def test_env_var_overrides_the_dark_cap(self, monkeypatch):
+        """The override is an absolute km value, not a grid multiple."""
+        monkeypatch.setenv("SOLVER_MAX_DISPLACEMENT_KM_DARK", "3.5")
+        assert solver_mod._dark_displacement_cap_km() == 3.5
+        monkeypatch.delenv("SOLVER_MAX_DISPLACEMENT_KM_DARK")
+        assert solver_mod._dark_displacement_cap_km() == 2.0 * ASSOC_GRID_STEP_KM
+
+    def test_a_narrowed_dark_cap_rejects_what_the_default_publishes(self, monkeypatch):
+        """The other half of the override: the resolved value is what the
+        gate reads, so lowering it takes the 4 km publish above back out."""
+        monkeypatch.setattr(solver_mod, "_MAX_DISPLACEMENT_KM_DARK", 3.0)
+        result, rec = self._run_displaced(4.0)
+        assert result is None
+        assert rec["outcome"] == "rejected_displacement"
+        assert rec["displacement_cap_km"] == 3.0
 
 
 class TestEndpoint:

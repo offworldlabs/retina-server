@@ -603,6 +603,12 @@ solver_fail_rms_delay: int = 0
 solver_fail_rms_doppler: int = 0
 solver_fail_beam: int = 0
 solver_fail_displacement: int = 0
+# Dark-lane subset of solver_fail_displacement (bumped in addition to it, never
+# instead of it — the aggregate keeps its meaning).  Dark solves are judged
+# against the wider _MAX_DISPLACEMENT_KM_DARK because their anchor is a 3 km
+# grid point rather than an ADS-B fix; this counter is how that cap's effect is
+# read live, against the aggregate.
+solver_fail_displacement_dark: int = 0
 
 # Position-jump detections (teleporting emits).  Observability only: jumps are
 # solver mis-association noise, not target behaviour, so they no longer mark
@@ -712,6 +718,7 @@ def _reset_for_tests() -> None:
     global solver_worker_errors
     global solver_fail_exception, solver_fail_unconverged, solver_fail_rms_delay
     global solver_fail_rms_doppler, solver_fail_beam, solver_fail_displacement
+    global solver_fail_displacement_dark
     global position_jump_events
     global sim_adsb_push_rejected_hex
     global solver_last_latency_s, solver_total_latency_s, solver_total_solved
@@ -800,6 +807,7 @@ def _reset_for_tests() -> None:
         solver_worker_errors = 0
         solver_fail_exception = solver_fail_unconverged = solver_fail_rms_delay = 0
         solver_fail_rms_doppler = solver_fail_beam = solver_fail_displacement = 0
+        solver_fail_displacement_dark = 0
         position_jump_events = 0
         sim_adsb_push_rejected_hex = 0
         solver_total_solved = 0

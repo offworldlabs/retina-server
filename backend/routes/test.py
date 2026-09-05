@@ -187,6 +187,11 @@ def _build_dashboard_data() -> bytes:
                     "rms_doppler": state.solver_fail_rms_doppler,
                     "beam": state.solver_fail_beam,
                     "displacement": state.solver_fail_displacement,
+                    # Dark-lane subset of "displacement" above, not a
+                    # sibling of it: a dark reject increments both, so the
+                    # aggregate stays comparable across the lane-aware cap
+                    # change while this line shows how much of it is dark.
+                    "displacement_dark": state.solver_fail_displacement_dark,
                 },
                 # Overlap grids rebuilt because a node's observed coverage
                 # tightened, and how many nodes triggered it.  Zero against
