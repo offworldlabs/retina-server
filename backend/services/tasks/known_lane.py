@@ -245,6 +245,12 @@ def _build_solver_input(hexn: str, claims: dict[str, dict]) -> dict | None:
                 "delay_us": float(c["delay_us"]),
                 "doppler_hz": float(c["doppler_hz"]),
                 "snr": _num(c.get("snr")),
+                # This lane does NOT have one epoch: _CLAIM_SPREAD_S admits
+                # claims up to 5 s apart, which at 300 m/s is ~1.5 km of target
+                # motion charged straight to the residual this lane exists to
+                # measure.  Carrying each claim's own capture time lets
+                # _attempt reuse the regular lane's epoch alignment.
+                "t_s": int(c["ts_ms"]) / 1000.0,
             }
             for nid, c in sorted(claims.items())
         ],
@@ -362,6 +368,15 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
     record's displacement_km and the accuracy error are the same number.
     """
     state.bump_counter("known_lane_attempts")
+    # Same correction, same flag, same helper as the regular lane — see
+    # solver.align_measurement_epochs.  Applied here rather than in
+    # _build_solver_input because the alignment needs the node configs, and
+    # because the accuracy classification below compares the solve against an
+    # initial guess already dead-reckoned to the newest claim's epoch, which is
+    # exactly the t0 the helper aligns onto.
+    epoch_meta: dict = {"epoch_aligned": False}
+    if state.SOLVER_EPOCH_ALIGN:
+        s_in, epoch_meta = solver_mod.align_measurement_epochs(s_in, node_cfgs)
     try:
         # Single solve at the pinned ADS-B altitude — no layer sweep.  The
         # sweep exists to DISCOVER an unknown altitude; here identity already
@@ -379,7 +394,7 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
             "known_no_converge",
             s_in,
             result if isinstance(result, dict) else None,
-            extra={"known_lane": True, "label": "no_converge", "published": False},
+            extra={"known_lane": True, "label": "no_converge", "published": False, **epoch_meta},
         )
         return
 
@@ -419,7 +434,7 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
         raw_lat=raw_lat,
         raw_lon=raw_lon,
         displacement_km=err_km,
-        extra={"known_lane": True, "label": label, "published": published},
+        extra={"known_lane": True, "label": label, "published": published, **epoch_meta},
     )
 
 
