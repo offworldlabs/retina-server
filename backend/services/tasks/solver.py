@@ -736,6 +736,7 @@ def multinode_key_decision(
     max_dist_km: float = _MN_ASSOC_MAX_DIST_KM,
     max_age_s: float = _MN_ASSOC_MAX_AGE_S,
     learned_vel_fn=track_filter.learned_velocity,
+    anchor_dr: bool = False,
 ) -> tuple[str, str, float | None]:
     """The keying rule itself, clock-free — the multinode-track analogue of
     claim_decision.  Extracted so the offline bench measures the SHIPPED rule
@@ -799,21 +800,45 @@ def multinode_key_decision(
         return f"mn-adsb-{adsb_hex}", "adsb", None
 
     lat, lon = result["lat"], result["lon"]
+    ts_s = result.get("timestamp_ms", 0) / 1000.0
 
     # The anchor branch keeps the FLAT gate.  It is not a dead-reckoning
     # question: the claim named this entry as the aircraft this solve is of,
     # and the distance check exists only to refuse an anchor whose solve
     # converged somewhere else entirely.  Nothing here is predicting where the
     # anchor drifted to, so there is no drift term to allow for.
+    #
+    # ...unless the caller says otherwise (anchor_dr).  A dark-follow input
+    # (services/dark_follow.py) breaks that premise by construction: its guess
+    # IS a prediction of where the anchor drifted to, so its solve is compared
+    # against an entry the follow lane already knows to be stale.  The numbers
+    # make it more than a nicety — the dark displacement cap is 6.0 km and the
+    # flat anchor gate is 6.0 km, so a solve at the edge of the gate that let
+    # it through is at the edge of the gate that must key it, before any drift
+    # is added; at the follow lane's 20 s staleness limit a 270 m/s target adds
+    # another 5.4 km of it.  Without this the anchor would be refused exactly
+    # when the aircraft is moving fastest, and the solve would fall through to
+    # the proximity scan the whole lane exists to stop relying on.  Same DR and
+    # same age-scaled gate as that scan, so "near the anchor" means one thing.
     if anchor_key and anchor_key.startswith("mn-dark-") and anchor_key in tracks:
         anchor = tracks[anchor_key]
         a_lat, a_lon = anchor.get("lat"), anchor.get("lon")
         if a_lat is not None and a_lon is not None:
+            a_gate_km = max_dist_km
+            a_dt = ts_s - anchor.get("timestamp_ms", 0) / 1000.0
+            if anchor_dr and 0.0 < a_dt <= max_age_s:
+                a_vel_east, a_vel_north = _entry_dr_velocity(anchor_key, anchor, learned_vel_fn)
+                a_lat, a_lon = offset_latlon_m(
+                    a_lat,
+                    a_lon,
+                    east_m=a_vel_east * a_dt,
+                    north_m=a_vel_north * a_dt,
+                )
+                a_gate_km = _mn_assoc_gate_km(a_dt, max_dist_km)
             a_dist = _haversine_km(lat, lon, a_lat, a_lon)
-            if a_dist <= max_dist_km:
+            if a_dist <= a_gate_km:
                 return anchor_key, "anchor", a_dist
 
-    ts_s = result.get("timestamp_ms", 0) / 1000.0
     # Candidates compete on d / gate_km, not on d: an entry solved 2 s ago at
     # 5 km is a worse match than one solved 40 s ago at 8 km only if you
     # ignore that the second one's position is a 40 s extrapolation.  A score
@@ -2202,7 +2227,16 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             # _MN_POS_HISTORY_LOCK (inside the smoother) is never taken in
             # reverse anywhere.
             _anchor_key = s_in.get("anchor_key") if isinstance(s_in, dict) else None
-            key, _key_how, _key_dist_km = multinode_key_decision(state.multinode_tracks, result, _adsb_hex, _anchor_key)
+            key, _key_how, _key_dist_km = multinode_key_decision(
+                state.multinode_tracks,
+                result,
+                _adsb_hex,
+                _anchor_key,
+                # Only the follow lane's anchor is a stale position by
+                # construction — see the anchor branch for why that changes
+                # the distance check it must be judged by.
+                anchor_dr=bool(isinstance(s_in, dict) and s_in.get("follow_key")),
+            )
             # Dark-lane key births vs re-keys.  The fragmentation question is
             # "how often does one aircraft get a second key", and the only
             # place that is decided is right here — solver_successes counts

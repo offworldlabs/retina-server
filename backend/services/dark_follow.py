@@ -151,6 +151,18 @@ def _reset_for_tests() -> None:
     state.dark_follow_targets = 0
 
 
+def _expire_targets_for_tests() -> None:
+    """Force the next follow_targets() call to rebuild, KEEPING the guard state.
+
+    Tests only, and distinct from _reset_for_tests for exactly that reason: the
+    guard's whole behaviour is "a key that was a target stops being one", which
+    is unobservable if the only way to re-read the list also forgets the drop.
+    """
+    global _targets_built_mono
+    with _TARGETS_LOCK:
+        _targets_built_mono = 0.0
+
+
 def mode() -> str:
     """The follow mode, defensively — the known lane's ``_mode`` precedent.
 
@@ -310,7 +322,9 @@ def follow_targets() -> list[dict]:
         return _targets
 
 
-def follow_gates(target: dict, dt_s: float, base_delay_us: float, base_doppler_hz: float, fc_hz: float) -> tuple[float, float]:
+def follow_gates(
+    target: dict, dt_s: float, base_delay_us: float, base_doppler_hz: float, fc_hz: float
+) -> tuple[float, float]:
     """Claim gates for one follow target coasted ``dt_s`` seconds, in
     (delay µs, Doppler Hz).
 
