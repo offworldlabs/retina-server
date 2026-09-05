@@ -82,6 +82,17 @@ per-node `location_uncertainty_km` is shown alongside. `tx_*` are true:
 transmitters are licensed towers. The page says this wherever it shows a
 position.
 
+## Relationship to the dashboard's Data Explorer
+
+This site is the **standalone, public** view: anyone can reach it and it shows
+exactly what the public archive API serves, which excludes nodes registered as
+private. The dashboard's own Data Explorer page (`dash.retina.fm/data`) is the
+**signed-in** view: it should serve the same public archive *and* make it easy
+to see only your own nodes, including ones that are not public. That needs an
+authenticated listing that adds the caller's private nodes, which the public
+route deliberately cannot do; it is follow-up backend work, not part of this
+site.
+
 ## Synthetic nodes
 
 The production fleet has none. Everything synthetic-related — the legend swatch,
