@@ -540,6 +540,15 @@ def _build_follow_solver_input(key: str, claims: dict[str, dict]) -> dict | None
     ``lane``/``guess_source``/``follow_key`` ride through to the history record
     (solver._record_solve_history stamps all three) so the lane is separable in
     /api/test/solver-stats without inferring it from the key.
+
+    A CONSEQUENCE WORTH KNOWING: with no cv_epochs on the input, an n=2 follow
+    solve cannot pass the n=2 confirmation gate and is always withheld, so the
+    lane publishes at n>=3 only.  Left that way on purpose — at n=2 the solver
+    fits five unknowns to four measurements and returns a zero residual for a
+    WRONG claim exactly as it does for a right one, which is the same blindness
+    the gate exists for and is not made safer by the claim having come from a
+    prediction.  A follow target already needs n>=3 to be followed at all; this
+    just means it needs three claiming nodes as well.
     """
     newest = max(claims.values(), key=lambda c: int(c["ts_ms"]))
     newest_ts_ms = int(newest["ts_ms"])

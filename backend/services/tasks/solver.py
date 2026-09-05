@@ -2253,9 +2253,15 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
                 elif _key_how == "proximity":
                     state.bump_counter("solver_key_proximity_dark")
             if _anchor_key:
-                # Only an anchored solver input (top-down claiming, active
-                # mode) ever sets s_in["anchor_key"] — this whole block is
-                # inert off/shadow, by construction, with no mode read here.
+                # s_in["anchor_key"] is set by exactly two producers: top-down
+                # claiming in active mode, and a dark-follow input in binding
+                # mode (services/dark_follow.py).  Both are off by default, so
+                # this block stays inert by construction with no mode read
+                # here.  The counters do not split the two, deliberately: they
+                # measure the same thing either way — how often an anchor
+                # named the track the solve actually landed on — and
+                # follow_key on the history record separates them after the
+                # fact for anyone who needs it.
                 state.bump_counter("solver_anchored_published")
                 state.bump_counter("solver_anchor_hits" if _key_how == "anchor" else "solver_anchor_fallbacks")
             # Raw solve position, before smoothing — the history record keeps
