@@ -54,6 +54,8 @@ services:
       # Dark track-following lane (feat/dark-track-following): binding here so the
       # test droplet measures continuity; main defaults to shadow.
       - DARK_FOLLOW_MODE=binding
+      # Test-only experiment (cap16): follow a dark key after 2 solves instead of 3.
+      - DARK_FOLLOW_MIN_SOLVES=2
       # Anonymous admin, asked for explicitly since ClickUp 86cb49d29 took it
       # off RETINA_ENV. No OAuth is configured here either.
       - AUTH_ALLOW_ANONYMOUS_ADMIN=1
