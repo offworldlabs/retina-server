@@ -672,9 +672,11 @@ const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircr
             interactive: false,
             color,
             fillColor: color,
-            fillOpacity: 0.10,
-            weight: 1,
-            opacity: 0.35,
+            // Strong enough to read against the light basemap: a 0.10 fill
+            // was invisible at the 10-20 px radii a typical solve draws.
+            fillOpacity: 0.28,
+            weight: 1.5,
+            opacity: 0.8,
           });
           circle.addTo(map);
           circles.set(ac.hex, circle);
