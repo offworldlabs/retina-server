@@ -19,6 +19,7 @@ export {
   solveSigmaM,
   solveUncertaintyRadiusM,
 } from "./uncertainty";
+export { MLAT_HISTORY_REFRESH_MS, newSolveArrived } from "./mlatHistory";
 export { mergeTrailPositions, sampleTrailPositions, buildTrailSegments } from "./trails";
 export { PLANE_PATH, getAircraftColor, altitudeColor, ALTITUDE_LEGEND, aircraftIconSize, makeAircraftIcon, makeDroneIcon, nodeIcon, drDriftM, drGsKt, drIconBudgetM, drIconState, hideDrIcon, isDarkMultinodeSolve, isMultinodeSolve } from "./icons";
 export { FitBounds, ViewportTracker, MapClickClear } from "./MapControls";

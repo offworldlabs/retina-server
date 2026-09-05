@@ -90,13 +90,19 @@ gain only to let a genuinely ill-conditioned solve show a bigger disc.
 
 ### Growth while dead-reckoning
 
-The feed dead-reckons a solve forward up to 30 s with the KF's learned
-velocity, then holds; the frontend continues its own DR up to 60 s. The disc
-grows accordingly:
+The feed dead-reckons a solve forward up to `MN_DR_CAP_S` with the KF's
+learned velocity, then holds; the frontend continues its own DR up to
+`UNCERTAINTY_DR_CAP_S`. The disc grows accordingly:
 
 ```
-σ(t) = sqrt( σ_solve² + (σ_v · min(t, 60))² )
+σ(t) = sqrt( σ_solve² + (σ_v · min(t, UNCERTAINTY_DR_CAP_S))² )
 ```
+
+Both caps were halved on 2026-09-05 (30 → 15 s and 60 → 30 s) once dark solves
+started landing every 1–3 s: a dark entry no longer survives to 60 s at all
+(`MN_DARK_EXPIRY_S` = 30 s), so the second half of the old growth curve
+described entries that cannot exist. See `docs/solverflow.md` for the
+error-vs-solve-age measurement the two budgets are cut from.
 
 `t` is the age of the solve at draw time, `σ_v` the velocity sigma:
 `track_filter.learned_velocity(key)[2]` when the KF has state for the key
