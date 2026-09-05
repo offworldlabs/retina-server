@@ -403,8 +403,15 @@ def force_retire_prefixes() -> tuple[str, ...]:
 # imports, so an import-time read would silently miss a salt set in
 # backend/.env and every node would move the day the file started being read.
 NODE_FUZZ_MODE_DEFAULT = "on"  # "off" disables; anything else enables
-NODE_FUZZ_MIN_KM_DEFAULT = 1.0  # Inner radius of the donut (km)
-NODE_FUZZ_MAX_KM_DEFAULT = 3.0  # Outer radius of the donut (km)
+# Narrowed from [1.0, 3.0] on 2026-09-05.  The wider donut put a node in the
+# wrong part of the metro area, which read on the map as a receiver that could
+# not be where its own coverage said it was, and drew a 3 km uncertainty disc
+# over most of a city at the zooms people actually use.  0.5 km is still a
+# floor of several hundred houses, and the honest limit of what a single fuzzed
+# anchor buys is set by correlation across channels, not by this radius —
+# services/public_location.py says so at length.
+NODE_FUZZ_MIN_KM_DEFAULT = 0.5  # Inner radius of the donut (km)
+NODE_FUZZ_MAX_KM_DEFAULT = 1.0  # Outer radius of the donut (km)
 
 
 def node_fuzz_mode() -> str:

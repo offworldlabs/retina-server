@@ -287,7 +287,7 @@ export function useAircraftFeed(ownerOnly = false) {
 
 // Receiver anonymization is entirely the backend's, applied where the bytes
 // are serialized (backend/services/public_location.py): coordinates are
-// displaced 1–3 km deterministically per node before they go on the wire, so
+// displaced deterministically per node before they go on the wire, so
 // no true receiver position reaches the browser and the client does no fuzzing
 // of its own. What the client does own is disclosing that: the feed declares
 // the outer displacement radius as location_uncertainty_km, and the map draws
