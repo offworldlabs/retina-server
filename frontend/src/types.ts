@@ -112,7 +112,8 @@ export interface RadarNode {
   node_id: string;
   /**
    * Receiver position as served. The backend displaces it deterministically
-   * per node (1–3 km by default) before it goes on the wire — see
+   * per node (the radius in force arrives as location_uncertainty_km,
+   * below) before it goes on the wire — see
    * backend/services/public_location.py — so this is NOT the operator's true
    * location and the client does no further fuzzing of its own.
    */
