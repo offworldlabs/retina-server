@@ -392,6 +392,12 @@ def force_retire_prefixes() -> tuple[str, ...]:
 # nodes within a few hundred metres of home, which is the case the fuzz exists
 # to prevent.
 #
+# The bounds are also part of the HMAC message public_location.py hashes, so
+# editing either one re-draws each node's bearing as well as its distance.
+# Changing them is therefore a re-fuzz of the whole fleet — see that module's
+# docstring for why anything less would hand the true receiver back to anyone
+# holding a published position from both frames.
+#
 # These are read at call time, not bound at import, for the same reason as
 # force_retire_prefixes() above: main.py calls load_dotenv() after the route
 # imports, so an import-time read would silently miss a salt set in

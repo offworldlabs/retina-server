@@ -11,14 +11,28 @@ it.  ``services/node_pipeline.py`` and everything it feeds must keep the true
 coordinates: fuzzing there would move the aircraft, not the operator.  TX sites
 are licensed broadcast towers and are never fuzzed.
 
-**The offset.**  ``HMAC-SHA256(salt, node_id)`` seeds a bearing uniform in
-[0, 360) and a displacement uniform in [NODE_FUZZ_MIN_KM, NODE_FUZZ_MAX_KM].
-The same node id under the same salt therefore yields the same offset forever,
-across processes and restarts — a node that wandered per boot would be
-averaged back to the truth by anyone logging the feed, which is the whole
-attack this defends against.  Keying on HMAC rather than a plain hash means
-the offset cannot be recomputed without the salt, so publishing the algorithm
-costs nothing.
+**The offset.**  ``HMAC-SHA256(salt, frame_message(node_id))`` seeds a bearing
+uniform in [0, 360) and a displacement uniform in [NODE_FUZZ_MIN_KM,
+NODE_FUZZ_MAX_KM].  The same node id under the same salt and the same bounds
+therefore yields the same offset forever, across processes and restarts — a
+node that wandered per boot would be averaged back to the truth by anyone
+logging the feed, which is the whole attack this defends against.  Keying on
+HMAC rather than a plain hash means the offset cannot be recomputed without the
+salt, so publishing the algorithm costs nothing.
+
+**Why the bounds are in the HMAC message.**  They are not there to add entropy;
+the salt does that.  They are there so that narrowing or widening the donut
+re-draws the bearing as well as the distance.  Derived from the node id alone,
+the bearing would be an invariant across a bounds change: a node published
+under two sets of bounds would appear at two points on the *same ray* from its
+true position, and an attacker holding both — the live map and the public
+Parquet archive are enough — recovers the receiver exactly by solving two
+linear equations, whatever the bounds were narrowed to.  Mixing the bounds in
+makes the second frame an independent draw, which is the difference between a
+re-fuzz that costs an operator a little privacy and one that costs all of it.
+The frame is the pair actually in force, so the re-key is automatic: no
+deployment has to remember to rotate NODE_FUZZ_SALT alongside the bounds, and
+one that does rotate the salt anyway is no worse off.
 
 The displacement floor is what makes the region a donut rather than a disc.  A
 uniform disc puts a meaningful fraction of nodes within a couple of hundred
@@ -70,6 +84,20 @@ _PUBLIC_DECIMALS = 4
 # offset back out.  Bounded by the fleet size, which is bounded by the node
 # registry.
 _offset_cache: dict[tuple[str, str, float, float], tuple[float, float]] = {}
+
+# The frame every node was published in before the bounds joined the HMAC
+# message, kept so that adopting that change does not by itself move a single
+# node.  A deployment still on these bounds keeps the offsets it has always
+# served; one that has moved off them is in a new frame already and has nothing
+# to preserve.  Frozen literals on purpose — they are a historical fact, not a
+# default, so they must not follow NODE_FUZZ_{MIN,MAX}_KM_DEFAULT if those are
+# ever edited.
+_ORIGINAL_FRAME = (1.0, 3.0)
+
+# Separates the node id from the frame label in the HMAC message.  A NUL cannot
+# occur in a node id, so no id can spell another id's message and collide with
+# its offset.
+_FRAME_SEP = "\x00"
 
 # Resolved persisted salt, read once per process.
 _file_salt: str | None = None
@@ -131,6 +159,25 @@ def _salt() -> str:
     return node_fuzz_salt() or _persisted_salt()
 
 
+def _frame_message(node_id: str, min_km: float, max_km: float) -> str:
+    """The HMAC message for one node under one pair of bounds.
+
+    The bare node id in the original frame, so that frame's offsets are exactly
+    what they have always been; the id plus a canonical label for the bounds in
+    any other, so every change of bounds lands the fleet in a frame unrelated
+    to the one it left (see the module docstring on why that matters).
+
+    The label is formatted to a fixed precision rather than interpolated raw:
+    "1", "1.0" and "1.000" are the same donut and must not be three frames, or
+    an innocent edit to backend/.env would re-fuzz the fleet for nothing.  Six
+    decimals is a millimetre of donut radius — far below anything a deployment
+    would mean to express, and far above float noise.
+    """
+    if (min_km, max_km) == _ORIGINAL_FRAME:
+        return node_id
+    return f"{node_id}{_FRAME_SEP}{min_km:.6f}:{max_km:.6f}"
+
+
 def public_offset_km(node_id: str | None) -> tuple[float, float]:
     """Deterministic (east_km, north_km) displacement for one node.
 
@@ -150,7 +197,8 @@ def public_offset_km(node_id: str | None) -> tuple[float, float]:
     if cached is not None:
         return cached
 
-    digest = hmac.new(salt.encode("utf-8"), key_id.encode("utf-8"), hashlib.sha256).digest()
+    message = _frame_message(key_id, min_km, max_km)
+    digest = hmac.new(salt.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).digest()
     # Two independent 64-bit draws out of the same digest: bytes 0-7 pick the
     # bearing, bytes 8-15 the displacement.  Dividing by 2**64 lands in [0, 1),
     # so the bearing never repeats 0° as 360° and the displacement never

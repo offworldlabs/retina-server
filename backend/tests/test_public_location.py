@@ -117,6 +117,112 @@ class TestOffset:
         assert haversine_km(51.5, -0.12, lat, lon) >= NODE_FUZZ_MIN_KM_DEFAULT - _ROUNDING_SLACK_KM
 
 
+class TestFrameRekey:
+    """The bounds are part of the HMAC message, so changing them re-keys.
+
+    Every test here is about one attack.  When the bearing came from the node
+    id alone, narrowing the donut left each node on its old ray: an observer
+    holding a published position from both frames — the live map and the public
+    Parquet archive are enough — solves two linear equations and gets the true
+    receiver back exactly, however small the new donut is.
+    """
+
+    OLD = (NODE_FUZZ_MIN_KM_DEFAULT, NODE_FUZZ_MAX_KM_DEFAULT)
+    NEW = (0.5, 1.0)
+
+    def _offset(self, node_id, bounds, monkeypatch):
+        monkeypatch.setenv("NODE_FUZZ_MIN_KM", str(bounds[0]))
+        monkeypatch.setenv("NODE_FUZZ_MAX_KM", str(bounds[1]))
+        return pl.public_offset_km(node_id)
+
+    @staticmethod
+    def _recover(p_old, p_new, old, new):
+        """The attack: the true position, assuming both frames share a bearing.
+
+        Offsets are measured from the true position, so the receiver is the
+        origin and the recovered point's distance from it is the attacker's
+        error.  With a shared bearing the two published points are
+        ``old_min + u·old_span`` and ``new_min + u·new_span`` along one ray, so
+        their separation determines ``u`` and ``u`` determines the receiver.
+        """
+        span = (old[1] - old[0]) - (new[1] - new[0])
+        sep = math.hypot(p_old[0] - p_new[0], p_old[1] - p_new[1])
+        u = (sep - (old[0] - new[0])) / span
+        d_old = old[0] + u * (old[1] - old[0])
+        unit = ((p_old[0] - p_new[0]) / sep, (p_old[1] - p_new[1]) / sep)
+        return (p_old[0] - d_old * unit[0], p_old[1] - d_old * unit[1])
+
+    def test_the_attack_works_on_a_shared_bearing(self, monkeypatch):
+        """The control: _recover() is a real attack, not arithmetic that always fails.
+
+        Synthesises the frame the old scheme would have produced — same
+        bearing, redrawn distance — and shows the receiver comes back to the
+        millimetre.  Without this, the test below could pass because the attack
+        was written wrong.
+        """
+        for node_id in (f"node-{i}" for i in range(20)):
+            east, north = self._offset(node_id, self.OLD, monkeypatch)
+            bearing = math.atan2(east, north)
+            u = (math.hypot(east, north) - self.OLD[0]) / (self.OLD[1] - self.OLD[0])
+            d_new = self.NEW[0] + u * (self.NEW[1] - self.NEW[0])
+            same_ray = (d_new * math.sin(bearing), d_new * math.cos(bearing))
+            recovered = self._recover((east, north), same_ray, self.OLD, self.NEW)
+            assert math.hypot(*recovered) < 1e-6
+
+    def test_a_bounds_change_defeats_the_attack(self, monkeypatch):
+        """The real scheme: the second frame is an independent draw.
+
+        The attacker still gets an answer — the arithmetic is defined — but it
+        is a worse answer than believing the published anchor, which is never
+        further from the truth than the new maximum.  That is the bar: holding
+        both frames must not beat holding the current one.
+        """
+        errors = []
+        for node_id in (f"node-{i}" for i in range(100)):
+            p_old = self._offset(node_id, self.OLD, monkeypatch)
+            p_new = self._offset(node_id, self.NEW, monkeypatch)
+            errors.append(math.hypot(*self._recover(p_old, p_new, self.OLD, self.NEW)))
+        errors.sort()
+        assert errors[len(errors) // 2] > self.NEW[1]
+        # A minority still land inside that bound by luck.  Nothing marks them
+        # out as the ones that did, so they are not a channel — but a majority
+        # would mean the frames were not independent after all.
+        assert sum(e < self.NEW[1] for e in errors) < len(errors) // 2
+
+    def test_a_bounds_change_moves_the_bearing(self, monkeypatch):
+        """The property underneath the attack, stated directly."""
+        for node_id in (f"node-{i}" for i in range(50)):
+            old_east, old_north = self._offset(node_id, self.OLD, monkeypatch)
+            new_east, new_north = self._offset(node_id, self.NEW, monkeypatch)
+            assert math.atan2(old_east, old_north) != math.atan2(new_east, new_north)
+
+    def test_the_original_frame_is_frozen(self, monkeypatch):
+        """A golden vector for the bounds every deployment started on.
+
+        Nodes have been published at these coordinates since the fuzz shipped.
+        Adopting a change to how the message is built must not move them, or
+        the deploy that carries the change is itself an unannounced re-fuzz —
+        and one that hands out a second sample of every node in the fleet.
+        """
+        monkeypatch.setenv("NODE_FUZZ_SALT", "golden-salt")
+        pl._reset_for_tests()
+        assert pl.public_latlon(33.7490, -84.3880, "golden-node") == (33.7335, -84.3645)
+
+    def test_the_original_bounds_are_the_original_frame_when_set_explicitly(self, monkeypatch):
+        """Writing the defaults into the environment is not a change of frame."""
+        implicit = pl.public_offset_km("node-a")
+        assert self._offset("node-a", self.OLD, monkeypatch) == implicit
+
+    def test_the_frame_label_is_canonical(self, monkeypatch):
+        """ "0.5" and "0.500" are one donut, so they must be one frame."""
+        monkeypatch.setenv("NODE_FUZZ_MIN_KM", "0.5")
+        monkeypatch.setenv("NODE_FUZZ_MAX_KM", "1.0")
+        terse = pl.public_offset_km("node-a")
+        monkeypatch.setenv("NODE_FUZZ_MIN_KM", "0.500")
+        monkeypatch.setenv("NODE_FUZZ_MAX_KM", "1.000")
+        assert pl.public_offset_km("node-a") == terse
+
+
 class TestPublicLatLon:
     TRUE_LAT, TRUE_LON = 51.5074123, -0.1278456
 

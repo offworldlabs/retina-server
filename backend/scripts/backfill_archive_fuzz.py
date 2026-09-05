@@ -2,6 +2,7 @@
 
 Usage:
     NODE_FUZZ_SALT=<the production salt> \\
+    NODE_FUZZ_MIN_KM=<the live min> NODE_FUZZ_MAX_KM=<the live max> \\
     PYTHONPATH=. python3 scripts/backfill_archive_fuzz.py [--prefix archive/]
                                                           [--limit N]
                                                           [--dry-run]
@@ -50,6 +51,16 @@ or after it is skipped.  A file's ``ingest_ts_ms`` column is stamped by the
 writer at flush time, so it is the right clock to compare against.  Establish
 that timestamp before the first production run; it cannot be recovered
 afterwards.
+
+The bounds
+----------
+Pass the live server's NODE_FUZZ_MIN_KM and NODE_FUZZ_MAX_KM as well.  They are
+part of the HMAC message, not merely the scale of its result, so a run under
+the defaults against a deployment serving some other donut writes a frame that
+matches nothing on the map — the same failure mode as the wrong salt, and just
+as permanent.  There is no guard for it here: this script cannot see the
+server's environment, and a wrong pair is indistinguishable from a deliberate
+one.  Read them off the running deployment before starting.
 
 ``--force`` overrides BOTH guards and rewrites unconditionally.  It exists for
 a re-run against a fresh copy of the archive, and displaces every node twice on
