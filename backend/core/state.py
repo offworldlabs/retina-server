@@ -4,7 +4,6 @@ Every global dict / set / queue that multiple parts of the server touch
 lives here so imports are unambiguous and circular-dependency-free.
 """
 
-import asyncio
 import logging
 import math
 import os
@@ -30,6 +29,7 @@ from config.constants import (
     TRACK_HISTORY_MAX,  # noqa: F401 — re-exported, used via state.TRACK_HISTORY_MAX
     as_num,
 )
+from core.frame_queue import ShardedFrameQueue
 
 # ── Coverage / analytics persistence ──────────────────────────────────────────
 COVERAGE_STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "coverage_data")
@@ -445,7 +445,12 @@ latest_overlaps_bytes: bytes = b'{"overlaps":[],"registered_nodes":[]}'
 
 # ── Async frame queue (TCP → processor) ──────────────────────────────────────
 _FRAME_QUEUE_SIZE = int(os.getenv("FRAME_QUEUE_SIZE", "10000"))
-frame_queue: asyncio.Queue = asyncio.Queue(maxsize=_FRAME_QUEUE_SIZE)
+# One shard per frame worker: a node's frames always take the same shard and one
+# worker drains it, which is what stops two threads mutating a node's tracker at
+# once (see core.frame_queue).  main.py starts frame_queue.shard_count workers,
+# so this env var is the single source of truth for both numbers.
+FRAME_WORKERS = max(1, int(os.getenv("FRAME_WORKERS", "4")))
+frame_queue: ShardedFrameQueue = ShardedFrameQueue(maxsize=_FRAME_QUEUE_SIZE, shards=FRAME_WORKERS)
 
 # ── Background multinode solver queue (frame workers → solver threads) ────────
 import queue as _stdlib_queue

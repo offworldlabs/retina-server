@@ -184,9 +184,6 @@ async def lifespan(app: FastAPI):
         # Start background daemon threads for multinode LM solving.
         # These drain solver_queue independently of frame workers.
         start_solver_workers()
-        # Run multiple parallel frame processor workers so the thread pool can
-        # process frames concurrently (scipy/numpy release the GIL).
-        _n_frame_workers = int(os.environ.get("FRAME_WORKERS", "4"))
 
         async def _snapshot_loop():
             """Save state snapshot periodically."""
@@ -220,7 +217,15 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(health_monitor_task()),
             asyncio.create_task(heartbeat_task()),
             asyncio.create_task(_snapshot_loop()),
-            *[asyncio.create_task(frame_processor_loop(radar_pipeline)) for _ in range(_n_frame_workers)],
+            # One frame worker per queue shard, so the thread pool processes
+            # frames concurrently (scipy/numpy release the GIL) while a single
+            # node's frames stay on one worker: serial, in arrival order. The
+            # worker count must equal the shard count or a shard goes unserved,
+            # so both come from state.frame_queue (sized by FRAME_WORKERS).
+            *[
+                asyncio.create_task(frame_processor_loop(radar_pipeline, shard))
+                for shard in range(state.frame_queue.shard_count)
+            ],
         ]
         yield
         for t in tasks:

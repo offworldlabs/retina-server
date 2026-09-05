@@ -22,6 +22,7 @@ from retina_tracker.config import M_THRESHOLD, N_WINDOW
 from retina_tracker.track import TrackState
 
 from core import state
+from core.frame_queue import ShardedFrameQueue
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from services.frame_processor import process_one_frame
 from services.tcp_handler import (
@@ -650,28 +651,32 @@ class TestBackgroundFrameLoop:
     counters, and drives tracks to ACTIVE.
 
     state.frame_queue is bound to the import-time event loop, so each test
-    creates a fresh asyncio.Queue and patches state.frame_queue with it.
-    This matches what the production server does (one queue, one loop, one
-    long-lived task).
+    creates a fresh ShardedFrameQueue and patches state.frame_queue with it,
+    then starts one worker per shard.  This matches what the production server
+    does (one queue, one worker per shard, one loop, long-lived tasks).
     """
 
-    async def _run_loop_drain(self, default_pipeline, queue: asyncio.Queue, timeout: float = 5.0):
-        """Run frame_processor_loop against a given queue until it empties."""
+    async def _run_loop_drain(self, default_pipeline, queue: ShardedFrameQueue, timeout: float = 5.0):
+        """Run one frame_processor_loop per shard until the queue empties."""
         from services.tasks.frame_loop import frame_processor_loop
 
         with patch.object(state, "frame_queue", queue):
-            task = asyncio.create_task(frame_processor_loop(default_pipeline))
+            tasks = [
+                asyncio.create_task(frame_processor_loop(default_pipeline, shard)) for shard in range(queue.shard_count)
+            ]
             deadline = asyncio.get_event_loop().time() + timeout
             while not queue.empty():
                 if asyncio.get_event_loop().time() > deadline:
                     break
                 await asyncio.sleep(0.01)
             await asyncio.sleep(0.05)  # one extra tick for the last item
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            for task in tasks:
+                task.cancel()
+            for task in tasks:
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
 
     @pytest.mark.anyio
     async def test_loop_drains_queue_and_increments_counter(self, _registered_node):
@@ -679,7 +684,7 @@ class TestBackgroundFrameLoop:
         pipe = PassiveRadarPipeline(_NODE_CONFIG)
         state.node_pipelines[_NODE_ID] = pipe
 
-        queue: asyncio.Queue = asyncio.Queue()
+        queue = ShardedFrameQueue(shards=2)
         base = int(time.time() * 1000)
         n = 3
         for i in range(n):
@@ -699,7 +704,7 @@ class TestBackgroundFrameLoop:
         pipe = PassiveRadarPipeline(_NODE_CONFIG)
         state.node_pipelines[_NODE_ID] = pipe
 
-        queue: asyncio.Queue = asyncio.Queue()
+        queue = ShardedFrameQueue(shards=2)
         base = int(time.time() * 1000)
         for i in range(_N_FRAMES):
             queue.put_nowait((_NODE_ID, _make_raw_frame(base + i * 1000)))

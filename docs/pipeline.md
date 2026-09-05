@@ -12,9 +12,9 @@ TCP frame (node)
     │
     ├─ ADS-B fast-path → state.adsb_aircraft (immediate, no queuing)
     │
-    └─ frame queue (asyncio, capacity 10 000)
+    └─ frame queue (asyncio, capacity 10 000, sharded: crc32(node_id) % FRAME_WORKERS)
            │
-           └─ FRAME_WORKERS thread pool
+           └─ FRAME_WORKERS workers, one per shard → thread pool
                   │
                   ├─ PassiveRadarPipeline.process_frame()
                   │       ├─ Tracker.process_frame()  (Kalman + GNN)
@@ -57,6 +57,23 @@ On receipt the server does two things in parallel:
 
 2. **Frame queue**: the frame is enqueued for CPU-bound processing by the
    `FRAME_WORKERS` thread pool. `FRAME_WORKERS=8` on the production server.
+
+   The queue is sharded by node: a frame goes to shard
+   `crc32(node_id) % FRAME_WORKERS`, and each worker drains exactly one shard,
+   awaiting one frame's executor call before it takes the next. So a node's
+   frames are processed one at a time and in arrival order, while frames from
+   nodes on other shards run in parallel. This is not a tuning choice: the
+   per-node `Tracker` has no locking, and while every worker drained one shared
+   queue two frames from the same node could mutate the same track list from two
+   threads — an `IndexError` out of `_associate` (frame dropped), or, silently,
+   out-of-order Kalman predict/update pairs. `FRAME_WORKERS=1` is a single shard
+   and therefore a plain FIFO. Depth (`frame_queue_depth`,
+   `frame_queue_saturated`) counts every shard, and the capacity of 10 000 is
+   the budget for the queue as a whole.
+
+   The cost of the mapping is that two busy nodes can land on one shard while
+   another shard idles, so raise `FRAME_WORKERS` rather than expecting perfect
+   balance from a fleet smaller than the worker count.
 
 ---
 
