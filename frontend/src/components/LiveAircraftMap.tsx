@@ -636,7 +636,7 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftR
       plane inside it reads as a phantom target. ── */
 const _uncertaintyCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: DEBUG_PASSIVE_PANE }) : null;
 
-const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircraftRef }) {
+const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircraftRef, colorByAlt }) {
   const map = useMap();
   const circlesRef = useRef(new Map()); // hex → L.circle
 
@@ -656,7 +656,8 @@ const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircr
         // rather than assert a precision it did not promise.
         if (radius <= 0) continue;
         live.add(ac.hex);
-        const color = getAircraftColor(ac);
+        // Same colour rule as the icon, including the colour-by-altitude toggle.
+        const color = getAircraftColor(ac, colorByAlt);
         let circle = circles.get(ac.hex);
         if (circle) {
           circle.setLatLng([ac.lat, ac.lon]);
@@ -695,7 +696,7 @@ const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircr
       for (const circle of circles.values()) circle.remove();
       circles.clear();
     };
-  }, [map, visibleAircraftRef]);
+  }, [map, visibleAircraftRef, colorByAlt]);
 
   return null;
 });
@@ -2149,7 +2150,7 @@ export default function LiveAircraftMap() {
 
             {/* 95% position-uncertainty disc around each multi-node solve. */}
             {showUncertainty && (
-              <SolveUncertaintyLayer visibleAircraftRef={visibleAircraftRef} />
+              <SolveUncertaintyLayer visibleAircraftRef={visibleAircraftRef} colorByAlt={colorByAlt} />
             )}
 
             {/* Selected trail — gradient fade; dashed for arc-type tracks */}
