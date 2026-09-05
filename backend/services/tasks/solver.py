@@ -1196,6 +1196,44 @@ def _is_dark_solver_input(s_in) -> bool:
     return not (hx and is_transponder_hex(hx))
 
 
+def _record_dark_accuracy_sample(rec: dict) -> None:
+    """Offer one published DARK solve to the rolling accuracy store.
+
+    state.accuracy_samples had no dark writer at all: the only general one is
+    track_gates._record_accuracy_sample, which sits behind ``if adsb_lat and
+    adsb_lon`` on the ADS-B enrichment path, so a solve with no transponder
+    identity could never produce a sample no matter how accurate it was.
+    health.py's solver_accuracy_degraded is computed from those samples, which
+    meant the alert claimed to cover "multi-node" accuracy while structurally
+    knowing nothing about the multinode lane that has no ADS-B.
+
+    position_source stays ``multinode_solve`` — not a new source name —
+    because that is genuinely what these tracks are published as
+    (aircraft_feed.py stamps multinode_solve on dark and tagged multinode
+    tracks alike), so this closes a sampling hole rather than inventing a
+    category; ``lane`` carries the split for anyone who needs it back.  The
+    error is gt_error_km, distance to simulation ground truth, which for a
+    dark solve is the only truth there is; where there are no ground-truth
+    trails (production) nothing is stamped and this samples nothing, so the
+    alert's inputs there are byte-identical to before.
+
+    Unthrottled, unlike the known lane's sampler: dark publishes run ~0.13/s
+    on the test fleet against that lane's ~8/s, three orders off the rate that
+    made throttling necessary to stop one source evicting the 5 000-sample
+    store.
+    """
+    state.accuracy_samples.append(
+        {
+            "hex": rec.get("gt_hex") or rec.get("solver_hex"),
+            "error_km": round(float(rec["gt_error_km"]), 4),
+            "position_source": "multinode_solve",
+            "lane": "dark",
+            "n_nodes": rec.get("n_nodes") or 0,
+            "ts": round(rec["ts_ms"] / 1000.0, 1),
+        }
+    )
+
+
 def _record_solve_history(
     outcome: str,
     s_in,
@@ -1314,6 +1352,8 @@ def _record_solve_history(
         rec["vel_err_ms"] = round(math.hypot(ve - gt_ve, vn - gt_vn), 1)
     else:
         rec["vel_err_ms"] = None
+    if rec["outcome"] == "published" and _dark and rec.get("gt_error_km") is not None:
+        _record_dark_accuracy_sample(rec)
     # Route by lane: the known lane's per-hex-per-pass volume would otherwise
     # evict dark records from the shared cap long before they aged out (see
     # state.mlat_solve_history_known).  Readers merge the two.

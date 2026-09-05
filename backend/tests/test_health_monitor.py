@@ -101,6 +101,73 @@ class TestComputeHealthIssues:
         assert "solver_accuracy_degraded" in {i["type"] for i in compute_health_issues()}
 
 
+class TestDarkSamplesReachTheProbe:
+    """solver_accuracy_degraded must actually cover the dark lane.
+
+    Before the dark sampler existed, state.accuracy_samples had no dark
+    writer: track_gates._record_accuracy_sample is gated on an ADS-B fix, so
+    a dark solve could never produce a sample however accurate or wrong it
+    was, and this alert spoke for "multi-node accuracy" while structurally
+    knowing nothing about the lane with no ADS-B.  Dark samples carry
+    position_source="multinode_solve" (what aircraft_feed publishes these
+    tracks as) plus lane="dark", so they land in a bucket the probe already
+    trusts — the thresholds are untouched, only their inputs changed.
+    """
+
+    def setup_method(self):
+        from core import state as core_state
+
+        core_state._reset_for_tests()
+
+    def _refresh(self):
+        from services.tasks.analytics_refresh import _refresh_accuracy_stats
+
+        _refresh_accuracy_stats()
+
+    def _sample(self, error_km, lane="dark"):
+        from core import state as core_state
+
+        core_state.accuracy_samples.append(
+            {
+                "hex": "gt1",
+                "error_km": error_km,
+                "position_source": "multinode_solve",
+                "lane": lane,
+                "n_nodes": 3,
+                "ts": 0.0,
+            }
+        )
+
+    def test_degraded_dark_solves_fire_the_alert(self, monkeypatch):
+        from core import state as core_state
+
+        for _ in range(40):
+            self._sample(30.0)
+        self._refresh()
+        monkeypatch.setattr(health.state, "latest_accuracy_bytes", core_state.latest_accuracy_bytes)
+        assert "solver_accuracy_degraded" in {i["type"] for i in compute_health_issues()}
+
+    def test_accurate_dark_solves_do_not(self, monkeypatch):
+        from core import state as core_state
+
+        for _ in range(40):
+            self._sample(0.9)
+        self._refresh()
+        monkeypatch.setattr(health.state, "latest_accuracy_bytes", core_state.latest_accuracy_bytes)
+        assert "solver_accuracy_degraded" not in {i["type"] for i in compute_health_issues()}
+
+    def test_dark_samples_are_binned_under_multinode_solve(self):
+        import orjson
+
+        from core import state as core_state
+
+        self._sample(1.0)
+        self._refresh()
+        by_source = orjson.loads(core_state.latest_accuracy_bytes)["by_source"]
+        assert set(by_source) == {"multinode_solve"}
+        assert by_source["multinode_solve"]["n_samples"] == 1
+
+
 class TestRunCycle:
     def test_fires_alert_per_issue(self, monkeypatch):
         sent = []
