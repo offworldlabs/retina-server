@@ -11,6 +11,8 @@ import time
 from collections import deque
 from concurrent.futures.process import BrokenProcessPool
 
+from retina_analytics.association import _point_in_beam
+
 from config.constants import (
     ARC_ONLY_ANOMALY_ALLOWLIST,
     ASSOC_GRID_STEP_KM,
@@ -1036,6 +1038,64 @@ def _claim_resolve_slot(s_in, now_s: float) -> bool:
     return True
 
 
+def _resolve_slot_blockers(track_ids, now_s: float) -> list[dict]:
+    """The live claims covering ``track_ids``, for a skip record.
+
+    Read-only, and taken after the refusal rather than during it: the check
+    itself must stay one atomic test-and-claim, and a skip is rare enough
+    (relative to the queue drain rate) that a second lock acquisition on that
+    path costs nothing.  Any claim that moves between the two is a claim the
+    diagnosis would have wanted to name anyway.
+    """
+    cutoff = now_s - _SOLVER_RESOLVE_INTERVAL_S
+    out: list[dict] = []
+    with _RECENT_SOLVES_LOCK:
+        for tid in track_ids:
+            held = _RECENT_SOLVES.get(tid)
+            if held is not None and held[0] > cutoff:
+                out.append({"track_id": tid, "held_ts": round(held[0], 3), "held_n": held[1]})
+    return out
+
+
+def _record_resolve_skip(s_in, now_s: float, blocking: list[dict] | None = None) -> None:
+    """Count and remember one resolve-slot refusal.
+
+    The counter alone could not answer the question the suppression rule
+    raises — *whose* claim blocked this, and was it even the same aircraft.
+    Live on the test droplet the rule refuses ~1 537 candidates per 646 dark
+    attempts per 30 min, and nothing recorded which claim did it, so a skip
+    that suppressed a genuinely different aircraft (tracker track ids are
+    shared across candidates — see _supersession_match) was indistinguishable
+    from one that suppressed a duplicate.  The deque carries the blocking
+    claims and the candidate's own guess position so the two can be told apart
+    after the fact.
+
+    Deliberately NOT a solve-history record: skips outrun real dark records
+    roughly two to one, and writing them into that deque would evict the
+    solves the same investigation needs (see state.solver_resolve_skips_recent).
+    """
+    s = s_in if isinstance(s_in, dict) else {}
+    track_ids = list(s.get("track_ids") or [])
+    dark = _is_dark_solver_input(s)
+    state.bump_counter("solver_resolve_skips")
+    if dark:
+        state.bump_counter("solver_resolve_skips_dark")
+    ig = s.get("initial_guess") or {}
+    state.solver_resolve_skips_recent.append(
+        {
+            "ts_ms": int(now_s * 1000),
+            # No key is minted for a candidate that never solves, so lane is
+            # the same fallback routes.test._record_lane uses for a reject.
+            "lane": "dark" if dark else "adsb",
+            "track_ids": track_ids,
+            "n_nodes": int(s.get("n_nodes") or 0),
+            "blocking": _resolve_slot_blockers(track_ids, now_s) if blocking is None else blocking,
+            "guess_lat": round(float(ig["lat"]), 6) if ig.get("lat") else None,
+            "guess_lon": round(float(ig["lon"]), 6) if ig.get("lon") else None,
+        }
+    )
+
+
 # Which single-node track pair currently owns a published n=2 track, and how
 # well it fitted.  One track is one aircraft, so two pairings sharing a track
 # are mutually exclusive; the better chi2 wins and the loser is withheld.
@@ -1384,6 +1444,59 @@ def _is_dark_solver_input(s_in) -> bool:
     return not (hx and is_transponder_hex(hx))
 
 
+def _stamp_foreign_nodes(rec: dict) -> None:
+    """Stamp which of a dark record's own nodes could not see the aircraft.
+
+    Cluster contamination is the dark lane's largest known defect — a
+    candidate assembled by format_track_pairs_for_solver can carry a node
+    whose track belongs to a *different* aircraft, and the solver then fits a
+    geometry no single aircraft ever occupied.  Offline the audit measured it
+    at ~60 % of dark candidates; this makes the same number live.
+
+    The test is the associator's own visibility predicate applied whole
+    (retina_analytics.association._point_in_beam against the registered
+    NodeGeometry), which is the same gate known-lane claiming uses — claiming
+    and the dark lane must mean the same thing by "this node can see there",
+    and a second bespoke rule here would let the two disagree.  Two
+    consequences worth knowing: it is a ground-projected bearing/footprint
+    test with no altitude term, and under FOV_MODE=active it is the learned
+    FOV rather than the theoretical wedge.  Both are exactly what the rest of
+    the pipeline believes about coverage, which is the point.
+
+    Position is the matched ground-truth point already stamped on the record
+    (gt_lat/gt_lon at the solve epoch), so this costs no extra trail lookup —
+    only one cone test per contributing node.  Nodes trimmed out by
+    _trim_and_resolve are included: a node dropped for a bad residual is
+    precisely the contamination this measures, and leaving it out would hide
+    every case trimming already rescued.
+
+    A node with no registered geometry is not judged either way.  When that
+    leaves nothing judgeable the record is left unstamped rather than stamped
+    clean, so contamination_pct never counts an abstention as innocence.
+    """
+    lat, lon = rec.get("gt_lat"), rec.get("gt_lon")
+    if lat is None or lon is None:
+        return
+    node_ids = list(rec.get("contributing_node_ids") or [])
+    node_ids += [nid for nid in (rec.get("trimmed_node_ids") or []) if nid not in node_ids]
+    if not node_ids:
+        return
+    geometries = state.node_associator.node_geometries
+    judged = 0
+    foreign: list[str] = []
+    for nid in node_ids:
+        geo = geometries.get(nid)
+        if geo is None:
+            continue
+        judged += 1
+        if not _point_in_beam(lat, lon, geo):
+            foreign.append(nid)
+    if not judged:
+        return
+    rec["foreign_node_ids"] = foreign
+    rec["contaminated"] = bool(foreign)
+
+
 def _record_dark_accuracy_sample(rec: dict) -> None:
     """Offer one published DARK solve to the rolling accuracy store.
 
@@ -1460,7 +1573,14 @@ def _record_solve_history(
 
     ``extra`` merges caller-supplied fields (trim metadata, beam-rejection
     diagnostics) into the record.  Applied before the GT stamp so it can
-    never clobber gt_hex/gt_error_km/gt_lat/gt_lon.
+    never clobber gt_hex/gt_error_km/gt_lat/gt_lon — and so the trimmed node
+    ids it carries are in hand for the contamination stamp below.
+
+    ``foreign_node_ids``/``contaminated`` are stamped on DARK records that
+    matched ground truth: which of this candidate's own nodes could not see
+    the aircraft it was matched to (see _stamp_foreign_nodes).  Absent on
+    every other record, which is what /api/test/solver-stats' contamination
+    block counts as "not judged" rather than as clean.
     """
     r = result if isinstance(result, dict) else {}
     s = s_in if isinstance(s_in, dict) else {}
@@ -1574,6 +1694,11 @@ def _record_solve_history(
         rec["vel_err_ms"] = round(math.hypot(ve - gt_ve, vn - gt_vn), 1)
     else:
         rec["vel_err_ms"] = None
+    # Live cluster-contamination metric, dark lane only and only where ground
+    # truth actually matched — without a truth position there is nothing to
+    # ask "could this node see it?" about.  See _stamp_foreign_nodes.
+    if _dark and rec.get("gt_hex"):
+        _stamp_foreign_nodes(rec)
     if rec["outcome"] == "published" and _dark and rec.get("gt_error_km") is not None:
         _record_dark_accuracy_sample(rec)
     # Route by lane: the known lane's per-hex-per-pass volume would otherwise
@@ -1724,8 +1849,9 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
     # here rather than at enqueue: the frame path must not carry solver state,
     # and a copy that queued before its twin was solved can only be recognised
     # once it reaches a worker.
-    if not _claim_resolve_slot(s_in, time.time()):
-        state.bump_counter("solver_resolve_skips")
+    _now_s = time.time()
+    if not _claim_resolve_slot(s_in, _now_s):
+        _record_resolve_skip(s_in, _now_s)
         return None
     n_nodes = s_in.get("n_nodes", 0) if isinstance(s_in, dict) else 0
     consensus_meta: dict | None = None

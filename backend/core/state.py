@@ -475,6 +475,15 @@ solver_queue: _stdlib_queue.Queue = _stdlib_queue.Queue(maxsize=_SOLVER_QUEUE_SI
 
 # Monotonic counter for dropped frames (useful for monitoring)
 frames_dropped: int = 0
+# Frames the per-node rate limiter refused before they ever reached
+# frame_queue (tcp_handler's NODE_FRAME_MIN_INTERVAL_S gate).  A different
+# event from frames_dropped, which is queue saturation: this one is the
+# pipeline deliberately sampling a node down to ~1 Hz, and a node streaming at
+# 22 fps therefore reports a large number here while dropping nothing.  It was
+# uncounted, so "how much of a node's evidence does the tracker actually see"
+# had no answer at all — the frames_dropped that IS published
+# (/api/admin/metrics) says zero throughout.
+node_frames_rate_limited: int = 0
 frames_processed: int = 0
 solver_successes: int = 0
 solver_failures: int = 0
@@ -542,6 +551,25 @@ solver_stale_drops: int = 0
 # solver_successes is normal and is the mechanism working — it is
 # solver_stale_drops that means work was lost.
 solver_resolve_skips: int = 0
+
+# The dark-lane share of the counter above, split out because the two lanes
+# read completely differently: an ADS-B-anchored duplicate that is skipped
+# costs nothing (the transponder keeps the track alive anyway), while a
+# skipped dark candidate may be the only chance that aircraft had of reaching
+# the map this window.  Lane is decided by solver._is_dark_solver_input, the
+# same predicate routes.test._record_lane falls back to for a record that
+# never got a key — and a skip never gets one.
+solver_resolve_skips_dark: int = 0
+
+# The last few hundred resolve-slot skips, with the claims that blocked them.
+# Deliberately NOT the solve-history deque: a skip is not a solve outcome, and
+# writing one record per skip into mlat_solve_history would evict the real
+# records at roughly twice their rate (live: ~1 537 skips per 646 dark
+# attempts per 30 min).  Small and separate, read by
+# /api/test/solver-stats' resolve_skips block and dumped by
+# /api/test/mlat-history?kind=resolve_skips.  ~250 B/entry.
+SOLVER_RESOLVE_SKIPS_RECENT_MAX = 500
+solver_resolve_skips_recent: deque = deque(maxlen=SOLVER_RESOLVE_SKIPS_RECENT_MAX)
 
 # Multinode entries removed because a later solve shared a source single-node
 # track with them AND the spatial/identical-inputs guard in solver.py's
@@ -746,12 +774,14 @@ def _reset_for_tests() -> None:
     global latest_mlat_accuracy_bytes, latest_mlat_verification_bytes
     global latest_storage_bytes, simulation_config
     global frames_dropped, frames_processed, solver_successes, solver_failures
+    global node_frames_rate_limited
     global adsb_seed_frames_autotagged, adsb_capture_ts_fallback
     global known_claims_made, known_claim_contentions, known_claims_bound
     global known_claims_errors, known_claims_visibility_rejects, known_claims_world_rejects
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
     global coverage_rebuild_backlog
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
+    global solver_resolve_skips_dark
     global mn_superseded, mn_superseded_blocked, solver_trimmed
     global solver_consensus_selected, solver_consensus_filtered
     global solver_consensus_fallback, solver_consensus_shadow
@@ -801,6 +831,7 @@ def _reset_for_tests() -> None:
     track_archive_buffer.clear()
     mlat_solve_history.clear()
     mlat_solve_history_known.clear()
+    solver_resolve_skips_recent.clear()
     accuracy_samples.clear()
     mlat_samples.clear()
     for q in (frame_queue, solver_queue):
@@ -832,7 +863,7 @@ def _reset_for_tests() -> None:
     simulation_config = dict(_SIMULATION_CONFIG_DEFAULTS)
 
     with counters_lock:
-        frames_dropped = frames_processed = 0
+        frames_dropped = frames_processed = node_frames_rate_limited = 0
         solver_successes = solver_failures = n2_unconfirmed = 0
         adsb_seed_frames_autotagged = adsb_capture_ts_fallback = 0
         known_claims_made = known_claim_contentions = known_claims_bound = 0
@@ -841,7 +872,7 @@ def _reset_for_tests() -> None:
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
         coverage_rebuild_backlog = 0
         solver_stale_drops = 0
-        solver_resolve_skips = 0
+        solver_resolve_skips = solver_resolve_skips_dark = 0
         mn_superseded = mn_superseded_blocked = 0
         solver_trimmed = 0
         solver_consensus_selected = solver_consensus_filtered = 0

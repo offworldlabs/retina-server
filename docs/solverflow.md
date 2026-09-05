@@ -11,10 +11,12 @@ beyond what publication needs, see [`pipeline.md`](pipeline.md) (its own §3 is
 stale on the known lane and pool fallback — this doc is the current source for
 those two topics).
 
-File:line references are repo-relative to `backend/`, except the `libs/*`
-paths, which are already fully qualified (those are separate submodule repos
-vendored under `libs/`). All references were checked against `main` at
-`0a1d30f`.
+References name a **file and a symbol**, never a line number: paths are
+repo-relative to `backend/`, except the `libs/*` ones, which are already fully
+qualified (those are separate submodule repos vendored under `libs/`). Line
+numbers were what this document used to carry, and they were stale within two
+weeks of being written — every one of them had drifted by the time anyone
+followed it. A symbol survives an edit above it, so grep for the name.
 
 ## Legend
 
@@ -74,13 +76,13 @@ lane rides the solver loop's idle cycles rather than owning workers of its
 own. Everything that reaches a solve passes through one gate stack
 (`_process_solver_item`) before publication.
 
-| Constant | Value | File:line |
+| Constant | Value | Defined in |
 |---|---|---|
-| `frame_queue` size (`FRAME_QUEUE_SIZE`) | 10000 | `core/state.py:358-359` |
-| `solver_queue` size (`SOLVER_QUEUE_SIZE`) | 200 | `core/state.py:365-366` |
-| `FRAME_WORKERS` | 4 (compose sets 6) | `main.py:164`, `docker-compose.yml:54` |
-| `SOLVER_WORKERS` | 2 daemon threads + same-size process pool | `services/tasks/solver.py:31,67` |
-| `KNOWN_LANE_MODE` default | `binding` | `core/state.py:72-74` |
+| `frame_queue` size (`FRAME_QUEUE_SIZE`) | 10000 | `core/state.py` |
+| `solver_queue` size (`SOLVER_QUEUE_SIZE`) | 200 | `core/state.py` |
+| `FRAME_WORKERS` | 4 (compose sets 6) | `core/state.py` (`FRAME_WORKERS`), `docker-compose.yml` |
+| `SOLVER_WORKERS` | 2 daemon threads + same-size process pool | `services/tasks/solver.py` (`_N_SOLVER_WORKERS`, `_make_solver_pool`) |
+| `KNOWN_LANE_MODE` default | `binding` | `core/state.py` (`KNOWN_LANE_MODE`) |
 
 ---
 
@@ -89,11 +91,11 @@ own. Everything that reaches a solve passes through one gate stack
 ```mermaid
 flowchart TD
     subgraph producers["Five producers"]
-        p1["TCP (primary)<br/>tcp_handler.py:326"]
-        p2["blah2 bridge<br/>blah2_bridge.py:289"]
-        p3["v1 node HTTP API<br/>node_stream.py:250"]
-        p4["Legacy HTTP radar routes<br/>routes/radar.py:151,202"]
-        p5["Startup priming<br/>node_pipeline.py:139"]
+        p1["TCP (primary)<br/>tcp_handler._enqueue_detection"]
+        p2["blah2 bridge<br/>blah2_bridge.blah2_bridge_task"]
+        p3["v1 node HTTP API<br/>node_stream._file_frame"]
+        p4["Legacy HTTP radar routes<br/>radar.ingest_detections(_bulk)"]
+        p5["Startup priming<br/>node_pipeline.prime_pipeline"]
     end
 
     p1 --> gA{"Gate A: timestamp present?"}
@@ -131,25 +133,25 @@ flowchart TD
     classDef inert fill:#eee,stroke:#999,color:#888,stroke-dasharray: 4 3
 ```
 
-The ordering inside `process_one_frame` (`services/frame_processor.py:294`) is
+The ordering inside `process_one_frame` (`services/frame_processor.py`) is
 load-bearing, not incidental: claiming (2.3) runs **before** ADS-B seeding
 (2.4) so a node-supplied `adsb` field is still distinguishable from a claim,
 and both run **before** the tracker (2.5) so that, in `binding` mode, a
 claimed detection never reaches the dark-lane tracker or association at all
-— see the ordering comment at `services/frame_processor.py:327-337`.
+— see the ordering comment at the head of `process_one_frame`'s claiming step.
 Frame-level gates (A/B/C on TCP, plus the connected-node check on the v1 API)
 sit ahead of everything else; nothing downstream sees a frame that failed
 one of them.
 
-| Constant | Value | File:line |
+| Constant | Value | Defined in |
 |---|---|---|
-| Gate A: timestamp required | — | `tcp_handler.py:513-516` |
-| Gate B: `NODE_FRAME_MIN_INTERVAL_S` | 1.0 s/node | `tcp_handler.py:495,527-532` |
-| Gate C: QueueFull | `frames_dropped` counter | `tcp_handler.py:536-552` |
-| `process_one_frame` entry | — | `services/frame_processor.py:294` |
-| Ordering rationale (claim → seed → tracker) | — | `services/frame_processor.py:327-337` |
-| Gate 2.10: `n_nodes < 2` skip | — | `services/frame_processor.py:409-426` |
-| blah2 poll interval | 1.0 s | `config/constants.py:266` |
+| Gate A: timestamp required | — | `tcp_handler._enqueue_detection` |
+| Gate B: `NODE_FRAME_MIN_INTERVAL_S` | 1.0 s/node, counted as `node_frames_rate_limited` | `tcp_handler` (`_NODE_MIN_INTERVAL_S`, `_enqueue_detection`) |
+| Gate C: QueueFull | `frames_dropped` counter | `tcp_handler._enqueue_detection` |
+| `process_one_frame` entry | — | `services/frame_processor.py` |
+| Ordering rationale (claim → seed → tracker) | — | `frame_processor.process_one_frame` |
+| Gate 2.10: `n_nodes < 2` skip | — | `frame_processor.process_one_frame` |
+| blah2 poll interval | 1.0 s | `config/constants.py` (`BLAH2_POLL_INTERVAL_S`) |
 
 ---
 
@@ -205,17 +207,17 @@ also reject — a differential property test in `test_known_claiming.py`
 failure increments the same `known_claims_visibility_rejects` counter as a
 gate failure: same event, same meaning, just caught cheaper.
 
-**Mode semantics** (`KNOWN_LANE_MODE`, read once at `core/state.py:72-74`,
+**Mode semantics** (`KNOWN_LANE_MODE`, read once in `core/state.py`,
 default `binding`; an unrecognized value falls back to `shadow`, not to the
 default — a typo should degrade to the inert mode, not the acting one):
 
 | Mode | Claiming | Frame the dark lane sees | Known-lane solver | Publication |
 |---|---|---|---|---|
-| `off` | never runs | untouched | returns 0 immediately (`known_lane.py:391-392`); worker never even calls it (`solver.py:1961`) | none |
+| `off` | never runs | untouched | returns 0 immediately (`known_lane.run_known_lane_pass`); worker never even calls it (`solver._run_solver_worker`) | none |
 | `shadow` | runs, records claims + residuals + counters | untouched | runs: solves, classifies, records accuracy samples | never |
-| `binding` | runs | `strip_claimed_detections` removes claimed indices (`frame_processor.py:347`) | runs | `truth_match` results publish into `state.multinode_tracks` as `mn-adsb-<hex>`; ghosts never publish |
+| `binding` | runs | `strip_claimed_detections` removes claimed indices (called from `frame_processor.process_one_frame`) | runs | `truth_match` results publish into `state.multinode_tracks` as `mn-adsb-<hex>`; ghosts never publish |
 
-`strip_claimed_detections` (`services/known_claiming.py:343`) returns a copy
+`strip_claimed_detections` (`services/known_claiming.py`) returns a copy
 with claimed indices removed from `delay`/`doppler`/`snr`/`adsb`; the
 original frame still feeds the archive and ADS-B extraction (steps 2.11-2.12)
 unchanged.
@@ -224,7 +226,7 @@ unchanged.
 
 ```mermaid
 flowchart TD
-    arm["Solver worker loop arms known_lane<br/>at thread start (solver.py:1961)"]
+    arm["Solver worker loop arms known_lane<br/>at thread start (solver._run_solver_worker)"]
     arm --> drain["After every queue-drain iteration,<br/>call maybe_run_pass"]
     drain --> gm{"mode == off?"}
     gm -->|"yes"| ret1["return"]:::inert
@@ -261,7 +263,7 @@ flowchart TD
     gpub -->|"no"| noop["accuracy sample only,<br/>no feed entry"]:::inert
 ```
 
-The docstring at `services/tasks/known_lane.py:19-27` calls this the "free
+The module docstring of `services/tasks/known_lane.py` calls this the "free
 solve invariant": the ADS-B fix seeds the initial guess and pins altitude,
 nothing else — no regularization pulls the solve toward the truth position,
 so the residual (`err_km`) is a genuine measurement of radar accuracy, not a
@@ -269,21 +271,21 @@ circular check. One more intentional-by-omission detail: known-lane
 measurements carry `snr = 0.0` (claim records have no `snr` key), which the
 LM's SNR weighting maps to a uniform weight of 1.0.
 
-| Constant | Value | File:line |
+| Constant | Value | Defined in |
 |---|---|---|
-| `KNOWN_CLAIM_MAX_FIX_AGE_S` | 45.0 s | `known_claiming.py` (= `ADSB_SEED_MAX_DR_AGE_S`, `association.py:106`) |
-| Path 2 gates: `KNOWN_CLAIM_DELAY_GATE_US` / `KNOWN_CLAIM_DOPPLER_GATE_HZ` | 10.0 us / 25.0 Hz, age-scaled | `known_claiming.py` (= `ADSB_SEED_*`, `association.py:98,99`) |
-| Prescreen slack `_SCREEN_MARGIN` | 1.02 | `known_claiming.py:79` |
-| Prescreen speed bound `_V_MAX_MS` | 340.0 m/s | `association.py:205` |
-| `CLAIM_MAX_GLOBAL_TRACKS` (contention reference cap, newest-first) | 200 | `association.py:89`, applied in `known_claiming.py:_dark_global_projections` |
-| Contention gates: `CLAIM_DELAY_GATE_US` / `CLAIM_DOPPLER_GATE_HZ` | 10.0 us / 25.0 Hz | `libs/retina-analytics/.../association.py:73,77` |
-| `CLAIM_MAX_DR_AGE_S` (contention DR window) | 30.0 s | `association.py:80` |
-| `CLAIM_ELIGIBLE_MIN_N_NODES` / `MIN_SOLVE_COUNT` | 3 / 2 | `association.py:85,86` |
-| `KNOWN_CLAIMS_PER_HEX_MAX` | 64 | `core/state.py:274-275` |
-| `_PASS_MIN_INTERVAL_S` | 2.0 s | `services/tasks/known_lane.py:105` |
-| `_CLAIM_MAX_AGE_S` / `_CLAIM_SPREAD_S` | 45.0 s / 5.0 s | `known_lane.py:91,99` |
-| `_ATTEMPT_TTL_S` | 600 s | `known_lane.py:110` |
-| `_MAX_DISPLACEMENT_KM` (truth_match cutoff) | 2.0 km | `services/tasks/solver.py:205` |
+| `KNOWN_CLAIM_MAX_FIX_AGE_S` | 45.0 s | `known_claiming.py` (= `association.ADSB_SEED_MAX_DR_AGE_S`) |
+| Path 2 gates: `KNOWN_CLAIM_DELAY_GATE_US` / `KNOWN_CLAIM_DOPPLER_GATE_HZ` | 10.0 us / 25.0 Hz, age-scaled | `known_claiming.py` (= `association.ADSB_SEED_DELAY_GATE_US` / `_DOPPLER_GATE_HZ`) |
+| Prescreen slack `_SCREEN_MARGIN` | 1.02 | `known_claiming.py` |
+| Prescreen speed bound `_V_MAX_MS` | 340.0 m/s | `association.py` |
+| `CLAIM_MAX_GLOBAL_TRACKS` (contention reference cap, newest-first) | 200 | `association.py`, applied in `known_claiming._dark_global_projections` |
+| Contention gates: `CLAIM_DELAY_GATE_US` / `CLAIM_DOPPLER_GATE_HZ` | 10.0 us / 25.0 Hz | `libs/retina-analytics/.../association.py` |
+| `CLAIM_MAX_DR_AGE_S` (contention DR window) | 30.0 s | `association.py` |
+| `CLAIM_ELIGIBLE_MIN_N_NODES` / `MIN_SOLVE_COUNT` | 3 / 2 | `association.py` |
+| `KNOWN_CLAIMS_PER_HEX_MAX` | 64 | `core/state.py` |
+| `_PASS_MIN_INTERVAL_S` | 2.0 s | `services/tasks/known_lane.py` |
+| `_CLAIM_MAX_AGE_S` / `_CLAIM_SPREAD_S` | 45.0 s / 5.0 s | `known_lane.py` |
+| `_ATTEMPT_TTL_S` | 600 s | `known_lane.py` |
+| `_MAX_DISPLACEMENT_KM` (truth_match cutoff) | 2.0 km | `services/tasks/solver.py` |
 
 ---
 
@@ -291,7 +293,7 @@ LM's SNR weighting maps to a uniform weight of 1.0.
 
 ```mermaid
 flowchart TD
-    frame["pipeline.process_frame<br/>passive_radar.py:672"]
+    frame["PassiveRadarPipeline.process_frame<br/>pipeline/passive_radar.py"]
     frame --> tracker["retina_tracker<br/>Kalman + GNN"]
     tracker --> geo["_run_geolocation per track<br/>with new data"]
 
@@ -345,7 +347,7 @@ flowchart TD
     classDef inert fill:#eee,stroke:#999,color:#888,stroke-dasharray: 4 3
 ```
 
-`compute_overlap_zone` (`libs/retina-analytics/.../association.py:578`)
+`compute_overlap_zone` (`libs/retina-analytics/.../association.py`)
 underlies both the confirmed-track association round and the overlap-grid
 cache: it fast-prunes non-overlapping node pairs by receiver separation,
 grids the shared coverage at `ASSOC_GRID_STEP_KM` on six altitude layers that
@@ -353,22 +355,22 @@ must match the solver's `_SOLVER_ALT_LAYERS_KM`, and requires each grid
 column to fall in **both** beams (`_point_in_beam`, FOV-aware only when
 `FOV_MODE=active`).
 
-| Constant | Value | File:line |
+| Constant | Value | Defined in |
 |---|---|---|
-| `GEO_INTERVAL_S` (single-node geo rate limit) | 10.0 s | `config/constants.py:194` |
-| Single-node min detections | 3 | `passive_radar.py:356-361` |
-| `N2_TRACK_HISTORY_MAX` (track view window) | 20 | `config/constants.py:59` |
-| `ADSB_VIEW_TAG_FRESH_N` | 3 | `frame_processor.py:220` |
-| `ASSOC_MIN_INTERVAL_S` | 30.0 s | `config/constants.py:22` |
-| `ASSOC_MAX_NEIGHBORS` | 50/round | `config/constants.py:23` |
-| `ASSOC_MAX_PAIRS_PER_ROUND` / `_MAX_FITS_PER_ROUND` | 64 / 8 | `config/constants.py:31`, `association.py:1043` |
-| `delay_gate_us` (bottom-up coarse gate) | 5.0 us | `association.py:883` |
-| `doppler_gate_hz` (bottom-up) | 30.0 Hz, **inert** — delay-only grid gate | `association.py:884` |
-| velocity seed cap `_V_MAX_MS` | 340 m/s | `association.py:166` |
-| `N2_CONFIRM_MIN_EPOCHS` / `MIN_SPAN_S` | 4 / 12.0 s | `config/constants.py:57-58` |
-| `_MERGE_DIST_KM` (clustering) | 6.0 km | `association.py:2160` |
-| `ASSOC_GRID_STEP_KM` | 3.0 km | `config/constants.py:21` |
-| `_SOLVER_ALT_LAYERS_KM` | [1.5, 3, 5, 7, 9, 11] km | `services/tasks/solver.py:111` |
+| `GEO_INTERVAL_S` (single-node geo rate limit) | 10.0 s | `config/constants.py` (applied as `_GEO_INTERVAL_S` in `_run_geolocation`) |
+| Single-node min detections | 3 | `pipeline/passive_radar.py` (`_geolocate_track_event`, `min_det`) |
+| `N2_TRACK_HISTORY_MAX` (track view window) | 20 | `config/constants.py` |
+| `ADSB_VIEW_TAG_FRESH_N` | 3 | `frame_processor.py` |
+| `ASSOC_MIN_INTERVAL_S` | 30.0 s | `config/constants.py` |
+| `ASSOC_MAX_NEIGHBORS` | 50/round | `config/constants.py` |
+| `ASSOC_MAX_PAIRS_PER_ROUND` / `_MAX_FITS_PER_ROUND` | 64 / 8 | `config/constants.py`, `association.py` |
+| `delay_gate_us` (bottom-up coarse gate) | 5.0 us | `association.compute_overlap_zone` (default arg) |
+| `doppler_gate_hz` (bottom-up) | 30.0 Hz, **inert** — delay-only grid gate | `association.compute_overlap_zone` (default arg) |
+| velocity seed cap `_V_MAX_MS` | 340 m/s | `association.py` |
+| `N2_CONFIRM_MIN_EPOCHS` / `MIN_SPAN_S` | 4 / 12.0 s | `config/constants.py` |
+| `_MERGE_DIST_KM` (clustering) | 6.0 km | `association.InterNodeAssociator.format_track_pairs_for_solver` (local) |
+| `ASSOC_GRID_STEP_KM` | 3.0 km | `config/constants.py` |
+| `_SOLVER_ALT_LAYERS_KM` | [1.5, 3, 5, 7, 9, 11] km | `services/tasks/solver.py` |
 
 ---
 
@@ -376,7 +378,7 @@ column to fall in **both** beams (`_point_in_beam`, FOV-aware only when
 
 The centerpiece: every candidate from either lane, once dequeued from
 `solver_queue`, runs through `_process_solver_item`
-(`services/tasks/solver.py:1344`) as a strict, ordered chain. A failure at
+(`services/tasks/solver.py`) as a strict, ordered chain. A failure at
 any gate stops the chain, bumps a counter, and (from 6.5 onward) writes a
 named record to solve history.
 
@@ -430,14 +432,14 @@ flowchart TD
 ```
 
 `SOLVER_CONSENSUS_MODE` is `off` in production (see the mode-flag table in
-[`architecture.md:94-110`](architecture.md#feature-gates)), so in practice
+[`architecture.md`](architecture.md#feature-gates)), so in practice
 this sub-branch never reaches `active` outside staging.
 
 ### The LM itself
 
-`solve_multinode` — `libs/retina-geolocator/retina_geolocator/multinode_solver.py:518`,
+`solve_multinode` — `libs/retina-geolocator/retina_geolocator/multinode_solver.py`,
 invoked through the process pool via `_pool_solve_multinode`
-(`services/tasks/solver.py:1915`).
+(`services/tasks/solver.py`).
 
 ```mermaid
 flowchart TD
@@ -459,19 +461,19 @@ flowchart TD
     classDef inert fill:#eee,stroke:#999,color:#888,stroke-dasharray: 4 3
 ```
 
-| Constant | Value | File:line |
+| Constant | Value | Defined in |
 |---|---|---|
-| `_SOLVER_MAX_QUEUE_AGE_S` (6.1) | 45.0 s | `services/tasks/solver.py:701` |
-| `SOLVER_RESOLVE_INTERVAL_S` (6.2) | 12 s (0 disables) | `services/tasks/solver.py:744` |
-| `_TRIM_MAX_ROUNDS` / `_TRIM_RESID_FACTOR` / `_TRIM_MIN_NODES` (6.4) | 4 / 1.5 / 3 | `services/tasks/solver.py:160-162` |
-| `SOLVER_RMS_DELAY_MAX_US` (6.5) | 3.0 us | `services/tasks/solver.py:132` |
-| `_SOLVER_RMS_DOPPLER_MAX_HZ` (6.6) | 200.0 Hz (hardcoded) | `services/tasks/solver.py:173` |
-| `_MAX_DISPLACEMENT_KM` (6.8) | 2.0 km | `services/tasks/solver.py:205` |
-| `N2_CONFIRM_CHI2_MAX` (6.9) | 2.0 | `config/constants.py:56` |
-| `_TRACK_CLAIM_TTL_S` (6.10) | 60.0 s | `services/tasks/solver.py:807` |
-| `_CONSENSUS_MIN_NODES` | 3 | `services/tasks/solver.py:154` |
-| `_SIGMA_DELAY_US` / `_SIGMA_DOPPLER_HZ` | 0.1 / 2.0 | `multinode_solver.py:51,52` |
-| `_V_BOUND_MS` / `_VZ_BOUND_MS` | 300.0 / 20.0 m/s | `multinode_solver.py:57,63` |
+| `_SOLVER_MAX_QUEUE_AGE_S` (6.1) | 45.0 s | `services/tasks/solver.py` |
+| `SOLVER_RESOLVE_INTERVAL_S` (6.2) | 12 s (0 disables) | `services/tasks/solver.py` (`_SOLVER_RESOLVE_INTERVAL_S`) |
+| `_TRIM_MAX_ROUNDS` / `_TRIM_RESID_FACTOR` / `_TRIM_MIN_NODES` (6.4) | 4 / 1.5 / 3 | `services/tasks/solver.py` |
+| `SOLVER_RMS_DELAY_MAX_US` (6.5) | 3.0 us | `services/tasks/solver.py` (`_SOLVER_RMS_DELAY_MAX_US`) |
+| `_SOLVER_RMS_DOPPLER_MAX_HZ` (6.6) | 200.0 Hz (hardcoded) | `services/tasks/solver.py` |
+| `_MAX_DISPLACEMENT_KM` (6.8) | 2.0 km | `services/tasks/solver.py` |
+| `N2_CONFIRM_CHI2_MAX` (6.9) | 2.0 | `config/constants.py` |
+| `_TRACK_CLAIM_TTL_S` (6.10) | 60.0 s | `services/tasks/solver.py` |
+| `_CONSENSUS_MIN_NODES` | 3 | `services/tasks/solver.py` |
+| `_SIGMA_DELAY_US` / `_SIGMA_DOPPLER_HZ` | 0.1 / 2.0 | `multinode_solver.py` |
+| `_V_BOUND_MS` / `_VZ_BOUND_MS` | 300.0 / 20.0 m/s | `multinode_solver.py` |
 
 ---
 
@@ -525,26 +527,61 @@ flowchart TD
 
 | Value | Set at | Meaning |
 |---|---|---|
-| `multinode_solve` | `aircraft_feed.py:132` | published multi-node solve |
-| `solver_adsb_seed` | `track_gates.py:330` | single-node LM with fresh ADS-B fix |
-| `solver_single_node` | `track_gates.py:330` | single-node LM, no ADS-B |
-| `single_node_ellipse_arc` | `track_gates.py:378` | overwrites either when an ambiguity arc exists — displayed point is the arc midpoint |
-| `adsb_single_node` | `aircraft_feed.py:_claimed_single_node_entries` | exactly one node claiming the hex within `CLAIMED_DISPLAY_FRESH_S`; position is the claim's ADS-B fix, the entry carries the node's full ambiguity arc. Two or more claiming nodes emit nothing here — that is the known-lane solver's `mn-adsb-<hex>` |
-| `known_lane_truth_match` / `known_lane_ghost` | `known_lane.py:260` | accuracy-sample-only, not a feed entry |
+| `multinode_solve` | `aircraft_feed.multinode_to_aircraft` | published multi-node solve |
+| `solver_adsb_seed` | `track_gates.track_entry` | single-node LM with fresh ADS-B fix |
+| `solver_single_node` | `track_gates.track_entry` | single-node LM, no ADS-B |
+| `single_node_ellipse_arc` | `track_gates.track_entry` | overwrites either when an ambiguity arc exists — displayed point is the arc midpoint |
+| `adsb_single_node` | `aircraft_feed._claimed_single_node_entries` | exactly one node claiming the hex within `CLAIMED_DISPLAY_FRESH_S`; position is the claim's ADS-B fix, the entry carries the node's full ambiguity arc. Two or more claiming nodes emit nothing here — that is the known-lane solver's `mn-adsb-<hex>` |
+| `known_lane_truth_match` / `known_lane_ghost` | `known_lane._record_accuracy` | accuracy-sample-only, not a feed entry |
 
-| Constant | Value | File:line |
+| Constant | Value | Defined in |
 |---|---|---|
 | `_MN_ASSOC_MAX_DIST_KM` / `_MN_ASSOC_MAX_AGE_S` (identity step 2/3) | 6.0 km / 60.0 s | `services/tasks/solver.py` |
 | `_MN_ASSOC_DRIFT_KM_PER_S` / `_MN_ASSOC_MAX_DIST_CAP_KM` (step 3 only — the gate grows with the matched entry's age) | 0.13 km/s / 12.0 km | `services/tasks/solver.py` |
 | Supersession gate (`_supersession_match`) — the same age-scaled `_mn_assoc_gate_km` and `_MN_ASSOC_MAX_AGE_S` as step 3, applied to the solve's RAW position | 6.0 + 0.13·dt km, cap 12.0 / 60.0 s | `services/tasks/solver.py` |
-| `CV_VEL_ADOPT_CHI2_MAX` | 5.0 | `config/constants.py:77` |
-| `MN_N2_MIN_SOLVES` | 2 | `config/constants.py:63` |
-| `MN_ONESHOT_TTL_S` | 15.0 s | `config/constants.py:66` |
-| `_DEDUP_SOURCE_RANK` order | multinode_solve 0 < adsb_single_node 1 < solver_adsb_seed 2 < solver_single_node 3 < single_node_ellipse_arc 4 | `services/feed_helpers.py:37-43` |
-| `CLAIMED_DISPLAY_FRESH_S` | 5.0 s | `config/constants.py:131-139` |
-| Dedup proximity / altitude gate | 3.0 km / 2000 ft | `services/feed_helpers.py:49-50` |
-| `AIRCRAFT_FLUSH_INTERVAL_S` | 1.0 s | `config/constants.py:167` |
-| `DISPLAY_STALE_TRACK_S` / `GATE_MAX_HOLD_S` | 15 s / 10 s | `config/constants.py:206,213` |
+| `CV_VEL_ADOPT_CHI2_MAX` | 5.0 | `config/constants.py` |
+| `MN_N2_MIN_SOLVES` | 2 | `config/constants.py` |
+| `MN_ONESHOT_TTL_S` | 15.0 s | `config/constants.py` |
+| `_DEDUP_SOURCE_RANK` order | multinode_solve 0 < adsb_single_node 1 < solver_adsb_seed 2 < solver_single_node 3 < single_node_ellipse_arc 4 | `services/feed_helpers.py` |
+| `CLAIMED_DISPLAY_FRESH_S` | 5.0 s | `config/constants.py` |
+| Dedup proximity / altitude gate | 3.0 km / 2000 ft | `services/feed_helpers.py` (`_DEDUP_PROXIMITY_KM`, `_DEDUP_ALT_GATE_FT`) |
+| `AIRCRAFT_FLUSH_INTERVAL_S` | 1.0 s | `config/constants.py` |
+| `DISPLAY_STALE_TRACK_S` / `GATE_MAX_HOLD_S` | 15 s / 10 s | `config/constants.py` |
+
+---
+
+## 7. Reading the pipeline from outside
+
+Three endpoints answer questions about the two lanes, and each has a shape
+worth knowing before it is trusted.
+
+**`/api/test/mlat-history`** dumps solve records. Both lanes write their own
+deque (`state.mlat_solve_history`, `state.mlat_solve_history_known`) and every
+reader merges them. `?lane=dark|known|adsb|all` narrows the answer;
+`?limit=` (default 1 000, max 5 000) is applied **per lane**, so a known-lane
+burst can never push dark records out of the response — the flat cap that
+preceded it left a 30 min request holding only the newest ~6 min of dark
+records, which reads exactly like a quiet dark lane. `lane_counts` is
+reported pre-cap so a truncated `records` list is legible.
+`?kind=resolve_skips` dumps a different store entirely — see below.
+
+**`/api/test/solver-stats`** is the Solver Report panel's source. Its funnel,
+error percentiles, ghosts, fragmentation, `contamination` and `resolve_skips`
+are all the DARK lane; `lane_split` gives the per-lane record counts and
+`known_lane` that lane's own numbers.
+
+| Block | Says | Watch for |
+|---|---|---|
+| `contamination` | Of the dark records that matched ground truth, how many carried a node that could not see the aircraft (`foreign_node_ids` on the record; verdict is the associator's own `_point_in_beam`, the same gate known-lane claiming uses) | `pct` is the live version of the offline ~60 % the cluster-splitting work exists to move. Records with no GT match, or no registered geometry for any contributing node, are **out of the denominator** — abstention, not innocence |
+| `resolve_skips` | Candidates the re-solve suppression refused in this window, from `state.solver_resolve_skips_recent`, with the claims that blocked each one | `attempts_ratio` is all-lane skips over DARK attempts (live baseline ~2.4). The deque holds 500 entries against ~50 skips/min, so read `window_effective_minutes` before reading `total` as a window count |
+| `counters.resolve_skips_dark` | Dark share of the since-boot skip counter | — |
+| `counters.node_frames_rate_limited` | Frames `NODE_FRAME_MIN_INTERVAL_S` refused before the tracker saw them (Gate B in §2) | Not the same event as `/api/admin/metrics`' `frames_dropped`, which is `frame_queue` saturation and normally reads zero |
+
+A skip is deliberately **not** a solve-history record: skips outrun dark
+records roughly two to one on the live fleet, so writing them into
+`mlat_solve_history` would evict exactly the solves an investigation needs.
+They are also not counted as attempts or rejects — a skipped candidate never
+reached a solve.
 
 ---
 
@@ -566,15 +603,15 @@ flowchart TD
   (`fragmentation`) and `superseded_keys` / `superseded_blocked` on each
   published `mlat_solve_history` record are how this is watched.
 - **Node-trust residuals are measure-only.** `node_bias.py` computes them but
-  nothing in the solver consumes them yet (`node_bias.py:33-40` docstring).
+  nothing in the solver consumes them yet (`node_bias.py` module docstring).
 - **`docs/pipeline.md` §3 is stale.** It predates the known lane and the
   process-pool inline fallback; this doc supersedes it for both topics.
 - **The bottom-up doppler gate is inert.** `doppler_gate_hz` in the dark
   lane's coarse pairing step is defined but the grid gate is delay-only in
-  practice (`libs/retina-analytics/.../association.py:884`).
+  practice (`association.compute_overlap_zone`'s `doppler_gate_hz`).
 - **Production runs with every mode flag off** except `KNOWN_LANE_MODE`, which
   is `binding` everywhere by code default and is set in no environment's
   `.env`. The in-repo statement of what each environment sets is
-  [`architecture.md:94-110`](architecture.md#feature-gates); the actual
+  [`architecture.md`](architecture.md#feature-gates); the actual
   values live in the gitignored `backend/.env` on each host, not in this
   repo.
