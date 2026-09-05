@@ -127,7 +127,12 @@ class TestFrameRekey:
     receiver back exactly, however small the new donut is.
     """
 
-    OLD = (NODE_FUZZ_MIN_KM_DEFAULT, NODE_FUZZ_MAX_KM_DEFAULT)
+    # Both pairs are set explicitly in every test below, and both are written
+    # as literals: this class is about the relationship between two frames, so
+    # it must keep testing that relationship when the defaults move.  OLD is
+    # the donut the fuzz shipped with, which is also the frame the module
+    # freezes; NEW is any narrower one.
+    OLD = (1.0, 3.0)
     NEW = (0.5, 1.0)
 
     def _offset(self, node_id, bounds, monkeypatch):
@@ -197,21 +202,29 @@ class TestFrameRekey:
             assert math.atan2(old_east, old_north) != math.atan2(new_east, new_north)
 
     def test_the_original_frame_is_frozen(self, monkeypatch):
-        """A golden vector for the bounds every deployment started on.
+        """A golden vector for the bounds the fuzz shipped with.
 
-        Nodes have been published at these coordinates since the fuzz shipped.
-        Adopting a change to how the message is built must not move them, or
-        the deploy that carries the change is itself an unannounced re-fuzz —
-        and one that hands out a second sample of every node in the fleet.
+        Nodes were published at these coordinates for as long as those bounds
+        were the defaults, and a deployment that still sets them expects them
+        back.  Pinned to the literals rather than to NODE_FUZZ_*_DEFAULT: the
+        frame is a historical fact, so it must not follow the defaults when
+        those are narrowed.
         """
         monkeypatch.setenv("NODE_FUZZ_SALT", "golden-salt")
         pl._reset_for_tests()
+        self._offset("golden-node", self.OLD, monkeypatch)
         assert pl.public_latlon(33.7490, -84.3880, "golden-node") == (33.7335, -84.3645)
 
-    def test_the_original_bounds_are_the_original_frame_when_set_explicitly(self, monkeypatch):
-        """Writing the defaults into the environment is not a change of frame."""
+    def test_setting_the_defaults_explicitly_is_not_a_change_of_frame(self, monkeypatch):
+        """Writing the shipped bounds into backend/.env must move nobody.
+
+        Whatever the defaults are, spelling them out is the same donut, so it
+        has to be the same frame — otherwise a deployment that documents its
+        own configuration re-fuzzes its fleet for it.
+        """
         implicit = pl.public_offset_km("node-a")
-        assert self._offset("node-a", self.OLD, monkeypatch) == implicit
+        defaults = (NODE_FUZZ_MIN_KM_DEFAULT, NODE_FUZZ_MAX_KM_DEFAULT)
+        assert self._offset("node-a", defaults, monkeypatch) == implicit
 
     def test_the_frame_label_is_canonical(self, monkeypatch):
         """ "0.5" and "0.500" are one donut, so they must be one frame."""
