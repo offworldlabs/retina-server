@@ -156,6 +156,27 @@ def get_node_configs() -> dict[str, dict]:
     return configs
 
 
+def configs_for_solver_input(node_cfgs: dict[str, dict], s_in: dict) -> dict[str, dict]:
+    """The subset of ``node_cfgs`` a solver input can actually reach.
+
+    The solver runs in a *spawn* process pool, so everything queued with an
+    input is pickled and shipped to a child on every call — and the fleet is
+    58 nodes while a candidate carries 2-8 measurements.  Sending the whole
+    set meant ~50 configs per solve that no code path could look at.
+
+    Nothing downstream needs the rest.  The solver builds NodeSetups from the
+    measurements only; trimming and consensus both narrow that set further
+    (_filter_s_in_to_nodes) and never widen it; the beam gate iterates the
+    result's contributing_node_ids, which are measurement node ids by
+    construction; and cv_epochs is built from the same matched nodes as the
+    measurements in all three input shapes association emits.  The known lane
+    is unaffected — it fetches its own configs (known_lane.run_known_lane_pass)
+    rather than reusing what was queued here.
+    """
+    wanted = {m.get("node_id") for m in (s_in.get("measurements") or ())}
+    return {nid: cfg for nid, cfg in node_cfgs.items() if nid in wanted}
+
+
 # ── Per-node pipeline factory ─────────────────────────────────────────────────
 
 
@@ -427,7 +448,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             if s_in["n_nodes"] < 2:
                 continue
             try:
-                state.solver_queue.put_nowait((s_in, node_cfgs, time.time()))
+                state.solver_queue.put_nowait((s_in, configs_for_solver_input(node_cfgs, s_in), time.time()))
             except Exception:
                 state.bump_counter("solver_queue_drops")
                 if state.solver_queue_drops % 100 == 1:
