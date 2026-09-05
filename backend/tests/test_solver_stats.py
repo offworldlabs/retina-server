@@ -268,6 +268,7 @@ class TestConsensusAndCounters:
         state.dark_follow_inputs = 15
         state.dark_follow_published = 16
         state.dark_follow_dropped = 17
+        state.dark_bottomup_shadowed = 18
         out = _solver_window_stats(10.0)
         assert out["counters"] == {
             "successes": 5,
@@ -288,6 +289,7 @@ class TestConsensusAndCounters:
             "dark_follow_inputs": 15,
             "dark_follow_published": 16,
             "dark_follow_dropped": 17,
+            "dark_bottomup_shadowed": 18,
         }
         assert out["consensus"]["selected"] == 7
         assert out["consensus"]["filtered"] == 8

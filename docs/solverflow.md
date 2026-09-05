@@ -393,9 +393,56 @@ lane's 20 s staleness limit a 270 m/s target adds 5.4 km more. Follow inputs
 therefore pass `anchor_dr=True`, which dead-reckons the anchor and applies the
 proximity scan's own age-scaled gate. Every other anchored input is unchanged.
 
+**Key ownership.** Following an aircraft is not enough on its own — the
+bottom-up lane keeps solving the same sky, and its solves are still keyed by
+proximity onto whatever entry is nearest. Measured on test with the lane
+binding (20 min, 625 six-plus-node dark samples, `DARK_FOLLOW_MODE=binding`):
+
+| | |
+|---|---|
+| follow solves published | 224, **all** anchor-keyed |
+| follow-solve position error | median 0.24 km, p90 1.35 km |
+| dark aircraft with 6+ nodes in cone shown on the map | **89%** (76% before the lane) |
+| bottom-up solves keyed by proximity onto an existing key | 425 |
+| ...that landed on a key owned by a **different** aircraft | 90 (**21%**) |
+| ...onto a key the follow lane had published on within 6 s | 12 |
+
+A cross-keyed solve moves the entry 5+ km, corrupts the KF velocity it feeds,
+and can supersede the right key. A tighter spatial gate cannot separate the two
+populations: same-aircraft re-key distances are p50 1.5 km / p90 4.3 km (mostly
+n=2 bottom-up solves whose own position error is ~2.4 km median), which overlaps
+the wrong-aircraft distances entirely. What *can* separate them is that the
+follow lane already supplies every solve an established track needs — so a
+bottom-up solve arriving at a freshly-followed key is either a duplicate of that
+aircraft (harmful: it competes with the anchored solve and drags the filter) or
+a different one (harmful: it steals the key). Neither should join.
+
+So in **binding mode only**, `multinode_key_decision`'s proximity scan gives the
+follow lane ownership of the keys it follows:
+
+- a key the lane published on within `DARK_FOLLOW_OWN_S` (6 s, three follow-solve
+  intervals) is **not a join candidate** for a bottom-up (non-anchored,
+  non-ADS-B) solve;
+- if the nearest such key is within `DARK_FOLLOW_SHADOW_KM` (2.0 km) of the
+  solve — same dead-reckoning and same distance as `key_dist_km` — the solve is
+  refused outright: `how == "shadowed"`, history outcome `shadowed_by_follow`
+  carrying `follow_key` and the distance, counter `dark_bottomup_shadowed`, no
+  publish, no KF update, no entry written;
+- farther away it falls through to the non-followed candidates and, failing
+  those, mints a key of its own as before.
+
+The anchor and ADS-B branches are untouched, which is what keeps the follow
+lane's own solves landing on their key (they are anchored, and the anchor branch
+returns before the scan). The `n>=3` case rule 2 also covers implicitly: an n=2
+bottom-up solve can no longer join a recently-followed key whose last published
+solve had `n>=3`. `shadow` and `off` modes never consult ownership at all, so
+the keying rule is byte-identical to before there.
+
 | Constant | Value | File |
 |---|---|---|
 | `DARK_FOLLOW_MODE` | `shadow` (env) | `core/state.py` |
+| `DARK_FOLLOW_OWN_S` | 6.0 s (env) | `services/dark_follow.py` |
+| `DARK_FOLLOW_SHADOW_KM` | 2.0 km (env) | `services/dark_follow.py` |
 | `DARK_FOLLOW_MAX_AGE_S` | 20 s (env) | `services/dark_follow.py` |
 | `DARK_FOLLOW_MIN_SOLVES` / `DARK_FOLLOW_MIN_NODES` | 3 / 3 | `services/dark_follow.py` |
 | `DARK_FOLLOW_MAX_VEL_SIGMA_MS` | 60 m/s (env) | `services/dark_follow.py` |
@@ -407,10 +454,13 @@ proximity scan's own age-scaled gate. Every other anchored input is unchanged.
 
 Observability: `/api/test/solver-stats` `counters` carries the funnel
 `dark_follow_targets` (a live gauge) → `dark_follow_claims` →
-`dark_follow_inputs` → `dark_follow_published`, plus `dark_follow_dropped`.
-Records are classified `lane: "dark_follow"` in `lane_split` and kept out of
-the bottom-up dark funnel, and each carries `guess_source: "prediction"` and
-`follow_key`.
+`dark_follow_inputs` → `dark_follow_published`, plus `dark_follow_dropped` and
+`dark_bottomup_shadowed` (the ownership refusals above). Records are classified
+`lane: "dark_follow"` in `lane_split` and kept out of the bottom-up dark funnel,
+and each carries `guess_source: "prediction"` and `follow_key`. A shadowed
+record stays in the **bottom-up** funnel — it is a bottom-up solve — and shows
+up as `rejects.by_reason["shadowed_by_follow"]`, with `follow_key` naming the
+track that refused it.
 
 ---
 

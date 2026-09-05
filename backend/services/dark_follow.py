@@ -46,7 +46,10 @@ Modes (state.DARK_FOLLOW_MODE), same three-way shape as KNOWN_LANE_MODE:
   binding  — claimed detections leave the dark pool (the same
              strip_claimed_detections the known lane uses) and the solve goes
              onto the normal solver queue, keyed onto the followed track by
-             its anchor.
+             its anchor.  Binding also gives the lane OWNERSHIP of the keys it
+             follows: a bottom-up solve may not join a key this lane published
+             on in the last DARK_FOLLOW_OWN_S — see that constant for the
+             measurement, and recently_followed for the reader.
 """
 
 import logging
@@ -94,6 +97,37 @@ DARK_FOLLOW_COOLDOWN_S = float(os.getenv("DARK_FOLLOW_COOLDOWN_S", "30"))
 # a follow-solve every 2 s is four refreshes inside the map's 60 s expiry.
 DARK_FOLLOW_INTERVAL_S = float(os.getenv("DARK_FOLLOW_INTERVAL_S", "2.0"))
 
+# ── Key ownership ────────────────────────────────────────────────────────────
+# How long after a follow-solve publishes on a key that key stays the follow
+# lane's, i.e. un-joinable by a bottom-up solve (solver.multinode_key_decision,
+# binding mode only).  Three follow-solve intervals: a followed track is solved
+# every DARK_FOLLOW_INTERVAL_S, so a key still inside this window is one the
+# lane is actively refreshing and does not need help keeping alive, while a key
+# that has missed three turns is one the lane has stopped answering for and the
+# bottom-up lane should be free to claim again.
+#
+# WHY OWNERSHIP AT ALL.  Measured on test with the lane binding (20 min, 625
+# six-plus-node dark samples): of 425 bottom-up solves keyed by proximity onto
+# an existing key, 90 landed on a key belonging to a DIFFERENT aircraft (21%),
+# 12 of them onto a key the follow lane had published on within the previous
+# 6 s.  A cross-keyed solve moves the entry 5+ km, corrupts the KF velocity it
+# feeds, and can supersede the right key.  A tighter spatial gate cannot
+# separate the two cases: same-aircraft re-key distances are p50 1.5 km /
+# p90 4.3 km, overlapping the wrong-aircraft population entirely.  What CAN
+# separate them is that the follow lane already supplies every solve an
+# established track needs — so near a freshly-followed key a bottom-up solve is
+# either a duplicate (it competes with the anchored solve and drags the filter)
+# or a different aircraft (it steals the key).  Neither should join.
+DARK_FOLLOW_OWN_S = float(os.getenv("DARK_FOLLOW_OWN_S", "6.0"))
+# How close a bottom-up solve has to land to a followed key before it is
+# refused outright rather than merely kept off that key.  Inside this radius
+# the two are the same aircraft often enough that minting a second key would
+# just fragment the track; outside it the solve is plausibly a neighbour the
+# follow lane knows nothing about and deserves a key of its own.  Well under
+# the 6 km proximity gate on purpose — this is a "these are the same target"
+# radius, not an association gate.
+DARK_FOLLOW_SHADOW_KM = float(os.getenv("DARK_FOLLOW_SHADOW_KM", "2.0"))
+
 # Consecutive rejected follow-solves that drop a key.  Two, not one: a single
 # reject is routinely a bad epoch (one node's contaminated measurement trips
 # the rms gate), while two in a row is the prediction itself being wrong.
@@ -138,6 +172,16 @@ _GUARD_LOCK = threading.Lock()
 _reject_streak: dict[str, int] = {}
 _cooldown_until: dict[str, float] = {}
 
+# Ownership state: key → the measurement epoch of the newest follow-solve that
+# published on it (see note_follow_publish for why the measurement clock and
+# not wall time).  Dict-level TTL, same shape and reason as the guard maps
+# above: mn-dark-* keys churn for the process lifetime, so nothing keyed by one
+# may grow unbounded.  60 s is the map's own expiry — a key with no follow
+# publish for that long has no entry left to own.
+_FOLLOWED_TTL_S = 60.0
+_FOLLOWED_LOCK = threading.Lock()
+_last_follow_publish: dict[str, float] = {}
+
 
 def _reset_for_tests() -> None:
     """Drop the target cache and the guard state.  Tests only."""
@@ -148,6 +192,8 @@ def _reset_for_tests() -> None:
     with _GUARD_LOCK:
         _reject_streak.clear()
         _cooldown_until.clear()
+    with _FOLLOWED_LOCK:
+        _last_follow_publish.clear()
     state.dark_follow_targets = 0
 
 
@@ -210,6 +256,43 @@ def record_outcome(key: str, ok: bool) -> None:
         _reject_streak[key] = streak
     if streak >= _MAX_CONSECUTIVE_REJECTS:
         drop_target(key, f"{streak} consecutive rejected follow-solves")
+
+
+def note_follow_publish(key: str, ts_s: float) -> None:
+    """Record that a follow-lane solve published on ``key`` at epoch ``ts_s``.
+
+    ``ts_s`` is the solve's MEASUREMENT epoch, not wall time, and that is not
+    an accident: the only reader is solver.multinode_key_decision, which is
+    deliberately clock-free — every time-of-day it uses arrives on the solve it
+    is judging — so that the keying rule stays replayable against recorded
+    history.  Feeding it wall time here would make the one gate that decides
+    key ownership the one thing a replay could not reproduce.
+
+    Called from the single point every follow-solve outcome passes through
+    (solver._record_solve_history), so there is no path that publishes on a
+    followed key without marking it.
+    """
+    if not key or ts_s <= 0.0:
+        return
+    with _FOLLOWED_LOCK:
+        _last_follow_publish[key] = ts_s
+        cutoff = ts_s - _FOLLOWED_TTL_S
+        for k in [k for k, t in _last_follow_publish.items() if t < cutoff]:
+            del _last_follow_publish[k]
+
+
+def recently_followed(key: str, now_s: float, within_s: float = DARK_FOLLOW_OWN_S) -> bool:
+    """Did the follow lane publish on ``key`` within ``within_s`` of ``now_s``?
+
+    Symmetric in time on purpose.  Solves reach the worker out of order (three
+    worker threads, a queue, and a per-key rate limit that batches claims), so
+    a bottom-up solve whose epoch sits just BEFORE the follow-solve's is
+    looking at the same instant of the same aircraft as one just after it, and
+    the ownership answer has to be the same for both.
+    """
+    with _FOLLOWED_LOCK:
+        last = _last_follow_publish.get(key)
+    return last is not None and abs(now_s - last) <= within_s
 
 
 def _in_cooldown(key: str, now_mono: float) -> bool:
