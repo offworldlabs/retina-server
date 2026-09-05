@@ -39,6 +39,9 @@ services:
       # tcp_handler.py while the build-out continues (ClickUp 86cb1emcx);
       # production now names itself honestly, see docker-compose.prod.yml.
       - RETINA_ENV=test
+      # Overnight dark-solver run 2026-09-05: exercise the free-altitude
+      # multistart solve (feat/free-altitude-solve) on this droplet only.
+      - SOLVER_ALT_MODE=free
       # Anonymous admin, asked for explicitly since ClickUp 86cb49d29 took it
       # off RETINA_ENV. No OAuth is configured here either.
       - AUTH_ALLOW_ANONYMOUS_ADMIN=1
