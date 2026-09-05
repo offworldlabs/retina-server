@@ -337,7 +337,7 @@ def _score_contamination(res: Result, s_in: dict, det_truth: dict, truth: list) 
     the delay grid).  Ambiguous attributions are counted in neither.
     """
     oids = [
-        det_truth.get((m["node_id"], float(m["delay_us"]), float(m["doppler_hz"])), None)
+        det_truth.get((m["node_id"], float(m["delay_us"]), float(m["doppler_hz"])))
         for m in s_in.get("measurements") or []
     ]
     if not oids:
@@ -351,7 +351,11 @@ def _score_contamination(res: Result, s_in: dict, det_truth: dict, truth: list) 
         guess = s_in.get("initial_guess") or {}
         contenders.sort(
             key=lambda o: min(
-                (_haversine_km(guess.get("lat", 0.0), guess.get("lon", 0.0), a, b) for a, b, oid, _ in truth if oid == o),
+                (
+                    _haversine_km(guess.get("lat", 0.0), guess.get("lon", 0.0), a, b)
+                    for a, b, oid, _ in truth
+                    if oid == o
+                ),
                 default=float("inf"),
             )
         )
@@ -1681,8 +1685,7 @@ def main():
         "--merge-dist-km",
         type=float,
         default=None,
-        help="track mode: how close two pairings must be to merge into one "
-        "solver input (association._MERGE_DIST_KM)",
+        help="track mode: how close two pairings must be to merge into one solver input (association._MERGE_DIST_KM)",
     )
     p.add_argument(
         "--pair-vel-exclusive",
