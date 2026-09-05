@@ -829,3 +829,156 @@ class TestLearnedVelocity:
 
         track_filter.reset()
         assert track_filter.learned_velocity(key) is None
+
+
+class TestIndefiniteCovariance:
+    """An indefinite cov_en_km2 must never reach the filter.
+
+    This is the 2026-09-05 droplet failure (91 ValueError: math domain error
+    in 40 minutes out of learned_velocity), and the mechanism is not roundoff
+    — the Joseph form in _kf_correct was already deployed when it happened.
+    cov_en_km2 is the top-left 2x2 of s2 * inv(JtJ) for the solver's 5-state
+    fit, and the solver falls back to pinv only on an outright LinAlgError,
+    so an ill-conditioned-but-not-singular JtJ (near-parallel baselines)
+    inverts to garbage that is INDEFINITE while both diagonals stay positive
+    — passing the solver's own check and, before the fix, _measurement_R's.
+
+    Joseph preserves PSD for any gain but only GIVEN PSD P and R: its
+    K R K^T term inherits R's negative eigenvalue, and _init_entry seeds P's
+    position block straight from R.  Hence the determinant check.
+
+    The covariances below are exactly that shape: equal diagonals with an
+    off-diagonal larger than their geometric mean, i.e. a "correlation"
+    above 1, which no real covariance has.
+    """
+
+    def setup_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def teardown_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    @staticmethod
+    def _indefinite_cov(var_km2=1.0, corr=1.2):
+        return [[var_km2, corr * var_km2], [corr * var_km2, var_km2]]
+
+    def test_indefinite_cov_falls_back_to_the_base_floor(self):
+        r = track_filter._measurement_R(make_result(35.0, -82.0, 1_000, cov_en_km2=self._indefinite_cov()))
+
+        # Rejected outright, so R is the cov=0 limit — exactly `base`, the
+        # same answer a missing cov gets.
+        assert r[0, 1] == 0.0
+        assert math.sqrt(0.5 * (r[0, 0] + r[1, 1])) == pytest.approx(track_filter._KF_DEFAULT_POS_SIGMA_M)
+        # The property that actually matters downstream.
+        assert np.all(np.linalg.eigvalsh(r) >= 0.0)
+
+    def test_a_correlated_but_psd_cov_is_still_accepted(self):
+        """The determinant check must reject only the impossible matrices.
+
+        A genuine off-diagonal is real information about solve geometry (a
+        two-node baseline has a long axis), and rejecting it would quietly
+        throw away the relative weighting _KF_R_INFLATE exists to provide.
+        corr=0.9 is strongly correlated but perfectly valid: det > 0.
+        """
+        cov = self._indefinite_cov(corr=0.9)
+        r = track_filter._measurement_R(make_result(35.0, -82.0, 1_000, cov_en_km2=cov))
+
+        assert r[0, 1] != 0.0  # the correlation survived
+        assert np.all(np.linalg.eigvalsh(r) >= 0.0)
+
+    @pytest.mark.parametrize("cadence_s", [1.4, 20.0])
+    def test_indefinite_cov_keeps_the_filter_psd_and_learned_velocity_alive(self, monkeypatch, cadence_s):
+        """The end-to-end regression: 200 solves carrying an indefinite cov.
+
+        On origin/main this raised the droplet's ValueError within 16 solves
+        at the 20 s cadence real solves arrive on, and within 7 at 1.4 s.
+        """
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        cov = self._indefinite_cov()
+        key = f"indef-{cadence_s}"
+        lat0, lon0 = 35.0, -82.0
+
+        for i in range(200):
+            lat_i, lon_i = offset_latlon_m(lat0, lon0, east_m=250.0 * cadence_s * i, north_m=0.0)
+            result = make_result(lat_i, lon_i, 1_000 + int(i * cadence_s * 1000), cov_en_km2=cov)
+            track_filter.smooth_solve(result, key, None)
+
+            entry = track_filter._KF_TRACKS.get(key)
+            assert entry is not None
+            assert np.all(np.diag(entry.P) >= 0.0), f"solve {i}: negative variance in {np.diag(entry.P)}"
+            assert np.allclose(entry.P, entry.P.T, rtol=0, atol=0), f"solve {i}: asymmetric covariance"
+            # The call that was throwing.
+            assert track_filter.learned_velocity(key) is not None
+
+    def test_tiny_position_sigma_cannot_produce_a_tight_r(self):
+        """A 1 m formal sigma is floored, not believed.
+
+        R is what makes the Joseph update ill-conditioned when it is tiny
+        relative to P, so the unmodeled-error floor is the other half of this
+        fix holding: frame-time skew, association contamination and altitude
+        pinning do not shrink because one solve's Jacobian was tight, and no
+        fix on this network is good to a metre.  The floor is additive and
+        unconditional, so a metre-scale cov contributes only
+        (_KF_R_INFLATE * 1)^2 = 16 m^2 against a base of 1200^2, leaving the
+        composed sigma at the base to within a hundredth of a percent.
+        """
+        for sigma_m in (1e-6, 1.0):
+            cov_km2 = (sigma_m / 1000.0) ** 2
+            r = track_filter._measurement_R(
+                make_result(35.0, -82.0, 1_000, cov_en_km2=[[cov_km2, 0.0], [0.0, cov_km2]])
+            )
+            actual_sigma = math.sqrt(0.5 * (r[0, 0] + r[1, 1]))
+            assert actual_sigma == pytest.approx(track_filter._KF_DEFAULT_POS_SIGMA_M, rel=1e-4)
+            assert actual_sigma >= track_filter._KF_MIN_POS_SIGMA_M
+            # Nowhere near the few-metre R that would make the update
+            # ill-conditioned, and an order of magnitude above even a
+            # bare-sensor floor: the unmodeled-error terms dominate.
+            assert actual_sigma > 1000.0
+
+    def test_repeated_updates_at_a_tiny_r_stay_psd(self, monkeypatch):
+        """200 solves with an effectively-zero cov and alternating positions.
+
+        The floor above means the filter never actually sees a metre-scale R,
+        so this asserts the composite invariant end to end rather than the
+        ill-conditioning in isolation (TestJosephCovariance drives
+        _kf_correct at R = 1e-4 directly).
+        """
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        key = "tiny-r"
+        tiny = (1e-6 / 1000.0) ** 2
+        cov = [[tiny, 0.0], [0.0, tiny]]
+
+        for i in range(200):
+            # Alternating, so the innovation never settles to zero.
+            lat_i, lon_i = offset_latlon_m(35.0, -82.0, east_m=100.0 * (i % 2), north_m=0.0)
+            track_filter.smooth_solve(make_result(lat_i, lon_i, 1_000 + i * 1_400, cov_en_km2=cov), key, None)
+
+            entry = track_filter._KF_TRACKS.get(key)
+            assert np.all(np.diag(entry.P) >= 0.0), f"solve {i}: negative variance in {np.diag(entry.P)}"
+            assert np.allclose(entry.P, entry.P.T, rtol=0, atol=0), f"solve {i}: asymmetric covariance"
+            assert track_filter.learned_velocity(key) is not None
+
+    def test_negative_velocity_variance_degrades_to_zero_sigma(self, monkeypatch):
+        """The last line of defence, on a hand-poisoned entry.
+
+        learned_velocity has two callers that each lose real work when it
+        raises — solver.py's multinode_key_decision drops the solve,
+        aircraft_feed's multinode_to_aircraft drops the whole broadcast — so
+        even a state no code path should now be able to reach must return a
+        number rather than throw.
+        """
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        key = "neg-vel-var"
+        track_filter.smooth_solve(make_result(35.0, -82.0, 1_000), key, None)
+        track_filter.smooth_solve(make_result(35.001, -82.0, 21_000), key, None)
+
+        with track_filter._KF_LOCK:
+            entry = track_filter._KF_TRACKS[key]
+            entry.P[1, 1] = -1e6
+            entry.P[3, 3] = -1e6
+
+        lv = track_filter.learned_velocity(key)
+        assert lv is not None
+        assert lv[2] == 0.0  # clamped, not raised
