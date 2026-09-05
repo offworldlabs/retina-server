@@ -100,6 +100,24 @@ def _pool_call(fn, *args):
         return fn(*args)
 
 
+def _pool_solve_multistart(s_in, node_cfgs, alt_starts_km):
+    """solve_multinode_multistart via the process pool (inline when none).
+
+    Defined here rather than beside _pool_solve_multinode at the foot of this
+    module for the reason _pool_select_consensus is: it is a default argument
+    value, resolved when the ``def`` executes, so it has to be bound before
+    _solve_best_altitude's signature is reached.
+
+    A module-level function taking only picklable arguments, because the pool
+    is a *spawn* pool — a child imports retina_geolocator and nothing of the
+    backend, so what crosses is this function's qualified name plus the input
+    dicts.
+    """
+    from retina_geolocator.multinode_solver import solve_multinode_multistart
+
+    return _pool_call(solve_multinode_multistart, s_in, node_cfgs, alt_starts_km, True)
+
+
 # Altitude layers (km) tried when n_nodes ≥ 3.  For an overdetermined system
 # (3+ delay equations, 2 unknowns after altitude pinning) only the correct
 # altitude layer yields rms_delay ≈ 0; wrong layers give rms > 0, so picking
@@ -320,17 +338,72 @@ def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn, layers_km: list[floa
     return best_result
 
 
-def _solve_best_altitude(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
-    """Altitude sweep for n≥3: pick by minimum rms_delay.
+# How many start altitudes the free mode hands the multi-start helper: the
+# layer nearest the guess and its two neighbours.  Freeing z removes the
+# ladder's quantisation but not the LM's locality, so the starts are still
+# what stops a solve settling on the wrong side of a bistatic ellipse — but
+# three of them, in one pool call, rather than the sweep's six.
+_FREE_ALT_N_STARTS = 3
+# Fewest measurements the free mode is used at.  Below this altitude is not
+# observable and retina_geolocator pins it anyway; the sweep is left in place
+# so the n=2 path keeps its documented behaviour exactly.
+_FREE_ALT_MIN_NODES = 3
 
-    If the initial_guess already carries an ADS-B altitude (not one of the fixed
-    grid layers), include it in the sweep so the correct exact altitude is tried.
+
+def _free_alt_starts(ig_alt_km, layers: list[float]) -> list[float]:
+    """The layer nearest ``ig_alt_km`` and its neighbours — _FREE_ALT_N_STARTS
+    of them, clamped to the ends of the ladder so the count never shrinks
+    there (the top and bottom layers are where a wrong start is least
+    recoverable, not most).
+    """
+    if not layers:
+        return []
+    alt = float(ig_alt_km) if ig_alt_km is not None else 7.0
+    nearest = min(range(len(layers)), key=lambda i: abs(layers[i] - alt))
+    lo = max(0, min(nearest - 1, len(layers) - _FREE_ALT_N_STARTS))
+    return layers[lo : lo + _FREE_ALT_N_STARTS]
+
+
+def _solve_best_altitude(
+    s_in: dict,
+    node_cfgs: dict,
+    solve_fn,
+    multistart_fn=_pool_solve_multistart,
+) -> dict | None:
+    """Altitude for n≥3, by whichever rule state.SOLVER_ALT_MODE names.
+
+    sweep (default): solve once per layer, pick by minimum rms_delay.  If the
+    initial_guess already carries an ADS-B altitude (not one of the fixed grid
+    layers), include it in the sweep so the correct exact altitude is tried.
+
+    free: one call to the multi-start helper, which solves altitude as a sixth
+    unknown from _free_alt_starts.  The sweep cannot do better than half its
+    2 km layer spacing, and on noise-free replay of this fleet's geometry that
+    quantisation alone left rms_delay at a 1.76 µs median against the 3.0 µs
+    reject gate — spending most of the gate's budget on an altitude the
+    measurements themselves determine, and provoking _trim_and_resolve to drop
+    nodes that were never the problem.  Costs one pool round trip per
+    candidate instead of six.
+
+    The mode is read per call rather than captured at import, so a test (and a
+    live config reload) sees the value it set.  Read here and not inside
+    _process_solver_item because _trim_and_resolve re-enters through this same
+    function: a trim must re-solve under the mode its first solve used, or the
+    residuals it is comparing are not the same quantity.
     """
     ig_alt = s_in.get("initial_guess", {}).get("alt_km")
     if ig_alt is not None and ig_alt not in _SOLVER_ALT_LAYERS_KM:
         layers = sorted(set(_SOLVER_ALT_LAYERS_KM + [round(float(ig_alt), 3)]))
     else:
         layers = _SOLVER_ALT_LAYERS_KM
+    n_meas = len({m.get("node_id") for m in (s_in.get("measurements") or [])})
+    if state.SOLVER_ALT_MODE == "free" and n_meas >= _FREE_ALT_MIN_NODES:
+        # No fall back to the sweep when this returns None: a helper that got
+        # no solve out of three starts is reporting the same thing the sweep
+        # reports when every layer fails, and sweeping anyway would cost the
+        # six round trips this mode exists to avoid on exactly the candidates
+        # that are least likely to repay them.
+        return multistart_fn(s_in, node_cfgs, _free_alt_starts(ig_alt, layers))
     return _sweep_altitudes(s_in, node_cfgs, solve_fn, layers, "rms_delay")
 
 
@@ -386,6 +459,7 @@ def _trim_and_resolve(
     node_cfgs: dict,
     solve_fn,
     result: dict,
+    multistart_fn=_pool_solve_multistart,
 ) -> tuple[dict, dict, dict | None]:
     """Drop the worst-residual node(s) and re-solve, down to _TRIM_MIN_NODES.
 
@@ -394,6 +468,11 @@ def _trim_and_resolve(
     measurement inflates rms_delay without moving the Huber-fitted position,
     so re-solving on the survivors after dropping the offending node recovers
     a solve the blanket gate would otherwise discard outright.
+
+    Re-solves through _solve_best_altitude, so it inherits whichever altitude
+    mode is in force — the loop compares this round's rms against the previous
+    round's, and mixing a swept altitude with a free one would make that
+    comparison meaningless.
 
     Returns (final_result, final_s_in, trim_meta).  trim_meta is None only
     when no round ever produced a successful re-solve — i.e. no trimming was
@@ -439,7 +518,7 @@ def _trim_and_resolve(
         s_next = _filter_s_in_to_nodes(s_in, survivors)
 
         try:
-            new_result = _solve_best_altitude(s_next, node_cfgs, solve_fn)
+            new_result = _solve_best_altitude(s_next, node_cfgs, solve_fn, multistart_fn)
         except Exception:
             logging.exception("Solver trim re-solve failed")
             break
@@ -1693,7 +1772,12 @@ def fov_gate_verdict(fov, n_nodes: int, brg: float, dist_km: float, range_rule_p
     return range_rule_pass or fov_pass
 
 
-def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus) -> dict | None:
+def _process_solver_item(
+    item: tuple,
+    solve_fn,
+    select_fn=_pool_select_consensus,
+    multistart_fn=_pool_solve_multistart,
+) -> dict | None:
     """Process a single solver queue entry. Returns the solver result (or None).
 
     Extracted from the worker loop so the success/failure/latency bookkeeping
@@ -1704,6 +1788,10 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
     initial_guess and _CONSENSUS_MODE != "off" — n=2 (mirror-disambiguation
     is the displacement/beam gates' job, not consensus's) and detection-level
     inputs (no initial_guess to pin an altitude with) never call it.
+
+    multistart_fn is the free-altitude solve (_pool_solve_multistart by
+    default; tests substitute a stub), reached only when
+    state.SOLVER_ALT_MODE is "free" — see _solve_best_altitude.
     """
     s_in, node_cfgs = item[0], item[1]
     enqueued_at: float | None = item[2] if len(item) > 2 else None
@@ -1736,7 +1824,7 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             if _CONSENSUS_MODE != "off":
                 s_in, consensus_meta = _consensus_select(s_in, node_cfgs, select_fn)
                 n_nodes = s_in.get("n_nodes", n_nodes)
-            result = _solve_best_altitude(s_in, node_cfgs, solve_fn)
+            result = _solve_best_altitude(s_in, node_cfgs, solve_fn, multistart_fn)
         else:
             result = _solve_best_altitude_n2(s_in, node_cfgs, solve_fn)
     except Exception:
@@ -1762,7 +1850,7 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             and (result.get("rms_delay") or 0) > _SOLVER_RMS_DELAY_MAX_US
             and result.get("per_node_delay_res_us")
         ):
-            result, s_in, trim_meta = _trim_and_resolve(s_in, node_cfgs, solve_fn, result)
+            result, s_in, trim_meta = _trim_and_resolve(s_in, node_cfgs, solve_fn, result, multistart_fn)
             n_nodes = result.get("n_nodes", n_nodes)
 
         # Built once and threaded through every history record below
@@ -1771,6 +1859,20 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
         _extra: dict | None = dict(trim_meta) if trim_meta else {}
         if consensus_meta is not None:
             _extra["consensus_meta"] = consensus_meta
+        # How this solve got its altitude, and — in free mode — what each
+        # start altitude fitted to.  Stamped on every record, published or
+        # rejected, and in BOTH modes (the sweep's solves report
+        # altitude_mode "pinned"), because the only way to judge SOLVER_ALT_MODE
+        # live is to compare the two lanes' rms_delay and gt_error_km over the
+        # same history buffer.  The per-start list is what says whether the
+        # three starts were worth keeping or one would have done.
+        if result.get("altitude_mode"):
+            _extra["altitude_mode"] = result["altitude_mode"]
+        if result.get("rms_by_start") is not None:
+            _extra["alt_starts_km"] = result.get("alt_starts_km")
+            _extra["alt_start_rms_us"] = [None if v is None else round(float(v), 3) for v in result["rms_by_start"]]
+        if result.get("z_saturated"):
+            _extra["z_saturated"] = True
         _extra = _extra or None
 
         rms_delay = result.get("rms_delay", 0) or 0

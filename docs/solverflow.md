@@ -81,6 +81,7 @@ own. Everything that reaches a solve passes through one gate stack
 | `FRAME_WORKERS` | 4 (compose sets 6) | `main.py:164`, `docker-compose.yml:54` |
 | `SOLVER_WORKERS` | 2 daemon threads + same-size process pool | `services/tasks/solver.py:31,67` |
 | `KNOWN_LANE_MODE` default | `binding` | `core/state.py:72-74` |
+| `SOLVER_ALT_MODE` default | `sweep` | `core/state.py:77-95` |
 
 ---
 
@@ -453,11 +454,51 @@ flowchart TD
     m6 -->|"no"| m7["vz_saturated if vz on bound;<br/>rms recomputed unweighted;<br/>cov_en_km2 from s^2(J^T J)^-1"]
 
     m7 --> alt{"n_nodes >= 3?"}
-    alt -->|"yes"| sweep["_solve_best_altitude wrapper:<br/>calls the LM once per layer in<br/>_SOLVER_ALT_LAYERS_KM,<br/>min rms_delay wins"]
+    alt -->|"yes"| mode{"SOLVER_ALT_MODE"}
+    mode -->|"sweep (default)"| sweep["_solve_best_altitude:<br/>calls the LM once per layer in<br/>_SOLVER_ALT_LAYERS_KM,<br/>min rms_delay wins"]
+    mode -->|"free"| freealt["_solve_best_altitude:<br/>ONE pool call to<br/>solve_multinode_multistart,<br/>3 start layers, z solved"]
     alt -->|"no, n=2"| single["_solve_best_altitude_n2:<br/>one LM call at the<br/>association altitude"]
 
     classDef inert fill:#eee,stroke:#999,color:#888,stroke-dasharray: 4 3
 ```
+
+#### `SOLVER_ALT_MODE` — how the n>=3 solve gets its altitude
+
+`solve_multinode` pins altitude from `initial_guess.alt_km`, so the fix is only
+as good as the altitude the caller found for it. `sweep`, the default, searches
+the six fixed layers of `_SOLVER_ALT_LAYERS_KM` — 2 km apart, so the pin is
+systematically up to 1 km wrong. On noise-free replay of this fleet's geometry
+that quantisation alone left `rms_delay` at a 1.76 us median against the 3.0 us
+gate at 6.5, while a solve at the true altitude reaches 0. Most of the gate's
+budget is spent on the ladder, and the residual left over gets blamed on nodes:
+trimming (6.4) drops measurements that were never the problem.
+
+`free` instead calls `solve_multinode_multistart`, which runs the LM with
+altitude as a sixth unknown (state `[x, y, z, vx, vy, vz]`, z bounded
+0.05–20 km, the `vz` bound unchanged) from three start layers — the one nearest
+the association guess and its two neighbours — and keeps the lowest `rms_delay`.
+Freeing z removes the ladder's quantisation but not the LM's locality, which is
+what the several starts are still for. It is also cheaper: **one** process-pool
+round trip per candidate instead of six, each of which pickles the node configs
+the input needs.
+
+At n=2 the mode is inert — four residuals cannot support six unknowns, so the
+geolocator pins altitude regardless and `_solve_best_altitude_n2` is unchanged.
+Trimming re-solves through `_solve_best_altitude`, so a trim round inherits
+whichever mode its first solve used.
+
+Both modes stamp `altitude_mode` (`"free"` / `"pinned"`) on every
+`mlat_solve_history` record, published or rejected; `free` adds `alt_starts_km`,
+`alt_start_rms_us` (each start's residual) and `z_saturated` (the altitude
+analogue of `vz_saturated` — z stopped on a bound rather than converging, so
+`alt_m` is the bound and not a fit). That is the comparison channel: deploy one
+mode per environment and read the two lanes' `rms_delay` and `gt_error_km` off
+`/api/test/mlat-history`.
+
+| Mode | Pool calls per n>=3 candidate | Altitude |
+|---|---|---|
+| `sweep` (default) | 6 (one per layer) | quantised to the nearest layer |
+| `free` | 1 (three starts inside it) | solved, 0.05–20 km |
 
 | Constant | Value | File:line |
 |---|---|---|
