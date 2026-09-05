@@ -178,7 +178,14 @@ def _run(solve_fn, mode="shadow"):
 
 
 def _known_records():
-    return [r for r in state.mlat_solve_history if r.get("known_lane")]
+    # The lane has its own deque (state.mlat_solve_history_known) so its
+    # per-hex-per-pass volume cannot evict dark records from a shared cap;
+    # the filter stays, as the assertion that nothing else lands there.
+    return [r for r in state.mlat_solve_history_known if r.get("known_lane")]
+
+
+def _dark_records():
+    return list(state.mlat_solve_history)
 
 
 class TestRealSolve:
