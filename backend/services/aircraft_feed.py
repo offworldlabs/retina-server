@@ -37,6 +37,7 @@ from services.id_utils import (
     passive_track_hex,
 )
 from services.public_location import fuzz_node_cfg
+from services.solve_uncertainty import solve_sigma_m, velocity_sigma_ms
 from services.track_gates import (
     _build_single_node_arc,
     _public_arc_cache,
@@ -151,6 +152,21 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
     entry["adsb_assisted"] = _assisted
     if _assisted:
         entry["adsb_hex"] = key[len(_MN_ADSB_PREFIX) :]
+    # Calibrated position uncertainty for the map's disc and the detail
+    # panel — see services/solve_uncertainty.py for the model and the
+    # 2026-09-05 fit.  Both fields are optional on the wire: sigma is None
+    # (and the pair omitted) only when the solve carries no n_nodes, which
+    # leaves no floor to apply.  Lane matters: the dark lane had no ADS-B fix
+    # seeding the guess and no pinned altitude, so it is inflated — and
+    # _assisted is the same key-prefix truth the lane fields above use, not
+    # anything read off r.  Shipped AT THE SOLVE EPOCH, ungrown: `seen`
+    # already carries the solve age and the frontend grows the disc itself
+    # with pos_sigma_vel_ms at its own display tick, which is finer-grained
+    # than this 1 Hz flush can be.
+    _pos_sigma_m = solve_sigma_m(r, dark=not _assisted)
+    if _pos_sigma_m is not None:
+        entry["pos_sigma_m"] = round(_pos_sigma_m, 1)
+        entry["pos_sigma_vel_ms"] = round(velocity_sigma_ms(key), 1)
     if _gs_source_kf:
         entry["gs_source"] = "kf"
     if _vel_untrusted:

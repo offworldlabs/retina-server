@@ -60,6 +60,13 @@ export interface Aircraft {
   /** Seconds since the newest claim/detection behind this entry. */
   seen?: number;
   /**
+   * Calibrated per-axis position sigma (metres) at the solve epoch.
+   * `multinode_solve` entries only; absent on older backends.
+   */
+  pos_sigma_m?: number;
+  /** Velocity sigma (m/s) governing how the position sigma grows with age. */
+  pos_sigma_vel_ms?: number;
+  /**
    * Age of the ADS-B fix this entry's lat/lon came from, one decimal.
    * Present on `adsb_single_node` entries only.
    */
