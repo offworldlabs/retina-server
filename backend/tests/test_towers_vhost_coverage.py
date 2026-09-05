@@ -17,6 +17,10 @@ _SMOKE = _REPO / "deploy" / "staging-smoke-test.sh"
 
 # Hostname role -> the staging URL variable the smoke test probes it as.
 #
+# HOST_DATA is here for the same reason as the two below: the data explorer's
+# `location /api/` reaches the monolith's still-routable tower endpoints, so the
+# vhost forwards them to the service rather than answering a second version.
+#
 # HOST_DASH and HOST_ADMIN joined the list when the tower routes were
 # deduplicated: their `location /api/` used to fall through to the monolith's
 # own copy of the tower stack, which had already diverged from the service's
@@ -30,6 +34,7 @@ _ROLE_TO_SMOKE_VAR = {
     "HOST_API": "API_URL",
     "HOST_DASH": "DASH_URL",
     "HOST_ADMIN": "ADMIN_URL",
+    "HOST_DATA": "DATA_URL",
 }
 
 # The paths towers-proxy.conf hands to the service. Every vhost that includes it

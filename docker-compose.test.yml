@@ -51,7 +51,7 @@ services:
       # named for what it is; the two answer different questions, and staging
       # sets them to different values. See services/alerting.py.
       - ALERT_ENVIRONMENT=test
-      - CORS_ORIGINS=https://test-towers.retina.fm,https://test-api.retina.fm,https://test-map.retina.fm,https://test-dash.retina.fm,https://test-admin.retina.fm
+      - CORS_ORIGINS=https://test-towers.retina.fm,https://test-api.retina.fm,https://test-map.retina.fm,https://test-dash.retina.fm,https://test-admin.retina.fm,https://test-data.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
       # at boot to render deploy/nginx/nginx.conf.template.
       #
@@ -68,6 +68,7 @@ services:
       - HOST_MAP=test-map.retina.fm
       - HOST_DASH=test-dash.retina.fm
       - HOST_ADMIN=test-admin.retina.fm
+      - HOST_DATA=test-data.retina.fm
       - HOST_TESTMAP=test-testmap.retina.fm
       - HOST_LEGACY_REDIRECT=test-tower-finder.retina.fm
       - CSP_CONNECT_SRC=https://test-api.retina.fm https://test-admin.retina.fm wss://*.retina.fm

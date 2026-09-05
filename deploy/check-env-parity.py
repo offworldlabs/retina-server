@@ -52,7 +52,7 @@ _LABEL_WIDTH = max(len(env) for env in OVERLAYS)
 
 # Every vhost the template defines must be TLS in a deployed environment. Update
 # this alongside the template if a vhost is added or removed.
-EXPECTED_TLS_VHOSTS = 7
+EXPECTED_TLS_VHOSTS = 8
 
 # Key paths permitted to differ between the environments, as regexes matched
 # against the dotted path into the merged compose tree.
@@ -151,6 +151,7 @@ HOST_VARS = (
     "HOST_MAP",
     "HOST_DASH",
     "HOST_ADMIN",
+    "HOST_DATA",
     "HOST_TESTMAP",
     "HOST_LEGACY_REDIRECT",
     "CSP_CONNECT_SRC",

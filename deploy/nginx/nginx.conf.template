@@ -19,7 +19,7 @@
 # Redirect all HTTP → HTTPS
 server {
     listen 80;
-    server_name ${HOST_MAIN} ${HOST_API} ${HOST_MAP} ${HOST_DASH} ${HOST_ADMIN} ${HOST_TESTMAP} ${HOST_LEGACY_REDIRECT} _;
+    server_name ${HOST_MAIN} ${HOST_API} ${HOST_MAP} ${HOST_DASH} ${HOST_ADMIN} ${HOST_DATA} ${HOST_TESTMAP} ${HOST_LEGACY_REDIRECT} _;
     return 301 https://$host$request_uri;
 }
 # RETINA_ENDIF
@@ -275,6 +275,41 @@ server {
     # operator reads config from, so it must not be the one showing the stale
     # copy. Note the dashboard's own config screen calls /api/admin/config/*,
     # which is NOT under any prefix here and still reaches the monolith.
+    # RETINA_IF TOWER_FINDER
+    # RETINA_INCLUDE snippets/towers-proxy.conf
+    # RETINA_ENDIF
+
+    # RETINA_INCLUDE snippets/spa.conf
+}
+
+# ${HOST_DATA} — public data explorer (data-explorer/, static, no build step).
+# Unauthenticated by design: it browses /api/data/archive, which is already the
+# public archive API — private nodes are filtered out inside the route, not here.
+# No /ws/ location: the page reads listings and files over plain HTTP and
+# subscribes to nothing.
+server {
+    # RETINA_IF TLS
+    listen 443 ssl;
+    # RETINA_ELSE
+    listen 80;
+    # RETINA_ENDIF
+    server_name ${HOST_DATA};
+
+    # RETINA_IF TLS
+    # RETINA_INCLUDE snippets/tls.conf
+    # RETINA_ENDIF
+    # RETINA_INCLUDE snippets/security-headers-page.conf
+
+    root /app/data-explorer;
+    index index.html;
+
+    location /api/ {
+        # RETINA_INCLUDE snippets/api.conf
+    }
+
+    # Same reason as ${HOST_DASH} above: this vhost answers /api/ from the
+    # monolith, which still carries reachable tower routes, and one path must
+    # have one answer per environment. This bundle has no tower UI either.
     # RETINA_IF TOWER_FINDER
     # RETINA_INCLUDE snippets/towers-proxy.conf
     # RETINA_ENDIF

@@ -53,7 +53,7 @@ services:
       # sourced from it would change meaning the day a guard decision does. See
       # services/alerting.py.
       - ALERT_ENVIRONMENT=production
-      - CORS_ORIGINS=https://towers.retina.fm,https://api.retina.fm,https://map.retina.fm,https://dash.retina.fm,https://admin.retina.fm
+      - CORS_ORIGINS=https://towers.retina.fm,https://api.retina.fm,https://map.retina.fm,https://dash.retina.fm,https://admin.retina.fm,https://data.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
       # at boot to render deploy/nginx/nginx.conf.template. One template serves
       # both environments; only these values change.
@@ -62,6 +62,7 @@ services:
       - HOST_MAP=map.retina.fm
       - HOST_DASH=dash.retina.fm
       - HOST_ADMIN=admin.retina.fm
+      - HOST_DATA=data.retina.fm
       # Parked, deliberately. `testmap.retina.fm` is now served by staging,
       # which is the only environment still running a simulator, so production
       # has no synthetic map surface to expose. The vhost cannot simply be
