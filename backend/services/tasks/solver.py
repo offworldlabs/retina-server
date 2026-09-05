@@ -338,12 +338,6 @@ def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn, layers_km: list[floa
     return best_result
 
 
-# How many start altitudes the free mode hands the multi-start helper: the
-# layer nearest the guess and its two neighbours.  Freeing z removes the
-# ladder's quantisation but not the LM's locality, so the starts are still
-# what stops a solve settling on the wrong side of a bistatic ellipse — but
-# three of them, in one pool call, rather than the sweep's six.
-_FREE_ALT_N_STARTS = 3
 # Fewest measurements the free mode is used at.  Below this altitude is not
 # observable and retina_geolocator pins it anyway; the sweep is left in place
 # so the n=2 path keeps its documented behaviour exactly.
@@ -351,17 +345,33 @@ _FREE_ALT_MIN_NODES = 3
 
 
 def _free_alt_starts(ig_alt_km, layers: list[float]) -> list[float]:
-    """The layer nearest ``ig_alt_km`` and its neighbours — _FREE_ALT_N_STARTS
-    of them, clamped to the ends of the ladder so the count never shrinks
-    there (the top and bottom layers are where a wrong start is least
+    """The start altitudes the free mode hands the multi-start helper.
+
+    state.SOLVER_FREE_ALT_STARTS of them, clamped into [1, len(layers)] — read
+    per call, like the mode flag, so a test and a config reload both see what
+    they set.  One start is the layer nearest ``ig_alt_km``, which is the
+    altitude spliced into ``layers`` when the input carries a non-layer one of
+    its own (ADS-B), exactly as the sweep treats it.  Several are a window
+    centred on that layer, clamped to the ends of the ladder so the count never
+    shrinks there (the top and bottom layers are where a wrong start is least
     recoverable, not most).
+
+    Freeing z removes the ladder's quantisation but not the LM's locality, and
+    the extra starts are what would stop a solve settling on the wrong side of
+    a bistatic ellipse.  On this fleet's geometry they had almost nothing to
+    stop: over 1019 free-mode solves on test, three starts' rms_delay differed
+    by more than 0.1 µs in 13 of them, and the nearest-layer start was more
+    than 0.5 µs worse than the best in 2 — so the default is one start and the
+    other two are bought explicitly, by a deployment whose geometry shows it
+    needs them.  See core/state.py for the numbers and the trade.
     """
     if not layers:
         return []
+    n = max(1, min(int(state.SOLVER_FREE_ALT_STARTS), len(layers)))
     alt = float(ig_alt_km) if ig_alt_km is not None else 7.0
     nearest = min(range(len(layers)), key=lambda i: abs(layers[i] - alt))
-    lo = max(0, min(nearest - 1, len(layers) - _FREE_ALT_N_STARTS))
-    return layers[lo : lo + _FREE_ALT_N_STARTS]
+    lo = max(0, min(nearest - (n - 1) // 2, len(layers) - n))
+    return layers[lo : lo + n]
 
 
 def _solve_best_altitude(
@@ -399,7 +409,7 @@ def _solve_best_altitude(
     n_meas = len({m.get("node_id") for m in (s_in.get("measurements") or [])})
     if state.SOLVER_ALT_MODE == "free" and n_meas >= _FREE_ALT_MIN_NODES:
         # No fall back to the sweep when this returns None: a helper that got
-        # no solve out of three starts is reporting the same thing the sweep
+        # no solve out of its starts is reporting the same thing the sweep
         # reports when every layer fails, and sweeping anyway would cost the
         # six round trips this mode exists to avoid on exactly the candidates
         # that are least likely to repay them.

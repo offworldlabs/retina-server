@@ -4,7 +4,8 @@ sweep (the default) calls the LM once per fixed altitude layer and keeps the
 lowest rms_delay — six process-pool round trips, and an altitude quantised to
 a ladder 2 km wide, which puts up to 1 km of error into the residual the
 reject gate reads.  free makes ONE call to the geolocator's multi-start
-helper, which solves altitude as a sixth unknown from three start layers.
+helper, which solves altitude as a sixth unknown from SOLVER_FREE_ALT_STARTS
+start layers — one by default, the layer nearest the association guess.
 
 These tests are about the routing, not the physics: the geolocator's own
 suite (tests/test_free_altitude.py there) measures what the free solve
@@ -78,7 +79,32 @@ class _AltModeBase:
 
 
 class TestFreeAltStarts:
-    """The three starts handed to the multi-start helper."""
+    """The starts handed to the multi-start helper: SOLVER_FREE_ALT_STARTS of
+    them, one by default."""
+
+    @pytest.mark.parametrize(
+        "alt_km,expected",
+        [
+            (9.0, [9.0]),
+            (7.0, [7.0]),
+            (8.2, [9.0]),
+            (1.5, [1.5]),
+            # Off the ends of the ladder: still the nearest layer, not nothing.
+            (0.4, [1.5]),
+            (40.0, [11.0]),
+        ],
+    )
+    def test_one_start_at_the_nearest_layer_by_default(self, alt_km, expected):
+        assert state.SOLVER_FREE_ALT_STARTS == 1
+        assert solver_mod._free_alt_starts(alt_km, solver_mod._SOLVER_ALT_LAYERS_KM) == expected
+
+    def test_an_adsb_altitude_in_the_ladder_is_the_start(self):
+        """_solve_best_altitude splices a non-layer altitude (ADS-B) into the
+        layers, and the starts are taken over that spliced list — so the single
+        default start is that exact altitude, which is what the sweep would
+        have pinned too."""
+        layers = sorted(set(solver_mod._SOLVER_ALT_LAYERS_KM + [8.4]))
+        assert solver_mod._free_alt_starts(8.4, layers) == [8.4]
 
     @pytest.mark.parametrize(
         "alt_km,expected",
@@ -94,17 +120,30 @@ class TestFreeAltStarts:
             (40.0, [7.0, 9.0, 11.0]),
         ],
     )
-    def test_window_around_the_nearest_layer(self, alt_km, expected):
+    def test_three_starts_are_the_window_around_the_nearest_layer(self, alt_km, expected, monkeypatch):
+        """The pre-default behaviour, still reachable by configuration."""
+        monkeypatch.setattr(state, "SOLVER_FREE_ALT_STARTS", 3)
         starts = solver_mod._free_alt_starts(alt_km, solver_mod._SOLVER_ALT_LAYERS_KM)
         assert starts == expected
-        assert len(starts) == solver_mod._FREE_ALT_N_STARTS
+        assert len(starts) == 3
 
-    def test_an_adsb_altitude_in_the_ladder_is_a_start(self):
-        """_solve_best_altitude splices an ADS-B altitude into the layers, and
-        the window is taken over that spliced list — otherwise the one exact
-        altitude available would never be started from."""
+    def test_three_starts_window_the_spliced_adsb_altitude(self, monkeypatch):
+        monkeypatch.setattr(state, "SOLVER_FREE_ALT_STARTS", 3)
         layers = sorted(set(solver_mod._SOLVER_ALT_LAYERS_KM + [8.4]))
         assert solver_mod._free_alt_starts(8.4, layers) == [7.0, 8.4, 9.0]
+
+    @pytest.mark.parametrize("configured", [0, -3])
+    def test_fewer_than_one_start_still_starts_somewhere(self, configured, monkeypatch):
+        """A count below one would leave the LM no start at all, so it clamps
+        rather than raises: a mis-set env degrades to a working solve."""
+        monkeypatch.setattr(state, "SOLVER_FREE_ALT_STARTS", configured)
+        assert solver_mod._free_alt_starts(9.0, solver_mod._SOLVER_ALT_LAYERS_KM) == [9.0]
+
+    def test_more_starts_than_layers_is_every_layer(self, monkeypatch):
+        """The other clamp: a count past the end of the ladder would slice
+        short of it, quietly dropping starts that were asked for."""
+        monkeypatch.setattr(state, "SOLVER_FREE_ALT_STARTS", 99)
+        assert solver_mod._free_alt_starts(9.0, solver_mod._SOLVER_ALT_LAYERS_KM) == solver_mod._SOLVER_ALT_LAYERS_KM
 
     def test_no_layers_gives_no_starts(self):
         assert solver_mod._free_alt_starts(9.0, []) == []
@@ -135,10 +174,10 @@ class TestFreeMode(_AltModeBase):
         state.SOLVER_ALT_MODE = self._saved_mode
         super().teardown_method()
 
-    def test_one_multistart_call_with_three_starts(self):
+    def test_one_multistart_call_with_one_start(self):
         nodes = ["n1", "n2", "n3"]
         solve = _Recorder(lambda n, s, *r: pytest.fail("sweep ran in free mode"))
-        multistart = _Recorder(lambda n, s, *r: _stub_result(n, altitude_mode="free", rms_by_start=[1.2, 0.4, 0.9]))
+        multistart = _Recorder(lambda n, s, *r: _stub_result(n, altitude_mode="free", rms_by_start=[0.4]))
 
         result = solver_mod._solve_best_altitude(_s_in(nodes), {}, solve, multistart)
 
@@ -146,7 +185,29 @@ class TestFreeMode(_AltModeBase):
         assert solve.calls == []
         assert len(multistart.calls) == 1
         (_, _, rest) = multistart.calls[0]
-        assert rest == ([7.0, 9.0, 11.0],)
+        assert rest == ([9.0],)
+
+    def test_an_adsb_guess_altitude_is_the_start(self):
+        """A non-layer initial_guess altitude is spliced into the ladder and
+        becomes the start itself — the free-mode analogue of the sweep's extra
+        layer, and the one exact altitude the candidate has."""
+        nodes = ["n1", "n2", "n3"]
+        multistart = _Recorder(lambda n, s, *r: _stub_result(n, altitude_mode="free"))
+
+        solver_mod._solve_best_altitude(_s_in(nodes, alt_km=8.437), {}, lambda s, c: None, multistart)
+
+        assert multistart.calls[0][2] == ([8.437],)
+
+    def test_the_start_count_is_configurable(self, monkeypatch):
+        """SOLVER_FREE_ALT_STARTS buys back the neighbour window for a geometry
+        whose single start lands on the wrong side of an ellipse."""
+        monkeypatch.setattr(state, "SOLVER_FREE_ALT_STARTS", 3)
+        multistart = _Recorder(lambda n, s, *r: _stub_result(n, altitude_mode="free"))
+
+        solver_mod._solve_best_altitude(_s_in(["n1", "n2", "n3"]), {}, lambda s, c: None, multistart)
+
+        assert len(multistart.calls) == 1
+        assert multistart.calls[0][2] == ([7.0, 9.0, 11.0],)
 
     def test_n2_keeps_the_sweep(self):
         """Altitude is unobservable at n=2 — the free path is not entered even
@@ -187,6 +248,24 @@ class TestFreeMode(_AltModeBase):
         assert rec["altitude_mode"] == "free"
         assert rec["alt_starts_km"] == [5.0, 7.0, 9.0]
         assert rec["alt_start_rms_us"] == [1.234, None, 0.432]
+
+    def test_a_single_start_still_records_its_residual(self):
+        """The comparison channel does not depend on there being several
+        starts: one start records a one-element list, not a bare number or
+        nothing at all."""
+        nodes = ["n1", "n2", "n3"]
+        multistart = _Recorder(
+            lambda n, s, *r: _stub_result(n, altitude_mode="free", rms_by_start=[0.4321], alt_starts_km=[9.0])
+        )
+        solver_mod._process_solver_item(
+            (_s_in(nodes), {}, time.time()),
+            lambda s, c: pytest.fail("sweep ran in free mode"),
+            multistart_fn=multistart,
+        )
+
+        rec = state.mlat_solve_history[-1]
+        assert rec["alt_starts_km"] == [9.0]
+        assert rec["alt_start_rms_us"] == [0.432]
 
     def test_z_saturation_reaches_the_history(self):
         nodes = ["n1", "n2", "n3"]
