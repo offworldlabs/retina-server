@@ -530,10 +530,10 @@ solver_stale_drops: int = 0
 solver_resolve_skips: int = 0
 
 # Multinode entries removed because a later solve shared a source single-node
-# track under a different track key (the 6 km match in multinode_key_decision
-# missed).  One aircraft is one set of source tracks, so the earlier entry is
-# replaced immediately rather than coexisting with the new one until its own
-# 60 s expiry.
+# track under a different track key (the age-scaled proximity match in
+# multinode_key_decision missed).  One aircraft is one set of source tracks,
+# so the earlier entry is replaced immediately rather than coexisting with the
+# new one until its own 60 s expiry.
 mn_superseded: int = 0
 
 # Solves published after node-trimming recovered them from the rms_delay
@@ -571,6 +571,19 @@ solver_consensus_shadow: int = 0
 solver_anchor_hits: int = 0
 solver_anchor_fallbacks: int = 0
 solver_anchored_published: int = 0
+
+# Dark-lane KEY DECISIONS, bumped in the publish path (solver.py's
+# multinode_key_decision).  Fragmentation is decided here and nowhere else —
+# solver_successes counts solves and the windowed distinct_keys counts the
+# survivors, so neither can say whether a dark solve joined an existing track
+# or started a new one.  minted is a key birth, proximity is a re-key onto a
+# live entry within its age-scaled gate; minted rising against a flat
+# proximity is fragmentation, and the two together are every dark decision the
+# proximity gate made.  Anchor hits are in neither (solver_anchor_hits already
+# counts those) and the ADS-B lane is excluded entirely — it keys off the
+# transponder hex unconditionally and has no decision to observe.
+solver_key_minted_dark: int = 0
+solver_key_proximity_dark: int = 0
 
 # Publishes whose velocity carried the vel_untrusted flag (vz saturated, or
 # raw-solve velocity at n<=3) — the denominator is solver_successes.
@@ -717,6 +730,7 @@ def _reset_for_tests() -> None:
     global solver_consensus_selected, solver_consensus_filtered
     global solver_consensus_fallback, solver_consensus_shadow
     global solver_anchor_hits, solver_anchor_fallbacks, solver_anchored_published
+    global solver_key_minted_dark, solver_key_proximity_dark
     global solver_vel_untrusted_published
     global fov_shadow_agree, fov_shadow_would_pass, fov_shadow_would_reject
     global fov_neg_events
@@ -806,6 +820,7 @@ def _reset_for_tests() -> None:
         solver_consensus_selected = solver_consensus_filtered = 0
         solver_consensus_fallback = solver_consensus_shadow = 0
         solver_anchor_hits = solver_anchor_fallbacks = solver_anchored_published = 0
+        solver_key_minted_dark = solver_key_proximity_dark = 0
         solver_vel_untrusted_published = 0
         fov_shadow_agree = fov_shadow_would_pass = fov_shadow_would_reject = 0
         fov_neg_events = 0

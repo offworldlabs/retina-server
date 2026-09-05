@@ -991,6 +991,17 @@ def _solver_window_stats(minutes: float) -> dict:
             "published": len(published_records),
             "solves_per_key": {"median": spk_median, "p90": spk_p90},
             "anchored_pct": anchored_pct,
+            # Dark-lane key decisions, SINCE BOOT (the claiming/consensus/fov
+            # convention above) rather than windowed like the four keys before
+            # them — they come off state counters, not the record window.  A
+            # birth (minted) against a re-key (proximity) is the decision the
+            # age-scaled proximity gate makes; distinct_keys above is what
+            # survived those decisions inside the window, so the two answer
+            # different halves of the same question and are both worth having
+            # here.  Per-record key_how/key_dist_km in mlat_solve_history is
+            # the windowed version when one is needed.
+            "dark_keys_minted": state.solver_key_minted_dark,
+            "dark_keys_proximity": state.solver_key_proximity_dark,
         },
         "counters": {
             "successes": state.solver_successes,
