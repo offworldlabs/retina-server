@@ -978,7 +978,7 @@ def run(
             # frame is what association pairs against — but only let a node
             # *trigger* a round on its own cadence.
             if mode == "track":
-                assoc._pending_tracks[nid] = confirmed_track_views(trackers[nid], history_n)
+                assoc._pending_tracks[nid] = confirmed_track_views(trackers[nid], history_n, ts_ms)
             else:
                 assoc._pending_frames[nid] = frame
             if (t - last_assoc.get(nid, -1e9)) < assoc_interval:

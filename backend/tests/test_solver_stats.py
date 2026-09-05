@@ -257,6 +257,8 @@ class TestConsensusAndCounters:
         state.solver_consensus_fallback = 9
         state.solver_consensus_shadow = 10
         state.solver_vel_untrusted_published = 11
+        state.tracks_stale_skipped = 13
+        state.solver_epoch_align_skipped = 14
         out = _solver_window_stats(10.0)
         assert out["counters"] == {
             "successes": 5,
@@ -265,6 +267,8 @@ class TestConsensusAndCounters:
             "solver_trimmed": 3,
             "stale_drops": 4,
             "resolve_skips": 12,
+            "tracks_stale_skipped": 13,
+            "epoch_align_skipped": 14,
             "queue_drops": 6,
             "worker_errors": 0,
             "vel_untrusted_published": 11,
