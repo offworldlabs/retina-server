@@ -496,6 +496,7 @@ class TestFragmentation:
             "mn_superseded": 0,
             "mn_superseded_blocked": 0,
             "mn_superseded_blocked_alt": 0,
+            "dark_follow_orphaned": 0,
         }
 
     def test_dark_key_decision_counters_are_surfaced(self):
@@ -585,6 +586,7 @@ class TestEndpoint:
             "mn_superseded",
             "mn_superseded_blocked",
             "mn_superseded_blocked_alt",
+            "dark_follow_orphaned",
         }
         assert data["fov"].keys() == {
             "mode",
