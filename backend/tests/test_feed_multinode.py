@@ -395,3 +395,93 @@ class TestAdsbAssistedLane:
         ac = self._build_mn()
         assert ac["adsb_assisted"] is False
         assert "adsb_hex" not in ac
+
+
+class TestSolveUncertaintyFields:
+    """pos_sigma_m / pos_sigma_vel_ms on every mn entry — the calibrated disc
+    the map draws (services/solve_uncertainty.py).
+
+    Both are optional on the wire, and the lane decides the inflation: a dark
+    solve had no ADS-B fix seeding its initial guess and no pinned altitude,
+    so it carries DARK_GAIN.  The lane comes from the KEY prefix, the same
+    authority the adsb_assisted field uses.  The KF is reset per test so the
+    velocity sigma exercises the no-KF-state fallback unless a test seeds one.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+        track_filter.reset()
+        yield
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+        track_filter.reset()
+
+    def _build_mn(self):
+        from services.frame_processor import build_combined_aircraft_json
+
+        pipeline = types.SimpleNamespace(geolocated_tracks={}, config={})
+        result = build_combined_aircraft_json(pipeline)
+        mn = [a for a in result["aircraft"] if a.get("multinode")]
+        assert len(mn) == 1
+        return mn[0]
+
+    def test_known_lane_n2_entry_carries_the_bare_floor(self):
+        # No pos_sigma_km on the fixture: sigma_solve is the n=2 floor alone.
+        state.multinode_tracks["mn-adsb-abc123"] = _mn_entry(age_s=1.0, vel_north=100.0)
+        ac = self._build_mn()
+        assert ac["pos_sigma_m"] == pytest.approx(650.0)
+
+    def test_no_kf_state_uses_the_default_velocity_sigma(self):
+        key = "mn-adsb-abc123"
+        assert track_filter.learned_velocity(key) is None  # never smoothed
+        state.multinode_tracks[key] = _mn_entry(age_s=1.0, vel_north=100.0)
+        ac = self._build_mn()
+        assert ac["pos_sigma_vel_ms"] == pytest.approx(25.0)
+
+    def test_dark_lane_gets_the_gain_and_the_known_lane_does_not(self):
+        state.multinode_tracks["mn-dark-1"] = _mn_entry(age_s=1.0, vel_north=100.0)
+        dark = self._build_mn()
+        state.multinode_tracks.clear()
+        state.multinode_tracks["mn-adsb-abc123"] = _mn_entry(age_s=1.0, vel_north=100.0)
+        known = self._build_mn()
+
+        assert known["adsb_assisted"] is True
+        assert dark["adsb_assisted"] is False
+        assert known["pos_sigma_m"] == pytest.approx(650.0)
+        assert dark["pos_sigma_m"] == pytest.approx(650.0 * 1.5)
+
+    def test_result_adsb_hex_does_not_soften_a_dark_key(self):
+        # Same key-is-authoritative rule as adsb_assisted: a dark key whose
+        # result dict happens to carry adsb_hex is still the dark lane, so it
+        # still gets the gain.
+        entry = _mn_entry(age_s=1.0, vel_north=100.0)
+        entry["adsb_hex"] = "abc123"
+        state.multinode_tracks["mn-dark-1"] = entry
+        ac = self._build_mn()
+        assert ac["pos_sigma_m"] == pytest.approx(650.0 * 1.5)
+
+    def test_formal_sigma_widens_the_disc(self):
+        entry = _mn_entry(age_s=1.0, vel_north=100.0)
+        entry["pos_sigma_km"] = 1.0
+        state.multinode_tracks["mn-adsb-abc123"] = entry
+        ac = self._build_mn()
+        assert ac["pos_sigma_m"] == pytest.approx(math.sqrt(1000.0**2 + 650.0**2), abs=0.1)
+
+    def test_kf_state_supplies_the_velocity_sigma(self):
+        key = "mn-adsb-abc123"
+        lat2, lon2 = offset_latlon_m(LAT, LON, east_m=0.0, north_m=50.0 * 20.0)
+        track_filter.smooth_solve(
+            {"lat": LAT, "lon": LON, "timestamp_ms": 1_000, "vel_east": 0.0, "vel_north": 0.0}, key, None
+        )
+        track_filter.smooth_solve(
+            {"lat": lat2, "lon": lon2, "timestamp_ms": 21_000, "vel_east": 0.0, "vel_north": 0.0}, key, None
+        )
+        lv = track_filter.learned_velocity(key)
+        assert lv is not None
+
+        state.multinode_tracks[key] = _mn_entry(age_s=1.0, vel_north=100.0)
+        ac = self._build_mn()
+        assert ac["pos_sigma_vel_ms"] == pytest.approx(round(lv[2], 1), abs=0.05)
+        assert ac["pos_sigma_vel_ms"] != pytest.approx(25.0)

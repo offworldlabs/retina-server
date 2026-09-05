@@ -18,6 +18,7 @@ export default function Toolbar({
   showRangeRings,
   showInBeamDiag,
   showArcs,
+  showUncertainty,
   soundOn,
   tileTheme,
   hasUserLoc,
@@ -34,6 +35,7 @@ export default function Toolbar({
   onToggleRangeRings,
   onToggleInBeamDiag,
   onToggleArcs,
+  onToggleUncertainty,
   onToggleSound,
   onCycleTheme,
   onShare,
@@ -91,6 +93,9 @@ export default function Toolbar({
       </button>
       <button className={`toggle-btn${showRangeRings ? " active" : ""}`} onClick={onToggleRangeRings} title="Show 5/10/20 km range rings around the selected aircraft">
         Range
+      </button>
+      <button className={`toggle-btn${showUncertainty ? " active" : ""}`} onClick={onToggleUncertainty} title="Show 95% position-uncertainty disc around multi-node solves">
+        σ Uncert.
       </button>
       <button className={`toggle-btn${showInBeamDiag ? " active" : ""}`} onClick={onToggleInBeamDiag} title="Show red lines from a node to in-beam aircraft it is NOT currently detecting (beam-coverage gaps)">
         Beam gaps

@@ -27,6 +27,7 @@ from services import track_filter
 from services.geo import bearing_deg, bistatic_differential_km, node_beam_params, offset_latlon_m
 from services.geo import haversine_km as _haversine_km
 from services.id_utils import is_transponder_hex, multinode_hex_from_key, normalize_hex_key
+from services.solve_uncertainty import solve_sigma_m
 
 _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 
@@ -1164,6 +1165,8 @@ def _record_solve_history(
     ig = s.get("initial_guess") or {}
     if displacement_km is None and raw_lat is not None and ig.get("lat") and ig.get("lon"):
         displacement_km = _haversine_km(float(ig["lat"]), float(ig["lon"]), float(raw_lat), float(raw_lon))
+    _dark = solve_key.startswith("mn-dark-") if solve_key else not s.get("adsb_hex")
+    _sigma_m = solve_sigma_m(r, dark=_dark)
     rec = {
         "ts_ms": now_ms,
         "measurement_ts_ms": int(r.get("timestamp_ms") or s.get("timestamp_ms") or 0),
@@ -1195,6 +1198,14 @@ def _record_solve_history(
         # never touched (rejects, off/ewma mode, first-ever solve for a key).
         "pos_sigma_km": round(float(r["pos_sigma_km"]), 3) if r.get("pos_sigma_km") is not None else None,
         "kf_pos_sigma_m": r.get("kf_pos_sigma_m"),
+        # The calibrated display sigma (services/solve_uncertainty.py), stamped
+        # here so the calibration that produced it can be re-run from
+        # /api/test/mlat-history alone: fraction(gt_error_km*1000 <=
+        # 2.448*sigma_m) over published records should stay near 0.95.  Lane
+        # comes from the track key when there is one (the same authority
+        # multinode_to_aircraft uses); rejects have no key yet, so their lane
+        # falls back to whether the solver input carried an ADS-B identity.
+        "sigma_m": (round(_sigma_m, 1) if _sigma_m is not None else None),
         "guess_lat": round(float(ig["lat"]), 6) if ig.get("lat") else None,
         "guess_lon": round(float(ig["lon"]), 6) if ig.get("lon") else None,
         "guess_alt_km": ig.get("alt_km"),

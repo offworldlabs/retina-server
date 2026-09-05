@@ -32,6 +32,8 @@ import {
   makeAircraftIcon,
   makeDroneIcon,
   hideDrIcon,
+  getAircraftColor,
+  solveUncertaintyRadiusM,
   nodeIcon,
   yagiSectorPositions,
   uncertaintyDiscRadiusM,
@@ -622,6 +624,83 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftR
   return null;
 });
 
+/* ── SolveUncertaintyLayer: one soft L.circle per visible multi-node solve,
+      radius = the calibrated 95% position-confidence radius (map/uncertainty.ts)
+      which grows while the icon dead-reckons between solves.
+
+      Same shape as AircraftTrailsLayer: one shared L.canvas renderer in the
+      passive pane, ref-driven so the 2 Hz display array does not tear the
+      circles down and rebuild them twice a second, updated on a 500 ms tick.
+
+      Hidden whenever hideDrIcon() hides the aircraft itself — a disc with no
+      plane inside it reads as a phantom target. ── */
+const _uncertaintyCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: DEBUG_PASSIVE_PANE }) : null;
+
+const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircraftRef, colorByAlt }) {
+  const map = useMap();
+  const circlesRef = useRef(new Map()); // hex → L.circle
+
+  useEffect(() => {
+    ensureDebugPanes(map);
+    const circles = circlesRef.current;
+    const tick = () => {
+      const markerNow = Date.now();
+      const live = new Set();
+      for (const ac of visibleAircraftRef.current || []) {
+        if (!ac.hex) continue;
+        if (ac.position_source !== "multinode_solve") continue;
+        if (!validLatLon(ac.lat, ac.lon)) continue;
+        if (hideDrIcon(ac, markerNow)) continue;
+        const radius = solveUncertaintyRadiusM(ac, markerNow);
+        // 0 = the feed never stated a sigma for this solve; draw nothing
+        // rather than assert a precision it did not promise.
+        if (radius <= 0) continue;
+        live.add(ac.hex);
+        // Same colour rule as the icon, including the colour-by-altitude toggle.
+        const color = getAircraftColor(ac, colorByAlt);
+        let circle = circles.get(ac.hex);
+        if (circle) {
+          circle.setLatLng([ac.lat, ac.lon]);
+          circle.setRadius(radius);
+          // Lane colour can flip mid-flight (a solve gaining or losing its
+          // transponder tag) — keep the disc in step with the icon.
+          if (circle.options.color !== color) circle.setStyle({ color, fillColor: color });
+        } else {
+          circle = L.circle([ac.lat, ac.lon], {
+            radius,
+            renderer: _uncertaintyCanvas,
+            interactive: false,
+            color,
+            fillColor: color,
+            fillOpacity: 0.10,
+            weight: 1,
+            opacity: 0.35,
+          });
+          circle.addTo(map);
+          circles.set(ac.hex, circle);
+        }
+      }
+      // Drop discs for aircraft that left the viewport, lost their solve, or
+      // whose icon is now hidden.
+      for (const [hex, circle] of circles) {
+        if (!live.has(hex)) {
+          circle.remove();
+          circles.delete(hex);
+        }
+      }
+    };
+    tick();
+    const id = setInterval(tick, 500);
+    return () => {
+      clearInterval(id);
+      for (const circle of circles.values()) circle.remove();
+      circles.clear();
+    };
+  }, [map, visibleAircraftRef, colorByAlt]);
+
+  return null;
+});
+
 /* ── BasemapLayer: TileLayer with bounded retry on tile load failure.
 
       Leaflet does not retry a failed tile.  A single 429 or timeout from the
@@ -1027,6 +1106,10 @@ export default function LiveAircraftMap() {
   const [showInBeamDiag, setShowInBeamDiag] = usePersistedState("tf.layer.inBeamDiag.v2", initialLayers?.inBeamDiag ?? false);
   // Detection arcs default ON — preserves the previously-unconditional render.
   const [showArcs, setShowArcs] = usePersistedState("tf.layer.arcs", initialLayers?.arcs ?? true);
+  // 95% position-uncertainty disc around multi-node solves. Default ON: the
+  // disc is the honest reading of a solved position, and hiding it by default
+  // would leave the icon looking more precise than it is.
+  const [showUncertainty, setShowUncertainty] = usePersistedState("tf.layer.uncertainty", initialLayers?.uncertainty ?? true);
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   // Enthusiast filters: altitude band (FL, hundreds of ft), speed floor, type.
   const [filters, setFilters] = usePersistedState("tf.filters", { minFl: "", maxFl: "", minGs: "", type: "all" });
@@ -1513,10 +1596,10 @@ export default function LiveAircraftMap() {
         coverage: showCoverage, labels: showLabels, trails: showTrails,
         groundTruth: showGroundTruth, illuminators: showIlluminators,
         colorByAlt, stats: showStats, rangeRings: showRangeRings,
-        inBeamDiag: showInBeamDiag, arcs: showArcs,
+        inBeamDiag: showInBeamDiag, arcs: showArcs, uncertainty: showUncertainty,
       }),
     });
-  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings, showInBeamDiag, showArcs]);
+  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings, showInBeamDiag, showArcs, showUncertainty]);
 
   // Push hash when selection or toggles change without waiting for a pan.
   useEffect(() => {
@@ -1528,10 +1611,10 @@ export default function LiveAircraftMap() {
         coverage: showCoverage, labels: showLabels, trails: showTrails,
         groundTruth: showGroundTruth, illuminators: showIlluminators,
         colorByAlt, stats: showStats, rangeRings: showRangeRings,
-        inBeamDiag: showInBeamDiag, arcs: showArcs,
+        inBeamDiag: showInBeamDiag, arcs: showArcs, uncertainty: showUncertainty,
       }),
     });
-  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings, showInBeamDiag, showArcs]);
+  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings, showInBeamDiag, showArcs, showUncertainty]);
 
   /* ── Keyboard shortcuts ─────────────────────────────────────
      Single-letter bindings.  Suppressed while typing in inputs so the
@@ -1685,6 +1768,7 @@ export default function LiveAircraftMap() {
         showRangeRings={showRangeRings}
         showInBeamDiag={showInBeamDiag}
         showArcs={showArcs}
+        showUncertainty={showUncertainty}
         soundOn={soundOn}
         tileTheme={tileTheme}
         hasUserLoc={!!userLoc}
@@ -1701,6 +1785,7 @@ export default function LiveAircraftMap() {
         onToggleRangeRings={() => setShowRangeRings((v) => !v)}
         onToggleInBeamDiag={() => setShowInBeamDiag((v) => !v)}
         onToggleArcs={() => setShowArcs((v) => !v)}
+        onToggleUncertainty={() => setShowUncertainty((v) => !v)}
         onToggleSound={() => setSoundOn((v) => !v)}
         onCycleTheme={() => setTileTheme((t) => t === "voyager" ? "positron" : t === "positron" ? "osm" : "voyager")}
         onShare={shareLink}
@@ -2061,6 +2146,11 @@ export default function LiveAircraftMap() {
                 frontendTrailsRef={frontendTrailsRef}
                 selectedHex={selectedHex}
               />
+            )}
+
+            {/* 95% position-uncertainty disc around each multi-node solve. */}
+            {showUncertainty && (
+              <SolveUncertaintyLayer visibleAircraftRef={visibleAircraftRef} colorByAlt={colorByAlt} />
             )}
 
             {/* Selected trail — gradient fade; dashed for arc-type tracks */}

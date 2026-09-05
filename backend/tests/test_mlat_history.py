@@ -145,6 +145,34 @@ class TestRecording:
         assert len(state.mlat_solve_history) == 1
         assert outcomes == ["published"]
 
+    def test_published_record_carries_the_calibrated_sigma(self):
+        """sigma_m is the disc radius the map draws, stamped into history so
+        the 2026-09-05 calibration can be re-run from /api/test/mlat-history
+        alone (fraction(gt_error_km*1000 <= 2.448*sigma_m) ~ 0.95)."""
+        self._run(_CONFIRMED_N2, _solve_fn(n_nodes=2))
+        rec = self._only_record()
+        assert rec["outcome"] == "published"
+        # Dark lane (no adsb_hex on the input, so the key is minted
+        # mn-dark-*): the n=2 floor of 650 m times the 1.5 dark gain.  No
+        # pos_sigma_km on this fixture, so the formal term contributes 0.
+        assert rec["solve_key"].startswith("mn-dark-")
+        assert rec["sigma_m"] == pytest.approx(975.0)
+
+    def test_known_lane_record_is_not_dark_inflated(self):
+        s_in = dict(_CONFIRMED_N2)
+        s_in["adsb_hex"] = "abc123"
+        self._run(s_in, _solve_fn(n_nodes=2))
+        rec = self._only_record()
+        assert not rec["solve_key"].startswith("mn-dark-")
+        assert rec["sigma_m"] == pytest.approx(650.0)
+
+    def test_record_without_n_nodes_has_no_sigma(self):
+        # A solve the model cannot floor is recorded with sigma_m None rather
+        # than a formal-sigma-only guess — same rule the feed uses to omit the
+        # field entirely.
+        self._run(_CONFIRMED_N2, _solve_fn())
+        assert self._only_record()["sigma_m"] is None
+
     def test_reset_for_tests_clears_history(self):
         self._run(_CONFIRMED_N2, _solve_fn())
         assert state.mlat_solve_history

@@ -11,6 +11,14 @@ export {
   yagiSectorPositions,
   uncertaintyDiscRadiusM,
 } from "./geo";
+export {
+  UNCERTAINTY_K95,
+  UNCERTAINTY_DR_CAP_S,
+  UNCERTAINTY_MAX_RADIUS_M,
+  solveAgeS,
+  solveSigmaM,
+  solveUncertaintyRadiusM,
+} from "./uncertainty";
 export { mergeTrailPositions, sampleTrailPositions, buildTrailSegments } from "./trails";
 export { PLANE_PATH, getAircraftColor, altitudeColor, ALTITUDE_LEGEND, aircraftIconSize, makeAircraftIcon, makeDroneIcon, nodeIcon, drDriftM, hideDrIcon } from "./icons";
 export { FitBounds, ViewportTracker, MapClickClear } from "./MapControls";
