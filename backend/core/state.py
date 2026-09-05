@@ -74,6 +74,20 @@ KNOWN_LANE_MODE = os.getenv("KNOWN_LANE_MODE", "binding").lower()
 if KNOWN_LANE_MODE not in ("off", "shadow", "binding"):
     KNOWN_LANE_MODE = "shadow"
 
+# Dark track following (see services/dark_follow.py) — the same top-down claim
+# as the known lane, against established mn-dark-* tracks instead of ADS-B
+# identities.  Same three-way vocabulary, and the same fallback discipline: an
+# unrecognised value degrades to the inert-for-the-feed mode.  Default
+# "shadow", unlike KNOWN_LANE_MODE's "binding", because this lane decides which
+# aircraft the map believes in without a transponder to check itself against —
+# it earns its soak before it binds.  Claiming rides the known lane's per-frame
+# stage, so this is inert whenever KNOWN_LANE_MODE is off (an ADS-B aircraft
+# must never lose a detection to a dark pseudo-state, and that precedence needs
+# the ADS-B claims to have been made first).
+DARK_FOLLOW_MODE = os.getenv("DARK_FOLLOW_MODE", "shadow").lower()
+if DARK_FOLLOW_MODE not in ("off", "shadow", "binding"):
+    DARK_FOLLOW_MODE = "shadow"
+
 node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR, fov_mode=FOV_MODE)
 
 
@@ -508,6 +522,17 @@ known_claims_world_rejects: int = 0
 # Claiming-stage exceptions absorbed by frame_processor's fail-open guard.
 # Nonzero means the known lane is broken and silently contributing nothing.
 known_claims_errors: int = 0
+# Dark track following (DARK_FOLLOW_MODE) — see services/dark_follow.py.
+# targets is a GAUGE (the size of the current pseudo-state list, assigned on
+# every rebuild), the other four are since-boot counters.  The funnel reads
+# targets -> claims -> inputs -> published, with dropped the guard's own
+# tally: a lane with targets but no claims is predicting positions no node
+# agrees with, and one with rising dropped is the guard doing its job.
+dark_follow_targets: int = 0
+dark_follow_claims: int = 0
+dark_follow_inputs: int = 0
+dark_follow_published: int = 0
+dark_follow_dropped: int = 0
 # n=2 solves withheld from the map because their track pairing has not (yet)
 # passed the constant-velocity fit.  Counted separately from solver_failures:
 # the solve succeeded, it simply has not earned publication, and a real target
@@ -749,6 +774,8 @@ def _reset_for_tests() -> None:
     global adsb_seed_frames_autotagged, adsb_capture_ts_fallback
     global known_claims_made, known_claim_contentions, known_claims_bound
     global known_claims_errors, known_claims_visibility_rejects, known_claims_world_rejects
+    global dark_follow_targets, dark_follow_claims, dark_follow_inputs
+    global dark_follow_published, dark_follow_dropped
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
     global coverage_rebuild_backlog
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
@@ -838,6 +865,8 @@ def _reset_for_tests() -> None:
         known_claims_made = known_claim_contentions = known_claims_bound = 0
         known_claims_errors = known_claims_visibility_rejects = 0
         known_claims_world_rejects = 0
+        dark_follow_targets = dark_follow_claims = dark_follow_inputs = 0
+        dark_follow_published = dark_follow_dropped = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
         coverage_rebuild_backlog = 0
         solver_stale_drops = 0

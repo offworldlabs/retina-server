@@ -19,7 +19,7 @@ from config.constants import (
     N2_TRACK_ASSOCIATION,
 )
 from core import state
-from services import track_filter
+from services import dark_follow, track_filter
 
 # Beam-coverage geometry, used to reject solver results whose range or (at
 # n=2) bearing fall outside a contributing node's detection area.  This
@@ -1487,6 +1487,16 @@ def _record_solve_history(
         # windowed fragmentation breakdown can see what fraction of ALL
         # attempts (not just successful ones) were anchor-carrying.
         "anchor_key": s.get("anchor_key"),
+        # Lane provenance, carried by the solver input rather than inferred
+        # from the key: a dark-follow solve (services/dark_follow.py) lands on
+        # an mn-dark-* key and would otherwise be indistinguishable from the
+        # bottom-up solves whose funnel it is not part of.  guess_source says
+        # what the initial guess WAS — "prediction" for a followed track,
+        # absent for the association grid centroid every other dark input
+        # carries — and follow_key names the track that predicted it.
+        "lane": s.get("lane"),
+        "guess_source": s.get("guess_source"),
+        "follow_key": s.get("follow_key"),
         "raw_lat": round(float(raw_lat), 6) if raw_lat is not None else None,
         "raw_lon": round(float(raw_lon), 6) if raw_lon is not None else None,
         "lat": round(float(r["lat"]), 6) if outcome == "published" else None,
@@ -1551,6 +1561,19 @@ def _record_solve_history(
     }
     if extra:
         rec.update(extra)
+    _follow_key = rec.get("follow_key")
+    if _follow_key:
+        # The dark-follow ghost guard (services/dark_follow.py) needs a verdict
+        # for every follow-solve, and this is the one place all of them pass
+        # through — published, every rejected_* gate, unconverged, and the
+        # shadow pass's own record.  Following a track is a feedback loop (the
+        # solve keeps the key alive, the key keeps claiming detections), so a
+        # key that stops earning its solves has to be droppable from OUTSIDE
+        # that loop.  A shadow record carries its own verdict in follow_ok:
+        # it never reached the gates, so "did it publish" says nothing.
+        dark_follow.record_outcome(_follow_key, bool(rec.get("follow_ok", outcome == "published")))
+        if outcome == "published":
+            state.bump_counter("dark_follow_published")
     if raw_lat is not None and raw_lon is not None:
         meas_ts_s = (rec["measurement_ts_ms"] or now_ms) / 1000.0
         rec.update(_gt_for_record(rec["adsb_hex"], float(raw_lat), float(raw_lon), meas_ts_s))
@@ -2370,11 +2393,12 @@ def _run_solver_worker():
     # coverage collector lock hard enough to stall test_mlat_history's
     # trail-race stress test (~50 daemons caught inside the mode check in a
     # single py-spy snapshot).
-    known_lane_armed = known_lane._mode() != "off"
+    known_lane_armed = known_lane.lanes_armed()
     while True:
         _solver_worker_iteration()
         if known_lane_armed:
-            # Known-lane pass (identity-first claims → per-hex solves).
+            # Known-lane pass (identity-first claims → per-hex solves), plus
+            # the dark-follow pass behind the same lock and interval.
             # Ridden on the worker loop rather than its own thread so the
             # solve compute stays on the threads that already own the solver
             # locks and pool; interval- and concurrency-gated inside, and it
