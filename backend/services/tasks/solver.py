@@ -67,6 +67,17 @@ _solver_pool_lock = threading.Lock()
 # and keying off it silently reverted deployments to inline GIL-bound solving.
 _POOL_ENABLED = os.getenv("SOLVER_POOL", "1").strip().lower() not in ("0", "false", "off")
 
+# Wall-clock ceiling on one pool round trip.  A solve runs well under a
+# second; the queue itself discards items older than _SOLVER_MAX_QUEUE_AGE_S
+# (45 s), so a call still outstanding at 30 s has already lost the work it was
+# doing.  Without a timeout a child that is *alive but stuck* — a pathological
+# LM, a spawn child wedged on import, a machine deep in swap — blocks one of
+# only SOLVER_WORKERS (2) threads for the life of the process, silently: the
+# enqueue side counts solver_queue_drops / solver_stale_drops, but nothing on
+# this path bumps an error counter, so task health stays green while the lane
+# is dead.
+_POOL_CALL_TIMEOUT_S = float(os.getenv("SOLVER_POOL_CALL_TIMEOUT_S", "30"))
+
 
 def _make_solver_pool() -> concurrent.futures.ProcessPoolExecutor:
     return concurrent.futures.ProcessPoolExecutor(
@@ -75,30 +86,69 @@ def _make_solver_pool() -> concurrent.futures.ProcessPoolExecutor:
     )
 
 
+def _replace_solver_pool(pool, reason: str) -> None:
+    """Tear down `pool` and stand a fresh one up in its place.
+
+    Idempotent across the worker threads: whoever gets the lock first swaps
+    the executor, and a second thread that hit the same failure finds
+    _solver_pool already moved on and leaves it alone.
+    """
+    global _solver_pool
+    with _solver_pool_lock:
+        if _solver_pool is not pool:
+            return
+        try:
+            pool.shutdown(wait=False)
+        except Exception:
+            pass
+        try:
+            _solver_pool = _make_solver_pool()
+            logging.warning("Solver process pool %s — recreated", reason)
+        except Exception:
+            _solver_pool = None
+            logging.exception(
+                "Solver process pool %s and could not be recreated — solving inline on worker threads from now on",
+                reason,
+            )
+
+
 def _pool_call(fn, *args):
     """Run fn in the solver process pool; inline when there is no pool."""
-    global _solver_pool
     pool = _solver_pool
     if pool is None:
         return fn(*args)
+    future = None
     try:
-        return pool.submit(fn, *args).result()
+        future = pool.submit(fn, *args)
+        return future.result(timeout=_POOL_CALL_TIMEOUT_S)
+    except concurrent.futures.TimeoutError:
+        if future is not None:
+            future.cancel()
+        state.bump_counter("solver_pool_timeouts")
+        state.bump_task_error("solver_pool")
+        # s_in is the first argument of every submitted solve, and carries the
+        # node count — the one field that says whether the hang correlates
+        # with problem size.
+        n_nodes = args[0].get("n_nodes") if args and isinstance(args[0], dict) else None
+        logging.warning(
+            "Solver pool call %s timed out after %.0fs (n_nodes=%s) — retrying inline",
+            getattr(fn, "__name__", fn),
+            _POOL_CALL_TIMEOUT_S,
+            n_nodes,
+        )
+        # Same recovery as the broken-pool branch below, and the same
+        # fallback: retry inline rather than dropping the item.  A wedged
+        # child never releases its worker slot, so the executor is replaced
+        # either way.  The inline retry is deliberate — the overwhelming
+        # cause here is a sick *child*, not a pathological input, and dropping
+        # would cost a solve that the fresh interpreter completes in
+        # milliseconds.  It is also the only branch that can still block this
+        # thread; the counter and the task error make that case visible
+        # instead of silent, which is what the timeout is for.
+        _replace_solver_pool(pool, "call timed out")
+        return fn(*args)
     except BrokenProcessPool:
-        with _solver_pool_lock:
-            if _solver_pool is pool:
-                try:
-                    pool.shutdown(wait=False)
-                except Exception:
-                    pass
-                try:
-                    _solver_pool = _make_solver_pool()
-                    logging.warning("Solver process pool broke — recreated")
-                except Exception:
-                    _solver_pool = None
-                    logging.exception(
-                        "Solver process pool broke and could not be recreated"
-                        " — solving inline on worker threads from now on"
-                    )
+        _replace_solver_pool(pool, "broke")
         return fn(*args)
 
 
@@ -2333,7 +2383,7 @@ def _process_solver_item(
         else:
             result = _solve_best_altitude_n2(s_in, node_cfgs, solve_fn)
     except Exception:
-        state.task_error_counts["solver"] += 1
+        state.bump_task_error("solver")
         state.bump_counter("solver_failures")
         state.bump_counter("solver_fail_exception")
         logging.exception("Multinode solver failed")

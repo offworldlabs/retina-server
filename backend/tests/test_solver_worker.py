@@ -1347,6 +1347,46 @@ class TestSolverProcessPool:
         assert solver_mod._solver_pool is replacement
         monkeypatch.setattr(solver_mod, "_solver_pool", None)
 
+    def test_hung_child_times_out_counts_and_falls_back_inline(self, monkeypatch):
+        """A child that is alive but stuck must cost one solve, not the lane.
+
+        Without a timeout, `.result()` blocks one of only SOLVER_WORKERS (2)
+        threads for the process lifetime and no counter anywhere moves.
+        """
+        import concurrent.futures
+
+        events = []
+        hung = concurrent.futures.Future()  # never set — the wedged child
+
+        class _HungPool:
+            def submit(self, fn, *args):
+                return hung
+
+            def shutdown(self, wait=False):
+                events.append("shutdown")
+
+        replacement = object()
+        pool = _HungPool()
+        monkeypatch.setattr(solver_mod, "_solver_pool", pool)
+        monkeypatch.setattr(solver_mod, "_make_solver_pool", lambda: replacement)
+        monkeypatch.setattr(solver_mod, "_POOL_CALL_TIMEOUT_S", 0.05)
+        before = state.solver_pool_timeouts
+        errors_before = state.task_error_counts.get("solver_pool", 0)
+
+        try:
+            # First arg is the s_in dict the real solve calls pass, so the
+            # n_nodes the warning logs comes off a realistic shape.
+            assert solver_mod._pool_call(_marker_fn, {"n_nodes": 3}) == {"marker": {"n_nodes": 3}}
+            assert state.solver_pool_timeouts == before + 1
+            assert state.task_error_counts["solver_pool"] == errors_before + 1
+            # The wedged executor is torn down and replaced, exactly as the
+            # broken-pool branch does — a stuck child never frees its slot.
+            assert events == ["shutdown"]
+            assert solver_mod._solver_pool is replacement
+        finally:
+            monkeypatch.setattr(solver_mod, "_solver_pool", None)
+            state.task_error_counts.pop("solver_pool", None)
+
 
 class TestDarkSolveSmoothing:
     """Dark solves accumulate EWMA history under their track key.

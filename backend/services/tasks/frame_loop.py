@@ -37,7 +37,7 @@ async def frame_processor_loop(default_pipeline, shard: int = 0):
             state.bump_counter("frames_processed")
             state.task_last_success["frame_processor"] = time.time()
         except Exception:
-            state.task_error_counts["frame_processor"] += 1
+            state.bump_task_error("frame_processor")
             logging.exception("Frame processing failed")
         finally:
             queue.task_done()

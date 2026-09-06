@@ -258,6 +258,14 @@ ANALYTICS_REFRESH_INTERVAL_S = 30  # Background analytics recompute
 # 30 s cadence) create the small-files problem at scale.
 ARCHIVE_FLUSH_INTERVAL_S = 3600
 ARCHIVE_BATCH_MAX = 10000  # Safety cap; should not normally trigger
+# How long a node's archive buffer may keep failing to write before it is
+# abandoned — but only once the node itself has left connected_nodes.  Frames
+# are deliberately retained across a failed write (disk full, permissions), and
+# the buffer key is popped only on a *successful* write that empties it, so a
+# node that departs mid-outage pinned its frames for the process lifetime and
+# was retried on every flush cycle forever.  Six cycles at the hourly cadence
+# above; a node that is still connected keeps its data indefinitely regardless.
+ARCHIVE_BUFFER_FAIL_TTL_S = float(os.getenv("ARCHIVE_BUFFER_FAIL_TTL_S", "21600"))
 TRACK_ARCHIVE_FLUSH_INTERVAL_S = 60  # Multi-node solver track archive flush cadence
 
 # ── Detection mirror (production forwards accepted v1 frames elsewhere) ──────

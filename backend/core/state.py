@@ -633,6 +633,13 @@ tracks_stale_skipped: int = 0
 solver_epoch_align_skipped: int = 0
 
 solver_queue_drops: int = 0
+
+# Solve calls that hit SOLVER_POOL_CALL_TIMEOUT_S waiting on a pool child and
+# were retried inline (services/tasks/solver._pool_call).  A stuck-but-alive
+# child used to block one of the two solver worker threads for the process
+# lifetime with no counter moving anywhere; nonzero here means the pool was
+# torn down and rebuilt at least that many times.
+solver_pool_timeouts: int = 0
 # Queue items discarded unsolved because they aged past _SOLVER_MAX_QUEUE_AGE_S
 # waiting for a worker.  Was only a DEBUG log, which staging does not emit —
 # the drain-rate collapse behind the August latency incident was invisible in
@@ -839,6 +846,31 @@ def bump_counter(name: str, n: int = 1) -> None:
 task_last_success: dict[str, float] = {}  # task_name → last success epoch
 task_error_counts: dict[str, int] = defaultdict(int)  # task_name → cumulative errors
 
+
+def bump_task_error(name: str, n: int = 1) -> None:
+    """Thread-safe increment for a task_error_counts entry.
+
+    The bare ``task_error_counts[name] += 1`` this replaces is a
+    read-modify-write on a shared dict, and the bump sites run on the event
+    loop, the frame workers and the solver threads at once — the same
+    lost-update shape bump_counter() exists for.  Reuses counters_lock: the
+    two never nest, and the critical section is one dict slot.
+    """
+    with counters_lock:
+        task_error_counts[name] += n
+
+
+def task_error_snapshot() -> dict[str, int]:
+    """Copy of task_error_counts, taken under the bump lock.
+
+    A bare ``dict(task_error_counts)`` on a request thread can raise
+    "dictionary changed size during iteration" while a worker inserts a
+    first-ever key for its task.
+    """
+    with counters_lock:
+        return dict(task_error_counts)
+
+
 # ── Accuracy tracking (haversine solver vs ADS-B) ────────────────────────────
 # Rolling buffer of {hex, error_km, position_source, ts} samples.
 ACCURACY_MAX_SAMPLES = 5000
@@ -901,6 +933,7 @@ def _reset_for_tests() -> None:
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
     global coverage_rebuild_backlog, tracks_stale_skipped, solver_epoch_align_skipped
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
+    global solver_pool_timeouts
     global solver_resolve_skips_dark
     global mn_superseded, mn_superseded_blocked, mn_superseded_blocked_alt, solver_trimmed
     global solver_consensus_selected, solver_consensus_filtered
@@ -993,6 +1026,7 @@ def _reset_for_tests() -> None:
         dark_follow_published = dark_follow_dropped = 0
         dark_bottomup_shadowed = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
+        solver_pool_timeouts = 0
         coverage_rebuild_backlog = 0
         tracks_stale_skipped = solver_epoch_align_skipped = 0
         solver_stale_drops = 0

@@ -184,5 +184,5 @@ async def aircraft_flush_task(default_pipeline):
             await broadcast_aircraft(aircraft_data, aircraft_bytes)
             state.task_last_success["aircraft_flush"] = time.time()
         except Exception:
-            state.task_error_counts["aircraft_flush"] += 1
+            state.bump_task_error("aircraft_flush")
             logging.exception("Aircraft flush failed")
