@@ -18,6 +18,7 @@ from config.constants import (
     ARCHIVE_BATCH_MAX,
     ARCHIVE_FLUSH_INTERVAL_S,
     N2_TRACK_HISTORY_MAX,
+    TRACK_MAX_STALE_S,
 )
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
@@ -275,7 +276,11 @@ def _view_adsb_hex(track, hist) -> str | None:
     return hexn
 
 
-def confirmed_track_views(tracker, history_n: int = N2_TRACK_HISTORY_MAX) -> list[dict]:
+def confirmed_track_views(
+    tracker,
+    history_n: int = N2_TRACK_HISTORY_MAX,
+    now_ts_ms: int | None = None,
+) -> list[dict]:
     """A tracker's confirmed tracks, in the shape submit_tracks takes.
 
     TENTATIVE tracks are excluded, the same filter the arc builder applies: they
@@ -285,15 +290,35 @@ def confirmed_track_views(tracker, history_n: int = N2_TRACK_HISTORY_MAX) -> lis
     reason arcs keep it — at 22 fps a single missed frame flips ACTIVE →
     COASTING and the next flips it back.
 
+    But COASTING is kept only while its newest REAL detection is fresh.  What
+    travels downstream is ``history[-1]``, and association hands that sample to
+    the solver as the node's current measurement — so a track coasting toward
+    its N_DELETE deletion point contributes a delay from wherever the aircraft
+    was several seconds ago.  That is the out-of-cone node the rms trim then
+    has to discard (see TRACK_MAX_STALE_S).  The staleness test reads
+    ``hist[-1]["timestamp"]`` rather than the track's coast count because
+    get_recent_detections returns only ASSOCIATED samples — mark_missed appends
+    None to ``history["measurements"]`` and the reverse scan skips those — so
+    that timestamp IS the last real detection's, exactly the honest signal,
+    while n_missed only counts frames the node happened to process.  Compared
+    against *now_ts_ms*, the frame timestamp being processed, never wall clock:
+    the fleet replays and backfills, and a filter keyed on wall clock would
+    silently empty every view in those runs.  Skipped when the caller supplies
+    no frame time, or when TRACK_MAX_STALE_S is 0.
+
     Shared with scripts/association_bench.py (which carried a near-verbatim
     copy) so the bench feeds association exactly what production does.
     """
+    max_stale_ms = TRACK_MAX_STALE_S * 1000.0 if now_ts_ms is not None else 0.0
     views = []
     for tr in tracker.tracks:
         if tr.state_status == TrackState.TENTATIVE:
             continue
         hist = tr.get_recent_detections(history_n)
         if len(hist) < 2:
+            continue
+        if max_stale_ms > 0 and (now_ts_ms - hist[-1]["timestamp"]) > max_stale_ms:
+            state.bump_counter("tracks_stale_skipped")
             continue
         views.append(
             {
@@ -313,8 +338,8 @@ def confirmed_track_views(tracker, history_n: int = N2_TRACK_HISTORY_MAX) -> lis
     return views
 
 
-def _node_track_views(pipeline: PassiveRadarPipeline) -> list[dict]:
-    return confirmed_track_views(pipeline.tracker)
+def _node_track_views(pipeline: PassiveRadarPipeline, now_ts_ms: int | None = None) -> list[dict]:
+    return confirmed_track_views(pipeline.tracker, now_ts_ms=now_ts_ms)
 
 
 def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarPipeline):
@@ -418,7 +443,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # Track-level association.  The detection-level path it replaced now lives
     # in retina_analytics.detection_association, reachable only from the
     # offline bench, which keeps it as the A/B baseline.
-    _track_views = _node_track_views(pipeline)
+    _track_views = _node_track_views(pipeline, _ts_ms_assoc or None)
     # Feed the per-node distinct-track counters — total_tracks /
     # geolocated_tracks were exported (and read by the admin API) but never
     # written anywhere.
