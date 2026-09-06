@@ -65,6 +65,7 @@ from scipy.optimize import linear_sum_assignment
 
 from config.constants import FT_TO_M, as_num
 from core import state
+from services import dark_follow
 from services.id_utils import normalize_hex_key
 
 # Same base constants as the seeding path: the comparison is the identical
@@ -195,7 +196,143 @@ def _is_contested(delay_us: float, doppler_hz: float, projections: list[tuple[fl
     )
 
 
-def claim_known_targets(node_id: str, frame: dict) -> set[int]:
+def _claim_dark_follow(
+    node_id: str,
+    geo,
+    frame_ts_s: float,
+    ts_ms: int,
+    delays: list,
+    dopplers: list,
+    free: list[int],
+) -> set[int]:
+    """Path 3: claim the leftover detections against followed dark tracks.
+
+    The ADS-B paths' assignment, run a second time with the dark pseudo-states
+    (services/dark_follow.py) standing in for cached transponder fixes — same
+    dead-reckoning, same visibility gate, same Hungarian one-to-one, same
+    per-axis normalised score.  Only the gate widths differ, because a dark
+    pseudo-state carries its own uncertainty and an ADS-B fix is treated as
+    truth (see dark_follow.follow_gates).
+
+    Runs on ``free`` — what the ADS-B paths did not take — which IS the
+    precedence rule: an aircraft with a transponder can never lose a detection
+    to a dark track's prediction, whatever the residuals say.  The reverse is
+    tolerable; a dark track that loses a detection is solved from its other
+    nodes, and a wrong ADS-B claim would charge a fix the node never saw to
+    that node's trust.
+
+    Claims land in state.known_claims under the mn-dark-* KEY rather than a
+    hex, marked ``dark_follow`` so known_lane's two passes can tell them apart.
+    They carry ``follow_fix`` rather than ``adsb_fix`` deliberately: every
+    other reader of the registry (the feed's single-node ADS-B section, the
+    per-node trust residuals) keys on ``adsb_fix``, and a follow claim has no
+    transponder fix to offer them — its absence is what keeps those readers
+    unchanged.
+    """
+    if not free or dark_follow.mode() == "off":
+        return set()
+    targets = dark_follow.follow_targets()
+    if not targets:
+        return set()
+
+    node_world = state.node_world(node_id)
+    cands: list[tuple[dict, float, float, float, float, float, float]] = []
+    for t in targets:
+        # Same world gate as path 2, same reason: a synthetic node's echoes are
+        # only ever of simulated aircraft.  Untagged targets pass.
+        if t["world"] is not None and t["world"] != node_world:
+            continue
+        dt = frame_ts_s - t["timestamp_ms"] / 1000.0
+        if not (0.0 <= dt <= dark_follow.DARK_FOLLOW_MAX_AGE_S):
+            continue
+        dr_lat, dr_lon = offset_latlon_m(
+            t["lat"],
+            t["lon"],
+            east_m=t["vel_east"] * dt,
+            north_m=t["vel_north"] * dt,
+        )
+        # The associator's own visibility predicate, applied whole — the same
+        # call path 2 makes, for the same asymmetry: a false accept binds a
+        # detection to an aircraft this node cannot see and takes it out of the
+        # lane that would have disagreed.
+        if not _point_in_beam(dr_lat, dr_lon, geo):
+            continue
+        alt_km = t["alt_m"] / 1000.0
+        pred_d, pred_f = predict_observation(
+            geo,
+            dr_lat,
+            dr_lon,
+            alt_km,
+            t["vel_east"],
+            t["vel_north"],
+        )
+        d_gate, f_gate = dark_follow.follow_gates(
+            t,
+            dt,
+            KNOWN_CLAIM_DELAY_GATE_US,
+            KNOWN_CLAIM_DOPPLER_GATE_HZ,
+            geo.fc_hz,
+        )
+        cands.append((t, pred_d, pred_f, d_gate, f_gate, dr_lat, dr_lon))
+    if not cands:
+        return set()
+
+    cost = np.full((len(free), len(cands)), _GATE_INFEASIBLE)
+    for c, (_t, pred_d, pred_f, d_gate, f_gate, _dr_lat, _dr_lon) in enumerate(cands):
+        for r, i in enumerate(free):
+            d_res = abs(pred_d - float(delays[i]))
+            f_res = abs(pred_f - float(dopplers[i]))
+            if d_res > d_gate or f_res > f_gate:
+                continue
+            cost[r, c] = d_res / d_gate + f_res / f_gate
+    rows, cols = linear_sum_assignment(cost)
+
+    claimed: set[int] = set()
+    for r, c in zip(rows, cols):
+        if cost[r, c] >= _GATE_INFEASIBLE:
+            continue
+        i = free[r]
+        t, pred_d, pred_f, _d_gate, _f_gate, dr_lat, dr_lon = cands[c]
+        dq = state.known_claims.get(t["key"])
+        if dq is None:
+            dq = state.known_claims.setdefault(t["key"], deque(maxlen=state.KNOWN_CLAIMS_PER_HEX_MAX))
+        dq.append(
+            {
+                "node_id": node_id,
+                "delay_us": float(delays[i]),
+                "doppler_hz": float(dopplers[i]),
+                "pred_delay_us": float(pred_d),
+                "pred_doppler_hz": float(pred_f),
+                "ts_ms": ts_ms,
+                "dark_follow": True,
+                # The prediction itself, at the frame epoch — this is what the
+                # follow solve uses as its initial guess, which is the second
+                # thing this lane exists for (the first being the key).  Unlike
+                # path 2's REPORTED-position rule there is no reported position
+                # to prefer: the dead-reckoned state is the only estimate there
+                # has ever been.
+                "follow_fix": {
+                    "lat": dr_lat,
+                    "lon": dr_lon,
+                    "alt_km": t["alt_m"] / 1000.0,
+                    "vel_east": t["vel_east"],
+                    "vel_north": t["vel_north"],
+                    "fix_ts_ms": ts_ms,
+                },
+                # Contention is an ADS-B-vs-dark question (identity evidence
+                # beating a dark projection).  A follow claim IS the dark
+                # projection, so there is nothing for it to contend with, and
+                # leaving the flag false is what lets known_lane's selection
+                # reuse _select_claims unchanged.
+                "contested": False,
+            }
+        )
+        claimed.add(i)
+        state.bump_counter("dark_follow_claims")
+    return claimed
+
+
+def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | None = None) -> set[int]:
     """Run the claiming stage for one frame; return the claimed detection
     indices.
 
@@ -212,6 +349,15 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
       2. Remaining detections × fresh cached ADS-B states whose dead-reckoned
          position this node can see, global one-to-one via
          linear_sum_assignment under age-scaled gates.
+      3. Dark track following (DARK_FOLLOW_MODE) — the same assignment again,
+         against established dark tracks' predicted observations instead of
+         ADS-B fixes.  See _claim_dark_follow.
+
+    ``follow_claimed``, when given, is the set path 3's indices are written
+    into.  They are deliberately NOT part of the return value: the two lanes
+    have independent binding modes, so the caller must be able to strip one
+    lane's claims from the frame without the other's.  Omit it and path 3 does
+    not run at all — a caller that cannot receive the split cannot honour it.
 
     Claims nothing without a registered geometry: the registry contract
     requires the predicted observation, and there is nothing to predict
@@ -412,12 +558,9 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
                 )
                 claimed_idx.add(i)
 
-    if not claims:
-        return set()
-
     # ── Contention, registry, counters, residual hook ─────────────────────────
-    projections = _dark_global_projections(geo, frame_ts_s)
-    nb = _node_bias()
+    projections = _dark_global_projections(geo, frame_ts_s) if claims else []
+    nb = _node_bias() if claims else None
     for i, hexn, fix, pred_d, pred_f in claims:
         d_meas = float(delays[i])
         f_meas = float(dopplers[i])
@@ -451,6 +594,21 @@ def claim_known_targets(node_id: str, frame: dict) -> set[int]:
             # per-node bias, and |residual| throws away the direction that
             # makes a bias a bias.
             nb.record_claim_residual(node_id, hexn, d_meas - pred_d, f_meas - pred_f, ts_ms)
+
+    # ── Path 3: dark track following ─────────────────────────────────────────
+    # Last, on what the ADS-B paths left behind — see _claim_dark_follow for
+    # why that ordering is the precedence rule rather than an implementation
+    # detail.
+    if follow_claimed is not None:
+        follow_claimed |= _claim_dark_follow(
+            node_id,
+            geo,
+            frame_ts_s,
+            ts_ms,
+            delays,
+            dopplers,
+            [i for i in range(len(delays)) if i not in claimed_idx],
+        )
 
     return claimed_idx
 

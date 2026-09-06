@@ -84,11 +84,25 @@ N2_CONFIRM_MIN_SPAN_S = 12.0  # Observation span before a pairing is fitted
 N2_CONFIRM_MIN_EPOCHS = 4  # Floor on samples; span is the real gate
 N2_TRACK_HISTORY_MAX = 20  # Per-node track samples fed to the fit
 
+# How old a track's newest REAL detection may be before the track stops being
+# offered to association (see services/frame_processor.confirmed_track_views).
+# A COASTING track is kept alive for N_DELETE=10 frames after its last
+# association, and at the fleet's 0.74-1 Hz per-node cadence that is up to ~13 s
+# of dead reckoning.  confirmed_track_views hands association the track's last
+# real sample, and association hands the solver that sample as if it were
+# current — so an aircraft that has flown out of a node's beam keeps
+# contributing a seconds-old delay to n>=3 solves.  Measured on the test
+# droplet: 230 out of-cone nodes survived into published dark solves in 20 min,
+# median 4 deg outside the beam edge (p90 22 deg) and 1.8 km beyond max range,
+# and they are the nodes the rms trim then throws away.  0 disables the filter.
+TRACK_MAX_STALE_S = float(os.getenv("TRACK_MAX_STALE_S", "3.0"))
+
 # A 2-node track needs this many solves before it renders a plane; 1
 # disables the gate.  One-shot n=2 solves were the dominant ghost source.
 MN_N2_MIN_SOLVES = int(os.getenv("MN_N2_MIN_SOLVES", "2"))
 # One-shot display lifetime for n>=3 solves, seconds.  A track confirmed by
-# a second solve gets the normal 60 s entry expiry / 30 s DR cap.
+# a second solve gets the normal MN_DARK_EXPIRY_S/60 s entry expiry and the
+# MN_DR_CAP_S dead-reckoning cap below.
 #
 # The window has to outlive the wait for the confirmation it is waiting for,
 # or it is not a preview window — it is a guaranteed disappearance.  A second
@@ -97,10 +111,35 @@ MN_N2_MIN_SOLVES = int(os.getenv("MN_N2_MIN_SOLVES", "2"))
 # cadence is a 9 s median and a 25 s p90.  At 5 s the great majority of
 # genuine n>=3 one-shots blinked out before the round that would have
 # confirmed them ever ran, which reads on the map as flicker, not as caution.
-# 15 s covers the median and most of the p90 while still being well short of
-# the 60 s entry expiry, so an unconfirmed one-shot is still withdrawn long
-# before a confirmed track would be.
+# 15 s covers the median and most of the p90 while still being short of the
+# entry expiry (MN_DARK_EXPIRY_S 30 s dark, 60 s assisted), so an unconfirmed
+# one-shot is still withdrawn before a confirmed track would be.
 MN_ONESHOT_TTL_S = float(os.getenv("MN_ONESHOT_TTL_S", "15.0"))
+
+# How far a multinode entry may be dead-reckoned past its last solve, seconds.
+# Beyond this it holds its last dead-reckoned point until the entry expires.
+#
+# The cap is a position-error budget, not a cadence allowance.  Measured on
+# the test droplet over 20 minutes (dark multinode feed entries vs ground
+# truth): median error 1.05 km under 3 s of solve age, 1.21 km at 3–8 s,
+# 1.50 km at 8–15 s, then 2.02 km at 15–30 s (7% of entries more than 5 km
+# off).  The knee is at 15 s, which is where the KF's learned velocity error
+# starts to dominate the solve error it is extrapolating.  The old 30 s cap
+# was set when a dark aircraft was re-solved every 12 s and the extra window
+# bought coverage; dark solves now land every 1–3 s, so a 15 s gap is a lost
+# track rather than a cadence gap, and extrapolating it only invents motion.
+MN_DR_CAP_S = float(os.getenv("MN_DR_CAP_S", "15.0"))
+
+# Entry expiry for DARK multinode tracks (mn-dark-*), seconds.  ADS-B-assisted
+# entries (mn-adsb-*) keep the 60 s expiry: they are anchored to a transponder
+# fix, so a gap there is the ADS-B feed breathing rather than a lost target.
+#
+# Same 20-minute capture: the 30–60 s age band was 12% of all displayed dark
+# entries, with a 3.99 km median error and 32% more than 5 km off — an icon
+# that reads as a live target while sitting kilometres from any aircraft.  At
+# the current 1–3 s dark solve cadence an entry that has not re-solved in 30 s
+# is a lost track, and withdrawing it is more honest than holding it.
+MN_DARK_EXPIRY_S = float(os.getenv("MN_DARK_EXPIRY_S", "30.0"))
 
 # Quality gate for adopting the constant-velocity fit's velocity into a
 # published solve, in place of the single-epoch Doppler solution (see
