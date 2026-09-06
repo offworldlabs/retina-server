@@ -609,6 +609,8 @@ async def system_metrics(_user=Depends(require_admin)):
         # Store sizes that used to grow without bound — exposed so a soak can
         # watch them plateau instead of trusting the fix.
         "track_arc_motion": len(state.track_arc_motion),
+        "track_last_emit": len(state.track_last_emit),
+        "track_gate_hold": len(state.track_gate_hold),
         "mn_pos_history": _mn_pos_history_size(),
         "track_histories": len(state.track_histories),
         "ground_truth_trails": len(state.ground_truth_trails),

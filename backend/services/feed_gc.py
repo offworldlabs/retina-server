@@ -65,12 +65,12 @@ def prune_stale_stores(now: float) -> None:
         # outlived its true counterpart would keep being served for a hex
         # nothing else in the process still knows about.
         state.track_histories_public.pop(h, None)
-        # NOTE: do NOT prune track_last_emit here.  track_histories ages out
-        # via the ~5 m dedup even when the track is still actively emitting
-        # the same arc midpoint.  Clearing the speed-gate reference would
-        # then let the next bad measurement leak through unchecked.
-        # track_last_emit is pruned when the track itself goes stale
-        # (see stale_geo cleanup above).
+        # NOTE: do NOT prune track_last_emit on *this* verdict.
+        # track_histories ages out via the ~5 m dedup even when the track is
+        # still actively emitting the same arc midpoint.  Clearing the
+        # speed-gate reference would then let the next bad measurement leak
+        # through unchecked.  track_last_emit has its own age sweep below,
+        # keyed on its own timestamp rather than the history's.
 
     # Arc-motion logs: also swept by the stale_geo cleanup, but tracks that
     # never enter active_geo_aircraft (default-pipeline path) would leak one
@@ -81,3 +81,26 @@ def prune_stale_stores(now: float) -> None:
     ]
     for h in stale_motion:
         state.track_arc_motion.pop(h, None)
+
+    # Speed-gate references and gate holds: same bug class as the arc-motion
+    # log above, and written on the same line-block.  track_entry() runs from
+    # two places — the active_geo_aircraft sweep, whose stale pass pops all
+    # three, and the default-pipeline branch, which pops none.  A hex that
+    # only ever reaches the feed on the second path (nodes registered without
+    # rx_lat/tx_lat, HTTP/sim ingest, and every per-track-id pr* hex, which
+    # never repeats) left an entry no code path could remove.
+    #
+    # TRAIL_STALE_S (300 s) is far longer than the 60 s window the speed gate
+    # itself will act on (track_gates: `if 0 < _dt < 60`) and than
+    # GATE_MAX_HOLD_S, so nothing here can weaken either gate: every entry
+    # dropped is one both gates would already ignore.  The two are swept
+    # together because the hold is meaningless without the reference it
+    # reverts to, and the hold carries its anchor timestamp at v[0] against
+    # last_emit's v[2].
+    stale_emit = [h for h, v in list(state.track_last_emit.items()) if not v or (now - v[2]) > TRAIL_STALE_S]
+    for h in stale_emit:
+        state.track_last_emit.pop(h, None)
+        state.track_gate_hold.pop(h, None)
+    stale_hold = [h for h, v in list(state.track_gate_hold.items()) if not v or (now - v[0]) > TRAIL_STALE_S]
+    for h in stale_hold:
+        state.track_gate_hold.pop(h, None)
