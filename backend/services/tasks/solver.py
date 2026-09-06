@@ -2016,6 +2016,19 @@ def _record_solve_history(
         # never touched (rejects, off/ewma mode, first-ever solve for a key).
         "pos_sigma_km": round(float(r["pos_sigma_km"]), 3) if r.get("pos_sigma_km") is not None else None,
         "kf_pos_sigma_m": r.get("kf_pos_sigma_m"),
+        # Which branch of the display filter produced this position, and the
+        # two numbers it decided from: kf_d2 is the innovation's chi²
+        # against the filter's own covariance, kf_innov_m the innovation
+        # magnitude in metres.  Present on every smoothed result (see
+        # track_filter._stamp), absent — and therefore None here — on rejects
+        # and in off/ewma mode.  These are what let a capture say what a
+        # different TRACK_KF_OUTLIER_MODE would have shown for the same
+        # solves: a "reanchored" record with kf_innov_m ~4000 on an
+        # established dark key is exactly the bad proximity join the hold
+        # mode exists to absorb.
+        "kf_action": r.get("kf_action"),
+        "kf_d2": r.get("kf_d2"),
+        "kf_innov_m": r.get("kf_innov_m"),
         # The calibrated display sigma (services/solve_uncertainty.py), stamped
         # here so the calibration that produced it can be re-run from
         # /api/test/mlat-history alone: fraction(gt_error_km*1000 <=
@@ -2818,6 +2831,18 @@ def _process_solver_item(
                 # services/track_filter.py, with this module's EWMA kept as the
                 # TRACK_SMOOTHER=ewma fallback.
                 result = track_filter.smooth_solve(result, key, _adsb_hex, ewma_fn=_ewma_smooth_track)
+                # Dark lane only, matching the filter's own gate: holding is a
+                # dark-key behaviour (TRACK_KF_OUTLIER_MODE), so counting the
+                # ADS-B lane's re-anchors here would bury the number this is for.
+                # Cumulative regardless of mode, like the consensus/claiming
+                # counters — in the default "reanchor" mode kf_held stays zero and
+                # kf_reanchored is the size of the population a hold would act on.
+                if key.startswith("mn-dark-"):
+                    _kf_action = result.get("kf_action")
+                    if _kf_action == "held":
+                        state.bump_counter("kf_held")
+                    elif _kf_action == "reanchored":
+                        state.bump_counter("kf_reanchored")
                 prev = state.multinode_tracks.get(key)
                 if prev:
                     # Latch: a tracker flag raised on an earlier solve holds for

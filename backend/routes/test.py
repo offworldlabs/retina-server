@@ -1338,6 +1338,16 @@ def _solver_window_stats(minutes: float) -> dict:
             # dark_keys_minted — a rule that removes keys without minting
             # fewer is costing correct frames for nothing.
             "dark_follow_orphaned": state.dark_follow_orphaned,
+            # Display-filter outlier decisions on dark keys, also since boot
+            # (services/track_filter.py's innovation gate).  They belong in
+            # this block for the same reason supersession does: a re-anchor is
+            # the display end of the same fragmentation loop — a bad
+            # proximity join that the key decision above accepted shows up
+            # here as the filter being asked to jump the track several km.
+            # kf_held is zero unless TRACK_KF_OUTLIER_MODE=hold; kf_reanchored
+            # is the population that mode would act on either way.
+            "kf_held": state.kf_held,
+            "kf_reanchored": state.kf_reanchored,
         },
         "counters": {
             "successes": state.solver_successes,

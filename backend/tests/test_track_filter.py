@@ -9,6 +9,11 @@ Covers:
   and ADS-B velocity preference over the solved CV fit
 - The Joseph covariance update's PSD invariant, and the sqrt clamp that
   backs it up when a covariance arrives already poisoned
+- TRACK_KF_R_SOURCE: the flat vs calibrated (solve_uncertainty) base term
+- TRACK_KF_OUTLIER_MODE: holding an established dark track against an
+  outlier solve, the streak that ends a hold, and the guards that keep the
+  hold off young tracks, small innovations and the ADS-B lane — plus the
+  solver-side publish/history/counter side of one
 - RMSE reduction on a seeded synthetic constant-velocity track
 - Exact agreement with a Stone-Soup reference Kalman filter (skipped if
   stonesoup is not installed — nothing else in this file depends on it)
@@ -27,8 +32,9 @@ os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
 from core import state  # noqa: E402
-from services import track_filter  # noqa: E402
+from services import solve_uncertainty, track_filter  # noqa: E402
 from services.geo import offset_latlon_m  # noqa: E402
+from services.tasks import solver as solver_mod  # noqa: E402
 
 
 def make_result(lat, lon, ts_ms, vel_east=None, vel_north=None, cov_en_km2=None):
@@ -982,3 +988,510 @@ class TestIndefiniteCovariance:
         lv = track_filter.learned_velocity(key)
         assert lv is not None
         assert lv[2] == 0.0  # clamped, not raised
+
+
+class TestRSource:
+    """TRACK_KF_R_SOURCE picks where _measurement_R's additive BASE term comes
+    from — the term that says how wrong a solve of this shape usually is,
+    independent of its own Jacobian.
+
+    "flat" (the default) is 1200 m for every solve, which prices a two-node
+    solve and a five-node one identically even though the 2026-09-05 dark-lane
+    tracing measured them 18x apart on the thing that matters: 36-62% of n=2
+    joins land more than 3 km off against 2% at n>=5.  "uncertainty" takes the
+    base from services/solve_uncertainty.solve_sigma_m instead — the
+    node-count-aware, ground-truth-calibrated number the map already draws its
+    disc from, so the filter trusts a solve exactly as much as the display
+    claims to.
+
+    Everything else about the composition is deliberately untouched: the
+    inflated formal term still adds on top, a non-PSD cov is still rejected
+    down to the base alone, and the final clamp still applies.
+    """
+
+    def setup_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def teardown_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    @staticmethod
+    def _result(n_nodes=3, **kwargs):
+        """A solve-shaped result carrying a node count — solve_sigma_m needs
+        one to pick a floor, and returns None without it."""
+        result = make_result(35.0, -82.0, 1_000, **kwargs)
+        result["n_nodes"] = n_nodes
+        return result
+
+    @staticmethod
+    def _sigma_of(r):
+        return math.sqrt(0.5 * (r[0, 0] + r[1, 1]))
+
+    @staticmethod
+    def _clamped(sigma_m):
+        return min(max(sigma_m, track_filter._KF_MIN_POS_SIGMA_M), track_filter._KF_MAX_POS_SIGMA_M)
+
+    def test_flat_is_todays_r_and_ignores_the_lane(self, monkeypatch):
+        """The default: base is _KF_DEFAULT_POS_SIGMA_M whatever the solve
+        looks like, so dark/known and n=2/n=5 all get the same R — bit
+        identical to the answer before this flag existed (which is also what
+        keeps TestRInflation's one-argument calls green)."""
+        monkeypatch.setenv("TRACK_KF_R_SOURCE", "flat")
+        r_dark_n2 = track_filter._measurement_R(self._result(n_nodes=2), dark=True)
+        r_known_n5 = track_filter._measurement_R(self._result(n_nodes=5), dark=False)
+        r_positional = track_filter._measurement_R(self._result(n_nodes=2))
+
+        assert np.array_equal(r_dark_n2, r_known_n5)
+        assert np.array_equal(r_dark_n2, r_positional)  # dark defaults to False
+        assert self._sigma_of(r_dark_n2) == pytest.approx(track_filter._KF_DEFAULT_POS_SIGMA_M)
+
+    def test_unset_and_unrecognised_values_are_flat(self, monkeypatch):
+        """Same contract as TRACK_SMOOTHER: a missing or misspelt value must
+        never silently change how much the filter trusts a solve."""
+        monkeypatch.delenv("TRACK_KF_R_SOURCE", raising=False)
+        r_unset = track_filter._measurement_R(self._result(n_nodes=2), dark=True)
+        monkeypatch.setenv("TRACK_KF_R_SOURCE", "some-nonsense-value")
+        r_junk = track_filter._measurement_R(self._result(n_nodes=2), dark=True)
+
+        assert self._sigma_of(r_unset) == pytest.approx(track_filter._KF_DEFAULT_POS_SIGMA_M)
+        assert np.array_equal(r_unset, r_junk)
+
+    def test_uncertainty_base_is_the_calibrated_solve_sigma(self, monkeypatch):
+        """base == solve_sigma_m(result, dark)^2, per node count, and an n=2
+        solve is trusted strictly less than an n=3 one — the whole point of
+        taking the base from the calibration instead of a flat constant."""
+        monkeypatch.setenv("TRACK_KF_R_SOURCE", "uncertainty")
+
+        sigmas = {}
+        for n in (2, 3):
+            result = self._result(n_nodes=n)
+            expected = solve_uncertainty.solve_sigma_m(result, dark=True)
+            r = track_filter._measurement_R(result, dark=True)
+            assert r[0, 1] == 0.0  # no cov -> the base alone, still diagonal
+            assert self._sigma_of(r) == pytest.approx(self._clamped(expected))
+            sigmas[n] = self._sigma_of(r)
+
+        assert sigmas[2] > sigmas[3]
+
+    def test_uncertainty_inflates_a_dark_solve_over_a_known_one(self, monkeypatch):
+        """The dark gain in solve_sigma_m is a prior about the lane (no ADS-B
+        fix seeded the guess, no pinned altitude), and it has to reach the
+        filter — that is the reason _measurement_R now takes the lane at all."""
+        monkeypatch.setenv("TRACK_KF_R_SOURCE", "uncertainty")
+        result = self._result(n_nodes=2)
+        assert self._sigma_of(track_filter._measurement_R(result, dark=True)) > self._sigma_of(
+            track_filter._measurement_R(result, dark=False)
+        )
+
+    def test_uncertainty_still_adds_the_inflated_formal_term(self, monkeypatch):
+        """Only the base changes.  The formal cov term is still inflated by
+        _KF_R_INFLATE and still ADDED — it is what keeps a well-conditioned
+        solve distinguishable from an ill-conditioned one of the same node
+        count."""
+        monkeypatch.setenv("TRACK_KF_R_SOURCE", "uncertainty")
+        formal_sigma_m = 1000.0
+        cov = [[(formal_sigma_m / 1000.0) ** 2, 0.0], [0.0, (formal_sigma_m / 1000.0) ** 2]]
+        result = self._result(n_nodes=2, cov_en_km2=cov)
+
+        base_sigma = solve_uncertainty.solve_sigma_m(result, dark=True)
+        expected = self._clamped(math.sqrt((track_filter._KF_R_INFLATE * formal_sigma_m) ** 2 + base_sigma**2))
+
+        r = track_filter._measurement_R(result, dark=True)
+        assert self._sigma_of(r) == pytest.approx(expected)
+        # And it is genuinely bigger than the same solve with no cov at all.
+        assert self._sigma_of(r) > self._sigma_of(track_filter._measurement_R(self._result(n_nodes=2), dark=True))
+
+    def test_uncertainty_rejects_a_non_psd_cov_down_to_its_own_base(self, monkeypatch):
+        """The PSD rejection is unchanged and still lands on "base alone" —
+        the base is just a different number now.  A sick cov must not be able
+        to reach P through this path either (see TestIndefiniteCovariance)."""
+        monkeypatch.setenv("TRACK_KF_R_SOURCE", "uncertainty")
+        indefinite = [[1.0, 1.2], [1.2, 1.0]]  # "correlation" > 1, no real covariance
+        result = self._result(n_nodes=3, cov_en_km2=indefinite)
+
+        r = track_filter._measurement_R(result, dark=True)
+        assert r[0, 1] == 0.0
+        assert self._sigma_of(r) == pytest.approx(self._clamped(solve_uncertainty.solve_sigma_m(result, dark=True)))
+        assert np.all(np.linalg.eigvalsh(r) >= 0.0)
+
+    def test_uncertainty_without_a_node_count_falls_back_to_the_flat_default(self, monkeypatch):
+        """solve_sigma_m returns None with no n_nodes — there is no calibrated
+        floor to apply — so the flat default is the honest answer rather than
+        a sigma derived from the formal term alone, which would be dishonestly
+        tight on exactly the solves that carry the least information."""
+        monkeypatch.setenv("TRACK_KF_R_SOURCE", "uncertainty")
+        result = make_result(35.0, -82.0, 1_000)  # no n_nodes
+        assert solve_uncertainty.solve_sigma_m(result, dark=True) is None
+        r = track_filter._measurement_R(result, dark=True)
+        assert self._sigma_of(r) == pytest.approx(track_filter._KF_DEFAULT_POS_SIGMA_M)
+
+    def test_the_lane_reaches_r_from_the_track_key(self, monkeypatch):
+        """End-to-end through smooth_solve: nothing passes `dark` explicitly
+        in production, it is derived from the key prefix, so a wired-up
+        mn-dark-* key must produce the wider dark R and an mn-adsb-* key the
+        narrower one.  Compared through the filter's seeded position
+        covariance, which _init_entry copies straight out of R."""
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        monkeypatch.setenv("TRACK_KF_R_SOURCE", "uncertainty")
+        result = self._result(n_nodes=2)
+
+        track_filter.smooth_solve(dict(result), "mn-dark-lane-r", None)
+        track_filter.smooth_solve(dict(result), "mn-adsb-abc123", None)
+
+        assert track_filter._KF_TRACKS["mn-dark-lane-r"].P[0, 0] > track_filter._KF_TRACKS["mn-adsb-abc123"].P[0, 0]
+
+
+# Established-track fixtures for TestHoldOutliers below.  A dark key flying a
+# straight line at 200 m/s (mid-envelope for the simulated commercial traffic
+# the dark lane carries) with a solve every 5 s, which is roughly the cadence
+# a multi-node dark target actually solves at.
+_HOLD_LAT0, _HOLD_LON0 = 35.0, -82.0
+_HOLD_V_MS = 200.0
+_HOLD_STEP_S = 5.0
+_HOLD_TS0_MS = 1_000
+
+
+def _hold_result(east_m, north_m, step, n_nodes=3):
+    """A dark solve ``step`` intervals into the line, offset by (east_m,
+    north_m) from where the aircraft really is at that moment."""
+    lat, lon = offset_latlon_m(
+        _HOLD_LAT0, _HOLD_LON0, east_m=_HOLD_V_MS * _HOLD_STEP_S * step + east_m, north_m=north_m
+    )
+    result = make_result(lat, lon, int(_HOLD_TS0_MS + step * _HOLD_STEP_S * 1000), vel_east=_HOLD_V_MS, vel_north=0.0)
+    result["n_nodes"] = n_nodes
+    return result
+
+
+def _establish(key, steps=3):
+    """Feed ``steps`` true-position solves, leaving the entry established
+    (n_updates == steps - 1: the first solve anchors, the rest update).
+    Returns the next step index."""
+    for i in range(steps):
+        track_filter.smooth_solve(_hold_result(0.0, 0.0, i), key, None)
+    return steps
+
+
+class TestHoldOutliers:
+    """TRACK_KF_OUTLIER_MODE=hold: an established dark track outvotes a single
+    implausible solve instead of being dragged to it.
+
+    The measurement behind this (test droplet, 2026-09-05, 20-minute captures
+    15 and 17): dark feed entries more than 5 km from any aircraft are 10-14%
+    of dark entries, and 58% of those ghost frames sit on keys that already
+    had four-or-more-node solves behind them — what moved them was a two- or
+    three-node solve joining by proximity.  Those joins are wrong far more
+    often than their node count suggests (25% of n=3 joins land >3 km off
+    against 5% at n=4 and 2% at n>=5) and the solve itself cannot tell: a
+    three-node free-altitude fit is exactly determined, so its rms is ~0
+    whether it is right or wrong.  The track can tell — 250 m/s x 5 s is
+    1.25 km, so a 4 km innovation against a key that knows its position to a
+    few hundred metres is not flight.
+
+    These tests run with TRACK_KF_R_SOURCE=uncertainty, which is the pairing
+    the flag is meant to ship in, and not an incidental choice: under the flat
+    1200 m base an innovation has to reach ~5 km before it breaches chi² at
+    all, which is already outside the solver's 6 km proximity gate — so with a
+    flat R there is almost no in-gate bad join for hold to act on.  Tightening
+    the base to the calibrated per-solve sigma is what makes the gate able to
+    see the 4 km population in the first place.
+    """
+
+    def setup_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def teardown_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    @pytest.fixture(autouse=True)
+    def _hold_env(self, monkeypatch):
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        monkeypatch.setenv("TRACK_KF_R_SOURCE", "uncertainty")
+        monkeypatch.setenv("TRACK_KF_OUTLIER_MODE", "hold")
+
+    def test_an_established_track_holds_a_four_km_outlier(self):
+        """The headline case: three good solves, then one 4 km off.
+
+        The published position is the COAST — where the filter's own state
+        says the aircraft is — not the outlier and not a compromise between
+        them, so the key is refreshed without moving.  The filter's clock
+        still advances (the entry must not look stale to the TTL sweep or to
+        the next solve's dt), and the velocity state survives untouched, which
+        is what keeps display-side dead reckoning working through a hold.
+        """
+        key = "mn-dark-hold-1"
+        step = _establish(key)
+        before = track_filter.learned_velocity(key)
+
+        outlier = _hold_result(0.0, 4_000.0, step)
+        out = track_filter.smooth_solve(outlier, key, None)
+
+        assert out["kf_action"] == "held"
+        assert out["smoother"] == "kf"
+        assert out["kf_innov_m"] == pytest.approx(4_000.0, abs=1.0)
+        assert out["kf_d2"] > track_filter._KF_GATE_CHI2
+        assert out["kf_pos_sigma_m"] > 0
+
+        # The returned position is the coast prediction: where the aircraft
+        # would be on the established line, NOT the 4 km-off measurement.
+        coast_lat, coast_lon = offset_latlon_m(
+            _HOLD_LAT0, _HOLD_LON0, east_m=_HOLD_V_MS * _HOLD_STEP_S * step, north_m=0.0
+        )
+        de, dn = track_filter._enu_offset_m(coast_lat, coast_lon, out["lat"], out["lon"])
+        assert math.hypot(de, dn) < 50.0
+        assert abs(out["lat"] - outlier["lat"]) > 0.01  # emphatically not the raw solve
+
+        entry = track_filter._KF_TRACKS[key]
+        assert entry.last_ts_s == pytest.approx(outlier["timestamp_ms"] / 1000.0)
+        assert entry.breach_streak == 1
+        assert entry.n_updates == 2  # a hold is not an accepted update
+
+        after = track_filter.learned_velocity(key)
+        assert after[0] == pytest.approx(_HOLD_V_MS, abs=5.0)
+        assert after[1] == pytest.approx(0.0, abs=5.0)
+        assert after[3] == pytest.approx(outlier["timestamp_ms"] / 1000.0)
+        assert after[0] == pytest.approx(before[0], abs=1.0)  # the coast changed nothing
+
+    def test_a_confirmed_new_position_re_anchors_when_the_streak_runs_out(self):
+        """Holding is a bet that the outlier was a one-off.  When the new
+        position keeps being confirmed the identity really did change, and the
+        filter concedes at _KF_HOLD_MAX_STREAK.
+
+        The offset here is 6 km rather than the 4 km above for a reason worth
+        recording: each hold coasts, so p_pred grows and the gate widens, and
+        a repeated 4 km offset is simply ACCEPTED as an ordinary update on the
+        very next solve (measured: d2 21.5 then 12.8) — the filter converges
+        on the new position without ever needing the streak.  The streak is
+        the backstop for a disagreement too large for that to happen quickly.
+        """
+        key = "mn-dark-hold-2"
+        step = _establish(key)
+
+        actions = []
+        for i in range(track_filter._KF_HOLD_MAX_STREAK):
+            out = track_filter.smooth_solve(_hold_result(0.0, 6_000.0, step + i), key, None)
+            actions.append(out["kf_action"])
+
+        assert actions == ["held"] * (track_filter._KF_HOLD_MAX_STREAK - 1) + ["reanchored"]
+
+        # Re-anchored AT the outlier, with a fresh entry: no streak, no
+        # accumulated evidence, exactly as any other re-anchor leaves it.
+        entry = track_filter._KF_TRACKS[key]
+        assert entry.breach_streak == 0
+        assert entry.n_updates == 0
+        assert entry.ref_lat == pytest.approx(_hold_result(0.0, 6_000.0, step + 2)["lat"])
+
+    def test_a_good_solve_between_breaches_clears_the_streak(self):
+        """The streak counts CONSECUTIVE breaches.  A solve the filter accepts
+        says the track and the solves agree again, so the two isolated bad
+        joins either side of it must not add up to a re-anchor."""
+        key = "mn-dark-hold-3"
+        step = _establish(key)
+
+        assert track_filter.smooth_solve(_hold_result(0.0, 6_000.0, step), key, None)["kf_action"] == "held"
+        assert track_filter._KF_TRACKS[key].breach_streak == 1
+
+        good = track_filter.smooth_solve(_hold_result(0.0, 0.0, step + 1), key, None)
+        assert good["kf_action"] == "smoothed"
+        assert track_filter._KF_TRACKS[key].breach_streak == 0
+
+        # Two more breaches now hold again rather than re-anchoring on the
+        # second, which is what a non-reset streak would have done.
+        for i in (2, 3):
+            assert track_filter.smooth_solve(_hold_result(0.0, 6_000.0, step + i), key, None)["kf_action"] == "held"
+
+    def test_a_young_track_re_anchors_instead_of_holding(self):
+        """One accepted update is not standing to overrule a solve: the
+        position estimate is still essentially the first solve's, so
+        "the track disagrees" carries no information.  Today's behaviour."""
+        key = "mn-dark-hold-4"
+        step = _establish(key, steps=2)  # anchor + one accepted update
+        assert track_filter._KF_TRACKS[key].n_updates == 1
+
+        out = track_filter.smooth_solve(_hold_result(0.0, 6_000.0, step), key, None)
+        assert out["kf_action"] == "reanchored"
+        assert out["kf_innov_m"] > track_filter._KF_HOLD_MIN_INNOV_M
+
+    def test_a_breach_below_the_minimum_innovation_is_never_held(self, monkeypatch):
+        """A gate breach on a small innovation is the FILTER being wrong, not
+        the solve: its velocity sigma is learned from a position sequence that
+        shares the solver's biases, so a well-converged entry can call an
+        ordinary sub-kilometre correction implausible.  A track must never be
+        allowed to freeze itself against its own genuine drift on that basis,
+        so below _KF_HOLD_MIN_INNOV_M the solve wins, exactly as today.
+
+        The R constants are tightened here because at the shipped ones a
+        1.2 km innovation cannot breach chi² at all (the 500 m sigma floor
+        alone puts the gate above it) — which is precisely why this guard is
+        cheap insurance rather than a load-bearing threshold.
+        """
+        monkeypatch.setenv("TRACK_KF_R_SOURCE", "flat")
+        monkeypatch.setattr(track_filter, "_KF_DEFAULT_POS_SIGMA_M", 150.0)
+        monkeypatch.setattr(track_filter, "_KF_MIN_POS_SIGMA_M", 50.0)
+        key = "mn-dark-hold-5"
+        step = _establish(key)
+
+        solve = _hold_result(0.0, 1_200.0, step)
+        out = track_filter.smooth_solve(solve, key, None)
+
+        assert out["kf_d2"] > track_filter._KF_GATE_CHI2  # it really is a breach
+        assert out["kf_innov_m"] < track_filter._KF_HOLD_MIN_INNOV_M
+        assert out["kf_action"] == "reanchored"  # today's behaviour, not held
+        assert out is solve  # and the raw solve is what gets published
+        assert track_filter._KF_TRACKS[key].ref_lat == pytest.approx(solve["lat"])
+
+    def test_reanchor_mode_is_todays_behaviour(self, monkeypatch):
+        """The default mode, on the exact scenario hold acts on: raw
+        passthrough at the outlier, filter re-anchored there."""
+        monkeypatch.setenv("TRACK_KF_OUTLIER_MODE", "reanchor")
+        key = "mn-dark-hold-6"
+        step = _establish(key)
+
+        outlier = _hold_result(0.0, 4_000.0, step)
+        out = track_filter.smooth_solve(outlier, key, None)
+
+        assert out is outlier  # same object, only the diagnostic stamp added
+        assert out["kf_action"] == "reanchored"
+        assert "smoother" not in out
+        assert track_filter._KF_TRACKS[key].ref_lat == pytest.approx(outlier["lat"])
+
+    def test_an_unrecognised_mode_falls_back_to_reanchor(self, monkeypatch):
+        monkeypatch.setenv("TRACK_KF_OUTLIER_MODE", "some-nonsense-value")
+        key = "mn-dark-hold-7"
+        step = _establish(key)
+        out = track_filter.smooth_solve(_hold_result(0.0, 4_000.0, step), key, None)
+        assert out["kf_action"] == "reanchored"
+
+    def test_an_adsb_key_re_anchors_even_in_hold_mode(self):
+        """Hold is dark-only.  The ADS-B lane keys off the transponder hex, so
+        it cannot suffer the wrong-key proximity join this defends against,
+        and an mn-adsb-* entry that disagrees with its own solves is a
+        different (real) problem that must not be masked by holding."""
+        key = "mn-adsb-abc123"
+        step = _establish(key)
+        out = track_filter.smooth_solve(_hold_result(0.0, 4_000.0, step), key, None)
+        assert out["kf_action"] == "reanchored"
+
+    def test_kf_action_is_stamped_on_every_path(self):
+        """kf_action/kf_d2/kf_innov_m are the measurement this change exists
+        to produce — solver.py copies them onto the history record, so a
+        capture under one policy can say what the other would have shown.
+        Every return path stamps, and the two numbers are None exactly where
+        no innovation was computed."""
+        key = "mn-dark-hold-8"
+
+        first = track_filter.smooth_solve(_hold_result(0.0, 0.0, 0), key, None)
+        assert (first["kf_action"], first["kf_d2"], first["kf_innov_m"]) == ("init", None, None)
+
+        dup = track_filter.smooth_solve(_hold_result(0.0, 0.0, 0), key, None)
+        assert (dup["kf_action"], dup["kf_d2"], dup["kf_innov_m"]) == ("passthrough", None, None)
+
+        second = track_filter.smooth_solve(_hold_result(0.0, 0.0, 1), key, None)
+        assert second["kf_action"] == "smoothed"
+        assert second["kf_d2"] is not None and second["kf_innov_m"] is not None
+
+        gap = _hold_result(0.0, 0.0, 1)
+        gap["timestamp_ms"] += int(track_filter._KF_MAX_GAP_S * 1000) + 1_000
+        assert track_filter.smooth_solve(gap, key, None)["kf_action"] == "init"
+
+
+class TestHoldThroughTheSolver:
+    """The solver end of a hold: it publishes like any other solve.
+
+    Nothing in services/tasks/solver.py branches on kf_action — a held result
+    is a result, and the entry it writes into state.multinode_tracks carries
+    the held position.  That is the whole point: the key stays refreshed (so
+    the aircraft does not blink out while a bad join is being ignored) and it
+    simply does not move.  What the solver does add is observability — the
+    three kf_* fields on the history record, and the dark-lane counters
+    /api/test/solver-stats reports.
+    """
+
+    def setup_method(self):
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+
+    def teardown_method(self):
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+
+    @pytest.fixture(autouse=True)
+    def _hold_env(self, monkeypatch):
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        monkeypatch.setenv("TRACK_KF_R_SOURCE", "uncertainty")
+        monkeypatch.setenv("TRACK_KF_OUTLIER_MODE", "hold")
+
+    @staticmethod
+    def _solve_fn(result):
+        def fn(s_in, cfgs):
+            return dict(result)
+
+        return fn
+
+    def _run(self, result):
+        return solver_mod._process_solver_item(
+            ({"n_nodes": result["n_nodes"]}, {}, time.time()), self._solve_fn(result)
+        )
+
+    def test_a_held_solve_publishes_at_the_held_position(self):
+        # Base the line at "now" so the entry never looks stale to the
+        # solver's own gates, which are wall-clock (unlike the filter's).
+        ts0_ms = int(time.time() * 1000)
+        lat0, lon0 = 35.0, -82.0
+
+        def line(step, north_m=0.0):
+            lat, lon = offset_latlon_m(lat0, lon0, east_m=200.0 * 5.0 * step, north_m=north_m)
+            return {
+                "success": True,
+                "lat": lat,
+                "lon": lon,
+                "alt_m": 9000.0,
+                "timestamp_ms": int(ts0_ms + step * 5_000),
+                "vel_east": 200.0,
+                "vel_north": 0.0,
+                "rms_delay": 1.0,
+                "rms_doppler": 5.0,
+                "n_nodes": 3,
+                "n_measurements": 3,
+                "contributing_node_ids": ["n1", "n2", "n3"],
+            }
+
+        for step in range(3):
+            assert self._run(line(step)) is not None
+        (key,) = state.multinode_tracks
+        assert key.startswith("mn-dark-")
+
+        # A 4 km-off solve, still inside the solver's 6 km proximity gate, so
+        # it keys onto the SAME entry — which is exactly the production
+        # failure this mode exists for.
+        outlier = line(3, north_m=4_000.0)
+        published = self._run(outlier)
+
+        assert published is not None
+        assert list(state.multinode_tracks) == [key]  # refreshed, not re-keyed or dropped
+        entry = state.multinode_tracks[key]
+        assert entry["kf_action"] == "held"
+        # The published position is the coast, not the raw solve.
+        assert abs(entry["lat"] - outlier["lat"]) > 0.01
+        assert entry["lat"] == pytest.approx(line(3)["lat"], abs=1e-3)
+
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "published"
+        assert rec["kf_action"] == "held"
+        assert rec["kf_innov_m"] == pytest.approx(4_000.0, abs=10.0)
+        assert rec["kf_d2"] > track_filter._KF_GATE_CHI2
+        # raw_lat is the solver's own answer, lat the one that reached the map.
+        assert rec["raw_lat"] == pytest.approx(outlier["lat"])
+        assert rec["lat"] == pytest.approx(entry["lat"])
+
+        assert state.kf_held == 1
+        assert state.kf_reanchored == 0
+
+    def test_the_counters_reset_with_the_other_solver_counters(self):
+        state.kf_held = 3
+        state.kf_reanchored = 5
+        state._reset_for_tests()
+        assert (state.kf_held, state.kf_reanchored) == (0, 0)

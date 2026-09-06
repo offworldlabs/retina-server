@@ -497,6 +497,8 @@ class TestFragmentation:
             "mn_superseded_blocked": 0,
             "mn_superseded_blocked_alt": 0,
             "dark_follow_orphaned": 0,
+            "kf_held": 0,
+            "kf_reanchored": 0,
         }
 
     def test_dark_key_decision_counters_are_surfaced(self):
@@ -510,6 +512,19 @@ class TestFragmentation:
         out = _solver_window_stats(10.0)
         assert out["fragmentation"]["dark_keys_minted"] == 4
         assert out["fragmentation"]["dark_keys_proximity"] == 11
+
+    def test_display_filter_outlier_counters_are_surfaced(self):
+        """The dark-lane display filter's verdict on each gate breach
+        (services/track_filter.py): held is the established track outvoting a
+        solve, reanchored is the filter believing the solve instead.  Since
+        boot, like the key decisions above, and in the same block because a
+        bad proximity join shows up first as a key decision and then as the
+        filter being asked to jump the track several km."""
+        state.kf_held = 7
+        state.kf_reanchored = 2
+        out = _solver_window_stats(10.0)
+        assert out["fragmentation"]["kf_held"] == 7
+        assert out["fragmentation"]["kf_reanchored"] == 2
 
     def test_supersession_counters_are_surfaced(self):
         """Entries popped as the same aircraft against shared-id entries the
@@ -587,6 +602,8 @@ class TestEndpoint:
             "mn_superseded_blocked",
             "mn_superseded_blocked_alt",
             "dark_follow_orphaned",
+            "kf_held",
+            "kf_reanchored",
         }
         assert data["fov"].keys() == {
             "mode",
