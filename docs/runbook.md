@@ -83,8 +83,9 @@ Note when reading alerts from any environment: production currently reports
 evidence of a problem with the fleet size or with a branch under test.
 
 Only `test-towers`, `test-api`, `test-map` and `test-dash` have DNS and certificate
-coverage on the test droplet. Its other three vhosts render but are unreachable by
-design.
+coverage on the test droplet. Its other four vhosts — including `test-data`, the
+data explorer added 2026-09-05 — render but are unreachable by design until a SAN
+and an A record are added.
 
 ### Real node detections on the test droplet
 
