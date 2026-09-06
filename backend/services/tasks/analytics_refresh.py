@@ -1857,7 +1857,7 @@ async def analytics_refresh_task():
             logging.debug("Analytics refresh completed")
             state.task_last_success["analytics_refresh"] = time.time()
         except Exception:
-            state.task_error_counts["analytics_refresh"] += 1
+            state.bump_task_error("analytics_refresh")
             logging.exception("Analytics refresh failed")
         await asyncio.sleep(ANALYTICS_REFRESH_INTERVAL_S)
 
@@ -1882,6 +1882,6 @@ async def coverage_constraints_task():
             await loop.run_in_executor(_coverage_executor, _refresh_coverage_constraints)
             state.task_last_success["coverage_constraints"] = time.time()
         except Exception:
-            state.task_error_counts["coverage_constraints"] += 1
+            state.bump_task_error("coverage_constraints")
             logging.exception("Coverage constraint refresh failed")
         await asyncio.sleep(COVERAGE_REFRESH_INTERVAL_S)

@@ -328,7 +328,7 @@ async def blah2_bridge_task(node: Blah2Node):
 
             except (httpx.HTTPError, Exception) as exc:
                 failures += 1
-                state.task_error_counts[key] += 1
+                state.bump_task_error(key)
                 if failures >= MAX_FAILURES:
                     log.warning(
                         "blah2_bridge[%s]: %d consecutive failures (%s), backing off %ds",

@@ -579,7 +579,10 @@ async def system_metrics(_user=Depends(require_admin)):
 
     return {
         "task_last_success": dict(state.task_last_success),
-        "task_error_counts": dict(state.task_error_counts),
+        # Snapshot under the same lock bump_task_error takes: a bare dict()
+        # over a dict a worker thread is inserting into can raise
+        # "dictionary changed size during iteration" on this request path.
+        "task_error_counts": state.task_error_snapshot(),
         "frame_queue_depth": state.frame_queue.qsize(),
         "frame_queue_max": state.frame_queue.maxsize,
         "frames_dropped": state.frames_dropped,

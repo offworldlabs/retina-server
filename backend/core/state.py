@@ -839,6 +839,30 @@ def bump_counter(name: str, n: int = 1) -> None:
 task_last_success: dict[str, float] = {}  # task_name → last success epoch
 task_error_counts: dict[str, int] = defaultdict(int)  # task_name → cumulative errors
 
+
+def bump_task_error(name: str, n: int = 1) -> None:
+    """Thread-safe increment for a task_error_counts entry.
+
+    The bare ``task_error_counts[name] += 1`` this replaces is a
+    read-modify-write on a shared dict, and the bump sites run on the event
+    loop, the frame workers and the solver threads at once — the same
+    lost-update shape bump_counter() exists for.  Reuses counters_lock: the
+    two never nest, and the critical section is one dict slot.
+    """
+    with counters_lock:
+        task_error_counts[name] += n
+
+
+def task_error_snapshot() -> dict[str, int]:
+    """Copy of task_error_counts, taken under the bump lock.
+
+    A bare ``dict(task_error_counts)`` on a request thread can raise
+    "dictionary changed size during iteration" while a worker inserts a
+    first-ever key for its task.
+    """
+    with counters_lock:
+        return dict(task_error_counts)
+
 # ── Accuracy tracking (haversine solver vs ADS-B) ────────────────────────────
 # Rolling buffer of {hex, error_km, position_source, ts} samples.
 ACCURACY_MAX_SAMPLES = 5000

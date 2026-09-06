@@ -2333,7 +2333,7 @@ def _process_solver_item(
         else:
             result = _solve_best_altitude_n2(s_in, node_cfgs, solve_fn)
     except Exception:
-        state.task_error_counts["solver"] += 1
+        state.bump_task_error("solver")
         state.bump_counter("solver_failures")
         state.bump_counter("solver_fail_exception")
         logging.exception("Multinode solver failed")

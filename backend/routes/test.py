@@ -280,7 +280,7 @@ def _build_dashboard_data() -> bytes:
             "mlat_verification": _mlat_verification_summary(),
             "task_health": {
                 "last_success": dict(state.task_last_success),
-                "error_counts": dict(state.task_error_counts),
+                "error_counts": state.task_error_snapshot(),
                 "stale_tasks": _get_stale_tasks(),
             },
         }
