@@ -11,6 +11,8 @@ import time
 from collections import deque
 from concurrent.futures.process import BrokenProcessPool
 
+from retina_analytics.association import _point_in_beam
+
 from config.constants import (
     ARC_ONLY_ANOMALY_ALLOWLIST,
     ASSOC_GRID_STEP_KM,
@@ -98,6 +100,24 @@ def _pool_call(fn, *args):
                         " — solving inline on worker threads from now on"
                     )
         return fn(*args)
+
+
+def _pool_solve_multistart(s_in, node_cfgs, alt_starts_km):
+    """solve_multinode_multistart via the process pool (inline when none).
+
+    Defined here rather than beside _pool_solve_multinode at the foot of this
+    module for the reason _pool_select_consensus is: it is a default argument
+    value, resolved when the ``def`` executes, so it has to be bound before
+    _solve_best_altitude's signature is reached.
+
+    A module-level function taking only picklable arguments, because the pool
+    is a *spawn* pool — a child imports retina_geolocator and nothing of the
+    backend, so what crosses is this function's qualified name plus the input
+    dicts.
+    """
+    from retina_geolocator.multinode_solver import solve_multinode_multistart
+
+    return _pool_call(solve_multinode_multistart, s_in, node_cfgs, alt_starts_km, True)
 
 
 # Altitude layers (km) tried when n_nodes ≥ 3.  For an overdetermined system
@@ -279,6 +299,91 @@ _N2_CONFIRM_CHI2_MAX = N2_CONFIRM_CHI2_MAX
 # It lived here while the frame path had its own, looser, unstated one.
 
 
+# ── Measurement epoch alignment ──────────────────────────────────────────────
+# The solver's residual model evaluates every measurement against ONE target
+# state: the measurement set is assumed simultaneous.  It is not.  Each node
+# samples on its own free-running cadence (~0.74-1 Hz on the fleet), so the
+# delays in one solver input were captured at times spread over up to a frame
+# interval, and association hands over each track's newest sample regardless of
+# when that was.  A 250 m/s target moves ~250 m per second of skew, which shows
+# up as up to ~1 us of bistatic delay error per second — charged in full to the
+# 3 us rms_delay gate, where it is indistinguishable from a contaminated node
+# and drives the trim to throw away legitimately in-cone nodes.
+#
+# The correction is closed-form and needs nothing the measurement does not
+# already carry.  Writing d_tx / d_rx for the TX->target and target->RX ranges,
+# the bistatic delay is (d_tx + d_rx - baseline)/c and the bistatic Doppler is
+# (fc/c)(v_tx + v_rx), where v_tx / v_rx are the target's velocity components
+# along the unit vectors pointing FROM the target TOWARD the TX and the RX
+# (retina_geolocator.multinode_solver._residual_function; the simulator's
+# _bistatic_delay / _bistatic_doppler in retina_simulation.world use the
+# identical convention).  Moving toward a site shortens that leg, so
+# d(d_tx)/dt = -v_tx and d(d_rx)/dt = -v_rx, and therefore
+#
+#     d(delay_us)/dt = -(v_tx + v_rx) / C_KM_US
+#                    = -doppler_hz * (C_KM_S / fc_hz) / C_KM_US
+#                    = -doppler_hz * 1e6 / fc_hz
+#
+# i.e. positive Doppler is a closing target and its delay is DECREASING.  The
+# unit test test_epoch_alignment.py checks the sign against a target flown
+# through the simulator's own geometry helpers at two times, rather than
+# against this derivation.
+_DELAY_RATE_HZ_TO_US_PER_S = 1e6
+
+
+def align_measurement_epochs(s_in: dict, node_cfgs: dict) -> tuple[dict, dict]:
+    """Dead-reckon every measurement's delay onto the newest one's epoch.
+
+    Pure: returns a new solver input (shallow copy, fresh measurement dicts)
+    and a metadata dict for the history record; *s_in* is never mutated, so a
+    caller can drop the result and keep the untouched input.
+
+    Alignment is all-or-nothing per input.  A partially aligned set is worse
+    than an unaligned one — the residual model has no way to know which
+    measurements share an epoch, so mixing corrected and uncorrected delays
+    just moves the error onto a different node.  Any measurement missing t_s
+    or doppler_hz, or whose node has no config to read fc_hz from, therefore
+    skips the whole input and counts solver_epoch_align_skipped.
+
+    Returns (s_in, meta) where meta carries epoch_aligned and, when it ran,
+    epoch_skew_s — the widest gap the correction closed.
+    """
+    meas = s_in.get("measurements") or []
+    if len(meas) < 2:
+        return s_in, {"epoch_aligned": False}
+
+    rates = []
+    for m in meas:
+        t_s = m.get("t_s")
+        doppler = m.get("doppler_hz")
+        cfg = node_cfgs.get(m.get("node_id")) or {}
+        # Same fallback chain the geolocator uses when it builds its NodeSetup,
+        # so a node whose config spells the carrier "FC" aligns on exactly the
+        # frequency the solve will predict against.
+        fc_hz = cfg.get("fc_hz", cfg.get("FC"))
+        if t_s is None or doppler is None or not fc_hz:
+            state.bump_counter("solver_epoch_align_skipped")
+            return s_in, {"epoch_aligned": False}
+        rates.append((float(t_s), -float(doppler) * _DELAY_RATE_HZ_TO_US_PER_S / float(fc_hz)))
+
+    # The newest sample, not the input's timestamp_ms: t0 has to be a time some
+    # measurement was actually taken, or every delay is extrapolated and the
+    # freshest node — the one that needed no correction — acquires an error.
+    t0 = max(t for t, _ in rates)
+    skew_s = t0 - min(t for t, _ in rates)
+
+    aligned = dict(s_in)
+    aligned["measurements"] = [
+        {**m, "delay_us": float(m["delay_us"]) + rate * (t0 - t_s)} for m, (t_s, rate) in zip(meas, rates)
+    ]
+    if "timestamp_ms" in aligned:
+        # The set now describes t0, so everything downstream that ages this
+        # solve (multinode expiry, the dead-reckoning gates, the history
+        # record's measurement_ts_ms) should date it from t0 too.
+        aligned["timestamp_ms"] = int(round(t0 * 1000.0))
+    return aligned, {"epoch_aligned": True, "epoch_skew_s": round(skew_s, 3)}
+
+
 def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn, layers_km: list[float], metric: str) -> dict | None:
     """Try each altitude layer; return the result with lowest value of `metric`.
 
@@ -320,17 +425,82 @@ def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn, layers_km: list[floa
     return best_result
 
 
-def _solve_best_altitude(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
-    """Altitude sweep for n≥3: pick by minimum rms_delay.
+# Fewest measurements the free mode is used at.  Below this altitude is not
+# observable and retina_geolocator pins it anyway; the sweep is left in place
+# so the n=2 path keeps its documented behaviour exactly.
+_FREE_ALT_MIN_NODES = 3
 
-    If the initial_guess already carries an ADS-B altitude (not one of the fixed
-    grid layers), include it in the sweep so the correct exact altitude is tried.
+
+def _free_alt_starts(ig_alt_km, layers: list[float]) -> list[float]:
+    """The start altitudes the free mode hands the multi-start helper.
+
+    state.SOLVER_FREE_ALT_STARTS of them, clamped into [1, len(layers)] — read
+    per call, like the mode flag, so a test and a config reload both see what
+    they set.  One start is the layer nearest ``ig_alt_km``, which is the
+    altitude spliced into ``layers`` when the input carries a non-layer one of
+    its own (ADS-B), exactly as the sweep treats it.  Several are a window
+    centred on that layer, clamped to the ends of the ladder so the count never
+    shrinks there (the top and bottom layers are where a wrong start is least
+    recoverable, not most).
+
+    Freeing z removes the ladder's quantisation but not the LM's locality, and
+    the extra starts are what would stop a solve settling on the wrong side of
+    a bistatic ellipse.  On this fleet's geometry they had almost nothing to
+    stop: over 1019 free-mode solves on test, three starts' rms_delay differed
+    by more than 0.1 µs in 13 of them, and the nearest-layer start was more
+    than 0.5 µs worse than the best in 2 — so the default is one start and the
+    other two are bought explicitly, by a deployment whose geometry shows it
+    needs them.  See core/state.py for the numbers and the trade.
+    """
+    if not layers:
+        return []
+    n = max(1, min(int(state.SOLVER_FREE_ALT_STARTS), len(layers)))
+    alt = float(ig_alt_km) if ig_alt_km is not None else 7.0
+    nearest = min(range(len(layers)), key=lambda i: abs(layers[i] - alt))
+    lo = max(0, min(nearest - (n - 1) // 2, len(layers) - n))
+    return layers[lo : lo + n]
+
+
+def _solve_best_altitude(
+    s_in: dict,
+    node_cfgs: dict,
+    solve_fn,
+    multistart_fn=_pool_solve_multistart,
+) -> dict | None:
+    """Altitude for n≥3, by whichever rule state.SOLVER_ALT_MODE names.
+
+    sweep (default): solve once per layer, pick by minimum rms_delay.  If the
+    initial_guess already carries an ADS-B altitude (not one of the fixed grid
+    layers), include it in the sweep so the correct exact altitude is tried.
+
+    free: one call to the multi-start helper, which solves altitude as a sixth
+    unknown from _free_alt_starts.  The sweep cannot do better than half its
+    2 km layer spacing, and on noise-free replay of this fleet's geometry that
+    quantisation alone left rms_delay at a 1.76 µs median against the 3.0 µs
+    reject gate — spending most of the gate's budget on an altitude the
+    measurements themselves determine, and provoking _trim_and_resolve to drop
+    nodes that were never the problem.  Costs one pool round trip per
+    candidate instead of six.
+
+    The mode is read per call rather than captured at import, so a test (and a
+    live config reload) sees the value it set.  Read here and not inside
+    _process_solver_item because _trim_and_resolve re-enters through this same
+    function: a trim must re-solve under the mode its first solve used, or the
+    residuals it is comparing are not the same quantity.
     """
     ig_alt = s_in.get("initial_guess", {}).get("alt_km")
     if ig_alt is not None and ig_alt not in _SOLVER_ALT_LAYERS_KM:
         layers = sorted(set(_SOLVER_ALT_LAYERS_KM + [round(float(ig_alt), 3)]))
     else:
         layers = _SOLVER_ALT_LAYERS_KM
+    n_meas = len({m.get("node_id") for m in (s_in.get("measurements") or [])})
+    if state.SOLVER_ALT_MODE == "free" and n_meas >= _FREE_ALT_MIN_NODES:
+        # No fall back to the sweep when this returns None: a helper that got
+        # no solve out of its starts is reporting the same thing the sweep
+        # reports when every layer fails, and sweeping anyway would cost the
+        # six round trips this mode exists to avoid on exactly the candidates
+        # that are least likely to repay them.
+        return multistart_fn(s_in, node_cfgs, _free_alt_starts(ig_alt, layers))
     return _sweep_altitudes(s_in, node_cfgs, solve_fn, layers, "rms_delay")
 
 
@@ -386,6 +556,7 @@ def _trim_and_resolve(
     node_cfgs: dict,
     solve_fn,
     result: dict,
+    multistart_fn=_pool_solve_multistart,
 ) -> tuple[dict, dict, dict | None]:
     """Drop the worst-residual node(s) and re-solve, down to _TRIM_MIN_NODES.
 
@@ -394,6 +565,11 @@ def _trim_and_resolve(
     measurement inflates rms_delay without moving the Huber-fitted position,
     so re-solving on the survivors after dropping the offending node recovers
     a solve the blanket gate would otherwise discard outright.
+
+    Re-solves through _solve_best_altitude, so it inherits whichever altitude
+    mode is in force — the loop compares this round's rms against the previous
+    round's, and mixing a swept altitude with a free one would make that
+    comparison meaningless.
 
     Returns (final_result, final_s_in, trim_meta).  trim_meta is None only
     when no round ever produced a successful re-solve — i.e. no trimming was
@@ -439,7 +615,7 @@ def _trim_and_resolve(
         s_next = _filter_s_in_to_nodes(s_in, survivors)
 
         try:
-            new_result = _solve_best_altitude(s_next, node_cfgs, solve_fn)
+            new_result = _solve_best_altitude(s_next, node_cfgs, solve_fn, multistart_fn)
         except Exception:
             logging.exception("Solver trim re-solve failed")
             break
@@ -984,6 +1160,34 @@ _SOLVER_MAX_QUEUE_AGE_S = 45.0
 # Sized against the map, not the association cadence: multinode_tracks expire
 # at 60 s, so refreshing an aircraft every 12 s leaves four solves' worth of
 # margin.  0 disables the suppression entirely.
+#
+# The claim is recorded ON PUBLICATION, not on admission, and from the
+# POST-TRIM survivors.  Claiming on admission made a candidate that never
+# reached the map suppress every later candidate sharing any of its track ids
+# for the full window — including other aircraft's, since tracker track ids
+# are shared across the association candidates of different aircraft (74 of
+# 178 ids in a 6 min live window appeared in solves of more than one
+# ground-truth aircraft; the same finding that forced _supersession_match's
+# spatial guard).  A rejected candidate, or a contaminated superset that the
+# gates sank, therefore blacked out the clean subsets behind it for 12 s and
+# nothing was refreshed at all.  Live that cost ~1 537 skips per 646 dark
+# attempts per 30 min — more candidates suppressed than solved, by a factor
+# of two.  The rule this suppression is FOR is "an aircraft already on the map
+# at this width does not need re-solving yet", and only a publication puts an
+# aircraft on the map.
+#
+# Two consequences, both accepted deliberately:
+#   * the check no longer claims under the same lock, so two workers can now
+#     both solve duplicates of one aircraft that arrived together.  The pair
+#     costs one extra solve and is resolved downstream by keying and
+#     supersession, which already handle exactly this; the alternative is the
+#     starvation above.
+#   * trimmed nodes' track ids are NOT claimed (_filter_s_in_to_nodes rebuilds
+#     track_ids from the surviving track_ids_by_node, so result's
+#     source_track_ids are the survivors).  A node dropped for a bad residual
+#     was probably another aircraft's — claiming its track would suppress that
+#     aircraft's own candidate on the strength of a measurement this solve
+#     threw away.
 _SOLVER_RESOLVE_INTERVAL_S = float(os.getenv("SOLVER_RESOLVE_INTERVAL_S", "12"))
 _RECENT_SOLVES: dict[str, tuple[float, int]] = {}  # track_id → (solved_at, n_nodes)
 _RECENT_SOLVES_LOCK = threading.Lock()
@@ -1001,39 +1205,96 @@ def _sweep_recent_solves(now_s: float) -> None:
         del _RECENT_SOLVES[tid]
 
 
-def _claim_resolve_slot(s_in, now_s: float) -> bool:
-    """False when this candidate re-solves tracks another candidate just took.
+def _resolve_slot_covered(s_in, now_s: float) -> tuple[bool, list[dict]]:
+    """Is every track this candidate carries already ON THE MAP at this width?
 
-    Records the claim as a side effect, under one lock with the test, so two
-    workers cannot both admit the same aircraft's duplicates.  An input with no
-    track provenance (detection-level, or an anchored input carrying none) is
-    always admitted — there is nothing to match it against.
+    Pure: it reads the claims and mutates nothing, so a candidate that is
+    admitted here and then rejected by the gate stack leaves no trace.  The
+    claim is made afterwards by _record_resolve_slot, from the publish path
+    only — see the block comment above for why, and for what the loss of
+    atomic test-and-claim costs.
+
+    Returns (covered, blocking).  ``blocking`` is the claims that covered it,
+    for the skip record; it is empty whenever ``covered`` is False.  An input
+    with no track provenance (detection-level, or an anchored input carrying
+    none) is never covered — there is nothing to match it against.
     """
     if _SOLVER_RESOLVE_INTERVAL_S <= 0 or not isinstance(s_in, dict):
-        return True
+        return False, []
     track_ids = s_in.get("track_ids")
     if not track_ids:
-        return True
+        return False, []
     n_nodes = int(s_in.get("n_nodes") or 0)
     cutoff = now_s - _SOLVER_RESOLVE_INTERVAL_S
+    blocking: list[dict] = []
     with _RECENT_SOLVES_LOCK:
-        covered = True
         for tid in track_ids:
             held = _RECENT_SOLVES.get(tid)
             if held is None or held[0] <= cutoff or held[1] < n_nodes:
-                covered = False
-                break
-        if covered:
-            return False
+                return False, []
+            blocking.append({"track_id": tid, "held_ts": round(held[0], 3), "held_n": held[1]})
+    return True, blocking
+
+
+def _record_resolve_slot(track_ids, n_nodes: int, now_s: float) -> None:
+    """Record that ``track_ids`` are covered by a PUBLISHED solve at n_nodes.
+
+    Called from the publish path alone, with the post-trim survivors
+    (``result["source_track_ids"]``).  Nothing else may call it: a claim is a
+    statement that this aircraft is on the map, and a rejected solve puts
+    nothing there.
+    """
+    if _SOLVER_RESOLVE_INTERVAL_S <= 0 or not track_ids:
+        return
+    n_nodes = int(n_nodes or 0)
+    cutoff = now_s - _SOLVER_RESOLVE_INTERVAL_S
+    with _RECENT_SOLVES_LOCK:
         for tid in track_ids:
             held = _RECENT_SOLVES.get(tid)
-            # Keep the widest claim of the window: a narrow candidate admitted
-            # after a wide one must not lower the bar the next copy is tested
-            # against.
+            # Keep the widest claim of the window: a narrow publish after a
+            # wide one must not lower the bar the next copy is tested against.
             held_nodes = held[1] if held is not None and held[0] > cutoff else 0
             _RECENT_SOLVES[tid] = (now_s, max(n_nodes, held_nodes))
         _sweep_recent_solves(now_s)
-    return True
+
+
+def _record_resolve_skip(s_in, now_s: float, blocking: list[dict]) -> None:
+    """Count and remember one resolve-slot refusal.
+
+    The counter alone could not answer the question the suppression rule
+    raises — *whose* claim blocked this, and was it even the same aircraft.
+    Live on the test droplet the rule refuses ~1 537 candidates per 646 dark
+    attempts per 30 min, and nothing recorded which claim did it, so a skip
+    that suppressed a genuinely different aircraft (tracker track ids are
+    shared across candidates — see _supersession_match) was indistinguishable
+    from one that suppressed a duplicate.  The deque carries the blocking
+    claims and the candidate's own guess position so the two can be told apart
+    after the fact.
+
+    Deliberately NOT a solve-history record: skips outrun real dark records
+    roughly two to one, and writing them into that deque would evict the
+    solves the same investigation needs (see state.solver_resolve_skips_recent).
+    """
+    s = s_in if isinstance(s_in, dict) else {}
+    track_ids = list(s.get("track_ids") or [])
+    dark = _is_dark_solver_input(s)
+    state.bump_counter("solver_resolve_skips")
+    if dark:
+        state.bump_counter("solver_resolve_skips_dark")
+    ig = s.get("initial_guess") or {}
+    state.solver_resolve_skips_recent.append(
+        {
+            "ts_ms": int(now_s * 1000),
+            # No key is minted for a candidate that never solves, so lane is
+            # the same fallback routes.test._record_lane uses for a reject.
+            "lane": "dark" if dark else "adsb",
+            "track_ids": track_ids,
+            "n_nodes": int(s.get("n_nodes") or 0),
+            "blocking": blocking,
+            "guess_lat": round(float(ig["lat"]), 6) if ig.get("lat") else None,
+            "guess_lon": round(float(ig["lon"]), 6) if ig.get("lon") else None,
+        }
+    )
 
 
 # Which single-node track pair currently owns a published n=2 track, and how
@@ -1384,6 +1645,59 @@ def _is_dark_solver_input(s_in) -> bool:
     return not (hx and is_transponder_hex(hx))
 
 
+def _stamp_foreign_nodes(rec: dict) -> None:
+    """Stamp which of a dark record's own nodes could not see the aircraft.
+
+    Cluster contamination is the dark lane's largest known defect — a
+    candidate assembled by format_track_pairs_for_solver can carry a node
+    whose track belongs to a *different* aircraft, and the solver then fits a
+    geometry no single aircraft ever occupied.  Offline the audit measured it
+    at ~60 % of dark candidates; this makes the same number live.
+
+    The test is the associator's own visibility predicate applied whole
+    (retina_analytics.association._point_in_beam against the registered
+    NodeGeometry), which is the same gate known-lane claiming uses — claiming
+    and the dark lane must mean the same thing by "this node can see there",
+    and a second bespoke rule here would let the two disagree.  Two
+    consequences worth knowing: it is a ground-projected bearing/footprint
+    test with no altitude term, and under FOV_MODE=active it is the learned
+    FOV rather than the theoretical wedge.  Both are exactly what the rest of
+    the pipeline believes about coverage, which is the point.
+
+    Position is the matched ground-truth point already stamped on the record
+    (gt_lat/gt_lon at the solve epoch), so this costs no extra trail lookup —
+    only one cone test per contributing node.  Nodes trimmed out by
+    _trim_and_resolve are included: a node dropped for a bad residual is
+    precisely the contamination this measures, and leaving it out would hide
+    every case trimming already rescued.
+
+    A node with no registered geometry is not judged either way.  When that
+    leaves nothing judgeable the record is left unstamped rather than stamped
+    clean, so contamination_pct never counts an abstention as innocence.
+    """
+    lat, lon = rec.get("gt_lat"), rec.get("gt_lon")
+    if lat is None or lon is None:
+        return
+    node_ids = list(rec.get("contributing_node_ids") or [])
+    node_ids += [nid for nid in (rec.get("trimmed_node_ids") or []) if nid not in node_ids]
+    if not node_ids:
+        return
+    geometries = state.node_associator.node_geometries
+    judged = 0
+    foreign: list[str] = []
+    for nid in node_ids:
+        geo = geometries.get(nid)
+        if geo is None:
+            continue
+        judged += 1
+        if not _point_in_beam(lat, lon, geo):
+            foreign.append(nid)
+    if not judged:
+        return
+    rec["foreign_node_ids"] = foreign
+    rec["contaminated"] = bool(foreign)
+
+
 def _record_dark_accuracy_sample(rec: dict) -> None:
     """Offer one published DARK solve to the rolling accuracy store.
 
@@ -1460,7 +1774,14 @@ def _record_solve_history(
 
     ``extra`` merges caller-supplied fields (trim metadata, beam-rejection
     diagnostics) into the record.  Applied before the GT stamp so it can
-    never clobber gt_hex/gt_error_km/gt_lat/gt_lon.
+    never clobber gt_hex/gt_error_km/gt_lat/gt_lon — and so the trimmed node
+    ids it carries are in hand for the contamination stamp below.
+
+    ``foreign_node_ids``/``contaminated`` are stamped on DARK records that
+    matched ground truth: which of this candidate's own nodes could not see
+    the aircraft it was matched to (see _stamp_foreign_nodes).  Absent on
+    every other record, which is what /api/test/solver-stats' contamination
+    block counts as "not judged" rather than as clean.
     """
     r = result if isinstance(result, dict) else {}
     s = s_in if isinstance(s_in, dict) else {}
@@ -1574,6 +1895,11 @@ def _record_solve_history(
         rec["vel_err_ms"] = round(math.hypot(ve - gt_ve, vn - gt_vn), 1)
     else:
         rec["vel_err_ms"] = None
+    # Live cluster-contamination metric, dark lane only and only where ground
+    # truth actually matched — without a truth position there is nothing to
+    # ask "could this node see it?" about.  See _stamp_foreign_nodes.
+    if _dark and rec.get("gt_hex"):
+        _stamp_foreign_nodes(rec)
     if rec["outcome"] == "published" and _dark and rec.get("gt_error_km") is not None:
         _record_dark_accuracy_sample(rec)
     # Route by lane: the known lane's per-hex-per-pass volume would otherwise
@@ -1693,7 +2019,12 @@ def fov_gate_verdict(fov, n_nodes: int, brg: float, dist_km: float, range_rule_p
     return range_rule_pass or fov_pass
 
 
-def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus) -> dict | None:
+def _process_solver_item(
+    item: tuple,
+    solve_fn,
+    select_fn=_pool_select_consensus,
+    multistart_fn=_pool_solve_multistart,
+) -> dict | None:
     """Process a single solver queue entry. Returns the solver result (or None).
 
     Extracted from the worker loop so the success/failure/latency bookkeeping
@@ -1704,6 +2035,10 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
     initial_guess and _CONSENSUS_MODE != "off" — n=2 (mirror-disambiguation
     is the displacement/beam gates' job, not consensus's) and detection-level
     inputs (no initial_guess to pin an altitude with) never call it.
+
+    multistart_fn is the free-altitude solve (_pool_solve_multistart by
+    default; tests substitute a stub), reached only when
+    state.SOLVER_ALT_MODE is "free" — see _solve_best_altitude.
     """
     s_in, node_cfgs = item[0], item[1]
     enqueued_at: float | None = item[2] if len(item) > 2 else None
@@ -1724,10 +2059,19 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
     # here rather than at enqueue: the frame path must not carry solver state,
     # and a copy that queued before its twin was solved can only be recognised
     # once it reaches a worker.
-    if not _claim_resolve_slot(s_in, time.time()):
-        state.bump_counter("solver_resolve_skips")
+    _now_s = time.time()
+    _covered, _blocking = _resolve_slot_covered(s_in, _now_s)
+    if _covered:
+        _record_resolve_skip(s_in, _now_s, _blocking)
         return None
     n_nodes = s_in.get("n_nodes", 0) if isinstance(s_in, dict) else 0
+    # Before anything reads a delay: the nodes did not sample simultaneously,
+    # and every gate below (rms_delay first among them) assumes they did.  Runs
+    # ahead of consensus and the altitude sweep so both judge the same aligned
+    # numbers the published solve is fitted to.
+    epoch_meta: dict = {"epoch_aligned": False}
+    if state.SOLVER_EPOCH_ALIGN and isinstance(s_in, dict):
+        s_in, epoch_meta = align_measurement_epochs(s_in, node_cfgs)
     consensus_meta: dict | None = None
     try:
         if "initial_guess" not in s_in:
@@ -1736,7 +2080,7 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             if _CONSENSUS_MODE != "off":
                 s_in, consensus_meta = _consensus_select(s_in, node_cfgs, select_fn)
                 n_nodes = s_in.get("n_nodes", n_nodes)
-            result = _solve_best_altitude(s_in, node_cfgs, solve_fn)
+            result = _solve_best_altitude(s_in, node_cfgs, solve_fn, multistart_fn)
         else:
             result = _solve_best_altitude_n2(s_in, node_cfgs, solve_fn)
     except Exception:
@@ -1762,7 +2106,7 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             and (result.get("rms_delay") or 0) > _SOLVER_RMS_DELAY_MAX_US
             and result.get("per_node_delay_res_us")
         ):
-            result, s_in, trim_meta = _trim_and_resolve(s_in, node_cfgs, solve_fn, result)
+            result, s_in, trim_meta = _trim_and_resolve(s_in, node_cfgs, solve_fn, result, multistart_fn)
             n_nodes = result.get("n_nodes", n_nodes)
 
         # Built once and threaded through every history record below
@@ -1771,6 +2115,24 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
         _extra: dict | None = dict(trim_meta) if trim_meta else {}
         if consensus_meta is not None:
             _extra["consensus_meta"] = consensus_meta
+        # Always stamped, aligned or not: "this solve was not aligned" is the
+        # fact /api/test/mlat-history needs to separate a residual the
+        # correction could not have helped from one it was applied to.
+        _extra.update(epoch_meta)
+        # How this solve got its altitude, and — in free mode — what each
+        # start altitude fitted to.  Stamped on every record, published or
+        # rejected, and in BOTH modes (the sweep's solves report
+        # altitude_mode "pinned"), because the only way to judge SOLVER_ALT_MODE
+        # live is to compare the two lanes' rms_delay and gt_error_km over the
+        # same history buffer.  The per-start list is what says whether the
+        # three starts were worth keeping or one would have done.
+        if result.get("altitude_mode"):
+            _extra["altitude_mode"] = result["altitude_mode"]
+        if result.get("rms_by_start") is not None:
+            _extra["alt_starts_km"] = result.get("alt_starts_km")
+            _extra["alt_start_rms_us"] = [None if v is None else round(float(v), 3) for v in result["rms_by_start"]]
+        if result.get("z_saturated"):
+            _extra["z_saturated"] = True
         _extra = _extra or None
 
         rms_delay = result.get("rms_delay", 0) or 0
@@ -2291,6 +2653,12 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
         archive_record = dict(result)
         archive_record["solve_ts_ms"] = int(time.time() * 1000)
         state.track_archive_buffer.append(archive_record)
+        # The re-solve claim, taken here and nowhere else: this aircraft is now
+        # on the map at this width, which is the only thing that makes a
+        # duplicate not worth solving.  Survivors only — source_track_ids is
+        # rebuilt from the post-trim node set.  Outside _MN_TRACKS_LOCK on
+        # purpose, so _RECENT_SOLVES_LOCK is never nested inside it.
+        _record_resolve_slot(result.get("source_track_ids"), result.get("n_nodes"), time.time())
         _record_solve_history(
             "published",
             s_in,
