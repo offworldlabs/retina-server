@@ -868,8 +868,12 @@ reached a solve.
   budgets are `DR_ICON_HIDE_DISTANCE_DARK_M` (3 km) and
   `DR_ICON_MAX_AGE_DARK_S` (12 s), which withdraw the icon — and with it the
   uncertainty disc, which since 2026-09-06 is the last solve's accuracy drawn
-  at `solve_lat`/`solve_lon` and no longer grows with solve age
-  (`docs/design-notes/2026-09-05-solve-uncertainty-disc.md`).
+  at `solve_lat`/`solve_lon`, no longer grows with solve age, and is drawn at
+  the **68%** radius rather than 95% (dark error is heavy-tailed, so an honest
+  95% ring on a good solve is ~13x its median error; the detail panel quotes
+  both). The dark lane has its own 68%-calibrated sigma floors —
+  2100/850/240 m for n=2/3/>=4 — instead of the old flat 1.5x gain on the
+  known-lane floors (`docs/design-notes/2026-09-05-solve-uncertainty-disc.md`).
 - **Node-trust residuals are measure-only.** `node_bias.py` computes them but
   nothing in the solver consumes them yet (`node_bias.py` module docstring).
 - **`docs/pipeline.md` §3 is stale.** It predates the known lane and the

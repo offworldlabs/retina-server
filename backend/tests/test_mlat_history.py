@@ -147,17 +147,19 @@ class TestRecording:
         assert outcomes == ["published"]
 
     def test_published_record_carries_the_calibrated_sigma(self):
-        """sigma_m is the disc radius the map draws, stamped into history so
-        the 2026-09-05 calibration can be re-run from /api/test/mlat-history
-        alone (fraction(gt_error_km*1000 <= 2.448*sigma_m) ~ 0.95)."""
+        """sigma_m is the sigma behind the disc the map draws, stamped into
+        history so the calibration can be re-run from /api/test/mlat-history
+        alone — which is how the dark floors were fitted (2026-09-06:
+        fraction(gt_error_km*1000 <= 1.5096*sigma_m) ~ 0.68 on the dark lane,
+        <= 2.448*sigma_m ~ 0.95 on the known one)."""
         self._run(_CONFIRMED_N2, _solve_fn(n_nodes=2))
         rec = self._only_record()
         assert rec["outcome"] == "published"
         # Dark lane (no adsb_hex on the input, so the key is minted
-        # mn-dark-*): the n=2 floor of 650 m times the 1.5 dark gain.  No
+        # mn-dark-*): the dark n=2 floor, not the known-lane one.  No
         # pos_sigma_km on this fixture, so the formal term contributes 0.
         assert rec["solve_key"].startswith("mn-dark-")
-        assert rec["sigma_m"] == pytest.approx(975.0)
+        assert rec["sigma_m"] == pytest.approx(2100.0)
 
     def test_known_lane_record_is_not_dark_inflated(self):
         s_in = dict(_CONFIRMED_N2)

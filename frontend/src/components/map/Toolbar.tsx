@@ -94,7 +94,7 @@ export default function Toolbar({
       <button className={`toggle-btn${showRangeRings ? " active" : ""}`} onClick={onToggleRangeRings} title="Show 5/10/20 km range rings around the selected aircraft">
         Range
       </button>
-      <button className={`toggle-btn${showUncertainty ? " active" : ""}`} onClick={onToggleUncertainty} title="Show 95% position-uncertainty disc around multi-node solves">
+      <button className={`toggle-btn${showUncertainty ? " active" : ""}`} onClick={onToggleUncertainty} title="Show the 68% position-uncertainty disc around multi-node solves (the panel also quotes 95%)">
         σ Uncert.
       </button>
       <button className={`toggle-btn${showInBeamDiag ? " active" : ""}`} onClick={onToggleInBeamDiag} title="Show red lines from a node to in-beam aircraft it is NOT currently detecting (beam-coverage gaps)">

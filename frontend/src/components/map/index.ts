@@ -12,12 +12,16 @@ export {
   uncertaintyDiscRadiusM,
 } from "./geo";
 export {
+  UNCERTAINTY_K68,
   UNCERTAINTY_K95,
   UNCERTAINTY_MAX_RADIUS_M,
+  UNCERTAINTY_RING_ONLY_ABOVE_M,
   solveAgeS,
   solveSigmaM,
   solveDiscCenter,
   solveUncertaintyRadiusM,
+  solveUncertaintyRadius95M,
+  isRingOnlyRadius,
 } from "./uncertainty";
 export { MLAT_HISTORY_REFRESH_MS, newSolveArrived } from "./mlatHistory";
 export { mergeTrailPositions, sampleTrailPositions, buildTrailSegments } from "./trails";
