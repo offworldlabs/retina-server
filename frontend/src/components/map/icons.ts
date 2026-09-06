@@ -3,9 +3,13 @@ import {
   ADSB_SINGLE_COLOR,
   DR_ICON_HIDE_DISTANCE_DARK_M,
   DR_ICON_HIDE_DISTANCE_M,
+  DR_ICON_MAX_AGE_DARK_S,
   DR_UNKNOWN_GS_KT,
   POSITION_SOURCE_ADSB_SINGLE,
 } from "./constants";
+// Same age the uncertainty disc grows on — one definition, so the icon and the
+// disc can never disagree about how old a solve is.
+import { solveAgeS } from "./uncertainty";
 
 // Top-down airplane SVG path (nose pointing up/north at 0°)
 export const PLANE_PATH =
@@ -74,8 +78,9 @@ export function isDarkMultinodeSolve(ac): boolean {
 }
 
 /** Drift budget in metres for this entry's lane — the dark lane gets a bigger
- *  one because the solver will not re-solve it inside 12 s.  See the
- *  DR_ICON_HIDE_DISTANCE_M block in constants.ts. */
+ *  one because a missed dark solve is ordinary and an assisted one is not.
+ *  How long a dark entry may keep drifting is DR_ICON_MAX_AGE_DARK_S's job.
+ *  See the DR_ICON_HIDE_DISTANCE_M block in constants.ts. */
 export function drIconBudgetM(ac): number {
   return isDarkMultinodeSolve(ac) ? DR_ICON_HIDE_DISTANCE_DARK_M : DR_ICON_HIDE_DISTANCE_M;
 }
@@ -114,22 +119,35 @@ export function hideDrIcon(ac, nowMs: number): boolean {
   return drDriftM(ac, nowMs) > drIconBudgetM(ac);
 }
 
-/** How this entry's icon should be drawn given its drift:
+/** How this entry's icon should be drawn given its drift and its solve age:
  *
- *  - "normal" — inside its lane's budget, an ordinary icon.
- *  - "stale"  — over budget, but drawn in the degraded style anyway.  A DARK
- *               multi-node solve lands here because 12 s between solves is its
- *               normal cadence, not a fault: hiding it would say "not solved"
- *               about a track that was solved.  A SELECTED aircraft lands here
- *               too, matching the viewport cull's selected-hex bypass — asking
- *               to look at a track and being shown nothing is worse than being
- *               shown a marker that admits it is stale.
+ *  - "normal" — inside its lane's drift budget and, on the dark lane, inside
+ *               the time budget too: an ordinary icon.
+ *  - "stale"  — over the drift budget but still within DR_ICON_MAX_AGE_DARK_S
+ *               of its last solve, drawn in the degraded style anyway.  A DARK
+ *               multi-node solve lands here because a missed solve is not a
+ *               fault: hiding it would say "not solved" about a track that was
+ *               solved.  A SELECTED aircraft lands here too, whatever its lane
+ *               or age, matching the viewport cull's selected-hex bypass —
+ *               asking to look at a track and being shown nothing is worse
+ *               than being shown a marker that admits it is stale.
  *  - "hidden" — over budget on a lane that re-solves every few seconds, so the
- *               drawn position is no longer evidence of anything.
+ *               drawn position is no longer evidence of anything; or a dark
+ *               solve that has gone DR_ICON_MAX_AGE_DARK_S without re-solving,
+ *               which measures as a lost track rather than a cadence gap
+ *               however little it has drifted.
+ *
+ *  The age rule is checked first so it wins over the dark lane's "stale"
+ *  concession: past the time budget a dark entry is not a stale solve being
+ *  honest about its drift, it is an entry the solver stopped confirming.
+ *  Either way only the drawing is withdrawn — the track stays in the stores,
+ *  the list, the trails and the selection, and the next solve resets `seen`.
  */
 export type DrIconState = "normal" | "stale" | "hidden";
 
 export function drIconState(ac, nowMs: number, isSelected = false): DrIconState {
+  if (isDarkMultinodeSolve(ac) && solveAgeS(ac, nowMs) > DR_ICON_MAX_AGE_DARK_S)
+    return isSelected ? "stale" : "hidden";
   if (!hideDrIcon(ac, nowMs)) return "normal";
   if (isSelected || isDarkMultinodeSolve(ac)) return "stale";
   return "hidden";

@@ -147,3 +147,23 @@ Env keys (all read at import, documented in `backend/.env.example`):
   hash letter `u`, Toolbar button).
 - Detail panel, Multi-node section: `Accuracy (95%)` → `±<now> m` with
   `(±<at solve> m)` when they differ.
+
+## Addendum 2026-09-06: `UNCERTAINTY_DR_CAP_S` is now 12 s
+
+The 30 s cap above was sized on the backend's dark-lane entry expiry
+(`MN_DARK_EXPIRY_S`), i.e. on how long an entry can exist rather than on how
+long it is worth drawing. Measured against ground truth over three 20-minute
+captures, dark entries under 4 s of solve age are 1% ghosts (more than 5 km
+from any aircraft) and 0.3 km off at the median, while entries past 12 s are
+15% ghosts and 1.5–2.4 km off — and dark solves now land every 1–3 s, so 12 s
+of silence is a lost track, not a cadence gap. `DR_ICON_MAX_AGE_DARK_S = 12`
+(`map/constants.ts`) therefore withdraws the dark icon at that age, and
+`SolveUncertaintyLayer` already drops any entry whose `drIconState` is
+`"hidden"`, so the disc goes with it. `UNCERTAINTY_DR_CAP_S` is now an alias
+of that constant: growth stops exactly where the drawing stops, and the rest
+of the old curve described discs nobody is shown. Assisted entries do not
+reach the cap either — at the speeds that grow a disc quickly they cross the
+2 km drift budget and lose their icon well inside 12 s. Only the drawing is
+withdrawn; the track stays in the stores, list, trails and selection, and
+about half of the tracks that go quiet for 12 s re-solve (median 16 s) and
+come straight back.

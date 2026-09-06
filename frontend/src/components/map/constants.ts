@@ -109,6 +109,29 @@ export const ARC_DR_MAX_S = 10;
 export const DR_ICON_HIDE_DISTANCE_M = 2000;
 export const DR_ICON_HIDE_DISTANCE_DARK_M = 3000;
 
+// Time budget for a DARK multi-node icon, in seconds of SOLVE AGE (`seen` plus
+// the wall-clock gap since ingest — the same age the disc grows on).  Distance
+// alone cannot describe a lost dark track: a slow or gs-less entry drifts far
+// too little to trip the 3 km budget, yet the backend keeps re-broadcasting it
+// for MN_DARK_EXPIRY_S = 30 s after its solves stop, so the map went on drawing
+// a confident icon — and a violet disc still growing under it — for tracks that
+// no longer existed.
+//
+// 12 s, measured against ground truth over three 20-minute captures: dark
+// entries under 4 s of solve age are 1% ghosts (over 5 km from any aircraft)
+// and 0.3 km off at the median, while entries past 12 s are 15% ghosts and
+// 1.5–2.4 km off.  Dark solves now land every 1–3 s, so 12 s of silence is a
+// lost track rather than a cadence gap.  Withdrawing the drawing there removes
+// 45–49% of ghost display-seconds for 21% of dark display-seconds hidden.
+//
+// About half of the tracks that go quiet for 12 s do re-solve later, at a
+// median of 16 s, so only the DRAWING is withdrawn: the entry stays in the
+// stores, the list, the trail buffers and the selection, and the next solve
+// resets `seen` and brings the icon straight back.  A selected aircraft keeps a
+// degraded icon instead of losing it, matching the drift budget's selected-hex
+// bypass.  See drIconState in icons.ts.
+export const DR_ICON_MAX_AGE_DARK_S = 12;
+
 // Ground speed (knots) assumed when a multi-node entry carries no `gs` at all.
 // The backend deletes gs from entries whose velocity vector it does not trust
 // (aircraft_feed, VEL_TRUST_MODE=active) — precisely the entries whose

@@ -17,21 +17,24 @@
  * React — this module is unit-tested on its own.
  */
 
+import { DR_ICON_MAX_AGE_DARK_S } from "./constants";
 import type { Aircraft } from "../../types";
 
 /** Rayleigh 95% radius factor (k_50 = 1.177 CEP, k_68 = 1.510). */
 export const UNCERTAINTY_K95 = 2.4477;
 
-/** Dead-reckoning growth is capped here: past this the icon itself is stale
- *  and a disc that kept growing would just be a claim about nothing.
+/** Dead-reckoning growth is capped here: past this no disc is drawn at all, so
+ *  a curve that kept climbing would only describe pictures nobody sees.
  *
- *  30 s, down from 60 s, to match the backend's dark-lane entry expiry
- *  (`MN_DARK_EXPIRY_S`): a dark entry no longer survives to 60 s at all, so
- *  the second half of the old growth curve described entries that cannot
- *  exist.  Assisted entries do live to 60 s, but they are anchored to a
- *  transponder fix rather than extrapolated, so growing their disc past the
- *  point the dark budget stops is not the honest reading either. */
-export const UNCERTAINTY_DR_CAP_S = 30;
+ *  The cap is DR_ICON_MAX_AGE_DARK_S, the age at which a dark solve's icon is
+ *  withdrawn — and SolveUncertaintyLayer drops any entry whose drIconState is
+ *  "hidden", so the disc goes with it.  Assisted entries never reach the cap
+ *  either: at the speeds that grow a disc quickly they cross the 2 km drift
+ *  budget first and lose their icon well inside 12 s.  The only entry that can
+ *  still be drawn past the cap is a selected one, and freezing its growth is
+ *  the honest reading — the number stopped being a measurement and became an
+ *  extrapolation the solver never confirmed. */
+export const UNCERTAINTY_DR_CAP_S = DR_ICON_MAX_AGE_DARK_S;
 
 /** Hard ceiling on the drawn radius.  A degenerate solve (near-parallel
  *  baselines) can report an astronomically large formal sigma; without a cap
