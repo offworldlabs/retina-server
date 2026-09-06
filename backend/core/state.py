@@ -74,6 +74,45 @@ KNOWN_LANE_MODE = os.getenv("KNOWN_LANE_MODE", "binding").lower()
 if KNOWN_LANE_MODE not in ("off", "shadow", "binding"):
     KNOWN_LANE_MODE = "shadow"
 
+# How the n>=3 solve gets its altitude (see services/tasks/solver.py's
+# _solve_best_altitude).  sweep/free, read here rather than in that module so
+# it sits with its sibling mode flags and a test can monkeypatch it without
+# reimporting the solver.
+#   sweep (default) — solve once per fixed altitude layer, keep the lowest
+#           rms_delay.  Six pool round trips per candidate, and an altitude
+#           quantised to the ladder: layers are 2 km apart, so the pin is
+#           systematically up to 1 km wrong and that error lands in the
+#           residual the reject gate reads.
+#   free  — one pool call to retina_geolocator's multi-start helper, which
+#           solves altitude as a sixth unknown, started from
+#           SOLVER_FREE_ALT_STARTS of those layers.
+# Not off/shadow/active: there is no shadow here, because the two modes
+# produce the same shape of result and the history record carries
+# altitude_mode either way — running both would double the solver's cost to
+# learn what one deploy of each already says.  An unrecognised value falls
+# back to "sweep", the same degrade-to-inert rule the sibling flags use.
+SOLVER_ALT_MODE = os.getenv("SOLVER_ALT_MODE", "sweep").lower()
+if SOLVER_ALT_MODE not in ("sweep", "free"):
+    SOLVER_ALT_MODE = "sweep"
+
+# How many start altitudes the free mode hands that helper.  Read here beside
+# the mode it qualifies; _free_alt_starts in services/tasks/solver.py clamps it
+# into [1, len(layers)] against the ladder that module owns.  1 starts at the
+# layer nearest the association guess — where the sweep would have pinned;
+# more is a window around it.
+#
+# The default is 1 because three starts did not pay for themselves: over 1019
+# free-mode solves on test, the three starts' rms_delay differed by more than
+# 0.1 us in 13 of them, and the nearest-layer start was more than 0.5 us worse
+# than the best start in 2.  That is ~0.2% of solves helped for 3x the solver
+# CPU, and the pool — not the altitude ladder — is what this deployment is
+# short of (~1.7 attempts/s against a 2.0 s average latency on two workers).
+# The knob stays because the reason for several starts is the LM's locality,
+# which is a property of the geometry rather than of this fleet: nodes lying
+# nearer a bistatic ellipse than these can send a single start to the wrong
+# side of it, and finding that out should not need a code change.
+SOLVER_FREE_ALT_STARTS = max(1, int(os.getenv("SOLVER_FREE_ALT_STARTS", "1")))
+
 node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR, fov_mode=FOV_MODE)
 
 
