@@ -18,6 +18,7 @@ from config.constants import (
     ARCHIVE_BATCH_MAX,
     ARCHIVE_FLUSH_INTERVAL_S,
     N2_TRACK_HISTORY_MAX,
+    TRACK_MAX_STALE_S,
 )
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
@@ -156,6 +157,27 @@ def get_node_configs() -> dict[str, dict]:
     return configs
 
 
+def configs_for_solver_input(node_cfgs: dict[str, dict], s_in: dict) -> dict[str, dict]:
+    """The subset of ``node_cfgs`` a solver input can actually reach.
+
+    The solver runs in a *spawn* process pool, so everything queued with an
+    input is pickled and shipped to a child on every call — and the fleet is
+    58 nodes while a candidate carries 2-8 measurements.  Sending the whole
+    set meant ~50 configs per solve that no code path could look at.
+
+    Nothing downstream needs the rest.  The solver builds NodeSetups from the
+    measurements only; trimming and consensus both narrow that set further
+    (_filter_s_in_to_nodes) and never widen it; the beam gate iterates the
+    result's contributing_node_ids, which are measurement node ids by
+    construction; and cv_epochs is built from the same matched nodes as the
+    measurements in all three input shapes association emits.  The known lane
+    is unaffected — it fetches its own configs (known_lane.run_known_lane_pass)
+    rather than reusing what was queued here.
+    """
+    wanted = {m.get("node_id") for m in (s_in.get("measurements") or ())}
+    return {nid: cfg for nid, cfg in node_cfgs.items() if nid in wanted}
+
+
 # ── Per-node pipeline factory ─────────────────────────────────────────────────
 
 
@@ -254,7 +276,11 @@ def _view_adsb_hex(track, hist) -> str | None:
     return hexn
 
 
-def confirmed_track_views(tracker, history_n: int = N2_TRACK_HISTORY_MAX) -> list[dict]:
+def confirmed_track_views(
+    tracker,
+    history_n: int = N2_TRACK_HISTORY_MAX,
+    now_ts_ms: int | None = None,
+) -> list[dict]:
     """A tracker's confirmed tracks, in the shape submit_tracks takes.
 
     TENTATIVE tracks are excluded, the same filter the arc builder applies: they
@@ -264,15 +290,35 @@ def confirmed_track_views(tracker, history_n: int = N2_TRACK_HISTORY_MAX) -> lis
     reason arcs keep it — at 22 fps a single missed frame flips ACTIVE →
     COASTING and the next flips it back.
 
+    But COASTING is kept only while its newest REAL detection is fresh.  What
+    travels downstream is ``history[-1]``, and association hands that sample to
+    the solver as the node's current measurement — so a track coasting toward
+    its N_DELETE deletion point contributes a delay from wherever the aircraft
+    was several seconds ago.  That is the out-of-cone node the rms trim then
+    has to discard (see TRACK_MAX_STALE_S).  The staleness test reads
+    ``hist[-1]["timestamp"]`` rather than the track's coast count because
+    get_recent_detections returns only ASSOCIATED samples — mark_missed appends
+    None to ``history["measurements"]`` and the reverse scan skips those — so
+    that timestamp IS the last real detection's, exactly the honest signal,
+    while n_missed only counts frames the node happened to process.  Compared
+    against *now_ts_ms*, the frame timestamp being processed, never wall clock:
+    the fleet replays and backfills, and a filter keyed on wall clock would
+    silently empty every view in those runs.  Skipped when the caller supplies
+    no frame time, or when TRACK_MAX_STALE_S is 0.
+
     Shared with scripts/association_bench.py (which carried a near-verbatim
     copy) so the bench feeds association exactly what production does.
     """
+    max_stale_ms = TRACK_MAX_STALE_S * 1000.0 if now_ts_ms is not None else 0.0
     views = []
     for tr in tracker.tracks:
         if tr.state_status == TrackState.TENTATIVE:
             continue
         hist = tr.get_recent_detections(history_n)
         if len(hist) < 2:
+            continue
+        if max_stale_ms > 0 and (now_ts_ms - hist[-1]["timestamp"]) > max_stale_ms:
+            state.bump_counter("tracks_stale_skipped")
             continue
         views.append(
             {
@@ -292,8 +338,8 @@ def confirmed_track_views(tracker, history_n: int = N2_TRACK_HISTORY_MAX) -> lis
     return views
 
 
-def _node_track_views(pipeline: PassiveRadarPipeline) -> list[dict]:
-    return confirmed_track_views(pipeline.tracker)
+def _node_track_views(pipeline: PassiveRadarPipeline, now_ts_ms: int | None = None) -> list[dict]:
+    return confirmed_track_views(pipeline.tracker, now_ts_ms=now_ts_ms)
 
 
 def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarPipeline):
@@ -339,7 +385,9 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # cannot cross-pair into a phantom solve).  _pframe is what the dark
     # lane processes from here down; the original frame is untouched, so
     # the archive and the ADS-B cache extraction below still see everything
-    # the node sent.
+    # the node sent.  Dark track following (DARK_FOLLOW_MODE) rides the same
+    # stage — it claims what the ADS-B paths leave, so it cannot run without
+    # them, which is why it is gated on KNOWN_LANE_MODE too.
     _pframe = frame
     if state.KNOWN_LANE_MODE != "off" and frame.get("delay"):
         # Fail open: the known lane is an overlay on the dark lane, and in
@@ -347,10 +395,20 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
         # this guard, one ADS-B record with alt_baro="ground" threw here and
         # took every frame down with it until the record aged out.
         try:
-            _claimed = claim_known_targets(node_id, frame)
+            # Two lanes claim here, with independent binding modes, so the
+            # strip is computed as one union and applied once: strip_claimed_
+            # detections re-bases the indices it keeps, and a second strip
+            # against the first's output would delete the wrong detections.
+            _followed: set[int] = set()
+            _claimed = claim_known_targets(node_id, frame, follow_claimed=_followed)
+            _strip: set[int] = set()
             if _claimed and state.KNOWN_LANE_MODE == "binding":
-                _pframe = strip_claimed_detections(frame, _claimed)
+                _strip |= _claimed
                 state.bump_counter("known_claims_bound", len(_claimed))
+            if _followed and state.DARK_FOLLOW_MODE == "binding":
+                _strip |= _followed
+            if _strip:
+                _pframe = strip_claimed_detections(frame, _strip)
         except Exception:
             state.bump_counter("known_claims_errors")
             now = time.time()
@@ -397,7 +455,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # Track-level association.  The detection-level path it replaced now lives
     # in retina_analytics.detection_association, reachable only from the
     # offline bench, which keeps it as the A/B baseline.
-    _track_views = _node_track_views(pipeline)
+    _track_views = _node_track_views(pipeline, _ts_ms_assoc or None)
     # Feed the per-node distinct-track counters — total_tracks /
     # geolocated_tracks were exported (and read by the admin API) but never
     # written anywhere.
@@ -427,7 +485,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             if s_in["n_nodes"] < 2:
                 continue
             try:
-                state.solver_queue.put_nowait((s_in, node_cfgs, time.time()))
+                state.solver_queue.put_nowait((s_in, configs_for_solver_input(node_cfgs, s_in), time.time()))
             except Exception:
                 state.bump_counter("solver_queue_drops")
                 if state.solver_queue_drops % 100 == 1:

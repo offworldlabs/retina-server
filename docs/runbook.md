@@ -396,7 +396,8 @@ recognised as such and dropped without solving.
 
 `SOLVER_RESOLVE_INTERVAL_S` (default 12 s) is the window an aircraft is not
 re-solved in. Raising it trades map refresh rate for solver headroom — do not go
-past the 60 s `multinode_tracks` expiry, or tracks will lapse between solves. `0`
+past the `multinode_tracks` expiry (`MN_DARK_EXPIRY_S`, 30 s, for `mn-dark-*`
+entries; 60 s for `mn-adsb-*` ones), or tracks will lapse between solves. `0`
 turns the suppression off.
 
 ---

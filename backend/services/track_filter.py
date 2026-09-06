@@ -270,12 +270,21 @@ def learned_velocity(track_key: str) -> tuple[float, float, float, float] | None
     filter.  _KF_LOCK is a leaf lock (see module docstring), so taking it here
     keeps the established solver.py -> track_filter order; callers must not
     hold it already.
+
+    The sqrt is clamped for the same reason _smooth_kf's kf_pos_sigma_m one
+    is: this is a read-only accessor on a hot display path with two callers
+    that each lose real work when it throws — solver.py's
+    multinode_key_decision (drops that solve) and aircraft_feed's
+    multinode_to_aircraft (drops the whole broadcast) — so a pathological
+    filter state must degrade to "sigma 0", never to a ValueError.  An
+    accessor is the wrong place to discover a covariance is sick; the
+    invariant is enforced upstream in _measurement_R and _kf_correct.
     """
     with _KF_LOCK:
         entry = _KF_TRACKS.get(track_key)
         if entry is None:
             return None
-        vel_sigma = math.sqrt(0.5 * (entry.P[1, 1] + entry.P[3, 3]))
+        vel_sigma = math.sqrt(max(0.0, 0.5 * (entry.P[1, 1] + entry.P[3, 3])))
         return float(entry.x[1]), float(entry.x[3]), float(vel_sigma), float(entry.last_ts_s)
 
 
@@ -391,8 +400,12 @@ def _measurement_R(result: dict) -> np.ndarray:
     not one scaled version of the other, so they add rather than one
     replacing the other:
 
-        cov present and sane:  R = (_KF_R_INFLATE**2) * cov_m2 + base
+        cov present and PSD:   R = (_KF_R_INFLATE**2) * cov_m2 + base
         cov absent/degenerate: R = base                          (cov=0 limit)
+
+    "Degenerate" now includes a cov that is not positive-semidefinite, which
+    an ill-conditioned solve really does produce — see the determinant check
+    in the body for why that has to be rejected rather than passed through.
 
     where base = diag(_KF_DEFAULT_POS_SIGMA_M**2, _KF_DEFAULT_POS_SIGMA_M**2)
     is added UNCONDITIONALLY — the no-cov fallback is not a separate branch,
@@ -413,8 +426,37 @@ def _measurement_R(result: dict) -> np.ndarray:
     cov = result.get("cov_en_km2")
     if cov is not None:
         arr = np.asarray(cov, dtype=float) * 1e6  # km^2 -> m^2
-        if arr.shape == (2, 2) and np.all(np.isfinite(arr)) and arr[0, 0] > 0 and arr[1, 1] > 0:
-            r = (_KF_R_INFLATE**2) * arr + base  # independent noise sources -> variances add
+        if arr.shape == (2, 2) and np.all(np.isfinite(arr)):
+            arr = (arr + arr.T) / 2.0
+            # PSD, not just positive-diagonal.  A 2x2 symmetric matrix is PSD
+            # iff both diagonals are >= 0 AND the determinant is >= 0; the
+            # determinant is the half that was missing, and it is not a
+            # theoretical gap.  cov_en_km2 is the top-left 2x2 block of
+            # s2 * inv(JtJ) for the solver's 5-state fit, and the solver
+            # falls back to pinv only on an outright LinAlgError — an
+            # ill-conditioned-but-not-singular JtJ (near-parallel baselines,
+            # the same degenerate tail that puts the formal sigma's p99 at
+            # 3.8e6 km) inverts to numerical garbage that is INDEFINITE while
+            # still having both diagonals positive, so it passed both this
+            # check and the solver's own.
+            #
+            # An indefinite R is not survivable downstream.  _kf_correct's
+            # Joseph form preserves positive-semidefiniteness for any gain,
+            # but only GIVEN PSD P and R — its K R K^T term inherits R's
+            # negative eigenvalue directly — and _init_entry seeds P's
+            # position block from this matrix, so a sick R poisons the filter
+            # at birth as well as on every update.  Once P's velocity
+            # diagonals go negative, learned_velocity's sqrt raises: on the
+            # test droplet that was 91 tracebacks in 40 minutes, each one
+            # costing either a solve or an entire feed broadcast.
+            #
+            # Rejecting is the honest response rather than repairing by
+            # eigenvalue clipping: a covariance this degenerate carries no
+            # trustworthy relative weighting to preserve, and "R = base" is
+            # already this function's documented answer for a degenerate cov.
+            det = arr[0, 0] * arr[1, 1] - arr[0, 1] * arr[1, 0]
+            if arr[0, 0] > 0 and arr[1, 1] > 0 and det >= 0:
+                r = (_KF_R_INFLATE**2) * arr + base  # independent noise sources -> variances add
 
     s = math.sqrt(0.5 * (r[0, 0] + r[1, 1]))
     if s < _KF_MIN_POS_SIGMA_M:
@@ -510,6 +552,10 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
         f, q = _f_q(dt)
         x_pred = f @ entry.x
         p_pred = f @ entry.P @ f.T + q
+        # Symmetrize here too, not only in _kf_correct: F P F^T is symmetric
+        # in exact arithmetic but drifts by roundoff, and this filter composes
+        # predict and update thousands of times over a track's life.
+        p_pred = (p_pred + p_pred.T) / 2.0
 
         z_e, z_n = _enu_offset_m(entry.ref_lat, entry.ref_lon, r_lat, r_lon)
         z = np.array([z_e, z_n])

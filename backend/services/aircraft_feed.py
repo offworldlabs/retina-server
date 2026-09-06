@@ -7,6 +7,7 @@ services.track_gates; shared helpers in services.feed_helpers; stale-store GC
 in services.feed_gc.
 """
 
+import logging
 import math
 import os
 import time
@@ -17,6 +18,8 @@ from config.constants import (
     ARC_REFRESH_S,
     CLAIMED_DISPLAY_FRESH_S,
     GT_REFRESH_S,
+    MN_DARK_EXPIRY_S,
+    MN_DR_CAP_S,
     MN_N2_MIN_SOLVES,
     MN_ONESHOT_TTL_S,
     STALE_TRACK_S,
@@ -56,12 +59,18 @@ def _reset_for_tests() -> None:
     """
     global _cached_pending_arcs, _cached_detecting_nodes, _arcs_last_ts
     global _cached_gt_snapshot, _cached_gt_meta, _gt_last_ts
+    global _mn_entry_fail_logged_at, _mn_entry_fail_count
     _cached_pending_arcs = []
     _cached_detecting_nodes = {}
     _arcs_last_ts = 0.0
     _cached_gt_snapshot = {}
     _cached_gt_meta = {}
     _gt_last_ts = 0.0
+    # Same reason as the wall-clock caches above: the log throttle is
+    # monotonic-time state, so one test's skipped entry would otherwise
+    # silence the next test's.
+    _mn_entry_fail_logged_at = 0.0
+    _mn_entry_fail_count = 0
 
 
 _MN_ADSB_PREFIX = "mn-adsb-"
@@ -175,6 +184,71 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
             del entry["gs"]
             del entry["track"]
     return entry
+
+
+# One multinode entry failing is a bug worth a log line, but the feed builds
+# at 1 Hz over ~40 live keys, so an unguarded logger would turn one sick
+# aircraft into thousands of identical lines an hour and bury everything else.
+# Same shape of throttle detection_mirror.py uses for its dropped-frame line.
+_MN_ENTRY_FAIL_LOG_INTERVAL_S = 60.0
+_mn_entry_fail_logged_at = 0.0
+_mn_entry_fail_count = 0
+
+
+def _note_multinode_entry_failure(key: str) -> None:
+    """Count a skipped multinode entry, logging at most once a minute."""
+    global _mn_entry_fail_logged_at, _mn_entry_fail_count
+    _mn_entry_fail_count += 1
+    now = time.monotonic()
+    if now - _mn_entry_fail_logged_at < _MN_ENTRY_FAIL_LOG_INTERVAL_S:
+        return
+    _mn_entry_fail_logged_at = now
+    logging.exception(
+        "Multinode feed entry failed for key=%s, skipping it (%d total since boot)",
+        key,
+        _mn_entry_fail_count,
+    )
+
+
+def _multinode_entry(key: str, r: dict, now: float) -> dict:
+    """One multinode solve as a feed entry, dead-reckoned to ``now``.
+
+    Split out of build_combined_aircraft_json so the whole per-entry
+    computation — multinode_to_aircraft, the learned-velocity lookup, the
+    dead-reckon — sits behind one try/except there.  Inline, an exception
+    from any of them took the entire flush with it.
+    """
+    ac = multinode_to_aircraft(key, r)
+    # Dead-reckon position using solver velocity (vel_east/vel_north in
+    # m/s), capped at MN_DR_CAP_S: beyond that a velocity error dominates
+    # any solve accuracy, so an old solve holds its last dead-reckoned
+    # point until the entry expiry rather than drifting further.
+    ts_fix = r.get("timestamp_ms", 0) / 1000.0
+    elapsed = min(now - ts_fix, MN_DR_CAP_S)
+    vel_east_m_s = r.get("vel_east", 0.0)
+    vel_north_m_s = r.get("vel_north", 0.0)
+    # TRACK_DR_SOURCE, read per call like TRACK_SMOOTHER: "kf" (default)
+    # dead-reckons with the display filter's LEARNED velocity when one
+    # exists — the solved velocity this block used to trust was measured
+    # (2026-08-09, n=93) at median 127 m/s vector error, i.e. ~3.8 km of
+    # drift at the 30 s cap below, worse than the solve error itself.
+    # "solve" restores the old behaviour (rollback, env only).  The KF
+    # accessor returns None whenever the KF never saw this key (smoother
+    # in ewma/off mode, first solve, TTL-swept) so the fallback below is
+    # also the natural off-path, not a separate mode.
+    if (os.getenv("TRACK_DR_SOURCE", "kf") or "kf").strip().lower() != "solve":
+        _lv = track_filter.learned_velocity(key)
+        if _lv is not None:
+            vel_east_m_s, vel_north_m_s = _lv[0], _lv[1]
+    if elapsed > 0.0 and (vel_east_m_s != 0.0 or vel_north_m_s != 0.0):
+        _dr_lat, _dr_lon = offset_latlon_m(
+            ac["lat"],
+            ac["lon"],
+            east_m=vel_east_m_s * elapsed,
+            north_m=vel_north_m_s * elapsed,
+        )
+        ac["lat"], ac["lon"] = round(_dr_lat, 5), round(_dr_lon, 5)
+    return ac
 
 
 def _claimed_single_node_entries(now: float) -> list[dict]:
@@ -340,54 +414,54 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
 
     # 3. Multi-node solver
     stale_mn = []
-    for key, r in list(state.multinode_tracks.items()):
+    # Snapshot and evict under the solver's track lock: the solver worker
+    # iterates state.multinode_tracks inside multinode_key_decision while
+    # holding it, and a pop from this thread mid-iteration raised
+    # "dictionary changed size during iteration" live (2026-09-05).  Lazy
+    # import: solver.py owns the lock and importing it at module level here
+    # would create a cycle through the task modules.
+    from services.tasks import solver as _solver_mod
+
+    with _solver_mod._MN_TRACKS_LOCK:
+        _mn_snapshot = list(state.multinode_tracks.items())
+    for key, r in _mn_snapshot:
         age_s = now - r.get("timestamp_ms", 0) / 1000
-        if age_s > 60:
+        # Lane-aware expiry, on the same key-prefix truth multinode_to_aircraft
+        # reads adsb_assisted off.  An assisted entry is anchored to a
+        # transponder hex, so a long gap is the ADS-B feed breathing and the
+        # historic 60 s still fits it.  A dark entry has nothing holding it in
+        # place: at the current 1–3 s dark solve cadence a 30 s gap is a lost
+        # track, and the 30–60 s band measured 3.99 km median error (32% over
+        # 5 km) — a confident icon kilometres from any aircraft.
+        _expiry_s = 60.0 if key.startswith(_MN_ADSB_PREFIX) else MN_DARK_EXPIRY_S
+        if age_s > _expiry_s:
             stale_mn.append(key)
             continue
         # Display gates below are NOT staleness — a gated entry stays in
         # state.multinode_tracks so the next solve can confirm it (n=2) or
-        # supersede it, and only the age_s > 60 branch above discards its
+        # supersede it, and only the expiry branch above discards its
         # anomaly hex.  A one-shot solve renders nothing at all: a 2-node
         # track needs a second solve to prove it isn't a mirror-point ghost,
         # and a 3+-node one-shot gets a short preview window instead of the
-        # full 60 s entry lifetime before it either confirms or expires.
+        # full entry lifetime before it either confirms or expires.
         solve_count = int(r.get("solve_count") or 1)
         if r.get("n_nodes") == 2 and solve_count < MN_N2_MIN_SOLVES:
             continue
         if r.get("n_nodes", 0) >= 3 and solve_count == 1 and age_s > MN_ONESHOT_TTL_S:
             continue
-        ac = multinode_to_aircraft(key, r)
-        # Dead-reckon position using solver velocity (vel_east/vel_north in
-        # m/s), capped at 30 s: beyond that a velocity error dominates any
-        # solve accuracy (a 15 m/s error is already 450 m of drift at the
-        # cap), so an old solve holds its last dead-reckoned point until the
-        # 60 s entry expiry rather than drifting further.
-        ts_fix = r.get("timestamp_ms", 0) / 1000.0
-        elapsed = min(now - ts_fix, 30.0)
-        vel_east_m_s = r.get("vel_east", 0.0)
-        vel_north_m_s = r.get("vel_north", 0.0)
-        # TRACK_DR_SOURCE, read per call like TRACK_SMOOTHER: "kf" (default)
-        # dead-reckons with the display filter's LEARNED velocity when one
-        # exists — the solved velocity this block used to trust was measured
-        # (2026-08-09, n=93) at median 127 m/s vector error, i.e. ~3.8 km of
-        # drift at the 30 s cap below, worse than the solve error itself.
-        # "solve" restores the old behaviour (rollback, env only).  The KF
-        # accessor returns None whenever the KF never saw this key (smoother
-        # in ewma/off mode, first solve, TTL-swept) so the fallback below is
-        # also the natural off-path, not a separate mode.
-        if (os.getenv("TRACK_DR_SOURCE", "kf") or "kf").strip().lower() != "solve":
-            _lv = track_filter.learned_velocity(key)
-            if _lv is not None:
-                vel_east_m_s, vel_north_m_s = _lv[0], _lv[1]
-        if elapsed > 0.0 and (vel_east_m_s != 0.0 or vel_north_m_s != 0.0):
-            _dr_lat, _dr_lon = offset_latlon_m(
-                ac["lat"],
-                ac["lon"],
-                east_m=vel_east_m_s * elapsed,
-                north_m=vel_north_m_s * elapsed,
-            )
-            ac["lat"], ac["lon"] = round(_dr_lat, 5), round(_dr_lon, 5)
+        # One sick solve must not cost the whole broadcast.  Everything from
+        # here to the append reads a single multinode entry, and an exception
+        # anywhere in it used to propagate out of the flush task ("Aircraft
+        # flush failed") and drop the ENTIRE tick's feed — every other
+        # aircraft with it — for one bad key.  A skipped entry ages out of
+        # state.multinode_tracks on its own within 60 s, so degrading to
+        # "this one aircraft is missing for a few ticks" is strictly better
+        # than an empty map.
+        try:
+            ac = _multinode_entry(key, r, now)
+        except Exception:
+            _note_multinode_entry_failure(key)
+            continue
         if ac["hex"] not in seen_hex:
             seen_hex.add(ac["hex"])
             append_track_history(ac["hex"], ac["lat"], ac["lon"], ac["alt_baro"], now)
@@ -410,7 +484,8 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
         # without bound — enough to trip the anomaly_flood health check.
         with state.anomaly_lock:
             state.anomaly_hexes.discard(multinode_hex_from_key(k))
-        state.multinode_tracks.pop(k, None)
+        with _solver_mod._MN_TRACKS_LOCK:
+            state.multinode_tracks.pop(k, None)
 
     # 3b. Singly-claimed ADS-B targets — no seen_hex guard on purpose.  A
     # partially-claimed aircraft can still carry a tracker track keyed by the
