@@ -332,13 +332,16 @@ def _refresh_analytics_and_nodes():
     # public_summaries drops it before public_node_summaries rewrites what is
     # left.  Two separate promises, applied in the order they compose — there
     # is nothing to translate for a node that is not being published.
-    public_nodes = public_node_summaries(public_summaries(state.node_analytics.get_all_summaries()))
     # The handle the map is allowed to print.  Added once, before the real-only
     # split, so both variants carry it: a node id names a machine its owner
     # chose the name of, and every surface that shows a node has to have
-    # something else to show.  See services/node_ref.py.
-    for nid, summary in public_nodes.items():
-        summary["node_ref"] = public_node_ref(nid)
+    # something else to show.  See services/node_ref.py.  New dicts, not an
+    # in-place key: with the fuzz off, public_node_summaries hands back the
+    # manager's own cached summaries, and those are not ours to grow.
+    public_nodes = {
+        nid: {**summary, "node_ref": public_node_ref(nid)}
+        for nid, summary in public_node_summaries(public_summaries(state.node_analytics.get_all_summaries())).items()
+    }
     analytics_data = {
         "nodes": public_nodes,
         "cross_node": public_cross_node(state.node_analytics.get_cross_node_analysis()),
