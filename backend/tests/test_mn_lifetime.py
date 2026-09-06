@@ -2,8 +2,8 @@
 
 Two problems in how state.multinode_tracks renders as mn-* aircraft:
 
-- a track solved exactly once dead-reckons for the full 60 s entry lifetime
-  (30 s DR cap) even though nothing has confirmed it is a real aircraft and
+- a track solved exactly once dead-reckons for the full entry lifetime
+  (MN_DR_CAP_S DR cap) even though nothing has confirmed it is a real aircraft and
   not a mirror-point/wrong-frame ghost.  solver.py now stamps a solve_count
   onto every published entry, and aircraft_feed.py withholds rendering until
   a 2-node track has MN_N2_MIN_SOLVES solves, and caps an n>=3 one-shot's
@@ -425,14 +425,18 @@ class TestFeedGates:
         assert len(self._mn_aircraft()) == 1
 
     def test_n3_one_shot_past_ttl_is_not_rendered_but_not_expired(self):
-        # Past MN_ONESHOT_TTL_S (15 s) but well inside the 60 s entry expiry,
-        # so this exercises the display gate and not staleness.
+        # Past MN_ONESHOT_TTL_S (15 s) but inside the dark lane's
+        # MN_DARK_EXPIRY_S (30 s), so this exercises the display gate and not
+        # staleness.
         state.multinode_tracks["k"] = _mn_entry(n_nodes=3, age_s=20.0, solve_count=1)
         assert self._mn_aircraft() == []
         assert "k" in state.multinode_tracks
 
     def test_n3_confirmed_old_entry_is_rendered(self):
-        state.multinode_tracks["k"] = _mn_entry(n_nodes=3, age_s=40.0, solve_count=2)
+        # 25 s: old enough to be past every display gate, young enough to sit
+        # inside the dark lane's MN_DARK_EXPIRY_S — the key here is bare "k",
+        # which is not mn-adsb-* and so expires on the dark budget.
+        state.multinode_tracks["k"] = _mn_entry(n_nodes=3, age_s=25.0, solve_count=2)
         assert len(self._mn_aircraft()) == 1
 
     def test_n2_gate_disabled_via_min_solves_1(self, monkeypatch):

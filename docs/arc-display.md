@@ -90,9 +90,9 @@ Geometry is frozen at creation; only style refreshes. Opacity fades linearly
 over `ARC_FADE_MS` (5 s), after which the buffer entry is pruned.
 
 Arc-only tracks dead-reckon their reference position for at most
-`ARC_DR_MAX_S` (10 s, vs 60 s for solved tracks) — the backend pins their
-position to the arc midpoint, so a long glide walks the reference off the
-measured locus.
+`ARC_DR_MAX_S` (10 s, vs `MN_DR_CAP_S` 15 s for solved tracks) — the backend
+pins their position to the arc midpoint, so a long glide walks the reference
+off the measured locus.
 
 Selecting an arc track (from the list panel or by clicking the arc) highlights
 its arcs in amber, draws the detecting node's beam wedge, and centers the map

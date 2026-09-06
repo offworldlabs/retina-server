@@ -6,15 +6,19 @@ archive buffering, get_or_create_node_pipeline.
 
 import queue
 import time
+import types
 
 import pytest
+from retina_tracker.track import TrackState
 
 from config.constants import GT_DISPLAY_STALE_S
 from core import state
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
+from services import frame_processor
 from services.frame_processor import (
     append_track_history,
     build_combined_aircraft_json,
+    confirmed_track_views,
     dedup_aircraft,
     flush_all_archive_buffers,
     get_node_configs,
@@ -275,6 +279,95 @@ class TestProcessOneFrame:
 
 
 # ── Multinode result conversion ──────────────────────────────────────────────
+
+
+class TestConfirmedTrackViewsStaleness:
+    """TRACK_MAX_STALE_S: a coasting track stops being offered to association
+    once its newest REAL detection has aged out.
+
+    The freshness signal is the newest entry get_recent_detections returns,
+    which by construction is an ASSOCIATED sample (mark_missed appends None to
+    history["measurements"] and the reverse scan skips those) — so these fakes
+    hand back only real detections, exactly as the tracker does, and the coast
+    is expressed as a gap between that newest sample and the frame time.
+    """
+
+    @staticmethod
+    def _track(newest_ts_ms: int, status=TrackState.COASTING, track_id="trk-stale"):
+        hist = [
+            {"timestamp": newest_ts_ms - 1000, "delay": 40.0, "doppler": 5.0, "snr": 12.0, "adsb": None},
+            {"timestamp": newest_ts_ms, "delay": 41.0, "doppler": 5.0, "snr": 12.0, "adsb": None},
+        ]
+        return types.SimpleNamespace(
+            id=track_id,
+            state_status=status,
+            adsb_hex=None,
+            get_recent_detections=lambda n: hist[-n:],
+        )
+
+    def _tracker(self, *tracks):
+        return types.SimpleNamespace(tracks=list(tracks))
+
+    def test_five_second_old_coasting_track_is_excluded_at_three(self, monkeypatch):
+        monkeypatch.setattr(frame_processor, "TRACK_MAX_STALE_S", 3.0)
+        state.tracks_stale_skipped = 0
+        now_ms = 1_000_000
+        tracker = self._tracker(self._track(now_ms - 5000))
+        assert confirmed_track_views(tracker, now_ts_ms=now_ms) == []
+        assert state.tracks_stale_skipped == 1
+
+    def test_same_track_is_included_at_ten(self, monkeypatch):
+        monkeypatch.setattr(frame_processor, "TRACK_MAX_STALE_S", 10.0)
+        state.tracks_stale_skipped = 0
+        now_ms = 1_000_000
+        tracker = self._tracker(self._track(now_ms - 5000))
+        views = confirmed_track_views(tracker, now_ts_ms=now_ms)
+        assert [v["track_id"] for v in views] == ["trk-stale"]
+        assert state.tracks_stale_skipped == 0
+
+    def test_zero_disables_the_filter(self, monkeypatch):
+        monkeypatch.setattr(frame_processor, "TRACK_MAX_STALE_S", 0.0)
+        state.tracks_stale_skipped = 0
+        now_ms = 1_000_000
+        tracker = self._tracker(self._track(now_ms - 600_000))
+        assert len(confirmed_track_views(tracker, now_ts_ms=now_ms)) == 1
+        assert state.tracks_stale_skipped == 0
+
+    def test_no_frame_time_disables_the_filter(self, monkeypatch):
+        """The bench and the ADS-B-seeding tests call without a frame time;
+        wall clock is not a substitute, so those callers stay unfiltered."""
+        monkeypatch.setattr(frame_processor, "TRACK_MAX_STALE_S", 3.0)
+        state.tracks_stale_skipped = 0
+        tracker = self._tracker(self._track(0))
+        assert len(confirmed_track_views(tracker)) == 1
+        assert state.tracks_stale_skipped == 0
+
+    def test_fresh_track_survives_beside_a_stale_one(self, monkeypatch):
+        """Staleness is per track, not per tracker — the node keeps
+        contributing whatever it can still actually see."""
+        monkeypatch.setattr(frame_processor, "TRACK_MAX_STALE_S", 3.0)
+        state.tracks_stale_skipped = 0
+        now_ms = 1_000_000
+        tracker = self._tracker(
+            self._track(now_ms - 5000, track_id="gone"),
+            self._track(now_ms - 500, track_id="here"),
+        )
+        views = confirmed_track_views(tracker, now_ts_ms=now_ms)
+        assert [v["track_id"] for v in views] == ["here"]
+        assert state.tracks_stale_skipped == 1
+
+    def test_tentative_is_still_excluded_regardless_of_freshness(self, monkeypatch):
+        """The TENTATIVE filter is unchanged and independent: a brand-new
+        TENTATIVE track's newest detection is as fresh as it gets, and it must
+        still not reach association."""
+        monkeypatch.setattr(frame_processor, "TRACK_MAX_STALE_S", 3.0)
+        state.tracks_stale_skipped = 0
+        now_ms = 1_000_000
+        tracker = self._tracker(self._track(now_ms, status=TrackState.TENTATIVE))
+        assert confirmed_track_views(tracker, now_ts_ms=now_ms) == []
+        # Skipped as TENTATIVE, not as stale — the counter must stay clean so
+        # it only ever means "an aircraft left this node's cone".
+        assert state.tracks_stale_skipped == 0
 
 
 class TestMultinodeToAircraft:
