@@ -24,6 +24,7 @@ from core import state
 from services.geo import bearing_deg, bistatic_delay_us, haversine_km, node_beam_params, point_in_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
+from services.node_ref import public_node_ref
 from services.node_sites import log_colocation_audit
 from services.public_location import (
     fuzz_enabled,
@@ -331,8 +332,15 @@ def _refresh_analytics_and_nodes():
     # public_summaries drops it before public_node_summaries rewrites what is
     # left.  Two separate promises, applied in the order they compose — there
     # is nothing to translate for a node that is not being published.
+    public_nodes = public_node_summaries(public_summaries(state.node_analytics.get_all_summaries()))
+    # The handle the map is allowed to print.  Added once, before the real-only
+    # split, so both variants carry it: a node id names a machine its owner
+    # chose the name of, and every surface that shows a node has to have
+    # something else to show.  See services/node_ref.py.
+    for nid, summary in public_nodes.items():
+        summary["node_ref"] = public_node_ref(nid)
     analytics_data = {
-        "nodes": public_node_summaries(public_summaries(state.node_analytics.get_all_summaries())),
+        "nodes": public_nodes,
         "cross_node": public_cross_node(state.node_analytics.get_cross_node_analysis()),
     }
     state.latest_analytics_bytes = orjson.dumps(analytics_data, option=orjson.OPT_SERIALIZE_NUMPY)
@@ -369,6 +377,7 @@ def _refresh_analytics_and_nodes():
         "nodes": {
             nid: {
                 "status": info.get("status"),
+                "node_ref": public_node_ref(nid),
                 "name": info.get("config", {}).get("name", nid),
                 "config_hash": info.get("config_hash"),
                 "last_heartbeat": info.get("last_heartbeat"),
