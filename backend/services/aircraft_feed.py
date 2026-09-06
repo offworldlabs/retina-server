@@ -17,6 +17,8 @@ from config.constants import (
     ARC_REFRESH_S,
     CLAIMED_DISPLAY_FRESH_S,
     GT_REFRESH_S,
+    MN_DARK_EXPIRY_S,
+    MN_DR_CAP_S,
     MN_N2_MIN_SOLVES,
     MN_ONESHOT_TTL_S,
     STALE_TRACK_S,
@@ -342,16 +344,24 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     stale_mn = []
     for key, r in list(state.multinode_tracks.items()):
         age_s = now - r.get("timestamp_ms", 0) / 1000
-        if age_s > 60:
+        # Lane-aware expiry, on the same key-prefix truth multinode_to_aircraft
+        # reads adsb_assisted off.  An assisted entry is anchored to a
+        # transponder hex, so a long gap is the ADS-B feed breathing and the
+        # historic 60 s still fits it.  A dark entry has nothing holding it in
+        # place: at the current 1–3 s dark solve cadence a 30 s gap is a lost
+        # track, and the 30–60 s band measured 3.99 km median error (32% over
+        # 5 km) — a confident icon kilometres from any aircraft.
+        _expiry_s = 60.0 if key.startswith(_MN_ADSB_PREFIX) else MN_DARK_EXPIRY_S
+        if age_s > _expiry_s:
             stale_mn.append(key)
             continue
         # Display gates below are NOT staleness — a gated entry stays in
         # state.multinode_tracks so the next solve can confirm it (n=2) or
-        # supersede it, and only the age_s > 60 branch above discards its
+        # supersede it, and only the expiry branch above discards its
         # anomaly hex.  A one-shot solve renders nothing at all: a 2-node
         # track needs a second solve to prove it isn't a mirror-point ghost,
         # and a 3+-node one-shot gets a short preview window instead of the
-        # full 60 s entry lifetime before it either confirms or expires.
+        # full entry lifetime before it either confirms or expires.
         solve_count = int(r.get("solve_count") or 1)
         if r.get("n_nodes") == 2 and solve_count < MN_N2_MIN_SOLVES:
             continue
@@ -359,19 +369,18 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             continue
         ac = multinode_to_aircraft(key, r)
         # Dead-reckon position using solver velocity (vel_east/vel_north in
-        # m/s), capped at 30 s: beyond that a velocity error dominates any
-        # solve accuracy (a 15 m/s error is already 450 m of drift at the
-        # cap), so an old solve holds its last dead-reckoned point until the
-        # 60 s entry expiry rather than drifting further.
+        # m/s), capped at MN_DR_CAP_S: beyond that a velocity error dominates
+        # any solve accuracy, so an old solve holds its last dead-reckoned
+        # point until the entry expiry above rather than drifting further.
         ts_fix = r.get("timestamp_ms", 0) / 1000.0
-        elapsed = min(now - ts_fix, 30.0)
+        elapsed = min(now - ts_fix, MN_DR_CAP_S)
         vel_east_m_s = r.get("vel_east", 0.0)
         vel_north_m_s = r.get("vel_north", 0.0)
         # TRACK_DR_SOURCE, read per call like TRACK_SMOOTHER: "kf" (default)
         # dead-reckons with the display filter's LEARNED velocity when one
         # exists — the solved velocity this block used to trust was measured
-        # (2026-08-09, n=93) at median 127 m/s vector error, i.e. ~3.8 km of
-        # drift at the 30 s cap below, worse than the solve error itself.
+        # (2026-08-09, n=93) at median 127 m/s vector error, i.e. ~1.9 km of
+        # drift at the MN_DR_CAP_S cap, worse than the solve error itself.
         # "solve" restores the old behaviour (rollback, env only).  The KF
         # accessor returns None whenever the KF never saw this key (smoother
         # in ewma/off mode, first solve, TTL-swept) so the fallback below is
