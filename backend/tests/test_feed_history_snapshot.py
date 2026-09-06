@@ -19,8 +19,9 @@ from collections import deque
 os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
-from core import state  # noqa: E402
 from retina_tracker.track import TrackState  # noqa: E402
+
+from core import state  # noqa: E402
 from services import aircraft_feed  # noqa: E402
 from services.frame_processor import build_combined_aircraft_json  # noqa: E402
 
