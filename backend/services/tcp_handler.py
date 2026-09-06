@@ -529,6 +529,12 @@ def _enqueue_detection(msg: dict, node_id: str | None):
     if node_id:
         last = _per_node_last_enqueue.get(node_id, 0.0)
         if (now_m - last) < _NODE_MIN_INTERVAL_S:
+            # Counted, not silent: this is the only place a node's detections
+            # are discarded on purpose, and until now nothing said how many.
+            # state.frames_dropped is the queue-saturation counter and reads
+            # zero throughout, so "the tracker sees every frame this node
+            # sent" looked true from every published metric.
+            state.bump_counter("node_frames_rate_limited")
             return  # position already updated; skip expensive queue work
         _per_node_last_enqueue[node_id] = now_m
 

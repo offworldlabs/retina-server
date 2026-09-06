@@ -210,10 +210,17 @@ def _build_dashboard_data() -> bytes:
                 # not the queue size.
                 "stale_drops": state.solver_stale_drops,
                 # Duplicate candidates for an aircraft already solved this
-                # window (see solver.py's _claim_resolve_slot).  Read it
+                # window (see solver.py's _resolve_slot_covered).  Read it
                 # against stale_drops: skips are work correctly not done,
                 # stale drops are work lost.
                 "resolve_skips": state.solver_resolve_skips,
+                # Confirmed tracks withheld from association because their
+                # newest real detection had aged past TRACK_MAX_STALE_S, and
+                # solver inputs the epoch alignment could not correct because a
+                # measurement carried no sample time (see frame_processor's
+                # confirmed_track_views and solver's align_measurement_epochs).
+                "tracks_stale_skipped": state.tracks_stale_skipped,
+                "epoch_align_skipped": state.solver_epoch_align_skipped,
                 # Multinode entries replaced because a later solve consumed
                 # the same source tracks under a new key (fragmented re-solve).
                 "mn_superseded": state.mn_superseded,
@@ -734,7 +741,8 @@ def _window_effective_minutes(records: list[dict], minutes: float) -> float:
 
 
 def _record_lane(rec: dict) -> str:
-    """Which solver lane produced one history record: "known", "dark" or "adsb".
+    """Which solver lane produced one history record: "known", "dark_follow",
+    "dark" or "adsb".
 
     ``known_lane`` is stamped by known_lane._attempt via ``extra``.  For the
     regular pipeline the authority is the minted track key (mn-dark-* vs
@@ -742,9 +750,16 @@ def _record_lane(rec: dict) -> str:
     key exists, so it falls back to the same predicate that key decision uses
     — whether the solver input carried a transponder-shaped identity, which is
     also what picked its displacement cap.
+
+    ``lane`` is checked before the key, because a dark-follow record
+    (services/dark_follow.py) is keyed mn-dark-* by design — it is the same
+    aircraft the dark lane tracks, reached top-down — and would otherwise land
+    in the bottom-up funnel whose attempts and rejects it is not one of.
     """
     if rec.get("known_lane"):
         return "known"
+    if rec.get("lane") == "dark_follow":
+        return "dark_follow"
     key = rec.get("solve_key")
     if key:
         return "dark" if key.startswith("mn-dark-") else "adsb"
@@ -752,11 +767,40 @@ def _record_lane(rec: dict) -> str:
     return "adsb" if hexn and is_transponder_hex(hexn) else "dark"
 
 
+_LANES = ("dark", "known", "adsb", "dark_follow")
+
+
+def _cap_per_lane(records: list[dict], limit: int) -> list[dict]:
+    """Keep the ``limit`` newest records OF EACH LANE, newest first.
+
+    ``records`` must already be newest-first.  A single flat ``[:limit]``
+    made the cap a race between lanes rather than a retention rule, exactly
+    as the shared deque did before PR #289 split it: the known lane writes
+    ~16x the dark lane's volume, so a flat 1 000-record answer to a 30 min
+    request held only the newest ~6 min of dark records and the rest of the
+    window read as a quiet period.  Capping per lane means known-lane volume
+    can never evict a dark record from a response.
+    """
+    kept: list[dict] = []
+    counts: dict[str, int] = {}
+    for r in records:
+        lane = _record_lane(r)
+        n = counts.get(lane, 0)
+        if n >= limit:
+            continue
+        counts[lane] = n + 1
+        kept.append(r)
+    return kept
+
+
 @router.get("/api/test/mlat-history")
 async def mlat_history(
     hex: str | None = None,
     all: int = 0,
     minutes: float = 30.0,
+    lane: str = "all",
+    limit: int = 1000,
+    kind: str = "solves",
 ):
     """Per-solve MLAT history from the last ~30 minutes.
 
@@ -770,22 +814,73 @@ async def mlat_history(
     merged here, so both lanes answer either query exactly as they did when
     they shared a deque.
 
+    ``?lane=dark|known|adsb`` narrows the answer to one lane (default
+    ``all``, classified by ``_record_lane``); ``?limit=`` caps the record
+    list (default 1 000, max 5 000) and is applied PER LANE, so a known-lane
+    burst can never push dark records out of an ``all`` response — see
+    _cap_per_lane.
+
+    ``?kind=resolve_skips`` dumps a different store entirely: the solver's
+    recent resolve-slot refusals (state.solver_resolve_skips_recent), each
+    with the claims that blocked it.  Those are not solve outcomes and
+    deliberately do not live in the solve-history deques.
+
     ``window_effective_minutes`` is how much of the requested window the
     stores actually hold — below ``window_minutes`` the answer is truncated.
     """
+    if lane not in ("all", *_LANES):
+        return Response(
+            content=orjson.dumps({"error": f"lane must be one of all,{','.join(_LANES)}"}),
+            media_type="application/json",
+            status_code=400,
+        )
+    if kind not in ("solves", "resolve_skips"):
+        return Response(
+            content=orjson.dumps({"error": "kind must be solves or resolve_skips"}),
+            media_type="application/json",
+            status_code=400,
+        )
     minutes = max(0.0, min(minutes, 35.0))
+    limit = max(1, min(int(limit), 5000))
     cutoff_ms = int((time.time() - minutes * 60.0) * 1000)
+
+    if kind == "resolve_skips":
+        skips = [
+            s
+            for s in list(state.solver_resolve_skips_recent)
+            if s["ts_ms"] >= cutoff_ms and (lane == "all" or s["lane"] == lane)
+        ]
+        skips.reverse()  # newest first
+        payload = {
+            "kind": "resolve_skips",
+            "window_minutes": minutes,
+            "lane": lane,
+            "lane_counts": {ln: sum(1 for s in skips if s["lane"] == ln) for ln in _LANES},
+            "n_records": len(skips),
+            "records": skips[:limit],
+        }
+        return Response(content=orjson.dumps(payload), media_type="application/json")
+
     merged = _merged_solve_history()
     effective_minutes = _window_effective_minutes(merged, minutes)
     records = [r for r in merged if r["ts_ms"] >= cutoff_ms]
     records.reverse()  # newest first
+    if lane != "all":
+        records = [r for r in records if _record_lane(r) == lane]
+    lane_counts = dict.fromkeys(_LANES, 0)
+    for r in records:
+        lane_counts[_record_lane(r)] += 1
 
     if all:
         payload = {
             "window_minutes": minutes,
             "window_effective_minutes": effective_minutes,
+            "lane": lane,
+            # Pre-cap, so a truncated `records` can be read against what the
+            # window actually held.
+            "lane_counts": lane_counts,
             "n_records": len(records),
-            "records": records[:1000],
+            "records": _cap_per_lane(records, limit),
         }
         return Response(content=orjson.dumps(payload), media_type="application/json")
 
@@ -813,6 +908,8 @@ async def mlat_history(
         "hex": norm,
         "window_minutes": minutes,
         "window_effective_minutes": effective_minutes,
+        "lane": lane,
+        "lane_counts": lane_counts,
         "n_solves": len(solves),
         "solves": solves[:500],
         "rejects_nearby": {
@@ -882,7 +979,7 @@ def _solver_window_stats(minutes: float) -> dict:
     effective_minutes = _window_effective_minutes(merged, minutes)
     all_records = [r for r in merged if r["ts_ms"] >= cutoff_ms]
 
-    lane_split = {"dark": 0, "adsb": 0, "known": 0}
+    lane_split = {"dark": 0, "adsb": 0, "known": 0, "dark_follow": 0}
     records: list[dict] = []
     known_records: list[dict] = []
     for r in all_records:
@@ -913,6 +1010,46 @@ def _solver_window_stats(minutes: float) -> dict:
             reject_total += 1
             reason = outcome[len("rejected_") :] if outcome.startswith("rejected_") else outcome
             by_reason[reason] = by_reason.get(reason, 0) + 1
+
+    # ── cluster contamination (dark, windowed) ──────────────────────────────
+    # Of the dark records this window that matched ground truth, how many
+    # carried a node that could not see the aircraft they were matched to —
+    # the live version of the offline number Phase 2 exists to move (~60 %).
+    # Records without the stamp are records nothing could be asked about (no
+    # GT match, or no registered geometry for any contributing node) and stay
+    # out of the denominator rather than counting as clean; see
+    # solver._stamp_foreign_nodes.
+    judged = [r for r in records if r.get("foreign_node_ids") is not None]
+    contaminated = [r for r in judged if r.get("contaminated")]
+    n_judged = len(judged)
+    contamination = {
+        "records_with_gt": n_judged,
+        "contaminated": len(contaminated),
+        "pct": round(100.0 * len(contaminated) / n_judged, 1) if n_judged else None,
+        "foreign_nodes_per_record": (
+            round(sum(len(r["foreign_node_ids"]) for r in judged) / n_judged, 2) if n_judged else None
+        ),
+    }
+
+    # ── resolve-slot skips (windowed, from the skip deque) ──────────────────
+    # The counter in "counters" below is since-boot; these are the skips that
+    # happened inside this window, so they can be read against the attempts in
+    # the same window.  attempts_ratio is (all-lane skips / DARK attempts) —
+    # the shape the acceptance target for the claim-on-publish fix is quoted
+    # in (live baseline ~1 537 / 646 = 2.4), not a per-lane rate.  The dark
+    # numerator is published beside it for anyone who wants one.
+    all_skips = list(state.solver_resolve_skips_recent)
+    skips = [s for s in all_skips if s["ts_ms"] >= cutoff_ms]
+    resolve_skips = {
+        "total": len(skips),
+        "dark": sum(1 for s in skips if s["lane"] == "dark"),
+        "attempts_ratio": round(len(skips) / attempts, 3) if attempts else None,
+        # The skip deque is 500 entries against a live rate of ~50/min, so a
+        # long window IS truncated here even when the solve-history stores
+        # cover it.  Same honesty rule as window_effective_minutes above: read
+        # it before reading total as a window count.
+        "window_effective_minutes": _window_effective_minutes(all_skips, minutes),
+    }
 
     pos_errors.sort()
     n_err = len(pos_errors)
@@ -1066,6 +1203,9 @@ def _solver_window_stats(minutes: float) -> dict:
         "published": {"total": n2 + n3plus, "n2": n2, "n3plus": n3plus},
         "rejects": {"total": reject_total, "by_reason": by_reason},
         "position_error_km": {"median": median_err, "p90": p90_err, "n": n_err},
+        # Both windowed and both DARK-lane, like the funnel above them.
+        "contamination": contamination,
+        "resolve_skips": resolve_skips,
         "ghosts": {
             # Scoped to dark tracks: precision_pct's denominator is
             # dark_tracks, and it is None (not 100.0) when there are none.
@@ -1192,9 +1332,35 @@ def _solver_window_stats(minutes: float) -> dict:
             "solver_trimmed": state.solver_trimmed,
             "stale_drops": state.solver_stale_drops,
             "resolve_skips": state.solver_resolve_skips,
+            "tracks_stale_skipped": state.tracks_stale_skipped,
+            "epoch_align_skipped": state.solver_epoch_align_skipped,
+            # Dark share of the line above.  The windowed version, with the
+            # blocking claims, is the "resolve_skips" block further up.
+            "resolve_skips_dark": state.solver_resolve_skips_dark,
             "queue_drops": state.solver_queue_drops,
+            # Frames the per-node rate limiter refused before the tracker ever
+            # saw them (tcp_handler's NODE_FRAME_MIN_INTERVAL_S).  Not the
+            # same event as /api/admin/metrics' frames_dropped, which is
+            # frame_queue saturation and normally reads zero.
+            "node_frames_rate_limited": state.node_frames_rate_limited,
             "worker_errors": state.solver_worker_errors,
             "vel_untrusted_published": state.solver_vel_untrusted_published,
+            # Dark track following (services/dark_follow.py), since boot except
+            # targets, which is a live gauge of the current pseudo-state list.
+            # The funnel is targets -> claims -> inputs -> published; dropped is
+            # the ghost guard's tally of keys it stopped following.
+            "dark_follow_targets": state.dark_follow_targets,
+            "dark_follow_claims": state.dark_follow_claims,
+            "dark_follow_inputs": state.dark_follow_inputs,
+            "dark_follow_published": state.dark_follow_published,
+            "dark_follow_dropped": state.dark_follow_dropped,
+            # The other side of the lane: bottom-up dark solves refused at
+            # keying because the follow lane owns the key they landed on.  It
+            # belongs beside the funnel because it is the same trade — the
+            # lane keeps a key only if it also stops the bottom-up lane from
+            # corrupting it — and the matching per-solve records are the
+            # "shadowed_by_follow" entries in rejects.by_reason.
+            "dark_bottomup_shadowed": state.dark_bottomup_shadowed,
         },
     }
 
