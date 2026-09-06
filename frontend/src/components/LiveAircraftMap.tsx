@@ -2248,8 +2248,11 @@ export default function LiveAircraftMap() {
                  A track that has dead-reckoned past its lane's drift budget is handled by
                  drIconState: the assisted lane, which re-solves every ~3 s, loses its icon —
                  the drawn position is no longer evidence of where the aircraft is — while a
-                 DARK solve keeps a degraded "stale solve" icon, because 12 s between solves
-                 is its normal cadence and hiding it would claim the track was never solved.
+                 DARK solve keeps a degraded "stale solve" icon, because a missed solve is
+                 ordinary and hiding it would claim the track was never solved.  A dark solve
+                 that has gone DR_ICON_MAX_AGE_DARK_S = 12 s without re-solving loses its icon
+                 whatever its drift: past that age 15% of dark entries are more than 5 km from
+                 any aircraft, so the entry is a lost track rather than a stale solve.
                  A selected aircraft always keeps an icon (degraded if over budget), matching
                  the viewport cull's selected-hex bypass.  Either way the track stays tracked
                  everywhere else, so the next real solve restores the solid icon. */}

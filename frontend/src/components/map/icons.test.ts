@@ -13,6 +13,7 @@ import {
   ADSB_SINGLE_COLOR,
   DR_ICON_HIDE_DISTANCE_DARK_M,
   DR_ICON_HIDE_DISTANCE_M,
+  DR_ICON_MAX_AGE_DARK_S,
   DR_UNKNOWN_GS_KT,
 } from "./constants";
 
@@ -159,14 +160,18 @@ describe("drIconState", () => {
   const over = { gs: 450, seen: 40, _updatedAt: NOW };   // ~9.3 km of drift
   const darkOver = { ...over, position_source: "multinode_solve", adsb_assisted: false };
   const assistedOver = { ...over, position_source: "multinode_solve", adsb_assisted: true };
+  // Over the 3 km dark drift budget (700 kt ≈ 360 m/s, so ~4.0 km) but still
+  // inside the 12 s time budget — the one combination drawn in the stale style.
+  const darkDrifted = { ...darkOver, gs: 700, seen: 11 };
 
   it("draws an in-budget track normally", () => {
     expect(drIconState({ ...darkOver, seen: 1 }, NOW)).toBe("normal");
     expect(drIconState({ ...assistedOver, seen: 1 }, NOW)).toBe("normal");
   });
 
-  it("degrades rather than hides an over-budget dark solve", () => {
-    expect(drIconState(darkOver, NOW)).toBe("stale");
+  it("degrades rather than hides a drifted dark solve inside its time budget", () => {
+    expect(hideDrIcon(darkDrifted, NOW)).toBe(true);
+    expect(drIconState(darkDrifted, NOW)).toBe("stale");
   });
 
   it("hides an over-budget assisted solve — for that lane it is a real anomaly", () => {
@@ -179,6 +184,54 @@ describe("drIconState", () => {
     expect(drIconState({ ...over, position_source: "adsb_single_node" }, NOW, true)).toBe("stale");
     // Selection does not degrade a healthy icon.
     expect(drIconState({ ...assistedOver, seen: 1 }, NOW, true)).toBe("normal");
+  });
+});
+
+describe("dark solve time budget", () => {
+  const NOW = 1_000_000;
+  // 120 kt ≈ 62 m/s: even 20 s of dead reckoning is ~1.2 km, inside both drift
+  // budgets, so only the age rule can decide any of these.
+  const dark = (over: object = {}) =>
+    ({ position_source: "multinode_solve", adsb_assisted: false, gs: 120, seen: 0, _updatedAt: NOW, ...over });
+  const assisted = (over: object = {}) => dark({ adsb_assisted: true, ...over });
+
+  it("draws a dark solve normally right up to the budget", () => {
+    expect(DR_ICON_MAX_AGE_DARK_S).toBe(12);
+    expect(drIconState(dark({ seen: 11.9 }), NOW)).toBe("normal");
+  });
+
+  it("withdraws the icon past the budget however little the entry drifted", () => {
+    // Measured: past 12 s of solve age 15% of dark entries are more than 5 km
+    // from any aircraft.  Drift alone would have kept this one drawn.
+    expect(hideDrIcon(dark({ seen: 12.1 }), NOW)).toBe(false);
+    expect(drIconState(dark({ seen: 12.1 }), NOW)).toBe("hidden");
+  });
+
+  it("keeps a degraded icon for the selected aircraft past the budget", () => {
+    expect(drIconState(dark({ seen: 12.1 }), NOW, true)).toBe("stale");
+    expect(drIconState(dark({ seen: 300 }), NOW, true)).toBe("stale");
+  });
+
+  it("counts wall-clock time since ingest toward the solve age", () => {
+    // 8 s at flush plus a 5 s WS gap is 13 s — the same age the disc grows on.
+    const ac = dark({ seen: 8 });
+    expect(drIconState(ac, NOW)).toBe("normal");
+    expect(drIconState(ac, NOW + 5_000)).toBe("hidden");
+  });
+
+  it("brings the icon back when a new solve resets seen", () => {
+    // About half of the tracks that go quiet for 12 s re-solve later (median
+    // 16 s), and only the drawing was withdrawn, so they come straight back.
+    expect(drIconState(dark({ seen: 20 }), NOW)).toBe("hidden");
+    expect(drIconState(dark({ seen: 0.5 }), NOW)).toBe("normal");
+  });
+
+  it("leaves the other lanes on the drift rule alone", () => {
+    // An assisted solve is anchored to a transponder fix, not extrapolated:
+    // it keeps its icon at 20 s because 1.2 km is inside its 2 km budget.
+    expect(drIconState(assisted({ seen: 20 }), NOW)).toBe("normal");
+    expect(drIconState(assisted({ seen: 300 }), NOW)).toBe("hidden");   // drift, not age
+    expect(drIconState({ position_source: "adsb_single_node", gs: 120, seen: 20, _updatedAt: NOW }, NOW)).toBe("normal");
   });
 });
 

@@ -51,12 +51,13 @@ describe("solveSigmaM", () => {
   });
 
   it("stops growing at the dead-reckoning cap", () => {
-    // The cap tracks the backend's dark-lane entry expiry (MN_DARK_EXPIRY_S).
-    expect(UNCERTAINTY_DR_CAP_S).toBe(30);
+    // The cap is DR_ICON_MAX_AGE_DARK_S: past it a dark solve has no icon, and
+    // SolveUncertaintyLayer draws no disc without one.
+    expect(UNCERTAINTY_DR_CAP_S).toBe(12);
     const ac = mn({ pos_sigma_m: 200, pos_sigma_vel_ms: 25 });
     const atCap = solveSigmaM(ac, UNCERTAINTY_DR_CAP_S);
     expect(solveSigmaM(ac, 600)).toBe(atCap);
-    expect(atCap).toBeCloseTo(Math.sqrt(200 * 200 + 750 * 750), 6);
+    expect(atCap).toBeCloseTo(Math.sqrt(200 * 200 + 300 * 300), 6);
   });
 
   it("clamps a negative age to the solve epoch", () => {
@@ -109,6 +110,7 @@ describe("solveUncertaintyRadiusM", () => {
   });
 
   it("grows while dead-reckoning, then holds at the cap", () => {
+    // 10 s of ageing is inside the 12 s cap, so this one is still growing.
     const ac = mn({ pos_sigma_m: 200, pos_sigma_vel_ms: 25, _updatedAt: NOW - 10_000 });
     const fresh = solveUncertaintyRadiusM(mn({ pos_sigma_m: 200, pos_sigma_vel_ms: 25 }), NOW);
     const aged = solveUncertaintyRadiusM(ac, NOW);
