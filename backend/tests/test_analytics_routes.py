@@ -129,6 +129,18 @@ class TestAssociationStatus:
         assert "overlap_zones" in body
         assert "overlaps" in body
 
+    def test_status_reports_world_skipped_pairs(self, client):
+        """The world gate on overlap zones is otherwise invisible: a fleet
+        whose sim/real pairs are being refused looks exactly like a fleet whose
+        pairs never overlapped, and only this counter separates them."""
+        _a = state.node_associator
+        _a.assoc_world_skipped_pairs += 7
+        try:
+            body = client.get("/api/radar/association/status").json()
+            assert body["assoc_world_skipped_pairs"] == 7
+        finally:
+            state._reset_for_tests()
+
     def test_status_includes_claiming_block(self, client):
         """Top-down claiming (ASSOC_CLAIM_MODE) since boot — off by default
         in tests, so this pins the shape rather than any particular mode."""
