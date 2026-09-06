@@ -104,6 +104,28 @@ def _looks_like_same_aircraft(a: dict, b: dict) -> bool:
     return True
 
 
+def _dedup_quality_key(entry: dict) -> tuple[int, float, float]:
+    """Order entries inside a dedup group best-first.
+
+    Source rank still decides first — a multi-receiver fix outranks anything
+    derived from one node's geometry.  What follows it used to be nothing at
+    all: the sort was stable and same-rank entries kept list order, which is
+    insertion order in state.multinode_tracks, so the *oldest* key for a target
+    won every tie.  Live that meant a stale n=2 solve, seconds old and
+    kilometres off, beating a fresh 8-node fix for the same aircraft.  More
+    receivers first, then the fresher fix; an entry that carries neither field
+    sorts as if it had no nodes and had not been seen.
+    """
+    rank = _DEDUP_SOURCE_RANK.get(entry.get("position_source"), 99)
+    n_nodes = entry.get("n_nodes")
+    seen = entry.get("seen")
+    return (
+        rank,
+        -(n_nodes if isinstance(n_nodes, (int, float)) else 0),
+        seen if isinstance(seen, (int, float)) else math.inf,
+    )
+
+
 def dedup_aircraft(aircraft: list[dict]) -> list[dict]:
     """Collapse entries that describe the same physical aircraft.
 
@@ -116,8 +138,25 @@ def dedup_aircraft(aircraft: list[dict]) -> list[dict]:
     ground-truth path is simulation-only (resolve_ground_truth_hex reads
     state.ground_truth_trails), so the proximity fallback is what carries real
     hardware.
+
+    That resolver is a nearest-trail-end lookup in 2-D within 8 km, so it
+    ignores altitude entirely and reaches far wider than the 3 km / 2000 ft
+    test the proximity path applies.  It therefore hands one ground_truth_hex
+    to aircraft that are plainly not the same target — measured live, a dark
+    aircraft 1-2 km laterally from an airliner but 7,100 ft below it, whose own
+    fresh 8-node solve then vanished under the airliner's entry.  So a
+    multinode member of a ground-truth group that fails that proximity test
+    against every entry kept so far is emitted on its own: two multi-receiver
+    solves that far apart are two aircraft whatever the resolver said, and the
+    resolver is an identity hint rather than evidence.  Lower-ranked members
+    still collapse under the group's winner however far away they sit — an
+    ellipse arc is a boresight crossing, not a position, and legitimately
+    lands kilometres off the aircraft that produced it.
     """
     groups: list[list[dict]] = []
+    # Parallel to `groups`: a proximity-formed group has already been tested
+    # with the altitude gate, so only the ground-truth ones may need splitting.
+    from_ground_truth: list[bool] = []
     by_truth: dict[str, int] = {}
 
     for ac in aircraft:
@@ -127,6 +166,7 @@ def dedup_aircraft(aircraft: list[dict]) -> list[dict]:
             if idx is None:
                 by_truth[gt] = len(groups)
                 groups.append([ac])
+                from_ground_truth.append(True)
             else:
                 groups[idx].append(ac)
             continue
@@ -136,25 +176,43 @@ def dedup_aircraft(aircraft: list[dict]) -> list[dict]:
                 break
         else:
             groups.append([ac])
+            from_ground_truth.append(False)
 
     out: list[dict] = []
-    for g in groups:
+    for g, by_identity in zip(groups, from_ground_truth):
         if len(g) == 1:
             out.append(g[0])
             continue
-        g.sort(key=lambda x: _DEDUP_SOURCE_RANK.get(x.get("position_source"), 99))
-        winner = g[0]
-        # Carry every contributing node onto the survivor so node filtering
-        # (aircraft_flush.filter_payload_to_nodes) and the frontend's
-        # node-highlight still see this aircraft under each node that saw it.
-        nodes: list[str] = []
-        for m in g:
-            for nid in [m.get("node_id"), *(m.get("contributing_node_ids") or [])]:
-                if nid and nid not in nodes:
-                    nodes.append(nid)
-        if nodes:
-            winner["contributing_node_ids"] = nodes
-        out.append(winner)
+        g.sort(key=_dedup_quality_key)
+        # winners[i] survives; collapsed[i] is everything folded into it, which
+        # is what decides whose nodes it inherits.
+        winners: list[dict] = [g[0]]
+        collapsed: list[list[dict]] = [[g[0]]]
+        for m in g[1:]:
+            if by_identity and m.get("position_source") == "multinode_solve":
+                for winner, members in zip(winners, collapsed):
+                    if _looks_like_same_aircraft(m, winner):
+                        members.append(m)
+                        break
+                else:
+                    winners.append(m)
+                    collapsed.append([m])
+                continue
+            collapsed[0].append(m)
+
+        for winner, members in zip(winners, collapsed):
+            # Carry every contributing node onto the survivor so node filtering
+            # (aircraft_flush.filter_payload_to_nodes) and the frontend's
+            # node-highlight still see this aircraft under each node that saw
+            # it — but only the nodes of the entries actually folded into it.
+            nodes: list[str] = []
+            for member in members:
+                for nid in [member.get("node_id"), *(member.get("contributing_node_ids") or [])]:
+                    if nid and nid not in nodes:
+                        nodes.append(nid)
+            if nodes:
+                winner["contributing_node_ids"] = nodes
+            out.append(winner)
 
     return out
 
