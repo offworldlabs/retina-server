@@ -532,7 +532,12 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
                     # aircraft with no arc at all once dedup collapsed their
                     # per-node entries.  Every promoted track now emits its
                     # measured-delay arc.
-                meas = track.history.get("measurements")
+                # This builder runs on the flush executor, not the frame worker
+                # that owns the tracker, and history["measurements"] is a bounded
+                # deque — iterating it with Python-level code while that worker
+                # appends raises RuntimeError.  list() is one C call and so an
+                # atomic snapshot under the GIL; take it before the reverse scan.
+                meas = list(track.history.get("measurements") or ())
                 if not meas:
                     continue
                 latest = next((m for m in reversed(meas) if m is not None), None)
