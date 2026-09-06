@@ -748,6 +748,14 @@ solver_anchored_published: int = 0
 # transponder hex unconditionally and has no decision to observe.
 solver_key_minted_dark: int = 0
 solver_key_proximity_dark: int = 0
+# ...and the subset of those proximity re-keys whose matched entry carried a
+# LATER measurement epoch than the solve itself (signed dt < 0).  Solves reach
+# the keying rule out of measurement order as a matter of course — two dark
+# lanes and a multi-worker solver pool — and until _MN_ASSOC_MAX_NEG_DT_S the
+# scan skipped those entries outright, so each one became a second key for an
+# aircraft that already had one.  This counter is the reclaimed population:
+# measured live, 16 of 67 dark mints in 22 min were of exactly this shape.
+solver_key_proximity_negdt: int = 0
 
 # Publishes whose velocity carried the vel_untrusted flag (vz saturated, or
 # raw-solve velocity at n<=3) — the denominator is solver_successes.
@@ -898,7 +906,7 @@ def _reset_for_tests() -> None:
     global solver_consensus_selected, solver_consensus_filtered
     global solver_consensus_fallback, solver_consensus_shadow
     global solver_anchor_hits, solver_anchor_fallbacks, solver_anchored_published
-    global solver_key_minted_dark, solver_key_proximity_dark
+    global solver_key_minted_dark, solver_key_proximity_dark, solver_key_proximity_negdt
     global solver_vel_untrusted_published
     global fov_shadow_agree, fov_shadow_would_pass, fov_shadow_would_reject
     global fov_neg_events
@@ -994,7 +1002,7 @@ def _reset_for_tests() -> None:
         solver_consensus_selected = solver_consensus_filtered = 0
         solver_consensus_fallback = solver_consensus_shadow = 0
         solver_anchor_hits = solver_anchor_fallbacks = solver_anchored_published = 0
-        solver_key_minted_dark = solver_key_proximity_dark = 0
+        solver_key_minted_dark = solver_key_proximity_dark = solver_key_proximity_negdt = 0
         solver_vel_untrusted_published = 0
         fov_shadow_agree = fov_shadow_would_pass = fov_shadow_would_reject = 0
         fov_neg_events = 0

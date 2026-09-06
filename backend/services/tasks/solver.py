@@ -821,6 +821,30 @@ _MN_ASSOC_MAX_DIST_CAP_KM = 12.0
 # Never associate to an entry the map has already dropped (the 60 s expiry in
 # frame_processor.build_combined_aircraft_json).
 _MN_ASSOC_MAX_AGE_S = 60.0
+# ...and how far the other way.  A solve may be matched to an entry whose
+# measurement epoch is up to this much LATER than the solve's own — dt < 0,
+# the entry stamped from a measurement taken after this one.
+#
+# Solves do not arrive in measurement order.  Two lanes now solve the same
+# dark aircraft from different epochs (the top-down dark-follow lane and the
+# bottom-up association lane) and the solver pool runs several workers, so a
+# solve 1-4 s OLDER than the entry just published for the same aircraft is
+# routine: measured live on test (2026-09-06, 927 published dark solves in
+# 22 min), 56 of 920 consecutive dark publishes had measurement time going
+# backwards.  Under the old `0.0 <= dt` rule the scan refused to even
+# consider those entries: 16 of the 67 fresh mn-dark-* keys minted in the
+# window were for an aircraft whose key had been published 0.0-1.8 s of wall
+# time earlier and 0.1-3.8 km away — well inside the 6 km gate — with a
+# measurement dt of -1 to -4 s.  Every one of those is a duplicate track for
+# one aircraft (the map draws two icons until the old key expires) and an
+# inflated dark_keys_minted.
+#
+# 10 s bounds it well clear of that 1-4 s jitter while keeping the case the
+# old rule was really about: past that, the ordering is not pool/lane jitter
+# but a stale queue item (_SOLVER_MAX_QUEUE_AGE_S is 45 s), and running an
+# entry backwards over ten-plus seconds of dead reckoning to manufacture a
+# match is exactly the fabrication the old rule refused.
+_MN_ASSOC_MAX_NEG_DT_S = 10.0
 
 # ── Supersession gate ────────────────────────────────────────────────────────
 # Supersession is DESTRUCTIVE in a way keying is not.  Keying to the wrong
@@ -953,7 +977,7 @@ def multinode_key_decision(
     max_age_s: float = _MN_ASSOC_MAX_AGE_S,
     learned_vel_fn=track_filter.learned_velocity,
     anchor_dr: bool = False,
-) -> tuple[str, str, float | None]:
+) -> tuple[str, str, float | None, float | None]:
     """The keying rule itself, clock-free — the multinode-track analogue of
     claim_decision.  Extracted so the offline bench measures the SHIPPED rule
     by construction (the same reason claim_decision is imported
@@ -972,12 +996,15 @@ def multinode_key_decision(
     actually is, and the max_age_s window already bounds dt.
 
     Caller holds _MN_TRACKS_LOCK — it reads `tracks` and the caller writes
-    back into it under the same lock.  Returns (key, how, dist_km) with
+    back into it under the same lock.  Returns (key, how, dist_km, dt_s) with
     how in {"adsb", "anchor", "proximity", "shadowed", "minted"}; dist_km is
     how far this solve landed from the entry it was keyed onto (dead-reckoned,
     for the proximity and shadowed branches) and None where nothing was
-    matched — "adsb" and "minted".  The caller stamps both onto the
-    solve-history record, which is the only way to tell a re-key apart from a
+    matched — "adsb" and "minted".  dt_s is the SIGNED age of that entry at
+    this solve's epoch (positive = the entry was measured first, negative =
+    this solve's measurement is the older of the two), None wherever dist_km
+    is.  The caller stamps all three onto the solve-history record, which is
+    the only way to tell a re-key apart from a
     fragment after the fact.  "shadowed" is the one verdict that is NOT a key:
     it names the followed key this solve was refused in favour of, and the
     caller must treat it as a rejection (see _process_solver_item).
@@ -999,13 +1026,26 @@ def multinode_key_decision(
          claim was attempted.
       3. DR proximity scan: only dark tracks are claimable — an untagged
          solve must never steal the identity of an ADS-B-tagged aircraft
-         that happens to be nearby — dead-reckoned forward so a fast target
-         is not rejected purely for having moved since its last solve.  The
-         gate each candidate is judged against grows with ITS OWN age
-         (_mn_assoc_gate_km), because that is what the dead-reckoning error
-         does; candidates compete on distance normalised by their own gate,
-         so a fresh close entry beats an old far one rather than the scan
-         simply taking whichever is nearer in kilometres.
+         that happens to be nearby — dead-reckoned to this solve's epoch so
+         a fast target is not rejected purely for having moved since its
+         last solve.  The gate each candidate is judged against grows with
+         ITS OWN age (_mn_assoc_gate_km), because that is what the
+         dead-reckoning error does; candidates compete on distance
+         normalised by their own gate, so a fresh close entry beats an old
+         far one rather than the scan simply taking whichever is nearer in
+         kilometres.
+
+         The dt window is SIGNED: -_MN_ASSOC_MAX_NEG_DT_S <= dt <=
+         max_age_s, and the dead reckoning uses the signed dt, so a
+         candidate measured AFTER this solve is offset BACKWARDS along its
+         velocity — which is exactly where that aircraft was at this solve's
+         epoch, not a fabrication.  Solves reach here out of measurement
+         order as a matter of course (two lanes, several pool workers); see
+         _MN_ASSOC_MAX_NEG_DT_S for the measurement and for why 10 s is the
+         bound.  _mn_assoc_gate_km clamps dt at 0, so a negative-dt
+         candidate is judged against the base gate with no drift allowance —
+         deliberate: the DR is short and the gate should not be widened for
+         a direction the drift measurement never covered.
 
          KEY OWNERSHIP (DARK_FOLLOW_MODE=binding only).  A key the follow
          lane published on within dark_follow.DARK_FOLLOW_OWN_S is removed
@@ -1028,7 +1068,7 @@ def multinode_key_decision(
     # ADS-B lane — adsb_assisted=true on the feed, and the mn-dark-* store
     # (so the anchor and proximity branches below) starved forever.
     if adsb_hex and is_transponder_hex(adsb_hex):
-        return f"mn-adsb-{adsb_hex}", "adsb", None
+        return f"mn-adsb-{adsb_hex}", "adsb", None, None
 
     lat, lon = result["lat"], result["lon"]
     ts_s = result.get("timestamp_ms", 0) / 1000.0
@@ -1068,7 +1108,7 @@ def multinode_key_decision(
                 a_gate_km = _mn_assoc_gate_km(a_dt, max_dist_km)
             a_dist = _haversine_km(lat, lon, a_lat, a_lon)
             if a_dist <= a_gate_km:
-                return anchor_key, "anchor", a_dist
+                return anchor_key, "anchor", a_dist, round(a_dt, 3)
 
     # Candidates compete on d / gate_km, not on d: an entry solved 2 s ago at
     # 5 km is a worse match than one solved 40 s ago at 8 km only if you
@@ -1079,6 +1119,7 @@ def multinode_key_decision(
     best_key: str | None = None
     best_score = 1.0
     best_dist: float | None = None
+    best_dt: float | None = None
     # Key ownership: the nearest key the follow lane is currently answering
     # for, and how far this solve landed from it.  Only collected for a
     # bottom-up solve in binding mode — an anchored or ADS-B solve names the
@@ -1086,6 +1127,7 @@ def multinode_key_decision(
     shadow_scan = not anchor_key and dark_follow.mode() == "binding"
     shadow_key: str | None = None
     shadow_dist: float | None = None
+    shadow_dt: float | None = None
 
     for key, prev in tracks.items():
         # Only dark tracks are claimable; an untagged solve must never steal the
@@ -1093,14 +1135,17 @@ def multinode_key_decision(
         if not key.startswith("mn-dark-"):
             continue
         dt = ts_s - prev.get("timestamp_ms", 0) / 1000.0
-        if not (0.0 <= dt <= max_age_s):
+        if not (-_MN_ASSOC_MAX_NEG_DT_S <= dt <= max_age_s):
             continue
         p_lat, p_lon = prev.get("lat"), prev.get("lon")
         if p_lat is None or p_lon is None:
             continue
-        # Dead-reckon the existing track forward before measuring, so a fast
-        # target is not rejected purely for having moved since its last solve.
-        # Same velocity the feed draws this entry with (_entry_dr_velocity).
+        # Dead-reckon the existing track to THIS solve's epoch before
+        # measuring, so a fast target is not rejected purely for having moved
+        # between the two measurements.  Same velocity the feed draws this
+        # entry with (_entry_dr_velocity), and the signed dt: a negative one
+        # walks the entry backwards along its own velocity, to where the
+        # aircraft was when this (older) measurement was taken.
         vel_east_ms, vel_north_ms = _entry_dr_velocity(key, prev, learned_vel_fn)
         p_lat, p_lon = offset_latlon_m(
             p_lat,
@@ -1115,11 +1160,11 @@ def multinode_key_decision(
         # the scan has to remember the nearest one rather than skipping it.
         if shadow_scan and dark_follow.recently_followed(key, ts_s, dark_follow.DARK_FOLLOW_OWN_S):
             if shadow_dist is None or d < shadow_dist:
-                shadow_key, shadow_dist = key, d
+                shadow_key, shadow_dist, shadow_dt = key, d, dt
             continue
         score = d / _mn_assoc_gate_km(dt, max_dist_km)
         if score < best_score:
-            best_key, best_score, best_dist = key, score, d
+            best_key, best_score, best_dist, best_dt = key, score, d, dt
 
     # Close enough to a followed key that this solve is the same aircraft the
     # follow lane is already solving: refuse it outright rather than mint a
@@ -1127,11 +1172,11 @@ def multinode_key_decision(
     # through to the non-followed candidates and, failing those, mints — the
     # one thing it may never do is join the followed key.
     if shadow_key is not None and shadow_dist <= dark_follow.DARK_FOLLOW_SHADOW_KM:
-        return shadow_key, "shadowed", shadow_dist
+        return shadow_key, "shadowed", shadow_dist, (None if shadow_dt is None else round(shadow_dt, 3))
     if best_key is not None:
-        return best_key, "proximity", best_dist
+        return best_key, "proximity", best_dist, (None if best_dt is None else round(best_dt, 3))
     # No claimant — a genuinely new target.
-    return f"mn-dark-{result.get('timestamp_ms', 0)}-{lat:.3f}-{lon:.3f}", "minted", None
+    return f"mn-dark-{result.get('timestamp_ms', 0)}-{lat:.3f}-{lon:.3f}", "minted", None, None
 
 
 def _supersession_match(
@@ -1180,16 +1225,24 @@ def _supersession_match(
     Two ways to match, either sufficient — and BOTH subject to the altitude
     gate, which is fail-open when either side has no altitude:
 
-      (a) SPATIAL.  Dead-reckon ``old_r`` forward to this solve's timestamp
-          and ask whether it lands within the age-scaled gate
-          (_mn_assoc_gate_km) grown from _MN_SUPERSEDE_BASE_KM.  Same DR as
+      (a) SPATIAL.  Dead-reckon ``old_r`` to this solve's timestamp and ask
+          whether it lands within the age-scaled gate (_mn_assoc_gate_km)
+          grown from _MN_SUPERSEDE_BASE_KM.  Same DR as
           multinode_key_decision — _entry_dr_velocity + offset_latlon_m, so
           the entry is judged where the feed DRAWS it — and measured against
           the solve's RAW position, which is what that gate was tuned
-          against.  The dt window is the keying rule's: an entry older than
-          ``max_age_s`` is past the map's own expiry, and a negative dt (the
-          entry stamped after this solve, out-of-order arrival) is never
-          dead-reckoned backwards to manufacture a match.
+          against.  The dt window is the keying rule's, signed the same way:
+          an entry older than ``max_age_s`` is past the map's own expiry,
+          and an entry stamped up to _MN_ASSOC_MAX_NEG_DT_S AFTER this solve
+          is dead-reckoned backwards over the signed dt to where that
+          aircraft was at this solve's epoch.  Out-of-order epochs between
+          the two dark lanes and across the pool's workers are routine at
+          1-4 s (see _MN_ASSOC_MAX_NEG_DT_S for the live measurement), so
+          refusing them here made a duplicate key un-mergeable as well as
+          un-preventable: the next solve could not supersede the duplicate
+          either whenever its own epoch was the earlier of the two.  The
+          10 s bound is what keeps the case the old rule was really about (a
+          stale queue item, not lane jitter) out of the backwards DR.
 
       (b) IDENTICAL INPUTS.  ``old_r``'s source track ids are non-empty and a
           subset of this solve's.  Built from the same measurements, so the
@@ -1231,7 +1284,7 @@ def _supersession_match(
 
     dr_dist_km: float | None = None
     dt = ts_ms / 1000.0 - float(old_r.get("timestamp_ms") or 0) / 1000.0
-    if 0.0 <= dt <= max_age_s:
+    if -_MN_ASSOC_MAX_NEG_DT_S <= dt <= max_age_s:
         p_lat, p_lon = old_r.get("lat"), old_r.get("lon")
         if p_lat is not None and p_lon is not None:
             vel_east_ms, vel_north_ms = _entry_dr_velocity(old_key, old_r, learned_vel_fn)
@@ -1892,6 +1945,7 @@ def _record_solve_history(
     chi2_per_dof: float | None = None,
     key_how: str | None = None,
     key_dist_km: float | None = None,
+    key_dt_s: float | None = None,
     follow_key: str | None = None,
     superseded_keys: list[str] | None = None,
     superseded_blocked: int | None = None,
@@ -1905,14 +1959,16 @@ def _record_solve_history(
     track key (it is minted after the gates), so ``solver_hex`` is None for
     them and lookup by map ID returns published records plus nearby rejects.
 
-    ``key_how``/``key_dist_km`` are multinode_key_decision's verdict for this
-    solve — which branch produced solve_key, and how far the solve landed from
-    the entry it was keyed onto.  Only the publish path has run the keying
-    rule, so both are None on every reject (the key is minted after the
-    gates, which is also why solver_hex is None there) — with one exception:
-    a ``shadowed_by_follow`` reject IS the keying rule's verdict, and carries
-    key_how/key_dist_km plus ``follow_key`` naming the followed key it was
-    refused in favour of.
+    ``key_how``/``key_dist_km``/``key_dt_s`` are multinode_key_decision's
+    verdict for this solve — which branch produced solve_key, how far the
+    solve landed from the entry it was keyed onto, and the signed measurement
+    age of that entry at this solve's epoch (negative = the entry was measured
+    after this solve; see _MN_ASSOC_MAX_NEG_DT_S).  Only the publish path has
+    run the keying rule, so all three are None on every reject (the key is
+    minted after the gates, which is also why solver_hex is None there) — with
+    one exception: a ``shadowed_by_follow`` reject IS the keying rule's
+    verdict, and carries key_how/key_dist_km/key_dt_s plus ``follow_key``
+    naming the followed key it was refused in favour of.
 
     ``follow_key`` overrides the input's own follow_key for the record only.
     The ghost guard below is deliberately NOT fed from it: the guard judges
@@ -2020,6 +2076,11 @@ def _record_solve_history(
         # reached keying at all (every reject).
         "key_how": key_how,
         "key_dist_km": round(float(key_dist_km), 3) if key_dist_km is not None else None,
+        # ...and how far apart in MEASUREMENT time the two were, signed.
+        # Negative means this solve's own epoch is the older one — the
+        # out-of-order arrival the signed dt window admits — and separates a
+        # re-key the old rule would also have made from one it refused.
+        "key_dt_s": round(float(key_dt_s), 1) if key_dt_s is not None else None,
         # Supersession's verdict for this publish (see _supersession_match):
         # the entries it popped as this same aircraft, and the count of
         # entries that shared a source track id but were refused.  Empty/0 on
@@ -2729,7 +2790,7 @@ def _process_solver_item(
             # _MN_POS_HISTORY_LOCK (inside the smoother) is never taken in
             # reverse anywhere.
             _anchor_key = s_in.get("anchor_key") if isinstance(s_in, dict) else None
-            key, _key_how, _key_dist_km = multinode_key_decision(
+            key, _key_how, _key_dist_km, _key_dt_s = multinode_key_decision(
                 state.multinode_tracks,
                 result,
                 _adsb_hex,
@@ -2765,6 +2826,15 @@ def _process_solver_item(
                         state.bump_counter("solver_key_minted_dark")
                     elif _key_how == "proximity":
                         state.bump_counter("solver_key_proximity_dark")
+                        # ...and, of those, the ones that matched an entry
+                        # whose measurement epoch was LATER than this solve's
+                        # — the out-of-order case _MN_ASSOC_MAX_NEG_DT_S
+                        # opened.  Every one of these was a fresh mint (a
+                        # duplicate track for one aircraft) under the old
+                        # rule, so this counter is how much of the measured
+                        # fragmentation the signed window actually reclaims.
+                        if _key_dt_s is not None and _key_dt_s < 0:
+                            state.bump_counter("solver_key_proximity_negdt")
                 if _anchor_key:
                     # s_in["anchor_key"] is set by exactly two producers: top-down
                     # claiming in active mode, and a dark-follow input in binding
@@ -2890,6 +2960,7 @@ def _process_solver_item(
                 follow_key=_shadow_key,
                 key_how=_key_how,
                 key_dist_km=_key_dist_km,
+                key_dt_s=_key_dt_s,
                 extra=_extra,
             )
             return result
@@ -2916,6 +2987,7 @@ def _process_solver_item(
             displacement_km=_disp_km,
             key_how=_key_how,
             key_dist_km=_key_dist_km,
+            key_dt_s=_key_dt_s,
             superseded_keys=_superseded_keys,
             superseded_blocked=_superseded_blocked,
             extra=_extra,

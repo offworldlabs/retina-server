@@ -493,6 +493,7 @@ class TestFragmentation:
             "anchored_pct": 0.0,
             "dark_keys_minted": 0,
             "dark_keys_proximity": 0,
+            "dark_keys_proximity_negdt": 0,
             "mn_superseded": 0,
             "mn_superseded_blocked": 0,
             "mn_superseded_blocked_alt": 0,
@@ -506,9 +507,13 @@ class TestFragmentation:
         lane from a busy one."""
         state.solver_key_minted_dark = 4
         state.solver_key_proximity_dark = 11
+        state.solver_key_proximity_negdt = 3
         out = _solver_window_stats(10.0)
         assert out["fragmentation"]["dark_keys_minted"] == 4
         assert out["fragmentation"]["dark_keys_proximity"] == 11
+        # The out-of-order subset of those re-keys — every one of them a
+        # dark_keys_minted before the signed dt window.
+        assert out["fragmentation"]["dark_keys_proximity_negdt"] == 3
 
     def test_supersession_counters_are_surfaced(self):
         """Entries popped as the same aircraft against shared-id entries the
@@ -529,10 +534,12 @@ class TestFragmentation:
     def test_dark_key_decision_counters_reset_with_state(self):
         state.solver_key_minted_dark = 4
         state.solver_key_proximity_dark = 11
+        state.solver_key_proximity_negdt = 3
         state._reset_for_tests()
         out = _solver_window_stats(10.0)
         assert out["fragmentation"]["dark_keys_minted"] == 0
         assert out["fragmentation"]["dark_keys_proximity"] == 0
+        assert out["fragmentation"]["dark_keys_proximity_negdt"] == 0
 
 
 class TestEmptyState:
@@ -582,6 +589,7 @@ class TestEndpoint:
             "anchored_pct",
             "dark_keys_minted",
             "dark_keys_proximity",
+            "dark_keys_proximity_negdt",
             "mn_superseded",
             "mn_superseded_blocked",
             "mn_superseded_blocked_alt",

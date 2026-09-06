@@ -596,7 +596,7 @@ class TestAnchorDeadReckoning:
         """15 s of coasting at 270 m/s is 4.05 km of travel; a solve 2 km past
         that is 6.05 km from where the entry was last STORED — outside the flat
         6 km gate, purely because the aircraft moved."""
-        key, how, _d = solver_mod.multinode_key_decision(
+        key, how, _d, _dt = solver_mod.multinode_key_decision(
             self._tracks(15.0, 270.0),
             self._result(6.05),
             None,
@@ -606,7 +606,7 @@ class TestAnchorDeadReckoning:
         assert how != "anchor"
 
     def test_dead_reckoning_honours_it(self):
-        key, how, dist = solver_mod.multinode_key_decision(
+        key, how, dist, _dt = solver_mod.multinode_key_decision(
             self._tracks(15.0, 270.0),
             self._result(6.05),
             None,
@@ -620,7 +620,7 @@ class TestAnchorDeadReckoning:
     def test_dead_reckoning_still_refuses_a_far_solve(self):
         """The check's job is unchanged: an anchor whose solve converged
         somewhere else entirely is not honoured just because it was named."""
-        key, how, _d = solver_mod.multinode_key_decision(
+        key, how, _d, _dt = solver_mod.multinode_key_decision(
             self._tracks(15.0, 270.0),
             self._result(30.0),
             None,
@@ -682,7 +682,7 @@ class TestKeyOwnership:
     def test_a_solve_next_to_a_freshly_followed_key_is_shadowed(self, monkeypatch):
         monkeypatch.setattr(state, "DARK_FOLLOW_MODE", "binding")
         dark_follow.note_follow_publish(_KEY, self._TS_S - 2.0)
-        key, how, dist = self._decide(1.0)
+        key, how, dist, _dt = self._decide(1.0)
         assert (key, how) == (_KEY, "shadowed")
         assert dist == pytest.approx(1.0, abs=0.05)
 
@@ -693,7 +693,7 @@ class TestKeyOwnership:
         one's."""
         monkeypatch.setattr(state, "DARK_FOLLOW_MODE", "binding")
         dark_follow.note_follow_publish(_KEY, self._TS_S - 2.0)
-        key, how, _dist = self._decide(4.0)
+        key, how, _dist, _dt = self._decide(4.0)
         assert how == "minted"
         assert key != _KEY
 
@@ -703,14 +703,14 @@ class TestKeyOwnership:
         it back."""
         monkeypatch.setattr(state, "DARK_FOLLOW_MODE", "binding")
         dark_follow.note_follow_publish(_KEY, self._TS_S - 20.0)
-        key, how, _dist = self._decide(1.0)
+        key, how, _dist, _dt = self._decide(1.0)
         assert (key, how) == (_KEY, "proximity")
 
     @pytest.mark.parametrize("mode", ["shadow", "off"])
     def test_the_inert_modes_key_exactly_as_before(self, monkeypatch, mode):
         monkeypatch.setattr(state, "DARK_FOLLOW_MODE", mode)
         dark_follow.note_follow_publish(_KEY, self._TS_S - 2.0)
-        key, how, _dist = self._decide(1.0)
+        key, how, _dist, _dt = self._decide(1.0)
         assert (key, how) == (_KEY, "proximity")
 
     def test_the_follow_lanes_own_solve_still_lands_on_its_key(self, monkeypatch):
@@ -720,7 +720,7 @@ class TestKeyOwnership:
         off the map."""
         monkeypatch.setattr(state, "DARK_FOLLOW_MODE", "binding")
         dark_follow.note_follow_publish(_KEY, self._TS_S - 2.0)
-        key, how, dist = self._decide(1.0, anchor_key=_KEY)
+        key, how, dist, _dt = self._decide(1.0, anchor_key=_KEY)
         assert (key, how) == (_KEY, "anchor")
         assert dist == pytest.approx(1.0, abs=0.05)
 
@@ -732,7 +732,7 @@ class TestKeyOwnership:
         dark_follow.note_follow_publish(_KEY, self._TS_S - 2.0)
         result = self._result(1.5)
         result["n_nodes"] = 2
-        key, how, _dist = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = solver_mod.multinode_key_decision(
             self._tracks(),
             result,
             None,

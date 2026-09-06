@@ -1313,6 +1313,12 @@ def _solver_window_stats(minutes: float) -> dict:
             # the windowed version when one is needed.
             "dark_keys_minted": state.solver_key_minted_dark,
             "dark_keys_proximity": state.solver_key_proximity_dark,
+            # ...and how many of those re-keys matched an entry measured
+            # AFTER the solve that joined it (signed dt < 0).  Those entries
+            # were invisible to the scan until _MN_ASSOC_MAX_NEG_DT_S, so
+            # this number is the fragmentation the signed window reclaims —
+            # every one of them was a dark_keys_minted before.
+            "dark_keys_proximity_negdt": state.solver_key_proximity_negdt,
             # Supersession, also since boot: entries popped because a new
             # solve was judged to be the same aircraft (solver.py's
             # _supersession_match), against entries that shared a source
