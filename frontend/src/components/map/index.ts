@@ -13,10 +13,10 @@ export {
 } from "./geo";
 export {
   UNCERTAINTY_K95,
-  UNCERTAINTY_DR_CAP_S,
   UNCERTAINTY_MAX_RADIUS_M,
   solveAgeS,
   solveSigmaM,
+  solveDiscCenter,
   solveUncertaintyRadiusM,
 } from "./uncertainty";
 export { MLAT_HISTORY_REFRESH_MS, newSolveArrived } from "./mlatHistory";

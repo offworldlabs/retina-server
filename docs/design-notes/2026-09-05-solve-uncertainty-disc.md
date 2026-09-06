@@ -167,3 +167,68 @@ reach the cap either — at the speeds that grow a disc quickly they cross the
 withdrawn; the track stays in the stores, list, trails and selection, and
 about half of the tracks that go quiet for 12 s re-solve (median 16 s) and
 come straight back.
+
+## 2026-09-06: disc anchored at the solve epoch, no age growth
+
+The growth term above is gone. The disc is now **the calibrated accuracy of
+the last solve, drawn where that solve was**: radius `k95 · σ_solve`, constant
+until the next solve lands, centred on the solve-epoch position rather than on
+the dead-reckoned icon. The icon keeps dead-reckoning; the separation that
+opens between it and its disc is the extrapolation, shown rather than
+described.
+
+### Why the growth term went
+
+- **It saturated instead of informing.** `σ_v` comes from the KF's learned
+  velocity, clamped to [5, 150] m/s. Measured live, dark solves sit *at* the
+  150 m/s clamp — a fresh dark track is seeded from the CV fit and never
+  earns a tighter estimate — so σ(t) reaches the 10 km `UNCERTAINTY_MAX_RADIUS_M`
+  ceiling within ~30 s of the last solve. Past that every dark disc is the
+  same disc: a viewport-filling blob carrying no information about which
+  solve was good.
+- **It was not calibrated.** Coverage of the grown disc against ground truth
+  ran ~50% for dark solves at fresh age and ~43% at 30 s+, on a shape captioned
+  "95%". Growing it made the number *less* true, not more: the aircraft was
+  not uniformly further from the drawn position, the drawn position was simply
+  wrong in a way a bigger circle does not describe.
+- **Comparable systems do not do it.** ATC coasting symbology, the MIL-STD-2525
+  area of uncertainty, and GPS accuracy circles all draw the accuracy of the
+  last *measurement* at the measurement's position, and convey staleness
+  through the symbol — a coast marker, a hollow icon, a dashed leader. Here
+  that role is already played by `drIconState` (hollow "stale" icon, then
+  withdrawal at `DR_ICON_MAX_AGE_DARK_S` = 12 s), so the growth term was
+  duplicating a signal that already existed, badly.
+
+`UNCERTAINTY_DR_CAP_S` is therefore deleted (nothing else imported it), and so
+is the age argument to `solveSigmaM` / `solveUncertaintyRadiusM`. `solveAgeS`
+stays — it is the icon's staleness clock (`map/icons.ts`).
+
+### Wire
+
+Two more optional fields on every `multinode_solve` entry
+(`services/aircraft_feed.py::multinode_to_aircraft`), both rounded to 5 dp
+like `lat`/`lon`:
+
+| field | meaning |
+|---|---|
+| `solve_lat` | Latitude of the fix the solver produced, **before** the feed dead-reckons `lat` forward (`MN_DR_CAP_S`). |
+| `solve_lon` | Same for longitude. |
+
+They are identical to `lat`/`lon` on a zero-age entry and diverge by exactly
+the backend's dead-reckoning afterwards. `pos_sigma_m` and `pos_sigma_vel_ms`
+are unchanged on the wire: the detail panel, the solve-history record and the
+drift budgets still read them, and a consumer that wants to model growth
+itself still can. The frontend falls back to `lat`/`lon` when the pair is
+absent (older backend), so an old feed still draws a disc, just on the icon.
+
+### Frontend
+
+- `map/uncertainty.ts`: `solveSigmaM(ac)`, `solveUncertaintyRadiusM(ac)` (no
+  `nowMs`/`ageS` any more) and a new `solveDiscCenter(ac)` → `[lat, lon] |
+  null`, preferring `solve_lat`/`solve_lon`.
+- `SolveUncertaintyLayer`: circle centred on `solveDiscCenter(ac)`. Show/hide
+  coupling to `drIconState`, colours, opacity, canvas renderer and the 500 ms
+  tick are unchanged.
+- Detail panel, Multi-node section: `Accuracy (95%)` is now a single
+  `±<radius>` — with no growth the old "(± … at solve)" second figure was
+  always the same number.

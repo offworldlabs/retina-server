@@ -135,6 +135,15 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
         "track": round(heading, 1),
         "lat": round(r["lat"], 5),
         "lon": round(r["lon"], 5),
+        # The SOLVE-EPOCH position: what the solver measured, before the
+        # caller (_multinode_entry) dead-reckons lat/lon forward up to
+        # MN_DR_CAP_S.  The map's 95% uncertainty disc is drawn here rather
+        # than on the icon, because pos_sigma_m below is the accuracy of this
+        # measurement and of nothing else; the gap that opens between the disc
+        # and the dead-reckoned icon IS the extrapolation.  Identical to
+        # lat/lon on a zero-age entry, and rounded the same way.
+        "solve_lat": round(r["lat"], 5),
+        "solve_lon": round(r["lon"], 5),
         # Real age of the solve, not 0 — see the matching note on the tracker
         # path.  Guarded because timestamp_ms is absent in some fixtures.
         "seen": round(max(0.0, time.time() - r["timestamp_ms"] / 1000.0), 1) if r.get("timestamp_ms") else 0,
@@ -168,10 +177,11 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
     # leaves no floor to apply.  Lane matters: the dark lane had no ADS-B fix
     # seeding the guess and no pinned altitude, so it is inflated — and
     # _assisted is the same key-prefix truth the lane fields above use, not
-    # anything read off r.  Shipped AT THE SOLVE EPOCH, ungrown: `seen`
-    # already carries the solve age and the frontend grows the disc itself
-    # with pos_sigma_vel_ms at its own display tick, which is finer-grained
-    # than this 1 Hz flush can be.
+    # anything read off r.  Both describe THE SOLVE EPOCH, ungrown, and the
+    # map now draws the disc that way too (2026-09-06) at solve_lat/solve_lon
+    # above.  pos_sigma_vel_ms stays on the wire — the detail panel, the solve
+    # history and the drift budgets still read it — it just no longer inflates
+    # a drawn radius with age.
     _pos_sigma_m = solve_sigma_m(r, dark=not _assisted)
     if _pos_sigma_m is not None:
         entry["pos_sigma_m"] = round(_pos_sigma_m, 1)

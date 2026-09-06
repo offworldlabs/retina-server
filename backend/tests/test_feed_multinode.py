@@ -71,6 +71,29 @@ class TestMultinodeDeadReckonCap:
         exp_lat, _ = offset_latlon_m(LAT, LON, east_m=0.0, north_m=100.0 * 10.0)
         assert ac["lat"] == pytest.approx(exp_lat, abs=2e-4)
 
+    def test_solve_epoch_position_is_published_undead_reckoned(self):
+        """solve_lat/solve_lon are the stored fix; lat/lon are the DR'd one.
+
+        The map centres its 95% uncertainty disc on the solve epoch, because
+        pos_sigma_m is the accuracy of THAT position and of nothing the
+        dead-reckoner invented afterwards.  Both pairs ride on every entry.
+        """
+        state.multinode_tracks["mn-dark-x"] = _mn_entry(age_s=10.0, vel_north=100.0)
+        ac = self._build_mn()
+        assert ac["solve_lat"] == round(LAT, 5)
+        assert ac["solve_lon"] == round(LON, 5)
+        # 10 s at 100 m/s north: lat has moved, lon has not.
+        exp_lat, _ = offset_latlon_m(LAT, LON, east_m=0.0, north_m=100.0 * 10.0)
+        assert ac["lat"] == pytest.approx(exp_lat, abs=2e-4)
+        assert ac["lat"] > ac["solve_lat"]
+        assert ac["lon"] == pytest.approx(ac["solve_lon"], abs=1e-5)
+
+    def test_solve_epoch_position_equals_the_fix_at_zero_age(self):
+        state.multinode_tracks["mn-dark-x"] = _mn_entry(age_s=0.0, vel_north=100.0)
+        ac = self._build_mn()
+        assert ac["solve_lat"] == pytest.approx(ac["lat"], abs=1e-5)
+        assert ac["solve_lon"] == pytest.approx(ac["lon"], abs=1e-5)
+
     def test_dr_horizon_is_capped_at_mn_dr_cap_s(self):
         # 20 s old (still inside the 30 s dark expiry, so this exercises the
         # DR cap and not staleness): advanced MN_DR_CAP_S worth of motion,
@@ -492,6 +515,16 @@ class TestSolveUncertaintyFields:
         state.multinode_tracks["mn-adsb-abc123"] = _mn_entry(age_s=1.0, vel_north=100.0)
         ac = self._build_mn()
         assert ac["pos_sigma_m"] == pytest.approx(650.0)
+
+    def test_solve_epoch_position_rides_along_with_the_sigma(self):
+        # The disc the sigma describes is drawn at solve_lat/solve_lon, so the
+        # pair is part of this wire contract even though it is published
+        # unconditionally rather than beside pos_sigma_m.
+        state.multinode_tracks["mn-adsb-abc123"] = _mn_entry(age_s=1.0, vel_north=100.0)
+        ac = self._build_mn()
+        assert ac["solve_lat"] == round(LAT, 5)
+        assert ac["solve_lon"] == round(LON, 5)
+        assert ac["pos_sigma_m"] > 0
 
     def test_no_kf_state_uses_the_default_velocity_sigma(self):
         key = "mn-adsb-abc123"

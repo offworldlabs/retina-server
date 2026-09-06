@@ -5,12 +5,7 @@ import { classifyHex, emergencySquawkLabel } from "./hexInfo";
 import { trailToCsv, downloadCsv } from "./trailExport";
 import { copyToClipboard, toast } from "./toast";
 import { M_PER_FT, KNOTS_PER_MS, MS_PER_KNOT } from "./units";
-import {
-  UNCERTAINTY_K95,
-  UNCERTAINTY_MAX_RADIUS_M,
-  solveSigmaM,
-  solveUncertaintyRadiusM,
-} from "./uncertainty";
+import { solveUncertaintyRadiusM } from "./uncertainty";
 
 export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError, detectingNodes = [], solveHistory = null }) {
   if (!ac) return null;
@@ -29,14 +24,11 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
   const hexInfo = classifyHex(ac.hex);
   const emergency = emergencySquawkLabel(ac.squawk);
 
-  // 95% position-uncertainty radius, from the same helpers as the map disc so
-  // the panel and the circle can never quote different numbers.  Date.now() at
-  // render is enough precision: the panel re-renders with the 2 Hz display
-  // array, so the "now" figure tracks the disc as it grows.
-  const uncertaintyNowM = solveUncertaintyRadiusM(ac, Date.now());
-  const sigmaAtSolve = solveSigmaM(ac, 0);
-  const uncertaintyAtSolveM =
-    sigmaAtSolve == null ? 0 : Math.min(UNCERTAINTY_K95 * sigmaAtSolve, UNCERTAINTY_MAX_RADIUS_M);
+  // 95% position-uncertainty radius, from the same helper as the map disc so
+  // the panel and the circle can never quote different numbers.  One figure,
+  // not two: the radius is the accuracy of the last solve and holds until the
+  // next one, so there is no "now" distinct from "at solve".
+  const uncertaintyM = solveUncertaintyRadiusM(ac);
 
   const handleExportTrail = () => {
     // `trails` (prop) is the canonical solved-position trail buffer maintained
@@ -242,18 +234,8 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
             <Field label="Nodes" value={ac.n_nodes} />
             <Field label="RMS Delay" value={`${ac.rms_delay ?? "\u2014"} \u03bcs`} />
             <Field label="RMS Doppler" value={`${ac.rms_doppler ?? "\u2014"} Hz`} />
-            {uncertaintyNowM > 0 && (
-              <Field
-                label="Accuracy (95%)"
-                value={
-                  `\u00b1${formatUncertaintyRadius(uncertaintyNowM)}` +
-                  // Only worth showing both when dead-reckoning has actually
-                  // moved the number; below 10 m they read as the same figure.
-                  (Math.abs(uncertaintyNowM - uncertaintyAtSolveM) > 10
-                    ? ` (\u00b1${formatUncertaintyRadius(uncertaintyAtSolveM)} at solve)`
-                    : "")
-                }
-              />
+            {uncertaintyM > 0 && (
+              <Field label="Accuracy (95%)" value={`\u00b1${formatUncertaintyRadius(uncertaintyM)}`} />
             )}
           </div>
         )}

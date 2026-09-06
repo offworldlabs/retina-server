@@ -35,6 +35,7 @@ import {
   makeDroneIcon,
   drIconState,
   getAircraftColor,
+  solveDiscCenter,
   solveUncertaintyRadiusM,
   nodeIcon,
   yagiSectorPositions,
@@ -631,17 +632,21 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftR
 });
 
 /* ── SolveUncertaintyLayer: one soft L.circle per visible multi-node solve,
-      radius = the calibrated 95% position-confidence radius (map/uncertainty.ts)
-      which grows while the icon dead-reckons between solves.
+      radius = the calibrated 95% position-confidence radius of the LAST SOLVE
+      (map/uncertainty.ts), centred on where that solve was (solveDiscCenter →
+      the feed's solve_lat/solve_lon).  Neither moves nor grows until the next
+      solve lands: the icon dead-reckons out of the disc, and that separation
+      is the extrapolation made visible.
 
       Same shape as AircraftTrailsLayer: one shared L.canvas renderer in the
       passive pane, ref-driven so the 2 Hz display array does not tear the
       circles down and rebuild them twice a second, updated on a 500 ms tick.
 
-      Follows the icon exactly (drIconState): drawn whenever an icon is drawn,
-      degraded "stale solve" icons included, and dropped when the icon is.  A
-      disc with no plane inside it reads as a phantom target; a stale plane with
-      no disc hides the one number that says how little the position is worth.
+      Shown and hidden with the icon (drIconState): drawn whenever an icon is
+      drawn, degraded "stale solve" icons included, and dropped when the icon
+      is.  A disc with no plane anywhere near it reads as a phantom target; a
+      stale plane with no disc hides the one number that says how little the
+      position is worth.
       ── */
 const _uncertaintyCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: DEBUG_PASSIVE_PANE }) : null;
 
@@ -662,22 +667,26 @@ const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircr
         // Ref, not a prop: keying this effect on selectedHex would tear every
         // disc down and rebuild it on each selection change.
         if (drIconState(ac, markerNow, ac.hex === selectedHexRef?.current) === "hidden") continue;
-        const radius = solveUncertaintyRadiusM(ac, markerNow);
+        const radius = solveUncertaintyRadiusM(ac);
         // 0 = the feed never stated a sigma for this solve; draw nothing
         // rather than assert a precision it did not promise.
         if (radius <= 0) continue;
+        // Solve epoch, not the icon: an older backend without solve_lat/lon
+        // falls back to the dead-reckoned position inside the helper.
+        const center = solveDiscCenter(ac);
+        if (!center) continue;
         live.add(ac.hex);
         // Same colour rule as the icon, including the colour-by-altitude toggle.
         const color = getAircraftColor(ac, colorByAlt);
         let circle = circles.get(ac.hex);
         if (circle) {
-          circle.setLatLng([ac.lat, ac.lon]);
+          circle.setLatLng(center);
           circle.setRadius(radius);
           // Lane colour can flip mid-flight (a solve gaining or losing its
           // transponder tag) — keep the disc in step with the icon.
           if (circle.options.color !== color) circle.setStyle({ color, fillColor: color });
         } else {
-          circle = L.circle([ac.lat, ac.lon], {
+          circle = L.circle(center, {
             radius,
             renderer: _uncertaintyCanvas,
             interactive: false,
