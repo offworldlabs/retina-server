@@ -64,8 +64,20 @@ export interface Aircraft {
    * `multinode_solve` entries only; absent on older backends.
    */
   pos_sigma_m?: number;
-  /** Velocity sigma (m/s) governing how the position sigma grows with age. */
+  /**
+   * Velocity sigma (m/s) for the solve's own motion estimate. Quoted by the
+   * panel and recorded in the solve history; the uncertainty disc no longer
+   * grows the radius with it (see map/uncertainty.ts).
+   */
   pos_sigma_vel_ms?: number;
+  /**
+   * Position the solve measured, before the backend dead-reckons `lat`/`lon`
+   * forward. `multinode_solve` entries only; absent on older backends, where
+   * the disc falls back to `lat`/`lon`. This is where the uncertainty disc is
+   * centred: `pos_sigma_m` is the accuracy of THIS position.
+   */
+  solve_lat?: number;
+  solve_lon?: number;
   /**
    * Age of the ADS-B fix this entry's lat/lon came from, one decimal.
    * Present on `adsb_single_node` entries only.

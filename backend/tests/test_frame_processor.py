@@ -389,6 +389,11 @@ class TestMultinodeToAircraft:
         assert ac["n_nodes"] == 3
         assert ac["lat"] == 33.9
         assert ac["lon"] == -84.6
+        # Solve-epoch pair: identical here (the caller dead-reckons lat/lon
+        # afterwards, this function does not), and the anchor for the map's
+        # uncertainty disc.
+        assert ac["solve_lat"] == 33.9
+        assert ac["solve_lon"] == -84.6
         assert ac["alt_baro"] == 10000  # 3048m / 0.3048
 
     def test_supersonic_speed_is_not_flagged(self):

@@ -865,8 +865,11 @@ reached a solve.
   a lost track rather than a cadence gap and extrapolating it only invents
   motion. `mn-adsb-*` entries keep the 60 s expiry: a transponder hex anchors
   them, so the same gap is the ADS-B feed breathing. The frontend's matching
-  budgets are `DR_ICON_HIDE_DISTANCE_DARK_M` (3 km) and `UNCERTAINTY_DR_CAP_S`
-  (30 s).
+  budgets are `DR_ICON_HIDE_DISTANCE_DARK_M` (3 km) and
+  `DR_ICON_MAX_AGE_DARK_S` (12 s), which withdraw the icon — and with it the
+  uncertainty disc, which since 2026-09-06 is the last solve's accuracy drawn
+  at `solve_lat`/`solve_lon` and no longer grows with solve age
+  (`docs/design-notes/2026-09-05-solve-uncertainty-disc.md`).
 - **Node-trust residuals are measure-only.** `node_bias.py` computes them but
   nothing in the solver consumes them yet (`node_bias.py` module docstring).
 - **`docs/pipeline.md` §3 is stale.** It predates the known lane and the

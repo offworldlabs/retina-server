@@ -122,8 +122,8 @@ class TestGrownSigma:
         assert su.grown_sigma_m(650.0, 25.0, 0.0) == pytest.approx(650.0)
 
     def test_growth_is_capped_at_the_growth_horizon(self):
-        # The horizon mirrors the frontend's UNCERTAINTY_DR_CAP_S (30 s),
-        # which in turn mirrors MN_DARK_EXPIRY_S.
+        # The horizon is sized on MN_DARK_EXPIRY_S (30 s): past it a dark
+        # entry no longer exists to extrapolate.
         assert su._GROWTH_MAX_AGE_S == 30.0
         at_cap = su.grown_sigma_m(180.0, 25.0, su._GROWTH_MAX_AGE_S)
         assert su.grown_sigma_m(180.0, 25.0, 600.0) == pytest.approx(at_cap)

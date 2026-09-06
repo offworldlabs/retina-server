@@ -81,12 +81,12 @@ _VEL_DEFAULT_MS = float(os.getenv("SOLVE_SIGMA_VEL_DEFAULT_MS", "25"))
 _SIGMA_MIN_M = 50.0
 _SIGMA_MAX_M = 5000.0
 
-# Velocity-sigma clamp band and the growth horizon.  Past the horizon the
-# frontend stops dead-reckoning entirely, so growing the disc further would
-# describe a position nothing is drawing.  It tracks the frontend's
-# UNCERTAINTY_DR_CAP_S, which in turn tracks MN_DARK_EXPIRY_S: a dark entry no
-# longer reaches 60 s at all, so the old 60 s horizon described entries that
-# cannot exist.
+# Velocity-sigma clamp band and the growth horizon.  The horizon is a hangover
+# from when the map grew the disc with solve age: it no longer does (2026-09-06
+# — the disc is the last solve's accuracy drawn at solve_lat/solve_lon), so
+# grown_sigma_m below has no caller in the feed.  Both are kept for callers
+# that model growth for themselves; the horizon is sized on MN_DARK_EXPIRY_S,
+# past which a dark entry does not exist to extrapolate.
 _VEL_MIN_MS = 5.0
 _VEL_MAX_MS = 150.0
 _GROWTH_MAX_AGE_S = 30.0
