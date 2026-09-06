@@ -65,6 +65,36 @@ without reimporting:
     "off"  — raw passthrough, no smoothing at all.
     anything else — treated as "kf".
 
+Two further env flags, also read PER CALL and both defaulting to today's
+behaviour, change how much a solve is trusted and what happens when one is
+implausible.  Both exist because of the same 2026-09-05 measurement of the
+dark lane on the test droplet: feed entries more than 5 km from any aircraft
+("ghosts") are 10-14% of dark entries, and 58% of those ghost frames sit on
+keys that had ALREADY accumulated four-or-more-node solves — what moved them
+was a two- or three-node solve joining by proximity.  Those joins are wrong
+far more often than their node count suggests (n=3: 25% land >3 km off; n=2:
+36-62%; n=4: 5%; n>=5: 2%), and nothing at solve time separates a good one
+from a bad one: a three-node free-altitude solve is exactly determined (six
+measurements, six unknowns), so its rms is ~0 either way.  What CAN separate
+them is the track itself — see TRACK_KF_OUTLIER_MODE below.
+
+    TRACK_KF_R_SOURCE:
+      "flat"        (default) — the additive base term in _measurement_R is
+                    the flat _KF_DEFAULT_POS_SIGMA_M for every solve.
+      "uncertainty" — the base term is instead the calibrated per-solve sigma
+                    from services/solve_uncertainty.solve_sigma_m, which knows
+                    the node count (650/210/180 m floors at n=2/3/>=4).  The
+                    filter then trusts a solve exactly as much as the map's
+                    uncertainty disc claims to, instead of pricing an n=2 and
+                    an n=5 solve identically.
+
+    TRACK_KF_OUTLIER_MODE:
+      "reanchor"    (default) — a gate breach re-anchors the whole filter at
+                    the outlier, as it always has.
+      "hold"        — for DARK keys only, an established track outvotes a
+                    single implausible solve: see the gate-breach block in
+                    _smooth_kf and the _KF_HOLD_* constants.
+
 Lock-order constraint: every caller of smooth_solve() holds solver.py's
 _MN_TRACKS_LOCK (see the comment at that call site).  _KF_LOCK below is a
 LEAF lock — nothing under it may call back into solver.py, acquire
@@ -200,6 +230,35 @@ _KF_MAX_GAP_S = 160.0
 # hard.  Smoothing across a jump that size would be actively wrong.
 _KF_GATE_CHI2 = 13.8
 
+# TRACK_KF_OUTLIER_MODE="hold" thresholds.  A hold says "the track is right
+# and this solve is wrong", which is only ever a defensible claim when the
+# track has earned it and the disagreement is too large to be flight.
+#
+# _KF_HOLD_MIN_UPDATES — position updates accepted since the entry was
+# anchored.  A key with two or more of them has a velocity state built from
+# real evidence and a position good to a few hundred metres; a key with none
+# has only its init prior and no standing to overrule anything, so a breach
+# there re-anchors exactly as it always did.
+#
+# _KF_HOLD_MIN_INNOV_M — the innovation magnitude, in metres, below which a
+# breach is never held whatever the chi² says.  The gate is scaled by the
+# filter's OWN covariance and the KF velocity sigma is known to be optimistic
+# (it is learned from a position sequence that shares the solver's biases), so
+# a well-converged entry can call a perfectly ordinary 800 m correction a
+# breach.  1500 m is above that noise and still far below the thing this is
+# for: the measured bad-join population sits at ~4 km, while a genuine
+# manoeuvre over one solve interval cannot reach it (250 m/s x 5 s = 1.25 km).
+#
+# _KF_HOLD_MAX_STREAK — consecutive held breaches before the filter concedes.
+# Holding is a bet that the outlier is a one-off; when the new position keeps
+# being confirmed, the identity really did change (a merge, a re-association)
+# and re-anchoring is right.  Three keeps the wrong-bet cost at two solve
+# intervals (~10 s, inside the 60 s entry expiry) while still absorbing the
+# isolated bad join that motivates the mode.
+_KF_HOLD_MIN_UPDATES = int(os.getenv("TRACK_KF_HOLD_MIN_UPDATES", "2"))
+_KF_HOLD_MIN_INNOV_M = float(os.getenv("TRACK_KF_HOLD_MIN_INNOV_M", "1500"))
+_KF_HOLD_MAX_STREAK = int(os.getenv("TRACK_KF_HOLD_MAX_STREAK", "3"))
+
 # Dict-level TTL, mirrors solver.py's _MN_HISTORY_TTL_S / _sweep_mn_history —
 # same shape of problem (one entry per distinct key for the process lifetime
 # unless swept), same fix.
@@ -219,6 +278,14 @@ class _TrackKF:
     the life of the entry: every subsequent solve is converted to an offset
     from this one fixed point, so nothing here ever needs to compare two
     different ENU frames against each other.
+
+    n_updates/breach_streak exist for TRACK_KF_OUTLIER_MODE="hold" (see the
+    _KF_HOLD_* constants): n_updates is how many position updates this
+    anchoring has ACCEPTED, which is what makes a track established enough to
+    overrule a solve, and breach_streak is how many consecutive gate breaches
+    have been held since the last accepted update.  Both are reset by
+    construction whenever _init_entry runs, which is the whole point — a
+    re-anchored entry has no accumulated evidence and no streak.
     """
 
     ref_lat: float
@@ -226,6 +293,8 @@ class _TrackKF:
     x: np.ndarray  # state [e_m, ve_ms, n_m, vn_ms] — THIS ORDER, see module doc
     P: np.ndarray  # 4x4 covariance, same ordering
     last_ts_s: float
+    n_updates: int = 0
+    breach_streak: int = 0
 
 
 # key -> _TrackKF.  Same shape as solver.py's _MN_POS_HISTORY: one entry per
@@ -286,6 +355,42 @@ def learned_velocity(track_key: str) -> tuple[float, float, float, float] | None
             return None
         vel_sigma = math.sqrt(max(0.0, 0.5 * (entry.P[1, 1] + entry.P[3, 3])))
         return float(entry.x[1]), float(entry.x[3]), float(vel_sigma), float(entry.last_ts_s)
+
+
+def _r_source() -> str:
+    """TRACK_KF_R_SOURCE, read per call (tests flip it with monkeypatch and
+    expect the next call to see it), unrecognised values falling back to the
+    default — same contract as TRACK_SMOOTHER in smooth_solve."""
+    mode = (os.getenv("TRACK_KF_R_SOURCE", "flat") or "flat").strip().lower()
+    return mode if mode in ("flat", "uncertainty") else "flat"
+
+
+def _outlier_mode() -> str:
+    """TRACK_KF_OUTLIER_MODE, read per call — see _r_source."""
+    mode = (os.getenv("TRACK_KF_OUTLIER_MODE", "reanchor") or "reanchor").strip().lower()
+    return mode if mode in ("reanchor", "hold") else "reanchor"
+
+
+def _stamp(result: dict, action: str, d2: float | None = None, innov_m: float | None = None) -> dict:
+    """Record WHICH branch of _smooth_kf produced this result, and the two
+    numbers that branch decided on.
+
+    Every return path stamps, in both outlier modes, because these fields are
+    the measurement: solver.py copies them onto the history record, so a
+    capture taken under one policy can say what the other would have shown for
+    the same solves (kf_d2 and kf_innov_m are exactly the two quantities the
+    hold decision is made from).  d2/innov_m are None on the paths that never
+    computed an innovation — first solve, gap re-init, duplicate timestamp —
+    rather than 0, which would read as "the innovation was zero".
+
+    Stamped IN PLACE on the raw-passthrough paths: those return the caller's
+    own dict by identity (the EWMA contract this filter kept), and copying
+    just to add three diagnostic fields would break that.
+    """
+    result["kf_action"] = action
+    result["kf_d2"] = round(d2, 2) if d2 is not None else None
+    result["kf_innov_m"] = round(innov_m, 1) if innov_m is not None else None
+    return result
 
 
 def _sweep(now_s: float) -> None:
@@ -391,8 +496,51 @@ def _kf_correct(
     return x_new, p_new, y, s
 
 
-def _measurement_R(result: dict) -> np.ndarray:
+def _base_sigma_m(result: dict, dark: bool) -> float:
+    """The additive base sigma _measurement_R composes on top of the formal
+    covariance, in metres.
+
+    TRACK_KF_R_SOURCE picks where it comes from:
+
+      "flat" (default) — _KF_DEFAULT_POS_SIGMA_M, 1200 m for every solve
+      regardless of node count.  That is what the filter has always used, and
+      it is why a two-node solve and a five-node solve are priced identically
+      here even though the two-node one is measured to land more than 3 km off
+      36-62% of the time against 2% at n>=5.
+
+      "uncertainty" — services/solve_uncertainty.solve_sigma_m for this solve,
+      the same calibrated number the map draws the uncertainty disc from
+      (per-node-count floors 650/210/180 m at n=2/3/>=4, the formal sigma
+      added in quadrature, x1.5 on the dark lane).  It was fitted on 944
+      solves with ground truth for exactly this job — saying how wrong a solve
+      of this shape usually is — so using it here makes the filter trust a
+      solve as much as the display already claims to, no more.
+
+    solve_sigma_m returns None for a result with no n_nodes; there is no
+    calibrated floor to apply then, so the flat default is the honest answer
+    rather than a guess derived from the formal sigma alone.
+
+    The import is deliberately function-local: solve_uncertainty imports this
+    module at module scope (for velocity_sigma_ms -> learned_velocity), so a
+    top-level import here would be a cycle.
+    """
+    if _r_source() != "uncertainty":
+        return _KF_DEFAULT_POS_SIGMA_M
+
+    from services.solve_uncertainty import solve_sigma_m
+
+    sigma = solve_sigma_m(result, dark=dark)
+    return _KF_DEFAULT_POS_SIGMA_M if sigma is None else float(sigma)
+
+
+def _measurement_R(result: dict, *, dark: bool = False) -> np.ndarray:
     """Per-solve position measurement covariance, in m^2.
+
+    ``dark`` is the lane of the track key this solve is being smoothed onto
+    (solver.py keys the dark lane "mn-dark-*"), threaded in from _smooth_kf
+    because the calibrated base sigma is lane-dependent — it defaults to False
+    so that the ``flat`` R source, which never looks at the lane, keeps a
+    one-argument call site.
 
     ADDITIVE composition (see the _KF_R_INFLATE comment above for the
     staging measurements this is built from): the formal LM-fit covariance,
@@ -407,8 +555,9 @@ def _measurement_R(result: dict) -> np.ndarray:
     an ill-conditioned solve really does produce — see the determinant check
     in the body for why that has to be rejected rather than passed through.
 
-    where base = diag(_KF_DEFAULT_POS_SIGMA_M**2, _KF_DEFAULT_POS_SIGMA_M**2)
-    is added UNCONDITIONALLY — the no-cov fallback is not a separate branch,
+    where base = diag(base_sigma**2, base_sigma**2) — base_sigma being
+    _KF_DEFAULT_POS_SIGMA_M or the calibrated per-solve sigma depending on
+    TRACK_KF_R_SOURCE, see _base_sigma_m — is added UNCONDITIONALLY — the no-cov fallback is not a separate branch,
     it is exactly this same formula evaluated at cov_m2 = 0.  This is what
     lets a well-conditioned solve (small cov_m2) and a poorly-conditioned one
     (large cov_m2) still land at meaningfully different R after inflation,
@@ -421,7 +570,8 @@ def _measurement_R(result: dict) -> np.ndarray:
     diagonal.  The floor is mostly inert now (see that constant's comment);
     the cap still matters for a badly-conditioned Jacobian.
     """
-    base = np.diag([_KF_DEFAULT_POS_SIGMA_M**2, _KF_DEFAULT_POS_SIGMA_M**2])
+    base_sigma = _base_sigma_m(result, dark)
+    base = np.diag([base_sigma**2, base_sigma**2])
     r = base
     cov = result.get("cov_en_km2")
     if cov is not None:
@@ -520,9 +670,15 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
     r_lat = result["lat"]
     r_lon = result["lon"]
     ts_s = result.get("timestamp_ms", 0) / 1000.0
+    # The lane, from the key solver.py keyed this solve onto (the same
+    # authority multinode_to_aircraft uses).  Both new behaviours are
+    # lane-aware: the calibrated base sigma carries a dark gain, and holding
+    # is dark-only because the ADS-B lane keys off the transponder hex and so
+    # never suffers the wrong-key proximity join this defends against.
+    dark = track_key.startswith("mn-dark-")
 
     has_adsb_vel, v0e, v0n = _adsb_velocity(adsb_hex)
-    r_pos = _measurement_R(result)
+    r_pos = _measurement_R(result, dark=dark)
 
     with _KF_LOCK:
         _sweep(ts_s)
@@ -530,7 +686,8 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
 
         if entry is None:
             _KF_TRACKS[track_key] = _init_entry(r_lat, r_lon, ts_s, result, has_adsb_vel, v0e, v0n, r_pos)
-            return result  # first solve for this key — nothing to smooth against yet
+            # First solve for this key — nothing to smooth against yet.
+            return _stamp(result, "init")
 
         dt = ts_s - entry.last_ts_s
         if dt <= 0:
@@ -541,13 +698,13 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
             # rounds re-solved the same epoch.  Fusing them would
             # double-count the same underlying measurements rather than add
             # independent evidence, so this stays a no-op, same as the EWMA.
-            return result
+            return _stamp(result, "passthrough")
 
         if dt > _KF_MAX_GAP_S:
             # Too long a gap to bridge with any confidence — start over here,
             # same threshold and same rationale as solver.py's _MN_DR_MAX_AGE_S.
             _KF_TRACKS[track_key] = _init_entry(r_lat, r_lon, ts_s, result, has_adsb_vel, v0e, v0n, r_pos)
-            return result
+            return _stamp(result, "init")
 
         f, q = _f_q(dt)
         x_pred = f @ entry.x
@@ -561,15 +718,63 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
         z = np.array([z_e, z_n])
         x_upd, p_upd, y, s_cov = _kf_correct(x_pred, p_pred, z, _H_POS, r_pos)
         d2 = float(y @ np.linalg.solve(s_cov, y))
+        innov_m = float(math.hypot(float(y[0]), float(y[1])))
 
         if d2 > _KF_GATE_CHI2:
             # This measurement is not a plausible continuation of the track
             # this filter has been carrying — track identity broke (a merge,
             # a re-association, a genuinely different aircraft), not a sharp
-            # manoeuvre.  Re-anchor at the new position instead of smearing
-            # the estimate across two aircraft.
+            # manoeuvre.
+            #
+            # Which of those two it is, the solve cannot say and the track
+            # can.  TRACK_KF_OUTLIER_MODE="reanchor" (the default, and every
+            # non-dark key) believes the solve and re-anchors at it.  "hold"
+            # believes an ESTABLISHED dark track instead, because that is what
+            # the 2026-09-05 ghost tracing found the failure to be: 58% of
+            # ghost frames sat on keys with four-or-more-node solves already
+            # behind them, moved there by a two- or three-node solve that
+            # joined by proximity and was simply wrong (25% of n=3 joins land
+            # >3 km off; an exactly-determined three-node fit has rms ~0
+            # whether or not it is right, so nothing at solve time catches
+            # it).  A key with several four-plus-node solves behind it knows
+            # its position to a few hundred metres, and a 4 km innovation
+            # against that is not flight — 250 m/s x 5 s is 1.25 km.
+            if (
+                _outlier_mode() == "hold"
+                and dark
+                and entry.n_updates >= _KF_HOLD_MIN_UPDATES
+                and innov_m > _KF_HOLD_MIN_INNOV_M
+            ):
+                entry.breach_streak += 1
+                if entry.breach_streak < _KF_HOLD_MAX_STREAK:
+                    # HOLD: the update is not applied and the anchor does not
+                    # move; the state advances by the coast (x_pred, p_pred)
+                    # alone, so the key is refreshed at its own predicted
+                    # position, learned_velocity keeps working, and the
+                    # growing p_pred makes the filter progressively easier to
+                    # convince if the new position is real after all.
+                    entry.x = x_pred
+                    entry.P = p_pred
+                    entry.last_ts_s = ts_s
+                    lat_h, lon_h = offset_latlon_m(
+                        entry.ref_lat, entry.ref_lon, east_m=float(x_pred[0]), north_m=float(x_pred[2])
+                    )
+                    held = dict(result)
+                    held["lat"] = round(lat_h, 6)
+                    held["lon"] = round(lon_h, 6)
+                    held["smoother"] = "kf"
+                    held["kf_pos_sigma_m"] = round(math.sqrt(max(0.0, 0.5 * (p_pred[0, 0] + p_pred[2, 2]))), 1)
+                    return _stamp(held, "held", d2, innov_m)
+                # The streak ran out: the new position has been confirmed
+                # _KF_HOLD_MAX_STREAK times running, so this is not one bad
+                # join, the identity genuinely changed.  Fall through and
+                # re-anchor — _init_entry builds a fresh entry, which is also
+                # what resets the streak.
+
+            # Re-anchor at the new position instead of smearing the estimate
+            # across two aircraft.
             _KF_TRACKS[track_key] = _init_entry(r_lat, r_lon, ts_s, result, has_adsb_vel, v0e, v0n, r_pos)
-            return result
+            return _stamp(result, "reanchored", d2, innov_m)
 
         # Velocity measurement update: ADS-B ONLY.  Solved vel_east/vel_north
         # is deliberately NOT applied here — see the _KF_VEL_SIGMA_SOLVE_MS
@@ -591,6 +796,12 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
         entry.x = x_upd
         entry.P = p_upd
         entry.last_ts_s = ts_s
+        # An accepted update is what makes a track established (and, in hold
+        # mode, what gives it standing to overrule a later solve); it also
+        # ends any run of held breaches, since the track and the solves agree
+        # again.
+        entry.n_updates += 1
+        entry.breach_streak = 0
 
         lat_s, lon_s = offset_latlon_m(entry.ref_lat, entry.ref_lon, east_m=float(x_upd[0]), north_m=float(x_upd[2]))
         smoothed = dict(result)
@@ -611,7 +822,7 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
             lon_s,
             smoothed["kf_pos_sigma_m"],
         )
-        return smoothed
+        return _stamp(smoothed, "smoothed", d2, innov_m)
 
 
 # ── Public API ────────────────────────────────────────────────────────────
@@ -629,6 +840,10 @@ def smooth_solve(result: dict, track_key: str, adsb_hex: str | None, *, ewma_fn=
       "ewma" — delegate to ewma_fn (solver.py's legacy _ewma_smooth_track),
                the pre-KF behaviour kept as an escape hatch.
       "off"  — return result unchanged.
+
+    The "kf" branch additionally honours TRACK_KF_R_SOURCE and
+    TRACK_KF_OUTLIER_MODE (see the module docstring); both default to the
+    behaviour this filter has always had.
     """
     mode = os.getenv("TRACK_SMOOTHER", "kf")
     mode = (mode or "kf").strip().lower()

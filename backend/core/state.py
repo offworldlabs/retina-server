@@ -611,6 +611,21 @@ solver_anchored_published: int = 0
 solver_key_minted_dark: int = 0
 solver_key_proximity_dark: int = 0
 
+# Display-filter outlier decisions on DARK keys (services/track_filter.py's
+# innovation gate, bumped in solver.py's publish path from the smoothed
+# result's kf_action).  A gate breach means the solve and the track the key
+# has been carrying disagree by more than the filter's own covariance can
+# explain; reanchored is the filter believing the solve, held is it believing
+# an established track instead (TRACK_KF_OUTLIER_MODE=hold — see that module
+# for the ghost measurement that motivates it).  Both are cumulative
+# regardless of mode, the consensus/claiming convention: in the default
+# reanchor mode kf_held stays zero and kf_reanchored is the size of the
+# population a hold would act on.  The ADS-B lane is excluded — it keys off
+# the transponder hex and cannot suffer the wrong-key proximity join this
+# observes.
+kf_held: int = 0
+kf_reanchored: int = 0
+
 # Publishes whose velocity carried the vel_untrusted flag (vz saturated, or
 # raw-solve velocity at n<=3) — the denominator is solver_successes.
 solver_vel_untrusted_published: int = 0
@@ -757,6 +772,7 @@ def _reset_for_tests() -> None:
     global solver_consensus_fallback, solver_consensus_shadow
     global solver_anchor_hits, solver_anchor_fallbacks, solver_anchored_published
     global solver_key_minted_dark, solver_key_proximity_dark
+    global kf_held, kf_reanchored
     global solver_vel_untrusted_published
     global fov_shadow_agree, fov_shadow_would_pass, fov_shadow_would_reject
     global fov_neg_events
@@ -848,6 +864,7 @@ def _reset_for_tests() -> None:
         solver_consensus_fallback = solver_consensus_shadow = 0
         solver_anchor_hits = solver_anchor_fallbacks = solver_anchored_published = 0
         solver_key_minted_dark = solver_key_proximity_dark = 0
+        kf_held = kf_reanchored = 0
         solver_vel_untrusted_published = 0
         fov_shadow_agree = fov_shadow_would_pass = fov_shadow_would_reject = 0
         fov_neg_events = 0
