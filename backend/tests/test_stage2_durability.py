@@ -18,6 +18,7 @@ import time
 os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
+from core import state  # noqa: E402
 from services import frame_processor as fp  # noqa: E402
 from services import state_snapshot as snap  # noqa: E402
 
@@ -92,6 +93,64 @@ class TestArchiveFlushExclusivity:
             fp._archive_buffer["n1"].append({"seq": 0})
         fp._flush_archive_node("n1")
         assert "n1" not in fp._archive_inflight  # next cycle can retry
+
+
+class TestArchiveBufferReclamation:
+    """A buffer key is popped only on a successful write that empties it.
+
+    A node that departs while its buffer is non-empty and its writes are
+    failing therefore pinned its frames for the process lifetime, and
+    flush_all_archive_buffers retried it every cycle forever — bounded per
+    node, unbounded in node count across a long uptime with node churn.
+    """
+
+    def setup_method(self):
+        fp._reset_for_tests()
+        state.connected_nodes.pop("gone", None)
+        state.connected_nodes.pop("live", None)
+
+    def teardown_method(self):
+        self.setup_method()
+
+    def _fail_once(self, monkeypatch, node_id):
+        def boom(nid, frames):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(fp, "archive_detections", boom)
+        with fp._archive_buffer_lock:
+            fp._archive_buffer[node_id].append({"seq": 0})
+        fp._flush_archive_node(node_id)
+
+    def test_departed_node_buffer_is_abandoned_after_the_ttl(self, monkeypatch):
+        self._fail_once(monkeypatch, "gone")
+        assert "gone" in fp._archive_fail_since
+        # Age the failure past the TTL rather than waiting six hours.
+        with fp._archive_buffer_lock:
+            fp._archive_fail_since["gone"] -= fp.ARCHIVE_BUFFER_FAIL_TTL_S + 1
+
+        fp.flush_all_archive_buffers()
+
+        assert "gone" not in fp._archive_buffer
+        assert "gone" not in fp._archive_fail_since
+
+    def test_connected_node_keeps_its_frames_however_long_the_outage(self, monkeypatch):
+        """Retain-on-failure is the point: a live node must not lose data."""
+        state.connected_nodes["live"] = {"status": "active"}
+        self._fail_once(monkeypatch, "live")
+        with fp._archive_buffer_lock:
+            fp._archive_fail_since["live"] -= fp.ARCHIVE_BUFFER_FAIL_TTL_S + 1
+
+        fp.flush_all_archive_buffers()
+
+        assert fp._archive_buffer["live"] == [{"seq": 0}]
+
+    def test_a_successful_write_clears_the_failure_clock(self, monkeypatch):
+        self._fail_once(monkeypatch, "gone")
+        assert "gone" in fp._archive_fail_since
+        monkeypatch.setattr(fp, "archive_detections", lambda nid, frames: None)
+        fp._flush_archive_node("gone")
+        assert "gone" not in fp._archive_fail_since
+        assert "gone" not in fp._archive_buffer
 
 
 class TestSnapshotAtomicity:

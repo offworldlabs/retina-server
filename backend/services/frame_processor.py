@@ -16,6 +16,7 @@ from retina_tracker.track import TrackState
 from config.constants import (
     ADSB_VIEW_TAG_FRESH_N,
     ARCHIVE_BATCH_MAX,
+    ARCHIVE_BUFFER_FAIL_TTL_S,
     ARCHIVE_FLUSH_INTERVAL_S,
     N2_TRACK_HISTORY_MAX,
     TRACK_MAX_STALE_S,
@@ -50,6 +51,10 @@ _ARCHIVE_BUFFER_HARD_CAP = ARCHIVE_BATCH_MAX * 2
 # N frames (duplicate Parquet rows) and then truncate twice, discarding up to
 # N frames that arrived during the first write.
 _archive_inflight: set[str] = set()
+# node_id → epoch of the first failed write in the current run of failures,
+# cleared on the next success.  Read only by _reclaim_dead_archive_buffers;
+# guarded by _archive_buffer_lock like the buffer itself.
+_archive_fail_since: dict[str, float] = {}
 
 
 def _flush_archive_node(node_id: str):
@@ -79,6 +84,7 @@ def _flush_archive_node(node_id: str):
         # a memory cap so a sustained outage can't OOM the process.
         with _archive_buffer_lock:
             _archive_inflight.discard(node_id)
+            _archive_fail_since.setdefault(node_id, time.time())
             buf = _archive_buffer.get(node_id, [])
             if len(buf) > _ARCHIVE_BUFFER_HARD_CAP:
                 dropped = len(buf) - _ARCHIVE_BUFFER_HARD_CAP
@@ -101,6 +107,7 @@ def _flush_archive_node(node_id: str):
     n_written = len(frames)
     with _archive_buffer_lock:
         _archive_inflight.discard(node_id)
+        _archive_fail_since.pop(node_id, None)
         buf = _archive_buffer.get(node_id, [])
         remaining = buf[n_written:]
         if remaining:
@@ -109,12 +116,52 @@ def _flush_archive_node(node_id: str):
             _archive_buffer.pop(node_id, None)
 
 
+def _reclaim_dead_archive_buffers() -> None:
+    """Abandon buffers for departed nodes whose writes keep failing.
+
+    A buffer key is popped only on a *successful* write that leaves nothing
+    behind (see the tail of _flush_archive_node), so a node that departs while
+    its buffer is non-empty and its writes are failing pins up to
+    _ARCHIVE_BUFFER_HARD_CAP frames for the process lifetime — and
+    flush_all_archive_buffers retries it on every cycle, forever.  Bounded per
+    node, unbounded in node count across a long uptime with node churn.
+
+    Both conditions are required.  Retain-on-failure is deliberate (a
+    transient disk-full must not drop data), so a node that is still connected
+    keeps its frames however long the outage lasts; only a node that has left
+    connected_nodes AND has been failing for ARCHIVE_BUFFER_FAIL_TTL_S is given
+    up on.  The two locks are taken in sequence, never nested — this runs on
+    the archive-flush executor thread while frame workers hold the buffer lock.
+    """
+    now = time.time()
+    with _archive_buffer_lock:
+        expired = [nid for nid, since in _archive_fail_since.items() if now - since > ARCHIVE_BUFFER_FAIL_TTL_S]
+    if not expired:
+        return
+    with state.connected_nodes_lock:
+        live = set(state.connected_nodes)
+    with _archive_buffer_lock:
+        for nid in expired:
+            if nid in live or nid in _archive_inflight:
+                continue
+            dropped = len(_archive_buffer.pop(nid, []))
+            failing_for = now - _archive_fail_since.pop(nid, now)
+            logging.warning(
+                "Abandoning archive buffer for departed node %s after %.0fs of failed writes"
+                " (%d frames dropped)",
+                nid,
+                failing_for,
+                dropped,
+            )
+
+
 def flush_all_archive_buffers():
     """Flush every node's buffered frames. Called from the background task."""
     with _archive_buffer_lock:
         node_ids = list(_archive_buffer.keys())
     for nid in node_ids:
         _flush_archive_node(nid)
+    _reclaim_dead_archive_buffers()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -137,6 +184,7 @@ def _reset_for_tests() -> None:
     with _archive_buffer_lock:
         _archive_buffer.clear()
         _archive_inflight.clear()
+        _archive_fail_since.clear()
     with _prof_lock:
         _prof_cpu = _prof_wall = 0.0
         _prof_analytics = _prof_assoc = _prof_known = _prof_pipeline = _prof_archive = 0.0
