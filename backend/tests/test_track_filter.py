@@ -1432,7 +1432,9 @@ class TestHoldThroughTheSolver:
         return fn
 
     def _run(self, result):
-        return solver_mod._process_solver_item(({"n_nodes": result["n_nodes"]}, {}, time.time()), self._solve_fn(result))
+        return solver_mod._process_solver_item(
+            ({"n_nodes": result["n_nodes"]}, {}, time.time()), self._solve_fn(result)
+        )
 
     def test_a_held_solve_publishes_at_the_held_position(self):
         # Base the line at "now" so the entry never looks stale to the
