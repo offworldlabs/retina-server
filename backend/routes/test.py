@@ -14,6 +14,7 @@ from config.constants import FT_TO_M, is_num
 from core import state
 from core.task_registry import get_stale_tasks
 from core.users import require_admin
+from services import track_filter
 from services.frame_processor import resolve_ground_truth_hex
 from services.geo import haversine_km
 from services.id_utils import is_transponder_hex, normalize_hex_key
@@ -1337,6 +1338,15 @@ def _solver_window_stats(minutes: float) -> dict:
             "mn_superseded_blocked": state.mn_superseded_blocked,
             "mn_superseded_blocked_alt": state.mn_superseded_blocked_alt,
         },
+        # Display smoother (services/track_filter.py), since boot except
+        # manoeuvre_active, which is a live gauge.  reanchors are chi-squared
+        # gate breaches that the manoeuvre retry could NOT explain — genuine
+        # identity breaks; manoeuvre_rescues are the ones it could, which
+        # before the adaptive process noise existed were counted in the first
+        # group and were most of it (every turn past ~60-110 degrees produced
+        # one).  A rising re-anchor count with rescues near zero means the
+        # manoeuvre sigma is too small for the turns being flown.
+        "display_filter": track_filter.filter_stats(),
         "counters": {
             "successes": state.solver_successes,
             "failures": state.solver_failures,
