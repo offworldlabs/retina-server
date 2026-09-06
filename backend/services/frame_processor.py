@@ -385,7 +385,9 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # cannot cross-pair into a phantom solve).  _pframe is what the dark
     # lane processes from here down; the original frame is untouched, so
     # the archive and the ADS-B cache extraction below still see everything
-    # the node sent.
+    # the node sent.  Dark track following (DARK_FOLLOW_MODE) rides the same
+    # stage — it claims what the ADS-B paths leave, so it cannot run without
+    # them, which is why it is gated on KNOWN_LANE_MODE too.
     _pframe = frame
     if state.KNOWN_LANE_MODE != "off" and frame.get("delay"):
         # Fail open: the known lane is an overlay on the dark lane, and in
@@ -393,10 +395,20 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
         # this guard, one ADS-B record with alt_baro="ground" threw here and
         # took every frame down with it until the record aged out.
         try:
-            _claimed = claim_known_targets(node_id, frame)
+            # Two lanes claim here, with independent binding modes, so the
+            # strip is computed as one union and applied once: strip_claimed_
+            # detections re-bases the indices it keeps, and a second strip
+            # against the first's output would delete the wrong detections.
+            _followed: set[int] = set()
+            _claimed = claim_known_targets(node_id, frame, follow_claimed=_followed)
+            _strip: set[int] = set()
             if _claimed and state.KNOWN_LANE_MODE == "binding":
-                _pframe = strip_claimed_detections(frame, _claimed)
+                _strip |= _claimed
                 state.bump_counter("known_claims_bound", len(_claimed))
+            if _followed and state.DARK_FOLLOW_MODE == "binding":
+                _strip |= _followed
+            if _strip:
+                _pframe = strip_claimed_detections(frame, _strip)
         except Exception:
             state.bump_counter("known_claims_errors")
             now = time.time()
