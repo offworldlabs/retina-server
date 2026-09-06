@@ -74,6 +74,56 @@ KNOWN_LANE_MODE = os.getenv("KNOWN_LANE_MODE", "binding").lower()
 if KNOWN_LANE_MODE not in ("off", "shadow", "binding"):
     KNOWN_LANE_MODE = "shadow"
 
+# Measurement epoch alignment (see services/tasks/solver.align_measurement_epochs).
+# on/off rather than the off/shadow/active triple its neighbours use: there is
+# nothing to shadow — the correction is a closed-form dead-reckoning of each
+# delay along its own measured Doppler, so a dry run would produce the same
+# number the acting run applies and observe nothing extra.  Default "on",
+# because leaving it off is the bug: nodes sample at independent phases and the
+# solver treats their measurements as simultaneous, so a 250 m/s target charges
+# up to ~1 us of delay error per second of skew (measured ~0.3 us rms at 2 s
+# skew on the fleet) straight to the 3 us rms gate.  The flag exists so the
+# alignment can be turned off live without a rollback if it ever misbehaves.
+SOLVER_EPOCH_ALIGN = os.getenv("SOLVER_EPOCH_ALIGN", "on").strip().lower() != "off"
+# How the n>=3 solve gets its altitude (see services/tasks/solver.py's
+# _solve_best_altitude).  sweep/free, read here rather than in that module so
+# it sits with its sibling mode flags and a test can monkeypatch it without
+# reimporting the solver.
+#   sweep (default) — solve once per fixed altitude layer, keep the lowest
+#           rms_delay.  Six pool round trips per candidate, and an altitude
+#           quantised to the ladder: layers are 2 km apart, so the pin is
+#           systematically up to 1 km wrong and that error lands in the
+#           residual the reject gate reads.
+#   free  — one pool call to retina_geolocator's multi-start helper, which
+#           solves altitude as a sixth unknown, started from
+#           SOLVER_FREE_ALT_STARTS of those layers.
+# Not off/shadow/active: there is no shadow here, because the two modes
+# produce the same shape of result and the history record carries
+# altitude_mode either way — running both would double the solver's cost to
+# learn what one deploy of each already says.  An unrecognised value falls
+# back to "sweep", the same degrade-to-inert rule the sibling flags use.
+SOLVER_ALT_MODE = os.getenv("SOLVER_ALT_MODE", "sweep").lower()
+if SOLVER_ALT_MODE not in ("sweep", "free"):
+    SOLVER_ALT_MODE = "sweep"
+
+# How many start altitudes the free mode hands that helper.  Read here beside
+# the mode it qualifies; _free_alt_starts in services/tasks/solver.py clamps it
+# into [1, len(layers)] against the ladder that module owns.  1 starts at the
+# layer nearest the association guess — where the sweep would have pinned;
+# more is a window around it.
+#
+# The default is 1 because three starts did not pay for themselves: over 1019
+# free-mode solves on test, the three starts' rms_delay differed by more than
+# 0.1 us in 13 of them, and the nearest-layer start was more than 0.5 us worse
+# than the best start in 2.  That is ~0.2% of solves helped for 3x the solver
+# CPU, and the pool — not the altitude ladder — is what this deployment is
+# short of (~1.7 attempts/s against a 2.0 s average latency on two workers).
+# The knob stays because the reason for several starts is the LM's locality,
+# which is a property of the geometry rather than of this fleet: nodes lying
+# nearer a bistatic ellipse than these can send a single start to the wrong
+# side of it, and finding that out should not need a code change.
+SOLVER_FREE_ALT_STARTS = max(1, int(os.getenv("SOLVER_FREE_ALT_STARTS", "1")))
+
 node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR, fov_mode=FOV_MODE)
 
 
@@ -475,6 +525,15 @@ solver_queue: _stdlib_queue.Queue = _stdlib_queue.Queue(maxsize=_SOLVER_QUEUE_SI
 
 # Monotonic counter for dropped frames (useful for monitoring)
 frames_dropped: int = 0
+# Frames the per-node rate limiter refused before they ever reached
+# frame_queue (tcp_handler's NODE_FRAME_MIN_INTERVAL_S gate).  A different
+# event from frames_dropped, which is queue saturation: this one is the
+# pipeline deliberately sampling a node down to ~1 Hz, and a node streaming at
+# 22 fps therefore reports a large number here while dropping nothing.  It was
+# uncounted, so "how much of a node's evidence does the tracker actually see"
+# had no answer at all — the frames_dropped that IS published
+# (/api/admin/metrics) says zero throughout.
+node_frames_rate_limited: int = 0
 frames_processed: int = 0
 solver_successes: int = 0
 solver_failures: int = 0
@@ -526,6 +585,21 @@ coverage_rebuild_nodes: int = 0
 # fleet's trigger rate — constraints are then converging slower than the
 # coverage they follow, which no rebuild counter can show.
 coverage_rebuild_backlog: int = 0
+
+# Confirmed tracks withheld from association because their newest REAL
+# detection was older than TRACK_MAX_STALE_S at the frame being processed —
+# see services/frame_processor.confirmed_track_views.  These are aircraft that
+# have left a node's beam and whose track is dead-reckoning toward deletion;
+# their last real sample used to reach the solver as a current measurement.
+tracks_stale_skipped: int = 0
+
+# Solver inputs whose measurements could not be aligned to a common epoch
+# because at least one lacked t_s, doppler_hz, or a node config with fc_hz —
+# see services/tasks/solver.align_measurement_epochs.  Counted only when
+# SOLVER_EPOCH_ALIGN is on; a nonzero value against solver_successes says how
+# much of the fleet is still emitting untimed measurements.
+solver_epoch_align_skipped: int = 0
+
 solver_queue_drops: int = 0
 # Queue items discarded unsolved because they aged past _SOLVER_MAX_QUEUE_AGE_S
 # waiting for a worker.  Was only a DEBUG log, which staging does not emit —
@@ -535,13 +609,35 @@ solver_queue_drops: int = 0
 solver_stale_drops: int = 0
 
 # Candidates dequeued and skipped because every single-node track they carry
-# was already solved within _SOLVER_RESOLVE_INTERVAL_S at no fewer nodes (see
-# solver.py's _claim_resolve_slot).  Association is per-node and rate-limited
-# per node, so one aircraft arrives as one candidate per node that can see it;
-# this counts the copies that were never worth solving.  High against
-# solver_successes is normal and is the mechanism working — it is
-# solver_stale_drops that means work was lost.
+# was already PUBLISHED within _SOLVER_RESOLVE_INTERVAL_S at no fewer nodes
+# (see solver.py's _resolve_slot_covered).  Association is per-node and
+# rate-limited per node, so one aircraft arrives as one candidate per node
+# that can see it; this counts the copies that were never worth solving.  High
+# against solver_successes is normal and is the mechanism working — it is
+# solver_stale_drops that means work was lost.  Read it against
+# solver_successes, not against attempts: while the claim was taken on
+# ADMISSION rather than on publication, a rejected candidate blacked out every
+# later one sharing a track id and this counter ran at ~2.4x attempts.
 solver_resolve_skips: int = 0
+
+# The dark-lane share of the counter above, split out because the two lanes
+# read completely differently: an ADS-B-anchored duplicate that is skipped
+# costs nothing (the transponder keeps the track alive anyway), while a
+# skipped dark candidate may be the only chance that aircraft had of reaching
+# the map this window.  Lane is decided by solver._is_dark_solver_input, the
+# same predicate routes.test._record_lane falls back to for a record that
+# never got a key — and a skip never gets one.
+solver_resolve_skips_dark: int = 0
+
+# The last few hundred resolve-slot skips, with the claims that blocked them.
+# Deliberately NOT the solve-history deque: a skip is not a solve outcome, and
+# writing one record per skip into mlat_solve_history would evict the real
+# records at roughly twice their rate (live: ~1 537 skips per 646 dark
+# attempts per 30 min).  Small and separate, read by
+# /api/test/solver-stats' resolve_skips block and dumped by
+# /api/test/mlat-history?kind=resolve_skips.  ~250 B/entry.
+SOLVER_RESOLVE_SKIPS_RECENT_MAX = 500
+solver_resolve_skips_recent: deque = deque(maxlen=SOLVER_RESOLVE_SKIPS_RECENT_MAX)
 
 # Multinode entries removed because a later solve shared a source single-node
 # track with them AND the spatial/identical-inputs guard in solver.py's
@@ -746,12 +842,14 @@ def _reset_for_tests() -> None:
     global latest_mlat_accuracy_bytes, latest_mlat_verification_bytes
     global latest_storage_bytes, simulation_config
     global frames_dropped, frames_processed, solver_successes, solver_failures
+    global node_frames_rate_limited
     global adsb_seed_frames_autotagged, adsb_capture_ts_fallback
     global known_claims_made, known_claim_contentions, known_claims_bound
     global known_claims_errors, known_claims_visibility_rejects, known_claims_world_rejects
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
-    global coverage_rebuild_backlog
+    global coverage_rebuild_backlog, tracks_stale_skipped, solver_epoch_align_skipped
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
+    global solver_resolve_skips_dark
     global mn_superseded, mn_superseded_blocked, solver_trimmed
     global solver_consensus_selected, solver_consensus_filtered
     global solver_consensus_fallback, solver_consensus_shadow
@@ -801,6 +899,7 @@ def _reset_for_tests() -> None:
     track_archive_buffer.clear()
     mlat_solve_history.clear()
     mlat_solve_history_known.clear()
+    solver_resolve_skips_recent.clear()
     accuracy_samples.clear()
     mlat_samples.clear()
     for q in (frame_queue, solver_queue):
@@ -832,7 +931,7 @@ def _reset_for_tests() -> None:
     simulation_config = dict(_SIMULATION_CONFIG_DEFAULTS)
 
     with counters_lock:
-        frames_dropped = frames_processed = 0
+        frames_dropped = frames_processed = node_frames_rate_limited = 0
         solver_successes = solver_failures = n2_unconfirmed = 0
         adsb_seed_frames_autotagged = adsb_capture_ts_fallback = 0
         known_claims_made = known_claim_contentions = known_claims_bound = 0
@@ -840,8 +939,9 @@ def _reset_for_tests() -> None:
         known_claims_world_rejects = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
         coverage_rebuild_backlog = 0
+        tracks_stale_skipped = solver_epoch_align_skipped = 0
         solver_stale_drops = 0
-        solver_resolve_skips = 0
+        solver_resolve_skips = solver_resolve_skips_dark = 0
         mn_superseded = mn_superseded_blocked = 0
         solver_trimmed = 0
         solver_consensus_selected = solver_consensus_filtered = 0
