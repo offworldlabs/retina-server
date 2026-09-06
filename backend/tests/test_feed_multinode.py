@@ -21,7 +21,7 @@ os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 from config.constants import MN_DARK_EXPIRY_S, MN_DR_CAP_S  # noqa: E402
 from core import state  # noqa: E402
 from services import track_filter  # noqa: E402
-from services.geo import offset_latlon_m  # noqa: E402
+from services.geo import dr_offset_m, offset_latlon_m  # noqa: E402
 
 LAT, LON = 35.0, -82.0
 
@@ -673,3 +673,56 @@ class TestMultinodeEntryFailureIsolation:
         # exactly one line, not 20.
         assert sum("Multinode feed entry failed" in r.message for r in caplog.records) == 1
         assert aircraft_feed._mn_entry_fail_count == 20
+
+
+class TestMultinodeArcDeadReckon:
+    """The drawn position follows the display filter's ARC, not its tangent.
+
+    services/tasks/solver.py's key decision dead-reckons candidate entries the
+    same way (its _entry_dr_velocity docstring is explicit that the two must
+    agree), so a turning aircraft that is MATCHED on its arc has to be DRAWN
+    on it too — otherwise the solve that joined the key lands nowhere near the
+    icon carrying it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+        track_filter.reset()
+        yield
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+        track_filter.reset()
+
+    def _build_mn(self):
+        from services.frame_processor import build_combined_aircraft_json
+
+        pipeline = types.SimpleNamespace(geolocated_tracks={}, config={})
+        result = build_combined_aircraft_json(pipeline)
+        mn = [a for a in result["aircraft"] if a.get("multinode")]
+        assert len(mn) == 1
+        return mn[0]
+
+    def test_a_turning_entry_is_drawn_on_its_arc(self, monkeypatch):
+        """10 s of a 3 deg/s right turn at 250 m/s: 218 m of cross-track
+        between the arc and the straight line, and the arc is east of it."""
+        state.multinode_tracks["mn-dark-turner"] = _mn_entry(age_s=10.0, vel_north=250.0)
+        monkeypatch.setattr(track_filter, "learned_velocity", lambda key: (0.0, 250.0, 5.0, 0.0))
+        monkeypatch.setattr(track_filter, "turn_rate", lambda key: (math.radians(3.0), 1.0))
+        ac = self._build_mn()
+        east_m, north_m = dr_offset_m(0.0, 250.0, math.radians(3.0), 10.0)  # 10 s, inside MN_DR_CAP_S
+        exp_lat, exp_lon = offset_latlon_m(LAT, LON, east_m=east_m, north_m=north_m)
+        assert ac["lat"] == pytest.approx(exp_lat, abs=2e-4)
+        assert ac["lon"] == pytest.approx(exp_lon, abs=2e-4)
+        # ...and that is measurably NOT the straight line, which is the point.
+        assert ac["lon"] > LON
+
+    def test_no_turn_estimate_is_the_straight_line_unchanged(self, monkeypatch):
+        state.multinode_tracks["mn-dark-straight"] = _mn_entry(age_s=10.0, vel_north=250.0)
+        monkeypatch.setattr(track_filter, "learned_velocity", lambda key: (0.0, 250.0, 5.0, 0.0))
+        monkeypatch.setattr(track_filter, "turn_rate", lambda key: None)
+        ac = self._build_mn()
+        exp_lat, _ = offset_latlon_m(LAT, LON, east_m=0.0, north_m=250.0 * 10.0)
+        assert ac["lat"] == pytest.approx(exp_lat, abs=2e-4)
+        assert ac["lon"] == pytest.approx(LON, abs=1e-5)

@@ -494,6 +494,7 @@ class TestFragmentation:
             "dark_keys_minted": 0,
             "dark_keys_proximity": 0,
             "dark_keys_proximity_negdt": 0,
+            "dark_keys_proximity_turn": 0,
             "mn_superseded": 0,
             "mn_superseded_blocked": 0,
             "mn_superseded_blocked_alt": 0,
@@ -508,12 +509,16 @@ class TestFragmentation:
         state.solver_key_minted_dark = 4
         state.solver_key_proximity_dark = 11
         state.solver_key_proximity_negdt = 3
+        state.solver_key_proximity_turn = 5
         out = _solver_window_stats(10.0)
         assert out["fragmentation"]["dark_keys_minted"] == 4
         assert out["fragmentation"]["dark_keys_proximity"] == 11
         # The out-of-order subset of those re-keys — every one of them a
         # dark_keys_minted before the signed dt window.
         assert out["fragmentation"]["dark_keys_proximity_negdt"] == 3
+        # ...and the turning subset — the population the arc dead reckoning
+        # and the manoeuvre allowance exist for.
+        assert out["fragmentation"]["dark_keys_proximity_turn"] == 5
 
     def test_supersession_counters_are_surfaced(self):
         """Entries popped as the same aircraft against shared-id entries the
@@ -540,6 +545,7 @@ class TestFragmentation:
         assert out["fragmentation"]["dark_keys_minted"] == 0
         assert out["fragmentation"]["dark_keys_proximity"] == 0
         assert out["fragmentation"]["dark_keys_proximity_negdt"] == 0
+        assert out["fragmentation"]["dark_keys_proximity_turn"] == 0
 
 
 class TestEmptyState:
@@ -590,6 +596,7 @@ class TestEndpoint:
             "dark_keys_minted",
             "dark_keys_proximity",
             "dark_keys_proximity_negdt",
+            "dark_keys_proximity_turn",
             "mn_superseded",
             "mn_superseded_blocked",
             "mn_superseded_blocked_alt",

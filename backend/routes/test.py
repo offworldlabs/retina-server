@@ -1319,6 +1319,14 @@ def _solver_window_stats(minutes: float) -> dict:
             # this number is the fragmentation the signed window reclaims —
             # every one of them was a dark_keys_minted before.
             "dark_keys_proximity_negdt": state.solver_key_proximity_negdt,
+            # ...and how many matched an entry the display filter said was
+            # TURNING — dead-reckoned around its arc, or gated with the
+            # manoeuvre allowance.  Turns are where dark keys are born (3.6x
+            # the straight-flight birth rate per second of flight), so this
+            # against dark_keys_minted is the arc DR's share of the
+            # fragmentation, and a flat zero while aircraft are turning means
+            # the turn estimate is not surviving its sign test.
+            "dark_keys_proximity_turn": state.solver_key_proximity_turn,
             # Supersession, also since boot: entries popped because a new
             # solve was judged to be the same aircraft (solver.py's
             # _supersession_match), against entries that shared a source

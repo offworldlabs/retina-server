@@ -110,7 +110,7 @@ import logging
 import math
 import os
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -178,6 +178,34 @@ _KF_MANOEUVRE_D2 = float(os.getenv("TRACK_KF_MANOEUVRE_D2", "2.0"))
 # is still a sigma_a of ~40 — which is why the tests measure the decay on the
 # engagement level rather than on sigma_a.
 _KF_MANOEUVRE_TAU_S = float(os.getenv("TRACK_KF_MANOEUVRE_TAU_S", "15"))
+
+# ── Turn-rate estimate (turn_rate(), for arc dead reckoning) ───────────────
+# How many (timestamp, heading) samples of the LEARNED velocity each entry
+# keeps.  Three: two consecutive rate estimates is the fewest that can
+# disagree, and a sign disagreement is the only cheap way to tell a turn from
+# heading noise on a filter whose position measurements carry a 1200 m floor.
+# More samples would average over a longer baseline than the 4-15 s the
+# association gate has to predict across, and would lag the turn entry.
+_KF_TURN_HISTORY_N = 3
+
+# Hard clamp on the reported rate.  4 deg/s is past a standard-rate turn
+# (3 deg/s, ~1.3 g at 250 m/s) and comfortably past anything a transport
+# aircraft sustains, so a larger number is an artefact of heading noise or of
+# a re-associated position, never a manoeuvre — and dead-reckoning an arc at
+# a fabricated rate is worse than the straight line it replaces.
+_KF_TURN_MAX_RAD_S = math.radians(4.0)
+
+# ...and the deadband under which the reported rate is exactly 0.0 (straight
+# flight, the CV dead reckoning unchanged).  At the median dark cadence a
+# 942 m position sigma is worth several degrees of heading noise per sample,
+# so a rate this small is not evidence of a turn; 0.2 deg/s also costs
+# nothing to ignore — 34 m of arc error over 30 s.
+_KF_TURN_DEADBAND_RAD_S = math.radians(0.2)
+
+# Below this speed the heading of the learned velocity is noise about an
+# undefined direction, and differencing two of them manufactures a turn rate
+# out of nothing.  A dark target this slow is not one the arc DR can help.
+_KF_TURN_MIN_SPEED_MS = 10.0
 
 # Base position-noise floor, applied to EVERY solve (variance = this
 # squared) — see _measurement_R below for why this is now additive rather
@@ -325,6 +353,13 @@ class _TrackKF:
     # re-anchor means the track identity is in question, so its innovation
     # history is too.
     manoeuvre: float = 0.0
+    # Up to _KF_TURN_HISTORY_N recent (timestamp_s, heading_rad) samples of
+    # the LEARNED velocity, oldest first — the input to turn_rate().
+    # Appended once per ACCEPTED update (a rejected/re-anchored one has no
+    # velocity worth believing), and empty on a fresh entry for the same
+    # reason `manoeuvre` starts at 0.0: after a re-anchor the track's own
+    # history is what is in question.
+    heading_hist: list[tuple[float, float]] = field(default_factory=list)
 
 
 # key -> _TrackKF.  Same shape as solver.py's _MN_POS_HISTORY: one entry per
@@ -427,6 +462,70 @@ def learned_velocity(track_key: str) -> tuple[float, float, float, float] | None
             return None
         vel_sigma = math.sqrt(max(0.0, 0.5 * (entry.P[1, 1] + entry.P[3, 3])))
         return float(entry.x[1]), float(entry.x[3]), float(vel_sigma), float(entry.last_ts_s)
+
+
+def _wrap_pi(angle_rad: float) -> float:
+    """``angle_rad`` folded into (-pi, pi] — a heading DIFFERENCE, so a turn
+    through north reads as a few degrees rather than as ~360."""
+    return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
+
+
+def turn_rate(track_key: str) -> tuple[float, float] | None:
+    """(omega_rad_s, manoeuvre_engagement) for this key, or None.
+
+    The rotation rate of the LEARNED velocity's heading, measured across the
+    entry's oldest and newest retained samples (_KF_TURN_HISTORY_N of them),
+    and the entry's current manoeuvre engagement level alongside it.
+    Positive omega is a right/clockwise turn, matching the
+    ``theta = atan2(east, north)`` convention services.geo.dr_offset_m
+    integrates the arc in.
+
+    Read-only and clock-free, exactly like learned_velocity, and injected at
+    its call sites the same way (solver.multinode_key_decision's
+    ``turn_rate_fn``) so the key decision and the offline bench stay testable
+    without KF state.  _KF_LOCK is a leaf lock; callers must not hold it.
+
+    None means "no usable turn estimate — dead-reckon straight", and covers:
+    no filter state for the key; fewer than 2 samples (a fresh or re-anchored
+    entry, or one whose speed never cleared _KF_TURN_MIN_SPEED_MS); a
+    non-positive sample interval; and — the important one — two consecutive
+    rate estimates that DISAGREE IN SIGN, which is what heading noise on a
+    straight track looks like and what a real turn never does.  The sign test
+    ignores rates inside the deadband, so a genuine turn is not thrown away
+    because one interval read as a hair the other way.
+
+    The returned rate is clamped to +-_KF_TURN_MAX_RAD_S and snapped to
+    exactly 0.0 inside _KF_TURN_DEADBAND_RAD_S, so a caller can treat 0.0 as
+    "straight" without repeating the thresholds.  The oldest-to-newest
+    difference is wrapped into (-pi, pi], so an estimate is only meaningful
+    while the retained span holds less than a half turn — which the clamp and
+    the deadband already imply for any sane cadence.
+    """
+    with _KF_LOCK:
+        entry = _KF_TRACKS.get(track_key)
+        if entry is None or len(entry.heading_hist) < 2:
+            return None
+        hist = list(entry.heading_hist)
+        engagement = float(entry.manoeuvre)
+
+    rates = []
+    for (t0, h0), (t1, h1) in zip(hist, hist[1:]):
+        if t1 <= t0:
+            return None
+        rates.append(_wrap_pi(h1 - h0) / (t1 - t0))
+    if len(rates) >= 2:
+        signs = [0 if abs(w) < _KF_TURN_DEADBAND_RAD_S else (1 if w > 0 else -1) for w in rates[-2:]]
+        if signs[0] and signs[1] and signs[0] != signs[1]:
+            return None
+
+    span_s = hist[-1][0] - hist[0][0]
+    if span_s <= 0:
+        return None
+    omega = _wrap_pi(hist[-1][1] - hist[0][1]) / span_s
+    omega = max(-_KF_TURN_MAX_RAD_S, min(_KF_TURN_MAX_RAD_S, omega))
+    if abs(omega) < _KF_TURN_DEADBAND_RAD_S:
+        omega = 0.0
+    return omega, engagement
 
 
 def _kf_reanchor() -> None:
@@ -843,6 +942,14 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
         entry.P = p_upd
         entry.last_ts_s = ts_s
         _update_manoeuvre(entry, dt, d2_observed)
+        # ...and the heading of the velocity this update just learned, for
+        # turn_rate().  Only on the accepted path: a re-anchor returns above
+        # with a fresh entry (and therefore an empty history), which is the
+        # intended behaviour, not an oversight.
+        speed_ms = math.hypot(float(x_upd[1]), float(x_upd[3]))
+        if speed_ms >= _KF_TURN_MIN_SPEED_MS:
+            entry.heading_hist.append((ts_s, math.atan2(float(x_upd[1]), float(x_upd[3]))))
+            del entry.heading_hist[:-_KF_TURN_HISTORY_N]
 
         lat_s, lon_s = offset_latlon_m(entry.ref_lat, entry.ref_lon, east_m=float(x_upd[0]), north_m=float(x_upd[2]))
         smoothed = dict(result)

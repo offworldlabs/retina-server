@@ -333,6 +333,7 @@ class TestKeyDecisionObservability:
         # measurement gap to report.
         assert rec["key_dist_km"] is None
         assert rec["key_dt_s"] is None
+        assert rec["key_omega_deg_s"] is None
         assert state.solver_key_minted_dark == 1
         assert state.solver_key_proximity_dark == 0
 

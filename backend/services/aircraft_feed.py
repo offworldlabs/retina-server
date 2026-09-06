@@ -33,7 +33,7 @@ from services.feed_helpers import (
     dedup_aircraft,
     resolve_ground_truth_hex,
 )
-from services.geo import offset_latlon_m
+from services.geo import dr_offset_m, offset_latlon_m
 from services.id_utils import (
     multinode_hex_from_key,
     normalize_hex_key,
@@ -246,17 +246,27 @@ def _multinode_entry(key: str, r: dict, now: float) -> dict:
     # accessor returns None whenever the KF never saw this key (smoother
     # in ewma/off mode, first solve, TTL-swept) so the fallback below is
     # also the natural off-path, not a separate mode.
+    _omega_rad_s = None
     if (os.getenv("TRACK_DR_SOURCE", "kf") or "kf").strip().lower() != "solve":
         _lv = track_filter.learned_velocity(key)
         if _lv is not None:
             vel_east_m_s, vel_north_m_s = _lv[0], _lv[1]
+            # ...and, from the same filter, the rate that velocity is
+            # ROTATING at, so a turning target is dead-reckoned around its arc
+            # rather than off on the tangent (services.geo.dr_offset_m; None
+            # for a straight or unknown track, which is the CV line
+            # unchanged).  This must stay the same call the solver's key
+            # decision makes — _entry_dr_velocity/_entry_dr_turn — or the
+            # position a solve is MATCHED at and the position the map DRAWS
+            # would disagree about the same aircraft, which is the whole
+            # reason those two share this arithmetic.  At the 15 s cap a
+            # 3 deg/s turn is 1.4 km of tangent error.
+            _tr = track_filter.turn_rate(key)
+            if _tr is not None:
+                _omega_rad_s = _tr[0]
     if elapsed > 0.0 and (vel_east_m_s != 0.0 or vel_north_m_s != 0.0):
-        _dr_lat, _dr_lon = offset_latlon_m(
-            ac["lat"],
-            ac["lon"],
-            east_m=vel_east_m_s * elapsed,
-            north_m=vel_north_m_s * elapsed,
-        )
+        _east_m, _north_m = dr_offset_m(vel_east_m_s, vel_north_m_s, _omega_rad_s, elapsed)
+        _dr_lat, _dr_lon = offset_latlon_m(ac["lat"], ac["lon"], east_m=_east_m, north_m=_north_m)
         ac["lat"], ac["lon"] = round(_dr_lat, 5), round(_dr_lon, 5)
     return ac
 

@@ -28,6 +28,11 @@ from services import dark_follow, track_filter
 # module carried its own haversine, bearing and in-beam rule until those
 # were consolidated into services.geo.
 from services.geo import bearing_deg, bistatic_differential_km, node_beam_params, offset_latlon_m
+
+# THE dead-reckoning displacement, shared with services/aircraft_feed.py so
+# the position this module judges an entry at and the position the feed
+# DRAWS it at are computed by the same arithmetic — see _entry_dr_velocity.
+from services.geo import dr_offset_m as _dr_offset_m
 from services.geo import haversine_km as _haversine_km
 from services.id_utils import is_transponder_hex, multinode_hex_from_key, normalize_hex_key
 from services.solve_uncertainty import solve_sigma_m
@@ -846,6 +851,44 @@ _MN_ASSOC_MAX_AGE_S = 60.0
 # match is exactly the fabrication the old rule refused.
 _MN_ASSOC_MAX_NEG_DT_S = 10.0
 
+# ── Manoeuvre allowance on the proximity gate ────────────────────────────────
+# Lateral acceleration allowed for, used ONLY to widen the proximity gate for
+# a candidate the display filter currently believes is manoeuvring
+# (track_filter.turn_rate's engagement level L, 0..1).
+#
+# 6.5 m/s^2, HALF the standard-rate turn at 250 m/s (3 deg/s is 13 m/s^2, and
+# 13 m/s^2 is also a standard-rate turn at 175 m/s).  13 was the first number
+# tried, and the offline replay of 1030 recorded dark publishes says it is too
+# much: it bought exactly one extra proximity join over the whole capture, and
+# that join was CROSS-AIRCRAFT — an entry the emulated engagement fired on
+# while its ground-truth turn rate was under 1 deg/s — which then cascaded
+# into an extra mint elsewhere.  At 6.5 the same replay is bit-identical to
+# the pre-change rule (no extra joins, no extra mints, no extra
+# cross-aircraft joins), so this is the largest allowance the recorded data
+# supports rather than the largest the kinematics would.
+#
+# Why an allowance at all, when the arc dead reckoning above already removes
+# the geometric half of the error: the velocity the arc is flown at is the
+# display KF's, and mid-turn that velocity lags the truth by up to ~270 m/s
+# (information-limited by the 1200 m measurement floor, see
+# track_filter._KF_MANOEUVRE_D2).  The arc cannot fix a wrong tangent.  The
+# allowance is the cross-track displacement that residual lag can produce,
+# 0.5*a*dt^2, scaled by how strongly the filter believes this entry is
+# manoeuvring at all: 0.64 km at 14 s (the p90 dark cadence) at full
+# engagement, 0.07 km at 4.6 s (the median), and exactly nothing — the
+# shipped gate, unchanged — for the straight-flight entries that are the
+# overwhelming majority.
+_MN_ASSOC_MANOEUVRE_A_LAT_MS2 = 6.5
+# ...capped, because widening any gate risks joining a NEIGHBOUR: 21% of
+# proximity joins measured on test already land on the wrong aircraft, and
+# the dt^2 growth would otherwise reach 2.9 km at the 30 s age tail and keep
+# going to 5.9 km at 60 s.  3 km is half the base gate and roughly the arc
+# error of a standard-rate turn held for 24 s; past that the evidence for
+# "same aircraft" is not distance.
+# Proximity only — supersession is destructive and gets no allowance at all
+# (see _MN_SUPERSEDE_BASE_KM).
+_MN_ASSOC_MANOEUVRE_EXTRA_CAP_KM = 3.0
+
 # ── Supersession gate ────────────────────────────────────────────────────────
 # Supersession is DESTRUCTIVE in a way keying is not.  Keying to the wrong
 # entry writes one bad position that the next solve corrects; superseding the
@@ -928,6 +971,40 @@ def _entry_dr_velocity(key: str, entry: dict, learned_vel_fn) -> tuple[float, fl
     return float(entry.get("vel_east") or 0.0), float(entry.get("vel_north") or 0.0)
 
 
+def _entry_dr_turn(key: str, turn_rate_fn) -> tuple[float | None, float]:
+    """(omega_rad_s or None, manoeuvre engagement 0..1) to dead-reckon with.
+
+    The turn-rate half of _entry_dr_velocity, read from the same filter under
+    the same rule: the display KF's estimate when it has one, and nothing
+    (straight line, no allowance) under TRACK_DR_SOURCE=solve or when the
+    accessor declines — a fresh key, a re-anchored one, heading noise that
+    changed sign.  ``turn_rate_fn`` is injected exactly like
+    ``learned_vel_fn``, so the offline bench and the unit tests can drive a
+    turn without KF state.
+    """
+    if turn_rate_fn is None or (os.getenv("TRACK_DR_SOURCE", "kf") or "kf").strip().lower() == "solve":
+        return None, 0.0
+    tr = turn_rate_fn(key)
+    if tr is None:
+        return None, 0.0
+    return float(tr[0]), float(tr[1])
+
+
+def _mn_manoeuvre_extra_km(engagement: float, dt_s: float) -> float:
+    """Extra proximity gate for an entry the filter believes is manoeuvring.
+
+    ``L * 0.5 * a_lat * dt^2``, capped at _MN_ASSOC_MANOEUVRE_EXTRA_CAP_KM —
+    the cross-track distance the KF's mid-turn velocity lag can put between
+    the arc prediction and the aircraft.  |dt|, because a backwards DR (an
+    entry measured after this solve) is wrong by the same amount forwards.
+    Zero engagement returns exactly 0.0, which is the shipped gate.
+    """
+    if engagement <= 0.0:
+        return 0.0
+    extra_km = engagement * 0.5 * _MN_ASSOC_MANOEUVRE_A_LAT_MS2 * (dt_s * dt_s) / 1000.0
+    return min(extra_km, _MN_ASSOC_MANOEUVRE_EXTRA_CAP_KM)
+
+
 def _collect_track_anomalies(s_in, result: dict) -> None:
     """Stamp contributing-track anomaly flags onto a multinode result.
 
@@ -976,8 +1053,9 @@ def multinode_key_decision(
     max_dist_km: float = _MN_ASSOC_MAX_DIST_KM,
     max_age_s: float = _MN_ASSOC_MAX_AGE_S,
     learned_vel_fn=track_filter.learned_velocity,
+    turn_rate_fn=track_filter.turn_rate,
     anchor_dr: bool = False,
-) -> tuple[str, str, float | None, float | None]:
+) -> tuple[str, str, float | None, float | None, float | None]:
     """The keying rule itself, clock-free — the multinode-track analogue of
     claim_decision.  Extracted so the offline bench measures the SHIPPED rule
     by construction (the same reason claim_decision is imported
@@ -996,16 +1074,22 @@ def multinode_key_decision(
     actually is, and the max_age_s window already bounds dt.
 
     Caller holds _MN_TRACKS_LOCK — it reads `tracks` and the caller writes
-    back into it under the same lock.  Returns (key, how, dist_km, dt_s) with
+    back into it under the same lock.  Returns
+    (key, how, dist_km, dt_s, omega_deg_s) with
     how in {"adsb", "anchor", "proximity", "shadowed", "minted"}; dist_km is
     how far this solve landed from the entry it was keyed onto (dead-reckoned,
     for the proximity and shadowed branches) and None where nothing was
     matched — "adsb" and "minted".  dt_s is the SIGNED age of that entry at
     this solve's epoch (positive = the entry was measured first, negative =
     this solve's measurement is the older of the two), None wherever dist_km
-    is.  The caller stamps all three onto the solve-history record, which is
-    the only way to tell a re-key apart from a
-    fragment after the fact.  "shadowed" is the one verdict that is NOT a key:
+    is.  omega_deg_s is the turn rate the matched entry was dead-reckoned
+    along (positive = right), reported ONLY when the turn estimate actually
+    changed this decision — a non-zero rate, or a non-zero manoeuvre gate
+    allowance — and None otherwise, including for a matched entry the filter
+    reads as flying straight.  So "not None" is exactly the population the
+    solver_key_proximity_turn counter is of.  The caller stamps all of them
+    onto the solve-history record, which is the only way to tell a re-key
+    apart from a fragment after the fact.  "shadowed" is the one verdict that is NOT a key:
     it names the followed key this solve was refused in favour of, and the
     caller must treat it as a rejection (see _process_solver_item).
 
@@ -1034,6 +1118,19 @@ def multinode_key_decision(
          normalised by their own gate, so a fresh close entry beats an old
          far one rather than the scan simply taking whichever is nearer in
          kilometres.
+
+         The dead reckoning follows the ARC when the display filter has a
+         turn rate for the candidate (track_filter.turn_rate through
+         _entry_dr_turn, injectable as ``turn_rate_fn``): a straight-line
+         prediction of a 3 deg/s turn is 0.9 km wrong at 12 s and 5.5 km at
+         30 s, and dark key births were measured 3.6x more likely per second
+         of flight during ground-truth turns than in straight flight.  A
+         candidate the filter additionally believes is MANOEUVRING gets a
+         cross-track allowance added to its gate (_mn_manoeuvre_extra_km),
+         because the arc is only as good as the tangent it is flown from and
+         mid-turn that tangent lags by up to ~270 m/s.  Straight-flight
+         candidates get neither: same arithmetic, same gate, same verdicts as
+         before this existed.
 
          The dt window is SIGNED: -_MN_ASSOC_MAX_NEG_DT_S <= dt <=
          max_age_s, and the dead reckoning uses the signed dt, so a
@@ -1068,7 +1165,7 @@ def multinode_key_decision(
     # ADS-B lane — adsb_assisted=true on the feed, and the mn-dark-* store
     # (so the anchor and proximity branches below) starved forever.
     if adsb_hex and is_transponder_hex(adsb_hex):
-        return f"mn-adsb-{adsb_hex}", "adsb", None, None
+        return f"mn-adsb-{adsb_hex}", "adsb", None, None, None
 
     lat, lon = result["lat"], result["lon"]
     ts_s = result.get("timestamp_ms", 0) / 1000.0
@@ -1099,16 +1196,13 @@ def multinode_key_decision(
             a_dt = ts_s - anchor.get("timestamp_ms", 0) / 1000.0
             if anchor_dr and 0.0 < a_dt <= max_age_s:
                 a_vel_east, a_vel_north = _entry_dr_velocity(anchor_key, anchor, learned_vel_fn)
-                a_lat, a_lon = offset_latlon_m(
-                    a_lat,
-                    a_lon,
-                    east_m=a_vel_east * a_dt,
-                    north_m=a_vel_north * a_dt,
-                )
+                a_omega, _a_eng = _entry_dr_turn(anchor_key, turn_rate_fn)
+                a_east_m, a_north_m = _dr_offset_m(a_vel_east, a_vel_north, a_omega, a_dt)
+                a_lat, a_lon = offset_latlon_m(a_lat, a_lon, east_m=a_east_m, north_m=a_north_m)
                 a_gate_km = _mn_assoc_gate_km(a_dt, max_dist_km)
             a_dist = _haversine_km(lat, lon, a_lat, a_lon)
             if a_dist <= a_gate_km:
-                return anchor_key, "anchor", a_dist, round(a_dt, 3)
+                return anchor_key, "anchor", a_dist, round(a_dt, 3), None
 
     # Candidates compete on d / gate_km, not on d: an entry solved 2 s ago at
     # 5 km is a worse match than one solved 40 s ago at 8 km only if you
@@ -1120,6 +1214,7 @@ def multinode_key_decision(
     best_score = 1.0
     best_dist: float | None = None
     best_dt: float | None = None
+    best_omega_deg_s: float | None = None
     # Key ownership: the nearest key the follow lane is currently answering
     # for, and how far this solve landed from it.  Only collected for a
     # bottom-up solve in binding mode — an anchored or ADS-B solve names the
@@ -1147,12 +1242,9 @@ def multinode_key_decision(
         # walks the entry backwards along its own velocity, to where the
         # aircraft was when this (older) measurement was taken.
         vel_east_ms, vel_north_ms = _entry_dr_velocity(key, prev, learned_vel_fn)
-        p_lat, p_lon = offset_latlon_m(
-            p_lat,
-            p_lon,
-            east_m=vel_east_ms * dt,
-            north_m=vel_north_ms * dt,
-        )
+        omega, engagement = _entry_dr_turn(key, turn_rate_fn)
+        east_m, north_m = _dr_offset_m(vel_east_ms, vel_north_ms, omega, dt)
+        p_lat, p_lon = offset_latlon_m(p_lat, p_lon, east_m=east_m, north_m=north_m)
         d = _haversine_km(lat, lon, p_lat, p_lon)
         # A key the follow lane just published on is not joinable bottom-up,
         # whatever the distance says — see dark_follow.DARK_FOLLOW_OWN_S for
@@ -1162,9 +1254,20 @@ def multinode_key_decision(
             if shadow_dist is None or d < shadow_dist:
                 shadow_key, shadow_dist, shadow_dt = key, d, dt
             continue
-        score = d / _mn_assoc_gate_km(dt, max_dist_km)
+        # The manoeuvre allowance widens THIS candidate's gate only, and only
+        # while the filter is engaged on it — the scoring is unchanged,
+        # d / gate, so a candidate that needed the allowance still loses to a
+        # closer one that did not.
+        extra_km = _mn_manoeuvre_extra_km(engagement, abs(dt))
+        score = d / (_mn_assoc_gate_km(dt, max_dist_km) + extra_km)
         if score < best_score:
             best_key, best_score, best_dist, best_dt = key, score, d, dt
+            # Reported only when the turn estimate did something: an entry
+            # the filter reads as straight and unengaged was dead-reckoned
+            # and gated exactly as it was before this existed, and saying
+            # "omega = 0" about it would inflate the turn counter with the
+            # whole straight-flight population.
+            best_omega_deg_s = math.degrees(omega) if omega is not None and (omega != 0.0 or extra_km > 0.0) else None
 
     # Close enough to a followed key that this solve is the same aircraft the
     # follow lane is already solving: refuse it outright rather than mint a
@@ -1172,11 +1275,17 @@ def multinode_key_decision(
     # through to the non-followed candidates and, failing those, mints — the
     # one thing it may never do is join the followed key.
     if shadow_key is not None and shadow_dist <= dark_follow.DARK_FOLLOW_SHADOW_KM:
-        return shadow_key, "shadowed", shadow_dist, (None if shadow_dt is None else round(shadow_dt, 3))
+        return shadow_key, "shadowed", shadow_dist, (None if shadow_dt is None else round(shadow_dt, 3)), None
     if best_key is not None:
-        return best_key, "proximity", best_dist, (None if best_dt is None else round(best_dt, 3))
+        return (
+            best_key,
+            "proximity",
+            best_dist,
+            (None if best_dt is None else round(best_dt, 3)),
+            (None if best_omega_deg_s is None else round(best_omega_deg_s, 3)),
+        )
     # No claimant — a genuinely new target.
-    return f"mn-dark-{result.get('timestamp_ms', 0)}-{lat:.3f}-{lon:.3f}", "minted", None, None
+    return f"mn-dark-{result.get('timestamp_ms', 0)}-{lat:.3f}-{lon:.3f}", "minted", None, None, None
 
 
 def _supersession_match(
@@ -1187,6 +1296,7 @@ def _supersession_match(
     raw_lon: float,
     ts_ms: float,
     learned_vel_fn=track_filter.learned_velocity,
+    turn_rate_fn=track_filter.turn_rate,
     max_age_s: float = _MN_ASSOC_MAX_AGE_S,
     alt_m: float | None = None,
 ) -> tuple[bool, float | None]:
@@ -1195,8 +1305,8 @@ def _supersession_match(
     The second half of the supersession rule in _process_solver_item.  The
     caller has already established the two cheap conditions — a different key,
     and at least one shared source track id — and this decides whether the
-    shared id means anything.  Clock-free with an injectable
-    ``learned_vel_fn``, for the same reasons multinode_key_decision is:
+    shared id means anything.  Clock-free with injectable ``learned_vel_fn``
+    / ``turn_rate_fn``, for the same reasons multinode_key_decision is:
     unit-testable without KF state or the whole publish path.
 
     Sharing a source track id is NOT on its own evidence of same-aircraft.
@@ -1228,8 +1338,15 @@ def _supersession_match(
       (a) SPATIAL.  Dead-reckon ``old_r`` to this solve's timestamp and ask
           whether it lands within the age-scaled gate (_mn_assoc_gate_km)
           grown from _MN_SUPERSEDE_BASE_KM.  Same DR as
-          multinode_key_decision — _entry_dr_velocity + offset_latlon_m, so
-          the entry is judged where the feed DRAWS it — and measured against
+          multinode_key_decision — _entry_dr_velocity and _entry_dr_turn
+          through the shared _dr_offset_m, so a turning entry is walked
+          around its arc here too and the entry is judged where the feed
+          DRAWS it.  What it does NOT get is that scan's manoeuvre gate
+          allowance: a wrong pop deletes a live aircraft's key, so this gate
+          is deliberately the tighter of the two on every axis (see
+          _MN_SUPERSEDE_BASE_KM) and widening it on a noisy engagement level
+          would give back exactly the neighbour-pops that base number exists
+          to stop.  Measured against
           the solve's RAW position, which is what that gate was tuned
           against.  The dt window is the keying rule's, signed the same way:
           an entry older than ``max_age_s`` is past the map's own expiry,
@@ -1288,12 +1405,9 @@ def _supersession_match(
         p_lat, p_lon = old_r.get("lat"), old_r.get("lon")
         if p_lat is not None and p_lon is not None:
             vel_east_ms, vel_north_ms = _entry_dr_velocity(old_key, old_r, learned_vel_fn)
-            p_lat, p_lon = offset_latlon_m(
-                p_lat,
-                p_lon,
-                east_m=vel_east_ms * dt,
-                north_m=vel_north_ms * dt,
-            )
+            omega, _engagement = _entry_dr_turn(old_key, turn_rate_fn)
+            east_m, north_m = _dr_offset_m(vel_east_ms, vel_north_ms, omega, dt)
+            p_lat, p_lon = offset_latlon_m(p_lat, p_lon, east_m=east_m, north_m=north_m)
             dr_dist_km = _haversine_km(raw_lat, raw_lon, p_lat, p_lon)
             if alt_ok and dr_dist_km <= _mn_assoc_gate_km(dt, _MN_SUPERSEDE_BASE_KM):
                 return True, dr_dist_km
@@ -1946,6 +2060,7 @@ def _record_solve_history(
     key_how: str | None = None,
     key_dist_km: float | None = None,
     key_dt_s: float | None = None,
+    key_omega_deg_s: float | None = None,
     follow_key: str | None = None,
     superseded_keys: list[str] | None = None,
     superseded_blocked: int | None = None,
@@ -1959,12 +2074,14 @@ def _record_solve_history(
     track key (it is minted after the gates), so ``solver_hex`` is None for
     them and lookup by map ID returns published records plus nearby rejects.
 
-    ``key_how``/``key_dist_km``/``key_dt_s`` are multinode_key_decision's
-    verdict for this solve — which branch produced solve_key, how far the
-    solve landed from the entry it was keyed onto, and the signed measurement
-    age of that entry at this solve's epoch (negative = the entry was measured
-    after this solve; see _MN_ASSOC_MAX_NEG_DT_S).  Only the publish path has
-    run the keying rule, so all three are None on every reject (the key is
+    ``key_how``/``key_dist_km``/``key_dt_s``/``key_omega_deg_s`` are
+    multinode_key_decision's verdict for this solve — which branch produced
+    solve_key, how far the solve landed from the entry it was keyed onto, the
+    signed measurement age of that entry at this solve's epoch (negative = the
+    entry was measured after this solve; see _MN_ASSOC_MAX_NEG_DT_S), and the
+    turn rate that entry was dead-reckoned along where the turn estimate
+    changed the decision at all.  Only the publish path has run the keying
+    rule, so all of them are None on every reject (the key is
     minted after the gates, which is also why solver_hex is None there) — with
     one exception: a ``shadowed_by_follow`` reject IS the keying rule's
     verdict, and carries key_how/key_dist_km/key_dt_s plus ``follow_key``
@@ -2081,6 +2198,15 @@ def _record_solve_history(
         # out-of-order arrival the signed dt window admits — and separates a
         # re-key the old rule would also have made from one it refused.
         "key_dt_s": round(float(key_dt_s), 1) if key_dt_s is not None else None,
+        # ...and the turn rate (deg/s, positive = right) the matched entry was
+        # dead-reckoned along, when the display filter had one and it mattered
+        # — a non-zero rate, or a manoeuvre gate allowance.  None everywhere
+        # else, INCLUDING a proximity match on an entry the filter reads as
+        # straight: the arc and the allowance both collapse to the shipped CV
+        # rule there, so there is no rate to report.  Paired with key_dist_km
+        # it is what separates a re-key the straight-line DR would also have
+        # made from one only the arc reached.
+        "key_omega_deg_s": (round(float(key_omega_deg_s), 2) if key_omega_deg_s is not None else None),
         # Supersession's verdict for this publish (see _supersession_match):
         # the entries it popped as this same aircraft, and the count of
         # entries that shared a source track id but were refused.  Empty/0 on
@@ -2790,7 +2916,7 @@ def _process_solver_item(
             # _MN_POS_HISTORY_LOCK (inside the smoother) is never taken in
             # reverse anywhere.
             _anchor_key = s_in.get("anchor_key") if isinstance(s_in, dict) else None
-            key, _key_how, _key_dist_km, _key_dt_s = multinode_key_decision(
+            key, _key_how, _key_dist_km, _key_dt_s, _key_omega = multinode_key_decision(
                 state.multinode_tracks,
                 result,
                 _adsb_hex,
@@ -2835,6 +2961,15 @@ def _process_solver_item(
                         # fragmentation the signed window actually reclaims.
                         if _key_dt_s is not None and _key_dt_s < 0:
                             state.bump_counter("solver_key_proximity_negdt")
+                        # ...and the ones the turn estimate reached: a match
+                        # whose entry was dead-reckoned around an arc, or
+                        # whose gate carried a manoeuvre allowance.  Dark key
+                        # births are 3.6x more likely per second of flight
+                        # during a ground-truth turn than in straight flight,
+                        # and this counter against dark_keys_minted is how
+                        # much of that the arc DR takes back.
+                        if _key_omega is not None:
+                            state.bump_counter("solver_key_proximity_turn")
                 if _anchor_key:
                     # s_in["anchor_key"] is set by exactly two producers: top-down
                     # claiming in active mode, and a dark-follow input in binding
@@ -2961,6 +3096,7 @@ def _process_solver_item(
                 key_how=_key_how,
                 key_dist_km=_key_dist_km,
                 key_dt_s=_key_dt_s,
+                key_omega_deg_s=_key_omega,
                 extra=_extra,
             )
             return result
@@ -2988,6 +3124,7 @@ def _process_solver_item(
             key_how=_key_how,
             key_dist_km=_key_dist_km,
             key_dt_s=_key_dt_s,
+            key_omega_deg_s=_key_omega,
             superseded_keys=_superseded_keys,
             superseded_blocked=_superseded_blocked,
             extra=_extra,

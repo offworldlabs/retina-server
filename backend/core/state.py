@@ -756,6 +756,17 @@ solver_key_proximity_dark: int = 0
 # aircraft that already had one.  This counter is the reclaimed population:
 # measured live, 16 of 67 dark mints in 22 min were of exactly this shape.
 solver_key_proximity_negdt: int = 0
+# ...and the subset whose matched entry was dead-reckoned around a TURN — the
+# display filter reported a non-zero heading rate for it (arc dead reckoning,
+# services.geo.dr_offset_m) or a manoeuvre engagement that widened its gate.
+# Measured live, dark key births are 3.6x more likely per second of flight
+# during a ground-truth turn (>1 deg/s) than in straight flight, because a
+# straight-line prediction of a 3 deg/s turn is already 0.9 km wrong at 12 s
+# against a gate whose p90 occupancy is 5.4 km of 6.  This counter against
+# solver_key_minted_dark is how much of that fragmentation the arc takes back;
+# a zero here with turns being flown means the turn estimate is never
+# surviving its sign test.
+solver_key_proximity_turn: int = 0
 
 # Publishes whose velocity carried the vel_untrusted flag (vz saturated, or
 # raw-solve velocity at n<=3) — the denominator is solver_successes.
@@ -907,6 +918,7 @@ def _reset_for_tests() -> None:
     global solver_consensus_fallback, solver_consensus_shadow
     global solver_anchor_hits, solver_anchor_fallbacks, solver_anchored_published
     global solver_key_minted_dark, solver_key_proximity_dark, solver_key_proximity_negdt
+    global solver_key_proximity_turn
     global solver_vel_untrusted_published
     global fov_shadow_agree, fov_shadow_would_pass, fov_shadow_would_reject
     global fov_neg_events
@@ -1003,6 +1015,7 @@ def _reset_for_tests() -> None:
         solver_consensus_fallback = solver_consensus_shadow = 0
         solver_anchor_hits = solver_anchor_fallbacks = solver_anchored_published = 0
         solver_key_minted_dark = solver_key_proximity_dark = solver_key_proximity_negdt = 0
+        solver_key_proximity_turn = 0
         solver_vel_untrusted_published = 0
         fov_shadow_agree = fov_shadow_would_pass = fov_shadow_would_reject = 0
         fov_neg_events = 0

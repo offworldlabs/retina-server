@@ -1206,3 +1206,99 @@ class TestManoeuvreAdaptiveQ:
         assert all(s["sigma_a"] == track_filter._KF_SIGMA_A_MS2 for s in solves)
         stats = track_filter.filter_stats()
         assert stats == {"reanchors": 0, "manoeuvre_rescues": 0, "manoeuvre_active": 0, "tracks": 1}
+
+
+class TestTurnRateAccessor:
+    """turn_rate(): the heading rate of the LEARNED velocity, for the arc
+    dead reckoning services.geo.dr_offset_m does.
+
+    The estimate is deliberately conservative — two consecutive rates that
+    disagree in sign are heading noise, not a turn, and a rate past
+    _KF_TURN_MAX_RAD_S is an artefact — because a fabricated arc is worse
+    than the straight line it replaces.
+    """
+
+    def setup_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def teardown_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def test_unknown_key_has_no_estimate(self):
+        assert track_filter.turn_rate("never-seen") is None
+
+    def test_one_sample_is_not_enough(self):
+        """A single accepted update leaves one heading and no rate at all —
+        the fresh-key and just-re-anchored case."""
+        fly("turn-1", cadence_s=4.0, omega_dps=0.0, straight_s=4.0, turn_deg=0.0)
+        entry = track_filter._KF_TRACKS["turn-1"]
+        assert len(entry.heading_hist) < 2
+        assert track_filter.turn_rate("turn-1") is None
+
+    def test_straight_flight_reads_as_exactly_zero(self):
+        fly("turn-straight", cadence_s=4.0, omega_dps=0.0, straight_s=60.0, turn_deg=0.0)
+        omega, engagement = track_filter.turn_rate("turn-straight")
+        assert omega == 0.0
+        assert 0.0 <= engagement <= 1.0
+
+    def test_a_three_degree_turn_is_measured_to_the_right_order(self):
+        """A sustained standard-rate turn reads ~2 deg/s, not 3.
+
+        This is the estimator inheriting the filter's own lag, not a bug: the
+        heading it differences is the KF's LEARNED velocity, and with a
+        1200 m measurement floor that velocity is information-limited (see
+        _update_manoeuvre) — it runs behind the aircraft's true heading for
+        the whole turn and only rotates at the true rate once the lag has
+        settled.  An under-read rate still bends the dead reckoning the right
+        way by most of the arc; an over-read one would invent a curve, which
+        is why the clamp is on that side.
+        """
+        fly("turn-3", cadence_s=4.0, omega_dps=3.0, straight_s=60.0, turn_deg=180.0)
+        omega, _engagement = track_filter.turn_rate("turn-3")
+        assert omega > 0.0  # right turn, the fly() generator's sense
+        assert math.degrees(omega) == pytest.approx(3.0, rel=0.4)
+
+    def test_a_left_turn_reads_negative(self):
+        fly("turn-left", cadence_s=4.0, omega_dps=-3.0, straight_s=60.0, turn_deg=-180.0)
+        omega, _engagement = track_filter.turn_rate("turn-left")
+        assert math.degrees(omega) == pytest.approx(-3.0, rel=0.4)
+
+    def test_the_turn_entry_is_under_read_before_it_is_believed(self):
+        """The control for the two above: 20 s into the turn the filter has
+        barely started rotating, so the reported rate is a fraction of the
+        truth — the estimator never claims more turn than the filter has
+        actually seen."""
+        fly("turn-entry", cadence_s=4.0, omega_dps=3.0, straight_s=60.0, turn_deg=60.0)
+        omega, _engagement = track_filter.turn_rate("turn-entry")
+        assert 0.0 < math.degrees(omega) < 1.0
+
+    def test_the_rate_is_clamped_at_four_degrees_per_second(self):
+        """Headings 20 degrees apart at 1 s: 20 deg/s, which no aircraft
+        flies — clamped rather than believed."""
+        track_filter._KF_TRACKS["clamped"] = track_filter._TrackKF(
+            ref_lat=35.0,
+            ref_lon=-82.0,
+            x=np.array([0.0, 0.0, 0.0, 250.0]),
+            P=np.eye(4),
+            last_ts_s=3.0,
+            heading_hist=[(1.0, 0.0), (2.0, math.radians(20.0)), (3.0, math.radians(40.0))],
+        )
+        omega, _engagement = track_filter.turn_rate("clamped")
+        assert omega == pytest.approx(track_filter._KF_TURN_MAX_RAD_S)
+
+    def test_rates_that_disagree_in_sign_are_refused(self):
+        track_filter._KF_TRACKS["wobble"] = track_filter._TrackKF(
+            ref_lat=35.0,
+            ref_lon=-82.0,
+            x=np.array([0.0, 0.0, 0.0, 250.0]),
+            P=np.eye(4),
+            last_ts_s=3.0,
+            heading_hist=[(1.0, 0.0), (2.0, math.radians(3.0)), (3.0, math.radians(-1.0))],
+        )
+        assert track_filter.turn_rate("wobble") is None
+
+    def test_the_history_never_grows_past_its_bound(self):
+        fly("turn-bound", cadence_s=2.0, omega_dps=3.0, straight_s=60.0, turn_deg=180.0)
+        assert len(track_filter._KF_TRACKS["turn-bound"].heading_hist) == track_filter._KF_TURN_HISTORY_N

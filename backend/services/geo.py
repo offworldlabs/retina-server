@@ -61,7 +61,73 @@ __all__ = [
     "node_beam_params",
     "in_node_beam",
     "valid_latlon",
+    "dr_offset_m",
 ]
+
+# Below this the coordinated-turn arc and the straight line are the same
+# curve to within floating-point noise, and the 1/omega radius blows up: a
+# guard on the division, NOT the "is this aircraft turning" question.  That
+# one is the turn-rate estimator's (services/track_filter.turn_rate applies a
+# 0.2 deg/s deadband before it ever reaches here).
+_DR_MIN_OMEGA_RAD_S = 1e-9
+
+
+def dr_offset_m(
+    vel_east_ms: float,
+    vel_north_ms: float,
+    omega_rad_s: float | None,
+    dt_s: float,
+) -> tuple[float, float]:
+    """(east_m, north_m) travelled in ``dt_s`` at this velocity and turn rate.
+
+    THE dead-reckoning displacement for the whole backend: the solver's key
+    decision, its supersession test and the feed's display DR all call this,
+    because an entry judged in one place and drawn in another must be moved
+    by the same arithmetic (see solver._entry_dr_velocity for what happens
+    when they disagree).
+
+    ``omega_rad_s`` None or 0.0 gives the constant-velocity straight line,
+    ``east = v_e * dt``.  Non-zero gives the coordinated-turn arc: the COMPASS
+    heading ``theta = atan2(v_e, v_n)`` rotating at a constant ``omega``
+    (positive = turning right/clockwise, the sense track_filter.turn_rate
+    reports) with the speed ``|v|`` held constant, so with radius
+    ``r = |v| / omega``
+
+        east  = r * (cos(theta) - cos(theta + omega*dt))
+        north = r * (sin(theta + omega*dt) - sin(theta))
+
+    i.e. the exact integral of ``(v*sin(theta+omega*s), v*cos(theta+omega*s))``
+    over s in [0, dt] — not a small-angle approximation, and reducing to the
+    straight line as omega -> 0.  (The textbook form of these two, written for
+    a heading measured anticlockwise FROM EAST, has the sines and cosines the
+    other way round; it is the same arc, and the compass convention is used
+    here so that a positive omega is a right turn everywhere in this codebase.)
+
+    ``dt_s`` may be NEGATIVE: the formulas walk the same arc backwards, to
+    where the aircraft was ``|dt|`` seconds before this fix.  Both callers in
+    solver.py need that — a solve can arrive with an epoch older than the
+    entry it is matched against (see _MN_ASSOC_MAX_NEG_DT_S).
+
+    Why the arc matters: a straight-line prediction of a 3 deg/s turn at
+    250 m/s is 0.9 km wrong after 12 s and 5.5 km wrong after 30 s, against a
+    6-12 km association gate whose p90 occupancy is already 5.4 km.
+    """
+    v_e = float(vel_east_ms or 0.0)
+    v_n = float(vel_north_ms or 0.0)
+    dt = float(dt_s)
+    omega = float(omega_rad_s or 0.0)
+    if not math.isfinite(omega) or abs(omega) < _DR_MIN_OMEGA_RAD_S:
+        return v_e * dt, v_n * dt
+    speed = math.hypot(v_e, v_n)
+    if speed == 0.0:
+        return 0.0, 0.0
+    theta = math.atan2(v_e, v_n)
+    theta_end = theta + omega * dt
+    radius = speed / omega
+    return (
+        radius * (math.cos(theta) - math.cos(theta_end)),
+        radius * (math.sin(theta_end) - math.sin(theta)),
+    )
 
 
 def valid_latlon(lat, lon) -> bool:
