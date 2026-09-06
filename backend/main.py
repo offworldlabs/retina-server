@@ -64,6 +64,7 @@ from services.background import (
     archive_flush_task,
     archive_lifecycle_task,
     coverage_constraints_task,
+    feed_gc_task,
     frame_processor_loop,
     health_monitor_task,
     heartbeat_task,
@@ -205,6 +206,10 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(prune_synthetic_nodes()),
             asyncio.create_task(adsb_truth_fetcher()),
             asyncio.create_task(aircraft_flush_task(radar_pipeline)),
+            # Feed-store GC on its own timer: it used to run only inside the
+            # feed build, so a slow websocket client stalling the flush task
+            # stalled server-wide GC with it.
+            asyncio.create_task(feed_gc_task()),
             asyncio.create_task(archive_flush_task()),
             asyncio.create_task(track_flush_task()),
             asyncio.create_task(archive_lifecycle_task()),
