@@ -139,20 +139,28 @@ async def association_status():
         # Track-pairing outcomes since boot.  gated is everything past the
         # coarse delay grid; unfitted counts the pairings handed to the solver
         # worker (which runs the fit and the n=2 gate); deferred counts rounds
-        # a budget cut short.  Those three are the live production surface.
+        # a budget cut short; superseded counts pairings dropped because a
+        # better-ranked one claiming the same track implied a velocity theirs
+        # contradicts; cluster_splits counts position clusters that held two
+        # tracks of one node and were emitted as one solver input each.  All
+        # five are the live production surface.
         "track_pairs": {
             "gated": getattr(_a, "track_pairs_gated", 0),
             "unfitted": getattr(_a, "track_pairs_unfitted", 0),
             "deferred": getattr(_a, "track_pairs_deferred", 0),
+            "superseded": getattr(_a, "track_pairs_superseded", 0),
+            "cluster_splits": getattr(_a, "cluster_splits", 0),
         },
         # Inline-fit counters — permanently zero in production BY DESIGN
         # (state.py builds the associator with cv_fit=None; only the offline
-        # bench's inline mode exercises stage-2 selection).  Split out so
+        # bench's inline mode exercises the chi2 threshold).  Split out so
         # nobody reads a structural zero as "no rejections happening".
+        # superseded used to live here too, and no longer can: the deferred
+        # path now has an exclusivity stage of its own, so the counter moves
+        # in production.
         "track_pairs_inline_only": {
             "accepted": getattr(_a, "track_pairs_accepted", 0),
             "rejected": getattr(_a, "track_pairs_rejected", 0),
-            "superseded": getattr(_a, "track_pairs_superseded", 0),
         },
         # Top-down claiming (ASSOC_CLAIM_MODE) since boot.  rounds/matched/
         # conflicts/anchored_inputs are all live in shadow too — _claim_round

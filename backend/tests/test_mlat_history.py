@@ -1031,9 +1031,10 @@ class TestResolveSkipDump:
     def _skip(self, track_ids=("a1", "b1"), n_nodes=3, **s_in):
         now = time.time()
         s = dict(_CONFIRMED_N2, n_nodes=n_nodes, track_ids=list(track_ids), **s_in)
-        solver_mod._claim_resolve_slot(s, now)
-        assert solver_mod._claim_resolve_slot(dict(s), now) is False
-        solver_mod._record_resolve_skip(dict(s), now)
+        solver_mod._record_resolve_slot(list(track_ids), n_nodes, now)
+        covered, blocking = solver_mod._resolve_slot_covered(dict(s), now)
+        assert covered is True
+        solver_mod._record_resolve_skip(dict(s), now, blocking)
 
     def test_skip_records_the_blocking_claim(self):
         self._skip()
