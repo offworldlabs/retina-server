@@ -1350,6 +1350,10 @@ def _solver_window_stats(minutes: float) -> dict:
         "counters": {
             "successes": state.solver_successes,
             "failures": state.solver_failures,
+            # Pool round trips abandoned at SOLVER_POOL_CALL_TIMEOUT_S and
+            # retried inline.  A stuck-but-alive child used to hold one of the
+            # two worker threads forever with every counter reading healthy.
+            "pool_timeouts": state.solver_pool_timeouts,
             "n2_unconfirmed": state.n2_unconfirmed,
             "solver_trimmed": state.solver_trimmed,
             "stale_drops": state.solver_stale_drops,

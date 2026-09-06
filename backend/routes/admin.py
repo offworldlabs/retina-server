@@ -589,6 +589,7 @@ async def system_metrics(_user=Depends(require_admin)):
         "frames_processed": state.frames_processed,
         "solver_successes": state.solver_successes,
         "solver_failures": state.solver_failures,
+        "solver_pool_timeouts": state.solver_pool_timeouts,
         "solver_queue_depth": state.solver_queue.qsize(),
         "solver_queue_drops": state.solver_queue_drops,
         "solver_stale_drops": state.solver_stale_drops,

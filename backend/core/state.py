@@ -633,6 +633,13 @@ tracks_stale_skipped: int = 0
 solver_epoch_align_skipped: int = 0
 
 solver_queue_drops: int = 0
+
+# Solve calls that hit SOLVER_POOL_CALL_TIMEOUT_S waiting on a pool child and
+# were retried inline (services/tasks/solver._pool_call).  A stuck-but-alive
+# child used to block one of the two solver worker threads for the process
+# lifetime with no counter moving anywhere; nonzero here means the pool was
+# torn down and rebuilt at least that many times.
+solver_pool_timeouts: int = 0
 # Queue items discarded unsolved because they aged past _SOLVER_MAX_QUEUE_AGE_S
 # waiting for a worker.  Was only a DEBUG log, which staging does not emit —
 # the drain-rate collapse behind the August latency incident was invisible in
@@ -925,6 +932,7 @@ def _reset_for_tests() -> None:
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
     global coverage_rebuild_backlog, tracks_stale_skipped, solver_epoch_align_skipped
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
+    global solver_pool_timeouts
     global solver_resolve_skips_dark
     global mn_superseded, mn_superseded_blocked, mn_superseded_blocked_alt, solver_trimmed
     global solver_consensus_selected, solver_consensus_filtered
@@ -1017,6 +1025,7 @@ def _reset_for_tests() -> None:
         dark_follow_published = dark_follow_dropped = 0
         dark_bottomup_shadowed = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
+        solver_pool_timeouts = 0
         coverage_rebuild_backlog = 0
         tracks_stale_skipped = solver_epoch_align_skipped = 0
         solver_stale_drops = 0
