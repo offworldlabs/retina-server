@@ -241,7 +241,22 @@ for deduplicated hex codes:
    tracks that don't have a known ADS-B position.
 
 The result is broadcast to all WebSocket clients and written to
-`tar1090_data/aircraft.json`.
+`tar1090_data/aircraft.json`. The broadcast fans its sends out with
+`asyncio.gather`, so it costs one 5 s send timeout in total no matter how many
+clients are wedged (`ws_send_timeouts` in `/api/admin/metrics` counts the
+clients dropped that way).
+
+**Stale-store GC does not run here.** `services/feed_gc.py`
+(`prune_stale_stores` for `adsb_aircraft`, `known_claims`,
+`ground_truth_trails`, `track_histories`, `track_arc_motion`,
+`track_last_emit`/`track_gate_hold`, plus `prune_multinode_tracks` for the
+lane-aware `multinode_tracks` expiry) runs on its own 5 s timer,
+`services/tasks/feed_gc.py::feed_gc_task`. It used to run inside this builder,
+which meant a stalled broadcast — or an idle `state.aircraft_dirty`, which
+skips the build entirely — stopped GC server-wide while frame workers and
+solver threads kept writing those stores. The builder still calls
+`prune_multinode_tracks` (idempotent) before reading its snapshot, and then
+only reads.
 
 ---
 

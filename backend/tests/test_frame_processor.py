@@ -961,10 +961,20 @@ class TestGroundTruthGhostPruning:
                 d.pop(k, None)
 
     def _build(self):
+        """One GC pass plus one feed build, in production order.
+
+        The stale-store pruning these tests assert on moved out of the feed
+        build onto its own 5 s timer (services.tasks.feed_gc) — a slow
+        websocket client used to stall the flush task and take server-wide GC
+        down with it.  The build still runs here because the pruning has to
+        hold against a feed that is being rebuilt over it.
+        """
         import types
 
         from services.frame_processor import build_combined_aircraft_json
+        from services.tasks.feed_gc import run_feed_gc
 
+        run_feed_gc()
         pipeline = types.SimpleNamespace(geolocated_tracks={}, config={})
         build_combined_aircraft_json(pipeline)
 

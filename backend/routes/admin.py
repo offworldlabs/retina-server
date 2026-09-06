@@ -615,6 +615,7 @@ async def system_metrics(_user=Depends(require_admin)):
         "track_histories": len(state.track_histories),
         "ground_truth_trails": len(state.ground_truth_trails),
         "ws_clients": len(state.ws_clients),
+        "ws_send_timeouts": state.ws_send_timeouts,
         "ws_live_clients": len(state.ws_live_clients),
         "stale_tasks": _get_stale_tasks(),
         "process_rss_mb": round(rss_mb, 1),

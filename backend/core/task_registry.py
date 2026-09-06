@@ -12,6 +12,8 @@ TASK_EXPECTED_INTERVAL_S: dict[str, int] = {
     "frame_processor": 10,
     "analytics_refresh": 60,
     "aircraft_flush": 5,
+    # services.tasks.feed_gc runs every 5 s; stale at 2x.
+    "feed_gc": 5,
     "archive_flush": 120,
     "archive_lifecycle": 3600,
     "reputation_evaluator": 120,

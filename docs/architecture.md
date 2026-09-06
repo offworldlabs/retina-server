@@ -65,8 +65,9 @@ are in [`arc-display.md`](arc-display.md).
   `max_bistatic_range_km`) flows from node registration into the per-node
   pipelines, the arc builder, and inter-node association — one contract.
 - **`services/tasks/`** — background async tasks: `aircraft_flush` (broadcast),
-  `solver` workers, `analytics_refresh`, archive lifecycle, snapshots,
-  `health_monitor` + `heartbeat` (see [`alerting.md`](alerting.md)).
+  `feed_gc` (stale-store GC on its own 5 s timer, deliberately not tied to the
+  feed build), `solver` workers, `analytics_refresh`, archive lifecycle,
+  snapshots, `health_monitor` + `heartbeat` (see [`alerting.md`](alerting.md)).
 - **`core/state.py`** — the in-memory world: connected nodes, tracks, aircraft,
   arc buffers, WebSocket client sets, latest JSON payloads.
 - **`core/users.py` + `core/auth.py`** — fastapi-users (cookie JWT, Google/GitHub
