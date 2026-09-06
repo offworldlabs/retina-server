@@ -107,8 +107,7 @@ def _replace_solver_pool(pool, reason: str) -> None:
         except Exception:
             _solver_pool = None
             logging.exception(
-                "Solver process pool %s and could not be recreated"
-                " — solving inline on worker threads from now on",
+                "Solver process pool %s and could not be recreated — solving inline on worker threads from now on",
                 reason,
             )
 

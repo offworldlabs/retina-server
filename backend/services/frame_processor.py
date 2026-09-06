@@ -147,8 +147,7 @@ def _reclaim_dead_archive_buffers() -> None:
             dropped = len(_archive_buffer.pop(nid, []))
             failing_for = now - _archive_fail_since.pop(nid, now)
             logging.warning(
-                "Abandoning archive buffer for departed node %s after %.0fs of failed writes"
-                " (%d frames dropped)",
+                "Abandoning archive buffer for departed node %s after %.0fs of failed writes (%d frames dropped)",
                 nid,
                 failing_for,
                 dropped,

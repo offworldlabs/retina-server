@@ -870,6 +870,7 @@ def task_error_snapshot() -> dict[str, int]:
     with counters_lock:
         return dict(task_error_counts)
 
+
 # ── Accuracy tracking (haversine solver vs ADS-B) ────────────────────────────
 # Rolling buffer of {hex, error_km, position_source, ts} samples.
 ACCURACY_MAX_SAMPLES = 5000

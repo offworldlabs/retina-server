@@ -269,10 +269,12 @@ class TestConsensusAndCounters:
         state.solver_epoch_align_skipped = 14
         state.solver_resolve_skips_dark = 9
         state.node_frames_rate_limited = 13
+        state.solver_pool_timeouts = 19
         out = _solver_window_stats(10.0)
         assert out["counters"] == {
             "successes": 5,
             "failures": 2,
+            "pool_timeouts": 19,
             "n2_unconfirmed": 1,
             "solver_trimmed": 3,
             "stale_drops": 4,
