@@ -594,6 +594,24 @@ class TestEndpoint:
             "neg_events",
         }
 
+    def test_display_filter_block_present(self):
+        """services/track_filter.py's chi-squared-gate outcomes ride on this
+        endpoint (they are module-level counters, not core.state ones, so this
+        is the only place they surface).  reanchors are identity breaks the
+        manoeuvre retry could not explain, manoeuvre_rescues the turns it
+        could, manoeuvre_active a live gauge over tracks."""
+        from services import track_filter
+
+        track_filter.reset()
+        resp = _client().get("/api/test/solver-stats")
+        data = resp.json()
+        assert data["display_filter"] == {
+            "reanchors": 0,
+            "manoeuvre_rescues": 0,
+            "manoeuvre_active": 0,
+            "tracks": 0,
+        }
+
     def test_known_lane_and_known_claims_blocks_present(self):
         resp = _client().get("/api/test/solver-stats")
         data = resp.json()
