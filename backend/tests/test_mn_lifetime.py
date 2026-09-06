@@ -285,11 +285,27 @@ class TestSupersessionMatch:
         rec.update(overrides)
         return rec
 
-    def test_negative_dt_is_never_dead_reckoned_backwards(self):
-        """The entry is stamped AFTER this solve (out-of-order arrival).  It
-        is not run backwards to manufacture a match, and with only a partial
-        id overlap there is nothing else to match on."""
-        entry = self._entry(20_000, *offset_latlon_m(LAT, LON, east_m=0.0, north_m=3000.0), ids=("t1", "t9"))
+    def test_an_out_of_order_entry_is_dead_reckoned_backwards(self):
+        """The entry is stamped AFTER this solve — its measurement epoch is
+        the later one (dt < 0).  That is not a fault: the two dark lanes and
+        the solver pool's workers deliver solves out of measurement order as
+        a matter of course (56 of 920 consecutive dark publishes measured
+        live), so inside _MN_ASSOC_MAX_NEG_DT_S the entry is run backwards
+        along its own velocity to where the aircraft was at this solve's
+        epoch, and judged there."""
+        entry = self._entry(12_000, *offset_latlon_m(LAT, LON, east_m=0.0, north_m=3000.0), ids=("t1", "t9"))
+        matched, dist = solver_mod._supersession_match(
+            "mn-dark-future", entry, {"t1", "t2"}, LAT, LON, 10_000, learned_vel_fn=self.NO_VEL
+        )
+        assert matched is True
+        assert dist == pytest.approx(3.0, abs=0.05)
+
+    def test_an_entry_far_ahead_of_this_solve_is_not_reckoned_backwards(self):
+        """Past _MN_ASSOC_MAX_NEG_DT_S the ordering is not lane or pool
+        jitter but a stale queue item, and running the entry fifteen seconds
+        backwards to manufacture a match is exactly what the window refuses.
+        With only a partial id overlap there is nothing else to match on."""
+        entry = self._entry(25_000, *offset_latlon_m(LAT, LON, east_m=0.0, north_m=3000.0), ids=("t1", "t9"))
         matched, dist = solver_mod._supersession_match(
             "mn-dark-future", entry, {"t1", "t2"}, LAT, LON, 10_000, learned_vel_fn=self.NO_VEL
         )

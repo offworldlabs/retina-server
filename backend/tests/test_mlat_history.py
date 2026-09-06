@@ -298,8 +298,8 @@ class TestDisplacementCapByLane:
 
 
 class TestKeyDecisionObservability:
-    """key_how / key_dist_km on the history record, and the dark key-decision
-    counters behind them.
+    """key_how / key_dist_km / key_dt_s on the history record, and the dark
+    key-decision counters behind them.
 
     Fragmentation is decided in multinode_key_decision and nowhere else, but
     until these fields existed the record kept only the key that came OUT: a
@@ -329,8 +329,10 @@ class TestKeyDecisionObservability:
         rec = state.mlat_solve_history[-1]
         assert rec["outcome"] == "published"
         assert rec["key_how"] == "minted"
-        # Nothing was matched, so there is no distance to report.
+        # Nothing was matched, so there is neither a distance nor a
+        # measurement gap to report.
         assert rec["key_dist_km"] is None
+        assert rec["key_dt_s"] is None
         assert state.solver_key_minted_dark == 1
         assert state.solver_key_proximity_dark == 0
 
@@ -342,8 +344,35 @@ class TestKeyDecisionObservability:
         rec = state.mlat_solve_history[-1]
         assert rec["key_how"] == "proximity"
         assert rec["key_dist_km"] == pytest.approx(3.0, abs=0.3)
+        # Both solves were measured at (near enough) the same instant, so the
+        # signed measurement gap to the matched entry is ~0 and, in
+        # particular, not negative.
+        assert rec["key_dt_s"] == pytest.approx(0.0, abs=0.2)
         assert state.solver_key_minted_dark == 1
         assert state.solver_key_proximity_dark == 1
+        assert state.solver_key_proximity_negdt == 0
+
+    def test_a_solve_measured_before_the_entry_it_joins_is_still_a_re_key(self):
+        """The out-of-order case, end to end.  The second solve's own
+        measurement epoch is 2 s OLDER than the entry the first one published
+        — routine between the dark-follow and bottom-up lanes and across the
+        solver pool's workers — and until the signed dt window it minted a
+        second key for an aircraft that already had one (16 of 67 dark mints
+        in a 22 min live window).  It now joins, and the record carries the
+        negative gap that says which population this re-key came from."""
+        now_ms = int(time.time() * 1000)
+        self._run(_CONFIRMED_N2, _solve_fn(timestamp_ms=now_ms))
+        self._run(
+            _CONFIRMED_N2,
+            _solve_fn(lat=LAT + 1.0 * self.KM_DEG, timestamp_ms=now_ms - 2000),
+        )
+        assert len(state.multinode_tracks) == 1
+        rec = state.mlat_solve_history[-1]
+        assert rec["key_how"] == "proximity"
+        assert rec["key_dt_s"] == pytest.approx(-2.0, abs=0.1)
+        assert state.solver_key_minted_dark == 1
+        assert state.solver_key_proximity_dark == 1
+        assert state.solver_key_proximity_negdt == 1
 
     def test_adsb_lane_records_its_branch_and_no_distance(self):
         """The ADS-B lane keys off the transponder hex unconditionally — a
@@ -363,6 +392,7 @@ class TestKeyDecisionObservability:
         rec = state.mlat_solve_history[-1]
         assert rec["outcome"] == "rejected_rms_delay"
         assert rec["key_how"] is None
+        assert rec["key_dt_s"] is None
         assert rec["key_dist_km"] is None
         assert state.solver_key_minted_dark == 0
 
