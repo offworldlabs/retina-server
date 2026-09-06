@@ -634,6 +634,13 @@ solver_epoch_align_skipped: int = 0
 
 solver_queue_drops: int = 0
 
+# WebSocket clients whose aircraft-feed send hit the broadcast timeout.  The
+# broadcast fans its sends out with asyncio.gather, so a wedged client costs
+# one timeout rather than serialising the whole flush behind it — this counter
+# is the only place that stall is now visible.  Nonzero and climbing means
+# clients are being dropped mid-broadcast; the feed itself is unaffected.
+ws_send_timeouts: int = 0
+
 # Solve calls that hit SOLVER_POOL_CALL_TIMEOUT_S waiting on a pool child and
 # were retried inline (services/tasks/solver._pool_call).  A stuck-but-alive
 # child used to block one of the two solver worker threads for the process
@@ -933,6 +940,7 @@ def _reset_for_tests() -> None:
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
     global coverage_rebuild_backlog, tracks_stale_skipped, solver_epoch_align_skipped
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
+    global ws_send_timeouts
     global solver_pool_timeouts
     global solver_resolve_skips_dark
     global mn_superseded, mn_superseded_blocked, mn_superseded_blocked_alt, solver_trimmed
@@ -1026,6 +1034,7 @@ def _reset_for_tests() -> None:
         dark_follow_published = dark_follow_dropped = 0
         dark_bottomup_shadowed = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
+        ws_send_timeouts = 0
         solver_pool_timeouts = 0
         coverage_rebuild_backlog = 0
         tracks_stale_skipped = solver_epoch_align_skipped = 0
