@@ -767,7 +767,7 @@ def _record_lane(rec: dict) -> str:
     return "adsb" if hexn and is_transponder_hex(hexn) else "dark"
 
 
-_LANES = ("dark", "known", "adsb")
+_LANES = ("dark", "known", "adsb", "dark_follow")
 
 
 def _cap_per_lane(records: list[dict], limit: int) -> list[dict]:

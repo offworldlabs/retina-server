@@ -960,7 +960,7 @@ class TestLaneFilterAndPerLaneCap:
         self._adsb()
         data = self._client().get("/api/test/mlat-history?all=1").json()
         assert data["lane"] == "all"
-        assert data["lane_counts"] == {"dark": 1, "known": 1, "adsb": 1}
+        assert data["lane_counts"] == {"dark": 1, "known": 1, "adsb": 1, "dark_follow": 0}
         assert data["n_records"] == 3
 
     def test_lane_dark_returns_only_dark_records(self):
@@ -969,7 +969,7 @@ class TestLaneFilterAndPerLaneCap:
         self._adsb(1)
         data = self._client().get("/api/test/mlat-history?all=1&lane=dark").json()
         assert data["n_records"] == 2
-        assert data["lane_counts"] == {"dark": 2, "known": 0, "adsb": 0}
+        assert data["lane_counts"] == {"dark": 2, "known": 0, "adsb": 0, "dark_follow": 0}
         assert all(r["solve_key"] == "mn-dark-1" for r in data["records"])
 
     def test_lane_known_returns_only_known_records(self):
@@ -993,7 +993,7 @@ class TestLaneFilterAndPerLaneCap:
         assert sorted(lanes) == ["dark", "dark", "known", "known"]
         # n_records / lane_counts stay pre-cap so truncation is legible.
         assert data["n_records"] == 22
-        assert data["lane_counts"] == {"dark": 2, "known": 20, "adsb": 0}
+        assert data["lane_counts"] == {"dark": 2, "known": 20, "adsb": 0, "dark_follow": 0}
 
     def test_limit_is_clamped_to_the_maximum(self):
         self._dark(3)
@@ -1062,6 +1062,7 @@ class TestResolveSkipDump:
             "dark": 1,
             "known": 0,
             "adsb": 1,
+            "dark_follow": 0,
         }
 
     def test_unknown_kind_is_rejected(self):
