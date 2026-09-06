@@ -232,3 +232,91 @@ absent (older backend), so an old feed still draws a disc, just on the icon.
 - Detail panel, Multi-node section: `Accuracy (95%)` is now a single
   `±<radius>` — with no growth the old "(± … at solve)" second figure was
   always the same number.
+
+## 2026-09-06: 68% ring + dark-lane floors
+
+Two changes, one problem: the disc was *calibrated on the wrong lane* and
+*quoted at the wrong quantile*. The 2026-09-05 fit had 944 ground-truthed
+solves, of which only 14 were dark, so the dark lane got a flat prior —
+`DARK_GAIN = 1.5` on the known-lane floors. Overnight the test droplet
+produced 1030 dark solves with ground truth (`solve_key` `mn-dark-*`, outcome
+`published`, `gt_error_km` against dead-reckoned truth):
+
+| n | k | err median | p68 | p95 | old σ median | coverage of the old 95% disc | σ for 95% | σ for 68% |
+|---|---|---|---|---|---|---|---|---|
+| 2 | 52 | 2295 m | 3274 m | 5964 m | 976 m | 0.56 | 2437 m | 2168 m |
+| 3 | 299 | 477 m | 1271 m | 5139 m | 344 m | 0.73 | 2100 m | 842 m |
+| ≥4 | 679 | 222 m | 353 m | 2867 m | 288 m | 0.89 | 1171 m | 234 m |
+
+A disc captioned "95%" covered 56% of n=2 dark solves. That is the headline
+failure and it is not subtle: the gain was a guess, and the guess was low.
+
+### Why the ring is now 68%, not 95%
+
+The σ that would make the caption true is in the "σ for 95%" column, and it is
+unusable on a map. A **good** 4-node dark solve — 222 m median error — would
+draw a 2.9 km ring, thirteen times its own median error, because the ring has
+to reach the tail of a heavy-tailed distribution shared with the bad solves.
+A viewport of 2.9 km discs is a wash: it hides the basemap, it hides the other
+aircraft, and it says nothing about which solve is worth trusting. The
+distribution is the problem, not the fit — dark error is not Gaussian-ish with
+a long tail, it is a tight core (222 m) with a heavy tail (2.9 km p95), and no
+single circle describes both.
+
+So the map draws the **68% radius** — `k68 = 1.5096`, the Rayleigh 68%
+quantile — which is what a GPS "accuracy circle", a phone's blue dot halo and
+most ATC uncertainty symbology actually show. On the same 4-node dark solve
+that is a ~350 m ring: it tracks the core of the distribution, it is legible
+at map scale, and it is honestly captioned. The 95% figure is not lost, it is
+quoted next to it in the detail panel (`±360 m (68%) · ±590 m (95%)`), which
+is where a number you want to *read* rather than *see* belongs.
+
+### Dark floors replace the dark gain
+
+`σ_dark = sqrt(min(formal, 3000)² + dark_floor(n)²)`, with the dark floors
+used **instead of** the known-lane floors (not multiplied into them):
+
+| n | dark floor | from |
+|---|---|---|
+| 2 | 2100 m | p68 3274 / 1.5096 = 2168, rounded down |
+| 3 | 850 m | p68 1271 / 1.5096 = 842 |
+| ≥4 | 240 m | p68 353 / 1.5096 = 234 |
+
+`SOLVE_SIGMA_DARK_GAIN` survives, accepted from the environment and applied,
+but defaults to **1.0**: a deployment pinned to the old model can restore it
+by setting the gain to 1.5 and the dark floors back to 650/210/180. Nothing
+ships that way.
+
+The known-lane floors (650/210/180) are unchanged. They were calibrated at 95%
+against known-lane truth and measured coverage on that lane is 0.95–0.99, so
+the known lane's ring is now *conservative* at 68% rather than wrong — the
+honest fix there is a separate 68% fit, which needs the same overnight
+treatment on known-lane data and is not part of this change.
+
+A side effect worth naming: 3.4% of dark entry-frames used to carry σ at the
+5 km `_SIGMA_MAX_M` clamp (gain 1.5 × a capped formal term), which the map
+then drew at the 10 km radius cap — a viewport-wide disc. With the gain gone
+the worst σ the model can emit is `sqrt(3000² + 2100²)` = 3661 m, so the clamp
+no longer binds on any real solve, and the widest possible ring is 5.5 km.
+
+### Ring-only rendering above 3 km
+
+`UNCERTAINTY_RING_ONLY_ABOVE_M = 3000`. A drawn radius above 3 km is a
+degenerate solve or a dark n=2 fix (whose floor alone draws 3.2 km); it is
+still worth showing — it is the honest answer for that aircraft — but it must
+not paint over the solves that are worth reading. Above the threshold the
+circle is drawn with `fillOpacity: 0` and a dashed hairline (`dashArray`);
+below it the filled disc is unchanged. A re-solve that crosses the threshold
+in either direction restyles the existing circle, so the two renderings cannot
+get stuck.
+
+### Changes
+
+- `services/solve_uncertainty.py`: `_DARK_FLOOR_N2_M` / `_N3_M` / `_N4_M`
+  (env `SOLVE_SIGMA_DARK_FLOOR_N*_M`), `_floor_m(n, dark=…)`,
+  `_DARK_GAIN` default 1.0. Documented in `backend/.env.example`.
+- `map/uncertainty.ts`: `UNCERTAINTY_K68`, `UNCERTAINTY_RING_ONLY_ABOVE_M`,
+  `solveUncertaintyRadiusM` (now k68), `solveUncertaintyRadius95M` (panel),
+  `isRingOnlyRadius`.
+- `SolveUncertaintyLayer`: outline-vs-fill on the threshold.
+- Detail panel: `Accuracy` shows both figures; toolbar tooltip says 68%.

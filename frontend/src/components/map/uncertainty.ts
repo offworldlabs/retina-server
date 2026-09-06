@@ -3,14 +3,14 @@
 /* ------------------------------------------------------------------ */
 
 /**
- * Pure helpers behind the 95%-confidence disc drawn around every multi-node
- * solve (SolveUncertaintyLayer) and quoted in the detail panel.
+ * Pure helpers behind the confidence disc drawn around every multi-node solve
+ * (SolveUncertaintyLayer) and quoted in the detail panel.
  *
  * The model (2026-09-06): **the disc is the calibrated accuracy of the last
  * solve, drawn where that solve was.**  The backend publishes the solve-epoch
  * per-axis sigma (`pos_sigma_m`) and the position that sigma belongs to
  * (`solve_lat`/`solve_lon`, the fix before the feed dead-reckons `lat`/`lon`
- * forward).  The radius is `UNCERTAINTY_K95 · pos_sigma_m` — a constant for
+ * forward).  The radius is `UNCERTAINTY_K68 · pos_sigma_m` — a constant for
  * as long as the solve stands — and the centre is the solve epoch, so the
  * icon visibly walks out of its own disc as it dead-reckons.  That separation
  * IS the extrapolation: it says "the last thing anyone measured was there,
@@ -27,6 +27,17 @@
  * docs/design-notes/2026-09-05-solve-uncertainty-disc.md for the fit and the
  * 2026-09-06 section for this change.
  *
+ * **The drawn ring is the 68% radius** (2026-09-06), the convention every GPS
+ * "accuracy circle" uses, not the 95% one it started as.  Dark-lane solve
+ * error is heavy-tailed: measured on 1030 ground-truthed dark solves, a good
+ * 4-node solve has a 222 m median error and a 2.9 km p95, so an honest 95%
+ * ring around it would be thirteen times its own typical error, and a screen
+ * full of them says nothing about which solve is good.  The 68% ring is
+ * legible at map scale and still honest about what it claims; the 95% figure
+ * has not gone anywhere, it is quoted in the detail panel beside it
+ * (`solveUncertaintyRadius95M`, 1.62x the drawn radius).  The backend's
+ * dark-lane floors are calibrated to match (services/solve_uncertainty.py).
+ *
  * Radial error is modelled as Rayleigh with sigma per axis, so the radius
  * containing the aircraft with probability p is k_p·sigma.  No Leaflet, no
  * React — this module is unit-tested on its own.
@@ -34,13 +45,23 @@
 
 import type { Aircraft } from "../../types";
 
-/** Rayleigh 95% radius factor (k_50 = 1.177 CEP, k_68 = 1.510). */
+/** Rayleigh 68% radius factor — what the map ring is drawn at (k_50 = 1.177
+ *  CEP, k_95 = 2.448). */
+export const UNCERTAINTY_K68 = 1.5096;
+
+/** Rayleigh 95% radius factor — the panel's second figure, not the ring. */
 export const UNCERTAINTY_K95 = 2.4477;
 
 /** Hard ceiling on the drawn radius.  A degenerate solve (near-parallel
  *  baselines) can report an astronomically large formal sigma; without a cap
  *  it would paint the whole viewport. */
 export const UNCERTAINTY_MAX_RADIUS_M = 10000;
+
+/** Above this drawn radius the disc is rendered as an outline only — no fill,
+ *  a dashed hairline.  A 3 km-plus ring is a degenerate solve saying "the
+ *  aircraft is somewhere in this suburb"; filled, a handful of them wash the
+ *  viewport out and hide the good solves underneath. */
+export const UNCERTAINTY_RING_ONLY_ABOVE_M = 3000;
 
 /** A feed entry as stored in `fixesRef` / the 2 Hz display array: the wire
  *  aircraft plus the arrival timestamp the map stamps on it. */
@@ -109,18 +130,42 @@ export function solveDiscCenter(ac: UncertaintyEntry | null | undefined): [numbe
   return null;
 }
 
+/** Shared shape for the two radius helpers: k·sigma, capped, 0 when there is
+ *  nothing honest to draw. */
+function radiusAtK(ac: UncertaintyEntry | null | undefined, k: number): number {
+  if (!isMultinodeSolve(ac)) return 0;
+  const sigma = solveSigmaM(ac);
+  if (sigma == null) return 0;
+  return Math.min(k * sigma, UNCERTAINTY_MAX_RADIUS_M);
+}
+
 /**
- * Radius in metres of the 95%-confidence disc for `ac`, capped at
- * UNCERTAINTY_MAX_RADIUS_M.  Independent of age: the number describes the
- * last solve, and the last solve does not change while it stands.
+ * Radius in metres of the ring the MAP draws: the 68% confidence radius,
+ * capped at UNCERTAINTY_MAX_RADIUS_M.  Independent of age — the number
+ * describes the last solve, and the last solve does not change while it
+ * stands.
  *
  * 0 means "draw nothing": non-multi-node entries have no calibration behind
  * them, and a multi-node entry without `pos_sigma_m` would otherwise get a
  * disc asserting a precision the feed never stated.
  */
 export function solveUncertaintyRadiusM(ac: UncertaintyEntry | null | undefined): number {
-  if (!isMultinodeSolve(ac)) return 0;
-  const sigma = solveSigmaM(ac);
-  if (sigma == null) return 0;
-  return Math.min(UNCERTAINTY_K95 * sigma, UNCERTAINTY_MAX_RADIUS_M);
+  return radiusAtK(ac, UNCERTAINTY_K68);
+}
+
+/**
+ * The 95% radius for the same entry, in metres — the detail panel's second
+ * figure.  Same sigma, same cap, a wider quantile; never drawn on the map.
+ */
+export function solveUncertaintyRadius95M(ac: UncertaintyEntry | null | undefined): number {
+  return radiusAtK(ac, UNCERTAINTY_K95);
+}
+
+/**
+ * True when a drawn radius is large enough to be rendered as an outline
+ * rather than a filled disc (see UNCERTAINTY_RING_ONLY_ABOVE_M).  Lives here
+ * so the threshold is unit-tested next to the radii it applies to.
+ */
+export function isRingOnlyRadius(radiusM: number): boolean {
+  return radiusM > UNCERTAINTY_RING_ONLY_ABOVE_M;
 }

@@ -37,6 +37,7 @@ import {
   getAircraftColor,
   solveDiscCenter,
   solveUncertaintyRadiusM,
+  isRingOnlyRadius,
   nodeIcon,
   yagiSectorPositions,
   uncertaintyDiscRadiusM,
@@ -632,11 +633,21 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftR
 });
 
 /* ── SolveUncertaintyLayer: one soft L.circle per visible multi-node solve,
-      radius = the calibrated 95% position-confidence radius of the LAST SOLVE
+      radius = the calibrated 68% position-confidence radius of the LAST SOLVE
       (map/uncertainty.ts), centred on where that solve was (solveDiscCenter →
       the feed's solve_lat/solve_lon).  Neither moves nor grows until the next
       solve lands: the icon dead-reckons out of the disc, and that separation
       is the extrapolation made visible.
+
+      68%, not 95%, since 2026-09-06: dark solve error is heavy-tailed, so a
+      95% ring on a GOOD solve is ~8x its median error and a viewport of them
+      is a wash.  The 95% figure stays in the detail panel.
+
+      Two renderings, one threshold (UNCERTAINTY_RING_ONLY_ABOVE_M): a normal
+      solve gets the soft filled disc, and anything above 3 km — a degenerate
+      solve, or a dark n=2 fix whose floor alone is 2.1 km — gets a dashed
+      hairline OUTLINE with no fill.  It still says where the aircraft might
+      be, without painting over the solves that are worth reading.
 
       Same shape as AircraftTrailsLayer: one shared L.canvas renderer in the
       passive pane, ref-driven so the 2 Hz display array does not tear the
@@ -678,13 +689,24 @@ const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircr
         live.add(ac.hex);
         // Same colour rule as the icon, including the colour-by-altitude toggle.
         const color = getAircraftColor(ac, colorByAlt);
+        // A big ring is drawn as an outline; a normal one keeps the fill.
+        const ringOnly = isRingOnlyRadius(radius);
+        const shapeStyle = ringOnly
+          ? { fillOpacity: 0, weight: 1, opacity: 0.7, dashArray: "4 5" }
+          : // Fill strong enough to read against the light basemap: a 0.10
+            // fill was invisible at the 10-20 px radii a typical solve draws.
+            { fillOpacity: 0.28, weight: 1.5, opacity: 0.8, dashArray: undefined };
         let circle = circles.get(ac.hex);
         if (circle) {
           circle.setLatLng(center);
           circle.setRadius(radius);
           // Lane colour can flip mid-flight (a solve gaining or losing its
-          // transponder tag) — keep the disc in step with the icon.
-          if (circle.options.color !== color) circle.setStyle({ color, fillColor: color });
+          // transponder tag), and a re-solve can cross the ring-only
+          // threshold in either direction — keep both in step with the icon.
+          const wasRingOnly = circle.options.fillOpacity === 0;
+          if (circle.options.color !== color || wasRingOnly !== ringOnly) {
+            circle.setStyle({ color, fillColor: color, ...shapeStyle });
+          }
         } else {
           circle = L.circle(center, {
             radius,
@@ -692,11 +714,7 @@ const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircr
             interactive: false,
             color,
             fillColor: color,
-            // Strong enough to read against the light basemap: a 0.10 fill
-            // was invisible at the 10-20 px radii a typical solve draws.
-            fillOpacity: 0.28,
-            weight: 1.5,
-            opacity: 0.8,
+            ...shapeStyle,
           });
           circle.addTo(map);
           circles.set(ac.hex, circle);
@@ -1128,7 +1146,7 @@ export default function LiveAircraftMap() {
   const [showInBeamDiag, setShowInBeamDiag] = usePersistedState("tf.layer.inBeamDiag.v2", initialLayers?.inBeamDiag ?? false);
   // Detection arcs default ON — preserves the previously-unconditional render.
   const [showArcs, setShowArcs] = usePersistedState("tf.layer.arcs", initialLayers?.arcs ?? true);
-  // 95% position-uncertainty disc around multi-node solves. Default ON: the
+  // 68% position-uncertainty disc around multi-node solves. Default ON: the
   // disc is the honest reading of a solved position, and hiding it by default
   // would leave the icon looking more precise than it is.
   const [showUncertainty, setShowUncertainty] = usePersistedState("tf.layer.uncertainty", initialLayers?.uncertainty ?? true);
@@ -2200,7 +2218,7 @@ export default function LiveAircraftMap() {
               />
             )}
 
-            {/* 95% position-uncertainty disc around each multi-node solve. */}
+            {/* 68% position-uncertainty disc around each multi-node solve. */}
             {showUncertainty && (
               <SolveUncertaintyLayer visibleAircraftRef={visibleAircraftRef} colorByAlt={colorByAlt} selectedHexRef={selectedHexRef} />
             )}

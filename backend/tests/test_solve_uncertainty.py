@@ -1,9 +1,12 @@
 """The calibrated solve-uncertainty model (services/solve_uncertainty.py).
 
-Pins the shape of the 2026-09-05 fit rather than its numbers alone: the floor
-is per node-count, the formal LM-fit sigma adds IN QUADRATURE (not linearly)
-and only after being capped, a missing/degenerate formal sigma degrades to the
-floor rather than to zero, and no n_nodes means no answer at all.
+Pins the shape of the fit rather than its numbers alone: the floor is per
+node-count AND per lane, the formal LM-fit sigma adds IN QUADRATURE (not
+linearly) and only after being capped, a missing/degenerate formal sigma
+degrades to the floor rather than to zero, and no n_nodes means no answer at
+all.  The dark lane's separate floors (2026-09-06, 68%-calibrated) replace the
+known-lane floors rather than scaling them, so the old multiplicative
+DARK_GAIN is unit by default.
 
 Env-derived constants are exercised by monkeypatching the module attributes,
 not by reimporting with a different environment — they are read once at import
@@ -49,6 +52,11 @@ class TestFloors:
     def test_floor_per_node_count(self, n_nodes, expected):
         assert su.solve_sigma_m(_result(n_nodes=n_nodes), dark=False) == pytest.approx(expected)
 
+    def test_known_lane_floors_are_the_2026_09_05_values(self):
+        # Known-lane coverage measured 0.95-0.99 against ADS-B truth, so the
+        # dark recalibration deliberately left these alone.
+        assert (su._FLOOR_N2_M, su._FLOOR_N3_M, su._FLOOR_N4_M) == (650.0, 210.0, 180.0)
+
     def test_n_nodes_missing_returns_none(self):
         assert su.solve_sigma_m(_result(pos_sigma_km=0.5), dark=False) is None
         assert su.solve_sigma_m({}, dark=True) is None
@@ -86,16 +94,58 @@ class TestFormalTerm:
         assert got == pytest.approx(math.sqrt(2000.0**2 + 180.0**2))
 
 
-class TestDarkGain:
-    def test_dark_inflates_by_the_gain(self):
+class TestDarkFloors:
+    """The dark lane has its own floors and no multiplicative gain."""
+
+    @pytest.mark.parametrize(
+        ("n_nodes", "expected"),
+        [(2, 2100.0), (3, 850.0), (4, 240.0), (9, 240.0)],
+    )
+    def test_dark_floor_per_node_count(self, n_nodes, expected):
+        assert su.solve_sigma_m(_result(n_nodes=n_nodes), dark=True) == pytest.approx(expected)
+
+    def test_dark_floors_replace_the_known_ones_rather_than_scaling_them(self):
+        # Not any multiple of the known-lane floor: dark error is a different
+        # shape, not a scaled copy (4x worse at n=2, 1.3x at n>=4).
         known = su.solve_sigma_m(_result(n_nodes=3), dark=False)
         dark = su.solve_sigma_m(_result(n_nodes=3), dark=True)
         assert known == pytest.approx(210.0)
-        assert dark == pytest.approx(210.0 * 1.5)
+        assert dark == pytest.approx(850.0)
+        assert dark / known == pytest.approx(850.0 / 210.0)
 
-    def test_dark_gain_is_env_tunable(self, monkeypatch):
-        monkeypatch.setattr(su, "_DARK_GAIN", 1.0)
-        assert su.solve_sigma_m(_result(n_nodes=2), dark=True) == pytest.approx(650.0)
+    def test_the_gain_defaults_to_unit(self):
+        # The dark floors carry the whole of the lane's inflation now.
+        assert su._DARK_GAIN == 1.0
+
+    def test_the_legacy_gain_still_applies_when_set(self):
+        # Back-compat: a deployment pinned to the 2026-09-05 model can still
+        # reach the old numbers from the environment.
+        assert su.solve_sigma_m(_result(n_nodes=2), dark=True) == pytest.approx(2100.0)
+
+    def test_dark_floors_are_env_tunable(self, monkeypatch):
+        monkeypatch.setattr(su, "_DARK_FLOOR_N3_M", 1234.0)
+        assert su.solve_sigma_m(_result(n_nodes=3), dark=True) == pytest.approx(1234.0)
+
+    def test_gain_is_env_tunable_and_multiplies_the_dark_floor(self, monkeypatch):
+        monkeypatch.setattr(su, "_DARK_GAIN", 1.5)
+        assert su.solve_sigma_m(_result(n_nodes=4), dark=True) == pytest.approx(240.0 * 1.5)
+
+    def test_the_gain_does_not_touch_the_known_lane(self, monkeypatch):
+        monkeypatch.setattr(su, "_DARK_GAIN", 3.0)
+        assert su.solve_sigma_m(_result(n_nodes=3), dark=False) == pytest.approx(210.0)
+
+    def test_formal_sigma_still_adds_in_quadrature_on_the_dark_lane(self):
+        got = su.solve_sigma_m(_result(n_nodes=4, pos_sigma_km=1.0), dark=True)
+        assert got == pytest.approx(math.sqrt(1000.0**2 + 240.0**2))
+
+    def test_the_capped_worst_case_stays_off_the_clamp(self):
+        # sqrt(3000^2 + 2100^2) = 3661 m, comfortably under _SIGMA_MAX_M: with
+        # the gain gone, the 5 km clamp no longer flattens dark solves into one
+        # viewport-wide disc the way the 2026-09-05 model did (3.4% of dark
+        # entry-frames sat on it).
+        got = su.solve_sigma_m(_result(n_nodes=2, pos_sigma_km=1e6), dark=True)
+        assert got == pytest.approx(math.sqrt(3000.0**2 + 2100.0**2))
+        assert got < su._SIGMA_MAX_M
 
 
 class TestClamp:
@@ -107,7 +157,7 @@ class TestClamp:
         assert su.solve_sigma_m(_result(n_nodes=4), dark=False) == pytest.approx(50.0)
 
     def test_ceiling_of_the_clamp_binds(self, monkeypatch):
-        monkeypatch.setattr(su, "_DARK_GAIN", 100.0)
+        monkeypatch.setattr(su, "_DARK_FLOOR_N2_M", 90_000.0)
         assert su.solve_sigma_m(_result(n_nodes=2), dark=True) == pytest.approx(5000.0)
 
     def test_returns_a_float(self):

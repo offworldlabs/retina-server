@@ -1,11 +1,15 @@
 import { describe, it, expect } from "vitest";
 import {
+  UNCERTAINTY_K68,
   UNCERTAINTY_K95,
   UNCERTAINTY_MAX_RADIUS_M,
+  UNCERTAINTY_RING_ONLY_ABOVE_M,
   solveAgeS,
   solveSigmaM,
   solveDiscCenter,
   solveUncertaintyRadiusM,
+  solveUncertaintyRadius95M,
+  isRingOnlyRadius,
 } from "./uncertainty";
 
 const NOW = 1_757_000_000_000;
@@ -90,11 +94,18 @@ describe("solveDiscCenter", () => {
 });
 
 describe("solveUncertaintyRadiusM", () => {
-  it("is k95 × the solve-epoch sigma", () => {
+  it("is k68 × the solve-epoch sigma — the drawn ring is the 68% radius", () => {
     expect(solveUncertaintyRadiusM(mn({ pos_sigma_m: 650 }))).toBeCloseTo(
-      UNCERTAINTY_K95 * 650,
+      UNCERTAINTY_K68 * 650,
       6,
     );
+  });
+
+  it("is narrower than the 95% radius by the ratio of the two quantiles", () => {
+    const r68 = solveUncertaintyRadiusM(mn({ pos_sigma_m: 240 }));
+    const r95 = solveUncertaintyRadius95M(mn({ pos_sigma_m: 240 }));
+    expect(r68).toBeLessThan(r95);
+    expect(r95 / r68).toBeCloseTo(UNCERTAINTY_K95 / UNCERTAINTY_K68, 6);
   });
 
   it("is 0 when the entry carries no sigma", () => {
@@ -115,7 +126,7 @@ describe("solveUncertaintyRadiusM", () => {
 
   it("accepts the multinode flag without a position_source", () => {
     expect(solveUncertaintyRadiusM({ multinode: true, pos_sigma_m: 200 })).toBeCloseTo(
-      UNCERTAINTY_K95 * 200,
+      UNCERTAINTY_K68 * 200,
       6,
     );
   });
@@ -128,10 +139,59 @@ describe("solveUncertaintyRadiusM", () => {
       mn({ pos_sigma_m: 200, pos_sigma_vel_ms: 150, seen: 30, _updatedAt: NOW - 300_000 }),
     );
     expect(aged).toBe(fresh);
-    expect(fresh).toBeCloseTo(UNCERTAINTY_K95 * 200, 6);
+    expect(fresh).toBeCloseTo(UNCERTAINTY_K68 * 200, 6);
   });
 
   it("caps the radius at 10 km", () => {
-    expect(solveUncertaintyRadiusM(mn({ pos_sigma_m: 5000 }))).toBe(UNCERTAINTY_MAX_RADIUS_M);
+    expect(solveUncertaintyRadiusM(mn({ pos_sigma_m: 9000 }))).toBe(UNCERTAINTY_MAX_RADIUS_M);
+  });
+
+  it("draws a readable ring for the worst dark solve the backend can emit", () => {
+    // Dark n=2 with the formal term on its cap: sqrt(3000² + 2100²) = 3661 m
+    // of sigma. The 68% ring is 5.5 km — big, but a ring rather than the
+    // 10 km-capped wash the old 95%-of-an-inflated-sigma model produced.
+    const worstDarkSigma = Math.sqrt(3000 ** 2 + 2100 ** 2);
+    const r = solveUncertaintyRadiusM(mn({ pos_sigma_m: worstDarkSigma }));
+    expect(r).toBeLessThan(UNCERTAINTY_MAX_RADIUS_M);
+    expect(isRingOnlyRadius(r)).toBe(true);
+  });
+});
+
+describe("solveUncertaintyRadius95M", () => {
+  it("is k95 × the solve-epoch sigma — the panel's second figure", () => {
+    expect(solveUncertaintyRadius95M(mn({ pos_sigma_m: 650 }))).toBeCloseTo(
+      UNCERTAINTY_K95 * 650,
+      6,
+    );
+  });
+
+  it("shares the map ring's cap and its draw-nothing cases", () => {
+    expect(solveUncertaintyRadius95M(mn({ pos_sigma_m: 5000 }))).toBe(UNCERTAINTY_MAX_RADIUS_M);
+    expect(solveUncertaintyRadius95M(mn())).toBe(0);
+    expect(solveUncertaintyRadius95M(null)).toBe(0);
+    expect(
+      solveUncertaintyRadius95M({ position_source: "adsb_single_node", pos_sigma_m: 650 }),
+    ).toBe(0);
+  });
+});
+
+describe("isRingOnlyRadius", () => {
+  it("is false for the radii a normal solve draws", () => {
+    // Known-lane n>=4 (180 m sigma) and n=2 (650 m): both stay filled.
+    expect(isRingOnlyRadius(solveUncertaintyRadiusM(mn({ pos_sigma_m: 180 })))).toBe(false);
+    expect(isRingOnlyRadius(solveUncertaintyRadiusM(mn({ pos_sigma_m: 650 })))).toBe(false);
+  });
+
+  it("is true above the threshold and false at it", () => {
+    expect(isRingOnlyRadius(UNCERTAINTY_RING_ONLY_ABOVE_M)).toBe(false);
+    expect(isRingOnlyRadius(UNCERTAINTY_RING_ONLY_ABOVE_M + 1)).toBe(true);
+  });
+
+  it("is true for a dark n=2 solve, whose floor alone is 2.1 km", () => {
+    expect(isRingOnlyRadius(solveUncertaintyRadiusM(mn({ pos_sigma_m: 2100 })))).toBe(true);
+  });
+
+  it("is false for a zero radius (nothing is drawn at all)", () => {
+    expect(isRingOnlyRadius(0)).toBe(false);
   });
 });
