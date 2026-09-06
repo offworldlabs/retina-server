@@ -428,9 +428,20 @@ def registered_node():
     state.node_analytics.register_node(_NODE_ID, dict(_NODE_CFG))
     area = state.node_analytics.detection_areas[_NODE_ID]
     coverage = state.node_analytics.empirical_coverages[_NODE_ID]
-    # MIN_POINTS (20) calibration points before to_polygon() emits anything.
-    for i in range(30):
-        coverage.add_point(_TRUE_RX_LAT + 0.05 + i * 0.002, _TRUE_RX_LON + 0.06 + i * 0.002)
+    # MIN_POINTS (20) calibration points before to_polygon() emits anything,
+    # and the published polygon is evidence-only (FOV off), so a bin is drawn
+    # only once it holds FOV_OPEN_MIN_POINTS detections of its OWN.  Thirty
+    # points spread over six adjacent bearings is a six-bin lobe with the rest
+    # of the compass closed — a polygon that has both a measured arc and the
+    # RX apex these assertions read.  A single line of points, which this was,
+    # opens one bin and no longer forms an area at all.
+    for step in range(6):
+        rad = math.radians(30.0 + 5.0 * step)
+        for i in range(5):
+            range_km = 10.0 + i
+            lat = _TRUE_RX_LAT + range_km * math.cos(rad) / 111.19
+            lon = _TRUE_RX_LON + range_km * math.sin(rad) / (111.19 * math.cos(math.radians(_TRUE_RX_LAT)))
+            coverage.add_point(lat, lon)
     for i in range(5):
         area.record_verified_detection(_TRUE_RX_LAT + 0.1 + i * 0.01, _TRUE_RX_LON + 0.1, f"abc{i:03d}")
     yield _NODE_ID
