@@ -343,6 +343,10 @@ export function useNodes() {
             if (Math.abs(rxLat) < 1e-6 && Math.abs(rxLon) < 1e-6) continue;
             nodeList.push({
               node_id: id,
+              // The public handle; null on a backend that does not serve one,
+              // which the label helper renders as "unlisted node" rather than
+              // falling back to the id.
+              node_ref: (info as any).node_ref ?? null,
               // Already privacy-fuzzed by the backend; used as served. The
               // backend builds its published arcs around this same anchor, so
               // a client-side rebuild lands on the backend's curve.

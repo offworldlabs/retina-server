@@ -97,8 +97,8 @@ export default function Toolbar({
       <button className={`toggle-btn${showUncertainty ? " active" : ""}`} onClick={onToggleUncertainty} title="Show 95% position-uncertainty disc around multi-node solves">
         σ Uncert.
       </button>
-      <button className={`toggle-btn${showInBeamDiag ? " active" : ""}`} onClick={onToggleInBeamDiag} title="Show red lines from a node to in-beam aircraft it is NOT currently detecting (beam-coverage gaps)">
-        Beam gaps
+      <button className={`toggle-btn${showInBeamDiag ? " active" : ""}`} onClick={onToggleInBeamDiag} title="Show red lines from a node to aircraft inside its measured coverage that it is NOT currently detecting (coverage gaps)">
+        Coverage gaps
       </button>
       <button className={`toggle-btn${showStats ? " active" : ""}`} onClick={onToggleStats} title="Show / hide the live stats panel (s)">
         Stats

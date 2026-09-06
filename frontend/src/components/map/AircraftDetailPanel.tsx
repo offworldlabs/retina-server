@@ -12,7 +12,13 @@ import {
   solveUncertaintyRadiusM,
 } from "./uncertainty";
 
-export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError, detectingNodes = [], solveHistory = null }) {
+/**
+ * `nodeLabelFor` maps a node id to the handle the map is allowed to print
+ * (map/nodeSites.ts).  Node ids stay the join key everywhere — `ac.node_id`,
+ * `detectingNodes` — and only the text changes; the default keeps the panel
+ * usable on its own (in a test, say) without ever falling back to the id.
+ */
+export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError, detectingNodes = [], solveHistory = null, nodeLabelFor = (_nodeId) => "unlisted node" }) {
   if (!ac) return null;
 
   const err = computeError(ac.hex, ac);
@@ -217,7 +223,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
         {isAdsbSingleNode && (
           <div className="detail-section">
             <div className="detail-section-title">Claimed detection</div>
-            <Field label="Claiming node" value={ac.node_id || "—"} />
+            <Field label="Claiming node" value={ac.node_id ? nodeLabelFor(ac.node_id) : "—"} />
             <Field
               label="ADS-B fix age"
               value={ac.adsb_fix_age_s != null ? `${ac.adsb_fix_age_s}s` : "—"}
@@ -370,7 +376,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
                 detectingNodes.length
                   ? (
                     <span style={{ wordBreak: "break-word" }}>
-                      {detectingNodes.join(", ")}
+                      {detectingNodes.map(nodeLabelFor).join(", ")}
                       <span style={{ color: "#64748b" }}> ({detectingNodes.length})</span>
                     </span>
                   )
