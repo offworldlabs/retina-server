@@ -74,30 +74,6 @@ KNOWN_LANE_MODE = os.getenv("KNOWN_LANE_MODE", "binding").lower()
 if KNOWN_LANE_MODE not in ("off", "shadow", "binding"):
     KNOWN_LANE_MODE = "shadow"
 
-# Dark track following (see services/dark_follow.py) — the same top-down claim
-# as the known lane, against established mn-dark-* tracks instead of ADS-B
-# identities.  Same three-way vocabulary, and the same fallback discipline: an
-# unrecognised value degrades to the inert-for-the-feed mode.  Default
-# "shadow", unlike KNOWN_LANE_MODE's "binding", because this lane decides which
-# aircraft the map believes in without a transponder to check itself against —
-# it earns its soak before it binds.  Claiming rides the known lane's per-frame
-# stage, so this is inert whenever KNOWN_LANE_MODE is off (an ADS-B aircraft
-# must never lose a detection to a dark pseudo-state, and that precedence needs
-# the ADS-B claims to have been made first).
-DARK_FOLLOW_MODE = os.getenv("DARK_FOLLOW_MODE", "shadow").lower()
-if DARK_FOLLOW_MODE not in ("off", "shadow", "binding"):
-    DARK_FOLLOW_MODE = "shadow"
-# Measurement epoch alignment (see services/tasks/solver.align_measurement_epochs).
-# on/off rather than the off/shadow/active triple its neighbours use: there is
-# nothing to shadow — the correction is a closed-form dead-reckoning of each
-# delay along its own measured Doppler, so a dry run would produce the same
-# number the acting run applies and observe nothing extra.  Default "on",
-# because leaving it off is the bug: nodes sample at independent phases and the
-# solver treats their measurements as simultaneous, so a 250 m/s target charges
-# up to ~1 us of delay error per second of skew (measured ~0.3 us rms at 2 s
-# skew on the fleet) straight to the 3 us rms gate.  The flag exists so the
-# alignment can be turned off live without a rollback if it ever misbehaves.
-SOLVER_EPOCH_ALIGN = os.getenv("SOLVER_EPOCH_ALIGN", "on").strip().lower() != "off"
 # How the n>=3 solve gets its altitude (see services/tasks/solver.py's
 # _solve_best_altitude).  sweep/free, read here rather than in that module so
 # it sits with its sibling mode flags and a test can monkeypatch it without
@@ -136,6 +112,32 @@ if SOLVER_ALT_MODE not in ("sweep", "free"):
 # nearer a bistatic ellipse than these can send a single start to the wrong
 # side of it, and finding that out should not need a code change.
 SOLVER_FREE_ALT_STARTS = max(1, int(os.getenv("SOLVER_FREE_ALT_STARTS", "1")))
+
+# Measurement epoch alignment (see services/tasks/solver.align_measurement_epochs).
+# on/off rather than the off/shadow/active triple its neighbours use: there is
+# nothing to shadow — the correction is a closed-form dead-reckoning of each
+# delay along its own measured Doppler, so a dry run would produce the same
+# number the acting run applies and observe nothing extra.  Default "on",
+# because leaving it off is the bug: nodes sample at independent phases and the
+# solver treats their measurements as simultaneous, so a 250 m/s target charges
+# up to ~1 us of delay error per second of skew (measured ~0.3 us rms at 2 s
+# skew on the fleet) straight to the 3 us rms gate.  The flag exists so the
+# alignment can be turned off live without a rollback if it ever misbehaves.
+SOLVER_EPOCH_ALIGN = os.getenv("SOLVER_EPOCH_ALIGN", "on").strip().lower() != "off"
+
+# Dark track following (see services/dark_follow.py) — the same top-down claim
+# as the known lane, against established mn-dark-* tracks instead of ADS-B
+# identities.  Same three-way vocabulary, and the same fallback discipline: an
+# unrecognised value degrades to the inert-for-the-feed mode.  Default
+# "shadow", unlike KNOWN_LANE_MODE's "binding", because this lane decides which
+# aircraft the map believes in without a transponder to check itself against —
+# it earns its soak before it binds.  Claiming rides the known lane's per-frame
+# stage, so this is inert whenever KNOWN_LANE_MODE is off (an ADS-B aircraft
+# must never lose a detection to a dark pseudo-state, and that precedence needs
+# the ADS-B claims to have been made first).
+DARK_FOLLOW_MODE = os.getenv("DARK_FOLLOW_MODE", "shadow").lower()
+if DARK_FOLLOW_MODE not in ("off", "shadow", "binding"):
+    DARK_FOLLOW_MODE = "shadow"
 
 node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR, fov_mode=FOV_MODE)
 
@@ -688,6 +690,16 @@ mn_superseded: int = 0
 # be (36 of 44 supersessions popped another aircraft's key before the guard).
 mn_superseded_blocked: int = 0
 
+# The subset of mn_superseded_blocked that the altitude half of the gate
+# refused on its own — the entry dead-reckoned close enough to be popped, but
+# its altitude and the new solve's differed by more than
+# _MN_SUPERSEDE_MAX_ALT_DIFF_M.  These are the neighbour-pops proximity alone
+# could never see: a bad solve of aircraft B landing on top of aircraft A's
+# key, which on the captures this gate was measured against was the dominant
+# way a well-covered dark aircraft lost its identity.  Read it against
+# mn_superseded_blocked to see how much of the guard's work altitude is doing.
+mn_superseded_blocked_alt: int = 0
+
 # Solves published after node-trimming recovered them from the rms_delay
 # gate at n>=4 (see solver.py's _trim_and_resolve).  Counted once per
 # publish, not per trim round — this is "how many map markers exist because
@@ -882,7 +894,7 @@ def _reset_for_tests() -> None:
     global coverage_rebuild_backlog, tracks_stale_skipped, solver_epoch_align_skipped
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
     global solver_resolve_skips_dark
-    global mn_superseded, mn_superseded_blocked, solver_trimmed
+    global mn_superseded, mn_superseded_blocked, mn_superseded_blocked_alt, solver_trimmed
     global solver_consensus_selected, solver_consensus_filtered
     global solver_consensus_fallback, solver_consensus_shadow
     global solver_anchor_hits, solver_anchor_fallbacks, solver_anchored_published
@@ -977,7 +989,7 @@ def _reset_for_tests() -> None:
         tracks_stale_skipped = solver_epoch_align_skipped = 0
         solver_stale_drops = 0
         solver_resolve_skips = solver_resolve_skips_dark = 0
-        mn_superseded = mn_superseded_blocked = 0
+        mn_superseded = mn_superseded_blocked = mn_superseded_blocked_alt = 0
         solver_trimmed = 0
         solver_consensus_selected = solver_consensus_filtered = 0
         solver_consensus_fallback = solver_consensus_shadow = 0
