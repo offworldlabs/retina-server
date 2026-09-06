@@ -38,6 +38,7 @@ def _reset_state():
     state.n2_unconfirmed = 0
     state.solver_stale_drops = 0
     state.solver_resolve_skips = 0
+    state.solver_resolve_skips_dark = 0
     state.multinode_tracks.clear()
     state.task_last_success.clear()
 
@@ -414,6 +415,49 @@ class TestResolveSuppression:
         # Skipping is not a failure and not a lost item: neither counter moves.
         assert state.solver_failures == 0
         assert state.solver_stale_drops == 0
+
+    def test_a_skip_is_recorded_with_the_claim_that_blocked_it(self):
+        """The counter alone cannot say WHOSE claim suppressed a candidate,
+        and tracker track ids are shared between different aircraft — so a
+        skip that suppressed a duplicate and one that suppressed a neighbour
+        looked identical.  The deque carries the blocking claims."""
+        _reset_state()
+        state.solver_resolve_skips_recent.clear()
+        now = time.time()
+        s_in = dict(self._s_in(["a1", "b1"], n_nodes=4), initial_guess={"lat": 35.0, "lon": -82.0})
+        assert solver_mod._claim_resolve_slot(dict(s_in), now) is True
+        assert solver_mod._claim_resolve_slot(dict(s_in), now) is False
+        solver_mod._record_resolve_skip(dict(s_in), now)
+
+        assert state.solver_resolve_skips == 1
+        assert state.solver_resolve_skips_dark == 1
+        assert len(state.solver_resolve_skips_recent) == 1
+        rec = state.solver_resolve_skips_recent[0]
+        assert rec["lane"] == "dark"
+        assert rec["track_ids"] == ["a1", "b1"]
+        assert rec["n_nodes"] == 4
+        assert rec["guess_lat"] == 35.0
+        assert {b["track_id"]: b["held_n"] for b in rec["blocking"]} == {"a1": 4, "b1": 4}
+
+    def test_a_tagged_candidate_is_counted_but_not_as_dark(self):
+        _reset_state()
+        state.solver_resolve_skips_recent.clear()
+        now = time.time()
+        s_in = dict(self._s_in(["a1"], n_nodes=3), adsb_hex="abc123")
+        solver_mod._record_resolve_skip(s_in, now)
+        assert state.solver_resolve_skips == 1
+        assert state.solver_resolve_skips_dark == 0
+        assert state.solver_resolve_skips_recent[0]["lane"] == "adsb"
+
+    def test_skips_never_enter_the_solve_history(self):
+        """One skip per solve-history record would evict the solves the same
+        investigation needs — live, skips outrun dark records two to one."""
+        _reset_state()
+        state.mlat_solve_history.clear()
+        s_in = self._s_in(["a1", "b1"])
+        solver_mod._record_resolve_skip(s_in, time.time())
+        assert not state.mlat_solve_history
+        assert not state.mlat_solve_history_known
 
 
 class TestSolveBestAltitude:
