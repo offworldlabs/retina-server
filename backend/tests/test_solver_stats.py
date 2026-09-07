@@ -1088,7 +1088,6 @@ class TestDarkFollowBlock:
         assert out["targets_now"] == 0
         assert set(out["ineligible"].values()) == {0}
 
-
     def test_counts_published_solves_narrower_than_their_pool(self):
         _push(_rec("published", n_nodes=2, pool_n_nodes=3))
         _push(_rec("published", n_nodes=3, pool_n_nodes=3))
