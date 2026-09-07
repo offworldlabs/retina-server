@@ -262,6 +262,7 @@ class TestConsensusAndCounters:
         state.solver_consensus_fallback = 9
         state.solver_consensus_shadow = 10
         state.solver_vel_untrusted_published = 11
+        state.solver_n2_alt_inherited = 26
         state.dark_follow_targets = 13
         state.dark_follow_claims = 14
         state.dark_follow_inputs = 15
@@ -302,6 +303,7 @@ class TestConsensusAndCounters:
             "node_frames_rate_limited": 13,
             "worker_errors": 0,
             "vel_untrusted_published": 11,
+            "n2_alt_inherited": 26,
             "dark_follow_targets": 13,
             "dark_follow_claims": 14,
             "dark_follow_inputs": 15,
