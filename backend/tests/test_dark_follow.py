@@ -456,6 +456,17 @@ class TestFollowPass:
 
         monkeypatch.setattr(state, "solver_queue", queue.Queue(maxsize=200))
 
+    @pytest.fixture(autouse=True)
+    def _admit_n2(self, monkeypatch):
+        """These tests exercise the pass MECHANICS — the rate limit, the
+        newest-claim dedup, the missing-config drop, shadow's own solve — on
+        the smallest claim set that produces an input, which is two nodes.
+        With DARK_FOLLOW_N2_ADMIT off (the default) the pass now declines to
+        build an n=2 input at all, so turn the bypass on here and let
+        TestN2InputsAreSkipped below own that gate.
+        """
+        monkeypatch.setattr(dark_follow, "DARK_FOLLOW_N2_ADMIT", True)
+
     def test_three_nodes_produce_one_anchored_queue_item(self):
         ts = int(time.time() * 1000)
         _install_follow_claims(["n1", "n2", "n3"], ts)
@@ -573,6 +584,64 @@ class TestFollowPass:
         assert known_lane.run_known_lane_pass(lambda s, c: None, self._CFGS, mode="shadow") == 0
 
 
+class TestN2InputsAreSkipped:
+    """A follow input from exactly two nodes is a solve that cannot publish.
+
+    A follow input carries no cv_epochs, so unless the anchored bypass is on it
+    dies at the solver's n=2 confirmation gate every time — 37-67 per 20-minute
+    capture on the test droplet, each a pool solve spent for nothing and, worse,
+    each an n2_unconfirmed verdict the ghost guard used to charge to the key.
+    """
+
+    _CFGS = {"n1": _NODE_CFG, "n2": _NODE_CFG, "n3": _NODE_CFG}
+
+    @pytest.fixture(autouse=True)
+    def _private_queue(self, monkeypatch):
+        import queue
+
+        monkeypatch.setattr(state, "solver_queue", queue.Queue(maxsize=200))
+
+    def test_two_nodes_are_not_enqueued_when_the_bypass_is_off(self, monkeypatch):
+        monkeypatch.setattr(dark_follow, "DARK_FOLLOW_N2_ADMIT", False)
+        _install_follow_claims(["n1", "n2"], int(time.time() * 1000))
+
+        assert known_lane.run_dark_follow_pass(None, self._CFGS, mode="binding") == 0
+        assert _drain_queue() == []
+        assert state.dark_follow_inputs == 0
+        assert state.dark_follow_n2_skipped == 1
+
+    def test_two_nodes_are_enqueued_when_the_bypass_is_on(self, monkeypatch):
+        monkeypatch.setattr(dark_follow, "DARK_FOLLOW_N2_ADMIT", True)
+        _install_follow_claims(["n1", "n2"], int(time.time() * 1000))
+
+        assert known_lane.run_dark_follow_pass(None, self._CFGS, mode="binding") == 1
+        assert len(_drain_queue()) == 1
+        assert state.dark_follow_inputs == 1
+        assert state.dark_follow_n2_skipped == 0
+
+    def test_a_third_node_is_unaffected(self, monkeypatch):
+        monkeypatch.setattr(dark_follow, "DARK_FOLLOW_N2_ADMIT", False)
+        _install_follow_claims(["n1", "n2", "n3"], int(time.time() * 1000))
+
+        assert known_lane.run_dark_follow_pass(None, self._CFGS, mode="binding") == 1
+        assert state.dark_follow_n2_skipped == 0
+
+    def test_the_skipped_key_keeps_its_target_status(self, monkeypatch):
+        """The whole point: flying into a coverage gap is not evidence against
+        the prediction, so no reject reaches the guard and the key stays
+        followable until DARK_FOLLOW_MAX_AGE_S ends it."""
+        monkeypatch.setattr(dark_follow, "DARK_FOLLOW_N2_ADMIT", False)
+        monkeypatch.setattr(dark_follow, "DARK_FOLLOW_INTERVAL_S", 0.0)
+        ts = int(time.time() * 1000)
+        for i in range(4):
+            _install_follow_claims(["n1", "n2"], ts + i)
+            known_lane.run_dark_follow_pass(None, self._CFGS, mode="binding")
+
+        assert state.dark_follow_n2_skipped == 4
+        assert state.dark_follow_dropped == 0
+        assert dark_follow._reject_streak.get(_KEY, 0) == 0
+
+
 class TestModesInProcessOneFrame:
     """Binding removes the followed detections from the frame the dark lane
     processes; shadow leaves the frame whole."""
@@ -655,6 +724,44 @@ class TestGhostGuard:
 
         for _ in range(2):
             solver_mod._record_solve_history("rejected_rms_delay", s_in, _reject_result())
+
+        dark_follow._expire_targets_for_tests()
+        assert dark_follow.follow_targets() == []
+        assert state.dark_follow_dropped == 1
+
+    def test_an_n2_unconfirmed_record_is_withheld_not_charged(self, monkeypatch):
+        """Being withheld for lack of a third node is not a refutation.
+
+        With DARK_FOLLOW_N2_ADMIT off, an n=2 follow input cannot clear the
+        confirmation gate however right the prediction was, so charging the
+        n2_unconfirmed verdict to the key's streak dropped targets that had
+        merely flown into 2-node coverage — 43-56 drops per 20-minute capture
+        on the test droplet, the dominant source of the lane's `cooldown`
+        ineligibility.  The guard hears nothing at all: not a reject, and not
+        an ok either.
+        """
+        self._armed(monkeypatch)
+        s_in = {"follow_key": _KEY, "lane": "dark_follow", "n_nodes": 2}
+
+        for _ in range(4):
+            solver_mod._record_solve_history("n2_unconfirmed", s_in, _reject_result())
+
+        dark_follow._expire_targets_for_tests()
+        assert len(dark_follow.follow_targets()) == 1
+        assert state.dark_follow_dropped == 0
+        assert state.dark_follow_n2_withheld == 4
+        assert dark_follow._reject_streak.get(_KEY, 0) == 0
+
+    def test_a_withheld_record_does_not_clear_an_existing_streak(self, monkeypatch):
+        """A withheld solve is not an ok either: it earned no
+        confirmation either, so a real reject on each side of it still drops
+        the key."""
+        self._armed(monkeypatch)
+        s_in = {"follow_key": _KEY, "lane": "dark_follow", "n_nodes": 2}
+
+        solver_mod._record_solve_history("rejected_rms_delay", s_in, _reject_result())
+        solver_mod._record_solve_history("n2_unconfirmed", s_in, _reject_result())
+        solver_mod._record_solve_history("rejected_rms_delay", s_in, _reject_result())
 
         dark_follow._expire_targets_for_tests()
         assert dark_follow.follow_targets() == []

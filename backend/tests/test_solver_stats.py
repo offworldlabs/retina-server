@@ -267,6 +267,8 @@ class TestConsensusAndCounters:
         state.dark_follow_inputs = 15
         state.dark_follow_published = 16
         state.dark_follow_dropped = 17
+        state.dark_follow_n2_withheld = 18
+        state.dark_follow_n2_skipped = 19
         state.dark_bottomup_shadowed = 18
         state.tracks_stale_skipped = 13
         state.solver_epoch_align_skipped = 14
@@ -305,6 +307,8 @@ class TestConsensusAndCounters:
             "dark_follow_inputs": 15,
             "dark_follow_published": 16,
             "dark_follow_dropped": 17,
+            "dark_follow_n2_withheld": 18,
+            "dark_follow_n2_skipped": 19,
             "dark_bottomup_shadowed": 18,
         }
         assert out["consensus"]["selected"] == 7
@@ -1092,6 +1096,17 @@ class TestDarkFollowBlock:
             "no_filter": 0,
             "vel_sigma": 7,
         }
+
+    def test_the_two_n2_sparings_are_reported_beside_the_funnel(self):
+        """Being withheld for lack of a third node is not evidence against the
+        prediction, so neither sparing shows up as a drop — they are only
+        visible as their own keys."""
+        state.bump_counter("dark_follow_n2_withheld", 11)
+        state.bump_counter("dark_follow_n2_skipped", 6)
+        out = _solver_window_stats(10.0)["dark_follow"]
+        assert out["n2_withheld"] == 11
+        assert out["n2_skipped"] == 6
+        assert out["dropped"] == 0
 
     def test_an_empty_lane_reports_zeroes_not_a_missing_block(self):
         out = _solver_window_stats(10.0)["dark_follow"]
