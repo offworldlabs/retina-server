@@ -86,7 +86,23 @@ DARK_FOLLOW_MIN_NODES = 3
 # uncertainty, and the Doppler allowance the gate below derives from it is
 # ~78 Hz against a 25 Hz base — wider than the base gate, which is the point
 # past which the "prediction" stops constraining anything.
-DARK_FOLLOW_MAX_VEL_SIGMA_MS = float(os.getenv("DARK_FOLLOW_MAX_VEL_SIGMA_MS", "60"))
+#
+# 115, not 60, since 2026-09-07.  The 60 m/s ceiling never admitted a 3-node
+# key: the display filter's 1200 m measurement floor (track_filter
+# _KF_DEFAULT_POS_SIGMA_M) means the velocity sigma after successive solves at
+# the 3-node bottom-up cadence (~10 s) runs 150 / 112 / 74 / 51 m/s, so a key
+# needed its 4th solve, and 3-node keys on the test fleet expired after a
+# median of one.  Every aircraft whose widest solve was 3 nodes got 0-3
+# follow-solves per 20 min against 30-100 for 4+-node aircraft, and was
+# refreshed only by the 10-12 s bottom-up cadence (dark position error 0.34 km
+# at <=3 s of solve age vs 2.7 km at 12+ s).  At 115 a key is admitted after
+# its 2nd solve.  The claim gates derived from the sigma saturate at
+# _MAX_DELAY_GATE_US / _MAX_DOPPLER_GATE_HZ, and the two-reject drop still
+# guards.  Measured on the test droplet across four 20-min captures: 3-node
+# fresh-solve time 33% -> 43-50%, dark position error by solve age
+# 0.34/0.80/1.10/2.69 km -> 0.20/0.40/0.85/1.76 km, dark ghost share 5.5% ->
+# 4.1-5.3%, velocity-sigma ineligibility 14-33 key-seconds per 20 min.
+DARK_FOLLOW_MAX_VEL_SIGMA_MS = float(os.getenv("DARK_FOLLOW_MAX_VEL_SIGMA_MS", "115"))
 # How long a dropped key stays un-followable.  Long enough that the bottom-up
 # lane gets several association rounds (ASSOC_MIN_INTERVAL_S is 30 s at its
 # widest, ~2 s at its narrowest) to re-find the aircraft on its own evidence
