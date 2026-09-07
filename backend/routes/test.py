@@ -1547,6 +1547,11 @@ def _solver_window_stats(minutes: float) -> dict:
             "node_frames_rate_limited": state.node_frames_rate_limited,
             "worker_errors": state.solver_worker_errors,
             "vel_untrusted_published": state.solver_vel_untrusted_published,
+            # n=2 inputs whose initial-guess altitude came from an established
+            # 3+-node dark key rather than the association grid (solver.py's
+            # _inherit_key_altitude).  The per-solve evidence is alt_source on
+            # the history records; this is the since-boot rate.
+            "n2_alt_inherited": state.solver_n2_alt_inherited,
             # Dark track following (services/dark_follow.py), since boot except
             # targets, which is a live gauge of the current pseudo-state list.
             # The funnel is targets -> claims -> inputs -> published; dropped is
