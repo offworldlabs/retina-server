@@ -1,4 +1,5 @@
-"""The one configuration validator, shared by registration and PUT /nodes/config.
+"""The one configuration validator, shared by registration and PUT /nodes/config,
+and the one normaliser every in-process copy of a node's config passes through.
 
 Bounds are the wire contract's, at version 1.1.1. Three checks are here and not
 there because a JSON schema cannot express them: a receiver and illuminator at
@@ -8,7 +9,7 @@ compares false against every bound, so it survives a range check untouched.
 
 A leaf on purpose. It takes a dict and returns a dict, knowing nothing of identity,
 HTTP or status codes, so both callers can share it and it stays testable without a
-database.
+database. Nothing beyond the standard library may be imported here.
 """
 
 import math
@@ -58,17 +59,30 @@ _NULLABLE = {"rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft"}
 _REQUIRED = set(_NUMERIC_BOUNDS) | {"tx_callsign", "beam_width_deg", "beam_azimuth_deg"}
 
 
-def _number(field: str, value: Any) -> float:
+def _as_finite_float(value: Any) -> tuple[float | None, str]:
+    """The value as a finite float, with the reason when it cannot be one.
+
+    Shared by the raising and non-raising doors below so the two cannot drift
+    on what counts as a real number, which is the property this whole module
+    turns on.  The reason is what _number reports and _finite_float discards.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ConfigInvalid(field, "not a number")
+        return None, "not a number"
     try:
         number = float(value)
     except OverflowError:
         # JSON puts no ceiling on integer literals, so a node can send an int with no
         # float representation. Rejected rather than left to raise out of the route.
-        raise ConfigInvalid(field, "out of range") from None
+        return None, "out of range"
     if not math.isfinite(number):
-        raise ConfigInvalid(field, "not a finite number")
+        return None, "not a finite number"
+    return number, ""
+
+
+def _number(field: str, value: Any) -> float:
+    number, reason = _as_finite_float(value)
+    if number is None:
+        raise ConfigInvalid(field, reason)
     return number
 
 
@@ -153,28 +167,82 @@ def validate_config(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-PositionStatus = Literal["positioned", "missing_rx", "missing_tx", "missing_both"]
+_COORDINATE_PAIRS = (("rx_lat", "rx_lon"), ("tx_lat", "tx_lon"))
+
+# The flat spelling nodes predating rx_/tx_ still send. services.tcp_handler
+# accepts it, so a node using it is placed and must read as placed.
+_LEGACY_COORDINATES = (("rx_lat", "lat"), ("rx_lon", "lon"))
+
+# Terrain figures, not measurements. pipeline.passive_radar and
+# retina_geolocator.multinode_solver both multiply an altitude by a metre
+# conversion the moment they are handed one, so neither may ever see a null.
+_ALTITUDE_DEFAULT_FT = {"rx_alt_ft": 900.0, "tx_alt_ft": 1200.0}
 
 
-def _is_num(v: Any) -> bool:
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+def _finite_float(value: Any) -> float | None:
+    """The value as a float, or None when it cannot be one.
 
-
-def _is_placed(lat: Any, lon: Any) -> bool:
-    """A pair given as a real position: a usable number in both slots, and
-    not the (0, 0) sentinel.
-
-    The same rule lives in services.geo.valid_latlon and in
-    retina_analytics.constants.has_full_geometry. Not shared from either: this
-    module is a leaf that takes a dict and returns a dict, and must stay
-    importable with neither retina_analytics nor a database on the path.
-    valid_latlon pulls in retina_analytics.constants, which would break that.
-
-    A config straight out of connected_nodes is unvalidated JSON rather than
-    validate_config's output, so lat/lon may be any type; _is_num keeps a
-    non-numeric value reading as not placed rather than raising.
+    The non-raising sibling of _number, for config dicts that never passed
+    through validate_config and may hold anything JSON can express.  Unlike
+    _number it parses a numeric string first, which such a dict does carry.
     """
-    return _is_num(lat) and _is_num(lon) and not (lat == 0.0 and lon == 0.0)
+    if isinstance(value, str):
+        try:
+            value = float(value)
+        except ValueError:
+            return None
+    return _as_finite_float(value)[0]
+
+
+def canonical_config(raw: Any) -> dict[str, Any]:
+    """The one in-memory shape of a node's config, for every consumer to read.
+
+    Returns a new dict, leaving ``raw`` untouched, in which:
+
+    - ``rx_lat``, ``rx_lon``, ``tx_lat`` and ``tx_lon`` are each a float or
+      None, always present. None means the end is not placed, covering absent,
+      null, unusable, half a pair, and the exact (0, 0) sentinel that was the
+      only representable "unknown" while the columns were NOT NULL. A single
+      zero axis is a real coordinate and survives.
+    - ``rx_alt_ft`` and ``tx_alt_ft`` are floats, always present.
+    - the legacy flat ``lat``/``lon`` fold into ``rx_lat``/``rx_lon`` and are
+      gone from the result.
+    - every other key passes through unchanged.
+
+    Never raises, for any input, including a non-dict.
+
+    Called wherever a config enters shared in-process state, so downstream code
+    may read a coordinate as a number or a null and nothing else. The durable
+    ``node_configs`` row is not canonicalised: it keeps its honest nulls.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    config = dict(raw)
+
+    # Keyed on absence, not falsiness: rx_lat present and explicitly null is a
+    # positionless registration, which a stray legacy lat must not overrule.
+    for field, legacy in _LEGACY_COORDINATES:
+        if field not in config and legacy in config:
+            config[field] = config[legacy]
+    config.pop("lat", None)
+    config.pop("lon", None)
+
+    for lat_field, lon_field in _COORDINATE_PAIRS:
+        lat = _finite_float(config.get(lat_field))
+        lon = _finite_float(config.get(lon_field))
+        if lat is None or lon is None or (lat == 0.0 and lon == 0.0):
+            lat = lon = None
+        config[lat_field] = lat
+        config[lon_field] = lon
+
+    for field, default in _ALTITUDE_DEFAULT_FT.items():
+        altitude = _finite_float(config.get(field))
+        config[field] = default if altitude is None else altitude
+
+    return config
+
+
+PositionStatus = Literal["positioned", "missing_rx", "missing_tx", "missing_both"]
 
 
 def position_status(config: dict[str, Any]) -> PositionStatus:
@@ -183,9 +251,11 @@ def position_status(config: dict[str, Any]) -> PositionStatus:
     One value for consumers to branch on, rather than four fields each of them
     has to recombine. Keyed on latitude and longitude alone: a node with a
     position and no altitude is positioned.
+
+    Reads a canonical_config, where an unplaced end is None on both axes.
     """
-    has_rx = _is_placed(config.get("rx_lat"), config.get("rx_lon"))
-    has_tx = _is_placed(config.get("tx_lat"), config.get("tx_lon"))
+    has_rx = config.get("rx_lat") is not None and config.get("rx_lon") is not None
+    has_tx = config.get("tx_lat") is not None and config.get("tx_lon") is not None
     if has_rx and has_tx:
         return "positioned"
     if has_rx:

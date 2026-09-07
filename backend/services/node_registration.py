@@ -14,13 +14,20 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 from core import state
+from services.node_config import canonical_config
 
 _registration_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="node-reg")
 
 
 def register_node_blocking(node_id: str, config: dict) -> None:
     """Register with analytics and the associator. Callers on the event loop
-    want `register_node`, not this."""
+    want `register_node`, not this.
+
+    The single door into both library registries, so the config is
+    canonicalised here as well as at each call site: neither library defends
+    against a null altitude or a coordinate that is not a number.
+    """
+    config = canonical_config(config)
     state.node_analytics.register_node(node_id, config)
     state.node_associator.register_node(node_id, config)
 

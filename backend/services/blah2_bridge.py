@@ -48,6 +48,7 @@ from core import state
 from core.runtime_config import default_source_path, runtime_path
 from core.task_registry import register_task
 from services import node_registration
+from services.node_config import canonical_config
 
 log = logging.getLogger("blah2_bridge")
 
@@ -218,18 +219,21 @@ def load_nodes(path: Path | None = None) -> list[Blah2Node]:
 
 async def _register_node(node: Blah2Node):
     """Register a node in state as a real (non-synthetic) connected node."""
+    # Hashed over the file's own config, so a node's hash tracks the file
+    # rather than the normaliser.
     cfg_hash = hashlib.sha256(json.dumps(node.config, sort_keys=True).encode()).hexdigest()[:16]
+    config = canonical_config(node.config)
     with state.connected_nodes_lock:
         state.connected_nodes[node.node_id] = {
             "config_hash": cfg_hash,
-            "config": node.config,
+            "config": config,
             "status": "active",
             "last_heartbeat": "",
             "peer": node.peer,
             "is_synthetic": False,
             "capabilities": {"adsb_report": True},
         }
-    await node_registration.register_node(node.node_id, node.config)
+    await node_registration.register_node(node.node_id, config)
     log.info("blah2_bridge: registered node %s", node.node_id)
 
 
