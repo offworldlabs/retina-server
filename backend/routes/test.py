@@ -1517,6 +1517,7 @@ def _solver_window_stats(minutes: float) -> dict:
             # DARK_FOLLOW_N2_ADMIT).  Read against n2_unconfirmed: this is the
             # share of the n=2 gate the follow lane is now walking past.
             "n2_anchored_admitted": state.n2_anchored_admitted,
+            "n2_fit_position_published": state.n2_fit_position_published,
             "solver_trimmed": state.solver_trimmed,
             "stale_drops": state.solver_stale_drops,
             "resolve_skips": state.solver_resolve_skips,

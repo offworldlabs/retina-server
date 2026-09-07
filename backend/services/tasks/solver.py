@@ -18,6 +18,7 @@ from config.constants import (
     ASSOC_GRID_STEP_KM,
     CV_VEL_ADOPT_CHI2_MAX,
     N2_CONFIRM_CHI2_MAX,
+    N2_CONFIRM_MIN_EPOCHS,
     N2_TRACK_ASSOCIATION,
 )
 from core import state
@@ -390,6 +391,27 @@ def _is_anchored_n2(s, r) -> bool:
 # the track path parked, requiring one would withhold every n=2 track.
 _N2_REQUIRE_CONFIRMED = N2_TRACK_ASSOCIATION
 _N2_CONFIRM_CHI2_MAX = N2_CONFIRM_CHI2_MAX
+
+# ...and once a pairing has passed that gate, publish the position the fit
+# itself produced rather than the single-epoch LM one.  Both describe the same
+# target from the same measurements, but not from the same NUMBER of them: the
+# LM fixes x, y from one epoch's 4 delay/Doppler residuals with altitude pinned
+# to a guess, while the confirmation fit ties every epoch the pairing has
+# accumulated to one constant-velocity trajectory — 4K measurements against 6
+# unknowns, altitude free — and evaluates it at the last epoch.  Measured
+# against ground truth on the test droplet, published n=2 solves sit a median
+# 2.6 km from truth, and still 1.6 km on the subset where the altitude pin
+# happened to be right, so the pin is not the whole of it: the rest is the
+# single epoch.  The fit is already computed for every confirmed pairing (it is
+# what confirms it), so this costs nothing and uses history the track already
+# has.
+#
+# Env-gated because it changes what lands on the map: if the fit position turns
+# out worse live, a restart with N2_PUBLISH_FIT_POSITION=0 is the way back.
+# Either way the history record carries both positions and their separation
+# (pos_source / solve_raw_lat / solve_raw_lon / fit_vs_solve_km), so gt_error
+# can be split by pos_source without a second deploy.
+_N2_PUBLISH_FIT_POSITION = os.getenv("N2_PUBLISH_FIT_POSITION", "1").strip().lower() not in ("0", "false", "off")
 
 # The calibration age rule moved to config.constants.CAL_MAX_ADSB_AGE_S and is
 # applied by services.calibration, which both recording sites now go through.
@@ -2050,6 +2072,75 @@ def _n2_anchor_admits(s_in: dict) -> bool:
     return True
 
 
+def _apply_n2_fit_position(s_in: dict, result: dict, node_cfgs) -> None:
+    """Swap in the constant-velocity fit's position on a published n=2 solve.
+
+    Called only after the confirmation gate above has passed the pairing, so
+    the fit this reads is the same one that decided the pairing is a single
+    aircraft — and on the anchored bypass path, where the claim round decided
+    that instead and the fit is used for position alone.
+
+    Runs deliberately AFTER every gate, and changes none of them.  The beam and
+    displacement gates ran on the LM position because that is the position
+    their caps were tuned against (an anchored n=2 is judged at 1.5 km, see
+    _DARK_FOLLOW_N2_MAX_DISP_KM), and the track-pair claim is decided on the
+    fit's chi2, not on either position.  The only thing that changes here is
+    which position gets published; rms_delay, rms_doppler and n_nodes stay the
+    single-epoch solve's, since they describe that solve and not this one.
+
+    The LM position is kept on the result as solve_raw_lat/solve_raw_lon (and
+    stamped into the history record) so the swap is measurable live rather than
+    only in the offline bench: gt_error split by pos_source over published n=2
+    records is the whole experiment.
+
+    Downstream, track_filter.smooth_solve consumes result lat/lon like any
+    other solve, so kf_pos_sigma_m now reflects the fit position — which is
+    the intent, the smoother should be seeing the better estimate.
+    """
+    # Stamped for every confirmed n=2 whether or not the swap happens, so an
+    # absent fit is distinguishable in the dump from a fit that was used.
+    result["solve_raw_lat"] = result.get("lat")
+    result["solve_raw_lon"] = result.get("lon")
+    result["pos_source"] = "solve"
+    if not _N2_PUBLISH_FIT_POSITION:
+        return
+    fit = _resolve_cv_fit(s_in, node_cfgs)
+    if not fit or not fit.get("success"):
+        # No fit to publish.  Normal, not an error: a pairing association
+        # fitted inline arrives with chi2_per_dof already set and no cv_epochs
+        # to refit from (see _resolve_cv_fit), and an anchored input that never
+        # carried epochs has nothing here either.  Those keep the LM position.
+        return
+    if fit.get("lat") is None or fit.get("lon") is None or fit.get("alt_m") is None:
+        return
+    if (fit.get("n_epochs") or 0) < N2_CONFIRM_MIN_EPOCHS:
+        return
+    lat = float(fit["lat"])
+    lon = float(fit["lon"])
+    # The fit evaluates its trajectory at its OWN last epoch, which is normally
+    # this solve's measurement epoch — so this is usually a no-op.  But they are
+    # two separate inputs and nothing enforces that, and publishing a position
+    # from a different instant than the timestamp it is published under is
+    # exactly the error the epoch-alignment work above exists to prevent, so
+    # propagate on the fit's own velocity rather than assuming.
+    _fit_ts = float(fit.get("timestamp_ms") or 0)
+    _res_ts = float(result.get("timestamp_ms") or 0)
+    if _fit_ts > 0 and _res_ts > 0 and _fit_ts != _res_ts:
+        dt_s = (_res_ts - _fit_ts) / 1000.0
+        lat, lon = offset_latlon_m(
+            lat,
+            lon,
+            east_m=float(fit.get("vel_east") or 0.0) * dt_s,
+            north_m=float(fit.get("vel_north") or 0.0) * dt_s,
+        )
+    result["fit_vs_solve_km"] = _haversine_km(float(result["lat"]), float(result["lon"]), lat, lon)
+    result["lat"] = lat
+    result["lon"] = lon
+    result["alt_m"] = float(fit["alt_m"])
+    result["pos_source"] = "cv_fit"
+    state.bump_counter("n2_fit_position_published")
+
+
 # ── Per-solve history (debug) ────────────────────────────────────────────────
 # Every solver outcome — published or gate-rejected — is appended to
 # state.mlat_solve_history so /api/test/mlat-history can decompose a bad map
@@ -2517,6 +2608,18 @@ def _record_solve_history(
         "vel_untrusted": bool(r.get("vel_untrusted")),
         "solver_vel_east": (round(float(r["solver_vel_east"]), 1) if r.get("solver_vel_east") is not None else None),
         "solver_vel_north": (round(float(r["solver_vel_north"]), 1) if r.get("solver_vel_north") is not None else None),
+        # Which position was published, and what the other candidate said.
+        # Only a confirmed n=2 solve has two (see _apply_n2_fit_position): the
+        # constant-velocity fit over the pairing's whole epoch history, and the
+        # single-epoch LM solve kept here as solve_raw_lat/solve_raw_lon.
+        # pos_source is None on every other record — nothing else chooses — so
+        # gt_error by pos_source over published n=2 records measures the swap
+        # live, and fit_vs_solve_km says how far apart the two answers were on
+        # the solves where it made no difference to the score.
+        "pos_source": r.get("pos_source"),
+        "solve_raw_lat": (round(float(r["solve_raw_lat"]), 6) if r.get("solve_raw_lat") is not None else None),
+        "solve_raw_lon": (round(float(r["solve_raw_lon"]), 6) if r.get("solve_raw_lon") is not None else None),
+        "fit_vs_solve_km": (round(float(r["fit_vs_solve_km"]), 3) if r.get("fit_vs_solve_km") is not None else None),
     }
     if extra:
         rec.update(extra)
@@ -3182,6 +3285,13 @@ def _process_solver_item(
                     extra=_extra,
                 )
                 return result
+        # Confirmed at n=2 — publish the fit's position rather than the
+        # single-epoch one.  Reached by both n=2 publish paths: the gate above
+        # returns on every reject, and an anchor-admitted input skips the gate
+        # body entirely (the `not _n2_anchor_admits` in its condition), so
+        # arriving here at n=2 means this solve is about to be published.
+        if _N2_REQUIRE_CONFIRMED and n_nodes == 2 and isinstance(s_in, dict):
+            _apply_n2_fit_position(s_in, result, node_cfgs)
         state.bump_counter("solver_successes")
         with state.solver_latency_lock:
             state.solver_total_solved += 1
