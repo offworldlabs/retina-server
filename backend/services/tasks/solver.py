@@ -2062,6 +2062,16 @@ def _record_solve_history(
         "solver_hex": multinode_hex_from_key(solve_key) if solve_key else None,
         "n_nodes": int(r.get("n_nodes") or s.get("n_nodes") or 0),
         "contributing_node_ids": list(r.get("contributing_node_ids") or []),
+        # How many nodes the association round HAD for this aircraft, against
+        # which n_nodes above is the number it actually solved with (see
+        # InterNodeAssociator._shared_track_pools: the node set of the
+        # shared-track component this input was clustered out of).  A published
+        # 2-node solve whose pool is 3 is a node the round paired and the
+        # position clustering then left in a separate input — which is the only
+        # way to tell that case apart from the third node never pairing at all.
+        # None on inputs that never went through that clustering (anchored /
+        # known-lane, dark-follow predictions).
+        "pool_n_nodes": s.get("pool_n_nodes"),
         "adsb_hex": s.get("adsb_hex"),
         # Set only on an anchored solver input (top-down claiming, active
         # mode) — present on rejects too, not just "published", so the
