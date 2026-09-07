@@ -1206,3 +1206,100 @@ class TestManoeuvreAdaptiveQ:
         assert all(s["sigma_a"] == track_filter._KF_SIGMA_A_MS2 for s in solves)
         stats = track_filter.filter_stats()
         assert stats == {"reanchors": 0, "manoeuvre_rescues": 0, "manoeuvre_active": 0, "tracks": 1}
+
+
+class TestN2WeakUpdate:
+    """An n=2 solve updates the filter WEAKLY (see _KF_N2_POS_SIGMA_M).
+
+    With altitude pinned, an n=2 fit is under-determined (5 unknowns, 4
+    residuals) and lands a median 1.4-2.3 km from truth against 0.3-0.5 km
+    for n>=3.  Fed at the n>=3 base sigma it dragged established tracks: when
+    anchored n=2 follow solves started publishing, n=3 publishes on the SAME
+    keys went from 0.44 km to 1.40 km median error, because the next claim
+    round dead-reckoned from the dragged state.  The n=2 solve should still
+    move the state — it is evidence, and it keeps the key alive — just far
+    less than a well-determined one carrying the identical innovation.
+    """
+
+    REF_LAT, REF_LON = 35.0, -82.0
+    BASE_TS_MS = 1_000_000
+    # Comfortably inside the innovation gate at either sigma, so this test
+    # measures the gain and not a re-anchor.
+    INNOVATION_M = 1500.0
+
+    def setup_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def teardown_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def _east_after_second_solve(self, n_nodes, adsb_hex=None):
+        """Seed a key with an n=4 solve, then apply one displaced solve at
+        ``n_nodes`` and return the filter's east position, in metres.
+
+        The seed is identical in every variant (same n_nodes, so the same R
+        seeds P), which is what makes the returned numbers comparable: the
+        only thing that differs between calls is the SECOND solve's R.
+        """
+        track_filter.reset()
+        key = f"n2-weak-{n_nodes}-{adsb_hex}"
+        first = make_result(self.REF_LAT, self.REF_LON, self.BASE_TS_MS)
+        first["n_nodes"] = 4
+        track_filter.smooth_solve(first, key, adsb_hex)
+
+        lat, lon = offset_latlon_m(self.REF_LAT, self.REF_LON, east_m=self.INNOVATION_M, north_m=0.0)
+        second = make_result(lat, lon, self.BASE_TS_MS + 10_000)
+        second["n_nodes"] = n_nodes
+        track_filter.smooth_solve(second, key, adsb_hex)
+        return float(track_filter._KF_TRACKS[key].x[0])
+
+    def test_default_n2_sigma(self):
+        assert track_filter._KF_N2_POS_SIGMA_M == 2500.0
+        assert track_filter._KF_N2_POS_SIGMA_M > track_filter._KF_DEFAULT_POS_SIGMA_M
+
+    def test_n2_moves_the_state_less_than_n4(self):
+        moved_n2 = self._east_after_second_solve(2)
+        moved_n4 = self._east_after_second_solve(4)
+        # Still moves — a weak update, not a discarded one.
+        assert moved_n2 > 0.0
+        assert moved_n2 < moved_n4
+        # And meaningfully so, not by a rounding margin: the gain scales
+        # roughly as 1/sigma^2 once the base term dominates R.
+        assert moved_n2 < 0.75 * moved_n4
+
+    def test_n2_sigma_is_tunable(self, monkeypatch):
+        """The constant is what _base_pos_sigma_m reads, so raising it
+        weakens the n=2 update further without a code change."""
+        baseline = self._east_after_second_solve(2)
+        monkeypatch.setattr(track_filter, "_KF_N2_POS_SIGMA_M", 8000.0)
+        assert self._east_after_second_solve(2) < baseline
+
+    def test_adsb_identified_n2_keeps_the_default_sigma(self):
+        """The ADS-B lane is untouched: its displayed position comes from the
+        transponder and its guess was already a fix, so none of the dark n=2
+        measurement describes it."""
+        result = make_result(self.REF_LAT, self.REF_LON, self.BASE_TS_MS)
+        result["n_nodes"] = 2
+        assert track_filter._base_pos_sigma_m(result, "a1b2c3") == track_filter._KF_DEFAULT_POS_SIGMA_M
+        assert self._east_after_second_solve(2, adsb_hex="a1b2c3") == pytest.approx(
+            self._east_after_second_solve(4, adsb_hex="a1b2c3")
+        )
+
+    def test_simulator_object_id_is_judged_dark(self):
+        """An ``obj-*`` simulator id rides in the same field but is not a
+        transponder identity — it is a dark-lane solve and gets the wide
+        sigma, the same predicate solver.py keys it into mn-dark-* with."""
+        result = make_result(self.REF_LAT, self.REF_LON, self.BASE_TS_MS)
+        result["n_nodes"] = 2
+        assert track_filter._base_pos_sigma_m(result, "obj-01373") == track_filter._KF_N2_POS_SIGMA_M
+
+    def test_n3_and_above_keep_the_default_sigma(self):
+        for n in (0, 1, 3, 4, 5):
+            result = make_result(self.REF_LAT, self.REF_LON, self.BASE_TS_MS)
+            result["n_nodes"] = n
+            assert track_filter._base_pos_sigma_m(result) == track_filter._KF_DEFAULT_POS_SIGMA_M
+        # A result with no n_nodes at all (the field is conditional on the
+        # producer) must not accidentally land on the n=2 branch either.
+        assert track_filter._base_pos_sigma_m(make_result(35.0, -82.0, 1_000)) == (track_filter._KF_DEFAULT_POS_SIGMA_M)
