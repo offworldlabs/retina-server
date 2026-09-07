@@ -64,11 +64,6 @@ services:
       # 115 admits after the 2nd solve; the claim gates saturate at their
       # 40 us / 100 Hz caps and the two-reject ghost guard still applies.
       - DARK_FOLLOW_MAX_VEL_SIGMA_MS=115
-      # Overnight 2026-09-07, temporary: the anchored n=2 follow bypass (#321)
-      # dragged followed keys (ghost share 4.1% -> 9.7%); off until its
-      # displacement cap + weak-KF fix lands, so the pool-adoption capture
-      # measures adoption alone.
-      - DARK_FOLLOW_N2_ADMIT=0
       # Anonymous admin, asked for explicitly since ClickUp 86cb49d29 took it
       # off RETINA_ENV. No OAuth is configured here either.
       - AUTH_ALLOW_ANONYMOUS_ADMIN=1
