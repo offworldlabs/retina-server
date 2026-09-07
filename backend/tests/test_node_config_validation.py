@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from services.node_config import ConfigInvalid, validate_config
+from services.node_config import ConfigInvalid, position_status, validate_config
 
 VALID = {
     "rx_lat": 51.42,
@@ -356,3 +356,125 @@ def test_the_field_named_is_always_a_string():
     with pytest.raises(ConfigInvalid) as excinfo:
         validate_config([1, 2])
     assert isinstance(excinfo.value.field, str)
+
+
+# --- Nullable coordinates ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "overrides,expected",
+    [
+        ({}, "positioned"),
+        ({"rx_lat": None, "rx_lon": None}, "missing_rx"),
+        ({"tx_lat": None, "tx_lon": None}, "missing_tx"),
+        ({"rx_lat": None, "rx_lon": None, "tx_lat": None, "tx_lon": None}, "missing_both"),
+        ({"rx_alt_ft": None, "tx_alt_ft": None}, "positioned"),
+        ({"rx_alt_ft": None}, "positioned"),
+    ],
+    ids=["full", "no-rx", "no-tx", "neither", "no-altitude", "one-altitude"],
+)
+def test_null_coordinates_are_accepted(overrides, expected):
+    out = validate_config(dict(VALID, **overrides))
+    for key, value in overrides.items():
+        assert out[key] is value
+    assert position_status(out) == expected
+
+
+@pytest.mark.parametrize(
+    "overrides,expected",
+    [
+        ({"rx_lat": 0.0, "rx_lon": 0.0}, "missing_rx"),
+        ({"tx_lat": 0.0, "tx_lon": 0.0}, "missing_tx"),
+        ({"rx_lat": 0.0}, "positioned"),
+        ({"tx_lon": 0.0}, "positioned"),
+    ],
+    ids=["rx-null-island", "tx-null-island", "rx-on-the-equator", "tx-on-the-prime-meridian"],
+)
+def test_position_status_treats_the_zero_pair_as_absent(overrides, expected):
+    """(0, 0) is the legacy broken-config sentinel, not a real position in the
+    Gulf of Guinea, matching has_full_geometry in retina-analytics. A single
+    zero axis is still a real coordinate, so it must not read as absent."""
+    out = validate_config(dict(VALID, **overrides))
+    assert position_status(out) == expected
+
+
+@pytest.mark.parametrize(
+    "overrides,field",
+    [
+        ({"rx_lat": None}, "rx_lat"),
+        ({"rx_lon": None}, "rx_lon"),
+        ({"tx_lat": None}, "tx_lat"),
+        ({"tx_lon": None}, "tx_lon"),
+    ],
+)
+def test_half_a_position_is_rejected(overrides, field):
+    with pytest.raises(ConfigInvalid) as excinfo:
+        validate_config(dict(VALID, **overrides))
+    assert excinfo.value.field == field
+    assert excinfo.value.reason == "latitude and longitude must be given together"
+
+
+def test_a_missing_key_is_still_an_error():
+    payload = dict(VALID)
+    del payload["rx_lat"]
+    with pytest.raises(ConfigInvalid) as excinfo:
+        validate_config(payload)
+    assert excinfo.value.reason == "missing"
+
+
+def test_baseline_check_is_skipped_when_a_side_is_null():
+    # Identical rx and tx would be a degenerate baseline, but with no tx there
+    # is no baseline to be degenerate.
+    out = validate_config(dict(VALID, tx_lat=None, tx_lon=None))
+    assert out["tx_lat"] is None
+
+
+def test_an_out_of_range_coordinate_is_reported_before_a_missing_pair():
+    """The bounds loop runs before the pair rule, so an out-of-range rx_lat is
+    reported as out-of-range, not as an unpaired coordinate, even though its
+    own pair (rx_lon) is null in the same payload."""
+    with pytest.raises(ConfigInvalid) as excinfo:
+        validate_config(dict(VALID, rx_lat=91.0, rx_lon=None))
+    assert excinfo.value.field == "rx_lat"
+    assert excinfo.value.reason == "out of range"
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {},
+        {"node_id": "x"},
+        {"rx_lat": 1.0},
+    ],
+    ids=["empty", "unrelated-keys-only", "latitude-without-longitude"],
+)
+def test_position_status_on_a_config_that_never_saw_validate_config(config):
+    """_refresh_analytics_and_nodes calls position_status on connected_nodes
+    configs directly, which never necessarily passed through validate_config:
+    a legacy node's config can carry no geometry keys at all, and a
+    bulk-ingested one can carry a lone coordinate. A side with only one of its
+    two coordinates places nothing, so all three of these read as
+    missing_both."""
+    assert position_status(config) == "missing_both"
+
+
+@pytest.mark.parametrize("field", ["rx_lat", "rx_lon", "tx_lat", "tx_lon"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("abc", id="string"),
+        pytest.param("", id="empty-string"),
+        pytest.param([], id="list"),
+        pytest.param(True, id="bool-true"),
+        pytest.param(False, id="bool-false"),
+    ],
+)
+def test_a_non_numeric_coordinate_reads_as_not_placed_rather_than_raising(field, value):
+    """A connected_nodes config is unvalidated JSON, so a garbage value can sit
+    in any coordinate slot: float("") and float([]) both raise, and bool is a
+    subclass of int, so a naive isinstance(x, (int, float)) check would accept
+    True as a latitude. position_status must read past all of that as merely
+    unplaced, not raise."""
+    config = {"rx_lat": 51.42, "rx_lon": -0.91, "tx_lat": 51.37, "tx_lon": -0.88, field: value}
+    side = "rx" if field.startswith("rx") else "tx"
+    assert position_status(config) == f"missing_{side}"

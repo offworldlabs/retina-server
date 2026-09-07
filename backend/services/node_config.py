@@ -12,7 +12,7 @@ database.
 """
 
 import math
-from typing import Any
+from typing import Any, Literal
 
 # About 0.11 m. Below this the receiver and illuminator are the same point as far as
 # the solver is concerned, whatever the node believes it measured.
@@ -47,6 +47,13 @@ _NUMERIC_BOUNDS: dict[str, tuple[float, float, bool, bool]] = {
     "delay_tolerance_us": (0, math.inf, False, True),
     "doppler_tolerance_hz": (0, math.inf, False, True),
 }
+
+# Nullable since 1.1.3. An owner setting a node up cannot always supply the
+# geometry, and a substituted coordinate would be wrong data the server could
+# not later tell apart from a survey. Latitude and longitude are a pair;
+# altitude stands alone, because it is a small term that already defaults to
+# zero wherever the geodesy reads it.
+_NULLABLE = {"rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft"}
 
 _REQUIRED = set(_NUMERIC_BOUNDS) | {"tx_callsign", "beam_width_deg", "beam_azimuth_deg"}
 
@@ -86,6 +93,9 @@ def validate_config(payload: dict[str, Any]) -> dict[str, Any]:
 
     out: dict[str, Any] = {}
     for field, (low, high, low_inclusive, high_inclusive) in _NUMERIC_BOUNDS.items():
+        if payload[field] is None and field in _NULLABLE:
+            out[field] = None
+            continue
         value = _number(field, payload[field])
         below = value < low if low_inclusive else value <= low
         above = value > high if high_inclusive else value >= high
@@ -123,10 +133,63 @@ def validate_config(payload: dict[str, Any]) -> dict[str, Any]:
             raise ConfigInvalid("beam_azimuth_deg")
         out["beam_azimuth_deg"] = azimuth
 
+    # A latitude without its longitude places nothing, so a half-supplied side
+    # is a bug upstream rather than a state worth representing.
+    for lat_field, lon_field in (("rx_lat", "rx_lon"), ("tx_lat", "tx_lon")):
+        if (out[lat_field] is None) != (out[lon_field] is None):
+            unpaired = lat_field if out[lat_field] is None else lon_field
+            raise ConfigInvalid(unpaired, "latitude and longitude must be given together")
+
     if (
-        abs(out["rx_lat"] - out["tx_lat"]) < _MIN_BASELINE_DEG
-        and abs(out["rx_lon"] - out["tx_lon"]) < _MIN_BASELINE_DEG
+        out["rx_lat"] is not None
+        and out["tx_lat"] is not None
+        and (
+            abs(out["rx_lat"] - out["tx_lat"]) < _MIN_BASELINE_DEG
+            and abs(out["rx_lon"] - out["tx_lon"]) < _MIN_BASELINE_DEG
+        )
     ):
         raise ConfigInvalid("tx_lat", "receiver and illuminator are at the same point")
 
     return out
+
+
+PositionStatus = Literal["positioned", "missing_rx", "missing_tx", "missing_both"]
+
+
+def _is_num(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _is_placed(lat: Any, lon: Any) -> bool:
+    """A pair given as a real position: a usable number in both slots, and
+    not the (0, 0) sentinel.
+
+    The same rule lives in services.geo.valid_latlon and in
+    retina_analytics.constants.has_full_geometry. Not shared from either: this
+    module is a leaf that takes a dict and returns a dict, and must stay
+    importable with neither retina_analytics nor a database on the path.
+    valid_latlon pulls in retina_analytics.constants, which would break that.
+
+    A config straight out of connected_nodes is unvalidated JSON rather than
+    validate_config's output, so lat/lon may be any type; _is_num keeps a
+    non-numeric value reading as not placed rather than raising.
+    """
+    return _is_num(lat) and _is_num(lon) and not (lat == 0.0 and lon == 0.0)
+
+
+def position_status(config: dict[str, Any]) -> PositionStatus:
+    """Which ends of the bistatic pair this config places.
+
+    One value for consumers to branch on, rather than four fields each of them
+    has to recombine. Keyed on latitude and longitude alone: a node with a
+    position and no altitude is positioned.
+    """
+    has_rx = _is_placed(config.get("rx_lat"), config.get("rx_lon"))
+    has_tx = _is_placed(config.get("tx_lat"), config.get("tx_lon"))
+    if has_rx and has_tx:
+        return "positioned"
+    if has_rx:
+        return "missing_tx"
+    if has_tx:
+        return "missing_rx"
+    return "missing_both"
