@@ -56,6 +56,14 @@ services:
       - DARK_FOLLOW_MODE=binding
       # Test-only experiment (cap16): follow a dark key after 2 solves instead of 3.
       - DARK_FOLLOW_MIN_SOLVES=2
+      # Test-only experiment (overnight 2026-09-07): admit 3-node dark keys to the
+      # follow lane sooner.  With the display filter's 1200 m R floor the KF
+      # velocity sigma after successive solves at the 3-node bottom-up cadence
+      # (~10 s) is 150/112/74/51 m/s, so the 60 m/s default needs a 4th solve
+      # and 3-node keys expire (median 1 solve) before they are ever followed.
+      # 115 admits after the 2nd solve; the claim gates saturate at their
+      # 40 us / 100 Hz caps and the two-reject ghost guard still applies.
+      - DARK_FOLLOW_MAX_VEL_SIGMA_MS=115
       # Anonymous admin, asked for explicitly since ClickUp 86cb49d29 took it
       # off RETINA_ENV. No OAuth is configured here either.
       - AUTH_ALLOW_ANONYMOUS_ADMIN=1
