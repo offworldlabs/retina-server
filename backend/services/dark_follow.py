@@ -140,7 +140,18 @@ DARK_FOLLOW_SHADOW_KM = float(os.getenv("DARK_FOLLOW_SHADOW_KM", "2.0"))
 # rejects in a row drop the target, an aircraft that flew out of 3-node
 # coverage stayed dropped.  Env-gated so the bypass can be turned off in one
 # restart if the ghost rate moves.
-DARK_FOLLOW_N2_ADMIT = os.getenv("DARK_FOLLOW_N2_ADMIT", "1").strip().lower() not in ("0", "false", "off")
+#
+# OFF by default (opt in with DARK_FOLLOW_N2_ADMIT=1).  Measured on the test
+# droplet in 20-min captures against ground truth: with the bypass on, dark
+# 2-node coverage time with a fresh solve rose (16-33% -> 42-50%) but the
+# dark ghost share rose with it, 4.1-5.3% -> 7.0-9.7%, and dead-reckoned
+# error at 8-12 s of solve age went 0.85-1.02 km -> 1.8-2.7 km.  The 1.5 km
+# displacement cap and the 2500 m n=2 measurement sigma (track_filter)
+# halved the damage (follow n=3 error 1.40 -> 0.78 km) but did not remove
+# it: an n=2 solve anchored to a key still nudges the key it is anchored to.
+# The rest of this change (max_n_nodes, n2_reason, the caps) stands on its
+# own; the bypass waits for a solve-weighting that can carry it.
+DARK_FOLLOW_N2_ADMIT = os.getenv("DARK_FOLLOW_N2_ADMIT", "0").strip().lower() not in ("0", "false", "off")
 
 # Consecutive rejected follow-solves that drop a key.  Two, not one: a single
 # reject is routinely a bad epoch (one node's contaminated measurement trips
