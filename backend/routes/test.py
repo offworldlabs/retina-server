@@ -1363,6 +1363,12 @@ def _solver_window_stats(minutes: float) -> dict:
             # Dark share of the line above.  The windowed version, with the
             # blocking claims, is the "resolve_skips" block further up.
             "resolve_skips_dark": state.solver_resolve_skips_dark,
+            # Candidates admitted by the 3+-node refresh rule that the width
+            # rule alone would have skipped (solver.py's
+            # _SOLVER_RESOLVE_REFRESH_S).  Extra solves bought on purpose, so
+            # that an entry nothing else refreshes stops dead-reckoning the
+            # whole 12 s window.
+            "resolve_refresh": state.solver_resolve_refresh,
             "queue_drops": state.solver_queue_drops,
             # Frames the per-node rate limiter refused before the tracker ever
             # saw them (tcp_handler's NODE_FRAME_MIN_INTERVAL_S).  Not the

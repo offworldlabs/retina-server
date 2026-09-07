@@ -675,6 +675,16 @@ solver_resolve_skips: int = 0
 # never got a key — and a skip never gets one.
 solver_resolve_skips_dark: int = 0
 
+# Candidates the resolve-slot rule would have skipped on width alone but let
+# through because every claim blocking them was older than
+# _SOLVER_RESOLVE_REFRESH_S and they carry 3+ nodes (solver.py's
+# _resolve_slot_state).  These are extra solves bought deliberately: the map
+# entry behind such a claim has been dead-reckoning for 6 s or more, and dark
+# position error roughly triples across the 12 s window.  Read against
+# solver_resolve_skips — the refresh is meant to move a slice of that counter
+# here, not to replace it.
+solver_resolve_refresh: int = 0
+
 # The last few hundred resolve-slot skips, with the claims that blocked them.
 # Deliberately NOT the solve-history deque: a skip is not a solve outcome, and
 # writing one record per skip into mlat_solve_history would evict the real
@@ -942,7 +952,7 @@ def _reset_for_tests() -> None:
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
     global ws_send_timeouts
     global solver_pool_timeouts
-    global solver_resolve_skips_dark
+    global solver_resolve_skips_dark, solver_resolve_refresh
     global mn_superseded, mn_superseded_blocked, mn_superseded_blocked_alt, solver_trimmed
     global solver_consensus_selected, solver_consensus_filtered
     global solver_consensus_fallback, solver_consensus_shadow
@@ -1039,7 +1049,7 @@ def _reset_for_tests() -> None:
         coverage_rebuild_backlog = 0
         tracks_stale_skipped = solver_epoch_align_skipped = 0
         solver_stale_drops = 0
-        solver_resolve_skips = solver_resolve_skips_dark = 0
+        solver_resolve_skips = solver_resolve_skips_dark = solver_resolve_refresh = 0
         mn_superseded = mn_superseded_blocked = mn_superseded_blocked_alt = 0
         solver_trimmed = 0
         solver_consensus_selected = solver_consensus_filtered = 0
