@@ -37,10 +37,11 @@ from core import state
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from services import dark_follow, track_filter
 from services import known_claiming as kc
-from services.frame_processor import process_one_frame
+from services.frame_processor import get_or_create_node_pipeline, process_one_frame
 from services.geo import offset_latlon_m
 from services.tasks import known_lane
 from services.tasks import solver as solver_mod
+from tests.node_helpers import register_test_node
 
 _NODE_CFG = {
     "rx_lat": 34.85,
@@ -647,6 +648,10 @@ class TestModesInProcessOneFrame:
     processes; shadow leaves the frame whole."""
 
     def _run(self, monkeypatch, mode):
+        # Registered through the shared helper, not the associator alone: a node
+        # absent from connected_nodes cannot be placed, so it gets no pipeline
+        # and process_one_frame skips every per-node branch this class names.
+        register_test_node(_NODE_ID, _NODE_CFG)
         ts = int(time.time() * 1000)
         geo = _install(monkeypatch, ts - 2000, mode=mode)
         monkeypatch.setattr(state, "KNOWN_LANE_MODE", "binding")
@@ -654,8 +659,11 @@ class TestModesInProcessOneFrame:
         frame = _frame(ts, [pd, pd + 500.0], [pf, pf + 500.0])
 
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        # The node's own pipeline, built from its own geometry, is what
+        # process_one_frame hands the frame to; `default` never sees it.
         seen = []
-        monkeypatch.setattr(default, "process_frame", lambda f: seen.append(f))
+        node_pipeline = get_or_create_node_pipeline(_NODE_ID, default)
+        monkeypatch.setattr(node_pipeline, "process_frame", lambda f: seen.append(f))
         process_one_frame(_NODE_ID, frame, default)
         assert len(seen) == 1
         return frame, seen[0]

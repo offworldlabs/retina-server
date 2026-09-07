@@ -364,6 +364,10 @@ class TestProcessOneFrameSolverQueue:
         )
         monkeypatch.setattr(state, "solver_queue", queue.Queue())
 
+        # A positioned node: process_one_frame only reaches submit_tracks_round
+        # (where the stub above is installed) for a node it can place.
+        with state.connected_nodes_lock:
+            state.connected_nodes["test-adsb-seed-queue"] = {"config": dict(_NODE_CFG)}
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         process_one_frame("test-adsb-seed-queue", _make_frame(), default)
 

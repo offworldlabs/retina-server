@@ -305,13 +305,12 @@ async def test_a_blocked_node_s_frames_stay_out_of_the_pipeline(registered_node,
 
 
 async def test_a_frame_from_a_node_absent_from_the_pipeline_is_not_filed(registered_node, node_client):
-    """Not filed, because frame_processor would solve it against the wrong geometry.
+    """Not filed, because this server holds no configuration for the node at all.
 
-    `get_or_create_node_pipeline` falls back to the process-wide default
-    pipeline for a node it holds no configuration for, so the frame would reach
-    the map as a plausible detection against somebody else's receiver and
-    transmitter, with an ack claiming it was accepted. Wrong data is worse than
-    the gap, and the gap is at most one heartbeat interval wide.
+    There is no config_hash to check staleness against and nothing to place,
+    count or attribute the frame under, with an ack claiming it was accepted
+    regardless. Wrong data is worse than the gap, and the gap is at most one
+    heartbeat interval wide.
     """
     token, _ = registered_node
     state.connected_nodes.clear()
