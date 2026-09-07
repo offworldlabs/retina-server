@@ -3015,6 +3015,7 @@ def _process_solver_item(
                 # anchor_key) is the identical-inputs branch (b) of the predicate —
                 # exactly the fragmentation-collapse this whole feature exists for.
                 max_superseded_count = 0
+                max_superseded_n_nodes = 0
                 _superseded_keys: list[str] = []
                 _superseded_blocked = 0
                 if result["source_track_ids"]:
@@ -3050,6 +3051,11 @@ def _process_solver_item(
                             _MN_POS_HISTORY.pop(old_key, None)
                         track_filter.drop_key(old_key)
                         max_superseded_count = max(max_superseded_count, old_r.get("solve_count", 0))
+                        max_superseded_n_nodes = max(
+                            max_superseded_n_nodes,
+                            int(old_r.get("max_n_nodes") or 0),
+                            int(old_r.get("n_nodes") or 0),
+                        )
                         _superseded_keys.append(old_key)
                         state.bump_counter("mn_superseded")
 
@@ -3062,9 +3068,17 @@ def _process_solver_item(
                 # n=2 gate) the next rebuild would drop the key on
                 # DARK_FOLLOW_MIN_NODES, which is precisely the aircraft this
                 # lane exists to follow out of 3-node coverage.
+                # Folded across supersession for the same reason solve_count is
+                # (above): the winning key is not always the key the history is
+                # on.  An established 3-node track absorbed into a freshly
+                # minted key has prev None, so without the superseded term a
+                # merge that happened to be n=2 would reset the mark to 2 and
+                # the next rebuild would drop the key — this bug, reached by
+                # the other path.
                 result["max_n_nodes"] = max(
                     int(prev.get("max_n_nodes") or 0) if prev else 0,
                     int(prev.get("n_nodes") or 0) if prev else 0,
+                    max_superseded_n_nodes,
                     int(result.get("n_nodes") or 0),
                 )
                 state.multinode_tracks[key] = result
