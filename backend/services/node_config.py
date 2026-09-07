@@ -174,9 +174,39 @@ _COORDINATE_PAIRS = (("rx_lat", "rx_lon"), ("tx_lat", "tx_lon"))
 _LEGACY_COORDINATES = (("rx_lat", "lat"), ("rx_lon", "lon"))
 
 # Terrain figures, not measurements. pipeline.passive_radar and
-# retina_geolocator.multinode_solver both multiply an altitude by a metre
-# conversion the moment they are handed one, so neither may ever see a null.
-_ALTITUDE_DEFAULT_FT = {"rx_alt_ft": 900.0, "tx_alt_ft": 1200.0}
+# retina_geolocator.multinode_solver each multiply an altitude by a metre
+# conversion the moment they are handed one, so neither may ever see a null;
+# retina_analytics.association takes one too, spelled `or 0`, which survives a
+# null by silently reading it as sea level.
+#
+# Applied at the geometry boundary, never on the way in: a config that reaches
+# publication or the Parquet archive must carry the altitude the node declared,
+# nulls included, because nothing downstream could later tell a working figure
+# apart from a survey and archive rows are not correctable once published.
+# resolve_altitudes below is the only caller.
+ALTITUDE_DEFAULT_FT = {"rx_alt_ft": 900.0, "tx_alt_ft": 1200.0}
+
+
+def resolve_altitudes(cfg: dict) -> dict:
+    """``cfg`` with a null altitude replaced by its terrain default.
+
+    The geometry boundary, and the counterpart to canonical_config: that keeps
+    a declared null null, because publication and the archive must not carry an
+    invented figure, and this resolves it for the geodesy, which cannot take
+    one. Apply it at every door into geometry and nowhere earlier, so that one
+    missing altitude cannot become 900 ft in one subsystem and 0 ft in another.
+
+    Keyed on None, not falsiness: a receiver at 0 ft is at sea level, not
+    unsurveyed, and ``or`` would silently lift it to 900.
+
+    Copies, so resolving cannot write the working figure back into the dict
+    that publication and the archive read.
+    """
+    resolved = dict(cfg)
+    for field, default in ALTITUDE_DEFAULT_FT.items():
+        if resolved.get(field) is None:
+            resolved[field] = default
+    return resolved
 
 
 def _finite_float(value: Any) -> float | None:
@@ -204,12 +234,19 @@ def canonical_config(raw: Any) -> dict[str, Any]:
       null, unusable, half a pair, and the exact (0, 0) sentinel that was the
       only representable "unknown" while the columns were NOT NULL. A single
       zero axis is a real coordinate and survives.
-    - ``rx_alt_ft`` and ``tx_alt_ft`` are floats, always present.
+    - ``rx_alt_ft`` and ``tx_alt_ft`` are each a float or None, always present.
+      None is the honest answer and is left standing here; geometry resolves it
+      through ``resolve_altitudes`` at the three doors that cannot take a null.
     - the legacy flat ``lat``/``lon`` fold into ``rx_lat``/``rx_lon`` and are
       gone from the result.
     - every other key passes through unchanged.
 
     Never raises, for any input, including a non-dict.
+
+    Corrects, never invents. Every transformation above turns an unusable value
+    into the null it already meant, or a coordinate into the number it already
+    was, so the result is safe to publish and to archive as well as to solve on
+    — which is why there is one shape here and not a canonical/declared pair.
 
     Called wherever a config enters shared in-process state, so downstream code
     may read a coordinate as a number or a null and nothing else. The durable
@@ -235,9 +272,8 @@ def canonical_config(raw: Any) -> dict[str, Any]:
         config[lat_field] = lat
         config[lon_field] = lon
 
-    for field, default in _ALTITUDE_DEFAULT_FT.items():
-        altitude = _finite_float(config.get(field))
-        config[field] = default if altitude is None else altitude
+    for field in ALTITUDE_DEFAULT_FT:
+        config[field] = _finite_float(config.get(field))
 
     return config
 

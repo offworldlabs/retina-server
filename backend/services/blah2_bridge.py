@@ -60,10 +60,14 @@ BRIDGE_STALE_INTERVAL_S = 10
 # Fields every node must supply — without these the bistatic solve is undefined.
 _REQUIRED = ("node_id", "detection_url", "rx_lat", "rx_lon", "tx_lat", "tx_lon", "fc_hz")
 
+# Altitude is deliberately absent from the defaults below: it is resolved at
+# the geometry boundary (node_config.resolve_altitudes) instead, so a node that
+# declares none archives and publishes a null rather than a figure nothing
+# downstream could later tell apart from a survey.
+_OPTIONAL_ALTITUDES = ("rx_alt_ft", "tx_alt_ft")
+
 # Optional fields and the defaults applied when a node omits them.
 _OPTIONAL_DEFAULTS = {
-    "rx_alt_ft": 0.0,
-    "tx_alt_ft": 0.0,
     "fs_hz": 2_000_000,
     "doppler_min": -300,
     "doppler_max": 300,
@@ -141,6 +145,15 @@ def _build_node(entry: dict) -> Blah2Node:
             raise Blah2ConfigError(f"{node_id}: {key} is not a number: {entry[key]!r}") from exc
     for key, default in _OPTIONAL_DEFAULTS.items():
         raw = entry.get(key, default)
+        try:
+            cfg[key] = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise Blah2ConfigError(f"{node_id}: {key} is not a number: {raw!r}") from exc
+    for key in _OPTIONAL_ALTITUDES:
+        raw = entry.get(key)
+        if raw is None:
+            cfg[key] = None
+            continue
         try:
             cfg[key] = float(raw)
         except (TypeError, ValueError) as exc:

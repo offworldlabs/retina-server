@@ -14,7 +14,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 from core import state
-from services.node_config import canonical_config
+from services.node_config import canonical_config, resolve_altitudes
 
 _registration_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="node-reg")
 
@@ -26,8 +26,14 @@ def register_node_blocking(node_id: str, config: dict) -> None:
     The single door into both library registries, so the config is
     canonicalised here as well as at each call site: neither library defends
     against a null altitude or a coordinate that is not a number.
+
+    A geometry door, so the altitude is resolved too. The associator reads it
+    as ``(config.get("rx_alt_ft") or 0) * 0.3048``, which quietly places an
+    unsurveyed receiver at sea level while the pipeline and the solver put the
+    same node at 900 ft. Neither registry publishes an altitude, so resolving
+    here cannot leak a working figure into a payload.
     """
-    config = canonical_config(config)
+    config = resolve_altitudes(canonical_config(config))
     state.node_analytics.register_node(node_id, config)
     state.node_associator.register_node(node_id, config)
 

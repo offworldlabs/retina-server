@@ -113,12 +113,14 @@ async def test_the_pipeline_config_carries_the_defaults_blah2_bridge_supplies(no
     assert config["min_doppler"] == 15
 
 
-async def test_a_row_with_no_position_registers_unplaced_with_resolved_altitudes(node_session):
-    """The row keeps its honest nulls; the in-memory copy does not.
+async def test_a_row_with_no_position_registers_unplaced_and_keeps_its_nulls(node_session):
+    """The in-memory copy keeps the row's honest nulls, altitude included.
 
-    A null altitude reaches PassiveRadarPipeline and the multinode solver as a
-    multiplicand, so registration resolves it. A null coordinate stays null and
-    the node is carried unplaced."""
+    Registration resolves nothing: this config is what /api/radar/nodes
+    publishes and what the Parquet archive snapshots, and a terrain default
+    written here would be indistinguishable downstream from a survey. Geometry
+    resolves the altitude at its own boundary instead, and a node with no
+    coordinates builds no pipeline at all."""
     unplaced = await _seed(
         node_session,
         NODE_ID,
@@ -134,8 +136,8 @@ async def test_a_row_with_no_position_registers_unplaced_with_resolved_altitudes
 
     config = state.connected_nodes[NODE_ID]["config"]
     assert position_status(config) == "missing_both"
-    assert config["rx_alt_ft"] == 900.0
-    assert config["tx_alt_ft"] == 1200.0
+    assert config["rx_alt_ft"] is None
+    assert config["tx_alt_ft"] is None
     assert get_or_create_node_pipeline(NODE_ID, PassiveRadarPipeline(DEFAULT_NODE_CONFIG)) is None
 
 
@@ -143,7 +145,10 @@ async def test_the_config_hash_is_computed_before_canonicalisation(node_session)
     """The TCP heartbeat compares a node's own hash against the stored one, so
     canonicalisation must not move it: the whole fleet would report config drift
     on the deploy that introduced it."""
-    node = await _seed(node_session, NODE_ID, rx_alt_ft=None, tx_alt_ft=None)
+    # The (0, 0) sentinel, which canonicalisation collapses to a null pair. A
+    # null altitude no longer serves here: it is left null on both sides now,
+    # so the two hashes would agree and the assertion below would pin nothing.
+    node = await _seed(node_session, NODE_ID, rx_lat=0.0, rx_lon=0.0)
     row_config = await _pipeline_config(node_session, NODE_ID)
     expected = hashlib.sha256(json.dumps(row_config, sort_keys=True).encode()).hexdigest()[:16]
 

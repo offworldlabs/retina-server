@@ -28,7 +28,7 @@ from services.geo import (
 )
 from services.id_utils import normalize_hex_key as _normalize_hex_key
 from services.known_claiming import claim_known_targets, strip_claimed_detections
-from services.node_config import position_status
+from services.node_config import position_status, resolve_altitudes
 from services.storage import archive_detections
 
 # ── Archive batching ──────────────────────────────────────────────────────────
@@ -195,13 +195,18 @@ def _reset_for_tests() -> None:
 
 
 def get_node_configs() -> dict[str, dict]:
+    """Every connected node's config, altitudes resolved.
+
+    The solver's snapshot: retina_geolocator multiplies an altitude by a metre
+    conversion as soon as it is handed one, so a null must not reach it.
+    """
     configs = {}
     with state.connected_nodes_lock:
         snapshot = list(state.connected_nodes.items())
     for nid, info in snapshot:
         cfg = info.get("config")
         if cfg:
-            configs[nid] = cfg
+            configs[nid] = resolve_altitudes(cfg)
     return configs
 
 
@@ -252,8 +257,9 @@ def get_or_create_node_pipeline(
 
     # Canonical: every config in connected_nodes goes in through
     # services.node_config.canonical_config, so a placed node has four float
-    # coordinates and two float altitudes, and no default is applied here.
-    cfg = state.connected_nodes.get(node_id, {}).get("config", {})
+    # coordinates. Altitude is resolved here, at the boundary, because
+    # passive_radar subscripts it and converts it to metres.
+    cfg = resolve_altitudes(state.connected_nodes.get(node_id, {}).get("config", {}))
     if position_status(cfg) == "positioned":
         pipeline_cfg = {
             "node_id": node_id,
