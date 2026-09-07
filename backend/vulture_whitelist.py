@@ -200,6 +200,13 @@ known_claims_world_rejects
 # transponder-hex gate on /api/sim/adsb/push.
 sim_adsb_push_rejected_hex
 
+# Dark-follow ineligibility counters (services/dark_follow.py _build_targets),
+# bumped by name through state.bump_counter like the rest of the funnel.
+# vulture flags only these two of the seven because the other names also
+# appear as substrings of read sites; the reason is the same for all seven.
+dark_follow_inelig_min_solves
+dark_follow_inelig_min_nodes
+
 
 # ── Framework attributes (previously CI --ignore-names) ───────────────────────
 # Moved out of the vulture invocation so the reason lives with the name.

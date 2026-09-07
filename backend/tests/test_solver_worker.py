@@ -39,6 +39,7 @@ def _reset_state():
     state.solver_stale_drops = 0
     state.solver_resolve_skips = 0
     state.solver_resolve_skips_dark = 0
+    state.solver_resolve_refresh = 0
     state.multinode_tracks.clear()
     state.task_last_success.clear()
 
@@ -405,6 +406,59 @@ class TestResolveSuppression:
         now = time.time()
         self._publish(["a1", "b1"], now=now)
         assert self._covered(["a1", "b1"], now=now) is False
+
+    def test_a_3_node_candidate_refreshes_an_aged_claim(self, monkeypatch):
+        """The width rule alone would keep this candidate out for 12 s.
+
+        The entry the claim stands for has been dead-reckoning for 7 s by
+        then, and dark position error roughly triples across the window, so a
+        3+-node re-solve is admitted even though the claim is wider.
+        """
+        monkeypatch.setattr(solver_mod, "_SOLVER_RESOLVE_REFRESH_S", 6.0)
+        now = time.time()
+        self._publish(["a1", "b1"], n_nodes=8, now=now - 7.0)
+        assert self._covered(["a1", "b1"], n_nodes=3, now=now) is False
+
+    def test_a_fresh_claim_still_covers_a_3_node_candidate(self, monkeypatch):
+        """The refresh is not a licence to solve every copy: inside the
+        refresh window the duplicate is still the waste the rule exists for."""
+        monkeypatch.setattr(solver_mod, "_SOLVER_RESOLVE_REFRESH_S", 6.0)
+        now = time.time()
+        self._publish(["a1", "b1"], n_nodes=8, now=now - 3.0)
+        assert self._covered(["a1", "b1"], n_nodes=3, now=now) is True
+
+    def test_a_2_node_candidate_never_refreshes(self, monkeypatch):
+        """n=2 publishes 6–9% of the time and lands 2.7 km from truth when it
+        does — worse than dead-reckoning the solve it would displace."""
+        monkeypatch.setattr(solver_mod, "_SOLVER_RESOLVE_REFRESH_S", 6.0)
+        now = time.time()
+        self._publish(["a1", "b1"], n_nodes=8, now=now - 7.0)
+        assert self._covered(["a1", "b1"], n_nodes=2, now=now) is True
+
+    def test_every_blocking_claim_must_be_aged_to_refresh(self, monkeypatch):
+        """One young claim is enough to hold the candidate: part of this
+        aircraft was on the map 1 s ago."""
+        monkeypatch.setattr(solver_mod, "_SOLVER_RESOLVE_REFRESH_S", 6.0)
+        now = time.time()
+        self._publish(["a1"], n_nodes=8, now=now - 7.0)
+        self._publish(["b1"], n_nodes=8, now=now - 1.0)
+        assert self._covered(["a1", "b1"], n_nodes=3, now=now) is True
+
+    def test_zero_refresh_restores_the_width_rule(self, monkeypatch):
+        monkeypatch.setattr(solver_mod, "_SOLVER_RESOLVE_REFRESH_S", 0.0)
+        now = time.time()
+        self._publish(["a1", "b1"], n_nodes=8, now=now - 7.0)
+        assert self._covered(["a1", "b1"], n_nodes=3, now=now) is True
+
+    def test_only_the_refreshed_admission_sets_the_flag(self, monkeypatch):
+        """_resolve_slot_state's third value is what the counter is bumped
+        from, so it must be True only for the refresh path — not for a
+        candidate no claim covered in the first place."""
+        monkeypatch.setattr(solver_mod, "_SOLVER_RESOLVE_REFRESH_S", 6.0)
+        now = time.time()
+        assert solver_mod._resolve_slot_state(self._s_in(["a1", "b1"], 3), now) == (False, [], False)
+        self._publish(["a1", "b1"], n_nodes=8, now=now - 7.0)
+        assert solver_mod._resolve_slot_state(self._s_in(["a1", "b1"], 3), now) == (False, [], True)
 
     def test_the_check_names_every_blocking_claim(self):
         now = time.time()

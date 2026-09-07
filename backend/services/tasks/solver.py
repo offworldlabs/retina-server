@@ -1435,7 +1435,39 @@ _SOLVER_MAX_QUEUE_AGE_S = 45.0
 #     was probably another aircraft's — claiming its track would suppress that
 #     aircraft's own candidate on the strength of a measurement this solve
 #     threw away.
+#
+# One exception, sized separately below: at 3 or more nodes a claim older than
+# _SOLVER_RESOLVE_REFRESH_S stops covering a candidate even at equal width.
+# The rule this suppression enforces is "already on the map at this width",
+# and that stays true for the whole window — but the map entry it points at
+# is dead-reckoning, so late in the window "already on the map" and "in the
+# right place" have come apart.
 _SOLVER_RESOLVE_INTERVAL_S = float(os.getenv("SOLVER_RESOLVE_INTERVAL_S", "12"))
+
+
+# When a claim stops covering a candidate that is wide enough to be worth
+# re-solving.  Dark position error against ground truth grows with the age of
+# the solve behind the entry (test fleet, median error by solve age):
+#
+#     <= 3 s    0.34 km
+#     3 – 8 s   0.80 km
+#     8 – 12 s  1.10 km
+#
+# and for an aircraft the dark-follow lane does not carry — every 3-node
+# aircraft — a re-solve is the only thing that refreshes the entry at all.
+# Live over a 5 min window, 487 of 500 dark skips were blocked by a
+# wider-or-equal claim, 118 of them at 3 nodes, and the blocking claim was
+# median 3.9 s / p90 9.0 s old when it did the blocking: the candidates being
+# thrown away are arriving exactly where the error curve above turns.  So a
+# candidate at 3+ nodes is admitted once every claim blocking it has aged past
+# this, whatever the claim's width.
+#
+# 3 nodes and not 2 deliberately.  An n=2 candidate publishes only 6–9% of the
+# time and lands 2.7 km from truth when it does, which is worse than letting
+# the 0.34 km solve it would displace dead-reckon; n <= 2 therefore stays on
+# the full _SOLVER_RESOLVE_INTERVAL_S rule.  0 disables the refresh entirely
+# and restores that rule at every width.
+_SOLVER_RESOLVE_REFRESH_S = float(os.getenv("SOLVER_RESOLVE_REFRESH_S", "6"))
 _RECENT_SOLVES: dict[str, tuple[float, int]] = {}  # track_id → (solved_at, n_nodes)
 _RECENT_SOLVES_LOCK = threading.Lock()
 _recent_solves_last_sweep = 0.0
@@ -1452,6 +1484,49 @@ def _sweep_recent_solves(now_s: float) -> None:
         del _RECENT_SOLVES[tid]
 
 
+def _resolve_slot_state(s_in, now_s: float) -> tuple[bool, list[dict], bool]:
+    """The whole resolve-slot decision: (covered, blocking, refreshed).
+
+    Pure, like the _resolve_slot_covered wrapper below it, and for the same
+    reason.  Split out from that wrapper so the caller can tell the two ways
+    of being admitted apart: a candidate no claim covers at all, and a 3+-node
+    candidate admitted only because every claim on it had aged past
+    _SOLVER_RESOLVE_REFRESH_S (``refreshed``, counted as
+    solver_resolve_refresh).  Deciding that at the call site instead would
+    mean a second pass over the same claims under the same lock.
+
+    ``blocking`` is the claims that covered the candidate, for the skip
+    record; it is empty whenever ``covered`` is False, refreshed or not — a
+    refreshed candidate is not skipped, so nothing records it.  An input with
+    no track provenance (detection-level, or an anchored input carrying none)
+    is never covered: there is nothing to match it against.
+    """
+    if _SOLVER_RESOLVE_INTERVAL_S <= 0 or not isinstance(s_in, dict):
+        return False, [], False
+    track_ids = s_in.get("track_ids")
+    if not track_ids:
+        return False, [], False
+    n_nodes = int(s_in.get("n_nodes") or 0)
+    cutoff = now_s - _SOLVER_RESOLVE_INTERVAL_S
+    # Claims at or before this are old enough for a wide candidate to refresh
+    # the map entry they stand for.  Starts true for a wide enough candidate
+    # and is cleared by the first claim too young to refresh.
+    refresh_cutoff = now_s - _SOLVER_RESOLVE_REFRESH_S
+    refreshed = _SOLVER_RESOLVE_REFRESH_S > 0 and n_nodes >= 3
+    blocking: list[dict] = []
+    with _RECENT_SOLVES_LOCK:
+        for tid in track_ids:
+            held = _RECENT_SOLVES.get(tid)
+            if held is None or held[0] <= cutoff or held[1] < n_nodes:
+                return False, [], False
+            if held[0] > refresh_cutoff:
+                refreshed = False
+            blocking.append({"track_id": tid, "held_ts": round(held[0], 3), "held_n": held[1]})
+    if refreshed:
+        return False, [], True
+    return True, blocking, False
+
+
 def _resolve_slot_covered(s_in, now_s: float) -> tuple[bool, list[dict]]:
     """Is every track this candidate carries already ON THE MAP at this width?
 
@@ -1461,26 +1536,12 @@ def _resolve_slot_covered(s_in, now_s: float) -> tuple[bool, list[dict]]:
     only — see the block comment above for why, and for what the loss of
     atomic test-and-claim costs.
 
-    Returns (covered, blocking).  ``blocking`` is the claims that covered it,
-    for the skip record; it is empty whenever ``covered`` is False.  An input
-    with no track provenance (detection-level, or an anchored input carrying
-    none) is never covered — there is nothing to match it against.
+    Returns (covered, blocking) from _resolve_slot_state, dropping the
+    refresh flag: the answer to "must this candidate be skipped", for callers
+    that do not count the refresh.
     """
-    if _SOLVER_RESOLVE_INTERVAL_S <= 0 or not isinstance(s_in, dict):
-        return False, []
-    track_ids = s_in.get("track_ids")
-    if not track_ids:
-        return False, []
-    n_nodes = int(s_in.get("n_nodes") or 0)
-    cutoff = now_s - _SOLVER_RESOLVE_INTERVAL_S
-    blocking: list[dict] = []
-    with _RECENT_SOLVES_LOCK:
-        for tid in track_ids:
-            held = _RECENT_SOLVES.get(tid)
-            if held is None or held[0] <= cutoff or held[1] < n_nodes:
-                return False, []
-            blocking.append({"track_id": tid, "held_ts": round(held[0], 3), "held_n": held[1]})
-    return True, blocking
+    covered, blocking, _refreshed = _resolve_slot_state(s_in, now_s)
+    return covered, blocking
 
 
 def _record_resolve_slot(track_ids, n_nodes: int, now_s: float) -> None:
@@ -2369,10 +2430,16 @@ def _process_solver_item(
     # and a copy that queued before its twin was solved can only be recognised
     # once it reaches a worker.
     _now_s = time.time()
-    _covered, _blocking = _resolve_slot_covered(s_in, _now_s)
+    _covered, _blocking, _refreshed = _resolve_slot_state(s_in, _now_s)
     if _covered:
         _record_resolve_skip(s_in, _now_s, _blocking)
         return None
+    if _refreshed:
+        # Admitted only by the 3+-node refresh rule: every claim on this
+        # candidate was older than _SOLVER_RESOLVE_REFRESH_S, so the entry it
+        # would have been suppressed behind has been dead-reckoning.  These
+        # are the extra solves that rule costs, and the ones it buys.
+        state.bump_counter("solver_resolve_refresh")
     n_nodes = s_in.get("n_nodes", 0) if isinstance(s_in, dict) else 0
     # Before anything reads a delay: the nodes did not sample simultaneously,
     # and every gate below (rms_delay first among them) assumes they did.  Runs
