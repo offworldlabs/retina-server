@@ -268,6 +268,7 @@ class TestConsensusAndCounters:
         state.tracks_stale_skipped = 13
         state.solver_epoch_align_skipped = 14
         state.solver_resolve_skips_dark = 9
+        state.solver_resolve_refresh = 3
         state.node_frames_rate_limited = 13
         state.solver_pool_timeouts = 19
         out = _solver_window_stats(10.0)
@@ -282,6 +283,7 @@ class TestConsensusAndCounters:
             "tracks_stale_skipped": 13,
             "epoch_align_skipped": 14,
             "resolve_skips_dark": 9,
+            "resolve_refresh": 3,
             "queue_drops": 6,
             "node_frames_rate_limited": 13,
             "worker_errors": 0,
