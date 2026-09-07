@@ -14,7 +14,7 @@ from config.constants import FT_TO_M, is_num
 from core import state
 from core.task_registry import get_stale_tasks
 from core.users import require_admin
-from services import track_filter
+from services import dark_follow, track_filter
 from services.frame_processor import resolve_ground_truth_hex
 from services.geo import haversine_km
 from services.id_utils import is_transponder_hex, normalize_hex_key
@@ -936,6 +936,75 @@ _GHOST_GT_MAX_AGE_S = 90.0
 _ADSB_FRESH_S = 60.0
 
 
+def _n_nodes_bucket(n_nodes) -> str:
+    """The by_n_nodes bucket one record falls in.
+
+    2/3/4 are their own buckets because that is where the interesting cliff
+    sits — an n=2 solve is a bistatic intersection, n=3 is barely
+    overdetermined, n>=4 is where the dark lane behaves.  Everything from 5 up
+    is one bucket ("5+") for the same reason the funnel above stops at n3plus:
+    the sample thins out fast and the differences stop being informative.
+    "<2" catches records that carry no usable node count (0, 1 or a missing
+    field, which some early reject paths write) so the buckets still sum to
+    attempts rather than quietly losing rows.
+    """
+    n = int(n_nodes or 0)
+    if n < 2:
+        return "<2"
+    if n >= 5:
+        return "5+"
+    return str(n)
+
+
+def _by_n_nodes(records: list[dict]) -> dict:
+    """Per-attempt outcomes bucketed by how many nodes went into the solve.
+
+    The question this answers is "what fraction of n-node candidates actually
+    reach the map, and what stops the rest?" — until it existed that needed an
+    offline pass over a history dump, which is how the 3-node dark starvation
+    was found in the first place.  Windowed over the same records the funnel
+    above uses, and the reject-reason stripping is deliberately identical to
+    the by_reason code there so the two tables can be added up.
+
+    gt_err_median_km carries the same <= _ERR_GT_GATE_KM gate as the top-level
+    position_error_km, so the per-bucket medians and the overall one are the
+    same population split up rather than two different ones.
+    """
+    buckets: dict[str, dict] = {}
+    for r in records:
+        b = buckets.setdefault(
+            _n_nodes_bucket(r.get("n_nodes")), {"attempts": 0, "published": 0, "rejects": {}, "errs": []}
+        )
+        b["attempts"] += 1
+        outcome = r.get("outcome")
+        if outcome == "published":
+            b["published"] += 1
+            err = r.get("gt_error_km")
+            if err is not None and err <= _ERR_GT_GATE_KM:
+                b["errs"].append(err)
+        else:
+            reason = outcome[len("rejected_") :] if outcome.startswith("rejected_") else outcome
+            b["rejects"][reason] = b["rejects"].get(reason, 0) + 1
+
+    out: dict[str, dict] = {}
+    for label, b in buckets.items():
+        errs = sorted(b["errs"])
+        top = sorted(b["rejects"].items(), key=lambda kv: (-kv[1], kv[0]))[:4]
+        out[label] = {
+            "attempts": b["attempts"],
+            "published": b["published"],
+            "publish_rate": round(b["published"] / b["attempts"], 3) if b["attempts"] else None,
+            # Top four reasons only: the tail is long (every gate in the solver
+            # has a label) and the whole distribution is already in by_reason.
+            "rejects": dict(top),
+            "gt_err_median_km": errs[len(errs) // 2] if errs else None,
+        }
+    # Sorted so the JSON reads 2, 3, 4, 5+ rather than in dict-insertion order,
+    # which is whatever order the window happened to arrive in.
+    order = {"<2": 0, "2": 1, "3": 2, "4": 3, "5+": 4}
+    return {k: out[k] for k in sorted(out, key=lambda k: order.get(k, 9))}
+
+
 def _solver_window_stats(minutes: float) -> dict:
     """Full solver picture: publication funnel, position error, ghost/false-track
     precision, consensus counters — the data behind the Solver Report panel.
@@ -1188,6 +1257,26 @@ def _solver_window_stats(minutes: float) -> dict:
         kc_visibility_rejects = state.known_claims_visibility_rejects
         kc_world_rejects = state.known_claims_world_rejects
         kc_errors = state.known_claims_errors
+        # Same one-lock snapshot for the follow lane's funnel and the
+        # per-reason ineligibility tally beside it: the two are only readable
+        # against each other (see the dark_follow block below), so they must
+        # not be sampled a rebuild apart.
+        df_targets = state.dark_follow_targets
+        df_inputs = state.dark_follow_inputs
+        df_published = state.dark_follow_published
+        df_dropped = state.dark_follow_dropped
+        df_inelig = {
+            reason: getattr(state, f"dark_follow_inelig_{reason}")
+            for reason in (
+                "cooldown",
+                "no_pos",
+                "age",
+                "min_solves",
+                "min_nodes",
+                "no_filter",
+                "vel_sigma",
+            )
+        }
 
     return {
         "window_minutes": minutes,
@@ -1204,6 +1293,14 @@ def _solver_window_stats(minutes: float) -> dict:
         "published": {"total": n2 + n3plus, "n2": n2, "n3plus": n3plus},
         "rejects": {"total": reject_total, "by_reason": by_reason},
         "position_error_km": {"median": median_err, "p90": p90_err, "n": n_err},
+        # The funnel again, split by how many nodes each attempt had — the
+        # dark lane's behaviour is not uniform in n and the aggregate hides
+        # it.  Same window and same records as attempts/published/rejects
+        # above, so the buckets sum back to them.  See _by_n_nodes.
+        "by_n_nodes": _by_n_nodes(records),
+        # ...and the same table for the known lane's own records, which do not
+        # pass through the funnel above (see the docstring).
+        "by_n_nodes_known": _by_n_nodes(known_records),
         # Both windowed and both DARK-lane, like the funnel above them.
         "contamination": contamination,
         "resolve_skips": resolve_skips,
@@ -1289,6 +1386,26 @@ def _solver_window_stats(minutes: float) -> dict:
         # made > 0 with bound == 0 is the shadow-soak signature.  errors
         # nonzero means the claiming stage is throwing and the lane is
         # silently contributing nothing.
+        # Dark track following (services/dark_follow.py), since boot except
+        # targets_now, a live gauge of the current pseudo-state list.  The
+        # funnel repeats three of the "counters" entries below because it is
+        # only readable beside "ineligible", which is the other half of the
+        # same walk: every dark key in state.multinode_tracks is either a
+        # target or one of those reasons, re-tested on every rebuild.
+        #
+        # ineligible IS IN KEY-SECONDS, the funnel is in events.  The target
+        # list is rebuilt once a second and every dark key is re-tested, so a
+        # key that is ineligible for a minute adds ~60 to its reason.  Compare
+        # the reasons with each other (which gate holds the lane back) and
+        # with targets_now; do NOT divide them by inputs or published.
+        "dark_follow": {
+            "mode": dark_follow.mode(),
+            "targets_now": df_targets,
+            "inputs": df_inputs,
+            "published": df_published,
+            "dropped": df_dropped,
+            "ineligible": df_inelig,
+        },
         "known_claims": {
             "made": kc_made,
             "contentions": kc_contentions,
@@ -1408,6 +1525,22 @@ async def solver_stats(minutes: float = 10.0):
     counts for the window and ``known_lane`` the known lane's own numbers.
     See ``_solver_window_stats`` for why, plus the ghost definition and the
     gate constants.
+
+    Two blocks answer "why is the dark lane doing this?" rather than "what is
+    it doing":
+
+    ``by_n_nodes`` (and ``by_n_nodes_known``) re-splits the same windowed
+    records by the node count of each attempt — attempts, published,
+    publish_rate, the top four reject reasons and the median GT error per
+    bucket (2 / 3 / 4 / 5+, with "<2" for records carrying no node count).
+    The dark lane is not uniform in n and the aggregate funnel hides it.
+
+    ``dark_follow`` is the follow lane's funnel plus ``ineligible``, a
+    per-reason tally of the dark keys the lane refused to follow, one entry
+    per gate in ``dark_follow._build_targets``.  Those counters are
+    KEY-SECONDS (the target list is rebuilt once a second and re-tests every
+    dark key), so they are read against each other and against
+    ``targets_now``, never against ``inputs``/``published``.
     """
     minutes = max(1.0, min(minutes, 35.0))
     payload = _solver_window_stats(minutes)
