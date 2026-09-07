@@ -186,7 +186,7 @@ class TestDerivedVelocityError(_SolverTestBase):
 
 
 def _fake_pool_call(fit_result, calls):
-    def fn(target_fn, *args):
+    def fn(target_fn, *args, **kwargs):
         calls.append((target_fn, args))
         return dict(fit_result) if fit_result is not None else None
 
@@ -294,7 +294,21 @@ class TestVelocityAdoptionRejectionFallbacks(_SolverTestBase):
 
 
 class TestVelocityAdoptionN2SharesPoolCall(_SolverTestBase):
+    """The gate and velocity adoption share one free fit; the pin adds one more.
+
+    Caching the fit on the input is what stops the n=2 confirmation gate and
+    the velocity adoption from paying for the same ~86 ms solve twice.  The
+    pinned-altitude fit that supplies the published POSITION is a second,
+    separately cached solve of the same epochs by design (see
+    _N2_FIT_FIX_ALTITUDE): the gate's chi2 threshold was calibrated against the
+    free fit's 6-state dof, so the two cannot be the same call.  Two is
+    therefore the ceiling, not one — and it is still one per purpose, which is
+    what this test is guarding.
+    """
+
     def test_gate_and_adoption_share_one_pool_call(self, monkeypatch):
+        import retina_geolocator.multinode_solver as mns
+
         calls = []
         monkeypatch.setattr(
             solver_mod,
@@ -320,7 +334,9 @@ class TestVelocityAdoptionN2SharesPoolCall(_SolverTestBase):
 
         assert result is not None and result["success"]
         assert result["vel_source"] == "cv_fit"
-        assert len(calls) == 1
+        # One free fit (gate + velocity, shared) and one pinned fit (position).
+        assert len(calls) == 2
+        assert {fn for fn, _args in calls} == {mns.fit_constant_velocity}
 
 
 # ── A3: fleet-wide direction error stats ─────────────────────────────────────
