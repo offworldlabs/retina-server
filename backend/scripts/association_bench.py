@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import itertools
 import math
 import os
 import statistics
@@ -956,6 +957,7 @@ def run(
     mode="detection",
     chi2_max=2.0,
     min_span_s=12.0,
+    min_epochs=4,
     history_n=20,
     exclusive=True,
     cv_fit_mode="inline",
@@ -1050,6 +1052,7 @@ def run(
         cv_fit=(fit_constant_velocity if (mode == "track" and not deferred) else None),
         cv_chi2_max=chi2_max,
         cv_min_span_s=min_span_s,
+        cv_min_epochs=min_epochs,
         cv_exclusive=exclusive,
         **_cluster_kwargs,
     )
@@ -1671,7 +1674,23 @@ def main():
     )
     p.add_argument("--chi2-max", type=float, nargs="+", default=[2.0], help="track mode: chi2/dof ceiling(s) to sweep")
     p.add_argument(
-        "--min-span-s", type=float, default=12.0, help="track mode: observation span before a pairing is fitted"
+        "--min-span-s",
+        "--cv-min-span-s",
+        dest="min_span_s",
+        type=float,
+        nargs="+",
+        default=[12.0],
+        help="track mode: observation span(s) to sweep before a pairing is fitted "
+        "(deferred mode: before its epochs are attached at all). Production is 12 "
+        "(N2_CONFIRM_MIN_SPAN_S); several values sweep like --chi2-max does.",
+    )
+    p.add_argument(
+        "--cv-min-epochs",
+        dest="min_epochs",
+        type=int,
+        default=4,
+        help="track mode: merged epochs a pairing needs before it is fitted "
+        "(deferred mode: before its epochs are attached). Production is 4.",
     )
     p.add_argument("--history-n", type=int, default=20, help="track mode: samples of per-node track history to fit")
     p.add_argument(
@@ -1876,7 +1895,7 @@ def main():
         f"{args.seconds:.0f}s @ {args.frame_interval:.0f}s frames, seed {args.seed}, "
         f"{'BLIND' if args.blind else 'ADS-B-tagged'}, mode={args.mode}"
         + (
-            f", span>={args.min_span_s:.0f}s, cv-fit={args.cv_fit_mode}, claim-mode={args.claim_mode}"
+            f", epochs>={args.min_epochs}, cv-fit={args.cv_fit_mode}, claim-mode={args.claim_mode}"
             if args.mode == "track"
             else ""
         )
@@ -1888,8 +1907,9 @@ def main():
 
     # chi2 only means anything in track mode; keep one pass otherwise.
     chi2_values = args.chi2_max if args.mode == "track" else [None]
+    span_values = args.min_span_s if args.mode == "track" else [args.min_span_s[0]]
     for interval in args.assoc_interval:
-        for chi2_max in chi2_values:
+        for min_span_s, chi2_max in itertools.product(span_values, chi2_values):
             for estimator_name in args.estimator:
                 solve_fn = _ESTIMATORS[estimator_name]
                 rates, solve_rates, reals, fakes, speed_errs = [], [], [], [], []
@@ -1916,7 +1936,8 @@ def main():
                         args.blind,
                         args.mode,
                         chi2_max if chi2_max is not None else 2.0,
-                        args.min_span_s,
+                        min_span_s,
+                        args.min_epochs,
                         args.history_n,
                         args.exclusive,
                         args.cv_fit_mode,
@@ -1948,7 +1969,7 @@ def main():
                     med_errs.append(statistics.median(last.errors_km) if last.errors_km else float("nan"))
                 label = f"assoc_interval={interval:g}s"
                 if chi2_max is not None:
-                    label += f"  chi2/dof<={chi2_max:g}"
+                    label += f"  span>={min_span_s:g}s  chi2/dof<={chi2_max:g}"
                 label += f"  estimator={estimator_name}"
                 if args.repeat > 1:
                     label += f"  (pooled over {args.repeat} seeds)"

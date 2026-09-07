@@ -38,6 +38,7 @@ def _rec(
     known_lane=False,
     displacement_km=None,
     lane=None,
+    pool_n_nodes=None,
 ):
     return {
         "ts_ms": int((time.time() - age_s) * 1000),
@@ -50,6 +51,7 @@ def _rec(
         "known_lane": known_lane,
         "displacement_km": displacement_km,
         "lane": lane,
+        "pool_n_nodes": pool_n_nodes,
     }
 
 
@@ -269,6 +271,7 @@ class TestConsensusAndCounters:
         state.tracks_stale_skipped = 13
         state.solver_epoch_align_skipped = 14
         state.solver_resolve_skips_dark = 9
+        state.solver_resolve_refresh = 3
         state.node_frames_rate_limited = 13
         state.solver_pool_timeouts = 19
         out = _solver_window_stats(10.0)
@@ -284,6 +287,7 @@ class TestConsensusAndCounters:
             "tracks_stale_skipped": 13,
             "epoch_align_skipped": 14,
             "resolve_skips_dark": 9,
+            "resolve_refresh": 3,
             "queue_drops": 6,
             "node_frames_rate_limited": 13,
             "worker_errors": 0,
@@ -973,3 +977,153 @@ class TestContaminationBlock:
         rec["known_lane"] = True
         state.mlat_solve_history_known.append(rec)
         assert _solver_window_stats(10.0)["contamination"]["records_with_gt"] == 0
+
+
+class TestByNNodes:
+    """The funnel re-split by how many nodes each attempt used — the question
+    "what fraction of 3-node candidates actually publish?", which before this
+    block needed an offline pass over a history dump."""
+
+
+class TestNodePool:
+    """``pool`` answers "could the round have solved this aircraft wider?".
+
+    pool_n_nodes is stamped on the solver input by the association stage — the
+    node set of the shared-track component the input was clustered out of — so
+    a published record whose n_nodes is below it is a solve the round had the
+    measurements for and did not make.  This is the counter that separates "the
+    third node never paired" from "it paired and the clustering did not take
+    it", which is the 3-node dark case we could not previously diagnose.
+    """
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_published_and_rejected_land_in_their_own_buckets(self):
+        state.mlat_solve_history.append(_rec("published", n_nodes=3, gt_error_km=0.4))
+        state.mlat_solve_history.append(_rec("rejected_beam", n_nodes=2))
+        out = _solver_window_stats(10.0)["by_n_nodes"]
+        assert out["3"] == {
+            "attempts": 1,
+            "published": 1,
+            "publish_rate": 1.0,
+            "rejects": {},
+            "gt_err_median_km": 0.4,
+        }
+        assert out["2"] == {
+            "attempts": 1,
+            "published": 0,
+            "publish_rate": 0.0,
+            # Same strip as the by_reason table, so the two can be added up.
+            "rejects": {"beam": 1},
+            "gt_err_median_km": None,
+        }
+
+    def test_buckets_sum_back_to_the_funnel(self):
+        for n in (2, 3, 4, 5, 9):
+            state.mlat_solve_history.append(_rec("published", n_nodes=n))
+            state.mlat_solve_history.append(_rec("rejected_rms", n_nodes=n))
+        out = _solver_window_stats(10.0)
+        by_n = out["by_n_nodes"]
+        # 5 and 9 share the 5+ bucket; everything else is its own.
+        assert sorted(by_n) == ["2", "3", "4", "5+"]
+        assert by_n["5+"]["attempts"] == 4
+        assert sum(b["attempts"] for b in by_n.values()) == out["attempts"]
+        assert sum(b["published"] for b in by_n.values()) == out["published"]["total"]
+
+    def test_a_record_with_no_node_count_is_kept_not_dropped(self):
+        """Some reject paths write no n_nodes; they still have to appear, or
+        the buckets stop summing to attempts."""
+        state.mlat_solve_history.append(_rec("rejected_geometry", n_nodes=None))
+        out = _solver_window_stats(10.0)
+        assert out["by_n_nodes"]["<2"]["attempts"] == 1
+        assert sum(b["attempts"] for b in out["by_n_nodes"].values()) == out["attempts"]
+
+    def test_gt_error_beyond_the_gate_is_excluded_like_the_top_level_median(self):
+        state.mlat_solve_history.append(_rec("published", n_nodes=4, gt_error_km=_ERR_GT_GATE_KM + 1))
+        out = _solver_window_stats(10.0)["by_n_nodes"]
+        assert out["4"]["published"] == 1
+        assert out["4"]["gt_err_median_km"] is None
+
+    def test_only_the_top_four_reject_reasons_are_listed(self):
+        for i in range(6):
+            for _ in range(6 - i):
+                state.mlat_solve_history.append(_rec(f"rejected_r{i}", n_nodes=3))
+        rejects = _solver_window_stats(10.0)["by_n_nodes"]["3"]["rejects"]
+        assert list(rejects) == ["r0", "r1", "r2", "r3"]
+        assert rejects["r0"] == 6
+
+    def test_the_known_lane_gets_its_own_table(self):
+        state.mlat_solve_history_known.append(_rec("published", n_nodes=4, known_lane=True))
+        out = _solver_window_stats(10.0)
+        assert out["by_n_nodes"] == {}
+        assert out["by_n_nodes_known"]["4"]["published"] == 1
+
+
+class TestDarkFollowBlock:
+    """The follow lane's funnel and, beside it, why the keys it did not follow
+    were refused."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_ineligibility_reasons_are_reported_per_reason(self):
+        state.bump_counter("dark_follow_inelig_vel_sigma", 7)
+        state.bump_counter("dark_follow_inelig_min_nodes", 3)
+        state.dark_follow_inputs = 5
+        state.dark_follow_published = 4
+        out = _solver_window_stats(10.0)["dark_follow"]
+        assert out["inputs"] == 5
+        assert out["published"] == 4
+        assert out["ineligible"] == {
+            "cooldown": 0,
+            "no_pos": 0,
+            "age": 0,
+            "min_solves": 0,
+            "min_nodes": 3,
+            "no_filter": 0,
+            "vel_sigma": 7,
+        }
+
+    def test_an_empty_lane_reports_zeroes_not_a_missing_block(self):
+        out = _solver_window_stats(10.0)["dark_follow"]
+        assert out["targets_now"] == 0
+        assert set(out["ineligible"].values()) == {0}
+
+    def test_counts_published_solves_narrower_than_their_pool(self):
+        _push(_rec("published", n_nodes=2, pool_n_nodes=3))
+        _push(_rec("published", n_nodes=3, pool_n_nodes=3))
+        out = _solver_window_stats(10.0)
+        assert out["pool"] == {
+            "records_with_pool": 2,
+            "narrower_than_pool": 1,
+            "pct": 50.0,
+            "mean_shortfall_nodes": 0.5,
+        }
+
+    def test_unstamped_and_unpublished_records_stay_out_of_the_denominator(self):
+        """Only DARK PUBLISHED records carrying the stamp can answer this.
+
+        An anchored or known-lane input never went through the clustering that
+        computes the pool, and a reject has no solve to be narrow; counting
+        either as a zero shortfall would dilute the number towards "fine".
+        """
+        _push(_rec("published", n_nodes=2, pool_n_nodes=3))
+        _push(_rec("published", n_nodes=2))  # dark, but no stamp
+        _push(_rec("rejected_beam", n_nodes=2, pool_n_nodes=4))
+        _push(_rec("published", n_nodes=2, pool_n_nodes=4, known_lane=True))
+        out = _solver_window_stats(10.0)
+        assert out["pool"]["records_with_pool"] == 1
+        assert out["pool"]["narrower_than_pool"] == 1
+        assert out["pool"]["pct"] == 100.0
+
+    def test_no_stamped_records_reports_null_not_zero(self):
+        """Nothing measured is not the same answer as nothing narrow."""
+        _push(_rec("published", n_nodes=2))
+        out = _solver_window_stats(10.0)
+        assert out["pool"] == {
+            "records_with_pool": 0,
+            "narrower_than_pool": 0,
+            "pct": None,
+            "mean_shortfall_nodes": None,
+        }

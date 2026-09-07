@@ -273,6 +273,86 @@ class TestPseudoStates:
         assert dark_follow.follow_targets() == []
 
 
+class TestIneligibilityCounters:
+    """One counter per gate in _build_targets, because the only other record of
+    why a key is not followed is a debug log the deployed log level never
+    emits — finding the 3-node starvation without these took an offline
+    simulation of the filter.
+
+    They are key-seconds: _build_targets re-tests every dark key on every
+    rebuild, so one pass over one key is one bump.
+    """
+
+    def test_a_noisy_velocity_is_counted_by_reason(self, monkeypatch):
+        _install(monkeypatch, int(time.time() * 1000) - 2000)
+        _kf(monkeypatch, vel_sigma=dark_follow.DARK_FOLLOW_MAX_VEL_SIGMA_MS + 1.0)
+        dark_follow._reset_for_tests()
+
+        assert dark_follow.follow_targets() == []
+        assert state.dark_follow_inelig_vel_sigma == 1
+        # ...and the drop still happens: the two counters answer different
+        # questions (key-seconds over the ceiling vs keys dropped).
+        assert state.dark_follow_dropped == 1
+
+    def test_the_cooldown_a_drop_starts_is_counted_on_the_next_rebuild(self, monkeypatch):
+        """The second pass sees the key in cooldown, not over sigma — so it
+        must not double-count the sigma gate."""
+        _install(monkeypatch, int(time.time() * 1000) - 2000)
+        _kf(monkeypatch, vel_sigma=dark_follow.DARK_FOLLOW_MAX_VEL_SIGMA_MS + 1.0)
+        dark_follow._reset_for_tests()
+        dark_follow.follow_targets()
+
+        dark_follow._expire_targets_for_tests()
+        assert dark_follow.follow_targets() == []
+        assert state.dark_follow_inelig_cooldown == 1
+        assert state.dark_follow_inelig_vel_sigma == 1
+
+    @pytest.mark.parametrize(
+        "counter,kwargs",
+        [
+            ("dark_follow_inelig_no_pos", {"lat": None}),
+            ("dark_follow_inelig_min_solves", {"solve_count": dark_follow.DARK_FOLLOW_MIN_SOLVES - 1}),
+            ("dark_follow_inelig_min_nodes", {"n_nodes": 2}),
+        ],
+    )
+    def test_each_gate_has_its_own_counter(self, monkeypatch, counter, kwargs):
+        _install(monkeypatch, int(time.time() * 1000) - 2000, **kwargs)
+
+        assert dark_follow.follow_targets() == []
+        assert getattr(state, counter) == 1
+
+    def test_a_stale_track_is_counted_as_age(self, monkeypatch):
+        ts = int((time.time() - dark_follow.DARK_FOLLOW_MAX_AGE_S - 5) * 1000)
+        _install(monkeypatch, ts)
+
+        assert dark_follow.follow_targets() == []
+        assert state.dark_follow_inelig_age == 1
+
+    def test_no_filter_state_is_counted(self, monkeypatch):
+        _install(monkeypatch, int(time.time() * 1000) - 2000, kf=False)
+
+        assert dark_follow.follow_targets() == []
+        assert state.dark_follow_inelig_no_filter == 1
+
+    def test_an_adsb_key_is_not_in_the_population_at_all(self, monkeypatch):
+        """mn-adsb-* is not a dark key, so it is neither a target nor
+        ineligible — counting it would put the wrong denominator under the
+        whole block."""
+        _install(monkeypatch, int(time.time() * 1000) - 2000, key="mn-adsb-abc123")
+
+        assert dark_follow.follow_targets() == []
+        assert state.dark_follow_inelig_no_pos == 0
+        assert state.dark_follow_inelig_age == 0
+        assert state.dark_follow_inelig_no_filter == 0
+
+    def test_an_eligible_key_bumps_nothing(self, monkeypatch):
+        _install(monkeypatch, int(time.time() * 1000) - 2000)
+
+        assert len(dark_follow.follow_targets()) == 1
+        assert state.dark_follow_inelig_cooldown == 0
+        assert state.dark_follow_inelig_vel_sigma == 0
+
+
 class TestClaiming:
     """Path 3 of the claiming stage: leftover detections vs pseudo-states."""
 

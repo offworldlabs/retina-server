@@ -342,21 +342,37 @@ def _pos_sigma_m(rec: dict) -> float:
 
 
 def _build_targets(now_s: float, now_mono: float) -> list[dict]:
-    """One pseudo-state per followable dark track.  Cheap, and cached."""
+    """One pseudo-state per followable dark track.  Cheap, and cached.
+
+    Every rejection below bumps its own state counter (the dark_follow_inelig_*
+    block in core/state.py), because until they existed the only way to answer
+    "why is this aircraft not being followed?" was an offline simulation of the
+    filter — the lane had one counter for drops and a debug log the deployed
+    log level never emits.  They are key-seconds, not events: this function
+    runs once per _TARGETS_TTL_S (1 s) and re-tests every dark key each time,
+    so one stuck key contributes ~60 a minute.  Read them against each other
+    and against dark_follow_targets, never against the claim/solve counters.
+    """
     out: list[dict] = []
     for key, rec in list(state.multinode_tracks.items()):
+        # Not counted: an mn-adsb-* key is not a dark key, so it is out of this
+        # walk's population entirely rather than ineligible within it.
         if not key.startswith("mn-dark-"):
             continue
         if _in_cooldown(key, now_mono):
+            state.bump_counter("dark_follow_inelig_cooldown")
             continue
         lat, lon = rec.get("lat"), rec.get("lon")
         if lat is None or lon is None:
+            state.bump_counter("dark_follow_inelig_no_pos")
             continue
         ts_ms = rec.get("timestamp_ms") or 0
         age_s = now_s - ts_ms / 1000.0
         if not (0.0 <= age_s <= DARK_FOLLOW_MAX_AGE_S):
+            state.bump_counter("dark_follow_inelig_age")
             continue
         if int(rec.get("solve_count") or 0) < DARK_FOLLOW_MIN_SOLVES:
+            state.bump_counter("dark_follow_inelig_min_solves")
             continue
         # The key's WIDEST solve, not its last.  A followed track that flies
         # into 2-node coverage now publishes there (the anchored bypass above),
@@ -365,6 +381,7 @@ def _build_targets(now_s: float, now_mono: float) -> list[dict]:
         # the gate is really asking is whether the key was ever overdetermined
         # enough to be trusted as an identity, and that is a high-water mark.
         if max(int(rec.get("max_n_nodes") or 0), int(rec.get("n_nodes") or 0)) < DARK_FOLLOW_MIN_NODES:
+            state.bump_counter("dark_follow_inelig_min_nodes")
             continue
         # No filter state, no follow.  The velocity and its sigma are the whole
         # prediction: without them there is nothing to dead-reckon with and no
@@ -372,9 +389,17 @@ def _build_targets(now_s: float, now_mono: float) -> list[dict]:
         # the under-determined quantity (n<=3 Doppler) the KF exists to fix.
         lv = track_filter.learned_velocity(key)
         if lv is None:
+            state.bump_counter("dark_follow_inelig_no_filter")
             continue
         vel_east, vel_north, vel_sigma_ms, _last_ts_s = lv
         if vel_sigma_ms > DARK_FOLLOW_MAX_VEL_SIGMA_MS:
+            # Counted here as well as in dark_follow_dropped, and the two do
+            # not agree on purpose: drop_target is idempotent inside its
+            # cooldown window ("keys dropped"), while this is the per-rebuild
+            # test ("key-seconds spent too noisy to follow").  The gap between
+            # them is how long the sigma stays over the ceiling, which is the
+            # number the 3-node starvation is measured in.
+            state.bump_counter("dark_follow_inelig_vel_sigma")
             drop_target(key, f"velocity sigma {vel_sigma_ms:.0f} m/s")
             continue
         # World tag.  The overlap-zone world gate means every node that
