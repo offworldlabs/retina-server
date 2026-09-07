@@ -42,6 +42,8 @@ services:
       # Overnight dark-solver run 2026-09-05: exercise the free-altitude
       # multistart solve (feat/free-altitude-solve) on this droplet only.
       - SOLVER_ALT_MODE=free
+      - ASSOC_ALT_LAYERS_KM=1.5,3,5,7,9,11
+      - N2_PUBLISH_FIT_POSITION=0
       # The fleet sends each node at ~1 Hz with jitter; a 1.0 s per-node
       # minimum interval was refusing ~12 of its 37 frames/s (counter
       # node_frames_rate_limited), starving the trackers to ~0.5 Hz.
