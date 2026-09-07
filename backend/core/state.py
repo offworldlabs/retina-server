@@ -593,6 +593,30 @@ dark_follow_claims: int = 0
 dark_follow_inputs: int = 0
 dark_follow_published: int = 0
 dark_follow_dropped: int = 0
+# Why the keys that are NOT followed were rejected, one counter per test in
+# dark_follow._build_targets, in the order the function applies them.  These
+# are KEY-SECONDS, not events: the target list is rebuilt every
+# dark_follow._TARGETS_TTL_S (1 s) and every dark key is re-tested on every
+# rebuild, so a key that stays ineligible for a minute adds ~60.  They are
+# therefore only meaningful against EACH OTHER (which gate is holding the lane
+# back) and against dark_follow_targets (the eligible side of the same walk) —
+# never against dark_follow_claims/inputs/published, which count events.
+#
+# WHY THESE EXIST.  The lane had one counter (dropped) and a debug log the
+# deployed WARNING-level config never emits, so "why is this aircraft not
+# followed?" was unanswerable from the API.  Measured on test: dark aircraft
+# whose widest solve is 3 nodes got 0-3 follow solves each against 30-100 for
+# 4+-node aircraft, and finding out why took an offline simulation of the
+# filter — the 1200 m R floor puts velocity sigma at 150/112/74/51 m/s over
+# successive solves, so a 3-node key only clears DARK_FOLLOW_MAX_VEL_SIGMA_MS
+# on its fourth solve.  vel_sigma dominating this block is that finding, live.
+dark_follow_inelig_cooldown: int = 0
+dark_follow_inelig_no_pos: int = 0
+dark_follow_inelig_age: int = 0
+dark_follow_inelig_min_solves: int = 0
+dark_follow_inelig_min_nodes: int = 0
+dark_follow_inelig_no_filter: int = 0
+dark_follow_inelig_vel_sigma: int = 0
 # Bottom-up dark solves refused at keying because the follow lane owns the key
 # they landed on (solver.multinode_key_decision's "shadowed" verdict, binding
 # mode only).  They passed every gate, so they are counted in solver_successes
@@ -947,6 +971,10 @@ def _reset_for_tests() -> None:
     global known_claims_errors, known_claims_visibility_rejects, known_claims_world_rejects
     global dark_follow_targets, dark_follow_claims, dark_follow_inputs
     global dark_follow_published, dark_follow_dropped, dark_bottomup_shadowed
+    global dark_follow_inelig_cooldown, dark_follow_inelig_no_pos
+    global dark_follow_inelig_age, dark_follow_inelig_min_solves
+    global dark_follow_inelig_min_nodes, dark_follow_inelig_no_filter
+    global dark_follow_inelig_vel_sigma
     global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
     global coverage_rebuild_backlog, tracks_stale_skipped, solver_epoch_align_skipped
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
@@ -1042,6 +1070,10 @@ def _reset_for_tests() -> None:
         known_claims_world_rejects = 0
         dark_follow_targets = dark_follow_claims = dark_follow_inputs = 0
         dark_follow_published = dark_follow_dropped = 0
+        dark_follow_inelig_cooldown = dark_follow_inelig_no_pos = 0
+        dark_follow_inelig_age = dark_follow_inelig_min_solves = 0
+        dark_follow_inelig_min_nodes = dark_follow_inelig_no_filter = 0
+        dark_follow_inelig_vel_sigma = 0
         dark_bottomup_shadowed = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
         ws_send_timeouts = 0
