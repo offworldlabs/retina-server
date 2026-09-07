@@ -222,6 +222,13 @@ def configs_for_solver_input(node_cfgs: dict[str, dict], s_in: dict) -> dict[str
     rather than reusing what was queued here.
     """
     wanted = {m.get("node_id") for m in (s_in.get("measurements") or ())}
+    # The pool's spare measurements are the one thing downstream that CAN
+    # widen the set: solver._adopt_pool_nodes re-solves with them once the
+    # first solve vouches for them, and a node without a config there is
+    # silently dropped by the epoch alignment and the solver's NodeSetups —
+    # measured live, that left 120 of 309 "widened" candidates solving on
+    # their original two nodes.  A pool is 0-6 extra configs, not 50.
+    wanted |= {m.get("node_id") for m in (s_in.get("pool_measurements") or ())}
     return {nid: cfg for nid, cfg in node_cfgs.items() if nid in wanted}
 
 
