@@ -1163,6 +1163,24 @@ def _solver_window_stats(minutes: float) -> dict:
     spk_p90 = counts_sorted[int(0.9 * (n_keys - 1))] if n_keys else None
     anchored_pct = round(100.0 * anchored_published / len(published_records), 1) if published_records else 0.0
 
+    # ── node pool ───────────────────────────────────────────────────────────
+    # "Could this round have solved the aircraft with more nodes than it did?"
+    # pool_n_nodes is stamped on the solver input by the association stage (the
+    # node set of the shared-track component the input was clustered out of, see
+    # InterNodeAssociator._shared_track_pools), so it is the number of nodes
+    # that PAIRED on this aircraft this round — the denominator n_nodes should
+    # be read against.  narrower_than_pool counts published dark solves that
+    # left at least one paired node out; the shortfall mean says how many.
+    #
+    # Records without the stamp are records the question does not apply to —
+    # anchored/known-lane inputs and dark-follow predictions never went through
+    # that clustering — so they are excluded from the denominator rather than
+    # counted as zero shortfall.  records_with_pool against len(published_records)
+    # is how much of the window the number actually speaks for.
+    pooled = [r for r in published_records if r.get("pool_n_nodes") is not None]
+    shortfalls = [int(r["pool_n_nodes"]) - int(r.get("n_nodes") or 0) for r in pooled]
+    narrower = sum(1 for d in shortfalls if d > 0)
+
     # ── ghosts (DARK tracks only) ───────────────────────────────────────────
     # The question this answers is "of the multinode tracks we put on the map
     # with no transponder to lean on, what fraction are real?", so an
@@ -1413,6 +1431,17 @@ def _solver_window_stats(minutes: float) -> dict:
             "visibility_rejects": kc_visibility_rejects,
             "world_rejects": kc_world_rejects,
             "errors": kc_errors,
+        },
+        # Dark published solves against the node pool their round had for the
+        # same aircraft (see the pooled/shortfalls block above).  pct is null
+        # rather than 0 when nothing in the window carried the stamp, because
+        # "no solve was narrower than its pool" and "no solve was measured" are
+        # not the same answer.
+        "pool": {
+            "records_with_pool": len(pooled),
+            "narrower_than_pool": narrower,
+            "pct": round(100.0 * narrower / len(pooled), 1) if pooled else None,
+            "mean_shortfall_nodes": round(sum(shortfalls) / len(shortfalls), 3) if shortfalls else None,
         },
         "fragmentation": {
             "distinct_keys": len(key_counts),
