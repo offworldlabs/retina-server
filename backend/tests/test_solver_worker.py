@@ -659,6 +659,174 @@ class TestSolveBestAltitude:
         assert result["alt_m"] == pytest.approx(9000.0)
         assert state.solver_successes == 1
 
+    def test_n2_inherits_altitude_from_an_established_key(self):
+        """An n=2 input under a solved 3-node dark key borrows its altitude.
+
+        The n=2 solve is exactly determined in (x, y) once altitude is pinned,
+        so its position error is its altitude error; a key already solved at
+        n>=3 has a measured altitude where the association grid has a weighted
+        mean over layers.  Dark targets drop from 3-node to 2-node coverage
+        constantly, which is exactly when this fires.
+        """
+        _reset_state()
+        state.multinode_tracks.clear()
+        state.solver_n2_alt_inherited = 0
+        state.multinode_tracks["mn-dark-established"] = {
+            "lat": 37.5,
+            "lon": -122.1,
+            "alt_m": 10400.0,
+            "vel_east": 0.0,
+            "vel_north": 0.0,
+            "n_nodes": 3,
+            "max_n_nodes": 3,
+            "timestamp_ms": 7000,
+        }
+        s_in = {
+            **_CONFIRMED_N2,
+            "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 7.5},
+            "timestamp_ms": 8000,
+            "measurements": [],
+        }
+        solver_mod._inherit_key_altitude(s_in, learned_vel_fn=None)
+        assert s_in["initial_guess"]["alt_km"] == pytest.approx(10.4)
+        assert s_in["alt_source"] == "key"
+        assert state.solver_n2_alt_inherited == 1
+
+    def test_n2_keeps_the_grid_altitude_with_no_key_in_range(self):
+        """A key 40 km away is a different aircraft, not an altitude source."""
+        _reset_state()
+        state.multinode_tracks.clear()
+        state.solver_n2_alt_inherited = 0
+        state.multinode_tracks["mn-dark-far"] = {
+            "lat": 37.5,
+            "lon": -121.6,  # ~44 km east at this latitude
+            "alt_m": 10400.0,
+            "vel_east": 0.0,
+            "vel_north": 0.0,
+            "n_nodes": 4,
+            "max_n_nodes": 4,
+            "timestamp_ms": 7000,
+        }
+        s_in = {
+            **_CONFIRMED_N2,
+            "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 7.5},
+            "timestamp_ms": 8000,
+            "measurements": [],
+        }
+        solver_mod._inherit_key_altitude(s_in, learned_vel_fn=None)
+        assert s_in["initial_guess"]["alt_km"] == pytest.approx(7.5)
+        assert s_in["alt_source"] == "grid"
+        assert state.solver_n2_alt_inherited == 0
+
+    def test_n2_does_not_inherit_from_a_two_node_key(self):
+        """An n=2 donor's altitude IS a grid altitude — inheriting it would
+        launder a guess into a measurement and let one bad grid pick spread
+        across every n=2 solve that lands near it."""
+        _reset_state()
+        state.multinode_tracks.clear()
+        state.solver_n2_alt_inherited = 0
+        state.multinode_tracks["mn-dark-thin"] = {
+            "lat": 37.5,
+            "lon": -122.1,
+            "alt_m": 10400.0,
+            "vel_east": 0.0,
+            "vel_north": 0.0,
+            "n_nodes": 2,
+            "max_n_nodes": 2,
+            "timestamp_ms": 7000,
+        }
+        s_in = {
+            **_CONFIRMED_N2,
+            "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 7.5},
+            "timestamp_ms": 8000,
+            "measurements": [],
+        }
+        solver_mod._inherit_key_altitude(s_in, learned_vel_fn=None)
+        assert s_in["initial_guess"]["alt_km"] == pytest.approx(7.5)
+        assert s_in["alt_source"] == "grid"
+        assert state.solver_n2_alt_inherited == 0
+
+    def test_stale_key_is_not_a_donor(self):
+        """Past N2_ALT_INHERIT_MAX_AGE_S the altitude is older than the climb
+        it is meant to track."""
+        _reset_state()
+        state.multinode_tracks.clear()
+        state.solver_n2_alt_inherited = 0
+        state.multinode_tracks["mn-dark-stale"] = {
+            "lat": 37.5,
+            "lon": -122.1,
+            "alt_m": 10400.0,
+            "vel_east": 0.0,
+            "vel_north": 0.0,
+            "n_nodes": 5,
+            "max_n_nodes": 5,
+            "timestamp_ms": 8000 - int(solver_mod.N2_ALT_INHERIT_MAX_AGE_S * 1000) - 5000,
+        }
+        s_in = {
+            **_CONFIRMED_N2,
+            "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 7.5},
+            "timestamp_ms": 8000,
+            "measurements": [],
+        }
+        solver_mod._inherit_key_altitude(s_in, learned_vel_fn=None)
+        assert s_in["alt_source"] == "grid"
+
+    def test_anchored_input_keeps_the_anchor_altitude(self):
+        """The follow lane's target already carries the anchor's own solved
+        altitude (tasks/known_lane.py), so there is nothing to inherit and
+        overwriting it would swap a per-key prediction for a neighbour's."""
+        _reset_state()
+        state.multinode_tracks.clear()
+        state.solver_n2_alt_inherited = 0
+        state.multinode_tracks["mn-dark-neighbour"] = {
+            "lat": 37.5,
+            "lon": -122.1,
+            "alt_m": 10400.0,
+            "vel_east": 0.0,
+            "vel_north": 0.0,
+            "n_nodes": 4,
+            "max_n_nodes": 4,
+            "timestamp_ms": 7000,
+        }
+        s_in = {
+            **_CONFIRMED_N2,
+            "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 5.5},
+            "timestamp_ms": 8000,
+            "anchor_key": "mn-dark-followed",
+            "measurements": [],
+        }
+        solver_mod._inherit_key_altitude(s_in, learned_vel_fn=None)
+        assert s_in["initial_guess"]["alt_km"] == pytest.approx(5.5)
+        assert s_in["alt_source"] == "anchor"
+        assert state.solver_n2_alt_inherited == 0
+
+    def test_nearest_qualifying_key_wins(self):
+        _reset_state()
+        state.multinode_tracks.clear()
+        state.solver_n2_alt_inherited = 0
+        for name, lon, alt_m in (
+            ("mn-dark-near", -122.10, 10400.0),
+            ("mn-dark-nearer", -122.101, 4200.0),
+        ):
+            state.multinode_tracks[name] = {
+                "lat": 37.5,
+                "lon": lon,
+                "alt_m": alt_m,
+                "vel_east": 0.0,
+                "vel_north": 0.0,
+                "n_nodes": 3,
+                "max_n_nodes": 3,
+                "timestamp_ms": 7500,
+            }
+        s_in = {
+            **_CONFIRMED_N2,
+            "initial_guess": {"lat": 37.5, "lon": -122.1012, "alt_km": 7.5},
+            "timestamp_ms": 8000,
+            "measurements": [],
+        }
+        solver_mod._inherit_key_altitude(s_in, learned_vel_fn=None)
+        assert s_in["initial_guess"]["alt_km"] == pytest.approx(4.2)
+
     def test_n2_uses_initial_guess_altitude_directly(self, monkeypatch):
         """For n_nodes=2, solver is called once with initial_guess.alt_km.
 

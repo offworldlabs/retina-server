@@ -663,6 +663,34 @@ class TestGtIdentityBinding:
         )
         return state.mlat_solve_history[-1]
 
+    def test_record_carries_alt_source(self):
+        """Which altitude a solve was seeded with has to reach the record.
+
+        gt_error split by alt_source at n=2 is the only way to see whether
+        inheriting an established key's altitude actually moved the position
+        error, and /api/test/mlat-history is where that split is taken.
+        """
+        solver_mod._record_solve_history(
+            "rejected_gate",
+            {
+                "timestamp_ms": int(time.time() * 1000),
+                "initial_guess": {"lat": LAT, "lon": LON, "alt_km": 10.4},
+                "alt_source": "key",
+                "n_nodes": 2,
+            },
+            None,
+            solve_key="mn-dark-test",
+            raw_lat=LAT,
+            raw_lon=LON,
+        )
+        rec = state.mlat_solve_history[-1]
+        assert rec["alt_source"] == "key"
+        assert rec["guess_alt_km"] == 10.4
+
+    def test_record_alt_source_absent_is_none(self):
+        rec = self._record(adsb_hex=None)
+        assert rec["alt_source"] is None
+
     def test_dark_record_keeps_proximity_scan(self):
         _put_gt("abc123")
         rec = self._record(adsb_hex=None)

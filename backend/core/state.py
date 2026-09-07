@@ -18,6 +18,7 @@ from retina_custody.models import NodeIdentity
 
 from config.constants import (
     ANOMALY_LOG_MAX,  # noqa: F401 — re-exported, used via state.ANOMALY_LOG_MAX
+    ASSOC_ALT_LAYERS_KM,
     ASSOC_GRID_STEP_KM,
     ASSOC_MAX_NEIGHBORS,
     ASSOC_MAX_PAIRS_PER_ROUND,
@@ -314,6 +315,11 @@ def _adsb_for_seeding() -> dict[str, dict]:
 
 node_associator = InterNodeAssociator(
     grid_step_km=ASSOC_GRID_STEP_KM,
+    # 1 km layers from 1 to 12 km instead of the library's six-layer default.
+    # The association altitude is what an n=2 solve's position error is made
+    # of (see constants._assoc_alt_layers_km for the measurement), and the
+    # library keeps the old ladder so its own tests and bench are unchanged.
+    altitudes_km=ASSOC_ALT_LAYERS_KM,
     coverage_provider=_coverage_limit_for,
     # Active only (see _learned_fov_for) — shadow still computes/counts the
     # FOV verdict at the solver gate, but must not touch the overlap grid,
@@ -850,6 +856,15 @@ solver_key_proximity_dark: int = 0
 # measured live, 16 of 67 dark mints in 22 min were of exactly this shape.
 solver_key_proximity_negdt: int = 0
 
+# n=2 solver inputs that took their initial-guess altitude from an established
+# multi-node dark key instead of the association grid (solver.py's
+# _solve_best_altitude_n2 and N2_ALT_INHERIT_KM).  The n=2 solve is exactly
+# determined in (x, y) once altitude is pinned, so a key that has already been
+# solved at n>=3 knows the altitude far better than a weighted mean over grid
+# layers does — this counts how often that inheritance actually fires, and the
+# matching per-solve evidence is alt_source="key" on the history records.
+solver_n2_alt_inherited: int = 0
+
 # Publishes whose velocity carried the vel_untrusted flag (vz saturated, or
 # raw-solve velocity at n<=3) — the denominator is solver_successes.
 solver_vel_untrusted_published: int = 0
@@ -1033,7 +1048,7 @@ def _reset_for_tests() -> None:
     global solver_consensus_fallback, solver_consensus_shadow
     global solver_anchor_hits, solver_anchor_fallbacks, solver_anchored_published
     global solver_key_minted_dark, solver_key_proximity_dark, solver_key_proximity_negdt
-    global solver_vel_untrusted_published
+    global solver_vel_untrusted_published, solver_n2_alt_inherited
     global fov_shadow_agree, fov_shadow_would_pass, fov_shadow_would_reject
     global fov_neg_events
     global solver_worker_errors
@@ -1138,6 +1153,7 @@ def _reset_for_tests() -> None:
         solver_consensus_fallback = solver_consensus_shadow = 0
         solver_anchor_hits = solver_anchor_fallbacks = solver_anchored_published = 0
         solver_key_minted_dark = solver_key_proximity_dark = solver_key_proximity_negdt = 0
+        solver_n2_alt_inherited = 0
         solver_vel_untrusted_published = 0
         fov_shadow_agree = fov_shadow_would_pass = fov_shadow_would_reject = 0
         fov_neg_events = 0

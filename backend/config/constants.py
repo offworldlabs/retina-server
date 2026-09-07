@@ -45,6 +45,62 @@ def as_num(v) -> float:
 # ── Association gates ────────────────────────────────────────────────────────
 DELAY_MATCH_THRESHOLD_US = 15.0  # Bistatic delay tolerance for matching
 ASSOC_GRID_STEP_KM = 3.0  # Overlap zone grid resolution (km)
+
+
+def _assoc_alt_layers_km() -> tuple[float, ...]:
+    """Altitude layers (km) the overlap grid is precomputed on.
+
+    An n=2 solve is exactly determined in (x, y) once altitude is pinned, so
+    its position error IS its altitude error, and that altitude comes from
+    here — the associator picks the best grid point and a delay-residual
+    weighted mean altitude across these layers.  Measured on a 20-minute test
+    capture against ground truth: n=2 solves had a median altitude error of
+    1.46 km (p90 5.25) and a position error of 1.61 km when the altitude
+    landed within 1 km of truth against 2.71 km when it did not.  The
+    horizontal step is not the limiter (the LM solve converges from a 3 km
+    start); the ladder is.
+
+    So: 1 km steps from 1 to 12 km, which covers the commercial cruise band
+    end to end and caps the quantisation error at 500 m.  The library's own
+    default is the old six layers (1.5, 3, 5, 7, 9, 11) whose widest gap is
+    2 km — that stays the library default so its tests and bench are
+    unchanged; this is the deployment's override.
+
+    Cost is linear in the layer count and paid once per node pair at
+    registration: the overlap columns are altitude-independent, so twelve
+    layers emit exactly twice the grid points of six.  Measured per zone on
+    one real pair at grid_step_km=3.0: 180 -> 360 points, 9.3 -> 13.3 ms.
+
+    Env-overridable as a comma list (ASSOC_ALT_LAYERS_KM="2,4,6,8"); a blank
+    or unparseable value falls back to the default rather than building an
+    empty grid, which would silently disable association altogether.
+    """
+    raw = os.getenv("ASSOC_ALT_LAYERS_KM", "")
+    if raw.strip():
+        try:
+            parsed = tuple(sorted(float(p) for p in parse_comma_list(raw)))
+        except ValueError:
+            parsed = ()
+        if parsed:
+            return parsed
+    return ASSOC_ALT_LAYERS_KM_DEFAULT
+
+
+ASSOC_ALT_LAYERS_KM_DEFAULT: tuple[float, ...] = (
+    1.0,
+    2.0,
+    3.0,
+    4.0,
+    5.0,
+    6.0,
+    7.0,
+    8.0,
+    9.0,
+    10.0,
+    11.0,
+    12.0,
+)
+ASSOC_ALT_LAYERS_KM: tuple[float, ...] = _assoc_alt_layers_km()
 ASSOC_MIN_INTERVAL_S = 30.0  # Per-node association rate limit (s)
 ASSOC_MAX_NEIGHBORS = 50  # CPU budget cap for neighbor checks
 # Track pairings emitted per association round when the constant-velocity fit

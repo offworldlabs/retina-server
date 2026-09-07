@@ -170,16 +170,23 @@ def _pool_solve_multistart(s_in, node_cfgs, alt_starts_km):
     return _pool_call(solve_multinode_multistart, s_in, node_cfgs, alt_starts_km, True)
 
 
-# Altitude layers (km) tried when n_nodes ≥ 3.  For an overdetermined system
+# Altitude layers (km) swept when n_nodes ≥ 3.  For an overdetermined system
 # (3+ delay equations, 2 unknowns after altitude pinning) only the correct
 # altitude layer yields rms_delay ≈ 0; wrong layers give rms > 0, so picking
-# the minimum selects the true altitude.  Layers match the association grid
-# (5, 7, 9, 11) so that the correct altitude is always ≤ 1 km from a layer for
-# Altitude sweep layers for n≥3 solver. Must match the altitudes_km used in
-# compute_overlap_zone so the initial_guess alt from association matches a sweep
-# point. Range 1.5–11 km covers simulation aircraft (0.3–15 km spawns) and
-# commercial aviation. The 1.5 and 3.0 km layers fix systematic 7–10 km errors
-# for low-altitude aircraft where the old [5,7,9,11] set forced wrong altitude.
+# the minimum selects the true altitude.  Range 1.5–11 km covers simulation
+# aircraft (0.3–15 km spawns) and commercial aviation.  The 1.5 and 3.0 km
+# layers fix systematic 7–10 km errors for low-altitude aircraft where the old
+# [5, 7, 9, 11] set forced a wrong altitude.
+#
+# These deliberately no longer match the association grid's layers
+# (ASSOC_ALT_LAYERS_KM, now 1 km steps to 12 km).  They used to, on the
+# argument that the initial guess should land on a sweep point — but the guess
+# is a delay-residual weighted MEAN across layers and so has never been a
+# layer value anyway, and _solve_best_altitude already folds the guess
+# altitude into the sweep as its own extra layer.  Doubling this list would
+# double every n≥3 solve's cost to refine an altitude the overdetermined
+# residual already resolves; the finer ladder is bought where it pays, which
+# is association and n=2.
 _SOLVER_ALT_LAYERS_KM = [1.5, 3.0, 5.0, 7.0, 9.0, 11.0]
 
 # Reject solver results whose RMS delay residual exceeds this value.
@@ -323,6 +330,21 @@ def _dark_displacement_cap_km() -> float:
 
 
 _MAX_DISPLACEMENT_KM_DARK = _dark_displacement_cap_km()
+
+# How close an established dark key must be, after dead reckoning to this
+# solve's epoch, for an n=2 input to inherit its altitude.  Default 6.0 km is
+# the keying rule's own proximity gate (_mn_assoc_gate_km's base): a key this
+# solve would be allowed to JOIN is a key whose altitude it may borrow, and
+# anything looser would let one aircraft's cruise altitude pin another's
+# position.
+N2_ALT_INHERIT_KM = float(os.getenv("N2_ALT_INHERIT_KM", "6.0"))
+# The donor must have been solved at 3+ nodes at some point (an n=2 donor
+# knows the altitude no better than the grid does — it IS a grid altitude,
+# and inheriting it would launder a guess into a measurement) and must have
+# solved recently, or the inherited altitude is older than the climb it is
+# meant to track.
+N2_ALT_INHERIT_MIN_NODES = 3
+N2_ALT_INHERIT_MAX_AGE_S = 60.0
 
 
 # ANCHORED n=2 inputs are judged far more tightly than either lane cap above.
@@ -614,11 +636,102 @@ def _solve_best_altitude_n2(s_in: dict, node_cfgs: dict, solve_fn) -> dict | Non
 
     The initial_guess.alt_km from association.py is set to the delay-residual
     weighted mean of all candidate altitudes in the group.  When the correct
-    altitude layer has smaller delay residuals it is upweighted; when all layers
-    tie (high altitude ambiguity), the mean falls back to ≈(7+9+11)/3 = 9 km,
-    which covers the typical commercial aviation cruise band (7–12 km).
+    altitude layer has smaller delay residuals it is upweighted; when all
+    layers tie (high altitude ambiguity), the mean falls back to the middle of
+    the ladder, which covers the typical commercial cruise band.
+
+    That is the best a single association round can do, and it is not very
+    good: measured over a 20-minute capture against ground truth, n=2 solves
+    had a median altitude error of 1.46 km (p90 5.25), and their position
+    error was 1.61 km when the altitude landed within 1 km of truth against
+    2.71 km when it did not.  But an aircraft that has ALREADY been solved at
+    three or more nodes has a measured altitude, not a grid guess — and dark
+    targets drop from n>=3 to n=2 coverage constantly.  So before solving,
+    look for an established dark key sitting under this input and inherit its
+    altitude (``_inherit_key_altitude``); the grid altitude stays the
+    fallback.  Which one was used is stamped on the input as ``alt_source``
+    so the history records can be split by it.
     """
+    _inherit_key_altitude(s_in)
     return solve_fn(s_in, node_cfgs)
+
+
+def _inherit_key_altitude(s_in: dict, learned_vel_fn=track_filter.learned_velocity) -> None:
+    """Point an n=2 input's initial-guess altitude at an established dark key.
+
+    Mutates ``s_in`` in place: sets ``initial_guess["alt_km"]`` when a donor
+    is found and always stamps ``alt_source`` — "key" when inherited, "anchor"
+    for a follow-lane input (whose guess already carries the anchor's own
+    solved altitude, see tasks/known_lane.py's target builder — there is
+    nothing to inherit and overwriting it would replace a per-key prediction
+    with a neighbour's altitude), "grid" otherwise.
+
+    Donor rules, all three necessary:
+
+    * within ``N2_ALT_INHERIT_KM`` of the guess after being dead-reckoned to
+      this solve's epoch — the same DR the keying rule uses
+      (``_entry_dr_velocity`` + ``offset_latlon_m``), so a key this solve
+      would be allowed to join is a key it may borrow from;
+    * ``max_n_nodes`` (or the current ``n_nodes``) at or above
+      ``N2_ALT_INHERIT_MIN_NODES``, so the altitude being inherited was
+      actually measured rather than being another grid guess;
+    * last solved within ``N2_ALT_INHERIT_MAX_AGE_S``, so it is not older
+      than the climb it is meant to track.
+
+    Nearest wins when several qualify.  No lock: this runs on the solve path,
+    which does not hold _MN_TRACKS_LOCK here, and taking it would put a lock
+    acquisition in front of every n=2 solve to read a dict that the keying
+    block rewrites wholesale a moment later anyway.  ``list(...items())``
+    snapshots under the GIL, and a donor that goes stale between this read and
+    the solve costs an initial guess, not a correctness property.
+    """
+    ig = s_in.get("initial_guess") if isinstance(s_in, dict) else None
+    if not isinstance(ig, dict):
+        return
+    if s_in.get("anchor_key"):
+        s_in["alt_source"] = "anchor"
+        return
+    s_in["alt_source"] = "grid"
+    lat, lon = ig.get("lat"), ig.get("lon")
+    if lat is None or lon is None:
+        return
+    ts_s = float(s_in.get("timestamp_ms") or 0) / 1000.0
+    if not ts_s:
+        return
+
+    best_alt_m: float | None = None
+    best_dist = N2_ALT_INHERIT_KM
+    for key, entry in list(state.multinode_tracks.items()):
+        if not key.startswith("mn-dark-"):
+            continue
+        n_nodes = max(int(entry.get("max_n_nodes") or 0), int(entry.get("n_nodes") or 0))
+        if n_nodes < N2_ALT_INHERIT_MIN_NODES:
+            continue
+        alt_m = entry.get("alt_m")
+        if alt_m is None:
+            continue
+        e_lat, e_lon = entry.get("lat"), entry.get("lon")
+        if e_lat is None or e_lon is None:
+            continue
+        dt = ts_s - float(entry.get("timestamp_ms") or 0) / 1000.0
+        if not (0.0 <= dt <= N2_ALT_INHERIT_MAX_AGE_S):
+            continue
+        vel_east_ms, vel_north_ms = _entry_dr_velocity(key, entry, learned_vel_fn)
+        d_lat, d_lon = offset_latlon_m(
+            e_lat,
+            e_lon,
+            east_m=vel_east_ms * dt,
+            north_m=vel_north_ms * dt,
+        )
+        d = _haversine_km(float(lat), float(lon), d_lat, d_lon)
+        if d < best_dist:
+            best_dist, best_alt_m = d, float(alt_m)
+
+    if best_alt_m is None:
+        return
+    ig["alt_km"] = round(best_alt_m / 1000.0, 3)
+    s_in["alt_source"] = "key"
+    state.bump_counter("solver_n2_alt_inherited")
 
 
 def _filter_s_in_to_nodes(s_in: dict, survivors) -> dict:
@@ -2473,6 +2586,13 @@ def _record_solve_history(
         "guess_lat": round(float(ig["lat"]), 6) if ig.get("lat") else None,
         "guess_lon": round(float(ig["lon"]), 6) if ig.get("lon") else None,
         "guess_alt_km": ig.get("alt_km"),
+        # Where that guess altitude came from: "key" (inherited from an
+        # established 3+-node dark entry, _inherit_key_altitude), "anchor"
+        # (the follow lane's own prediction) or "grid" (the association
+        # weighted mean).  Stamped so the live effect is measurable directly
+        # off /api/test/mlat-history — gt_error split by alt_source at n=2 is
+        # the number this inheritance exists to move.
+        "alt_source": s.get("alt_source") if isinstance(s, dict) else None,
         "displacement_km": round(displacement_km, 3) if displacement_km is not None else None,
         # Which displacement cap judged this solve (see _MAX_DISPLACEMENT_KM
         # and _MAX_DISPLACEMENT_KM_DARK).  Stamped on every record, not only
