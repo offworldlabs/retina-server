@@ -428,7 +428,7 @@ class TestVelUntrustedDerivation:
         node_ids = ["n1", "n2", "n3"]
         calls = []
 
-        def fake_pool_call(target_fn, *args):
+        def fake_pool_call(target_fn, *args, **kwargs):
             calls.append((target_fn, args))
             return {
                 "success": True,
@@ -478,7 +478,7 @@ class TestVelUntrustedDerivation:
         node_ids = ["n1", "n2"]
         calls = []
 
-        def fake_pool_call(target_fn, *args):
+        def fake_pool_call(target_fn, *args, **kwargs):
             calls.append((target_fn, args))
             return {
                 "success": True,

@@ -1062,18 +1062,18 @@ class TestN2ConfirmationGate:
 class TestN2FitPositionPublish:
     """A confirmed n=2 publishes the fit position, not the single-epoch one.
 
-    The confirmation fit is an over-determined estimate of the same target —
-    every epoch of the pairing, 4K measurements against 6 unknowns with
-    altitude free — while the LM solve it replaces is 4 residuals at one epoch
-    with altitude pinned to a guess.  It is computed either way (it is what
-    confirms the pairing), so this is the same fit being used for position as
-    well as for chi2 and velocity.
+    The fit is an over-determined estimate of the same target — every epoch of
+    the pairing, 4K measurements — while the LM solve it replaces is 4
+    residuals at one epoch.  The position swap runs against the PINNED-altitude
+    fit (_N2_FIT_FIX_ALTITUDE, the default): at n=2 the free fit's z is an
+    unobservable direction full of noise, and it drags x/y with it.
     """
 
     @pytest.fixture(autouse=True)
     def _gate_on(self, monkeypatch):
         monkeypatch.setattr(solver_mod, "_N2_REQUIRE_CONFIRMED", True)
         monkeypatch.setattr(solver_mod, "_N2_PUBLISH_FIT_POSITION", True)
+        monkeypatch.setattr(solver_mod, "_N2_FIT_FIX_ALTITUDE", True)
 
     _FIT = {
         "success": True,
@@ -1085,20 +1085,24 @@ class TestN2FitPositionPublish:
         "vel_up": 0.0,
         "chi2_per_dof": 0.5,
         "n_epochs": 8,
+        "altitude_fixed": True,
         "timestamp_ms": 7100,
     }
 
     def _input(self, **fit_overrides):
         """A confirmed n=2 input carrying an already-resolved fit.
 
-        Seeded straight onto the ``_cv_fit`` cache rather than through
-        cv_epochs: _resolve_cv_fit returns the cached dict untouched, so this
-        exercises the publish decision without a pool solve.
+        Seeded straight onto the fit cache rather than through cv_epochs:
+        _resolve_cv_fit returns the cached dict untouched, so this exercises
+        the publish decision without a pool solve.  Which cache key depends on
+        the pin flag — the pinned fit is cached separately from the free one so
+        the confirmation gate keeps reading the dof it was calibrated against.
         """
         s_in = dict(_CONFIRMED_N2)
         if fit_overrides.get("_absent"):
             return s_in
-        s_in["_cv_fit"] = {**self._FIT, **fit_overrides}
+        key = "_cv_fit_pinned" if solver_mod._N2_FIT_FIX_ALTITUDE else "_cv_fit"
+        s_in[key] = {**self._FIT, **fit_overrides}
         return s_in
 
     @staticmethod
@@ -1122,8 +1126,43 @@ class TestN2FitPositionPublish:
         # makes gt_error comparable between the two without a second deploy.
         assert (rec["solve_raw_lat"], rec["solve_raw_lon"]) == (37.5, -122.1)
         assert rec["fit_vs_solve_km"] == pytest.approx(14.0, abs=1.0)
+        assert rec["fit_altitude_fixed"] is True
         assert state.n2_fit_position_published == 1
         assert state.n2_unconfirmed == 0
+
+    def test_a_free_fits_altitude_is_never_published(self, monkeypatch):
+        """Position from the fit, altitude from the solve, when z was free.
+
+        This is the live finding the pin exists for: with two nodes the
+        vertical direction is unobservable, so a free fit put published n=2
+        altitudes at -1721 m, -466 m and 15249 m — |alt - truth| at a 4.57 km
+        median against 2.94 km for the ladder guess the solve pinned.  The
+        horizontal answer is still worth taking (4K measurements against 4);
+        the altitude is not, because neither estimate constrains it.
+        """
+        _reset_state()
+        state.mlat_solve_history.clear()
+        monkeypatch.setattr(solver_mod, "_N2_FIT_FIX_ALTITUDE", False)
+        rec = self._published(monkeypatch, self._input(alt_m=-1721.0, altitude_fixed=False))
+
+        assert (rec["raw_lat"], rec["raw_lon"]) == (37.6, -122.2)
+        assert rec["pos_source"] == "cv_fit"
+        # The solve's pinned altitude, NOT the fit's -1721 m.
+        assert rec["alt_m"] == 8000.0
+        assert rec["fit_altitude_fixed"] is False
+        assert state.n2_fit_position_published == 1
+
+    def test_the_pin_can_be_switched_off_without_losing_the_swap(self, monkeypatch):
+        """N2_FIT_FIX_ALTITUDE=0 is the way back to the free fit's position."""
+        _reset_state()
+        state.mlat_solve_history.clear()
+        monkeypatch.setattr(solver_mod, "_N2_FIT_FIX_ALTITUDE", False)
+        s_in = self._input(altitude_fixed=False)
+
+        assert "_cv_fit" in s_in and "_cv_fit_pinned" not in s_in
+        rec = self._published(monkeypatch, s_in)
+        assert rec["pos_source"] == "cv_fit"
+        assert rec["fit_altitude_fixed"] is False
 
     def test_an_earlier_fit_epoch_is_propagated_to_the_solve_epoch(self, monkeypatch):
         """The fit evaluates at its own last epoch; publishing it under this
@@ -1148,6 +1187,7 @@ class TestN2FitPositionPublish:
         assert (rec["raw_lat"], rec["raw_lon"]) == (37.5, -122.1)
         assert rec["pos_source"] == "solve"
         assert rec["fit_vs_solve_km"] is None
+        assert rec["fit_altitude_fixed"] is None
         assert state.n2_fit_position_published == 0
 
     def test_an_unusable_fit_keeps_the_solve_position(self, monkeypatch):
@@ -1175,7 +1215,7 @@ class TestN2FitPositionPublish:
         _reset_state()
         state.mlat_solve_history.clear()
         monkeypatch.setattr(state, "node_analytics", _StubAnalytics())
-        s_in = {"n_nodes": 2, "chi2_per_dof": 40.0, "n_epochs": 8, "_cv_fit": dict(self._FIT)}
+        s_in = {"n_nodes": 2, "chi2_per_dof": 40.0, "n_epochs": 8, "_cv_fit_pinned": dict(self._FIT)}
         result = solver_mod._process_solver_item((s_in, {}, time.time()), TestN2ConfirmationGate._solve_fn)
 
         assert not state.multinode_tracks
@@ -1326,8 +1366,9 @@ class TestFitRunsOnThisSideOfTheQueue:
     def test_deferred_fit_is_run_here(self, monkeypatch):
         called = {}
 
-        def fake_fit(fit_input, cfgs):
+        def fake_fit(fit_input, cfgs, *, fix_altitude=False):
             called["epochs"] = len(fit_input["epochs"])
+            called["fix_altitude"] = fix_altitude
             return {
                 "success": True,
                 "chi2_per_dof": 0.4,
@@ -1352,8 +1393,19 @@ class TestFitRunsOnThisSideOfTheQueue:
         }
         assert solver_mod._resolve_n2_chi2(s_in, {"n1": {}, "n2": {}}) == 0.4
         assert called["epochs"] == 6
+        # The confirmation gate reads the FREE fit: its chi2 threshold was
+        # calibrated against the 6-state dof, and the pin only serves position.
+        assert called["fix_altitude"] is False
         # Cached, so a retry of the same item does not refit.
         assert s_in["chi2_per_dof"] == 0.4
+
+        # The pinned fit is a separate call cached under a separate key, so it
+        # cannot overwrite the chi2 the gate already decided on.
+        pinned = solver_mod._resolve_cv_fit(s_in, {"n1": {}, "n2": {}}, fix_altitude=True)
+        assert pinned is not None
+        assert called["fix_altitude"] is True
+        assert s_in["_cv_fit_pinned"] is pinned
+        assert s_in["_cv_fit"] is not pinned
 
     def test_an_already_fitted_input_is_not_refitted(self, monkeypatch):
         import retina_geolocator.multinode_solver as mns
