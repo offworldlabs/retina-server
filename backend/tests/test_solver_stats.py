@@ -274,6 +274,10 @@ class TestConsensusAndCounters:
         state.solver_resolve_refresh = 3
         state.node_frames_rate_limited = 13
         state.solver_pool_timeouts = 19
+        state.solver_adopt_eligible = 21
+        state.solver_adopt_widened = 22
+        state.solver_adopt_nodes_added = 23
+        state.solver_adopt_rejected = 24
         out = _solver_window_stats(10.0)
         assert out["counters"] == {
             "successes": 5,
@@ -288,6 +292,10 @@ class TestConsensusAndCounters:
             "epoch_align_skipped": 14,
             "resolve_skips_dark": 9,
             "resolve_refresh": 3,
+            "adopt_eligible": 21,
+            "adopt_widened": 22,
+            "adopt_nodes_added": 23,
+            "adopt_rejected": 24,
             "queue_drops": 6,
             "node_frames_rate_limited": 13,
             "worker_errors": 0,
