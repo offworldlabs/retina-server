@@ -2332,7 +2332,25 @@ def _record_solve_history(
         # key that stops earning its solves has to be droppable from OUTSIDE
         # that loop.  A shadow record carries its own verdict in follow_ok:
         # it never reached the gates, so "did it publish" says nothing.
-        dark_follow.record_outcome(_follow_key, bool(rec.get("follow_ok", outcome == "published")))
+        #
+        # ...with one exception.  An n2_unconfirmed record means the solve was
+        # WITHHELD for lack of a third node, not refuted: with the anchored n=2
+        # bypass off (DARK_FOLLOW_N2_ADMIT, default), a follow input built from
+        # exactly two claiming nodes carries no cv_epochs and so cannot clear
+        # the confirmation gate however right the prediction was.  Feeding that
+        # to the guard as a reject cost the key its target status after two of
+        # them — measured on the test droplet, 43-56 drops per 20-minute
+        # capture and 1146-1409 key-seconds of `cooldown`, the lane's biggest
+        # ineligibility bucket by a wide margin, during which the bottom-up
+        # lane had to re-find the aircraft from scratch at the 5-8% publish
+        # rate its own n=2 candidates manage.  So the guard hears nothing at
+        # all here: not ok (the prediction earned no confirmation either) and
+        # not reject.  The key still ends on DARK_FOLLOW_MAX_AGE_S when no
+        # wider claim arrives, which is the honest end of following.
+        if outcome == "n2_unconfirmed":
+            state.bump_counter("dark_follow_n2_withheld")
+        else:
+            dark_follow.record_outcome(_follow_key, bool(rec.get("follow_ok", outcome == "published")))
         if outcome == "published":
             state.bump_counter("dark_follow_published")
             # ...and the lane now owns the key it published on, for

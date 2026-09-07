@@ -617,6 +617,27 @@ dark_follow_inelig_min_solves: int = 0
 dark_follow_inelig_min_nodes: int = 0
 dark_follow_inelig_no_filter: int = 0
 dark_follow_inelig_vel_sigma: int = 0
+# The two ways an n=2 follow input is now spared instead of held against the
+# key it was predicted from.  Both exist because being withheld for lack of a
+# third node is not evidence that the prediction was wrong, and the follow
+# guard used to treat it as such: two consecutive rejected follow-solves drop
+# the target for 30 s, and with DARK_FOLLOW_N2_ADMIT off an n=2 follow input
+# dies at the solver's confirmation gate (outcome n2_unconfirmed) every single
+# time.  Measured on the test droplet over 20-minute captures, that made
+# `cooldown` the lane's biggest ineligibility bucket by far — 1146-1409
+# key-seconds per window from 43-56 target drops, while the bottom-up lane had
+# to re-find each dropped aircraft from scratch at a 5-8% publish rate for its
+# own n=2 candidates.
+#
+# n2_withheld counts follow-solve records whose n2_unconfirmed outcome was NOT
+# fed to the guard (solver._record_solve_history); n2_skipped counts follow
+# inputs never built at all because the claim round matched only two nodes and
+# the bypass is off (known_lane.run_dark_follow_pass), each of which also saves
+# a pool solve that could never have published.  Read them against
+# dark_follow_inputs: skipped is the input that no longer happens, withheld the
+# verdict that no longer counts.
+dark_follow_n2_withheld: int = 0
+dark_follow_n2_skipped: int = 0
 # Bottom-up dark solves refused at keying because the follow lane owns the key
 # they landed on (solver.multinode_key_decision's "shadowed" verdict, binding
 # mode only).  They passed every gate, so they are counted in solver_successes
@@ -985,6 +1006,7 @@ def _reset_for_tests() -> None:
     global dark_follow_inelig_age, dark_follow_inelig_min_solves
     global dark_follow_inelig_min_nodes, dark_follow_inelig_no_filter
     global dark_follow_inelig_vel_sigma
+    global dark_follow_n2_withheld, dark_follow_n2_skipped
     global n2_unconfirmed, n2_anchored_admitted, coverage_rebuilds, coverage_rebuild_nodes
     global coverage_rebuild_backlog, tracks_stale_skipped, solver_epoch_align_skipped
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
@@ -1085,6 +1107,7 @@ def _reset_for_tests() -> None:
         dark_follow_inelig_age = dark_follow_inelig_min_solves = 0
         dark_follow_inelig_min_nodes = dark_follow_inelig_no_filter = 0
         dark_follow_inelig_vel_sigma = 0
+        dark_follow_n2_withheld = dark_follow_n2_skipped = 0
         dark_bottomup_shadowed = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
         ws_send_timeouts = 0
