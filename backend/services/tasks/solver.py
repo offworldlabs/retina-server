@@ -11,7 +11,7 @@ import time
 from collections import deque
 from concurrent.futures.process import BrokenProcessPool
 
-from retina_analytics.association import _point_in_beam
+from retina_analytics.association import _point_in_beam, predict_observation
 
 from config.constants import (
     ARC_ONLY_ANOMALY_ALLOWLIST,
@@ -682,6 +682,207 @@ def _trim_and_resolve(
         result, s_in = new_result, s_next
 
     return result, s_in, trim_meta
+
+
+# ── Pool adoption (dark bottom-up) ───────────────────────────────────────────
+# The association round often pairs more nodes for an aircraft than the input
+# the solver is handed uses: pool_n_nodes is the node set of the shared-track
+# component the input was clustered out of (InterNodeAssociator.
+# _shared_track_pools), and 21 minutes of live instrumentation put 72% of
+# published dark solves below it, mean shortfall 2.27 nodes.  The costly half
+# is at the bottom: 390 of 481 rejected n=2 candidates had a pool of 3+, and
+# an n=3 candidate publishes 81% of the time against 6% for n=2.  That is the
+# largest single block of detections the pipeline throws away.
+#
+# The fix is NOT to merge more aggressively upstream — sweeping the position
+# merge radius to 6 km raised cross-aircraft contamination from 25% to 32%,
+# because at that radius two aircraft are as close as one aircraft's own
+# pairings.  Instead the solve itself vouches for the extra node: predict what
+# that node should have measured at the position and velocity just solved, and
+# adopt it only if what it actually measured agrees.  A node that agrees on
+# delay AND Doppler at an independently solved point is evidence about the
+# same aircraft, which is precisely what the n=2 confirmation gate is asking
+# for and cannot get from two nodes alone.
+#
+# Gate defaults.  An n=2 dark solve sits ~2 km from truth, and 2 km of range
+# error is 2/c ≈ 6.7 µs of bistatic delay, so 6.0 µs admits a genuine node at
+# the accuracy this stage actually has without opening the door to an
+# unrelated target (a wrong aircraft is normally tens of µs away).  60 Hz on
+# Doppler is the same order as the n=2 velocity error against a ~600 MHz
+# carrier.  Both are env-tunable, and SOLVER_ADOPT_POOL=0 turns the whole
+# stage off.
+_ADOPT_POOL_ENABLED = os.getenv("SOLVER_ADOPT_POOL", "1").strip().lower() not in ("0", "false", "off")
+_ADOPT_DELAY_GATE_US = float(os.getenv("SOLVER_ADOPT_DELAY_GATE_US", "6.0"))
+_ADOPT_DOPPLER_GATE_HZ = float(os.getenv("SOLVER_ADOPT_DOPPLER_GATE_HZ", "60"))
+# A widened solve that lands more than this from the narrow one is not the
+# same aircraft solved better — it is a different geometry the adopted node
+# dragged the fit into, and keeping it would publish a position no measurement
+# in the original input supports.
+_ADOPT_MAX_JUMP_KM = float(os.getenv("SOLVER_ADOPT_MAX_JUMP_KM", "5.0"))
+
+
+def _s_in_with_adopted(s_in: dict, adopted: list[dict], first: dict) -> dict:
+    """s_in plus the adopted pool measurements, ready to re-solve.
+
+    Pure — s_in is never mutated, so a rejected widening leaves the caller
+    holding the untouched input.  The initial guess becomes the FIRST solve's
+    position rather than the association grid centroid it came in with: the
+    narrow solve is the best estimate anything has of where this aircraft is,
+    and it is also the point the adopted measurements were just gated against,
+    so starting anywhere else would judge them from a different place than the
+    one that admitted them.
+    """
+    s_wide = dict(s_in)
+    meas = [dict(m) for m in (s_in.get("measurements") or [])]
+    meas.extend({k: m.get(k) for k in ("node_id", "delay_us", "doppler_hz", "snr", "t_s")} for m in adopted)
+    s_wide["measurements"] = meas
+    s_wide["n_nodes"] = len({m.get("node_id") for m in meas})
+    # Provenance follows the measurement: a published solve names the tracklets
+    # it was built from, and an adopted node's track is now one of them.
+    by_node = {nid: list(ids) for nid, ids in (s_in.get("track_ids_by_node") or {}).items()}
+    for m in adopted:
+        tid = m.get("track_id")
+        if tid and tid not in by_node.setdefault(m["node_id"], []):
+            by_node[m["node_id"]].append(tid)
+    s_wide["track_ids_by_node"] = {nid: sorted(ids) for nid, ids in by_node.items()}
+    s_wide["track_ids"] = sorted(set(s_in.get("track_ids") or []) | {t for ids in by_node.values() for t in ids})
+    s_wide["initial_guess"] = {
+        "lat": first.get("lat"),
+        "lon": first.get("lon"),
+        "alt_km": float(first.get("alt_m") or 0.0) / 1000.0,
+    }
+    if first.get("vel_east") is not None:
+        s_wide["initial_velocity"] = {
+            "vel_east_ms": first.get("vel_east"),
+            "vel_north_ms": first.get("vel_north"),
+        }
+    return s_wide
+
+
+def _adopt_pool_nodes(
+    s_in: dict,
+    node_cfgs: dict,
+    result: dict,
+    solve_fn,
+    multistart_fn=_pool_solve_multistart,
+) -> tuple[dict, dict, dict | None]:
+    """Widen a narrow dark solve with pool nodes the solve itself vouches for.
+
+    Runs immediately after the first successful solve and BEFORE trimming and
+    before every gate, so a candidate that adopts a third node is judged as an
+    n=3 solve throughout — including by the n=2 confirmation gate, which no
+    longer applies to it.  That is the point rather than a side effect: the
+    gate exists because two nodes cannot corroborate each other's identity,
+    and a third node whose measured delay matches what the two-node solve
+    predicts for it is exactly the corroboration it was demanding.
+
+    Only bottom-up dark inputs qualify.  Anchored and known-lane inputs have a
+    transponder identity and were never clustered by
+    format_track_pairs_for_solver, so they carry no pool to adopt from.
+
+    Returns (result, s_in, meta).  meta is None when the stage did not apply
+    at all; otherwise it records what was tried, so a history record can be
+    read for adoption's true and false positives rather than just its count.
+    Cost is bounded at two extra LM solves per eligible candidate (~60-90 ms
+    each in the pool): the first widening, plus at most one retry with the
+    worst adopted node dropped.
+    """
+    if not _ADOPT_POOL_ENABLED or not isinstance(s_in, dict) or not isinstance(result, dict):
+        return result, s_in, None
+    if not _is_dark_solver_input(s_in) or s_in.get("anchor_key"):
+        return result, s_in, None
+    pool_n = s_in.get("pool_n_nodes")
+    pool_meas = s_in.get("pool_measurements") or []
+    if not pool_meas or not pool_n or (result.get("n_nodes") or 0) >= pool_n:
+        return result, s_in, None
+    lat, lon = result.get("lat"), result.get("lon")
+    if lat is None or lon is None:
+        return result, s_in, None
+    have = {m.get("node_id") for m in (s_in.get("measurements") or [])}
+    cands = [m for m in pool_meas if m.get("node_id") not in have and m.get("delay_us") is not None]
+    if not cands:
+        return result, s_in, None
+
+    state.bump_counter("solver_adopt_eligible")
+    meta: dict = {"pool_n": int(pool_n), "candidates": len(cands), "adopted_node_ids": [], "outcome": "none_passed"}
+    alt_km = float(result.get("alt_m") or 0.0) / 1000.0
+    vel_east = float(result.get("vel_east") or 0.0)
+    vel_north = float(result.get("vel_north") or 0.0)
+    geometries = state.node_associator.node_geometries if state.node_associator else {}
+
+    adopted: list[dict] = []
+    pred_resid: dict[str, float] = {}
+    for m in cands:
+        geo = geometries.get(m["node_id"])
+        if geo is None:
+            # Same abstention rule as everywhere else: a node with no
+            # registered geometry cannot be predicted for, so it is not
+            # adopted rather than adopted unchecked.
+            continue
+        try:
+            pred_delay, pred_doppler = predict_observation(geo, lat, lon, alt_km, vel_east, vel_north)
+        except Exception:
+            logging.exception("Solver pool adoption: prediction failed for node %s", m["node_id"])
+            continue
+        d_delay = abs(float(m["delay_us"]) - pred_delay)
+        if d_delay > _ADOPT_DELAY_GATE_US:
+            continue
+        # Doppler abstains rather than blocks when the pool pairing carried
+        # none: the delay agreement is the stronger of the two claims and a
+        # missing measurement is not a disagreement.
+        if m.get("doppler_hz") is not None and abs(float(m["doppler_hz"]) - pred_doppler) > _ADOPT_DOPPLER_GATE_HZ:
+            continue
+        adopted.append(m)
+        pred_resid[m["node_id"]] = d_delay
+
+    if not adopted:
+        state.bump_counter("solver_adopt_rejected")
+        return result, s_in, meta
+
+    for attempt in range(2):
+        meta["adopted_node_ids"] = sorted(m["node_id"] for m in adopted)
+        s_wide = _s_in_with_adopted(s_in, adopted, result)
+        if state.SOLVER_EPOCH_ALIGN:
+            s_wide, _ = align_measurement_epochs(s_wide, node_cfgs)
+        try:
+            wide = _solve_best_altitude(s_wide, node_cfgs, solve_fn, multistart_fn)
+        except Exception:
+            logging.exception("Solver pool adoption re-solve failed")
+            wide = None
+        if not wide or not wide.get("success"):
+            meta["outcome"] = "rejected_solve"
+            break
+        rms_delay = wide.get("rms_delay") or 0
+        if rms_delay > _SOLVER_RMS_DELAY_MAX_US:
+            # One cheap second chance, and only one: with two or more adopted
+            # nodes the rms is a sum over both, so a single contaminated
+            # adoption can sink a widening the other node would have carried.
+            # Beyond that, keep the narrow solve — this is a bonus path, not a
+            # search.
+            if attempt == 0 and len(adopted) >= 2:
+                residuals = wide.get("per_node_delay_res_us") or {}
+                worst = max(adopted, key=lambda m: residuals.get(m["node_id"], pred_resid[m["node_id"]]))
+                meta["dropped_node_id"] = worst["node_id"]
+                adopted = [m for m in adopted if m["node_id"] != worst["node_id"]]
+                continue
+            meta["outcome"] = "rejected_rms"
+            meta["wide_rms_delay"] = round(float(rms_delay), 3)
+            break
+        jump_km = _haversine_km(float(lat), float(lon), float(wide["lat"]), float(wide["lon"]))
+        if jump_km > _ADOPT_MAX_JUMP_KM:
+            meta["outcome"] = "rejected_jump"
+            meta["jump_km"] = round(jump_km, 2)
+            break
+        meta["outcome"] = "widened"
+        meta["jump_km"] = round(jump_km, 2)
+        meta["wide_rms_delay"] = round(float(rms_delay), 3)
+        state.bump_counter("solver_adopt_widened")
+        state.bump_counter("solver_adopt_nodes_added", len(adopted))
+        return wide, s_wide, meta
+
+    meta["adopted_node_ids"] = sorted(m["node_id"] for m in adopted)
+    state.bump_counter("solver_adopt_rejected")
+    return result, s_in, meta
 
 
 # ── Multi-epoch EWMA position smoother (all N) ───────────────────────────────
@@ -2523,6 +2724,15 @@ def _process_solver_item(
         # otherwise — unchanged.  A consensus-filtered n=3 input skips this
         # (below the n≥4 floor) by construction, which is intended: consensus
         # already chose the subset it trusts.
+        # Widen before anything judges the solve.  An n=2 candidate that
+        # adopts a pool node the solve itself vouches for reaches every gate
+        # below as an n=3 solve — including the n=2 confirmation gate, which
+        # is asking for exactly the corroboration the adopted node supplied.
+        n_nodes_pre_adopt = result.get("n_nodes")
+        result, s_in, adopt_meta = _adopt_pool_nodes(s_in, node_cfgs, result, solve_fn, multistart_fn)
+        if adopt_meta:
+            n_nodes = result.get("n_nodes", n_nodes)
+
         trim_meta: dict | None = None
         if (
             "initial_guess" in s_in
@@ -2537,6 +2747,9 @@ def _process_solver_item(
         # (published or rejected) so a bad map marker can be traced back to
         # both what trimming tried and what consensus selected.
         _extra: dict | None = dict(trim_meta) if trim_meta else {}
+        if adopt_meta:
+            _extra["adopt_meta"] = adopt_meta
+            _extra["n_nodes_pre_adopt"] = n_nodes_pre_adopt
         if consensus_meta is not None:
             _extra["consensus_meta"] = consensus_meta
         # How this solve got its altitude, and — in free mode — what each
