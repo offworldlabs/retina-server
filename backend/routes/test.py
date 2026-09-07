@@ -1520,6 +1520,14 @@ def _solver_window_stats(minutes: float) -> dict:
             # that an entry nothing else refreshes stops dead-reckoning the
             # whole 12 s window.
             "resolve_refresh": state.solver_resolve_refresh,
+            # Pool adoption (solver.py's _adopt_pool_nodes): dark candidates
+            # solved narrower than the round's node pool, how many were
+            # re-solved wider once the narrow solve vouched for the extra
+            # node's delay/Doppler, and how many node-measurements that added.
+            "adopt_eligible": state.solver_adopt_eligible,
+            "adopt_widened": state.solver_adopt_widened,
+            "adopt_nodes_added": state.solver_adopt_nodes_added,
+            "adopt_rejected": state.solver_adopt_rejected,
             "queue_drops": state.solver_queue_drops,
             # Frames the per-node rate limiter refused before the tracker ever
             # saw them (tcp_handler's NODE_FRAME_MIN_INTERVAL_S).  Not the

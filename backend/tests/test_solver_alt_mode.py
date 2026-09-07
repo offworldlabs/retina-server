@@ -342,3 +342,14 @@ class TestConfigsForSolverInput:
     def test_no_measurements_gives_nothing(self):
         assert frame_processor.configs_for_solver_input(self._FLEET, {"measurements": []}) == {}
         assert frame_processor.configs_for_solver_input(self._FLEET, {}) == {}
+
+    def test_pool_measurement_nodes_travel_too(self):
+        """The pool is the one thing that can widen a candidate downstream
+        (solver._adopt_pool_nodes re-solves with it), and a node with no
+        config there is skipped silently by the solver — live, that left 120
+        of 309 'widened' candidates solving on their original two nodes."""
+        s_in = _s_in(["n1", "n2"])
+        s_in["pool_measurements"] = [{"node_id": "n6", "delay_us": 40.0, "doppler_hz": 3.0, "snr": 9.0, "t_s": 1.0}]
+        cfgs = frame_processor.configs_for_solver_input(self._FLEET, s_in)
+        assert sorted(cfgs) == ["n1", "n2", "n6"]
+        assert cfgs["n6"] is self._FLEET["n6"]

@@ -719,6 +719,20 @@ solver_resolve_skips_dark: int = 0
 # here, not to replace it.
 solver_resolve_refresh: int = 0
 
+# Pool adoption (solver.py's _adopt_pool_nodes).  A dark candidate solved with
+# fewer nodes than the association round paired for it is "eligible"; when the
+# extra node's measured delay/Doppler agree with what the narrow solve
+# predicts for that node it is adopted and the candidate re-solved wider.
+# Live baseline the stage was built against: 72% of published dark solves sit
+# below their pool (mean shortfall 2.27 nodes), and 390 of 481 rejected n=2
+# candidates had a pool of 3+.  Read widened/eligible as the hit rate and
+# nodes_added/widened as the average width bought; rejected counts eligible
+# candidates where nothing passed the gates or the wider solve was refused.
+solver_adopt_eligible: int = 0
+solver_adopt_widened: int = 0
+solver_adopt_nodes_added: int = 0
+solver_adopt_rejected: int = 0
+
 # The last few hundred resolve-slot skips, with the claims that blocked them.
 # Deliberately NOT the solve-history deque: a skip is not a solve outcome, and
 # writing one record per skip into mlat_solve_history would evict the real
@@ -991,6 +1005,7 @@ def _reset_for_tests() -> None:
     global ws_send_timeouts
     global solver_pool_timeouts
     global solver_resolve_skips_dark, solver_resolve_refresh
+    global solver_adopt_eligible, solver_adopt_widened, solver_adopt_nodes_added, solver_adopt_rejected
     global mn_superseded, mn_superseded_blocked, mn_superseded_blocked_alt, solver_trimmed
     global solver_consensus_selected, solver_consensus_filtered
     global solver_consensus_fallback, solver_consensus_shadow
@@ -1093,6 +1108,7 @@ def _reset_for_tests() -> None:
         tracks_stale_skipped = solver_epoch_align_skipped = 0
         solver_stale_drops = 0
         solver_resolve_skips = solver_resolve_skips_dark = solver_resolve_refresh = 0
+        solver_adopt_eligible = solver_adopt_widened = solver_adopt_nodes_added = solver_adopt_rejected = 0
         mn_superseded = mn_superseded_blocked = mn_superseded_blocked_alt = 0
         solver_trimmed = 0
         solver_consensus_selected = solver_consensus_filtered = 0
