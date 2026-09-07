@@ -701,6 +701,28 @@ def run_dark_follow_pass(solve_fn, node_cfgs: dict | None = None, mode: str | No
         newest_ts = max(int(c["ts_ms"]) for c in claims.values())
         if _last_follow_ts_ms.get(key, -1) >= newest_ts:
             continue
+        # An n=2 follow input is a solve that cannot publish.  A follow input
+        # carries no cv_epochs (see _build_follow_solver_input), so unless the
+        # anchored bypass is on it dies at the solver's n=2 confirmation gate
+        # with outcome n2_unconfirmed every time — 37-67 of them per 20-minute
+        # capture on the test droplet, one every DARK_FOLLOW_INTERVAL_S for as
+        # long as a followed aircraft sits in 2-node coverage, each costing a
+        # pool solve for nothing.  So don't build it.  The target stays alive
+        # (no record_outcome call, deliberately: flying into a coverage gap is
+        # not evidence against the prediction) and simply ages out on
+        # DARK_FOLLOW_MAX_AGE_S if no wider claim ever comes.  The dedup stamps
+        # are written exactly as an enqueued input would write them, so the
+        # rate limit and the newest-claim check behave identically either way.
+        #
+        # This gates the FOLLOW path only.  Nothing here touches what the claim
+        # round did to the dark pool: the detections were already claimed and
+        # (in binding mode) already stripped, upstream in known_claiming, so
+        # the bottom-up lane sees exactly what it saw before.
+        if len(claims) == 2 and not dark_follow.DARK_FOLLOW_N2_ADMIT:
+            _last_follow_mono[key] = now_mono
+            _last_follow_ts_ms[key] = newest_ts
+            state.bump_counter("dark_follow_n2_skipped")
+            continue
         s_in = _build_follow_solver_input(key, claims)
         if s_in is None:
             continue

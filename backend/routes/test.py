@@ -1283,6 +1283,8 @@ def _solver_window_stats(minutes: float) -> dict:
         df_inputs = state.dark_follow_inputs
         df_published = state.dark_follow_published
         df_dropped = state.dark_follow_dropped
+        df_n2_withheld = state.dark_follow_n2_withheld
+        df_n2_skipped = state.dark_follow_n2_skipped
         df_inelig = {
             reason: getattr(state, f"dark_follow_inelig_{reason}")
             for reason in (
@@ -1422,6 +1424,15 @@ def _solver_window_stats(minutes: float) -> dict:
             "inputs": df_inputs,
             "published": df_published,
             "dropped": df_dropped,
+            # The two n=2 sparings, in events like the rest of the funnel.
+            # n2_skipped is the follow input never built because the claim
+            # round matched only two nodes and DARK_FOLLOW_N2_ADMIT is off;
+            # n2_withheld is the n2_unconfirmed verdict that was not charged to
+            # the key's reject streak.  Both are subtractions from "dropped"
+            # and from ineligible["cooldown"] — the bucket they were the
+            # dominant source of — so read them beside those two.
+            "n2_withheld": df_n2_withheld,
+            "n2_skipped": df_n2_skipped,
             "ineligible": df_inelig,
         },
         "known_claims": {
@@ -1545,6 +1556,8 @@ def _solver_window_stats(minutes: float) -> dict:
             "dark_follow_inputs": state.dark_follow_inputs,
             "dark_follow_published": state.dark_follow_published,
             "dark_follow_dropped": state.dark_follow_dropped,
+            "dark_follow_n2_withheld": state.dark_follow_n2_withheld,
+            "dark_follow_n2_skipped": state.dark_follow_n2_skipped,
             # The other side of the lane: bottom-up dark solves refused at
             # keying because the follow lane owns the key they landed on.  It
             # belongs beside the funnel because it is the same trade — the
