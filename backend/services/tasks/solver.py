@@ -1706,6 +1706,41 @@ def _resolve_n2_chi2(s_in: dict, node_cfgs) -> float | None:
 resolve_n2_chi2 = _resolve_n2_chi2
 
 
+def _n2_anchor_admits(s_in: dict) -> bool:
+    """True if this n=2 input is an anchored follow of an established track.
+
+    The n=2 confirmation gate below is a defence against pairing two
+    single-node tracks that belong to DIFFERENT aircraft, and the
+    constant-velocity fit is how it decides they are one.  An anchored input
+    has already answered that question by a stronger route: top-down claiming
+    tested each detection against the followed track's own predicted delay and
+    Doppler (services/dark_follow.py), and the track it was tested against has
+    at least DARK_FOLLOW_MIN_SOLVES solves behind it.  Re-asking with a fit
+    there is redundant, and it is not a cheap redundancy — measured on the test
+    droplet, 14 follow inputs per capture were rejected n2_unconfirmed, and two
+    consecutive rejects drop the followed target, so an aircraft that flew out
+    of 3-node coverage was dropped rather than followed through it.
+
+    Deliberately narrow: the anchor must still name a live ``mn-dark-*`` entry
+    with the solve count that made it followable in the first place, so a stale
+    or freshly minted key admits nothing.  Bumps the counter here rather than
+    at the call site so the gate itself stays a single expression; the counter
+    is the rate to watch if the bypass ever needs turning off.
+    """
+    if not dark_follow.DARK_FOLLOW_N2_ADMIT:
+        return False
+    anchor_key = s_in.get("anchor_key")
+    if not anchor_key or not str(anchor_key).startswith("mn-dark-"):
+        return False
+    rec = state.multinode_tracks.get(anchor_key)
+    if not isinstance(rec, dict):
+        return False
+    if int(rec.get("solve_count") or 0) < dark_follow.DARK_FOLLOW_MIN_SOLVES:
+        return False
+    state.bump_counter("n2_anchored_admitted")
+    return True
+
+
 # ── Per-solve history (debug) ────────────────────────────────────────────────
 # Every solver outcome — published or gate-rejected — is appended to
 # state.mlat_solve_history so /api/test/mlat-history can decompose a bad map
@@ -2062,6 +2097,19 @@ def _record_solve_history(
         "solver_hex": multinode_hex_from_key(solve_key) if solve_key else None,
         "n_nodes": int(r.get("n_nodes") or s.get("n_nodes") or 0),
         "contributing_node_ids": list(r.get("contributing_node_ids") or []),
+        # Association's side of an n=2 pairing, on EVERY record rather than
+        # just published ones.  n_epochs and cv_epochs_present are the two
+        # halves of the n2_unconfirmed story: 142 of 165 rejects in a droplet
+        # capture had no cv_epochs at all (both node tracks must span
+        # N2_CONFIRM_MIN_SPAN_S before association attaches them), so "no fit"
+        # and "bad fit" are distinguishable from the dump alone.  track_ids is
+        # the input's own tracklet ids — a reject carries an empty
+        # source_track_ids because that is rebuilt post-trim on the publish
+        # path only, which made it impossible to follow one rejected pairing
+        # across rounds and see whether it ever earned its way through.
+        "n_epochs": s.get("n_epochs"),
+        "cv_epochs_present": bool(s.get("cv_epochs")),
+        "track_ids": list(s.get("track_ids") or []),
         "adsb_hex": s.get("adsb_hex"),
         # Set only on an anchored solver input (top-down claiming, active
         # mode) — present on rejects too, not just "published", so the
@@ -2717,7 +2765,7 @@ def _process_solver_item(
         # far) is not yet evidence of anything.  Association re-tests it every
         # round, so a real target is published as soon as it has the history to
         # earn it rather than being discarded.
-        if _N2_REQUIRE_CONFIRMED and n_nodes == 2 and isinstance(s_in, dict):
+        if _N2_REQUIRE_CONFIRMED and n_nodes == 2 and isinstance(s_in, dict) and not _n2_anchor_admits(s_in):
             _chi2 = _resolve_n2_chi2(s_in, node_cfgs)
             if _chi2 is None or _chi2 > _N2_CONFIRM_CHI2_MAX:
                 logging.debug(
@@ -2734,7 +2782,15 @@ def _process_solver_item(
                     s_in,
                     result,
                     chi2_per_dof=_chi2,
-                    extra=_extra,
+                    # Two populations hide under this one outcome and nothing
+                    # separated them before: 142 of 165 rejects in a droplet
+                    # capture had no fit at all (association never attached
+                    # cv_epochs, because only 55% of dark 2-node time has two
+                    # node tracks spanning N2_CONFIRM_MIN_SPAN_S), and 23 had a
+                    # fit at chi2/dof 18-43 — every one of those a real
+                    # aircraft the constant-velocity model does not describe.
+                    # They want opposite fixes, so the reason is recorded.
+                    extra={**(_extra or {}), "n2_reason": "unfitted" if _chi2 is None else "chi2"},
                 )
                 return result
             if not _claim_track_pair(s_in, _chi2):
@@ -2998,6 +3054,19 @@ def _process_solver_item(
                         state.bump_counter("mn_superseded")
 
                 result["solve_count"] = max(prev.get("solve_count", 0) if prev else 0, max_superseded_count) + 1
+                # High-water mark of geometry, carried forward with the key.
+                # dark_follow._build_targets asks whether a track was ever
+                # overdetermined enough to be trusted as an identity, and
+                # n_nodes alone answers only for the LAST solve: once a
+                # followed track publishes at n=2 (the anchored bypass at the
+                # n=2 gate) the next rebuild would drop the key on
+                # DARK_FOLLOW_MIN_NODES, which is precisely the aircraft this
+                # lane exists to follow out of 3-node coverage.
+                result["max_n_nodes"] = max(
+                    int(prev.get("max_n_nodes") or 0) if prev else 0,
+                    int(prev.get("n_nodes") or 0) if prev else 0,
+                    int(result.get("n_nodes") or 0),
+                )
                 state.multinode_tracks[key] = result
                 if trim_meta:
                     state.bump_counter("solver_trimmed")

@@ -16,6 +16,7 @@ os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
 from core import state  # noqa: E402
+from services import dark_follow  # noqa: E402
 from services.geo import in_node_beam  # noqa: E402
 from services.tasks import solver as solver_mod  # noqa: E402
 
@@ -36,6 +37,7 @@ def _reset_state():
     state.solver_total_latency_s = 0.0
     state.solver_last_latency_s = 0.0
     state.n2_unconfirmed = 0
+    state.n2_anchored_admitted = 0
     state.solver_stale_drops = 0
     state.solver_resolve_skips = 0
     state.solver_resolve_skips_dark = 0
@@ -914,6 +916,74 @@ class TestN2ConfirmationGate:
 
         assert not state.multinode_tracks
         assert state.n2_unconfirmed == 1
+
+    def _anchored(self, monkeypatch, *, solve_count, admit=True):
+        """An n=2 input anchored onto an existing dark key with ``solve_count``.
+
+        The anchor names a live entry, which is what the bypass checks: a key
+        the follow lane could actually be following, not a bare string.
+        """
+        monkeypatch.setattr(state, "node_analytics", _StubAnalytics())
+        monkeypatch.setattr(dark_follow, "DARK_FOLLOW_N2_ADMIT", admit)
+        state.multinode_tracks["mn-dark-1-abc"] = {
+            "lat": 37.5,
+            "lon": -122.1,
+            "n_nodes": 3,
+            "solve_count": solve_count,
+            "timestamp_ms": 7000,
+        }
+        # No chi2 and no epochs to fit from — the shape 142 of 165 measured
+        # rejects had, and the one the fit can never rescue.
+        return {"n_nodes": 2, "anchor_key": "mn-dark-1-abc", "lane": "dark_follow"}
+
+    def test_anchored_follow_of_an_established_key_publishes(self, monkeypatch):
+        """The claim round already vetted this pairing against the followed
+        track's predicted delay and Doppler, so the fit is redundant here."""
+        _reset_state()
+        s_in = self._anchored(monkeypatch, solve_count=dark_follow.DARK_FOLLOW_MIN_SOLVES)
+        solver_mod._process_solver_item((s_in, {}, time.time()), self._solve_fn)
+
+        # Published onto the anchor itself — the whole point of the anchor is
+        # that this solve continues that track rather than minting a new key.
+        rec = state.multinode_tracks["mn-dark-1-abc"]
+        assert rec["timestamp_ms"] == 7100
+        assert state.n2_anchored_admitted == 1
+        assert state.n2_unconfirmed == 0
+        # ...and the key keeps the width that made it followable, so the next
+        # dark_follow._build_targets rebuild does not drop it on this n=2.
+        assert rec["n_nodes"] == 2
+        assert rec["max_n_nodes"] == 3
+
+    def test_anchored_follow_of_a_young_key_is_still_gated(self, monkeypatch):
+        """A key with one solve behind it is what the bottom-up lane mints for
+        a mis-associated fragment; it vouches for nothing."""
+        _reset_state()
+        s_in = self._anchored(monkeypatch, solve_count=1)
+        solver_mod._process_solver_item((s_in, {}, time.time()), self._solve_fn)
+
+        assert not any(k.startswith("mn-dark-7100-") for k in state.multinode_tracks)
+        assert state.n2_unconfirmed == 1
+        assert state.n2_anchored_admitted == 0
+
+    def test_the_bypass_can_be_switched_off(self, monkeypatch):
+        _reset_state()
+        s_in = self._anchored(monkeypatch, solve_count=dark_follow.DARK_FOLLOW_MIN_SOLVES, admit=False)
+        solver_mod._process_solver_item((s_in, {}, time.time()), self._solve_fn)
+
+        assert not any(k.startswith("mn-dark-7100-") for k in state.multinode_tracks)
+        assert state.n2_unconfirmed == 1
+        assert state.n2_anchored_admitted == 0
+
+    def test_an_unknown_anchor_key_admits_nothing(self, monkeypatch):
+        """An anchor naming a key that is no longer on the map is not evidence
+        — the entry may have been superseded or expired since the claim."""
+        _reset_state()
+        s_in = self._anchored(monkeypatch, solve_count=dark_follow.DARK_FOLLOW_MIN_SOLVES)
+        state.multinode_tracks.clear()
+        solver_mod._process_solver_item((s_in, {}, time.time()), self._solve_fn)
+
+        assert state.n2_unconfirmed == 1
+        assert state.n2_anchored_admitted == 0
 
     def test_n3_is_unaffected(self, monkeypatch):
         """n>=3 is overdetermined, so its residual gates already work."""

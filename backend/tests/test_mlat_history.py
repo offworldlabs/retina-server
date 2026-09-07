@@ -135,6 +135,33 @@ class TestRecording:
         assert rec["outcome"] == "n2_unconfirmed"
         assert rec["chi2_per_dof"] is None
 
+    def test_n2_reject_says_which_of_the_two_causes_it_was(self, monkeypatch):
+        """An unfitted reject and a badly fitted one want opposite fixes.
+
+        Measured on the test droplet, 142 of 165 n2_unconfirmed rejects had no
+        fit at all (association attaches cv_epochs only once both node tracks
+        span N2_CONFIRM_MIN_SPAN_S) and 23 had a fit at chi2/dof 18-43.  One
+        outcome string covered both, so the dump could not tell them apart.
+        """
+        monkeypatch.setattr(solver_mod, "_resolve_n2_chi2", lambda *a: None)
+        self._run({"n_nodes": 2, "n_epochs": 3, "track_ids": [11, 22]}, _solve_fn())
+        rec = self._only_record()
+        assert rec["n2_reason"] == "unfitted"
+        assert rec["n_epochs"] == 3
+        assert rec["cv_epochs_present"] is False
+        # Rejects carry an empty source_track_ids (that is rebuilt post-trim on
+        # the publish path only), so without this a rejected pairing could not
+        # be followed across rounds to see whether it ever earned its way in.
+        assert rec["track_ids"] == [11, 22]
+
+    def test_a_badly_fitted_n2_reject_is_labelled_chi2(self, monkeypatch):
+        monkeypatch.setattr(solver_mod, "_resolve_n2_chi2", lambda *a: 31.0)
+        self._run({"n_nodes": 2, "n_epochs": 9, "cv_epochs": [{}, {}]}, _solve_fn())
+        rec = self._only_record()
+        assert rec["outcome"] == "n2_unconfirmed"
+        assert rec["n2_reason"] == "chi2"
+        assert rec["cv_epochs_present"] is True
+
     def test_unconverged_is_recorded(self):
         self._run(_CONFIRMED_N2, _solve_fn(success=False))
         assert self._only_record()["outcome"] == "unconverged"

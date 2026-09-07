@@ -220,6 +220,29 @@ class TestPseudoStates:
 
         assert dark_follow.follow_targets() == []
 
+    def test_a_narrow_last_solve_on_a_wide_key_is_still_a_target(self, monkeypatch):
+        """Eligibility is the key's widest solve, not its most recent one.
+
+        A followed aircraft that flies out of 3-node coverage now publishes at
+        n=2 (the anchored bypass at the solver's n=2 gate), which writes
+        n_nodes 2 onto the record.  Judging on that alone would drop the key on
+        the very rebuild after the first such publish — dropping exactly the
+        track this lane exists to carry through the thin patch.
+        """
+        ts = int(time.time() * 1000) - 2000
+        _install(monkeypatch, ts, n_nodes=2, max_n_nodes=4)
+
+        (t,) = dark_follow.follow_targets()
+
+        assert t["key"] == _KEY
+
+    def test_a_key_that_was_never_wide_is_not_a_target(self, monkeypatch):
+        """The high-water mark has to be real, not merely present."""
+        ts = int(time.time() * 1000) - 2000
+        _install(monkeypatch, ts, n_nodes=2, max_n_nodes=2)
+
+        assert dark_follow.follow_targets() == []
+
     def test_no_filter_state_is_not(self, monkeypatch):
         """The velocity and its sigma ARE the prediction; without them there is
         nothing to dead-reckon with and no honest way to widen a gate."""
