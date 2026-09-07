@@ -38,6 +38,7 @@ def _rec(
     known_lane=False,
     displacement_km=None,
     lane=None,
+    pool_n_nodes=None,
 ):
     return {
         "ts_ms": int((time.time() - age_s) * 1000),
@@ -50,6 +51,7 @@ def _rec(
         "known_lane": known_lane,
         "displacement_km": displacement_km,
         "lane": lane,
+        "pool_n_nodes": pool_n_nodes,
     }
 
 
@@ -1073,3 +1075,56 @@ class TestDarkFollowBlock:
         out = _solver_window_stats(10.0)["dark_follow"]
         assert out["targets_now"] == 0
         assert set(out["ineligible"].values()) == {0}
+
+
+class TestNodePool:
+    """``pool`` answers "could the round have solved this aircraft wider?".
+
+    pool_n_nodes is stamped on the solver input by the association stage — the
+    node set of the shared-track component the input was clustered out of — so
+    a published record whose n_nodes is below it is a solve the round had the
+    measurements for and did not make.  This is the counter that separates "the
+    third node never paired" from "it paired and the clustering did not take
+    it", which is the 3-node dark case we could not previously diagnose.
+    """
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_counts_published_solves_narrower_than_their_pool(self):
+        _push(_rec("published", n_nodes=2, pool_n_nodes=3))
+        _push(_rec("published", n_nodes=3, pool_n_nodes=3))
+        out = _solver_window_stats(10.0)
+        assert out["pool"] == {
+            "records_with_pool": 2,
+            "narrower_than_pool": 1,
+            "pct": 50.0,
+            "mean_shortfall_nodes": 0.5,
+        }
+
+    def test_unstamped_and_unpublished_records_stay_out_of_the_denominator(self):
+        """Only DARK PUBLISHED records carrying the stamp can answer this.
+
+        An anchored or known-lane input never went through the clustering that
+        computes the pool, and a reject has no solve to be narrow; counting
+        either as a zero shortfall would dilute the number towards "fine".
+        """
+        _push(_rec("published", n_nodes=2, pool_n_nodes=3))
+        _push(_rec("published", n_nodes=2))  # dark, but no stamp
+        _push(_rec("rejected_beam", n_nodes=2, pool_n_nodes=4))
+        _push(_rec("published", n_nodes=2, pool_n_nodes=4, known_lane=True))
+        out = _solver_window_stats(10.0)
+        assert out["pool"]["records_with_pool"] == 1
+        assert out["pool"]["narrower_than_pool"] == 1
+        assert out["pool"]["pct"] == 100.0
+
+    def test_no_stamped_records_reports_null_not_zero(self):
+        """Nothing measured is not the same answer as nothing narrow."""
+        _push(_rec("published", n_nodes=2))
+        out = _solver_window_stats(10.0)
+        assert out["pool"] == {
+            "records_with_pool": 0,
+            "narrower_than_pool": 0,
+            "pct": None,
+            "mean_shortfall_nodes": None,
+        }
