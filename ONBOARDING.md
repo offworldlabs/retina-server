@@ -228,6 +228,7 @@ CI runs on every PR, on push to `main`, and on demand through
 1. Any PR, whatever its base: `backend-tests`, `frontend-build`,
    `dashboard-build`, `docker-build`, `env-parity`, plus an automated review.
 2. Merge to `main` → deploy to **staging** → staging smoke + Playwright E2E → deploy to **production** → prod smoke + Playwright E2E.
+   A markdown-only merge skips that chain; the `changes` job has the exceptions.
 
 So merging to `main` deploys to production automatically. Work on a feature
 branch, open a PR, get it green, then merge.
