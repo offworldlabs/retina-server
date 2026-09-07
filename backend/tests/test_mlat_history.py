@@ -135,6 +135,33 @@ class TestRecording:
         assert rec["outcome"] == "n2_unconfirmed"
         assert rec["chi2_per_dof"] is None
 
+    def test_n2_reject_says_which_of_the_two_causes_it_was(self, monkeypatch):
+        """An unfitted reject and a badly fitted one want opposite fixes.
+
+        Measured on the test droplet, 142 of 165 n2_unconfirmed rejects had no
+        fit at all (association attaches cv_epochs only once both node tracks
+        span N2_CONFIRM_MIN_SPAN_S) and 23 had a fit at chi2/dof 18-43.  One
+        outcome string covered both, so the dump could not tell them apart.
+        """
+        monkeypatch.setattr(solver_mod, "_resolve_n2_chi2", lambda *a: None)
+        self._run({"n_nodes": 2, "n_epochs": 3, "track_ids": [11, 22]}, _solve_fn())
+        rec = self._only_record()
+        assert rec["n2_reason"] == "unfitted"
+        assert rec["n_epochs"] == 3
+        assert rec["cv_epochs_present"] is False
+        # Rejects carry an empty source_track_ids (that is rebuilt post-trim on
+        # the publish path only), so without this a rejected pairing could not
+        # be followed across rounds to see whether it ever earned its way in.
+        assert rec["track_ids"] == [11, 22]
+
+    def test_a_badly_fitted_n2_reject_is_labelled_chi2(self, monkeypatch):
+        monkeypatch.setattr(solver_mod, "_resolve_n2_chi2", lambda *a: 31.0)
+        self._run({"n_nodes": 2, "n_epochs": 9, "cv_epochs": [{}, {}]}, _solve_fn())
+        rec = self._only_record()
+        assert rec["outcome"] == "n2_unconfirmed"
+        assert rec["n2_reason"] == "chi2"
+        assert rec["cv_epochs_present"] is True
+
     def test_unconverged_is_recorded(self):
         self._run(_CONFIRMED_N2, _solve_fn(success=False))
         assert self._only_record()["outcome"] == "unconverged"
@@ -297,6 +324,86 @@ class TestDisplacementCapByLane:
         assert result is None
         assert rec["outcome"] == "rejected_displacement"
         assert rec["displacement_cap_km"] == 3.0
+
+
+class TestAnchoredN2DisplacementCap:
+    """An ANCHORED n=2 solve is judged at _DARK_FOLLOW_N2_MAX_DISP_KM, which
+    is tighter than either lane cap — see that constant for the live numbers.
+
+    The wide dark cap exists for anchor uncertainty (a 3 km association
+    lattice point); a follow input's guess is the lane's own dead-reckoned
+    prediction instead, so the allowance does not apply, while the n=2 fit is
+    under-determined and needs the tighter leash.  The bottom-up n=2 case is
+    here too because it must NOT move: nothing about its guess changed.
+    """
+
+    KM_DEG = 1.0 / 111.32
+    ANCHOR = "mn-dark-0001"
+
+    def setup_method(self):
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+
+    def teardown_method(self):
+        solver_mod._reset_for_tests()
+
+    def _run_displaced(self, km, *, anchored=True, n_nodes=2):
+        """Solve at (LAT, LON) whose guess sits ``km`` south of it."""
+        s_in = dict(_CONFIRMED_N2)
+        s_in["n_nodes"] = n_nodes
+        s_in["initial_guess"] = {"lat": LAT - km * self.KM_DEG, "lon": LON, "alt_km": 9.0}
+        if anchored:
+            s_in["anchor_key"] = self.ANCHOR
+        result = solver_mod._process_solver_item((s_in, {}, time.time()), _solve_fn())
+        assert len(state.mlat_solve_history) == 1
+        return result, state.mlat_solve_history[0]
+
+    def test_default_cap_is_1_5_km(self):
+        assert solver_mod._DARK_FOLLOW_N2_MAX_DISP_KM == 1.5
+
+    def test_anchored_n2_past_the_tight_cap_is_rejected(self):
+        """3 km: inside the dark lane cap (6 km) that would otherwise judge
+        it, well past the anchored-n2 one."""
+        result, rec = self._run_displaced(3.0)
+        assert result is None
+        assert rec["outcome"] == "rejected_displacement"
+        assert rec["displacement_cap_km"] == solver_mod._DARK_FOLLOW_N2_MAX_DISP_KM
+        assert rec["displacement_km"] == pytest.approx(3.0, abs=0.05)
+        # The reject is the point: it counts toward the follow lane's
+        # two-consecutive-rejects drop, which is the intended guard.
+        assert state.solver_fail_displacement == 1
+        assert state.solver_fail_displacement_dark == 1
+
+    def test_anchored_n2_inside_the_tight_cap_is_published(self):
+        result, rec = self._run_displaced(1.0)
+        assert result is not None and result["success"]
+        assert rec["outcome"] == "published"
+        assert rec["displacement_cap_km"] == solver_mod._DARK_FOLLOW_N2_MAX_DISP_KM
+
+    def test_bottom_up_n2_keeps_the_lane_cap(self):
+        """No anchor_key: an ordinary dark n=2 pairing, whose guess IS the
+        3 km lattice point the wide cap was measured for."""
+        result, rec = self._run_displaced(3.0, anchored=False)
+        assert result is not None and result["success"]
+        assert rec["outcome"] == "published"
+        assert rec["displacement_cap_km"] == solver_mod._MAX_DISPLACEMENT_KM_DARK
+
+    def test_anchored_n3_keeps_the_lane_cap(self):
+        """The tight cap is about the n=2 fit, not about being anchored: at
+        n=3 the fit is determined and the wide cap still applies."""
+        result, rec = self._run_displaced(3.0, n_nodes=3)
+        assert result is not None and result["success"]
+        assert rec["outcome"] == "published"
+        assert rec["displacement_cap_km"] == solver_mod._MAX_DISPLACEMENT_KM_DARK
+
+    def test_cap_is_tunable_without_a_deploy(self, monkeypatch):
+        """The resolved value is what the gate reads, so widening it takes
+        the 3 km reject above back to a publish."""
+        monkeypatch.setattr(solver_mod, "_DARK_FOLLOW_N2_MAX_DISP_KM", 5.0)
+        result, rec = self._run_displaced(3.0)
+        assert result is not None and result["success"]
+        assert rec["outcome"] == "published"
+        assert rec["displacement_cap_km"] == 5.0
 
 
 class TestKeyDecisionObservability:

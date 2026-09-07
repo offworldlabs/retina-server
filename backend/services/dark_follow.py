@@ -127,6 +127,31 @@ DARK_FOLLOW_OWN_S = float(os.getenv("DARK_FOLLOW_OWN_S", "6.0"))
 # the 6 km proximity gate on purpose — this is a "these are the same target"
 # radius, not an association gate.
 DARK_FOLLOW_SHADOW_KM = float(os.getenv("DARK_FOLLOW_SHADOW_KM", "2.0"))
+# Whether an anchored follow input may bypass the solver's n=2 confirmation
+# gate (services/tasks/solver.py, _N2_REQUIRE_CONFIRMED).  That gate exists to
+# reject cross-aircraft pairings of two single-node tracks that have never been
+# shown to be one aircraft, and it does so with a constant-velocity fit over
+# the pairing's own epochs.  An anchored input is not that: the claim round
+# already tested every claimed detection against the FOLLOWED track's predicted
+# delay and Doppler, which is a stronger statement of identity than the fit,
+# and it is made against a key with DARK_FOLLOW_MIN_SOLVES solves behind it.
+# Measured on the test droplet (18-30 min history dumps): 14 follow inputs per
+# capture died at that gate with outcome n2_unconfirmed, and because two
+# rejects in a row drop the target, an aircraft that flew out of 3-node
+# coverage stayed dropped.  Env-gated so the bypass can be turned off in one
+# restart if the ghost rate moves.
+#
+# OFF by default (opt in with DARK_FOLLOW_N2_ADMIT=1).  Measured on the test
+# droplet in 20-min captures against ground truth: with the bypass on, dark
+# 2-node coverage time with a fresh solve rose (16-33% -> 42-50%) but the
+# dark ghost share rose with it, 4.1-5.3% -> 7.0-9.7%, and dead-reckoned
+# error at 8-12 s of solve age went 0.85-1.02 km -> 1.8-2.7 km.  The 1.5 km
+# displacement cap and the 2500 m n=2 measurement sigma (track_filter)
+# halved the damage (follow n=3 error 1.40 -> 0.78 km) but did not remove
+# it: an n=2 solve anchored to a key still nudges the key it is anchored to.
+# The rest of this change (max_n_nodes, n2_reason, the caps) stands on its
+# own; the bypass waits for a solve-weighting that can carry it.
+DARK_FOLLOW_N2_ADMIT = os.getenv("DARK_FOLLOW_N2_ADMIT", "0").strip().lower() not in ("0", "false", "off")
 
 # Consecutive rejected follow-solves that drop a key.  Two, not one: a single
 # reject is routinely a bad epoch (one node's contaminated measurement trips
@@ -360,7 +385,13 @@ def _build_targets(now_s: float, now_mono: float) -> list[dict]:
         if int(rec.get("solve_count") or 0) < DARK_FOLLOW_MIN_SOLVES:
             state.bump_counter("dark_follow_inelig_min_solves")
             continue
-        if int(rec.get("n_nodes") or 0) < DARK_FOLLOW_MIN_NODES:
+        # The key's WIDEST solve, not its last.  A followed track that flies
+        # into 2-node coverage now publishes there (the anchored bypass above),
+        # which writes n_nodes 2 onto the record and would otherwise make the
+        # very next rebuild drop the key this gate was meant to protect.  What
+        # the gate is really asking is whether the key was ever overdetermined
+        # enough to be trusted as an identity, and that is a high-water mark.
+        if max(int(rec.get("max_n_nodes") or 0), int(rec.get("n_nodes") or 0)) < DARK_FOLLOW_MIN_NODES:
             state.bump_counter("dark_follow_inelig_min_nodes")
             continue
         # No filter state, no follow.  The velocity and its sigma are the whole

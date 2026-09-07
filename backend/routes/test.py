@@ -1501,6 +1501,11 @@ def _solver_window_stats(minutes: float) -> dict:
             # two worker threads forever with every counter reading healthy.
             "pool_timeouts": state.solver_pool_timeouts,
             "n2_unconfirmed": state.n2_unconfirmed,
+            # n=2 solves published without a constant-velocity fit because an
+            # anchored follow input vouched for the pairing (dark_follow.
+            # DARK_FOLLOW_N2_ADMIT).  Read against n2_unconfirmed: this is the
+            # share of the n=2 gate the follow lane is now walking past.
+            "n2_anchored_admitted": state.n2_anchored_admitted,
             "solver_trimmed": state.solver_trimmed,
             "stale_drops": state.solver_stale_drops,
             "resolve_skips": state.solver_resolve_skips,

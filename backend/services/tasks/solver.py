@@ -324,6 +324,53 @@ def _dark_displacement_cap_km() -> float:
 
 _MAX_DISPLACEMENT_KM_DARK = _dark_displacement_cap_km()
 
+
+# ANCHORED n=2 inputs are judged far more tightly than either lane cap above.
+#
+# Letting an anchored dark-follow input publish at n=2 (the change this file's
+# _n2_anchor_admits makes) bought coverage and cost accuracy.  Measured on the
+# test droplet over 20-minute captures, with the bypass on: dark 2-node time
+# solved went 35% → 57% and 4+-node fresh 65% → 77%, but follow-lane n=2
+# publishes landed a median 1.43 km (p90 4.6 km) from truth, dark ghosts
+# (an entry > 5 km from any ground truth) went 4.1% → 9.7% overall, and the
+# n=2 entries themselves went 6% → 22% ghosts.
+#
+# The tight cap is meaningful precisely BECAUSE the input is anchored.  The
+# wide dark cap exists for anchor uncertainty: an ordinary dark guess is a
+# quantised ASSOC_GRID_STEP_KM lattice point averaged over a 6 km-wide cluster,
+# so judging the solve against it at 2 km measures the anchor.  A follow
+# input's guess is not that — it is the follow lane's own dead-reckoned
+# prediction of a track with DARK_FOLLOW_MIN_SOLVES solves behind it, a real
+# position estimate whose own error budget is well under a kilometre.  And the
+# fit on the other side is weaker, not stronger: with altitude pinned an n=2
+# solve fits 5 unknowns against 4 residuals, so the residual gates cannot see a
+# wrong answer (see the _N2_REQUIRE_CONFIRMED comment) and the LM is free to
+# wander along the under-determined direction.  Past 1.5 km we are therefore
+# looking at that wandering rather than at anchor uncertainty.
+#
+# Rejecting is the intended outcome here, not a loss of coverage: the reject
+# counts toward the follow lane's two-consecutive-rejects drop
+# (services/dark_follow.py record_outcome), which is exactly the guard that
+# should fire once the follow can no longer be corroborated.
+_DARK_FOLLOW_N2_MAX_DISP_KM = float(os.getenv("DARK_FOLLOW_N2_MAX_DISP_KM", "1.5"))
+
+
+def _is_anchored_n2(s, r) -> bool:
+    """True if this is an anchored solver input that solved at exactly n=2.
+
+    Both the displacement gate and the history record ask this — the gate to
+    pick the cap, the record to stamp which cap judged the solve — and they
+    must not be able to disagree, so the predicate lives in one place.
+    """
+    if not isinstance(s, dict) or not s.get("anchor_key"):
+        return False
+    # Result first, input as the fallback — the same precedence the history
+    # record's own "n_nodes" field uses, so a solve_fn that does not restate
+    # n_nodes (the trim path is the only producer that changes it) is still
+    # judged by the node count it actually had.
+    return int((r or {}).get("n_nodes") or s.get("n_nodes") or 0) == 2
+
+
 # An n=2 solve is published only once its track pairing has justified itself.
 #
 # The residual gates above are structurally blind here: the solver fits
@@ -1767,6 +1814,41 @@ def _resolve_n2_chi2(s_in: dict, node_cfgs) -> float | None:
 resolve_n2_chi2 = _resolve_n2_chi2
 
 
+def _n2_anchor_admits(s_in: dict) -> bool:
+    """True if this n=2 input is an anchored follow of an established track.
+
+    The n=2 confirmation gate below is a defence against pairing two
+    single-node tracks that belong to DIFFERENT aircraft, and the
+    constant-velocity fit is how it decides they are one.  An anchored input
+    has already answered that question by a stronger route: top-down claiming
+    tested each detection against the followed track's own predicted delay and
+    Doppler (services/dark_follow.py), and the track it was tested against has
+    at least DARK_FOLLOW_MIN_SOLVES solves behind it.  Re-asking with a fit
+    there is redundant, and it is not a cheap redundancy — measured on the test
+    droplet, 14 follow inputs per capture were rejected n2_unconfirmed, and two
+    consecutive rejects drop the followed target, so an aircraft that flew out
+    of 3-node coverage was dropped rather than followed through it.
+
+    Deliberately narrow: the anchor must still name a live ``mn-dark-*`` entry
+    with the solve count that made it followable in the first place, so a stale
+    or freshly minted key admits nothing.  Bumps the counter here rather than
+    at the call site so the gate itself stays a single expression; the counter
+    is the rate to watch if the bypass ever needs turning off.
+    """
+    if not dark_follow.DARK_FOLLOW_N2_ADMIT:
+        return False
+    anchor_key = s_in.get("anchor_key")
+    if not anchor_key or not str(anchor_key).startswith("mn-dark-"):
+        return False
+    rec = state.multinode_tracks.get(anchor_key)
+    if not isinstance(rec, dict):
+        return False
+    if int(rec.get("solve_count") or 0) < dark_follow.DARK_FOLLOW_MIN_SOLVES:
+        return False
+    state.bump_counter("n2_anchored_admitted")
+    return True
+
+
 # ── Per-solve history (debug) ────────────────────────────────────────────────
 # Every solver outcome — published or gate-rejected — is appended to
 # state.mlat_solve_history so /api/test/mlat-history can decompose a bad map
@@ -2133,6 +2215,19 @@ def _record_solve_history(
         # None on inputs that never went through that clustering (anchored /
         # known-lane, dark-follow predictions).
         "pool_n_nodes": s.get("pool_n_nodes"),
+        # Association's side of an n=2 pairing, on EVERY record rather than
+        # just published ones.  n_epochs and cv_epochs_present are the two
+        # halves of the n2_unconfirmed story: 142 of 165 rejects in a droplet
+        # capture had no cv_epochs at all (both node tracks must span
+        # N2_CONFIRM_MIN_SPAN_S before association attaches them), so "no fit"
+        # and "bad fit" are distinguishable from the dump alone.  track_ids is
+        # the input's own tracklet ids — a reject carries an empty
+        # source_track_ids because that is rebuilt post-trim on the publish
+        # path only, which made it impossible to follow one rejected pairing
+        # across rounds and see whether it ever earned its way through.
+        "n_epochs": s.get("n_epochs"),
+        "cv_epochs_present": bool(s.get("cv_epochs")),
+        "track_ids": list(s.get("track_ids") or []),
         "adsb_hex": s.get("adsb_hex"),
         # Set only on an anchored solver input (top-down claiming, active
         # mode) — present on rejects too, not just "published", so the
@@ -2184,7 +2279,13 @@ def _record_solve_history(
         # published solve's displacement against the cap that let it through
         # and a reject's against the cap that killed it — the two lanes are
         # judged differently and the record has to say which applied.
-        "displacement_cap_km": _MAX_DISPLACEMENT_KM_DARK if _dark else _MAX_DISPLACEMENT_KM,
+        # ...and an anchored n=2 solve is judged by neither lane cap but by
+        # _DARK_FOLLOW_N2_MAX_DISP_KM, so the record has to say that too.
+        "displacement_cap_km": (
+            _DARK_FOLLOW_N2_MAX_DISP_KM
+            if _is_anchored_n2(s, r)
+            else (_MAX_DISPLACEMENT_KM_DARK if _dark else _MAX_DISPLACEMENT_KM)
+        ),
         # How this solve got its key, and how far it was from the entry it
         # was keyed onto (see multinode_key_decision).  Fragmentation is a
         # question about key DECISIONS, and until now the history recorded
@@ -2740,9 +2841,21 @@ def _process_solver_item(
         # fallback_* outcome keep the guess anchor: consensus either never
         # ran against this solve's input or was not acted on, so its
         # centroid is not a vetted reference here.
+        #
+        # An anchored n=2 result overrides both lane caps with the much
+        # tighter _DARK_FOLLOW_N2_MAX_DISP_KM — see that constant for the
+        # live accuracy measurements.  It is the one case where the guess is
+        # a real position estimate (the follow lane's dead-reckoned
+        # prediction) rather than an association lattice point, so the wide
+        # dark allowance for anchor uncertainty does not apply, while the fit
+        # itself is under-determined and needs the tighter leash.
         _disp_km: float | None = None
         _dark_input = _is_dark_solver_input(s_in)
-        _disp_cap_km = _MAX_DISPLACEMENT_KM_DARK if _dark_input else _MAX_DISPLACEMENT_KM
+        _anchored_n2 = _is_anchored_n2(s_in, result)
+        if _anchored_n2:
+            _disp_cap_km = _DARK_FOLLOW_N2_MAX_DISP_KM
+        else:
+            _disp_cap_km = _MAX_DISPLACEMENT_KM_DARK if _dark_input else _MAX_DISPLACEMENT_KM
         if "initial_guess" in s_in:
             _ig = s_in["initial_guess"]
             _anchor_lat, _anchor_lon = _ig.get("lat"), _ig.get("lon")
@@ -2768,7 +2881,7 @@ def _process_solver_item(
                         n_nodes,
                         _disp_km,
                         "consensus centroid" if _anchor_label == "consensus" else "initial_guess",
-                        "dark" if _dark_input else "adsb",
+                        "anchored n=2" if _anchored_n2 else ("dark" if _dark_input else "adsb"),
                         _disp_cap_km,
                         result["lat"],
                         result["lon"],
@@ -2794,7 +2907,7 @@ def _process_solver_item(
         # far) is not yet evidence of anything.  Association re-tests it every
         # round, so a real target is published as soon as it has the history to
         # earn it rather than being discarded.
-        if _N2_REQUIRE_CONFIRMED and n_nodes == 2 and isinstance(s_in, dict):
+        if _N2_REQUIRE_CONFIRMED and n_nodes == 2 and isinstance(s_in, dict) and not _n2_anchor_admits(s_in):
             _chi2 = _resolve_n2_chi2(s_in, node_cfgs)
             if _chi2 is None or _chi2 > _N2_CONFIRM_CHI2_MAX:
                 logging.debug(
@@ -2811,7 +2924,15 @@ def _process_solver_item(
                     s_in,
                     result,
                     chi2_per_dof=_chi2,
-                    extra=_extra,
+                    # Two populations hide under this one outcome and nothing
+                    # separated them before: 142 of 165 rejects in a droplet
+                    # capture had no fit at all (association never attached
+                    # cv_epochs, because only 55% of dark 2-node time has two
+                    # node tracks spanning N2_CONFIRM_MIN_SPAN_S), and 23 had a
+                    # fit at chi2/dof 18-43 — every one of those a real
+                    # aircraft the constant-velocity model does not describe.
+                    # They want opposite fixes, so the reason is recorded.
+                    extra={**(_extra or {}), "n2_reason": "unfitted" if _chi2 is None else "chi2"},
                 )
                 return result
             if not _claim_track_pair(s_in, _chi2):
@@ -3036,6 +3157,7 @@ def _process_solver_item(
                 # anchor_key) is the identical-inputs branch (b) of the predicate —
                 # exactly the fragmentation-collapse this whole feature exists for.
                 max_superseded_count = 0
+                max_superseded_n_nodes = 0
                 _superseded_keys: list[str] = []
                 _superseded_blocked = 0
                 if result["source_track_ids"]:
@@ -3071,10 +3193,36 @@ def _process_solver_item(
                             _MN_POS_HISTORY.pop(old_key, None)
                         track_filter.drop_key(old_key)
                         max_superseded_count = max(max_superseded_count, old_r.get("solve_count", 0))
+                        max_superseded_n_nodes = max(
+                            max_superseded_n_nodes,
+                            int(old_r.get("max_n_nodes") or 0),
+                            int(old_r.get("n_nodes") or 0),
+                        )
                         _superseded_keys.append(old_key)
                         state.bump_counter("mn_superseded")
 
                 result["solve_count"] = max(prev.get("solve_count", 0) if prev else 0, max_superseded_count) + 1
+                # High-water mark of geometry, carried forward with the key.
+                # dark_follow._build_targets asks whether a track was ever
+                # overdetermined enough to be trusted as an identity, and
+                # n_nodes alone answers only for the LAST solve: once a
+                # followed track publishes at n=2 (the anchored bypass at the
+                # n=2 gate) the next rebuild would drop the key on
+                # DARK_FOLLOW_MIN_NODES, which is precisely the aircraft this
+                # lane exists to follow out of 3-node coverage.
+                # Folded across supersession for the same reason solve_count is
+                # (above): the winning key is not always the key the history is
+                # on.  An established 3-node track absorbed into a freshly
+                # minted key has prev None, so without the superseded term a
+                # merge that happened to be n=2 would reset the mark to 2 and
+                # the next rebuild would drop the key — this bug, reached by
+                # the other path.
+                result["max_n_nodes"] = max(
+                    int(prev.get("max_n_nodes") or 0) if prev else 0,
+                    int(prev.get("n_nodes") or 0) if prev else 0,
+                    max_superseded_n_nodes,
+                    int(result.get("n_nodes") or 0),
+                )
                 state.multinode_tracks[key] = result
                 if trim_meta:
                     state.bump_counter("solver_trimmed")
