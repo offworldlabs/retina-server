@@ -24,6 +24,7 @@ from core import state
 from services.geo import bearing_deg, bistatic_delay_us, haversine_km, node_beam_params, point_in_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
+from services.node_config import position_status
 from services.node_sites import log_colocation_audit
 from services.public_location import (
     fuzz_enabled,
@@ -382,6 +383,7 @@ def _refresh_analytics_and_nodes():
                 ),
                 "sample_rate": (info.get("config", {}).get("Fs") or info.get("config", {}).get("fs_hz")),
                 "location": _public_location_block(nid, info.get("config", {})),
+                "position_status": position_status(info.get("config", {})),
             }
             for nid, info in _published_nodes
         },

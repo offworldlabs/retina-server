@@ -138,10 +138,33 @@ class TestMyNodes:
         try:
             nodes = client.get("/api/auth/me/nodes").json()
             node = next(n for n in nodes if n["node_id"] == "field-check-node")
-            for field in ("node_id", "name", "status", "is_synthetic"):
+            for field in ("node_id", "name", "status", "is_synthetic", "position_status"):
                 assert field in node, f"Missing field: {field}"
         finally:
             asyncio.run(set_node_owner("field-check-node", None))
+
+    def test_my_nodes_entry_carries_position_status_for_a_private_node(self, client):
+        """A private node is filtered out of /api/radar/nodes entirely, so
+        its owner has nowhere else to learn it needs a position."""
+        from core import state
+        from core.auth import set_node_owner
+        from core.users import ANONYMOUS_USER
+
+        node_id = "position-status-node"
+        asyncio.run(set_node_owner(node_id, ANONYMOUS_USER["id"]))
+        with state.connected_nodes_lock:
+            state.connected_nodes[node_id] = {
+                "status": "active",
+                "config": {"rx_lat": None, "rx_lon": None, "tx_lat": None, "tx_lon": None},
+            }
+        try:
+            nodes = client.get("/api/auth/me/nodes").json()
+            node = next(n for n in nodes if n["node_id"] == node_id)
+            assert node["position_status"] == "missing_both"
+        finally:
+            asyncio.run(set_node_owner(node_id, None))
+            with state.connected_nodes_lock:
+                state.connected_nodes.pop(node_id, None)
 
 
 # ── OAuth state token (CSRF + open-redirect) ──────────────────────────────────
