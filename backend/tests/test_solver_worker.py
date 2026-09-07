@@ -38,6 +38,7 @@ def _reset_state():
     state.solver_last_latency_s = 0.0
     state.n2_unconfirmed = 0
     state.n2_anchored_admitted = 0
+    state.n2_fit_position_published = 0
     state.solver_stale_drops = 0
     state.solver_resolve_skips = 0
     state.solver_resolve_skips_dark = 0
@@ -1224,6 +1225,132 @@ class TestN2ConfirmationGate:
         assert any(k.startswith("mn-dark-7100-") for k in state.multinode_tracks)
         assert state.solver_successes == 1
         assert state.n2_unconfirmed == 0
+
+
+class TestN2FitPositionPublish:
+    """A confirmed n=2 publishes the fit position, not the single-epoch one.
+
+    The confirmation fit is an over-determined estimate of the same target —
+    every epoch of the pairing, 4K measurements against 6 unknowns with
+    altitude free — while the LM solve it replaces is 4 residuals at one epoch
+    with altitude pinned to a guess.  It is computed either way (it is what
+    confirms the pairing), so this is the same fit being used for position as
+    well as for chi2 and velocity.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _gate_on(self, monkeypatch):
+        monkeypatch.setattr(solver_mod, "_N2_REQUIRE_CONFIRMED", True)
+        monkeypatch.setattr(solver_mod, "_N2_PUBLISH_FIT_POSITION", True)
+
+    _FIT = {
+        "success": True,
+        "lat": 37.6,
+        "lon": -122.2,
+        "alt_m": 9000.0,
+        "vel_east": 100.0,
+        "vel_north": 0.0,
+        "vel_up": 0.0,
+        "chi2_per_dof": 0.5,
+        "n_epochs": 8,
+        "timestamp_ms": 7100,
+    }
+
+    def _input(self, **fit_overrides):
+        """A confirmed n=2 input carrying an already-resolved fit.
+
+        Seeded straight onto the ``_cv_fit`` cache rather than through
+        cv_epochs: _resolve_cv_fit returns the cached dict untouched, so this
+        exercises the publish decision without a pool solve.
+        """
+        s_in = dict(_CONFIRMED_N2)
+        if fit_overrides.get("_absent"):
+            return s_in
+        s_in["_cv_fit"] = {**self._FIT, **fit_overrides}
+        return s_in
+
+    @staticmethod
+    def _published(monkeypatch, s_in):
+        monkeypatch.setattr(state, "node_analytics", _StubAnalytics())
+        solver_mod._process_solver_item((s_in, {}, time.time()), TestN2ConfirmationGate._solve_fn)
+        recs = [r for r in state.mlat_solve_history if r["outcome"] == "published"]
+        assert len(recs) == 1
+        return recs[0]
+
+    def test_fit_position_is_published_and_the_solve_kept_alongside(self, monkeypatch):
+        _reset_state()
+        state.mlat_solve_history.clear()
+        rec = self._published(monkeypatch, self._input())
+
+        # raw_lat/raw_lon is the position that went to the smoother.
+        assert (rec["raw_lat"], rec["raw_lon"]) == (37.6, -122.2)
+        assert rec["alt_m"] == 9000.0
+        assert rec["pos_source"] == "cv_fit"
+        # ...and the single-epoch solve is still on the record, which is what
+        # makes gt_error comparable between the two without a second deploy.
+        assert (rec["solve_raw_lat"], rec["solve_raw_lon"]) == (37.5, -122.1)
+        assert rec["fit_vs_solve_km"] == pytest.approx(14.0, abs=1.0)
+        assert state.n2_fit_position_published == 1
+        assert state.n2_unconfirmed == 0
+
+    def test_an_earlier_fit_epoch_is_propagated_to_the_solve_epoch(self, monkeypatch):
+        """The fit evaluates at its own last epoch; publishing it under this
+        solve's timestamp without propagating would be an epoch mismatch."""
+        _reset_state()
+        state.mlat_solve_history.clear()
+        # 2 s before the solve at 100 m/s east ⇒ 200 m of longitude.
+        rec = self._published(monkeypatch, self._input(timestamp_ms=5100))
+
+        _exp_lat, _exp_lon = solver_mod.offset_latlon_m(37.6, -122.2, east_m=200.0, north_m=0.0)
+        assert rec["raw_lat"] == pytest.approx(_exp_lat, abs=1e-5)
+        assert rec["raw_lon"] == pytest.approx(_exp_lon, abs=1e-5)
+        assert rec["raw_lon"] > -122.2  # moved east, not back along the track
+        assert state.n2_fit_position_published == 1
+
+    def test_the_swap_can_be_switched_off(self, monkeypatch):
+        _reset_state()
+        state.mlat_solve_history.clear()
+        monkeypatch.setattr(solver_mod, "_N2_PUBLISH_FIT_POSITION", False)
+        rec = self._published(monkeypatch, self._input())
+
+        assert (rec["raw_lat"], rec["raw_lon"]) == (37.5, -122.1)
+        assert rec["pos_source"] == "solve"
+        assert rec["fit_vs_solve_km"] is None
+        assert state.n2_fit_position_published == 0
+
+    def test_an_unusable_fit_keeps_the_solve_position(self, monkeypatch):
+        """No fit on this side is the normal case for an inline-fitted pairing
+        (chi2 arrives set, no cv_epochs survive to refit from), and a fit that
+        did not converge is not a position at all.  Both still publish."""
+        for s_in in (
+            self._input(_absent=True),
+            self._input(success=False),
+            self._input(lat=None),
+            self._input(n_epochs=2),
+        ):
+            _reset_state()
+            state.mlat_solve_history.clear()
+            rec = self._published(monkeypatch, s_in)
+
+            assert (rec["raw_lat"], rec["raw_lon"]) == (37.5, -122.1)
+            assert rec["pos_source"] == "solve"
+            assert state.n2_fit_position_published == 0
+            assert state.solver_successes == 1
+
+    def test_an_unconfirmed_pairing_never_reaches_the_swap(self, monkeypatch):
+        """The chi2 gate is untouched: a pairing that fails it is withheld
+        whether or not a fit position exists for it."""
+        _reset_state()
+        state.mlat_solve_history.clear()
+        monkeypatch.setattr(state, "node_analytics", _StubAnalytics())
+        s_in = {"n_nodes": 2, "chi2_per_dof": 40.0, "n_epochs": 8, "_cv_fit": dict(self._FIT)}
+        result = solver_mod._process_solver_item((s_in, {}, time.time()), TestN2ConfirmationGate._solve_fn)
+
+        assert not state.multinode_tracks
+        assert state.n2_unconfirmed == 1
+        assert state.n2_fit_position_published == 0
+        assert result["lat"] == 37.5
+        assert result.get("pos_source") is None
 
 
 class TestCoverageCalibration:
