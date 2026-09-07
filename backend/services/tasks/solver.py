@@ -324,6 +324,53 @@ def _dark_displacement_cap_km() -> float:
 
 _MAX_DISPLACEMENT_KM_DARK = _dark_displacement_cap_km()
 
+
+# ANCHORED n=2 inputs are judged far more tightly than either lane cap above.
+#
+# Letting an anchored dark-follow input publish at n=2 (the change this file's
+# _n2_anchor_admits makes) bought coverage and cost accuracy.  Measured on the
+# test droplet over 20-minute captures, with the bypass on: dark 2-node time
+# solved went 35% → 57% and 4+-node fresh 65% → 77%, but follow-lane n=2
+# publishes landed a median 1.43 km (p90 4.6 km) from truth, dark ghosts
+# (an entry > 5 km from any ground truth) went 4.1% → 9.7% overall, and the
+# n=2 entries themselves went 6% → 22% ghosts.
+#
+# The tight cap is meaningful precisely BECAUSE the input is anchored.  The
+# wide dark cap exists for anchor uncertainty: an ordinary dark guess is a
+# quantised ASSOC_GRID_STEP_KM lattice point averaged over a 6 km-wide cluster,
+# so judging the solve against it at 2 km measures the anchor.  A follow
+# input's guess is not that — it is the follow lane's own dead-reckoned
+# prediction of a track with DARK_FOLLOW_MIN_SOLVES solves behind it, a real
+# position estimate whose own error budget is well under a kilometre.  And the
+# fit on the other side is weaker, not stronger: with altitude pinned an n=2
+# solve fits 5 unknowns against 4 residuals, so the residual gates cannot see a
+# wrong answer (see the _N2_REQUIRE_CONFIRMED comment) and the LM is free to
+# wander along the under-determined direction.  Past 1.5 km we are therefore
+# looking at that wandering rather than at anchor uncertainty.
+#
+# Rejecting is the intended outcome here, not a loss of coverage: the reject
+# counts toward the follow lane's two-consecutive-rejects drop
+# (services/dark_follow.py record_outcome), which is exactly the guard that
+# should fire once the follow can no longer be corroborated.
+_DARK_FOLLOW_N2_MAX_DISP_KM = float(os.getenv("DARK_FOLLOW_N2_MAX_DISP_KM", "1.5"))
+
+
+def _is_anchored_n2(s, r) -> bool:
+    """True if this is an anchored solver input that solved at exactly n=2.
+
+    Both the displacement gate and the history record ask this — the gate to
+    pick the cap, the record to stamp which cap judged the solve — and they
+    must not be able to disagree, so the predicate lives in one place.
+    """
+    if not isinstance(s, dict) or not s.get("anchor_key"):
+        return False
+    # Result first, input as the fallback — the same precedence the history
+    # record's own "n_nodes" field uses, so a solve_fn that does not restate
+    # n_nodes (the trim path is the only producer that changes it) is still
+    # judged by the node count it actually had.
+    return int((r or {}).get("n_nodes") or s.get("n_nodes") or 0) == 2
+
+
 # An n=2 solve is published only once its track pairing has justified itself.
 #
 # The residual gates above are structurally blind here: the solver fits
@@ -2161,7 +2208,13 @@ def _record_solve_history(
         # published solve's displacement against the cap that let it through
         # and a reject's against the cap that killed it — the two lanes are
         # judged differently and the record has to say which applied.
-        "displacement_cap_km": _MAX_DISPLACEMENT_KM_DARK if _dark else _MAX_DISPLACEMENT_KM,
+        # ...and an anchored n=2 solve is judged by neither lane cap but by
+        # _DARK_FOLLOW_N2_MAX_DISP_KM, so the record has to say that too.
+        "displacement_cap_km": (
+            _DARK_FOLLOW_N2_MAX_DISP_KM
+            if _is_anchored_n2(s, r)
+            else (_MAX_DISPLACEMENT_KM_DARK if _dark else _MAX_DISPLACEMENT_KM)
+        ),
         # How this solve got its key, and how far it was from the entry it
         # was keyed onto (see multinode_key_decision).  Fragmentation is a
         # question about key DECISIONS, and until now the history recorded
@@ -2711,9 +2764,21 @@ def _process_solver_item(
         # fallback_* outcome keep the guess anchor: consensus either never
         # ran against this solve's input or was not acted on, so its
         # centroid is not a vetted reference here.
+        #
+        # An anchored n=2 result overrides both lane caps with the much
+        # tighter _DARK_FOLLOW_N2_MAX_DISP_KM — see that constant for the
+        # live accuracy measurements.  It is the one case where the guess is
+        # a real position estimate (the follow lane's dead-reckoned
+        # prediction) rather than an association lattice point, so the wide
+        # dark allowance for anchor uncertainty does not apply, while the fit
+        # itself is under-determined and needs the tighter leash.
         _disp_km: float | None = None
         _dark_input = _is_dark_solver_input(s_in)
-        _disp_cap_km = _MAX_DISPLACEMENT_KM_DARK if _dark_input else _MAX_DISPLACEMENT_KM
+        _anchored_n2 = _is_anchored_n2(s_in, result)
+        if _anchored_n2:
+            _disp_cap_km = _DARK_FOLLOW_N2_MAX_DISP_KM
+        else:
+            _disp_cap_km = _MAX_DISPLACEMENT_KM_DARK if _dark_input else _MAX_DISPLACEMENT_KM
         if "initial_guess" in s_in:
             _ig = s_in["initial_guess"]
             _anchor_lat, _anchor_lon = _ig.get("lat"), _ig.get("lon")
@@ -2739,7 +2804,7 @@ def _process_solver_item(
                         n_nodes,
                         _disp_km,
                         "consensus centroid" if _anchor_label == "consensus" else "initial_guess",
-                        "dark" if _dark_input else "adsb",
+                        "anchored n=2" if _anchored_n2 else ("dark" if _dark_input else "adsb"),
                         _disp_cap_km,
                         result["lat"],
                         result["lon"],

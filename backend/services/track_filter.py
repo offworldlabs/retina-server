@@ -116,6 +116,7 @@ import numpy as np
 
 from core import state
 from services.geo import M_PER_DEG_LAT, km_per_deg_lon, offset_latlon_m
+from services.id_utils import is_transponder_hex
 
 # ── Tunables ──────────────────────────────────────────────────────────────
 # Read once at import — these are physical/model constants, not per-call
@@ -184,6 +185,30 @@ _KF_MANOEUVRE_TAU_S = float(os.getenv("TRACK_KF_MANOEUVRE_TAU_S", "15"))
 # than a fallback-only default.  cov absent -> R is EXACTLY this, the cov=0
 # limit of the same formula, not a separate code path.
 _KF_DEFAULT_POS_SIGMA_M = float(os.getenv("TRACK_KF_POS_SIGMA_M", "1200"))
+
+# The same floor for an n=2 solve, which is a different measurement in all but
+# name.  With altitude pinned, an n=2 fit has 5 unknowns against 4 residuals:
+# it is under-determined, its residuals go to ~0 whether or not the answer is
+# right (see solver.py's _SOLVER_RMS_DELAY_MAX_US and _N2_REQUIRE_CONFIRMED),
+# and the position it returns is largely the initial guess pulled along the
+# under-determined direction.  Measured live over 20-minute test-droplet
+# captures: bottom-up n=2 publishes sit 2.3 km from truth at the median and
+# anchored follow-lane ones 1.4 km, against 0.3–0.5 km for n>=3.
+#
+# Feeding those to the filter at the n>=3 base sigma was actively destructive,
+# not merely noisy.  When anchored n=2 follow solves started publishing, the
+# n=3 publishes on the SAME keys went from a 0.44 km median error to 1.40 km:
+# each n=2 update dragged the state, the next claim round dead-reckoned from
+# the dragged state, and the lane walked its own tracks off the target.  At
+# 2500 m the n=2 solve still keeps the key alive and still nudges it toward
+# the evidence, but its Kalman gain is roughly (1200/2500)^2 ≈ 4x smaller, so
+# it cannot pull an established n>=3 trajectory off truth on its own.
+#
+# ADS-B-identified tracks are deliberately excluded (see _base_pos_sigma_m):
+# their displayed position comes from the transponder, and their solves are
+# judged against a fix that is already ~100 m from truth, so none of the
+# measurement above describes them.
+_KF_N2_POS_SIGMA_M = float(os.getenv("TRACK_KF_N2_POS_SIGMA_M", "2500"))
 
 # cov_en_km2, when present, comes from the LM fit's Jacobian: a formal
 # measurement-noise-propagation covariance, and ONLY that.  It has no way to
@@ -603,7 +628,23 @@ def _kf_correct(
     return x_new, p_new, y, s
 
 
-def _measurement_R(result: dict) -> np.ndarray:
+def _base_pos_sigma_m(result: dict, adsb_hex: str | None = None) -> float:
+    """The unmodeled-error floor this solve carries, in metres.
+
+    _KF_DEFAULT_POS_SIGMA_M for everything except a DARK n=2 solve, which gets
+    the wider _KF_N2_POS_SIGMA_M — see that constant for the live measurement
+    and for why the ADS-B lane is excluded.  ``adsb_hex`` is tested with
+    is_transponder_hex rather than for mere presence because the simulator's
+    ``obj-*`` object ids ride in the same field and are NOT transponder
+    identities: they are dark-lane solves and belong on the wide sigma, which
+    is the same predicate solver.py keys them into ``mn-dark-*`` with.
+    """
+    if int(result.get("n_nodes") or 0) != 2 or is_transponder_hex(adsb_hex):
+        return _KF_DEFAULT_POS_SIGMA_M
+    return _KF_N2_POS_SIGMA_M
+
+
+def _measurement_R(result: dict, adsb_hex: str | None = None) -> np.ndarray:
     """Per-solve position measurement covariance, in m^2.
 
     ADDITIVE composition (see the _KF_R_INFLATE comment above for the
@@ -619,8 +660,9 @@ def _measurement_R(result: dict) -> np.ndarray:
     an ill-conditioned solve really does produce — see the determinant check
     in the body for why that has to be rejected rather than passed through.
 
-    where base = diag(_KF_DEFAULT_POS_SIGMA_M**2, _KF_DEFAULT_POS_SIGMA_M**2)
-    is added UNCONDITIONALLY — the no-cov fallback is not a separate branch,
+    where base = diag(sigma**2, sigma**2) for the per-solve floor
+    _base_pos_sigma_m picks (_KF_DEFAULT_POS_SIGMA_M, or the wider
+    _KF_N2_POS_SIGMA_M for a dark n=2 solve) and is added UNCONDITIONALLY — the no-cov fallback is not a separate branch,
     it is exactly this same formula evaluated at cov_m2 = 0.  This is what
     lets a well-conditioned solve (small cov_m2) and a poorly-conditioned one
     (large cov_m2) still land at meaningfully different R after inflation,
@@ -633,7 +675,8 @@ def _measurement_R(result: dict) -> np.ndarray:
     diagonal.  The floor is mostly inert now (see that constant's comment);
     the cap still matters for a badly-conditioned Jacobian.
     """
-    base = np.diag([_KF_DEFAULT_POS_SIGMA_M**2, _KF_DEFAULT_POS_SIGMA_M**2])
+    base_sigma_m = _base_pos_sigma_m(result, adsb_hex)
+    base = np.diag([base_sigma_m**2, base_sigma_m**2])
     r = base
     cov = result.get("cov_en_km2")
     if cov is not None:
@@ -758,7 +801,7 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
     ts_s = result.get("timestamp_ms", 0) / 1000.0
 
     has_adsb_vel, v0e, v0n = _adsb_velocity(adsb_hex)
-    r_pos = _measurement_R(result)
+    r_pos = _measurement_R(result, adsb_hex)
 
     with _KF_LOCK:
         _sweep(ts_s)
