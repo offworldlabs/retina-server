@@ -817,9 +817,12 @@ def run_dark_follow_pass(solve_fn, node_cfgs: dict | None = None, mode: str | No
             from services.frame_processor import get_node_configs
 
             node_cfgs = get_node_configs()
-        # A node whose config has gone (disconnected since the claim) cannot be
-        # solved with: the LM needs its geometry.  Drop the node rather than
-        # the key — the remaining nodes are still a solve if there are two.
+        # A node absent from the snapshot cannot be solved with: the LM needs
+        # its geometry, and get_node_configs returns the placed nodes only, so
+        # this drops both a node that disconnected since the claim and one that
+        # re-registered without its position while these claims were held.
+        # Drop the node rather than the key: the remaining nodes are still a
+        # solve if there are two of them.
         claims = {nid: c for nid, c in claims.items() if nid in node_cfgs}
         if len(claims) < 2:
             continue

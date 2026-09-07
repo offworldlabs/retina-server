@@ -189,6 +189,32 @@ class TestGetNodeConfigs:
         get_node_configs()
         assert stored["rx_alt_ft"] is None
 
+    def test_omits_an_unplaced_node(self):
+        """The snapshot is the placement gate for everything drawn from it.
+
+        Consumers test `nid in node_cfgs` and treat that as "can be solved
+        with", which is only true if an unplaced node never appears: it has no
+        geometry to solve against, and its None coordinates would otherwise
+        reach the solver queue through known_lane's dark-follow claim filter.
+        """
+        state.connected_nodes["test-cfg-5"] = {
+            "config": {"rx_lat": None, "rx_lon": None, "tx_lat": None, "tx_lon": None},
+            "status": "active",
+        }
+        assert "test-cfg-5" not in get_node_configs()
+
+    def test_wanted_narrows_the_snapshot(self):
+        """A config is copied per node, so a caller that can only reach a
+        handful says so rather than paying for the fleet."""
+        for nid in ("test-cfg-6", "test-cfg-7"):
+            state.connected_nodes[nid] = {
+                "config": {"rx_lat": 33.9, "rx_lon": -84.6},
+                "status": "active",
+            }
+        configs = get_node_configs({"test-cfg-6"})
+        assert "test-cfg-6" in configs
+        assert "test-cfg-7" not in configs
+
 
 class TestResolveAltitudes:
     def test_sea_level_survives(self):

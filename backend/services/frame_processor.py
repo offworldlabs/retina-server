@@ -194,18 +194,44 @@ def _reset_for_tests() -> None:
 # ── Node configs helper ──────────────────────────────────────────────────────
 
 
-def get_node_configs() -> dict[str, dict]:
-    """Every connected node's config, altitudes resolved.
+def _solver_input_node_ids(s_in: dict) -> set[str]:
+    """The node ids a solver input can reach.
 
-    The solver's snapshot: retina_geolocator multiplies an altitude by a metre
-    conversion as soon as it is handed one, so a null must not reach it.
+    Its measurements, plus the pool's spare ones: _adopt_pool_nodes re-solves
+    with those once the first solve vouches for them, so a config missing for
+    one is silently dropped by the epoch alignment and the solver's NodeSetups.
+    """
+    return {m.get("node_id") for m in (s_in.get("measurements") or ())} | {
+        m.get("node_id") for m in (s_in.get("pool_measurements") or ())
+    }
+
+
+def get_node_configs(wanted: set[str] | None = None) -> dict[str, dict]:
+    """Every *placed* connected node's config, altitudes resolved.
+
+    The solver's snapshot, and the placement gate for everything drawn from
+    it: an unplaced node has no geometry to solve against, so membership here
+    means the node can be solved with and a consumer needs no check of its
+    own.  Gated here rather than at each of them because the snapshot is the
+    one place that knows, and a consumer testing `nid in node_cfgs` reads as
+    though it already had (see known_lane's dark-follow claim filter).
+
+    Altitudes are resolved because retina_geolocator multiplies one by a metre
+    conversion as soon as it is handed it, so a null must not reach it.  That
+    is a copy per node, so `wanted` narrows it to the ids a caller can use;
+    the default is the whole placed fleet.
     """
     configs = {}
     with state.connected_nodes_lock:
         snapshot = list(state.connected_nodes.items())
     for nid, info in snapshot:
+        if wanted is not None and nid not in wanted:
+            continue
         cfg = info.get("config")
-        if cfg:
+        # missing_tx is placed enough: the range circle and the bearing wedge
+        # are both about the receiver, and the bistatic paths test the
+        # transmitter separately.
+        if cfg and position_status(cfg) in ("positioned", "missing_tx"):
             configs[nid] = resolve_altitudes(cfg)
     return configs
 
@@ -227,14 +253,11 @@ def configs_for_solver_input(node_cfgs: dict[str, dict], s_in: dict) -> dict[str
     is unaffected — it fetches its own configs (known_lane.run_known_lane_pass)
     rather than reusing what was queued here.
     """
-    wanted = {m.get("node_id") for m in (s_in.get("measurements") or ())}
     # The pool's spare measurements are the one thing downstream that CAN
-    # widen the set: solver._adopt_pool_nodes re-solves with them once the
-    # first solve vouches for them, and a node without a config there is
-    # silently dropped by the epoch alignment and the solver's NodeSetups —
-    # measured live, that left 120 of 309 "widened" candidates solving on
-    # their original two nodes.  A pool is 0-6 extra configs, not 50.
-    wanted |= {m.get("node_id") for m in (s_in.get("pool_measurements") or ())}
+    # widen the set, which is why _solver_input_node_ids counts them: measured
+    # live, omitting them left 120 of 309 "widened" candidates solving on their
+    # original two nodes.  A pool is 0-6 extra configs, not 50.
+    wanted = _solver_input_node_ids(s_in)
     return {nid: cfg for nid, cfg in node_cfgs.items() if nid in wanted}
 
 
@@ -257,10 +280,15 @@ def get_or_create_node_pipeline(
 
     # Canonical: every config in connected_nodes goes in through
     # services.node_config.canonical_config, so a placed node has four float
-    # coordinates. Altitude is resolved here, at the boundary, because
-    # passive_radar subscripts it and converts it to metres.
-    cfg = resolve_altitudes(state.connected_nodes.get(node_id, {}).get("config", {}))
+    # coordinates.
+    cfg = state.connected_nodes.get(node_id, {}).get("config", {})
     if position_status(cfg) == "positioned":
+        # Altitude is resolved here, at the boundary, because passive_radar
+        # subscripts it and converts it to metres.  After the placement test,
+        # not before: only this branch caches anything, so an unplaced node
+        # reaches this line on every frame it ever sends, and the copy would
+        # be thrown away every time.
+        cfg = resolve_altitudes(cfg)
         pipeline_cfg = {
             "node_id": node_id,
             "Fs": cfg.get("fs_hz", cfg.get("Fs", 2_000_000)),
@@ -560,7 +588,9 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             + round_.adsb_inputs
         )
         if solver_inputs:
-            node_cfgs = get_node_configs()
+            # Only what these inputs name: the snapshot copies a config per
+            # node, and the fleet is far larger than any one candidate.
+            node_cfgs = get_node_configs(set().union(*(_solver_input_node_ids(s) for s in solver_inputs)))
             for s_in in solver_inputs:
                 if s_in["n_nodes"] < 2:
                     continue
