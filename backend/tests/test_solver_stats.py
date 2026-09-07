@@ -252,6 +252,7 @@ class TestConsensusAndCounters:
         state.solver_successes = 5
         state.solver_failures = 2
         state.n2_unconfirmed = 1
+        state.n2_anchored_admitted = 20
         state.solver_trimmed = 3
         state.solver_stale_drops = 4
         state.solver_resolve_skips = 12
@@ -279,6 +280,7 @@ class TestConsensusAndCounters:
             "failures": 2,
             "pool_timeouts": 19,
             "n2_unconfirmed": 1,
+            "n2_anchored_admitted": 20,
             "solver_trimmed": 3,
             "stale_drops": 4,
             "resolve_skips": 12,

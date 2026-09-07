@@ -628,6 +628,16 @@ dark_bottomup_shadowed: int = 0
 # the solve succeeded, it simply has not earned publication, and a real target
 # is published as soon as it accumulates the observation span to justify itself.
 n2_unconfirmed: int = 0
+# n=2 solves admitted PAST that gate because they were anchored onto an
+# established dark track (services/dark_follow.py, DARK_FOLLOW_N2_ADMIT).  The
+# complement of n2_unconfirmed on the follow lane: measured on the test
+# droplet, 165 of 321 n=2 records were rejected as n2_unconfirmed and 86% of
+# those sat within 5 km of a real aircraft, 14 per capture of them anchored
+# follow inputs whose identity the claim round had already established.  A
+# separate counter because this is the one place a pairing is published
+# without a constant-velocity fit behind it, so its rate is what says whether
+# the bypass is worth the ghost risk.
+n2_anchored_admitted: int = 0
 # Overlap-grid rebuilds triggered by a node's empirical coverage tightening.
 # A counter rather than a log line: the server emits WARNING and above, so an
 # INFO message about this is invisible in every deployed environment — the same
@@ -975,7 +985,7 @@ def _reset_for_tests() -> None:
     global dark_follow_inelig_age, dark_follow_inelig_min_solves
     global dark_follow_inelig_min_nodes, dark_follow_inelig_no_filter
     global dark_follow_inelig_vel_sigma
-    global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
+    global n2_unconfirmed, n2_anchored_admitted, coverage_rebuilds, coverage_rebuild_nodes
     global coverage_rebuild_backlog, tracks_stale_skipped, solver_epoch_align_skipped
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
     global ws_send_timeouts
@@ -1064,6 +1074,7 @@ def _reset_for_tests() -> None:
     with counters_lock:
         frames_dropped = frames_processed = node_frames_rate_limited = 0
         solver_successes = solver_failures = n2_unconfirmed = 0
+        n2_anchored_admitted = 0
         adsb_seed_frames_autotagged = adsb_capture_ts_fallback = 0
         known_claims_made = known_claim_contentions = known_claims_bound = 0
         known_claims_errors = known_claims_visibility_rejects = 0
