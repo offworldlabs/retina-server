@@ -460,6 +460,45 @@ def _beam_gate_ok(out: dict, s_in: dict, node_cfgs: dict, fov_provider) -> bool:
     return True
 
 
+def _n2_fit_positions(s_in: dict, out: dict, node_cfgs: dict) -> dict:
+    """The two fit positions a published n=2 solve could have been given.
+
+    Runs the SHIPPED swap (solver._apply_n2_fit_position) twice over a throwaway
+    copy of the result, once with the altitude pin off and once on, so the bench
+    measures the code that ships rather than a reimplementation of it — the same
+    reason DeferredN2Gate calls the worker's own chi2 resolver.  The two fits
+    cache under different keys on s_in, so neither run disturbs the other or the
+    chi2 the confirmation gate already decided on.
+
+    Returns {"free": {...} | None, "pinned": {...} | None}, each a copy of `out`
+    with lat/lon/alt_m as that variant would have published them.
+    """
+    from services.tasks import solver as _solver_mod
+
+    variants: dict = {}
+    _saved_publish = _solver_mod._N2_PUBLISH_FIT_POSITION
+    _saved_pin = _solver_mod._N2_FIT_FIX_ALTITUDE
+    _solver_mod._N2_PUBLISH_FIT_POSITION = True
+    try:
+        for name, pin in (("free", False), ("pinned", True)):
+            _solver_mod._N2_FIT_FIX_ALTITUDE = pin
+            probe = dict(out)
+            _solver_mod._apply_n2_fit_position(s_in, probe, node_cfgs)
+            # The swap declines on an input with no epochs to refit from, and
+            # on a fit that did not converge — those are not a position.
+            variants[name] = probe if probe.get("pos_source") == "cv_fit" else None
+    finally:
+        _solver_mod._N2_PUBLISH_FIT_POSITION = _saved_publish
+        _solver_mod._N2_FIT_FIX_ALTITUDE = _saved_pin
+    # The free variant deliberately does NOT publish the fit's altitude (that
+    # is the fix under test), so read the altitude off the fit itself: the
+    # question this block answers is what the free fit's z was worth.
+    _free_fit = s_in.get("_cv_fit")
+    if variants["free"] is not None and _free_fit is not None and _free_fit.get("alt_m") is not None:
+        variants["free"] = dict(variants["free"], alt_m=float(_free_fit["alt_m"]))
+    return variants
+
+
 class DeferredN2Gate:
     """The solver-side n=2 gate, replayed against simulated time.
 
@@ -614,6 +653,18 @@ class Result:
     # Position clusters that held two different tracks of one node and were
     # split into one solver input each, straight off the associator.
     cluster_splits: int = 0
+    # Three-way position comparison for every PUBLISHED n=2 solve that bound to
+    # a truth aircraft: the single-epoch LM solve that is published today, the
+    # free-altitude constant-velocity fit, and the same fit with altitude
+    # pinned to the LM solve's own initial guess.  Kilometres from truth at the
+    # solve epoch, plus |altitude - truth| for each, because the pin exists
+    # precisely because the free fit's altitude is not an estimate of anything.
+    n2_pos_solve_km: list = None
+    n2_pos_fit_free_km: list = None
+    n2_pos_fit_pinned_km: list = None
+    n2_alt_solve_km: list = None
+    n2_alt_fit_free_km: list = None
+    n2_alt_fit_pinned_km: list = None
     # Deferred mode only: what the *solver-side* n=2 gate did.  In production the
     # associator emits unscored pairings and this gate is the one that runs, so
     # without these the shipped configuration's selection is invisible.
@@ -718,6 +769,12 @@ class Result:
         self.speed_err_by_n = defaultdict(list)
         self.dopp_rms_by_n = defaultdict(list)
         self.claim_chi2_drift = []
+        self.n2_pos_solve_km = []
+        self.n2_pos_fit_free_km = []
+        self.n2_pos_fit_pinned_km = []
+        self.n2_alt_solve_km = []
+        self.n2_alt_fit_free_km = []
+        self.n2_alt_fit_pinned_km = []
         self.cluster_sizes = Counter()
         self.track_n = defaultdict(Counter)
         self.solve_ms = []
@@ -806,6 +863,12 @@ class Result:
         "speed_err_ms",
         "claim_chi2_drift",
         "solve_ms",
+        "n2_pos_solve_km",
+        "n2_pos_fit_free_km",
+        "n2_pos_fit_pinned_km",
+        "n2_alt_solve_km",
+        "n2_alt_fit_free_km",
+        "n2_alt_fit_pinned_km",
     )
     _COUNTER_FIELDS = ("n_nodes_matched", "n_nodes_ghost", "cluster_sizes")
 
@@ -1149,6 +1212,10 @@ def run(
         # Carry the object id so a real target keeps one identity across
         # solves — keying on a position would mint a new track per epoch.
         truth = [(ac.lat, ac.lon, ac.object_id, ac.speed_km_s * 1000.0) for ac in world.aircraft]
+        # Altitude is not in `truth` because nothing else needed it; the n=2
+        # position comparison below does, since the whole finding is about what
+        # an unobservable z does to a published fix.
+        truth_alt_km = {ac.object_id: ac.alt_km for ac in world.aircraft}
         for nid in due_nodes:
             next_send[nid] += frame_interval
             frame = world.generate_detections_for_node(nid, ts_ms)
@@ -1320,6 +1387,28 @@ def run(
                             res.published_contaminated += 1
                     res.errors_km.append(d)
                     res.n_nodes_matched[nn] += 1
+                    if nn == 2 and deferred and best_id is not None:
+                        # Three-way position comparison, published n=2 only.
+                        # The LM solve is what ships today; the two fits are
+                        # what the swap would publish with z free and with z
+                        # pinned to the solve's own initial guess.  Scored
+                        # against the SAME aircraft `d` bound to, not against
+                        # each variant's own nearest truth, or a variant could
+                        # look good by landing near a different aeroplane.
+                        _t_lat, _t_lon = next(((a, b) for a, b, oid, _ in truth if oid == best_id), (None, None))
+                        _t_alt_km = truth_alt_km.get(best_id)
+                        if _t_lat is not None and _t_alt_km is not None:
+                            _vars = _n2_fit_positions(s_in, out, node_cfgs)
+                            if _vars["free"] is not None and _vars["pinned"] is not None:
+                                res.n2_pos_solve_km.append(d)
+                                res.n2_alt_solve_km.append(abs(out.get("alt_m", 0.0) / 1000.0 - _t_alt_km))
+                                for _name, _bucket, _abucket in (
+                                    ("free", res.n2_pos_fit_free_km, res.n2_alt_fit_free_km),
+                                    ("pinned", res.n2_pos_fit_pinned_km, res.n2_alt_fit_pinned_km),
+                                ):
+                                    _v = _vars[_name]
+                                    _bucket.append(_haversine_km(_v["lat"], _v["lon"], _t_lat, _t_lon))
+                                    _abucket.append(abs(_v.get("alt_m", 0.0) / 1000.0 - _t_alt_km))
                     # Broken out because the whole dual-site hypothesis is
                     # about the n=2 case specifically: whether two illuminators
                     # sharing one receiver confine the fix better than two
@@ -1520,6 +1609,21 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
                 f"      n={nn}: {len(v):>4} solves   median {statistics.median(v):5.2f} km"
                 f"   p90 {v[int(0.9 * (len(v) - 1))]:5.2f}"
             )
+    if r.n2_pos_solve_km:
+
+        def _mp(v):
+            v = sorted(v)
+            return statistics.median(v), v[int(0.9 * (len(v) - 1))]
+
+        print(f"  n=2 position source comparison (published, truth-matched, N={len(r.n2_pos_solve_km)}):")
+        for _name, _pos, _alt in (
+            ("solve     ", r.n2_pos_solve_km, r.n2_alt_solve_km),
+            ("fit_free  ", r.n2_pos_fit_free_km, r.n2_alt_fit_free_km),
+            ("fit_pinned", r.n2_pos_fit_pinned_km, r.n2_alt_fit_pinned_km),
+        ):
+            _pm, _pp = _mp(_pos)
+            _am, _ap = _mp(_alt)
+            print(f"      {_name}: pos med {_pm:6.2f} km  p90 {_pp:6.2f}   |alt err| med {_am:6.2f} km  p90 {_ap:6.2f}")
     if r.speed_err_ms:
         e = sorted(r.speed_err_ms)
         print(

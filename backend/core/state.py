@@ -665,6 +665,13 @@ n2_unconfirmed: int = 0
 # without a constant-velocity fit behind it, so its rate is what says whether
 # the bypass is worth the ghost risk.
 n2_anchored_admitted: int = 0
+# Confirmed n=2 solves published at the constant-velocity fit's position
+# instead of the single-epoch LM one (solver._apply_n2_fit_position,
+# N2_PUBLISH_FIT_POSITION).  Read against solver_successes for the n=2 lane:
+# the shortfall is confirmed pairings whose fit could not be reconstructed on
+# this side — association fitted them inline and kept no epochs — and those
+# still publish, at the old position.
+n2_fit_position_published: int = 0
 # Overlap-grid rebuilds triggered by a node's empirical coverage tightening.
 # A counter rather than a log line: the server emits WARNING and above, so an
 # INFO message about this is invisible in every deployed environment — the same
@@ -1037,6 +1044,7 @@ def _reset_for_tests() -> None:
     global dark_follow_inelig_vel_sigma
     global dark_follow_n2_withheld, dark_follow_n2_skipped
     global n2_unconfirmed, n2_anchored_admitted, coverage_rebuilds, coverage_rebuild_nodes
+    global n2_fit_position_published
     global coverage_rebuild_backlog, tracks_stale_skipped, solver_epoch_align_skipped
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
     global ws_send_timeouts
@@ -1126,7 +1134,7 @@ def _reset_for_tests() -> None:
     with counters_lock:
         frames_dropped = frames_processed = node_frames_rate_limited = 0
         solver_successes = solver_failures = n2_unconfirmed = 0
-        n2_anchored_admitted = 0
+        n2_anchored_admitted = n2_fit_position_published = 0
         adsb_seed_frames_autotagged = adsb_capture_ts_fallback = 0
         known_claims_made = known_claim_contentions = known_claims_bound = 0
         known_claims_errors = known_claims_visibility_rejects = 0

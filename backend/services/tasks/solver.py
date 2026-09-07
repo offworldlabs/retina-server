@@ -18,6 +18,7 @@ from config.constants import (
     ASSOC_GRID_STEP_KM,
     CV_VEL_ADOPT_CHI2_MAX,
     N2_CONFIRM_CHI2_MAX,
+    N2_CONFIRM_MIN_EPOCHS,
     N2_TRACK_ASSOCIATION,
 )
 from core import state
@@ -112,14 +113,19 @@ def _replace_solver_pool(pool, reason: str) -> None:
             )
 
 
-def _pool_call(fn, *args):
-    """Run fn in the solver process pool; inline when there is no pool."""
+def _pool_call(fn, *args, **kwargs):
+    """Run fn in the solver process pool; inline when there is no pool.
+
+    Keyword arguments cross to the child like the positional ones do (both are
+    pickled by submit), so a callee with an options keyword — fit_constant_
+    velocity's fix_altitude — does not need a positional-only wrapper.
+    """
     pool = _solver_pool
     if pool is None:
-        return fn(*args)
+        return fn(*args, **kwargs)
     future = None
     try:
-        future = pool.submit(fn, *args)
+        future = pool.submit(fn, *args, **kwargs)
         return future.result(timeout=_POOL_CALL_TIMEOUT_S)
     except concurrent.futures.TimeoutError:
         if future is not None:
@@ -146,10 +152,10 @@ def _pool_call(fn, *args):
         # thread; the counter and the task error make that case visible
         # instead of silent, which is what the timeout is for.
         _replace_solver_pool(pool, "call timed out")
-        return fn(*args)
+        return fn(*args, **kwargs)
     except BrokenProcessPool:
         _replace_solver_pool(pool, "broke")
-        return fn(*args)
+        return fn(*args, **kwargs)
 
 
 def _pool_solve_multistart(s_in, node_cfgs, alt_starts_km):
@@ -410,6 +416,47 @@ def _is_anchored_n2(s, r) -> bool:
 # the track path parked, requiring one would withhold every n=2 track.
 _N2_REQUIRE_CONFIRMED = N2_TRACK_ASSOCIATION
 _N2_CONFIRM_CHI2_MAX = N2_CONFIRM_CHI2_MAX
+
+# ...and once a pairing has passed that gate, publish the position the fit
+# itself produced rather than the single-epoch LM one.  Both describe the same
+# target from the same measurements, but not from the same NUMBER of them: the
+# LM fixes x, y from one epoch's 4 delay/Doppler residuals with altitude pinned
+# to a guess, while the confirmation fit ties every epoch the pairing has
+# accumulated to one constant-velocity trajectory — 4K measurements against 6
+# unknowns, altitude free — and evaluates it at the last epoch.  Measured
+# against ground truth on the test droplet, published n=2 solves sit a median
+# 2.6 km from truth, and still 1.6 km on the subset where the altitude pin
+# happened to be right, so the pin is not the whole of it: the rest is the
+# single epoch.  The fit is already computed for every confirmed pairing (it is
+# what confirms it), so this costs nothing and uses history the track already
+# has.
+#
+# Env-gated because it changes what lands on the map: if the fit position turns
+# out worse live, a restart with N2_PUBLISH_FIT_POSITION=0 is the way back.
+# Either way the history record carries both positions and their separation
+# (pos_source / solve_raw_lat / solve_raw_lon / fit_vs_solve_km), so gt_error
+# can be split by pos_source without a second deploy.
+_N2_PUBLISH_FIT_POSITION = os.getenv("N2_PUBLISH_FIT_POSITION", "1").strip().lower() not in ("0", "false", "off")
+
+# ...but published with its altitude PINNED, not the one it solved for.
+#
+# The fit that confirms the pairing solves a free z, correctly: a free
+# parameter in the chi2 test would hand a crossed pairing slack it should not
+# get.  For POSITION the same freedom is a defect.  At n=2 altitude is not
+# observable, so the fit spends z wherever the noise points, and a wrong z
+# leans on x and y through the bistatic geometry and drags the horizontal
+# answer with it.  Measured over the 14 published n=2 solves of a 20-minute
+# synthetic capture: published altitudes of -1721 m, -466 m and 15249 m, with
+# |published alt - truth| at a 4.57 km median against 2.94 km for the ladder
+# guess the swap replaced, and fit_vs_solve_km at a 5.4 km median.
+#
+# So the position swap uses a SECOND fit of the same epochs with
+# fix_altitude=True (cached separately as _cv_fit_pinned).  The confirmation
+# gate keeps reading the free fit: its chi2 threshold was calibrated against a
+# 6-state dof and re-deciding the gate is not this change.  Two fits of the
+# same epochs is one extra ~86 ms pool call per confirmed n=2 solve, paid on
+# the worker's own threads.
+_N2_FIT_FIX_ALTITUDE = os.getenv("N2_FIT_FIX_ALTITUDE", "1").strip().lower() not in ("0", "false", "off")
 
 # The calibration age rule moved to config.constants.CAL_MAX_ADSB_AGE_S and is
 # applied by services.calibration, which both recording sites now go through.
@@ -2057,7 +2104,7 @@ def claim_decision(
     return True
 
 
-def _resolve_cv_fit(s_in: dict, node_cfgs) -> dict | None:
+def _resolve_cv_fit(s_in: dict, node_cfgs, *, fix_altitude: bool = False) -> dict | None:
     """Constant-velocity fit over the whole observation window, cached.
 
     Fits one constant-velocity trajectory to the associated track pairing's
@@ -2076,8 +2123,18 @@ def _resolve_cv_fit(s_in: dict, node_cfgs) -> dict | None:
     _resolve_n2_chi2 without ever reaching here — which is also the one case
     this function cannot reconstruct a fit dict for: with the fit already
     done inline, no epochs survive on the input to refit from.
+
+    ``fix_altitude`` selects the pinned 4-state fit (z held at the initial
+    guess, vz = 0) and caches it under a SEPARATE key, ``_cv_fit_pinned``.
+    The two fits answer different questions over the same epochs — the free one
+    is the confirmation test, the pinned one is the position (see
+    _N2_FIT_FIX_ALTITUDE) — and they have different dof, so the pinned fit
+    deliberately does not write chi2_per_dof/n_epochs back onto the input:
+    those feed the n=2 gate, whose threshold was calibrated against the
+    6-state.
     """
-    cached = s_in.get("_cv_fit")
+    cache_key = "_cv_fit_pinned" if fix_altitude else "_cv_fit"
+    cached = s_in.get(cache_key)
     if cached is not None:
         return cached
     epochs = s_in.get("cv_epochs")
@@ -2095,13 +2152,16 @@ def _resolve_cv_fit(s_in: dict, node_cfgs) -> dict | None:
                 "timestamp_ms": s_in.get("timestamp_ms", 0),
             },
             node_cfgs,
+            fix_altitude=fix_altitude,
         )
     except Exception:
         logging.exception("constant-velocity fit failed")
         return None
     if not fit or not fit.get("success"):
         return None
-    s_in["_cv_fit"] = fit
+    s_in[cache_key] = fit
+    if fix_altitude:
+        return fit
     # Cache it so a retry of the same input does not refit.
     s_in["chi2_per_dof"] = fit["chi2_per_dof"]
     s_in["n_epochs"] = fit["n_epochs"]
@@ -2159,6 +2219,92 @@ def _n2_anchor_admits(s_in: dict) -> bool:
         return False
     state.bump_counter("n2_anchored_admitted")
     return True
+
+
+def _apply_n2_fit_position(s_in: dict, result: dict, node_cfgs) -> None:
+    """Swap in the constant-velocity fit's position on a published n=2 solve.
+
+    Called only after the confirmation gate above has passed the pairing, so
+    the epochs this refits are the ones that decided the pairing is a single
+    aircraft — and on the anchored bypass path, where the claim round decided
+    that instead and the fit is used for position alone.
+
+    With _N2_FIT_FIX_ALTITUDE (the default) this is a SECOND fit of those same
+    epochs, with altitude pinned to the solve's own initial guess.  The gate
+    keeps the free-z fit it was calibrated against; only the position comes
+    from the pinned one.  Altitude is never taken from a free fit at all — see
+    the assignment below.
+
+    Runs deliberately AFTER every gate, and changes none of them.  The beam and
+    displacement gates ran on the LM position because that is the position
+    their caps were tuned against (an anchored n=2 is judged at 1.5 km, see
+    _DARK_FOLLOW_N2_MAX_DISP_KM), and the track-pair claim is decided on the
+    fit's chi2, not on either position.  The only thing that changes here is
+    which position gets published; rms_delay, rms_doppler and n_nodes stay the
+    single-epoch solve's, since they describe that solve and not this one.
+
+    The LM position is kept on the result as solve_raw_lat/solve_raw_lon (and
+    stamped into the history record) so the swap is measurable live rather than
+    only in the offline bench: gt_error split by pos_source over published n=2
+    records is the whole experiment.
+
+    Downstream, track_filter.smooth_solve consumes result lat/lon like any
+    other solve, so kf_pos_sigma_m now reflects the fit position — which is
+    the intent, the smoother should be seeing the better estimate.
+    """
+    # Stamped for every confirmed n=2 whether or not the swap happens, so an
+    # absent fit is distinguishable in the dump from a fit that was used.
+    result["solve_raw_lat"] = result.get("lat")
+    result["solve_raw_lon"] = result.get("lon")
+    result["pos_source"] = "solve"
+    if not _N2_PUBLISH_FIT_POSITION:
+        return
+    fit = _resolve_cv_fit(s_in, node_cfgs, fix_altitude=_N2_FIT_FIX_ALTITUDE)
+    if not fit or not fit.get("success"):
+        # No fit to publish.  Normal, not an error: a pairing association
+        # fitted inline arrives with chi2_per_dof already set and no cv_epochs
+        # to refit from (see _resolve_cv_fit), and an anchored input that never
+        # carried epochs has nothing here either.  Those keep the LM position.
+        return
+    if fit.get("lat") is None or fit.get("lon") is None or fit.get("alt_m") is None:
+        return
+    if (fit.get("n_epochs") or 0) < N2_CONFIRM_MIN_EPOCHS:
+        return
+    lat = float(fit["lat"])
+    lon = float(fit["lon"])
+    # The fit evaluates its trajectory at its OWN last epoch, which is normally
+    # this solve's measurement epoch — so this is usually a no-op.  But they are
+    # two separate inputs and nothing enforces that, and publishing a position
+    # from a different instant than the timestamp it is published under is
+    # exactly the error the epoch-alignment work above exists to prevent, so
+    # propagate on the fit's own velocity rather than assuming.
+    _fit_ts = float(fit.get("timestamp_ms") or 0)
+    _res_ts = float(result.get("timestamp_ms") or 0)
+    if _fit_ts > 0 and _res_ts > 0 and _fit_ts != _res_ts:
+        dt_s = (_res_ts - _fit_ts) / 1000.0
+        lat, lon = offset_latlon_m(
+            lat,
+            lon,
+            east_m=float(fit.get("vel_east") or 0.0) * dt_s,
+            north_m=float(fit.get("vel_north") or 0.0) * dt_s,
+        )
+    result["fit_vs_solve_km"] = _haversine_km(float(result["lat"]), float(result["lon"]), lat, lon)
+    result["lat"] = lat
+    result["lon"] = lon
+    # Altitude comes from the fit ONLY when the fit was told to pin it — in
+    # which case it is the solve's own pinned altitude anyway, and the
+    # assignment is a no-op kept for symmetry.  A FREE fit's altitude is never
+    # published: at n=2 it is an unobservable direction the optimiser has
+    # filled with noise, and it measured worse (4.57 km median |alt - truth|)
+    # than the ladder guess the solve pinned (2.94 km).  Position is worth
+    # taking from the fit because 4K measurements beat 4; altitude is not,
+    # because neither of them constrains it.
+    fit_alt_fixed = bool(fit.get("altitude_fixed"))
+    if fit_alt_fixed:
+        result["alt_m"] = float(fit["alt_m"])
+    result["fit_altitude_fixed"] = fit_alt_fixed
+    result["pos_source"] = "cv_fit"
+    state.bump_counter("n2_fit_position_published")
 
 
 # ── Per-solve history (debug) ────────────────────────────────────────────────
@@ -2635,6 +2781,23 @@ def _record_solve_history(
         "vel_untrusted": bool(r.get("vel_untrusted")),
         "solver_vel_east": (round(float(r["solver_vel_east"]), 1) if r.get("solver_vel_east") is not None else None),
         "solver_vel_north": (round(float(r["solver_vel_north"]), 1) if r.get("solver_vel_north") is not None else None),
+        # Which position was published, and what the other candidate said.
+        # Only a confirmed n=2 solve has two (see _apply_n2_fit_position): the
+        # constant-velocity fit over the pairing's whole epoch history, and the
+        # single-epoch LM solve kept here as solve_raw_lat/solve_raw_lon.
+        # pos_source is None on every other record — nothing else chooses — so
+        # gt_error by pos_source over published n=2 records measures the swap
+        # live, and fit_vs_solve_km says how far apart the two answers were on
+        # the solves where it made no difference to the score.
+        "pos_source": r.get("pos_source"),
+        "solve_raw_lat": (round(float(r["solve_raw_lat"]), 6) if r.get("solve_raw_lat") is not None else None),
+        "solve_raw_lon": (round(float(r["solve_raw_lon"]), 6) if r.get("solve_raw_lon") is not None else None),
+        "fit_vs_solve_km": (round(float(r["fit_vs_solve_km"]), 3) if r.get("fit_vs_solve_km") is not None else None),
+        # Whether the published fit position came from a pinned-altitude fit.
+        # None on every record that did not swap a position in; the point of
+        # carrying it is that alt_error by fit_altitude_fixed is the live read
+        # on the pin, the same way gt_error by pos_source is on the swap.
+        "fit_altitude_fixed": (bool(r["fit_altitude_fixed"]) if r.get("fit_altitude_fixed") is not None else None),
     }
     if extra:
         rec.update(extra)
@@ -3300,6 +3463,13 @@ def _process_solver_item(
                     extra=_extra,
                 )
                 return result
+        # Confirmed at n=2 — publish the fit's position rather than the
+        # single-epoch one.  Reached by both n=2 publish paths: the gate above
+        # returns on every reject, and an anchor-admitted input skips the gate
+        # body entirely (the `not _n2_anchor_admits` in its condition), so
+        # arriving here at n=2 means this solve is about to be published.
+        if _N2_REQUIRE_CONFIRMED and n_nodes == 2 and isinstance(s_in, dict):
+            _apply_n2_fit_position(s_in, result, node_cfgs)
         state.bump_counter("solver_successes")
         with state.solver_latency_lock:
             state.solver_total_solved += 1
