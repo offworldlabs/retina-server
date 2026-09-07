@@ -971,3 +971,103 @@ class TestContaminationBlock:
         rec["known_lane"] = True
         state.mlat_solve_history_known.append(rec)
         assert _solver_window_stats(10.0)["contamination"]["records_with_gt"] == 0
+
+
+class TestByNNodes:
+    """The funnel re-split by how many nodes each attempt used — the question
+    "what fraction of 3-node candidates actually publish?", which before this
+    block needed an offline pass over a history dump."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_published_and_rejected_land_in_their_own_buckets(self):
+        state.mlat_solve_history.append(_rec("published", n_nodes=3, gt_error_km=0.4))
+        state.mlat_solve_history.append(_rec("rejected_beam", n_nodes=2))
+        out = _solver_window_stats(10.0)["by_n_nodes"]
+        assert out["3"] == {
+            "attempts": 1,
+            "published": 1,
+            "publish_rate": 1.0,
+            "rejects": {},
+            "gt_err_median_km": 0.4,
+        }
+        assert out["2"] == {
+            "attempts": 1,
+            "published": 0,
+            "publish_rate": 0.0,
+            # Same strip as the by_reason table, so the two can be added up.
+            "rejects": {"beam": 1},
+            "gt_err_median_km": None,
+        }
+
+    def test_buckets_sum_back_to_the_funnel(self):
+        for n in (2, 3, 4, 5, 9):
+            state.mlat_solve_history.append(_rec("published", n_nodes=n))
+            state.mlat_solve_history.append(_rec("rejected_rms", n_nodes=n))
+        out = _solver_window_stats(10.0)
+        by_n = out["by_n_nodes"]
+        # 5 and 9 share the 5+ bucket; everything else is its own.
+        assert sorted(by_n) == ["2", "3", "4", "5+"]
+        assert by_n["5+"]["attempts"] == 4
+        assert sum(b["attempts"] for b in by_n.values()) == out["attempts"]
+        assert sum(b["published"] for b in by_n.values()) == out["published"]["total"]
+
+    def test_a_record_with_no_node_count_is_kept_not_dropped(self):
+        """Some reject paths write no n_nodes; they still have to appear, or
+        the buckets stop summing to attempts."""
+        state.mlat_solve_history.append(_rec("rejected_geometry", n_nodes=None))
+        out = _solver_window_stats(10.0)
+        assert out["by_n_nodes"]["<2"]["attempts"] == 1
+        assert sum(b["attempts"] for b in out["by_n_nodes"].values()) == out["attempts"]
+
+    def test_gt_error_beyond_the_gate_is_excluded_like_the_top_level_median(self):
+        state.mlat_solve_history.append(_rec("published", n_nodes=4, gt_error_km=_ERR_GT_GATE_KM + 1))
+        out = _solver_window_stats(10.0)["by_n_nodes"]
+        assert out["4"]["published"] == 1
+        assert out["4"]["gt_err_median_km"] is None
+
+    def test_only_the_top_four_reject_reasons_are_listed(self):
+        for i in range(6):
+            for _ in range(6 - i):
+                state.mlat_solve_history.append(_rec(f"rejected_r{i}", n_nodes=3))
+        rejects = _solver_window_stats(10.0)["by_n_nodes"]["3"]["rejects"]
+        assert list(rejects) == ["r0", "r1", "r2", "r3"]
+        assert rejects["r0"] == 6
+
+    def test_the_known_lane_gets_its_own_table(self):
+        state.mlat_solve_history_known.append(_rec("published", n_nodes=4, known_lane=True))
+        out = _solver_window_stats(10.0)
+        assert out["by_n_nodes"] == {}
+        assert out["by_n_nodes_known"]["4"]["published"] == 1
+
+
+class TestDarkFollowBlock:
+    """The follow lane's funnel and, beside it, why the keys it did not follow
+    were refused."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_ineligibility_reasons_are_reported_per_reason(self):
+        state.bump_counter("dark_follow_inelig_vel_sigma", 7)
+        state.bump_counter("dark_follow_inelig_min_nodes", 3)
+        state.dark_follow_inputs = 5
+        state.dark_follow_published = 4
+        out = _solver_window_stats(10.0)["dark_follow"]
+        assert out["inputs"] == 5
+        assert out["published"] == 4
+        assert out["ineligible"] == {
+            "cooldown": 0,
+            "no_pos": 0,
+            "age": 0,
+            "min_solves": 0,
+            "min_nodes": 3,
+            "no_filter": 0,
+            "vel_sigma": 7,
+        }
+
+    def test_an_empty_lane_reports_zeroes_not_a_missing_block(self):
+        out = _solver_window_stats(10.0)["dark_follow"]
+        assert out["targets_now"] == 0
+        assert set(out["ineligible"].values()) == {0}
