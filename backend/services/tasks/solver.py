@@ -178,15 +178,13 @@ def _pool_solve_multistart(s_in, node_cfgs, alt_starts_km):
 # layers fix systematic 7–10 km errors for low-altitude aircraft where the old
 # [5, 7, 9, 11] set forced a wrong altitude.
 #
-# These deliberately no longer match the association grid's layers
-# (ASSOC_ALT_LAYERS_KM, now 1 km steps to 12 km).  They used to, on the
-# argument that the initial guess should land on a sweep point — but the guess
-# is a delay-residual weighted MEAN across layers and so has never been a
-# layer value anyway, and _solve_best_altitude already folds the guess
-# altitude into the sweep as its own extra layer.  Doubling this list would
-# double every n≥3 solve's cost to refine an altitude the overdetermined
-# residual already resolves; the finer ladder is bought where it pays, which
-# is association and n=2.
+# These happen to equal the association grid's default layers
+# (ASSOC_ALT_LAYERS_KM) but are not tied to them: the initial guess is a
+# delay-residual weighted MEAN across the grid's layers and so has never been
+# a layer value anyway, and _solve_best_altitude folds the guess altitude into
+# the sweep as its own extra layer.  Doubling this list would double every
+# n>=3 solve's cost to refine an altitude the overdetermined residual already
+# resolves.
 _SOLVER_ALT_LAYERS_KM = [1.5, 3.0, 5.0, 7.0, 9.0, 11.0]
 
 # Reject solver results whose RMS delay residual exceeds this value.

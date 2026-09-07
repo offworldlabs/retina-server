@@ -56,24 +56,30 @@ def _assoc_alt_layers_km() -> tuple[float, ...]:
     weighted mean altitude across these layers.  Measured on a 20-minute test
     capture against ground truth: n=2 solves had a median altitude error of
     1.46 km (p90 5.25) and a position error of 1.61 km when the altitude
-    landed within 1 km of truth against 2.71 km when it did not.  The
-    horizontal step is not the limiter (the LM solve converges from a 3 km
-    start); the ladder is.
+    landed within 1 km of truth against 2.71 km when it did not.
 
-    So: 1 km steps from 1 to 12 km, which covers the commercial cruise band
-    end to end and caps the quantisation error at 500 m.  The library's own
-    default is the old six layers (1.5, 3, 5, 7, 9, 11) whose widest gap is
-    2 km — that stays the library default so its tests and bench are
-    unchanged; this is the deployment's override.
+    The obvious fix — a finer ladder — was tried and measured, and it does
+    not help.  With 1 km steps from 1 to 12 km (two 20-minute captures against
+    the six-layer baseline, synthetic traffic only): n=2 attempts tripled
+    (170 -> 548 per capture) and the extra attempts were almost all
+    beam-rejected; the population of n=3 solves whose pool nodes all failed
+    adoption grew from 3-6 to 24-28 per capture at ~2.7 km error; and the
+    inherited-altitude n=3 solves (see solver.py's _inherit_key_altitude)
+    came out at 1.2-1.6 km against 0.36 km with the six layers, because the
+    donors' own altitudes had been solved from worse initial guesses.  The
+    guess is a weighted MEAN across layers, so a denser ladder does not make
+    it land nearer a layer; it makes more low-residual layers tie.
 
-    Cost is linear in the layer count and paid once per node pair at
-    registration: the overlap columns are altitude-independent, so twelve
-    layers emit exactly twice the grid points of six.  Measured per zone on
-    one real pair at grid_step_km=3.0: 180 -> 360 points, 9.3 -> 13.3 ms.
-
-    Env-overridable as a comma list (ASSOC_ALT_LAYERS_KM="2,4,6,8"); a blank
-    or unparseable value falls back to the default rather than building an
-    empty grid, which would silently disable association altogether.
+    So the default stays the library's six layers (1.5, 3, 5, 7, 9, 11), and
+    the ladder is env-overridable as a comma list (ASSOC_ALT_LAYERS_KM=
+    "1,2,3,4,5,6,7,8,9,10,11,12") so the experiment can be repeated without a
+    code change.  Cost is linear in the layer count and paid once per node
+    pair at registration: the overlap columns are altitude-independent, so
+    twelve layers emit exactly twice the grid points of six (measured per
+    zone on one real pair at grid_step_km=3.0: 180 -> 360 points, 9.3 ->
+    13.3 ms).  A blank or unparseable value falls back to the default rather
+    than building an empty grid, which would silently disable association
+    altogether.
     """
     raw = os.getenv("ASSOC_ALT_LAYERS_KM", "")
     if raw.strip():
@@ -86,20 +92,7 @@ def _assoc_alt_layers_km() -> tuple[float, ...]:
     return ASSOC_ALT_LAYERS_KM_DEFAULT
 
 
-ASSOC_ALT_LAYERS_KM_DEFAULT: tuple[float, ...] = (
-    1.0,
-    2.0,
-    3.0,
-    4.0,
-    5.0,
-    6.0,
-    7.0,
-    8.0,
-    9.0,
-    10.0,
-    11.0,
-    12.0,
-)
+ASSOC_ALT_LAYERS_KM_DEFAULT: tuple[float, ...] = (1.5, 3.0, 5.0, 7.0, 9.0, 11.0)
 ASSOC_ALT_LAYERS_KM: tuple[float, ...] = _assoc_alt_layers_km()
 ASSOC_MIN_INTERVAL_S = 30.0  # Per-node association rate limit (s)
 ASSOC_MAX_NEIGHBORS = 50  # CPU budget cap for neighbor checks
