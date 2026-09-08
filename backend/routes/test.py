@@ -1470,6 +1470,13 @@ def _solver_window_stats(minutes: float) -> dict:
             # the windowed version when one is needed.
             "dark_keys_minted": state.solver_key_minted_dark,
             "dark_keys_proximity": state.solver_key_proximity_dark,
+            # ...and the re-keys the node-track evidence decided rather than
+            # distance alone (solver.py's TRACK_LINK_AGE_S) — a shared tracker
+            # track id inside the gate, including the follow-owned keys that
+            # are joined on two of them.  Each one is a key birth the
+            # distance-only rule would have made, or a solve it would have
+            # discarded.
+            "dark_keys_tracks": state.solver_key_tracks,
             # ...and how many of those re-keys matched an entry measured
             # AFTER the solve that joined it (signed dt < 0).  Those entries
             # were invisible to the scan until _MN_ASSOC_MAX_NEG_DT_S, so
