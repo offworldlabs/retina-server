@@ -69,6 +69,7 @@ from core import state
 from services import dark_follow, track_filter
 from services.geo import haversine_km, offset_latlon_m
 from services.id_utils import normalize_hex_key
+from services.known_claiming import KNOWN_CLAIM_MAX_FIX_AGE_S
 
 # Deliberate one-way dependency: this module reuses the solver worker's
 # record store, gates, publication lock and smoother so known-lane records
@@ -257,6 +258,45 @@ def _build_solver_input(hexn: str, claims: dict[str, dict]) -> dict | None:
         east_m=vel_east * dt_s,
         north_m=vel_north * dt_s,
     )
+    seed_source = "fix"
+
+    # A HELD claim (known_claiming path H) can outlive its transponder by any
+    # amount — that is the point of the hold — and the fix above is then a
+    # position from minutes ago propagated at a heading from minutes ago.  Its
+    # dead-reckoned guess drifts kilometres, _attempt measures displacement
+    # against it, labels the honest solve a "ghost", and the aircraft stops
+    # being published exactly when it stopped being visible any other way.
+    # Past the fix-age cap the lane's OWN last solve for this hex is the better
+    # prior: it is a radar measurement, seconds old, of the same aircraft, and
+    # the filter has a velocity for it.  Altitude still comes from the fix —
+    # a barometric altitude does not go stale the way a position does, and it
+    # remains the best altitude information anyone has.
+    if abs(dt_s) > KNOWN_CLAIM_MAX_FIX_AGE_S:
+        prev = state.multinode_tracks.get(f"mn-adsb-{hexn}")
+        prev_lat = prev.get("lat") if isinstance(prev, dict) else None
+        prev_lon = prev.get("lon") if isinstance(prev, dict) else None
+        prev_ts_ms = _num(prev.get("timestamp_ms"), 0) if isinstance(prev, dict) else 0
+        if isinstance(prev_lat, (int, float)) and isinstance(prev_lon, (int, float)) and prev_ts_ms:
+            learned = track_filter.learned_velocity(f"mn-adsb-{hexn}")
+            if learned is not None:
+                seed_ve, seed_vn = float(learned[0]), float(learned[1])
+            else:
+                seed_ve = _num(prev.get("vel_east"))
+                seed_vn = _num(prev.get("vel_north"))
+            coast_s = (newest_ts_ms - int(prev_ts_ms)) / 1000.0
+            guess_lat, guess_lon = offset_latlon_m(
+                float(prev_lat),
+                float(prev_lon),
+                east_m=seed_ve * coast_s,
+                north_m=seed_vn * coast_s,
+            )
+            # The velocity seed moves with the guess: seeding a position from
+            # the radar track and a heading from a stale transponder report
+            # would be two different aircraft's worth of prior.
+            vel_east, vel_north = seed_ve, seed_vn
+            seed_source = "kf"
+    # No prior solve leaves seed_source "fix" and today's dead-reckoned guess:
+    # a drifting prior still beats no prior, and the classification says so.
 
     return {
         "initial_guess": {
@@ -264,6 +304,7 @@ def _build_solver_input(hexn: str, claims: dict[str, dict]) -> dict | None:
             "lon": guess_lon,
             "alt_km": _num(fix.get("alt_baro")) * FT_TO_M / 1000.0,
         },
+        "seed_source": seed_source,
         "initial_velocity": {
             "vel_east_ms": vel_east,
             "vel_north_ms": vel_north,
@@ -423,7 +464,13 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
             "known_no_converge",
             s_in,
             result if isinstance(result, dict) else None,
-            extra={"known_lane": True, "label": "no_converge", "published": False, **epoch_meta},
+            extra={
+                "known_lane": True,
+                "label": "no_converge",
+                "published": False,
+                "seed_source": s_in.get("seed_source", "fix"),
+                **epoch_meta,
+            },
         )
         return
 
@@ -463,7 +510,13 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
         raw_lat=raw_lat,
         raw_lon=raw_lon,
         displacement_km=err_km,
-        extra={"known_lane": True, "label": label, "published": published, **epoch_meta},
+        extra={
+            "known_lane": True,
+            "label": label,
+            "published": published,
+            "seed_source": s_in.get("seed_source", "fix"),
+            **epoch_meta,
+        },
     )
 
 
