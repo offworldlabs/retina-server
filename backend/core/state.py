@@ -622,6 +622,12 @@ known_claims_errors: int = 0
 known_hold_claims: int = 0
 known_hold_expired: int = 0
 known_hold_dropped_disagree: int = 0
+# Known-track FOLLOW (services/known_claiming._follow_states): detections
+# claimed against the known lane's OWN published position for a hex whose
+# transponder has gone stale, on a node that has no hold of its own.  It is
+# what stops a node that newly acquires a silent aircraft from feeding the
+# dark pool and minting a twin key beside the lane's entry.
+known_follow_claims: int = 0
 # Dark track following (DARK_FOLLOW_MODE) — see services/dark_follow.py.
 # targets is a GAUGE (the size of the current pseudo-state list, assigned on
 # every rebuild), the other four are since-boot counters.  The funnel reads
@@ -1079,6 +1085,7 @@ def _reset_for_tests() -> None:
     global known_claims_made, known_claim_contentions, known_claims_bound
     global known_claims_errors, known_claims_visibility_rejects, known_claims_world_rejects
     global known_hold_claims, known_hold_expired, known_hold_dropped_disagree
+    global known_follow_claims
     global dark_follow_targets, dark_follow_claims, dark_follow_inputs
     global dark_follow_published, dark_follow_dropped, dark_bottomup_shadowed
     global dark_follow_inelig_cooldown, dark_follow_inelig_no_pos
@@ -1185,6 +1192,7 @@ def _reset_for_tests() -> None:
         known_claims_errors = known_claims_visibility_rejects = 0
         known_claims_world_rejects = 0
         known_hold_claims = known_hold_expired = known_hold_dropped_disagree = 0
+        known_follow_claims = 0
         dark_follow_targets = dark_follow_claims = dark_follow_inputs = 0
         dark_follow_published = dark_follow_dropped = 0
         dark_follow_inelig_cooldown = dark_follow_inelig_no_pos = 0

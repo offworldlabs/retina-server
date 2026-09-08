@@ -164,6 +164,28 @@ solve instead of the drifting dead-reckoned fix (`seed_source: "kf"`), and
 `aircraft_feed._claimed_single_node_entries` skips a singly-claimed hold whose
 fix has aged out rather than drawing the aircraft at a position nothing
 measured.
+
+**Follow and re-anchor (the silent aircraft's other two failure modes).**  A
+hold only helps the nodes that already had the aircraft: a node that ACQUIRES
+one mid-silence has no tag, no fresh fix and no hold, so its detections start a
+dark twin beside the lane's own entry.  `known_claiming._follow_states` offers
+the lane's published `mn-adsb-<hex>` position (at most `KNOWN_FOLLOW_MAX_AGE_S`
+old, `KNOWN_FOLLOW_MIN_SOLVES` solves behind it, velocity from the filter) to
+path 2 as an ordinary candidate — same visibility gate, prescreen, age-scaled
+gates and Hungarian — and the resulting claim carries the hex's ORIGINAL stale
+fix plus `follow: True` (`known_follow_claims`), so the new node holds the
+track from the next frame on.  And because a kf seed is a prior rather than a
+measurement, a turn during the silence drifts it along the old heading until
+the honest solves fall outside `_MAX_DISPLACEMENT_KM` of it and stop being
+published, which freezes the prior and makes the state permanent.
+`known_lane._reanchor` breaks that: `KNOWN_LANE_REANCHOR_STREAK` consecutive
+kf-seeded ghosts that agree with EACH OTHER (a wrong solve is wrong somewhere
+new each time) are published as label `reanchored` (`known_lane_reanchored`).
+A fix-seeded ghost never re-anchors — a live transponder stays the lane's truth
+gate.  Both counters ride the solver-stats `known_claims` / `known_lane`
+blocks.  Related: `track_filter._adsb_velocity` now ignores a cached fix older
+than `KNOWN_CLAIM_MAX_FIX_AGE_S`, so a pre-silence heading can no longer pull
+the filter's velocity (and with it the dead-reckoned prior) off the turn.
 Frame-level gates (A/B/C on TCP, plus the connected-node check on the v1 API)
 sit ahead of everything else; nothing downstream sees a frame that failed
 one of them.
@@ -321,6 +343,8 @@ LM's SNR weighting maps to a uniform weight of 1.0.
 | `KNOWN_HOLD_MAX_GAP_S` (path H window; **0 = feature off**, live-settable via `PUT /api/test/known-hold`) | 8.0 s of frame time | `known_claiming.py` |
 | Path H gates: `KNOWN_HOLD_DELAY_GATE_US` + `KNOWN_HOLD_DELAY_RATE_US_PER_S` * dt / `KNOWN_HOLD_DOPPLER_GATE_HZ` + `KNOWN_HOLD_DOPPLER_RATE_HZ_PER_S` * dt | 1.5 us + 1.0 us/s / 20 Hz + 10 Hz/s | `known_claiming.py` |
 | `KNOWN_HOLD_MAX_DOPPLER_RATE_HZ_S` / `KNOWN_HOLD_RATE_MAX_SPAN_S` | 15 Hz/s / 5.0 s | `known_claiming.py` |
+| `KNOWN_FOLLOW_MAX_AGE_S` / `KNOWN_FOLLOW_MIN_SOLVES` (follow candidates; **0 = off**) | 20.0 s / 3 | `known_claiming.py` |
+| `KNOWN_LANE_REANCHOR_STREAK` (**0 = off**) | 2 | `services/tasks/known_lane.py` |
 | `_PASS_MIN_INTERVAL_S` | 2.0 s | `services/tasks/known_lane.py` |
 | `_CLAIM_MAX_AGE_S` / `_CLAIM_SPREAD_S` | 45.0 s / 5.0 s | `known_lane.py` |
 | `_ATTEMPT_TTL_S` | 600 s | `known_lane.py` |
