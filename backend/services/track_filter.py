@@ -113,10 +113,18 @@ import threading
 from dataclasses import dataclass
 
 import numpy as np
+from retina_analytics.association import ADSB_SEED_MAX_DR_AGE_S
 
 from core import state
 from services.geo import M_PER_DEG_LAT, km_per_deg_lon, offset_latlon_m
 from services.id_utils import is_transponder_hex
+
+# Maximum age of a cached ADS-B fix whose gs/track may still steer a live
+# radar track — the same 45 s cap services.known_claiming aliases as
+# KNOWN_CLAIM_MAX_FIX_AGE_S.  Taken from the library rather than from that
+# module because known_claiming reaches this one through services.dark_follow,
+# so importing it back here would close an import cycle.
+_ADSB_VEL_MAX_AGE_S = ADSB_SEED_MAX_DR_AGE_S
 
 # ── Tunables ──────────────────────────────────────────────────────────────
 # Read once at import — these are physical/model constants, not per-call
@@ -721,15 +729,39 @@ def _measurement_R(result: dict, adsb_hex: str | None = None) -> np.ndarray:
     return r
 
 
-def _adsb_velocity(adsb_hex: str | None) -> tuple[bool, float, float]:
+def _adsb_velocity(adsb_hex: str | None, now_ms: float | None = None) -> tuple[bool, float, float]:
     """(has_live_entry, v_east_ms, v_north_ms) from core.state.adsb_aircraft.
 
     Mirrors _ewma_smooth_track's ADS-B branch exactly: gs in knots * 0.514444
     -> m/s, track in degrees (0=N, 90=E) -> (sin, cos) east/north components.
+
+    THE STALE-FIX GUARD.  ``state.adsb_aircraft`` keeps an entry long after
+    the transponder stops reporting, and gs/track on it are then a heading
+    from minutes ago.  The known lane exists precisely to keep solving such
+    an aircraft from radar alone — so when it TURNS during the silence, an
+    unaged gs/track pulls the filter's velocity back toward the pre-silence
+    heading, the dead-reckoned prior walks off along the old course, and the
+    honest solves that follow are measured against it and labelled ghosts.
+    Live traffic in the same cache is unaffected: its fix is seconds old.
+
+    ``now_ms`` is the epoch the velocity is wanted FOR (the solve's own
+    ``timestamp_ms``), never wall clock — a replay or a backlogged node must
+    see the same verdict the live path saw.  Omitted, the entry is used
+    unaged, which is the pre-guard behaviour for callers with no epoch of
+    their own.  An entry carrying no timestamp at all is likewise used: no
+    live writer produces one, so the only sources are pre-timestamp records
+    and tests, and rejecting those would silently disable the velocity seed
+    rather than the stale-heading case this guard is about.
     """
     adsb = state.adsb_aircraft.get(adsb_hex) if adsb_hex else None
     if not adsb:
         return False, 0.0, 0.0
+    if now_ms is not None:
+        # adsb_derived_fields stamps timestamp_ms; the raw record carries
+        # last_seen_ms.  Either answers "when was this fix reported".
+        fix_ts_ms = adsb.get("timestamp_ms") or adsb.get("last_seen_ms") or 0
+        if fix_ts_ms and abs(float(now_ms) - float(fix_ts_ms)) / 1000.0 > _ADSB_VEL_MAX_AGE_S:
+            return False, 0.0, 0.0
     gs_knots = float(adsb.get("gs", 0) or 0)
     track_deg = float(adsb.get("track", 0) or 0)
     v_ms = gs_knots * 0.514444
@@ -800,7 +832,7 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
     r_lon = result["lon"]
     ts_s = result.get("timestamp_ms", 0) / 1000.0
 
-    has_adsb_vel, v0e, v0n = _adsb_velocity(adsb_hex)
+    has_adsb_vel, v0e, v0n = _adsb_velocity(adsb_hex, result.get("timestamp_ms"))
     r_pos = _measurement_R(result, adsb_hex)
 
     with _KF_LOCK:

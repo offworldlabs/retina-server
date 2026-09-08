@@ -1172,14 +1172,15 @@ def _ewma_smooth_track(result: dict, track_key: str, adsb_hex: str | None) -> di
     r_lon = result["lon"]
     r_ts = result.get("timestamp_ms", 0) / 1000.0
 
-    adsb = state.adsb_aircraft.get(adsb_hex) if adsb_hex else None
-    if adsb:
-        gs_knots = float(adsb.get("gs", 0) or 0)
-        track_deg = float(adsb.get("track", 0) or 0)
-        gs_kms = gs_knots * 0.514444 / 1000.0  # knots → km/s
-        # Geographic track: 0° = North, 90° = East.
-        vel_north_kms = gs_kms * math.cos(math.radians(track_deg))
-        vel_east_kms = gs_kms * math.sin(math.radians(track_deg))
+    # Aged against this solve's own epoch, not wall clock, and by the same
+    # rule the KF smoother applies — a fix older than the cap is a heading
+    # from before the aircraft went silent, and dead-reckoning the history
+    # along it walks the smoothed position off the track.  See
+    # track_filter._adsb_velocity.
+    has_adsb_vel, v_east_ms, v_north_ms = track_filter._adsb_velocity(adsb_hex, result.get("timestamp_ms"))
+    if has_adsb_vel:
+        vel_east_kms = v_east_ms / 1000.0
+        vel_north_kms = v_north_ms / 1000.0
     else:
         vel_east_kms = float(result.get("vel_east") or 0.0) / 1000.0
         vel_north_kms = float(result.get("vel_north") or 0.0) / 1000.0
