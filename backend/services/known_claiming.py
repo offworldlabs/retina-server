@@ -631,6 +631,18 @@ def _follow_states(frame_ts_s: float, claimed_hexes: set[str]) -> dict[str, dict
         if alt_m is None:
             alt_m = float(rec.get("alt_km") or 0.0) * 1000.0
         alt_m = float(alt_m or 0.0)
+        # World tag: the cache's while the stale entry is still there, else
+        # the hold's (every hold stamps the claiming node's world).  A follow
+        # candidate with NO world would pass the world gate on every node,
+        # and real traffic flies over the simulated fleet's footprint —
+        # exactly the decoy case that gate exists for.
+        world = cached.get("world") if isinstance(cached, dict) else None
+        if world is None:
+            for holds in list(state.known_track_holds.values()):
+                e = holds.get(hexn)
+                if isinstance(e, dict) and e.get("world") is not None:
+                    world = e["world"]
+                    break
         out[hexn] = {
             "lat": float(lat),
             "lon": float(lon),
@@ -642,7 +654,7 @@ def _follow_states(frame_ts_s: float, claimed_hexes: set[str]) -> dict[str, dict
             # entry ages out there is nothing to tag with, and an untagged
             # candidate passes every world — the same rule the cache path
             # applies to an entry written before worlds existed.
-            "world": cached.get("world") if isinstance(cached, dict) else None,
+            "world": world,
             # Marks this candidate as synthetic for the claim-building step
             # below; no other reader of a cached state ever sees it.
             "_follow_fix": _follow_fix_record(hexn, float(lat), float(lon), alt_m, ve, vn, ts_ms),
