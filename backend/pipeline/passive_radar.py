@@ -51,6 +51,12 @@ from services.public_location import public_latlon
 from services.publication import is_private
 
 # ─── Node Configuration ─────────────────────────────────────────────
+# Fallback geometry only, for a frame whose node is absent from the registries;
+# a registered node is always solved against its own configuration. The numbers
+# are the retired radar3 site (RX Wilderness, illuminated by WXIA-TV on ch 10),
+# kept because they are a self-consistent bistatic pair rather than because that
+# site still exists. Anything solved against them lands near Atlanta, which is
+# the tell that a node reached the pipeline unregistered.
 DEFAULT_NODE_CONFIG = {
     "node_id": "net13",
     "Fs": 2_000_000,  # Sample rate Hz

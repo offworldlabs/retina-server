@@ -24,15 +24,6 @@ TASK_EXPECTED_INTERVAL_S: dict[str, int] = {
 }
 
 
-def register_task(name: str, expected_interval_s: int) -> None:
-    """Add a dynamically-discovered task to the staleness registry.
-
-    For tasks whose number is not known until config is read. Idempotent, so
-    re-reading a config file does not disturb an already-registered task.
-    """
-    TASK_EXPECTED_INTERVAL_S.setdefault(name, expected_interval_s)
-
-
 def get_stale_tasks() -> list[str]:
     """Tasks that have not reported success within 2x their expected interval.
 

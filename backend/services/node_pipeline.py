@@ -18,8 +18,8 @@ from services import node_registration
 
 logger = logging.getLogger(__name__)
 
-# The pipeline expects three fields the v1 wire config does not carry; these
-# are the values the nodes actually run with, not invented ones.
+# The pipeline expects three fields the v1 wire config does not carry. The same
+# triple is in pipeline/passive_radar.py's DEFAULT_NODE_CONFIG; keep them equal.
 _PIPELINE_DEFAULTS = {"doppler_min": -300, "doppler_max": 300, "min_doppler": 15}
 
 # beam_azimuth_deg is passed through rather than defaulted: null is broadside

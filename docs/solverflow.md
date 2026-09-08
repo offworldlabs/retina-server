@@ -90,9 +90,9 @@ own. Everything that reaches a solve passes through one gate stack
 flowchart TD
     subgraph producers["Four producers"]
         p1["TCP (primary)<br/>tcp_handler.py:326"]
-        p3["v1 node HTTP API<br/>node_stream.py:250"]
+        p3["v1 node HTTP API<br/>node_stream.py:284"]
         p4["Legacy HTTP radar routes<br/>routes/radar.py:151,202"]
-        p5["Startup priming<br/>node_pipeline.py:139"]
+        p5["Startup priming<br/>node_pipeline.py:137"]
     end
 
     p1 --> gA{"Gate A: timestamp present?"}

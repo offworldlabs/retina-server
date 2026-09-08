@@ -311,7 +311,7 @@ curl -sk https://localhost/api/radar/nodes | jq '.nodes | keys'
 ```
 
 ```bash
-curl -sk https://localhost/api/test/node/<node_id>/verification | jq '{n_tracks, n_matched, position}'
+NODE_ID=radar3a-retnode; curl -sk "https://localhost/api/test/node/$NODE_ID/verification" | jq '{n_tracks, n_matched, position}'
 ```
 
 A node missing from the first list failed validation — the reason is logged at error level, naming the offending field.
