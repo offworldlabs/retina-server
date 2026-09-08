@@ -1295,6 +1295,14 @@ simulation_config: dict = {
     **_seed_sim_fracs_from_env(),
     # aircraft (commercial) fraction = 1 - sum of above
     #
+    # Transponder outages: the fraction of ADS-B-equipped aircraft the
+    # simulator takes silent mid-flight (has_adsb stays true, the broadcast
+    # stops).  Deliberately NOT part of the frac_* sum above and NOT env-seeded
+    # with them: it is a fraction OF the ADS-B population, orthogonal to the
+    # spawn-type roll, so folding it into that sum would make a scene with lots
+    # of dark traffic silently unable to test outages.  0.0 = off.
+    "frac_adsb_outage": 0.0,
+    #
     # Deliberately NO defaults for max_range_km / min_aircraft / max_aircraft:
     # the fleet orchestrator applies those keys only when present, falling back
     # to its own deployment env (FLEET_MIN_AIRCRAFT etc.).  Defaults here are a
