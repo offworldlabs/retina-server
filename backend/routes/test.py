@@ -14,7 +14,7 @@ from config.constants import FT_TO_M, is_num
 from core import state
 from core.task_registry import get_stale_tasks
 from core.users import require_admin
-from services import dark_follow, track_filter
+from services import dark_follow, known_claiming, track_filter
 from services.frame_processor import resolve_ground_truth_hex
 from services.geo import haversine_km
 from services.id_utils import is_transponder_hex, normalize_hex_key
@@ -465,6 +465,36 @@ async def get_anomaly_log():
         ),
         media_type="application/json",
     )
+
+
+# ── Known-track hold (path H) ─────────────────────────────────────────────────
+
+
+@router.get("/api/test/known-hold")
+async def get_known_hold():
+    """Current hold window, in seconds of frame time (0 = feature off)."""
+    return {"max_gap_s": known_claiming.KNOWN_HOLD_MAX_GAP_S}
+
+
+@router.put("/api/test/known-hold")
+async def put_known_hold(body: dict = Body(...), _admin=Depends(require_admin)):
+    """Set the hold window live, so the feature can be A/B'd on a running
+    backend without a redeploy.  0 turns path H off entirely — the store stops
+    being written as well, so "off" is the behaviour that predates the hold
+    rather than a hold that never matches.
+
+    Admin-gated on the same precedent as put_simulation_config: this changes
+    which detections leave the dark pool for every node at once.
+    """
+    v = body.get("max_gap_s")
+    if not isinstance(v, (int, float)) or isinstance(v, bool) or not (0 <= v <= 300):
+        raise HTTPException(400, detail="max_gap_s must be 0-300")
+    known_claiming.KNOWN_HOLD_MAX_GAP_S = float(v)
+    if v == 0:
+        # Off means off: a store left behind would come back the moment the
+        # window was reopened, holding tracks from before the experiment.
+        state.known_track_holds.clear()
+    return {"max_gap_s": known_claiming.KNOWN_HOLD_MAX_GAP_S}
 
 
 # ── Simulation physics config ─────────────────────────────────────────────────
@@ -1275,6 +1305,9 @@ def _solver_window_stats(minutes: float) -> dict:
         kc_visibility_rejects = state.known_claims_visibility_rejects
         kc_world_rejects = state.known_claims_world_rejects
         kc_errors = state.known_claims_errors
+        kh_claims = state.known_hold_claims
+        kh_expired = state.known_hold_expired
+        kh_disagree = state.known_hold_dropped_disagree
         # Same one-lock snapshot for the follow lane's funnel and the
         # per-reason ineligibility tally beside it: the two are only readable
         # against each other (see the dark_follow block below), so they must
@@ -1442,6 +1475,16 @@ def _solver_window_stats(minutes: float) -> dict:
             "visibility_rejects": kc_visibility_rejects,
             "world_rejects": kc_world_rejects,
             "errors": kc_errors,
+            # Path H (services/known_claiming._claim_holds).  claims is the
+            # detections held onto a hex after its transponder stopped
+            # explaining them; disagree the ghost-lock guard firing (a fresh
+            # fix contradicted the held track); holds the CURRENT size of the
+            # store, a gauge, summed over nodes — read beside claims, since a
+            # store that grows while claims does not is holds that never match.
+            "hold_claims": kh_claims,
+            "hold_expired": kh_expired,
+            "hold_dropped_disagree": kh_disagree,
+            "holds": sum(len(h) for h in list(state.known_track_holds.values())),
         },
         # Dark published solves against the node pool their round had for the
         # same aircraft (see the pooled/shortfalls block above).  pct is null
