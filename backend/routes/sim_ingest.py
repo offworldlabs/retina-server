@@ -83,6 +83,11 @@ async def push_ground_truth_snapshot(body: dict = Body(...), _key=Depends(_verif
             "speed_ms": ac.get("speed_ms", 0),
             "heading": ac.get("heading", 0),
             "has_adsb": ac.get("has_adsb", False),
+            # Transponder present but silent right now (simulator outage).
+            # has_adsb stays true, so the dark count is unaffected — this is
+            # what tells the known-track hold apart from a genuinely dark
+            # aircraft.
+            "adsb_silent": ac.get("adsb_silent", False),
             "adsb_callsign": ac.get("adsb_callsign"),
             "anomaly_event": ac.get("anomaly_event"),
         }

@@ -473,9 +473,22 @@ async def get_anomaly_log():
 @router.get("/api/simulation/config")
 async def get_simulation_config():
     """Return current simulation physics configuration plus live object-type counts."""
-    counts: dict[str, int] = {"anomalous": 0, "drone": 0, "aircraft": 0, "dark": 0, "total": 0}
+    counts: dict[str, int] = {
+        "anomalous": 0,
+        "drone": 0,
+        "aircraft": 0,
+        "dark": 0,
+        # Transponder-equipped aircraft currently inside an outage.  Counted
+        # alongside (not instead of) its type bucket: a silent aircraft is
+        # still a commercial aircraft, it just is not broadcasting, so this
+        # is the one count that overlaps the others.
+        "adsb_silent": 0,
+        "total": 0,
+    }
     for meta in list(state.ground_truth_meta.values()):
         counts["total"] += 1
+        if meta.get("adsb_silent"):
+            counts["adsb_silent"] += 1
         if meta.get("is_anomalous"):
             counts["anomalous"] += 1
         elif meta.get("object_type") == "drone":
@@ -498,6 +511,9 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
 
     Accepted keys: frac_anomalous, frac_drone, frac_dark (0.0–1.0 each).
     Sum of the three must not exceed 1.0 — the remainder is commercial aircraft.
+    frac_adsb_outage (0.0–1.0) is deliberately OUTSIDE that sum: it is the
+    fraction OF the ADS-B aircraft that go transponder-silent mid-flight,
+    orthogonal to the spawn-type roll.
     Optional: max_range_km (0 = auto, or 10–400), min_aircraft (1–500),
     max_aircraft (1–500).
 
@@ -511,6 +527,7 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
         "frac_anomalous",
         "frac_drone",
         "frac_dark",
+        "frac_adsb_outage",
         "max_range_km",
         "min_aircraft",
         "max_aircraft",
@@ -543,6 +560,7 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
                     raise HTTPException(400, detail=f"{k} must be 0.0–1.0")
             updated[k] = v
 
+    # frac_adsb_outage is intentionally absent here — see the docstring.
     total_frac = (
         updated.get("frac_anomalous", state.simulation_config["frac_anomalous"])
         + updated.get("frac_drone", state.simulation_config["frac_drone"])
