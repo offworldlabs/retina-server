@@ -39,6 +39,7 @@ from services.id_utils import (
     normalize_hex_key,
     passive_track_hex,
 )
+from services.known_claiming import KNOWN_CLAIM_MAX_FIX_AGE_S
 from services.public_location import fuzz_node_cfg
 from services.solve_uncertainty import solve_sigma_m, velocity_sigma_ms
 from services.track_gates import (
@@ -309,6 +310,19 @@ def _claimed_single_node_entries(now: float) -> list[dict]:
         lat, lon = fix.get("lat"), fix.get("lon")
         if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
             continue
+        # A HELD claim (known_claiming path H) carries the LAST fix the
+        # transponder ever gave, however old — the hold is a radar link, not a
+        # position report.  This section draws the fix itself, so once that fix
+        # is past the claiming path's own freshness cap there is nothing here
+        # worth drawing: the icon would sit where the aircraft was, not where
+        # it is, and grow more wrong the longer the hold succeeds.  Skipped
+        # rather than dead-reckoned — one node's claim gives an arc, not a
+        # position, so there is no honest estimate to put in its place.  Two or
+        # more claiming nodes are unaffected: those are the known lane's, and
+        # it solves them (see known_lane._build_solver_input's stale-fix seed).
+        _fix_age_s = (float(newest["ts_ms"]) - float(fix.get("fix_ts_ms") or 0)) / 1000.0
+        if newest.get("hold") and _fix_age_s > KNOWN_CLAIM_MAX_FIX_AGE_S:
+            continue
         node_id = newest["node_id"]
         delay_us = float(newest.get("delay_us") or 0.0)
 
@@ -341,6 +355,12 @@ def _claimed_single_node_entries(now: float) -> list[dict]:
                 "seen": round(max(0.0, now - float(newest["ts_ms"]) / 1000.0), 1),
                 "multinode": False,
                 "position_source": "adsb_single_node",
+                # True when the drawn fix is no longer being refreshed by a
+                # transponder (a hold still inside the freshness cap, or a
+                # cached fix that has aged during this claim's own lifetime),
+                # so the map can say the position is coasting rather than
+                # measured.  Absent-as-false for every claim made today.
+                "adsb_stale": _fix_age_s > 0.0 and bool(newest.get("hold")),
                 # Mandatory: the live/owner WS feeds drop any entry whose
                 # node_id is not in the connection's node set.
                 "node_id": node_id,

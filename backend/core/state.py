@@ -420,6 +420,30 @@ adsb_aircraft: dict[str, dict] = {}
 KNOWN_CLAIMS_PER_HEX_MAX = 64
 known_claims: dict[str, deque] = {}
 
+# ── Known-track holds: the link a claim leaves behind ─────────────────────────
+# Written by services/known_claiming.py on every claim for (node, hex); read
+# by the same module's hold path on the next frame from that node.
+#   node_id -> hex -> {"delay_us", "doppler_hz", "ts_ms",
+#                      "prev_delay_us", "prev_doppler_hz", "prev_ts_ms",
+#                      "fix": the claim's adsb_fix (original fix_ts_ms),
+#                      "world", "n_claims", "n_hold"}
+# A claim is evidence that THIS node's echo of THIS hex sits at that
+# (delay, Doppler); the transponder fix that first supplied the identity is
+# not needed to keep believing it one frame later.  So the entry is the node's
+# own measured track of the aircraft, and the hold path predicts the next
+# frame's observation from it — which is what keeps a linked track linked
+# after the tags stop and the cached fix ages out, instead of falling into the
+# dark pool as a fresh ghost beside the aircraft it belongs to.
+# Two samples, not one: the Doppler rate needs a difference, and a rate from
+# ADS-B would re-introduce the dependency the hold exists to drop.
+# Same unlocked discipline as known_claims above (single writer per node — the
+# frame worker — dict writes atomic under the GIL).  Bounded three ways:
+# entries older than KNOWN_HOLD_MAX_GAP_S are dropped when that node's next
+# frame is processed, feed_gc.prune_stale_stores prunes per hex for a node
+# that stopped sending entirely, and a hold is one entry per (node, hex) that
+# ever claimed — the same population known_claims is keyed by.
+known_track_holds: dict[str, dict[str, dict]] = {}
+
 # ── Track history: rolling position buffer per aircraft hex ───────────────────
 # The TRUE frame.  Everything internal compares against it — the speed gate's
 # reference, the arc-motion log, the jump check, routes/test.py's ground-truth
@@ -588,6 +612,16 @@ known_claims_world_rejects: int = 0
 # Claiming-stage exceptions absorbed by frame_processor's fail-open guard.
 # Nonzero means the known lane is broken and silently contributing nothing.
 known_claims_errors: int = 0
+# Known-track hold (see known_track_holds above and services/known_claiming.py).
+# claims counts detections claimed by the hold path — the ones that would have
+# fallen into the dark pool as the tags stopped; expired counts hold entries
+# dropped for exceeding KNOWN_HOLD_MAX_GAP_S; dropped_disagree counts holds
+# discarded because a FRESH ADS-B fix for the same hex contradicted the held
+# track (the ghost-lock guard: the hold may outlive the transponder, never
+# disagree with it while it is still reporting).
+known_hold_claims: int = 0
+known_hold_expired: int = 0
+known_hold_dropped_disagree: int = 0
 # Dark track following (DARK_FOLLOW_MODE) — see services/dark_follow.py.
 # targets is a GAUGE (the size of the current pseudo-state list, assigned on
 # every rebuild), the other four are since-boot counters.  The funnel reads
@@ -1044,6 +1078,7 @@ def _reset_for_tests() -> None:
     global adsb_seed_frames_autotagged, adsb_capture_ts_fallback
     global known_claims_made, known_claim_contentions, known_claims_bound
     global known_claims_errors, known_claims_visibility_rejects, known_claims_world_rejects
+    global known_hold_claims, known_hold_expired, known_hold_dropped_disagree
     global dark_follow_targets, dark_follow_claims, dark_follow_inputs
     global dark_follow_published, dark_follow_dropped, dark_bottomup_shadowed
     global dark_follow_inelig_cooldown, dark_follow_inelig_no_pos
@@ -1084,6 +1119,7 @@ def _reset_for_tests() -> None:
         multinode_tracks,
         adsb_aircraft,
         known_claims,
+        known_track_holds,
         track_histories,
         track_histories_public,
         track_last_emit,
@@ -1148,6 +1184,7 @@ def _reset_for_tests() -> None:
         known_claims_made = known_claim_contentions = known_claims_bound = 0
         known_claims_errors = known_claims_visibility_rejects = 0
         known_claims_world_rejects = 0
+        known_hold_claims = known_hold_expired = known_hold_dropped_disagree = 0
         dark_follow_targets = dark_follow_claims = dark_follow_inputs = 0
         dark_follow_published = dark_follow_dropped = 0
         dark_follow_inelig_cooldown = dark_follow_inelig_no_pos = 0

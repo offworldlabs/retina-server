@@ -40,10 +40,28 @@ synthetic echo to, and each such bind puts a plane icon on the map at a
 position no radar in either world measured.  Entries carry a "world" tag
 ("sim"/"real") stamped where they are written; claiming skips candidates
 tagged with the other world and counts them (known_claims_world_rejects).
+
+THE HOLD (path H).  Both ADS-B paths ask the same question every frame from
+scratch: does a transponder fix explain this detection right now?  When the
+tags stop and the cached fix ages past KNOWN_CLAIM_MAX_FIX_AGE_S the answer
+becomes "no" for an aircraft that has not moved, changed, or gone anywhere —
+its echoes fall into the dark pool, the tracker forms a track, and the dark
+solver mints a new key beside (or on top of) the aircraft the lane was
+tracking a second earlier.  But a claim is evidence in its own right: it says
+this node's echo of this hex sat at that (delay, Doppler).  The next frame's
+echo of the same aircraft is one frame of motion away from it, and Doppler
+says how far — so the node's OWN measured track can predict the next
+observation without any transponder at all.  Path H does exactly that, from
+state.known_track_holds, and runs after path 1 and before path 2 so that a
+link, once made, cannot be peeled off by another hex's dead-reckoned fix.
+It has no maximum duration: as long as the track keeps matching frame after
+frame it stays linked.  The one thing it may not do is contradict a live
+transponder — see the consistency rule in _claim_holds.
 """
 
 import logging
 import math
+import os
 from collections import deque
 
 import numpy as np
@@ -88,6 +106,39 @@ _GATE_INFEASIBLE = 1.0e6
 # separation (well under 0.1% at any range this gate passes) — the margin is
 # not tuned to the error, it is large enough that the error cannot reach it.
 _SCREEN_MARGIN = 1.02
+
+# ── Hold gates (path H) ──────────────────────────────────────────────────────
+# The maximum frame-time gap a hold may bridge, and the feature's rollback
+# lever: 0 disables path H entirely and leaves claiming byte-identical to the
+# behaviour that predates it.  Measured in FRAME time (frame["timestamp"]),
+# never wall clock — a replay or a backlogged node must see the same gates the
+# live path saw.  8 s: a node's frames arrive ~1 s apart and the simulator's
+# SNR-dependent miss rate reaches 40% at the detection threshold, so 2–4 s
+# gaps are routine and a bound below that would break the link on ordinary
+# misses; past ~8 s the propagated Doppler rate is extrapolation rather than
+# measurement.
+KNOWN_HOLD_MAX_GAP_S = float(os.getenv("KNOWN_HOLD_MAX_GAP_S", "8"))
+# Gate = base + rate * dt, per axis.  The bases are set off the measurement
+# noise, not off aircraft motion (motion is what the prediction models):
+# retina_simulation.world.generate_detections_for_node adds sigma 0.1–0.2 µs
+# of delay noise and 2–4 Hz of Doppler noise depending on SNR, and the hold
+# compares a prediction built from ONE past sample against a new one, so the
+# relevant sigma is sqrt(2) of that — ~0.3 µs and ~5.7 Hz at the noisy end.
+# A gate must sit at least 5 sigma above it or ordinary noise breaks the link,
+# which puts the bases at 1.5 µs and 20 Hz.  The rate terms cover what the
+# constant-rate propagation itself cannot: turns and altitude changes, which
+# grow with the gap.
+KNOWN_HOLD_DELAY_GATE_US = float(os.getenv("KNOWN_HOLD_DELAY_GATE_US", "1.5"))
+KNOWN_HOLD_DELAY_RATE_US_PER_S = float(os.getenv("KNOWN_HOLD_DELAY_RATE_US_PER_S", "1.0"))
+KNOWN_HOLD_DOPPLER_GATE_HZ = float(os.getenv("KNOWN_HOLD_DOPPLER_GATE_HZ", "20"))
+KNOWN_HOLD_DOPPLER_RATE_HZ_PER_S = float(os.getenv("KNOWN_HOLD_DOPPLER_RATE_HZ_PER_S", "10"))
+# Ceiling on the propagated Doppler rate, and the maximum age of the sample
+# pair it may be derived from.  An airliner's bistatic Doppler rate stays well
+# inside +-15 Hz/s outside a hard turn; a larger apparent rate is two samples
+# of DIFFERENT aircraft (or a miss-riddled pair straddling a manoeuvre), and
+# propagating it would walk the prediction off the track it is holding.
+KNOWN_HOLD_MAX_DOPPLER_RATE_HZ_S = float(os.getenv("KNOWN_HOLD_MAX_DOPPLER_RATE_HZ_S", "15"))
+KNOWN_HOLD_RATE_MAX_SPAN_S = float(os.getenv("KNOWN_HOLD_RATE_MAX_SPAN_S", "5"))
 
 _logger = logging.getLogger(__name__)
 
@@ -332,6 +383,260 @@ def _claim_dark_follow(
     return claimed
 
 
+def _touch_hold(
+    node_id: str,
+    hexn: str,
+    d_meas: float,
+    f_meas: float,
+    ts_ms: int,
+    fix: dict | None,
+    world: str | None,
+    is_hold: bool,
+) -> None:
+    """Record this claim as the node's newest measurement of the hex's track.
+
+    Called for EVERY claim — node tag, cached-fix assignment, or hold — because
+    the store's whole job is to remember that this node's echo of this hex was
+    here, whichever path established it.  Keeps the previous sample beside the
+    newest one: a Doppler RATE needs a difference, and taking that rate from
+    ADS-B would put the transponder back in the loop the hold exists to
+    survive without.
+
+    ``fix`` is None on a hold claim, which is what keeps the ORIGINAL fix (and
+    its fix_ts_ms) on the entry: downstream readers age the fix to see how long
+    the aircraft has been silent, and refreshing the timestamp without a new
+    transponder report would hide exactly that.
+    """
+    if KNOWN_HOLD_MAX_GAP_S <= 0:
+        # The rollback lever is total: with the feature off nothing is written
+        # either, so an off backend carries no store and claiming is exactly
+        # what it was before path H existed.
+        return
+    holds = state.known_track_holds.setdefault(node_id, {})
+    e = holds.get(hexn)
+    if e is None:
+        e = {
+            "delay_us": d_meas,
+            "doppler_hz": f_meas,
+            "ts_ms": ts_ms,
+            "prev_delay_us": None,
+            "prev_doppler_hz": None,
+            "prev_ts_ms": None,
+            "fix": fix,
+            "world": world,
+            "n_claims": 0,
+            "n_hold": 0,
+        }
+        holds[hexn] = e
+    else:
+        if ts_ms != e["ts_ms"]:
+            e["prev_delay_us"] = e["delay_us"]
+            e["prev_doppler_hz"] = e["doppler_hz"]
+            e["prev_ts_ms"] = e["ts_ms"]
+        e["delay_us"] = d_meas
+        e["doppler_hz"] = f_meas
+        e["ts_ms"] = ts_ms
+        if fix is not None:
+            e["fix"] = fix
+        e["world"] = world
+    e["n_claims"] += 1
+    if is_hold:
+        e["n_hold"] += 1
+
+
+def _hold_predict(entry: dict, fc_hz: float, frame_ts_s: float) -> tuple[float, float, float]:
+    """(pred_delay_us, pred_doppler_hz, dt_s) for a held track at frame time.
+
+    Delay is propagated from Doppler rather than from a delay difference:
+    Doppler IS the range rate, measured in this same frame, so it gives a
+    first-order prediction from a SINGLE past sample (the case that matters —
+    the frame right after the tags stop) instead of needing two.  The bistatic
+    range closes when the Doppler is positive, so the delay shrinks:
+
+        d(delay_us)/dt = -doppler_hz * 1e6 / fc_hz
+
+    (delay_us = R_km / C_KM_US, dR/dt = -doppler * C_KM_S / fc_hz, and
+    C_KM_S = C_KM_US * 1e6, so the C_KM_US cancels.)  The sign is checked
+    empirically against the simulator in test_known_track_hold.py rather than
+    trusted from this derivation — a convention flip anywhere between the
+    generator and here would double the error instead of cancelling it.
+
+    Doppler is propagated at the rate of the last two samples, clipped, and
+    only when they are recent enough to be one manoeuvre; otherwise it is held
+    flat, which is the honest zero-information answer.
+    """
+    dt = frame_ts_s - entry["ts_ms"] / 1000.0
+    delay_rate = -entry["doppler_hz"] * 1.0e6 / fc_hz
+    doppler_rate = 0.0
+    prev_ts_ms = entry.get("prev_ts_ms")
+    if prev_ts_ms is not None:
+        span = (entry["ts_ms"] - prev_ts_ms) / 1000.0
+        if 0.0 < span <= KNOWN_HOLD_RATE_MAX_SPAN_S:
+            raw = (entry["doppler_hz"] - entry["prev_doppler_hz"]) / span
+            doppler_rate = max(-KNOWN_HOLD_MAX_DOPPLER_RATE_HZ_S, min(KNOWN_HOLD_MAX_DOPPLER_RATE_HZ_S, raw))
+    return (
+        entry["delay_us"] + delay_rate * dt,
+        entry["doppler_hz"] + doppler_rate * dt,
+        dt,
+    )
+
+
+def _fix_record(st: dict) -> dict:
+    """The REPORTED fix a claim carries, built from one cached ADS-B state —
+    same rule as associate_detections_to_adsb, so a claim and a node tag for
+    one aircraft carry the same position and downstream consumers need not
+    know which path produced it."""
+    return {
+        "lat": st["lat"],
+        "lon": st["lon"],
+        "alt_baro": st.get("alt_baro"),
+        "gs": st.get("gs"),
+        "track": st.get("track"),
+        "fix_ts_ms": st.get("timestamp_ms", 0),
+    }
+
+
+def _fresh_fix_prediction(
+    hexn: str, geo, frame_ts_s: float, node_world: str
+) -> tuple[float, float, float, dict] | None:
+    """Path 2's own prediction for one hex plus the fix record it would carry,
+    or None when no fresh usable fix exists.  The consistency rule's
+    reference — see _claim_holds."""
+    st = state._adsb_for_seeding().get(hexn)
+    if st is None:
+        return None
+    cand_world = st.get("world")
+    if cand_world is not None and cand_world != node_world:
+        return None
+    age_s = frame_ts_s - st.get("timestamp_ms", 0) / 1000.0
+    if abs(age_s) > KNOWN_CLAIM_MAX_FIX_AGE_S:
+        return None
+    dr_lat, dr_lon = offset_latlon_m(
+        st["lat"],
+        st["lon"],
+        east_m=st.get("vel_east", 0.0) * age_s,
+        north_m=st.get("vel_north", 0.0) * age_s,
+    )
+    pred_d, pred_f = predict_observation(
+        geo,
+        dr_lat,
+        dr_lon,
+        st.get("alt_m", 0.0) / 1000.0,
+        st.get("vel_east", 0.0),
+        st.get("vel_north", 0.0),
+    )
+    return pred_d, pred_f, _gate_scale(age_s), _fix_record(st)
+
+
+def _claim_holds(
+    node_id: str,
+    geo,
+    frame_ts_s: float,
+    delays: list,
+    dopplers: list,
+    free: list[int],
+    claimed_hexes: set[str],
+) -> list[tuple[int, str, dict, float, float, dict]]:
+    """Path H: claim leftover detections against this node's own held tracks.
+
+    Runs between path 1 and path 2, which is the precedence rule the user's
+    requirement names: once a node track is linked to a hex it may not be
+    peeled off to another hex's dead-reckoned fix, and running after path 2
+    would let exactly that happen every time a neighbouring aircraft's fix
+    reached this detection first.  Path 1 still outranks it — a node's own
+    correlation is newer evidence about the same question than yesterday's
+    match.
+
+    THE CONSISTENCY RULE (the ghost-lock guard).  A hold that may never be
+    contradicted is a self-feeding loop of the kind dark_follow's guard exists
+    to stop: the hold claims a detection, the claim refreshes the hold, and
+    nothing can ever disagree because binding mode has already taken the
+    detection out of the lane that would.  So while the transponder is still
+    reporting, the hold must AGREE with it: if the hex has a fresh cached fix,
+    the hold-matched detection has to fall inside path 2's gate for that hex
+    too, or the hold is dropped and the hex falls through to path 2 as it does
+    today.  When the fix is stale or gone there is nothing to disagree with,
+    and the hold stands on its own — which is the entire point of the feature.
+    """
+    if KNOWN_HOLD_MAX_GAP_S <= 0:
+        return []
+    holds = state.known_track_holds.get(node_id)
+    if not holds:
+        return []
+
+    # Expiry first, on this node's own frame clock, so a held track that has
+    # gone quiet for longer than the gap can bridge is gone before it can be
+    # matched (and cannot linger in the store either).
+    expired = [
+        h for h, e in list(holds.items()) if not (0.0 <= frame_ts_s - e["ts_ms"] / 1000.0 <= KNOWN_HOLD_MAX_GAP_S)
+    ]
+    for h in expired:
+        holds.pop(h, None)
+    if expired:
+        state.bump_counter("known_hold_expired", len(expired))
+    if not free or not holds:
+        return []
+
+    cands = []
+    for hexn, e in list(holds.items()):
+        if hexn in claimed_hexes:
+            continue
+        pred_d, pred_f, dt = _hold_predict(e, geo.fc_hz, frame_ts_s)
+        d_gate = KNOWN_HOLD_DELAY_GATE_US + KNOWN_HOLD_DELAY_RATE_US_PER_S * dt
+        f_gate = KNOWN_HOLD_DOPPLER_GATE_HZ + KNOWN_HOLD_DOPPLER_RATE_HZ_PER_S * dt
+        cands.append((hexn, e, pred_d, pred_f, d_gate, f_gate, dt))
+    if not cands:
+        return []
+
+    cost = np.full((len(free), len(cands)), _GATE_INFEASIBLE)
+    for c, (_hexn, _e, pred_d, pred_f, d_gate, f_gate, _dt) in enumerate(cands):
+        for r, i in enumerate(free):
+            d_res = abs(pred_d - float(delays[i]))
+            f_res = abs(pred_f - float(dopplers[i]))
+            if d_res > d_gate or f_res > f_gate:
+                continue
+            cost[r, c] = d_res / d_gate + f_res / f_gate
+    rows, cols = linear_sum_assignment(cost)
+
+    node_world = state.node_world(node_id)
+    out: list[tuple[int, str, dict, float, float, dict]] = []
+    for r, c in zip(rows, cols):
+        if cost[r, c] >= _GATE_INFEASIBLE:
+            continue
+        i = free[r]
+        hexn, e, pred_d, pred_f, _d_gate, _f_gate, dt = cands[c]
+        ref = _fresh_fix_prediction(hexn, geo, frame_ts_s, node_world)
+        extra = {"hold": True, "hold_gap_s": round(dt, 3)}
+        if ref is not None:
+            ref_d, ref_f, scale, fresh_fix = ref
+            if (
+                abs(ref_d - float(delays[i])) > KNOWN_CLAIM_DELAY_GATE_US * scale
+                or abs(ref_f - float(dopplers[i])) > KNOWN_CLAIM_DOPPLER_GATE_HZ * scale
+            ):
+                holds.pop(hexn, None)
+                state.bump_counter("known_hold_dropped_disagree")
+                continue
+            # The transponder is live and agrees, so the claim carries THAT
+            # fix, exactly as path 2 would have — and refreshes the hold with
+            # it (see the caller).  Without this, path H outranking path 2
+            # every frame would freeze the entry's fix at the first claim on
+            # a node without tags, and the lane would read a live aircraft
+            # as 45 s silent.
+            fix = fresh_fix
+            extra["fix_refreshed"] = True
+        else:
+            fix = e.get("fix")
+        if not isinstance(fix, dict):
+            # A hold with no fix behind it has nothing to seed the known lane
+            # with, and every reader of a claim keys on adsb_fix.  Cannot
+            # happen from the paths above; dropped rather than published as a
+            # half-claim.
+            continue
+        out.append((i, hexn, fix, pred_d, pred_f, extra))
+        state.bump_counter("known_hold_claims")
+    return out
+
+
 def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | None = None) -> set[int]:
     """Run the claiming stage for one frame; return the claimed detection
     indices.
@@ -346,6 +651,11 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
          backend never overwrites a node-provided list), so it is not
          re-gated; the prediction is still computed so the record carries
          the residual the trust path needs.
+      H. This node's own HELD tracks (state.known_track_holds): hexes this
+         node has claimed before, predicted forward from their last measured
+         (delay, Doppler) rather than from a transponder fix.  Ahead of path 2
+         so a linked track cannot be peeled off to another hex, and therefore
+         ahead of path 3 as well.  See _claim_holds.
       2. Remaining detections × fresh cached ADS-B states whose dead-reckoned
          position this node can see, global one-to-one via
          linear_sum_assignment under age-scaled gates.
@@ -375,8 +685,8 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
     ts_ms = int(frame.get("timestamp", 0))
     frame_ts_s = ts_ms / 1000.0
 
-    # (det_idx, hexn, adsb_fix, pred_delay_us, pred_doppler_hz)
-    claims: list[tuple[int, str, dict, float, float]] = []
+    # (det_idx, hexn, adsb_fix, pred_delay_us, pred_doppler_hz, extra)
+    claims: list[tuple[int, str, dict, float, float, dict]] = []
     claimed_idx: set[int] = set()
     claimed_hexes: set[str] = set()
 
@@ -408,9 +718,24 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
                 "track": tag.get("track"),
                 "fix_ts_ms": ts_ms,
             }
-            claims.append((i, hexn, fix, pred_d, pred_f))
+            claims.append((i, hexn, fix, pred_d, pred_f, {}))
             claimed_idx.add(i)
             claimed_hexes.add(hexn)
+
+    # ── Path H: this node's own held tracks ──────────────────────────────────
+    # Between path 1 and path 2 on purpose — see _claim_holds.
+    for hold_claim in _claim_holds(
+        node_id,
+        geo,
+        frame_ts_s,
+        delays,
+        dopplers,
+        [i for i in range(len(delays)) if i not in claimed_idx],
+        claimed_hexes,
+    ):
+        claims.append(hold_claim)
+        claimed_idx.add(hold_claim[0])
+        claimed_hexes.add(hold_claim[1])
 
     # ── Path 2: assignment over untagged detections × fresh cached states ────
     free = [i for i in range(len(delays)) if i not in claimed_idx]
@@ -539,21 +864,10 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
                     (
                         i,
                         hexn,
-                        {
-                            # REPORTED fix, not the dead-reckoned one — same
-                            # rule as associate_detections_to_adsb, so a claim
-                            # and a node tag for one aircraft carry the same
-                            # position and downstream consumers need not know
-                            # which path produced it.
-                            "lat": st["lat"],
-                            "lon": st["lon"],
-                            "alt_baro": st.get("alt_baro"),
-                            "gs": st.get("gs"),
-                            "track": st.get("track"),
-                            "fix_ts_ms": st.get("timestamp_ms", 0),
-                        },
+                        _fix_record(st),
                         pred_d,
                         pred_f,
+                        {},
                     )
                 )
                 claimed_idx.add(i)
@@ -561,7 +875,8 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
     # ── Contention, registry, counters, residual hook ─────────────────────────
     projections = _dark_global_projections(geo, frame_ts_s) if claims else []
     nb = _node_bias() if claims else None
-    for i, hexn, fix, pred_d, pred_f in claims:
+    node_world_tag = state.node_world(node_id) if claims else None
+    for i, hexn, fix, pred_d, pred_f, extra in claims:
         d_meas = float(delays[i])
         f_meas = float(dopplers[i])
         # A detection both a known hex and an established dark track can
@@ -584,7 +899,24 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
                 "ts_ms": ts_ms,
                 "adsb_fix": fix,
                 "contested": contested,
+                # "hold": True / "hold_gap_s" on a path-H claim; absent
+                # otherwise, so every existing reader is unchanged.
+                **extra,
             }
+        )
+        # Every claim is a fresh measurement of this node's track of this hex,
+        # whichever path made it — that is what the hold store holds.  A hold
+        # claim passes fix=None so the stored (older) fix and its fix_ts_ms
+        # survive, keeping the silence visible downstream.
+        _touch_hold(
+            node_id,
+            hexn,
+            d_meas,
+            f_meas,
+            ts_ms,
+            None if extra.get("hold") and not extra.get("fix_refreshed") else fix,
+            node_world_tag,
+            bool(extra.get("hold")),
         )
         state.bump_counter("known_claims_made")
         if contested:

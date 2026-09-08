@@ -446,6 +446,10 @@ class TestKnownLaneAndClaimsPassthrough:
             "visibility_rejects": 6,
             "world_rejects": 3,
             "errors": 1,
+            "hold_claims": 0,
+            "hold_expired": 0,
+            "hold_dropped_disagree": 0,
+            "holds": 0,
         }
 
     def test_both_blocks_zero_on_a_fresh_process(self):
@@ -459,6 +463,10 @@ class TestKnownLaneAndClaimsPassthrough:
             "visibility_rejects": 0,
             "world_rejects": 0,
             "errors": 0,
+            "hold_claims": 0,
+            "hold_expired": 0,
+            "hold_dropped_disagree": 0,
+            "holds": 0,
         }
 
     def test_lane_counters_absent_from_state_read_as_zero(self, monkeypatch):
@@ -671,6 +679,10 @@ class TestEndpoint:
             "visibility_rejects",
             "world_rejects",
             "errors",
+            "hold_claims",
+            "hold_expired",
+            "hold_dropped_disagree",
+            "holds",
         }
 
     def test_minutes_clamp_low(self):
