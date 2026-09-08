@@ -659,9 +659,10 @@ def _mlat_verification_summary() -> dict:
 
 # ── Per-node solver verification ──────────────────────────────────────────────
 
-# The radar3 aliases below predate the per-node routes and are kept until the
-# node itself is decommissioned: whatever calls them lives on the droplets, not
-# in this repo, so removing them here would 404 something no grep can find.
+# The radar3 aliases below predate the per-node routes (eac190a 2026-04-09, vs
+# 4906b32 2026-08-05) and are kept until the node itself is decommissioned:
+# whatever calls them lives on the droplets, not in this repo, so removing them
+# here would 404 something no grep can find.
 _RADAR3_NODE_ID = "radar3-retnode"
 
 

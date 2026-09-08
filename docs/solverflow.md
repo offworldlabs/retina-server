@@ -78,7 +78,7 @@ own. Everything that reaches a solve passes through one gate stack
 |---|---|---|
 | `frame_queue` size (`FRAME_QUEUE_SIZE`) | 10000 | `core/state.py:358-359` |
 | `solver_queue` size (`SOLVER_QUEUE_SIZE`) | 200 | `core/state.py:365-366` |
-| `FRAME_WORKERS` | 4 (compose sets 6) | `main.py:164`, `docker-compose.yml:54` |
+| `FRAME_WORKERS` | 4 (compose sets 6) | `FRAME_WORKERS` in `main.py`, `docker-compose.yml:54` |
 | `SOLVER_WORKERS` | 2 daemon threads + same-size process pool | `services/tasks/solver.py:31,67` |
 | `KNOWN_LANE_MODE` default | `binding` | `core/state.py:72-74` |
 
@@ -89,10 +89,10 @@ own. Everything that reaches a solve passes through one gate stack
 ```mermaid
 flowchart TD
     subgraph producers["Four producers"]
-        p1["TCP (primary)<br/>tcp_handler.py:326"]
-        p3["v1 node HTTP API<br/>node_stream.py:284"]
-        p4["Legacy HTTP radar routes<br/>routes/radar.py:151,202"]
-        p5["Startup priming<br/>node_pipeline.py:137"]
+        p1["TCP (primary)<br/>tcp_handler.handle_tcp_client"]
+        p3["v1 node HTTP API<br/>node_stream.post_detection"]
+        p4["Legacy HTTP radar routes<br/>radar.ingest_detections(_bulk)"]
+        p5["Startup priming<br/>node_pipeline.prime_pipeline_at_startup"]
     end
 
     p1 --> gA{"Gate A: timestamp present?"}

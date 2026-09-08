@@ -293,7 +293,7 @@ The health check only monitors these three tasks (defined in `_CRITICAL_TASKS` i
 | `aircraft_flush` | ~5 s | 15 s |
 | `analytics_refresh` | 30 s | 120 s |
 
-`solver` updates `task_last_success` but is **not** checked by `/api/health` — its alerts fire via separate mechanisms (`solver_latency_high`, `solver_queue_drops`).
+`solver` updates `task_last_success` but is **not** checked by `/api/health`: its alerts fire via separate mechanisms (`solver_latency_high`, `solver_queue_drops`).
 
 **Check logs for exceptions in the named task:**
 ```bash
@@ -311,12 +311,14 @@ curl -sk https://localhost/api/radar/nodes | jq '.nodes | keys'
 ```
 
 ```bash
-NODE_ID=radar3a-retnode; curl -sk "https://localhost/api/test/node/$NODE_ID/verification" | jq '{n_tracks, n_matched, position}'
+NODE_ID=ret0123abcd; curl -sk "https://localhost/api/test/node/$NODE_ID/verification" | jq '{n_tracks, n_matched, position}'
 ```
 
-A node missing from the first list failed validation — the reason is logged at error level, naming the offending field.
+A node missing from the first list has not registered, or has no active configuration. An invalid one is refused at the config PUT with a 4xx naming the offending field (`services/node_config.py`), so it never reaches this list to be missing from.
 
-Bad geometry passes validation, and `position.median_km` will *not* reliably catch it: that figure is dominated by the single-node solver's own ~25–35 km uncertainty. A deliberate 20 km TX error moved it by about 5 km, inside the run-to-run spread. To check tx/rx/fc against the hardware, compare the node's published `adsb[].expected_delay` with the bistatic delay computed from the configured geometry — correct config agrees to tens of metres, a 20 km TX error to tens of kilometres.
+Bad geometry passes validation, and `position.median_km` will *not* reliably catch it: that figure is dominated by the single-node solver's own ~25–35 km uncertainty. A deliberate 20 km TX error moved it by about 5 km, inside the run-to-run spread.
+
+What does catch it is the delay residual: compare the node's published `adsb[].expected_delay` with the bistatic delay computed from the configured geometry, which agrees to tens of metres when the config is right and to tens of kilometres under a 20 km TX error. This needs a node that publishes that array. A v1 node sends `adsb_hex` alone, so it has no equivalent check yet (86cb7fdhg).
 
 ---
 
