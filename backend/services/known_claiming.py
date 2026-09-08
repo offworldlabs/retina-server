@@ -481,9 +481,27 @@ def _hold_predict(entry: dict, fc_hz: float, frame_ts_s: float) -> tuple[float, 
     )
 
 
-def _fresh_fix_prediction(hexn: str, geo, frame_ts_s: float, node_world: str) -> tuple[float, float, float] | None:
-    """Path 2's own prediction for one hex, or None when no fresh usable fix
-    exists.  The consistency rule's reference — see _claim_holds."""
+def _fix_record(st: dict) -> dict:
+    """The REPORTED fix a claim carries, built from one cached ADS-B state —
+    same rule as associate_detections_to_adsb, so a claim and a node tag for
+    one aircraft carry the same position and downstream consumers need not
+    know which path produced it."""
+    return {
+        "lat": st["lat"],
+        "lon": st["lon"],
+        "alt_baro": st.get("alt_baro"),
+        "gs": st.get("gs"),
+        "track": st.get("track"),
+        "fix_ts_ms": st.get("timestamp_ms", 0),
+    }
+
+
+def _fresh_fix_prediction(
+    hexn: str, geo, frame_ts_s: float, node_world: str
+) -> tuple[float, float, float, dict] | None:
+    """Path 2's own prediction for one hex plus the fix record it would carry,
+    or None when no fresh usable fix exists.  The consistency rule's
+    reference — see _claim_holds."""
     st = state._adsb_for_seeding().get(hexn)
     if st is None:
         return None
@@ -507,7 +525,7 @@ def _fresh_fix_prediction(hexn: str, geo, frame_ts_s: float, node_world: str) ->
         st.get("vel_east", 0.0),
         st.get("vel_north", 0.0),
     )
-    return pred_d, pred_f, _gate_scale(age_s)
+    return pred_d, pred_f, _gate_scale(age_s), _fix_record(st)
 
 
 def _claim_holds(
@@ -588,8 +606,9 @@ def _claim_holds(
         i = free[r]
         hexn, e, pred_d, pred_f, _d_gate, _f_gate, dt = cands[c]
         ref = _fresh_fix_prediction(hexn, geo, frame_ts_s, node_world)
+        extra = {"hold": True, "hold_gap_s": round(dt, 3)}
         if ref is not None:
-            ref_d, ref_f, scale = ref
+            ref_d, ref_f, scale, fresh_fix = ref
             if (
                 abs(ref_d - float(delays[i])) > KNOWN_CLAIM_DELAY_GATE_US * scale
                 or abs(ref_f - float(dopplers[i])) > KNOWN_CLAIM_DOPPLER_GATE_HZ * scale
@@ -597,14 +616,23 @@ def _claim_holds(
                 holds.pop(hexn, None)
                 state.bump_counter("known_hold_dropped_disagree")
                 continue
-        fix = e.get("fix")
+            # The transponder is live and agrees, so the claim carries THAT
+            # fix, exactly as path 2 would have — and refreshes the hold with
+            # it (see the caller).  Without this, path H outranking path 2
+            # every frame would freeze the entry's fix at the first claim on
+            # a node without tags, and the lane would read a live aircraft
+            # as 45 s silent.
+            fix = fresh_fix
+            extra["fix_refreshed"] = True
+        else:
+            fix = e.get("fix")
         if not isinstance(fix, dict):
             # A hold with no fix behind it has nothing to seed the known lane
             # with, and every reader of a claim keys on adsb_fix.  Cannot
             # happen from the paths above; dropped rather than published as a
             # half-claim.
             continue
-        out.append((i, hexn, fix, pred_d, pred_f, {"hold": True, "hold_gap_s": round(dt, 3)}))
+        out.append((i, hexn, fix, pred_d, pred_f, extra))
         state.bump_counter("known_hold_claims")
     return out
 
@@ -836,19 +864,7 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
                     (
                         i,
                         hexn,
-                        {
-                            # REPORTED fix, not the dead-reckoned one — same
-                            # rule as associate_detections_to_adsb, so a claim
-                            # and a node tag for one aircraft carry the same
-                            # position and downstream consumers need not know
-                            # which path produced it.
-                            "lat": st["lat"],
-                            "lon": st["lon"],
-                            "alt_baro": st.get("alt_baro"),
-                            "gs": st.get("gs"),
-                            "track": st.get("track"),
-                            "fix_ts_ms": st.get("timestamp_ms", 0),
-                        },
+                        _fix_record(st),
                         pred_d,
                         pred_f,
                         {},
@@ -898,7 +914,7 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
             d_meas,
             f_meas,
             ts_ms,
-            None if extra.get("hold") else fix,
+            None if extra.get("hold") and not extra.get("fix_refreshed") else fix,
             node_world_tag,
             bool(extra.get("hold")),
         )

@@ -97,6 +97,34 @@ class TestHoldPath:
         # The STORED fix, with its original epoch, so the silence is visible.
         assert rec["adsb_fix"]["fix_ts_ms"] == ts
 
+    def test_fresh_fix_that_agrees_refreshes_the_hold(self):
+        """A live transponder that AGREES with the held track is carried by
+        the hold claim and refreshes the store: on a node without tags path H
+        outranks path 2 every frame, and without this the entry's fix would
+        freeze at the first claim and read a live aircraft as silent."""
+        geo = _register()
+        ts = int(time.time() * 1000)
+        d, f = _pred(geo)
+        kc.claim_known_targets(_NODE_ID, _frame(ts, [d], [f], adsb=[_tag()]))
+        state.adsb_aircraft[_HEX] = {
+            "hex": _HEX,
+            "lat": _LAT,
+            "lon": _LON,
+            "alt_baro": _ALT_BARO_FT,
+            "gs": 0,
+            "track": 0,
+            "timestamp_ms": ts + 1000,
+            "last_seen_ms": ts + 1000,
+        }
+        before = state.known_hold_dropped_disagree
+        assert kc.claim_known_targets(_NODE_ID, _frame(ts + 1000, [d], [f])) == {0}
+        assert state.known_hold_dropped_disagree == before
+        rec = state.known_claims[_HEX][-1]
+        assert rec["hold"] is True
+        assert rec["fix_refreshed"] is True
+        assert rec["adsb_fix"]["fix_ts_ms"] == ts + 1000
+        assert state.known_track_holds[_NODE_ID][_HEX]["fix"]["fix_ts_ms"] == ts + 1000
+
     def test_gap_beyond_the_window_expires_the_hold(self):
         """2. A gap longer than KNOWN_HOLD_MAX_GAP_S drops the entry."""
         geo = _register()
