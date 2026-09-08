@@ -16,15 +16,18 @@ import {
   DR_ICON_MAX_AGE_DARK_S,
   DR_UNKNOWN_GS_KT,
 } from "./constants";
+import { ALT_BANDS, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED } from "./mapPalette";
 
-const CYAN = "#38bdf8";
-const VIOLET = "#a78bfa";
+// Asserted against the palette rather than literal hex: the lane a source maps
+// to is the contract, and the shade is free to move with the surface.
+const SKY = LANE_MN_ADSB;
+const VIOLET = LANE_MN_DARK;
 
 describe("getAircraftColor lanes", () => {
-  it("colours an ADS-B-assisted multinode solve cyan", () => {
-    expect(getAircraftColor({ position_source: "multinode_solve", adsb_assisted: true })).toBe(CYAN);
+  it("colours an ADS-B-assisted multinode solve sky", () => {
+    expect(getAircraftColor({ position_source: "multinode_solve", adsb_assisted: true })).toBe(SKY);
     // multinode flag alone (no position_source) takes the same branch.
-    expect(getAircraftColor({ multinode: true, adsb_assisted: true })).toBe(CYAN);
+    expect(getAircraftColor({ multinode: true, adsb_assisted: true })).toBe(SKY);
   });
 
   it("colours a dark multinode solve violet", () => {
@@ -35,18 +38,26 @@ describe("getAircraftColor lanes", () => {
 
   it("colours a claimed single-node ADS-B target blue", () => {
     expect(getAircraftColor({ position_source: "adsb_single_node" })).toBe(ADSB_SINGLE_COLOR);
-    expect(ADSB_SINGLE_COLOR).not.toBe(CYAN);
   });
 
   it("keeps the seeded-solver and fallback branches", () => {
-    expect(getAircraftColor({ position_source: "solver_adsb_seed" })).toBe("#2dd4bf");
-    expect(getAircraftColor({ position_source: "solver_single_node" })).toBe(CYAN);
+    expect(getAircraftColor({ position_source: "solver_adsb_seed" })).toBe(LANE_SOLVER_SEED);
+    expect(getAircraftColor({ position_source: "solver_single_node" })).toBe(SKY);
+  });
+
+  // The four lanes have to stay distinguishable; the documented exception is
+  // the solver_single_node relic, which deliberately shares the sky lane.
+  it("gives every lane its own colour", () => {
+    const lanes = [SKY, VIOLET, ADSB_SINGLE_COLOR, LANE_SOLVER_SEED];
+    expect(new Set(lanes).size).toBe(lanes.length);
   });
 
   it("lets colorByAlt override every lane", () => {
+    const top = ALT_BANDS[0][1];
+    const bottom = ALT_BANDS[ALT_BANDS.length - 1][1];
     const ac = { position_source: "multinode_solve", adsb_assisted: true, alt_baro: 41000 };
-    expect(getAircraftColor(ac, true)).toBe("#a855f7");
-    expect(getAircraftColor({ position_source: "adsb_single_node", alt_baro: 0 }, true)).toBe("#ef4444");
+    expect(getAircraftColor(ac, true)).toBe(top);
+    expect(getAircraftColor({ position_source: "adsb_single_node", alt_baro: 0 }, true)).toBe(bottom);
   });
 });
 
@@ -237,7 +248,7 @@ describe("dark solve time budget", () => {
 
 describe("makeAircraftIcon stale rendering", () => {
   const ac = { hex: "mnabc123", position_source: "multinode_solve", adsb_assisted: false, track: 90, alt_baro: 30000 };
-  const VIOLET_ = "#a78bfa";
+  const VIOLET_ = LANE_MN_DARK;
 
   it("keeps the lane colour and marks the marker stale", () => {
     const stale = makeAircraftIcon(ac, false, false, false, true);

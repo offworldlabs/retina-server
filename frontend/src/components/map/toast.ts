@@ -18,18 +18,22 @@ let _container: HTMLDivElement | null = null;
 let _entries: ToastEntry[] = [];
 let _idSeq = 1;
 
+// Literal values rather than the surface's custom properties: toasts mount on
+// document.body, outside the `.app.map-surface` subtree the tokens are scoped
+// to, so a var() here would resolve to nothing. They match dash's semantic
+// washes by hand.
 const TONE_BG: Record<Tone, string> = {
-  info: "#1e293b",
-  success: "#065f46",
-  error: "#7f1d1d",
-  warn: "#78350f",
+  info: "#ffffff",
+  success: "#ecfdf5",
+  error: "#fef2f2",
+  warn: "#fffbeb",
 };
 
 const TONE_BORDER: Record<Tone, string> = {
-  info: "#334155",
+  info: "#e2e8f0",
   success: "#10b981",
-  error: "#f43f5e",
-  warn: "#f59e0b",
+  error: "#e11d48",
+  warn: "#d97706",
 };
 
 function ensureContainer(): HTMLDivElement {
@@ -61,11 +65,11 @@ function render() {
     Object.assign(el.style, {
       background: TONE_BG[e.tone],
       border: `1px solid ${TONE_BORDER[e.tone]}`,
-      color: "#e2e8f0",
+      color: "#0f172a",
       padding: "8px 12px",
-      borderRadius: "6px",
+      borderRadius: "8px",
       fontSize: "13px",
-      boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+      boxShadow: "0 4px 12px rgba(15,23,42,0.15)",
       pointerEvents: "auto",
       maxWidth: "320px",
     } as CSSStyleDeclaration);

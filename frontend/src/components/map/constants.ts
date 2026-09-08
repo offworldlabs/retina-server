@@ -42,14 +42,15 @@ export const POSITION_SOURCE_ARC_ONLY = "single_node_ellipse_arc";
 export const POSITION_SOURCE_ADSB_SINGLE = "adsb_single_node";
 
 // Three lanes, three colours (getAircraftColor, StatsOverlay, the trimmed arc):
-// this blue for a claimed single-node ADS-B target, cyan #38bdf8 for a
+// this blue for a claimed single-node ADS-B target, sky LANE_MN_ADSB for a
 // multi-node solve that carried a transponder tag (mn-adsb-*, adsb_assisted),
-// violet #a78bfa for a dark multi-node solve (mn-dark-*).  The two blues sit
-// next to each other because both lanes know the transponder identity; violet
-// is the odd one out because a dark solve does not.  Teal #2dd4bf stays on the
-// ADS-B-seeded solver source, and cyan doubles as the fallback colour for the
-// rare solver_single_node relic.
-export const ADSB_SINGLE_COLOR = "#3b82f6";
+// violet LANE_MN_DARK for a dark multi-node solve (mn-dark-*).  The two blues
+// sit next to each other because both lanes know the transponder identity;
+// violet is the odd one out because a dark solve does not.  Teal
+// LANE_SOLVER_SEED stays on the ADS-B-seeded solver source, and sky doubles as
+// the fallback colour for the rare solver_single_node relic.  The values live
+// in mapPalette.ts, which is where every map colour is chosen.
+export { LANE_ADSB_SINGLE as ADSB_SINGLE_COLOR } from "./mapPalette";
 
 // The claimed arc is drawn at a FIXED SCREEN LENGTH — a multiple of the plane
 // icon it sits under — rather than a fixed ground length.  The locus spans

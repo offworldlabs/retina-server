@@ -4,6 +4,7 @@ import { useMap } from "react-leaflet";
 import L from "leaflet";
 import { ARC_HOLD_MS, ARC_FADE_MS, ARC_TOTAL_LIFE_MS, dopplerColor } from "./constants";
 import { buildBistaticArc } from "./bistaticArc";
+import { DRONE, SELECTED } from "./mapPalette";
 
 /* ── DetectionArcs: imperative Leaflet polylines with timer-driven opacity fade.
 
@@ -62,8 +63,8 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
         // alone isn't enough to identify which arc belongs to the selected
         // target.
         const color = isSelected
-          ? "#fbbf24"
-          : (entry.target_class === "drone" ? "#fb923c" : dopplerColor(entry.doppler_hz ?? 0));
+          ? SELECTED
+          : (entry.target_class === "drone" ? DRONE : dopplerColor(entry.doppler_hz ?? 0));
         const weight = isSelected ? 6 : 4;
 
         const existing = polyMap.get(key);

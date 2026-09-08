@@ -32,6 +32,7 @@ export { default as NodeOwnerControl } from "./NodeOwnerControl";
 export { default as AircraftListPanel } from "./AircraftListPanel";
 export { default as AircraftDetailPanel } from "./AircraftDetailPanel";
 export { default as Toolbar } from "./Toolbar";
+export { default as MapLegend } from "./MapLegend";
 export { default as PlaybackBar } from "./PlaybackBar";
 export { default as DetectionArcs } from "./DetectionArcs";
 export { default as ClaimedArcs } from "./ClaimedArcs";

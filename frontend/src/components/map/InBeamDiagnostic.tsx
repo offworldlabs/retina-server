@@ -4,6 +4,7 @@ import { useMap } from "react-leaflet";
 import L from "leaflet";
 import { isInBeam } from "./geo";
 import { groundTruthKey } from "./constants";
+import { ANOMALY } from "./mapPalette";
 
 /* ── InBeamDiagnostic: flags ADS-B aircraft inside a node's beam that
       have no recent confirmed detection from that node.  Renders a
@@ -98,7 +99,7 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundT
             existing.setLatLngs(latLngs);
           } else {
             const line = L.polyline(latLngs, {
-              color: "#ef4444", // red-500
+              color: ANOMALY,
               weight: 1.5,
               opacity: 0.7,
               dashArray: "4 6",

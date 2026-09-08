@@ -10,6 +10,16 @@ import {
 // Same age the uncertainty disc grows on — one definition, so the icon and the
 // disc can never disagree about how old a solve is.
 import { solveAgeS } from "./uncertainty";
+import {
+  ALT_BANDS,
+  DRONE,
+  INK,
+  LANE_MN_ADSB,
+  LANE_MN_DARK,
+  LANE_SOLVER_SEED,
+  NODE,
+  SELECTED,
+} from "./mapPalette";
 
 // Top-down airplane SVG path (nose pointing up/north at 0°)
 export const PLANE_PATH =
@@ -17,53 +27,43 @@ export const PLANE_PATH =
 
 // Quadrotor drone SVG — simple X-frame with four motor circles
 export const DRONE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24"
-  style="display:block;filter:drop-shadow(0 1px 4px rgba(0,0,0,0.7));">
+  style="display:block;filter:drop-shadow(0 1px 3px rgba(15,23,42,0.35));">
   <!-- arms -->
-  <line x1="4" y1="4" x2="20" y2="20" stroke="#f59e0b" stroke-width="2.2" stroke-linecap="round"/>
-  <line x1="20" y1="4" x2="4" y2="20" stroke="#f59e0b" stroke-width="2.2" stroke-linecap="round"/>
+  <line x1="4" y1="4" x2="20" y2="20" stroke="${DRONE}" stroke-width="2.2" stroke-linecap="round"/>
+  <line x1="20" y1="4" x2="4" y2="20" stroke="${DRONE}" stroke-width="2.2" stroke-linecap="round"/>
   <!-- motor circles -->
-  <circle cx="4"  cy="4"  r="3" fill="none" stroke="#f59e0b" stroke-width="1.5"/>
-  <circle cx="20" cy="4"  r="3" fill="none" stroke="#f59e0b" stroke-width="1.5"/>
-  <circle cx="4"  cy="20" r="3" fill="none" stroke="#f59e0b" stroke-width="1.5"/>
-  <circle cx="20" cy="20" r="3" fill="none" stroke="#f59e0b" stroke-width="1.5"/>
+  <circle cx="4"  cy="4"  r="3" fill="none" stroke="${DRONE}" stroke-width="1.5"/>
+  <circle cx="20" cy="4"  r="3" fill="none" stroke="${DRONE}" stroke-width="1.5"/>
+  <circle cx="4"  cy="20" r="3" fill="none" stroke="${DRONE}" stroke-width="1.5"/>
+  <circle cx="20" cy="20" r="3" fill="none" stroke="${DRONE}" stroke-width="1.5"/>
   <!-- center hub -->
-  <circle cx="12" cy="12" r="2.5" fill="#f59e0b"/>
+  <circle cx="12" cy="12" r="2.5" fill="${DRONE}"/>
 </svg>`;
 
 // Altitude → colour bands (low warm → high cool), FlightRadar-style. Band edges
 // are multiples of 5000 ft so they line up with the AircraftMarker altBand
 // memo key — crossing a band re-renders the icon with the new colour.
 export function altitudeColor(altFt) {
-  if (altFt >= 40000) return "#a855f7";
-  if (altFt >= 30000) return "#3b82f6";
-  if (altFt >= 20000) return "#22c55e";
-  if (altFt >= 10000) return "#eab308";
-  if (altFt >= 5000) return "#f97316";
-  return "#ef4444";
+  for (const [floor, color] of ALT_BANDS) if (altFt >= floor) return color;
+  return ALT_BANDS[ALT_BANDS.length - 1][1];
 }
 
-export const ALTITUDE_LEGEND = [
-  ["#ef4444", "<5k"],
-  ["#f97316", "5–10k"],
-  ["#eab308", "10–20k"],
-  ["#22c55e", "20–30k"],
-  ["#3b82f6", "30–40k"],
-  ["#a855f7", "40k+"],
-];
+// Legend order is low band first, which is the reverse of the lookup order.
+export const ALTITUDE_LEGEND = ALT_BANDS.map(([, color, label]) => [color, label]).reverse();
 
 export function getAircraftColor(ac, colorByAlt = false) {
   if (colorByAlt && typeof ac.alt_baro === "number") return altitudeColor(ac.alt_baro);
   // Multi-node splits on adsb_assisted (backend: the mn-adsb-* / mn-dark-* key
-  // prefix): a solve that knew the transponder is cyan, a dark one violet.
+  // prefix): a solve that knew the transponder is sky, a dark one violet.
   // See the palette note in constants.ts for why the lanes are coloured this way.
   if (ac.multinode || ac.position_source === "multinode_solve")
-    return ac.adsb_assisted ? "#38bdf8" : "#a78bfa";
+    return ac.adsb_assisted ? LANE_MN_ADSB : LANE_MN_DARK;
   if (ac.position_source === POSITION_SOURCE_ADSB_SINGLE) return ADSB_SINGLE_COLOR;
-  if (ac.position_source === "solver_adsb_seed") return "#2dd4bf";
-  // Fallback, now sharing cyan with the assisted multi-node lane: the only
+  if (ac.position_source === "solver_adsb_seed") return LANE_SOLVER_SEED;
+  // Fallback, now sharing sky with the assisted multi-node lane: the only
   // source that lands here is the solver_single_node relic, which is rare
   // enough that the collision is cheaper than a fourth shade.
-  return "#38bdf8";
+  return LANE_MN_ADSB;
 }
 
 /** True for any multi-node solve, either lane. */
@@ -163,8 +163,8 @@ export function aircraftIconSize(ac) {
 
 /**
  * `isStale` draws the SAME lane-coloured aircraft, hollowed out: the body drops
- * to a 15% wash, the outline becomes the lane colour dashed instead of solid
- * white, and the whole marker sits at 55% opacity with no drop shadow.  It
+ * to a 15% wash, the outline becomes the lane colour dashed instead of the
+ * solid hairline, and the whole marker sits at 55% opacity with no shadow.  It
  * reads at a glance as "this outline is where the solve says it would be",
  * which is the honest claim for a track past its drift budget — and it is not
  * the same picture as an absent icon, which claims nothing was solved.
@@ -178,15 +178,20 @@ export function makeAircraftIcon(ac, showLabel, isSelected, colorByAlt = false, 
 
   const size = aircraftIconSize(ac);
 
+  // Both shadows are sized for pale tiles: the selection glow is tight and
+  // opaque because a soft halo dissolves into a light basemap, and the resting
+  // shadow is a faint ink drop rather than the heavy black the dark map needed.
   const glow = isSelected
-    ? "filter:drop-shadow(0 0 7px #fbbf24) drop-shadow(0 0 3px #fbbf24);"
+    ? `filter:drop-shadow(0 0 5px ${SELECTED}) drop-shadow(0 0 2px ${SELECTED});`
     : isStale
       ? ""
-      : "filter:drop-shadow(0 2px 5px rgba(0,0,0,0.85));";
+      : "filter:drop-shadow(0 1px 3px rgba(15,23,42,0.35));";
 
+  // The resting outline is an ink hairline. A white one vanished against the
+  // basemap, leaving the lane colour to meet the tiles with no separation.
   const bodyAttrs = isStale
     ? `fill="${color}" fill-opacity="0.15" stroke="${color}" stroke-width="1.6" stroke-dasharray="3 2.5"`
-    : `fill="${color}" stroke="rgba(255,255,255,0.7)" stroke-width="1.2"`;
+    : `fill="${color}" stroke="${INK}" stroke-opacity="0.55" stroke-width="1"`;
 
   // pointer-events: only the visible SVG + label are clickable.  The outer
   // 90×44 container would otherwise grab clicks in its empty 90% area —
@@ -217,14 +222,12 @@ export function makeAircraftIcon(ac, showLabel, isSelected, colorByAlt = false, 
 // per frame and never rotated to its heading.
 export function makeDroneIcon(ac, showLabel, isSelected) {
   const label = ac.flight?.trim() || ac.hex?.slice(-6)?.toUpperCase() || "";
-  const glowFilter = isSelected
-    ? "filter:drop-shadow(0 0 7px #fbbf24);"
-    : "";
+  const glowFilter = isSelected ? `filter:drop-shadow(0 0 5px ${SELECTED});` : "";
 
   const droneHtml = `<div style="${glowFilter}">${DRONE_SVG}</div>`;
   const labelHtml =
     showLabel && label
-      ? `<div class="aircraft-label" style="color:#f59e0b;">${label}</div>`
+      ? `<div class="aircraft-label" style="color:${DRONE};">${label}</div>`
       : "";
 
   return L.divIcon({
@@ -236,15 +239,19 @@ export function makeDroneIcon(ac, showLabel, isSelected) {
 }
 
 // Nodes use amber instead of red so they don't share a palette with the
-// anomalous-aircraft marker (#f43f5e — rose-red + dashed halo). The two reds
-// were close enough that users mistook anomalous aircraft for static nodes.
+// anomalous-aircraft marker (rose-red + dashed halo). The two reds were close
+// enough that users mistook anomalous aircraft for static nodes.
+//
+// The rings carry the node on a pale basemap where the old yellow glow could
+// not: a light halo on light tiles is invisible, so the outer rings are drawn
+// at higher opacity and the glow is an ink drop instead.
 export const nodeIcon = L.divIcon({
   className: "node-marker",
   html: `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24"
-    style="display:block;filter:drop-shadow(0 0 5px rgba(250,204,21,0.75));">
-    <circle cx="12" cy="12" r="3.2" fill="#facc15"/>
-    <circle cx="12" cy="12" r="6.5" fill="none" stroke="#facc15" stroke-width="1.5" opacity="0.6"/>
-    <circle cx="12" cy="12" r="10.5" fill="none" stroke="#facc15" stroke-width="1" opacity="0.25"/>
+    style="display:block;filter:drop-shadow(0 1px 2px rgba(15,23,42,0.35));">
+    <circle cx="12" cy="12" r="3.2" fill="${NODE}"/>
+    <circle cx="12" cy="12" r="6.5" fill="none" stroke="${NODE}" stroke-width="1.5" opacity="0.75"/>
+    <circle cx="12" cy="12" r="10.5" fill="none" stroke="${NODE}" stroke-width="1" opacity="0.4"/>
   </svg>`,
   iconSize: [22, 22],
   iconAnchor: [11, 11],

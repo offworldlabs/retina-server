@@ -91,7 +91,7 @@ function MainApp() {
   const [liveEverOpened, setLiveEverOpened] = useState(isMapDomain);
 
   return (
-    <div className="app">
+    <div className={`app${isMapDomain ? " map-surface" : ""}`}>
       <header className="app-header">
         <span className="header-icon">&#9041;</span>
         <h1>{isMapDomain ? "RETINA" : "Tower Finder"}</h1>
