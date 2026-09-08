@@ -1,37 +1,108 @@
 /**
- * Dashboard (admin.retina.fm / staging-admin.retina.fm) E2E tests.
+ * Dashboard (dash.retina.fm / staging-dash.retina.fm) E2E tests.
  *
- * The dashboard requires Google OAuth login, so most tests exercise:
- *   1. Unauthenticated state → redirect to /login
- *   2. Login page rendering and structure
- *   3. API endpoints backing the dashboard (no auth required for health)
+ * The dashboard has two legitimate auth modes, and the server says which one
+ * it is in on every unauthenticated GET /api/auth/me:
+ *
+ *   oauth   — OAuth client keys are configured. /api/auth/me answers 401,
+ *             `/` redirects to /login, and /login renders the login card.
+ *   bypass  — AUTH_ALLOW_ANONYMOUS_ADMIN=1 with no OAuth client (deployed in
+ *             every environment while OAuth is unconfigured; see
+ *             backend/.env.example). /api/auth/me answers 200 with the anonymous
+ *             admin and `auth_enabled: false`. `/` renders the dashboard
+ *             directly, and /login is a transient page: LoginPage navigates to
+ *             `/` the moment the auth call resolves, so it shows the login card
+ *             only for the one round trip to /api/auth/me.
+ *
+ * The login-card tests used to assume the oauth mode on /login and passed in
+ * bypass mode only by racing that round trip — reliably from a GitHub runner,
+ * 19 times in 20 failing from a client close to the origin. A lost race on
+ * production rolls production back (ci.yml, e2e-prod). So: the tests that
+ * check the real deployment key off the mode the server reports, and the tests
+ * that check the login card's markup hold the auth call open (see
+ * holdAuthUnresolved) so the card stays put while it is inspected.
  *
  * Authenticated flows are covered via API-level assumptions (see api.spec.ts).
  */
-import { test, expect, request as playwrightRequest } from "@playwright/test";
+import { test, expect, request as playwrightRequest, type Page } from "@playwright/test";
 import { hosts } from "../playwright.config";
 
 const DASH = hosts.dash;
 const API = hosts.api;
 
-test.describe("Dashboard — unauthenticated access", () => {
-  test("unauthenticated request to / renders the login page", async ({ page }) => {
+type AuthMode = "oauth" | "bypass";
+
+/** Ask the server which auth mode it is in, exactly as the SPA does. */
+async function serverAuthMode(): Promise<AuthMode> {
+  const ctx = await playwrightRequest.newContext();
+  const res = await ctx.get(`${DASH}/api/auth/me`);
+  const status = res.status();
+  const body = status === 200 ? await res.json() : null;
+  await ctx.dispose();
+  if (status === 401) return "oauth";
+  if (status === 200 && body && body.auth_enabled === false) return "bypass";
+  // A 200 that claims auth is enabled would be a leaked session on an
+  // unauthenticated request; anything else is a broken auth endpoint. Both
+  // are exactly what this suite exists to catch.
+  throw new Error(`Unexpected unauthenticated /api/auth/me: ${status} ${JSON.stringify(body)}`);
+}
+
+/**
+ * Keep the SPA's auth call from ever resolving, so LoginPage renders the login
+ * card and stays on it whatever mode the server is in. The AuthProvider retries
+ * a failed /api/auth/me four times with backoff (~9 s) before settling on "no
+ * user", and LoginPage shows the card for as long as there is no user, so the
+ * card is stable for the whole test. Aborting rather than answering 401 matters:
+ * the API client answers a 401 by navigating to /login, which on /login is a
+ * reload, and the page would never settle.
+ */
+async function holdAuthUnresolved(page: Page) {
+  await page.route("**/api/auth/me", (route) => route.abort("connectionrefused"));
+}
+
+test.describe("Dashboard — unauthenticated access (real auth mode)", () => {
+  test("/ renders what the server's auth mode says it should", async ({ page }) => {
+    const mode = await serverAuthMode();
     await page.goto(DASH);
-    // No OAuth client is configured on staging, so AUTH_ENABLED=False, and
-    // AUTH_ALLOW_ANONYMOUS_ADMIN=1 turns that into a mock admin user for every
-    // /api/auth/me request. In that case the dashboard renders directly (no
-    // redirect). With OAuth keys set, this would redirect to /login.
-    // We assert that exactly one of the two states is rendered correctly.
-    const isRedirected = await page.waitForURL(/\/login/, { timeout: 8_000 }).then(() => true).catch(() => false);
-    if (isRedirected) {
+    if (mode === "oauth") {
+      await page.waitForURL(/\/login/, { timeout: 10_000 });
       await expect(page.locator(".login-card")).toBeVisible({ timeout: 5_000 });
     } else {
-      // Auth disabled: dashboard content rendered directly
-      await page.waitForLoadState("networkidle");
-      // The page should not be a bare error — check that the app root is rendered
-      await expect(page.locator("#root")).toBeVisible();
+      // Anonymous admin: the dashboard itself, not the login card, and not a
+      // bare error page.
+      await expect(page.locator("h1")).toBeVisible({ timeout: 10_000 });
+      await expect(page.locator(".login-card")).toBeHidden();
+      expect(page.url()).not.toMatch(/\/login/);
+    }
+  });
+
+  test("/login resolves to the state the server's auth mode implies", async ({ page }) => {
+    const mode = await serverAuthMode();
+    await page.goto(`${DASH}/login`);
+    if (mode === "oauth") {
+      await expect(page.locator(".login-card")).toBeVisible({ timeout: 10_000 });
+      await expect(page.locator("h1")).toContainText(/Retina/i);
+    } else {
+      // The anonymous admin is already "logged in": /login must hand over to
+      // the dashboard, not strand the user on a login card that goes nowhere.
+      await page.waitForURL((url) => !url.pathname.startsWith("/login"), { timeout: 10_000 });
+      await expect(page.locator("h1")).toBeVisible({ timeout: 10_000 });
       await expect(page.locator(".login-card")).toBeHidden();
     }
+  });
+
+  test("no JavaScript errors on login page load", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", (err) => errors.push(err.message));
+    await page.goto(`${DASH}/login`);
+    await page.waitForLoadState("networkidle");
+    expect(errors).toHaveLength(0);
+  });
+});
+
+test.describe("Dashboard — login card (auth call held open)", () => {
+  test.beforeEach(async ({ page }) => {
+    await holdAuthUnresolved(page);
   });
 
   test("login page renders logo and title", async ({ page }) => {
@@ -57,14 +128,6 @@ test.describe("Dashboard — unauthenticated access", () => {
     await page.goto(`${DASH}/login?error=access_denied`);
     await expect(page.locator(".login-error")).toBeVisible({ timeout: 10_000 });
     await expect(page.locator(".login-error")).toContainText(/access denied/i);
-  });
-
-  test("no JavaScript errors on login page load", async ({ page }) => {
-    const errors: string[] = [];
-    page.on("pageerror", (err) => errors.push(err.message));
-    await page.goto(`${DASH}/login`);
-    await page.waitForLoadState("networkidle");
-    expect(errors).toHaveLength(0);
   });
 });
 
