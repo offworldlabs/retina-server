@@ -744,6 +744,10 @@ def _adsb_velocity(adsb_hex: str | None, now_ms: float | None = None) -> tuple[b
     honest solves that follow are measured against it and labelled ghosts.
     Live traffic in the same cache is unaffected: its fix is seconds old.
 
+    Only STALENESS is guarded, in one direction: a fix stamped AHEAD of the
+    solve is not a stale heading (it is a fresher one, and clock skew between
+    a node and the ADS-B feed produces exactly that), so it is used.
+
     ``now_ms`` is the epoch the velocity is wanted FOR (the solve's own
     ``timestamp_ms``), never wall clock — a replay or a backlogged node must
     see the same verdict the live path saw.  Omitted, the entry is used
@@ -760,7 +764,7 @@ def _adsb_velocity(adsb_hex: str | None, now_ms: float | None = None) -> tuple[b
         # adsb_derived_fields stamps timestamp_ms; the raw record carries
         # last_seen_ms.  Either answers "when was this fix reported".
         fix_ts_ms = adsb.get("timestamp_ms") or adsb.get("last_seen_ms") or 0
-        if fix_ts_ms and abs(float(now_ms) - float(fix_ts_ms)) / 1000.0 > _ADSB_VEL_MAX_AGE_S:
+        if fix_ts_ms and (float(now_ms) - float(fix_ts_ms)) / 1000.0 > _ADSB_VEL_MAX_AGE_S:
             return False, 0.0, 0.0
     gs_knots = float(adsb.get("gs", 0) or 0)
     track_deg = float(adsb.get("track", 0) or 0)
