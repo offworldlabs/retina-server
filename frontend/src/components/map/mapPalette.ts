@@ -56,6 +56,11 @@ export const INK = "#0f172a";
 export const INK_MUTED = "#475569";
 export const INK_SUBTLE = "#94a3b8";
 
+/** The surface accent, for SVG drawn inline. Matches `--accent-hover`, which
+ *  a presentation attribute cannot read: `var()` resolves in CSS, not in a
+ *  bare `stroke="…"`. */
+export const ACCENT_STRONG = "#2563eb";
+
 /* ── Quality scale ────────────────────────────────────────────────────────
    Good / attention / bad, at dash's semantic values darkened for light tiles.
    Used for position error, solver confidence and detection age. */
@@ -63,6 +68,20 @@ export const INK_SUBTLE = "#94a3b8";
 export const GOOD = "#059669"; // emerald-600
 export const WARN = "#d97706"; // amber-600
 export const BAD = "#e11d48"; // rose-600
+
+/* ── Simulation object classes ────────────────────────────────────────────
+   The Physics tab's legend, and the truth dots the fleet spawns for each
+   class. Aliases rather than new values: docs/simulation.md promises the map
+   and that legend agree ("ADS-B truth dots are blue and dark aircraft grey"),
+   which only holds if they read the same constants. */
+
+export const SIM_COMMERCIAL = LANE_MN_ADSB;
+export const SIM_DARK = INK_MUTED;
+export const SIM_DRONE = DRONE;
+export const SIM_ANOMALOUS = ANOMALY;
+/** The fleet-scene controls, which reshape the whole world rather than one
+ *  object class, and are deliberately not one of the class colours. */
+export const SIM_SCENE = LANE_MN_DARK;
 
 /* ── Altitude bands ───────────────────────────────────────────────────────
    Low warm → high cool. Band edges are multiples of 5000 ft so they line up
