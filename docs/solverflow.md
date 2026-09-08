@@ -143,6 +143,27 @@ load-bearing, not incidental: claiming (2.3) runs **before** ADS-B seeding
 and both run **before** the tracker (2.5) so that, in `binding` mode, a
 claimed detection never reaches the dark-lane tracker or association at all
 — see the ordering comment at the head of `process_one_frame`'s claiming step.
+
+**Path H (the hold).** Paths 1 and 2 re-ask every frame whether a transponder
+fix explains a detection, so when the tags stop and the cached fix ages past
+`KNOWN_CLAIM_MAX_FIX_AGE_S` an aircraft that has done nothing unusual falls
+into the dark pool and comes back as a freshly-minted `mn-dark-*` ghost beside
+itself.  A claim is evidence on its own terms — this node's echo of this hex
+sat at that (delay, Doppler) — so `state.known_track_holds` keeps the last two
+samples per (node, hex) and path H predicts the next frame from them, delay
+propagated from the measured Doppler (`d(delay_us)/dt = -doppler_hz * 1e6 /
+fc_hz`).  It runs **after path 1 and before path 2**, which is the requirement
+rather than an implementation detail: a linked track must not be peelable to
+another hex's dead-reckoned fix.  There is no maximum hold duration — as long
+as the track keeps matching, it stays linked — but a hold may never contradict
+a live transponder: with a fresh fix on file the matched detection must pass
+path 2's gate for that hex too, or the hold is dropped
+(`known_hold_dropped_disagree`).  Downstream, `known_lane._build_solver_input`
+seeds a stale-fix solve from the lane's own last published `mn-adsb-<hex>`
+solve instead of the drifting dead-reckoned fix (`seed_source: "kf"`), and
+`aircraft_feed._claimed_single_node_entries` skips a singly-claimed hold whose
+fix has aged out rather than drawing the aircraft at a position nothing
+measured.
 Frame-level gates (A/B/C on TCP, plus the connected-node check on the v1 API)
 sit ahead of everything else; nothing downstream sees a frame that failed
 one of them.
@@ -167,6 +188,7 @@ flowchart TD
     entry -->|"no"| dark0["untouched -> dark lane"]:::inert
     entry -->|"yes, but exception"| failopen["known_claims_errors<br/>FAIL OPEN to dark lane"]:::inert
     entry -->|"yes"| path1["Path 1: node-tagged<br/>frame['adsb'] index-aligned"]
+    entry --> pathH["Path H: Hungarian over<br/>this node's HELD tracks<br/>(state.known_track_holds)"]
     entry --> path2["Path 2: Hungarian over<br/>cached ADS-B (state._adsb_for_seeding)"]
 
     path1 --> gP1{"dict, normalizable hex,<br/>hex unclaimed, finite lat/lon"}
@@ -185,6 +207,16 @@ flowchart TD
     gGate -->|"infeasible"| infeasible["cost = 1.0e6, excluded<br/>by linear_sum_assignment"]:::inert
     gGate -->|"feasible"| claim2["claim recorded<br/>(REPORTED ADS-B position,<br/>not the DR position)"]
 
+    pathH --> gGap{"frame-time gap<br/><= KNOWN_HOLD_MAX_GAP_S 8s"}
+    gGap -->|"no"| expired["entry dropped,<br/>known_hold_expired"]:::inert
+    gGap -->|"yes"| predH["predict from the node's OWN<br/>last claim: delay += -doppler*1e6/fc * dt,<br/>doppler += clipped rate * dt"]
+    predH --> gGateH{"gate = 1.5us + 1.0us/s * dt,<br/>20Hz + 10Hz/s * dt"}
+    gGateH -->|"infeasible"| infeasible
+    gGateH -->|"feasible"| gAgree{"fresh cached fix for this hex?<br/>must ALSO pass path 2's gate"}
+    gAgree -->|"disagrees"| dropH["hold dropped,<br/>known_hold_dropped_disagree;<br/>hex falls through to path 2"]:::inert
+    gAgree -->|"agrees, or fix stale/absent"| claimH["claim recorded, hold=True,<br/>hold_gap_s, STORED fix<br/>(original fix_ts_ms)"]
+
+    claimH --> contest
     claim1 --> contest{"Contention check<br/>vs claim_eligible dark tracks<br/>(n_nodes>=3 OR solve_count>=2)"}
     claim2 --> contest
     contest -->|"residual within gate"| contested["flagged + counted,<br/>dark track kept"]
@@ -286,6 +318,9 @@ LM's SNR weighting maps to a uniform weight of 1.0.
 | `CLAIM_MAX_DR_AGE_S` (contention DR window) | 30.0 s | `association.py` |
 | `CLAIM_ELIGIBLE_MIN_N_NODES` / `MIN_SOLVE_COUNT` | 3 / 2 | `association.py` |
 | `KNOWN_CLAIMS_PER_HEX_MAX` | 64 | `core/state.py` |
+| `KNOWN_HOLD_MAX_GAP_S` (path H window; **0 = feature off**, live-settable via `PUT /api/test/known-hold`) | 8.0 s of frame time | `known_claiming.py` |
+| Path H gates: `KNOWN_HOLD_DELAY_GATE_US` + `KNOWN_HOLD_DELAY_RATE_US_PER_S` * dt / `KNOWN_HOLD_DOPPLER_GATE_HZ` + `KNOWN_HOLD_DOPPLER_RATE_HZ_PER_S` * dt | 1.5 us + 1.0 us/s / 20 Hz + 10 Hz/s | `known_claiming.py` |
+| `KNOWN_HOLD_MAX_DOPPLER_RATE_HZ_S` / `KNOWN_HOLD_RATE_MAX_SPAN_S` | 15 Hz/s / 5.0 s | `known_claiming.py` |
 | `_PASS_MIN_INTERVAL_S` | 2.0 s | `services/tasks/known_lane.py` |
 | `_CLAIM_MAX_AGE_S` / `_CLAIM_SPREAD_S` | 45.0 s / 5.0 s | `known_lane.py` |
 | `_ATTEMPT_TTL_S` | 600 s | `known_lane.py` |
