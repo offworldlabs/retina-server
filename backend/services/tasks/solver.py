@@ -9,6 +9,7 @@ import queue
 import threading
 import time
 from collections import deque
+from collections.abc import Iterable
 from concurrent.futures.process import BrokenProcessPool
 
 from retina_analytics.association import _point_in_beam, predict_observation
@@ -1302,6 +1303,48 @@ _MN_ASSOC_MAX_AGE_S = 60.0
 # match is exactly the fabrication the old rule refused.
 _MN_ASSOC_MAX_NEG_DT_S = 10.0
 
+# ── Node-track continuity ────────────────────────────────────────────────────
+# Every solver input carries the node-level tracker track ids it was built from
+# (s_in["track_ids"], from retina_analytics association).  Two dark solves that
+# were built from some of the SAME node tracks are usually the same aircraft,
+# and that is evidence the distance-only keying rule above throws away.
+#
+# Measured on the test deployment (captures 16-18, 2026-09-07) over pairs of
+# dark solves keyed differently within 40 s, by shared node track ids and
+# dead-reckoned distance — "precision" is P(same ground-truth aircraft):
+#
+#   shared   <2 km      2-4 km     4-6 km     6-10 km
+#   0        0.67       0.49       0.24       -
+#   1        1.00 (14)  0.71 (28)  0.92 (13)  0.15 (47)
+#   >=2      1.00 (21)  0.89 (28)  0.60 (15)  0.42 (31)
+#
+# Two things follow.  Inside the association gate a shared track id is strong
+# evidence of identity (84-94% pooled) and worth more than a couple of km of
+# proximity; OUTSIDE it the precision collapses to 0.15-0.42, i.e. shared node
+# tracks are ALSO what cross-aircraft association candidates look like at
+# range.  So this evidence is only ever used to re-rank candidates the gate
+# already admits, and the gate itself is not widened by so much as a metre.
+#
+# The memory window is short because the ids are: a node track id appears in
+# consecutive dark solves for a median of 7 s (p90 32 s) before the tracker
+# retires or re-numbers it, so beyond ~40 s an id match is a coincidence of
+# id reuse rather than continuity.  40 s also sits just under the 60 s entry
+# expiry, so no entry carries ids from a life it has otherwise forgotten.
+TRACK_LINK_AGE_S = float(os.getenv("TRACK_LINK_AGE_S", "40"))
+# How many shared node tracks it takes to join a key the follow lane owns.
+# Ownership (dark_follow.DARK_FOLLOW_OWN_S) exists to stop a DIFFERENT aircraft
+# stealing an established key, and at >=2 shared tracks inside the gate the
+# measurement says that is 89-100% not what is happening — it is the same
+# aircraft, solved bottom-up, 2-3 km from where the follow lane put it (n=3
+# solve scatter).  15 of 35 mints that had a same-aircraft predecessor within
+# 40 s were exactly this: follow-owned predecessor, inside the gate, beyond the
+# 2 km shadow radius, and 11 of the 15 shared node tracks with it.
+TRACK_LINK_MIN_SHARED_JOIN = int(os.getenv("TRACK_LINK_MIN_SHARED_JOIN", "2"))
+# Cap on the per-entry id memory.  A dark solve carries 2-6 track ids and the
+# window holds ~40 s of them, so this bounds a pathological key (a merged or
+# thrashing entry) rather than the normal case.
+TRACK_LINK_MAX_IDS = int(os.getenv("TRACK_LINK_MAX_IDS", "24"))
+
 # ── Supersession gate ────────────────────────────────────────────────────────
 # Supersession is DESTRUCTIVE in a way keying is not.  Keying to the wrong
 # entry writes one bad position that the next solve corrects; superseding the
@@ -1424,6 +1467,68 @@ def _collect_track_anomalies(s_in, result: dict) -> None:
         result["max_velocity_ms"] = round(max_vel, 1)
 
 
+def merge_recent_track_ids(
+    prev: dict | None,
+    track_ids: Iterable[str] | None,
+    ts_s: float,
+    max_age_s: float = TRACK_LINK_AGE_S,
+    max_ids: int = TRACK_LINK_MAX_IDS,
+) -> dict[str, float]:
+    """This solve's node track ids merged into the entry's short id memory.
+
+    ``{track_id: last_seen_ts_s}``, carried on the multinode entry as
+    ``recent_track_ids`` so the next solve's keying decision can ask whether it
+    was built from any of the same node tracks (see TRACK_LINK_AGE_S).  Pruned
+    on every write rather than on read — the entry is written far less often
+    than the keying scan reads it, and an unpruned dict would keep growing for
+    a long-lived key.  Newest ids win the cap, since the whole point of the
+    memory is recency.
+    """
+    out: dict[str, float] = {}
+    for tid, seen in (prev or {}).items():
+        try:
+            seen_f = float(seen)
+        except (TypeError, ValueError):
+            continue
+        # Symmetric in time for the same reason dark_follow.recently_followed
+        # is: solves arrive out of measurement order, so an id stamped by a
+        # LATER solve is still evidence about this one.
+        if abs(ts_s - seen_f) <= max_age_s:
+            out[str(tid)] = seen_f
+    fresh = {str(tid): ts_s for tid in track_ids or ()}
+    if len(out) + len(fresh) > max_ids:
+        # This solve's own ids are the freshest evidence the next decision has,
+        # so they are never the ones the cap drops — the inherited memory is
+        # trimmed to fit around them, oldest first.
+        room = max(max_ids - len(fresh), 0)
+        keep = sorted(
+            ((tid, seen) for tid, seen in out.items() if tid not in fresh), key=lambda kv: kv[1], reverse=True
+        )
+        out = dict(keep[:room])
+    out.update(fresh)
+    return out
+
+
+def _shared_recent_tracks(prev: dict, solve_ids: set[str], ts_s: float, max_age_s: float = TRACK_LINK_AGE_S) -> int:
+    """How many of this solve's node track ids the entry has seen recently."""
+    if not solve_ids:
+        return 0
+    recent = prev.get("recent_track_ids")
+    if not isinstance(recent, dict):
+        return 0
+    n = 0
+    for tid in solve_ids:
+        seen = recent.get(tid)
+        if seen is None:
+            continue
+        try:
+            if abs(ts_s - float(seen)) <= max_age_s:
+                n += 1
+        except (TypeError, ValueError):
+            continue
+    return n
+
+
 def multinode_key_decision(
     tracks: dict[str, dict],
     result: dict,
@@ -1433,6 +1538,7 @@ def multinode_key_decision(
     max_age_s: float = _MN_ASSOC_MAX_AGE_S,
     learned_vel_fn=track_filter.learned_velocity,
     anchor_dr: bool = False,
+    track_ids: Iterable[str] | None = None,
 ) -> tuple[str, str, float | None, float | None]:
     """The keying rule itself, clock-free — the multinode-track analogue of
     claim_decision.  Extracted so the offline bench measures the SHIPPED rule
@@ -1453,9 +1559,10 @@ def multinode_key_decision(
 
     Caller holds _MN_TRACKS_LOCK — it reads `tracks` and the caller writes
     back into it under the same lock.  Returns (key, how, dist_km, dt_s) with
-    how in {"adsb", "anchor", "proximity", "shadowed", "minted"}; dist_km is
+    how in {"adsb", "anchor", "proximity", "tracks", "shadowed", "minted"};
+    dist_km is
     how far this solve landed from the entry it was keyed onto (dead-reckoned,
-    for the proximity and shadowed branches) and None where nothing was
+    for the proximity, tracks and shadowed branches) and None where nothing was
     matched — "adsb" and "minted".  dt_s is the SIGNED age of that entry at
     this solve's epoch (positive = the entry was measured first, negative =
     this solve's measurement is the older of the two), None wherever dist_km
@@ -1514,6 +1621,28 @@ def multinode_key_decision(
          key; 21% of proximity joins measured on test were the latter.  See
          dark_follow.DARK_FOLLOW_OWN_S for why a tighter gate cannot separate
          the two.
+
+         NODE-TRACK CONTINUITY ("tracks").  ``track_ids`` are this solve's
+         node-level tracker track ids, and each entry remembers the ones its
+         recent solves were built from (recent_track_ids, TRACK_LINK_AGE_S).
+         Sharing them is direct evidence that two solves are of one aircraft,
+         and it is used ONLY to re-rank candidates the gate already admits —
+         see TRACK_LINK_AGE_S for the measured precision, which is 84-94%
+         inside the gate and 0.15-0.42 outside it, so the gate is never
+         widened by this and a shared id can never rescue an out-of-gate
+         candidate.  Two things change inside the gate:
+           - A follow-owned candidate sharing >= TRACK_LINK_MIN_SHARED_JOIN
+             ids is JOINED rather than skipped (how "tracks").  Ownership is
+             there to stop a different aircraft stealing the key, and >=2
+             shared node tracks in-gate say this is the same aircraft the
+             follow lane is already solving, landing 2-3 km out on n=3 solve
+             scatter.  One shared id is weaker (0.71-0.92) — not enough to
+             take the key, but enough to refuse the solve as a duplicate, so
+             it shadows beyond DARK_FOLLOW_SHADOW_KM instead of minting.
+           - Other candidates score d/gate divided by (1 + shared, capped at
+             4), so a track-sharing entry outranks a nearer stranger; the
+             winner is reported as "tracks" when it shared anything at all
+             and "proximity" when it did not.
       4. Mint.  This key only needs to be unique at birth; every later solve
          associates to it above (by proximity, or by anchor once a claim
          forms), so it stays stable.
@@ -1576,6 +1705,19 @@ def multinode_key_decision(
     best_score = 1.0
     best_dist: float | None = None
     best_dt: float | None = None
+    best_shared = 0
+    # This solve's node track ids, and the best follow-owned candidate that
+    # shares enough of them to be joined outright (see TRACK_LINK_AGE_S).
+    solve_ids = {str(t) for t in (track_ids or ())}
+    link_key: str | None = None
+    link_score = 1.0
+    link_dist: float | None = None
+    link_dt: float | None = None
+    # A follow-owned candidate sharing exactly one id: too weak to take the
+    # key, strong enough to refuse the solve however far out it landed.
+    weak_link_key: str | None = None
+    weak_link_dist: float | None = None
+    weak_link_dt: float | None = None
     # Key ownership: the nearest key the follow lane is currently answering
     # for, and how far this solve landed from it.  Only collected for a
     # bottom-up solve in binding mode — an anchored or ADS-B solve names the
@@ -1610,27 +1752,65 @@ def multinode_key_decision(
             north_m=vel_north_ms * dt,
         )
         d = _haversine_km(lat, lon, p_lat, p_lon)
-        # A key the follow lane just published on is not joinable bottom-up,
-        # whatever the distance says — see dark_follow.DARK_FOLLOW_OWN_S for
-        # the measurement.  It still competes to SHADOW this solve below, so
-        # the scan has to remember the nearest one rather than skipping it.
+        gate_km = _mn_assoc_gate_km(dt, max_dist_km)
+        # How much of this solve's node-track evidence this entry has seen.
+        shared = _shared_recent_tracks(prev, solve_ids, ts_s)
+        # A key the follow lane just published on is not joinable bottom-up on
+        # distance alone, whatever the distance says — see
+        # dark_follow.DARK_FOLLOW_OWN_S for the measurement.  It still competes
+        # to SHADOW this solve below, so the scan has to remember the nearest
+        # one rather than skipping it; and shared node tracks inside the gate
+        # answer the one question ownership was standing in for (is this the
+        # same aircraft?) directly, so they can join it after all.
         if shadow_scan and dark_follow.recently_followed(key, ts_s, dark_follow.DARK_FOLLOW_OWN_S):
+            if shared >= TRACK_LINK_MIN_SHARED_JOIN and d <= gate_km:
+                l_score = d / gate_km
+                if link_key is None or l_score < link_score:
+                    link_key, link_score, link_dist, link_dt = key, l_score, d, dt
+            elif shared >= 1 and d <= gate_km and weak_link_key is None:
+                weak_link_key, weak_link_dist, weak_link_dt = key, d, dt
             if shadow_dist is None or d < shadow_dist:
                 shadow_key, shadow_dist, shadow_dt = key, d, dt
             continue
-        score = d / _mn_assoc_gate_km(dt, max_dist_km)
+        # Shared node tracks discount the distance score so a track-sharing
+        # entry beats a nearer stranger, but only among candidates the gate
+        # already admits: outside it the same evidence is 0.15-0.42 precise,
+        # so the gate check stays explicit rather than riding on the score
+        # being < 1.0 as it did when score was exactly d / gate.
+        if d >= gate_km:
+            continue
+        score = (d / gate_km) / (1 + min(shared, 3))
         if score < best_score:
-            best_key, best_score, best_dist, best_dt = key, score, d, dt
+            best_key, best_score, best_dist, best_dt, best_shared = key, score, d, dt, shared
 
     # Close enough to a followed key that this solve is the same aircraft the
     # follow lane is already solving: refuse it outright rather than mint a
     # second key for a target that already has one.  Farther away it falls
     # through to the non-followed candidates and, failing those, mints — the
     # one thing it may never do is join the followed key.
+    #
+    # ...unless the node tracks say this IS that aircraft, in which case the
+    # solve joins the followed key instead of being thrown away: >=2 shared
+    # ids inside the gate is 89-100% the same target, and refusing the solve
+    # there costs the track a position rather than protecting it.  Checked
+    # before the distance shadow so the evidence outranks the radius.
+    if link_key is not None:
+        return link_key, "tracks", link_dist, (None if link_dt is None else round(link_dt, 3))
+    # One shared id is not enough to take a followed key, but it is enough to
+    # say this solve is a duplicate of one the follow lane already made, so it
+    # is refused at any distance inside the gate rather than minting the second
+    # key for that aircraft that the 2 km radius alone would have allowed.
+    if weak_link_key is not None:
+        return weak_link_key, "shadowed", weak_link_dist, (None if weak_link_dt is None else round(weak_link_dt, 3))
     if shadow_key is not None and shadow_dist <= dark_follow.DARK_FOLLOW_SHADOW_KM:
         return shadow_key, "shadowed", shadow_dist, (None if shadow_dt is None else round(shadow_dt, 3))
     if best_key is not None:
-        return best_key, "proximity", best_dist, (None if best_dt is None else round(best_dt, 3))
+        return (
+            best_key,
+            "tracks" if best_shared >= 1 else "proximity",
+            best_dist,
+            (None if best_dt is None else round(best_dt, 3)),
+        )
     # No claimant — a genuinely new target.
     return f"mn-dark-{result.get('timestamp_ms', 0)}-{lat:.3f}-{lon:.3f}", "minted", None, None
 
@@ -3566,6 +3746,13 @@ def _process_solver_item(
                 # construction — see the anchor branch for why that changes
                 # the distance check it must be judged by.
                 anchor_dr=bool(isinstance(s_in, dict) and s_in.get("follow_key")),
+                # Node-track continuity: the tracker track ids this solve was
+                # built from, matched against what each candidate entry
+                # remembers (TRACK_LINK_AGE_S).  Pre-trim ids on purpose — the
+                # question is which node tracks this solve CAME from, not which
+                # survived the residual trim, and result["source_track_ids"] is
+                # not built until below.
+                track_ids=(s_in.get("track_ids") if isinstance(s_in, dict) else None),
             )
             # Key ownership (DARK_FOLLOW_MODE=binding).  A bottom-up solve
             # that landed on a key the follow lane is answering for is not
@@ -3591,6 +3778,14 @@ def _process_solver_item(
                 if key.startswith("mn-dark-"):
                     if _key_how == "minted":
                         state.bump_counter("solver_key_minted_dark")
+                    elif _key_how == "tracks":
+                        # Re-keys that the node-track evidence decided: either a
+                        # candidate that shared ids and outranked a nearer
+                        # stranger, or a follow-owned key joined on >=2 shared
+                        # ids.  Counted apart from proximity so the two rules
+                        # can be read against each other — every one of these
+                        # was a mint or a discarded solve before.
+                        state.bump_counter("solver_key_tracks")
                     elif _key_how == "proximity":
                         state.bump_counter("solver_key_proximity_dark")
                         # ...and, of those, the ones that matched an entry
@@ -3741,6 +3936,21 @@ def _process_solver_item(
                     int(prev.get("n_nodes") or 0) if prev else 0,
                     max_superseded_n_nodes,
                     int(result.get("n_nodes") or 0),
+                )
+                # Node-track memory, carried with the key: the ids this solve
+                # was built from merged into the ones the entry has seen in the
+                # last TRACK_LINK_AGE_S, so the NEXT solve's keying decision can
+                # ask whether it shares any of them (see TRACK_LINK_AGE_S and
+                # multinode_key_decision).  Pre-trim ids for the same reason the
+                # decision reads them pre-trim, pruned and capped on write so a
+                # long-lived key cannot accumulate an unbounded dict.  Feed
+                # entries are built field-by-field (aircraft_feed's
+                # multinode_to_aircraft) and the Parquet archive writes a fixed
+                # schema, so this field reaches neither the map nor the archive.
+                result["recent_track_ids"] = merge_recent_track_ids(
+                    (prev or {}).get("recent_track_ids"),
+                    s_in.get("track_ids") if isinstance(s_in, dict) else None,
+                    result.get("timestamp_ms", 0) / 1000.0,
                 )
                 state.multinode_tracks[key] = result
                 if trim_meta:

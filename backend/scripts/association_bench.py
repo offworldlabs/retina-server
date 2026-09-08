@@ -100,6 +100,7 @@ from services.tasks.solver import (  # noqa: E402
     _ewma_smooth_track,
     claim_decision,
     fov_gate_verdict,
+    merge_recent_track_ids,
     multinode_key_decision,
     resolve_n2_chi2,
 )
@@ -702,6 +703,16 @@ class Result:
     # honored or falls through.
     anchored_published: int = 0
     anchor_fallbacks: int = 0
+    # The keying verdict itself, histogrammed (multinode_key_decision's `how`
+    # for dark solves): minted is a key birth, proximity a distance-only
+    # re-key, tracks a re-key the shared node-track evidence decided
+    # (solver.TRACK_LINK_AGE_S), shadowed a bottom-up solve refused in favour
+    # of a followed key.  minted is the fragmentation number the continuity
+    # work moves; the other three are where the mints went.
+    key_minted: int = 0
+    key_proximity: int = 0
+    key_tracks: int = 0
+    key_shadowed: int = 0
     # Distinct state.multinode_tracks-equivalent keys minted over the whole
     # run (bench_mn) — the acceptance metric claiming exists to move:
     # distinct published keys should drop toward O(targets).  keys_real/
@@ -844,6 +855,10 @@ class Result:
         "anchored_inputs",
         "anchored_published",
         "anchor_fallbacks",
+        "key_minted",
+        "key_proximity",
+        "key_tracks",
+        "key_shadowed",
         "distinct_keys",
         "keys_real",
         "keys_ghost",
@@ -1310,7 +1325,25 @@ def run(
                 # block runs (after every gate above, before GT matching).
                 if mode == "track":
                     _anchor_key = s_in.get("anchor_key")
-                    _key, _how, _dist_km, _dt_s = multinode_key_decision(bench_mn, out, None, _anchor_key)
+                    _key, _how, _dist_km, _dt_s = multinode_key_decision(
+                        bench_mn,
+                        out,
+                        None,
+                        _anchor_key,
+                        # Node-track continuity reads the same field the
+                        # shipped caller passes (s_in["track_ids"]) against the
+                        # memory the bench entry carries below.
+                        track_ids=s_in.get("track_ids"),
+                    )
+                    if _key.startswith("mn-dark-"):
+                        if _how == "minted":
+                            res.key_minted += 1
+                        elif _how == "proximity":
+                            res.key_proximity += 1
+                        elif _how == "tracks":
+                            res.key_tracks += 1
+                        elif _how == "shadowed":
+                            res.key_shadowed += 1
                     if _anchor_key:
                         res.anchored_published += 1
                         if _how != "anchor":
@@ -1338,6 +1371,15 @@ def run(
                         "n_nodes": out.get("n_nodes", s_in.get("n_nodes", 0)),
                         "solve_count": (_prev_mn.get("solve_count", 0) if _prev_mn else 0) + 1,
                         "source_track_ids": sorted(_new_ids),
+                        # Mirrors solver.py's write: the ids this solve was
+                        # built from merged into the entry's short memory, so
+                        # the bench's next decision sees what production's
+                        # would.
+                        "recent_track_ids": merge_recent_track_ids(
+                            (_prev_mn or {}).get("recent_track_ids"),
+                            _new_ids,
+                            ts_ms / 1000.0,
+                        ),
                     }
                     if recorder is not None:
                         recorder.record_publish(
@@ -1704,6 +1746,11 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
     print(f"  solver rejects/failures: {r.solver_rejects}  beam gate rejects: {r.beam_rejects}")
     # Top-down claiming.  Gated on either counter moving: shadow mode counts
     # without ever emitting an anchored_input, active mode does both.
+    if r.key_minted + r.key_proximity + r.key_tracks + r.key_shadowed > 0:
+        print(
+            f"  dark key decisions: {r.key_minted} minted, {r.key_proximity} proximity, "
+            f"{r.key_tracks} tracks, {r.key_shadowed} shadowed"
+        )
     if r.claims_matched + r.anchored_inputs > 0:
         print(
             f"  claiming: {r.claims_matched} matched, {r.claim_conflicts} "

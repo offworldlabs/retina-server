@@ -517,6 +517,7 @@ class TestFragmentation:
             "anchored_pct": 0.0,
             "dark_keys_minted": 0,
             "dark_keys_proximity": 0,
+            "dark_keys_tracks": 0,
             "dark_keys_proximity_negdt": 0,
             "mn_superseded": 0,
             "mn_superseded_blocked": 0,
@@ -532,9 +533,12 @@ class TestFragmentation:
         state.solver_key_minted_dark = 4
         state.solver_key_proximity_dark = 11
         state.solver_key_proximity_negdt = 3
+        state.solver_key_tracks = 7
         out = _solver_window_stats(10.0)
         assert out["fragmentation"]["dark_keys_minted"] == 4
         assert out["fragmentation"]["dark_keys_proximity"] == 11
+        # Re-keys the node-track evidence decided rather than distance alone.
+        assert out["fragmentation"]["dark_keys_tracks"] == 7
         # The out-of-order subset of those re-keys — every one of them a
         # dark_keys_minted before the signed dt window.
         assert out["fragmentation"]["dark_keys_proximity_negdt"] == 3
@@ -559,10 +563,12 @@ class TestFragmentation:
         state.solver_key_minted_dark = 4
         state.solver_key_proximity_dark = 11
         state.solver_key_proximity_negdt = 3
+        state.solver_key_tracks = 7
         state._reset_for_tests()
         out = _solver_window_stats(10.0)
         assert out["fragmentation"]["dark_keys_minted"] == 0
         assert out["fragmentation"]["dark_keys_proximity"] == 0
+        assert out["fragmentation"]["dark_keys_tracks"] == 0
         assert out["fragmentation"]["dark_keys_proximity_negdt"] == 0
 
 
@@ -613,6 +619,7 @@ class TestEndpoint:
             "anchored_pct",
             "dark_keys_minted",
             "dark_keys_proximity",
+            "dark_keys_tracks",
             "dark_keys_proximity_negdt",
             "mn_superseded",
             "mn_superseded_blocked",

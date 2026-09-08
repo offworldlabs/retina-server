@@ -862,6 +862,14 @@ solver_key_proximity_dark: int = 0
 # aircraft that already had one.  This counter is the reclaimed population:
 # measured live, 16 of 67 dark mints in 22 min were of exactly this shape.
 solver_key_proximity_negdt: int = 0
+# Dark re-keys decided by NODE-TRACK CONTINUITY rather than by distance alone
+# (solver.py's TRACK_LINK_AGE_S): a candidate that shared tracker track ids with
+# this solve and so outranked a nearer stranger inside the gate, or a key the
+# follow lane owns that was joined on >= TRACK_LINK_MIN_SHARED_JOIN shared ids.
+# Kept apart from solver_key_proximity_dark so the two rules can be read against
+# each other — under the distance-only rule every one of these was either a
+# fresh key for an aircraft that already had one or a solve thrown away.
+solver_key_tracks: int = 0
 
 # n=2 solver inputs that took their initial-guess altitude from an established
 # multi-node dark key instead of the association grid (solver.py's
@@ -1056,6 +1064,7 @@ def _reset_for_tests() -> None:
     global solver_consensus_fallback, solver_consensus_shadow
     global solver_anchor_hits, solver_anchor_fallbacks, solver_anchored_published
     global solver_key_minted_dark, solver_key_proximity_dark, solver_key_proximity_negdt
+    global solver_key_tracks
     global solver_vel_untrusted_published, solver_n2_alt_inherited
     global fov_shadow_agree, fov_shadow_would_pass, fov_shadow_would_reject
     global fov_neg_events
@@ -1161,6 +1170,7 @@ def _reset_for_tests() -> None:
         solver_consensus_fallback = solver_consensus_shadow = 0
         solver_anchor_hits = solver_anchor_fallbacks = solver_anchored_published = 0
         solver_key_minted_dark = solver_key_proximity_dark = solver_key_proximity_negdt = 0
+        solver_key_tracks = 0
         solver_n2_alt_inherited = 0
         solver_vel_untrusted_published = 0
         fov_shadow_agree = fov_shadow_would_pass = fov_shadow_would_reject = 0

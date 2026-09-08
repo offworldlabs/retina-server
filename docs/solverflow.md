@@ -317,6 +317,24 @@ each solve to the newest key sharing a `source_track_ids` entry linked the
 **wrong aircraft 12%** of the time in a dense metro cluster — the same reason
 `_supersession_match` (§6) stopped trusting a bare shared id.
 
+Node track ids do earn a place *inside* the gate, and only there — the
+`"tracks"` verdict. Each `mn-dark-*` entry remembers the tracker track ids its
+recent solves were built from (`recent_track_ids`, pruned to
+`TRACK_LINK_AGE_S` = 40 s, because an id lives a median 7 s in solve records),
+and a solve sharing them with a candidate the proximity gate already admits is
+84-94% the same aircraft (measured 2026-09-07: 1 shared id 0.71-1.00 by
+distance band, >=2 shared 0.60-1.00, both against 0.24-0.67 for none). Past the
+gate the same evidence is 0.15-0.42 precise — that is the 12% mislink above,
+seen from the other side — so shared ids **never widen the gate**; they only
+re-rank inside it, with the candidate score becoming `d/gate` divided by
+`1 + min(shared, 3)`. The one place they change a verdict rather than an
+ordering is key ownership: a key the follow lane owns is joined outright on
+`TRACK_LINK_MIN_SHARED_JOIN` (2) shared ids inside the gate, and on exactly one
+shared id the solve is refused as a duplicate ("shadowed") even beyond
+`DARK_FOLLOW_SHADOW_KM`, rather than minting the second key for an aircraft
+that already has one — the dominant measured duplicate mechanism, 15 of 35
+mints with a same-aircraft predecessor within 40 s.
+
 ```mermaid
 flowchart TD
     build["dark_follow.follow_targets()<br/>rebuilt at most 1/s, TTL-cached"]
