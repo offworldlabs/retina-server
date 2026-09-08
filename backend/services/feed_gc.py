@@ -53,6 +53,19 @@ def prune_stale_stores(now: float) -> None:
     for h in stale_claims:
         state.known_claims.pop(h, None)
 
+    # 4a-bis. Known-track holds, on the same rule and for the same reason.
+    # The claiming path expires a node's own entries against ITS frame clock,
+    # which never ticks again for a node that stopped sending — so a node that
+    # disconnects mid-claim would pin one entry per hex it ever held.  Pruned
+    # per hex (not per node) so a still-live node keeps the tracks it is still
+    # holding.
+    for nid, holds in list(state.known_track_holds.items()):
+        for h, e in list(holds.items()):
+            if (now - e.get("ts_ms", 0) / 1000.0) > KNOWN_CLAIMS_STALE_S:
+                holds.pop(h, None)
+        if not holds:
+            state.known_track_holds.pop(nid, None)
+
     # 4b. Prune stale ground-truth trails and track histories to bound
     # memory and keep resolve_ground_truth_hex O(N) scans cheap.
     #
