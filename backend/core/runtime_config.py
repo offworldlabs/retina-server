@@ -28,7 +28,7 @@ RUNTIME_DIR = _BACKEND_DIR / "data" / "runtime"
 # invisible on an existing deployment, because the volume masks the directory.
 _IMAGE_DEFAULTS_DIR = _BACKEND_DIR.parent / "deploy" / "config-image" / "config"
 
-_RUNTIME_FILES = ("nodes_config.json", "blah2_nodes.json")
+_RUNTIME_FILES = ("nodes_config.json",)
 
 logger = logging.getLogger(__name__)
 

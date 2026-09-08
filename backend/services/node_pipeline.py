@@ -1,9 +1,8 @@
-"""Make a v1 node indistinguishable from a blah2_bridge node to the pipeline.
+"""Put a v1 node into the pipeline the way every other source does.
 
-The bridge is the working reference: services/blah2_bridge.py puts a node into
-connected_nodes, hands it to services/node_registration, and pushes frames onto
-one queue. This does the same, so a v1 node reaches the map without anything
-downstream knowing the difference.
+A node reaches the map by landing in connected_nodes, going through
+services/node_registration, and having its frames pushed onto one queue. This
+does those three, so nothing downstream needs to know where the node came from.
 """
 
 import hashlib
@@ -19,8 +18,8 @@ from services import node_registration
 
 logger = logging.getLogger(__name__)
 
-# The pipeline expects three fields the v1 wire config does not carry.
-# Values copied from services/blah2_bridge.py rather than invented.
+# The pipeline expects three fields the v1 wire config does not carry; these
+# are the values the nodes actually run with, not invented ones.
 _PIPELINE_DEFAULTS = {"doppler_min": -300, "doppler_max": 300, "min_doppler": 15}
 
 # beam_azimuth_deg is passed through rather than defaulted: null is broadside
@@ -117,8 +116,7 @@ async def prime_pipeline_at_startup() -> int:
 
     A failure here costs the v1 fleet its pipeline membership until the next
     restart, which is bad but recoverable. Raising instead would abort the
-    lifespan and take the whole API with it, including the blah2_bridge path
-    this phase deliberately keeps running as its rollback.
+    lifespan and take the whole API down with it.
     """
     import core.users
     from services.alerting import send_alert

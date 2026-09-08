@@ -42,7 +42,7 @@ labeled on the arrow.
 
 ```mermaid
 flowchart TD
-    ingest["Ingest: 5 producers"] --> fq[["frame_queue asyncio.Queue"]]
+    ingest["Ingest: 4 producers"] --> fq[["frame_queue asyncio.Queue"]]
     fq --> fp["frame_processor_loop: process_one_frame"]
 
     fp --> known["Known lane: claiming"]
@@ -88,9 +88,8 @@ own. Everything that reaches a solve passes through one gate stack
 
 ```mermaid
 flowchart TD
-    subgraph producers["Five producers"]
+    subgraph producers["Four producers"]
         p1["TCP (primary)<br/>tcp_handler.py:326"]
-        p2["blah2 bridge<br/>blah2_bridge.py:289"]
         p3["v1 node HTTP API<br/>node_stream.py:250"]
         p4["Legacy HTTP radar routes<br/>routes/radar.py:151,202"]
         p5["Startup priming<br/>node_pipeline.py:139"]
@@ -105,7 +104,6 @@ flowchart TD
     gC -->|"yes"| dropC["frames_dropped counter<br/>+ rate-limited warning"]:::inert
     gC -->|"no"| fq[["frame_queue"]]
 
-    p2 --> fq
     p3 --> gD{"node in<br/>state.connected_nodes?"}
     gD -->|"no"| dropD["frames_dropped + refused"]:::inert
     gD -->|"yes"| fq
@@ -149,7 +147,6 @@ one of them.
 | `process_one_frame` entry | — | `services/frame_processor.py:294` |
 | Ordering rationale (claim → seed → tracker) | — | `services/frame_processor.py:327-337` |
 | Gate 2.10: `n_nodes < 2` skip | — | `services/frame_processor.py:409-426` |
-| blah2 poll interval | 1.0 s | `config/constants.py:266` |
 
 ---
 

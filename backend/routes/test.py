@@ -659,8 +659,6 @@ def _mlat_verification_summary() -> dict:
 
 # ── Per-node solver verification ──────────────────────────────────────────────
 
-_RADAR3_NODE_ID = "radar3-retnode"
-
 
 @router.get("/api/test/node/{node_id}/verification")
 async def node_verification(node_id: str):
@@ -669,12 +667,6 @@ async def node_verification(node_id: str):
         content=state.latest_node_verification_bytes.get(node_id, b"{}"),
         media_type="application/json",
     )
-
-
-@router.get("/api/test/radar3/verification")
-async def radar3_verification():
-    """Back-compat alias for the radar3 node's verification stats."""
-    return await node_verification(_RADAR3_NODE_ID)
 
 
 @router.get("/api/test/mlat-verification")
@@ -1074,9 +1066,3 @@ async def node_detection_range(node_id: str):
         ),
         media_type="application/json",
     )
-
-
-@router.get("/api/test/radar3/detection-range")
-async def radar3_detection_range():
-    """Back-compat alias for the radar3 node's detection range."""
-    return await node_detection_range(_RADAR3_NODE_ID)
