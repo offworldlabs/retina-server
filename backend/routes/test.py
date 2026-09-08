@@ -1317,6 +1317,7 @@ def _solver_window_stats(minutes: float) -> dict:
         kl_no_converge = getattr(state, "known_lane_no_converge", 0)
         kl_published = getattr(state, "known_lane_published", 0)
         kl_publish_errors = getattr(state, "known_lane_publish_errors", 0)
+        kl_reanchored = getattr(state, "known_lane_reanchored", 0)
         kc_made = state.known_claims_made
         kc_contentions = state.known_claim_contentions
         kc_bound = state.known_claims_bound
@@ -1326,6 +1327,7 @@ def _solver_window_stats(minutes: float) -> dict:
         kh_claims = state.known_hold_claims
         kh_expired = state.known_hold_expired
         kh_disagree = state.known_hold_dropped_disagree
+        kf_claims = state.known_follow_claims
         # Same one-lock snapshot for the follow lane's funnel and the
         # per-reason ineligibility tally beside it: the two are only readable
         # against each other (see the dark_follow block below), so they must
@@ -1439,6 +1441,12 @@ def _solver_window_stats(minutes: float) -> dict:
             "no_converge": kl_no_converge,
             "published": kl_published,
             "publish_errors": kl_publish_errors,
+            # Ghost solves the lane re-anchored onto instead (see
+            # known_lane._reanchor): the kf-seeded prior had drifted — the
+            # aircraft turned while silent — and two consecutive solves agreed
+            # with each other rather than with it.  They are published like a
+            # truth_match and are NOT part of the ghost count.
+            "reanchored": kl_reanchored,
             # The one WINDOWED entry in this since-boot block (it carries its
             # own window_minutes so it cannot be misread as cumulative):
             # solver-vs-ADS-B error over this lane's records in the window,
@@ -1502,6 +1510,11 @@ def _solver_window_stats(minutes: float) -> dict:
             "hold_claims": kh_claims,
             "hold_expired": kh_expired,
             "hold_dropped_disagree": kh_disagree,
+            # Follow claims (services/known_claiming._follow_states): claims a
+            # node made against the lane's own published position for a hex
+            # whose transponder went stale, having no hold of its own — the
+            # detections that would otherwise have started a dark twin.
+            "follow_claims": kf_claims,
             "holds": sum(len(h) for h in list(state.known_track_holds.values())),
         },
         # Dark published solves against the node pool their round had for the

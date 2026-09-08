@@ -83,7 +83,7 @@ from scipy.optimize import linear_sum_assignment
 
 from config.constants import FT_TO_M, as_num
 from core import state
-from services import dark_follow
+from services import dark_follow, track_filter
 from services.id_utils import normalize_hex_key
 
 # Same base constants as the seeding path: the comparison is the identical
@@ -139,6 +139,25 @@ KNOWN_HOLD_DOPPLER_RATE_HZ_PER_S = float(os.getenv("KNOWN_HOLD_DOPPLER_RATE_HZ_P
 # propagating it would walk the prediction off the track it is holding.
 KNOWN_HOLD_MAX_DOPPLER_RATE_HZ_S = float(os.getenv("KNOWN_HOLD_MAX_DOPPLER_RATE_HZ_S", "15"))
 KNOWN_HOLD_RATE_MAX_SPAN_S = float(os.getenv("KNOWN_HOLD_RATE_MAX_SPAN_S", "5"))
+
+# ── Follow gates (path 2's synthetic candidates) ─────────────────────────────
+# A hold only helps the nodes that already had the aircraft.  The node that
+# ACQUIRES a silent aircraft mid-silence has neither a tag, nor a fresh fix,
+# nor a hold — so its detections go to the dark pool and mint a twin beside
+# the very entry the known lane is still publishing.  The lane's own published
+# position is the missing candidate: a radar measurement of that aircraft,
+# seconds old, on a key every node can read.
+#
+# Maximum age of that published entry, for the same reason (and the same
+# default) as dark_follow.DARK_FOLLOW_MAX_AGE_S: past ~20 s the entry is being
+# extrapolated rather than followed.  0 disables the path entirely and leaves
+# path 2 byte-identical to what it was before.
+KNOWN_FOLLOW_MAX_AGE_S = float(os.getenv("KNOWN_FOLLOW_MAX_AGE_S", "20"))
+# ...and the minimum number of solves behind it.  A one- or two-solve entry is
+# a position the lane has not yet confirmed against itself, and offering it as
+# a claiming candidate would let a single bad solve capture detections on
+# every node at once.
+KNOWN_FOLLOW_MIN_SOLVES = int(os.getenv("KNOWN_FOLLOW_MIN_SOLVES", "3"))
 
 _logger = logging.getLogger(__name__)
 
@@ -528,6 +547,121 @@ def _fresh_fix_prediction(
     return pred_d, pred_f, _gate_scale(age_s), _fix_record(st)
 
 
+def _follow_fix_record(hexn: str, lat: float, lon: float, alt_m: float, ve: float, vn: float, ts_ms: int) -> dict:
+    """The ``adsb_fix`` a follow claim carries.
+
+    Preferably the hex's ORIGINAL transponder fix, taken from its hold on any
+    node that still has one: the known lane reads fix_ts_ms to decide how long
+    the aircraft has been silent (and therefore whether to seed from the fix or
+    from its own last solve — see known_lane._build_solver_input), and handing
+    it a freshly stamped fix would tell it the transponder is live.  The node
+    is irrelevant to that question — the fix is the aircraft's, not the node's
+    — so the first hold that has one answers.
+
+    With no hold anywhere, the entry itself is the only evidence there is: its
+    position and altitude, its velocity re-expressed as the gs/track a fix
+    carries, and its own timestamp, which correctly reads as "current" because
+    that is exactly what it is.
+    """
+    for holds in list(state.known_track_holds.values()):
+        e = holds.get(hexn)
+        if isinstance(e, dict) and isinstance(e.get("fix"), dict):
+            return dict(e["fix"])
+    speed_ms = math.hypot(ve, vn)
+    return {
+        "lat": lat,
+        "lon": lon,
+        # Feet, the unit a transponder reports and every reader of a fix
+        # expects (known_lane multiplies alt_baro by FT_TO_M).
+        "alt_baro": alt_m / FT_TO_M,
+        "gs": speed_ms / 0.514444,
+        "track": math.degrees(math.atan2(ve, vn)) % 360.0,
+        "fix_ts_ms": ts_ms,
+    }
+
+
+def _follow_states(frame_ts_s: float, claimed_hexes: set[str]) -> dict[str, dict]:
+    """Synthetic path-2 candidates built from the known lane's own published
+    entries, for hexes whose transponder has gone stale or silent.
+
+    Shaped exactly like a cached ADS-B state so path 2 can treat them as one
+    population: the visibility gate, the range prescreen, the age-scaled gates
+    and the Hungarian assignment all apply unchanged, and a follow candidate
+    competes with the real fixes rather than being claimed beside them.  The
+    eligibility rules are dark_follow._build_targets': recent enough, solved
+    often enough, and with a velocity to dead-reckon by.
+
+    A hex with a FRESH fix is skipped — path 2 already has the better
+    candidate, and offering both would put the same aircraft in the assignment
+    twice.
+    """
+    if KNOWN_FOLLOW_MAX_AGE_S <= 0:
+        return {}
+    cache = state._adsb_for_seeding()
+    out: dict[str, dict] = {}
+    for key, rec in list(state.multinode_tracks.items()):
+        if not key.startswith("mn-adsb-") or not isinstance(rec, dict):
+            continue
+        hexn = normalize_hex_key(key[len("mn-adsb-") :])
+        if not hexn or hexn in claimed_hexes:
+            continue
+        cached = cache.get(hexn)
+        if isinstance(cached, dict) and abs(frame_ts_s - cached.get("timestamp_ms", 0) / 1000.0) <= (
+            KNOWN_CLAIM_MAX_FIX_AGE_S
+        ):
+            continue
+        lat, lon = rec.get("lat"), rec.get("lon")
+        if lat is None or lon is None or not (math.isfinite(lat) and math.isfinite(lon)):
+            continue
+        ts_ms = int(rec.get("timestamp_ms") or 0)
+        if not (0.0 <= frame_ts_s - ts_ms / 1000.0 <= KNOWN_FOLLOW_MAX_AGE_S):
+            continue
+        if int(rec.get("solve_count") or 0) < KNOWN_FOLLOW_MIN_SOLVES:
+            continue
+        # The filter's velocity first — it is learned from the position
+        # sequence and survives the transponder, which the entry's own solved
+        # velocity (under-determined at n<=3) does not always.
+        lv = track_filter.learned_velocity(key)
+        if lv is not None:
+            ve, vn = float(lv[0]), float(lv[1])
+        else:
+            ve = float(rec.get("vel_east") or 0.0)
+            vn = float(rec.get("vel_north") or 0.0)
+        alt_m = rec.get("alt_m")
+        if alt_m is None:
+            alt_m = float(rec.get("alt_km") or 0.0) * 1000.0
+        alt_m = float(alt_m or 0.0)
+        # World tag: the cache's while the stale entry is still there, else
+        # the hold's (every hold stamps the claiming node's world).  A follow
+        # candidate with NO world would pass the world gate on every node,
+        # and real traffic flies over the simulated fleet's footprint —
+        # exactly the decoy case that gate exists for.
+        world = cached.get("world") if isinstance(cached, dict) else None
+        if world is None:
+            for holds in list(state.known_track_holds.values()):
+                e = holds.get(hexn)
+                if isinstance(e, dict) and e.get("world") is not None:
+                    world = e["world"]
+                    break
+        out[hexn] = {
+            "lat": float(lat),
+            "lon": float(lon),
+            "alt_m": alt_m,
+            "vel_east": ve,
+            "vel_north": vn,
+            "timestamp_ms": ts_ms,
+            # The hex's world tag while the cache still remembers it; once the
+            # entry ages out there is nothing to tag with, and an untagged
+            # candidate passes every world — the same rule the cache path
+            # applies to an entry written before worlds existed.
+            "world": world,
+            # Marks this candidate as synthetic for the claim-building step
+            # below; no other reader of a cached state ever sees it.
+            "_follow_fix": _follow_fix_record(hexn, float(lat), float(lon), alt_m, ve, vn, ts_ms),
+        }
+    return out
+
+
 def _claim_holds(
     node_id: str,
     geo,
@@ -756,7 +890,14 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
         # it for a candidate poleward of the node and could reject one the gate
         # would have passed.
         screen_km_per_lon = km_per_deg_lon(abs(geo.rx_lat) + screen_r_max_km / KM_PER_DEG_LAT)
-        for hexn, st in state._adsb_for_seeding().items():
+        # The cached fixes plus the lane's own published positions for hexes
+        # whose fix has gone stale (see _follow_states).  update() rather than
+        # a second loop so each hex appears exactly once in the assignment;
+        # the snapshot _adsb_for_seeding returns is freshly built per call, so
+        # writing into it cannot touch the cache.
+        cand_states = state._adsb_for_seeding()
+        cand_states.update(_follow_states(frame_ts_s, claimed_hexes))
+        for hexn, st in cand_states.items():
             if hexn in claimed_hexes:
                 continue
             # World gate: a synthetic node's echoes can only ever be of
@@ -860,16 +1001,26 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
                     continue
                 i = free[r]
                 hexn, st, pred_d, pred_f, _scale = cands[c]
+                # A follow candidate carries the hex's ORIGINAL (stale) fix
+                # rather than a fix record built from itself — see
+                # _follow_fix_record.  "follow": True marks the claim for the
+                # lane and for the operator; everything else about it is an
+                # ordinary path-2 claim, including the hold it goes on to
+                # create, which is the point: from the next frame this node
+                # holds the track on its own measurements.
+                follow_fix = st.get("_follow_fix")
                 claims.append(
                     (
                         i,
                         hexn,
-                        _fix_record(st),
+                        follow_fix if isinstance(follow_fix, dict) else _fix_record(st),
                         pred_d,
                         pred_f,
-                        {},
+                        {"follow": True} if isinstance(follow_fix, dict) else {},
                     )
                 )
+                if isinstance(follow_fix, dict):
+                    state.bump_counter("known_follow_claims")
                 claimed_idx.add(i)
 
     # ── Contention, registry, counters, residual hook ─────────────────────────

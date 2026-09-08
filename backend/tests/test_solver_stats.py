@@ -423,6 +423,7 @@ class TestKnownLaneAndClaimsPassthrough:
             "no_converge": 1,
             "published": 4,
             "publish_errors": 1,
+            "reanchored": 0,
             # Windowed, and empty here — these are since-boot counters bumped
             # directly, with no history records behind them.
             "position_error_km": {"median": None, "p90": None, "n": 0, "window_minutes": 10.0},
@@ -450,6 +451,7 @@ class TestKnownLaneAndClaimsPassthrough:
             "hold_expired": 0,
             "hold_dropped_disagree": 0,
             "holds": 0,
+            "follow_claims": 0,
         }
 
     def test_both_blocks_zero_on_a_fresh_process(self):
@@ -467,6 +469,7 @@ class TestKnownLaneAndClaimsPassthrough:
             "hold_expired": 0,
             "hold_dropped_disagree": 0,
             "holds": 0,
+            "follow_claims": 0,
         }
 
     def test_lane_counters_absent_from_state_read_as_zero(self, monkeypatch):
@@ -670,6 +673,7 @@ class TestEndpoint:
             "no_converge",
             "published",
             "publish_errors",
+            "reanchored",
             "position_error_km",
         }
         assert data["known_claims"].keys() == {
@@ -683,6 +687,7 @@ class TestEndpoint:
             "hold_expired",
             "hold_dropped_disagree",
             "holds",
+            "follow_claims",
         }
 
     def test_minutes_clamp_low(self):

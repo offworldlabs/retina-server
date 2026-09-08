@@ -61,6 +61,7 @@ merged or not.
 
 import logging
 import math
+import os
 import threading
 import time
 
@@ -92,6 +93,7 @@ _COUNTERS = (
     "known_lane_no_converge",
     "known_lane_published",
     "known_lane_publish_errors",
+    "known_lane_reanchored",
 )
 for _name in _COUNTERS:
     if not hasattr(state, _name):
@@ -148,6 +150,19 @@ _last_sample_mono: dict[str, float] = {}
 _last_follow_mono: dict[str, float] = {}
 _last_follow_ts_ms: dict[str, int] = {}
 
+# ── Re-anchoring after a kf-seeded ghost ──────────────────────────────────────
+# How many CONSECUTIVE self-consistent kf-seeded ghosts it takes to conclude
+# that the prior, not the solve, is what moved.  2 = the solve said the same
+# thing twice in a row; 0 disables re-anchoring and restores the pre-feature
+# classification exactly.
+KNOWN_LANE_REANCHOR_STREAK = int(os.getenv("KNOWN_LANE_REANCHOR_STREAK", "2"))
+# Last kf-seeded ghost per hex: {"lat", "lon", "ts_ms", "streak"}.  Written
+# only from _attempt, i.e. single-writer under _PASS_LOCK like the maps above.
+# A memory older than this is no evidence about the current solve — it is the
+# lane's own claim-staleness scale, comfortably longer than the pass interval.
+_REANCHOR_TTL_S = 60.0
+_reanchor_mem: dict[str, dict] = {}
+
 
 def _reset_for_tests() -> None:
     """Restore this module's private state to boot values.  Tests only."""
@@ -158,6 +173,7 @@ def _reset_for_tests() -> None:
         _last_sample_mono.clear()
         _last_follow_mono.clear()
         _last_follow_ts_ms.clear()
+        _reanchor_mem.clear()
     with state.counters_lock:
         for name in _COUNTERS:
             setattr(state, name, 0)
@@ -331,6 +347,53 @@ def _build_solver_input(hexn: str, claims: dict[str, dict]) -> dict | None:
     }
 
 
+def _reanchor(hexn: str, raw_lat: float, raw_lon: float, ts_ms: int) -> bool:
+    """True when this kf-seeded ghost is the point at which the LANE, not the
+    solve, should move.
+
+    The kf seed is a prior, not a measurement: the lane's own last published
+    position dead-reckoned forward.  When the aircraft turns during its
+    silence the prior keeps flying the old heading, the solves keep landing on
+    the aircraft, and displacement against the prior crosses the ghost
+    threshold — after which nothing is published, the prior stops being
+    refreshed, and the gap grows without limit.  Every later solve is then
+    measured against a position the aircraft left minutes ago, so the lane can
+    never recover on its own.  Live captures show exactly that: 25 consecutive
+    ghosts, all within 0.6 km of truth, against a prior 13 km away.
+
+    What distinguishes a moved prior from a genuinely wrong solve is
+    REPEATABILITY: a wrong solve is wrong somewhere new each time, while the
+    aircraft is where it is.  So two consecutive ghost solves that agree with
+    EACH OTHER to within the same displacement cap are taken as the truth and
+    the prior is abandoned.
+
+    A fix-seeded ghost never reaches here (see the caller): a live transponder
+    is the lane's truth gate, and re-anchoring away from it would let the lane
+    publish a position the aircraft's own fix contradicts.
+    """
+    if KNOWN_LANE_REANCHOR_STREAK <= 0:
+        return False
+    now_s = ts_ms / 1000.0
+    for h, m in list(_reanchor_mem.items()):
+        if abs(now_s - m["ts_ms"] / 1000.0) > _REANCHOR_TTL_S:
+            _reanchor_mem.pop(h, None)
+    prev = _reanchor_mem.get(hexn)
+    streak = 1
+    if (
+        prev is not None
+        and 0.0 <= now_s - prev["ts_ms"] / 1000.0 <= _REANCHOR_TTL_S
+        and haversine_km(prev["lat"], prev["lon"], raw_lat, raw_lon) <= solver_mod._MAX_DISPLACEMENT_KM
+    ):
+        streak = int(prev["streak"]) + 1
+    if streak >= KNOWN_LANE_REANCHOR_STREAK:
+        # Spent: the next solve is measured against the position this one
+        # publishes, so the streak starts over from the new anchor.
+        _reanchor_mem.pop(hexn, None)
+        return True
+    _reanchor_mem[hexn] = {"lat": raw_lat, "lon": raw_lon, "ts_ms": ts_ms, "streak": streak}
+    return False
+
+
 def _record_accuracy(hexn: str, err_km: float, label: str, n_nodes: int, ts_s: float) -> None:
     """Append one known-lane sample to the rolling accuracy store, at most one
     per hex per _ACCURACY_SAMPLE_INTERVAL_S.
@@ -478,11 +541,20 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
     raw_lat, raw_lon = float(result["lat"]), float(result["lon"])
     err_km = haversine_km(float(ig["lat"]), float(ig["lon"]), raw_lat, raw_lon)
     label = "truth_match" if err_km <= solver_mod._MAX_DISPLACEMENT_KM else "ghost"
+    # The prior is only a prior — when it is the lane's OWN dead-reckoned
+    # solve rather than a transponder fix, a repeated self-consistent
+    # disagreement means the prior moved, not the solve.  See _reanchor.
+    if (
+        label == "ghost"
+        and s_in.get("seed_source") == "kf"
+        and _reanchor(hexn, raw_lat, raw_lon, int(s_in["timestamp_ms"]))
+    ):
+        label = "reanchored"
     state.bump_counter(f"known_lane_{label}")
     n_nodes = int(result.get("n_nodes") or s_in.get("n_nodes") or 0)
     _record_accuracy(hexn, err_km, label, n_nodes, s_in["timestamp_ms"] / 1000.0)
 
-    published = mode == "binding" and label == "truth_match"
+    published = mode == "binding" and label in ("truth_match", "reanchored")
     solve_key = None
     if published:
         # A failing publish must cost this ONE hex its publish, never the
