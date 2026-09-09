@@ -150,16 +150,14 @@ class RegisterRequest(_RequestModel):
     node_id: NodeId
     board_model: str = Field(max_length=64)
     agreements: Agreements
-    # Deliberately untyped. A Pydantic model here would 422 on a bad value before
-    # the handler runs, putting a config-shaped rejection in front of identity
-    # resolution and making the response an oracle for which identities exist.
-    # Validation is services/node_config.validate_config, called from inside the
-    # handler once the identity has resolved.
+    # Deliberately untyped, for the reason routes/node_register.py's module
+    # docstring gives: a Pydantic model here would refuse a bad value before the
+    # handler runs, ahead of identity resolution. Validation is
+    # services/node_config.validate_config, from inside the handler.
     #
-    # Described without being enforced: WithJsonSchema replaces what is published
-    # and leaves validation alone, so the shape reaches a client generating from
-    # the contract while the refusal stays behind identity resolution. Anything
-    # this schema forbids still reaches the handler and is refused there.
+    # WithJsonSchema describes without enforcing: it replaces what is published
+    # and leaves validation alone, so anything this schema forbids still reaches
+    # the handler and is refused there.
     config: Annotated[dict[str, Any], WithJsonSchema(config_json_schema())]
 
 

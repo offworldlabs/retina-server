@@ -48,11 +48,17 @@ NODE_PATH_PREFIX = "/v1/nodes"
 #
 # 1.1.3 also publishes the configuration schema, built from the same tables the
 # validator enforces (86cb6d7he), and the version does not move for it: the
-# server accepts and refuses exactly what it did, and only the description
-# changed. Two documents therefore carry this version, the later a superset of
-# the earlier, so a client pinned to 1.1.3 may or may not have the fifteen
-# configuration fields and cannot tell which it holds from the version alone.
-# Published without being enforced: see routes/node_schemas.py, RegisterRequest.
+# server accepts and refuses exactly what it did, so there is no change in
+# behaviour for a version to describe.
+#
+# What did change is the document, and not additively. Where `config` was an
+# object with no required keys and `additionalProperties: true`, it is now
+# fifteen required fields with unknown keys forbidden, and its generated type is
+# named NodeConfig where it was Config. So the document narrows, to what this
+# server has always enforced, and renames. Two documents therefore carry this
+# version and a client cannot tell them apart by it: a payload the earlier one
+# called valid, one omitting cpi_s say, the later one rejects, and a client
+# regenerated against the later one renames its config type.
 NODE_API_VERSION = "1.1.3"
 
 # No tag here: each sub-router carries the contract's own grouping, since those

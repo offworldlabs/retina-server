@@ -6,6 +6,7 @@ from services.node_config import (
     ConfigInvalid,
     canonical_config,
     config_json_schema,
+    numeric_branch,
     position_status,
     validate_config,
 )
@@ -664,14 +665,19 @@ def test_canonicalising_twice_changes_nothing():
 # this end accepts.
 
 
-def _numeric_branch(published: dict) -> dict:
-    """The number branch of a published property, nullable or not."""
-    return published["anyOf"][0] if "anyOf" in published else published
+# Taken from the published schema rather than from NUMERIC_FIELDS above, so a
+# field added to either table is covered by the time it reaches the document.
+# A hand-written list would leave a new bound published, enforced, and unchecked.
+PUBLISHED_NUMERIC_FIELDS = sorted(
+    field
+    for field, published in config_json_schema()["properties"].items()
+    if numeric_branch(published).get("type") == "number"
+)
 
 
-@pytest.mark.parametrize("field", NUMERIC_FIELDS)
+@pytest.mark.parametrize("field", PUBLISHED_NUMERIC_FIELDS)
 def test_every_published_bound_is_where_the_validator_refuses(field):
-    schema = _numeric_branch(config_json_schema()["properties"][field])
+    schema = numeric_branch(config_json_schema()["properties"][field])
 
     for keyword, outward in (("minimum", -math.inf), ("maximum", math.inf)):
         if keyword in schema:

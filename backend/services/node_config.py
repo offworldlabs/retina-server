@@ -4,11 +4,10 @@ and the one normaliser every in-process copy of a node's config passes through.
 These bounds are the wire contract's, and they are its source: config_json_schema
 below is what the document publishes, so the contract is built from this module
 rather than copied into it. Three checks cannot travel with them, because a JSON
-schema expresses none of them: a receiver and
-illuminator at the same point give the solver a degenerate baseline; bool is a
-subclass of int in Python, so a plain range check accepts True as a latitude of
-1; and NaN compares false against every bound, so it survives a range check
-untouched.
+schema expresses none of them: a receiver and illuminator at the same point give
+the solver a degenerate baseline; bool is a subclass of int in Python, so a plain
+range check accepts True as a latitude of 1; and NaN compares false against every
+bound, so it survives a range check untouched.
 
 A leaf on purpose. It takes a dict and returns a dict, knowing nothing of identity,
 HTTP or status codes, so both callers can share it and it stays testable without a
@@ -16,6 +15,7 @@ database. Nothing beyond the standard library may be imported here.
 """
 
 import math
+from copy import deepcopy
 from typing import Any, Literal
 
 # About 0.11 m. Below this the receiver and illuminator are the same point as far as
@@ -59,8 +59,6 @@ _NUMERIC_BOUNDS: dict[str, tuple[float, float, bool, bool]] = {
 # zero wherever the geodesy reads it.
 _NULLABLE = {"rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft"}
 
-_REQUIRED = set(_NUMERIC_BOUNDS) | {"tx_callsign", "beam_width_deg", "beam_azimuth_deg"}
-
 # The three fields the table above does not carry: the callsign, which is not
 # numeric, and the two beam fields, whose bounds are checked beside it because
 # both are nullable. Written out rather than derived, so
@@ -72,6 +70,11 @@ _UNTABLED_PROPERTIES: dict[str, dict[str, Any]] = {
     "beam_width_deg": {"type": "number", "exclusiveMinimum": 0.0, "maximum": 360.0},
     "beam_azimuth_deg": {"type": "number", "minimum": 0.0, "exclusiveMaximum": 360.0},
 }
+
+# Derived from the two tables rather than listed again, so a field added to
+# either is required by this validator and published as required in the same
+# edit.
+_REQUIRED = set(_NUMERIC_BOUNDS) | set(_UNTABLED_PROPERTIES)
 
 # Nullable beyond the coordinates, and for a different reason: no node has its
 # antenna characterised, so null is what the whole fleet sends for both.
@@ -92,12 +95,14 @@ here: both answer `400 invalid_config` naming the field."""
 
 
 def _numeric_property(low: float, high: float, low_inclusive: bool, high_inclusive: bool) -> dict[str, Any]:
+    # An unbounded end is what JSON Schema says by omission: neither an infinity
+    # nor a NaN is a bound, and either would publish a ceiling the server does
+    # not have in a literal no JSON parser can read. Both ends are guarded, so
+    # adding an unbounded low to the table cannot slip one out.
     schema: dict[str, Any] = {"type": "number"}
-    schema["minimum" if low_inclusive else "exclusiveMinimum"] = float(low)
-    # The two tolerances have no ceiling, which JSON Schema says by omission.
-    # math.inf is not a bound, and publishing it would state a limit the server
-    # does not have.
-    if not math.isinf(high):
+    if math.isfinite(low):
+        schema["minimum" if low_inclusive else "exclusiveMinimum"] = float(low)
+    if math.isfinite(high):
         schema["maximum" if high_inclusive else "exclusiveMaximum"] = float(high)
     return schema
 
@@ -107,15 +112,15 @@ def config_json_schema() -> dict[str, Any]:
 
     Generated from what this module enforces rather than written beside it, so
     the document a node is built against cannot state a bound the server does
-    not apply. The two operations that take a configuration publish it inline
-    rather than as a shared component: Pydantic resolves every `$ref` it emits
-    against its own definitions, and this schema is not one of its models.
+    not apply. Describing the shape is not enforcing it; registration's body
+    stays untyped, for the reason routes/node_register.py gives.
 
-    Publishing it does not enforce it. Registration's body stays untyped so
-    that no config-shaped refusal can reach the wire ahead of identity
-    resolution, which is the whole reason its refusals share one body.
+    Fresh every call, nested dicts included. Two callers publish this and the
+    frameworks under both mutate schema dicts in place, so a shared sub-dict
+    would let one operation's published bounds rewrite the other's.
     """
-    tabled = {field: _numeric_property(*bounds) for field, bounds in _NUMERIC_BOUNDS.items()}
+    properties = {field: _numeric_property(*bounds) for field, bounds in _NUMERIC_BOUNDS.items()}
+    properties |= deepcopy(_UNTABLED_PROPERTIES)
     nullable = _NULLABLE | _NULLABLE_BEAM
     return {
         "type": "object",
@@ -123,7 +128,7 @@ def config_json_schema() -> dict[str, Any]:
         "description": _SCHEMA_DESCRIPTION,
         "properties": {
             field: {"anyOf": [schema, {"type": "null"}]} if field in nullable else schema
-            for field, schema in (tabled | _UNTABLED_PROPERTIES).items()
+            for field, schema in properties.items()
         },
         # Sorted for the same reason the refusals above are: a document that
         # reordered between runs would show as a diff in the CI gate.
@@ -132,6 +137,20 @@ def config_json_schema() -> dict[str, Any]:
         # ignoring it.
         "additionalProperties": False,
     }
+
+
+def numeric_branch(published: dict[str, Any]) -> dict[str, Any]:
+    """The number half of a published property, whether or not it is nullable.
+
+    Beside the builder because it is how the builder's output is read back, and
+    the alternative is each caller re-deriving where the bounds live. Selects on
+    the type rather than on position in the `anyOf`, so reordering the branches
+    cannot leave a caller reading the null one and finding no bounds at all.
+    """
+    for alternative in published.get("anyOf", [published]):
+        if alternative.get("type") == "number":
+            return alternative
+    return published
 
 
 def _as_finite_float(value: Any) -> tuple[float | None, str]:

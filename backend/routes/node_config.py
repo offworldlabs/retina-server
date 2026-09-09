@@ -83,9 +83,9 @@ response does not mention it, and nothing about streaming depends on the node no
         "x-max-body-bytes": NODE_BODY_LIMITS["/v1/nodes/config"],
         # The body is read inside the handler rather than declared, so FastAPI has
         # nothing to describe it with and the published operation would otherwise
-        # take no body at all. The schema is the same object registration's
-        # `config` publishes, built from the validator's own tables, so the two
-        # cannot state different bounds for one body.
+        # take no body at all. The same object registration's `config` publishes,
+        # which scripts/generate_openapi.py then hoists into the one component
+        # both operations reference.
         "requestBody": {
             "required": True,
             "description": "The full configuration, in the same shape as `config` on `POST /v1/nodes/register`.",

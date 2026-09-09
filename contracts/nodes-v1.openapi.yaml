@@ -198,112 +198,7 @@ paths:
         content:
           application/json:
             schema:
-              properties:
-                rx_lat:
-                  anyOf:
-                  - type: number
-                    maximum: 90.0
-                    minimum: -90.0
-                  - type: 'null'
-                rx_lon:
-                  anyOf:
-                  - type: number
-                    maximum: 180.0
-                    minimum: -180.0
-                  - type: 'null'
-                rx_alt_ft:
-                  anyOf:
-                  - type: number
-                    maximum: 30000.0
-                    minimum: -1500.0
-                  - type: 'null'
-                tx_lat:
-                  anyOf:
-                  - type: number
-                    maximum: 90.0
-                    minimum: -90.0
-                  - type: 'null'
-                tx_lon:
-                  anyOf:
-                  - type: number
-                    maximum: 180.0
-                    minimum: -180.0
-                  - type: 'null'
-                tx_alt_ft:
-                  anyOf:
-                  - type: number
-                    maximum: 30000.0
-                    minimum: -1500.0
-                  - type: 'null'
-                fc_hz:
-                  type: number
-                  maximum: 6000000000.0
-                  minimum: 1000000.0
-                fs_hz:
-                  type: number
-                  maximum: 20000000.0
-                  minimum: 100000.0
-                max_range_km:
-                  type: number
-                  maximum: 1000.0
-                  exclusiveMinimum: 0.0
-                cpi_s:
-                  type: number
-                  maximum: 10.0
-                  exclusiveMinimum: 0.0
-                delay_tolerance_us:
-                  type: number
-                  exclusiveMinimum: 0.0
-                doppler_tolerance_hz:
-                  type: number
-                  exclusiveMinimum: 0.0
-                tx_callsign:
-                  type: string
-                  maxLength: 32
-                  minLength: 1
-                beam_width_deg:
-                  anyOf:
-                  - type: number
-                    maximum: 360.0
-                    exclusiveMinimum: 0.0
-                  - type: 'null'
-                beam_azimuth_deg:
-                  anyOf:
-                  - type: number
-                    exclusiveMaximum: 360.0
-                    minimum: 0.0
-                  - type: 'null'
-              additionalProperties: false
-              type: object
-              required:
-              - beam_azimuth_deg
-              - beam_width_deg
-              - cpi_s
-              - delay_tolerance_us
-              - doppler_tolerance_hz
-              - fc_hz
-              - fs_hz
-              - max_range_km
-              - rx_alt_ft
-              - rx_lat
-              - rx_lon
-              - tx_alt_ft
-              - tx_callsign
-              - tx_lat
-              - tx_lon
-              title: NodeConfig
-              description: |-
-                The receiver and illuminator geometry, the radio parameters and the association
-                tolerances. Every field is required.
-
-                The six coordinate fields are nullable, for a node whose owner cannot supply the
-                geometry. Such a node registers and streams, and its detections are counted, but
-                it places nothing on the map until a position arrives. A latitude and its
-                longitude are given together or both null.
-
-                Necessary but not sufficient. A receiver and illuminator at the same point are
-                refused, as is a value that is not a finite number, and neither is expressible
-                here: both answer `400 invalid_config` naming the field.
+              $ref: '#/components/schemas/NodeConfig'
         required: true
       responses:
         '200':
@@ -807,6 +702,113 @@ components:
       - streaming_allowed
       - node_ref
       title: HeartbeatResponse
+    NodeConfig:
+      type: object
+      title: NodeConfig
+      description: |-
+        The receiver and illuminator geometry, the radio parameters and the association
+        tolerances. Every field is required.
+
+        The six coordinate fields are nullable, for a node whose owner cannot supply the
+        geometry. Such a node registers and streams, and its detections are counted, but
+        it places nothing on the map until a position arrives. A latitude and its
+        longitude are given together or both null.
+
+        Necessary but not sufficient. A receiver and illuminator at the same point are
+        refused, as is a value that is not a finite number, and neither is expressible
+        here: both answer `400 invalid_config` naming the field.
+      properties:
+        rx_lat:
+          anyOf:
+          - type: number
+            minimum: -90.0
+            maximum: 90.0
+          - type: 'null'
+        rx_lon:
+          anyOf:
+          - type: number
+            minimum: -180.0
+            maximum: 180.0
+          - type: 'null'
+        rx_alt_ft:
+          anyOf:
+          - type: number
+            minimum: -1500.0
+            maximum: 30000.0
+          - type: 'null'
+        tx_lat:
+          anyOf:
+          - type: number
+            minimum: -90.0
+            maximum: 90.0
+          - type: 'null'
+        tx_lon:
+          anyOf:
+          - type: number
+            minimum: -180.0
+            maximum: 180.0
+          - type: 'null'
+        tx_alt_ft:
+          anyOf:
+          - type: number
+            minimum: -1500.0
+            maximum: 30000.0
+          - type: 'null'
+        fc_hz:
+          type: number
+          minimum: 1000000.0
+          maximum: 6000000000.0
+        fs_hz:
+          type: number
+          minimum: 100000.0
+          maximum: 20000000.0
+        max_range_km:
+          type: number
+          exclusiveMinimum: 0.0
+          maximum: 1000.0
+        cpi_s:
+          type: number
+          exclusiveMinimum: 0.0
+          maximum: 10.0
+        delay_tolerance_us:
+          type: number
+          exclusiveMinimum: 0.0
+        doppler_tolerance_hz:
+          type: number
+          exclusiveMinimum: 0.0
+        tx_callsign:
+          type: string
+          minLength: 1
+          maxLength: 32
+        beam_width_deg:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+            maximum: 360.0
+          - type: 'null'
+        beam_azimuth_deg:
+          anyOf:
+          - type: number
+            minimum: 0.0
+            exclusiveMaximum: 360.0
+          - type: 'null'
+      required:
+      - beam_azimuth_deg
+      - beam_width_deg
+      - cpi_s
+      - delay_tolerance_us
+      - doppler_tolerance_hz
+      - fc_hz
+      - fs_hz
+      - max_range_km
+      - rx_alt_ft
+      - rx_lat
+      - rx_lon
+      - tx_alt_ft
+      - tx_callsign
+      - tx_lat
+      - tx_lon
+      additionalProperties: false
     NodeHealth:
       properties:
         cpu_pct:
@@ -925,112 +927,7 @@ components:
         agreements:
           $ref: '#/components/schemas/Agreements'
         config:
-          properties:
-            rx_lat:
-              anyOf:
-              - type: number
-                maximum: 90.0
-                minimum: -90.0
-              - type: 'null'
-            rx_lon:
-              anyOf:
-              - type: number
-                maximum: 180.0
-                minimum: -180.0
-              - type: 'null'
-            rx_alt_ft:
-              anyOf:
-              - type: number
-                maximum: 30000.0
-                minimum: -1500.0
-              - type: 'null'
-            tx_lat:
-              anyOf:
-              - type: number
-                maximum: 90.0
-                minimum: -90.0
-              - type: 'null'
-            tx_lon:
-              anyOf:
-              - type: number
-                maximum: 180.0
-                minimum: -180.0
-              - type: 'null'
-            tx_alt_ft:
-              anyOf:
-              - type: number
-                maximum: 30000.0
-                minimum: -1500.0
-              - type: 'null'
-            fc_hz:
-              type: number
-              maximum: 6000000000.0
-              minimum: 1000000.0
-            fs_hz:
-              type: number
-              maximum: 20000000.0
-              minimum: 100000.0
-            max_range_km:
-              type: number
-              maximum: 1000.0
-              exclusiveMinimum: 0.0
-            cpi_s:
-              type: number
-              maximum: 10.0
-              exclusiveMinimum: 0.0
-            delay_tolerance_us:
-              type: number
-              exclusiveMinimum: 0.0
-            doppler_tolerance_hz:
-              type: number
-              exclusiveMinimum: 0.0
-            tx_callsign:
-              type: string
-              maxLength: 32
-              minLength: 1
-            beam_width_deg:
-              anyOf:
-              - type: number
-                maximum: 360.0
-                exclusiveMinimum: 0.0
-              - type: 'null'
-            beam_azimuth_deg:
-              anyOf:
-              - type: number
-                exclusiveMaximum: 360.0
-                minimum: 0.0
-              - type: 'null'
-          additionalProperties: false
-          type: object
-          required:
-          - beam_azimuth_deg
-          - beam_width_deg
-          - cpi_s
-          - delay_tolerance_us
-          - doppler_tolerance_hz
-          - fc_hz
-          - fs_hz
-          - max_range_km
-          - rx_alt_ft
-          - rx_lat
-          - rx_lon
-          - tx_alt_ft
-          - tx_callsign
-          - tx_lat
-          - tx_lon
-          title: NodeConfig
-          description: |-
-            The receiver and illuminator geometry, the radio parameters and the association
-            tolerances. Every field is required.
-
-            The six coordinate fields are nullable, for a node whose owner cannot supply the
-            geometry. Such a node registers and streams, and its detections are counted, but
-            it places nothing on the map until a position arrives. A latitude and its
-            longitude are given together or both null.
-
-            Necessary but not sufficient. A receiver and illuminator at the same point are
-            refused, as is a value that is not a finite number, and neither is expressible
-            here: both answer `400 invalid_config` naming the field.
+          $ref: '#/components/schemas/NodeConfig'
       additionalProperties: false
       type: object
       required:
