@@ -414,7 +414,7 @@ export default function TestRadar() {
                 MARIETTA.lat,
                 nodeStyle === "both" ? MARIETTA.lon + 0.04 : MARIETTA.lon,
               ]}
-              icon={nodeIcon}
+              icon={nodeIcon()}
             >
               <Popup>radar3-retnode (divIcon, icons.ts)</Popup>
             </Marker>

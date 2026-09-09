@@ -569,9 +569,6 @@
   white-space: nowrap;
 }
 
-/* These five stops are _DOPPLER_STOPS from map/constants.ts, in order. The
-   guide has to show the ramp the arcs are actually drawn with, and the old
-   grey centre stop was from before that centre became cyan. */
 /* The stops are DOPPLER_STOPS from map/mapPalette.ts, in order: the guide has
    to show the ramp the arcs are actually drawn with. */
 .ps-doppler-bar {

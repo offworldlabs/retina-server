@@ -1,4 +1,4 @@
-import { DOPPLER_STOPS } from "./mapPalette";
+import { activePalette } from "./mapPalette";
 
 export const API_BASE = "/api";
 export const STALE_AIRCRAFT_MS = 8000;
@@ -44,14 +44,16 @@ export const POSITION_SOURCE_ARC_ONLY = "single_node_ellipse_arc";
 export const POSITION_SOURCE_ADSB_SINGLE = "adsb_single_node";
 
 // Three lanes, three colours (getAircraftColor, StatsOverlay, the trimmed arc):
-// this blue for a claimed single-node ADS-B target, cyan #38bdf8 for a
+// this blue for a claimed single-node ADS-B target, cyan LANE_MN_ADSB for a
 // multi-node solve that carried a transponder tag (mn-adsb-*, adsb_assisted),
-// violet #a78bfa for a dark multi-node solve (mn-dark-*).  The two blues sit
-// next to each other because both lanes know the transponder identity; violet
-// is the odd one out because a dark solve does not.  Teal #2dd4bf stays on the
-// ADS-B-seeded solver source, and cyan doubles as the fallback colour for the
-// rare solver_single_node relic.
-export { LANE_ADSB_SINGLE as ADSB_SINGLE_COLOR } from "./mapPalette";
+// fuchsia LANE_MN_DARK for a dark multi-node solve (mn-dark-*).  Blue and cyan
+// sit next to each other because both lanes know the transponder identity;
+// fuchsia is the odd one out because a dark solve does not.  Green
+// LANE_SOLVER_SEED stays on the ADS-B-seeded solver source, and cyan doubles as
+// the fallback colour for the rare solver_single_node relic.  The values live
+// in mapPalette.ts, which is where every map colour is chosen, where the
+// separation between them is justified, and where each theme states its own
+// values — which is why there is no colour constant here to import.
 
 // The claimed arc is drawn at a FIXED SCREEN LENGTH — a multiple of the plane
 // icon it sits under — rather than a fixed ground length.  The locus spans
@@ -145,16 +147,21 @@ export const DR_ICON_MAX_AGE_DARK_S = 12;
 // after a couple of seconds on an assumption the feed never made.
 export const DR_UNKNOWN_GS_KT = 250;
 
-// Doppler colour gradient — dark blue (approaching) → light blue → cyan → light red → dark red (receding)
-// Centre stop is bright cyan so near-zero-doppler arcs are always visible on light basemaps.
-// t ∈ [-1, +1] maps linearly across the 5 stops.
+// Doppler colour gradient — blue (approaching) through neutral to red
+// (receding).  t ∈ [-1, +1] maps linearly across the 5 stops, which live in
+// mapPalette.ts because each theme needs its own: on the light surface the
+// previous ramp's light-blue, cyan and light-red stops measured 2.27, 1.61 and
+// 2.47 against Positron, so the arcs nearest zero Doppler — the common case —
+// were the ones you could least see.  Both ramps now keep a neutral centre, so
+// "no radial motion" reads as the absence of a direction rather than a third
+// colour.
 export function dopplerColor(doppler_hz, maxDop = 200) {
-  const _DOPPLER_STOPS = DOPPLER_STOPS;
+  const stops = activePalette().DOPPLER_STOPS;
   const t = Math.max(-1, Math.min(1, doppler_hz / maxDop)); // [-1, +1]
-  const pos = (t + 1) / 2 * (_DOPPLER_STOPS.length - 1);   // [0, 4]
+  const pos = ((t + 1) / 2) * (stops.length - 1);           // [0, 4]
   const lo = Math.floor(pos);
-  const hi = Math.min(lo + 1, _DOPPLER_STOPS.length - 1);
+  const hi = Math.min(lo + 1, stops.length - 1);
   const f = pos - lo;
-  const [r, g, b] = _DOPPLER_STOPS[lo].map((c, i) => Math.round(c + f * (_DOPPLER_STOPS[hi][i] - c)));
+  const [r, g, b] = stops[lo].map((c, i) => Math.round(c + f * (stops[hi][i] - c)));
   return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
 }

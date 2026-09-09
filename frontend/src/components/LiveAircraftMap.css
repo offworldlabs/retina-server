@@ -164,6 +164,13 @@
   flex-shrink: 0;
 }
 
+/* --bg-input matches --bg-sunk on light, so a field on this pane would be left
+   with only its border. Controls here take the card colour instead. */
+.app.map-surface .aircraft-list-panel input[type="text"],
+.app.map-surface .aircraft-list-panel select {
+  background: var(--bg-card);
+}
+
 .al-search input {
   flex: 1;
   background: transparent;
