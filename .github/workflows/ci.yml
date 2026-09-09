@@ -498,12 +498,96 @@ jobs:
             done
             echo "staging's tower-finder-service honours the contract."
 
+  # Does this push touch anything the droplets serve? A docs-only merge would
+  # otherwise redeploy staging AND production and run both Playwright suites for
+  # files no vhost serves, with the prod deploy queued behind the whole staging
+  # chain to do it. Gating deploy-staging alone is enough: a skipped
+  # dependency skips its dependents whatever their own `if:` says, so
+  # staging-smoke-tests, e2e-staging, deploy-production and everything past it
+  # fall out with it. The rollback jobs are keyed to `result == 'failure'`, and a
+  # skipped deploy is not a failed one, so they stay dormant.
+  #
+  # Only the deploy chain is gated. The test matrix above still runs on a
+  # docs-only push, deliberately: it is the cheap half, and it is what would
+  # catch this filter being wrong.
+  #
+  # This asks what the push changed, not whether the droplets match main, and
+  # the two differ after a deploy that failed or rolled back. Any push to main
+  # used to re-run the deploy and carry the stranded commit across with it; now
+  # a docs-only one will not. Re-run the failed deploy job rather than waiting
+  # for the next merge to do it.
+  changes:
+    name: Is there anything to deploy?
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The push's whole range has to be diffable and `before` can be
+          # several commits back. No submodules: path names are all this needs.
+          fetch-depth: 0
+      - name: Decide
+        id: filter
+        # Through the environment rather than interpolated into the script, so
+        # the shell never parses anything the event supplied.
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Anything this cannot establish, it deploys. The filter may only ever
+          # drop work it has positively shown to be unnecessary; erring the
+          # other way skips a real deploy and says nothing.
+          if [ -z "${BEFORE:-}" ] || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            echo "::notice::No diffable base ('${BEFORE:-}'), so deploying. A force-push or a rewritten history arrives here."
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # --no-renames, so a rename reports both the path that went and the
+          # path that arrived. Rename detection names only the destination, and
+          # `git mv app.py app.md` would then read as a markdown-only push while
+          # having deleted a module.
+          CHANGED=$(git diff --name-only --no-renames "$BEFORE" "$AFTER")
+          if [ -z "$CHANGED" ]; then
+            echo "::notice::Empty diff against ${BEFORE}, so deploying."
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Changed in ${BEFORE}..${AFTER}:"
+          printf '%s\n' "$CHANGED" | sed 's/^/  /'
+          # Skip only when EVERY path is markdown, hence the inverted match: the
+          # question is whether a non-markdown path exists, not whether a
+          # markdown one does. Asked the other way round this would skip a push
+          # that touched the README and a router in the same commit.
+          #
+          # Here-strings rather than a pipe into `grep -q`. -q exits on its first
+          # match, and on a list past the 64KiB pipe buffer the printf feeding it
+          # is still in write(): it takes a SIGPIPE, exits 141, and `pipefail`
+          # hands that to the `if`, which then reads a push full of code as
+          # markdown-only. A here-string has no second process to kill.
+          #
+          # data-explorer/ is the exception to markdown being inert, and the
+          # second test is what keeps it deploying: Dockerfile COPYs that
+          # directory into the image verbatim and nginx serves it with
+          # `root /app/data-explorer`, so the markdown under it (including
+          # vendor/NOTICE.md, a third-party licence) is a served file. Every
+          # other nginx root is a dist/ build output, which no markdown reaches.
+          if grep -qvE '\.md$' <<< "$CHANGED" || grep -qE '^data-explorer/' <<< "$CHANGED"; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Markdown only, so skipping the deploy chain. The droplets' checkouts pick these commits up at the next code deploy."
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
+
   deploy-staging:
     name: Deploy to staging
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [backend-tests, frontend-build, dashboard-build, docker-build, env-parity, tower-service-contract]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [changes, backend-tests, frontend-build, dashboard-build, docker-build, env-parity, tower-service-contract]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.changes.outputs.code == 'true'
     concurrency:
       group: staging-deploy
       # Queue deploys instead of cancelling: a cancelled deploy can abort after
