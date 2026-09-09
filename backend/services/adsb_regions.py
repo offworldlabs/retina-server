@@ -249,7 +249,8 @@ def is_position_absent(lat, lon) -> bool:
     which no node and no aircraft occupies.  Only the exact pair reads as
     absence: the equator and the prime meridian are each perfectly good
     coordinates on their own.  This is the convention retina_analytics applies
-    in _has_receiver_position, and every backend site must agree with it.
+    in has_full_geometry, which holds it for both ends of the bistatic pair,
+    and every backend site must agree with it.
 
     A bool is never the sentinel even though `bool` is an `int` subclass and
     `False == 0.0`: a node reporting a boolean is sending malformed config,

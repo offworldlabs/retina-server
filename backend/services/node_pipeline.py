@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core import state
 from core.nodes import Node, NodeConfig
 from services import node_registration
+from services.node_config import canonical_config
 
 if TYPE_CHECKING:
     from routes.node_schemas import DetectionFrame
@@ -98,9 +99,15 @@ def config_hash(config: dict) -> str:
 
 async def register_with_pipeline(session: AsyncSession, node: Node) -> None:
     config = await _pipeline_config(session, node.node_id)
+    # Hashed before canonicalisation, and it must stay that way: the TCP
+    # heartbeat compares a node's own hash against this one, and hashing the
+    # canonical form would report config drift across the whole fleet on the
+    # deploy that introduced it.
+    declared_hash = config_hash(config)
+    config = canonical_config(config)
     with state.connected_nodes_lock:
         state.connected_nodes[node.node_id] = {
-            "config_hash": config_hash(config),
+            "config_hash": declared_hash,
             "config": config,
             "status": "active",
             "last_heartbeat": "",

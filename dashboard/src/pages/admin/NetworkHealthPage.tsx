@@ -134,7 +134,9 @@ export default function NetworkHealthPage() {
 
       {/* Node location map */}
       {(() => {
-        const geoNodes = nodes.filter((n) => n.location?.rx_lat && n.location?.rx_lon);
+        const geoNodes = nodes.filter(
+          (n) => n.location?.rx_lat != null && n.location?.rx_lon != null,
+        );
         if (geoNodes.length === 0) return null;
         const avgLat = geoNodes.reduce((s, n) => s + n.location.rx_lat, 0) / geoNodes.length;
         const avgLon = geoNodes.reduce((s, n) => s + n.location.rx_lon, 0) / geoNodes.length;

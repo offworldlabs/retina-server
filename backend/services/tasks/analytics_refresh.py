@@ -24,6 +24,7 @@ from core import state
 from services.geo import bearing_deg, bistatic_delay_us, haversine_km, node_beam_params, point_in_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
+from services.node_config import position_status
 from services.node_sites import log_colocation_audit
 from services.public_location import (
     fuzz_enabled,
@@ -382,6 +383,7 @@ def _refresh_analytics_and_nodes():
                 ),
                 "sample_rate": (info.get("config", {}).get("Fs") or info.get("config", {}).get("fs_hz")),
                 "location": _public_location_block(nid, info.get("config", {})),
+                "position_status": position_status(info.get("config", {})),
             }
             for nid, info in _published_nodes
         },
@@ -609,18 +611,18 @@ def _refresh_missed_detections(nodes_snapshot: list):
         if info.get("status") == "disconnected":
             continue
         cfg = info.get("config", {})
+        if position_status(cfg) != "positioned":
+            continue
         rx_lat = cfg.get("rx_lat")
         rx_lon = cfg.get("rx_lon")
         tx_lat = cfg.get("tx_lat")
         tx_lon = cfg.get("tx_lon")
-        if not all((rx_lat, rx_lon, tx_lat, tx_lon)):
-            continue
 
         # Resolved the same way every module resolves it: explicit aim, else
         # broadside off the RX→TX baseline (Yagi sits perpendicular to it),
         # else omnidirectional; width falls back to the shared YAGI default.
-        # tx_lat/tx_lon are already known truthy from the `all(...)` check
-        # above, so beam_azimuth can't come back None here.
+        # The position_status gate above admits only a node with both ends
+        # placed, so beam_azimuth cannot come back None here.
         params = node_beam_params(cfg)
         beam_width = params["beam_width_deg"]
         max_range = params["max_range_km"]
@@ -957,12 +959,12 @@ def _refresh_node_verification(node_id: str):
         if not measured_delay_us or measured_delay_us <= 0:
             continue
 
-        tx_lat = cfg.get("tx_lat") or 0.0
-        tx_lon = cfg.get("tx_lon") or 0.0
-        rx_lat = cfg.get("rx_lat") or 0.0
-        rx_lon = cfg.get("rx_lon") or 0.0
-        if not tx_lat or not rx_lat:
+        if position_status(cfg) != "positioned":
             continue
+        tx_lat = cfg.get("tx_lat")
+        tx_lon = cfg.get("tx_lon")
+        rx_lat = cfg.get("rx_lat")
+        rx_lon = cfg.get("rx_lon")
 
         solver_lat = getattr(track, "lat", 0.0) or 0.0
         solver_lon = getattr(track, "lon", 0.0) or 0.0
@@ -1617,19 +1619,15 @@ def _refresh_mlat_verification():
         max_bistatic_deg: float | None = None
         for cid in r.get("contributing_node_ids", []):
             cfg = node_cfg_snap.get(cid, {})
-            t_tx_lat = cfg.get("tx_lat")
-            t_tx_lon = cfg.get("tx_lon")
-            t_rx_lat = cfg.get("rx_lat")
-            t_rx_lon = cfg.get("rx_lon")
-            if not all((t_tx_lat, t_tx_lon, t_rx_lat, t_rx_lon)):
+            if position_status(cfg) != "positioned":
                 continue
             ang = _bistatic_angle_deg(
                 solver_lat,
                 solver_lon,
-                float(t_tx_lat),
-                float(t_tx_lon),
-                float(t_rx_lat),
-                float(t_rx_lon),
+                cfg["tx_lat"],
+                cfg["tx_lon"],
+                cfg["rx_lat"],
+                cfg["rx_lon"],
             )
             if max_bistatic_deg is None or ang > max_bistatic_deg:
                 max_bistatic_deg = ang

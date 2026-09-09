@@ -48,6 +48,7 @@ from core import state
 from core.runtime_config import default_source_path, runtime_path
 from core.task_registry import register_task
 from services import node_registration
+from services.node_config import canonical_config
 
 log = logging.getLogger("blah2_bridge")
 
@@ -59,10 +60,14 @@ BRIDGE_STALE_INTERVAL_S = 10
 # Fields every node must supply — without these the bistatic solve is undefined.
 _REQUIRED = ("node_id", "detection_url", "rx_lat", "rx_lon", "tx_lat", "tx_lon", "fc_hz")
 
+# Altitude is deliberately absent from the defaults below: it is resolved at
+# the geometry boundary (node_config.resolve_altitudes) instead, so a node that
+# declares none archives and publishes a null rather than a figure nothing
+# downstream could later tell apart from a survey.
+_OPTIONAL_ALTITUDES = ("rx_alt_ft", "tx_alt_ft")
+
 # Optional fields and the defaults applied when a node omits them.
 _OPTIONAL_DEFAULTS = {
-    "rx_alt_ft": 0.0,
-    "tx_alt_ft": 0.0,
     "fs_hz": 2_000_000,
     "doppler_min": -300,
     "doppler_max": 300,
@@ -144,6 +149,15 @@ def _build_node(entry: dict) -> Blah2Node:
             cfg[key] = float(raw)
         except (TypeError, ValueError) as exc:
             raise Blah2ConfigError(f"{node_id}: {key} is not a number: {raw!r}") from exc
+    for key in _OPTIONAL_ALTITUDES:
+        raw = entry.get(key)
+        if raw is None:
+            cfg[key] = None
+            continue
+        try:
+            cfg[key] = float(raw)
+        except (TypeError, ValueError) as exc:
+            raise Blah2ConfigError(f"{node_id}: {key} is not a number: {raw!r}") from exc
 
     for key, lo, hi in (("rx_lat", -90, 90), ("tx_lat", -90, 90), ("rx_lon", -180, 180), ("tx_lon", -180, 180)):
         if not lo <= cfg[key] <= hi:
@@ -218,18 +232,21 @@ def load_nodes(path: Path | None = None) -> list[Blah2Node]:
 
 async def _register_node(node: Blah2Node):
     """Register a node in state as a real (non-synthetic) connected node."""
+    # Hashed over the file's own config, so a node's hash tracks the file
+    # rather than the normaliser.
     cfg_hash = hashlib.sha256(json.dumps(node.config, sort_keys=True).encode()).hexdigest()[:16]
+    config = canonical_config(node.config)
     with state.connected_nodes_lock:
         state.connected_nodes[node.node_id] = {
             "config_hash": cfg_hash,
-            "config": node.config,
+            "config": config,
             "status": "active",
             "last_heartbeat": "",
             "peer": node.peer,
             "is_synthetic": False,
             "capabilities": {"adsb_report": True},
         }
-    await node_registration.register_node(node.node_id, node.config)
+    await node_registration.register_node(node.node_id, config)
     log.info("blah2_bridge: registered node %s", node.node_id)
 
 

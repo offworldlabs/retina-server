@@ -15,6 +15,7 @@ from core import state
 from core.users import require_admin
 from pipeline.passive_radar import PassiveRadarPipeline
 from services import node_registration
+from services.node_config import canonical_config
 from services.node_pipeline import config_hash
 from services.public_location import public_latlon
 from services.publication import is_private
@@ -129,17 +130,20 @@ async def ingest_detections(
     frames = body.frames if body.frames is not None else [body_dict]
 
     if node_id not in state.connected_nodes:
+        # This path carries no geometry at all: the node is counted, and stays
+        # unplaced until it configures itself over TCP or the v1 API.
+        legacy_config = canonical_config({"node_id": node_id})
         with state.connected_nodes_lock:
             state.connected_nodes[node_id] = {
                 "config_hash": "",
-                "config": {"node_id": node_id},
+                "config": legacy_config,
                 "status": "active",
                 "last_heartbeat": datetime.now(timezone.utc).isoformat(),
                 "peer": "http",
                 "is_synthetic": is_synthetic_node(node_id),
                 "capabilities": {},
             }
-        await node_registration.register_node(node_id, {"node_id": node_id})
+        await node_registration.register_node(node_id, legacy_config)
     else:
         with state.connected_nodes_lock:
             state.connected_nodes[node_id]["status"] = "active"
@@ -189,7 +193,9 @@ async def ingest_detections_bulk(
                 changed = False
             else:
                 entry_config = entry.config or {"node_id": node_id}
+                # Hashed as declared, stored canonical: see register_with_pipeline.
                 entry_hash = config_hash(entry_config)
+                entry_config = canonical_config(entry_config)
                 # A hash mismatch only triggers re-registration for a node this
                 # endpoint itself created. Otherwise a caller holding RADAR_API_KEY
                 # could strip a live v1 or TCP node's geometry by naming it in a

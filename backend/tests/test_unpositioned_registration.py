@@ -8,7 +8,7 @@ complete, the associator fuses a dozen unrelated nodes into a single candidate,
 and the solver queue backs up behind candidates that are pure artefact
 (86cb5hef4).
 
-The guard itself lives in retina-analytics (`_has_receiver_position`), so what
+The guard itself lives in retina-analytics (`has_full_geometry`), so what
 is pinned here is the behaviour this repo depends on rather than its
 implementation: nothing but the submodule revision stands between main and a
 repeat, and the failure mode is a saturated solver rather than an exception.

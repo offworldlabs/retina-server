@@ -314,3 +314,17 @@ class TestFrameOrdering:
     async def test_newer_frame_after_older_still_passes(self, monkeypatch):
         """An out-of-order frame must not wedge the node against later good ones."""
         assert await self._enqueued_timestamps(monkeypatch, [1000, 500, 2000]) == [1000, 2000]
+
+
+def test_an_omitted_altitude_stays_null():
+    """No invented altitude on the way in.
+
+    resolve_altitudes supplies the terrain figure at the geometry boundary, so
+    a node that declares none must reach publication and the Parquet archive
+    with a null: those rows are permanent, and a fabricated figure there cannot
+    afterwards be told apart from a survey.
+    """
+    cfg = _build_node(MINIMAL).config
+
+    assert cfg["rx_alt_ft"] is None
+    assert cfg["tx_alt_ft"] is None

@@ -19,6 +19,7 @@ from services import node_registration
 from services.feed_helpers import adsb_capture_ts_ms, adsb_store
 from services.geo import valid_latlon
 from services.id_utils import normalize_hex_key
+from services.node_config import canonical_config
 
 # Optional shared token for node authentication. If not set, any node can connect.
 _RADAR_NODE_TOKEN: str | None = os.getenv("RADAR_NODE_TOKEN")
@@ -59,17 +60,25 @@ SERVER_CAPABILITIES = {
 
 def _validate_node_config(config: dict) -> str | None:
     """Return an error message if the node config is invalid, else None."""
-    # Accept both flat lat/lon and rx_lat/rx_lon forms
-    lat = config.get("rx_lat", config.get("lat"))
-    lon = config.get("rx_lon", config.get("lon"))
-    if lat is None or lon is None:
-        return "missing lat/lon (expected rx_lat/rx_lon or lat/lon)"
-    try:
-        lat, lon = float(lat), float(lon)
-    except (TypeError, ValueError):
-        return f"non-numeric lat/lon: {lat!r}, {lon!r}"
-    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
-        return f"lat/lon out of range: {lat}, {lon}"
+    # rx_lat/rx_lon present and explicitly null is a positionless
+    # registration, not a missing one: dict.get's single-default form cannot
+    # tell that apart from the keys being absent, which still falls back to
+    # the legacy flat lat/lon form.
+    _explicit_positionless = (
+        "rx_lat" in config and "rx_lon" in config and config["rx_lat"] is None and config["rx_lon"] is None
+    )
+    if not _explicit_positionless:
+        # Accept both flat lat/lon and rx_lat/rx_lon forms
+        lat = config.get("rx_lat", config.get("lat"))
+        lon = config.get("rx_lon", config.get("lon"))
+        if lat is None or lon is None:
+            return "missing lat/lon (expected rx_lat/rx_lon or lat/lon)"
+        try:
+            lat, lon = float(lat), float(lon)
+        except (TypeError, ValueError):
+            return f"non-numeric lat/lon: {lat!r}, {lon!r}"
+        if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+            return f"lat/lon out of range: {lat}, {lon}"
     bw = config.get("beam_width_deg")
     if bw is not None:
         try:
@@ -243,13 +252,18 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                         logging.warning("Radar TCP: rejected CONFIG from %s: %s", node_id, cfg_err)
                         await _send_msg(writer, {"type": "CONFIG_NACK", "error": cfg_err})
                         continue
+                    # config_hash stays the node's own, computed over what it
+                    # sent: the heartbeat drift check compares against it.
+                    canonical = canonical_config(config_payload)
                     is_synth = msg.get("is_synthetic", is_synthetic_node(node_id))
                     _was_disconnected = state.connected_nodes.get(node_id, {}).get("status") == "disconnected"
-                    _config_changed = state.connected_nodes.get(node_id, {}).get("config") != config_payload
+                    # Both sides canonical, or every reconnect would look like a
+                    # config change and evict the node's pipeline.
+                    _config_changed = state.connected_nodes.get(node_id, {}).get("config") != canonical
                     with state.connected_nodes_lock:
                         state.connected_nodes[node_id] = {
                             "config_hash": config_hash,
-                            "config": config_payload,
+                            "config": canonical,
                             "status": "active",
                             "last_heartbeat": datetime.now(timezone.utc).isoformat(),
                             "peer": str(peer),
@@ -300,7 +314,7 @@ async def handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.Stream
                             "server_capabilities": SERVER_CAPABILITIES,
                         },
                     )
-                    await node_registration.register_node(node_id, config_payload)
+                    await node_registration.register_node(node_id, canonical)
                     continue
 
                 # ── REGISTER_KEY (chain of custody) ────────────────

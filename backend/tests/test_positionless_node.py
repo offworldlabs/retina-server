@@ -1,0 +1,124 @@
+"""A node that registers with null coordinates is carried, not placed.
+
+The sibling of test_unpositioned_registration, which covers coordinates that
+are absent. Here they are explicitly null, which is what contract 1.1.3 added:
+the node is counted and visible in the dashboard, and takes no part in the map
+or the solver.
+"""
+
+import pytest
+
+from core import state
+from services.node_config import position_status
+
+_CONFIG = {
+    "rx_lat": None,
+    "rx_lon": None,
+    "rx_alt_ft": None,
+    "tx_lat": None,
+    "tx_lon": None,
+    "tx_alt_ft": None,
+    "tx_callsign": "WSPA",
+    "fc_hz": 195e6,
+    "fs_hz": 2.4e6,
+    "beam_width_deg": None,
+    "beam_azimuth_deg": None,
+    "max_range_km": 150.0,
+    "cpi_s": 0.5,
+    "delay_tolerance_us": 10.0,
+    "doppler_tolerance_hz": 5.0,
+}
+
+
+# Enumerated explicitly rather than scanned from connected_nodes: not every
+# test below registers through it, so cleanup can't be derived from it.
+_NODE_IDS = ("test-null-1", "test-null-2", "test-null-3")
+
+# A single node can't discriminate the overlap guard: with nobody to pair
+# against, no zone forms whether or not the guard excludes it. Ten can: were
+# has_full_geometry not excluding them, all ten would collapse onto the same
+# undefined geometry and pair into every one of the 45 possible zones.
+_OVERLAP_IDS = [f"test-null-overlap-{i}" for i in range(10)]
+
+
+@pytest.fixture(autouse=True)
+def _clean():
+    yield
+    for node_id in (*_NODE_IDS, *_OVERLAP_IDS):
+        state.connected_nodes.pop(node_id, None)
+        state.node_pipelines.pop(node_id, None)
+        state.node_associator.unregister_node(node_id)
+        state.node_analytics.retire_node(node_id)
+
+
+def test_positionless_node_is_counted_but_not_placed():
+    node_id = "test-null-1"
+    state.node_analytics.register_node(node_id, dict(_CONFIG))
+    state.node_associator.register_node(node_id, dict(_CONFIG))
+
+    assert node_id in state.node_analytics.metrics
+    assert "detection_area" not in state.node_analytics.get_node_summary(node_id)
+
+    # A metrics entry alone doesn't show frames are counted, which is the
+    # promise this feature makes to the owner of a node we cannot place.
+    assert state.node_analytics.record_detection_frame(node_id, {"timestamp": 1.0, "detections": []}) is True
+    assert state.node_analytics.metrics[node_id].total_frames == 1
+
+
+def test_ten_positionless_nodes_form_no_overlap_zones():
+    for node_id in _OVERLAP_IDS:
+        state.node_analytics.register_node(node_id, dict(_CONFIG))
+        state.node_associator.register_node(node_id, dict(_CONFIG))
+
+    wanted = set(_OVERLAP_IDS)
+    assert sum(1 for pair in state.node_associator.overlap_zones if wanted & set(pair)) == 0
+
+
+def test_positionless_node_builds_no_solver_pipeline():
+    """The never-solve half: a positionless node builds no solver pipeline.
+
+    get_or_create_node_pipeline returns None rather than falling back to the
+    shared default pipeline: solving this node's frames against the default's
+    fixed geometry would geolocate them at somebody else's receiver and
+    illuminator, and publish them under this node's id.
+    """
+    from services.frame_processor import get_or_create_node_pipeline
+
+    node_id = "test-null-3"
+    with state.connected_nodes_lock:
+        state.connected_nodes[node_id] = {
+            "config": dict(_CONFIG),
+            "config_hash": "",
+            "status": "active",
+            "last_heartbeat": None,
+            "peer": "test",
+            "is_synthetic": False,
+            "capabilities": {},
+        }
+
+    default = object()
+    assert get_or_create_node_pipeline(node_id, default) is None
+    assert node_id not in state.node_pipelines
+
+
+def test_position_status_reaches_the_nodes_payload():
+    import orjson
+
+    from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
+
+    node_id = "test-null-2"
+    with state.connected_nodes_lock:
+        state.connected_nodes[node_id] = {
+            "config": dict(_CONFIG),
+            "config_hash": "",
+            "status": "active",
+            "last_heartbeat": None,
+            "peer": "test",
+            "is_synthetic": False,
+            "capabilities": {},
+        }
+    _refresh_analytics_and_nodes()
+    payload = orjson.loads(state.latest_nodes_bytes)
+    assert payload["nodes"][node_id]["position_status"] == "missing_both"
+    assert payload["nodes"][node_id]["location"]["rx_lat"] is None
+    assert position_status(_CONFIG) == "missing_both"

@@ -96,6 +96,7 @@ from services.geo import (
     node_beam_params,  # noqa: E402
 )
 from services.geo import haversine_km as _haversine_km  # noqa: E402
+from services.node_config import position_status  # noqa: E402
 from services.tasks.solver import (  # noqa: E402
     _ewma_smooth_track,
     claim_decision,
@@ -421,6 +422,13 @@ def _beam_gate_ok(out: dict, s_in: dict, node_cfgs: dict, fov_provider) -> bool:
     for nid in contributing_ids:
         cfg = node_cfgs.get(nid)
         if not cfg:
+            continue
+        # The same placement guard solver.py applies before its range/bearing
+        # work: node_beam_params stopped coercing a missing coordinate to 0.0,
+        # so an unplaced node reaches the haversine below as None.  A snapshot
+        # read from a live server carries only placed nodes, but this leg is
+        # also pointed at recorded ones.
+        if position_status(cfg) not in ("positioned", "missing_tx"):
             continue
         p = node_beam_params(cfg)
         rx_lat, rx_lon = p["rx_lat"], p["rx_lon"]
