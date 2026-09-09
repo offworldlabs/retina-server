@@ -294,7 +294,7 @@ class TestPerNodeAnalyticsRoute:
         seed_nodes(**{_PRIV: "private"})
         state.node_analytics.register_node(_PRIV, {"node_id": _PRIV, "rx_lat": 34.0, "rx_lon": -82.0})
         try:
-            assert client.get(f"/api/radar/analytics/{_PRIV}").status_code == 404
+            assert client.get(f"/api/radar/analytics/{_seed_ref(_PRIV)}").status_code == 404
         finally:
             state.node_analytics.retire_node(_PRIV)
 
@@ -302,9 +302,48 @@ class TestPerNodeAnalyticsRoute:
         seed_nodes(**{_PUB: "public"})
         state.node_analytics.register_node(_PUB, {"node_id": _PUB, "rx_lat": 34.0, "rx_lon": -82.0})
         try:
-            assert client.get(f"/api/radar/analytics/{_PUB}").status_code == 200
+            assert client.get(f"/api/radar/analytics/{_seed_ref(_PUB)}").status_code == 200
         finally:
             state.node_analytics.retire_node(_PUB)
+
+    def test_the_private_node_id_is_not_accepted_as_a_path_parameter(self, client, seed_nodes):
+        """The old identifier must stop resolving, or the rename buys nothing."""
+        seed_nodes(**{_PUB: "public"})
+        state.node_analytics.register_node(_PUB, {"node_id": _PUB, "rx_lat": 34.0, "rx_lon": -82.0})
+        try:
+            assert client.get(f"/api/radar/analytics/{_PUB}").status_code == 404
+        finally:
+            state.node_analytics.retire_node(_PUB)
+
+    def test_a_miss_does_not_quote_what_was_asked_for(self, client, seed_nodes):
+        """Unknown ref, private node and no-such-node give one indistinguishable answer."""
+        seed_nodes(**{_PRIV: "private"})
+        state.node_analytics.register_node(_PRIV, {"node_id": _PRIV, "rx_lat": 34.0, "rx_lon": -82.0})
+        try:
+            private = client.get(f"/api/radar/analytics/{_seed_ref(_PRIV)}")
+            unknown = client.get("/api/radar/analytics/ndeffffffffff")
+            raw_id = client.get(f"/api/radar/analytics/{_PRIV}")
+        finally:
+            state.node_analytics.retire_node(_PRIV)
+        assert private.json() == unknown.json() == raw_id.json()
+        assert _PRIV not in private.text
+
+    def test_the_value_carries_no_node_id(self, client, seed_nodes):
+        """The scrub the cached listing runs, on the route that builds its own.
+
+        Re-keying the entry on the ref while leaving the id inside it publishes
+        the mapping between the two, which is the whole disclosure.
+        """
+        seed_nodes(**{_PUB: "public"})
+        ref = _seed_ref(_PUB)
+        state.node_analytics.register_node(_PUB, {"node_id": _PUB, "rx_lat": 34.0, "rx_lon": -82.0})
+        try:
+            body = client.get(f"/api/radar/analytics/{ref}")
+        finally:
+            state.node_analytics.retire_node(_PUB)
+        assert body.status_code == 200
+        assert body.json()["node_ref"] == ref
+        assert _PUB not in body.text
 
 
 class TestRadarNodesPayload:
@@ -645,3 +684,107 @@ class TestFuzzDoesNotGateThis:
         monkeypatch.setattr(publication, "private_node_ids", lambda: frozenset({_PRIV}))
         out = public_aircraft_payload(_payload())
         assert [ac["hex"] for ac in out["aircraft"]] == ["BBB222", "mnCCC333"]
+
+
+# ── The other public path parameters ──────────────────────────────────────────
+
+
+class TestPublicPathParameters:
+    """Custody and per-node test routes are addressed the same way.
+
+    Each pair pins both halves of the rename: the ref reaches the node, and the
+    node_id that used to reach it no longer does. An identifier that still
+    answers is still published.
+    """
+
+    def _store_chain(self, node_id: str) -> None:
+        state.chain_entries[node_id] = [{"node_id": node_id, "hour_utc": "2026-09-09T00", "_verified": True}]
+
+    def test_custody_chain_takes_a_ref(self, client, seed_nodes):
+        seed_nodes(**{_PUB: "public"})
+        self._store_chain(_PUB)
+        try:
+            body = client.get(f"/api/custody/chain/{_seed_ref(_PUB)}")
+            assert body.status_code == 200
+            assert body.json()["node_ref"] == _seed_ref(_PUB)
+        finally:
+            state.chain_entries.pop(_PUB, None)
+
+    def test_custody_chain_does_not_take_the_node_id(self, client, seed_nodes):
+        seed_nodes(**{_PUB: "public"})
+        self._store_chain(_PUB)
+        try:
+            assert client.get(f"/api/custody/chain/{_PUB}").status_code == 404
+        finally:
+            state.chain_entries.pop(_PUB, None)
+
+    def test_the_signed_entry_bodies_are_left_alone(self, client, seed_nodes):
+        """Each entry's node_id is inside the ECDSA preimage the node signed,
+        and the server holds only public keys, so it cannot be rewritten."""
+        seed_nodes(**{_PUB: "public"})
+        self._store_chain(_PUB)
+        try:
+            entries = client.get(f"/api/custody/chain/{_seed_ref(_PUB)}").json()["entries"]
+        finally:
+            state.chain_entries.pop(_PUB, None)
+        assert [e["node_id"] for e in entries] == [_PUB]
+
+    def test_custody_verify_takes_a_ref_and_not_the_node_id(self, client, seed_nodes):
+        seed_nodes(**{_PUB: "public"})
+        self._store_chain(_PUB)
+        try:
+            # 400 rather than 404: the chain is found, no public key is registered.
+            assert client.get(f"/api/custody/verify/{_seed_ref(_PUB)}").status_code == 400
+            assert client.get(f"/api/custody/verify/{_PUB}").status_code == 404
+        finally:
+            state.chain_entries.pop(_PUB, None)
+
+    def test_custody_status_is_keyed_on_refs(self, client, seed_nodes):
+        seed_nodes(**{_PUB: "public"})
+        self._store_chain(_PUB)
+        try:
+            body = client.get("/api/custody/status")
+        finally:
+            state.chain_entries.pop(_PUB, None)
+        assert list(body.json()["chain_entries"]) == [_seed_ref(_PUB)]
+        assert _PUB not in body.text
+
+    def test_node_verification_takes_a_ref_and_not_the_node_id(self, client, seed_nodes):
+        seed_nodes(**{_PUB: "public"})
+        state.latest_node_verification_bytes[_PUB] = orjson.dumps({"node_id": _PUB, "n_tracks": 3})
+        try:
+            body = client.get(f"/api/test/node/{_seed_ref(_PUB)}/verification")
+            assert body.json() == {"n_tracks": 3, "node_ref": _seed_ref(_PUB)}
+            # An unresolvable ref answers exactly as an unknown node does.
+            assert client.get(f"/api/test/node/{_PUB}/verification").json() == {}
+        finally:
+            state.latest_node_verification_bytes.pop(_PUB, None)
+
+    def test_detection_range_takes_a_ref_and_not_the_node_id(self, client, seed_nodes):
+        seed_nodes(**{_PUB: "public"})
+        # Full geometry: without both pairs the node gets no detection area.
+        state.node_analytics.register_node(
+            _PUB, {"node_id": _PUB, "rx_lat": 34.0, "rx_lon": -82.0, "tx_lat": 34.1, "tx_lon": -82.1}
+        )
+        try:
+            body = client.get(f"/api/test/node/{_seed_ref(_PUB)}/detection-range")
+            assert body.status_code == 200
+            assert body.json()["node_ref"] == _seed_ref(_PUB)
+            assert _PUB not in body.text
+            assert client.get(f"/api/test/node/{_PUB}/detection-range").status_code == 404
+        finally:
+            state.node_analytics.retire_node(_PUB)
+
+    def test_a_404_does_not_quote_what_was_asked_for(self, client):
+        for path in (
+            f"/api/custody/chain/{_PUB}",
+            f"/api/custody/verify/{_PUB}",
+            f"/api/test/node/{_PUB}/detection-range",
+        ):
+            assert _PUB not in client.get(path).text, path
+
+    def test_the_hardcoded_radar3_routes_are_gone(self, client):
+        """They named a production site in the route path, which no
+        response-body change reaches."""
+        assert client.get("/api/test/radar3/verification").status_code == 404
+        assert client.get("/api/test/radar3/detection-range").status_code == 404

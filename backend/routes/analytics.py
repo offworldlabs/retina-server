@@ -11,6 +11,7 @@ from retina_analytics.trust import AdsReportEntry
 
 from core import state
 from services import node_bias
+from services.node_refs import id_for_identity, public_analytics
 from services.public_location import public_node_summary
 from services.publication import is_private
 
@@ -26,20 +27,23 @@ async def radar_analytics(real_only: bool = False):
     return Response(content=state.latest_analytics_bytes, media_type="application/json")
 
 
-@router.get("/api/radar/analytics/{node_id}")
-async def radar_node_analytics(node_id: str):
-    # A node whose owner registered it private is 404 here, not 403: the two
-    # answers differ only in whether they confirm the node exists, and this
-    # route is reachable by anyone with a node id to try.  Same status the
-    # cached listing produces by omission, so the two surfaces agree.
-    if is_private(node_id):
-        raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+@router.get("/api/radar/analytics/{node_ref}")
+async def radar_node_analytics(node_ref: str):
+    # Every miss is the same 404 with the same detail, and the detail does not
+    # quote what was asked for: an unknown ref, a node with no analytics and a
+    # node whose owner registered it private must be indistinguishable, or the
+    # answer confirms the existence this route is meant not to.  Same status
+    # the cached listing produces by omission, so the two surfaces agree.
+    node_id = id_for_identity(node_ref)
+    if node_id is None or is_private(node_id):
+        raise HTTPException(status_code=404, detail="Node not found")
     summary = state.node_analytics.get_node_summary(node_id)
     if summary.keys() == {"node_id"}:
-        raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+        raise HTTPException(status_code=404, detail="Node not found")
     # Same blocks as the cached /api/radar/analytics payload, built fresh — so
     # the same receiver-geometry rewrite has to happen here too, or this route
     # is the hole the cached one closed.  See services/public_location.py.
+    # Keyed on the node_id, which is what the fuzz offset is HMAC-keyed on.
     summary = public_node_summary(node_id, summary)
     # Backend-computed bias estimate from claim residuals — same conditional
     # shape as the manager's own blocks: present only once the node has
@@ -48,7 +52,15 @@ async def radar_node_analytics(node_id: str):
     bias = node_bias.node_summary(node_id)
     if bias is not None:
         summary = {**summary, "node_bias": bias}
-    return summary
+    # The identity scrub the cached listing runs, on one node's entry: naming
+    # the node by its ref while leaving raw ids in the value would publish the
+    # mapping between the two.  The fleet is the vocabulary, because a summary
+    # can name other nodes (a reputation penalty quotes the neighbour it
+    # disagreed with); it is the same 60 s-cached map the refresh task reads.
+    published = public_analytics({node_id: summary}, {}, state.node_analytics.get_all_summaries())["nodes"]
+    if node_ref not in published:
+        raise HTTPException(status_code=404, detail="Node not found")
+    return {**published[node_ref], "node_ref": node_ref}
 
 
 @router.post("/api/radar/analytics/adsb-report")

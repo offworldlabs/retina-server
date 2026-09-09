@@ -126,6 +126,22 @@ def id_for_ref(node_ref: str | None) -> str | None:
     return _reverse.get(node_ref)
 
 
+def id_for_identity(identity: str | None) -> str | None:
+    """The node behind a published identity, or None if nothing publishes as it.
+
+    The inverse of `public_identity`, and what every public path parameter
+    resolves through. It is `id_for_ref` plus the synthetic passthrough that
+    `public_identity` applies on the way out: a synthetic node is published
+    under its own id, so that id is its handle and must keep resolving. A real
+    node is reachable only by the ref its registry row carries.
+    """
+    if not identity:
+        return None
+    if is_synthetic_node(identity):
+        return identity
+    return id_for_ref(identity)
+
+
 def public_identity(node_id: str | None) -> str | None:
     """What a node id is published as, or None if it must not be published.
 

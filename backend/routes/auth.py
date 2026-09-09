@@ -34,6 +34,7 @@ from core.users import (
     get_or_create_oauth_user,
 )
 from services.node_config import position_status
+from services.node_refs import public_identity
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -246,6 +247,14 @@ async def logout():
 
 @router.get("/me/nodes")
 async def my_nodes(request: Request):
+    """The caller's own nodes, under both identifiers.
+
+    Authenticated and scoped to the owner, so the node_id is theirs to see and
+    stays. The ref rides along because every public surface is keyed on it, and
+    a consumer merging this list with one of those needs one key space rather
+    than the same node twice under two. It is null for a node with no published
+    handle, which is a node that appears on no public surface either.
+    """
     user = await get_current_user(request)
     node_ids = await get_user_nodes(user["id"])
     out = []
@@ -257,6 +266,7 @@ async def my_nodes(request: Request):
         out.append(
             {
                 "node_id": nid,
+                "node_ref": public_identity(nid),
                 "name": cfg.get("name", nid),
                 "status": info.get("status", "never_connected"),
                 "last_heartbeat": info.get("last_heartbeat"),

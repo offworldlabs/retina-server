@@ -18,6 +18,7 @@ from services import dark_follow, known_claiming, track_filter
 from services.frame_processor import resolve_ground_truth_hex
 from services.geo import haversine_km
 from services.id_utils import is_transponder_hex, normalize_hex_key
+from services.node_refs import id_for_identity
 from services.public_location import fuzz_enabled, public_latlon, translate_polygon
 from services.tasks import solver as solver_mod
 
@@ -724,22 +725,23 @@ def _mlat_verification_summary() -> dict:
 
 # ── Per-node solver verification ──────────────────────────────────────────────
 
-_RADAR3_NODE_ID = "radar3-retnode"
 
+@router.get("/api/test/node/{node_ref}/verification")
+async def node_verification(node_ref: str):
+    """Return pre-computed solver-vs-ADS-B verification stats for one node.
 
-@router.get("/api/test/node/{node_id}/verification")
-async def node_verification(node_id: str):
-    """Return pre-computed solver-vs-ADS-B verification stats for one node."""
-    return Response(
-        content=state.latest_node_verification_bytes.get(node_id, b"{}"),
-        media_type="application/json",
-    )
-
-
-@router.get("/api/test/radar3/verification")
-async def radar3_verification():
-    """Back-compat alias for the radar3 node's verification stats."""
-    return await node_verification(_RADAR3_NODE_ID)
+    Unauthenticated, so it is addressed and answered in published identities: a
+    ref that resolves to nothing gets the empty body an unknown node already
+    gets, and the payload names the node by the ref rather than by the id the
+    refresh task keyed it under.
+    """
+    node_id = id_for_identity(node_ref)
+    raw = state.latest_node_verification_bytes.get(node_id, b"{}") if node_id else b"{}"
+    payload = orjson.loads(raw)
+    if "node_id" in payload:
+        payload = {k: v for k, v in payload.items() if k != "node_id"}
+        payload["node_ref"] = node_ref
+    return Response(content=orjson.dumps(payload), media_type="application/json")
 
 
 @router.get("/api/test/mlat-verification")
@@ -1703,13 +1705,15 @@ async def mlat_accuracy():
     )
 
 
-@router.get("/api/test/node/{node_id}/detection-range")
-async def node_detection_range(node_id: str):
+@router.get("/api/test/node/{node_ref}/detection-range")
+async def node_detection_range(node_ref: str):
     """Return one node's empirical detection range and coverage polygon.
 
-    Unauthenticated, so the receiver geometry here is the published geometry:
-    ``rx`` is the fuzzed coordinate and the polygon is translated rigidly by
-    the same offset, exactly as on /api/radar/analytics.
+    Unauthenticated, so both the identity and the geometry are the published
+    ones: the node is addressed and named by its ref, an unresolvable ref gets
+    the same answer as an unregistered node, ``rx`` is the fuzzed coordinate
+    and the polygon is translated rigidly by the same offset, exactly as on
+    /api/radar/analytics.
 
     ``furthest_detections`` used to ride along and no longer does.  Each entry
     was a real aircraft's lat/lon together with its distance from the true
@@ -1718,15 +1722,17 @@ async def node_detection_range(node_id: str):
     sharper disclosure than the position field it sat next to, and no caller
     (frontend, dashboard, or test) reads it.
     """
-    area = state.node_analytics.detection_areas.get(node_id)
+    node_id = id_for_identity(node_ref)
+    area = state.node_analytics.detection_areas.get(node_id) if node_id else None
     if not area:
         return Response(
-            content=orjson.dumps({"error": f"node {node_id} not registered"}),
+            content=orjson.dumps({"error": "node not registered"}),
             media_type="application/json",
             status_code=404,
         )
 
-    summary = {k: v for k, v in area.summary().items() if k != "furthest_detections"}
+    summary = {k: v for k, v in area.summary().items() if k not in ("furthest_detections", "node_id")}
+    summary["node_ref"] = node_ref
     rx = summary.get("rx") or {}
     pub_lat, pub_lon = public_latlon(rx.get("lat"), rx.get("lon"), node_id)
     summary["rx"] = {**rx, "lat": pub_lat, "lon": pub_lon}
@@ -1753,9 +1759,3 @@ async def node_detection_range(node_id: str):
         ),
         media_type="application/json",
     )
-
-
-@router.get("/api/test/radar3/detection-range")
-async def radar3_detection_range():
-    """Back-compat alias for the radar3 node's detection range."""
-    return await node_detection_range(_RADAR3_NODE_ID)
