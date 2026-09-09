@@ -168,7 +168,7 @@ export default function TestRadar() {
       track,
       gs,
       position_source: "single_node_ellipse_arc",
-      node_id: "radar3-retnode",
+      node_ref: "radar3-retnode",
       ambiguity_arc: arc,
       doppler_hz: 0,
     }),
@@ -193,11 +193,11 @@ export default function TestRadar() {
       const buf = arcsBufferRef.current;
       if (arcMode === "bucketed") {
         const tsBucket = Math.floor(now / 1000);
-        const key = `${aircraft.hex}-${aircraft.node_id}-${tsBucket}`;
+        const key = `${aircraft.hex}-${aircraft.node_ref}-${tsBucket}`;
         if (!(key in buf)) {
           buf[key] = {
             hex: aircraft.hex,
-            node_id: aircraft.node_id,
+            node_ref: aircraft.node_ref,
             ambiguity_arc: arc,
             doppler_hz: aircraft.doppler_hz,
             target_class: undefined,
@@ -206,10 +206,10 @@ export default function TestRadar() {
         }
       } else if (arcMode === "pending") {
         const mid = arcMidpoint(arc);
-        const key = `det-${aircraft.node_id}-${Math.round(mid[0] * 100)}-${Math.round(mid[1] * 100)}`;
+        const key = `det-${aircraft.node_ref}-${Math.round(mid[0] * 100)}-${Math.round(mid[1] * 100)}`;
         buf[key] = {
           hex: null,
-          node_id: aircraft.node_id,
+          node_ref: aircraft.node_ref,
           ambiguity_arc: arc,
           doppler_hz: aircraft.doppler_hz,
           target_class: undefined,
@@ -227,7 +227,7 @@ export default function TestRadar() {
     writeOnce();
     const id = setInterval(writeOnce, 1000);
     return () => clearInterval(id);
-  }, [refreshOn, arcMode, arc, aircraft.hex, aircraft.node_id, aircraft.doppler_hz]);
+  }, [refreshOn, arcMode, arc, aircraft.hex, aircraft.node_ref, aircraft.doppler_hz]);
 
   const clearBuffer = () => {
     arcsBufferRef.current = {};

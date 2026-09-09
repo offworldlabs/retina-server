@@ -27,7 +27,7 @@ const _LOCUS_CACHE_MAX = 512;
 
 interface ArcTrackLike {
   hex?: string;
-  node_id?: string;
+  node_ref?: string;
   delay_us?: number;
   alt_baro?: number;
   ambiguity_arc?: [number, number][];
@@ -39,8 +39,8 @@ export function resolveArcPoints(
   node: NodeGeometry | undefined | null,
 ): [number, number][] | null {
   const delay = ac.delay_us;
-  if (node && ac.node_id && delay != null && delay > 0) {
-    const key = `${ac.hex}|${ac.node_id}|${delay}`;
+  if (node && ac.node_ref && delay != null && delay > 0) {
+    const key = `${ac.hex}|${ac.node_ref}|${delay}`;
     let pts = _locusCache.get(key);
     if (pts === undefined) {
       pts = buildBistaticArc(delay, node) ?? null;

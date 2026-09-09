@@ -38,7 +38,7 @@ export interface Aircraft {
   track?: number;
   squawk?: string;
   type?: string;
-  node_id?: string;
+  node_ref?: string;
   target_class?: string;
   object_type?: string;
   position_source?: string;
@@ -54,7 +54,7 @@ export interface Aircraft {
   max_velocity_ms?: number;
   /** Debug: emitted position teleported (solver mis-association noise). */
   position_jump?: boolean;
-  contributing_node_ids?: string[];
+  contributing_node_refs?: string[];
   ground_truth_hex?: string;
   ambiguity_arc?: [number, number][];
   /** Seconds since the newest claim/detection behind this entry. */
@@ -122,13 +122,13 @@ export interface AircraftFeedReturn {
   historyRef: React.MutableRefObject<{ aircraft: Aircraft[]; ts: number }[]>;
   setPaused: (val: boolean) => void;
   arcsBufferRef: React.MutableRefObject<Record<string, ArcEntry>>;
-  /** "hex|node_id" → timestamp of that node's most recent detection of the aircraft. */
+  /** "hex|node_ref" → timestamp of that node's most recent detection of the aircraft. */
   detectionsRef: React.MutableRefObject<Record<string, number>>;
 }
 
 /** Radar node metadata from /api/radar/analytics (as shaped by useNodes) */
 export interface RadarNode {
-  node_id: string;
+  node_ref: string;
   /**
    * Receiver position as served. The backend displaces it deterministically
    * per node (the radius in force arrives as location_uncertainty_km,
@@ -163,8 +163,8 @@ export interface RadarNode {
   empirical_polygon: [number, number][] | null;
   empirical_n_points: number;
   /**
-   * Server-derived, not parsed from node_id: see utils/nodeKind.ts. Once
-   * identities publish as node_ref, no prefix in the id survives to match.
+   * Server-derived, not parsed from the identifier: see utils/nodeKind.ts.
+   * Identities publish as node_ref, so no prefix survives to match on.
    */
   is_synthetic: boolean;
 }
