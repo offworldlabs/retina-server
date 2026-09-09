@@ -182,6 +182,11 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci --legacy-peer-deps
       - run: npm run lint
+      # Runs both tsc projects, src and e2e; see frontend/package.json. One
+      # step, the same shape as dashboard-build and the same command ONBOARDING
+      # tells you to run, so the three cannot drift. A src failure hides the e2e
+      # result until the next push, which costs a cycle and is worth less than
+      # the conditional machinery needed to avoid it.
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
