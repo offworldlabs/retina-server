@@ -94,7 +94,8 @@ async def association_overlaps():
     overlap zones are computed FROM node positions, but
     ``NodeAssociator.get_overlap_summary()`` emits only the two node ids, a
     grid-point count, the delay/Doppler gates and a has_overlap flag — no
-    coordinates, no grid, no extent.  ``registered_nodes`` is a list of ids.
+    coordinates, no grid, no extent.  Both ids are published as node_refs, as
+    is every entry of ``registered_nodes``.
     A pair count and a gate width constrain the inter-node distance far too
     loosely to locate either node, so admin-gating this would cost the map its
     coverage layer and buy nothing.  If this payload ever grows a lat/lon (a
