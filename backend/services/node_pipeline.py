@@ -64,13 +64,12 @@ async def _pipeline_config(session: AsyncSession, node_id: str) -> dict:
 
 
 def pipeline_frame(frame: "DetectionFrame") -> dict:
-    """The wire frame in the shape services/blah2_bridge.py puts on the queue.
+    """The wire frame in the shape the frame queue's readers expect.
 
-    `timestamp` is milliseconds because that is what the queue's readers expect.
-    `delay` needs no conversion: it is microseconds on the wire, where the bridge
-    has to convert from kilometres.
+    `timestamp` is milliseconds, and `delay` needs no conversion: it is
+    microseconds on the wire and microseconds on the queue.
 
-    `adsb_hex` travels under its own key rather than the bridge's `adsb`, which
+    `adsb_hex` travels under its own key rather than `adsb`, which
     frame_processor reads as position reports. The contract's array is an
     association and carries no lat/lon, so filing it there would be filing an
     empty position for every detection.
