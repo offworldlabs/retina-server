@@ -24,6 +24,12 @@
  *  SYNTH_NODE_ID  — synth- prefix     → is_synthetic=true,  registered via single POST
  *  BULK_A_NODE_ID — real prefix, no config,       registered via bulk POST
  *  BULK_B_NODE_ID — real prefix, full geo config, registered via bulk POST
+ *  PLACED_NODE_ID — real prefix, full geo config AND a frame, via bulk POST
+ *
+ * REAL_NODE_ID and PLACED_NODE_ID are a deliberate pair in the per-node
+ * analytics block: the first is unpositioned (the single-POST route carries no
+ * config, so it cannot be placed) and therefore has no detection area, the
+ * second is placed and does. Both are asserted.
  */
 import { test, expect, request } from "@playwright/test";
 import { env, hosts } from "../playwright.config";
@@ -75,11 +81,26 @@ const BULK_B_NODE_ID = runNodeId("e2e-bulk-b");
 const RESP_NODE_ID        = runNodeId("e2e-resp");
 const FRAMES_NODE_ID      = runNodeId("e2e-frames");
 const NOTIMESTAMP_NODE_ID = runNodeId("e2e-notimestamp");
+const PLACED_NODE_ID      = runNodeId("e2e-placed");
 
 // Full geographic config sent with BULK_B — used to verify config propagation into analytics.
 const BULK_B_CONFIG = {
   node_id: BULK_B_NODE_ID,
   rx_lat: 33.94, rx_lon: -84.65, rx_alt_ft: 950,
+  tx_lat: 33.76, tx_lon: -84.33, tx_alt_ft: 1600,
+  beam_width_deg: 45,
+  max_range_km: 50,
+};
+
+// The per-node analytics block's placed half. Its own node rather than a reuse
+// of BULK_B: that one is the fixture for bulk config propagation, and sharing
+// it would let a change to bulk-registration semantics fail a detection_area
+// assertion that has nothing to do with it. Registered WITH a frame, so
+// n_detections and furthest_detections can be observed populated rather than
+// pinned at empty forever.
+const PLACED_CONFIG = {
+  node_id: PLACED_NODE_ID,
+  rx_lat: 33.91, rx_lon: -84.61, rx_alt_ft: 900,
   tx_lat: 33.76, tx_lon: -84.33, tx_alt_ft: 1600,
   beam_width_deg: 45,
   max_range_km: 50,
@@ -292,6 +313,23 @@ describeUnlessProd("Node registration — main integration suite", () => {
     expect(bulkRes.status()).toBe(200);
     bulkResponseBody = await bulkRes.json();
 
+    // PLACED goes in its own call rather than joining the two above: the
+    // response-contract test asserts that call's exact nodes_registered and
+    // frames_queued, and a third node carrying a frame would change both.
+    const placedRegRes = await ctx.post(`${API}/api/radar/detections/bulk`, {
+      headers: { "X-API-Key": API_KEY },
+      data: {
+        nodes: [
+          {
+            node_id: PLACED_NODE_ID,
+            config: PLACED_CONFIG,
+            frames: [{ timestamp: Date.now() / 1000, delay: [100.5], doppler: [0.2], snr: [28.0] }],
+          },
+        ],
+      },
+    });
+    expect(placedRegRes.status()).toBe(200);
+
     // ── Wait for 30 s refresh — all 4 nodes must appear simultaneously ────────
     nodesBody = (await waitForNodes(ctx, [
       REAL_NODE_ID, SYNTH_NODE_ID, BULK_A_NODE_ID, BULK_B_NODE_ID,
@@ -454,13 +492,27 @@ describeUnlessProd("Node registration — main integration suite", () => {
   test.describe("/api/radar/analytics/{node_id} — immediate per-node depth", () => {
     let analyticsBody: Record<string, unknown>;
     let analyticsStatus: number;
+    let placedBody: Record<string, unknown>;
+    let placedStatus: number;
 
     test.beforeAll(async () => {
       // Per-node analytics are registered synchronously during POST handling,
       // so they are available immediately — no cache wait needed.
-      const res = await ctx.get(`${API}/api/radar/analytics/${REAL_NODE_ID}`);
+      // Two nodes, because the contract is a pair. REAL_NODE_ID registers
+      // through POST /api/radar/detections, which carries no config at all and
+      // so leaves it deliberately unpositioned; since contract 1.1.3 an
+      // unpositioned node is given no detection area, and withholding it is
+      // what keeps such a node off the map. PLACED_NODE_ID carries a full geo
+      // config and a frame, so it has a footprint to describe. Independent
+      // requests, so issued together like the other paired GETs in this file.
+      const [res, placedRes] = await Promise.all([
+        ctx.get(`${API}/api/radar/analytics/${REAL_NODE_ID}`),
+        ctx.get(`${API}/api/radar/analytics/${PLACED_NODE_ID}`),
+      ]);
       analyticsStatus = res.status();
+      placedStatus = placedRes.status();
       analyticsBody = await res.json();
+      placedBody = await placedRes.json();
     });
 
     test("returns HTTP 200 immediately after registration (no 30 s cache wait)", () => {
@@ -514,8 +566,16 @@ describeUnlessProd("Node registration — main integration suite", () => {
       expect(t.rms_doppler_error_hz).toBe(0);
     });
 
+    test("the placed node's analytics also returns HTTP 200", () => {
+      // Same reason the sibling status check above is its own test: the four
+      // detection_area assertions below all read placedBody, so a failed fetch
+      // would otherwise surface four times as an undefined property rather
+      // than once as the status that actually explains it.
+      expect(placedStatus).toBe(200);
+    });
+
     test("detection_area block is present with all expected geometry keys", () => {
-      const da = analyticsBody.detection_area as Record<string, unknown>;
+      const da = placedBody.detection_area as Record<string, unknown>;
       expect(da).toBeDefined();
       const rx = da.rx as Record<string, unknown> | undefined;
       const fuzzed = ((rx?.location_uncertainty_km as number) ?? 0) > 0;
@@ -539,7 +599,7 @@ describeUnlessProd("Node registration — main integration suite", () => {
     });
 
     test("detection_area.rx and .tx each expose lat and lon", () => {
-      const da = analyticsBody.detection_area as Record<string, Record<string, unknown>>;
+      const da = placedBody.detection_area as Record<string, Record<string, unknown>>;
       expect(da.rx).toHaveProperty("lat");
       expect(da.rx).toHaveProperty("lon");
       expect(da.tx).toHaveProperty("lat");
@@ -547,16 +607,17 @@ describeUnlessProd("Node registration — main integration suite", () => {
     });
 
     test("detection_area.n_detections is a non-negative integer", () => {
-      // We sent one frame with delay/doppler data — after the frame workers process it
-      // n_detections will be 1. If the worker hasn't run yet it will be 0.
-      // Either value is correct; what matters is the field is a valid number.
-      const da = analyticsBody.detection_area as Record<string, unknown>;
+      // PLACED_NODE_ID is registered with one frame carrying delay/doppler, so
+      // this reads 1 once the frame workers drain the queue and 0 before they
+      // do. Either is correct; what matters is that the field is a valid
+      // number, and that the populated case is reachable at all.
+      const da = placedBody.detection_area as Record<string, unknown>;
       expect(typeof da.n_detections).toBe("number");
       expect(da.n_detections as number).toBeGreaterThanOrEqual(0);
     });
 
     test("detection_area.furthest_detections is an empty array for a fresh node", () => {
-      const da = analyticsBody.detection_area as Record<string, unknown>;
+      const da = placedBody.detection_area as Record<string, unknown>;
       const rx = da.rx as Record<string, unknown> | undefined;
       if (((rx?.location_uncertainty_km as number) ?? 0) > 0) {
         // Redacted wholesale when receiver fuzzing is on — see the geometry
@@ -566,6 +627,18 @@ describeUnlessProd("Node registration — main integration suite", () => {
       }
       expect(Array.isArray(da.furthest_detections)).toBe(true);
       expect((da.furthest_detections as unknown[]).length).toBe(0);
+    });
+
+    test("an unconfigured legacy node is given no detection_area", () => {
+      // The other half of the pair above, and the reason this block reads two
+      // nodes. POST /api/radar/detections registers without coordinates, and
+      // canonical_config leaves them null rather than the (0, 0) it once
+      // coerced them to. No detection area is what keeps such a node off the
+      // map, so its absence here is the contract, not a gap in the payload.
+      expect(analyticsBody).not.toHaveProperty("detection_area");
+      // Still counted and still described: only the footprint is withheld.
+      expect(analyticsBody.metrics).toBeDefined();
+      expect(analyticsBody.trust).toBeDefined();
     });
 
     test("reputation block: initial reputation is 1.0, not blocked, no penalties", () => {
