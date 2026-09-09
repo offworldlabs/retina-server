@@ -80,7 +80,6 @@ import {
   GOOD,
   ILLUMINATOR,
   INK,
-  INK_MUTED,
   INK_SUBTLE,
   LANE_MN_ADSB,
   LANE_MN_DARK,
@@ -88,6 +87,7 @@ import {
   NODE,
   SELECTED,
   TRUTH,
+  TRUTH_DARK,
   WARN,
 } from "./map/mapPalette";
 import { reconcileAdsbPairs, snapTrack, sweepStaleRadar } from "./map/trackStores";
@@ -131,11 +131,11 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
       // entries without the field (older payloads) keep the ADS-B blue.
       const isDark  = !isAnom && !isDrone && ac.has_adsb === false;
       const isSel   = ac.hex === selectedHex;
-      const color   = isAnom ? ANOMALY : isDrone ? DRONE : isDark ? INK_MUTED : TRUTH;
+      const color   = isAnom ? ANOMALY : isDrone ? DRONE : isDark ? TRUTH_DARK : TRUTH;
       // Selection ring is ink so it reads against all fill colours — on a pale
       // basemap the white ring it used to be disappeared into the tiles.  The
       // other borders are a shade darker than the fill they edge.
-      const border  = isSel ? INK : isAnom ? "#be123c" : isDrone ? "#b45309" : isDark ? "#334155" : "#0e7490";
+      const border  = isSel ? INK : isAnom ? "#991b1b" : isDrone ? "#b45309" : isDark ? "#334155" : "#020617";
       const baseR   = isDrone ? 6 : isAnom ? 8 : 9;
       const radius  = isSel ? baseR + 4 : baseR;
       const weight  = isSel ? 4 : 3;

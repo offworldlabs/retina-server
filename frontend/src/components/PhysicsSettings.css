@@ -576,7 +576,7 @@
   flex: 1;
   height: 8px;
   border-radius: 4px;
-  background: linear-gradient(to right, #1e3a8a, #60a5fa, #22d3ee, #f87171, #991b1b);
+  background: linear-gradient(to right, #1e3a8a, #2563eb, #475569, #dc2626, #7f1d1d);
 }
 
 .ps-doppler-hint {

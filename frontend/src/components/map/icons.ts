@@ -13,7 +13,6 @@ import { solveAgeS } from "./uncertainty";
 import {
   ALT_BANDS,
   DRONE,
-  INK,
   LANE_MN_ADSB,
   LANE_MN_DARK,
   LANE_SOLVER_SEED,
@@ -54,13 +53,13 @@ export const ALTITUDE_LEGEND = ALT_BANDS.map(([, color, label]) => [color, label
 export function getAircraftColor(ac, colorByAlt = false) {
   if (colorByAlt && typeof ac.alt_baro === "number") return altitudeColor(ac.alt_baro);
   // Multi-node splits on adsb_assisted (backend: the mn-adsb-* / mn-dark-* key
-  // prefix): a solve that knew the transponder is sky, a dark one violet.
+  // prefix): a solve that knew the transponder is cyan, a dark one fuchsia.
   // See the palette note in constants.ts for why the lanes are coloured this way.
   if (ac.multinode || ac.position_source === "multinode_solve")
     return ac.adsb_assisted ? LANE_MN_ADSB : LANE_MN_DARK;
   if (ac.position_source === POSITION_SOURCE_ADSB_SINGLE) return ADSB_SINGLE_COLOR;
   if (ac.position_source === "solver_adsb_seed") return LANE_SOLVER_SEED;
-  // Fallback, now sharing sky with the assisted multi-node lane: the only
+  // Fallback, sharing cyan with the assisted multi-node lane: the only
   // source that lands here is the solver_single_node relic, which is rare
   // enough that the collision is cheaper than a fourth shade.
   return LANE_MN_ADSB;
@@ -72,7 +71,7 @@ export function isMultinodeSolve(ac): boolean {
 }
 
 /** True for a DARK multi-node solve (backend key prefix mn-dark-*).  Same rule
- *  as the violet branch of getAircraftColor, including "absent flag is dark". */
+ *  as the fuchsia branch of getAircraftColor, including "absent flag is dark". */
 export function isDarkMultinodeSolve(ac): boolean {
   return isMultinodeSolve(ac) && !ac.adsb_assisted;
 }
@@ -178,20 +177,24 @@ export function makeAircraftIcon(ac, showLabel, isSelected, colorByAlt = false, 
 
   const size = aircraftIconSize(ac);
 
-  // Both shadows are sized for pale tiles: the selection glow is tight and
-  // opaque because a soft halo dissolves into a light basemap, and the resting
-  // shadow is a faint ink drop rather than the heavy black the dark map needed.
+  // The selection glow is tight and opaque because a soft halo dissolves into
+  // a light basemap. The resting shadow is a tight, low ink drop: it defines
+  // the silhouette without laying grey over the fill.
   const glow = isSelected
     ? `filter:drop-shadow(0 0 5px ${SELECTED}) drop-shadow(0 0 2px ${SELECTED});`
     : isStale
       ? ""
-      : "filter:drop-shadow(0 1px 3px rgba(15,23,42,0.35));";
+      : "filter:drop-shadow(0 1px 2px rgba(15,23,42,0.5));";
 
-  // The resting outline is an ink hairline. A white one vanished against the
-  // basemap, leaving the lane colour to meet the tiles with no separation.
+  // The fill carries the lane, and nothing is allowed to dilute it: at 18px an
+  // outline is a large fraction of the glyph, so an ink one drags every lane
+  // towards the same dark blur and a thick white one washes them all pale.
+  // Both were tried. What is left is a hairline white halo, just enough to
+  // stop the glyph merging into the basemap's grey linework and labels, with
+  // the drop shadow supplying the edge.
   const bodyAttrs = isStale
     ? `fill="${color}" fill-opacity="0.15" stroke="${color}" stroke-width="1.6" stroke-dasharray="3 2.5"`
-    : `fill="${color}" stroke="${INK}" stroke-opacity="0.55" stroke-width="1"`;
+    : `fill="${color}" stroke="#ffffff" stroke-opacity="0.9" stroke-width="0.7"`;
 
   // pointer-events: only the visible SVG + label are clickable.  The outer
   // 90×44 container would otherwise grab clicks in its empty 90% area —

@@ -16,35 +16,56 @@
  */
 
 /* ── Track lanes ──────────────────────────────────────────────────────────
-   Four position sources, four colours. The two blues sit together because
-   both lanes know the transponder identity; violet is the odd one out
-   because a dark solve does not. See the lane note in constants.ts. */
+   Four position sources, four colours. All four draw the SAME plane glyph, so
+   colour is the only thing telling them apart and they are chosen to be as far
+   apart as the surface allows: no lane pair is closer than CIEDE2000 22.8,
+   against 14.8 for the first light-surface pass, which read as a wall of
+   near-identical blues at icon size.
+
+   Two blues still sit next to each other because both those lanes know the
+   transponder identity, but cyan and blue rather than two shades of one hue —
+   the tighter family reading was not worth the legibility.
+
+   The ceiling here is the basemap. Every value has to clear 3:1 against
+   Positron's near-white land fill, which rules out the light, vivid end of
+   every hue and leaves eight categories competing for the dark end. */
 
 /** Multi-node solve that carried a transponder tag (mn-adsb-*). */
-export const LANE_MN_ADSB = "#0284c7"; // sky-600
+export const LANE_MN_ADSB = "#0891b2"; // cyan-600
 /** Multi-node solve with no transponder identity (mn-dark-*). */
-export const LANE_MN_DARK = "#7c3aed"; // violet-600
+export const LANE_MN_DARK = "#a21caf"; // fuchsia-700
 /** Single node claiming a target off its real ADS-B fix. */
 export const LANE_ADSB_SINGLE = "#2563eb"; // blue-600
 /** Solver run seeded from an ADS-B position. */
-export const LANE_SOLVER_SEED = "#0d9488"; // teal-600
+export const LANE_SOLVER_SEED = "#047857"; // emerald-700
 
 /* ── Map furniture ───────────────────────────────────────────────────────── */
 
-/** Node markers, their uncertainty disc, and range rings. */
-export const NODE = "#ca8a04"; // yellow-600
+/** Node markers, their uncertainty disc, and range rings. A step darker than
+ *  the obvious amber: yellow-600 measured 2.62:1 on Positron, so the receivers
+ *  were the one thing on the map you could not reliably see. */
+export const NODE = "#a16207"; // yellow-700
 /** Broadcast illuminators. */
-export const ILLUMINATOR = "#db2777"; // pink-600
+export const ILLUMINATOR = "#9d174d"; // pink-800
 /** Empirical coverage polygons. Green here means coverage, never truth. */
 export const COVERAGE = "#16a34a"; // green-600
 /** The selection highlight: selected track, its arcs, its range rings. */
 export const SELECTED = "#d97706"; // amber-600
 /** Anomalous tracks, and the pulsing ring around them. */
-export const ANOMALY = "#e11d48"; // rose-600
+export const ANOMALY = "#dc2626"; // red-600
 /** Drones, which are not aircraft and should not be read as one. */
 export const DRONE = "#ea580c"; // orange-600
-/** ADS-B ground truth: the reference dot, its trail, the error lines. */
-export const TRUTH = "#0891b2"; // cyan-600
+/** ADS-B ground truth: the reference dot, its trail, the error lines.
+ *
+ *  Neutral rather than chromatic, and deliberately so. Truth is what the
+ *  solved lanes are measured against, not a fifth lane, and any colour it
+ *  borrowed landed within CIEDE2000 11 of the cyan lane — the single worst
+ *  confusion on the old light map. A near-black dot beside a coloured plane
+ *  reads as "here is where it actually is". */
+export const TRUTH = "#1e293b"; // slate-800
+/** The "dark aircraft" ground-truth dot: a simulated target flying without
+ *  ADS-B. Grey, and light enough to stay clear of TRUTH beside it. */
+export const TRUTH_DARK = "#64748b"; // slate-500
 /** MLAT verification overlay. */
 export const MLAT = "#c026d3"; // fuchsia-600
 

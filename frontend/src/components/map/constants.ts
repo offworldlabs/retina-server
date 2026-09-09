@@ -42,14 +42,15 @@ export const POSITION_SOURCE_ARC_ONLY = "single_node_ellipse_arc";
 export const POSITION_SOURCE_ADSB_SINGLE = "adsb_single_node";
 
 // Three lanes, three colours (getAircraftColor, StatsOverlay, the trimmed arc):
-// this blue for a claimed single-node ADS-B target, sky LANE_MN_ADSB for a
+// this blue for a claimed single-node ADS-B target, cyan LANE_MN_ADSB for a
 // multi-node solve that carried a transponder tag (mn-adsb-*, adsb_assisted),
-// violet LANE_MN_DARK for a dark multi-node solve (mn-dark-*).  The two blues
+// fuchsia LANE_MN_DARK for a dark multi-node solve (mn-dark-*).  Blue and cyan
 // sit next to each other because both lanes know the transponder identity;
-// violet is the odd one out because a dark solve does not.  Teal
-// LANE_SOLVER_SEED stays on the ADS-B-seeded solver source, and sky doubles as
+// fuchsia is the odd one out because a dark solve does not.  Green
+// LANE_SOLVER_SEED stays on the ADS-B-seeded solver source, and cyan doubles as
 // the fallback colour for the rare solver_single_node relic.  The values live
-// in mapPalette.ts, which is where every map colour is chosen.
+// in mapPalette.ts, which is where every map colour is chosen and where the
+// separation between them is justified.
 export { LANE_ADSB_SINGLE as ADSB_SINGLE_COLOR } from "./mapPalette";
 
 // The claimed arc is drawn at a FIXED SCREEN LENGTH — a multiple of the plane
@@ -144,15 +145,20 @@ export const DR_ICON_MAX_AGE_DARK_S = 12;
 // after a couple of seconds on an assumption the feed never made.
 export const DR_UNKNOWN_GS_KT = 250;
 
-// Doppler colour gradient — dark blue (approaching) → light blue → cyan → light red → dark red (receding)
-// Centre stop is bright cyan so near-zero-doppler arcs are always visible on light basemaps.
-// t ∈ [-1, +1] maps linearly across the 5 stops.
+// Doppler colour gradient — blue (approaching) through neutral to red
+// (receding).  t ∈ [-1, +1] maps linearly across the 5 stops.
+//
+// Every stop clears 3:1 against Positron's land fill, which the previous ramp
+// did not: its light-blue, cyan and light-red stops measured 2.27, 1.61 and
+// 2.47, so the arcs nearest zero Doppler — the common case — were the ones you
+// could not see.  The centre is neutral slate rather than a hue, so "no radial
+// motion" reads as the absence of a direction rather than a third colour.
 const _DOPPLER_STOPS = [
-  [0x1e, 0x3a, 0x8a], // -1.0  dark blue
-  [0x60, 0xa5, 0xfa], // -0.5  light blue
-  [0x22, 0xd3, 0xee], //  0.0  cyan-400 (replaces grey — visible on any basemap)
-  [0xf8, 0x71, 0x71], // +0.5  light red
-  [0x99, 0x1b, 0x1b], // +1.0  dark red
+  [0x1e, 0x3a, 0x8a], // -1.0  blue-900   approaching fast
+  [0x25, 0x63, 0xeb], // -0.5  blue-600
+  [0x47, 0x55, 0x69], //  0.0  slate-600  no radial motion
+  [0xdc, 0x26, 0x26], // +0.5  red-600
+  [0x7f, 0x1d, 0x1d], // +1.0  red-900    receding fast
 ];
 export function dopplerColor(doppler_hz, maxDop = 200) {
   const t = Math.max(-1, Math.min(1, doppler_hz / maxDop)); // [-1, +1]

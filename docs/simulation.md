@@ -103,7 +103,9 @@ the bearing away from the world center and retires only once beyond that
 edge — the viewer watches it leave. A 900 s exit grace backstops genuinely
 stuck aircraft; drones keep the old 2×-lifetime churn (an amber X-frame
 vanishing reads as turnover, not a tracking bug). On the map, ADS-B truth
-dots are blue and dark aircraft grey, matching the Physics-tab legend.
+dots are near-black and dark aircraft grey: truth is the reference the solved
+lanes are measured against, so it is deliberately the one thing out there
+wearing no lane colour.
 
 ---
 
