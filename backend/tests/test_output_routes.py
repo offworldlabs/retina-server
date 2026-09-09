@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 
 import pytest
 from fastapi.testclient import TestClient
@@ -43,6 +44,8 @@ class TestSolverAircraft:
     ``latest_aircraft_json``: the two differ by exactly the nodes whose owners
     registered them private, and this route is on the public side of that split
     (services/publication.py, services/tasks/aircraft_flush.broadcast_aircraft).
+    They therefore carry ``node_ref``, which is what substitution leaves behind
+    on the published feed, not the ``node_id`` the internal frame keeps.
     """
 
     def test_solver_aircraft_empty(self, client):
@@ -56,8 +59,8 @@ class TestSolverAircraft:
     def test_solver_aircraft_with_data(self, client):
         state.latest_aircraft_json_public = {
             "aircraft": [
-                {"hex": "ABC123", "lat": 33.45, "lon": -112.07, "node_id": "n1", "multinode": False},
-                {"hex": "DEF456", "lat": 34.0, "lon": -111.0, "node_id": "n2", "multinode": False},
+                {"hex": "ABC123", "lat": 33.45, "lon": -112.07, "node_ref": "n1", "multinode": False},
+                {"hex": "DEF456", "lat": 34.0, "lon": -111.0, "node_ref": "n2", "multinode": False},
             ]
         }
         try:
@@ -80,8 +83,8 @@ class TestSolverAircraft:
         state.connected_nodes["synth-node-1"] = {"is_synthetic": True, "status": "active"}
         state.latest_aircraft_json_public = {
             "aircraft": [
-                {"hex": "REAL01", "lat": 33.45, "lon": -112.07, "node_id": "test-real-1", "multinode": False},
-                {"hex": "SYNTH01", "lat": 34.0, "lon": -111.0, "node_id": "synth-node-1", "multinode": False},
+                {"hex": "REAL01", "lat": 33.45, "lon": -112.07, "node_ref": "test-real-1", "multinode": False},
+                {"hex": "SYNTH01", "lat": 34.0, "lon": -111.0, "node_ref": "synth-node-1", "multinode": False},
             ]
         }
         try:
@@ -103,9 +106,9 @@ class TestSolverAircraft:
                     "hex": "MULTI01",
                     "lat": 33.45,
                     "lon": -112.07,
-                    "node_id": "synth-node-1",
+                    "node_ref": "synth-node-1",
                     "multinode": True,
-                    "contributing_node_ids": ["synth-node-1", "test-real-1"],
+                    "contributing_node_refs": ["synth-node-1", "test-real-1"],
                 },
             ]
         }
@@ -133,11 +136,14 @@ class TestSolverAircraft:
 
         state.connected_nodes["ret1a2b3c4d"] = {"is_synthetic": False, "status": "active"}
         state.latest_aircraft_json_public = {
-            "aircraft": [{"hex": "REF01", "lat": 1.0, "lon": 2.0, "node_id": "nde1a2b3c4d00", "multinode": False}]
+            "aircraft": [{"hex": "REF01", "lat": 1.0, "lon": 2.0, "node_ref": "nde1a2b3c4d00", "multinode": False}]
         }
         try:
             body = client.get("/api/v1/solver/aircraft?real_only=true").json()
             assert [ac["hex"] for ac in body["aircraft"]] == ["REF01"]
+            # The wire contract names the field for what it holds.
+            assert body["aircraft"][0]["node_ref"] == "nde1a2b3c4d00"
+            assert "node_id" not in body["aircraft"][0]
         finally:
             state.latest_aircraft_json_public = {}
             state.connected_nodes.pop("ret1a2b3c4d", None)
@@ -160,14 +166,27 @@ class TestFormatAircraft:
             "position_source": "solver_adsb_seed",
             "multinode": True,
             "n_nodes": 3,
-            "contributing_node_ids": ["a", "b", "c"],
+            "contributing_node_refs": ["a", "b", "c"],
+            "node_ref": "nde1a2b3c4d00",
             "extra_field": "should_not_appear",
         }
         result = _format_aircraft(ac)
         assert result["hex"] == "ABC"
         assert result["multinode"] is True
         assert result["n_nodes"] == 3
+        assert result["contributing_node_refs"] == ["a", "b", "c"]
+        assert result["node_ref"] == "nde1a2b3c4d00"
         assert "extra_field" not in result
+
+    def test_the_private_field_names_are_not_emitted(self):
+        """The input is the published feed, so an id-named key is not read."""
+        from routes.output import _format_aircraft
+
+        result = _format_aircraft({"node_id": "ret1a2b3c4d", "contributing_node_ids": ["ret1a2b3c4d"]})
+        assert "node_id" not in result
+        assert "contributing_node_ids" not in result
+        assert result["node_ref"] is None
+        assert result["contributing_node_refs"] == []
 
     def test_format_defaults(self):
         from routes.output import _format_aircraft
@@ -176,7 +195,7 @@ class TestFormatAircraft:
         assert result["hex"] is None
         assert result["multinode"] is False
         assert result["n_nodes"] == 1
-        assert result["contributing_node_ids"] == []
+        assert result["contributing_node_refs"] == []
 
 
 # ── Real node IDs ────────────────────────────────────────────────────────────
@@ -285,3 +304,16 @@ class TestApiDocs:
         r = client.get("/api/v1/docs")
         assert r.status_code == 200
         assert "text/html" in r.headers["content-type"]
+
+    def test_the_worked_example_names_no_real_node(self, client):
+        """The docs were the one place more disclosive than the payload."""
+        html = client.get("/api/v1/docs").text
+        assert "radar3-retnode" not in html
+        assert re.search(r'"node_ref": "(nde|sim)[0-9a-z]{12}"', html)
+
+    def test_the_documented_fields_are_the_published_ones(self, client):
+        html = client.get("/api/v1/docs").text
+        for field in ("node_ref", "contributing_node_refs"):
+            assert f"<td>{field}</td>" in html
+        for field in ("node_id", "contributing_node_ids"):
+            assert f"<td>{field}</td>" not in html

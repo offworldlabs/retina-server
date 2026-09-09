@@ -138,8 +138,8 @@ class _FakeWS:
 class TestBroadcastAircraft:
     async def test_updates_state_and_sends_to_clients(self, monkeypatch):
         # Synthetic-prefixed id: it is published as itself, so the served bytes
-        # are still a serialisation of this frame.  An unregistered real id has
-        # no node_ref and is dropped at the publication boundary.
+        # differ from this frame only in the field name.  An unregistered real
+        # id has no node_ref and is dropped at the publication boundary.
         monkeypatch.setattr(state, "connected_nodes", {"test-n1": {"is_synthetic": False}})
         state.ws_clients.clear()
         state.ws_live_clients.clear()
@@ -155,7 +155,7 @@ class TestBroadcastAircraft:
             "detection_arcs": [],
             "ground_truth": {},
         }
-        payload_bytes = orjson.dumps(data)
+        payload_bytes = orjson.dumps({**data, "aircraft": [{"hex": "X1", "node_ref": "test-n1"}]})
 
         try:
             await broadcast_aircraft(data)

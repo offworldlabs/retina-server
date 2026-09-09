@@ -47,9 +47,9 @@ def _format_aircraft(ac: dict) -> dict:
         "position_source": ac.get("position_source"),
         "multinode": ac.get("multinode", False),
         "n_nodes": ac.get("n_nodes", 1),
-        "contributing_node_ids": ac.get("contributing_node_ids", []),
+        "contributing_node_refs": ac.get("contributing_node_refs", []),
         "flight": ac.get("flight"),
-        "node_id": ac.get("node_id"),
+        "node_ref": ac.get("node_ref"),
         "target_class": ac.get("target_class"),
         "delay_us": ac.get("delay_us"),
         "doppler_hz": ac.get("doppler_hz"),
@@ -90,12 +90,12 @@ async def solver_aircraft(
         # The feed is published under node_ref, so the connected-node ids are
         # translated before the match rather than compared raw; a node with no
         # ref is not in the payload to be matched either (services/node_refs.py).
-        real_ids = {ref for ref in (node_refs.public_identity(nid) for nid in _real_node_ids()) if ref}
+        real_refs = {ref for ref in (node_refs.public_identity(nid) for nid in _real_node_ids()) if ref}
         aircraft_list = [
             ac
             for ac in data.get("aircraft", [])
-            if ac.get("node_id") in real_ids
-            or (ac.get("multinode") and any(nid in real_ids for nid in ac.get("contributing_node_ids", [])))
+            if ac.get("node_ref") in real_refs
+            or (ac.get("multinode") and any(ref in real_refs for ref in ac.get("contributing_node_refs", [])))
         ]
     else:
         aircraft_list = data.get("aircraft", [])
@@ -297,8 +297,9 @@ _DOCS_HTML = """<!DOCTYPE html>
       <tr><td>position_source</td><td>string</td><td>How position was derived — see values below</td></tr>
       <tr><td>multinode</td><td>bool</td><td>True if solved from ≥2 nodes (highest accuracy)</td></tr>
       <tr><td>n_nodes</td><td>int</td><td>Number of contributing nodes</td></tr>
+      <tr><td>contributing_node_refs</td><td>array</td><td>Public references of the nodes behind a multinode solve; empty for single-node entries</td></tr>
       <tr><td>flight</td><td>string</td><td>Callsign / flight number</td></tr>
-      <tr><td>node_id</td><td>string</td><td>Detecting node ID</td></tr>
+      <tr><td>node_ref</td><td>string</td><td>Public reference of the detecting node (e.g. <code>nde4f2k9xq7m3b8</code>)</td></tr>
       <tr><td>target_class</td><td>string</td><td><code>aircraft</code>, <code>drone</code>, or null</td></tr>
       <tr><td>delay_us</td><td>float</td><td>Bistatic delay of latest detection (µs)</td></tr>
       <tr><td>doppler_hz</td><td>float</td><td>Doppler shift of latest detection (Hz)</td></tr>
@@ -337,7 +338,7 @@ _DOCS_HTML = """<!DOCTYPE html>
       "multinode": false,
       "n_nodes": 1,
       "flight": "DAL1234",
-      "node_id": "radar3-retnode",
+      "node_ref": "nde4f2k9xq7m3b8",
       "target_class": "aircraft",
       "delay_us": 14.22,
       "doppler_hz": -83.4,

@@ -62,8 +62,8 @@ class TestFlushOnce:
         _flush_once(_frame())
 
         real = orjson.loads(state.latest_real_aircraft_json_bytes)
-        assert [ac["node_id"] for ac in real["aircraft"]] == [_REF]
-        assert [arc["node_id"] for arc in real["detection_arcs"]] == [_REF]
+        assert [ac["node_ref"] for ac in real["aircraft"]] == [_REF]
+        assert [arc["node_ref"] for arc in real["detection_arcs"]] == [_REF]
 
     def test_the_public_feed_is_published_under_the_ref(self, seeded, connected):
         from services.tasks.aircraft_flush import _flush_once
@@ -71,8 +71,9 @@ class TestFlushOnce:
         _flush_once(_frame())
 
         public = orjson.loads(state.latest_aircraft_json_bytes)
-        assert [ac["node_id"] for ac in public["aircraft"]] == [_REF]
-        assert state.latest_aircraft_json_public["aircraft"][0]["node_id"] == _REF
+        assert [ac["node_ref"] for ac in public["aircraft"]] == [_REF]
+        assert state.latest_aircraft_json_public["aircraft"][0]["node_ref"] == _REF
+        assert "node_id" not in public["aircraft"][0]
 
     def test_the_frame_kept_on_state_is_neither_redacted_nor_substituted(self, seeded, connected):
         """The owner filter reads it from there and matches on node_id."""
@@ -102,7 +103,7 @@ class TestOwnerFeed:
         assert [ac["node_id"] for ac in owned["aircraft"]] == [_ID]
 
         out = orjson.loads(published_bytes(owned))
-        assert [ac["node_id"] for ac in out["aircraft"]] == [_REF]
+        assert [ac["node_ref"] for ac in out["aircraft"]] == [_REF]
 
     def test_substituting_first_would_empty_it(self, seeded):
         """The failure this ordering exists to prevent, stated as a test."""

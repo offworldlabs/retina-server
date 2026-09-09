@@ -151,8 +151,20 @@ def public_identity(node_id: str | None) -> str | None:
     return ref
 
 
+def _renamed(entry: dict, old: str, new: str, value) -> dict:
+    """`entry` with key `old` replaced by `new` in place, carrying `value`."""
+    return {(new if k == old else k): (value if k == old else v) for k, v in entry.items()}
+
+
 def substitute_identities(data: dict) -> dict:
-    """A feed payload with every published node identity replaced by its ref.
+    """A feed payload under its published field names and identities.
+
+    `node_id` becomes `node_ref` and `contributing_node_ids` becomes
+    `contributing_node_refs`. The old names do not survive alongside the new
+    ones: a field called `node_id` holding a ref is the confusion this boundary
+    exists to remove, and a consumer that still finds the old key will keep
+    reading it. `detecting_nodes` keeps its name, which claims no identifier
+    type; only its values changed.
 
     Runs last on each publication path, after the private-node redaction in
     services/publication.py and after every node_id-keyed filter in
@@ -161,17 +173,20 @@ def substitute_identities(data: dict) -> dict:
     """
     aircraft = []
     for ac in data.get("aircraft", []):
-        contributors = ac.get("contributing_node_ids")
-        if contributors:
+        if "contributing_node_ids" in ac:
+            contributors = ac["contributing_node_ids"]
             kept = [r for r in (public_identity(n) for n in contributors) if r]
-            if not kept:
+            if contributors and not kept:
                 continue
-            ac = {**ac, "contributing_node_ids": kept}
-        if ac.get("node_id") is not None:
-            ref = public_identity(ac.get("node_id"))
-            if ref is None:
+            ac = _renamed(ac, "contributing_node_ids", "contributing_node_refs", kept)
+        if "node_id" in ac:
+            node_id = ac["node_id"]
+            ref = public_identity(node_id)
+            # A null node_id is a multinode entry with no single detector, not
+            # an unresolvable node, so it is published as a null ref.
+            if node_id is not None and ref is None:
                 continue
-            ac = {**ac, "node_id": ref}
+            ac = _renamed(ac, "node_id", "node_ref", ref)
         aircraft.append(ac)
 
     out = {**data, "aircraft": aircraft}
@@ -182,7 +197,7 @@ def substitute_identities(data: dict) -> dict:
             ref = public_identity(arc.get("node_id"))
             if ref is None:
                 continue
-            arcs.append({**arc, "node_id": ref})
+            arcs.append(_renamed(arc, "node_id", "node_ref", ref))
         out["detection_arcs"] = arcs
 
     detecting = data.get("detecting_nodes")

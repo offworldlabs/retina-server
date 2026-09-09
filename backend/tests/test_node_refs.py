@@ -201,7 +201,7 @@ class TestSubstituteIdentities:
     def test_a_single_node_entry_carries_the_ref(self, seed):
         seed(ret1a2b3c4d="nde1a2b3c4d00")
         out = node_refs.substitute_identities({"aircraft": [{"hex": "abc123", "node_id": "ret1a2b3c4d"}]})
-        assert out["aircraft"] == [{"hex": "abc123", "node_id": "nde1a2b3c4d00"}]
+        assert out["aircraft"] == [{"hex": "abc123", "node_ref": "nde1a2b3c4d00"}]
 
     def test_contributing_ids_are_substituted(self, seed):
         seed(ret1a2b3c4d="nde1a2b3c4d00", ret9f8e7d6c="nde9f8e7d6c00")
@@ -216,12 +216,46 @@ class TestSubstituteIdentities:
                 ]
             }
         )
-        assert out["aircraft"][0]["contributing_node_ids"] == ["nde1a2b3c4d00", "nde9f8e7d6c00"]
+        assert out["aircraft"][0]["contributing_node_refs"] == ["nde1a2b3c4d00", "nde9f8e7d6c00"]
+        assert "contributing_node_ids" not in out["aircraft"][0]
 
     def test_a_synthetic_node_passes_through_unchanged(self, seed):
+        """Unchanged in value; the field is still renamed, as it is for every entry."""
         seed(ret1a2b3c4d="nde1a2b3c4d00")
         out = node_refs.substitute_identities({"aircraft": [{"hex": "abc123", "node_id": _SYNTH}]})
-        assert out["aircraft"] == [{"hex": "abc123", "node_id": _SYNTH}]
+        assert out["aircraft"] == [{"hex": "abc123", "node_ref": _SYNTH}]
+
+    def test_a_null_node_id_is_published_as_a_null_ref(self, seed):
+        """A multinode entry has no single detector; the key still has to go."""
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        out = node_refs.substitute_identities(
+            {
+                "aircraft": [
+                    {
+                        "hex": "abc123",
+                        "node_id": None,
+                        "multinode": True,
+                        "contributing_node_ids": ["ret1a2b3c4d"],
+                    }
+                ]
+            }
+        )
+        assert out["aircraft"] == [
+            {
+                "hex": "abc123",
+                "node_ref": None,
+                "multinode": True,
+                "contributing_node_refs": ["nde1a2b3c4d00"],
+            }
+        ]
+
+    def test_an_empty_contributor_list_is_renamed_not_dropped(self, seed):
+        """An entry with no contributors is a single-node one, not a redacted one."""
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        out = node_refs.substitute_identities(
+            {"aircraft": [{"hex": "abc123", "node_id": "ret1a2b3c4d", "contributing_node_ids": []}]}
+        )
+        assert out["aircraft"] == [{"hex": "abc123", "node_ref": "nde1a2b3c4d00", "contributing_node_refs": []}]
 
     def test_an_unresolvable_real_node_is_dropped_not_published(self, seed):
         """Fail closed: publishing the private id as a fallback is the bug."""
@@ -238,7 +272,9 @@ class TestSubstituteIdentities:
                 "detecting_nodes": {"abc123": ["ret1a2b3c4d", "ret0badcafe"]},
             }
         )
-        assert out["detection_arcs"] == [{"hex": "abc123", "node_id": "nde1a2b3c4d00"}]
+        assert out["detection_arcs"] == [{"hex": "abc123", "node_ref": "nde1a2b3c4d00"}]
+        # detecting_nodes keeps its name: it claims no identifier type, and only
+        # its values changed.
         assert out["detecting_nodes"] == {"abc123": ["nde1a2b3c4d00"]}
 
     def test_a_hex_left_with_no_nodes_loses_its_entry(self, seed):

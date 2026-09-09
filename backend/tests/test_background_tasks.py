@@ -83,8 +83,8 @@ class TestBroadcastAircraft:
         from services.tasks.aircraft_flush import broadcast_aircraft
 
         # Synthetic-prefixed id: it is published as itself, so the served bytes
-        # are still a serialisation of this frame.  An unregistered real id has
-        # no node_ref and is dropped at the publication boundary.
+        # differ from this frame only in the field name.  An unregistered real
+        # id has no node_ref and is dropped at the publication boundary.
         data = {
             "now": time.time(),
             "aircraft": [{"hex": "BC01", "node_id": "test-n1"}],
@@ -93,10 +93,10 @@ class TestBroadcastAircraft:
         }
         import orjson
 
-        data_bytes = orjson.dumps(data)
+        published_bytes = orjson.dumps({**data, "aircraft": [{"hex": "BC01", "node_ref": "test-n1"}]})
         await broadcast_aircraft(data)
         assert state.latest_aircraft_json == data
-        assert state.latest_aircraft_json_bytes == data_bytes
+        assert state.latest_aircraft_json_bytes == published_bytes
         assert state.latest_real_aircraft_json_bytes != b""
 
 
