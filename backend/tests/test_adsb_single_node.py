@@ -19,7 +19,6 @@ import time
 import types
 from collections import deque
 
-import orjson
 import pytest
 
 os.environ.setdefault("RETINA_ENV", "test")
@@ -269,8 +268,8 @@ class TestDownstream:
         entries = _claimed_single_node_entries(time.time())
         payload = {"now": time.time(), "aircraft": entries, "detection_arcs": []}
 
-        kept = orjson.loads(filter_payload_to_nodes(payload, {"node-a"}))
-        dropped = orjson.loads(filter_payload_to_nodes(payload, {"node-z"}))
+        kept = filter_payload_to_nodes(payload, {"node-a"})
+        dropped = filter_payload_to_nodes(payload, {"node-z"})
 
         assert [ac["hex"] for ac in kept["aircraft"]] == [_HEX]
         assert dropped["aircraft"] == []

@@ -226,14 +226,17 @@ class TestPublicOwnerSplit:
     """
 
     @pytest.fixture(autouse=True)
-    def _private(self, monkeypatch):
+    def _private(self, monkeypatch, seed_nodes):
         monkeypatch.setattr(publication, "private_node_ids", lambda: frozenset({_PRIV}))
+        # The public node needs a node_ref row or the publication boundary
+        # drops it after the redaction and these assertions read an empty feed
+        # for the wrong reason (services/node_refs.py).
+        seed_nodes(**{_PUB: "public"})
 
     def _broadcast(self):
         from services.tasks.aircraft_flush import broadcast_aircraft
 
-        data = _payload()
-        asyncio.run(broadcast_aircraft(data, orjson.dumps(data)))
+        asyncio.run(broadcast_aircraft(_payload()))
         asyncio.set_event_loop(asyncio.new_event_loop())
 
     def test_the_public_bytes_have_no_private_entry(self):
@@ -245,7 +248,7 @@ class TestPublicOwnerSplit:
         from services.tasks.aircraft_flush import filter_payload_to_nodes
 
         self._broadcast()
-        owner = orjson.loads(filter_payload_to_nodes(state.latest_aircraft_json, {_PRIV}))
+        owner = filter_payload_to_nodes(state.latest_aircraft_json, {_PRIV})
         assert [ac["hex"] for ac in owner["aircraft"]] == ["AAA111", "mnCCC333"]
 
     def test_the_unredacted_dict_is_kept_for_that_purpose(self):

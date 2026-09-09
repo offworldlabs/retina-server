@@ -19,6 +19,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import HTMLResponse, Response
 
 from core import state
+from services import node_refs
 
 router = APIRouter()
 
@@ -86,7 +87,10 @@ async def solver_aircraft(
     now = time.time()
 
     if real_only:
-        real_ids = _real_node_ids()
+        # The feed is published under node_ref, so the connected-node ids are
+        # translated before the match rather than compared raw; a node with no
+        # ref is not in the payload to be matched either (services/node_refs.py).
+        real_ids = {ref for ref in (node_refs.public_identity(nid) for nid in _real_node_ids()) if ref}
         aircraft_list = [
             ac
             for ac in data.get("aircraft", [])

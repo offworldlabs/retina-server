@@ -1,4 +1,4 @@
-"""Tests for aircraft flush — _build_real_only_payload and broadcast_aircraft."""
+"""Tests for aircraft flush — _real_only_dict and broadcast_aircraft."""
 
 import os
 
@@ -14,7 +14,7 @@ import pytest
 from core import state  # noqa: E402
 from services.tasks import aircraft_flush  # noqa: E402
 from services.tasks.aircraft_flush import (  # noqa: E402
-    _build_real_only_payload,
+    _real_only_dict,
     broadcast_aircraft,
 )
 
@@ -31,7 +31,7 @@ def _cleanup():
     state.latest_aircraft_json_bytes = old_bytes
 
 
-class TestBuildRealOnlyPayload:
+class TestRealOnlyDict:
     def test_filters_synthetic_nodes(self):
         state.connected_nodes["real-1"] = {"is_synthetic": False}
         state.connected_nodes["synth-1"] = {"is_synthetic": True}
@@ -47,7 +47,7 @@ class TestBuildRealOnlyPayload:
                 {"node_id": "synth-1"},
             ],
         }
-        result = orjson.loads(_build_real_only_payload(data))
+        result = _real_only_dict(data)
 
         assert len(result["aircraft"]) == 1
         assert result["aircraft"][0]["hex"] == "A"
@@ -69,13 +69,13 @@ class TestBuildRealOnlyPayload:
             ],
             "detection_arcs": [],
         }
-        result = orjson.loads(_build_real_only_payload(data))
+        result = _real_only_dict(data)
         assert len(result["aircraft"]) == 1
         assert result["aircraft"][0]["hex"] == "MN"
 
     def test_empty_aircraft(self):
         data = {"now": 0, "aircraft": [], "detection_arcs": []}
-        result = orjson.loads(_build_real_only_payload(data))
+        result = _real_only_dict(data)
         assert result["aircraft"] == []
         assert result["messages"] == 0
 
@@ -83,12 +83,13 @@ class TestBuildRealOnlyPayload:
 class TestBroadcastAircraft:
     def test_updates_state_bytes(self):
         data = {"now": 123, "aircraft": [], "detection_arcs": [], "ground_truth": {}}
-        data_bytes = orjson.dumps(data)
 
-        asyncio.get_event_loop().run_until_complete(broadcast_aircraft(data, data_bytes))
+        asyncio.get_event_loop().run_until_complete(broadcast_aircraft(data))
 
+        # The frame kept on state is the unredacted one the owner filter reads;
+        # the bytes are always rebuilt, because substitution allocates.
         assert state.latest_aircraft_json is data
-        assert state.latest_aircraft_json_bytes is data_bytes
+        assert state.latest_aircraft_json_bytes == orjson.dumps(data)
 
 
 class _StubWS:
@@ -135,8 +136,7 @@ class TestBroadcastFanOut:
         return {"now": 123, "aircraft": [], "detection_arcs": [], "ground_truth": {}}
 
     def _broadcast(self):
-        data = self._data()
-        return asyncio.run(broadcast_aircraft(data, orjson.dumps(data)))
+        return asyncio.run(broadcast_aircraft(self._data()))
 
     def test_slow_client_is_dropped_and_the_others_are_served(self):
         fast_a, fast_b, slow = _StubWS(), _StubWS(), _StubWS(delay_s=30.0)
@@ -186,17 +186,20 @@ class TestBroadcastFanOut:
 
     def test_owner_clients_are_fanned_out_with_their_filtered_payloads(self):
         fast, slow = _StubWS(), _StubWS(delay_s=30.0)
-        state.ws_owner_clients[fast] = {"node-a"}
-        state.ws_owner_clients[slow] = {"node-b"}
+        # Synthetic-prefixed ids, so the published payload still carries the
+        # entry: an unregistered real id has no node_ref and is dropped at the
+        # publication boundary, which is not what this test is about.
+        state.ws_owner_clients[fast] = {"test-a"}
+        state.ws_owner_clients[slow] = {"test-b"}
         data = {
             "now": 5,
-            "aircraft": [{"node_id": "node-a", "hex": "aaa"}],
+            "aircraft": [{"node_id": "test-a", "hex": "aaa"}],
             "detection_arcs": [],
             "ground_truth": {},
         }
         before = state.ws_send_timeouts
 
-        asyncio.run(broadcast_aircraft(data, orjson.dumps(data)))
+        asyncio.run(broadcast_aircraft(data))
 
         assert [a["hex"] for a in orjson.loads(fast.sent[0])["aircraft"]] == ["aaa"]
         assert list(state.ws_owner_clients) == [fast]

@@ -1,5 +1,6 @@
 """Tests for public output API routes — solver aircraft, ground truth."""
 
+import asyncio
 import os
 
 import pytest
@@ -9,7 +10,10 @@ os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
 from core import state  # noqa: E402
+from core.nodes import Node  # noqa: E402
+from core.users import async_session_maker  # noqa: E402
 from main import app  # noqa: E402
+from services import node_refs  # noqa: E402
 
 
 @pytest.fixture()
@@ -22,7 +26,7 @@ def client():
 def _clean_state():
     """Clean up injected state after each test."""
     yield
-    state.connected_nodes.pop("real-node-1", None)
+    state.connected_nodes.pop("test-real-1", None)
     state.connected_nodes.pop("synth-node-1", None)
     state.ground_truth_trails.clear()
     state.ground_truth_meta.clear()
@@ -66,12 +70,17 @@ class TestSolverAircraft:
             state.latest_aircraft_json_public = {}
 
     def test_solver_aircraft_real_only(self, client):
-        """real_only=true filters to aircraft from non-synthetic nodes."""
-        state.connected_nodes["real-node-1"] = {"is_synthetic": False, "status": "active"}
+        """real_only=true filters to aircraft from non-synthetic nodes.
+
+        The ids carry a synthetic prefix so they are published as themselves:
+        the feed seeded here is the published one, and the filter translates
+        the connected-node ids before matching (services/node_refs.py).
+        """
+        state.connected_nodes["test-real-1"] = {"is_synthetic": False, "status": "active"}
         state.connected_nodes["synth-node-1"] = {"is_synthetic": True, "status": "active"}
         state.latest_aircraft_json_public = {
             "aircraft": [
-                {"hex": "REAL01", "lat": 33.45, "lon": -112.07, "node_id": "real-node-1", "multinode": False},
+                {"hex": "REAL01", "lat": 33.45, "lon": -112.07, "node_id": "test-real-1", "multinode": False},
                 {"hex": "SYNTH01", "lat": 34.0, "lon": -111.0, "node_id": "synth-node-1", "multinode": False},
             ]
         }
@@ -87,7 +96,7 @@ class TestSolverAircraft:
 
     def test_solver_aircraft_multinode_real(self, client):
         """Multinode aircraft with at least one real contributing node passes real_only filter."""
-        state.connected_nodes["real-node-1"] = {"is_synthetic": False, "status": "active"}
+        state.connected_nodes["test-real-1"] = {"is_synthetic": False, "status": "active"}
         state.latest_aircraft_json_public = {
             "aircraft": [
                 {
@@ -96,7 +105,7 @@ class TestSolverAircraft:
                     "lon": -112.07,
                     "node_id": "synth-node-1",
                     "multinode": True,
-                    "contributing_node_ids": ["synth-node-1", "real-node-1"],
+                    "contributing_node_ids": ["synth-node-1", "test-real-1"],
                 },
             ]
         }
@@ -106,6 +115,32 @@ class TestSolverAircraft:
             assert r.json()["count"] == 1
         finally:
             state.latest_aircraft_json_public = {}
+
+    def test_real_only_matches_a_registered_node_by_its_ref(self, client):
+        """The filter holds node_ids and the feed holds refs, so it translates.
+
+        Compared raw, a real fleet's every entry falls out of this response.
+        """
+
+        async def _seed():
+            async with async_session_maker() as session:
+                session.add(Node(node_id="ret1a2b3c4d", node_ref="nde1a2b3c4d00"))
+                await session.commit()
+
+        asyncio.run(_seed())
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        node_refs._reset_for_tests()
+
+        state.connected_nodes["ret1a2b3c4d"] = {"is_synthetic": False, "status": "active"}
+        state.latest_aircraft_json_public = {
+            "aircraft": [{"hex": "REF01", "lat": 1.0, "lon": 2.0, "node_id": "nde1a2b3c4d00", "multinode": False}]
+        }
+        try:
+            body = client.get("/api/v1/solver/aircraft?real_only=true").json()
+            assert [ac["hex"] for ac in body["aircraft"]] == ["REF01"]
+        finally:
+            state.latest_aircraft_json_public = {}
+            state.connected_nodes.pop("ret1a2b3c4d", None)
 
 
 # ── Format aircraft ─────────────────────────────────────────────────────────
@@ -151,14 +186,14 @@ class TestRealNodeIds:
     def test_real_node_ids(self):
         from routes.output import _real_node_ids
 
-        state.connected_nodes["real-node-1"] = {"is_synthetic": False}
+        state.connected_nodes["test-real-1"] = {"is_synthetic": False}
         state.connected_nodes["synth-node-1"] = {"is_synthetic": True}
         try:
             ids = _real_node_ids()
-            assert "real-node-1" in ids
+            assert "test-real-1" in ids
             assert "synth-node-1" not in ids
         finally:
-            state.connected_nodes.pop("real-node-1", None)
+            state.connected_nodes.pop("test-real-1", None)
             state.connected_nodes.pop("synth-node-1", None)
 
 
