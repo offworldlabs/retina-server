@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   getAircraftColor,
   drDriftM,
@@ -10,20 +10,27 @@ import {
   makeAircraftIcon,
 } from "./icons";
 import {
-  ADSB_SINGLE_COLOR,
   DR_ICON_HIDE_DISTANCE_DARK_M,
   DR_ICON_HIDE_DISTANCE_M,
   DR_ICON_MAX_AGE_DARK_S,
   DR_UNKNOWN_GS_KT,
 } from "./constants";
-import { ALT_BANDS, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED } from "./mapPalette";
+import { PALETTES, setActivePalette, type MapTheme } from "./mapPalette";
 
 // Asserted against the palette rather than literal hex: the lane a source maps
-// to is the contract, and the shade is free to move with the surface.
-const SKY = LANE_MN_ADSB;
-const VIOLET = LANE_MN_DARK;
+// to is the contract, and the shade is free to move with the surface. The whole
+// block runs once per theme, because the mapping is the contract in BOTH and a
+// theme that quietly dropped a lane onto the wrong colour would otherwise pass.
+describe.each<MapTheme>(["light", "dark"])("getAircraftColor lanes (%s)", (theme) => {
+  const P = PALETTES[theme];
+  const { ALT_BANDS, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED } = P;
+  const ADSB_SINGLE_COLOR = P.LANE_ADSB_SINGLE;
+  const SKY = LANE_MN_ADSB;
+  const VIOLET = LANE_MN_DARK;
 
-describe("getAircraftColor lanes", () => {
+  beforeEach(() => setActivePalette(P));
+  afterEach(() => setActivePalette(PALETTES.dark));
+
   it("colours an ADS-B-assisted multinode solve sky", () => {
     expect(getAircraftColor({ position_source: "multinode_solve", adsb_assisted: true })).toBe(SKY);
     // multinode flag alone (no position_source) takes the same branch.
@@ -248,7 +255,9 @@ describe("dark solve time budget", () => {
 
 describe("makeAircraftIcon stale rendering", () => {
   const ac = { hex: "mnabc123", position_source: "multinode_solve", adsb_assisted: false, track: 90, alt_baro: 30000 };
-  const VIOLET_ = LANE_MN_DARK;
+  // The default theme, which is what makeAircraftIcon draws with unless a
+  // provider has said otherwise.
+  const VIOLET_ = PALETTES.dark.LANE_MN_DARK;
 
   it("keeps the lane colour and marks the marker stale", () => {
     const stale = makeAircraftIcon(ac, false, false, false, true);

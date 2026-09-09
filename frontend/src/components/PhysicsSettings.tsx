@@ -5,16 +5,8 @@ import "./PhysicsSettings.css";
 // One plane path — imported from the icon module the map itself uses.
 import { PLANE_PATH } from "./map/icons";
 // One palette for both tabs, so this legend and the map cannot disagree.
-import {
-  ACCENT_STRONG,
-  BAD,
-  INK_MUTED,
-  SIM_ANOMALOUS,
-  SIM_COMMERCIAL,
-  SIM_DARK,
-  SIM_DRONE,
-  SIM_SCENE,
-} from "./map/mapPalette";
+import { usePalette } from "./map/useMapTheme";
+import { activePalette } from "./map/mapPalette";
 import { withCartoKey } from "../utils/basemap";
 import {
   formatKm,
@@ -27,8 +19,11 @@ import {
 
 const API = "/api";
 
-// SVG icon components — colours match map rendering exactly
-function PlaneIcon({ color = SIM_COMMERCIAL, size = 26 }) {
+// SVG icon components — colours match map rendering exactly. These are called
+// during render of a component that re-renders on a theme change, so reading
+// the active palette here sees the theme the tree is being drawn with.
+function PlaneIcon({ color = undefined, size = 26 }) {
+  color = color ?? activePalette().SIM_COMMERCIAL;
   return (
     <svg width={size} height={size} viewBox="0 0 32 32" style={{ display: "block", filter: "drop-shadow(0 1px 2px rgba(15,23,42,0.25))" }}>
       <path d={PLANE_PATH} fill={color} />
@@ -37,6 +32,7 @@ function PlaneIcon({ color = SIM_COMMERCIAL, size = 26 }) {
 }
 
 function DarkPlaneIcon({ size = 26 }) {
+  const { SIM_DARK, INK_MUTED } = activePalette();
   // Grey plane with a diagonal "no-signal" bar — conveys ADS-B-off
   return (
     <svg width={size} height={size} viewBox="0 0 32 32" style={{ display: "block" }}>
@@ -47,6 +43,7 @@ function DarkPlaneIcon({ size = 26 }) {
 }
 
 function DroneIcon({ size = 26 }) {
+  const { SIM_DRONE } = activePalette();
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" style={{ display: "block", filter: "drop-shadow(0 1px 2px rgba(15,23,42,0.25))" }}>
       <line x1="4" y1="4" x2="20" y2="20" stroke={SIM_DRONE} strokeWidth="2.2" strokeLinecap="round" />
@@ -61,6 +58,7 @@ function DroneIcon({ size = 26 }) {
 }
 
 function AnomalousIcon({ size = 26 }) {
+  const { SIM_ANOMALOUS } = activePalette();
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" style={{ display: "block", filter: "drop-shadow(0 1px 2px rgba(15,23,42,0.25))" }}>
       <circle cx="12" cy="12" r="9"  fill="none" stroke={SIM_ANOMALOUS} strokeWidth="1.5" strokeDasharray="4 2" />
@@ -71,8 +69,11 @@ function AnomalousIcon({ size = 26 }) {
   );
 }
 
-// Object type definitions — colours and SVG icons match LiveAircraftMap rendering precisely
-const OBJECT_TYPES = [
+// Object type definitions — colours and SVG icons match LiveAircraftMap
+// rendering precisely. A function because the colours are per-theme.
+function objectTypes() {
+  const { SIM_ANOMALOUS, SIM_DRONE, SIM_DARK } = activePalette();
+  return [
   {
     key: "frac_anomalous",
     label: "Anomalous",
@@ -103,7 +104,8 @@ const OBJECT_TYPES = [
     mapNote: "Grey bistatic arc only (no ADS-B icon)",
     maxPct: 50,
   },
-];
+  ];
+}
 
 function pct(v) { return Math.round(v * 100); }
 function frac(p) { return Math.round(p) / 100; }
@@ -131,6 +133,14 @@ function serverToScene(data) {
 }
 
 export default function PhysicsSettings() {
+  const palette = usePalette();
+  const { ACCENT_STRONG, BAD, INK_MUTED, SIM_ANOMALOUS, SIM_COMMERCIAL, SIM_DARK, SIM_DRONE, SIM_SCENE } =
+    palette;
+  // The guide has to show the ramp the arcs are actually drawn with, so it is
+  // built from the same stops dopplerColor interpolates rather than restated.
+  const dopplerRamp = palette.DOPPLER_STOPS.map(
+    ([r, g, b]) => `rgb(${r}, ${g}, ${b})`,
+  ).join(", ");
   const [config, setConfig] = useState(null);
   const [draft, setDraft] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -555,7 +565,7 @@ export default function PhysicsSettings() {
 
       {/* ── Type Sliders ────────────────────────────────────────────── */}
       <div className="ps-sliders">
-        {OBJECT_TYPES.map(({ key, label, countKey, color, Icon, description, mapNote, maxPct }) => {
+        {objectTypes().map(({ key, label, countKey, color, Icon, description, mapNote, maxPct }) => {
           const fillPct = (pct(draft[key]) / maxPct) * 100;
           return (
             <div key={key} className="ps-type-card" style={{ "--accent": color }}>
@@ -1013,7 +1023,10 @@ export default function PhysicsSettings() {
         </p>
         <div className="ps-doppler-gradient-row">
           <span className="ps-doppler-end">← Approaching</span>
-          <div className="ps-doppler-bar" />
+          <div
+            className="ps-doppler-bar"
+            style={{ background: `linear-gradient(to right, ${dopplerRamp})` }}
+          />
           <span className="ps-doppler-end">Receding →</span>
         </div>
         <p className="ps-doppler-hint">

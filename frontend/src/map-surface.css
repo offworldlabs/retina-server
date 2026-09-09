@@ -40,8 +40,69 @@
      shadow dash never has to reach for. */
   --panel-shadow: 0 2px 12px rgba(15, 23, 42, 0.12);
 
+  /* Map-specific tokens, i.e. the things dash has no equivalent for because it
+     has no map: how far the basemap is pushed back, the chips drawn onto it,
+     ink that has to sit on a semantic wash, and the one violet the Physics
+     tab uses for a control that is not an object class. */
+  --tile-filter: saturate(0.9);
+  --attribution-bg: rgba(255, 255, 255, 0.85);
+  --map-chip-bg: rgba(255, 255, 255, 0.88);
+  --map-chip-ink: #0f172a;
+  --error-ink: #b91c1c;
+  --warning-ink: #b45309;
+  --violet: #7c3aed;
+  --violet-hover: #6d28d9;
+
   background: var(--bg-primary);
   color: var(--text-primary);
+}
+
+/* ── Dark ─────────────────────────────────────────────────────────────────
+   The surface this map has always had, and the default — MapThemeProvider
+   stamps data-theme on the element above. Only the token values change: every
+   rule in this file and in LiveAircraftMap.css was written against the custom
+   properties, so the whole chrome inverts from this block alone.
+
+   The values are the original console's, now named rather than inlined. Its
+   hairlines were a blue-tinted translucent white rather than a solid grey,
+   which is what stops a navy panel's edge reading as a black line. */
+
+.app.map-surface[data-theme="dark"] {
+  --bg-primary: #0d1b2a;
+  --bg-secondary: #132240;
+  --bg-card: #132240;
+  --bg-card-hover: #1a2b4d;
+  --bg-input: rgba(15, 30, 55, 0.9);
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --border: rgba(100, 180, 255, 0.14);
+  --border-light: rgba(100, 180, 255, 0.28);
+  --accent: #38bdf8;
+  --accent-hover: #7dd3fc;
+  --accent-light: rgba(56, 189, 248, 0.16);
+  --success: #4ade80;
+  --success-light: rgba(74, 222, 128, 0.15);
+  --warning: #fbbf24;
+  --warning-light: rgba(251, 191, 36, 0.15);
+  --error: #f43f5e;
+  --error-light: rgba(244, 63, 94, 0.15);
+
+  /* Panels float over the map, and on a dark surface a soft shadow does
+     nothing — the elevation has to come from the panel being lighter than the
+     canvas, plus a hard edge. */
+  --panel-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
+
+  /* Voyager pushed back hard, which is the treatment the original console
+     used: a light basemap tinted down until the tracks sit clearly in front. */
+  --tile-filter: saturate(0.85) brightness(0.78) opacity(0.82);
+  --attribution-bg: rgba(13, 27, 42, 0.85);
+  --map-chip-bg: rgba(8, 18, 38, 0.78);
+  --map-chip-ink: #ffffff;
+  --error-ink: #fca5a5;
+  --warning-ink: #fcd34d;
+  --violet: #a78bfa;
+  --violet-hover: #c4b5fd;
 }
 
 /* ── Header ───────────────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
-import { ALTITUDE_LEGEND } from "./icons";
-import { ILLUMINATOR, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED, NODE, TRUTH } from "./mapPalette";
+import { altitudeLegend } from "./icons";
+import { usePalette } from "./useMapTheme";
 import { usePersistedState } from "./usePersistedState";
 
 /**
@@ -11,6 +11,7 @@ import { usePersistedState } from "./usePersistedState";
  * its header for anyone who has learnt the colours.
  */
 export default function MapLegend({ colorByAlt, showGroundTruth, showIlluminators, hasPlayback }) {
+  const { ILLUMINATOR, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED, NODE, TRUTH } = usePalette();
   const [open, setOpen] = usePersistedState("tf.legendOpen", true);
 
   return (
@@ -28,7 +29,7 @@ export default function MapLegend({ colorByAlt, showGroundTruth, showIlluminator
       {open && (
         <div className="map-legend-body">
           {colorByAlt ? (
-            ALTITUDE_LEGEND.map(([c, lbl]) => <LegendItem key={lbl} color={c} label={lbl} />)
+            altitudeLegend().map(([c, lbl]) => <LegendItem key={lbl} color={c} label={lbl} />)
           ) : (
             <>
               <LegendItem color={LANE_SOLVER_SEED} label="Solver + ADS-B" />

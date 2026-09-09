@@ -5,6 +5,7 @@ import TowerMap from "./components/TowerMap";
 import PhysicsSettings from "./components/PhysicsSettings";
 import { fetchTowers } from "./api";
 import { isMapDomain, usesRealOnlyFeed } from "./utils/domains";
+import { MapThemeProvider } from "./components/map/useMapTheme";
 
 // Leaflet is ~300 KB — only load it when the Live Radar tab is first opened
 const LiveAircraftMap = lazy(() => import("./components/LiveAircraftMap"));
@@ -58,7 +59,14 @@ export default function App() {
       </Suspense>
     );
   }
-  return <MainApp />;
+  // The theme owns the palette the whole surface is drawn with, so it wraps
+  // everything rather than sitting inside the map: the Physics tab needs it
+  // too, and the token block it stamps is on the surface element above both.
+  return (
+    <MapThemeProvider>
+      <MainApp />
+    </MapThemeProvider>
+  );
 }
 
 function MainApp() {

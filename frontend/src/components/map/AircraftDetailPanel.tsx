@@ -6,9 +6,10 @@ import { trailToCsv, downloadCsv } from "./trailExport";
 import { copyToClipboard, toast } from "./toast";
 import { M_PER_FT, KNOTS_PER_MS, MS_PER_KNOT } from "./units";
 import { solveUncertaintyRadiusM, solveUncertaintyRadius95M } from "./uncertainty";
-import { ANOMALY, GOOD, INK_MUTED, INK_SUBTLE, LANE_MN_ADSB, MLAT, WARN } from "./mapPalette";
+import { usePalette } from "./useMapTheme";
 
 export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError, detectingNodes = [], solveHistory = null }) {
+  const { ANOMALY, GOOD, INK_MUTED, INK_SUBTLE, LANE_MN_ADSB, WARN } = usePalette();
   if (!ac) return null;
 
   const err = computeError(ac.hex, ac);
@@ -402,6 +403,7 @@ function Field({ label, value }) {
 }
 
 function MlatVerificationSection({ solverHex }) {
+  const { MLAT } = usePalette();
   const [data, setData] = useState(null);
   const [accuracy, setAccuracy] = useState(null);
 
@@ -460,6 +462,7 @@ function MlatVerificationSection({ solverHex }) {
 }
 
 function MlatSolveHistorySection({ history }) {
+  const { ANOMALY, GOOD, INK_MUTED, INK_SUBTLE, MLAT, WARN } = usePalette();
   // Per-solve records behind this marker over the last ~30 min, newest first
   // (GET /api/test/mlat-history?hex=...).  gt_error_km is frozen at solve
   // time against the nearest GT trail point — independent of the display's

@@ -233,8 +233,8 @@
   );
 }
 
-/* The thumb's ring is a white gap against the class colour — the old dark
-   navy ring disappeared once the page went light. */
+/* The thumb sits in a gap the colour of the card behind it, so the ring reads
+   as a gap in either theme rather than as a second colour. */
 .ps-range::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 16px;
@@ -288,7 +288,7 @@
 .ps-warn {
   background: var(--error-light);
   border: 1px solid var(--error);
-  color: #b91c1c;
+  color: var(--error-ink);
   border-radius: var(--radius-sm);
   padding: 10px 14px;
   font-size: 13px;
@@ -312,7 +312,7 @@
 .ps-drift-stale {
   background: var(--warning-light);
   border: 1px solid var(--warning);
-  color: #b45309;
+  color: var(--warning-ink);
 }
 
 .ps-drift-resynced {
@@ -334,7 +334,7 @@
 }
 
 .ps-drift-btn:hover {
-  background: rgba(15, 23, 42, 0.06);
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
 }
 
 /* ── Settings grid ──────────────────────────────────────────── */
@@ -482,7 +482,7 @@
 .ps-scene-warning {
   background: var(--error-light);
   border: 1px solid var(--error);
-  color: #b91c1c;
+  color: var(--error-ink);
   border-radius: var(--radius-sm);
   padding: 10px 14px;
   font-size: 13px;
@@ -493,7 +493,7 @@
    controls above it. */
 .ps-scene-apply-btn {
   padding: 9px 22px;
-  background: #7c3aed;
+  background: var(--violet);
   color: #fff;
   border: none;
   border-radius: var(--radius-sm);
@@ -505,7 +505,7 @@
 }
 
 .ps-scene-apply-btn:hover:not(:disabled) {
-  background: #6d28d9;
+  background: var(--violet-hover);
 }
 
 .ps-scene-apply-btn:disabled {
@@ -520,7 +520,7 @@
 }
 
 .ps-scene-apply-armed:hover:not(:disabled) {
-  background: #dc2626;
+  background: var(--error);
 }
 
 .ps-scene-pending-chip {
@@ -572,11 +572,13 @@
 /* These five stops are _DOPPLER_STOPS from map/constants.ts, in order. The
    guide has to show the ramp the arcs are actually drawn with, and the old
    grey centre stop was from before that centre became cyan. */
+/* The gradient itself is set inline from the palette's DOPPLER_STOPS: the
+   guide has to show the ramp the arcs are drawn with, and that ramp differs
+   between the themes. */
 .ps-doppler-bar {
   flex: 1;
   height: 8px;
   border-radius: 4px;
-  background: linear-gradient(to right, #1e3a8a, #2563eb, #475569, #dc2626, #7f1d1d);
 }
 
 .ps-doppler-hint {

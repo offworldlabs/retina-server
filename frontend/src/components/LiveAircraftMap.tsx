@@ -73,23 +73,7 @@ import { arcNearestPoint } from "./map/arcErrors";
 import { detectingNodeIdsFor } from "./map/detections";
 import { ensureDebugPanes, DEBUG_PASSIVE_PANE, GT_CLICK_PANE } from "./map/panes";
 import { ARC_TOTAL_LIFE_MS } from "./map/constants";
-import {
-  ANOMALY,
-  COVERAGE,
-  DRONE,
-  GOOD,
-  ILLUMINATOR,
-  INK,
-  INK_SUBTLE,
-  LANE_MN_ADSB,
-  LANE_MN_DARK,
-  MLAT,
-  NODE,
-  SELECTED,
-  TRUTH,
-  TRUTH_DARK,
-  WARN,
-} from "./map/mapPalette";
+import { useMapTheme, usePalette } from "./map/useMapTheme";
 import { reconcileAdsbPairs, snapTrack, sweepStaleRadar } from "./map/trackStores";
 import StatsOverlay from "./map/StatsOverlay";
 import ShortcutHelp from "./map/ShortcutHelp";
@@ -111,6 +95,7 @@ L.Icon.Default.mergeOptions({
 const _gtCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: GT_CLICK_PANE }) : null;
 
 const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, onSelect, selectedHex }) {
+  const { ANOMALY, DRONE, INK, TRUTH, TRUTH_DARK } = usePalette();
   const map = useMap();
   const markerMapRef = useRef(new Map()); // hex → L.circleMarker — incremental diff
   const onSelectRef  = useRef(onSelect);
@@ -171,7 +156,7 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
         markerMap.delete(hex);
       }
     }
-  }, [aircraft, map, selectedHex]);
+  }, [aircraft, map, selectedHex, ANOMALY, DRONE, INK, TRUTH, TRUTH_DARK]);
 
   // Full cleanup on unmount
   useEffect(() => {
@@ -196,6 +181,7 @@ const _mgCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane:
 // mounts once instead of keying on the 2 Hz radarAircraft array identity —
 // which tore down and recreated every dot and line twice a second.
 const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAircraftRef, groundTruthRef, smoothRef, nodesByIdRef }) {
+  const { NODE, TRUTH } = usePalette();
   const map = useMap();
   const markersRef = useRef(new Map());  // gtHex → { dot: L.circleMarker, line: L.polyline | null (arc-only track with no arc this frame) }
 
@@ -328,7 +314,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
       }
       markers.clear();
     };
-  }, [map, radarAircraftRef, groundTruthRef, smoothRef]);
+  }, [map, radarAircraftRef, groundTruthRef, smoothRef, NODE, TRUTH]);
 
   return null;
 });
@@ -351,6 +337,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
 const _mlatCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: DEBUG_PASSIVE_PANE }) : null;
 
 const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthRef, smoothRef }) {
+  const { MLAT } = usePalette();
   const map = useMap();
   const markersRef = useRef(new Map());
   // Tracks fetched from the verification API. Mutable so the render tick
@@ -499,7 +486,7 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
       }
       markers.clear();
     };
-  }, [map, groundTruthRef, smoothRef]);
+  }, [map, groundTruthRef, smoothRef, MLAT]);
 
   return null;
 });
@@ -510,6 +497,7 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
       the detail panel's solve-history table is the lookup surface.  Bounded
       (≤60 dots for one selected track), so React CircleMarkers are fine. ── */
 const MlatSolveHistoryLayer = memo(function MlatSolveHistoryLayer({ solves }) {
+  const { ANOMALY, GOOD, INK_SUBTLE, WARN } = usePalette();
   const errColor = (e) =>
     e == null ? INK_SUBTLE : e < 3 ? GOOD : e < 8 ? WARN : ANOMALY;
   return (
@@ -600,6 +588,7 @@ const _trailsCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, p
 // visibleAircraft array identity destroyed and rebuilt every polyline twice a
 // second, and the 500 ms interval below essentially never fired twice.
 const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftRef, frontendTrailsRef, selectedHex }) {
+  const { WARN } = usePalette();
   const map = useMap();
   const linesRef = useRef(new Map()); // hex → L.polyline
 
@@ -647,7 +636,7 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftR
       for (const line of lines.values()) line.remove();
       lines.clear();
     };
-  }, [map, visibleAircraftRef, frontendTrailsRef, selectedHex]);
+  }, [map, visibleAircraftRef, frontendTrailsRef, selectedHex, WARN]);
 
   return null;
 });
@@ -836,6 +825,7 @@ const BasemapLayer = memo(function BasemapLayer({ url }) {
       tracking, and a 5 px disc was getting lost under nearby aircraft icons —
       so it gets the larger glowing divIcon (a handful of DOM nodes is fine). ── */
 const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelectNode }) {
+  const { NODE } = usePalette();
   return visibleNodes.map((n) => {
     const isSynth = n.node_id?.startsWith("synth-");
     // Every published rx coordinate is displaced by the backend; the disc is
@@ -897,7 +887,7 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
         {disc}
         <Marker
           position={[n.rx_lat, n.rx_lon]}
-          icon={nodeIcon}
+          icon={nodeIcon()}
           zIndexOffset={1000}
           eventHandlers={{ click: () => onSelectNode(n.node_id) }}
         >
@@ -920,6 +910,7 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
 
 /* ── CoverageLayer: memoized — only re-renders when nodes or showCoverage changes ── */
 const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }) {
+  const { COVERAGE, NODE } = usePalette();
   if (!showCoverage) return null;
   return visibleNodes.map((n) => {
     if (n.empirical_polygon && n.empirical_polygon.length >= 3) {
@@ -977,6 +968,7 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
       list of nodes that bounce off it. Only the illuminators our own nodes use,
       not every broadcast tower in range (that would be unreadable clutter). ── */
 const IlluminatorsLayer = memo(function IlluminatorsLayer({ visibleNodes, showIlluminators }) {
+  const { ILLUMINATOR } = usePalette();
   if (!showIlluminators) return null;
   const byTx = new Map();
   for (const n of visibleNodes) {
@@ -1038,6 +1030,7 @@ const FollowController = memo(function FollowController({ followSelected, select
       it needs `useMap()` to access the live smoothed position via
       `smoothRef`, which other map children already pattern. ── */
 const HashSync = memo(function HashSync({ onMove, showRangeRings, selectedHex, smoothRef }) {
+  const { LANE_MN_ADSB } = usePalette();
   const map = useMapEvents({
     moveend: () => {
       const c = map.getCenter();
@@ -1075,6 +1068,8 @@ const HashSync = memo(function HashSync({ onMove, showRangeRings, selectedHex, s
 /* ── Main component ───────────────────────────────────────────── */
 
 export default function LiveAircraftMap() {
+  const { ANOMALY, COVERAGE, LANE_MN_ADSB, LANE_MN_DARK, SELECTED, WARN } = usePalette();
+  const { theme, setTheme } = useMapTheme();
   /* ── Node-owner view ─────────────────────────────────────────── */
   // Resolved before the feed so `ownerOnly` can pick the server-filtered
   // /ws/aircraft/owner endpoint. Only takes effect once the user is logged in.
@@ -1192,10 +1187,21 @@ export default function LiveAircraftMap() {
   // distance column in the list panel.
   const [userLoc, setUserLoc] = useState(null); // { lat, lon } | null
   // Tile theme — voyager (default dark-ish), positron (light), osm (classic).
-  // Positron by default: the chrome and the track colours are both picked for
-  // a pale basemap, and voyager under them reads as two maps at once. The
-  // other two stay in the cycle for anyone who wants them.
-  const [tileTheme, setTileTheme] = usePersistedState("tf.tile.theme", "positron");
+  // Each theme has a basemap its colours were picked against: Positron for
+  // light, Voyager tinted down for dark. Voyager under the light palette reads
+  // as two maps at once, and Positron under the dark one is a white sheet
+  // behind navy panels.
+  const [tileTheme, setTileTheme] = usePersistedState("tf.tile.theme", "voyager");
+
+  // Switching theme moves the basemap with it, but only on an actual switch —
+  // seeding from `theme` on every mount would silently undo a basemap the user
+  // picked, every reload.
+  const prevThemeRef = useRef(theme);
+  useEffect(() => {
+    if (prevThemeRef.current === theme) return;
+    prevThemeRef.current = theme;
+    setTileTheme(theme === "dark" ? "voyager" : "positron");
+  }, [theme, setTileTheme]);
 
   const animationFrameRef = useRef(null);
   const fixesRef = useRef({});   // hex → last server fix
@@ -1889,6 +1895,8 @@ export default function LiveAircraftMap() {
         onFit={() => setFocusNonce((n) => n + 1)}
         filters={filters}
         onFiltersChange={setFilters}
+        theme={theme}
+        onToggleTheme={() => setTheme(theme === "dark" ? "light" : "dark")}
       />
 
       <div className="live-map-body">

@@ -39,6 +39,8 @@ export default function Toolbar({
   hasUserLoc,
   filters,
   onFiltersChange,
+  theme,
+  onToggleTheme,
   onToggleCoverage,
   onToggleLabels,
   onToggleTrails,
@@ -152,6 +154,13 @@ export default function Toolbar({
               >
                 Emergency squawk alert
                 <span className="menu-hint">{soundOn ? "on" : "off"}</span>
+              </button>
+              <button
+                role="menuitem"
+                className={theme === "light" ? "active" : ""}
+                onClick={run(onToggleTheme)}
+              >
+                Light mode <span className="menu-hint">{theme === "light" ? "on" : "off"}</span>
               </button>
               <button role="menuitem" onClick={run(onCycleTheme)}>
                 Basemap <span className="menu-hint">{themeLabel}</span>

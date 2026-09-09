@@ -1,7 +1,7 @@
 import { useMemo } from "react";
-import { ADSB_SINGLE_COLOR, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
+import { POSITION_SOURCE_ADSB_SINGLE } from "./constants";
 import { drIconState } from "./icons";
-import { ANOMALY, DRONE, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED } from "./mapPalette";
+import { usePalette } from "./useMapTheme";
 import { M_PER_FT } from "./units";
 
 interface StatsOverlayProps {
@@ -22,6 +22,8 @@ interface StatsOverlayProps {
  * it never hides a target the user is trying to click.
  */
 export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, onToggle }: StatsOverlayProps) {
+  const { ANOMALY, DRONE, LANE_ADSB_SINGLE, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED } =
+    usePalette();
   const stats = useMemo(() => {
     const now = Date.now();
     const total = aircraft.length;
@@ -132,7 +134,7 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
           </Row>
 
           <Row label="ADS‑B·1N">
-            <strong style={{ color: ADSB_SINGLE_COLOR }}>{stats.adsbSingle}</strong>
+            <strong style={{ color: LANE_ADSB_SINGLE }}>{stats.adsbSingle}</strong>
           </Row>
 
           <Row label="Arc·1N">{stats.arcOnly}</Row>

@@ -1,3 +1,5 @@
+import { activePalette } from "./mapPalette";
+
 export const API_BASE = "/api";
 export const STALE_AIRCRAFT_MS = 8000;
 export const MAX_HISTORY = 150;
@@ -49,9 +51,9 @@ export const POSITION_SOURCE_ADSB_SINGLE = "adsb_single_node";
 // fuchsia is the odd one out because a dark solve does not.  Green
 // LANE_SOLVER_SEED stays on the ADS-B-seeded solver source, and cyan doubles as
 // the fallback colour for the rare solver_single_node relic.  The values live
-// in mapPalette.ts, which is where every map colour is chosen and where the
-// separation between them is justified.
-export { LANE_ADSB_SINGLE as ADSB_SINGLE_COLOR } from "./mapPalette";
+// in mapPalette.ts, which is where every map colour is chosen, where the
+// separation between them is justified, and where each theme states its own
+// values — which is why there is no colour constant here to import.
 
 // The claimed arc is drawn at a FIXED SCREEN LENGTH — a multiple of the plane
 // icon it sits under — rather than a fixed ground length.  The locus spans
@@ -146,26 +148,20 @@ export const DR_ICON_MAX_AGE_DARK_S = 12;
 export const DR_UNKNOWN_GS_KT = 250;
 
 // Doppler colour gradient — blue (approaching) through neutral to red
-// (receding).  t ∈ [-1, +1] maps linearly across the 5 stops.
-//
-// Every stop clears 3:1 against Positron's land fill, which the previous ramp
-// did not: its light-blue, cyan and light-red stops measured 2.27, 1.61 and
-// 2.47, so the arcs nearest zero Doppler — the common case — were the ones you
-// could not see.  The centre is neutral slate rather than a hue, so "no radial
-// motion" reads as the absence of a direction rather than a third colour.
-const _DOPPLER_STOPS = [
-  [0x1e, 0x3a, 0x8a], // -1.0  blue-900   approaching fast
-  [0x25, 0x63, 0xeb], // -0.5  blue-600
-  [0x47, 0x55, 0x69], //  0.0  slate-600  no radial motion
-  [0xdc, 0x26, 0x26], // +0.5  red-600
-  [0x7f, 0x1d, 0x1d], // +1.0  red-900    receding fast
-];
+// (receding).  t ∈ [-1, +1] maps linearly across the 5 stops, which live in
+// mapPalette.ts because each theme needs its own: on the light surface the
+// previous ramp's light-blue, cyan and light-red stops measured 2.27, 1.61 and
+// 2.47 against Positron, so the arcs nearest zero Doppler — the common case —
+// were the ones you could least see.  Both ramps now keep a neutral centre, so
+// "no radial motion" reads as the absence of a direction rather than a third
+// colour.
 export function dopplerColor(doppler_hz, maxDop = 200) {
+  const stops = activePalette().DOPPLER_STOPS;
   const t = Math.max(-1, Math.min(1, doppler_hz / maxDop)); // [-1, +1]
-  const pos = (t + 1) / 2 * (_DOPPLER_STOPS.length - 1);   // [0, 4]
+  const pos = ((t + 1) / 2) * (stops.length - 1);           // [0, 4]
   const lo = Math.floor(pos);
-  const hi = Math.min(lo + 1, _DOPPLER_STOPS.length - 1);
+  const hi = Math.min(lo + 1, stops.length - 1);
   const f = pos - lo;
-  const [r, g, b] = _DOPPLER_STOPS[lo].map((c, i) => Math.round(c + f * (_DOPPLER_STOPS[hi][i] - c)));
+  const [r, g, b] = stops[lo].map((c, i) => Math.round(c + f * (stops[hi][i] - c)));
   return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
 }

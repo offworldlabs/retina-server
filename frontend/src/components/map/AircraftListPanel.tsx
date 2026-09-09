@@ -2,7 +2,7 @@ import { useEffect, useRef, useMemo, useState, useCallback } from "react";
 import { PLANE_PATH, getAircraftColor } from "./icons";
 import { POSITION_SOURCE_ARC_ONLY, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
 import { classifyHex } from "./hexInfo";
-import { INK_SUBTLE, NODE, TRUTH } from "./mapPalette";
+import { usePalette } from "./useMapTheme";
 import { distanceKm } from "./distance";
 import { M_PER_FT } from "./units";
 
@@ -27,6 +27,7 @@ export default function AircraftListPanel({
   onTogglePin,
   userLoc,
 }) {
+  const { INK_SUBTLE, NODE, TRUTH } = usePalette();
   const containerRef     = useRef(null);
   const [scrollTop, setScrollTop]         = useState(0);
   const [containerHeight, setContainerHeight] = useState(600);
