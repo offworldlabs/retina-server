@@ -48,8 +48,8 @@ def _make_config(node_id: str = "test-node-1", is_synthetic: bool = False, confi
             "config": config
             or {
                 "node_id": node_id,
-                "rx_lat": 33.94,
-                "rx_lon": -84.65,
+                "rx_lat": 33.9,
+                "rx_lon": -84.6,
                 "rx_alt_ft": 950,
                 "tx_lat": 33.76,
                 "tx_lon": -84.33,
@@ -127,7 +127,7 @@ class TestIsSyntheticNode:
         assert is_synthetic_node("realnode-mommpy5s") is True
 
     def test_non_synthetic(self):
-        assert is_synthetic_node("net13") is False
+        assert is_synthetic_node("default-node") is False
 
     def test_a_hardware_node_id(self):
         assert is_synthetic_node("example-node-a") is False
@@ -173,7 +173,7 @@ class TestHandshake:
                 _make_hello("test-node-1"),
                 _make_config(
                     "test-node-1",
-                    config={"node_id": "test-node-1", "lat": "33.94", "lon": "-84.65", "tx_lat": 0.0, "tx_lon": 0.0},
+                    config={"node_id": "test-node-1", "lat": "33.9", "lon": "-84.6", "tx_lat": 0.0, "tx_lon": 0.0},
                 ),
                 b"",
             ]
@@ -183,7 +183,7 @@ class TestHandshake:
         asyncio.run(handle_tcp_client(reader, writer))
 
         config = state.connected_nodes["test-node-1"]["config"]
-        assert (config["rx_lat"], config["rx_lon"]) == (33.94, -84.65)
+        assert (config["rx_lat"], config["rx_lon"]) == (33.9, -84.6)
         assert "lat" not in config and "lon" not in config
         assert config["tx_lat"] is None and config["tx_lon"] is None
         assert config["rx_alt_ft"] is None and config["tx_alt_ft"] is None
@@ -279,8 +279,8 @@ class TestConfigReplacementEvictsCachedPipeline:
                 "is_synthetic": False,
                 "config": {
                     "node_id": node_id,
-                    "rx_lat": 33.94,
-                    "rx_lon": -84.65,
+                    "rx_lat": 33.9,
+                    "rx_lon": -84.6,
                     "rx_alt_ft": 950,
                     "tx_lat": 33.76,
                     "tx_lon": -84.33,

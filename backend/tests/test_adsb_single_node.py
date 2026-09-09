@@ -32,21 +32,21 @@ from services.geo import C_KM_US  # noqa: E402
 from services.tasks.aircraft_flush import filter_payload_to_nodes  # noqa: E402
 from tests.probe_helpers import run_probe  # noqa: E402
 
-# Real Atlanta-area bistatic geometry, same as test_arc_builder's: the arc
-# assertions below are worthless against a node the builder would decline for
-# reasons other than the one under test.
+# Invented but self-consistent bistatic geometry: the arc assertions below are
+# worthless against a node the builder would decline for reasons other than the
+# one under test.
 _NODE_CFG = {
     "node_id": "node-a",
-    "rx_lat": 33.939182,
-    "rx_lon": -84.651910,
-    "tx_lat": 33.756670,
-    "tx_lon": -84.331844,
+    "rx_lat": 34.0,
+    "rx_lon": -84.0,
+    "tx_lat": 33.82,
+    "tx_lon": -83.68,
     "beam_width_deg": 90,
     "max_range_km": 100,
 }
 
 _HEX = "abc123"
-_FIX_LAT, _FIX_LON = 33.85, -84.5
+_FIX_LAT, _FIX_LON = 33.91, -83.85
 # Comfortably above ARC_MIN_DIFFERENTIAL_KM once multiplied by C_KM_US.
 _DELAY_US = 120.0
 

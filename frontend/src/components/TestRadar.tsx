@@ -97,7 +97,7 @@ export default function TestRadar() {
   // Autopilot state: a single simulated aircraft flying straight at a fixed
   // ground speed and heading.  Lives in world coords (lat/lon) so motion
   // looks identical to a production track — radar polar coords are derived
-  // for the arc builder.  Initial state: 25 km east of Marietta, heading
+  // for the arc builder.  Initial state: 25 km east of the test site, heading
   // north-east at 480 kt, cruise altitude.
   const [posLat, setPosLat] = useState(TEST_SITE.lat);
   const [posLon, setPosLon] = useState(TEST_SITE.lon + 0.27); // ~25 km east at 34°N

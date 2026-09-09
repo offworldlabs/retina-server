@@ -192,7 +192,7 @@ class TestLeaderboard:
         asyncio.set_event_loop(asyncio.new_event_loop())
         node_refs._reset_for_tests()
 
-        state.connected_nodes[nid] = {"status": "active", "config": {"name": "Fairforest-1"}, "is_synthetic": False}
+        state.connected_nodes[nid] = {"status": "active", "config": {"name": "Example Site 1"}, "is_synthetic": False}
         state.latest_missed_detections[nid] = {"in_range": 10, "detected": 7, "missed": 3, "miss_rate": 0.3}
         orig = state.latest_analytics_bytes
         state.latest_analytics_bytes = orjson.dumps(
@@ -208,7 +208,7 @@ class TestLeaderboard:
             state.latest_missed_detections.pop(nid, None)
 
         (entry,) = [e for e in entries if e["node_id"] == nid]
-        assert entry["name"] == "Fairforest-1"
+        assert entry["name"] == "Example Site 1"
         assert entry["online"] is True
         assert entry["detections"] == 42
         assert (entry["missed"], entry["miss_rate"]) == (3, 0.3)

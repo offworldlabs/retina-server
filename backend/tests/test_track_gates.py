@@ -23,10 +23,10 @@ from services import track_gates  # noqa: E402
 
 _NODE_CFG = {
     "node_id": "cal_node",
-    "rx_lat": 33.939182,
-    "rx_lon": -84.651910,
-    "tx_lat": 33.756670,
-    "tx_lon": -84.331844,
+    "rx_lat": 34.0,
+    "rx_lon": -84.0,
+    "tx_lat": 33.82,
+    "tx_lon": -83.68,
     "beam_width_deg": 90,
     "max_range_km": 100,
 }
@@ -85,8 +85,8 @@ def _make_track(*, n_detections, last_detection_age_s, now, last_detection_adsb_
 
     track = GeolocatedTrack(
         track_id=f"track-{HEX}",
-        lat=33.90,
-        lon=-84.60,
+        lat=33.96,
+        lon=-83.95,
         alt_m=3000,
         vel_east=0.0,
         vel_north=0.0,
@@ -105,7 +105,7 @@ def _make_track(*, n_detections, last_detection_age_s, now, last_detection_adsb_
     return track
 
 
-def _adsb_fix(now, *, lat=33.90, lon=-84.60, age_s=1.0):
+def _adsb_fix(now, *, lat=33.96, lon=-83.95, age_s=1.0):
     state.adsb_aircraft[HEX] = {
         "lat": lat,
         "lon": lon,

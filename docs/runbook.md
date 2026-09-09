@@ -694,8 +694,8 @@ summarized per node in `/api/radar/analytics` (`empirical_coverage.fov`:
 `n_pos`, `bins_observed/prior/closed`, `max_limit_km`). Sanity rule for
 **synthetic** nodes: open bins must fit the 42° wedge — `bins_observed`
 persistently above ~12 means a calibration leak, not real coverage (the
-simulator only generates detections in-wedge). Real nodes (radar3/radar3a)
-legitimately learn near-omni.
+simulator only generates detections in-wedge). Real nodes legitimately learn
+near-omni.
 
 To force a fleet-wide relearn (e.g. after a calibration-semantics change):
 bump `CALIBRATION_SCHEMA` in

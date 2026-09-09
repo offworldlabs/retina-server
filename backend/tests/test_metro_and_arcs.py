@@ -57,10 +57,10 @@ class TestArcBuilderWithDelay:
         from services.frame_processor import _build_single_node_arc
 
         node_cfg = {
-            "rx_lat": 33.939182,
-            "rx_lon": -84.651910,
-            "tx_lat": 33.756670,
-            "tx_lon": -84.331844,
+            "rx_lat": 33.9,
+            "rx_lon": -84.6,
+            "tx_lat": 33.7,
+            "tx_lon": -84.3,
             "beam_width_deg": 90,
             "max_range_km": 100,
         }
@@ -75,10 +75,10 @@ class TestArcBuilderWithDelay:
             latest_delay_us = 50.0
 
         node_cfg = {
-            "rx_lat": 33.939182,
-            "rx_lon": -84.651910,
-            "tx_lat": 33.756670,
-            "tx_lon": -84.331844,
+            "rx_lat": 33.9,
+            "rx_lon": -84.6,
+            "tx_lat": 33.7,
+            "tx_lon": -84.3,
             "beam_width_deg": 90,
             "max_range_km": 100,
         }
