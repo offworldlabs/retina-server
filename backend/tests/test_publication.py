@@ -23,7 +23,7 @@ from core import state  # noqa: E402
 from core.nodes import Node  # noqa: E402
 from core.users import async_session_maker  # noqa: E402
 from main import app  # noqa: E402
-from services import publication  # noqa: E402
+from services import node_refs, publication  # noqa: E402
 from services.publication import (  # noqa: E402
     is_private,
     private_node_ids,
@@ -35,6 +35,16 @@ _PRIV = "privnode01"
 _PUB = "pubnode01"
 
 
+def _seed_ref(node_id: str) -> str:
+    """A well-formed NodeRef for a seeded row.
+
+    Must satisfy routes/node_schemas.NodeRef, ``^(nde|sim)[0-9a-z]{12}$``: a ref
+    the schema would reject proves nothing about a boundary that publishes it.
+    """
+    body = "".join(c if c.isalnum() else "0" for c in node_id.lower())
+    return "nde" + body[-12:].rjust(12, "0")
+
+
 @pytest.fixture()
 def seed_nodes():
     """seed_nodes(node_id="private"|"public", …) — write rows and drop the cache."""
@@ -43,7 +53,7 @@ def seed_nodes():
         async def _go():
             async with async_session_maker() as session:
                 for nid, choice in choices.items():
-                    session.add(Node(node_id=nid, node_ref=f"nde-{nid}"[:15], publication=choice))
+                    session.add(Node(node_id=nid, node_ref=_seed_ref(nid), publication=choice))
                 await session.commit()
 
         asyncio.run(_go())
@@ -51,6 +61,9 @@ def seed_nodes():
         # restores one for the same reason.
         asyncio.set_event_loop(asyncio.new_event_loop())
         publication._reset_for_tests()
+        # Both caches sit in front of the same rows and both have a TTL, so a
+        # previous test's map would otherwise answer for these ones.
+        node_refs._reset_for_tests()
 
     return _seed
 
@@ -305,9 +318,133 @@ class TestRadarNodesPayload:
             state.connected_nodes.pop(_PUB, None)
 
         body = orjson.loads(state.latest_nodes_bytes)
-        assert _PRIV not in body["nodes"]
-        assert _PUB in body["nodes"]
+        assert _seed_ref(_PRIV) not in body["nodes"]
+        assert _seed_ref(_PUB) in body["nodes"]
         assert body["total"] == 1
+
+    def test_the_listing_is_keyed_on_refs_and_names_fall_back_to_them(self, seed_nodes):
+        from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
+
+        seed_nodes(**{"ret1a2b3c4d": "public"})
+        cfg = {"rx_lat": 34.0, "rx_lon": -82.0, "rx_alt_ft": 100.0}
+        state.connected_nodes["ret1a2b3c4d"] = {
+            "status": "active",
+            "is_synthetic": False,
+            "config": {**cfg, "node_id": "ret1a2b3c4d"},
+        }
+        try:
+            _refresh_analytics_and_nodes()
+        finally:
+            state.connected_nodes.pop("ret1a2b3c4d", None)
+
+        body = orjson.loads(state.latest_nodes_bytes)
+        assert "ret1a2b3c4d" not in body["nodes"]
+        (ref,) = body["nodes"].keys()
+        assert ref.startswith("nde")
+        assert body["nodes"][ref]["name"] == ref
+
+    def test_the_fuzzed_position_does_not_move_when_the_key_changes(self, seed_nodes):
+        """The offset is HMAC-keyed on node_id; re-keying it would move the
+        whole fleet, so the published position must be unchanged."""
+        from services.public_location import public_latlon
+        from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
+
+        seed_nodes(**{"ret1a2b3c4d": "public"})
+        cfg = {"rx_lat": 34.0, "rx_lon": -82.0, "rx_alt_ft": 100.0}
+        state.connected_nodes["ret1a2b3c4d"] = {
+            "status": "active",
+            "is_synthetic": False,
+            "config": {**cfg, "node_id": "ret1a2b3c4d"},
+        }
+        try:
+            _refresh_analytics_and_nodes()
+        finally:
+            state.connected_nodes.pop("ret1a2b3c4d", None)
+
+        expected_lat, expected_lon = public_latlon(34.0, -82.0, "ret1a2b3c4d")
+        (block,) = [n["location"] for n in orjson.loads(state.latest_nodes_bytes)["nodes"].values()]
+        assert block["rx_lat"] == pytest.approx(expected_lat)
+        assert block["rx_lon"] == pytest.approx(expected_lon)
+
+    def test_a_node_with_no_registry_row_is_dropped(self, seed_nodes):
+        """No ref, no entry: falling back to the id would publish the identifier
+        this boundary exists to withhold."""
+        from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
+
+        seed_nodes(**{"ret1a2b3c4d": "public"})
+        cfg = {"rx_lat": 34.0, "rx_lon": -82.0, "rx_alt_ft": 100.0}
+        for nid in ("ret1a2b3c4d", "ret9f8e7d6c"):
+            state.connected_nodes[nid] = {
+                "status": "active",
+                "is_synthetic": False,
+                "config": {**cfg, "node_id": nid},
+            }
+        try:
+            _refresh_analytics_and_nodes()
+        finally:
+            for nid in ("ret1a2b3c4d", "ret9f8e7d6c"):
+                state.connected_nodes.pop(nid, None)
+
+        body = orjson.loads(state.latest_nodes_bytes)
+        assert list(body["nodes"]) == [_seed_ref("ret1a2b3c4d")]
+        # The counts come from the published entries, so the dropped node is
+        # not reinstated as an anonymous tally.
+        assert body["total"] == 1
+        assert body["connected"] == 1
+
+    def test_the_real_only_analytics_variant_is_keyed_on_refs(self, seed_nodes):
+        """The intersection is against connected_nodes, which is keyed on
+        node_id, so re-keying before it would empty the variant."""
+        from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
+
+        seed_nodes(**{"ret1a2b3c4d": "public"})
+        cfg = {"rx_lat": 34.0, "rx_lon": -82.0, "rx_alt_ft": 100.0}
+        state.connected_nodes["ret1a2b3c4d"] = {
+            "status": "active",
+            "is_synthetic": False,
+            "config": {**cfg, "node_id": "ret1a2b3c4d"},
+        }
+        state.node_analytics.register_node("ret1a2b3c4d", {"node_id": "ret1a2b3c4d", **cfg})
+        state.node_analytics._summaries_cache = None
+        try:
+            _refresh_analytics_and_nodes()
+        finally:
+            state.node_analytics.retire_node("ret1a2b3c4d")
+            state.node_analytics._summaries_cache = None
+            state.connected_nodes.pop("ret1a2b3c4d", None)
+
+        real = orjson.loads(state.latest_analytics_real_bytes)["nodes"]
+        assert list(real) == [_seed_ref("ret1a2b3c4d")]
+
+
+class TestOverlapsPayload:
+    """/api/radar/overlaps names nodes and nothing else, so the names are refs."""
+
+    def test_pairs_and_the_registry_carry_refs_and_drop_the_unresolvable(self, seed_nodes, monkeypatch):
+        from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
+
+        seed_nodes(**{"ret1a2b3c4d": "public", "ret9f8e7d6c": "public"})
+
+        class _Assoc:
+            node_geometries = {"ret1a2b3c4d": object(), "ret9f8e7d6c": object(), "ret0badcafe": object()}
+
+            def get_overlap_summary(self):
+                return [
+                    {"node_a": "ret1a2b3c4d", "node_b": "ret9f8e7d6c", "has_overlap": True},
+                    # One side has no registry row: half a named pair still
+                    # describes a baseline, so the whole zone goes.
+                    {"node_a": "ret1a2b3c4d", "node_b": "ret0badcafe", "has_overlap": True},
+                    {"node_a": "ret1a2b3c4d", "node_b": "ret9f8e7d6c", "has_overlap": False},
+                ]
+
+        monkeypatch.setattr(state, "node_associator", _Assoc())
+        _refresh_analytics_and_nodes()
+
+        body = orjson.loads(state.latest_overlaps_bytes)
+        assert body["registered_nodes"] == [_seed_ref("ret1a2b3c4d"), _seed_ref("ret9f8e7d6c")]
+        assert body["overlaps"] == [
+            {"node_a": _seed_ref("ret1a2b3c4d"), "node_b": _seed_ref("ret9f8e7d6c"), "has_overlap": True}
+        ]
 
 
 # ── The archive ──────────────────────────────────────────────────────────────
