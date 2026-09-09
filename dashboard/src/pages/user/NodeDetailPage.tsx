@@ -50,7 +50,7 @@ export default function NodeDetailPage() {
       <div className="page-header">
         <h1 style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <button className="btn btn-outline btn-sm" onClick={() => navigate(-1)}>← Back</button>
-          {data.node_id || nodeId}
+          {data.node_ref || nodeId}
         </h1>
         <p>Detailed metrics and trust analysis</p>
       </div>

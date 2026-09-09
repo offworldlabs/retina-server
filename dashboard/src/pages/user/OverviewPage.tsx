@@ -117,12 +117,20 @@ export default function OverviewPage() {
               </thead>
               <tbody>
                 {needsAttention.map((node) => {
-                  // The detail page addresses the node on public routes, so the
-                  // ref is the link target wherever the node has one.
-                  const id = node.node_ref || node.node_id || node.id;
+                  // The detail page addresses the node on public routes, which
+                  // take the ref.  A node with no ref is on no public surface,
+                  // so its row is still listed (this is the only place its
+                  // owner is told) but it is not a link to a 404.
+                  const ref = node.node_ref;
                   return (
-                    <tr key={id} style={{ cursor: "pointer" }} onClick={() => navigate(`/nodes/${id}`)}>
-                      <td style={{ color: "var(--accent)" }}>{node.name || id}</td>
+                    <tr
+                      key={ref || node.node_id || node.id}
+                      style={ref ? { cursor: "pointer" } : undefined}
+                      onClick={ref ? () => navigate(`/nodes/${ref}`) : undefined}
+                    >
+                      <td style={{ color: ref ? "var(--accent)" : undefined }}>
+                        {node.name || ref || node.node_id || node.id}
+                      </td>
                       <td><PositionStatusBadge status={node.position_status} /></td>
                     </tr>
                   );

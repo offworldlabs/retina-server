@@ -434,8 +434,10 @@ export function useAuth() {
         setUser(me);
         const myNodes = await fetchMyNodes();
         // /api/auth/me/nodes carries both identifiers; take the ref, which is
-        // the key space the analytics node map and the aircraft feed use.
-        if (!cancelled) setOwnedNodeRefs((myNodes || []).map((n) => n.node_ref));
+        // the key space the analytics node map and the aircraft feed use. It
+        // is null for an owned node with no registry row, and a null in this
+        // list counts as a node the owner has on the map.
+        if (!cancelled) setOwnedNodeRefs((myNodes || []).map((n) => n.node_ref).filter(Boolean));
       }
       if (!cancelled) setLoading(false);
     })();
