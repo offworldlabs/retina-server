@@ -158,11 +158,12 @@ test.describe("Live Map — aircraft list panel", { tag: "@live" }, () => {
   });
 });
 
-// What a node may be called on a public surface: a published node_ref, or a
-// synthetic fleet id, which is published unchanged because it names nothing
-// private. `ret` + 8 hex is the private node id and must never appear.
-const PUBLISHED_IDENTITY = /^(nde[0-9a-z]{12}|(?:synth|e2e|test|realnode)-\S+)$/;
-const PRIVATE_NODE_ID = /^ret[0-9a-f]{8}$/;
+// What a node may be called on THIS surface: a synthetic fleet id, published
+// unchanged because it names nothing private. A real node reaches the browser
+// as a published node_ref (nde + 12), so that is what a leak looks like here;
+// the private `ret` + 8 hex id no longer reaches the wire at all, and asserting
+// against it would assert nothing.
+const SYNTHETIC_IDENTITY = /^(?:synth|e2e|test|realnode)-\S+$/;
 
 test.describe("Live Map — node markers", { tag: "@live" }, () => {
   test("every node marker is a synthetic one", async ({ page }) => {
@@ -177,7 +178,7 @@ test.describe("Live Map — node markers", { tag: "@live" }, () => {
     await expect(page.locator(".node-marker")).toHaveCount(0);
   });
 
-  test("node popup names a published identity, never the private node id", async ({ page }) => {
+  test("node popup names a synthetic fleet id, not a real node's ref", async ({ page }) => {
     await page.goto(BASE);
     await waitForLive(page);
 
@@ -190,8 +191,7 @@ test.describe("Live Map — node markers", { tag: "@live" }, () => {
     const identity = page.locator(".leaflet-popup-content strong").first();
     await expect(identity).toBeVisible({ timeout: 5_000 });
     const name = ((await identity.textContent()) ?? "").trim();
-    expect(name, `node popup identity: ${name}`).toMatch(PUBLISHED_IDENTITY);
-    expect(name, `node popup identity: ${name}`).not.toMatch(PRIVATE_NODE_ID);
+    expect(name, `node popup identity: ${name}`).toMatch(SYNTHETIC_IDENTITY);
   });
 });
 

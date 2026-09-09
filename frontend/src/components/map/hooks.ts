@@ -7,24 +7,12 @@ import { validLatLon } from "./geo";
 import type { RadarNode } from "../../types";
 import { hidesRealNodes, usesRealOnlyFeed } from "../../utils/domains";
 import { isSyntheticNode } from "../../utils/nodeKind";
+import {
+  fromSyntheticNode,
+  scrubToSyntheticNodes,
+  syntheticDetectingNodes,
+} from "./syntheticOnly";
 import { fetchMe, fetchMyNodes } from "../../api";
-
-// A feed entry carries no is_synthetic flag of its own, so the ref is all there
-// is to go on: isSyntheticNode falls back to the prefix, which is what still
-// separates a synthetic id from a published nde… ref.
-const isSyntheticRef = (ref: string) => isSyntheticNode({}, ref);
-
-// Which nodes an entry is attributed to: node_ref for a single-node track,
-// contributing_node_refs for a solve. Mirrors the server's own real-only
-// filter (services/tasks/aircraft_flush.py), so an entry naming no node at all
-// belongs to neither fleet and is dropped rather than kept by default.
-function fromSyntheticNode(
-  entry: { node_ref?: string; contributing_node_refs?: string[] },
-): boolean {
-  if (entry.node_ref && isSyntheticRef(entry.node_ref)) return true;
-  const contributors = entry.contributing_node_refs;
-  return Array.isArray(contributors) && contributors.some(isSyntheticRef);
-}
 
 /**
  * Manages the WebSocket connection to /ws/aircraft with auto-reconnect,
@@ -130,19 +118,17 @@ export function useAircraftFeed(ownerOnly = false) {
       // carries no synthetic fleet to show, so the real nodes come off here
       // instead. Everything node-attributed goes together or the map contradicts
       // itself: an aircraft kept without its node is a detection nothing on the
-      // map made, and the detail panel prints detecting_nodes by name.
+      // map made, and the detail panel prints detecting_nodes by name. Each kept
+      // entry is then scrubbed as well, because one can name both fleets at once
+      // (see syntheticOnly.ts).
       const newAircraft = hidesRealNodes
-        ? (rawAircraft || []).filter(fromSyntheticNode)
+        ? (rawAircraft || []).filter(fromSyntheticNode).map(scrubToSyntheticNodes)
         : rawAircraft;
       const detectionArcs = hidesRealNodes
-        ? (rawArcs || []).filter(fromSyntheticNode)
+        ? (rawArcs || []).filter(fromSyntheticNode).map(scrubToSyntheticNodes)
         : rawArcs;
       const detectingNodes = hidesRealNodes
-        ? Object.fromEntries(
-            Object.entries(rawDetectingNodes || {}).map(
-              ([hex, refs]) => [hex, (Array.isArray(refs) ? refs : []).filter(isSyntheticRef)],
-            ),
-          )
+        ? syntheticDetectingNodes(rawDetectingNodes)
         : rawDetectingNodes;
 
       historyRef.current.push({ aircraft: newAircraft, ts: Date.now() });
