@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import sys
 import threading
@@ -157,6 +158,40 @@ class TestRefreshIsAtomic:
         # under whoever still holds a reference to them.
         assert old_forward == {"ret1a2b3c4d": "nde1a2b3c4d00"}
         assert old_reverse == {"nde1a2b3c4d00": "ret1a2b3c4d"}
+
+
+class TestUnresolvedLogging:
+    """An unauthenticated route can call `public_identity` once per connected
+    node on every request it serves, so a repeated unresolvable id must not
+    turn into a repeated log line."""
+
+    def test_a_repeated_unresolvable_id_logs_once(self, seed, caplog):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        with caplog.at_level(logging.ERROR, logger="services.node_refs"):
+            for _ in range(5):
+                assert node_refs.public_identity("ret0badcafe") is None
+        assert len(caplog.records) == 1
+
+    def test_a_different_unresolvable_id_still_logs_its_own_line(self, seed, caplog):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        with caplog.at_level(logging.ERROR, logger="services.node_refs"):
+            assert node_refs.public_identity("ret0badcafe") is None
+            assert node_refs.public_identity("ret0badcafe") is None
+            assert node_refs.public_identity("retffffffff") is None
+        assert len(caplog.records) == 2
+
+    def test_a_refresh_lets_it_log_again(self, seed, caplog, monkeypatch):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        with caplog.at_level(logging.ERROR, logger="services.node_refs"):
+            assert node_refs.public_identity("ret0badcafe") is None
+            assert node_refs.public_identity("ret0badcafe") is None
+            assert len(caplog.records) == 1
+
+            monkeypatch.setattr(node_refs, "_expires_at", 0.0)
+            node_refs._refresh()
+
+            assert node_refs.public_identity("ret0badcafe") is None
+        assert len(caplog.records) == 2
 
 
 _SYNTH = "synth-GVL-0002"

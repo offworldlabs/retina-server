@@ -35,6 +35,9 @@ _lock = threading.Lock()
 _forward: dict[str, str] = {}
 _reverse: dict[str, str] = {}
 _expires_at: float = 0.0
+# node ids already logged as unresolvable since the last successful refresh.
+# Only ever touched under _lock, matching how _forward/_reverse are rebound.
+_logged_unresolved: set[str] = set()
 
 _engine = None
 
@@ -46,6 +49,7 @@ def _reset_for_tests() -> None:
         _forward = {}
         _reverse = {}
         _expires_at = 0.0
+        _logged_unresolved.clear()
         if _engine is not None:
             _engine.dispose()
             _engine = None
@@ -98,6 +102,10 @@ def _refresh() -> None:
         _forward = forward
         _reverse = reverse
         _expires_at = time.monotonic() + _TTL_S
+        # A rebind is a new generation of the map; a node unresolvable under
+        # the old one may have gained a row, so it earns a fresh log line if
+        # it is still unresolvable, and one that regresses is reported again.
+        _logged_unresolved.clear()
 
 
 def ref_for(node_id: str | None) -> str | None:
@@ -123,6 +131,11 @@ def public_identity(node_id: str | None) -> str | None:
     and the map identifies them by these ids. A real node with no registry row
     yields None and its entry is dropped, because publishing the private id as
     a fallback is the failure this boundary exists to prevent.
+
+    Callers span a 1 Hz flush and unauthenticated routes that a caller can hit
+    at whatever rate it chooses, so the same unresolved id is logged at most
+    once per cache generation rather than once per lookup; `_refresh` clears
+    `_logged_unresolved` each time it rebinds the maps.
     """
     if not node_id:
         return None
@@ -130,7 +143,11 @@ def public_identity(node_id: str | None) -> str | None:
         return node_id
     ref = ref_for(node_id)
     if ref is None:
-        log.error("no node_ref for %s; dropping its contribution from the public feed", node_id)
+        with _lock:
+            first_report = node_id not in _logged_unresolved
+            _logged_unresolved.add(node_id)
+        if first_report:
+            log.error("no node_ref for %s; dropping its contribution from the public feed", node_id)
     return ref
 
 

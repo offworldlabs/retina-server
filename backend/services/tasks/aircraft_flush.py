@@ -29,8 +29,8 @@ def published_bytes(payload: dict) -> bytes:
     """Serialise an already-filtered payload under its published identities.
 
     Substitution is the last step on every publication path.  Every filter it
-    follows — the private-node redaction, the real-only filter, the per-owner
-    one — matches `node_id` against a set of `node_id`, so a payload that
+    follows (the private-node redaction, the real-only filter, the per-owner
+    one) matches `node_id` against a set of `node_id`, so a payload that
     reached them already carrying refs would match nothing and the feed would
     come back empty.
     """

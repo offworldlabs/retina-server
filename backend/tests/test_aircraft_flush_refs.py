@@ -1,7 +1,7 @@
 """The aircraft feeds publish node_ref, and substitution runs last.
 
-Every filter on the way out — the private-node redaction, the real-only
-filter, the per-owner one — matches node_id against a set of node_id.  These
+Every filter on the way out (the private-node redaction, the real-only
+filter, the per-owner one) matches node_id against a set of node_id.  These
 pin the ordering that keeps them working: a payload substituted before them
 would match nothing and each feed would come back empty.
 """
