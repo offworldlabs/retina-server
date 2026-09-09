@@ -35,8 +35,9 @@ export default function DetectionsPage() {
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
+  // The public aircraft feed renamed node_id to node_ref at publication.
   const filtered = filterNode
-    ? aircraft.filter((a) => a.node_id === filterNode || a.source === filterNode)
+    ? aircraft.filter((a) => a.node_ref === filterNode || a.source === filterNode)
     : aircraft;
 
   return (
