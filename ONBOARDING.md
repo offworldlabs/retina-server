@@ -71,7 +71,8 @@ git submodule update --init --recursive
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
-pip install -e ../libs/retina-geolocator -e ../libs/retina-tracker
+pip install -e ../libs/retina-geolocator -e ../libs/retina-tracker \
+  -e ../libs/retina-custody -e ../libs/retina-simulation -e ../libs/retina-analytics
 cp .env.example .env          # fill in what you need (see below)
 RETINA_ENV=dev AUTH_ALLOW_ANONYMOUS_ADMIN=1 SYNTHETIC_FLEET_ENABLED=1 uvicorn main:app --reload
 ```

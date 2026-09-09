@@ -829,3 +829,477 @@ class TestLearnedVelocity:
 
         track_filter.reset()
         assert track_filter.learned_velocity(key) is None
+
+
+class TestIndefiniteCovariance:
+    """An indefinite cov_en_km2 must never reach the filter.
+
+    This is the 2026-09-05 droplet failure (91 ValueError: math domain error
+    in 40 minutes out of learned_velocity), and the mechanism is not roundoff
+    — the Joseph form in _kf_correct was already deployed when it happened.
+    cov_en_km2 is the top-left 2x2 of s2 * inv(JtJ) for the solver's 5-state
+    fit, and the solver falls back to pinv only on an outright LinAlgError,
+    so an ill-conditioned-but-not-singular JtJ (near-parallel baselines)
+    inverts to garbage that is INDEFINITE while both diagonals stay positive
+    — passing the solver's own check and, before the fix, _measurement_R's.
+
+    Joseph preserves PSD for any gain but only GIVEN PSD P and R: its
+    K R K^T term inherits R's negative eigenvalue, and _init_entry seeds P's
+    position block straight from R.  Hence the determinant check.
+
+    The covariances below are exactly that shape: equal diagonals with an
+    off-diagonal larger than their geometric mean, i.e. a "correlation"
+    above 1, which no real covariance has.
+    """
+
+    def setup_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def teardown_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    @staticmethod
+    def _indefinite_cov(var_km2=1.0, corr=1.2):
+        return [[var_km2, corr * var_km2], [corr * var_km2, var_km2]]
+
+    def test_indefinite_cov_falls_back_to_the_base_floor(self):
+        r = track_filter._measurement_R(make_result(35.0, -82.0, 1_000, cov_en_km2=self._indefinite_cov()))
+
+        # Rejected outright, so R is the cov=0 limit — exactly `base`, the
+        # same answer a missing cov gets.
+        assert r[0, 1] == 0.0
+        assert math.sqrt(0.5 * (r[0, 0] + r[1, 1])) == pytest.approx(track_filter._KF_DEFAULT_POS_SIGMA_M)
+        # The property that actually matters downstream.
+        assert np.all(np.linalg.eigvalsh(r) >= 0.0)
+
+    def test_a_correlated_but_psd_cov_is_still_accepted(self):
+        """The determinant check must reject only the impossible matrices.
+
+        A genuine off-diagonal is real information about solve geometry (a
+        two-node baseline has a long axis), and rejecting it would quietly
+        throw away the relative weighting _KF_R_INFLATE exists to provide.
+        corr=0.9 is strongly correlated but perfectly valid: det > 0.
+        """
+        cov = self._indefinite_cov(corr=0.9)
+        r = track_filter._measurement_R(make_result(35.0, -82.0, 1_000, cov_en_km2=cov))
+
+        assert r[0, 1] != 0.0  # the correlation survived
+        assert np.all(np.linalg.eigvalsh(r) >= 0.0)
+
+    @pytest.mark.parametrize("cadence_s", [1.4, 20.0])
+    def test_indefinite_cov_keeps_the_filter_psd_and_learned_velocity_alive(self, monkeypatch, cadence_s):
+        """The end-to-end regression: 200 solves carrying an indefinite cov.
+
+        On origin/main this raised the droplet's ValueError within 16 solves
+        at the 20 s cadence real solves arrive on, and within 7 at 1.4 s.
+        """
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        cov = self._indefinite_cov()
+        key = f"indef-{cadence_s}"
+        lat0, lon0 = 35.0, -82.0
+
+        for i in range(200):
+            lat_i, lon_i = offset_latlon_m(lat0, lon0, east_m=250.0 * cadence_s * i, north_m=0.0)
+            result = make_result(lat_i, lon_i, 1_000 + int(i * cadence_s * 1000), cov_en_km2=cov)
+            track_filter.smooth_solve(result, key, None)
+
+            entry = track_filter._KF_TRACKS.get(key)
+            assert entry is not None
+            assert np.all(np.diag(entry.P) >= 0.0), f"solve {i}: negative variance in {np.diag(entry.P)}"
+            assert np.allclose(entry.P, entry.P.T, rtol=0, atol=0), f"solve {i}: asymmetric covariance"
+            # The call that was throwing.
+            assert track_filter.learned_velocity(key) is not None
+
+    def test_tiny_position_sigma_cannot_produce_a_tight_r(self):
+        """A 1 m formal sigma is floored, not believed.
+
+        R is what makes the Joseph update ill-conditioned when it is tiny
+        relative to P, so the unmodeled-error floor is the other half of this
+        fix holding: frame-time skew, association contamination and altitude
+        pinning do not shrink because one solve's Jacobian was tight, and no
+        fix on this network is good to a metre.  The floor is additive and
+        unconditional, so a metre-scale cov contributes only
+        (_KF_R_INFLATE * 1)^2 = 16 m^2 against a base of 1200^2, leaving the
+        composed sigma at the base to within a hundredth of a percent.
+        """
+        for sigma_m in (1e-6, 1.0):
+            cov_km2 = (sigma_m / 1000.0) ** 2
+            r = track_filter._measurement_R(
+                make_result(35.0, -82.0, 1_000, cov_en_km2=[[cov_km2, 0.0], [0.0, cov_km2]])
+            )
+            actual_sigma = math.sqrt(0.5 * (r[0, 0] + r[1, 1]))
+            assert actual_sigma == pytest.approx(track_filter._KF_DEFAULT_POS_SIGMA_M, rel=1e-4)
+            assert actual_sigma >= track_filter._KF_MIN_POS_SIGMA_M
+            # Nowhere near the few-metre R that would make the update
+            # ill-conditioned, and an order of magnitude above even a
+            # bare-sensor floor: the unmodeled-error terms dominate.
+            assert actual_sigma > 1000.0
+
+    def test_repeated_updates_at_a_tiny_r_stay_psd(self, monkeypatch):
+        """200 solves with an effectively-zero cov and alternating positions.
+
+        The floor above means the filter never actually sees a metre-scale R,
+        so this asserts the composite invariant end to end rather than the
+        ill-conditioning in isolation (TestJosephCovariance drives
+        _kf_correct at R = 1e-4 directly).
+        """
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        key = "tiny-r"
+        tiny = (1e-6 / 1000.0) ** 2
+        cov = [[tiny, 0.0], [0.0, tiny]]
+
+        for i in range(200):
+            # Alternating, so the innovation never settles to zero.
+            lat_i, lon_i = offset_latlon_m(35.0, -82.0, east_m=100.0 * (i % 2), north_m=0.0)
+            track_filter.smooth_solve(make_result(lat_i, lon_i, 1_000 + i * 1_400, cov_en_km2=cov), key, None)
+
+            entry = track_filter._KF_TRACKS.get(key)
+            assert np.all(np.diag(entry.P) >= 0.0), f"solve {i}: negative variance in {np.diag(entry.P)}"
+            assert np.allclose(entry.P, entry.P.T, rtol=0, atol=0), f"solve {i}: asymmetric covariance"
+            assert track_filter.learned_velocity(key) is not None
+
+    def test_negative_velocity_variance_degrades_to_zero_sigma(self, monkeypatch):
+        """The last line of defence, on a hand-poisoned entry.
+
+        learned_velocity has two callers that each lose real work when it
+        raises — solver.py's multinode_key_decision drops the solve,
+        aircraft_feed's multinode_to_aircraft drops the whole broadcast — so
+        even a state no code path should now be able to reach must return a
+        number rather than throw.
+        """
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        key = "neg-vel-var"
+        track_filter.smooth_solve(make_result(35.0, -82.0, 1_000), key, None)
+        track_filter.smooth_solve(make_result(35.001, -82.0, 21_000), key, None)
+
+        with track_filter._KF_LOCK:
+            entry = track_filter._KF_TRACKS[key]
+            entry.P[1, 1] = -1e6
+            entry.P[3, 3] = -1e6
+
+        lv = track_filter.learned_velocity(key)
+        assert lv is not None
+        assert lv[2] == 0.0  # clamped, not raised
+
+
+def fly(key, cadence_s, *, omega_dps, straight_s=60.0, turn_deg=180.0, tail_s=0.0, v_ms=250.0, lat0=35.0, lon0=-82.0):
+    """Feed a noiseless coordinated-turn track through smooth_solve.
+
+    Straight and level for ``straight_s`` (long enough for the filter to
+    converge), then a constant-rate turn of ``turn_deg`` at ``omega_dps``,
+    then ``tail_s`` more of straight flight.  Positions are integrated at
+    50 ms and sampled every ``cadence_s``; no cov_en_km2, so R is the
+    _KF_DEFAULT_POS_SIGMA_M floor exactly (the same choice, for the same
+    reason, as TestKFReducesError).
+
+    Returns a list of one dict per solve: elapsed time, degrees of turn
+    completed, the filter's velocity vector error against the truth, the
+    reported velocity sigma, and the sigma_a the entry would predict with
+    next.
+    """
+    turn_end = straight_s + (turn_deg / omega_dps if omega_dps else 0.0)
+    hdg = 0.0
+    east = north = 0.0
+    t = 0.0
+    step = 0.05
+    ts0 = 1_000_000
+    next_solve = 0.0
+    turned = 0.0
+    out = []
+    while t < turn_end + tail_s + 1e-9:
+        if t >= next_solve - 1e-9:
+            lat, lon = offset_latlon_m(lat0, lon0, east_m=east, north_m=north)
+            track_filter.smooth_solve(make_result(lat, lon, ts0 + int(t * 1000)), key, None)
+            lv = track_filter.learned_velocity(key)
+            entry = track_filter._KF_TRACKS.get(key)
+            out.append(
+                {
+                    "t": t,
+                    "turn_deg": turned,
+                    "vel_err_ms": math.hypot(lv[0] - v_ms * math.sin(hdg), lv[1] - v_ms * math.cos(hdg)),
+                    "vel_sigma_ms": lv[2],
+                    "sigma_a": track_filter._entry_sigma_a(entry) if entry else None,
+                }
+            )
+            next_solve += cadence_s
+        turning = straight_s <= t < turn_end
+        if turning:
+            turned += omega_dps * step
+        east += v_ms * math.sin(hdg) * step
+        north += v_ms * math.cos(hdg) * step
+        hdg += math.radians(omega_dps) * step if turning else 0.0
+        t += step
+    return out
+
+
+class TestManoeuvreAdaptiveQ:
+    """The CV model against a coordinated turn — see the module docstring's
+    manoeuvre paragraph and the _KF_SIGMA_A_MANOEUVRE_MS2 comment.
+
+    With a fixed sigma_a = 1.5 the filter's velocity error grows to ~350 m/s
+    inside a standard-rate turn and the chi-squared gate then re-anchors the
+    track around 110 degrees of turn, at every solve cadence.  The adaptive
+    process noise has to remove the re-anchor (which is what splits one
+    aircraft into two keys downstream) without touching straight flight.
+
+    Every test here drives the SAME synthetic turn through the real
+    smooth_solve entry point, and the disabled-path test below re-runs it with
+    the manoeuvre sigma pinned to the base — that is the control that proves
+    these assertions can still fail.
+    """
+
+    def setup_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def teardown_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    @pytest.mark.parametrize("cadence_s", [4.6, 12.0])
+    def test_standard_rate_turn_does_not_reanchor(self, monkeypatch, cadence_s):
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        solves = fly("turn-adaptive", cadence_s, omega_dps=3.0)
+
+        stats = track_filter.filter_stats()
+        assert stats["reanchors"] == 0, f"turn re-anchored at {cadence_s}s cadence: {stats}"
+        # Manoeuvre mode really did engage — the assertion above must not be
+        # passing because the turn was somehow benign.
+        assert any(s["sigma_a"] > track_filter._KF_SIGMA_A_MS2 for s in solves)
+        assert stats["manoeuvre_active"] >= 1
+
+        # Velocity error: bounded well under the aircraft's own speed, unlike
+        # the ~350 m/s the fixed-sigma_a filter reaches (see the disabled-path
+        # test).  Not bounded to a single turn interval's worth of heading
+        # change: at an R sigma of 1200 m the measurements simply do not carry
+        # a faster velocity estimate than that — the same 180-degree turn run
+        # at a FIXED sigma_a of 800 (i.e. manoeuvre mode engaged throughout,
+        # the best this Q can do) still peaks at 157 m/s of velocity error.
+        in_turn = [s for s in solves if s["turn_deg"] > 0]
+        peak = max(s["vel_err_ms"] for s in in_turn[2:])
+        assert peak < 300.0, f"peak in-turn velocity error {peak:.0f} m/s"
+
+    def test_the_same_turn_reanchors_with_the_adaptive_path_disabled(self, monkeypatch):
+        """The control for the test above: pin the manoeuvre sigma to the base
+        (the documented way to disable the whole path) and the pre-adaptive
+        behaviour comes back — a re-anchor mid-turn, and a velocity error the
+        size of the aircraft's own speed on the way there."""
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        monkeypatch.setattr(track_filter, "_KF_SIGMA_A_MANOEUVRE_MS2", track_filter._KF_SIGMA_A_MS2)
+
+        solves = fly("turn-fixed", 4.6, omega_dps=3.0)
+
+        assert track_filter.filter_stats()["reanchors"] >= 1
+        assert max(s["sigma_a"] for s in solves) == track_filter._KF_SIGMA_A_MS2
+        assert max(s["vel_err_ms"] for s in solves) > 300.0
+
+    def test_a_ten_kilometre_jump_still_reanchors(self, monkeypatch):
+        """The retry must rescue manoeuvres, not identity breaks: the gate
+        value stays 13.8 for both attempts precisely so a jump no acceleration
+        could produce is still refused."""
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        key = "turn-jump"
+        lat0, lon0 = 35.0, -82.0
+        ts = 1_000_000
+        for i in range(6):
+            lat, lon = offset_latlon_m(lat0, lon0, east_m=250.0 * 4.6 * i, north_m=0.0)
+            track_filter.smooth_solve(make_result(lat, lon, ts + int(i * 4600)), key, None)
+        assert track_filter.filter_stats()["reanchors"] == 0
+
+        jump_lat, jump_lon = offset_latlon_m(lat0, lon0, east_m=250.0 * 4.6 * 6 + 10_000.0, north_m=0.0)
+        out = track_filter.smooth_solve(make_result(jump_lat, jump_lon, ts + int(6 * 4600)), key, None)
+        assert "smoother" not in out  # raw passthrough: the gate re-anchored
+        stats = track_filter.filter_stats()
+        assert stats["reanchors"] == 1
+        assert stats["manoeuvre_rescues"] == 0
+
+    def test_a_breach_inside_the_manoeuvre_envelope_is_rescued_not_reanchored(self, monkeypatch):
+        """The retry's own path, isolated from the turn: a displacement that
+        breaches the gate at the base process noise but not at the manoeuvre
+        one is accepted, counted as a rescue, and leaves the track's identity
+        (its ENU anchor) intact."""
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        key = "turn-rescue"
+        lat0, lon0 = 35.0, -82.0
+        ts = 1_000_000
+        cadence = 12.0
+        # 25 solves of straight flight first: the retry can only ever rescue
+        # what the manoeuvre Q's own position term (sigma_a * dt^3/3, ~680 m
+        # of sigma at 12 s) widens the gate by, so the band exists only once P
+        # has converged and stopped dominating S.  A young track's gate is
+        # already wide enough that the two attempts agree.
+        for i in range(25):
+            lat, lon = offset_latlon_m(lat0, lon0, east_m=250.0 * cadence * i, north_m=0.0)
+            track_filter.smooth_solve(make_result(lat, lon, ts + int(i * cadence * 1000)), key, None)
+        anchor = (track_filter._KF_TRACKS[key].ref_lat, track_filter._KF_TRACKS[key].ref_lon)
+
+        # 5.2 km off the predicted position at a 12 s cadence: outside the
+        # base-Q gate, inside the manoeuvre-Q one (Q's position term at
+        # sigma_a=800 over 12 s is ~680 m of sigma, comparable to R itself).
+        lat, lon = offset_latlon_m(lat0, lon0, east_m=250.0 * cadence * 25, north_m=5_200.0)
+        out = track_filter.smooth_solve(make_result(lat, lon, ts + int(25 * cadence * 1000)), key, None)
+
+        stats = track_filter.filter_stats()
+        assert stats["manoeuvre_rescues"] == 1, stats
+        assert stats["reanchors"] == 0
+        assert out["smoother"] == "kf"  # smoothed, not a raw re-anchor passthrough
+        assert (track_filter._KF_TRACKS[key].ref_lat, track_filter._KF_TRACKS[key].ref_lon) == anchor
+        assert track_filter._entry_sigma_a(track_filter._KF_TRACKS[key]) == track_filter._KF_SIGMA_A_MANOEUVRE_MS2
+
+    def test_manoeuvre_engagement_decays_after_the_turn(self, monkeypatch):
+        """_KF_MANOEUVRE_TAU_S is a decay constant, not a latch: 45 s after the
+        last surprising update the engagement is under a tenth of full, and it
+        keeps falling.
+
+        The claim is about ENGAGEMENT, not about sigma_a landing back on 1.5
+        exactly: the manoeuvre sigma is ~500x the base, so even 5% of residual
+        engagement is a sigma_a near 40.  Measured on this track, engagement
+        is 4.7% at 46 s past the last re-arm and 0.4% a minute after that."""
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        solves = fly("turn-decay", 4.6, omega_dps=3.0, turn_deg=90.0, tail_s=120.0)
+
+        # Measured from the LAST re-arm, not from the last degree of turn:
+        # the filter is still catching up for a solve or two after the roll-out
+        # (its velocity state entered the turn's exit believing the turn
+        # continued), and those updates are genuinely surprising, so they
+        # legitimately re-engage.  What tau promises is the decay AFTER the
+        # surprises stop, which is what this measures.
+        assert max(s["sigma_a"] for s in solves) > track_filter._KF_SIGMA_A_MS2  # it engaged at all
+        # A re-arm is any solve that did NOT decay — held at full counts,
+        # which is what most of a turn looks like once engagement saturates.
+        last_rearm = max(
+            s["t"]
+            for i, s in enumerate(solves)
+            if i and s["sigma_a"] > track_filter._KF_SIGMA_A_MS2 and s["sigma_a"] >= solves[i - 1]["sigma_a"]
+        )
+        settled = [s for s in solves if s["t"] >= last_rearm + 45.0]
+        assert settled, "test needs solves past the decay window"
+        full = track_filter._KF_SIGMA_A_MS2 + 0.1 * (
+            track_filter._KF_SIGMA_A_MANOEUVRE_MS2 - track_filter._KF_SIGMA_A_MS2
+        )
+        assert all(s["sigma_a"] < full for s in settled)
+        # ...and still falling, monotonically, over the rest of the tail.
+        assert settled[-1]["sigma_a"] < settled[0]["sigma_a"] * 0.2
+
+    def test_the_reported_velocity_sigma_grows_while_manoeuvring(self, monkeypatch):
+        """Point of the whole exercise downstream: dark_follow and the feed
+        gate on learned_velocity's sigma, so an inflated Q has to show up
+        THERE, not just inside P.  It does — the velocity block of P carries
+        the manoeuvre Q term directly."""
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        solves = fly("turn-sigma", 4.6, omega_dps=3.0)
+
+        straight = [s for s in solves if s["turn_deg"] == 0.0]
+        engaged = [s for s in solves if s["sigma_a"] > track_filter._KF_SIGMA_A_MS2]
+        assert engaged
+        assert max(s["vel_sigma_ms"] for s in engaged) > min(s["vel_sigma_ms"] for s in straight[-3:])
+
+    def test_straight_flight_never_engages_the_manoeuvre_path(self, monkeypatch):
+        """The adaptive path must be inert on a clean track — this is the
+        property TestStoneSoupOracle depends on to keep comparing the shipped
+        CV filter against Stone-Soup step by step."""
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        solves = fly("turn-none", 4.6, omega_dps=0.0, straight_s=200.0, turn_deg=0.0)
+
+        assert all(s["sigma_a"] == track_filter._KF_SIGMA_A_MS2 for s in solves)
+        stats = track_filter.filter_stats()
+        assert stats == {"reanchors": 0, "manoeuvre_rescues": 0, "manoeuvre_active": 0, "tracks": 1}
+
+
+class TestN2WeakUpdate:
+    """An n=2 solve updates the filter WEAKLY (see _KF_N2_POS_SIGMA_M).
+
+    With altitude pinned, an n=2 fit is under-determined (5 unknowns, 4
+    residuals) and lands a median 1.4-2.3 km from truth against 0.3-0.5 km
+    for n>=3.  Fed at the n>=3 base sigma it dragged established tracks: when
+    anchored n=2 follow solves started publishing, n=3 publishes on the SAME
+    keys went from 0.44 km to 1.40 km median error, because the next claim
+    round dead-reckoned from the dragged state.  The n=2 solve should still
+    move the state — it is evidence, and it keeps the key alive — just far
+    less than a well-determined one carrying the identical innovation.
+    """
+
+    REF_LAT, REF_LON = 35.0, -82.0
+    BASE_TS_MS = 1_000_000
+    # Comfortably inside the innovation gate at either sigma, so this test
+    # measures the gain and not a re-anchor.
+    INNOVATION_M = 1500.0
+
+    def setup_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def teardown_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def _east_after_second_solve(self, n_nodes, adsb_hex=None):
+        """Seed a key with an n=4 solve, then apply one displaced solve at
+        ``n_nodes`` and return the filter's east position, in metres.
+
+        The seed is identical in every variant (same n_nodes, so the same R
+        seeds P), which is what makes the returned numbers comparable: the
+        only thing that differs between calls is the SECOND solve's R.
+        """
+        track_filter.reset()
+        key = f"n2-weak-{n_nodes}-{adsb_hex}"
+        first = make_result(self.REF_LAT, self.REF_LON, self.BASE_TS_MS)
+        first["n_nodes"] = 4
+        track_filter.smooth_solve(first, key, adsb_hex)
+
+        lat, lon = offset_latlon_m(self.REF_LAT, self.REF_LON, east_m=self.INNOVATION_M, north_m=0.0)
+        second = make_result(lat, lon, self.BASE_TS_MS + 10_000)
+        second["n_nodes"] = n_nodes
+        track_filter.smooth_solve(second, key, adsb_hex)
+        return float(track_filter._KF_TRACKS[key].x[0])
+
+    def test_default_n2_sigma(self):
+        assert track_filter._KF_N2_POS_SIGMA_M == 2500.0
+        assert track_filter._KF_N2_POS_SIGMA_M > track_filter._KF_DEFAULT_POS_SIGMA_M
+
+    def test_n2_moves_the_state_less_than_n4(self):
+        moved_n2 = self._east_after_second_solve(2)
+        moved_n4 = self._east_after_second_solve(4)
+        # Still moves — a weak update, not a discarded one.
+        assert moved_n2 > 0.0
+        assert moved_n2 < moved_n4
+        # And meaningfully so, not by a rounding margin: the gain scales
+        # roughly as 1/sigma^2 once the base term dominates R.
+        assert moved_n2 < 0.75 * moved_n4
+
+    def test_n2_sigma_is_tunable(self, monkeypatch):
+        """The constant is what _base_pos_sigma_m reads, so raising it
+        weakens the n=2 update further without a code change."""
+        baseline = self._east_after_second_solve(2)
+        monkeypatch.setattr(track_filter, "_KF_N2_POS_SIGMA_M", 8000.0)
+        assert self._east_after_second_solve(2) < baseline
+
+    def test_adsb_identified_n2_keeps_the_default_sigma(self):
+        """The ADS-B lane is untouched: its displayed position comes from the
+        transponder and its guess was already a fix, so none of the dark n=2
+        measurement describes it."""
+        result = make_result(self.REF_LAT, self.REF_LON, self.BASE_TS_MS)
+        result["n_nodes"] = 2
+        assert track_filter._base_pos_sigma_m(result, "a1b2c3") == track_filter._KF_DEFAULT_POS_SIGMA_M
+        assert self._east_after_second_solve(2, adsb_hex="a1b2c3") == pytest.approx(
+            self._east_after_second_solve(4, adsb_hex="a1b2c3")
+        )
+
+    def test_simulator_object_id_is_judged_dark(self):
+        """An ``obj-*`` simulator id rides in the same field but is not a
+        transponder identity — it is a dark-lane solve and gets the wide
+        sigma, the same predicate solver.py keys it into mn-dark-* with."""
+        result = make_result(self.REF_LAT, self.REF_LON, self.BASE_TS_MS)
+        result["n_nodes"] = 2
+        assert track_filter._base_pos_sigma_m(result, "obj-01373") == track_filter._KF_N2_POS_SIGMA_M
+
+    def test_n3_and_above_keep_the_default_sigma(self):
+        for n in (0, 1, 3, 4, 5):
+            result = make_result(self.REF_LAT, self.REF_LON, self.BASE_TS_MS)
+            result["n_nodes"] = n
+            assert track_filter._base_pos_sigma_m(result) == track_filter._KF_DEFAULT_POS_SIGMA_M
+        # A result with no n_nodes at all (the field is conditional on the
+        # producer) must not accidentally land on the n=2 branch either.
+        assert track_filter._base_pos_sigma_m(make_result(35.0, -82.0, 1_000)) == (track_filter._KF_DEFAULT_POS_SIGMA_M)

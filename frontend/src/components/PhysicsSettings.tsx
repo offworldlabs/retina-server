@@ -858,7 +858,7 @@ export default function PhysicsSettings() {
             </div>
             <div
               className="ps-perf-card"
-              title="Live multinode tracks with no ADS-B tag, more than 5 km from every ground-truth trail and every fresh ADS-B fix"
+              title="Live multinode tracks with no ADS-B tag, more than 5 km from every ground-truth trail and every fresh ADS-B fix. Precision is scored over dark tracks only — ADS-B-tagged tracks are not evidence either way — and reads — when there are none."
             >
               <span className="ps-perf-val">
                 {solverStats ? solverStats.ghosts.ghost_tracks : "—"}
@@ -872,13 +872,13 @@ export default function PhysicsSettings() {
                 )}
               </span>
             </div>
-            <div className="ps-perf-card">
+            <div className="ps-perf-card" title="Dark-lane published solves vs ground truth, this window">
               <span className="ps-perf-val">
                 {solverStats ? formatKm(solverStats.position_error_km.median) : "—"}
               </span>
               <span className="ps-perf-lbl">Median Error</span>
             </div>
-            <div className="ps-perf-card">
+            <div className="ps-perf-card" title="Dark-lane published solves vs ground truth, this window">
               <span className="ps-perf-val">
                 {solverStats ? formatKm(solverStats.position_error_km.p90) : "—"}
               </span>
@@ -914,8 +914,13 @@ export default function PhysicsSettings() {
                     </span>
                   ))}
                 </div>
+                {/* The funnel is the dark lane, so the caption has to name
+                    it: the known lane's records sit in this window too and
+                    are counted separately (lane_split), not here. */}
                 <div className="ps-funnel-caption">
-                  last {solverStats.window_minutes} min · {solverStats.attempts} attempts
+                  last {solverStats.window_effective_minutes ?? solverStats.window_minutes} min ·{" "}
+                  {solverStats.attempts} dark-lane attempts
+                  {solverStats.lane_split && ` · ${solverStats.lane_split.known} known-lane`}
                 </div>
 
                 {rejectReasonBars(solverStats.rejects.by_reason).length > 0 && (

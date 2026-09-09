@@ -83,8 +83,28 @@ Note when reading alerts from any environment: production currently reports
 evidence of a problem with the fleet size or with a branch under test.
 
 Only `test-towers`, `test-api`, `test-map` and `test-dash` have DNS and certificate
-coverage on the test droplet. Its other three vhosts render but are unreachable by
-design.
+coverage on the test droplet. Its other four vhosts — including `test-data`, the
+data explorer added 2026-09-05 — render but are unreachable by design until a SAN
+and an A record are added.
+
+### Real node detections on the test droplet
+
+Production forwards each accepted v1 detection frame to the test droplet's
+`/api/radar/detections/bulk`, so real nodes appear there beside the synthetic
+fleet. It is one-way: nodes talk only to production, and nothing the test
+droplet returns reaches a board.
+
+Turn it off by unsetting `DETECTION_MIRROR_URL` on production and redeploying.
+
+The mirror drops rather than retrying, so an unreachable test droplet costs
+mirrored frames and nothing else. It logs `detection mirror failing` on the
+transition and once a minute after that, and raises a `detection_mirror` admin
+event on each transition. Silence in the admin event log with frames still
+arriving on production means it is working; confirm it positively by checking
+that the real node ids appear in the test droplet's `/api/radar/analytics`.
+
+Real receiver and transmitter geometry now lands on a droplet running
+`AUTH_ALLOW_ANONYMOUS_ADMIN=1`.
 
 ---
 
@@ -365,7 +385,8 @@ recognised as such and dropped without solving.
 
 `SOLVER_RESOLVE_INTERVAL_S` (default 12 s) is the window an aircraft is not
 re-solved in. Raising it trades map refresh rate for solver headroom — do not go
-past the 60 s `multinode_tracks` expiry, or tracks will lapse between solves. `0`
+past the `multinode_tracks` expiry (`MN_DARK_EXPIRY_S`, 30 s, for `mn-dark-*`
+entries; 60 s for `mn-adsb-*` ones), or tracks will lapse between solves. `0`
 turns the suppression off.
 
 ---
@@ -411,6 +432,14 @@ curl -sk https://localhost/api/radar/data/aircraft.json | python3 -c \
 ```
 
 If 0 aircraft: check `adsb_truth_fetcher` task in metrics (`task_last_success.adsb_truth_fetcher`). The external ADS-B source (`adsb.lol` or similar) may be down.
+
+If the logs carry `ADS-B region cap`: the fleet is spread across more query regions than `ADSB_MAX_REGIONS_PER_CYCLE` allows, and the named regions went unqueried, so their nodes have no external truth this cycle. The line lists what was dropped and how many nodes each held. The remedy is raising the cap (and checking the providers tolerate the extra requests), not removing nodes: the cap bounds request count, so shedding a node only helps if it happened to be the last one in its region.
+
+If the logs carry `configure a detection range past the ... query margin`: a node's `max_range_km` reaches further than the padding every query region carries (`ADSB_NODE_RANGE_MARGIN_KM`), so aircraft in the outer part of that node's coverage are never asked for and its detections there cross-validate against nothing. The line names the largest configured range and the margin. Either correct the node's config, if the range is not real, or raise the margin, which widens every box and so raises the OpenSky credits each cycle costs.
+
+An outage empties `external_adsb_cache` rather than freezing it: entries are dropped once they pass `EXTERNAL_ADSB_MAX_AGE_S` from their own capture time, so an empty cache means the feed has been unreachable for longer than that, not that a poll happened to fail. `external_adsb_cached` in `/api/radar/*` reports the current count.
+
+A rising `adsb_capture_ts_fallback` (in `server_health`, `/api/test/dashboard`) is a node-clock problem, not a feed problem: some node's frames carry no timestamp, or one more than `ADSB_CAPTURE_MAX_SKEW_S` from server time, so its ADS-B positions are being aged against our clock instead of its own.
 
 If aircraft exist but `multinode_tracks == 0`: check node count — multinode tracks require at least 2 active nodes with overlapping coverage.
 

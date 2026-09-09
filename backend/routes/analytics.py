@@ -64,7 +64,11 @@ async def submit_adsb_report(
         raise HTTPException(status_code=400, detail=f"Missing: {missing}")
 
     entry = AdsReportEntry(
-        timestamp_ms=body.get("timestamp_ms", 0),
+        # Server-stamped when the node omits it: the field is optional by
+        # contract, and cross-validation gates on the sample's age, so a
+        # default of 0 would exclude that node's reports from the check
+        # entirely rather than merely dating them coarsely.
+        timestamp_ms=body.get("timestamp_ms") or int(time.time() * 1000),
         predicted_delay=body["predicted_delay"],
         predicted_doppler=body.get("predicted_doppler", 0),
         measured_delay=body["measured_delay"],
@@ -121,26 +125,42 @@ async def association_status():
     return {
         "registered_nodes": len(_a.node_geometries),
         "overlap_zones": len(_a.overlap_zones),
+        # Node pairs that got no grid because the two nodes are in different
+        # worlds (node_world above).  Read next to overlap_zones: on a fleet
+        # of 50 synthetic nodes over the same city as 8 receivers it is the
+        # 400 sim/real pairs whose grids could only ever have paired a
+        # simulated echo with a real one.  Counted per pair considered, so it
+        # keeps rising as nodes re-register — zero means the fleet is single-
+        # world (or untagged), not that the gate is off.
+        "assoc_world_skipped_pairs": getattr(_a, "assoc_world_skipped_pairs", 0),
         # Confirmed single-node tracks each node last submitted; these are what
         # pairings are drawn from.
         "pending_tracks": {nid: len(tracks) for nid, tracks in list(_a._pending_tracks.items())},
         # Track-pairing outcomes since boot.  gated is everything past the
         # coarse delay grid; unfitted counts the pairings handed to the solver
         # worker (which runs the fit and the n=2 gate); deferred counts rounds
-        # a budget cut short.  Those three are the live production surface.
+        # a budget cut short; superseded counts pairings dropped because a
+        # better-ranked one claiming the same track implied a velocity theirs
+        # contradicts; cluster_splits counts position clusters that held two
+        # tracks of one node and were emitted as one solver input each.  All
+        # five are the live production surface.
         "track_pairs": {
             "gated": getattr(_a, "track_pairs_gated", 0),
             "unfitted": getattr(_a, "track_pairs_unfitted", 0),
             "deferred": getattr(_a, "track_pairs_deferred", 0),
+            "superseded": getattr(_a, "track_pairs_superseded", 0),
+            "cluster_splits": getattr(_a, "cluster_splits", 0),
         },
         # Inline-fit counters — permanently zero in production BY DESIGN
         # (state.py builds the associator with cv_fit=None; only the offline
-        # bench's inline mode exercises stage-2 selection).  Split out so
+        # bench's inline mode exercises the chi2 threshold).  Split out so
         # nobody reads a structural zero as "no rejections happening".
+        # superseded used to live here too, and no longer can: the deferred
+        # path now has an exclusivity stage of its own, so the counter moves
+        # in production.
         "track_pairs_inline_only": {
             "accepted": getattr(_a, "track_pairs_accepted", 0),
             "rejected": getattr(_a, "track_pairs_rejected", 0),
-            "superseded": getattr(_a, "track_pairs_superseded", 0),
         },
         # Top-down claiming (ASSOC_CLAIM_MODE) since boot.  rounds/matched/
         # conflicts/anchored_inputs are all live in shadow too — _claim_round

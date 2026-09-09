@@ -55,6 +55,7 @@ from routes.sim_ingest import synthetic_fleet_enabled
 from routes.stats import router as stats_router
 from routes.streaming import router as streaming_router
 from routes.test import router as test_router
+from services import detection_mirror
 from services.alerting import log_destination
 from services.background import (
     adsb_truth_fetcher,
@@ -63,6 +64,7 @@ from services.background import (
     archive_flush_task,
     archive_lifecycle_task,
     coverage_constraints_task,
+    feed_gc_task,
     frame_processor_loop,
     health_monitor_task,
     heartbeat_task,
@@ -177,9 +179,6 @@ async def lifespan(app: FastAPI):
         # Start background daemon threads for multinode LM solving.
         # These drain solver_queue independently of frame workers.
         start_solver_workers()
-        # Run multiple parallel frame processor workers so the thread pool can
-        # process frames concurrently (scipy/numpy release the GIL).
-        _n_frame_workers = int(os.environ.get("FRAME_WORKERS", "4"))
 
         async def _snapshot_loop():
             """Save state snapshot periodically."""
@@ -190,12 +189,21 @@ async def lifespan(app: FastAPI):
                 except Exception:
                     logging.exception("State snapshot save failed")
 
+        # Unset DETECTION_MIRROR_URL leaves this unarmed, and mirror_task then
+        # returns at once, so the task list is the same shape in every
+        # environment.
+        detection_mirror.configure_from_env()
+
         tasks = [
             asyncio.create_task(server.serve_forever()),
             asyncio.create_task(reputation_evaluator()),
             asyncio.create_task(prune_synthetic_nodes()),
             asyncio.create_task(adsb_truth_fetcher()),
             asyncio.create_task(aircraft_flush_task(radar_pipeline)),
+            # Feed-store GC on its own timer: it used to run only inside the
+            # feed build, so a slow websocket client stalling the flush task
+            # stalled server-wide GC with it.
+            asyncio.create_task(feed_gc_task()),
             asyncio.create_task(archive_flush_task()),
             asyncio.create_task(track_flush_task()),
             asyncio.create_task(archive_lifecycle_task()),
@@ -203,10 +211,19 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(analytics_refresh_task()),
             asyncio.create_task(coverage_constraints_task()),
             asyncio.create_task(storage_refresh_task()),
+            asyncio.create_task(detection_mirror.mirror_task()),
             asyncio.create_task(health_monitor_task()),
             asyncio.create_task(heartbeat_task()),
             asyncio.create_task(_snapshot_loop()),
-            *[asyncio.create_task(frame_processor_loop(radar_pipeline)) for _ in range(_n_frame_workers)],
+            # One frame worker per queue shard, so the thread pool processes
+            # frames concurrently (scipy/numpy release the GIL) while a single
+            # node's frames stay on one worker: serial, in arrival order. The
+            # worker count must equal the shard count or a shard goes unserved,
+            # so both come from state.frame_queue (sized by FRAME_WORKERS).
+            *[
+                asyncio.create_task(frame_processor_loop(radar_pipeline, shard))
+                for shard in range(state.frame_queue.shard_count)
+            ],
         ]
         yield
         for t in tasks:

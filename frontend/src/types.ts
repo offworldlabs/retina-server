@@ -60,6 +60,25 @@ export interface Aircraft {
   /** Seconds since the newest claim/detection behind this entry. */
   seen?: number;
   /**
+   * Calibrated per-axis position sigma (metres) at the solve epoch.
+   * `multinode_solve` entries only; absent on older backends.
+   */
+  pos_sigma_m?: number;
+  /**
+   * Velocity sigma (m/s) for the solve's own motion estimate. Quoted by the
+   * panel and recorded in the solve history; the uncertainty disc no longer
+   * grows the radius with it (see map/uncertainty.ts).
+   */
+  pos_sigma_vel_ms?: number;
+  /**
+   * Position the solve measured, before the backend dead-reckons `lat`/`lon`
+   * forward. `multinode_solve` entries only; absent on older backends, where
+   * the disc falls back to `lat`/`lon`. This is where the uncertainty disc is
+   * centred: `pos_sigma_m` is the accuracy of THIS position.
+   */
+  solve_lat?: number;
+  solve_lon?: number;
+  /**
    * Age of the ADS-B fix this entry's lat/lon came from, one decimal.
    * Present on `adsb_single_node` entries only.
    */
@@ -112,7 +131,8 @@ export interface RadarNode {
   node_id: string;
   /**
    * Receiver position as served. The backend displaces it deterministically
-   * per node (1–3 km by default) before it goes on the wire — see
+   * per node (the radius in force arrives as location_uncertainty_km,
+   * below) before it goes on the wire — see
    * backend/services/public_location.py — so this is NOT the operator's true
    * location and the client does no further fuzzing of its own.
    */

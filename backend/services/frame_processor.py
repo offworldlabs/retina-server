@@ -16,8 +16,10 @@ from retina_tracker.track import TrackState
 from config.constants import (
     ADSB_VIEW_TAG_FRESH_N,
     ARCHIVE_BATCH_MAX,
+    ARCHIVE_BUFFER_FAIL_TTL_S,
     ARCHIVE_FLUSH_INTERVAL_S,
     N2_TRACK_HISTORY_MAX,
+    TRACK_MAX_STALE_S,
 )
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
@@ -26,6 +28,7 @@ from services.geo import (
 )
 from services.id_utils import normalize_hex_key as _normalize_hex_key
 from services.known_claiming import claim_known_targets, strip_claimed_detections
+from services.node_config import position_status, resolve_altitudes
 from services.storage import archive_detections
 
 # ── Archive batching ──────────────────────────────────────────────────────────
@@ -49,6 +52,10 @@ _ARCHIVE_BUFFER_HARD_CAP = ARCHIVE_BATCH_MAX * 2
 # N frames (duplicate Parquet rows) and then truncate twice, discarding up to
 # N frames that arrived during the first write.
 _archive_inflight: set[str] = set()
+# node_id → epoch of the first failed write in the current run of failures,
+# cleared on the next success.  Read only by _reclaim_dead_archive_buffers;
+# guarded by _archive_buffer_lock like the buffer itself.
+_archive_fail_since: dict[str, float] = {}
 
 
 def _flush_archive_node(node_id: str):
@@ -78,6 +85,7 @@ def _flush_archive_node(node_id: str):
         # a memory cap so a sustained outage can't OOM the process.
         with _archive_buffer_lock:
             _archive_inflight.discard(node_id)
+            _archive_fail_since.setdefault(node_id, time.time())
             buf = _archive_buffer.get(node_id, [])
             if len(buf) > _ARCHIVE_BUFFER_HARD_CAP:
                 dropped = len(buf) - _ARCHIVE_BUFFER_HARD_CAP
@@ -100,6 +108,7 @@ def _flush_archive_node(node_id: str):
     n_written = len(frames)
     with _archive_buffer_lock:
         _archive_inflight.discard(node_id)
+        _archive_fail_since.pop(node_id, None)
         buf = _archive_buffer.get(node_id, [])
         remaining = buf[n_written:]
         if remaining:
@@ -108,12 +117,51 @@ def _flush_archive_node(node_id: str):
             _archive_buffer.pop(node_id, None)
 
 
+def _reclaim_dead_archive_buffers() -> None:
+    """Abandon buffers for departed nodes whose writes keep failing.
+
+    A buffer key is popped only on a *successful* write that leaves nothing
+    behind (see the tail of _flush_archive_node), so a node that departs while
+    its buffer is non-empty and its writes are failing pins up to
+    _ARCHIVE_BUFFER_HARD_CAP frames for the process lifetime — and
+    flush_all_archive_buffers retries it on every cycle, forever.  Bounded per
+    node, unbounded in node count across a long uptime with node churn.
+
+    Both conditions are required.  Retain-on-failure is deliberate (a
+    transient disk-full must not drop data), so a node that is still connected
+    keeps its frames however long the outage lasts; only a node that has left
+    connected_nodes AND has been failing for ARCHIVE_BUFFER_FAIL_TTL_S is given
+    up on.  The two locks are taken in sequence, never nested — this runs on
+    the archive-flush executor thread while frame workers hold the buffer lock.
+    """
+    now = time.time()
+    with _archive_buffer_lock:
+        expired = [nid for nid, since in _archive_fail_since.items() if now - since > ARCHIVE_BUFFER_FAIL_TTL_S]
+    if not expired:
+        return
+    with state.connected_nodes_lock:
+        live = set(state.connected_nodes)
+    with _archive_buffer_lock:
+        for nid in expired:
+            if nid in live or nid in _archive_inflight:
+                continue
+            dropped = len(_archive_buffer.pop(nid, []))
+            failing_for = now - _archive_fail_since.pop(nid, now)
+            logging.warning(
+                "Abandoning archive buffer for departed node %s after %.0fs of failed writes (%d frames dropped)",
+                nid,
+                failing_for,
+                dropped,
+            )
+
+
 def flush_all_archive_buffers():
     """Flush every node's buffered frames. Called from the background task."""
     with _archive_buffer_lock:
         node_ids = list(_archive_buffer.keys())
     for nid in node_ids:
         _flush_archive_node(nid)
+    _reclaim_dead_archive_buffers()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -136,6 +184,7 @@ def _reset_for_tests() -> None:
     with _archive_buffer_lock:
         _archive_buffer.clear()
         _archive_inflight.clear()
+        _archive_fail_since.clear()
     with _prof_lock:
         _prof_cpu = _prof_wall = 0.0
         _prof_analytics = _prof_assoc = _prof_known = _prof_pipeline = _prof_archive = 0.0
@@ -145,15 +194,71 @@ def _reset_for_tests() -> None:
 # ── Node configs helper ──────────────────────────────────────────────────────
 
 
-def get_node_configs() -> dict[str, dict]:
+def _solver_input_node_ids(s_in: dict) -> set[str]:
+    """The node ids a solver input can reach.
+
+    Its measurements, plus the pool's spare ones: _adopt_pool_nodes re-solves
+    with those once the first solve vouches for them, so a config missing for
+    one is silently dropped by the epoch alignment and the solver's NodeSetups.
+    """
+    return {m.get("node_id") for m in (s_in.get("measurements") or ())} | {
+        m.get("node_id") for m in (s_in.get("pool_measurements") or ())
+    }
+
+
+def get_node_configs(wanted: set[str] | None = None) -> dict[str, dict]:
+    """Every *placed* connected node's config, altitudes resolved.
+
+    The solver's snapshot, and the placement gate for everything drawn from
+    it: an unplaced node has no geometry to solve against, so membership here
+    means the node can be solved with and a consumer needs no check of its
+    own.  Gated here rather than at each of them because the snapshot is the
+    one place that knows, and a consumer testing `nid in node_cfgs` reads as
+    though it already had (see known_lane's dark-follow claim filter).
+
+    Altitudes are resolved because retina_geolocator multiplies one by a metre
+    conversion as soon as it is handed it, so a null must not reach it.  That
+    is a copy per node, so `wanted` narrows it to the ids a caller can use;
+    the default is the whole placed fleet.
+    """
     configs = {}
     with state.connected_nodes_lock:
         snapshot = list(state.connected_nodes.items())
     for nid, info in snapshot:
+        if wanted is not None and nid not in wanted:
+            continue
         cfg = info.get("config")
-        if cfg:
-            configs[nid] = cfg
+        # missing_tx is placed enough: the range circle and the bearing wedge
+        # are both about the receiver, and the bistatic paths test the
+        # transmitter separately.
+        if cfg and position_status(cfg) in ("positioned", "missing_tx"):
+            configs[nid] = resolve_altitudes(cfg)
     return configs
+
+
+def configs_for_solver_input(node_cfgs: dict[str, dict], s_in: dict) -> dict[str, dict]:
+    """The subset of ``node_cfgs`` a solver input can actually reach.
+
+    The solver runs in a *spawn* process pool, so everything queued with an
+    input is pickled and shipped to a child on every call — and the fleet is
+    58 nodes while a candidate carries 2-8 measurements.  Sending the whole
+    set meant ~50 configs per solve that no code path could look at.
+
+    Nothing downstream needs the rest.  The solver builds NodeSetups from the
+    measurements only; trimming and consensus both narrow that set further
+    (_filter_s_in_to_nodes) and never widen it; the beam gate iterates the
+    result's contributing_node_ids, which are measurement node ids by
+    construction; and cv_epochs is built from the same matched nodes as the
+    measurements in all three input shapes association emits.  The known lane
+    is unaffected — it fetches its own configs (known_lane.run_known_lane_pass)
+    rather than reusing what was queued here.
+    """
+    # The pool's spare measurements are the one thing downstream that CAN
+    # widen the set, which is why _solver_input_node_ids counts them: measured
+    # live, omitting them left 120 of 309 "widened" candidates solving on their
+    # original two nodes.  A pool is 0-6 extra configs, not 50.
+    wanted = _solver_input_node_ids(s_in)
+    return {nid: cfg for nid, cfg in node_cfgs.items() if nid in wanted}
 
 
 # ── Per-node pipeline factory ─────────────────────────────────────────────────
@@ -162,23 +267,38 @@ def get_node_configs() -> dict[str, dict]:
 def get_or_create_node_pipeline(
     node_id: str,
     default_pipeline: PassiveRadarPipeline,
-) -> PassiveRadarPipeline:
+) -> PassiveRadarPipeline | None:
+    """The node's own pipeline, built from its config and cached from then on.
+
+    None for a node this server cannot place: solving its frames against
+    default_pipeline's fixed geometry would geolocate them at somebody else's
+    receiver and illuminator and publish them under this node's id.
+    """
     pipeline = state.node_pipelines.get(node_id)
     if pipeline is not None:
         return pipeline
 
+    # Canonical: every config in connected_nodes goes in through
+    # services.node_config.canonical_config, so a placed node has four float
+    # coordinates.
     cfg = state.connected_nodes.get(node_id, {}).get("config", {})
-    if cfg.get("rx_lat") and cfg.get("tx_lat"):
+    if position_status(cfg) == "positioned":
+        # Altitude is resolved here, at the boundary, because passive_radar
+        # subscripts it and converts it to metres.  After the placement test,
+        # not before: only this branch caches anything, so an unplaced node
+        # reaches this line on every frame it ever sends, and the copy would
+        # be thrown away every time.
+        cfg = resolve_altitudes(cfg)
         pipeline_cfg = {
             "node_id": node_id,
             "Fs": cfg.get("fs_hz", cfg.get("Fs", 2_000_000)),
             "FC": cfg.get("fc_hz", cfg.get("FC", 195_000_000)),
             "rx_lat": cfg["rx_lat"],
             "rx_lon": cfg["rx_lon"],
-            "rx_alt_ft": cfg.get("rx_alt_ft", 900),
+            "rx_alt_ft": cfg["rx_alt_ft"],
             "tx_lat": cfg["tx_lat"],
             "tx_lon": cfg["tx_lon"],
-            "tx_alt_ft": cfg.get("tx_alt_ft", 1200),
+            "tx_alt_ft": cfg["tx_alt_ft"],
             "doppler_min": cfg.get("doppler_min", -300),
             "doppler_max": cfg.get("doppler_max", 300),
             "min_doppler": cfg.get("min_doppler", 15),
@@ -196,7 +316,7 @@ def get_or_create_node_pipeline(
         state.node_pipelines[node_id] = pipeline
         return pipeline
 
-    return default_pipeline
+    return None
 
 
 # ── Per-frame processing (runs in thread pool) ───────────────────────────────
@@ -254,7 +374,11 @@ def _view_adsb_hex(track, hist) -> str | None:
     return hexn
 
 
-def confirmed_track_views(tracker, history_n: int = N2_TRACK_HISTORY_MAX) -> list[dict]:
+def confirmed_track_views(
+    tracker,
+    history_n: int = N2_TRACK_HISTORY_MAX,
+    now_ts_ms: int | None = None,
+) -> list[dict]:
     """A tracker's confirmed tracks, in the shape submit_tracks takes.
 
     TENTATIVE tracks are excluded, the same filter the arc builder applies: they
@@ -264,15 +388,35 @@ def confirmed_track_views(tracker, history_n: int = N2_TRACK_HISTORY_MAX) -> lis
     reason arcs keep it — at 22 fps a single missed frame flips ACTIVE →
     COASTING and the next flips it back.
 
+    But COASTING is kept only while its newest REAL detection is fresh.  What
+    travels downstream is ``history[-1]``, and association hands that sample to
+    the solver as the node's current measurement — so a track coasting toward
+    its N_DELETE deletion point contributes a delay from wherever the aircraft
+    was several seconds ago.  That is the out-of-cone node the rms trim then
+    has to discard (see TRACK_MAX_STALE_S).  The staleness test reads
+    ``hist[-1]["timestamp"]`` rather than the track's coast count because
+    get_recent_detections returns only ASSOCIATED samples — mark_missed appends
+    None to ``history["measurements"]`` and the reverse scan skips those — so
+    that timestamp IS the last real detection's, exactly the honest signal,
+    while n_missed only counts frames the node happened to process.  Compared
+    against *now_ts_ms*, the frame timestamp being processed, never wall clock:
+    the fleet replays and backfills, and a filter keyed on wall clock would
+    silently empty every view in those runs.  Skipped when the caller supplies
+    no frame time, or when TRACK_MAX_STALE_S is 0.
+
     Shared with scripts/association_bench.py (which carried a near-verbatim
     copy) so the bench feeds association exactly what production does.
     """
+    max_stale_ms = TRACK_MAX_STALE_S * 1000.0 if now_ts_ms is not None else 0.0
     views = []
     for tr in tracker.tracks:
         if tr.state_status == TrackState.TENTATIVE:
             continue
         hist = tr.get_recent_detections(history_n)
         if len(hist) < 2:
+            continue
+        if max_stale_ms > 0 and (now_ts_ms - hist[-1]["timestamp"]) > max_stale_ms:
+            state.bump_counter("tracks_stale_skipped")
             continue
         views.append(
             {
@@ -292,8 +436,8 @@ def confirmed_track_views(tracker, history_n: int = N2_TRACK_HISTORY_MAX) -> lis
     return views
 
 
-def _node_track_views(pipeline: PassiveRadarPipeline) -> list[dict]:
-    return confirmed_track_views(pipeline.tracker)
+def _node_track_views(pipeline: PassiveRadarPipeline, now_ts_ms: int | None = None) -> list[dict]:
+    return confirmed_track_views(pipeline.tracker, now_ts_ms=now_ts_ms)
 
 
 def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarPipeline):
@@ -339,7 +483,9 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # cannot cross-pair into a phantom solve).  _pframe is what the dark
     # lane processes from here down; the original frame is untouched, so
     # the archive and the ADS-B cache extraction below still see everything
-    # the node sent.
+    # the node sent.  Dark track following (DARK_FOLLOW_MODE) rides the same
+    # stage — it claims what the ADS-B paths leave, so it cannot run without
+    # them, which is why it is gated on KNOWN_LANE_MODE too.
     _pframe = frame
     if state.KNOWN_LANE_MODE != "off" and frame.get("delay"):
         # Fail open: the known lane is an overlay on the dark lane, and in
@@ -347,10 +493,20 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
         # this guard, one ADS-B record with alt_baro="ground" threw here and
         # took every frame down with it until the record aged out.
         try:
-            _claimed = claim_known_targets(node_id, frame)
+            # Two lanes claim here, with independent binding modes, so the
+            # strip is computed as one union and applied once: strip_claimed_
+            # detections re-bases the indices it keeps, and a second strip
+            # against the first's output would delete the wrong detections.
+            _followed: set[int] = set()
+            _claimed = claim_known_targets(node_id, frame, follow_claimed=_followed)
+            _strip: set[int] = set()
             if _claimed and state.KNOWN_LANE_MODE == "binding":
-                _pframe = strip_claimed_detections(frame, _claimed)
+                _strip |= _claimed
                 state.bump_counter("known_claims_bound", len(_claimed))
+            if _followed and state.DARK_FOLLOW_MODE == "binding":
+                _strip |= _followed
+            if _strip:
+                _pframe = strip_claimed_detections(frame, _strip)
         except Exception:
             state.bump_counter("known_claims_errors")
             now = time.time()
@@ -369,7 +525,11 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # association directly, so there is no inert way to shadow this.
     if state.ADSB_SEED_MODE == "active" and not _pframe.get("adsb"):
         _geo = state.node_associator.node_geometries.get(node_id)
-        if _geo is not None:
+        # A geometry exists even for a node this server cannot place (see
+        # get_or_create_node_pipeline's docstring), so presence alone is not
+        # enough; the node must also be positioned.
+        _cfg = state.node_associator.node_configs.get(node_id, {})
+        if _geo is not None and position_status(_cfg) == "positioned":
             # Own-world states only: this is a cache-wide assignment for a
             # node with no receiver, so every other-world entry is a decoy
             # its detections can bind to on a delay/Doppler coincidence —
@@ -388,60 +548,68 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             if _tags is not None:
                 _pframe["adsb"] = _tags
                 state.bump_counter("adsb_seed_frames_autotagged")
+    # None for a node this server cannot place (see get_or_create_node_pipeline):
+    # its frame is still counted above by record_detection_frame, but it is
+    # not geolocated, tracked, associated or handed to the solver: there is
+    # no geometry to place any of that against.
     pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
-    pipeline.process_frame(_pframe)
+    if pipeline is not None:
+        pipeline.process_frame(_pframe)
     _d_pipeline = time.thread_time() - _t3 - _d_known
 
     _t2 = time.thread_time()
-    _ts_ms_assoc = frame.get("timestamp", 0)
-    # Track-level association.  The detection-level path it replaced now lives
-    # in retina_analytics.detection_association, reachable only from the
-    # offline bench, which keeps it as the A/B baseline.
-    _track_views = _node_track_views(pipeline)
-    # Feed the per-node distinct-track counters — total_tracks /
-    # geolocated_tracks were exported (and read by the admin API) but never
-    # written anywhere.
-    state.node_analytics.record_node_tracks(
-        node_id,
-        (v["track_id"] for v in _track_views),
-        list(pipeline.geolocated_tracks.keys()),
-    )
-    round_ = state.node_associator.submit_tracks_round(
-        node_id,
-        _track_views,
-        _ts_ms_assoc,
-    )
-    # anchored_inputs (top-down claiming, ASSOC_CLAIM_MODE=active) and
-    # adsb_inputs (ADS-B seeding, ADSB_SEED_MODE=active) are already in
-    # solver-input shape — see _claim_round / _adsb_seed_round — so they
-    # join the bottom-up pairs' formatted output directly.  Both empty in
-    # off/shadow mode.
-    solver_inputs = (
-        (state.node_associator.format_track_pairs_for_solver(round_.pairs) if round_.pairs else [])
-        + round_.anchored_inputs
-        + round_.adsb_inputs
-    )
-    if solver_inputs:
-        node_cfgs = get_node_configs()
-        for s_in in solver_inputs:
-            if s_in["n_nodes"] < 2:
-                continue
-            try:
-                state.solver_queue.put_nowait((s_in, node_cfgs, time.time()))
-            except Exception:
-                state.bump_counter("solver_queue_drops")
-                if state.solver_queue_drops % 100 == 1:
-                    logging.warning(
-                        "Solver queue full — dropped %d candidates total",
-                        state.solver_queue_drops,
-                    )
-                    from services.alerting import send_alert
+    if pipeline is not None:
+        _ts_ms_assoc = frame.get("timestamp", 0)
+        # Track-level association.  The detection-level path it replaced now lives
+        # in retina_analytics.detection_association, reachable only from the
+        # offline bench, which keeps it as the A/B baseline.
+        _track_views = _node_track_views(pipeline, _ts_ms_assoc or None)
+        # Feed the per-node distinct-track counters — total_tracks /
+        # geolocated_tracks were exported (and read by the admin API) but never
+        # written anywhere.
+        state.node_analytics.record_node_tracks(
+            node_id,
+            (v["track_id"] for v in _track_views),
+            list(pipeline.geolocated_tracks.keys()),
+        )
+        round_ = state.node_associator.submit_tracks_round(
+            node_id,
+            _track_views,
+            _ts_ms_assoc,
+        )
+        # anchored_inputs (top-down claiming, ASSOC_CLAIM_MODE=active) and
+        # adsb_inputs (ADS-B seeding, ADSB_SEED_MODE=active) are already in
+        # solver-input shape — see _claim_round / _adsb_seed_round — so they
+        # join the bottom-up pairs' formatted output directly.  Both empty in
+        # off/shadow mode.
+        solver_inputs = (
+            (state.node_associator.format_track_pairs_for_solver(round_.pairs) if round_.pairs else [])
+            + round_.anchored_inputs
+            + round_.adsb_inputs
+        )
+        if solver_inputs:
+            # Only what these inputs name: the snapshot copies a config per
+            # node, and the fleet is far larger than any one candidate.
+            node_cfgs = get_node_configs(set().union(*(_solver_input_node_ids(s) for s in solver_inputs)))
+            for s_in in solver_inputs:
+                if s_in["n_nodes"] < 2:
+                    continue
+                try:
+                    state.solver_queue.put_nowait((s_in, configs_for_solver_input(node_cfgs, s_in), time.time()))
+                except Exception:
+                    state.bump_counter("solver_queue_drops")
+                    if state.solver_queue_drops % 100 == 1:
+                        logging.warning(
+                            "Solver queue full — dropped %d candidates total",
+                            state.solver_queue_drops,
+                        )
+                        from services.alerting import send_alert
 
-                    send_alert(
-                        "solver_queue_drops",
-                        f"Solver queue full — {state.solver_queue_drops} candidates dropped",
-                        {"total_drops": state.solver_queue_drops},
-                    )
+                        send_alert(
+                            "solver_queue_drops",
+                            f"Solver queue full — {state.solver_queue_drops} candidates dropped",
+                            {"total_drops": state.solver_queue_drops},
+                        )
     _d_assoc = time.thread_time() - _t2
 
     # ADS-B extraction.  Only TCP frames still reach here carrying an `adsb`
@@ -451,7 +619,9 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # here, where the verification and accuracy pipelines can reference them.
     _adsb_list = frame.get("adsb")
     if _adsb_list:
-        _ts_ms = int(time.time() * 1000)
+        _recv_s = time.time()
+        _ts_ms = adsb_capture_ts_ms(frame, _recv_s)
+        _recv_ms = int(_recv_s * 1000)
         # Same world stamp the TCP fast-path applies — a real node's list is
         # real traffic, a test frame's is simulated; claiming keys on it.
         _world = state.node_world(node_id)
@@ -476,12 +646,13 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
                 "gs": _ae.get("gs", 0),
                 "track": _ae.get("track", 0),
                 "last_seen_ms": _ts_ms,
+                "recv_ms": _recv_ms,  # server clock; see the TCP path
                 "world": _world,
             }
             # Derived once here, not per read — see state.adsb_derived_fields.
             # Published only after it is complete: readers snapshot unlocked.
             _rec.update(state.adsb_derived_fields(_rec))
-            state.adsb_aircraft[_hex] = _rec
+            adsb_store(_hex, _rec)
         state.aircraft_dirty = True
 
     # Time the archive append + conditional flush — the phase that actually
@@ -550,6 +721,8 @@ from services.feed_helpers import (  # noqa: E402,F401
     _estimate_velocity_ms_from_motion,
     _looks_like_same_aircraft,
     _record_arc_motion,
+    adsb_capture_ts_ms,
+    adsb_store,
     append_track_history,
     dedup_aircraft,
     position_distance_km,

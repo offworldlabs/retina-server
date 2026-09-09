@@ -423,7 +423,8 @@ async def get_tower_config(_admin=Depends(require_admin)):
         cfg = info.get("config", {})
         tx_lat = cfg.get("tx_lat")
         tx_lon = cfg.get("tx_lon")
-        if tx_lat and tx_lon:
+        # A transmitter on the equator or the prime meridian is a real tower.
+        if tx_lat is not None and tx_lon is not None:
             key = f"{tx_lat:.4f},{tx_lon:.4f}"
             if key not in towers:
                 towers[key] = {
@@ -579,17 +580,23 @@ async def system_metrics(_user=Depends(require_admin)):
 
     return {
         "task_last_success": dict(state.task_last_success),
-        "task_error_counts": dict(state.task_error_counts),
+        # Snapshot under the same lock bump_task_error takes: a bare dict()
+        # over a dict a worker thread is inserting into can raise
+        # "dictionary changed size during iteration" on this request path.
+        "task_error_counts": state.task_error_snapshot(),
         "frame_queue_depth": state.frame_queue.qsize(),
         "frame_queue_max": state.frame_queue.maxsize,
         "frames_dropped": state.frames_dropped,
         "frames_processed": state.frames_processed,
         "solver_successes": state.solver_successes,
         "solver_failures": state.solver_failures,
+        "solver_pool_timeouts": state.solver_pool_timeouts,
         "solver_queue_depth": state.solver_queue.qsize(),
         "solver_queue_drops": state.solver_queue_drops,
         "solver_stale_drops": state.solver_stale_drops,
         "solver_resolve_skips": state.solver_resolve_skips,
+        "tracks_stale_skipped": state.tracks_stale_skipped,
+        "solver_epoch_align_skipped": state.solver_epoch_align_skipped,
         "mn_superseded": state.mn_superseded,
         "solver_trimmed": state.solver_trimmed,
         "solver_last_latency_s": round(state.solver_last_latency_s, 3),
@@ -603,10 +610,13 @@ async def system_metrics(_user=Depends(require_admin)):
         # Store sizes that used to grow without bound — exposed so a soak can
         # watch them plateau instead of trusting the fix.
         "track_arc_motion": len(state.track_arc_motion),
+        "track_last_emit": len(state.track_last_emit),
+        "track_gate_hold": len(state.track_gate_hold),
         "mn_pos_history": _mn_pos_history_size(),
         "track_histories": len(state.track_histories),
         "ground_truth_trails": len(state.ground_truth_trails),
         "ws_clients": len(state.ws_clients),
+        "ws_send_timeouts": state.ws_send_timeouts,
         "ws_live_clients": len(state.ws_live_clients),
         "stale_tasks": _get_stale_tasks(),
         "process_rss_mb": round(rss_mb, 1),

@@ -98,6 +98,12 @@ def _known_lane_state():
     prev_claims = getattr(state, "known_claims", _SENTINEL)
     prev_mode = getattr(state, "KNOWN_LANE_MODE", _SENTINEL)
     state.known_claims = {}
+    # The module keeps its pass-interval clock (_last_pass_ts) at module
+    # level; under xdist worksteal a test from another class can leave it
+    # inside the interval, so the first maybe_run_pass of the next test is
+    # gated and its attempt count reads 0 (seen once in CI, 2026-09-06).
+    known_lane._reset_for_tests()
+    state._reset_for_tests()
     yield
     for name, prev in (("known_claims", prev_claims), ("KNOWN_LANE_MODE", prev_mode)):
         if prev is _SENTINEL:
@@ -178,7 +184,14 @@ def _run(solve_fn, mode="shadow"):
 
 
 def _known_records():
-    return [r for r in state.mlat_solve_history if r.get("known_lane")]
+    # The lane has its own deque (state.mlat_solve_history_known) so its
+    # per-hex-per-pass volume cannot evict dark records from a shared cap;
+    # the filter stays, as the assertion that nothing else lands there.
+    return [r for r in state.mlat_solve_history_known if r.get("known_lane")]
+
+
+def _dark_records():
+    return list(state.mlat_solve_history)
 
 
 class TestRealSolve:

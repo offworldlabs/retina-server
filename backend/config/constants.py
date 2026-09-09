@@ -17,6 +17,7 @@ from core.env_parsing import parse_comma_list
 C_KM_US = 0.299792458  # Speed of light (km/µs)
 R_EARTH_KM = 6371.0  # Mean Earth radius (km)
 FT_TO_M = 0.3048  # Feet → metres
+KNOTS_TO_MS = 0.514444  # Knots → metres per second
 
 # ── Field coercion ───────────────────────────────────────────────────────────
 
@@ -44,6 +45,55 @@ def as_num(v) -> float:
 # ── Association gates ────────────────────────────────────────────────────────
 DELAY_MATCH_THRESHOLD_US = 15.0  # Bistatic delay tolerance for matching
 ASSOC_GRID_STEP_KM = 3.0  # Overlap zone grid resolution (km)
+
+
+def _assoc_alt_layers_km() -> tuple[float, ...]:
+    """Altitude layers (km) the overlap grid is precomputed on.
+
+    An n=2 solve is exactly determined in (x, y) once altitude is pinned, so
+    its position error IS its altitude error, and that altitude comes from
+    here — the associator picks the best grid point and a delay-residual
+    weighted mean altitude across these layers.  Measured on a 20-minute test
+    capture against ground truth: n=2 solves had a median altitude error of
+    1.46 km (p90 5.25) and a position error of 1.61 km when the altitude
+    landed within 1 km of truth against 2.71 km when it did not.
+
+    The obvious fix — a finer ladder — was tried and measured, and it does
+    not help.  With 1 km steps from 1 to 12 km (two 20-minute captures against
+    the six-layer baseline, synthetic traffic only): n=2 attempts tripled
+    (170 -> 548 per capture) and the extra attempts were almost all
+    beam-rejected; the population of n=3 solves whose pool nodes all failed
+    adoption grew from 3-6 to 24-28 per capture at ~2.7 km error; and the
+    inherited-altitude n=3 solves (see solver.py's _inherit_key_altitude)
+    came out at 1.2-1.6 km against 0.36 km with the six layers, because the
+    donors' own altitudes had been solved from worse initial guesses.  The
+    guess is a weighted MEAN across layers, so a denser ladder does not make
+    it land nearer a layer; it makes more low-residual layers tie.
+
+    So the default stays the library's six layers (1.5, 3, 5, 7, 9, 11), and
+    the ladder is env-overridable as a comma list (ASSOC_ALT_LAYERS_KM=
+    "1,2,3,4,5,6,7,8,9,10,11,12") so the experiment can be repeated without a
+    code change.  Cost is linear in the layer count and paid once per node
+    pair at registration: the overlap columns are altitude-independent, so
+    twelve layers emit exactly twice the grid points of six (measured per
+    zone on one real pair at grid_step_km=3.0: 180 -> 360 points, 9.3 ->
+    13.3 ms).  A blank or unparseable value falls back to the default rather
+    than building an empty grid, which would silently disable association
+    altogether.
+    """
+    raw = os.getenv("ASSOC_ALT_LAYERS_KM", "")
+    if raw.strip():
+        try:
+            parsed = tuple(sorted(float(p) for p in parse_comma_list(raw)))
+        except ValueError:
+            parsed = ()
+        if parsed:
+            return parsed
+    return ASSOC_ALT_LAYERS_KM_DEFAULT
+
+
+ASSOC_ALT_LAYERS_KM_DEFAULT: tuple[float, ...] = (1.5, 3.0, 5.0, 7.0, 9.0, 11.0)
+ASSOC_ALT_LAYERS_KM: tuple[float, ...] = _assoc_alt_layers_km()
 ASSOC_MIN_INTERVAL_S = 30.0  # Per-node association rate limit (s)
 ASSOC_MAX_NEIGHBORS = 50  # CPU budget cap for neighbor checks
 # Track pairings emitted per association round when the constant-velocity fit
@@ -83,12 +133,62 @@ N2_CONFIRM_MIN_SPAN_S = 12.0  # Observation span before a pairing is fitted
 N2_CONFIRM_MIN_EPOCHS = 4  # Floor on samples; span is the real gate
 N2_TRACK_HISTORY_MAX = 20  # Per-node track samples fed to the fit
 
+# How old a track's newest REAL detection may be before the track stops being
+# offered to association (see services/frame_processor.confirmed_track_views).
+# A COASTING track is kept alive for N_DELETE=10 frames after its last
+# association, and at the fleet's 0.74-1 Hz per-node cadence that is up to ~13 s
+# of dead reckoning.  confirmed_track_views hands association the track's last
+# real sample, and association hands the solver that sample as if it were
+# current — so an aircraft that has flown out of a node's beam keeps
+# contributing a seconds-old delay to n>=3 solves.  Measured on the test
+# droplet: 230 out of-cone nodes survived into published dark solves in 20 min,
+# median 4 deg outside the beam edge (p90 22 deg) and 1.8 km beyond max range,
+# and they are the nodes the rms trim then throws away.  0 disables the filter.
+TRACK_MAX_STALE_S = float(os.getenv("TRACK_MAX_STALE_S", "3.0"))
+
 # A 2-node track needs this many solves before it renders a plane; 1
 # disables the gate.  One-shot n=2 solves were the dominant ghost source.
 MN_N2_MIN_SOLVES = int(os.getenv("MN_N2_MIN_SOLVES", "2"))
 # One-shot display lifetime for n>=3 solves, seconds.  A track confirmed by
-# a second solve gets the normal 60 s entry expiry / 30 s DR cap.
-MN_ONESHOT_TTL_S = float(os.getenv("MN_ONESHOT_TTL_S", "5.0"))
+# a second solve gets the normal MN_DARK_EXPIRY_S/60 s entry expiry and the
+# MN_DR_CAP_S dead-reckoning cap below.
+#
+# The window has to outlive the wait for the confirmation it is waiting for,
+# or it is not a preview window — it is a guaranteed disappearance.  A second
+# solve can only come from a later association round, and association is
+# rate-limited per node at ASSOC_MIN_INTERVAL_S = 30 s; live, the dark solve
+# cadence is a 9 s median and a 25 s p90.  At 5 s the great majority of
+# genuine n>=3 one-shots blinked out before the round that would have
+# confirmed them ever ran, which reads on the map as flicker, not as caution.
+# 15 s covers the median and most of the p90 while still being short of the
+# entry expiry (MN_DARK_EXPIRY_S 30 s dark, 60 s assisted), so an unconfirmed
+# one-shot is still withdrawn before a confirmed track would be.
+MN_ONESHOT_TTL_S = float(os.getenv("MN_ONESHOT_TTL_S", "15.0"))
+
+# How far a multinode entry may be dead-reckoned past its last solve, seconds.
+# Beyond this it holds its last dead-reckoned point until the entry expires.
+#
+# The cap is a position-error budget, not a cadence allowance.  Measured on
+# the test droplet over 20 minutes (dark multinode feed entries vs ground
+# truth): median error 1.05 km under 3 s of solve age, 1.21 km at 3–8 s,
+# 1.50 km at 8–15 s, then 2.02 km at 15–30 s (7% of entries more than 5 km
+# off).  The knee is at 15 s, which is where the KF's learned velocity error
+# starts to dominate the solve error it is extrapolating.  The old 30 s cap
+# was set when a dark aircraft was re-solved every 12 s and the extra window
+# bought coverage; dark solves now land every 1–3 s, so a 15 s gap is a lost
+# track rather than a cadence gap, and extrapolating it only invents motion.
+MN_DR_CAP_S = float(os.getenv("MN_DR_CAP_S", "15.0"))
+
+# Entry expiry for DARK multinode tracks (mn-dark-*), seconds.  ADS-B-assisted
+# entries (mn-adsb-*) keep the 60 s expiry: they are anchored to a transponder
+# fix, so a gap there is the ADS-B feed breathing rather than a lost target.
+#
+# Same 20-minute capture: the 30–60 s age band was 12% of all displayed dark
+# entries, with a 3.99 km median error and 32% more than 5 km off — an icon
+# that reads as a live target while sitting kilometres from any aircraft.  At
+# the current 1–3 s dark solve cadence an entry that has not re-solved in 30 s
+# is a lost track, and withdrawing it is more honest than holding it.
+MN_DARK_EXPIRY_S = float(os.getenv("MN_DARK_EXPIRY_S", "30.0"))
 
 # Quality gate for adopting the constant-velocity fit's velocity into a
 # published solve, in place of the single-epoch Doppler solution (see
@@ -207,7 +307,24 @@ ANALYTICS_REFRESH_INTERVAL_S = 30  # Background analytics recompute
 # 30 s cadence) create the small-files problem at scale.
 ARCHIVE_FLUSH_INTERVAL_S = 3600
 ARCHIVE_BATCH_MAX = 10000  # Safety cap; should not normally trigger
+# How long a node's archive buffer may keep failing to write before it is
+# abandoned — but only once the node itself has left connected_nodes.  Frames
+# are deliberately retained across a failed write (disk full, permissions), and
+# the buffer key is popped only on a *successful* write that empties it, so a
+# node that departs mid-outage pinned its frames for the process lifetime and
+# was retried on every flush cycle forever.  Six cycles at the hourly cadence
+# above; a node that is still connected keeps its data indefinitely regardless.
+ARCHIVE_BUFFER_FAIL_TTL_S = float(os.getenv("ARCHIVE_BUFFER_FAIL_TTL_S", "21600"))
 TRACK_ARCHIVE_FLUSH_INTERVAL_S = 60  # Multi-node solver track archive flush cadence
+
+# ── Detection mirror (production forwards accepted v1 frames elsewhere) ──────
+DETECTION_MIRROR_FLUSH_INTERVAL_S = 1.0  # One batched POST per second
+# Ten flush intervals at the contract's ceiling (12 nodes at 2 Hz = 24 frames/s).
+# Deliberately small: the mirror sheds rather than accumulating a backlog when
+# the receiving environment is unreachable.
+DETECTION_MIRROR_QUEUE_MAX = 240
+DETECTION_MIRROR_TIMEOUT_S = 2.0  # Bounds a hung receiver
+DETECTION_MIRROR_LOG_INTERVAL_S = 60.0  # Throttle for the drop/failure line
 
 # ── Archive lifecycle (R2 offload + local disk cleanup) ──────────────────────
 ARCHIVE_OFFLOAD_AGE_DAYS = 1  # Upload to R2 after this many days
@@ -283,7 +400,49 @@ GT_REFRESH_S = 5.0  # Ground-truth snapshot refresh cadence (s)
 REPUTATION_INTERVAL_S = 60  # Reputation evaluator sleep (s)
 ADSB_TRUTH_INTERVAL_S = 120  # ADS-B truth fetcher sleep (s)
 ADSB_BACKOFF_S = 300  # Rate-limit backoff (s)
-OPENSKY_BUFFER_DEG = 1.0  # lat/lon margin for OpenSky bbox (degrees)
+
+# ── External ADS-B query regions ─────────────────────────────────────────────
+ADSB_CELL_SPACING_KM = 400.0  # Lattice cell size for grouping nodes into queries
+# Padding every query region carries around its members, sized against the
+# fleet's configured max_range_km (140 at the widest).  An assumption about the
+# fleet, not a bound from the contract: node_config accepts max_range_km up to
+# 1000, and a node configured past this margin detects aircraft the query never
+# asks for, so the truth fetcher logs the shortfall rather than under-covering
+# it silently.  Raising this raises every box's area and so its OpenSky credits.
+ADSB_NODE_RANGE_MARGIN_KM = 150.0
+# A query must reach a node anywhere in its cell plus that node's detection
+# range, so radius >= spacing/sqrt(2) + margin = 283 + 150 = 433 km = 234 nm.
+# That is the ceiling; real groups are tighter because geometry comes from the
+# members, not the cell.  Stays under adsb.lol's 250 nm schema cap.
+ADSB_MAX_REGIONS_PER_CYCLE = 8  # adsb.lol's measured burst bucket
+
+# How old either side of an ADS-B cross-validation may be.  Applied to the
+# external entry and to the node's sample separately, so the worst skew between
+# them is twice this: at 250 m/s that is 7.5 km of honest motion against a
+# 10 km mismatch bar, which leaves the bar measuring disagreement rather than
+# elapsed time.  Tight enough that the check only fires on samples captured near
+# a poll — widening it means dead-reckoning the entry first, not a bigger number.
+XVAL_MAX_AGE_S = 15.0
+# How far behind us a node's frame timestamp may sit and still be believed.
+# Backlog makes a frame genuinely older than its arrival, and reporting that is
+# the point, so this is wide enough not to mistake backlog for a broken clock.
+ADSB_CAPTURE_MAX_SKEW_S = 300.0
+# How far ahead of us it may sit.  Tight, and deliberately not symmetric with
+# the above: a stamp in the future is not stale to any gate and never becomes
+# so, so only network and scheduling jitter is allowed for.
+ADSB_CAPTURE_MAX_LEAD_S = 2.0
+# How long an external ADS-B entry stays servable after its own capture time.
+# Derived, not chosen: a rate-limited poll cycle is already
+# ADSB_TRUTH_INTERVAL_S + ADSB_BACKOFF_S apart, so anything tighter would blank
+# the fallback during ordinary backoff.  The margin covers fetch latency.  This
+# is an upper bound on how long an outage can go on serving last-good data, not
+# a freshness claim: entries carry their true age and every consumer gates on it.
+EXTERNAL_ADSB_MAX_AGE_S = ADSB_TRUTH_INTERVAL_S + ADSB_BACKOFF_S + 180
+# Oldest external entry a consumer scoring solves will treat as truth.  Much
+# tighter than the retention bound above, which only says when the poller stops
+# holding an entry at all: at 250 m/s a 120 s fix is 30 km from the aircraft,
+# and verification reports the difference as node error.
+EXTERNAL_TRUTH_MAX_AGE_S = 120.0
 
 # ── Admin / ops ──────────────────────────────────────────────────────────────
 EVENT_LOG_MAX = 2000  # Event log buffer capacity
@@ -334,13 +493,26 @@ def force_retire_prefixes() -> tuple[str, ...]:
 # nodes within a few hundred metres of home, which is the case the fuzz exists
 # to prevent.
 #
+# The bounds are also part of the HMAC message public_location.py hashes, so
+# editing either one re-draws each node's bearing as well as its distance.
+# Changing them is therefore a re-fuzz of the whole fleet — see that module's
+# docstring for why anything less would hand the true receiver back to anyone
+# holding a published position from both frames.
+#
 # These are read at call time, not bound at import, for the same reason as
 # force_retire_prefixes() above: main.py calls load_dotenv() after the route
 # imports, so an import-time read would silently miss a salt set in
 # backend/.env and every node would move the day the file started being read.
 NODE_FUZZ_MODE_DEFAULT = "on"  # "off" disables; anything else enables
-NODE_FUZZ_MIN_KM_DEFAULT = 1.0  # Inner radius of the donut (km)
-NODE_FUZZ_MAX_KM_DEFAULT = 3.0  # Outer radius of the donut (km)
+# Narrowed from [1.0, 3.0] on 2026-09-05.  The wider donut put a node in the
+# wrong part of the metro area, which read on the map as a receiver that could
+# not be where its own coverage said it was, and drew a 3 km uncertainty disc
+# over most of a city at the zooms people actually use.  0.5 km is still a
+# floor of several hundred houses, and the honest limit of what a single fuzzed
+# anchor buys is set by correlation across channels, not by this radius —
+# services/public_location.py says so at length.
+NODE_FUZZ_MIN_KM_DEFAULT = 0.5  # Inner radius of the donut (km)
+NODE_FUZZ_MAX_KM_DEFAULT = 1.0  # Outer radius of the donut (km)
 
 
 def node_fuzz_mode() -> str:
@@ -370,6 +542,23 @@ def node_fuzz_max_km() -> float:
     # displacements outside both bounds.  Clamp rather than raise: a
     # misconfigured pair must not stop the server serving.
     return max(value, node_fuzz_min_km())
+
+
+# Two receivers closer than this that are NOT configured at the same
+# coordinates are almost certainly one site entered twice.  services/
+# node_sites.py groups on exact equality and reports these instead of merging
+# them — see that module on why proximity must not decide a node's offset.
+# 150 m is comfortably wider than the scatter between two typed-in fixes for
+# one roof and far narrower than the gap between two operators' houses.
+NODE_FUZZ_SITE_AUDIT_KM_DEFAULT = 0.15
+
+
+def node_fuzz_site_audit_km() -> float:
+    """Distance under which two differently-configured nodes are flagged (km)."""
+    try:
+        return float(os.getenv("NODE_FUZZ_SITE_AUDIT_KM") or NODE_FUZZ_SITE_AUDIT_KM_DEFAULT)
+    except ValueError:
+        return NODE_FUZZ_SITE_AUDIT_KM_DEFAULT
 
 
 def node_fuzz_salt() -> str:

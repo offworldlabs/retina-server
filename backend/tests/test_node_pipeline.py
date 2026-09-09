@@ -10,6 +10,8 @@ needs a node with a configuration row attached.
 """
 
 import asyncio
+import hashlib
+import json
 import logging
 from datetime import UTC, datetime
 
@@ -24,7 +26,9 @@ from core import state
 from core.nodes import Node, NodeConfig
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from services.frame_processor import get_or_create_node_pipeline
+from services.node_config import position_status
 from services.node_pipeline import (
+    _pipeline_config,
     prime_pipeline,
     prime_pipeline_at_startup,
     register_with_pipeline,
@@ -107,6 +111,53 @@ async def test_the_pipeline_config_carries_the_defaults_the_wire_config_omits(no
     assert config["doppler_min"] == -300
     assert config["doppler_max"] == 300
     assert config["min_doppler"] == 15
+
+
+async def test_a_row_with_no_position_registers_unplaced_and_keeps_its_nulls(node_session):
+    """The in-memory copy keeps the row's honest nulls, altitude included.
+
+    Registration resolves nothing: this config is what /api/radar/nodes
+    publishes and what the Parquet archive snapshots, and a terrain default
+    written here would be indistinguishable downstream from a survey. Geometry
+    resolves the altitude at its own boundary instead, and a node with no
+    coordinates builds no pipeline at all."""
+    unplaced = await _seed(
+        node_session,
+        NODE_ID,
+        rx_lat=None,
+        rx_lon=None,
+        rx_alt_ft=None,
+        tx_lat=None,
+        tx_lon=None,
+        tx_alt_ft=None,
+    )
+
+    await register_with_pipeline(node_session, unplaced)
+
+    config = state.connected_nodes[NODE_ID]["config"]
+    assert position_status(config) == "missing_both"
+    assert config["rx_alt_ft"] is None
+    assert config["tx_alt_ft"] is None
+    assert get_or_create_node_pipeline(NODE_ID, PassiveRadarPipeline(DEFAULT_NODE_CONFIG)) is None
+
+
+async def test_the_config_hash_is_computed_before_canonicalisation(node_session):
+    """The TCP heartbeat compares a node's own hash against the stored one, so
+    canonicalisation must not move it: the whole fleet would report config drift
+    on the deploy that introduced it."""
+    # The (0, 0) sentinel, which canonicalisation collapses to a null pair. A
+    # null altitude no longer serves here: it is left null on both sides now,
+    # so the two hashes would agree and the assertion below would pin nothing.
+    node = await _seed(node_session, NODE_ID, rx_lat=0.0, rx_lon=0.0)
+    row_config = await _pipeline_config(node_session, NODE_ID)
+    expected = hashlib.sha256(json.dumps(row_config, sort_keys=True).encode()).hexdigest()[:16]
+
+    await register_with_pipeline(node_session, node)
+
+    entry = state.connected_nodes[NODE_ID]
+    assert entry["config_hash"] == expected
+    stored = hashlib.sha256(json.dumps(entry["config"], sort_keys=True).encode()).hexdigest()[:16]
+    assert stored != expected, "the two forms must differ here, or this pins nothing"
 
 
 async def test_an_aimed_node_keeps_the_azimuth_it_was_configured_with(node_session):
@@ -307,3 +358,38 @@ async def test_a_full_queue_drops_the_frame_and_bumps_the_counter(monkeypatch):
     assert submit_frame(NODE_ID, {"timestamp": 1, "delay": [], "doppler": [], "snr": []}) is False
 
     assert state.frames_dropped == before + 1
+
+
+def test_pipeline_frame_converts_the_wire_shape():
+    """Seconds to milliseconds, and `adsb_hex` under its own key rather than `adsb`."""
+    from routes.node_schemas import DetectionFrame
+    from services.node_pipeline import pipeline_frame
+
+    out = pipeline_frame(
+        DetectionFrame(
+            t=1753900000.123,
+            seq=918273,
+            boot_id="k3n8v2qp71ab",
+            config_version=1,
+            delay=[12.4, 30.1],
+            doppler=[-118.0, 44.5],
+            snr=[14.2, 9.8],
+            adsb_hex=["4ca1f2", None],
+        )
+    )
+
+    assert out["timestamp"] == 1753900000123
+    assert out["delay"] == [12.4, 30.1]
+    assert out["doppler"] == [-118.0, 44.5]
+    assert out["snr"] == [14.2, 9.8]
+    assert out["adsb_hex"] == ["4ca1f2", None]
+    assert "adsb" not in out
+    assert (out["seq"], out["boot_id"], out["config_version"]) == (918273, "k3n8v2qp71ab", 1)
+
+
+def test_the_route_uses_the_shared_conversion():
+    """One conversion, not two that can drift apart."""
+    from routes import node_stream
+    from services import node_pipeline
+
+    assert node_stream.pipeline_frame is node_pipeline.pipeline_frame

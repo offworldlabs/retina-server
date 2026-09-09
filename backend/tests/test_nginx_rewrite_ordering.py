@@ -32,6 +32,7 @@ _VALUES = {
     "HOST_MAP": "map.example.com",
     "HOST_DASH": "dash.example.com",
     "HOST_ADMIN": "admin.example.com",
+    "HOST_DATA": "data.example.com",
     "HOST_TESTMAP": "testmap.example.com",
     "HOST_LEGACY_REDIRECT": "tower-finder.example.com",
     "CSP_CONNECT_SRC": "https://api.example.com",

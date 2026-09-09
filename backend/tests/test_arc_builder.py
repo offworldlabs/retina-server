@@ -1497,14 +1497,31 @@ class TestArcTrackIsTranslated:
         assert (ac["lat"], ac["lon"]) != tuple(round(v, 6) for v in self._true_midpoint(track))
 
     def test_icon_is_displaced_by_about_the_node_offset(self):
-        from config.constants import NODE_FUZZ_MAX_KM_DEFAULT, NODE_FUZZ_MIN_KM_DEFAULT
+        """About, not exactly — and the gap is geometry, not a bug.
+
+        The published arc is REBUILT around the fuzzed receiver rather than
+        translated, so moving one focus of the ellipse changes the curve's
+        shape a little and its midpoint travels a slightly different vector
+        from the receiver's own.  Measured across ten salts on this fixture the
+        ratio runs 0.90 to 1.27, so the assertion is a band around the offset
+        rather than the donut's bounds: those coincided with the band only
+        while the donut was wide, and pinning the icon to them made a change of
+        NODE_FUZZ_MAX_KM look like an arc-builder regression.
+
+        What has to hold is that the icon moved by something of the offset's
+        size — far enough that the true crossing is not being served, close
+        enough that it is this node's offset doing the moving.
+        """
+        import math
+
         from services.geo import haversine_km
+        from services.public_location import public_offset_km
 
         track = self._put()
         ac = self._build()
         true_lat, true_lon = self._true_midpoint(track)
         moved_km = haversine_km(true_lat, true_lon, ac["lat"], ac["lon"])
-        assert NODE_FUZZ_MIN_KM_DEFAULT <= moved_km <= NODE_FUZZ_MAX_KM_DEFAULT
+        assert moved_km == pytest.approx(math.hypot(*public_offset_km("test_node")), rel=0.5)
 
     def test_internal_state_stays_in_the_true_frame(self):
         track = self._put()

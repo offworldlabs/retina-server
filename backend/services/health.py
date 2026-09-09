@@ -167,7 +167,17 @@ def compute_health_issues() -> list[dict]:
 
     # Solver accuracy degradation (mean error >10 km).
     # Threshold only on *trusted point fixes* — multi-node and ADS-B-anchored
-    # solves. Single-receiver positions (`single_node_ellipse_arc`,
+    # solves.  Concretely, and as of the dark sampling fix below, that is
+    # `multinode_solve` (BOTH lanes: ADS-B-anchored samples from
+    # track_gates._record_accuracy_sample, and dark samples carrying
+    # lane="dark" from solver._record_dark_accuracy_sample), `solver_adsb_seed`
+    # and anything else a future source adds that is not named untrusted here.
+    # Until that fix the dark lane was structurally invisible to this check:
+    # its only sampler was gated on an ADS-B fix the dark lane by definition
+    # does not have, so the alert spoke for "multi-node accuracy" while
+    # measuring only the tagged half of it.  The thresholds (>20 samples,
+    # >10 km weighted mean) are untouched — the change is what feeds them.
+    # Single-receiver positions (`single_node_ellipse_arc`,
     # `solver_single_node`) are geometry-limited loci that sit tens of km off
     # truth by construction (bistatic root ambiguity / poor GDOP); including
     # them made the overall mean read ~27 km on prod even though multi-node
@@ -205,7 +215,8 @@ def compute_health_issues() -> list[dict]:
                     add(
                         "solver_accuracy_degraded",
                         WARNING,
-                        f"Solver mean error {mean_trusted:.1f}km over {n_trusted} trusted-position samples",
+                        f"Solver mean error {mean_trusted:.1f}km over {n_trusted} "
+                        f"trusted-position samples (multinode dark + ADS-B-anchored)",
                     )
     except Exception:
         logging.debug("health probe failed", exc_info=True)

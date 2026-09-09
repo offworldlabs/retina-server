@@ -1,9 +1,11 @@
 """Feed-side handling of multinode solver tracks.
 
 Covers the dead-reckoning of mn-* entries in build_combined_aircraft_json:
-position is advanced with the solved velocity, but only up to a 30 s horizon —
+position is advanced with the solved velocity, but only up to MN_DR_CAP_S —
 past that a velocity error dominates any solve accuracy, so an old solve holds
-its last dead-reckoned point until the 60 s entry expiry.
+its last dead-reckoned point until the entry expires.  Expiry is lane-aware:
+MN_DARK_EXPIRY_S for a dark (mn-dark-*) entry, the historic 60 s for an
+ADS-B-assisted (mn-adsb-*) one, whose transponder hex anchors it.
 """
 
 import math
@@ -16,6 +18,7 @@ import pytest
 os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
+from config.constants import MN_DARK_EXPIRY_S, MN_DR_CAP_S  # noqa: E402
 from core import state  # noqa: E402
 from services import track_filter  # noqa: E402
 from services.geo import offset_latlon_m  # noqa: E402
@@ -68,15 +71,95 @@ class TestMultinodeDeadReckonCap:
         exp_lat, _ = offset_latlon_m(LAT, LON, east_m=0.0, north_m=100.0 * 10.0)
         assert ac["lat"] == pytest.approx(exp_lat, abs=2e-4)
 
-    def test_dr_horizon_is_capped_at_30s(self):
-        # 45 s old (younger than the 60 s expiry): advanced 30 s worth of
-        # motion, not 45.
-        state.multinode_tracks["mn-dark-x"] = _mn_entry(age_s=45.0, vel_north=100.0)
+    def test_solve_epoch_position_is_published_undead_reckoned(self):
+        """solve_lat/solve_lon are the stored fix; lat/lon are the DR'd one.
+
+        The map centres its 95% uncertainty disc on the solve epoch, because
+        pos_sigma_m is the accuracy of THAT position and of nothing the
+        dead-reckoner invented afterwards.  Both pairs ride on every entry.
+        """
+        state.multinode_tracks["mn-dark-x"] = _mn_entry(age_s=10.0, vel_north=100.0)
         ac = self._build_mn()
-        capped_lat, _ = offset_latlon_m(LAT, LON, east_m=0.0, north_m=100.0 * 30.0)
-        uncapped_lat, _ = offset_latlon_m(LAT, LON, east_m=0.0, north_m=100.0 * 45.0)
+        assert ac["solve_lat"] == round(LAT, 5)
+        assert ac["solve_lon"] == round(LON, 5)
+        # 10 s at 100 m/s north: lat has moved, lon has not.
+        exp_lat, _ = offset_latlon_m(LAT, LON, east_m=0.0, north_m=100.0 * 10.0)
+        assert ac["lat"] == pytest.approx(exp_lat, abs=2e-4)
+        assert ac["lat"] > ac["solve_lat"]
+        assert ac["lon"] == pytest.approx(ac["solve_lon"], abs=1e-5)
+
+    def test_solve_epoch_position_equals_the_fix_at_zero_age(self):
+        state.multinode_tracks["mn-dark-x"] = _mn_entry(age_s=0.0, vel_north=100.0)
+        ac = self._build_mn()
+        assert ac["solve_lat"] == pytest.approx(ac["lat"], abs=1e-5)
+        assert ac["solve_lon"] == pytest.approx(ac["lon"], abs=1e-5)
+
+    def test_dr_horizon_is_capped_at_mn_dr_cap_s(self):
+        # 20 s old (still inside the 30 s dark expiry, so this exercises the
+        # DR cap and not staleness): advanced MN_DR_CAP_S worth of motion,
+        # not 20 s worth.
+        state.multinode_tracks["mn-dark-x"] = _mn_entry(age_s=20.0, vel_north=100.0)
+        ac = self._build_mn()
+        capped_lat, _ = offset_latlon_m(LAT, LON, east_m=0.0, north_m=100.0 * MN_DR_CAP_S)
+        uncapped_lat, _ = offset_latlon_m(LAT, LON, east_m=0.0, north_m=100.0 * 20.0)
         assert ac["lat"] == pytest.approx(capped_lat, abs=2e-4)
-        assert abs(ac["lat"] - uncapped_lat) > 5e-3
+        # The 5 s the cap withheld is 500 m of northing, ~0.0045 deg of lat.
+        assert abs(ac["lat"] - uncapped_lat) > 3e-3
+
+    def test_assisted_entry_past_the_cap_holds_its_dead_reckoned_point(self):
+        # The assisted lane lives 60 s, so it reaches ages the dark lane never
+        # does — and past MN_DR_CAP_S it must hold, not keep extrapolating.
+        state.multinode_tracks["mn-adsb-abc123"] = _mn_entry(age_s=45.0, vel_north=100.0)
+        ac = self._build_mn()
+        capped_lat, _ = offset_latlon_m(LAT, LON, east_m=0.0, north_m=100.0 * MN_DR_CAP_S)
+        assert ac["lat"] == pytest.approx(capped_lat, abs=2e-4)
+
+
+class TestMultinodeLaneExpiry:
+    """Dark entries expire at MN_DARK_EXPIRY_S, assisted ones at 60 s.
+
+    A dark solve now lands every 1-3 s while the aircraft is tracked, so an
+    entry that has not re-solved in 30 s is a lost track rather than a cadence
+    gap; holding it drew an icon a measured 3.99 km (median) from any
+    aircraft.  An mn-adsb-* entry is anchored to a transponder hex, so the
+    same gap is the ADS-B feed breathing and it keeps the historic 60 s.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+        yield
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+
+    def _mn_hexes(self):
+        from services.frame_processor import build_combined_aircraft_json
+
+        pipeline = types.SimpleNamespace(geolocated_tracks={}, config={})
+        result = build_combined_aircraft_json(pipeline)
+        return [a["hex"] for a in result["aircraft"] if a.get("multinode")]
+
+    def test_dark_entry_inside_the_dark_expiry_is_rendered(self):
+        state.multinode_tracks["mn-dark-x"] = _mn_entry(age_s=MN_DARK_EXPIRY_S - 5.0, vel_north=100.0)
+        assert len(self._mn_hexes()) == 1
+        assert "mn-dark-x" in state.multinode_tracks
+
+    def test_dark_entry_past_the_dark_expiry_is_dropped(self):
+        state.multinode_tracks["mn-dark-x"] = _mn_entry(age_s=MN_DARK_EXPIRY_S + 1.0, vel_north=100.0)
+        assert self._mn_hexes() == []
+        # Expiry, not a display gate: the entry leaves the store entirely.
+        assert "mn-dark-x" not in state.multinode_tracks
+
+    def test_assisted_entry_at_the_same_age_survives(self):
+        state.multinode_tracks["mn-adsb-abc123"] = _mn_entry(age_s=MN_DARK_EXPIRY_S + 1.0, vel_north=100.0)
+        assert len(self._mn_hexes()) == 1
+        assert "mn-adsb-abc123" in state.multinode_tracks
+
+    def test_assisted_entry_still_expires_at_60s(self):
+        state.multinode_tracks["mn-adsb-abc123"] = _mn_entry(age_s=61.0, vel_north=100.0)
+        assert self._mn_hexes() == []
+        assert "mn-adsb-abc123" not in state.multinode_tracks
 
 
 class TestMultinodeDeadReckonSource:
@@ -395,3 +478,200 @@ class TestAdsbAssistedLane:
         ac = self._build_mn()
         assert ac["adsb_assisted"] is False
         assert "adsb_hex" not in ac
+
+
+class TestSolveUncertaintyFields:
+    """pos_sigma_m / pos_sigma_vel_ms on every mn entry — the calibrated disc
+    the map draws (services/solve_uncertainty.py).
+
+    Both are optional on the wire, and the lane decides the floor: a dark
+    solve had no ADS-B fix seeding its initial guess and no pinned altitude,
+    so it carries the dark-lane floors (2026-09-06, 68%-calibrated) instead of
+    the known-lane ones.  The lane comes from the KEY prefix, the same
+    authority the adsb_assisted field uses.  The KF is reset per test so the
+    velocity sigma exercises the no-KF-state fallback unless a test seeds one.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+        track_filter.reset()
+        yield
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+        track_filter.reset()
+
+    def _build_mn(self):
+        from services.frame_processor import build_combined_aircraft_json
+
+        pipeline = types.SimpleNamespace(geolocated_tracks={}, config={})
+        result = build_combined_aircraft_json(pipeline)
+        mn = [a for a in result["aircraft"] if a.get("multinode")]
+        assert len(mn) == 1
+        return mn[0]
+
+    def test_known_lane_n2_entry_carries_the_bare_floor(self):
+        # No pos_sigma_km on the fixture: sigma_solve is the n=2 floor alone.
+        state.multinode_tracks["mn-adsb-abc123"] = _mn_entry(age_s=1.0, vel_north=100.0)
+        ac = self._build_mn()
+        assert ac["pos_sigma_m"] == pytest.approx(650.0)
+
+    def test_solve_epoch_position_rides_along_with_the_sigma(self):
+        # The disc the sigma describes is drawn at solve_lat/solve_lon, so the
+        # pair is part of this wire contract even though it is published
+        # unconditionally rather than beside pos_sigma_m.
+        state.multinode_tracks["mn-adsb-abc123"] = _mn_entry(age_s=1.0, vel_north=100.0)
+        ac = self._build_mn()
+        assert ac["solve_lat"] == round(LAT, 5)
+        assert ac["solve_lon"] == round(LON, 5)
+        assert ac["pos_sigma_m"] > 0
+
+    def test_no_kf_state_uses_the_default_velocity_sigma(self):
+        key = "mn-adsb-abc123"
+        assert track_filter.learned_velocity(key) is None  # never smoothed
+        state.multinode_tracks[key] = _mn_entry(age_s=1.0, vel_north=100.0)
+        ac = self._build_mn()
+        assert ac["pos_sigma_vel_ms"] == pytest.approx(25.0)
+
+    def test_dark_lane_gets_the_dark_floor_and_the_known_lane_does_not(self):
+        state.multinode_tracks["mn-dark-1"] = _mn_entry(age_s=1.0, vel_north=100.0)
+        dark = self._build_mn()
+        state.multinode_tracks.clear()
+        state.multinode_tracks["mn-adsb-abc123"] = _mn_entry(age_s=1.0, vel_north=100.0)
+        known = self._build_mn()
+
+        assert known["adsb_assisted"] is True
+        assert dark["adsb_assisted"] is False
+        # n=2 on the fixture: the known-lane 95% floor vs the dark 68% floor.
+        assert known["pos_sigma_m"] == pytest.approx(650.0)
+        assert dark["pos_sigma_m"] == pytest.approx(2100.0)
+
+    def test_result_adsb_hex_does_not_soften_a_dark_key(self):
+        # Same key-is-authoritative rule as adsb_assisted: a dark key whose
+        # result dict happens to carry adsb_hex is still the dark lane, so it
+        # still gets the dark floor.
+        entry = _mn_entry(age_s=1.0, vel_north=100.0)
+        entry["adsb_hex"] = "abc123"
+        state.multinode_tracks["mn-dark-1"] = entry
+        ac = self._build_mn()
+        assert ac["pos_sigma_m"] == pytest.approx(2100.0)
+
+    def test_formal_sigma_widens_the_disc(self):
+        entry = _mn_entry(age_s=1.0, vel_north=100.0)
+        entry["pos_sigma_km"] = 1.0
+        state.multinode_tracks["mn-adsb-abc123"] = entry
+        ac = self._build_mn()
+        assert ac["pos_sigma_m"] == pytest.approx(math.sqrt(1000.0**2 + 650.0**2), abs=0.1)
+
+    def test_kf_state_supplies_the_velocity_sigma(self):
+        key = "mn-adsb-abc123"
+        lat2, lon2 = offset_latlon_m(LAT, LON, east_m=0.0, north_m=50.0 * 20.0)
+        track_filter.smooth_solve(
+            {"lat": LAT, "lon": LON, "timestamp_ms": 1_000, "vel_east": 0.0, "vel_north": 0.0}, key, None
+        )
+        track_filter.smooth_solve(
+            {"lat": lat2, "lon": lon2, "timestamp_ms": 21_000, "vel_east": 0.0, "vel_north": 0.0}, key, None
+        )
+        lv = track_filter.learned_velocity(key)
+        assert lv is not None
+
+        state.multinode_tracks[key] = _mn_entry(age_s=1.0, vel_north=100.0)
+        ac = self._build_mn()
+        assert ac["pos_sigma_vel_ms"] == pytest.approx(round(lv[2], 1), abs=0.05)
+        assert ac["pos_sigma_vel_ms"] != pytest.approx(25.0)
+
+
+class TestMultinodeEntryFailureIsolation:
+    """One bad multinode key must cost one aircraft, not the whole feed.
+
+    The 2026-09-05 droplet failure went through here: a track whose filter
+    covariance had gone non-PSD made learned_velocity raise, and because the
+    per-entry work sat inline in build_combined_aircraft_json's loop the
+    exception propagated out of the flush task ("Aircraft flush failed") and
+    dropped the ENTIRE tick's payload -- every other aircraft with it, 91
+    times in 40 minutes.  track_filter now stops that covariance ever
+    forming; this is the second line of defence, which has to hold for any
+    future per-entry bug, not just that one.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        from services import aircraft_feed
+
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+        track_filter.reset()
+        aircraft_feed._reset_for_tests()
+        yield
+        state.multinode_tracks.clear()
+        state.track_histories.clear()
+        track_filter.reset()
+        aircraft_feed._reset_for_tests()
+
+    def _build(self):
+        from services.frame_processor import build_combined_aircraft_json
+
+        pipeline = types.SimpleNamespace(geolocated_tracks={}, config={})
+        return build_combined_aircraft_json(pipeline)
+
+    def test_one_raising_entry_does_not_abort_the_build(self, monkeypatch, caplog):
+        from services import aircraft_feed
+
+        good_a, bad, good_b = "mn-dark-good-a", "mn-dark-bad", "mn-dark-good-b"
+        for i, key in enumerate((good_a, bad, good_b)):
+            # Spread them out: co-located entries are collapsed by
+            # dedup_aircraft, which would hide the very thing under test.
+            entry = _mn_entry(age_s=5.0, vel_north=100.0)
+            entry["lat"] = LAT + 0.1 * i
+            state.multinode_tracks[key] = entry
+
+        real_learned_velocity = track_filter.learned_velocity
+
+        def _boom(track_key):
+            # Exactly the failure the droplet saw, raised from exactly the
+            # function it was raised from.
+            if track_key == bad:
+                raise ValueError("math domain error")
+            return real_learned_velocity(track_key)
+
+        monkeypatch.setattr(aircraft_feed.track_filter, "learned_velocity", _boom)
+
+        with caplog.at_level("ERROR"):
+            result = self._build()
+
+        mn_hexes = {a["hex"] for a in result["aircraft"] if a.get("multinode")}
+        from services.id_utils import multinode_hex_from_key
+
+        # The two healthy aircraft are still served ...
+        assert multinode_hex_from_key(good_a) in mn_hexes
+        assert multinode_hex_from_key(good_b) in mn_hexes
+        # ... and only the sick one is missing.
+        assert multinode_hex_from_key(bad) not in mn_hexes
+        # Logged once, naming the key, so this is diagnosable rather than silent.
+        assert sum("Multinode feed entry failed" in r.message for r in caplog.records) == 1
+        assert bad in caplog.text
+
+    def test_repeated_failures_are_rate_limited_to_one_log_line(self, monkeypatch, caplog):
+        from services import aircraft_feed
+
+        bad = "mn-dark-bad"
+        state.multinode_tracks[bad] = _mn_entry(age_s=5.0, vel_north=100.0)
+
+        def _boom(track_key):
+            raise ValueError("math domain error")
+
+        monkeypatch.setattr(aircraft_feed.track_filter, "learned_velocity", _boom)
+
+        with caplog.at_level("ERROR"):
+            for _ in range(20):
+                # Re-stamp: the entry would otherwise age past the 60 s expiry
+                # only after many more ticks, but keeping it fresh makes the
+                # 20 failures unambiguous.
+                state.multinode_tracks[bad] = _mn_entry(age_s=5.0, vel_north=100.0)
+                self._build()
+
+        # 20 failures inside one _MN_ENTRY_FAIL_LOG_INTERVAL_S window ->
+        # exactly one line, not 20.
+        assert sum("Multinode feed entry failed" in r.message for r in caplog.records) == 1
+        assert aircraft_feed._mn_entry_fail_count == 20

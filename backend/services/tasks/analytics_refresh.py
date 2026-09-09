@@ -10,7 +10,13 @@ import time
 import numpy as np
 import orjson
 
-from config.constants import ANALYTICS_REFRESH_INTERVAL_S, CLAIMED_DISPLAY_FRESH_S, as_num, is_num
+from config.constants import (
+    ANALYTICS_REFRESH_INTERVAL_S,
+    CLAIMED_DISPLAY_FRESH_S,
+    EXTERNAL_TRUTH_MAX_AGE_S,
+    as_num,
+    is_num,
+)
 from config.constants import (
     DELAY_MATCH_THRESHOLD_US as _DELAY_MATCH_THRESHOLD_US,
 )
@@ -18,6 +24,8 @@ from core import state
 from services.geo import bearing_deg, bistatic_delay_us, haversine_km, node_beam_params, point_in_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
+from services.node_config import position_status
+from services.node_sites import log_colocation_audit
 from services.public_location import (
     fuzz_enabled,
     location_uncertainty_km,
@@ -304,6 +312,18 @@ def _refresh_analytics_and_nodes():
     """Heavy work: recompute analytics, nodes, and overlaps → store as bytes."""
     from services.tcp_handler import is_synthetic_node
 
+    # Co-located receivers share one fuzz offset, and the pairs that ALMOST
+    # qualify — one site whose two configurations disagree by a few metres — are
+    # published as two independent samples of that site.  Nothing else would
+    # ever say so, so the audit rides the refresh that already walks the fleet;
+    # it logs only when its answer changes.  Pointless with the fuzz off, where
+    # every coordinate is the true one anyway.
+    if fuzz_enabled():
+        try:
+            log_colocation_audit()
+        except Exception:
+            logging.exception("Co-location audit failed")
+
     # Analytics.  Both variants below are served to unauthenticated clients, so
     # the receiver geometry in them is the published one — see
     # services/public_location.public_node_summary for what moves and why.  The
@@ -363,6 +383,7 @@ def _refresh_analytics_and_nodes():
                 ),
                 "sample_rate": (info.get("config", {}).get("Fs") or info.get("config", {}).get("fs_hz")),
                 "location": _public_location_block(nid, info.get("config", {})),
+                "position_status": position_status(info.get("config", {})),
             }
             for nid, info in _published_nodes
         },
@@ -573,7 +594,7 @@ def _refresh_missed_detections(nodes_snapshot: list):
         adsb_snapshot.append((hex_code, lat, lon))
         seen_hexes.add(hex_code.lower())
 
-    for hex_code, entry in list(state.external_adsb_cache.items()):
+    for hex_code, entry in _external_truth_entries(now):
         lat = entry.get("lat")
         lon = entry.get("lon")
         if lat is None or lon is None:
@@ -590,18 +611,18 @@ def _refresh_missed_detections(nodes_snapshot: list):
         if info.get("status") == "disconnected":
             continue
         cfg = info.get("config", {})
+        if position_status(cfg) != "positioned":
+            continue
         rx_lat = cfg.get("rx_lat")
         rx_lon = cfg.get("rx_lon")
         tx_lat = cfg.get("tx_lat")
         tx_lon = cfg.get("tx_lon")
-        if not all((rx_lat, rx_lon, tx_lat, tx_lon)):
-            continue
 
         # Resolved the same way every module resolves it: explicit aim, else
         # broadside off the RX→TX baseline (Yagi sits perpendicular to it),
         # else omnidirectional; width falls back to the shared YAGI default.
-        # tx_lat/tx_lon are already known truthy from the `all(...)` check
-        # above, so beam_azimuth can't come back None here.
+        # The position_status gate above admits only a node with both ends
+        # placed, so beam_azimuth cannot come back None here.
         params = node_beam_params(cfg)
         beam_width = params["beam_width_deg"]
         max_range = params["max_range_km"]
@@ -841,6 +862,21 @@ def _velocity_accuracy() -> dict:
     return out
 
 
+def _external_truth_entries(now: float):
+    """External ADS-B entries young enough to be treated as truth.
+
+    The poller's prune bounds how long an entry survives, but it runs on the
+    fetch cadence, so between cycles the cache still holds entries far past
+    what a consumer scoring solves should accept.  Entries carry their own
+    capture time; this is the one place that reads it on their behalf.
+    """
+    for hex_code, entry in list(state.external_adsb_cache.items()):
+        ts_ms = entry.get("last_seen_ms")
+        if not ts_ms or abs(now - ts_ms / 1000) > EXTERNAL_TRUTH_MAX_AGE_S:
+            continue
+        yield hex_code, entry
+
+
 def _refresh_node_verification(node_id: str):
     """Compare one node's detections to ADS-B truth via bistatic delay matching."""
     node_tracks = []
@@ -879,7 +915,7 @@ def _refresh_node_verification(node_id: str):
         adsb_candidates.append((adsb_hex, entry))
         seen_adsb_hexes.add(adsb_hex)
 
-    for adsb_hex, entry in list(state.external_adsb_cache.items()):
+    for adsb_hex, entry in _external_truth_entries(now):
         if not _valid_latlon(entry.get("lat"), entry.get("lon")):
             continue
         if adsb_hex not in seen_adsb_hexes:
@@ -923,12 +959,12 @@ def _refresh_node_verification(node_id: str):
         if not measured_delay_us or measured_delay_us <= 0:
             continue
 
-        tx_lat = cfg.get("tx_lat") or 0.0
-        tx_lon = cfg.get("tx_lon") or 0.0
-        rx_lat = cfg.get("rx_lat") or 0.0
-        rx_lon = cfg.get("rx_lon") or 0.0
-        if not tx_lat or not rx_lat:
+        if position_status(cfg) != "positioned":
             continue
+        tx_lat = cfg.get("tx_lat")
+        tx_lon = cfg.get("tx_lon")
+        rx_lat = cfg.get("rx_lat")
+        rx_lon = cfg.get("rx_lon")
 
         solver_lat = getattr(track, "lat", 0.0) or 0.0
         solver_lon = getattr(track, "lon", 0.0) or 0.0
@@ -1319,13 +1355,13 @@ def _refresh_mlat_verification():
     # Fallback 2: OpenSky / external ADS-B snapshot — same pattern as
     # _refresh_node_verification().  Useful when the live ADS-B injector
     # is in its rate-limit backoff window (up to 300 s).
-    for adsb_hex, entry in list(state.external_adsb_cache.items()):
+    for adsb_hex, entry in _external_truth_entries(now):
         if not _valid_latlon(entry.get("lat"), entry.get("lon")):
             continue
         if adsb_hex not in seen_truth_hexes:
-            # external_adsb_cache schema is {lat, lon, alt_m, velocity,
-            # heading} (periodic.py) — NOT the tar1090 gs/alt_baro schema.
-            # Reading gs/alt_baro here zeroed every external truth entry.
+            # external_adsb_cache carries alt_m/velocity in SI and names its
+            # provider in source (periodic.py), not the tar1090 alt_baro/gs
+            # schema this function otherwise reads.
             gs_ms = float(entry["velocity"] if entry.get("velocity") is not None else (entry.get("gs") or 0) * 0.514444)
             alt_m = float(entry["alt_m"] if entry.get("alt_m") is not None else as_num(entry.get("alt_baro")) * 0.3048)
             adsb_truth_pool.append(
@@ -1583,19 +1619,15 @@ def _refresh_mlat_verification():
         max_bistatic_deg: float | None = None
         for cid in r.get("contributing_node_ids", []):
             cfg = node_cfg_snap.get(cid, {})
-            t_tx_lat = cfg.get("tx_lat")
-            t_tx_lon = cfg.get("tx_lon")
-            t_rx_lat = cfg.get("rx_lat")
-            t_rx_lon = cfg.get("rx_lon")
-            if not all((t_tx_lat, t_tx_lon, t_rx_lat, t_rx_lon)):
+            if position_status(cfg) != "positioned":
                 continue
             ang = _bistatic_angle_deg(
                 solver_lat,
                 solver_lon,
-                float(t_tx_lat),
-                float(t_tx_lon),
-                float(t_rx_lat),
-                float(t_rx_lon),
+                cfg["tx_lat"],
+                cfg["tx_lon"],
+                cfg["rx_lat"],
+                cfg["rx_lon"],
             )
             if max_bistatic_deg is None or ang > max_bistatic_deg:
                 max_bistatic_deg = ang
@@ -1823,7 +1855,7 @@ async def analytics_refresh_task():
             logging.debug("Analytics refresh completed")
             state.task_last_success["analytics_refresh"] = time.time()
         except Exception:
-            state.task_error_counts["analytics_refresh"] += 1
+            state.bump_task_error("analytics_refresh")
             logging.exception("Analytics refresh failed")
         await asyncio.sleep(ANALYTICS_REFRESH_INTERVAL_S)
 
@@ -1848,6 +1880,6 @@ async def coverage_constraints_task():
             await loop.run_in_executor(_coverage_executor, _refresh_coverage_constraints)
             state.task_last_success["coverage_constraints"] = time.time()
         except Exception:
-            state.task_error_counts["coverage_constraints"] += 1
+            state.bump_task_error("coverage_constraints")
             logging.exception("Coverage constraint refresh failed")
         await asyncio.sleep(COVERAGE_REFRESH_INTERVAL_S)

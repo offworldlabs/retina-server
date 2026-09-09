@@ -129,6 +129,47 @@ class TestAssociationStatus:
         assert "overlap_zones" in body
         assert "overlaps" in body
 
+    def test_track_pairs_block_reports_the_live_counters(self, client):
+        """superseded and cluster_splits belong to the LIVE block, not the
+        inline-only one.
+
+        They used to be structurally zero in production because the only
+        exclusivity stage ran on a chi2 nothing computes with cv_fit=None.
+        The deferred path now prunes on implied-velocity conflict and splits
+        clusters that hold two tracks of one node, so both counters move on a
+        live fleet and reading them as "inline only" would be wrong.
+        """
+        _a = state.node_associator
+        _a.track_pairs_superseded += 5
+        _a.cluster_splits += 3
+        try:
+            body = client.get("/api/radar/association/status").json()
+            assert body["track_pairs"].keys() == {
+                "gated",
+                "unfitted",
+                "deferred",
+                "superseded",
+                "cluster_splits",
+            }
+            assert body["track_pairs"]["superseded"] == 5
+            assert body["track_pairs"]["cluster_splits"] == 3
+            assert body["track_pairs_inline_only"].keys() == {"accepted", "rejected"}
+        finally:
+            _a.track_pairs_superseded -= 5
+            _a.cluster_splits -= 3
+
+    def test_status_reports_world_skipped_pairs(self, client):
+        """The world gate on overlap zones is otherwise invisible: a fleet
+        whose sim/real pairs are being refused looks exactly like a fleet whose
+        pairs never overlapped, and only this counter separates them."""
+        _a = state.node_associator
+        _a.assoc_world_skipped_pairs += 7
+        try:
+            body = client.get("/api/radar/association/status").json()
+            assert body["assoc_world_skipped_pairs"] == 7
+        finally:
+            state._reset_for_tests()
+
     def test_status_includes_claiming_block(self, client):
         """Top-down claiming (ASSOC_CLAIM_MODE) since boot — off by default
         in tests, so this pins the shape rather than any particular mode."""

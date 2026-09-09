@@ -9,16 +9,21 @@ import queue
 import threading
 import time
 from collections import deque
+from collections.abc import Iterable
 from concurrent.futures.process import BrokenProcessPool
+
+from retina_analytics.association import _point_in_beam, predict_observation
 
 from config.constants import (
     ARC_ONLY_ANOMALY_ALLOWLIST,
+    ASSOC_GRID_STEP_KM,
     CV_VEL_ADOPT_CHI2_MAX,
     N2_CONFIRM_CHI2_MAX,
+    N2_CONFIRM_MIN_EPOCHS,
     N2_TRACK_ASSOCIATION,
 )
 from core import state
-from services import track_filter
+from services import dark_follow, track_filter
 
 # Beam-coverage geometry, used to reject solver results whose range or (at
 # n=2) bearing fall outside a contributing node's detection area.  This
@@ -27,6 +32,8 @@ from services import track_filter
 from services.geo import bearing_deg, bistatic_differential_km, node_beam_params, offset_latlon_m
 from services.geo import haversine_km as _haversine_km
 from services.id_utils import is_transponder_hex, multinode_hex_from_key, normalize_hex_key
+from services.node_config import position_status
+from services.solve_uncertainty import solve_sigma_m
 
 _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 
@@ -63,6 +70,17 @@ _solver_pool_lock = threading.Lock()
 # and keying off it silently reverted deployments to inline GIL-bound solving.
 _POOL_ENABLED = os.getenv("SOLVER_POOL", "1").strip().lower() not in ("0", "false", "off")
 
+# Wall-clock ceiling on one pool round trip.  A solve runs well under a
+# second; the queue itself discards items older than _SOLVER_MAX_QUEUE_AGE_S
+# (45 s), so a call still outstanding at 30 s has already lost the work it was
+# doing.  Without a timeout a child that is *alive but stuck* — a pathological
+# LM, a spawn child wedged on import, a machine deep in swap — blocks one of
+# only SOLVER_WORKERS (2) threads for the life of the process, silently: the
+# enqueue side counts solver_queue_drops / solver_stale_drops, but nothing on
+# this path bumps an error counter, so task health stays green while the lane
+# is dead.
+_POOL_CALL_TIMEOUT_S = float(os.getenv("SOLVER_POOL_CALL_TIMEOUT_S", "30"))
+
 
 def _make_solver_pool() -> concurrent.futures.ProcessPoolExecutor:
     return concurrent.futures.ProcessPoolExecutor(
@@ -71,43 +89,110 @@ def _make_solver_pool() -> concurrent.futures.ProcessPoolExecutor:
     )
 
 
-def _pool_call(fn, *args):
-    """Run fn in the solver process pool; inline when there is no pool."""
+def _replace_solver_pool(pool, reason: str) -> None:
+    """Tear down `pool` and stand a fresh one up in its place.
+
+    Idempotent across the worker threads: whoever gets the lock first swaps
+    the executor, and a second thread that hit the same failure finds
+    _solver_pool already moved on and leaves it alone.
+    """
     global _solver_pool
+    with _solver_pool_lock:
+        if _solver_pool is not pool:
+            return
+        try:
+            pool.shutdown(wait=False)
+        except Exception:
+            pass
+        try:
+            _solver_pool = _make_solver_pool()
+            logging.warning("Solver process pool %s — recreated", reason)
+        except Exception:
+            _solver_pool = None
+            logging.exception(
+                "Solver process pool %s and could not be recreated — solving inline on worker threads from now on",
+                reason,
+            )
+
+
+def _pool_call(fn, *args, **kwargs):
+    """Run fn in the solver process pool; inline when there is no pool.
+
+    Keyword arguments cross to the child like the positional ones do (both are
+    pickled by submit), so a callee with an options keyword — fit_constant_
+    velocity's fix_altitude — does not need a positional-only wrapper.
+    """
     pool = _solver_pool
     if pool is None:
-        return fn(*args)
+        return fn(*args, **kwargs)
+    future = None
     try:
-        return pool.submit(fn, *args).result()
+        future = pool.submit(fn, *args, **kwargs)
+        return future.result(timeout=_POOL_CALL_TIMEOUT_S)
+    except concurrent.futures.TimeoutError:
+        if future is not None:
+            future.cancel()
+        state.bump_counter("solver_pool_timeouts")
+        state.bump_task_error("solver_pool")
+        # s_in is the first argument of every submitted solve, and carries the
+        # node count — the one field that says whether the hang correlates
+        # with problem size.
+        n_nodes = args[0].get("n_nodes") if args and isinstance(args[0], dict) else None
+        logging.warning(
+            "Solver pool call %s timed out after %.0fs (n_nodes=%s) — retrying inline",
+            getattr(fn, "__name__", fn),
+            _POOL_CALL_TIMEOUT_S,
+            n_nodes,
+        )
+        # Same recovery as the broken-pool branch below, and the same
+        # fallback: retry inline rather than dropping the item.  A wedged
+        # child never releases its worker slot, so the executor is replaced
+        # either way.  The inline retry is deliberate — the overwhelming
+        # cause here is a sick *child*, not a pathological input, and dropping
+        # would cost a solve that the fresh interpreter completes in
+        # milliseconds.  It is also the only branch that can still block this
+        # thread; the counter and the task error make that case visible
+        # instead of silent, which is what the timeout is for.
+        _replace_solver_pool(pool, "call timed out")
+        return fn(*args, **kwargs)
     except BrokenProcessPool:
-        with _solver_pool_lock:
-            if _solver_pool is pool:
-                try:
-                    pool.shutdown(wait=False)
-                except Exception:
-                    pass
-                try:
-                    _solver_pool = _make_solver_pool()
-                    logging.warning("Solver process pool broke — recreated")
-                except Exception:
-                    _solver_pool = None
-                    logging.exception(
-                        "Solver process pool broke and could not be recreated"
-                        " — solving inline on worker threads from now on"
-                    )
-        return fn(*args)
+        _replace_solver_pool(pool, "broke")
+        return fn(*args, **kwargs)
 
 
-# Altitude layers (km) tried when n_nodes ≥ 3.  For an overdetermined system
+def _pool_solve_multistart(s_in, node_cfgs, alt_starts_km):
+    """solve_multinode_multistart via the process pool (inline when none).
+
+    Defined here rather than beside _pool_solve_multinode at the foot of this
+    module for the reason _pool_select_consensus is: it is a default argument
+    value, resolved when the ``def`` executes, so it has to be bound before
+    _solve_best_altitude's signature is reached.
+
+    A module-level function taking only picklable arguments, because the pool
+    is a *spawn* pool — a child imports retina_geolocator and nothing of the
+    backend, so what crosses is this function's qualified name plus the input
+    dicts.
+    """
+    from retina_geolocator.multinode_solver import solve_multinode_multistart
+
+    return _pool_call(solve_multinode_multistart, s_in, node_cfgs, alt_starts_km, True)
+
+
+# Altitude layers (km) swept when n_nodes ≥ 3.  For an overdetermined system
 # (3+ delay equations, 2 unknowns after altitude pinning) only the correct
 # altitude layer yields rms_delay ≈ 0; wrong layers give rms > 0, so picking
-# the minimum selects the true altitude.  Layers match the association grid
-# (5, 7, 9, 11) so that the correct altitude is always ≤ 1 km from a layer for
-# Altitude sweep layers for n≥3 solver. Must match the altitudes_km used in
-# compute_overlap_zone so the initial_guess alt from association matches a sweep
-# point. Range 1.5–11 km covers simulation aircraft (0.3–15 km spawns) and
-# commercial aviation. The 1.5 and 3.0 km layers fix systematic 7–10 km errors
-# for low-altitude aircraft where the old [5,7,9,11] set forced wrong altitude.
+# the minimum selects the true altitude.  Range 1.5–11 km covers simulation
+# aircraft (0.3–15 km spawns) and commercial aviation.  The 1.5 and 3.0 km
+# layers fix systematic 7–10 km errors for low-altitude aircraft where the old
+# [5, 7, 9, 11] set forced a wrong altitude.
+#
+# These happen to equal the association grid's default layers
+# (ASSOC_ALT_LAYERS_KM) but are not tied to them: the initial guess is a
+# delay-residual weighted MEAN across the grid's layers and so has never been
+# a layer value anyway, and _solve_best_altitude folds the guess altitude into
+# the sweep as its own extra layer.  Doubling this list would double every
+# n>=3 solve's cost to refine an altitude the overdetermined residual already
+# resolves.
 _SOLVER_ALT_LAYERS_KM = [1.5, 3.0, 5.0, 7.0, 9.0, 11.0]
 
 # Reject solver results whose RMS delay residual exceeds this value.
@@ -187,11 +272,15 @@ _SOLVER_RMS_DOPPLER_MAX_HZ = 200.0
 # 15–50 km from the true position, meaning they are ≥12 km from an
 # initial_guess that was placed near the truth.
 #
-# Threshold: with the ADS-B position override in find_associations(),
-# the initial_guess is within ~100 m of the true aircraft position.
-# Displacement from initial_guess therefore approximates the position error.
-# With σ_delay = 0.1 µs the displacement = GDOP × 0.1 × 0.3 km.
-# 2.0 km → GDOP ≤ 67 (reasonable bistatic geometry).
+# The cap is per-lane, because the anchor's own uncertainty is: what the
+# gate actually measures is |solve − anchor|, and that is only a proxy for
+# position error when the anchor is trustworthy.
+#
+# ADS-B-anchored inputs (_is_dark_solver_input false).  With the ADS-B
+# position override in find_associations(), the initial_guess is within
+# ~100 m of the true aircraft position, so displacement from it approximates
+# the position error directly.  With σ_delay = 0.1 µs the displacement =
+# GDOP × 0.1 × 0.3 km, so 2.0 km → GDOP ≤ 67 (reasonable bistatic geometry).
 # Mirror-point ghosts land 15–50 km away and are safely rejected.
 #
 # Originally N=2-only because that's where mirror-points dominate. Production
@@ -202,7 +291,113 @@ _SOLVER_RMS_DOPPLER_MAX_HZ = 200.0
 # convergence (wrong-frame association, local-minimum trap), while N=2 was
 # pre-filtered. Generalising the gate to every N puts the comparison on the
 # same footing — bad N≥3 solves are now rejected on the same criterion.
+#
+# This constant has a second consumer: known_lane.py labels its solves
+# truth_match/ghost against it (there the distance is to a known ADS-B fix,
+# so the ADS-B-anchored reading is the right one).  Retune it with that in
+# mind — the dark cap below is the one to move for dark-lane recall.
 _MAX_DISPLACEMENT_KM = 2.0
+
+
+# DARK inputs (_is_dark_solver_input true — no usable transponder identity on
+# the solver input).  The ~100 m premise above does not hold: nothing
+# overrode the guess with a transponder position, so the anchor is a
+# quantised ASSOC_GRID_STEP_KM (3 km) lattice point, averaged over a
+# candidate cluster up to the association layer's merge radius (6 km) wide.
+# The anchor's own uncertainty is therefore of order the grid step, and
+# judging a dark solve at 2 km measures the anchor, not the solve.
+#
+# Live (2026-09, 10 min): displacement was 41% of dark-lane solver attempts
+# (109/265).  Of 31 recent dark rejected_displacement records carrying a
+# ground-truth stamp, median GT error was 2.1 km and 20/31 were under 3 km —
+# only 1/31 was ≥ 10 km (a real ghost) — against a displacement_km median of
+# 3.26 km (min 2.06, 23/31 ≤ 4 km).  Published dark solves sit at a 0.98 km
+# GT-error median, so most of what the 2 km cap killed was of a quality
+# comparable to what it passed.
+#
+# Default 6.0 km = 2 × ASSOC_GRID_STEP_KM: one grid step for the
+# quantisation, one for the cluster-merge spread.  This widens the allowance
+# for anchor uncertainty, not for bad convergence — mirror points and
+# wrong-frame solves land 15–50 km out and are still rejected with room to
+# spare.  The env override is an absolute km value, not a grid multiple, so
+# live tuning does not have to reason about the association grid.
+def _dark_displacement_cap_km() -> float:
+    """Resolve the dark-lane displacement cap from the environment.
+
+    A function rather than an inline ``float(os.getenv(...))`` (the
+    _SOLVER_RMS_DELAY_MAX_US idiom) only because the default is derived
+    from ASSOC_GRID_STEP_KM rather than being a literal — and so a test can
+    exercise the env plumbing without reimporting this module.
+    """
+    raw = os.getenv("SOLVER_MAX_DISPLACEMENT_KM_DARK")
+    if raw:
+        return float(raw)
+    return max(_MAX_DISPLACEMENT_KM, 2.0 * ASSOC_GRID_STEP_KM)
+
+
+_MAX_DISPLACEMENT_KM_DARK = _dark_displacement_cap_km()
+
+# How close an established dark key must be, after dead reckoning to this
+# solve's epoch, for an n=2 input to inherit its altitude.  Default 6.0 km is
+# the keying rule's own proximity gate (_mn_assoc_gate_km's base): a key this
+# solve would be allowed to JOIN is a key whose altitude it may borrow, and
+# anything looser would let one aircraft's cruise altitude pin another's
+# position.
+N2_ALT_INHERIT_KM = float(os.getenv("N2_ALT_INHERIT_KM", "6.0"))
+# The donor must have been solved at 3+ nodes at some point (an n=2 donor
+# knows the altitude no better than the grid does — it IS a grid altitude,
+# and inheriting it would launder a guess into a measurement) and must have
+# solved recently, or the inherited altitude is older than the climb it is
+# meant to track.
+N2_ALT_INHERIT_MIN_NODES = 3
+N2_ALT_INHERIT_MAX_AGE_S = 60.0
+
+
+# ANCHORED n=2 inputs are judged far more tightly than either lane cap above.
+#
+# Letting an anchored dark-follow input publish at n=2 (the change this file's
+# _n2_anchor_admits makes) bought coverage and cost accuracy.  Measured on the
+# test droplet over 20-minute captures, with the bypass on: dark 2-node time
+# solved went 35% → 57% and 4+-node fresh 65% → 77%, but follow-lane n=2
+# publishes landed a median 1.43 km (p90 4.6 km) from truth, dark ghosts
+# (an entry > 5 km from any ground truth) went 4.1% → 9.7% overall, and the
+# n=2 entries themselves went 6% → 22% ghosts.
+#
+# The tight cap is meaningful precisely BECAUSE the input is anchored.  The
+# wide dark cap exists for anchor uncertainty: an ordinary dark guess is a
+# quantised ASSOC_GRID_STEP_KM lattice point averaged over a 6 km-wide cluster,
+# so judging the solve against it at 2 km measures the anchor.  A follow
+# input's guess is not that — it is the follow lane's own dead-reckoned
+# prediction of a track with DARK_FOLLOW_MIN_SOLVES solves behind it, a real
+# position estimate whose own error budget is well under a kilometre.  And the
+# fit on the other side is weaker, not stronger: with altitude pinned an n=2
+# solve fits 5 unknowns against 4 residuals, so the residual gates cannot see a
+# wrong answer (see the _N2_REQUIRE_CONFIRMED comment) and the LM is free to
+# wander along the under-determined direction.  Past 1.5 km we are therefore
+# looking at that wandering rather than at anchor uncertainty.
+#
+# Rejecting is the intended outcome here, not a loss of coverage: the reject
+# counts toward the follow lane's two-consecutive-rejects drop
+# (services/dark_follow.py record_outcome), which is exactly the guard that
+# should fire once the follow can no longer be corroborated.
+_DARK_FOLLOW_N2_MAX_DISP_KM = float(os.getenv("DARK_FOLLOW_N2_MAX_DISP_KM", "1.5"))
+
+
+def _is_anchored_n2(s, r) -> bool:
+    """True if this is an anchored solver input that solved at exactly n=2.
+
+    Both the displacement gate and the history record ask this — the gate to
+    pick the cap, the record to stamp which cap judged the solve — and they
+    must not be able to disagree, so the predicate lives in one place.
+    """
+    if not isinstance(s, dict) or not s.get("anchor_key"):
+        return False
+    # Result first, input as the fallback — the same precedence the history
+    # record's own "n_nodes" field uses, so a solve_fn that does not restate
+    # n_nodes (the trim path is the only producer that changes it) is still
+    # judged by the node count it actually had.
+    return int((r or {}).get("n_nodes") or s.get("n_nodes") or 0) == 2
+
 
 # An n=2 solve is published only once its track pairing has justified itself.
 #
@@ -224,9 +419,135 @@ _MAX_DISPLACEMENT_KM = 2.0
 _N2_REQUIRE_CONFIRMED = N2_TRACK_ASSOCIATION
 _N2_CONFIRM_CHI2_MAX = N2_CONFIRM_CHI2_MAX
 
+# ...and once a pairing has passed that gate, publish the position the fit
+# itself produced rather than the single-epoch LM one.  Both describe the same
+# target from the same measurements, but not from the same NUMBER of them: the
+# LM fixes x, y from one epoch's 4 delay/Doppler residuals with altitude pinned
+# to a guess, while the confirmation fit ties every epoch the pairing has
+# accumulated to one constant-velocity trajectory — 4K measurements against 6
+# unknowns, altitude free — and evaluates it at the last epoch.  Measured
+# against ground truth on the test droplet, published n=2 solves sit a median
+# 2.6 km from truth, and still 1.6 km on the subset where the altitude pin
+# happened to be right, so the pin is not the whole of it: the rest is the
+# single epoch.  The fit is already computed for every confirmed pairing (it is
+# what confirms it), so this costs nothing and uses history the track already
+# has.
+#
+# Env-gated because it changes what lands on the map: if the fit position turns
+# out worse live, a restart with N2_PUBLISH_FIT_POSITION=0 is the way back.
+# Either way the history record carries both positions and their separation
+# (pos_source / solve_raw_lat / solve_raw_lon / fit_vs_solve_km), so gt_error
+# can be split by pos_source without a second deploy.
+_N2_PUBLISH_FIT_POSITION = os.getenv("N2_PUBLISH_FIT_POSITION", "1").strip().lower() not in ("0", "false", "off")
+
+# ...but published with its altitude PINNED, not the one it solved for.
+#
+# The fit that confirms the pairing solves a free z, correctly: a free
+# parameter in the chi2 test would hand a crossed pairing slack it should not
+# get.  For POSITION the same freedom is a defect.  At n=2 altitude is not
+# observable, so the fit spends z wherever the noise points, and a wrong z
+# leans on x and y through the bistatic geometry and drags the horizontal
+# answer with it.  Measured over the 14 published n=2 solves of a 20-minute
+# synthetic capture: published altitudes of -1721 m, -466 m and 15249 m, with
+# |published alt - truth| at a 4.57 km median against 2.94 km for the ladder
+# guess the swap replaced, and fit_vs_solve_km at a 5.4 km median.
+#
+# So the position swap uses a SECOND fit of the same epochs with
+# fix_altitude=True (cached separately as _cv_fit_pinned).  The confirmation
+# gate keeps reading the free fit: its chi2 threshold was calibrated against a
+# 6-state dof and re-deciding the gate is not this change.  Two fits of the
+# same epochs is one extra ~86 ms pool call per confirmed n=2 solve, paid on
+# the worker's own threads.
+_N2_FIT_FIX_ALTITUDE = os.getenv("N2_FIT_FIX_ALTITUDE", "1").strip().lower() not in ("0", "false", "off")
+
 # The calibration age rule moved to config.constants.CAL_MAX_ADSB_AGE_S and is
 # applied by services.calibration, which both recording sites now go through.
 # It lived here while the frame path had its own, looser, unstated one.
+
+
+# ── Measurement epoch alignment ──────────────────────────────────────────────
+# The solver's residual model evaluates every measurement against ONE target
+# state: the measurement set is assumed simultaneous.  It is not.  Each node
+# samples on its own free-running cadence (~0.74-1 Hz on the fleet), so the
+# delays in one solver input were captured at times spread over up to a frame
+# interval, and association hands over each track's newest sample regardless of
+# when that was.  A 250 m/s target moves ~250 m per second of skew, which shows
+# up as up to ~1 us of bistatic delay error per second — charged in full to the
+# 3 us rms_delay gate, where it is indistinguishable from a contaminated node
+# and drives the trim to throw away legitimately in-cone nodes.
+#
+# The correction is closed-form and needs nothing the measurement does not
+# already carry.  Writing d_tx / d_rx for the TX->target and target->RX ranges,
+# the bistatic delay is (d_tx + d_rx - baseline)/c and the bistatic Doppler is
+# (fc/c)(v_tx + v_rx), where v_tx / v_rx are the target's velocity components
+# along the unit vectors pointing FROM the target TOWARD the TX and the RX
+# (retina_geolocator.multinode_solver._residual_function; the simulator's
+# _bistatic_delay / _bistatic_doppler in retina_simulation.world use the
+# identical convention).  Moving toward a site shortens that leg, so
+# d(d_tx)/dt = -v_tx and d(d_rx)/dt = -v_rx, and therefore
+#
+#     d(delay_us)/dt = -(v_tx + v_rx) / C_KM_US
+#                    = -doppler_hz * (C_KM_S / fc_hz) / C_KM_US
+#                    = -doppler_hz * 1e6 / fc_hz
+#
+# i.e. positive Doppler is a closing target and its delay is DECREASING.  The
+# unit test test_epoch_alignment.py checks the sign against a target flown
+# through the simulator's own geometry helpers at two times, rather than
+# against this derivation.
+_DELAY_RATE_HZ_TO_US_PER_S = 1e6
+
+
+def align_measurement_epochs(s_in: dict, node_cfgs: dict) -> tuple[dict, dict]:
+    """Dead-reckon every measurement's delay onto the newest one's epoch.
+
+    Pure: returns a new solver input (shallow copy, fresh measurement dicts)
+    and a metadata dict for the history record; *s_in* is never mutated, so a
+    caller can drop the result and keep the untouched input.
+
+    Alignment is all-or-nothing per input.  A partially aligned set is worse
+    than an unaligned one — the residual model has no way to know which
+    measurements share an epoch, so mixing corrected and uncorrected delays
+    just moves the error onto a different node.  Any measurement missing t_s
+    or doppler_hz, or whose node has no config to read fc_hz from, therefore
+    skips the whole input and counts solver_epoch_align_skipped.
+
+    Returns (s_in, meta) where meta carries epoch_aligned and, when it ran,
+    epoch_skew_s — the widest gap the correction closed.
+    """
+    meas = s_in.get("measurements") or []
+    if len(meas) < 2:
+        return s_in, {"epoch_aligned": False}
+
+    rates = []
+    for m in meas:
+        t_s = m.get("t_s")
+        doppler = m.get("doppler_hz")
+        cfg = node_cfgs.get(m.get("node_id")) or {}
+        # Same fallback chain the geolocator uses when it builds its NodeSetup,
+        # so a node whose config spells the carrier "FC" aligns on exactly the
+        # frequency the solve will predict against.
+        fc_hz = cfg.get("fc_hz", cfg.get("FC"))
+        if t_s is None or doppler is None or not fc_hz:
+            state.bump_counter("solver_epoch_align_skipped")
+            return s_in, {"epoch_aligned": False}
+        rates.append((float(t_s), -float(doppler) * _DELAY_RATE_HZ_TO_US_PER_S / float(fc_hz)))
+
+    # The newest sample, not the input's timestamp_ms: t0 has to be a time some
+    # measurement was actually taken, or every delay is extrapolated and the
+    # freshest node — the one that needed no correction — acquires an error.
+    t0 = max(t for t, _ in rates)
+    skew_s = t0 - min(t for t, _ in rates)
+
+    aligned = dict(s_in)
+    aligned["measurements"] = [
+        {**m, "delay_us": float(m["delay_us"]) + rate * (t0 - t_s)} for m, (t_s, rate) in zip(meas, rates)
+    ]
+    if "timestamp_ms" in aligned:
+        # The set now describes t0, so everything downstream that ages this
+        # solve (multinode expiry, the dead-reckoning gates, the history
+        # record's measurement_ts_ms) should date it from t0 too.
+        aligned["timestamp_ms"] = int(round(t0 * 1000.0))
+    return aligned, {"epoch_aligned": True, "epoch_skew_s": round(skew_s, 3)}
 
 
 def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn, layers_km: list[float], metric: str) -> dict | None:
@@ -270,17 +591,82 @@ def _sweep_altitudes(s_in: dict, node_cfgs: dict, solve_fn, layers_km: list[floa
     return best_result
 
 
-def _solve_best_altitude(s_in: dict, node_cfgs: dict, solve_fn) -> dict | None:
-    """Altitude sweep for n≥3: pick by minimum rms_delay.
+# Fewest measurements the free mode is used at.  Below this altitude is not
+# observable and retina_geolocator pins it anyway; the sweep is left in place
+# so the n=2 path keeps its documented behaviour exactly.
+_FREE_ALT_MIN_NODES = 3
 
-    If the initial_guess already carries an ADS-B altitude (not one of the fixed
-    grid layers), include it in the sweep so the correct exact altitude is tried.
+
+def _free_alt_starts(ig_alt_km, layers: list[float]) -> list[float]:
+    """The start altitudes the free mode hands the multi-start helper.
+
+    state.SOLVER_FREE_ALT_STARTS of them, clamped into [1, len(layers)] — read
+    per call, like the mode flag, so a test and a config reload both see what
+    they set.  One start is the layer nearest ``ig_alt_km``, which is the
+    altitude spliced into ``layers`` when the input carries a non-layer one of
+    its own (ADS-B), exactly as the sweep treats it.  Several are a window
+    centred on that layer, clamped to the ends of the ladder so the count never
+    shrinks there (the top and bottom layers are where a wrong start is least
+    recoverable, not most).
+
+    Freeing z removes the ladder's quantisation but not the LM's locality, and
+    the extra starts are what would stop a solve settling on the wrong side of
+    a bistatic ellipse.  On this fleet's geometry they had almost nothing to
+    stop: over 1019 free-mode solves on test, three starts' rms_delay differed
+    by more than 0.1 µs in 13 of them, and the nearest-layer start was more
+    than 0.5 µs worse than the best in 2 — so the default is one start and the
+    other two are bought explicitly, by a deployment whose geometry shows it
+    needs them.  See core/state.py for the numbers and the trade.
+    """
+    if not layers:
+        return []
+    n = max(1, min(int(state.SOLVER_FREE_ALT_STARTS), len(layers)))
+    alt = float(ig_alt_km) if ig_alt_km is not None else 7.0
+    nearest = min(range(len(layers)), key=lambda i: abs(layers[i] - alt))
+    lo = max(0, min(nearest - (n - 1) // 2, len(layers) - n))
+    return layers[lo : lo + n]
+
+
+def _solve_best_altitude(
+    s_in: dict,
+    node_cfgs: dict,
+    solve_fn,
+    multistart_fn=_pool_solve_multistart,
+) -> dict | None:
+    """Altitude for n≥3, by whichever rule state.SOLVER_ALT_MODE names.
+
+    sweep (default): solve once per layer, pick by minimum rms_delay.  If the
+    initial_guess already carries an ADS-B altitude (not one of the fixed grid
+    layers), include it in the sweep so the correct exact altitude is tried.
+
+    free: one call to the multi-start helper, which solves altitude as a sixth
+    unknown from _free_alt_starts.  The sweep cannot do better than half its
+    2 km layer spacing, and on noise-free replay of this fleet's geometry that
+    quantisation alone left rms_delay at a 1.76 µs median against the 3.0 µs
+    reject gate — spending most of the gate's budget on an altitude the
+    measurements themselves determine, and provoking _trim_and_resolve to drop
+    nodes that were never the problem.  Costs one pool round trip per
+    candidate instead of six.
+
+    The mode is read per call rather than captured at import, so a test (and a
+    live config reload) sees the value it set.  Read here and not inside
+    _process_solver_item because _trim_and_resolve re-enters through this same
+    function: a trim must re-solve under the mode its first solve used, or the
+    residuals it is comparing are not the same quantity.
     """
     ig_alt = s_in.get("initial_guess", {}).get("alt_km")
     if ig_alt is not None and ig_alt not in _SOLVER_ALT_LAYERS_KM:
         layers = sorted(set(_SOLVER_ALT_LAYERS_KM + [round(float(ig_alt), 3)]))
     else:
         layers = _SOLVER_ALT_LAYERS_KM
+    n_meas = len({m.get("node_id") for m in (s_in.get("measurements") or [])})
+    if state.SOLVER_ALT_MODE == "free" and n_meas >= _FREE_ALT_MIN_NODES:
+        # No fall back to the sweep when this returns None: a helper that got
+        # no solve out of its starts is reporting the same thing the sweep
+        # reports when every layer fails, and sweeping anyway would cost the
+        # six round trips this mode exists to avoid on exactly the candidates
+        # that are least likely to repay them.
+        return multistart_fn(s_in, node_cfgs, _free_alt_starts(ig_alt, layers))
     return _sweep_altitudes(s_in, node_cfgs, solve_fn, layers, "rms_delay")
 
 
@@ -297,11 +683,102 @@ def _solve_best_altitude_n2(s_in: dict, node_cfgs: dict, solve_fn) -> dict | Non
 
     The initial_guess.alt_km from association.py is set to the delay-residual
     weighted mean of all candidate altitudes in the group.  When the correct
-    altitude layer has smaller delay residuals it is upweighted; when all layers
-    tie (high altitude ambiguity), the mean falls back to ≈(7+9+11)/3 = 9 km,
-    which covers the typical commercial aviation cruise band (7–12 km).
+    altitude layer has smaller delay residuals it is upweighted; when all
+    layers tie (high altitude ambiguity), the mean falls back to the middle of
+    the ladder, which covers the typical commercial cruise band.
+
+    That is the best a single association round can do, and it is not very
+    good: measured over a 20-minute capture against ground truth, n=2 solves
+    had a median altitude error of 1.46 km (p90 5.25), and their position
+    error was 1.61 km when the altitude landed within 1 km of truth against
+    2.71 km when it did not.  But an aircraft that has ALREADY been solved at
+    three or more nodes has a measured altitude, not a grid guess — and dark
+    targets drop from n>=3 to n=2 coverage constantly.  So before solving,
+    look for an established dark key sitting under this input and inherit its
+    altitude (``_inherit_key_altitude``); the grid altitude stays the
+    fallback.  Which one was used is stamped on the input as ``alt_source``
+    so the history records can be split by it.
     """
+    _inherit_key_altitude(s_in)
     return solve_fn(s_in, node_cfgs)
+
+
+def _inherit_key_altitude(s_in: dict, learned_vel_fn=track_filter.learned_velocity) -> None:
+    """Point an n=2 input's initial-guess altitude at an established dark key.
+
+    Mutates ``s_in`` in place: sets ``initial_guess["alt_km"]`` when a donor
+    is found and always stamps ``alt_source`` — "key" when inherited, "anchor"
+    for a follow-lane input (whose guess already carries the anchor's own
+    solved altitude, see tasks/known_lane.py's target builder — there is
+    nothing to inherit and overwriting it would replace a per-key prediction
+    with a neighbour's altitude), "grid" otherwise.
+
+    Donor rules, all three necessary:
+
+    * within ``N2_ALT_INHERIT_KM`` of the guess after being dead-reckoned to
+      this solve's epoch — the same DR the keying rule uses
+      (``_entry_dr_velocity`` + ``offset_latlon_m``), so a key this solve
+      would be allowed to join is a key it may borrow from;
+    * ``max_n_nodes`` (or the current ``n_nodes``) at or above
+      ``N2_ALT_INHERIT_MIN_NODES``, so the altitude being inherited was
+      actually measured rather than being another grid guess;
+    * last solved within ``N2_ALT_INHERIT_MAX_AGE_S``, so it is not older
+      than the climb it is meant to track.
+
+    Nearest wins when several qualify.  No lock: this runs on the solve path,
+    which does not hold _MN_TRACKS_LOCK here, and taking it would put a lock
+    acquisition in front of every n=2 solve to read a dict that the keying
+    block rewrites wholesale a moment later anyway.  ``list(...items())``
+    snapshots under the GIL, and a donor that goes stale between this read and
+    the solve costs an initial guess, not a correctness property.
+    """
+    ig = s_in.get("initial_guess") if isinstance(s_in, dict) else None
+    if not isinstance(ig, dict):
+        return
+    if s_in.get("anchor_key"):
+        s_in["alt_source"] = "anchor"
+        return
+    s_in["alt_source"] = "grid"
+    lat, lon = ig.get("lat"), ig.get("lon")
+    if lat is None or lon is None:
+        return
+    ts_s = float(s_in.get("timestamp_ms") or 0) / 1000.0
+    if not ts_s:
+        return
+
+    best_alt_m: float | None = None
+    best_dist = N2_ALT_INHERIT_KM
+    for key, entry in list(state.multinode_tracks.items()):
+        if not key.startswith("mn-dark-"):
+            continue
+        n_nodes = max(int(entry.get("max_n_nodes") or 0), int(entry.get("n_nodes") or 0))
+        if n_nodes < N2_ALT_INHERIT_MIN_NODES:
+            continue
+        alt_m = entry.get("alt_m")
+        if alt_m is None:
+            continue
+        e_lat, e_lon = entry.get("lat"), entry.get("lon")
+        if e_lat is None or e_lon is None:
+            continue
+        dt = ts_s - float(entry.get("timestamp_ms") or 0) / 1000.0
+        if not (0.0 <= dt <= N2_ALT_INHERIT_MAX_AGE_S):
+            continue
+        vel_east_ms, vel_north_ms = _entry_dr_velocity(key, entry, learned_vel_fn)
+        d_lat, d_lon = offset_latlon_m(
+            e_lat,
+            e_lon,
+            east_m=vel_east_ms * dt,
+            north_m=vel_north_ms * dt,
+        )
+        d = _haversine_km(float(lat), float(lon), d_lat, d_lon)
+        if d < best_dist:
+            best_dist, best_alt_m = d, float(alt_m)
+
+    if best_alt_m is None:
+        return
+    ig["alt_km"] = round(best_alt_m / 1000.0, 3)
+    s_in["alt_source"] = "key"
+    state.bump_counter("solver_n2_alt_inherited")
 
 
 def _filter_s_in_to_nodes(s_in: dict, survivors) -> dict:
@@ -336,6 +813,7 @@ def _trim_and_resolve(
     node_cfgs: dict,
     solve_fn,
     result: dict,
+    multistart_fn=_pool_solve_multistart,
 ) -> tuple[dict, dict, dict | None]:
     """Drop the worst-residual node(s) and re-solve, down to _TRIM_MIN_NODES.
 
@@ -344,6 +822,11 @@ def _trim_and_resolve(
     measurement inflates rms_delay without moving the Huber-fitted position,
     so re-solving on the survivors after dropping the offending node recovers
     a solve the blanket gate would otherwise discard outright.
+
+    Re-solves through _solve_best_altitude, so it inherits whichever altitude
+    mode is in force — the loop compares this round's rms against the previous
+    round's, and mixing a swept altitude with a free one would make that
+    comparison meaningless.
 
     Returns (final_result, final_s_in, trim_meta).  trim_meta is None only
     when no round ever produced a successful re-solve — i.e. no trimming was
@@ -389,7 +872,7 @@ def _trim_and_resolve(
         s_next = _filter_s_in_to_nodes(s_in, survivors)
 
         try:
-            new_result = _solve_best_altitude(s_next, node_cfgs, solve_fn)
+            new_result = _solve_best_altitude(s_next, node_cfgs, solve_fn, multistart_fn)
         except Exception:
             logging.exception("Solver trim re-solve failed")
             break
@@ -406,6 +889,207 @@ def _trim_and_resolve(
         result, s_in = new_result, s_next
 
     return result, s_in, trim_meta
+
+
+# ── Pool adoption (dark bottom-up) ───────────────────────────────────────────
+# The association round often pairs more nodes for an aircraft than the input
+# the solver is handed uses: pool_n_nodes is the node set of the shared-track
+# component the input was clustered out of (InterNodeAssociator.
+# _shared_track_pools), and 21 minutes of live instrumentation put 72% of
+# published dark solves below it, mean shortfall 2.27 nodes.  The costly half
+# is at the bottom: 390 of 481 rejected n=2 candidates had a pool of 3+, and
+# an n=3 candidate publishes 81% of the time against 6% for n=2.  That is the
+# largest single block of detections the pipeline throws away.
+#
+# The fix is NOT to merge more aggressively upstream — sweeping the position
+# merge radius to 6 km raised cross-aircraft contamination from 25% to 32%,
+# because at that radius two aircraft are as close as one aircraft's own
+# pairings.  Instead the solve itself vouches for the extra node: predict what
+# that node should have measured at the position and velocity just solved, and
+# adopt it only if what it actually measured agrees.  A node that agrees on
+# delay AND Doppler at an independently solved point is evidence about the
+# same aircraft, which is precisely what the n=2 confirmation gate is asking
+# for and cannot get from two nodes alone.
+#
+# Gate defaults.  An n=2 dark solve sits ~2 km from truth, and 2 km of range
+# error is 2/c ≈ 6.7 µs of bistatic delay, so 6.0 µs admits a genuine node at
+# the accuracy this stage actually has without opening the door to an
+# unrelated target (a wrong aircraft is normally tens of µs away).  60 Hz on
+# Doppler is the same order as the n=2 velocity error against a ~600 MHz
+# carrier.  Both are env-tunable, and SOLVER_ADOPT_POOL=0 turns the whole
+# stage off.
+_ADOPT_POOL_ENABLED = os.getenv("SOLVER_ADOPT_POOL", "1").strip().lower() not in ("0", "false", "off")
+_ADOPT_DELAY_GATE_US = float(os.getenv("SOLVER_ADOPT_DELAY_GATE_US", "6.0"))
+_ADOPT_DOPPLER_GATE_HZ = float(os.getenv("SOLVER_ADOPT_DOPPLER_GATE_HZ", "60"))
+# A widened solve that lands more than this from the narrow one is not the
+# same aircraft solved better — it is a different geometry the adopted node
+# dragged the fit into, and keeping it would publish a position no measurement
+# in the original input supports.
+_ADOPT_MAX_JUMP_KM = float(os.getenv("SOLVER_ADOPT_MAX_JUMP_KM", "5.0"))
+
+
+def _s_in_with_adopted(s_in: dict, adopted: list[dict], first: dict) -> dict:
+    """s_in plus the adopted pool measurements, ready to re-solve.
+
+    Pure — s_in is never mutated, so a rejected widening leaves the caller
+    holding the untouched input.  The initial guess becomes the FIRST solve's
+    position rather than the association grid centroid it came in with: the
+    narrow solve is the best estimate anything has of where this aircraft is,
+    and it is also the point the adopted measurements were just gated against,
+    so starting anywhere else would judge them from a different place than the
+    one that admitted them.
+    """
+    s_wide = dict(s_in)
+    meas = [dict(m) for m in (s_in.get("measurements") or [])]
+    meas.extend({k: m.get(k) for k in ("node_id", "delay_us", "doppler_hz", "snr", "t_s")} for m in adopted)
+    s_wide["measurements"] = meas
+    s_wide["n_nodes"] = len({m.get("node_id") for m in meas})
+    # Provenance follows the measurement: a published solve names the tracklets
+    # it was built from, and an adopted node's track is now one of them.
+    by_node = {nid: list(ids) for nid, ids in (s_in.get("track_ids_by_node") or {}).items()}
+    for m in adopted:
+        tid = m.get("track_id")
+        if tid and tid not in by_node.setdefault(m["node_id"], []):
+            by_node[m["node_id"]].append(tid)
+    s_wide["track_ids_by_node"] = {nid: sorted(ids) for nid, ids in by_node.items()}
+    s_wide["track_ids"] = sorted(set(s_in.get("track_ids") or []) | {t for ids in by_node.values() for t in ids})
+    s_wide["initial_guess"] = {
+        "lat": first.get("lat"),
+        "lon": first.get("lon"),
+        "alt_km": float(first.get("alt_m") or 0.0) / 1000.0,
+    }
+    if first.get("vel_east") is not None:
+        s_wide["initial_velocity"] = {
+            "vel_east_ms": first.get("vel_east"),
+            "vel_north_ms": first.get("vel_north"),
+        }
+    return s_wide
+
+
+def _adopt_pool_nodes(
+    s_in: dict,
+    node_cfgs: dict,
+    result: dict,
+    solve_fn,
+    multistart_fn=_pool_solve_multistart,
+) -> tuple[dict, dict, dict | None]:
+    """Widen a narrow dark solve with pool nodes the solve itself vouches for.
+
+    Runs immediately after the first successful solve and BEFORE trimming and
+    before every gate, so a candidate that adopts a third node is judged as an
+    n=3 solve throughout — including by the n=2 confirmation gate, which no
+    longer applies to it.  That is the point rather than a side effect: the
+    gate exists because two nodes cannot corroborate each other's identity,
+    and a third node whose measured delay matches what the two-node solve
+    predicts for it is exactly the corroboration it was demanding.
+
+    Only bottom-up dark inputs qualify.  Anchored and known-lane inputs have a
+    transponder identity and were never clustered by
+    format_track_pairs_for_solver, so they carry no pool to adopt from.
+
+    Returns (result, s_in, meta).  meta is None when the stage did not apply
+    at all; otherwise it records what was tried, so a history record can be
+    read for adoption's true and false positives rather than just its count.
+    Cost is bounded at two extra LM solves per eligible candidate (~60-90 ms
+    each in the pool): the first widening, plus at most one retry with the
+    worst adopted node dropped.
+    """
+    if not _ADOPT_POOL_ENABLED or not isinstance(s_in, dict) or not isinstance(result, dict):
+        return result, s_in, None
+    if not _is_dark_solver_input(s_in) or s_in.get("anchor_key"):
+        return result, s_in, None
+    pool_n = s_in.get("pool_n_nodes")
+    pool_meas = s_in.get("pool_measurements") or []
+    if not pool_meas or not pool_n or (result.get("n_nodes") or 0) >= pool_n:
+        return result, s_in, None
+    lat, lon = result.get("lat"), result.get("lon")
+    if lat is None or lon is None:
+        return result, s_in, None
+    have = {m.get("node_id") for m in (s_in.get("measurements") or [])}
+    cands = [m for m in pool_meas if m.get("node_id") not in have and m.get("delay_us") is not None]
+    if not cands:
+        return result, s_in, None
+
+    state.bump_counter("solver_adopt_eligible")
+    meta: dict = {"pool_n": int(pool_n), "candidates": len(cands), "adopted_node_ids": [], "outcome": "none_passed"}
+    alt_km = float(result.get("alt_m") or 0.0) / 1000.0
+    vel_east = float(result.get("vel_east") or 0.0)
+    vel_north = float(result.get("vel_north") or 0.0)
+    geometries = state.node_associator.node_geometries if state.node_associator else {}
+
+    adopted: list[dict] = []
+    pred_resid: dict[str, float] = {}
+    for m in cands:
+        geo = geometries.get(m["node_id"])
+        if geo is None:
+            # Same abstention rule as everywhere else: a node with no
+            # registered geometry cannot be predicted for, so it is not
+            # adopted rather than adopted unchecked.
+            continue
+        try:
+            pred_delay, pred_doppler = predict_observation(geo, lat, lon, alt_km, vel_east, vel_north)
+        except Exception:
+            logging.exception("Solver pool adoption: prediction failed for node %s", m["node_id"])
+            continue
+        d_delay = abs(float(m["delay_us"]) - pred_delay)
+        if d_delay > _ADOPT_DELAY_GATE_US:
+            continue
+        # Doppler abstains rather than blocks when the pool pairing carried
+        # none: the delay agreement is the stronger of the two claims and a
+        # missing measurement is not a disagreement.
+        if m.get("doppler_hz") is not None and abs(float(m["doppler_hz"]) - pred_doppler) > _ADOPT_DOPPLER_GATE_HZ:
+            continue
+        adopted.append(m)
+        pred_resid[m["node_id"]] = d_delay
+
+    if not adopted:
+        state.bump_counter("solver_adopt_rejected")
+        return result, s_in, meta
+
+    for attempt in range(2):
+        meta["adopted_node_ids"] = sorted(m["node_id"] for m in adopted)
+        s_wide = _s_in_with_adopted(s_in, adopted, result)
+        if state.SOLVER_EPOCH_ALIGN:
+            s_wide, _ = align_measurement_epochs(s_wide, node_cfgs)
+        try:
+            wide = _solve_best_altitude(s_wide, node_cfgs, solve_fn, multistart_fn)
+        except Exception:
+            logging.exception("Solver pool adoption re-solve failed")
+            wide = None
+        if not wide or not wide.get("success"):
+            meta["outcome"] = "rejected_solve"
+            break
+        rms_delay = wide.get("rms_delay") or 0
+        if rms_delay > _SOLVER_RMS_DELAY_MAX_US:
+            # One cheap second chance, and only one: with two or more adopted
+            # nodes the rms is a sum over both, so a single contaminated
+            # adoption can sink a widening the other node would have carried.
+            # Beyond that, keep the narrow solve — this is a bonus path, not a
+            # search.
+            if attempt == 0 and len(adopted) >= 2:
+                residuals = wide.get("per_node_delay_res_us") or {}
+                worst = max(adopted, key=lambda m: residuals.get(m["node_id"], pred_resid[m["node_id"]]))
+                meta["dropped_node_id"] = worst["node_id"]
+                adopted = [m for m in adopted if m["node_id"] != worst["node_id"]]
+                continue
+            meta["outcome"] = "rejected_rms"
+            meta["wide_rms_delay"] = round(float(rms_delay), 3)
+            break
+        jump_km = _haversine_km(float(lat), float(lon), float(wide["lat"]), float(wide["lon"]))
+        if jump_km > _ADOPT_MAX_JUMP_KM:
+            meta["outcome"] = "rejected_jump"
+            meta["jump_km"] = round(jump_km, 2)
+            break
+        meta["outcome"] = "widened"
+        meta["jump_km"] = round(jump_km, 2)
+        meta["wide_rms_delay"] = round(float(rms_delay), 3)
+        state.bump_counter("solver_adopt_widened")
+        state.bump_counter("solver_adopt_nodes_added", len(adopted))
+        return wide, s_wide, meta
+
+    meta["adopted_node_ids"] = sorted(m["node_id"] for m in adopted)
+    state.bump_counter("solver_adopt_rejected")
+    return result, s_in, meta
 
 
 # ── Multi-epoch EWMA position smoother (all N) ───────────────────────────────
@@ -489,14 +1173,15 @@ def _ewma_smooth_track(result: dict, track_key: str, adsb_hex: str | None) -> di
     r_lon = result["lon"]
     r_ts = result.get("timestamp_ms", 0) / 1000.0
 
-    adsb = state.adsb_aircraft.get(adsb_hex) if adsb_hex else None
-    if adsb:
-        gs_knots = float(adsb.get("gs", 0) or 0)
-        track_deg = float(adsb.get("track", 0) or 0)
-        gs_kms = gs_knots * 0.514444 / 1000.0  # knots → km/s
-        # Geographic track: 0° = North, 90° = East.
-        vel_north_kms = gs_kms * math.cos(math.radians(track_deg))
-        vel_east_kms = gs_kms * math.sin(math.radians(track_deg))
+    # Aged against this solve's own epoch, not wall clock, and by the same
+    # rule the KF smoother applies — a fix older than the cap is a heading
+    # from before the aircraft went silent, and dead-reckoning the history
+    # along it walks the smoothed position off the track.  See
+    # track_filter._adsb_velocity.
+    has_adsb_vel, v_east_ms, v_north_ms = track_filter._adsb_velocity(adsb_hex, result.get("timestamp_ms"))
+    if has_adsb_vel:
+        vel_east_kms = v_east_ms / 1000.0
+        vel_north_kms = v_north_ms / 1000.0
     else:
         vel_east_kms = float(result.get("vel_east") or 0.0) / 1000.0
         vel_north_kms = float(result.get("vel_north") or 0.0) / 1000.0
@@ -554,18 +1239,194 @@ def _ewma_smooth_track(result: dict, track_key: str, adsb_hex: str | None) -> di
 # overlapping icons that drifted apart and then tripped the position-mismatch
 # and supersonic anomaly detectors.
 
-# Dark-target association gate.  retina_analytics.association uses the same 6 km
-# (_MERGE_DIST_KM) for within-round clustering, so this keeps the cross-round
-# gate no tighter than the one already applied per round.
+# Dark-target association gate, at dt=0.  retina_analytics.association uses the
+# same 6 km (_MERGE_DIST_KM) for within-round clustering, so this keeps the
+# cross-round gate no tighter than the one already applied per round.
 _MN_ASSOC_MAX_DIST_KM = 6.0
+
+# ...and how that gate GROWS with the age of the entry being matched against.
+#
+# The proximity branch does not compare two simultaneous positions: it compares
+# this solve against an existing entry dead-reckoned forward over dt seconds.
+# The error in that prediction is dominated by the velocity it was dead-reckoned
+# with, which is measured (aircraft_feed.py's DR block, 2026-08-09, n=93) at a
+# median 127 m/s vector error — 0.13 km of extra uncertainty per second of age,
+# on top of the ~1–2 km the solve positions themselves carry (published dark
+# solves: 0.98 km median GT error, p90 2.5–7.9 km).  A flat 6 km therefore
+# judges a 2 s-old entry far too loosely and a 40 s-old one far too tightly.
+#
+# Measured on this deployment (26 min): 57 dark key births, only 3 of them
+# while the same aircraft already had a live key — so simultaneous duplicates
+# are not the problem, sequential re-keying is.  Classified by distance from the
+# new key to the nearest dark entry alive in the previous frame, 11 of the 57
+# landed at 6–10 km with that predecessor then disappearing within 10 s: the
+# same target, re-keyed purely because its predecessor's dead-reckoned position
+# had drifted past the flat 6 km.  Those 11 are what this slope is for.  The
+# 23 at 10–20 km and the 20 with nothing within 20 km are out of its reach by
+# construction, and deliberately so.
+#
+# 0.13 km/s is the measured velocity error itself, not a multiple of it: one
+# sigma of DR drift, added to a 6 km base that already covers the solve error.
+# 6 km at dt=0, ~9.9 km at 30 s, and the cap from ~46 s to the 60 s age limit.
+_MN_ASSOC_DRIFT_KM_PER_S = 0.13
+# Ceiling on the grown gate.  Simulated aircraft are deconflicted to >=5 km
+# horizontally at spawn (retina_simulation.world), and two real targets closer
+# than a few km are not separable by this pipeline anyway — but a gate that
+# grew unbounded would eventually swallow a genuinely different aircraft in
+# the same sector.  12 km = twice the flat gate: past the 6–10 km band the
+# measurement puts the re-keys in, short of the 10–20 km band where the same
+# measurement shows predecessors that mostly lived on (13 of 23).
+_MN_ASSOC_MAX_DIST_CAP_KM = 12.0
 # Never associate to an entry the map has already dropped (the 60 s expiry in
 # frame_processor.build_combined_aircraft_json).
 _MN_ASSOC_MAX_AGE_S = 60.0
+# ...and how far the other way.  A solve may be matched to an entry whose
+# measurement epoch is up to this much LATER than the solve's own — dt < 0,
+# the entry stamped from a measurement taken after this one.
+#
+# Solves do not arrive in measurement order.  Two lanes now solve the same
+# dark aircraft from different epochs (the top-down dark-follow lane and the
+# bottom-up association lane) and the solver pool runs several workers, so a
+# solve 1-4 s OLDER than the entry just published for the same aircraft is
+# routine: measured live on test (2026-09-06, 927 published dark solves in
+# 22 min), 56 of 920 consecutive dark publishes had measurement time going
+# backwards.  Under the old `0.0 <= dt` rule the scan refused to even
+# consider those entries: 16 of the 67 fresh mn-dark-* keys minted in the
+# window were for an aircraft whose key had been published 0.0-1.8 s of wall
+# time earlier and 0.1-3.8 km away — well inside the 6 km gate — with a
+# measurement dt of -1 to -4 s.  Every one of those is a duplicate track for
+# one aircraft (the map draws two icons until the old key expires) and an
+# inflated dark_keys_minted.
+#
+# 10 s bounds it well clear of that 1-4 s jitter while keeping the case the
+# old rule was really about: past that, the ordering is not pool/lane jitter
+# but a stale queue item (_SOLVER_MAX_QUEUE_AGE_S is 45 s), and running an
+# entry backwards over ten-plus seconds of dead reckoning to manufacture a
+# match is exactly the fabrication the old rule refused.
+_MN_ASSOC_MAX_NEG_DT_S = 10.0
+
+# ── Node-track continuity ────────────────────────────────────────────────────
+# Every solver input carries the node-level tracker track ids it was built from
+# (s_in["track_ids"], from retina_analytics association).  Two dark solves that
+# were built from some of the SAME node tracks are usually the same aircraft,
+# and that is evidence the distance-only keying rule above throws away.
+#
+# Measured on the test deployment (captures 16-18, 2026-09-07) over pairs of
+# dark solves keyed differently within 40 s, by shared node track ids and
+# dead-reckoned distance — "precision" is P(same ground-truth aircraft):
+#
+#   shared   <2 km      2-4 km     4-6 km     6-10 km
+#   0        0.67       0.49       0.24       -
+#   1        1.00 (14)  0.71 (28)  0.92 (13)  0.15 (47)
+#   >=2      1.00 (21)  0.89 (28)  0.60 (15)  0.42 (31)
+#
+# Two things follow.  Inside the association gate a shared track id is strong
+# evidence of identity (84-94% pooled) and worth more than a couple of km of
+# proximity; OUTSIDE it the precision collapses to 0.15-0.42, i.e. shared node
+# tracks are ALSO what cross-aircraft association candidates look like at
+# range.  So this evidence is only ever used to re-rank candidates the gate
+# already admits, and the gate itself is not widened by so much as a metre.
+#
+# The memory window is short because the ids are: a node track id appears in
+# consecutive dark solves for a median of 7 s (p90 32 s) before the tracker
+# retires or re-numbers it, so beyond ~40 s an id match is a coincidence of
+# id reuse rather than continuity.  40 s also sits just under the 60 s entry
+# expiry, so no entry carries ids from a life it has otherwise forgotten.
+TRACK_LINK_AGE_S = float(os.getenv("TRACK_LINK_AGE_S", "40"))
+# How many shared node tracks it takes to join a key the follow lane owns.
+# Ownership (dark_follow.DARK_FOLLOW_OWN_S) exists to stop a DIFFERENT aircraft
+# stealing an established key, and at >=2 shared tracks inside the gate the
+# measurement says that is 89-100% not what is happening — it is the same
+# aircraft, solved bottom-up, 2-3 km from where the follow lane put it (n=3
+# solve scatter).  15 of 35 mints that had a same-aircraft predecessor within
+# 40 s were exactly this: follow-owned predecessor, inside the gate, beyond the
+# 2 km shadow radius, and 11 of the 15 shared node tracks with it.
+TRACK_LINK_MIN_SHARED_JOIN = int(os.getenv("TRACK_LINK_MIN_SHARED_JOIN", "2"))
+# Cap on the per-entry id memory.  A dark solve carries 2-6 track ids and the
+# window holds ~40 s of them, so this bounds a pathological key (a merged or
+# thrashing entry) rather than the normal case.
+TRACK_LINK_MAX_IDS = int(os.getenv("TRACK_LINK_MAX_IDS", "24"))
+
+# ── Supersession gate ────────────────────────────────────────────────────────
+# Supersession is DESTRUCTIVE in a way keying is not.  Keying to the wrong
+# entry writes one bad position that the next solve corrects; superseding the
+# wrong entry deletes a live aircraft's key outright, with its Kalman state,
+# its position history and its follow-lane identity, and that aircraft's next
+# solve mints a fresh key and restarts from nothing.  So the same evidence that
+# is good enough to key is NOT good enough to pop, and this gate is tighter
+# than _MN_ASSOC_MAX_DIST_KM on purpose.
+#
+# Measured over three 20 min ground-truth captures on the test deployment
+# (2026-09-05, 129 supersessions): 63 of the 129 popped a DIFFERENT ground-truth
+# aircraft's key.  The shape is always the same — three dark aircraft 5-6 km
+# apart inside the same nodes' cones, a 3-4 node solve of B carrying 4.5-10 km
+# of position error landing inside the 6 km gate of A's established key (up to
+# 71 solves old) and popping it, after which A is drawn 5+ km off for several
+# seconds under a brand-new key.  For well-covered dark aircraft this is now
+# the dominant miss.
+#
+# 4 km is where the replay puts the knee.  Replaying the recorded 129
+# supersessions offline: base 4 km AND |dalt| <= 1000 m gives 7 cross-aircraft
+# pops (from 56), 33 same-aircraft pops (from 64) and 1 pop by a bad new solve
+# (from 12).  Distance alone at 3 km is worse on every axis that matters
+# (9 / 41 / 3), and altitude alone at the old 6 km base leaves 8 cross-aircraft
+# pops while keeping 26 same-aircraft ones — cheaper, but it does not close the
+# neighbour-pop hole this exists for.  The 4 km base still grows with entry age
+# through _mn_assoc_gate_km, so an old entry is not judged by a dt=0 number.
+_MN_SUPERSEDE_BASE_KM = 4.0
+# ...and the altitude half of the same gate.  Horizontal error is what a bad
+# multinode solve has a lot of; altitude is the axis on which two aircraft in
+# the same sector actually differ, and the one a wrong solve does not usually
+# reproduce.  In the same captures, cross-aircraft pops sat at a median
+# |daltitude| of ~2.7 km between the old entry and the new solve while
+# same-aircraft pops sat at ~0.4 km, and the same-aircraft pops that did exceed
+# 1 km were almost all bad solves (new solve error > 2 km) — pops worth losing.
+# Fail-open when either altitude is missing, like the rest of the pipeline's
+# optional fields: an entry with no altitude is judged on distance alone rather
+# than being made unpoppable.
+_MN_SUPERSEDE_MAX_ALT_DIFF_M = 1000.0
+
 # Guards the read-modify-write in _process_solver_item.  Solver workers run
 # _N_SOLVER_WORKERS-way concurrently, and two threads associating the same
 # aircraft at once would each miss the other's entry and mint two tracks — the
 # very duplication this exists to prevent.
 _MN_TRACKS_LOCK = threading.Lock()
+
+
+def _mn_assoc_gate_km(dt_s: float, base_km: float = _MN_ASSOC_MAX_DIST_KM) -> float:
+    """Proximity gate for an entry last solved ``dt_s`` seconds ago.
+
+    ``base_km + _MN_ASSOC_DRIFT_KM_PER_S * dt``, capped at
+    _MN_ASSOC_MAX_DIST_CAP_KM — the constants above carry the measurement.
+    The cap is floored at ``base_km`` so a caller widening the base (tests,
+    the bench) can never end up with a gate tighter than the one it asked for.
+    """
+    return min(base_km + _MN_ASSOC_DRIFT_KM_PER_S * max(dt_s, 0.0), max(_MN_ASSOC_MAX_DIST_CAP_KM, base_km))
+
+
+def _entry_dr_velocity(key: str, entry: dict, learned_vel_fn) -> tuple[float, float]:
+    """(vel_east_ms, vel_north_ms) to dead-reckon an existing entry with.
+
+    The same choice services/aircraft_feed.py makes for the position it
+    DRAWS — the KF's learned velocity when the filter has state for this key,
+    the raw solved velocity otherwise, and the raw one unconditionally under
+    TRACK_DR_SOURCE=solve.  Deliberately shared semantics: if the key decision
+    dead-reckoned an entry somewhere other than where the feed draws it, a
+    solve could match an entry that is not under it on the map (or fail to
+    match one that is), and the two would disagree about the same aircraft.
+
+    ``learned_vel_fn`` is injected (defaulting to track_filter.learned_velocity
+    at the call site) so this stays testable without KF state, and so the
+    offline bench — which has no filter — takes the fallback naturally rather
+    than through a mode flag.  learned_velocity takes _KF_LOCK, a leaf lock;
+    the established solver.py -> track_filter order is what the caller already
+    uses for smooth_solve under _MN_TRACKS_LOCK.
+    """
+    if learned_vel_fn is not None and (os.getenv("TRACK_DR_SOURCE", "kf") or "kf").strip().lower() != "solve":
+        lv = learned_vel_fn(key)
+        if lv is not None:
+            return float(lv[0]), float(lv[1])
+    return float(entry.get("vel_east") or 0.0), float(entry.get("vel_north") or 0.0)
 
 
 def _collect_track_anomalies(s_in, result: dict) -> None:
@@ -608,6 +1469,68 @@ def _collect_track_anomalies(s_in, result: dict) -> None:
         result["max_velocity_ms"] = round(max_vel, 1)
 
 
+def merge_recent_track_ids(
+    prev: dict | None,
+    track_ids: Iterable[str] | None,
+    ts_s: float,
+    max_age_s: float = TRACK_LINK_AGE_S,
+    max_ids: int = TRACK_LINK_MAX_IDS,
+) -> dict[str, float]:
+    """This solve's node track ids merged into the entry's short id memory.
+
+    ``{track_id: last_seen_ts_s}``, carried on the multinode entry as
+    ``recent_track_ids`` so the next solve's keying decision can ask whether it
+    was built from any of the same node tracks (see TRACK_LINK_AGE_S).  Pruned
+    on every write rather than on read — the entry is written far less often
+    than the keying scan reads it, and an unpruned dict would keep growing for
+    a long-lived key.  Newest ids win the cap, since the whole point of the
+    memory is recency.
+    """
+    out: dict[str, float] = {}
+    for tid, seen in (prev or {}).items():
+        try:
+            seen_f = float(seen)
+        except (TypeError, ValueError):
+            continue
+        # Symmetric in time for the same reason dark_follow.recently_followed
+        # is: solves arrive out of measurement order, so an id stamped by a
+        # LATER solve is still evidence about this one.
+        if abs(ts_s - seen_f) <= max_age_s:
+            out[str(tid)] = seen_f
+    fresh = {str(tid): ts_s for tid in track_ids or ()}
+    if len(out) + len(fresh) > max_ids:
+        # This solve's own ids are the freshest evidence the next decision has,
+        # so they are never the ones the cap drops — the inherited memory is
+        # trimmed to fit around them, oldest first.
+        room = max(max_ids - len(fresh), 0)
+        keep = sorted(
+            ((tid, seen) for tid, seen in out.items() if tid not in fresh), key=lambda kv: kv[1], reverse=True
+        )
+        out = dict(keep[:room])
+    out.update(fresh)
+    return out
+
+
+def _shared_recent_tracks(prev: dict, solve_ids: set[str], ts_s: float, max_age_s: float = TRACK_LINK_AGE_S) -> int:
+    """How many of this solve's node track ids the entry has seen recently."""
+    if not solve_ids:
+        return 0
+    recent = prev.get("recent_track_ids")
+    if not isinstance(recent, dict):
+        return 0
+    n = 0
+    for tid in solve_ids:
+        seen = recent.get(tid)
+        if seen is None:
+            continue
+        try:
+            if abs(ts_s - float(seen)) <= max_age_s:
+                n += 1
+        except (TypeError, ValueError):
+            continue
+    return n
+
+
 def multinode_key_decision(
     tracks: dict[str, dict],
     result: dict,
@@ -615,16 +1538,41 @@ def multinode_key_decision(
     anchor_key: str | None,
     max_dist_km: float = _MN_ASSOC_MAX_DIST_KM,
     max_age_s: float = _MN_ASSOC_MAX_AGE_S,
-) -> tuple[str, str]:
-    """The keying rule itself, pure and clock-free — the multinode-track
-    analogue of claim_decision.  Extracted so the offline bench measures the
-    SHIPPED rule by construction (the same reason claim_decision is imported
+    learned_vel_fn=track_filter.learned_velocity,
+    anchor_dr: bool = False,
+    track_ids: Iterable[str] | None = None,
+) -> tuple[str, str, float | None, float | None]:
+    """The keying rule itself, clock-free — the multinode-track analogue of
+    claim_decision.  Extracted so the offline bench measures the SHIPPED rule
+    by construction (the same reason claim_decision is imported
     at association_bench.py's top-of-file import), and so _process_solver_item can observe
     which branch fired for the anchor counters below.
 
+    Clock-free but no longer strictly pure: the proximity scan asks the KF
+    for each candidate's learned velocity (``learned_vel_fn``, injectable and
+    defaulting to the real accessor) and reads TRACK_DR_SOURCE, both so its
+    dead-reckoning matches the position the feed draws — see
+    _entry_dr_velocity.  Every time-of-day still arrives in `result` and
+    `tracks`, so the rule remains replayable against recorded data.  The DR
+    horizon deliberately is NOT clamped to the feed's 30 s display cap: that
+    cap limits how far a stale marker may slide across the map, while what
+    this scan needs is the best available estimate of where the aircraft
+    actually is, and the max_age_s window already bounds dt.
+
     Caller holds _MN_TRACKS_LOCK — it reads `tracks` and the caller writes
-    back into it under the same lock.  Returns (key, how) with
-    how in {"adsb", "anchor", "proximity", "minted"}.
+    back into it under the same lock.  Returns (key, how, dist_km, dt_s) with
+    how in {"adsb", "anchor", "proximity", "tracks", "shadowed", "minted"};
+    dist_km is
+    how far this solve landed from the entry it was keyed onto (dead-reckoned,
+    for the proximity, tracks and shadowed branches) and None where nothing was
+    matched — "adsb" and "minted".  dt_s is the SIGNED age of that entry at
+    this solve's epoch (positive = the entry was measured first, negative =
+    this solve's measurement is the older of the two), None wherever dist_km
+    is.  The caller stamps all three onto the solve-history record, which is
+    the only way to tell a re-key apart from a
+    fragment after the fact.  "shadowed" is the one verdict that is NOT a key:
+    it names the followed key this solve was refused in favour of, and the
+    caller must treat it as a rejection (see _process_solver_item).
 
     Order:
       1. ADS-B-tagged solves key on the transponder hex — unconditional, and
@@ -641,11 +1589,62 @@ def multinode_key_decision(
          still landed near the claimed track is legitimate, while one that
          converged somewhere else entirely is not honored just because a
          claim was attempted.
-      3. Existing DR proximity scan, moved verbatim from the pre-claiming
-         track-key logic (now this function): only dark tracks are claimable — an untagged
+      3. DR proximity scan: only dark tracks are claimable — an untagged
          solve must never steal the identity of an ADS-B-tagged aircraft
-         that happens to be nearby — dead-reckoned forward so a fast target
-         is not rejected purely for having moved since its last solve.
+         that happens to be nearby — dead-reckoned to this solve's epoch so
+         a fast target is not rejected purely for having moved since its
+         last solve.  The gate each candidate is judged against grows with
+         ITS OWN age (_mn_assoc_gate_km), because that is what the
+         dead-reckoning error does; candidates compete on distance
+         normalised by their own gate, so a fresh close entry beats an old
+         far one rather than the scan simply taking whichever is nearer in
+         kilometres.
+
+         The dt window is SIGNED: -_MN_ASSOC_MAX_NEG_DT_S <= dt <=
+         max_age_s, and the dead reckoning uses the signed dt, so a
+         candidate measured AFTER this solve is offset BACKWARDS along its
+         velocity — which is exactly where that aircraft was at this solve's
+         epoch, not a fabrication.  Solves reach here out of measurement
+         order as a matter of course (two lanes, several pool workers); see
+         _MN_ASSOC_MAX_NEG_DT_S for the measurement and for why 10 s is the
+         bound.  _mn_assoc_gate_km clamps dt at 0, so a negative-dt
+         candidate is judged against the base gate with no drift allowance —
+         deliberate: the DR is short and the gate should not be widened for
+         a direction the drift measurement never covered.
+
+         KEY OWNERSHIP (DARK_FOLLOW_MODE=binding only).  A key the follow
+         lane published on within dark_follow.DARK_FOLLOW_OWN_S is removed
+         from this scan's candidates entirely, and if the nearest such key is
+         within DARK_FOLLOW_SHADOW_KM the solve is refused ("shadowed")
+         instead of keyed at all.  The follow lane already supplies every
+         solve an established track needs, so a bottom-up solve arriving at
+         one of its keys is either a duplicate — competing with the anchored
+         solve and dragging the filter — or a different aircraft stealing the
+         key; 21% of proximity joins measured on test were the latter.  See
+         dark_follow.DARK_FOLLOW_OWN_S for why a tighter gate cannot separate
+         the two.
+
+         NODE-TRACK CONTINUITY ("tracks").  ``track_ids`` are this solve's
+         node-level tracker track ids, and each entry remembers the ones its
+         recent solves were built from (recent_track_ids, TRACK_LINK_AGE_S).
+         Sharing them is direct evidence that two solves are of one aircraft,
+         and it is used ONLY to re-rank candidates the gate already admits —
+         see TRACK_LINK_AGE_S for the measured precision, which is 84-94%
+         inside the gate and 0.15-0.42 outside it, so the gate is never
+         widened by this and a shared id can never rescue an out-of-gate
+         candidate.  Two things change inside the gate:
+           - A follow-owned candidate sharing >= TRACK_LINK_MIN_SHARED_JOIN
+             ids is JOINED rather than skipped (how "tracks").  Ownership is
+             there to stop a different aircraft stealing the key, and >=2
+             shared node tracks in-gate say this is the same aircraft the
+             follow lane is already solving, landing 2-3 km out on n=3 solve
+             scatter.  One shared id is weaker (0.71-0.92) — not enough to
+             take the key, but enough to refuse the solve as a duplicate, so
+             it shadows beyond DARK_FOLLOW_SHADOW_KM instead of minting.
+           - Other candidates score d/gate divided by (1 + shared, capped at
+             4), so a track-sharing entry outranks a nearer stranger; the
+             winner is reported as "tracks" when it shared anything at all
+             and "proximity" when it did not.
       4. Mint.  This key only needs to be unique at birth; every later solve
          associates to it above (by proximity, or by anchor once a claim
          forms), so it stays stable.
@@ -656,18 +1655,79 @@ def multinode_key_decision(
     # ADS-B lane — adsb_assisted=true on the feed, and the mn-dark-* store
     # (so the anchor and proximity branches below) starved forever.
     if adsb_hex and is_transponder_hex(adsb_hex):
-        return f"mn-adsb-{adsb_hex}", "adsb"
+        return f"mn-adsb-{adsb_hex}", "adsb", None, None
 
     lat, lon = result["lat"], result["lon"]
+    ts_s = result.get("timestamp_ms", 0) / 1000.0
 
+    # The anchor branch keeps the FLAT gate.  It is not a dead-reckoning
+    # question: the claim named this entry as the aircraft this solve is of,
+    # and the distance check exists only to refuse an anchor whose solve
+    # converged somewhere else entirely.  Nothing here is predicting where the
+    # anchor drifted to, so there is no drift term to allow for.
+    #
+    # ...unless the caller says otherwise (anchor_dr).  A dark-follow input
+    # (services/dark_follow.py) breaks that premise by construction: its guess
+    # IS a prediction of where the anchor drifted to, so its solve is compared
+    # against an entry the follow lane already knows to be stale.  The numbers
+    # make it more than a nicety — the dark displacement cap is 6.0 km and the
+    # flat anchor gate is 6.0 km, so a solve at the edge of the gate that let
+    # it through is at the edge of the gate that must key it, before any drift
+    # is added; at the follow lane's 20 s staleness limit a 270 m/s target adds
+    # another 5.4 km of it.  Without this the anchor would be refused exactly
+    # when the aircraft is moving fastest, and the solve would fall through to
+    # the proximity scan the whole lane exists to stop relying on.  Same DR and
+    # same age-scaled gate as that scan, so "near the anchor" means one thing.
     if anchor_key and anchor_key.startswith("mn-dark-") and anchor_key in tracks:
         anchor = tracks[anchor_key]
         a_lat, a_lon = anchor.get("lat"), anchor.get("lon")
-        if a_lat is not None and a_lon is not None and _haversine_km(lat, lon, a_lat, a_lon) <= max_dist_km:
-            return anchor_key, "anchor"
+        if a_lat is not None and a_lon is not None:
+            a_gate_km = max_dist_km
+            a_dt = ts_s - anchor.get("timestamp_ms", 0) / 1000.0
+            if anchor_dr and 0.0 < a_dt <= max_age_s:
+                a_vel_east, a_vel_north = _entry_dr_velocity(anchor_key, anchor, learned_vel_fn)
+                a_lat, a_lon = offset_latlon_m(
+                    a_lat,
+                    a_lon,
+                    east_m=a_vel_east * a_dt,
+                    north_m=a_vel_north * a_dt,
+                )
+                a_gate_km = _mn_assoc_gate_km(a_dt, max_dist_km)
+            a_dist = _haversine_km(lat, lon, a_lat, a_lon)
+            if a_dist <= a_gate_km:
+                return anchor_key, "anchor", a_dist, round(a_dt, 3)
 
-    ts_s = result.get("timestamp_ms", 0) / 1000.0
-    best_key, best_dist = None, max_dist_km
+    # Candidates compete on d / gate_km, not on d: an entry solved 2 s ago at
+    # 5 km is a worse match than one solved 40 s ago at 8 km only if you
+    # ignore that the second one's position is a 40 s extrapolation.  A score
+    # < 1.0 is inside that candidate's own gate; the initial 1.0 is therefore
+    # the "no candidate" sentinel and keeps the old strict-inequality
+    # behaviour at exactly the gate distance.
+    best_key: str | None = None
+    best_score = 1.0
+    best_dist: float | None = None
+    best_dt: float | None = None
+    best_shared = 0
+    # This solve's node track ids, and the best follow-owned candidate that
+    # shares enough of them to be joined outright (see TRACK_LINK_AGE_S).
+    solve_ids = {str(t) for t in (track_ids or ())}
+    link_key: str | None = None
+    link_score = 1.0
+    link_dist: float | None = None
+    link_dt: float | None = None
+    # A follow-owned candidate sharing exactly one id: too weak to take the
+    # key, strong enough to refuse the solve however far out it landed.
+    weak_link_key: str | None = None
+    weak_link_dist: float | None = None
+    weak_link_dt: float | None = None
+    # Key ownership: the nearest key the follow lane is currently answering
+    # for, and how far this solve landed from it.  Only collected for a
+    # bottom-up solve in binding mode — an anchored or ADS-B solve names the
+    # aircraft it is of, and neither branch above reaches this scan.
+    shadow_scan = not anchor_key and dark_follow.mode() == "binding"
+    shadow_key: str | None = None
+    shadow_dist: float | None = None
+    shadow_dt: float | None = None
 
     for key, prev in tracks.items():
         # Only dark tracks are claimable; an untagged solve must never steal the
@@ -675,27 +1735,216 @@ def multinode_key_decision(
         if not key.startswith("mn-dark-"):
             continue
         dt = ts_s - prev.get("timestamp_ms", 0) / 1000.0
-        if not (0.0 <= dt <= max_age_s):
+        if not (-_MN_ASSOC_MAX_NEG_DT_S <= dt <= max_age_s):
             continue
         p_lat, p_lon = prev.get("lat"), prev.get("lon")
         if p_lat is None or p_lon is None:
             continue
-        # Dead-reckon the existing track forward before measuring, so a fast
-        # target is not rejected purely for having moved since its last solve.
+        # Dead-reckon the existing track to THIS solve's epoch before
+        # measuring, so a fast target is not rejected purely for having moved
+        # between the two measurements.  Same velocity the feed draws this
+        # entry with (_entry_dr_velocity), and the signed dt: a negative one
+        # walks the entry backwards along its own velocity, to where the
+        # aircraft was when this (older) measurement was taken.
+        vel_east_ms, vel_north_ms = _entry_dr_velocity(key, prev, learned_vel_fn)
         p_lat, p_lon = offset_latlon_m(
             p_lat,
             p_lon,
-            east_m=prev.get("vel_east", 0.0) * dt,
-            north_m=prev.get("vel_north", 0.0) * dt,
+            east_m=vel_east_ms * dt,
+            north_m=vel_north_ms * dt,
         )
         d = _haversine_km(lat, lon, p_lat, p_lon)
-        if d < best_dist:
-            best_key, best_dist = key, d
+        gate_km = _mn_assoc_gate_km(dt, max_dist_km)
+        # How much of this solve's node-track evidence this entry has seen.
+        shared = _shared_recent_tracks(prev, solve_ids, ts_s)
+        # A key the follow lane just published on is not joinable bottom-up on
+        # distance alone, whatever the distance says — see
+        # dark_follow.DARK_FOLLOW_OWN_S for the measurement.  It still competes
+        # to SHADOW this solve below, so the scan has to remember the nearest
+        # one rather than skipping it; and shared node tracks inside the gate
+        # answer the one question ownership was standing in for (is this the
+        # same aircraft?) directly, so they can join it after all.
+        if shadow_scan and dark_follow.recently_followed(key, ts_s, dark_follow.DARK_FOLLOW_OWN_S):
+            if shared >= TRACK_LINK_MIN_SHARED_JOIN and d <= gate_km:
+                l_score = d / gate_km
+                if link_key is None or l_score < link_score:
+                    link_key, link_score, link_dist, link_dt = key, l_score, d, dt
+            elif shared >= 1 and d <= gate_km and weak_link_key is None:
+                weak_link_key, weak_link_dist, weak_link_dt = key, d, dt
+            if shadow_dist is None or d < shadow_dist:
+                shadow_key, shadow_dist, shadow_dt = key, d, dt
+            continue
+        # Shared node tracks discount the distance score so a track-sharing
+        # entry beats a nearer stranger, but only among candidates the gate
+        # already admits: outside it the same evidence is 0.15-0.42 precise,
+        # so the gate check stays explicit rather than riding on the score
+        # being < 1.0 as it did when score was exactly d / gate.
+        if d >= gate_km:
+            continue
+        score = (d / gate_km) / (1 + min(shared, 3))
+        if score < best_score:
+            best_key, best_score, best_dist, best_dt, best_shared = key, score, d, dt, shared
 
+    # Close enough to a followed key that this solve is the same aircraft the
+    # follow lane is already solving: refuse it outright rather than mint a
+    # second key for a target that already has one.  Farther away it falls
+    # through to the non-followed candidates and, failing those, mints — the
+    # one thing it may never do is join the followed key.
+    #
+    # ...unless the node tracks say this IS that aircraft, in which case the
+    # solve joins the followed key instead of being thrown away: >=2 shared
+    # ids inside the gate is 89-100% the same target, and refusing the solve
+    # there costs the track a position rather than protecting it.  Checked
+    # before the distance shadow so the evidence outranks the radius.
+    if link_key is not None:
+        return link_key, "tracks", link_dist, (None if link_dt is None else round(link_dt, 3))
+    # One shared id is not enough to take a followed key, but it is enough to
+    # say this solve is a duplicate of one the follow lane already made, so it
+    # is refused at any distance inside the gate rather than minting the second
+    # key for that aircraft that the 2 km radius alone would have allowed.
+    if weak_link_key is not None:
+        return weak_link_key, "shadowed", weak_link_dist, (None if weak_link_dt is None else round(weak_link_dt, 3))
+    if shadow_key is not None and shadow_dist <= dark_follow.DARK_FOLLOW_SHADOW_KM:
+        return shadow_key, "shadowed", shadow_dist, (None if shadow_dt is None else round(shadow_dt, 3))
     if best_key is not None:
-        return best_key, "proximity"
+        return (
+            best_key,
+            "tracks" if best_shared >= 1 else "proximity",
+            best_dist,
+            (None if best_dt is None else round(best_dt, 3)),
+        )
     # No claimant — a genuinely new target.
-    return f"mn-dark-{result.get('timestamp_ms', 0)}-{lat:.3f}-{lon:.3f}", "minted"
+    return f"mn-dark-{result.get('timestamp_ms', 0)}-{lat:.3f}-{lon:.3f}", "minted", None, None
+
+
+def _supersession_match(
+    old_key: str,
+    old_r: dict,
+    new_ids: set,
+    raw_lat: float,
+    raw_lon: float,
+    ts_ms: float,
+    learned_vel_fn=track_filter.learned_velocity,
+    max_age_s: float = _MN_ASSOC_MAX_AGE_S,
+    alt_m: float | None = None,
+) -> tuple[bool, float | None]:
+    """Is the existing entry ``old_key`` the same aircraft as this new solve?
+
+    The second half of the supersession rule in _process_solver_item.  The
+    caller has already established the two cheap conditions — a different key,
+    and at least one shared source track id — and this decides whether the
+    shared id means anything.  Clock-free with an injectable
+    ``learned_vel_fn``, for the same reasons multinode_key_decision is:
+    unit-testable without KF state or the whole publish path.
+
+    Sharing a source track id is NOT on its own evidence of same-aircraft.
+    Single-node tracker tracks are genuinely shared between the association
+    candidates of DIFFERENT aircraft (a 6 min live window: 74 of 178 track ids
+    appeared in published solves of more than one ground-truth aircraft), so
+    the bare shared-id rule this replaces popped another aircraft's key 36
+    times in 44 supersessions, 41 of them beyond the association gate and 43
+    of them under 15 s old.  The victim's next solve then found no key and
+    minted a fresh one — dark keys churning at 7.4/min with a 7 s median
+    lifetime, against 2.4/min and 33 s before the dark publish rate rose.
+    Replayed over those 139 live solves, this guard cuts mints 47 -> 22 and
+    cross-aircraft pops 36 -> 7.
+
+    Nor is proximity on its own: on three 20 min ground-truth captures
+    (2026-09-05, 129 supersessions) 63 popped a different ground-truth
+    aircraft, almost always a 3-4 node solve of B with 4.5-10 km of position
+    error landing inside neighbour A's 6 km gate and deleting A's established
+    key.  So this predicate is gated tighter than the keying rule on BOTH
+    axes — _MN_SUPERSEDE_BASE_KM (4 km, still age-scaled) and
+    _MN_SUPERSEDE_MAX_ALT_DIFF_M (1000 m) carry those measurements — because a
+    wrong pop costs a live aircraft's key while a refusal costs one deferred
+    merge.  Replayed over those 129: cross-aircraft pops 56 -> 7, pops by a
+    bad new solve 12 -> 1, at the price of 64 -> 33 same-aircraft merges.
+
+    Two ways to match, either sufficient — and BOTH subject to the altitude
+    gate, which is fail-open when either side has no altitude:
+
+      (a) SPATIAL.  Dead-reckon ``old_r`` to this solve's timestamp and ask
+          whether it lands within the age-scaled gate (_mn_assoc_gate_km)
+          grown from _MN_SUPERSEDE_BASE_KM.  Same DR as
+          multinode_key_decision — _entry_dr_velocity + offset_latlon_m, so
+          the entry is judged where the feed DRAWS it — and measured against
+          the solve's RAW position, which is what that gate was tuned
+          against.  The dt window is the keying rule's, signed the same way:
+          an entry older than ``max_age_s`` is past the map's own expiry,
+          and an entry stamped up to _MN_ASSOC_MAX_NEG_DT_S AFTER this solve
+          is dead-reckoned backwards over the signed dt to where that
+          aircraft was at this solve's epoch.  Out-of-order epochs between
+          the two dark lanes and across the pool's workers are routine at
+          1-4 s (see _MN_ASSOC_MAX_NEG_DT_S for the live measurement), so
+          refusing them here made a duplicate key un-mergeable as well as
+          un-preventable: the next solve could not supersede the duplicate
+          either whenever its own epoch was the earlier of the two.  The
+          10 s bound is what keeps the case the old rule was really about (a
+          stale queue item, not lane jitter) out of the backwards DR.
+
+      (b) IDENTICAL INPUTS.  ``old_r``'s source track ids are non-empty and a
+          subset of this solve's.  Built from the same measurements, so the
+          same aircraft by construction — this is the anchor-merge case,
+          where a bottom-up fragment minted from exactly these tracks is
+          absorbed into the anchor.  A merely OVERLAPPING set is not enough:
+          overlap is the contamination described above.
+
+          Bounded, though, at twice the branch (a) gate and by the same
+          altitude test.  Identical inputs converging many kilometres and
+          thousands of metres apart is a multi-modal solve — the same
+          measurements admitting two solutions — not one aircraft seen twice,
+          and picking the wrong mode still costs a key.  Branch (b) fired 7
+          times in those captures: 4 were cross-aircraft (dead-reckoned 6.2,
+          6.3, 9.0 and 16.5 km apart, |daltitude| 10764, 1596, 1033 and 739 m)
+          and only one of the 3 same-aircraft ones was a legitimate merge
+          (1.8 km, 31 m).  The real anchor-merge case is always close, so the
+          bound costs it nothing.  A dt window that never opened leaves
+          ``dr_dist_km`` unknown, and an unknown distance cannot fail a
+          distance bound — the ids still have to be a subset.
+
+    Returns (matched, dr_dist_km).  dr_dist_km is the dead-reckoned distance
+    in km when it could be computed (the dt window held and the entry has a
+    position), None otherwise — reported for the same reason
+    multinode_key_decision returns its dist_km: after the fact it is the only
+    way to tell a tight merge from a rescued far one.
+    """
+    # The altitude half of the gate, applied to both branches below.  Missing
+    # or non-finite on either side is "unknown", and unknown passes — an entry
+    # that never carried an altitude must stay poppable on distance alone.
+    old_alt, new_alt = old_r.get("alt_m"), alt_m
+    alt_ok = (
+        old_alt is None
+        or new_alt is None
+        or not math.isfinite(old_alt)
+        or not math.isfinite(new_alt)
+        or abs(new_alt - old_alt) <= _MN_SUPERSEDE_MAX_ALT_DIFF_M
+    )
+
+    dr_dist_km: float | None = None
+    dt = ts_ms / 1000.0 - float(old_r.get("timestamp_ms") or 0) / 1000.0
+    if -_MN_ASSOC_MAX_NEG_DT_S <= dt <= max_age_s:
+        p_lat, p_lon = old_r.get("lat"), old_r.get("lon")
+        if p_lat is not None and p_lon is not None:
+            vel_east_ms, vel_north_ms = _entry_dr_velocity(old_key, old_r, learned_vel_fn)
+            p_lat, p_lon = offset_latlon_m(
+                p_lat,
+                p_lon,
+                east_m=vel_east_ms * dt,
+                north_m=vel_north_ms * dt,
+            )
+            dr_dist_km = _haversine_km(raw_lat, raw_lon, p_lat, p_lon)
+            if alt_ok and dr_dist_km <= _mn_assoc_gate_km(dt, _MN_SUPERSEDE_BASE_KM):
+                return True, dr_dist_km
+
+    old_ids = set(old_r.get("source_track_ids") or ())
+    if (
+        alt_ok
+        and old_ids
+        and old_ids.issubset(new_ids)
+        and (dr_dist_km is None or dr_dist_km <= 2.0 * _mn_assoc_gate_km(dt, _MN_SUPERSEDE_BASE_KM))
+    ):
+        return True, dr_dist_km
+    return False, dr_dist_km
 
 
 # Maximum age (seconds) of a solver queue item before it is discarded without
@@ -746,7 +1995,67 @@ _SOLVER_MAX_QUEUE_AGE_S = 45.0
 # Sized against the map, not the association cadence: multinode_tracks expire
 # at 60 s, so refreshing an aircraft every 12 s leaves four solves' worth of
 # margin.  0 disables the suppression entirely.
+#
+# The claim is recorded ON PUBLICATION, not on admission, and from the
+# POST-TRIM survivors.  Claiming on admission made a candidate that never
+# reached the map suppress every later candidate sharing any of its track ids
+# for the full window — including other aircraft's, since tracker track ids
+# are shared across the association candidates of different aircraft (74 of
+# 178 ids in a 6 min live window appeared in solves of more than one
+# ground-truth aircraft; the same finding that forced _supersession_match's
+# spatial guard).  A rejected candidate, or a contaminated superset that the
+# gates sank, therefore blacked out the clean subsets behind it for 12 s and
+# nothing was refreshed at all.  Live that cost ~1 537 skips per 646 dark
+# attempts per 30 min — more candidates suppressed than solved, by a factor
+# of two.  The rule this suppression is FOR is "an aircraft already on the map
+# at this width does not need re-solving yet", and only a publication puts an
+# aircraft on the map.
+#
+# Two consequences, both accepted deliberately:
+#   * the check no longer claims under the same lock, so two workers can now
+#     both solve duplicates of one aircraft that arrived together.  The pair
+#     costs one extra solve and is resolved downstream by keying and
+#     supersession, which already handle exactly this; the alternative is the
+#     starvation above.
+#   * trimmed nodes' track ids are NOT claimed (_filter_s_in_to_nodes rebuilds
+#     track_ids from the surviving track_ids_by_node, so result's
+#     source_track_ids are the survivors).  A node dropped for a bad residual
+#     was probably another aircraft's — claiming its track would suppress that
+#     aircraft's own candidate on the strength of a measurement this solve
+#     threw away.
+#
+# One exception, sized separately below: at 3 or more nodes a claim older than
+# _SOLVER_RESOLVE_REFRESH_S stops covering a candidate even at equal width.
+# The rule this suppression enforces is "already on the map at this width",
+# and that stays true for the whole window — but the map entry it points at
+# is dead-reckoning, so late in the window "already on the map" and "in the
+# right place" have come apart.
 _SOLVER_RESOLVE_INTERVAL_S = float(os.getenv("SOLVER_RESOLVE_INTERVAL_S", "12"))
+
+
+# When a claim stops covering a candidate that is wide enough to be worth
+# re-solving.  Dark position error against ground truth grows with the age of
+# the solve behind the entry (test fleet, median error by solve age):
+#
+#     <= 3 s    0.34 km
+#     3 – 8 s   0.80 km
+#     8 – 12 s  1.10 km
+#
+# and for an aircraft the dark-follow lane does not carry — every 3-node
+# aircraft — a re-solve is the only thing that refreshes the entry at all.
+# Live over a 5 min window, 487 of 500 dark skips were blocked by a
+# wider-or-equal claim, 118 of them at 3 nodes, and the blocking claim was
+# median 3.9 s / p90 9.0 s old when it did the blocking: the candidates being
+# thrown away are arriving exactly where the error curve above turns.  So a
+# candidate at 3+ nodes is admitted once every claim blocking it has aged past
+# this, whatever the claim's width.
+#
+# 3 nodes and not 2 deliberately.  An n=2 candidate publishes only 6–9% of the
+# time and lands 2.7 km from truth when it does, which is worse than letting
+# the 0.34 km solve it would displace dead-reckon; n <= 2 therefore stays on
+# the full _SOLVER_RESOLVE_INTERVAL_S rule.  0 disables the refresh entirely
+# and restores that rule at every width.
+_SOLVER_RESOLVE_REFRESH_S = float(os.getenv("SOLVER_RESOLVE_REFRESH_S", "6"))
 _RECENT_SOLVES: dict[str, tuple[float, int]] = {}  # track_id → (solved_at, n_nodes)
 _RECENT_SOLVES_LOCK = threading.Lock()
 _recent_solves_last_sweep = 0.0
@@ -763,39 +2072,125 @@ def _sweep_recent_solves(now_s: float) -> None:
         del _RECENT_SOLVES[tid]
 
 
-def _claim_resolve_slot(s_in, now_s: float) -> bool:
-    """False when this candidate re-solves tracks another candidate just took.
+def _resolve_slot_state(s_in, now_s: float) -> tuple[bool, list[dict], bool]:
+    """The whole resolve-slot decision: (covered, blocking, refreshed).
 
-    Records the claim as a side effect, under one lock with the test, so two
-    workers cannot both admit the same aircraft's duplicates.  An input with no
-    track provenance (detection-level, or an anchored input carrying none) is
-    always admitted — there is nothing to match it against.
+    Pure, like the _resolve_slot_covered wrapper below it, and for the same
+    reason.  Split out from that wrapper so the caller can tell the two ways
+    of being admitted apart: a candidate no claim covers at all, and a 3+-node
+    candidate admitted only because every claim on it had aged past
+    _SOLVER_RESOLVE_REFRESH_S (``refreshed``, counted as
+    solver_resolve_refresh).  Deciding that at the call site instead would
+    mean a second pass over the same claims under the same lock.
+
+    ``blocking`` is the claims that covered the candidate, for the skip
+    record; it is empty whenever ``covered`` is False, refreshed or not — a
+    refreshed candidate is not skipped, so nothing records it.  An input with
+    no track provenance (detection-level, or an anchored input carrying none)
+    is never covered: there is nothing to match it against.
     """
     if _SOLVER_RESOLVE_INTERVAL_S <= 0 or not isinstance(s_in, dict):
-        return True
+        return False, [], False
     track_ids = s_in.get("track_ids")
     if not track_ids:
-        return True
+        return False, [], False
     n_nodes = int(s_in.get("n_nodes") or 0)
     cutoff = now_s - _SOLVER_RESOLVE_INTERVAL_S
+    # Claims at or before this are old enough for a wide candidate to refresh
+    # the map entry they stand for.  Starts true for a wide enough candidate
+    # and is cleared by the first claim too young to refresh.
+    refresh_cutoff = now_s - _SOLVER_RESOLVE_REFRESH_S
+    refreshed = _SOLVER_RESOLVE_REFRESH_S > 0 and n_nodes >= 3
+    blocking: list[dict] = []
     with _RECENT_SOLVES_LOCK:
-        covered = True
         for tid in track_ids:
             held = _RECENT_SOLVES.get(tid)
             if held is None or held[0] <= cutoff or held[1] < n_nodes:
-                covered = False
-                break
-        if covered:
-            return False
+                return False, [], False
+            if held[0] > refresh_cutoff:
+                refreshed = False
+            blocking.append({"track_id": tid, "held_ts": round(held[0], 3), "held_n": held[1]})
+    if refreshed:
+        return False, [], True
+    return True, blocking, False
+
+
+def _resolve_slot_covered(s_in, now_s: float) -> tuple[bool, list[dict]]:
+    """Is every track this candidate carries already ON THE MAP at this width?
+
+    Pure: it reads the claims and mutates nothing, so a candidate that is
+    admitted here and then rejected by the gate stack leaves no trace.  The
+    claim is made afterwards by _record_resolve_slot, from the publish path
+    only — see the block comment above for why, and for what the loss of
+    atomic test-and-claim costs.
+
+    Returns (covered, blocking) from _resolve_slot_state, dropping the
+    refresh flag: the answer to "must this candidate be skipped", for callers
+    that do not count the refresh.
+    """
+    covered, blocking, _refreshed = _resolve_slot_state(s_in, now_s)
+    return covered, blocking
+
+
+def _record_resolve_slot(track_ids, n_nodes: int, now_s: float) -> None:
+    """Record that ``track_ids`` are covered by a PUBLISHED solve at n_nodes.
+
+    Called from the publish path alone, with the post-trim survivors
+    (``result["source_track_ids"]``).  Nothing else may call it: a claim is a
+    statement that this aircraft is on the map, and a rejected solve puts
+    nothing there.
+    """
+    if _SOLVER_RESOLVE_INTERVAL_S <= 0 or not track_ids:
+        return
+    n_nodes = int(n_nodes or 0)
+    cutoff = now_s - _SOLVER_RESOLVE_INTERVAL_S
+    with _RECENT_SOLVES_LOCK:
         for tid in track_ids:
             held = _RECENT_SOLVES.get(tid)
-            # Keep the widest claim of the window: a narrow candidate admitted
-            # after a wide one must not lower the bar the next copy is tested
-            # against.
+            # Keep the widest claim of the window: a narrow publish after a
+            # wide one must not lower the bar the next copy is tested against.
             held_nodes = held[1] if held is not None and held[0] > cutoff else 0
             _RECENT_SOLVES[tid] = (now_s, max(n_nodes, held_nodes))
         _sweep_recent_solves(now_s)
-    return True
+
+
+def _record_resolve_skip(s_in, now_s: float, blocking: list[dict]) -> None:
+    """Count and remember one resolve-slot refusal.
+
+    The counter alone could not answer the question the suppression rule
+    raises — *whose* claim blocked this, and was it even the same aircraft.
+    Live on the test droplet the rule refuses ~1 537 candidates per 646 dark
+    attempts per 30 min, and nothing recorded which claim did it, so a skip
+    that suppressed a genuinely different aircraft (tracker track ids are
+    shared across candidates — see _supersession_match) was indistinguishable
+    from one that suppressed a duplicate.  The deque carries the blocking
+    claims and the candidate's own guess position so the two can be told apart
+    after the fact.
+
+    Deliberately NOT a solve-history record: skips outrun real dark records
+    roughly two to one, and writing them into that deque would evict the
+    solves the same investigation needs (see state.solver_resolve_skips_recent).
+    """
+    s = s_in if isinstance(s_in, dict) else {}
+    track_ids = list(s.get("track_ids") or [])
+    dark = _is_dark_solver_input(s)
+    state.bump_counter("solver_resolve_skips")
+    if dark:
+        state.bump_counter("solver_resolve_skips_dark")
+    ig = s.get("initial_guess") or {}
+    state.solver_resolve_skips_recent.append(
+        {
+            "ts_ms": int(now_s * 1000),
+            # No key is minted for a candidate that never solves, so lane is
+            # the same fallback routes.test._record_lane uses for a reject.
+            "lane": "dark" if dark else "adsb",
+            "track_ids": track_ids,
+            "n_nodes": int(s.get("n_nodes") or 0),
+            "blocking": blocking,
+            "guess_lat": round(float(ig["lat"]), 6) if ig.get("lat") else None,
+            "guess_lon": round(float(ig["lon"]), 6) if ig.get("lon") else None,
+        }
+    )
 
 
 # Which single-node track pair currently owns a published n=2 track, and how
@@ -891,7 +2286,7 @@ def claim_decision(
     return True
 
 
-def _resolve_cv_fit(s_in: dict, node_cfgs) -> dict | None:
+def _resolve_cv_fit(s_in: dict, node_cfgs, *, fix_altitude: bool = False) -> dict | None:
     """Constant-velocity fit over the whole observation window, cached.
 
     Fits one constant-velocity trajectory to the associated track pairing's
@@ -910,8 +2305,18 @@ def _resolve_cv_fit(s_in: dict, node_cfgs) -> dict | None:
     _resolve_n2_chi2 without ever reaching here — which is also the one case
     this function cannot reconstruct a fit dict for: with the fit already
     done inline, no epochs survive on the input to refit from.
+
+    ``fix_altitude`` selects the pinned 4-state fit (z held at the initial
+    guess, vz = 0) and caches it under a SEPARATE key, ``_cv_fit_pinned``.
+    The two fits answer different questions over the same epochs — the free one
+    is the confirmation test, the pinned one is the position (see
+    _N2_FIT_FIX_ALTITUDE) — and they have different dof, so the pinned fit
+    deliberately does not write chi2_per_dof/n_epochs back onto the input:
+    those feed the n=2 gate, whose threshold was calibrated against the
+    6-state.
     """
-    cached = s_in.get("_cv_fit")
+    cache_key = "_cv_fit_pinned" if fix_altitude else "_cv_fit"
+    cached = s_in.get(cache_key)
     if cached is not None:
         return cached
     epochs = s_in.get("cv_epochs")
@@ -929,13 +2334,16 @@ def _resolve_cv_fit(s_in: dict, node_cfgs) -> dict | None:
                 "timestamp_ms": s_in.get("timestamp_ms", 0),
             },
             node_cfgs,
+            fix_altitude=fix_altitude,
         )
     except Exception:
         logging.exception("constant-velocity fit failed")
         return None
     if not fit or not fit.get("success"):
         return None
-    s_in["_cv_fit"] = fit
+    s_in[cache_key] = fit
+    if fix_altitude:
+        return fit
     # Cache it so a retry of the same input does not refit.
     s_in["chi2_per_dof"] = fit["chi2_per_dof"]
     s_in["n_epochs"] = fit["n_epochs"]
@@ -958,6 +2366,127 @@ def _resolve_n2_chi2(s_in: dict, node_cfgs) -> float | None:
 # Public alias: the offline bench resolves chi2 through the same code path the
 # worker uses, rather than carrying a copy of the fit plumbing.
 resolve_n2_chi2 = _resolve_n2_chi2
+
+
+def _n2_anchor_admits(s_in: dict) -> bool:
+    """True if this n=2 input is an anchored follow of an established track.
+
+    The n=2 confirmation gate below is a defence against pairing two
+    single-node tracks that belong to DIFFERENT aircraft, and the
+    constant-velocity fit is how it decides they are one.  An anchored input
+    has already answered that question by a stronger route: top-down claiming
+    tested each detection against the followed track's own predicted delay and
+    Doppler (services/dark_follow.py), and the track it was tested against has
+    at least DARK_FOLLOW_MIN_SOLVES solves behind it.  Re-asking with a fit
+    there is redundant, and it is not a cheap redundancy — measured on the test
+    droplet, 14 follow inputs per capture were rejected n2_unconfirmed, and two
+    consecutive rejects drop the followed target, so an aircraft that flew out
+    of 3-node coverage was dropped rather than followed through it.
+
+    Deliberately narrow: the anchor must still name a live ``mn-dark-*`` entry
+    with the solve count that made it followable in the first place, so a stale
+    or freshly minted key admits nothing.  Bumps the counter here rather than
+    at the call site so the gate itself stays a single expression; the counter
+    is the rate to watch if the bypass ever needs turning off.
+    """
+    if not dark_follow.DARK_FOLLOW_N2_ADMIT:
+        return False
+    anchor_key = s_in.get("anchor_key")
+    if not anchor_key or not str(anchor_key).startswith("mn-dark-"):
+        return False
+    rec = state.multinode_tracks.get(anchor_key)
+    if not isinstance(rec, dict):
+        return False
+    if int(rec.get("solve_count") or 0) < dark_follow.DARK_FOLLOW_MIN_SOLVES:
+        return False
+    state.bump_counter("n2_anchored_admitted")
+    return True
+
+
+def _apply_n2_fit_position(s_in: dict, result: dict, node_cfgs) -> None:
+    """Swap in the constant-velocity fit's position on a published n=2 solve.
+
+    Called only after the confirmation gate above has passed the pairing, so
+    the epochs this refits are the ones that decided the pairing is a single
+    aircraft — and on the anchored bypass path, where the claim round decided
+    that instead and the fit is used for position alone.
+
+    With _N2_FIT_FIX_ALTITUDE (the default) this is a SECOND fit of those same
+    epochs, with altitude pinned to the solve's own initial guess.  The gate
+    keeps the free-z fit it was calibrated against; only the position comes
+    from the pinned one.  Altitude is never taken from a free fit at all — see
+    the assignment below.
+
+    Runs deliberately AFTER every gate, and changes none of them.  The beam and
+    displacement gates ran on the LM position because that is the position
+    their caps were tuned against (an anchored n=2 is judged at 1.5 km, see
+    _DARK_FOLLOW_N2_MAX_DISP_KM), and the track-pair claim is decided on the
+    fit's chi2, not on either position.  The only thing that changes here is
+    which position gets published; rms_delay, rms_doppler and n_nodes stay the
+    single-epoch solve's, since they describe that solve and not this one.
+
+    The LM position is kept on the result as solve_raw_lat/solve_raw_lon (and
+    stamped into the history record) so the swap is measurable live rather than
+    only in the offline bench: gt_error split by pos_source over published n=2
+    records is the whole experiment.
+
+    Downstream, track_filter.smooth_solve consumes result lat/lon like any
+    other solve, so kf_pos_sigma_m now reflects the fit position — which is
+    the intent, the smoother should be seeing the better estimate.
+    """
+    # Stamped for every confirmed n=2 whether or not the swap happens, so an
+    # absent fit is distinguishable in the dump from a fit that was used.
+    result["solve_raw_lat"] = result.get("lat")
+    result["solve_raw_lon"] = result.get("lon")
+    result["pos_source"] = "solve"
+    if not _N2_PUBLISH_FIT_POSITION:
+        return
+    fit = _resolve_cv_fit(s_in, node_cfgs, fix_altitude=_N2_FIT_FIX_ALTITUDE)
+    if not fit or not fit.get("success"):
+        # No fit to publish.  Normal, not an error: a pairing association
+        # fitted inline arrives with chi2_per_dof already set and no cv_epochs
+        # to refit from (see _resolve_cv_fit), and an anchored input that never
+        # carried epochs has nothing here either.  Those keep the LM position.
+        return
+    if fit.get("lat") is None or fit.get("lon") is None or fit.get("alt_m") is None:
+        return
+    if (fit.get("n_epochs") or 0) < N2_CONFIRM_MIN_EPOCHS:
+        return
+    lat = float(fit["lat"])
+    lon = float(fit["lon"])
+    # The fit evaluates its trajectory at its OWN last epoch, which is normally
+    # this solve's measurement epoch — so this is usually a no-op.  But they are
+    # two separate inputs and nothing enforces that, and publishing a position
+    # from a different instant than the timestamp it is published under is
+    # exactly the error the epoch-alignment work above exists to prevent, so
+    # propagate on the fit's own velocity rather than assuming.
+    _fit_ts = float(fit.get("timestamp_ms") or 0)
+    _res_ts = float(result.get("timestamp_ms") or 0)
+    if _fit_ts > 0 and _res_ts > 0 and _fit_ts != _res_ts:
+        dt_s = (_res_ts - _fit_ts) / 1000.0
+        lat, lon = offset_latlon_m(
+            lat,
+            lon,
+            east_m=float(fit.get("vel_east") or 0.0) * dt_s,
+            north_m=float(fit.get("vel_north") or 0.0) * dt_s,
+        )
+    result["fit_vs_solve_km"] = _haversine_km(float(result["lat"]), float(result["lon"]), lat, lon)
+    result["lat"] = lat
+    result["lon"] = lon
+    # Altitude comes from the fit ONLY when the fit was told to pin it — in
+    # which case it is the solve's own pinned altitude anyway, and the
+    # assignment is a no-op kept for symmetry.  A FREE fit's altitude is never
+    # published: at n=2 it is an unobservable direction the optimiser has
+    # filled with noise, and it measured worse (4.57 km median |alt - truth|)
+    # than the ladder guess the solve pinned (2.94 km).  Position is worth
+    # taking from the fit because 4K measurements beat 4; altitude is not,
+    # because neither of them constrains it.
+    fit_alt_fixed = bool(fit.get("altitude_fixed"))
+    if fit_alt_fixed:
+        result["alt_m"] = float(fit["alt_m"])
+    result["fit_altitude_fixed"] = fit_alt_fixed
+    result["pos_source"] = "cv_fit"
+    state.bump_counter("n2_fit_position_published")
 
 
 # ── Per-solve history (debug) ────────────────────────────────────────────────
@@ -1131,6 +2660,112 @@ def _gt_for_record(adsb_hex, lat: float, lon: float, ts_s: float) -> dict:
     return dict(_GT_NO_MATCH)
 
 
+def _is_dark_solver_input(s_in) -> bool:
+    """True when a solver input carries no usable ADS-B identity.
+
+    The same predicate multinode_key_decision mints keys with: an id that is
+    not transponder-shaped (a simulator object id, a claim against a poisoned
+    adsb_aircraft entry) is not an ADS-B anchor, so it must be judged as dark
+    rather than inherit the ADS-B lane's tight displacement cap on a guess
+    that nothing overrode.  Keeping the two in step is what makes
+    displacement_cap_km on a history record agree with the mn-dark-/mn-adsb-
+    lane the same solve is keyed into.
+    """
+    hx = s_in.get("adsb_hex") if isinstance(s_in, dict) else None
+    return not (hx and is_transponder_hex(hx))
+
+
+def _stamp_foreign_nodes(rec: dict) -> None:
+    """Stamp which of a dark record's own nodes could not see the aircraft.
+
+    Cluster contamination is the dark lane's largest known defect — a
+    candidate assembled by format_track_pairs_for_solver can carry a node
+    whose track belongs to a *different* aircraft, and the solver then fits a
+    geometry no single aircraft ever occupied.  Offline the audit measured it
+    at ~60 % of dark candidates; this makes the same number live.
+
+    The test is the associator's own visibility predicate applied whole
+    (retina_analytics.association._point_in_beam against the registered
+    NodeGeometry), which is the same gate known-lane claiming uses — claiming
+    and the dark lane must mean the same thing by "this node can see there",
+    and a second bespoke rule here would let the two disagree.  Two
+    consequences worth knowing: it is a ground-projected bearing/footprint
+    test with no altitude term, and under FOV_MODE=active it is the learned
+    FOV rather than the theoretical wedge.  Both are exactly what the rest of
+    the pipeline believes about coverage, which is the point.
+
+    Position is the matched ground-truth point already stamped on the record
+    (gt_lat/gt_lon at the solve epoch), so this costs no extra trail lookup —
+    only one cone test per contributing node.  Nodes trimmed out by
+    _trim_and_resolve are included: a node dropped for a bad residual is
+    precisely the contamination this measures, and leaving it out would hide
+    every case trimming already rescued.
+
+    A node with no registered geometry is not judged either way.  When that
+    leaves nothing judgeable the record is left unstamped rather than stamped
+    clean, so contamination_pct never counts an abstention as innocence.
+    """
+    lat, lon = rec.get("gt_lat"), rec.get("gt_lon")
+    if lat is None or lon is None:
+        return
+    node_ids = list(rec.get("contributing_node_ids") or [])
+    node_ids += [nid for nid in (rec.get("trimmed_node_ids") or []) if nid not in node_ids]
+    if not node_ids:
+        return
+    geometries = state.node_associator.node_geometries
+    judged = 0
+    foreign: list[str] = []
+    for nid in node_ids:
+        geo = geometries.get(nid)
+        if geo is None:
+            continue
+        judged += 1
+        if not _point_in_beam(lat, lon, geo):
+            foreign.append(nid)
+    if not judged:
+        return
+    rec["foreign_node_ids"] = foreign
+    rec["contaminated"] = bool(foreign)
+
+
+def _record_dark_accuracy_sample(rec: dict) -> None:
+    """Offer one published DARK solve to the rolling accuracy store.
+
+    state.accuracy_samples had no dark writer at all: the only general one is
+    track_gates._record_accuracy_sample, which sits behind ``if adsb_lat and
+    adsb_lon`` on the ADS-B enrichment path, so a solve with no transponder
+    identity could never produce a sample no matter how accurate it was.
+    health.py's solver_accuracy_degraded is computed from those samples, which
+    meant the alert claimed to cover "multi-node" accuracy while structurally
+    knowing nothing about the multinode lane that has no ADS-B.
+
+    position_source stays ``multinode_solve`` — not a new source name —
+    because that is genuinely what these tracks are published as
+    (aircraft_feed.py stamps multinode_solve on dark and tagged multinode
+    tracks alike), so this closes a sampling hole rather than inventing a
+    category; ``lane`` carries the split for anyone who needs it back.  The
+    error is gt_error_km, distance to simulation ground truth, which for a
+    dark solve is the only truth there is; where there are no ground-truth
+    trails (production) nothing is stamped and this samples nothing, so the
+    alert's inputs there are byte-identical to before.
+
+    Unthrottled, unlike the known lane's sampler: dark publishes run ~0.13/s
+    on the test fleet against that lane's ~8/s, three orders off the rate that
+    made throttling necessary to stop one source evicting the 5 000-sample
+    store.
+    """
+    state.accuracy_samples.append(
+        {
+            "hex": rec.get("gt_hex") or rec.get("solver_hex"),
+            "error_km": round(float(rec["gt_error_km"]), 4),
+            "position_source": "multinode_solve",
+            "lane": "dark",
+            "n_nodes": rec.get("n_nodes") or 0,
+            "ts": round(rec["ts_ms"] / 1000.0, 1),
+        }
+    )
+
+
 def _record_solve_history(
     outcome: str,
     s_in,
@@ -1141,6 +2776,12 @@ def _record_solve_history(
     raw_lon: float | None = None,
     displacement_km: float | None = None,
     chi2_per_dof: float | None = None,
+    key_how: str | None = None,
+    key_dist_km: float | None = None,
+    key_dt_s: float | None = None,
+    follow_key: str | None = None,
+    superseded_keys: list[str] | None = None,
+    superseded_blocked: int | None = None,
     extra: dict | None = None,
 ) -> None:
     """Append one solve outcome to state.mlat_solve_history.
@@ -1151,9 +2792,39 @@ def _record_solve_history(
     track key (it is minted after the gates), so ``solver_hex`` is None for
     them and lookup by map ID returns published records plus nearby rejects.
 
+    ``key_how``/``key_dist_km``/``key_dt_s`` are multinode_key_decision's
+    verdict for this solve — which branch produced solve_key, how far the
+    solve landed from the entry it was keyed onto, and the signed measurement
+    age of that entry at this solve's epoch (negative = the entry was measured
+    after this solve; see _MN_ASSOC_MAX_NEG_DT_S).  Only the publish path has
+    run the keying rule, so all three are None on every reject (the key is
+    minted after the gates, which is also why solver_hex is None there) — with
+    one exception: a ``shadowed_by_follow`` reject IS the keying rule's
+    verdict, and carries key_how/key_dist_km/key_dt_s plus ``follow_key``
+    naming the followed key it was refused in favour of.
+
+    ``follow_key`` overrides the input's own follow_key for the record only.
+    The ghost guard below is deliberately NOT fed from it: the guard judges
+    solves the FOLLOW lane produced, and a shadowed record is a bottom-up
+    solve that merely names a followed key — feeding it there would let the
+    bottom-up lane's refusals drop the very track that refused them.
+
+    ``superseded_keys``/``superseded_blocked`` are the other side of that
+    decision: which existing entries this publish popped as the same aircraft
+    (see _supersession_match), and how many entries shared a source track id
+    with it but were refused.  Both are publish-path only, for the same reason
+    key_how is — nothing before the gates has run supersession.
+
     ``extra`` merges caller-supplied fields (trim metadata, beam-rejection
     diagnostics) into the record.  Applied before the GT stamp so it can
-    never clobber gt_hex/gt_error_km/gt_lat/gt_lon.
+    never clobber gt_hex/gt_error_km/gt_lat/gt_lon — and so the trimmed node
+    ids it carries are in hand for the contamination stamp below.
+
+    ``foreign_node_ids``/``contaminated`` are stamped on DARK records that
+    matched ground truth: which of this candidate's own nodes could not see
+    the aircraft it was matched to (see _stamp_foreign_nodes).  Absent on
+    every other record, which is what /api/test/solver-stats' contamination
+    block counts as "not judged" rather than as clean.
     """
     r = result if isinstance(result, dict) else {}
     s = s_in if isinstance(s_in, dict) else {}
@@ -1164,6 +2835,8 @@ def _record_solve_history(
     ig = s.get("initial_guess") or {}
     if displacement_km is None and raw_lat is not None and ig.get("lat") and ig.get("lon"):
         displacement_km = _haversine_km(float(ig["lat"]), float(ig["lon"]), float(raw_lat), float(raw_lon))
+    _dark = solve_key.startswith("mn-dark-") if solve_key else _is_dark_solver_input(s)
+    _sigma_m = solve_sigma_m(r, dark=_dark)
     rec = {
         "ts_ms": now_ms,
         "measurement_ts_ms": int(r.get("timestamp_ms") or s.get("timestamp_ms") or 0),
@@ -1172,12 +2845,45 @@ def _record_solve_history(
         "solver_hex": multinode_hex_from_key(solve_key) if solve_key else None,
         "n_nodes": int(r.get("n_nodes") or s.get("n_nodes") or 0),
         "contributing_node_ids": list(r.get("contributing_node_ids") or []),
+        # How many nodes the association round HAD for this aircraft, against
+        # which n_nodes above is the number it actually solved with (see
+        # InterNodeAssociator._shared_track_pools: the node set of the
+        # shared-track component this input was clustered out of).  A published
+        # 2-node solve whose pool is 3 is a node the round paired and the
+        # position clustering then left in a separate input — which is the only
+        # way to tell that case apart from the third node never pairing at all.
+        # None on inputs that never went through that clustering (anchored /
+        # known-lane, dark-follow predictions).
+        "pool_n_nodes": s.get("pool_n_nodes"),
+        # Association's side of an n=2 pairing, on EVERY record rather than
+        # just published ones.  n_epochs and cv_epochs_present are the two
+        # halves of the n2_unconfirmed story: 142 of 165 rejects in a droplet
+        # capture had no cv_epochs at all (both node tracks must span
+        # N2_CONFIRM_MIN_SPAN_S before association attaches them), so "no fit"
+        # and "bad fit" are distinguishable from the dump alone.  track_ids is
+        # the input's own tracklet ids — a reject carries an empty
+        # source_track_ids because that is rebuilt post-trim on the publish
+        # path only, which made it impossible to follow one rejected pairing
+        # across rounds and see whether it ever earned its way through.
+        "n_epochs": s.get("n_epochs"),
+        "cv_epochs_present": bool(s.get("cv_epochs")),
+        "track_ids": list(s.get("track_ids") or []),
         "adsb_hex": s.get("adsb_hex"),
         # Set only on an anchored solver input (top-down claiming, active
         # mode) — present on rejects too, not just "published", so the
         # windowed fragmentation breakdown can see what fraction of ALL
         # attempts (not just successful ones) were anchor-carrying.
         "anchor_key": s.get("anchor_key"),
+        # Lane provenance, carried by the solver input rather than inferred
+        # from the key: a dark-follow solve (services/dark_follow.py) lands on
+        # an mn-dark-* key and would otherwise be indistinguishable from the
+        # bottom-up solves whose funnel it is not part of.  guess_source says
+        # what the initial guess WAS — "prediction" for a followed track,
+        # absent for the association grid centroid every other dark input
+        # carries — and follow_key names the track that predicted it.
+        "lane": s.get("lane"),
+        "guess_source": s.get("guess_source"),
+        "follow_key": follow_key or s.get("follow_key"),
         "raw_lat": round(float(raw_lat), 6) if raw_lat is not None else None,
         "raw_lon": round(float(raw_lon), 6) if raw_lon is not None else None,
         "lat": round(float(r["lat"]), 6) if outcome == "published" else None,
@@ -1195,10 +2901,61 @@ def _record_solve_history(
         # never touched (rejects, off/ewma mode, first-ever solve for a key).
         "pos_sigma_km": round(float(r["pos_sigma_km"]), 3) if r.get("pos_sigma_km") is not None else None,
         "kf_pos_sigma_m": r.get("kf_pos_sigma_m"),
+        # The calibrated display sigma (services/solve_uncertainty.py), stamped
+        # here so the calibration that produced it can be re-run from
+        # /api/test/mlat-history alone: fraction(gt_error_km*1000 <=
+        # 2.448*sigma_m) over published records should stay near 0.95.  Lane
+        # comes from the track key when there is one (the same authority
+        # multinode_to_aircraft uses); rejects have no key yet, so their lane
+        # falls back to whether the solver input carried an ADS-B identity.
+        "sigma_m": (round(_sigma_m, 1) if _sigma_m is not None else None),
         "guess_lat": round(float(ig["lat"]), 6) if ig.get("lat") else None,
         "guess_lon": round(float(ig["lon"]), 6) if ig.get("lon") else None,
         "guess_alt_km": ig.get("alt_km"),
+        # Where that guess altitude came from: "key" (inherited from an
+        # established 3+-node dark entry, _inherit_key_altitude), "anchor"
+        # (the follow lane's own prediction) or "grid" (the association
+        # weighted mean).  Stamped so the live effect is measurable directly
+        # off /api/test/mlat-history — gt_error split by alt_source at n=2 is
+        # the number this inheritance exists to move.
+        "alt_source": s.get("alt_source") if isinstance(s, dict) else None,
         "displacement_km": round(displacement_km, 3) if displacement_km is not None else None,
+        # Which displacement cap judged this solve (see _MAX_DISPLACEMENT_KM
+        # and _MAX_DISPLACEMENT_KM_DARK).  Stamped on every record, not only
+        # rejected_displacement, so /api/test/mlat-history can read a
+        # published solve's displacement against the cap that let it through
+        # and a reject's against the cap that killed it — the two lanes are
+        # judged differently and the record has to say which applied.
+        # ...and an anchored n=2 solve is judged by neither lane cap but by
+        # _DARK_FOLLOW_N2_MAX_DISP_KM, so the record has to say that too.
+        "displacement_cap_km": (
+            _DARK_FOLLOW_N2_MAX_DISP_KM
+            if _is_anchored_n2(s, r)
+            else (_MAX_DISPLACEMENT_KM_DARK if _dark else _MAX_DISPLACEMENT_KM)
+        ),
+        # How this solve got its key, and how far it was from the entry it
+        # was keyed onto (see multinode_key_decision).  Fragmentation is a
+        # question about key DECISIONS, and until now the history recorded
+        # only the key that came out: a minted key and a re-key onto an
+        # existing one were indistinguishable after the fact, so the
+        # age-scaled proximity gate could not be measured against the flat
+        # one it replaced.  key_dist_km is the dead-reckoned distance for a
+        # proximity match, the flat anchor distance for an anchor hit, and
+        # None where nothing was matched (adsb, minted) or the record never
+        # reached keying at all (every reject).
+        "key_how": key_how,
+        "key_dist_km": round(float(key_dist_km), 3) if key_dist_km is not None else None,
+        # ...and how far apart in MEASUREMENT time the two were, signed.
+        # Negative means this solve's own epoch is the older one — the
+        # out-of-order arrival the signed dt window admits — and separates a
+        # re-key the old rule would also have made from one it refused.
+        "key_dt_s": round(float(key_dt_s), 1) if key_dt_s is not None else None,
+        # Supersession's verdict for this publish (see _supersession_match):
+        # the entries it popped as this same aircraft, and the count of
+        # entries that shared a source track id but were refused.  Empty/0 on
+        # every reject — supersession runs only on the publish path.
+        "superseded_keys": list(superseded_keys or []),
+        "superseded_blocked": int(superseded_blocked or 0),
         "solve_count": r.get("solve_count"),
         "source_track_ids": list(r.get("source_track_ids") or []),
         "vel_source": r.get("vel_source"),
@@ -1206,9 +2963,68 @@ def _record_solve_history(
         "vel_untrusted": bool(r.get("vel_untrusted")),
         "solver_vel_east": (round(float(r["solver_vel_east"]), 1) if r.get("solver_vel_east") is not None else None),
         "solver_vel_north": (round(float(r["solver_vel_north"]), 1) if r.get("solver_vel_north") is not None else None),
+        # Which position was published, and what the other candidate said.
+        # Only a confirmed n=2 solve has two (see _apply_n2_fit_position): the
+        # constant-velocity fit over the pairing's whole epoch history, and the
+        # single-epoch LM solve kept here as solve_raw_lat/solve_raw_lon.
+        # pos_source is None on every other record — nothing else chooses — so
+        # gt_error by pos_source over published n=2 records measures the swap
+        # live, and fit_vs_solve_km says how far apart the two answers were on
+        # the solves where it made no difference to the score.
+        "pos_source": r.get("pos_source"),
+        "solve_raw_lat": (round(float(r["solve_raw_lat"]), 6) if r.get("solve_raw_lat") is not None else None),
+        "solve_raw_lon": (round(float(r["solve_raw_lon"]), 6) if r.get("solve_raw_lon") is not None else None),
+        "fit_vs_solve_km": (round(float(r["fit_vs_solve_km"]), 3) if r.get("fit_vs_solve_km") is not None else None),
+        # Whether the published fit position came from a pinned-altitude fit.
+        # None on every record that did not swap a position in; the point of
+        # carrying it is that alt_error by fit_altitude_fixed is the live read
+        # on the pin, the same way gt_error by pos_source is on the swap.
+        "fit_altitude_fixed": (bool(r["fit_altitude_fixed"]) if r.get("fit_altitude_fixed") is not None else None),
     }
     if extra:
         rec.update(extra)
+    # The INPUT's follow_key, not the record's: a shadowed_by_follow reject
+    # names a followed key it was refused in favour of, and that key's guard
+    # must not hear about a solve the follow lane never made.
+    _follow_key = s.get("follow_key")
+    if _follow_key:
+        # The dark-follow ghost guard (services/dark_follow.py) needs a verdict
+        # for every follow-solve, and this is the one place all of them pass
+        # through — published, every rejected_* gate, unconverged, and the
+        # shadow pass's own record.  Following a track is a feedback loop (the
+        # solve keeps the key alive, the key keeps claiming detections), so a
+        # key that stops earning its solves has to be droppable from OUTSIDE
+        # that loop.  A shadow record carries its own verdict in follow_ok:
+        # it never reached the gates, so "did it publish" says nothing.
+        #
+        # ...with one exception.  An n2_unconfirmed record means the solve was
+        # WITHHELD for lack of a third node, not refuted: with the anchored n=2
+        # bypass off (DARK_FOLLOW_N2_ADMIT, default), a follow input built from
+        # exactly two claiming nodes carries no cv_epochs and so cannot clear
+        # the confirmation gate however right the prediction was.  Feeding that
+        # to the guard as a reject cost the key its target status after two of
+        # them — measured on the test droplet, 43-56 drops per 20-minute
+        # capture and 1146-1409 key-seconds of `cooldown`, the lane's biggest
+        # ineligibility bucket by a wide margin, during which the bottom-up
+        # lane had to re-find the aircraft from scratch at the 5-8% publish
+        # rate its own n=2 candidates manage.  So the guard hears nothing at
+        # all here: not ok (the prediction earned no confirmation either) and
+        # not reject.  The key still ends on DARK_FOLLOW_MAX_AGE_S when no
+        # wider claim arrives, which is the honest end of following.
+        if outcome == "n2_unconfirmed":
+            state.bump_counter("dark_follow_n2_withheld")
+        else:
+            dark_follow.record_outcome(_follow_key, bool(rec.get("follow_ok", outcome == "published")))
+        if outcome == "published":
+            state.bump_counter("dark_follow_published")
+            # ...and the lane now owns the key it published on, for
+            # DARK_FOLLOW_OWN_S.  Stamped with the MEASUREMENT epoch, because
+            # the reader (multinode_key_decision) compares it against another
+            # solve's measurement epoch and is deliberately clock-free.  The
+            # key published on, not the anchor: on the rare anchor fallback
+            # the lane's solve went somewhere else, and that is the entry it
+            # is now refreshing.
+            dark_follow.note_follow_publish(solve_key or _follow_key, rec["measurement_ts_ms"] / 1000.0)
     if raw_lat is not None and raw_lon is not None:
         meas_ts_s = (rec["measurement_ts_ms"] or now_ms) / 1000.0
         rec.update(_gt_for_record(rec["adsb_hex"], float(raw_lat), float(raw_lon), meas_ts_s))
@@ -1232,7 +3048,17 @@ def _record_solve_history(
         rec["vel_err_ms"] = round(math.hypot(ve - gt_ve, vn - gt_vn), 1)
     else:
         rec["vel_err_ms"] = None
-    buf = state.mlat_solve_history
+    # Live cluster-contamination metric, dark lane only and only where ground
+    # truth actually matched — without a truth position there is nothing to
+    # ask "could this node see it?" about.  See _stamp_foreign_nodes.
+    if _dark and rec.get("gt_hex"):
+        _stamp_foreign_nodes(rec)
+    if rec["outcome"] == "published" and _dark and rec.get("gt_error_km") is not None:
+        _record_dark_accuracy_sample(rec)
+    # Route by lane: the known lane's per-hex-per-pass volume would otherwise
+    # evict dark records from the shared cap long before they aged out (see
+    # state.mlat_solve_history_known).  Readers merge the two.
+    buf = state.mlat_solve_history_known if rec.get("known_lane") else state.mlat_solve_history
     buf.append(rec)
     # Age-prune from the left; append/popleft are atomic, and a racing second
     # writer at worst re-checks an already-fresh head.
@@ -1346,7 +3172,12 @@ def fov_gate_verdict(fov, n_nodes: int, brg: float, dist_km: float, range_rule_p
     return range_rule_pass or fov_pass
 
 
-def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus) -> dict | None:
+def _process_solver_item(
+    item: tuple,
+    solve_fn,
+    select_fn=_pool_select_consensus,
+    multistart_fn=_pool_solve_multistart,
+) -> dict | None:
     """Process a single solver queue entry. Returns the solver result (or None).
 
     Extracted from the worker loop so the success/failure/latency bookkeeping
@@ -1357,6 +3188,10 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
     initial_guess and _CONSENSUS_MODE != "off" — n=2 (mirror-disambiguation
     is the displacement/beam gates' job, not consensus's) and detection-level
     inputs (no initial_guess to pin an altitude with) never call it.
+
+    multistart_fn is the free-altitude solve (_pool_solve_multistart by
+    default; tests substitute a stub), reached only when
+    state.SOLVER_ALT_MODE is "free" — see _solve_best_altitude.
     """
     s_in, node_cfgs = item[0], item[1]
     enqueued_at: float | None = item[2] if len(item) > 2 else None
@@ -1377,10 +3212,25 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
     # here rather than at enqueue: the frame path must not carry solver state,
     # and a copy that queued before its twin was solved can only be recognised
     # once it reaches a worker.
-    if not _claim_resolve_slot(s_in, time.time()):
-        state.bump_counter("solver_resolve_skips")
+    _now_s = time.time()
+    _covered, _blocking, _refreshed = _resolve_slot_state(s_in, _now_s)
+    if _covered:
+        _record_resolve_skip(s_in, _now_s, _blocking)
         return None
+    if _refreshed:
+        # Admitted only by the 3+-node refresh rule: every claim on this
+        # candidate was older than _SOLVER_RESOLVE_REFRESH_S, so the entry it
+        # would have been suppressed behind has been dead-reckoning.  These
+        # are the extra solves that rule costs, and the ones it buys.
+        state.bump_counter("solver_resolve_refresh")
     n_nodes = s_in.get("n_nodes", 0) if isinstance(s_in, dict) else 0
+    # Before anything reads a delay: the nodes did not sample simultaneously,
+    # and every gate below (rms_delay first among them) assumes they did.  Runs
+    # ahead of consensus and the altitude sweep so both judge the same aligned
+    # numbers the published solve is fitted to.
+    epoch_meta: dict = {"epoch_aligned": False}
+    if state.SOLVER_EPOCH_ALIGN and isinstance(s_in, dict):
+        s_in, epoch_meta = align_measurement_epochs(s_in, node_cfgs)
     consensus_meta: dict | None = None
     try:
         if "initial_guess" not in s_in:
@@ -1389,11 +3239,11 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             if _CONSENSUS_MODE != "off":
                 s_in, consensus_meta = _consensus_select(s_in, node_cfgs, select_fn)
                 n_nodes = s_in.get("n_nodes", n_nodes)
-            result = _solve_best_altitude(s_in, node_cfgs, solve_fn)
+            result = _solve_best_altitude(s_in, node_cfgs, solve_fn, multistart_fn)
         else:
             result = _solve_best_altitude_n2(s_in, node_cfgs, solve_fn)
     except Exception:
-        state.task_error_counts["solver"] += 1
+        state.bump_task_error("solver")
         state.bump_counter("solver_failures")
         state.bump_counter("solver_fail_exception")
         logging.exception("Multinode solver failed")
@@ -1408,6 +3258,15 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
         # otherwise — unchanged.  A consensus-filtered n=3 input skips this
         # (below the n≥4 floor) by construction, which is intended: consensus
         # already chose the subset it trusts.
+        # Widen before anything judges the solve.  An n=2 candidate that
+        # adopts a pool node the solve itself vouches for reaches every gate
+        # below as an n=3 solve — including the n=2 confirmation gate, which
+        # is asking for exactly the corroboration the adopted node supplied.
+        n_nodes_pre_adopt = result.get("n_nodes")
+        result, s_in, adopt_meta = _adopt_pool_nodes(s_in, node_cfgs, result, solve_fn, multistart_fn)
+        if adopt_meta:
+            n_nodes = result.get("n_nodes", n_nodes)
+
         trim_meta: dict | None = None
         if (
             "initial_guess" in s_in
@@ -1415,15 +3274,36 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             and (result.get("rms_delay") or 0) > _SOLVER_RMS_DELAY_MAX_US
             and result.get("per_node_delay_res_us")
         ):
-            result, s_in, trim_meta = _trim_and_resolve(s_in, node_cfgs, solve_fn, result)
+            result, s_in, trim_meta = _trim_and_resolve(s_in, node_cfgs, solve_fn, result, multistart_fn)
             n_nodes = result.get("n_nodes", n_nodes)
 
         # Built once and threaded through every history record below
         # (published or rejected) so a bad map marker can be traced back to
         # both what trimming tried and what consensus selected.
         _extra: dict | None = dict(trim_meta) if trim_meta else {}
+        if adopt_meta:
+            _extra["adopt_meta"] = adopt_meta
+            _extra["n_nodes_pre_adopt"] = n_nodes_pre_adopt
         if consensus_meta is not None:
             _extra["consensus_meta"] = consensus_meta
+        # How this solve got its altitude, and — in free mode — what each
+        # start altitude fitted to.  Stamped on every record, published or
+        # rejected, and in BOTH modes (the sweep's solves report
+        # altitude_mode "pinned"), because the only way to judge SOLVER_ALT_MODE
+        # live is to compare the two lanes' rms_delay and gt_error_km over the
+        # same history buffer.  The per-start list is what says whether the
+        # three starts were worth keeping or one would have done.
+        if result.get("altitude_mode"):
+            _extra["altitude_mode"] = result["altitude_mode"]
+        if result.get("rms_by_start") is not None:
+            _extra["alt_starts_km"] = result.get("alt_starts_km")
+            _extra["alt_start_rms_us"] = [None if v is None else round(float(v), 3) for v in result["rms_by_start"]]
+        if result.get("z_saturated"):
+            _extra["z_saturated"] = True
+        # Always stamped, aligned or not: "this solve was not aligned" is the
+        # fact /api/test/mlat-history needs to separate a residual the
+        # correction could not have helped from one it was applied to.
+        _extra.update(epoch_meta)
         _extra = _extra or None
 
         rms_delay = result.get("rms_delay", 0) or 0
@@ -1521,6 +3401,15 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             for nid in contributing_ids:
                 cfg = node_cfgs.get(nid)
                 if not cfg:
+                    continue
+                # A receiver is enough: the range circle and the bearing wedge
+                # are both about it, and the bistatic branch below tests its
+                # transmitter separately. Gated at all because node_cfgs is an
+                # unfiltered snapshot of every connected node and nothing from
+                # submit_tracks_round to here checks placement, so a node
+                # re-registered without its position while its retained tracks
+                # were being paired arrives here unplaced.
+                if position_status(cfg) not in ("positioned", "missing_tx"):
                     continue
                 p = node_beam_params(cfg)
                 rx_lat, rx_lon = p["rx_lat"], p["rx_lon"]
@@ -1627,13 +3516,19 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
                 extra=_beam_extra,
             )
             return None
-        # Reject if the solution drifted more than _MAX_DISPLACEMENT_KM from
-        # its sanity anchor. For N=2 this catches mirror-point ghosts (false
-        # bistatic ellipse intersection 15-50 km away). For N≥3 it catches
-        # solves where the inter-node associator bound a wrong frame and the
-        # LM converged on a non-target position — production stats showed
-        # those were the dominant source of the per-N inversion in
-        # /api/test/mlat-accuracy.
+        # Reject if the solution drifted more than the lane's displacement
+        # cap from its sanity anchor. For N=2 this catches mirror-point
+        # ghosts (false bistatic ellipse intersection 15-50 km away). For N≥3
+        # it catches solves where the inter-node associator bound a wrong
+        # frame and the LM converged on a non-target position — production
+        # stats showed those were the dominant source of the per-N inversion
+        # in /api/test/mlat-accuracy.
+        #
+        # The cap is chosen by LANE, not by anchor label: an ADS-B-anchored
+        # input is judged at _MAX_DISPLACEMENT_KM because its guess was
+        # overridden onto a transponder fix, a dark one at the wider
+        # _MAX_DISPLACEMENT_KM_DARK because its guess is a 3 km-lattice grid
+        # point.  Both constants' comments carry the measurement.
         #
         # The anchor is the association guess by default (that mis-
         # association protection).  But for a consensus-vetted solve
@@ -1642,14 +3537,28 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
         # corroborated centroid replaces guess-proximity as the sanity
         # reference instead.  Measured in the first live active-mode window:
         # 131 displacement kills, 80 of them <3 km from truth and 110
-        # consensus-selected, median centroid offset 3.04 km against this
-        # same 2 km cap — the gate was anchored to the contaminated guess
-        # consensus+LM exist to correct, so it was killing the corrections
+        # consensus-selected, median centroid offset 3.04 km against the
+        # then-uniform 2 km cap — the gate was anchored to the contaminated
+        # guess consensus+LM exist to correct, so it was killing the corrections
         # rather than the mis-associations.  shadow mode and every
         # fallback_* outcome keep the guess anchor: consensus either never
         # ran against this solve's input or was not acted on, so its
         # centroid is not a vetted reference here.
+        #
+        # An anchored n=2 result overrides both lane caps with the much
+        # tighter _DARK_FOLLOW_N2_MAX_DISP_KM — see that constant for the
+        # live accuracy measurements.  It is the one case where the guess is
+        # a real position estimate (the follow lane's dead-reckoned
+        # prediction) rather than an association lattice point, so the wide
+        # dark allowance for anchor uncertainty does not apply, while the fit
+        # itself is under-determined and needs the tighter leash.
         _disp_km: float | None = None
+        _dark_input = _is_dark_solver_input(s_in)
+        _anchored_n2 = _is_anchored_n2(s_in, result)
+        if _anchored_n2:
+            _disp_cap_km = _DARK_FOLLOW_N2_MAX_DISP_KM
+        else:
+            _disp_cap_km = _MAX_DISPLACEMENT_KM_DARK if _dark_input else _MAX_DISPLACEMENT_KM
         if "initial_guess" in s_in:
             _ig = s_in["initial_guess"]
             _anchor_lat, _anchor_lon = _ig.get("lat"), _ig.get("lon")
@@ -1667,19 +3576,27 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
                     result["lat"],
                     result["lon"],
                 )
-                if _disp_km > _MAX_DISPLACEMENT_KM:
+                if _disp_km > _disp_cap_km:
                     logging.debug(
-                        "n=%d result rejected: %.1f km from %s "
-                        "(lat=%.3f lon=%.3f) — likely mirror or wrong-frame "
-                        "convergence",
+                        "n=%d result rejected: %.1f km from %s (%s lane cap "
+                        "%.1f km, lat=%.3f lon=%.3f) — likely mirror or "
+                        "wrong-frame convergence",
                         n_nodes,
                         _disp_km,
                         "consensus centroid" if _anchor_label == "consensus" else "initial_guess",
+                        "anchored n=2" if _anchored_n2 else ("dark" if _dark_input else "adsb"),
+                        _disp_cap_km,
                         result["lat"],
                         result["lon"],
                     )
                     state.bump_counter("solver_failures")
                     state.bump_counter("solver_fail_displacement")
+                    # Subset of the line above, not an alternative to it: the
+                    # aggregate keeps its old meaning for anything reading it,
+                    # and the dark split is what tells us live whether raising
+                    # the dark cap actually moved the rejects it was raised for.
+                    if _dark_input:
+                        state.bump_counter("solver_fail_displacement_dark")
                     _record_solve_history(
                         "rejected_displacement",
                         s_in,
@@ -1693,7 +3610,7 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
         # far) is not yet evidence of anything.  Association re-tests it every
         # round, so a real target is published as soon as it has the history to
         # earn it rather than being discarded.
-        if _N2_REQUIRE_CONFIRMED and n_nodes == 2 and isinstance(s_in, dict):
+        if _N2_REQUIRE_CONFIRMED and n_nodes == 2 and isinstance(s_in, dict) and not _n2_anchor_admits(s_in):
             _chi2 = _resolve_n2_chi2(s_in, node_cfgs)
             if _chi2 is None or _chi2 > _N2_CONFIRM_CHI2_MAX:
                 logging.debug(
@@ -1710,7 +3627,15 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
                     s_in,
                     result,
                     chi2_per_dof=_chi2,
-                    extra=_extra,
+                    # Two populations hide under this one outcome and nothing
+                    # separated them before: 142 of 165 rejects in a droplet
+                    # capture had no fit at all (association never attached
+                    # cv_epochs, because only 55% of dark 2-node time has two
+                    # node tracks spanning N2_CONFIRM_MIN_SPAN_S), and 23 had a
+                    # fit at chi2/dof 18-43 — every one of those a real
+                    # aircraft the constant-velocity model does not describe.
+                    # They want opposite fixes, so the reason is recorded.
+                    extra={**(_extra or {}), "n2_reason": "unfitted" if _chi2 is None else "chi2"},
                 )
                 return result
             if not _claim_track_pair(s_in, _chi2):
@@ -1729,6 +3654,13 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
                     extra=_extra,
                 )
                 return result
+        # Confirmed at n=2 — publish the fit's position rather than the
+        # single-epoch one.  Reached by both n=2 publish paths: the gate above
+        # returns on every reject, and an anchor-admitted input skips the gate
+        # body entirely (the `not _n2_anchor_admits` in its condition), so
+        # arriving here at n=2 means this solve is about to be published.
+        if _N2_REQUIRE_CONFIRMED and n_nodes == 2 and isinstance(s_in, dict):
+            _apply_n2_fit_position(s_in, result, node_cfgs)
         state.bump_counter("solver_successes")
         with state.solver_latency_lock:
             state.solver_total_solved += 1
@@ -1816,78 +3748,249 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             # _MN_POS_HISTORY_LOCK (inside the smoother) is never taken in
             # reverse anywhere.
             _anchor_key = s_in.get("anchor_key") if isinstance(s_in, dict) else None
-            key, _key_how = multinode_key_decision(state.multinode_tracks, result, _adsb_hex, _anchor_key)
-            if _anchor_key:
-                # Only an anchored solver input (top-down claiming, active
-                # mode) ever sets s_in["anchor_key"] — this whole block is
-                # inert off/shadow, by construction, with no mode read here.
-                state.bump_counter("solver_anchored_published")
-                state.bump_counter("solver_anchor_hits" if _key_how == "anchor" else "solver_anchor_fallbacks")
-            # Raw solve position, before smoothing — the history record keeps
-            # both so display-side drift can be separated from solver error.
-            _raw_lat, _raw_lon = result["lat"], result["lon"]
-            # Multi-epoch averaging cuts single-frame noise by ~√K.  Originally
-            # n=2-with-ADS-B only — production showed dark targets (where MLAT
-            # is the only position source) were the one population left raw.
-            # Smoothing now runs through the env-gated KF in
-            # services/track_filter.py, with this module's EWMA kept as the
-            # TRACK_SMOOTHER=ewma fallback.
-            result = track_filter.smooth_solve(result, key, _adsb_hex, ewma_fn=_ewma_smooth_track)
-            prev = state.multinode_tracks.get(key)
-            if prev:
-                # Latch: a tracker flag raised on an earlier solve holds for
-                # the multinode track's lifetime (≤60 s expiry) even if the
-                # contributing track has since despawned or gone quiet.
-                result["is_anomalous"] = bool(result.get("is_anomalous")) or bool(prev.get("is_anomalous"))
-                result["anomaly_types"] = sorted(
-                    set(result.get("anomaly_types", [])) | set(prev.get("anomaly_types", []))
+            key, _key_how, _key_dist_km, _key_dt_s = multinode_key_decision(
+                state.multinode_tracks,
+                result,
+                _adsb_hex,
+                _anchor_key,
+                # Only the follow lane's anchor is a stale position by
+                # construction — see the anchor branch for why that changes
+                # the distance check it must be judged by.
+                anchor_dr=bool(isinstance(s_in, dict) and s_in.get("follow_key")),
+                # Node-track continuity: the tracker track ids this solve was
+                # built from, matched against what each candidate entry
+                # remembers (TRACK_LINK_AGE_S).  Pre-trim ids on purpose — the
+                # question is which node tracks this solve CAME from, not which
+                # survived the residual trim, and result["source_track_ids"] is
+                # not built until below.
+                track_ids=(s_in.get("track_ids") if isinstance(s_in, dict) else None),
+            )
+            # Key ownership (DARK_FOLLOW_MODE=binding).  A bottom-up solve
+            # that landed on a key the follow lane is answering for is not
+            # keyed at all: it is either a duplicate of the anchored solve
+            # already refreshing that key or a different aircraft about to
+            # steal it, and both drag the entry and its filter.  The verdict
+            # is taken here, under the same lock as the decision, so nothing
+            # about the entry can change between deciding and refusing; the
+            # record and the counter are emitted outside it, as every other
+            # outcome's are.
+            _shadow_key = key if _key_how == "shadowed" else None
+            if _shadow_key is None:
+                # Dark-lane key births vs re-keys.  The fragmentation question is
+                # "how often does one aircraft get a second key", and the only
+                # place that is decided is right here — solver_successes counts
+                # solves, distinct_keys counts survivors, neither counts the
+                # decision.  Dark only: the ADS-B lane keys off the transponder
+                # hex unconditionally and has no decision to observe.  Anchor
+                # hits are deliberately in neither counter; solver_anchor_hits
+                # already carries them, and double-counting them here would make
+                # minted + proximity stop summing to the dark decisions this
+                # gate actually made.
+                if key.startswith("mn-dark-"):
+                    if _key_how == "minted":
+                        state.bump_counter("solver_key_minted_dark")
+                    elif _key_how == "tracks":
+                        # Re-keys that the node-track evidence decided: either a
+                        # candidate that shared ids and outranked a nearer
+                        # stranger, or a follow-owned key joined on >=2 shared
+                        # ids.  Counted apart from proximity so the two rules
+                        # can be read against each other — every one of these
+                        # was a mint or a discarded solve before.
+                        state.bump_counter("solver_key_tracks")
+                    elif _key_how == "proximity":
+                        state.bump_counter("solver_key_proximity_dark")
+                        # ...and, of those, the ones that matched an entry
+                        # whose measurement epoch was LATER than this solve's
+                        # — the out-of-order case _MN_ASSOC_MAX_NEG_DT_S
+                        # opened.  Every one of these was a fresh mint (a
+                        # duplicate track for one aircraft) under the old
+                        # rule, so this counter is how much of the measured
+                        # fragmentation the signed window actually reclaims.
+                        if _key_dt_s is not None and _key_dt_s < 0:
+                            state.bump_counter("solver_key_proximity_negdt")
+                if _anchor_key:
+                    # s_in["anchor_key"] is set by exactly two producers: top-down
+                    # claiming in active mode, and a dark-follow input in binding
+                    # mode (services/dark_follow.py).  Both are off by default, so
+                    # this block stays inert by construction with no mode read
+                    # here.  The counters do not split the two, deliberately: they
+                    # measure the same thing either way — how often an anchor
+                    # named the track the solve actually landed on — and
+                    # follow_key on the history record separates them after the
+                    # fact for anyone who needs it.
+                    state.bump_counter("solver_anchored_published")
+                    state.bump_counter("solver_anchor_hits" if _key_how == "anchor" else "solver_anchor_fallbacks")
+                # Raw solve position, before smoothing — the history record keeps
+                # both so display-side drift can be separated from solver error.
+                _raw_lat, _raw_lon = result["lat"], result["lon"]
+                # Multi-epoch averaging cuts single-frame noise by ~√K.  Originally
+                # n=2-with-ADS-B only — production showed dark targets (where MLAT
+                # is the only position source) were the one population left raw.
+                # Smoothing now runs through the env-gated KF in
+                # services/track_filter.py, with this module's EWMA kept as the
+                # TRACK_SMOOTHER=ewma fallback.
+                result = track_filter.smooth_solve(result, key, _adsb_hex, ewma_fn=_ewma_smooth_track)
+                prev = state.multinode_tracks.get(key)
+                if prev:
+                    # Latch: a tracker flag raised on an earlier solve holds for
+                    # the multinode track's lifetime (≤60 s expiry) even if the
+                    # contributing track has since despawned or gone quiet.
+                    result["is_anomalous"] = bool(result.get("is_anomalous")) or bool(prev.get("is_anomalous"))
+                    result["anomaly_types"] = sorted(
+                        set(result.get("anomaly_types", [])) | set(prev.get("anomaly_types", []))
+                    )
+                # Source-track identity: the single-node track ids this solve was
+                # built from.  Used below for supersession and carried into the
+                # history record so a bad map marker can be traced to its inputs.
+                result["source_track_ids"] = sorted(s_in.get("track_ids") or []) if isinstance(s_in, dict) else []
+
+                # Supersession: an earlier entry that is THIS aircraft, under a
+                # key the proximity match (multinode_key_decision) missed, is
+                # replaced now rather than left rendering beside the new one for
+                # up to 60 s.  solve_count carries forward so the re-solved
+                # aircraft does not fall back under the n=2 gate below.
+                #
+                # A shared source track id is the cheap filter, not the rule.  The
+                # premise this block used to carry — "one aircraft is one set of
+                # source tracks" — is false: single-node tracker tracks are shared
+                # between the association candidates of DIFFERENT aircraft (74 of
+                # 178 track ids in a 6 min live window appeared in published solves
+                # of more than one ground-truth aircraft), so popping on the shared
+                # id alone destroyed a live neighbour's key 36 times in 44
+                # supersessions — 41 of them beyond the association gate, 43 under
+                # 15 s old — and the victim's next solve minted a fresh key (dark
+                # keys churning at 7.4/min with a 7 s median lifetime).  Now
+                # _supersession_match has to agree: the old entry dead-reckons
+                # into the gate, or its inputs are a subset of this solve's.
+                # Replayed over the same solves that cuts mints 47 -> 22 and
+                # cross-aircraft pops 36 -> 7.  Refusals are counted
+                # (mn_superseded_blocked), not
+                # silent — the shared-id signal is mostly contamination and the
+                # panel has to be able to see that.
+                #
+                # Proximity alone was not enough either: a later ground-truth
+                # capture (2026-09-05) found 63 of 129 supersessions still popping
+                # a neighbour, a solve of one aircraft with kilometres of error
+                # landing inside another's gate.  The predicate now runs on the
+                # tighter _MN_SUPERSEDE_BASE_KM and an altitude gate — see its
+                # docstring — which is why the solve's own alt_m goes in here.
+                #
+                # Unchanged by anchor honoring: `old_key == key: continue` below
+                # already protects an anchor from superseding itself, and a
+                # proximity-minted fragment built from exactly the anchor's source
+                # tracks merging INTO the anchor (old_key != key, key ==
+                # anchor_key) is the identical-inputs branch (b) of the predicate —
+                # exactly the fragmentation-collapse this whole feature exists for.
+                max_superseded_count = 0
+                max_superseded_n_nodes = 0
+                _superseded_keys: list[str] = []
+                _superseded_blocked = 0
+                if result["source_track_ids"]:
+                    new_ids = set(result["source_track_ids"])
+                    _ts_ms = result.get("timestamp_ms") or 0
+                    for old_key, old_r in list(state.multinode_tracks.items()):
+                        if old_key == key:
+                            continue
+                        if not new_ids.intersection(old_r.get("source_track_ids") or ()):
+                            continue
+                        matched, _ = _supersession_match(
+                            old_key, old_r, new_ids, _raw_lat, _raw_lon, _ts_ms, alt_m=result.get("alt_m")
+                        )
+                        if not matched:
+                            _superseded_blocked += 1
+                            state.bump_counter("mn_superseded_blocked")
+                            # Split out the refusals the altitude gate alone made:
+                            # re-asking with the altitudes withheld (which the
+                            # predicate fails open on) is the same question minus
+                            # that test.  Worth separating because the two
+                            # refusals mean different things — a distance refusal
+                            # is a neighbour far away, an altitude one is a
+                            # neighbour the solve landed right on top of, and only
+                            # the second says how much of the new gate's work is
+                            # being done by altitude.
+                            if _supersession_match(old_key, old_r, new_ids, _raw_lat, _raw_lon, _ts_ms)[0]:
+                                state.bump_counter("mn_superseded_blocked_alt")
+                            continue
+                        state.multinode_tracks.pop(old_key, None)
+                        with state.anomaly_lock:
+                            state.anomaly_hexes.discard(multinode_hex_from_key(old_key))
+                        with _MN_POS_HISTORY_LOCK:
+                            _MN_POS_HISTORY.pop(old_key, None)
+                        track_filter.drop_key(old_key)
+                        max_superseded_count = max(max_superseded_count, old_r.get("solve_count", 0))
+                        max_superseded_n_nodes = max(
+                            max_superseded_n_nodes,
+                            int(old_r.get("max_n_nodes") or 0),
+                            int(old_r.get("n_nodes") or 0),
+                        )
+                        _superseded_keys.append(old_key)
+                        state.bump_counter("mn_superseded")
+
+                result["solve_count"] = max(prev.get("solve_count", 0) if prev else 0, max_superseded_count) + 1
+                # High-water mark of geometry, carried forward with the key.
+                # dark_follow._build_targets asks whether a track was ever
+                # overdetermined enough to be trusted as an identity, and
+                # n_nodes alone answers only for the LAST solve: once a
+                # followed track publishes at n=2 (the anchored bypass at the
+                # n=2 gate) the next rebuild would drop the key on
+                # DARK_FOLLOW_MIN_NODES, which is precisely the aircraft this
+                # lane exists to follow out of 3-node coverage.
+                # Folded across supersession for the same reason solve_count is
+                # (above): the winning key is not always the key the history is
+                # on.  An established 3-node track absorbed into a freshly
+                # minted key has prev None, so without the superseded term a
+                # merge that happened to be n=2 would reset the mark to 2 and
+                # the next rebuild would drop the key — this bug, reached by
+                # the other path.
+                result["max_n_nodes"] = max(
+                    int(prev.get("max_n_nodes") or 0) if prev else 0,
+                    int(prev.get("n_nodes") or 0) if prev else 0,
+                    max_superseded_n_nodes,
+                    int(result.get("n_nodes") or 0),
                 )
-            # Source-track identity: the single-node track ids this solve was
-            # built from.  Used below for supersession and carried into the
-            # history record so a bad map marker can be traced to its inputs.
-            result["source_track_ids"] = sorted(s_in.get("track_ids") or []) if isinstance(s_in, dict) else []
-
-            # Supersession: one aircraft is one set of source tracks.  A later
-            # solve that consumes any of the same single-node tracks under a
-            # DIFFERENT key is the same aircraft re-solved past the 6 km match
-            # radius (multinode_key_decision), not a second one — replace the
-            # earlier entry instead of letting it keep rendering for up to
-            # 60 s beside the new one.  solve_count carries forward so the
-            # re-solved aircraft does not fall back under the n=2 gate below.
-            #
-            # Unchanged by anchor honoring: `old_key == key: continue` below
-            # already protects an anchor from superseding itself, and a
-            # proximity-minted fragment sharing the anchor's source tracks
-            # merging INTO the anchor (old_key != key, key == anchor_key) is
-            # exactly the fragmentation-collapse this whole feature exists
-            # for — not a bug to guard against.
-            max_superseded_count = 0
-            if result["source_track_ids"]:
-                new_ids = set(result["source_track_ids"])
-                for old_key, old_r in list(state.multinode_tracks.items()):
-                    if old_key == key:
-                        continue
-                    if not new_ids.intersection(old_r.get("source_track_ids") or ()):
-                        continue
-                    state.multinode_tracks.pop(old_key, None)
-                    with state.anomaly_lock:
-                        state.anomaly_hexes.discard(multinode_hex_from_key(old_key))
-                    with _MN_POS_HISTORY_LOCK:
-                        _MN_POS_HISTORY.pop(old_key, None)
-                    track_filter.drop_key(old_key)
-                    max_superseded_count = max(max_superseded_count, old_r.get("solve_count", 0))
-                    state.bump_counter("mn_superseded")
-
-            result["solve_count"] = max(prev.get("solve_count", 0) if prev else 0, max_superseded_count) + 1
-            state.multinode_tracks[key] = result
-            if trim_meta:
-                state.bump_counter("solver_trimmed")
+                # Node-track memory, carried with the key: the ids this solve
+                # was built from merged into the ones the entry has seen in the
+                # last TRACK_LINK_AGE_S, so the NEXT solve's keying decision can
+                # ask whether it shares any of them (see TRACK_LINK_AGE_S and
+                # multinode_key_decision).  Pre-trim ids for the same reason the
+                # decision reads them pre-trim, pruned and capped on write so a
+                # long-lived key cannot accumulate an unbounded dict.  Feed
+                # entries are built field-by-field (aircraft_feed's
+                # multinode_to_aircraft) and the Parquet archive writes a fixed
+                # schema, so this field reaches neither the map nor the archive.
+                result["recent_track_ids"] = merge_recent_track_ids(
+                    (prev or {}).get("recent_track_ids"),
+                    s_in.get("track_ids") if isinstance(s_in, dict) else None,
+                    result.get("timestamp_ms", 0) / 1000.0,
+                )
+                state.multinode_tracks[key] = result
+                if trim_meta:
+                    state.bump_counter("solver_trimmed")
+        if _shadow_key is not None:
+            state.bump_counter("dark_bottomup_shadowed")
+            _record_solve_history(
+                "shadowed_by_follow",
+                s_in,
+                result,
+                follow_key=_shadow_key,
+                key_how=_key_how,
+                key_dist_km=_key_dist_km,
+                key_dt_s=_key_dt_s,
+                extra=_extra,
+            )
+            return result
         # Append a snapshot to the track-archive buffer for Parquet persistence.
         # solve_ts_ms records when the solve completed (server wallclock) so
         # analysts can measure end-to-end latency vs. result["timestamp_ms"].
         archive_record = dict(result)
         archive_record["solve_ts_ms"] = int(time.time() * 1000)
         state.track_archive_buffer.append(archive_record)
+        # The re-solve claim, taken here and nowhere else: this aircraft is now
+        # on the map at this width, which is the only thing that makes a
+        # duplicate not worth solving.  Survivors only — source_track_ids is
+        # rebuilt from the post-trim node set.  Outside _MN_TRACKS_LOCK on
+        # purpose, so _RECENT_SOLVES_LOCK is never nested inside it.
+        _record_resolve_slot(result.get("source_track_ids"), result.get("n_nodes"), time.time())
         _record_solve_history(
             "published",
             s_in,
@@ -1897,6 +4000,11 @@ def _process_solver_item(item: tuple, solve_fn, select_fn=_pool_select_consensus
             raw_lon=_raw_lon,
             chi2_per_dof=s_in.get("chi2_per_dof") if isinstance(s_in, dict) else None,
             displacement_km=_disp_km,
+            key_how=_key_how,
+            key_dist_km=_key_dist_km,
+            key_dt_s=_key_dt_s,
+            superseded_keys=_superseded_keys,
+            superseded_blocked=_superseded_blocked,
             extra=_extra,
         )
     elif result is not None:
@@ -1963,11 +4071,12 @@ def _run_solver_worker():
     # coverage collector lock hard enough to stall test_mlat_history's
     # trail-race stress test (~50 daemons caught inside the mode check in a
     # single py-spy snapshot).
-    known_lane_armed = known_lane._mode() != "off"
+    known_lane_armed = known_lane.lanes_armed()
     while True:
         _solver_worker_iteration()
         if known_lane_armed:
-            # Known-lane pass (identity-first claims → per-hex solves).
+            # Known-lane pass (identity-first claims → per-hex solves), plus
+            # the dark-follow pass behind the same lock and interval.
             # Ridden on the worker loop rather than its own thread so the
             # solve compute stays on the threads that already own the solver
             # locks and pool; interval- and concurrency-gated inside, and it

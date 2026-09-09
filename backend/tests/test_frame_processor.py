@@ -6,15 +6,19 @@ archive buffering, get_or_create_node_pipeline.
 
 import queue
 import time
+import types
 
 import pytest
+from retina_tracker.track import TrackState
 
 from config.constants import GT_DISPLAY_STALE_S
 from core import state
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
+from services import frame_processor
 from services.frame_processor import (
     append_track_history,
     build_combined_aircraft_json,
+    confirmed_track_views,
     dedup_aircraft,
     flush_all_archive_buffers,
     get_node_configs,
@@ -23,10 +27,22 @@ from services.frame_processor import (
     normalize_hex_key,
     position_distance_km,
     process_one_frame,
+    resolve_altitudes,
     resolve_ground_truth_hex,
 )
+from tests.node_helpers import register_test_node
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+# A placed node, for the paths process_one_frame only enters for one.
+_PLACED_CFG = {
+    "rx_lat": 34.0,
+    "rx_lon": -84.0,
+    "tx_lat": 33.8,
+    "tx_lon": -83.8,
+    "fc_hz": 195e6,
+    "max_range_km": 150.0,
+}
 
 
 def _make_frame(ts: int = None, n: int = 3) -> dict:
@@ -154,6 +170,66 @@ class TestGetNodeConfigs:
         configs = get_node_configs()
         assert "test-cfg-2" not in configs
 
+    def test_resolves_a_null_altitude(self):
+        """The solver's snapshot feeds retina_geolocator, which multiplies an
+        altitude by a metre conversion the moment it is handed one."""
+        state.connected_nodes["test-cfg-3"] = {
+            "config": {"rx_lat": 33.9, "rx_lon": -84.6, "rx_alt_ft": None, "tx_alt_ft": None},
+            "status": "active",
+        }
+        configs = get_node_configs()
+        assert configs["test-cfg-3"]["rx_alt_ft"] == 900.0
+        assert configs["test-cfg-3"]["tx_alt_ft"] == 1200.0
+
+    def test_leaves_the_stored_config_alone(self):
+        """resolve_altitudes copies. Defaulting in place would write the
+        working figure back into the dict publication and the archive read."""
+        stored = {"rx_lat": 33.9, "rx_lon": -84.6, "rx_alt_ft": None}
+        state.connected_nodes["test-cfg-4"] = {"config": stored, "status": "active"}
+        get_node_configs()
+        assert stored["rx_alt_ft"] is None
+
+    def test_omits_an_unplaced_node(self):
+        """The snapshot is the placement gate for everything drawn from it.
+
+        Consumers test `nid in node_cfgs` and treat that as "can be solved
+        with", which is only true if an unplaced node never appears: it has no
+        geometry to solve against, and its None coordinates would otherwise
+        reach the solver queue through known_lane's dark-follow claim filter.
+        """
+        state.connected_nodes["test-cfg-5"] = {
+            "config": {"rx_lat": None, "rx_lon": None, "tx_lat": None, "tx_lon": None},
+            "status": "active",
+        }
+        assert "test-cfg-5" not in get_node_configs()
+
+    def test_wanted_narrows_the_snapshot(self):
+        """A config is copied per node, so a caller that can only reach a
+        handful says so rather than paying for the fleet."""
+        for nid in ("test-cfg-6", "test-cfg-7"):
+            state.connected_nodes[nid] = {
+                "config": {"rx_lat": 33.9, "rx_lon": -84.6},
+                "status": "active",
+            }
+        configs = get_node_configs({"test-cfg-6"})
+        assert "test-cfg-6" in configs
+        assert "test-cfg-7" not in configs
+
+
+class TestResolveAltitudes:
+    def test_sea_level_survives(self):
+        """0 ft is a real altitude, not an absent one: a truthiness fallback
+        would silently lift every sea-level receiver to 900 ft."""
+        assert resolve_altitudes({"rx_alt_ft": 0.0})["rx_alt_ft"] == 0.0
+
+    def test_a_null_takes_the_terrain_default(self):
+        resolved = resolve_altitudes({"rx_alt_ft": None, "tx_alt_ft": None})
+        assert resolved["rx_alt_ft"] == 900.0
+        assert resolved["tx_alt_ft"] == 1200.0
+
+    def test_an_absent_altitude_takes_the_terrain_default(self):
+        assert resolve_altitudes({})["rx_alt_ft"] == 900.0
+
 
 # ── Pipeline factory ─────────────────────────────────────────────────────────
 
@@ -191,10 +267,34 @@ class TestGetOrCreateNodePipeline:
         p2 = get_or_create_node_pipeline("test-cached", default)
         assert p1 is p2
 
-    def test_falls_back_to_default(self):
+    def test_returns_none_for_a_node_with_no_usable_position(self):
+        """Not a fall-back to `default`: solving an unplaceable node's frames
+        against the shared pipeline's fixed geometry would geolocate them at
+        somebody else's receiver and illuminator."""
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         p = get_or_create_node_pipeline("test-noconfig", default)
-        assert p is default
+        assert p is None
+
+    def test_null_altitudes_default_rather_than_reach_the_geolocator_as_none(self):
+        """PassiveRadarPipeline._init_geolocator multiplies the altitude by
+        FT_TO_M unconditionally, so a null altitude must be resolved before it
+        gets here. Registration is what resolves it, so the node is registered
+        rather than written straight into connected_nodes."""
+        default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        register_test_node(
+            "test-null-altitude",
+            {
+                "rx_lat": 34.0,
+                "rx_lon": -84.0,
+                "rx_alt_ft": None,
+                "tx_lat": 33.8,
+                "tx_lon": -83.8,
+                "tx_alt_ft": None,
+            },
+        )
+        p = get_or_create_node_pipeline("test-null-altitude", default)
+        assert p.config["rx_alt_ft"] == 900
+        assert p.config["tx_alt_ft"] == 1200
 
 
 # ── Frame processing ─────────────────────────────────────────────────────────
@@ -203,9 +303,13 @@ class TestGetOrCreateNodePipeline:
 class TestProcessOneFrame:
     def test_process_valid_frame(self):
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        register_test_node("test-proc", _PLACED_CFG)
         frame = _make_frame()
         # Should not raise
         process_one_frame("test-proc", frame, default)
+        # The node's own pipeline saw the frame; an unregistered node would
+        # have had none and the whole per-node half would have been skipped.
+        assert state.node_pipelines["test-proc"].config["rx_lat"] == 34.0
 
     def test_sets_aircraft_dirty_with_adsb(self):
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
@@ -266,6 +370,9 @@ class TestProcessOneFrame:
         # also guarantees only this frame's item is seen.
         monkeypatch.setattr(state, "solver_queue", queue.Queue())
 
+        # A positioned node: process_one_frame only reaches submit_tracks_round
+        # (where the stub above is installed) for a node it can place.
+        register_test_node("test-anchor", _PLACED_CFG)
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         process_one_frame("test-anchor", _make_frame(), default)
 
@@ -275,6 +382,95 @@ class TestProcessOneFrame:
 
 
 # ── Multinode result conversion ──────────────────────────────────────────────
+
+
+class TestConfirmedTrackViewsStaleness:
+    """TRACK_MAX_STALE_S: a coasting track stops being offered to association
+    once its newest REAL detection has aged out.
+
+    The freshness signal is the newest entry get_recent_detections returns,
+    which by construction is an ASSOCIATED sample (mark_missed appends None to
+    history["measurements"] and the reverse scan skips those) — so these fakes
+    hand back only real detections, exactly as the tracker does, and the coast
+    is expressed as a gap between that newest sample and the frame time.
+    """
+
+    @staticmethod
+    def _track(newest_ts_ms: int, status=TrackState.COASTING, track_id="trk-stale"):
+        hist = [
+            {"timestamp": newest_ts_ms - 1000, "delay": 40.0, "doppler": 5.0, "snr": 12.0, "adsb": None},
+            {"timestamp": newest_ts_ms, "delay": 41.0, "doppler": 5.0, "snr": 12.0, "adsb": None},
+        ]
+        return types.SimpleNamespace(
+            id=track_id,
+            state_status=status,
+            adsb_hex=None,
+            get_recent_detections=lambda n: hist[-n:],
+        )
+
+    def _tracker(self, *tracks):
+        return types.SimpleNamespace(tracks=list(tracks))
+
+    def test_five_second_old_coasting_track_is_excluded_at_three(self, monkeypatch):
+        monkeypatch.setattr(frame_processor, "TRACK_MAX_STALE_S", 3.0)
+        state.tracks_stale_skipped = 0
+        now_ms = 1_000_000
+        tracker = self._tracker(self._track(now_ms - 5000))
+        assert confirmed_track_views(tracker, now_ts_ms=now_ms) == []
+        assert state.tracks_stale_skipped == 1
+
+    def test_same_track_is_included_at_ten(self, monkeypatch):
+        monkeypatch.setattr(frame_processor, "TRACK_MAX_STALE_S", 10.0)
+        state.tracks_stale_skipped = 0
+        now_ms = 1_000_000
+        tracker = self._tracker(self._track(now_ms - 5000))
+        views = confirmed_track_views(tracker, now_ts_ms=now_ms)
+        assert [v["track_id"] for v in views] == ["trk-stale"]
+        assert state.tracks_stale_skipped == 0
+
+    def test_zero_disables_the_filter(self, monkeypatch):
+        monkeypatch.setattr(frame_processor, "TRACK_MAX_STALE_S", 0.0)
+        state.tracks_stale_skipped = 0
+        now_ms = 1_000_000
+        tracker = self._tracker(self._track(now_ms - 600_000))
+        assert len(confirmed_track_views(tracker, now_ts_ms=now_ms)) == 1
+        assert state.tracks_stale_skipped == 0
+
+    def test_no_frame_time_disables_the_filter(self, monkeypatch):
+        """The bench and the ADS-B-seeding tests call without a frame time;
+        wall clock is not a substitute, so those callers stay unfiltered."""
+        monkeypatch.setattr(frame_processor, "TRACK_MAX_STALE_S", 3.0)
+        state.tracks_stale_skipped = 0
+        tracker = self._tracker(self._track(0))
+        assert len(confirmed_track_views(tracker)) == 1
+        assert state.tracks_stale_skipped == 0
+
+    def test_fresh_track_survives_beside_a_stale_one(self, monkeypatch):
+        """Staleness is per track, not per tracker — the node keeps
+        contributing whatever it can still actually see."""
+        monkeypatch.setattr(frame_processor, "TRACK_MAX_STALE_S", 3.0)
+        state.tracks_stale_skipped = 0
+        now_ms = 1_000_000
+        tracker = self._tracker(
+            self._track(now_ms - 5000, track_id="gone"),
+            self._track(now_ms - 500, track_id="here"),
+        )
+        views = confirmed_track_views(tracker, now_ts_ms=now_ms)
+        assert [v["track_id"] for v in views] == ["here"]
+        assert state.tracks_stale_skipped == 1
+
+    def test_tentative_is_still_excluded_regardless_of_freshness(self, monkeypatch):
+        """The TENTATIVE filter is unchanged and independent: a brand-new
+        TENTATIVE track's newest detection is as fresh as it gets, and it must
+        still not reach association."""
+        monkeypatch.setattr(frame_processor, "TRACK_MAX_STALE_S", 3.0)
+        state.tracks_stale_skipped = 0
+        now_ms = 1_000_000
+        tracker = self._tracker(self._track(now_ms, status=TrackState.TENTATIVE))
+        assert confirmed_track_views(tracker, now_ts_ms=now_ms) == []
+        # Skipped as TENTATIVE, not as stale — the counter must stay clean so
+        # it only ever means "an aircraft left this node's cone".
+        assert state.tracks_stale_skipped == 0
 
 
 class TestMultinodeToAircraft:
@@ -296,6 +492,11 @@ class TestMultinodeToAircraft:
         assert ac["n_nodes"] == 3
         assert ac["lat"] == 33.9
         assert ac["lon"] == -84.6
+        # Solve-epoch pair: identical here (the caller dead-reckons lat/lon
+        # afterwards, this function does not), and the anchor for the map's
+        # uncertainty disc.
+        assert ac["solve_lat"] == 33.9
+        assert ac["solve_lon"] == -84.6
         assert ac["alt_baro"] == 10000  # 3048m / 0.3048
 
     def test_supersonic_speed_is_not_flagged(self):
@@ -731,6 +932,109 @@ class TestDedupAircraft:
         assert dedup_aircraft(one) == one
 
 
+# ─── Regression: the ground-truth resolver is a hint, not evidence ───────────
+# resolve_ground_truth_hex is a nearest-trail-end lookup in 2-D within 8 km, so
+# it ignores altitude: a dark aircraft 1-2 km from an airliner but 7,100 ft
+# below it was handed the airliner's ground_truth_hex, and dedup then hid its
+# own fresh 8-node solve.  Same-rank ties also used to fall back to list order,
+# i.e. the oldest key in state.multinode_tracks, so a stale n=2 solve beat a
+# fresh one for the same target.
+
+
+class TestDedupMultinodeSplitAndFreshness:
+    def _mn(self, hex_code, lat, lon, alt=30000, gt=None, node=None, n_nodes=None, seen=None):
+        e = {
+            "hex": hex_code,
+            "position_source": "multinode_solve",
+            "lat": lat,
+            "lon": lon,
+            "alt_baro": alt,
+        }
+        if gt is not None:
+            e["ground_truth_hex"] = gt
+        if node is not None:
+            e["node_id"] = node
+        if n_nodes is not None:
+            e["n_nodes"] = n_nodes
+        if seen is not None:
+            e["seen"] = seen
+        return e
+
+    def test_altitude_separated_multinode_entries_both_survive(self):
+        """The live case: ~1 km apart laterally, 7000 ft apart vertically."""
+        out = dedup_aircraft(
+            [
+                self._mn("mn0000000001", 34.900, -82.000, alt=30000, gt="t1", n_nodes=4),
+                self._mn("mn0000000002", 34.909, -82.000, alt=23000, gt="t1", n_nodes=8),
+            ]
+        )
+        assert len(out) == 2
+        assert {ac["hex"] for ac in out} == {"mn0000000001", "mn0000000002"}
+
+    def test_fresher_higher_node_solve_wins_the_tie(self):
+        """Both are the same aircraft, so one survives — the better solve."""
+        out = dedup_aircraft(
+            [
+                self._mn("mn0000000001", 34.9000, -82.0, gt="t1", node="node-a", n_nodes=3, seen=12.0),
+                self._mn("mn0000000002", 34.9045, -82.0, alt=30100, gt="t1", node="node-b", n_nodes=8, seen=1.5),
+            ]
+        )
+        assert len(out) == 1
+        assert out[0]["hex"] == "mn0000000002"
+        assert set(out[0]["contributing_node_ids"]) == {"node-a", "node-b"}
+
+    def test_equal_node_count_breaks_on_freshness(self):
+        out = dedup_aircraft(
+            [
+                self._mn("mn0000000001", 34.9000, -82.0, gt="t1", n_nodes=5, seen=9.0),
+                self._mn("mn0000000002", 34.9045, -82.0, alt=30100, gt="t1", n_nodes=5, seen=1.0),
+            ]
+        )
+        assert len(out) == 1
+        assert out[0]["hex"] == "mn0000000002"
+
+    def test_distant_arc_still_collapses_under_the_solve(self):
+        """An arc is a boresight crossing, not a position: distance from the
+        aircraft that produced it proves nothing, so it still collapses."""
+        out = dedup_aircraft(
+            [
+                {
+                    "hex": "abf380",
+                    "position_source": "single_node_ellipse_arc",
+                    "lat": 34.954,  # ~6 km north
+                    "lon": -82.0,
+                    "alt_baro": 30000,
+                    "ground_truth_hex": "t1",
+                    "node_id": "node-a",
+                },
+                self._mn("mn0000000001", 34.900, -82.0, gt="t1", node="node-b", n_nodes=6),
+            ]
+        )
+        assert len(out) == 1
+        assert out[0]["position_source"] == "multinode_solve"
+        assert set(out[0]["contributing_node_ids"]) == {"node-a", "node-b"}
+
+    def test_proximity_path_unchanged_apart_from_the_tie_break(self):
+        """Real hardware has no ground_truth_hex: same grouping as before, but
+        the better solve now wins instead of whichever was listed first."""
+        merged = dedup_aircraft(
+            [
+                self._mn("mn0000000001", 34.900, -82.0, n_nodes=2, seen=8.0),
+                self._mn("mn0000000002", 34.909, -82.0, alt=30100, n_nodes=7, seen=1.0),
+            ]
+        )
+        assert len(merged) == 1
+        assert merged[0]["hex"] == "mn0000000002"
+
+        split = dedup_aircraft(
+            [
+                self._mn("mn0000000001", 34.900, -82.0, alt=30000, n_nodes=2),
+                self._mn("mn0000000002", 34.909, -82.0, alt=25000, n_nodes=7),
+            ]
+        )
+        assert len(split) == 2
+
+
 # ─── Regression: despawned simulated aircraft must not linger ────────────────
 
 
@@ -760,10 +1064,20 @@ class TestGroundTruthGhostPruning:
                 d.pop(k, None)
 
     def _build(self):
+        """One GC pass plus one feed build, in production order.
+
+        The stale-store pruning these tests assert on moved out of the feed
+        build onto its own 5 s timer (services.tasks.feed_gc) — a slow
+        websocket client used to stall the flush task and take server-wide GC
+        down with it.  The build still runs here because the pruning has to
+        hold against a feed that is being rebuilt over it.
+        """
         import types
 
         from services.frame_processor import build_combined_aircraft_json
+        from services.tasks.feed_gc import run_feed_gc
 
+        run_feed_gc()
         pipeline = types.SimpleNamespace(geolocated_tracks={}, config={})
         build_combined_aircraft_json(pipeline)
 

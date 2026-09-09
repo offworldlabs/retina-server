@@ -70,18 +70,78 @@ export const ADSB_SINGLE_ARC_ICON_MULTIPLE = 2.5;
 // anchoring, list centering, and the smooth store.)
 export const ARC_DR_MAX_S = 10;
 
-// Dead-reckoning drift budget (metres) past which the plane ICON is hidden.
-// The backend keeps feeding an mn entry for 60 s after its last solve, dead-
-// reckoned the whole way, so a target whose solves stop is drawn kilometres
-// from where it actually is — the icon reads as a real target because nothing
-// about it looks stale.  2 km matches the known-lane publish displacement gate
-// (_MAX_DISPLACEMENT_KM) and sits under backend dedup's 3 km proximity gate, so
-// a second icon cannot appear at the true position while the drifted one is
-// still shown.  A healthy target (solves every 1–2 s) accrues ≤ ~600 m and
-// never trips it; at airliner speed the icon survives ~6–8 s of solve loss.
-// The TRACK stays alive — stores, trails, list, selection — so a new solve
-// revives the icon on the next 2 Hz render.
+// Dead-reckoning drift budget (metres) past which the plane ICON stops being
+// drawn as an ordinary live target.  The backend keeps feeding an mn entry past
+// its last solve (MN_DARK_EXPIRY_S 30 s dark, 60 s ADS-B-assisted), so a target
+// whose solves stop is drawn kilometres from where it actually is — the icon
+// reads as a real target because nothing about it looks stale.
+//
+// The budget is LANE-AWARE, because the two multi-node lanes re-solve at very
+// different rates and one budget cannot describe both:
+//
+//  * Assisted lane (mn-adsb-*) and every other source — 2 km.  Measured
+//    re-solve cadence is 2.9 s median, so a healthy target accrues a few
+//    hundred metres and never trips it; at airliner speed the icon survives
+//    ~6–8 s of solve loss.  2 km also matches the known-lane publish
+//    displacement gate (_MAX_DISPLACEMENT_KM) and sits under backend dedup's
+//    3 km proximity gate, so a second icon cannot appear at the true position
+//    while the drifted one is still shown.
+//  * Dark lane (mn-dark-*) — 3 km.  It was 6 km, sized when the solver refused
+//    to re-solve the same tracks inside SOLVER_RESOLVE_INTERVAL_S = 12 s and
+//    the measured dark cadence was 9.0 s median / 24.9 s p90: at that cadence
+//    2 km hid 48% of published dark track-frames and only 6 km got 90% of them
+//    drawn.  Dark solves now land every 1–3 s, so the drift a healthy track
+//    accrues is metres, and the budget stopped buying coverage and started
+//    buying wrong icons: measured against ground truth over 20 minutes, dark
+//    entries run 1.50 km median error at 8–15 s of solve age but 2.02 km at
+//    15–30 s (7% over 5 km) and 3.99 km at 30–60 s (32% over 5 km).  3 km sits
+//    at that knee — it still tolerates the odd missed solve, and it no longer
+//    draws a confident icon 6 km from any aircraft.
+//
+// Exceeding the budget does not mean the same thing in both lanes, so neither
+// does the rendering (see drIconState in icons.ts): an assisted track over
+// budget is a genuine anomaly and loses its icon, while a dark track over
+// budget is the normal consequence of a missed solve and is drawn in a
+// degraded "stale solve" style instead — "solved but stale" has to stay
+// distinguishable from "not solved".  Either way the TRACK stays alive —
+// stores, trails, list, selection — so a new solve restores the normal icon on
+// the next 2 Hz render.
 export const DR_ICON_HIDE_DISTANCE_M = 2000;
+export const DR_ICON_HIDE_DISTANCE_DARK_M = 3000;
+
+// Time budget for a DARK multi-node icon, in seconds of SOLVE AGE (`seen` plus
+// the wall-clock gap since ingest — the same age the disc grows on).  Distance
+// alone cannot describe a lost dark track: a slow or gs-less entry drifts far
+// too little to trip the 3 km budget, yet the backend keeps re-broadcasting it
+// for MN_DARK_EXPIRY_S = 30 s after its solves stop, so the map went on drawing
+// a confident icon — and a violet disc still growing under it — for tracks that
+// no longer existed.
+//
+// 12 s, measured against ground truth over three 20-minute captures: dark
+// entries under 4 s of solve age are 1% ghosts (over 5 km from any aircraft)
+// and 0.3 km off at the median, while entries past 12 s are 15% ghosts and
+// 1.5–2.4 km off.  Dark solves now land every 1–3 s, so 12 s of silence is a
+// lost track rather than a cadence gap.  Withdrawing the drawing there removes
+// 45–49% of ghost display-seconds for 21% of dark display-seconds hidden.
+//
+// About half of the tracks that go quiet for 12 s do re-solve later, at a
+// median of 16 s, so only the DRAWING is withdrawn: the entry stays in the
+// stores, the list, the trail buffers and the selection, and the next solve
+// resets `seen` and brings the icon straight back.  A selected aircraft keeps a
+// degraded icon instead of losing it, matching the drift budget's selected-hex
+// bypass.  See drIconState in icons.ts.
+export const DR_ICON_MAX_AGE_DARK_S = 12;
+
+// Ground speed (knots) assumed when a multi-node entry carries no `gs` at all.
+// The backend deletes gs from entries whose velocity vector it does not trust
+// (aircraft_feed, VEL_TRUST_MODE=active) — precisely the entries whose
+// dead-reckoned position deserves the least confidence.  Reading an absent gs
+// as "0 kt, therefore no drift" inverted the gate: untrustworthy entries were
+// the only ones that could never be hidden, while trustworthy fast ones were.
+// 250 kt is a deliberately middling airliner cruise figure: high enough that a
+// long solve gap trips the budget, low enough that it does not hide a track
+// after a couple of seconds on an assumption the feed never made.
+export const DR_UNKNOWN_GS_KT = 250;
 
 // Doppler colour gradient — dark blue (approaching) → light blue → cyan → light red → dark red (receding)
 // Centre stop is bright cyan so near-zero-doppler arcs are always visible on light basemaps.

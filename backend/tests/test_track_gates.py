@@ -321,3 +321,53 @@ class TestUnassociatedEntryHonesty:
         assert entry["alt_baro"] == 30000
         assert entry["alt_geom"] == 30000
         assert entry["flight"] == HEX
+
+
+class TestGateStoreReclamation:
+    """track_last_emit / track_gate_hold must age out on their own timestamps.
+
+    Both are written by track_entry() for every emitted hex, but the only
+    eviction used to be the active_geo_aircraft stale sweep in
+    aircraft_feed.py — which pops nothing for a hex that reaches the feed
+    through the default-pipeline branch instead (nodes registered without
+    rx_lat/tx_lat, HTTP/sim ingest, and every per-track-id pr* hex, which
+    never repeats).  Those entries were unreclaimable for the process
+    lifetime.  Same bug the arc-motion log was already fixed for, in the same
+    sweep, on the same line-block.
+    """
+
+    def test_stale_entries_are_pruned_and_fresh_ones_kept(self):
+        from config.constants import TRAIL_STALE_S
+        from services.feed_gc import prune_stale_stores
+
+        now = time.time()
+        state.track_last_emit["fresh1"] = [1.0, 2.0, now - 10]
+        state.track_last_emit["stale1"] = [3.0, 4.0, now - TRAIL_STALE_S - 10]
+        # Paired hold: goes with its reference, since a hold is meaningless
+        # without the position it reverts to.
+        state.track_gate_hold["stale1"] = (now - TRAIL_STALE_S - 10, 3.0, 4.0)
+        state.track_gate_hold["fresh1"] = (now - 10, 1.0, 2.0)
+        # Orphan hold with no surviving reference — its own anchor timestamp
+        # sits at v[0], not v[2].
+        state.track_gate_hold["orphan1"] = (now - TRAIL_STALE_S - 10, 5.0, 6.0)
+
+        prune_stale_stores(now)
+
+        assert "fresh1" in state.track_last_emit
+        assert "stale1" not in state.track_last_emit
+        assert "fresh1" in state.track_gate_hold
+        assert "stale1" not in state.track_gate_hold
+        assert "orphan1" not in state.track_gate_hold
+
+    def test_prune_does_not_touch_entries_inside_the_gate_window(self):
+        """The speed gate only acts on dt < 60 s and holds expire well before
+        TRAIL_STALE_S, so nothing this sweep drops could still have been read.
+        """
+        from services.feed_gc import prune_stale_stores
+
+        now = time.time()
+        state.track_last_emit["gated"] = [1.0, 2.0, now - 59]
+        state.track_gate_hold["gated"] = (now - 59, 1.0, 2.0)
+        prune_stale_stores(now)
+        assert state.track_last_emit["gated"] == [1.0, 2.0, now - 59]
+        assert "gated" in state.track_gate_hold

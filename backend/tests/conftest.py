@@ -31,6 +31,13 @@ os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 # force-retires the fixture's `live-node`, with nothing in the failure naming
 # the variable as the cause.
 os.environ["NODE_FORCE_RETIRE_PREFIXES"] = ""
+# services.detection_mirror reads this once, in configure_from_env(), which the
+# app lifespan calls and which every `with TestClient(app)` file therefore
+# runs. Assigned rather than setdefault: a developer whose worktree carries
+# production's backend/.env would otherwise arm the module for the rest of the
+# session and have a stray background task post real frames to the real
+# target with the real key.
+os.environ["DETECTION_MIRROR_URL"] = ""
 # The suite has no OAuth provider to log in against, so the route tests reach the
 # admin endpoints through core.users' anonymous-admin bypass. That bypass is an
 # explicit opt-in and no longer follows from RETINA_ENV=test, so ask for it here.
@@ -148,6 +155,7 @@ def _reset_module_state():
     from services import (
         aircraft_feed,
         alerting,
+        dark_follow,
         feed_helpers,
         frame_processor,
         known_claiming,
@@ -156,7 +164,7 @@ def _reset_module_state():
         tcp_handler,
         track_gates,
     )
-    from services.tasks import analytics_refresh, known_lane, solver
+    from services.tasks import analytics_refresh, known_lane, periodic, solver
 
     for mod in (
         state,
@@ -170,8 +178,10 @@ def _reset_module_state():
         alerting,
         tcp_handler,
         known_claiming,
+        dark_follow,
         node_bias,
         publication,
+        periodic,
     ):
         mod._reset_for_tests()
     yield

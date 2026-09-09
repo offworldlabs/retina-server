@@ -21,6 +21,8 @@ import {
   GT_PRUNE_GRACE_MS,
   POSITION_SOURCE_ARC_ONLY,
   ARC_DR_MAX_S,
+  MLAT_HISTORY_REFRESH_MS,
+  newSolveArrived,
   groundTruthKey,
   applyGroundTruthFixes,
   pruneGroundTruthFixes,
@@ -31,7 +33,11 @@ import {
   buildTrailSegments,
   makeAircraftIcon,
   makeDroneIcon,
-  hideDrIcon,
+  drIconState,
+  getAircraftColor,
+  solveDiscCenter,
+  solveUncertaintyRadiusM,
+  isRingOnlyRadius,
   nodeIcon,
   yagiSectorPositions,
   uncertaintyDiscRadiusM,
@@ -514,7 +520,7 @@ const MlatSolveHistoryLayer = memo(function MlatSolveHistoryLayer({ solves }) {
       (selection, labels, callsign, altitude band, type).  lat/lon/track/gs are updated
       imperatively at 60fps via markerRegistry → marker.setLatLng() in the RAF loop,
       completely bypassing React reconcile. ── */
-const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels, colorByAlt, onSelect, markerRegistry }) {
+const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, isStale, showLabels, colorByAlt, onSelect, markerRegistry }) {
   const altBand = Math.floor((ac.alt_baro ?? 0) / 5000);
   const markerRef = useRef(null);
 
@@ -529,9 +535,9 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels
   const icon = useMemo(
     () => ac.target_class === "drone"
       ? makeDroneIcon(ac, showLabels, isSelected)
-      : makeAircraftIcon(ac, showLabels, isSelected, colorByAlt),
+      : makeAircraftIcon(ac, showLabels, isSelected, colorByAlt, isStale),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [ac.hex, isSelected, showLabels, colorByAlt, ac.flight, ac.target_class, altBand, ac.position_source, ac.adsb_assisted],
+    [ac.hex, isSelected, isStale, showLabels, colorByAlt, ac.flight, ac.target_class, altBand, ac.position_source, ac.adsb_assisted],
   );
   const handlers = useMemo(() => ({ click: () => onSelect(ac.hex) }), [ac.hex, onSelect]);
   return <Marker ref={markerRef} position={[ac.lat, ac.lon]} icon={icon} eventHandlers={handlers} />;
@@ -539,6 +545,10 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, showLabels
   // Skip re-render when ONLY position/velocity changed — those are patched live
   // by the RAF loop via marker.setLatLng() without touching React at all.
   prev.isSelected === next.isSelected &&
+  // isStale swaps the icon between the solid and the degraded "stale solve"
+  // rendering, so it has to defeat the memo like isSelected does.  It flips at
+  // most twice per solve gap, not per frame.
+  prev.isStale === next.isStale &&
   prev.showLabels === next.showLabels &&
   prev.colorByAlt === next.colorByAlt &&
   prev.ac.hex === next.ac.hex &&
@@ -618,6 +628,115 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftR
       lines.clear();
     };
   }, [map, visibleAircraftRef, frontendTrailsRef, selectedHex]);
+
+  return null;
+});
+
+/* ── SolveUncertaintyLayer: one soft L.circle per visible multi-node solve,
+      radius = the calibrated 68% position-confidence radius of the LAST SOLVE
+      (map/uncertainty.ts), centred on where that solve was (solveDiscCenter →
+      the feed's solve_lat/solve_lon).  Neither moves nor grows until the next
+      solve lands: the icon dead-reckons out of the disc, and that separation
+      is the extrapolation made visible.
+
+      68%, not 95%, since 2026-09-06: dark solve error is heavy-tailed, so a
+      95% ring on a GOOD solve is ~8x its median error and a viewport of them
+      is a wash.  The 95% figure stays in the detail panel.
+
+      Two renderings, one threshold (UNCERTAINTY_RING_ONLY_ABOVE_M): a normal
+      solve gets the soft filled disc, and anything above 3 km — a degenerate
+      solve, or a dark n=2 fix whose floor alone is 2.1 km — gets a dashed
+      hairline OUTLINE with no fill.  It still says where the aircraft might
+      be, without painting over the solves that are worth reading.
+
+      Same shape as AircraftTrailsLayer: one shared L.canvas renderer in the
+      passive pane, ref-driven so the 2 Hz display array does not tear the
+      circles down and rebuild them twice a second, updated on a 500 ms tick.
+
+      Shown and hidden with the icon (drIconState): drawn whenever an icon is
+      drawn, degraded "stale solve" icons included, and dropped when the icon
+      is.  A disc with no plane anywhere near it reads as a phantom target; a
+      stale plane with no disc hides the one number that says how little the
+      position is worth.
+      ── */
+const _uncertaintyCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: DEBUG_PASSIVE_PANE }) : null;
+
+const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircraftRef, colorByAlt, selectedHexRef }) {
+  const map = useMap();
+  const circlesRef = useRef(new Map()); // hex → L.circle
+
+  useEffect(() => {
+    ensureDebugPanes(map);
+    const circles = circlesRef.current;
+    const tick = () => {
+      const markerNow = Date.now();
+      const live = new Set();
+      for (const ac of visibleAircraftRef.current || []) {
+        if (!ac.hex) continue;
+        if (ac.position_source !== "multinode_solve") continue;
+        if (!validLatLon(ac.lat, ac.lon)) continue;
+        // Ref, not a prop: keying this effect on selectedHex would tear every
+        // disc down and rebuild it on each selection change.
+        if (drIconState(ac, markerNow, ac.hex === selectedHexRef?.current) === "hidden") continue;
+        const radius = solveUncertaintyRadiusM(ac);
+        // 0 = the feed never stated a sigma for this solve; draw nothing
+        // rather than assert a precision it did not promise.
+        if (radius <= 0) continue;
+        // Solve epoch, not the icon: an older backend without solve_lat/lon
+        // falls back to the dead-reckoned position inside the helper.
+        const center = solveDiscCenter(ac);
+        if (!center) continue;
+        live.add(ac.hex);
+        // Same colour rule as the icon, including the colour-by-altitude toggle.
+        const color = getAircraftColor(ac, colorByAlt);
+        // A big ring is drawn as an outline; a normal one keeps the fill.
+        const ringOnly = isRingOnlyRadius(radius);
+        const shapeStyle = ringOnly
+          ? { fillOpacity: 0, weight: 1, opacity: 0.7, dashArray: "4 5" }
+          : // Fill strong enough to read against the light basemap: a 0.10
+            // fill was invisible at the 10-20 px radii a typical solve draws.
+            { fillOpacity: 0.28, weight: 1.5, opacity: 0.8, dashArray: undefined };
+        let circle = circles.get(ac.hex);
+        if (circle) {
+          circle.setLatLng(center);
+          circle.setRadius(radius);
+          // Lane colour can flip mid-flight (a solve gaining or losing its
+          // transponder tag), and a re-solve can cross the ring-only
+          // threshold in either direction — keep both in step with the icon.
+          const wasRingOnly = circle.options.fillOpacity === 0;
+          if (circle.options.color !== color || wasRingOnly !== ringOnly) {
+            circle.setStyle({ color, fillColor: color, ...shapeStyle });
+          }
+        } else {
+          circle = L.circle(center, {
+            radius,
+            renderer: _uncertaintyCanvas,
+            interactive: false,
+            color,
+            fillColor: color,
+            ...shapeStyle,
+          });
+          circle.addTo(map);
+          circles.set(ac.hex, circle);
+        }
+      }
+      // Drop discs for aircraft that left the viewport, lost their solve, or
+      // whose icon is now hidden.
+      for (const [hex, circle] of circles) {
+        if (!live.has(hex)) {
+          circle.remove();
+          circles.delete(hex);
+        }
+      }
+    };
+    tick();
+    const id = setInterval(tick, 500);
+    return () => {
+      clearInterval(id);
+      for (const circle of circles.values()) circle.remove();
+      circles.clear();
+    };
+  }, [map, visibleAircraftRef, colorByAlt, selectedHexRef]);
 
   return null;
 });
@@ -1027,6 +1146,10 @@ export default function LiveAircraftMap() {
   const [showInBeamDiag, setShowInBeamDiag] = usePersistedState("tf.layer.inBeamDiag.v2", initialLayers?.inBeamDiag ?? false);
   // Detection arcs default ON — preserves the previously-unconditional render.
   const [showArcs, setShowArcs] = usePersistedState("tf.layer.arcs", initialLayers?.arcs ?? true);
+  // 68% position-uncertainty disc around multi-node solves. Default ON: the
+  // disc is the honest reading of a solved position, and hiding it by default
+  // would leave the icon looking more precise than it is.
+  const [showUncertainty, setShowUncertainty] = usePersistedState("tf.layer.uncertainty", initialLayers?.uncertainty ?? true);
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   // Enthusiast filters: altitude band (FL, hundreds of ft), speed floor, type.
   const [filters, setFilters] = usePersistedState("tf.filters", { minFl: "", maxFl: "", minGs: "", type: "all" });
@@ -1123,6 +1246,13 @@ export default function LiveAircraftMap() {
         _key: ac.hex,
         _fixLat: ac.lat,
         _fixLon: ac.lon,
+        // Last ground speed the feed actually stated for this track.  The
+        // backend deletes `gs` from entries whose velocity it stopped trusting,
+        // and the drift budget needs *some* speed for those (icons.drGsKt) —
+        // an absent gs is not a stationary aircraft.  Deliberately NOT merged
+        // back into `gs`: the 60 fps dead-reckoning projection must keep using
+        // only what the feed stands behind.
+        _lastGsKt: typeof ac.gs === "number" ? ac.gs : prev?._lastGsKt,
         // Only reset the position-anchor timestamp when the fix actually moved.
         // If the server re-broadcasts the same lat/lon (between solve cycles),
         // preserve _fixTs so dead-reckoning keeps projecting forward.
@@ -1350,8 +1480,10 @@ export default function LiveAircraftMap() {
   // used to tear every Leaflet object down twice a second.
   const visibleAircraftRef = useRef(visibleAircraft);
   const radarAircraftRef = useRef(radarAircraft);
+  const selectedHexRef = useRef(selectedHex);
   useEffect(() => { visibleAircraftRef.current = visibleAircraft; }, [visibleAircraft]);
   useEffect(() => { radarAircraftRef.current = radarAircraft; }, [radarAircraft]);
+  useEffect(() => { selectedHexRef.current = selectedHex; }, [selectedHex]);
 
   // No viewport filter — the L.canvas renderer handles off-screen dots natively.
   // Removing the filter means:
@@ -1417,12 +1549,16 @@ export default function LiveAircraftMap() {
     : null;
 
   // Per-solve history for the selected MLAT track (debug): fetched once per
-  // selection + refreshed on the backend's ~30 s recording cadence.  Tagged
-  // with the hex it was fetched for so a selection change never shows the
-  // previous track's solves while the new fetch is in flight.
+  // selection, then polled every MLAT_HISTORY_REFRESH_MS.  Tagged with the hex
+  // it was fetched for so a selection change never shows the previous track's
+  // solves while the new fetch is in flight.
   const selectedMnHex =
     selectedAc?.position_source === "multinode_solve" ? selectedAc.hex : null;
+  const selectedMnSeen = selectedMnHex ? selectedAc?.seen ?? null : null;
   const [mlatHistory, setMlatHistory] = useState(null);
+  // The poll's loader, published for the `seen` watcher below to call. A ref
+  // rather than a dependency so a refetch never restarts the interval.
+  const reloadMlatHistoryRef = useRef(null);
   useEffect(() => {
     if (!selectedMnHex) {
       setMlatHistory(null);
@@ -1434,10 +1570,27 @@ export default function LiveAircraftMap() {
         if (!cancelled && d && d.hex === selectedMnHex) setMlatHistory(d);
       });
     };
+    reloadMlatHistoryRef.current = load;
     load();
-    const interval = setInterval(load, 30000);
-    return () => { cancelled = true; clearInterval(interval); };
+    const interval = setInterval(load, MLAT_HISTORY_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      reloadMlatHistoryRef.current = null;
+    };
   }, [selectedMnHex]);
+
+  // A fall in `seen` is the feed announcing a fresh solve for this track — the
+  // one event worth a fetch off the poll's schedule (see newSolveArrived).
+  // Dark solves arrive every 1-3 s while a track is held, faster than the
+  // poll, and the dots are the surface someone selected the aircraft to read.
+  const prevMnSeenRef = useRef({ hex: null, seen: null });
+  useEffect(() => {
+    const prev = prevMnSeenRef.current;
+    const next = { hex: selectedMnHex, seen: selectedMnSeen };
+    prevMnSeenRef.current = next;
+    if (newSolveArrived(prev, next)) reloadMlatHistoryRef.current?.();
+  }, [selectedMnHex, selectedMnSeen]);
 
   // Nodes with a live detection of the selected simulated object — read from
   // the detection-presence oracle (per-aircraft signals ∪ the detecting_nodes
@@ -1513,10 +1666,10 @@ export default function LiveAircraftMap() {
         coverage: showCoverage, labels: showLabels, trails: showTrails,
         groundTruth: showGroundTruth, illuminators: showIlluminators,
         colorByAlt, stats: showStats, rangeRings: showRangeRings,
-        inBeamDiag: showInBeamDiag, arcs: showArcs,
+        inBeamDiag: showInBeamDiag, arcs: showArcs, uncertainty: showUncertainty,
       }),
     });
-  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings, showInBeamDiag, showArcs]);
+  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings, showInBeamDiag, showArcs, showUncertainty]);
 
   // Push hash when selection or toggles change without waiting for a pan.
   useEffect(() => {
@@ -1528,10 +1681,10 @@ export default function LiveAircraftMap() {
         coverage: showCoverage, labels: showLabels, trails: showTrails,
         groundTruth: showGroundTruth, illuminators: showIlluminators,
         colorByAlt, stats: showStats, rangeRings: showRangeRings,
-        inBeamDiag: showInBeamDiag, arcs: showArcs,
+        inBeamDiag: showInBeamDiag, arcs: showArcs, uncertainty: showUncertainty,
       }),
     });
-  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings, showInBeamDiag, showArcs]);
+  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings, showInBeamDiag, showArcs, showUncertainty]);
 
   /* ── Keyboard shortcuts ─────────────────────────────────────
      Single-letter bindings.  Suppressed while typing in inputs so the
@@ -1685,6 +1838,7 @@ export default function LiveAircraftMap() {
         showRangeRings={showRangeRings}
         showInBeamDiag={showInBeamDiag}
         showArcs={showArcs}
+        showUncertainty={showUncertainty}
         soundOn={soundOn}
         tileTheme={tileTheme}
         hasUserLoc={!!userLoc}
@@ -1701,6 +1855,7 @@ export default function LiveAircraftMap() {
         onToggleRangeRings={() => setShowRangeRings((v) => !v)}
         onToggleInBeamDiag={() => setShowInBeamDiag((v) => !v)}
         onToggleArcs={() => setShowArcs((v) => !v)}
+        onToggleUncertainty={() => setShowUncertainty((v) => !v)}
         onToggleSound={() => setSoundOn((v) => !v)}
         onCycleTheme={() => setTileTheme((t) => t === "voyager" ? "positron" : t === "positron" ? "osm" : "voyager")}
         onShare={shareLink}
@@ -2063,6 +2218,11 @@ export default function LiveAircraftMap() {
               />
             )}
 
+            {/* 68% position-uncertainty disc around each multi-node solve. */}
+            {showUncertainty && (
+              <SolveUncertaintyLayer visibleAircraftRef={visibleAircraftRef} colorByAlt={colorByAlt} selectedHexRef={selectedHexRef} />
+            )}
+
             {/* Selected trail — gradient fade; dashed for arc-type tracks */}
             {showTrails && selectedTrailPositions.length >= 2 && (() => {
               const isArcTrack = selectedAc?.position_source === POSITION_SOURCE_ARC_ONLY;
@@ -2112,21 +2272,30 @@ export default function LiveAircraftMap() {
                  is underdetermined, and drawing it as a plane painted short-lived ghost
                  aircraft wherever clutter promoted a track.  They stay in the list as
                  Solver·1N rows.
-                 A track that has dead-reckoned past DR_ICON_HIDE_DISTANCE_M loses its icon
-                 for the same reason — the drawn position is no longer evidence of where the
-                 aircraft is — but stays tracked everywhere else, so the next real solve
-                 brings the icon straight back. */}
+                 A track that has dead-reckoned past its lane's drift budget is handled by
+                 drIconState: the assisted lane, which re-solves every ~3 s, loses its icon —
+                 the drawn position is no longer evidence of where the aircraft is — while a
+                 DARK solve keeps a degraded "stale solve" icon, because a missed solve is
+                 ordinary and hiding it would claim the track was never solved.  A dark solve
+                 that has gone DR_ICON_MAX_AGE_DARK_S = 12 s without re-solving loses its icon
+                 whatever its drift: past that age 15% of dark entries are more than 5 km from
+                 any aircraft, so the entry is a lost track rather than a stale solve.
+                 A selected aircraft always keeps an icon (degraded if over budget), matching
+                 the viewport cull's selected-hex bypass.  Either way the track stays tracked
+                 everywhere else, so the next real solve restores the solid icon. */}
             {visibleAircraft.map((ac) => {
               if (!validLatLon(ac.lat, ac.lon)) return null;
               if (ac.position_source === POSITION_SOURCE_ARC_ONLY) return null;
               if (ac.position_source === "solver_single_node") return null;
-              if (hideDrIcon(ac, markerNow)) return null;
               const isSelected = ac.hex === selectedHex;
+              const drState = drIconState(ac, markerNow, isSelected);
+              if (drState === "hidden") return null;
               return (
                 <AircraftMarker
                   key={`icon-${ac.hex}`}
                   ac={ac}
                   isSelected={isSelected}
+                  isStale={drState === "stale"}
                   showLabels={showLabels}
                   colorByAlt={colorByAlt}
                   onSelect={handleSelectAircraft}
@@ -2142,7 +2311,7 @@ export default function LiveAircraftMap() {
               .filter((ac) =>
                 anomalyHexesRef.current.has(ac.ground_truth_hex || ac.hex) &&
                 ac.lat && ac.lon &&
-                !hideDrIcon(ac, markerNow)
+                drIconState(ac, markerNow, ac.hex === selectedHex) !== "hidden"
               )
               .map((ac) => (
                 <CircleMarker

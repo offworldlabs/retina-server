@@ -1,17 +1,24 @@
 """Tests for GET /api/test/solver-stats — the Solver Report panel's data source.
 
-Funnel/reject/error stats come from state.mlat_solve_history (windowed);
-ghost detection and consensus/counters read current live state directly.
-See routes.test._solver_window_stats for the ghost definition.
+Funnel/reject/error stats come from the two solve-history deques merged and
+windowed; ghost detection and consensus/counters read current live state
+directly.  The top-level funnel is the DARK lane only — see
+routes.test._solver_window_stats for why, and for the ghost definition.
+
+_rec's defaults (no solve_key, no adsb_hex, no known_lane) make a DARK record,
+so every pre-lane-split funnel test below still describes the lane those keys
+were always meant to describe.
 """
 
+import threading
 import time
 from collections import deque
 
 from fastapi.testclient import TestClient
 
 from core import state
-from routes.test import _ERR_GT_GATE_KM, _GHOST_GATE_KM, _solver_window_stats
+from routes.test import _ERR_GT_GATE_KM, _GHOST_GATE_KM, _record_lane, _solver_window_stats
+from services.tasks import solver as solver_mod
 
 
 def _client():
@@ -20,7 +27,19 @@ def _client():
     return TestClient(app)
 
 
-def _rec(outcome, n_nodes=2, gt_error_km=None, age_s=0.0, solve_key=None, anchor_key=None):
+def _rec(
+    outcome,
+    n_nodes=2,
+    gt_error_km=None,
+    age_s=0.0,
+    solve_key=None,
+    anchor_key=None,
+    adsb_hex=None,
+    known_lane=False,
+    displacement_km=None,
+    lane=None,
+    pool_n_nodes=None,
+):
     return {
         "ts_ms": int((time.time() - age_s) * 1000),
         "outcome": outcome,
@@ -28,7 +47,20 @@ def _rec(outcome, n_nodes=2, gt_error_km=None, age_s=0.0, solve_key=None, anchor
         "gt_error_km": gt_error_km,
         "solve_key": solve_key,
         "anchor_key": anchor_key,
+        "adsb_hex": adsb_hex,
+        "known_lane": known_lane,
+        "displacement_km": displacement_km,
+        "lane": lane,
+        "pool_n_nodes": pool_n_nodes,
     }
+
+
+def _push(rec):
+    """Route a record to the deque the solver would have written it to."""
+    if rec.get("known_lane"):
+        state.mlat_solve_history_known.append(rec)
+    else:
+        state.mlat_solve_history.append(rec)
 
 
 class TestFunnelAndRejects:
@@ -161,13 +193,55 @@ class TestGhosts:
         out = _solver_window_stats(10.0)
         assert out["ghosts"]["ghost_tracks"] == 1
 
-    def test_precision_pct(self):
+    def test_precision_pct_denominator_is_dark_only(self):
+        # One tagged track and one dark ghost.  The old denominator was
+        # live_tracks, which scored this 50% — half the "precision" being an
+        # ADS-B track that the ghost scan never even looked at.  Every dark
+        # track here is a ghost, so dark precision is 0%.
         state.multinode_tracks["mn-adsb-a"] = {"lat": 35.0, "lon": -82.0}
         state.multinode_tracks["mn-dark-1"] = {"lat": 10.0, "lon": 10.0}  # ghost, nothing nearby
         out = _solver_window_stats(10.0)
         assert out["ghosts"]["live_tracks"] == 2
+        assert out["ghosts"]["adsb_associated"] == 1
+        assert out["ghosts"]["dark_tracks"] == 1
         assert out["ghosts"]["ghost_tracks"] == 1
-        assert out["ghosts"]["precision_pct"] == 50.0
+        assert out["ghosts"]["precision_pct"] == 0.0
+
+    def test_precision_is_none_with_no_dark_tracks(self):
+        # The structural lie this replaces: ADS-B tracks only, so the ghost
+        # scan has nothing to score, and the answer used to be a confident
+        # 100% precision with gt_matched pinned at 0 — indistinguishable from
+        # a perfectly healthy dark lane.
+        state.multinode_tracks["mn-adsb-a"] = {"lat": 35.0, "lon": -82.0}
+        state.multinode_tracks["mn-adsb-b"] = {"lat": 35.1, "lon": -82.0}
+        out = _solver_window_stats(10.0)
+        assert out["ghosts"]["dark_tracks"] == 0
+        assert out["ghosts"]["gt_matched"] == 0
+        assert out["ghosts"]["precision_pct"] is None
+        assert out["ghosts"]["scope"] == "dark"
+
+    def test_dark_partition_adds_up(self):
+        # gt_matched + adsb_near + ghost_tracks == dark_tracks, exactly.
+        now = time.time()
+        state.multinode_tracks["mn-adsb-a"] = {"lat": 35.0, "lon": -82.0}
+        state.multinode_tracks["mn-dark-gt"] = {"lat": 35.0, "lon": -82.0}
+        state.multinode_tracks["mn-dark-adsb"] = {"lat": 36.0, "lon": -82.0}
+        state.multinode_tracks["mn-dark-ghost"] = {"lat": 10.0, "lon": 10.0}
+        state.ground_truth_trails["gt1"] = deque([[35.009, -82.0, 9000.0, now]])
+        state.adsb_aircraft["real1"] = {"lat": 36.009, "lon": -82.0, "last_seen_ms": int(now * 1000)}
+        g = _solver_window_stats(10.0)["ghosts"]
+        assert g["dark_tracks"] == 3
+        assert (g["gt_matched"], g["adsb_near"], g["ghost_tracks"]) == (1, 1, 1)
+        assert g["gt_matched"] + g["adsb_near"] + g["ghost_tracks"] == g["dark_tracks"]
+        # 2 of 3 dark tracks corroborated.
+        assert g["precision_pct"] == 66.7
+
+    def test_positionless_dark_track_is_out_of_the_denominator(self):
+        state.multinode_tracks["mn-dark-1"] = {"lat": None, "lon": None}
+        g = _solver_window_stats(10.0)["ghosts"]
+        assert g["live_tracks"] == 1
+        assert g["dark_tracks"] == 0
+        assert g["precision_pct"] is None
 
 
 class TestConsensusAndCounters:
@@ -178,6 +252,8 @@ class TestConsensusAndCounters:
         state.solver_successes = 5
         state.solver_failures = 2
         state.n2_unconfirmed = 1
+        state.n2_anchored_admitted = 20
+        state.n2_fit_position_published = 25
         state.solver_trimmed = 3
         state.solver_stale_drops = 4
         state.solver_resolve_skips = 12
@@ -187,17 +263,57 @@ class TestConsensusAndCounters:
         state.solver_consensus_fallback = 9
         state.solver_consensus_shadow = 10
         state.solver_vel_untrusted_published = 11
+        state.solver_n2_alt_inherited = 26
+        state.dark_follow_targets = 13
+        state.dark_follow_claims = 14
+        state.dark_follow_inputs = 15
+        state.dark_follow_published = 16
+        state.dark_follow_dropped = 17
+        state.dark_follow_n2_withheld = 18
+        state.dark_follow_n2_skipped = 19
+        state.dark_bottomup_shadowed = 18
+        state.tracks_stale_skipped = 13
+        state.solver_epoch_align_skipped = 14
+        state.solver_resolve_skips_dark = 9
+        state.solver_resolve_refresh = 3
+        state.node_frames_rate_limited = 13
+        state.solver_pool_timeouts = 19
+        state.solver_adopt_eligible = 21
+        state.solver_adopt_widened = 22
+        state.solver_adopt_nodes_added = 23
+        state.solver_adopt_rejected = 24
         out = _solver_window_stats(10.0)
         assert out["counters"] == {
             "successes": 5,
             "failures": 2,
+            "pool_timeouts": 19,
             "n2_unconfirmed": 1,
+            "n2_anchored_admitted": 20,
+            "n2_fit_position_published": 25,
             "solver_trimmed": 3,
             "stale_drops": 4,
             "resolve_skips": 12,
+            "tracks_stale_skipped": 13,
+            "epoch_align_skipped": 14,
+            "resolve_skips_dark": 9,
+            "resolve_refresh": 3,
+            "adopt_eligible": 21,
+            "adopt_widened": 22,
+            "adopt_nodes_added": 23,
+            "adopt_rejected": 24,
             "queue_drops": 6,
+            "node_frames_rate_limited": 13,
             "worker_errors": 0,
             "vel_untrusted_published": 11,
+            "n2_alt_inherited": 26,
+            "dark_follow_targets": 13,
+            "dark_follow_claims": 14,
+            "dark_follow_inputs": 15,
+            "dark_follow_published": 16,
+            "dark_follow_dropped": 17,
+            "dark_follow_n2_withheld": 18,
+            "dark_follow_n2_skipped": 19,
+            "dark_bottomup_shadowed": 18,
         }
         assert out["consensus"]["selected"] == 7
         assert out["consensus"]["filtered"] == 8
@@ -307,6 +423,10 @@ class TestKnownLaneAndClaimsPassthrough:
             "no_converge": 1,
             "published": 4,
             "publish_errors": 1,
+            "reanchored": 0,
+            # Windowed, and empty here — these are since-boot counters bumped
+            # directly, with no history records behind them.
+            "position_error_km": {"median": None, "p90": None, "n": 0, "window_minutes": 10.0},
         }
 
     def test_known_claims_reflects_the_claiming_counters(self):
@@ -327,6 +447,11 @@ class TestKnownLaneAndClaimsPassthrough:
             "visibility_rejects": 6,
             "world_rejects": 3,
             "errors": 1,
+            "hold_claims": 0,
+            "hold_expired": 0,
+            "hold_dropped_disagree": 0,
+            "holds": 0,
+            "follow_claims": 0,
         }
 
     def test_both_blocks_zero_on_a_fresh_process(self):
@@ -340,6 +465,11 @@ class TestKnownLaneAndClaimsPassthrough:
             "visibility_rejects": 0,
             "world_rejects": 0,
             "errors": 0,
+            "hold_claims": 0,
+            "hold_expired": 0,
+            "hold_dropped_disagree": 0,
+            "holds": 0,
+            "follow_claims": 0,
         }
 
     def test_lane_counters_absent_from_state_read_as_zero(self, monkeypatch):
@@ -352,15 +482,16 @@ class TestKnownLaneAndClaimsPassthrough:
 
 
 class TestFragmentation:
-    """Windowed, from published mlat_solve_history records — the acceptance
-    metric top-down claiming exists to move: distinct published keys."""
+    """Windowed, from published DARK records — the acceptance metric top-down
+    claiming exists to move: distinct published keys.  Keys are spelled
+    mn-dark-* because that prefix is what puts a record in this lane."""
 
     def setup_method(self):
         state._reset_for_tests()
 
     def test_distinct_keys_and_solves_per_key(self):
         # 5 distinct keys, solved 1, 1, 1, 2 and 3 times respectively.
-        for key, n in (("a", 1), ("b", 1), ("c", 1), ("d", 2), ("e", 3)):
+        for key, n in (("mn-dark-a", 1), ("mn-dark-b", 1), ("mn-dark-c", 1), ("mn-dark-d", 2), ("mn-dark-e", 3)):
             for _ in range(n):
                 state.mlat_solve_history.append(_rec("published", solve_key=key))
         out = _solver_window_stats(10.0)
@@ -374,16 +505,16 @@ class TestFragmentation:
         assert frag["solves_per_key"]["p90"] == 2
 
     def test_anchored_pct_reads_anchor_key_regardless_of_outcome_scope(self):
-        state.mlat_solve_history.append(_rec("published", solve_key="a", anchor_key="mn-dark-1"))
-        state.mlat_solve_history.append(_rec("published", solve_key="b"))
-        state.mlat_solve_history.append(_rec("published", solve_key="c"))
-        state.mlat_solve_history.append(_rec("published", solve_key="d"))
+        state.mlat_solve_history.append(_rec("published", solve_key="mn-dark-a", anchor_key="mn-dark-1"))
+        state.mlat_solve_history.append(_rec("published", solve_key="mn-dark-b"))
+        state.mlat_solve_history.append(_rec("published", solve_key="mn-dark-c"))
+        state.mlat_solve_history.append(_rec("published", solve_key="mn-dark-d"))
         out = _solver_window_stats(10.0)
         assert out["fragmentation"]["anchored_pct"] == 25.0
 
     def test_rejects_do_not_count_toward_fragmentation(self):
-        state.mlat_solve_history.append(_rec("rejected_beam", solve_key="a"))
-        state.mlat_solve_history.append(_rec("published", solve_key="b"))
+        state.mlat_solve_history.append(_rec("rejected_beam", solve_key="mn-dark-a"))
+        state.mlat_solve_history.append(_rec("published", solve_key="mn-dark-b"))
         out = _solver_window_stats(10.0)
         assert out["fragmentation"]["published"] == 1
         assert out["fragmentation"]["distinct_keys"] == 1
@@ -395,7 +526,61 @@ class TestFragmentation:
             "published": 0,
             "solves_per_key": {"median": None, "p90": None},
             "anchored_pct": 0.0,
+            "dark_keys_minted": 0,
+            "dark_keys_proximity": 0,
+            "dark_keys_tracks": 0,
+            "dark_keys_proximity_negdt": 0,
+            "mn_superseded": 0,
+            "mn_superseded_blocked": 0,
+            "mn_superseded_blocked_alt": 0,
         }
+
+    def test_dark_key_decision_counters_are_surfaced(self):
+        """Key births vs re-keys, from the state counters solver.py bumps in
+        the publish path.  Since boot, not windowed — the four keys above
+        count what SURVIVED the decisions inside the window, these count the
+        decisions themselves, and the panel needs both to tell a fragmenting
+        lane from a busy one."""
+        state.solver_key_minted_dark = 4
+        state.solver_key_proximity_dark = 11
+        state.solver_key_proximity_negdt = 3
+        state.solver_key_tracks = 7
+        out = _solver_window_stats(10.0)
+        assert out["fragmentation"]["dark_keys_minted"] == 4
+        assert out["fragmentation"]["dark_keys_proximity"] == 11
+        # Re-keys the node-track evidence decided rather than distance alone.
+        assert out["fragmentation"]["dark_keys_tracks"] == 7
+        # The out-of-order subset of those re-keys — every one of them a
+        # dark_keys_minted before the signed dt window.
+        assert out["fragmentation"]["dark_keys_proximity_negdt"] == 3
+
+    def test_supersession_counters_are_surfaced(self):
+        """Entries popped as the same aircraft against shared-id entries the
+        spatial/identical-inputs guard refused (solver.py's
+        _supersession_match).  They belong beside the key decisions: a wrong
+        pop deletes a live aircraft's key and its next solve reappears above
+        as another dark_keys_minted.  The _alt split says how many of the
+        refusals were altitude's doing — close enough to pop, kilometres
+        apart vertically, which is the neighbour-pop signature."""
+        state.mn_superseded = 3
+        state.mn_superseded_blocked = 29
+        state.mn_superseded_blocked_alt = 12
+        out = _solver_window_stats(10.0)
+        assert out["fragmentation"]["mn_superseded"] == 3
+        assert out["fragmentation"]["mn_superseded_blocked"] == 29
+        assert out["fragmentation"]["mn_superseded_blocked_alt"] == 12
+
+    def test_dark_key_decision_counters_reset_with_state(self):
+        state.solver_key_minted_dark = 4
+        state.solver_key_proximity_dark = 11
+        state.solver_key_proximity_negdt = 3
+        state.solver_key_tracks = 7
+        state._reset_for_tests()
+        out = _solver_window_stats(10.0)
+        assert out["fragmentation"]["dark_keys_minted"] == 0
+        assert out["fragmentation"]["dark_keys_proximity"] == 0
+        assert out["fragmentation"]["dark_keys_tracks"] == 0
+        assert out["fragmentation"]["dark_keys_proximity_negdt"] == 0
 
 
 class TestEmptyState:
@@ -409,7 +594,9 @@ class TestEmptyState:
         assert out["rejects"] == {"total": 0, "by_reason": {}}
         assert out["position_error_km"] == {"median": None, "p90": None, "n": 0}
         assert out["ghosts"]["live_tracks"] == 0
-        assert out["ghosts"]["precision_pct"] == 0.0
+        assert out["ghosts"]["precision_pct"] is None
+        assert out["lane_split"] == {"dark": 0, "adsb": 0, "known": 0, "dark_follow": 0}
+        assert out["window_effective_minutes"] == 0.0
 
 
 class TestEndpoint:
@@ -441,6 +628,13 @@ class TestEndpoint:
             "published",
             "solves_per_key",
             "anchored_pct",
+            "dark_keys_minted",
+            "dark_keys_proximity",
+            "dark_keys_tracks",
+            "dark_keys_proximity_negdt",
+            "mn_superseded",
+            "mn_superseded_blocked",
+            "mn_superseded_blocked_alt",
         }
         assert data["fov"].keys() == {
             "mode",
@@ -448,6 +642,24 @@ class TestEndpoint:
             "would_pass",
             "would_reject",
             "neg_events",
+        }
+
+    def test_display_filter_block_present(self):
+        """services/track_filter.py's chi-squared-gate outcomes ride on this
+        endpoint (they are module-level counters, not core.state ones, so this
+        is the only place they surface).  reanchors are identity breaks the
+        manoeuvre retry could not explain, manoeuvre_rescues the turns it
+        could, manoeuvre_active a live gauge over tracks."""
+        from services import track_filter
+
+        track_filter.reset()
+        resp = _client().get("/api/test/solver-stats")
+        data = resp.json()
+        assert data["display_filter"] == {
+            "reanchors": 0,
+            "manoeuvre_rescues": 0,
+            "manoeuvre_active": 0,
+            "tracks": 0,
         }
 
     def test_known_lane_and_known_claims_blocks_present(self):
@@ -461,6 +673,8 @@ class TestEndpoint:
             "no_converge",
             "published",
             "publish_errors",
+            "reanchored",
+            "position_error_km",
         }
         assert data["known_claims"].keys() == {
             "made",
@@ -469,6 +683,11 @@ class TestEndpoint:
             "visibility_rejects",
             "world_rejects",
             "errors",
+            "hold_claims",
+            "hold_expired",
+            "hold_dropped_disagree",
+            "holds",
+            "follow_claims",
         }
 
     def test_minutes_clamp_low(self):
@@ -478,3 +697,484 @@ class TestEndpoint:
     def test_minutes_clamp_high(self):
         resp = _client().get("/api/test/solver-stats?minutes=1000")
         assert resp.json()["window_minutes"] == 35.0
+
+
+class TestLaneSplit:
+    """The funnel is the DARK lane; every record is classified first.
+
+    Live before this split (test droplet, 10 min): ``attempts 4475,
+    published 80`` with ``rejects.by_reason {known_truth_match: 3296,
+    known_ghost: 914, displacement: 109, ...}``.  94% of the "attempts" were
+    known-lane records, the known lane's own SUCCESS label led the reject
+    table, and the dark lane's real 265 -> 80 could not be recovered from the
+    payload at all.
+    """
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_known_records_leave_the_funnel_and_land_in_lane_split(self):
+        _push(_rec("published", solve_key="mn-dark-1"))
+        _push(_rec("rejected_displacement"))
+        for _ in range(3):
+            _push(_rec("known_truth_match", known_lane=True, displacement_km=0.5))
+        _push(_rec("known_ghost", known_lane=True, displacement_km=8.0))
+        out = _solver_window_stats(10.0)
+        assert out["lane_split"] == {"dark": 2, "adsb": 0, "known": 4, "dark_follow": 0}
+        assert out["attempts"] == 2
+        assert out["published"]["total"] == 1
+        assert out["rejects"] == {"total": 1, "by_reason": {"displacement": 1}}
+        # The known lane's success label is no longer a reject reason.
+        assert "known_truth_match" not in out["rejects"]["by_reason"]
+        assert "known_ghost" not in out["rejects"]["by_reason"]
+
+    def test_follow_records_leave_the_dark_funnel(self):
+        """A dark-follow solve (services/dark_follow.py) is keyed mn-dark-* by
+        design — it is the same aircraft, reached top-down — so only the
+        ``lane`` stamp keeps it out of a bottom-up funnel it is not part of."""
+        _push(_rec("published", solve_key="mn-dark-1"))
+        _push(_rec("published", solve_key="mn-dark-2", lane="dark_follow"))
+        _push(_rec("rejected_displacement", lane="dark_follow"))
+        out = _solver_window_stats(10.0)
+        assert out["lane_split"] == {"dark": 1, "adsb": 0, "known": 0, "dark_follow": 2}
+        assert out["attempts"] == 1
+        assert out["rejects"]["total"] == 0
+
+    def test_adsb_lane_records_are_counted_but_not_funnelled(self):
+        _push(_rec("published", solve_key="mn-adsb-a1b2c3"))
+        _push(_rec("rejected_displacement", adsb_hex="a1b2c3"))
+        _push(_rec("published", solve_key="mn-dark-1"))
+        out = _solver_window_stats(10.0)
+        assert out["lane_split"] == {"dark": 1, "adsb": 2, "known": 0, "dark_follow": 0}
+        assert out["attempts"] == 1
+        assert out["rejects"]["total"] == 0
+
+    def test_lane_split_sums_to_the_whole_window(self):
+        _push(_rec("published", solve_key="mn-dark-1"))
+        _push(_rec("published", solve_key="mn-adsb-a1b2c3"))
+        _push(_rec("known_truth_match", known_lane=True))
+        _push(_rec("published", age_s=60 * 60))  # outside the window
+        out = _solver_window_stats(10.0)
+        assert sum(out["lane_split"].values()) == 3
+
+    def test_position_error_and_fragmentation_are_dark_only(self):
+        _push(_rec("published", solve_key="mn-dark-1", gt_error_km=1.0))
+        _push(_rec("published", solve_key="mn-adsb-a1b2c3", gt_error_km=9.0))
+        _push(_rec("known_truth_match", known_lane=True, solve_key="mn-adsb-b", gt_error_km=0.1))
+        out = _solver_window_stats(10.0)
+        assert out["position_error_km"] == {"median": 1.0, "p90": 1.0, "n": 1}
+        assert out["fragmentation"]["published"] == 1
+        assert out["fragmentation"]["distinct_keys"] == 1
+
+    def test_known_lane_window_position_error(self):
+        for d in (0.2, 0.5, 1.0, 4.0, 9.0):
+            _push(_rec("known_truth_match", known_lane=True, displacement_km=d))
+        pe = _solver_window_stats(10.0)["known_lane"]["position_error_km"]
+        # Same percentile idiom as the dark block: sorted[n//2], sorted[int(.9*(n-1))].
+        assert pe == {"median": 1.0, "p90": 4.0, "n": 5, "window_minutes": 10.0}
+
+
+class TestRecordLane:
+    """The key is the authority when there is one; a reject has none yet, so
+    it falls back to the predicate that chose its displacement cap."""
+
+    def test_known_flag_wins_over_everything(self):
+        assert _record_lane({"known_lane": True, "solve_key": "mn-dark-1"}) == "known"
+
+    def test_key_prefix_decides_a_published_record(self):
+        assert _record_lane({"solve_key": "mn-dark-1"}) == "dark"
+        assert _record_lane({"solve_key": "mn-adsb-a1b2c3"}) == "adsb"
+
+    def test_keyless_reject_falls_back_to_the_input_identity(self):
+        assert _record_lane({"solve_key": None, "adsb_hex": "a1b2c3"}) == "adsb"
+        assert _record_lane({"solve_key": None, "adsb_hex": None}) == "dark"
+
+    def test_non_transponder_id_is_dark(self):
+        # A simulator object id is not a transponder identity — the same rule
+        # multinode_key_decision and the dark displacement cap use.
+        assert _record_lane({"solve_key": None, "adsb_hex": "obj-01373"}) == "dark"
+
+
+class TestWindowEffectiveMinutes:
+    """Truncation has to be legible.  The shared deque held ~18 min at the
+    live record rate while both endpoints advertise a 35 min window, so
+    ``?minutes=35`` answered out of 18 min of records with nothing in the
+    payload saying so."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_reports_the_age_of_the_oldest_record_held(self):
+        _push(_rec("published", age_s=8 * 60))
+        _push(_rec("published", age_s=1))
+        out = _solver_window_stats(35.0)
+        assert out["window_minutes"] == 35.0
+        assert 7.9 <= out["window_effective_minutes"] <= 8.1
+
+    def test_never_exceeds_the_requested_window(self):
+        _push(_rec("published", age_s=30 * 60))
+        out = _solver_window_stats(10.0)
+        assert out["window_effective_minutes"] == 10.0
+
+    def test_counts_the_known_deque_too(self):
+        # Oldest record overall is the known one; the merged view is what
+        # both endpoints answer from.
+        _push(_rec("known_truth_match", known_lane=True, age_s=12 * 60))
+        _push(_rec("published", age_s=1))
+        assert _solver_window_stats(35.0)["window_effective_minutes"] >= 11.9
+
+
+class _MutatingRec(dict):
+    """A track record that inserts a new track the first time it is read.
+
+    Stands in for a solver worker publishing mid-scan.  Only a snapshot taken
+    before the loop survives this; iterating state.multinode_tracks live
+    raises "dictionary changed size during iteration", which is exactly how
+    the endpoint 500'd.
+    """
+
+    def __init__(self, target, *a, **kw):
+        super().__init__(*a, **kw)
+        self._target = target
+        self._fired = False
+
+    def get(self, *a, **kw):
+        if not self._fired:
+            self._fired = True
+            self._target[f"mn-dark-inserted-{len(self._target)}"] = {"lat": 1.0, "lon": 1.0}
+        return super().get(*a, **kw)
+
+
+class TestLiveStateSnapshots:
+    """Every dict _solver_window_stats scans is written by another thread
+    while the request runs, so each is snapshotted before iteration."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_multinode_tracks_iterated_under_the_solver_lock(self, monkeypatch):
+        """The snapshot is taken while solver._MN_TRACKS_LOCK is held — the
+        same lock solver._process_solver_item and known_lane._publish write
+        the dict under."""
+        lock = threading.Lock()
+        monkeypatch.setattr(solver_mod, "_MN_TRACKS_LOCK", lock)
+        seen = []
+
+        class _Tracks(dict):
+            def items(self):
+                seen.append(lock.locked())
+                return super().items()
+
+        monkeypatch.setattr(state, "multinode_tracks", _Tracks({"mn-dark-1": {"lat": 35.0, "lon": -82.0}}))
+        out = _solver_window_stats(10.0)
+        assert out["ghosts"]["dark_tracks"] == 1
+        assert seen and all(seen), "multinode_tracks was iterated without _MN_TRACKS_LOCK"
+
+    def test_concurrent_track_insert_does_not_raise(self):
+        tracks = state.multinode_tracks
+        tracks["mn-dark-1"] = _MutatingRec(tracks, {"lat": 35.0, "lon": -82.0})
+        tracks["mn-dark-2"] = {"lat": 35.5, "lon": -82.0}
+        # Pre-fix this raised RuntimeError: dictionary changed size during
+        # iteration, and the endpoint returned a 500.
+        out = _solver_window_stats(10.0)
+        assert out["ghosts"]["live_tracks"] == 2
+
+    def test_concurrent_ground_truth_trail_insert_does_not_raise(self):
+        now = time.time()
+
+        class _MutatingTrail(deque):
+            def __iter__(self):
+                state.ground_truth_trails.setdefault("gt-late", deque())
+                return super().__iter__()
+
+        state.multinode_tracks["mn-dark-1"] = {"lat": 35.0, "lon": -82.0}
+        state.ground_truth_trails["gt1"] = _MutatingTrail([[35.009, -82.0, 9000.0, now]])
+        assert _solver_window_stats(10.0)["ghosts"]["gt_matched"] == 1
+
+    def test_concurrent_adsb_insert_does_not_raise(self):
+        now_ms = int(time.time() * 1000)
+
+        class _MutatingFix(dict):
+            def get(self, *a, **kw):
+                state.adsb_aircraft.setdefault("late1", {"lat": 0.0, "lon": 0.0, "last_seen_ms": now_ms})
+                return super().get(*a, **kw)
+
+        state.multinode_tracks["mn-dark-1"] = {"lat": 35.0, "lon": -82.0}
+        state.adsb_aircraft["real1"] = _MutatingFix({"lat": 35.009, "lon": -82.0, "last_seen_ms": now_ms})
+        assert _solver_window_stats(10.0)["ghosts"]["ghost_tracks"] == 0
+
+
+def _skip_rec(lane="dark", age_s=0.0, track_ids=("a1",), n_nodes=3):
+    return {
+        "ts_ms": int((time.time() - age_s) * 1000),
+        "lane": lane,
+        "track_ids": list(track_ids),
+        "n_nodes": n_nodes,
+        "blocking": [{"track_id": track_ids[0], "held_ts": time.time() - age_s, "held_n": n_nodes}],
+        "guess_lat": None,
+        "guess_lon": None,
+    }
+
+
+class TestResolveSkipBlock:
+    """Resolve-slot skips are windowed from their own deque, not from the
+    since-boot counter, so they can be read against the attempts in the same
+    window — the ratio the claim-on-publish fix is judged on."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_totals_split_by_lane(self):
+        for _ in range(3):
+            state.solver_resolve_skips_recent.append(_skip_rec("dark"))
+        state.solver_resolve_skips_recent.append(_skip_rec("adsb"))
+        out = _solver_window_stats(10.0)["resolve_skips"]
+        assert out["total"] == 4
+        assert out["dark"] == 3
+
+    def test_window_excludes_old_skips(self):
+        state.solver_resolve_skips_recent.append(_skip_rec(age_s=20 * 60))
+        state.solver_resolve_skips_recent.append(_skip_rec(age_s=1))
+        assert _solver_window_stats(10.0)["resolve_skips"]["total"] == 1
+
+    def test_attempts_ratio_is_skips_over_dark_attempts(self):
+        for _ in range(4):
+            state.solver_resolve_skips_recent.append(_skip_rec())
+        state.mlat_solve_history.append(_rec("published"))
+        state.mlat_solve_history.append(_rec("rejected_beam"))
+        out = _solver_window_stats(10.0)
+        assert out["attempts"] == 2
+        assert out["resolve_skips"]["attempts_ratio"] == 2.0
+
+    def test_attempts_ratio_is_none_without_attempts(self):
+        state.solver_resolve_skips_recent.append(_skip_rec())
+        assert _solver_window_stats(10.0)["resolve_skips"]["attempts_ratio"] is None
+
+    def test_window_effective_minutes_exposes_a_truncated_deque(self):
+        """The deque is 500 entries against ~50 skips/min live, so a long
+        window IS truncated here even when the solve stores cover it."""
+        state.solver_resolve_skips_recent.append(_skip_rec(age_s=6 * 60))
+        out = _solver_window_stats(30.0)["resolve_skips"]
+        assert 5.9 <= out["window_effective_minutes"] <= 6.1
+
+    def test_a_skip_is_not_an_attempt_or_a_reject(self):
+        """Skips must not leak into the funnel — they never reached a solve."""
+        for _ in range(5):
+            state.solver_resolve_skips_recent.append(_skip_rec())
+        out = _solver_window_stats(10.0)
+        assert out["attempts"] == 0
+        assert out["rejects"]["total"] == 0
+
+
+def _gt_rec(foreign=(), **kw):
+    """A dark record carrying the contamination stamp."""
+    rec = _rec("published", **kw)
+    rec["gt_hex"] = "abc123"
+    rec["foreign_node_ids"] = list(foreign)
+    rec["contaminated"] = bool(foreign)
+    return rec
+
+
+class TestContaminationBlock:
+    """Live cluster contamination: of the dark records that matched ground
+    truth, how many carried a node that could not see the aircraft."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_pct_and_mean_over_judged_records(self):
+        state.mlat_solve_history.append(_gt_rec(foreign=["n1"]))
+        state.mlat_solve_history.append(_gt_rec(foreign=["n1", "n2"]))
+        state.mlat_solve_history.append(_gt_rec(foreign=[]))
+        state.mlat_solve_history.append(_gt_rec(foreign=[]))
+        out = _solver_window_stats(10.0)["contamination"]
+        assert out["records_with_gt"] == 4
+        assert out["contaminated"] == 2
+        assert out["pct"] == 50.0
+        assert out["foreign_nodes_per_record"] == 0.75
+
+    def test_unstamped_records_are_out_of_the_denominator(self):
+        """No GT match, or no judgeable node geometry, is an abstention — not
+        a clean record."""
+        state.mlat_solve_history.append(_gt_rec(foreign=["n1"]))
+        state.mlat_solve_history.append(_rec("published"))
+        out = _solver_window_stats(10.0)["contamination"]
+        assert out["records_with_gt"] == 1
+        assert out["pct"] == 100.0
+
+    def test_empty_window_abstains_rather_than_reporting_zero(self):
+        out = _solver_window_stats(10.0)["contamination"]
+        assert out == {
+            "records_with_gt": 0,
+            "contaminated": 0,
+            "pct": None,
+            "foreign_nodes_per_record": None,
+        }
+
+    def test_known_lane_records_are_not_counted(self):
+        """Dark lane only, like every other block in the funnel."""
+        rec = _gt_rec(foreign=["n1"])
+        rec["known_lane"] = True
+        state.mlat_solve_history_known.append(rec)
+        assert _solver_window_stats(10.0)["contamination"]["records_with_gt"] == 0
+
+
+class TestByNNodes:
+    """The funnel re-split by how many nodes each attempt used — the question
+    "what fraction of 3-node candidates actually publish?", which before this
+    block needed an offline pass over a history dump."""
+
+
+class TestNodePool:
+    """``pool`` answers "could the round have solved this aircraft wider?".
+
+    pool_n_nodes is stamped on the solver input by the association stage — the
+    node set of the shared-track component the input was clustered out of — so
+    a published record whose n_nodes is below it is a solve the round had the
+    measurements for and did not make.  This is the counter that separates "the
+    third node never paired" from "it paired and the clustering did not take
+    it", which is the 3-node dark case we could not previously diagnose.
+    """
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_published_and_rejected_land_in_their_own_buckets(self):
+        state.mlat_solve_history.append(_rec("published", n_nodes=3, gt_error_km=0.4))
+        state.mlat_solve_history.append(_rec("rejected_beam", n_nodes=2))
+        out = _solver_window_stats(10.0)["by_n_nodes"]
+        assert out["3"] == {
+            "attempts": 1,
+            "published": 1,
+            "publish_rate": 1.0,
+            "rejects": {},
+            "gt_err_median_km": 0.4,
+        }
+        assert out["2"] == {
+            "attempts": 1,
+            "published": 0,
+            "publish_rate": 0.0,
+            # Same strip as the by_reason table, so the two can be added up.
+            "rejects": {"beam": 1},
+            "gt_err_median_km": None,
+        }
+
+    def test_buckets_sum_back_to_the_funnel(self):
+        for n in (2, 3, 4, 5, 9):
+            state.mlat_solve_history.append(_rec("published", n_nodes=n))
+            state.mlat_solve_history.append(_rec("rejected_rms", n_nodes=n))
+        out = _solver_window_stats(10.0)
+        by_n = out["by_n_nodes"]
+        # 5 and 9 share the 5+ bucket; everything else is its own.
+        assert sorted(by_n) == ["2", "3", "4", "5+"]
+        assert by_n["5+"]["attempts"] == 4
+        assert sum(b["attempts"] for b in by_n.values()) == out["attempts"]
+        assert sum(b["published"] for b in by_n.values()) == out["published"]["total"]
+
+    def test_a_record_with_no_node_count_is_kept_not_dropped(self):
+        """Some reject paths write no n_nodes; they still have to appear, or
+        the buckets stop summing to attempts."""
+        state.mlat_solve_history.append(_rec("rejected_geometry", n_nodes=None))
+        out = _solver_window_stats(10.0)
+        assert out["by_n_nodes"]["<2"]["attempts"] == 1
+        assert sum(b["attempts"] for b in out["by_n_nodes"].values()) == out["attempts"]
+
+    def test_gt_error_beyond_the_gate_is_excluded_like_the_top_level_median(self):
+        state.mlat_solve_history.append(_rec("published", n_nodes=4, gt_error_km=_ERR_GT_GATE_KM + 1))
+        out = _solver_window_stats(10.0)["by_n_nodes"]
+        assert out["4"]["published"] == 1
+        assert out["4"]["gt_err_median_km"] is None
+
+    def test_only_the_top_four_reject_reasons_are_listed(self):
+        for i in range(6):
+            for _ in range(6 - i):
+                state.mlat_solve_history.append(_rec(f"rejected_r{i}", n_nodes=3))
+        rejects = _solver_window_stats(10.0)["by_n_nodes"]["3"]["rejects"]
+        assert list(rejects) == ["r0", "r1", "r2", "r3"]
+        assert rejects["r0"] == 6
+
+    def test_the_known_lane_gets_its_own_table(self):
+        state.mlat_solve_history_known.append(_rec("published", n_nodes=4, known_lane=True))
+        out = _solver_window_stats(10.0)
+        assert out["by_n_nodes"] == {}
+        assert out["by_n_nodes_known"]["4"]["published"] == 1
+
+
+class TestDarkFollowBlock:
+    """The follow lane's funnel and, beside it, why the keys it did not follow
+    were refused."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_ineligibility_reasons_are_reported_per_reason(self):
+        state.bump_counter("dark_follow_inelig_vel_sigma", 7)
+        state.bump_counter("dark_follow_inelig_min_nodes", 3)
+        state.dark_follow_inputs = 5
+        state.dark_follow_published = 4
+        out = _solver_window_stats(10.0)["dark_follow"]
+        assert out["inputs"] == 5
+        assert out["published"] == 4
+        assert out["ineligible"] == {
+            "cooldown": 0,
+            "no_pos": 0,
+            "age": 0,
+            "min_solves": 0,
+            "min_nodes": 3,
+            "no_filter": 0,
+            "vel_sigma": 7,
+        }
+
+    def test_the_two_n2_sparings_are_reported_beside_the_funnel(self):
+        """Being withheld for lack of a third node is not evidence against the
+        prediction, so neither sparing shows up as a drop — they are only
+        visible as their own keys."""
+        state.bump_counter("dark_follow_n2_withheld", 11)
+        state.bump_counter("dark_follow_n2_skipped", 6)
+        out = _solver_window_stats(10.0)["dark_follow"]
+        assert out["n2_withheld"] == 11
+        assert out["n2_skipped"] == 6
+        assert out["dropped"] == 0
+
+    def test_an_empty_lane_reports_zeroes_not_a_missing_block(self):
+        out = _solver_window_stats(10.0)["dark_follow"]
+        assert out["targets_now"] == 0
+        assert set(out["ineligible"].values()) == {0}
+
+    def test_counts_published_solves_narrower_than_their_pool(self):
+        _push(_rec("published", n_nodes=2, pool_n_nodes=3))
+        _push(_rec("published", n_nodes=3, pool_n_nodes=3))
+        out = _solver_window_stats(10.0)
+        assert out["pool"] == {
+            "records_with_pool": 2,
+            "narrower_than_pool": 1,
+            "pct": 50.0,
+            "mean_shortfall_nodes": 0.5,
+        }
+
+    def test_unstamped_and_unpublished_records_stay_out_of_the_denominator(self):
+        """Only DARK PUBLISHED records carrying the stamp can answer this.
+
+        An anchored or known-lane input never went through the clustering that
+        computes the pool, and a reject has no solve to be narrow; counting
+        either as a zero shortfall would dilute the number towards "fine".
+        """
+        _push(_rec("published", n_nodes=2, pool_n_nodes=3))
+        _push(_rec("published", n_nodes=2))  # dark, but no stamp
+        _push(_rec("rejected_beam", n_nodes=2, pool_n_nodes=4))
+        _push(_rec("published", n_nodes=2, pool_n_nodes=4, known_lane=True))
+        out = _solver_window_stats(10.0)
+        assert out["pool"]["records_with_pool"] == 1
+        assert out["pool"]["narrower_than_pool"] == 1
+        assert out["pool"]["pct"] == 100.0
+
+    def test_no_stamped_records_reports_null_not_zero(self):
+        """Nothing measured is not the same answer as nothing narrow."""
+        _push(_rec("published", n_nodes=2))
+        out = _solver_window_stats(10.0)
+        assert out["pool"] == {
+            "records_with_pool": 0,
+            "narrower_than_pool": 0,
+            "pct": None,
+            "mean_shortfall_nodes": None,
+        }

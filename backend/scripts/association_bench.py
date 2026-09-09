@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import itertools
 import math
 import os
 import statistics
@@ -69,6 +70,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # superseded detection path that --mode detection measures as the baseline, so
 # constructing it unconditionally leaves --mode track unaffected.
 import retina_analytics.association as _assoc_module  # noqa: E402
+from retina_analytics.association import predict_observation  # noqa: E402
 from retina_analytics.detection_association import DetectionAssociator  # noqa: E402
 from retina_analytics.manager import NodeAnalyticsManager  # noqa: E402
 from retina_geolocator.consensus import solve_consensus  # noqa: E402
@@ -94,10 +96,12 @@ from services.geo import (
     node_beam_params,  # noqa: E402
 )
 from services.geo import haversine_km as _haversine_km  # noqa: E402
+from services.node_config import position_status  # noqa: E402
 from services.tasks.solver import (  # noqa: E402
     _ewma_smooth_track,
     claim_decision,
     fov_gate_verdict,
+    merge_recent_track_ids,
     multinode_key_decision,
     resolve_n2_chi2,
 )
@@ -248,6 +252,133 @@ def _frame_to_detections(frame: dict) -> list[dict]:
     return dets
 
 
+# ── Contamination scoring (truth side-channel) ───────────────────────────
+# How far a detection may sit from an aircraft's noiseless (delay, doppler)
+# and still be attributed to it.  The simulator's own measurement noise is
+# gauss(0, 0.1-0.2 us) in delay and gauss(0, 2-4 Hz) in Doppler
+# (world.generate_detections_for_node), so these are ~5 sigma: wide enough
+# that a real echo is never mistaken for clutter, tight enough that clutter
+# — uniform over tens of us — almost never lands on an aircraft.
+_TRUTH_DELAY_GATE_US = 1.0
+_TRUTH_DOPPLER_GATE_HZ = 25.0
+# Sentinel for "this measurement matched two different aircraft equally
+# well".  Neither foreign nor own — excluded from the numerator so an
+# ambiguity in the scorer is never reported as a contamination.
+_TRUTH_AMBIGUOUS = "?ambiguous"
+
+
+def _index_detection_truth(det_truth: dict, geo, node_id: str, frame: dict, aircraft: list) -> None:
+    """Record which aircraft produced each detection in one node's frame.
+
+    Truth side-channel, for the CONTAMINATION metric only: it is built from
+    the frame BEFORE _strip_adsb and never reaches association, so the blind
+    discipline is intact.  It cannot be read off the frame's own ``adsb``
+    list either — the simulator appends None there for every aircraft with
+    has_adsb False, and dark aircraft are exactly the population this metric
+    exists to score.  So each detection is instead matched back to the
+    aircraft whose noiseless observation it is nearest.
+
+    Keyed on the (delay, doppler) floats themselves because that is the only
+    handle the metric gets downstream: a solver input's measurement carries
+    its track's latest delay/doppler verbatim (history[-1] -> the detection
+    dict -> here), and the simulator rounds both to 2 dp, so the equality is
+    exact rather than approximate.
+    """
+    delays = frame.get("delay") or []
+    if not delays:
+        return
+    dopplers = frame.get("doppler") or []
+    preds = []
+    for ac in aircraft:
+        d_us, f_hz = predict_observation(
+            geo,
+            ac.lat,
+            ac.lon,
+            ac.alt_km,
+            ac.vel_east * 1000.0,
+            ac.vel_north * 1000.0,
+            ac.vel_up * 1000.0,
+        )
+        preds.append((d_us, f_hz, ac.object_id))
+    for d, f in zip(delays, dopplers):
+        best = best2 = None
+        for d_us, f_hz, oid in preds:
+            dd, df = abs(d - d_us), abs(f - f_hz)
+            if dd > _TRUTH_DELAY_GATE_US or df > _TRUTH_DOPPLER_GATE_HZ:
+                continue
+            # Normalised so the two axes are comparable at their own gates.
+            cost = (dd / _TRUTH_DELAY_GATE_US) ** 2 + (df / _TRUTH_DOPPLER_GATE_HZ) ** 2
+            if best is None or cost < best[0]:
+                best, best2 = (cost, oid), best
+            elif best2 is None or cost < best2[0]:
+                best2 = (cost, oid)
+        if best is None:
+            continue  # clutter: left absent, which the scorer reads as foreign
+        oid = best[1]
+        if best2 is not None and best2[0] < 4.0 * best[0]:
+            oid = _TRUTH_AMBIGUOUS
+        key = (node_id, float(d), float(f))
+        prev = det_truth.get(key)
+        # The same (node, delay, doppler) recurring for a different aircraft
+        # later in the run would silently relabel an earlier measurement, so
+        # a collision demotes the key rather than overwriting it.
+        det_truth[key] = oid if (prev is None or prev == oid) else _TRUTH_AMBIGUOUS
+
+
+def _score_contamination(res: Result, s_in: dict, det_truth: dict, truth: list) -> int | None:
+    """Count the nodes in one solver input that are not looking at its aircraft.
+
+    The input's own aircraft is the plurality of its measurements' true
+    aircraft — the honest reading of "what is this candidate mostly about",
+    and the one that does not assume the (possibly contaminated) initial
+    guess is anywhere near a target.  Ties are broken by the nearest ground
+    truth to the initial guess, which is the criterion the ghost/matched
+    split already uses.
+
+    A node is foreign when its measurement belongs to a different aircraft,
+    or to no aircraft at all (clutter that survived the tracker's M-of-N and
+    the delay grid).  Ambiguous attributions are counted in neither.
+
+    Returns the foreign-node count, so the caller can score the same input
+    again at the publish point (see the PUBLISHED counters on Result: the
+    candidate-level rate has a denominator the association layer itself moves,
+    and a change that emits more, cleaner candidates reads as a regression on
+    it while being an improvement on what actually reaches the map).  None
+    when nothing could be attributed at all.
+    """
+    oids = [
+        det_truth.get((m["node_id"], float(m["delay_us"]), float(m["doppler_hz"])))
+        for m in s_in.get("measurements") or []
+    ]
+    if not oids:
+        return None
+    counts = Counter(o for o in oids if o is not None and o != _TRUTH_AMBIGUOUS)
+    if not counts:
+        return None
+    top_n = max(counts.values())
+    contenders = sorted(o for o, c in counts.items() if c == top_n)
+    if len(contenders) > 1:
+        guess = s_in.get("initial_guess") or {}
+        contenders.sort(
+            key=lambda o: min(
+                (
+                    _haversine_km(guess.get("lat", 0.0), guess.get("lon", 0.0), a, b)
+                    for a, b, oid, _ in truth
+                    if oid == o
+                ),
+                default=float("inf"),
+            )
+        )
+    own = contenders[0]
+    foreign = sum(1 for o in oids if o != own and o != _TRUTH_AMBIGUOUS)
+    res.inputs_scored += 1
+    res.input_nodes += len(oids)
+    res.foreign_nodes += foreign
+    if foreign:
+        res.inputs_contaminated += 1
+    return foreign
+
+
 def _strip_adsb(frame: dict) -> dict:
     """Return the frame as a real receiver would see it.
 
@@ -292,6 +423,13 @@ def _beam_gate_ok(out: dict, s_in: dict, node_cfgs: dict, fov_provider) -> bool:
         cfg = node_cfgs.get(nid)
         if not cfg:
             continue
+        # The same placement guard solver.py applies before its range/bearing
+        # work: node_beam_params stopped coercing a missing coordinate to 0.0,
+        # so an unplaced node reaches the haversine below as None.  A snapshot
+        # read from a live server carries only placed nodes, but this leg is
+        # also pointed at recorded ones.
+        if position_status(cfg) not in ("positioned", "missing_tx"):
+            continue
         p = node_beam_params(cfg)
         rx_lat, rx_lon = p["rx_lat"], p["rx_lon"]
         range_km = _haversine_km(rx_lat, rx_lon, out["lat"], out["lon"])
@@ -329,6 +467,45 @@ def _beam_gate_ok(out: dict, s_in: dict, node_cfgs: dict, fov_provider) -> bool:
         if node_fail:
             return False
     return True
+
+
+def _n2_fit_positions(s_in: dict, out: dict, node_cfgs: dict) -> dict:
+    """The two fit positions a published n=2 solve could have been given.
+
+    Runs the SHIPPED swap (solver._apply_n2_fit_position) twice over a throwaway
+    copy of the result, once with the altitude pin off and once on, so the bench
+    measures the code that ships rather than a reimplementation of it — the same
+    reason DeferredN2Gate calls the worker's own chi2 resolver.  The two fits
+    cache under different keys on s_in, so neither run disturbs the other or the
+    chi2 the confirmation gate already decided on.
+
+    Returns {"free": {...} | None, "pinned": {...} | None}, each a copy of `out`
+    with lat/lon/alt_m as that variant would have published them.
+    """
+    from services.tasks import solver as _solver_mod
+
+    variants: dict = {}
+    _saved_publish = _solver_mod._N2_PUBLISH_FIT_POSITION
+    _saved_pin = _solver_mod._N2_FIT_FIX_ALTITUDE
+    _solver_mod._N2_PUBLISH_FIT_POSITION = True
+    try:
+        for name, pin in (("free", False), ("pinned", True)):
+            _solver_mod._N2_FIT_FIX_ALTITUDE = pin
+            probe = dict(out)
+            _solver_mod._apply_n2_fit_position(s_in, probe, node_cfgs)
+            # The swap declines on an input with no epochs to refit from, and
+            # on a fit that did not converge — those are not a position.
+            variants[name] = probe if probe.get("pos_source") == "cv_fit" else None
+    finally:
+        _solver_mod._N2_PUBLISH_FIT_POSITION = _saved_publish
+        _solver_mod._N2_FIT_FIX_ALTITUDE = _saved_pin
+    # The free variant deliberately does NOT publish the fit's altitude (that
+    # is the fix under test), so read the altitude off the fit itself: the
+    # question this block answers is what the free fit's z was worth.
+    _free_fit = s_in.get("_cv_fit")
+    if variants["free"] is not None and _free_fit is not None and _free_fit.get("alt_m") is not None:
+        variants["free"] = dict(variants["free"], alt_m=float(_free_fit["alt_m"]))
+    return variants
 
 
 class DeferredN2Gate:
@@ -482,6 +659,21 @@ class Result:
     gate_accepted: int = 0
     gate_unfitted: int = 0
     gate_superseded: int = 0
+    # Position clusters that held two different tracks of one node and were
+    # split into one solver input each, straight off the associator.
+    cluster_splits: int = 0
+    # Three-way position comparison for every PUBLISHED n=2 solve that bound to
+    # a truth aircraft: the single-epoch LM solve that is published today, the
+    # free-altitude constant-velocity fit, and the same fit with altitude
+    # pinned to the LM solve's own initial guess.  Kilometres from truth at the
+    # solve epoch, plus |altitude - truth| for each, because the pin exists
+    # precisely because the free fit's altitude is not an estimate of anything.
+    n2_pos_solve_km: list = None
+    n2_pos_fit_free_km: list = None
+    n2_pos_fit_pinned_km: list = None
+    n2_alt_solve_km: list = None
+    n2_alt_fit_free_km: list = None
+    n2_alt_fit_pinned_km: list = None
     # Deferred mode only: what the *solver-side* n=2 gate did.  In production the
     # associator emits unscored pairings and this gate is the one that runs, so
     # without these the shipped configuration's selection is invisible.
@@ -519,6 +711,16 @@ class Result:
     # honored or falls through.
     anchored_published: int = 0
     anchor_fallbacks: int = 0
+    # The keying verdict itself, histogrammed (multinode_key_decision's `how`
+    # for dark solves): minted is a key birth, proximity a distance-only
+    # re-key, tracks a re-key the shared node-track evidence decided
+    # (solver.TRACK_LINK_AGE_S), shadowed a bottom-up solve refused in favour
+    # of a followed key.  minted is the fragmentation number the continuity
+    # work moves; the other three are where the mints went.
+    key_minted: int = 0
+    key_proximity: int = 0
+    key_tracks: int = 0
+    key_shadowed: int = 0
     # Distinct state.multinode_tracks-equivalent keys minted over the whole
     # run (bench_mn) — the acceptance metric claiming exists to move:
     # distinct published keys should drop toward O(targets).  keys_real/
@@ -530,6 +732,30 @@ class Result:
     distinct_keys: int = 0
     keys_real: int = 0
     keys_ghost: int = 0
+
+    # ── Candidate contamination (--mode track) ────────────────────────────
+    # Scored on every solver input association emits, BEFORE the solve and
+    # before every downstream gate: the question is what association handed
+    # the solver, not what survived it.  A contaminated input is one whose
+    # measurements do not all belong to the same aircraft — the failure the
+    # cluster-merge rework targets, and the one the ghost rate cannot see
+    # (a two-aircraft merge usually still solves within MATCH_KM of one of
+    # them, so it counts as matched while carrying 4-5 km of position
+    # error).  See _score_contamination.
+    inputs_scored: int = 0
+    inputs_contaminated: int = 0
+    foreign_nodes: int = 0
+    input_nodes: int = 0
+    # The same score restricted to inputs that cleared every gate and bound
+    # to a real aircraft — what actually reached the map.  Reported next to
+    # the candidate rate because the two answer different questions: the
+    # candidate rate's denominator is the number of candidates association
+    # chooses to emit, so splitting one contaminated cluster into several
+    # clean ones plus the false pairing it was hiding *raises* it while
+    # lowering this one.
+    published_inputs: int = 0
+    published_contaminated: int = 0
+    published_foreign_nodes: int = 0
 
     # Stone-Soup GOSPA/SIAP scalars for this one run (--ss-metrics), or None
     # when it was off, stonesoup wasn't available, or the recorder had
@@ -562,6 +788,12 @@ class Result:
         self.speed_err_by_n = defaultdict(list)
         self.dopp_rms_by_n = defaultdict(list)
         self.claim_chi2_drift = []
+        self.n2_pos_solve_km = []
+        self.n2_pos_fit_free_km = []
+        self.n2_pos_fit_pinned_km = []
+        self.n2_alt_solve_km = []
+        self.n2_alt_fit_free_km = []
+        self.n2_alt_fit_pinned_km = []
         self.cluster_sizes = Counter()
         self.track_n = defaultdict(Counter)
         self.solve_ms = []
@@ -631,9 +863,21 @@ class Result:
         "anchored_inputs",
         "anchored_published",
         "anchor_fallbacks",
+        "key_minted",
+        "key_proximity",
+        "key_tracks",
+        "key_shadowed",
         "distinct_keys",
         "keys_real",
         "keys_ghost",
+        "inputs_scored",
+        "inputs_contaminated",
+        "foreign_nodes",
+        "input_nodes",
+        "published_inputs",
+        "published_contaminated",
+        "published_foreign_nodes",
+        "cluster_splits",
     )
     _EXTEND_FIELDS = (
         "errors_km",
@@ -642,6 +886,12 @@ class Result:
         "speed_err_ms",
         "claim_chi2_drift",
         "solve_ms",
+        "n2_pos_solve_km",
+        "n2_pos_fit_free_km",
+        "n2_pos_fit_pinned_km",
+        "n2_alt_solve_km",
+        "n2_alt_fit_free_km",
+        "n2_alt_fit_pinned_km",
     )
     _COUNTER_FIELDS = ("n_nodes_matched", "n_nodes_ghost", "cluster_sizes")
 
@@ -684,6 +934,22 @@ class Result:
     @property
     def ghost_pct(self):
         return 100.0 * self.ghosts / self.total if self.total else 0.0
+
+    @property
+    def contaminated_inputs_pct(self):
+        return 100.0 * self.inputs_contaminated / self.inputs_scored if self.inputs_scored else 0.0
+
+    @property
+    def foreign_nodes_per_input(self):
+        return self.foreign_nodes / self.inputs_scored if self.inputs_scored else 0.0
+
+    @property
+    def published_contaminated_pct(self):
+        return 100.0 * self.published_contaminated / self.published_inputs if self.published_inputs else 0.0
+
+    @property
+    def published_foreign_per_solve(self):
+        return self.published_foreign_nodes / self.published_inputs if self.published_inputs else 0.0
 
 
 def build_scene(
@@ -777,6 +1043,7 @@ def run(
     mode="detection",
     chi2_max=2.0,
     min_span_s=12.0,
+    min_epochs=4,
     history_n=20,
     exclusive=True,
     cv_fit_mode="inline",
@@ -789,6 +1056,7 @@ def run(
     ss_metric_dt=5.0,
     ss_hold_s=12.0,
     smoother_legs=None,
+    cluster_opts=None,
 ) -> Result:
     import random
 
@@ -861,12 +1129,18 @@ def run(
     # emits unscored pairings and the solver worker fits and arbitrates.  The
     # two are different code paths, so they need separate baselines.
     deferred = mode == "track" and cv_fit_mode == "deferred"
+    # The cluster-merge knobs are passed only when the caller overrode them,
+    # so a plain run measures whatever the library currently ships rather than
+    # freezing today's defaults into the bench.
+    _cluster_kwargs = {k: v for k, v in (cluster_opts or {}).items() if v is not None}
     assoc = DetectionAssociator(
         grid_step_km=3.0,
         cv_fit=(fit_constant_velocity if (mode == "track" and not deferred) else None),
         cv_chi2_max=chi2_max,
         cv_min_span_s=min_span_s,
+        cv_min_epochs=min_epochs,
         cv_exclusive=exclusive,
+        **_cluster_kwargs,
     )
     n2_gate = DeferredN2Gate(chi2_max, claim_ttl_s=claim_ttl_s, claim_policy=claim_policy) if deferred else None
     # One tracker per node, driven by every frame — mirrors
@@ -915,6 +1189,10 @@ def run(
     _BENCH_MN_MAX_AGE_MS = 60_000
 
     res = Result()
+    # (node_id, delay_us, doppler_hz) -> the aircraft that produced that
+    # detection.  Truth side-channel for the contamination metric only, built
+    # from the un-stripped frame below — see _index_detection_truth.
+    det_truth: dict = {}
     _all_keys_seen: set = set()
     _keys_real: set = set()
     _keys_ghost: set = set()
@@ -957,9 +1235,17 @@ def run(
         # Carry the object id so a real target keeps one identity across
         # solves — keying on a position would mint a new track per epoch.
         truth = [(ac.lat, ac.lon, ac.object_id, ac.speed_km_s * 1000.0) for ac in world.aircraft]
+        # Altitude is not in `truth` because nothing else needed it; the n=2
+        # position comparison below does, since the whole finding is about what
+        # an unobservable z does to a published fix.
+        truth_alt_km = {ac.object_id: ac.alt_km for ac in world.aircraft}
         for nid in due_nodes:
             next_send[nid] += frame_interval
             frame = world.generate_detections_for_node(nid, ts_ms)
+            if mode == "track":
+                # Before _strip_adsb, and never fed to association: the
+                # contamination metric's truth channel.
+                _index_detection_truth(det_truth, assoc.node_geometries[nid], nid, frame, world.aircraft)
             if fov_analytics is not None:
                 # The truth channel, not the (possibly blind) association
                 # stream below -- a real node's ADS-B calibration reaches
@@ -978,7 +1264,7 @@ def run(
             # frame is what association pairs against — but only let a node
             # *trigger* a round on its own cadence.
             if mode == "track":
-                assoc._pending_tracks[nid] = confirmed_track_views(trackers[nid], history_n)
+                assoc._pending_tracks[nid] = confirmed_track_views(trackers[nid], history_n, ts_ms)
             else:
                 assoc._pending_frames[nid] = frame
             if (t - last_assoc.get(nid, -1e9)) < assoc_interval:
@@ -1001,6 +1287,13 @@ def run(
                 res.cluster_sizes[(_k, len(s_in.get("track_ids") or []))] += 1
                 if s_in.get("n_nodes", 0) < 2:
                     continue
+                _foreign = None
+                if mode == "track":
+                    # Scored here, ahead of the solve and every gate below:
+                    # this measures what association emitted, which is the
+                    # thing the cluster-merge rework changes.  Re-scored at
+                    # the publish point further down, on the same number.
+                    _foreign = _score_contamination(res, s_in, det_truth, truth)
                 try:
                     _t0 = time.perf_counter()
                     out = solve_fn(s_in, node_cfgs)
@@ -1040,7 +1333,25 @@ def run(
                 # block runs (after every gate above, before GT matching).
                 if mode == "track":
                     _anchor_key = s_in.get("anchor_key")
-                    _key, _how = multinode_key_decision(bench_mn, out, None, _anchor_key)
+                    _key, _how, _dist_km, _dt_s = multinode_key_decision(
+                        bench_mn,
+                        out,
+                        None,
+                        _anchor_key,
+                        # Node-track continuity reads the same field the
+                        # shipped caller passes (s_in["track_ids"]) against the
+                        # memory the bench entry carries below.
+                        track_ids=s_in.get("track_ids"),
+                    )
+                    if _key.startswith("mn-dark-"):
+                        if _how == "minted":
+                            res.key_minted += 1
+                        elif _how == "proximity":
+                            res.key_proximity += 1
+                        elif _how == "tracks":
+                            res.key_tracks += 1
+                        elif _how == "shadowed":
+                            res.key_shadowed += 1
                     if _anchor_key:
                         res.anchored_published += 1
                         if _how != "anchor":
@@ -1068,6 +1379,15 @@ def run(
                         "n_nodes": out.get("n_nodes", s_in.get("n_nodes", 0)),
                         "solve_count": (_prev_mn.get("solve_count", 0) if _prev_mn else 0) + 1,
                         "source_track_ids": sorted(_new_ids),
+                        # Mirrors solver.py's write: the ids this solve was
+                        # built from merged into the entry's short memory, so
+                        # the bench's next decision sees what production's
+                        # would.
+                        "recent_track_ids": merge_recent_track_ids(
+                            (_prev_mn or {}).get("recent_track_ids"),
+                            _new_ids,
+                            ts_ms / 1000.0,
+                        ),
                     }
                     if recorder is not None:
                         recorder.record_publish(
@@ -1104,8 +1424,41 @@ def run(
                     (_keys_real if d <= MATCH_KM else _keys_ghost).add(_key)
                 if d <= MATCH_KM:
                     res.matched += 1
+                    if _foreign is not None:
+                        # Same input, scored again now that every gate has
+                        # accepted it and it has bound to a real aircraft:
+                        # this is the population the live audit sampled (45%
+                        # of published dark solves carried a foreign node),
+                        # and unlike the candidate rate its denominator is
+                        # not something association can inflate.
+                        res.published_inputs += 1
+                        res.published_foreign_nodes += _foreign
+                        if _foreign:
+                            res.published_contaminated += 1
                     res.errors_km.append(d)
                     res.n_nodes_matched[nn] += 1
+                    if nn == 2 and deferred and best_id is not None:
+                        # Three-way position comparison, published n=2 only.
+                        # The LM solve is what ships today; the two fits are
+                        # what the swap would publish with z free and with z
+                        # pinned to the solve's own initial guess.  Scored
+                        # against the SAME aircraft `d` bound to, not against
+                        # each variant's own nearest truth, or a variant could
+                        # look good by landing near a different aeroplane.
+                        _t_lat, _t_lon = next(((a, b) for a, b, oid, _ in truth if oid == best_id), (None, None))
+                        _t_alt_km = truth_alt_km.get(best_id)
+                        if _t_lat is not None and _t_alt_km is not None:
+                            _vars = _n2_fit_positions(s_in, out, node_cfgs)
+                            if _vars["free"] is not None and _vars["pinned"] is not None:
+                                res.n2_pos_solve_km.append(d)
+                                res.n2_alt_solve_km.append(abs(out.get("alt_m", 0.0) / 1000.0 - _t_alt_km))
+                                for _name, _bucket, _abucket in (
+                                    ("free", res.n2_pos_fit_free_km, res.n2_alt_fit_free_km),
+                                    ("pinned", res.n2_pos_fit_pinned_km, res.n2_alt_fit_pinned_km),
+                                ):
+                                    _v = _vars[_name]
+                                    _bucket.append(_haversine_km(_v["lat"], _v["lon"], _t_lat, _t_lon))
+                                    _abucket.append(abs(_v.get("alt_m", 0.0) / 1000.0 - _t_alt_km))
                     # Broken out because the whole dual-site hypothesis is
                     # about the n=2 case specifically: whether two illuminators
                     # sharing one receiver confine the fix better than two
@@ -1153,6 +1506,7 @@ def run(
     res.gate_accepted = assoc.track_pairs_accepted
     res.gate_unfitted = assoc.track_pairs_unfitted
     res.gate_superseded = assoc.track_pairs_superseded
+    res.cluster_splits = getattr(assoc, "cluster_splits", 0)
     res.claims_matched = assoc.claims_matched
     res.claim_conflicts = assoc.claim_conflicts
     res.anchored_inputs = assoc.anchored_inputs_emitted
@@ -1305,6 +1659,21 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
                 f"      n={nn}: {len(v):>4} solves   median {statistics.median(v):5.2f} km"
                 f"   p90 {v[int(0.9 * (len(v) - 1))]:5.2f}"
             )
+    if r.n2_pos_solve_km:
+
+        def _mp(v):
+            v = sorted(v)
+            return statistics.median(v), v[int(0.9 * (len(v) - 1))]
+
+        print(f"  n=2 position source comparison (published, truth-matched, N={len(r.n2_pos_solve_km)}):")
+        for _name, _pos, _alt in (
+            ("solve     ", r.n2_pos_solve_km, r.n2_alt_solve_km),
+            ("fit_free  ", r.n2_pos_fit_free_km, r.n2_alt_fit_free_km),
+            ("fit_pinned", r.n2_pos_fit_pinned_km, r.n2_alt_fit_pinned_km),
+        ):
+            _pm, _pp = _mp(_pos)
+            _am, _ap = _mp(_alt)
+            print(f"      {_name}: pos med {_pm:6.2f} km  p90 {_pp:6.2f}   |alt err| med {_am:6.2f} km  p90 {_ap:6.2f}")
     if r.speed_err_ms:
         e = sorted(r.speed_err_ms)
         print(
@@ -1329,6 +1698,21 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
             f"  solves faster than any real aircraft ({truth_max_kt:.0f} kt): "
             f"{over} ({100 * over / len(r.speeds_kt):.0f}%)"
         )
+    if r.inputs_scored:
+        print(
+            f"  CONTAMINATION: {r.inputs_contaminated}/{r.inputs_scored} solver inputs carry a foreign node"
+            f"  -> {r.contaminated_inputs_pct:5.1f}%   "
+            f"foreign nodes/input {r.foreign_nodes_per_input:.2f}"
+            f"  ({r.foreign_nodes}/{r.input_nodes} nodes)"
+        )
+    if r.published_inputs:
+        print(
+            f"  CONTAMINATION (published): {r.published_contaminated}/{r.published_inputs} matched solves"
+            f"  -> {r.published_contaminated_pct:5.1f}%   "
+            f"foreign nodes/solve {r.published_foreign_per_solve:.2f}"
+        )
+    if r.cluster_splits:
+        print(f"  cluster splits (same-node track conflict): {r.cluster_splits}")
     if r.gate_gated:
         print(
             f"  CV gate: {r.gate_gated} pairings past the delay grid  "
@@ -1370,6 +1754,11 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
     print(f"  solver rejects/failures: {r.solver_rejects}  beam gate rejects: {r.beam_rejects}")
     # Top-down claiming.  Gated on either counter moving: shadow mode counts
     # without ever emitting an anchored_input, active mode does both.
+    if r.key_minted + r.key_proximity + r.key_tracks + r.key_shadowed > 0:
+        print(
+            f"  dark key decisions: {r.key_minted} minted, {r.key_proximity} proximity, "
+            f"{r.key_tracks} tracks, {r.key_shadowed} shadowed"
+        )
     if r.claims_matched + r.anchored_inputs > 0:
         print(
             f"  claiming: {r.claims_matched} matched, {r.claim_conflicts} "
@@ -1444,7 +1833,23 @@ def main():
     )
     p.add_argument("--chi2-max", type=float, nargs="+", default=[2.0], help="track mode: chi2/dof ceiling(s) to sweep")
     p.add_argument(
-        "--min-span-s", type=float, default=12.0, help="track mode: observation span before a pairing is fitted"
+        "--min-span-s",
+        "--cv-min-span-s",
+        dest="min_span_s",
+        type=float,
+        nargs="+",
+        default=[12.0],
+        help="track mode: observation span(s) to sweep before a pairing is fitted "
+        "(deferred mode: before its epochs are attached at all). Production is 12 "
+        "(N2_CONFIRM_MIN_SPAN_S); several values sweep like --chi2-max does.",
+    )
+    p.add_argument(
+        "--cv-min-epochs",
+        dest="min_epochs",
+        type=int,
+        default=4,
+        help="track mode: merged epochs a pairing needs before it is fitted "
+        "(deferred mode: before its epochs are attached). Production is 4.",
     )
     p.add_argument("--history-n", type=int, default=20, help="track mode: samples of per-node track history to fit")
     p.add_argument(
@@ -1498,6 +1903,32 @@ def main():
         help="track mode: disable one-to-one hypothesis selection "
         "(each pairing then answers only to the chi2 threshold)",
     )
+    # Cluster-merge knobs (track mode).  Each defaults to None, meaning "leave
+    # the library's own default alone", so the bench does not silently pin a
+    # value the library later changes — and so a sweep leg reads as exactly
+    # the deviation it is testing.
+    p.add_argument(
+        "--merge-dist-km",
+        type=float,
+        default=None,
+        help="track mode: how close two pairings must be to merge into one solver input (association._MERGE_DIST_KM)",
+    )
+    p.add_argument(
+        "--pair-vel-exclusive",
+        choices=("on", "off"),
+        default=None,
+        help="track mode, deferred only: drop a pairing whose implied velocity "
+        "contradicts a better-scoring pairing that claims the same track",
+    )
+    p.add_argument(
+        "--merge-vel-consistent",
+        choices=("on", "off"),
+        default=None,
+        help="track mode: require implied-velocity agreement, not just "
+        "proximity, before two pairings are merged into one cluster",
+    )
+    p.add_argument("--pair-vel-dv-ms", type=float, default=None, help="velocity-conflict speed threshold (m/s)")
+    p.add_argument("--pair-vel-dtheta-deg", type=float, default=None, help="velocity-conflict heading threshold (deg)")
     p.add_argument("--min-aircraft", type=int, default=10, help="matches FLEET_AIRCRAFT lower bound")
     p.add_argument("--max-aircraft", type=int, default=20)
     p.add_argument("--metro-traffic-frac", type=float, default=0.85, help="matches FLEET_METRO_TRAFFIC_FRAC")
@@ -1568,6 +1999,14 @@ def main():
     )
     args = p.parse_args()
 
+    cluster_opts = {
+        "merge_dist_km": args.merge_dist_km,
+        "pair_vel_exclusive": None if args.pair_vel_exclusive is None else args.pair_vel_exclusive == "on",
+        "merge_vel_consistent": None if args.merge_vel_consistent is None else args.merge_vel_consistent == "on",
+        "pair_vel_dv_ms": args.pair_vel_dv_ms,
+        "pair_vel_dtheta_deg": args.pair_vel_dtheta_deg,
+    }
+
     # --ss-metrics auto/on/off resolution.  "on" without stonesoup installed
     # is a hard error (the user explicitly asked for numbers this image
     # cannot produce); "auto" degrades quietly except for one notice line so
@@ -1615,23 +2054,26 @@ def main():
         f"{args.seconds:.0f}s @ {args.frame_interval:.0f}s frames, seed {args.seed}, "
         f"{'BLIND' if args.blind else 'ADS-B-tagged'}, mode={args.mode}"
         + (
-            f", span>={args.min_span_s:.0f}s, cv-fit={args.cv_fit_mode}, claim-mode={args.claim_mode}"
+            f", epochs>={args.min_epochs}, cv-fit={args.cv_fit_mode}, claim-mode={args.claim_mode}"
             if args.mode == "track"
             else ""
         )
         + f", fov={args.fov}"
         + f", ss-metrics={'on' if ss_metrics_enabled else 'off'}"
         + (f", smoother-legs={','.join(lbl for lbl, _, _ in smoother_legs)}" if smoother_legs else "")
+        + "".join(f", {k.replace('_', '-')}={v}" for k, v in sorted(cluster_opts.items()) if v is not None)
     )
 
     # chi2 only means anything in track mode; keep one pass otherwise.
     chi2_values = args.chi2_max if args.mode == "track" else [None]
+    span_values = args.min_span_s if args.mode == "track" else [args.min_span_s[0]]
     for interval in args.assoc_interval:
-        for chi2_max in chi2_values:
+        for min_span_s, chi2_max in itertools.product(span_values, chi2_values):
             for estimator_name in args.estimator:
                 solve_fn = _ESTIMATORS[estimator_name]
                 rates, solve_rates, reals, fakes, speed_errs = [], [], [], [], []
                 n2_rates = []
+                contam_rates, foreign_rates, med_errs, pub_contam_rates = [], [], [], []
                 agg = Result()
                 last = None
                 for k in range(args.repeat):
@@ -1653,7 +2095,8 @@ def main():
                         args.blind,
                         args.mode,
                         chi2_max if chi2_max is not None else 2.0,
-                        args.min_span_s,
+                        min_span_s,
+                        args.min_epochs,
                         args.history_n,
                         args.exclusive,
                         args.cv_fit_mode,
@@ -1666,6 +2109,7 @@ def main():
                         ss_metric_dt=args.ss_metric_dt,
                         ss_hold_s=args.ss_hold_s,
                         smoother_legs=smoother_legs,
+                        cluster_opts=cluster_opts,
                     )
                     agg.merge(last, tag=f"s{args.seed + k}")
                     # Track-level is the comparable metric — solve-level and
@@ -1678,9 +2122,13 @@ def main():
                     fakes.append(len(last.ghost_tracks))
                     if last.speed_err_ms:
                         speed_errs.append(statistics.median(last.speed_err_ms))
+                    contam_rates.append(last.contaminated_inputs_pct)
+                    foreign_rates.append(last.foreign_nodes_per_input)
+                    pub_contam_rates.append(last.published_contaminated_pct)
+                    med_errs.append(statistics.median(last.errors_km) if last.errors_km else float("nan"))
                 label = f"assoc_interval={interval:g}s"
                 if chi2_max is not None:
-                    label += f"  chi2/dof<={chi2_max:g}"
+                    label += f"  span>={min_span_s:g}s  chi2/dof<={chi2_max:g}"
                 label += f"  estimator={estimator_name}"
                 if args.repeat > 1:
                     label += f"  (pooled over {args.repeat} seeds)"
@@ -1700,6 +2148,27 @@ def main():
                         f"({', '.join(f'{x:.0f}%' for x in n2_rates)})"
                     )
                     print(f"    by solve: {', '.join(f'{x:.1f}%' for x in solve_rates)}")
+                    if any(contam_rates):
+                        print(
+                            f"    contaminated inputs per seed: "
+                            f"{', '.join(f'{x:.0f}%' for x in contam_rates)}"
+                            f"   mean {statistics.mean(contam_rates):.1f}%"
+                        )
+                        print(
+                            f"    foreign nodes/input per seed: "
+                            f"{', '.join(f'{x:.2f}' for x in foreign_rates)}"
+                            f"   mean {statistics.mean(foreign_rates):.2f}"
+                        )
+                        print(
+                            f"    published contaminated per seed: "
+                            f"{', '.join(f'{x:.0f}%' for x in pub_contam_rates)}"
+                            f"   mean {statistics.mean(pub_contam_rates):.1f}%"
+                        )
+                        print(
+                            f"    median matched error per seed: "
+                            f"{', '.join(f'{x:.2f}' for x in med_errs)} km"
+                            f"   real tracks {', '.join(str(x) for x in reals)}"
+                        )
                     if speed_errs:
                         print(
                             f"    median speed error per seed: "

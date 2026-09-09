@@ -26,6 +26,7 @@ from services.frame_processor import (
     confirmed_track_views,
     process_one_frame,
 )
+from tests.node_helpers import register_test_node
 
 _NODE_CFG = {
     "rx_lat": 34.85,
@@ -364,6 +365,9 @@ class TestProcessOneFrameSolverQueue:
         )
         monkeypatch.setattr(state, "solver_queue", queue.Queue())
 
+        # A positioned node: process_one_frame only reaches submit_tracks_round
+        # (where the stub above is installed) for a node it can place.
+        register_test_node("test-adsb-seed-queue", _NODE_CFG)
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         process_one_frame("test-adsb-seed-queue", _make_frame(), default)
 
@@ -385,10 +389,14 @@ class TestProcessOneFrameSolverQueue:
         monkeypatch.setattr(fp, "claim_known_targets", _boom)
         before = state.known_claims_errors
 
+        # Placed, so the dark lane the frame is meant to continue down is
+        # actually there to continue down.
+        register_test_node("test-claim-fail-open", _NODE_CFG)
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         process_one_frame("test-claim-fail-open", _make_frame(), default)
 
         assert state.known_claims_errors == before + 1
+        assert "test-claim-fail-open" in state.node_pipelines
 
     def test_empty_adsb_inputs_add_nothing(self, monkeypatch):
         monkeypatch.setattr(
@@ -398,6 +406,8 @@ class TestProcessOneFrameSolverQueue:
         )
         monkeypatch.setattr(state, "solver_queue", queue.Queue())
 
+        # Placed, so the round the stub above returns is really consulted.
+        register_test_node("test-adsb-seed-empty", _NODE_CFG)
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         process_one_frame("test-adsb-seed-empty", _make_frame(), default)
 
@@ -605,3 +615,32 @@ class TestSeedWorldWiring:
         must consult the same resolver claiming and the auto-tag filter use,
         or one consumer accepts what another rejects."""
         assert state.node_associator.node_world_provider is state.node_world
+
+    def test_a_sim_and_a_real_node_over_one_footprint_get_no_overlap_zone(self):
+        """The same resolver, one level down: bottom-up pairing must not build
+        a grid across worlds either.  Registering a synthetic node and a
+        hardware node on overlapping coverage used to leave a zone whose only
+        possible pairing was a simulated echo against a real one — which is how
+        real node ids reached the synthetic fleet's dark solves."""
+        _a = state.node_associator
+        try:
+            _a.register_node("synth-GVL-9001", dict(_NODE_CFG))
+            _a.register_node("hw-9001", dict(_NODE_CFG, rx_lat=34.86, rx_lon=-82.36))
+
+            assert _a.overlap_zones == {}
+            assert _a._neighbors.get("synth-GVL-9001", set()) == set()
+            assert _a.assoc_world_skipped_pairs == 1
+        finally:
+            state._reset_for_tests()
+
+    def test_two_synthetic_nodes_over_one_footprint_still_pair(self):
+        """The gate is the world difference, not the registration."""
+        _a = state.node_associator
+        try:
+            _a.register_node("synth-GVL-9001", dict(_NODE_CFG))
+            _a.register_node("synth-GVL-9002", dict(_NODE_CFG, rx_lat=34.86, rx_lon=-82.36))
+
+            assert _a.overlap_zones
+            assert _a.assoc_world_skipped_pairs == 0
+        finally:
+            state._reset_for_tests()

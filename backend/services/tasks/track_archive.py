@@ -63,5 +63,5 @@ async def track_flush_task():
                 logger.debug("track archive flushed: %s", key)
             state.task_last_success["track_archive_flush"] = time.time()
         except Exception:
-            state.task_error_counts["track_archive_flush"] += 1
+            state.bump_task_error("track_archive_flush")
             logger.exception("track_flush_task iteration failed")

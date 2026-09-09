@@ -33,6 +33,7 @@ from core.users import (
     get_jwt_strategy,
     get_or_create_oauth_user,
 )
+from services.node_config import position_status
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -262,6 +263,7 @@ async def my_nodes(request: Request):
                 "is_synthetic": info.get("is_synthetic", False),
                 "rx_lat": cfg.get("rx_lat"),
                 "rx_lon": cfg.get("rx_lon"),
+                "position_status": position_status(cfg),
                 "frequency": cfg.get("FC", cfg.get("frequency")),
             }
         )

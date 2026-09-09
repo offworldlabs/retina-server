@@ -18,6 +18,7 @@ fact.
 import time
 
 from core import state
+from services.node_config import canonical_config
 from services.tasks import solver as solver_mod
 
 LAT, LON = 35.0, -82.0
@@ -599,6 +600,37 @@ class TestBeamGateNSplit(_TrimmingTestBase):
         failure = rec["beam_failures"][0]
         assert failure["rule"] == "range"
 
+    def test_a_node_with_no_receiver_is_skipped_rather_than_gated_on(self):
+        """node_cfgs is an unfiltered snapshot of every connected node, and
+        nothing between submit_tracks_round and the beam gate checks placement,
+        so a node re-registered without its position while its retained tracks
+        were being paired arrives here unplaced. There is no receiver to measure
+        a range or a bearing from, so it contributes no verdict at all rather
+        than a range computed against a stand-in coordinate."""
+        s_in = {
+            "n_nodes": 2,
+            "measurements": [
+                {"node_id": "n1", "delay_us": 10.0, "doppler_hz": 1.0, "snr": 15.0},
+                {"node_id": "unplaced", "delay_us": 12.0, "doppler_hz": 2.0, "snr": 14.0},
+            ],
+            "timestamp_ms": int(time.time() * 1000),
+        }
+        cfgs = {
+            "n1": {"rx_lat": 35.0, "rx_lon": -82.0, "max_range_km": 500.0},
+            # Canonical form of a node that declared no position: the keys are
+            # present and null, so a `.get(key, 0)` default cannot rescue it.
+            "unplaced": canonical_config({"rx_lat": None, "rx_lon": None, "max_range_km": 5.0}),
+        }
+
+        def solve_fn(_s_in, _cfgs):
+            return _stub_result(["n1", "unplaced"], rms_delay=1.0, lat=35.1, lon=-82.0, n_nodes=2)
+
+        result = self._run(s_in, solve_fn, cfgs=cfgs)
+
+        # n1 passes its range test and the unplaced node is skipped, so the
+        # solve survives. Without the gate this raises TypeError instead.
+        assert result is not None and result["success"]
+
 
 class _StubFov:
     """Duck-types EmpiricalCoverageState's beam-gate surface — enough for
@@ -827,3 +859,76 @@ class TestFovGateActive(_TrimmingTestBase):
         assert state.fov_shadow_agree == 1
         assert state.fov_shadow_would_pass == 0
         assert state.fov_shadow_would_reject == 0
+
+
+class TestTrimmedTracksAreNotClaimed(_TrimmingTestBase):
+    """A trimmed node's tracks must not take a re-solve claim.
+
+    The claim says "this aircraft is on the map at this width".  A node
+    dropped for a bad residual contributed nothing to the published position
+    and its track was probably a different aircraft's — claiming it would
+    suppress that aircraft's own candidate on the strength of a measurement
+    this solve threw away.
+    """
+
+    _FULL = ["n1", "n2", "n3", "n4", "bad"]
+    _TRIM = ["n1", "n2", "n3", "n4"]
+
+    def test_the_dropped_nodes_track_is_left_unclaimed(self):
+        table = {
+            frozenset(self._FULL): _stub_result(
+                self._FULL,
+                rms_delay=8.0,
+                per_node={"n1": 0.5, "n2": 0.5, "n3": 0.5, "n4": 0.5, "bad": 12.0},
+            ),
+            frozenset(self._TRIM): _stub_result(
+                self._TRIM,
+                rms_delay=0.8,
+                per_node={"n1": 0.3, "n2": 0.3, "n3": 0.3, "n4": 0.3},
+            ),
+        }
+        s_in = _s_in(
+            self._FULL,
+            track_ids=["t1", "t2", "t3", "t4", "tbad"],
+            track_ids_by_node={
+                "n1": ["t1"],
+                "n2": ["t2"],
+                "n3": ["t3"],
+                "n4": ["t4"],
+                "bad": ["tbad"],
+            },
+        )
+        result = self._run(s_in, _stub_solve_fn(table))
+        assert result is not None and result["success"]
+        assert result["source_track_ids"] == ["t1", "t2", "t3", "t4"]
+        assert set(solver_mod._RECENT_SOLVES) == {"t1", "t2", "t3", "t4"}
+
+    def test_a_candidate_built_on_the_dropped_track_still_runs(self):
+        """The other half of the same claim: whoever "tbad" really belongs to
+        keeps its slot."""
+        table = {
+            frozenset(self._FULL): _stub_result(
+                self._FULL,
+                rms_delay=8.0,
+                per_node={"n1": 0.5, "n2": 0.5, "n3": 0.5, "n4": 0.5, "bad": 12.0},
+            ),
+            frozenset(self._TRIM): _stub_result(
+                self._TRIM,
+                rms_delay=0.8,
+                per_node={"n1": 0.3, "n2": 0.3, "n3": 0.3, "n4": 0.3},
+            ),
+        }
+        s_in = _s_in(
+            self._FULL,
+            track_ids=["t1", "t2", "t3", "t4", "tbad"],
+            track_ids_by_node={
+                "n1": ["t1"],
+                "n2": ["t2"],
+                "n3": ["t3"],
+                "n4": ["t4"],
+                "bad": ["tbad"],
+            },
+        )
+        self._run(s_in, _stub_solve_fn(table))
+        neighbour = {"n_nodes": 2, "track_ids": ["tbad", "tother"]}
+        assert solver_mod._resolve_slot_covered(neighbour, time.time())[0] is False

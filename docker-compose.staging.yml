@@ -58,7 +58,7 @@ services:
       # RETINA_ENV above: this box names itself `staging` in an alert while still
       # running the `test` guards. See services/alerting.py.
       - ALERT_ENVIRONMENT=staging
-      - CORS_ORIGINS=https://staging-towers.retina.fm,https://staging-api.retina.fm,https://staging-map.retina.fm,https://staging-dash.retina.fm,https://staging-admin.retina.fm
+      - CORS_ORIGINS=https://staging-towers.retina.fm,https://staging-api.retina.fm,https://staging-map.retina.fm,https://staging-dash.retina.fm,https://staging-admin.retina.fm,https://staging-data.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
       # at boot to render deploy/nginx/nginx.conf.template. One template serves
       # both environments; only these values change.
@@ -73,6 +73,7 @@ services:
       - HOST_MAP=staging-map.retina.fm
       - HOST_DASH=staging-dash.retina.fm
       - HOST_ADMIN=staging-admin.retina.fm
+      - HOST_DATA=staging-data.retina.fm
       # Not `staging-testmap`: this is the public demo surface. Production stopped
       # running a simulator, and staging is the only environment that still has
       # one, so the hostname people already use points here. The DNS record is

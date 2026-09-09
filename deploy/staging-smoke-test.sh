@@ -14,6 +14,11 @@ DASH_URL="https://staging-dash.retina.fm"
 # dashboard checks elsewhere use DASH_URL, since both serve dashboard/dist and
 # the admin routes are gated client-side on the user's role, not by hostname.
 ADMIN_URL="https://staging-admin.retina.fm"
+# The public data explorer (data-explorer/, static). Like staging-admin, this
+# name has no DNS record yet — the vhost renders and the parity check proves it
+# is identical to production's, and the probes below start asserting the moment
+# a record appears. See NO_DNS_BY_DESIGN.
+DATA_URL="https://staging-data.retina.fm"
 # Both vhosts are rooted at frontend/dist and so serve the tower finder too.
 # testmap is the public demo (prod parks the name as testmap-retired).
 MAP_URL="https://staging-map.retina.fm"
@@ -89,6 +94,37 @@ check_contract() {
         printf '    %s\n' "$reason"
         FAIL=$((FAIL+1))
     fi
+}
+
+# Vhosts that render (and so are covered by the parity check) but have no DNS
+# record on this environment by design. A probe against one is skipped rather
+# than failed, and starts asserting the moment a record appears — narrowly, so a
+# real DNS outage on any other vhost still fails the run.
+NO_DNS_BY_DESIGN="staging-admin.retina.fm staging-data.retina.fm"
+in_no_dns_list() {
+    case " ${NO_DNS_BY_DESIGN} " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
+# A check_* wrapper for a vhost on that list: skip while the name does not
+# resolve, run the check once it does.
+check_status_if_dns() {
+    local name="$1" url="$2" expected_code="$3" host
+    host="${url#https://}"; host="${host%%/*}"
+    if in_no_dns_list "$host" && ! getent hosts "$host" >/dev/null 2>&1; then
+        printf "  %-40s SKIP (vhost has no DNS record by design)\n" "$name"
+        return
+    fi
+    check_status "$name" "$url" "$expected_code"
+}
+
+check_header_if_dns() {
+    local name="$1" url="$2" header="$3" host
+    host="${url#https://}"; host="${host%%/*}"
+    if in_no_dns_list "$host" && ! getent hosts "$host" >/dev/null 2>&1; then
+        printf "  %-40s SKIP (vhost has no DNS record by design)\n" "$name"
+        return
+    fi
+    check_header "$name" "$url" "$header"
 }
 
 check_header() {
@@ -185,6 +221,13 @@ echo "── Dashboard subdomain (staging-dash.retina.fm) ──"
 check_status "staging-dash GET /"           "${DASH_URL}/"                  "200"
 
 echo ""
+echo "── Data explorer subdomain (staging-data.retina.fm) ──"
+# Served from /app/data-explorer, which the Dockerfile copies straight from the
+# source tree — no build stage, so a missing COPY shows up here as a 404 rather
+# than as a broken bundle.
+check_status_if_dns "staging-data GET /"    "${DATA_URL}/"                  "200"
+
+echo ""
 echo "── Frontend assets ──"
 check_status "GET / (frontend)"             "${BASE_URL}/"                  "200"
 check        "HTML has app root"            "${BASE_URL}/"                  "id=\"root\""
@@ -203,6 +246,12 @@ echo "── Shared nginx config (must match production) ──"
 # preserved as-is by the template refactor and tracked separately; asserting it
 # here on `/` would just fail.
 check_header "CSP on dashboard vhost"       "${DASH_URL}/api/health" "content-security-policy"
+# The data explorer vendors react, react-dom, lodash, classnames and
+# @edsc/timeline under data-explorer/vendor/ precisely because this policy is
+# `script-src 'self'`. If the header ever stops being served on this vhost the
+# vendoring silently stops being load-bearing, and a CDN script would start
+# working locally and in staging while remaining blocked nowhere — assert it.
+check_header_if_dns "CSP on data explorer vhost" "${DATA_URL}/api/health" "content-security-policy"
 check_header "CSP on frontend vhost"        "${BASE_URL}/api/health" "content-security-policy"
 check_header "HSTS on api subdomain"        "${API_URL}/api/health"  "strict-transport-security"
 # Two zones, two checks. The credential surface carries the tight limit that
@@ -219,7 +268,8 @@ echo "── tower-finder-service seam ──"
 # test_towers_vhost_coverage.py asserts this list matches the template.
 for endpoint in "${BASE_URL}/api/towers" "${MAP_URL}/api/towers" \
                 "${TESTMAP_URL}/api/towers" "${API_URL}/towers" \
-                "${DASH_URL}/api/towers" "${ADMIN_URL}/api/towers"; do
+                "${DASH_URL}/api/towers" "${ADMIN_URL}/api/towers" \
+                "${DATA_URL}/api/towers"; do
     # staging-admin has an nginx vhost but deliberately no DNS record —
     # docker-compose.staging.yml documents the trade: the origin cert is
     # *.retina.fm so an unresolved name costs nothing, and keeping HOST_*
@@ -231,7 +281,7 @@ for endpoint in "${BASE_URL}/api/towers" "${MAP_URL}/api/towers" \
     # asserting the moment a record appears — and narrowly, so a real DNS
     # outage on any other vhost still fails the run.
     host="${endpoint#https://}"; host="${host%%/*}"
-    if [ "$host" = "staging-admin.retina.fm" ] && ! getent hosts "$host" >/dev/null 2>&1; then
+    if in_no_dns_list "$host" && ! getent hosts "$host" >/dev/null 2>&1; then
         printf "  %-40s SKIP (vhost has no DNS record by design)\n" "$host"
         continue
     fi
@@ -251,7 +301,24 @@ check_status  "sibling /api/ path stays on the app" "${BASE_URL}/api/radar/nodes
 # `elevation_m` was the shared key of both implementations back when there were
 # two; the monolith's copy is deleted, so a 200 here can only be the service —
 # through the proxy on a vhost (dash) that had none before the dedup.
-check        "dash /api/elevation answers"  "${DASH_URL}/api/elevation?lat=33.45&lon=-112.07" "elevation_m"
+#
+# Via the shared helper rather than `check`, so this environment tolerates the
+# service's upstream provider being unavailable on the same terms production
+# does. Staging answered 200 on 2026-08-27 only because its droplet holds a
+# separate quota from production's; nothing here is immune to the same outage.
+printf "  %-40s " "dash /api/elevation answers"
+if REASON=$(assert_elevation_contract "${DASH_URL}/api/elevation"); then
+    EL_RC=0
+else
+    EL_RC=$?
+fi
+if [ "$EL_RC" = 0 ]; then
+    echo "OK"; PASS=$((PASS+1))
+elif [ "$EL_RC" = 2 ]; then
+    echo "WARN"; printf '    %s\n' "$REASON"; PASS=$((PASS+1))
+else
+    echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
+fi
 check_status "dash /api/config answers"     "${DASH_URL}/api/config"                          "200"
 # PUT is the half that genuinely changed hands: the monolith gated it on an
 # admin session, the service gates it on a bearer token, and only the service's

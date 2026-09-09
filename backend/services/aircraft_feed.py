@@ -7,6 +7,7 @@ services.track_gates; shared helpers in services.feed_helpers; stale-store GC
 in services.feed_gc.
 """
 
+import logging
 import math
 import os
 import time
@@ -17,6 +18,7 @@ from config.constants import (
     ARC_REFRESH_S,
     CLAIMED_DISPLAY_FRESH_S,
     GT_REFRESH_S,
+    MN_DR_CAP_S,
     MN_N2_MIN_SOLVES,
     MN_ONESHOT_TTL_S,
     STALE_TRACK_S,
@@ -24,7 +26,8 @@ from config.constants import (
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
 from services import track_filter
-from services.feed_gc import prune_stale_stores
+from services.feed_gc import MN_ADSB_PREFIX as _MN_ADSB_PREFIX
+from services.feed_gc import prune_multinode_tracks
 from services.feed_helpers import (
     append_track_history,
     dedup_aircraft,
@@ -36,7 +39,9 @@ from services.id_utils import (
     normalize_hex_key,
     passive_track_hex,
 )
+from services.known_claiming import KNOWN_CLAIM_MAX_FIX_AGE_S
 from services.public_location import fuzz_node_cfg
+from services.solve_uncertainty import solve_sigma_m, velocity_sigma_ms
 from services.track_gates import (
     _build_single_node_arc,
     _public_arc_cache,
@@ -55,15 +60,18 @@ def _reset_for_tests() -> None:
     """
     global _cached_pending_arcs, _cached_detecting_nodes, _arcs_last_ts
     global _cached_gt_snapshot, _cached_gt_meta, _gt_last_ts
+    global _mn_entry_fail_logged_at, _mn_entry_fail_count
     _cached_pending_arcs = []
     _cached_detecting_nodes = {}
     _arcs_last_ts = 0.0
     _cached_gt_snapshot = {}
     _cached_gt_meta = {}
     _gt_last_ts = 0.0
-
-
-_MN_ADSB_PREFIX = "mn-adsb-"
+    # Same reason as the wall-clock caches above: the log throttle is
+    # monotonic-time state, so one test's skipped entry would otherwise
+    # silence the next test's.
+    _mn_entry_fail_logged_at = 0.0
+    _mn_entry_fail_count = 0
 
 
 def multinode_to_aircraft(key: str, r: dict) -> dict:
@@ -125,6 +133,15 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
         "track": round(heading, 1),
         "lat": round(r["lat"], 5),
         "lon": round(r["lon"], 5),
+        # The SOLVE-EPOCH position: what the solver measured, before the
+        # caller (_multinode_entry) dead-reckons lat/lon forward up to
+        # MN_DR_CAP_S.  The map's 95% uncertainty disc is drawn here rather
+        # than on the icon, because pos_sigma_m below is the accuracy of this
+        # measurement and of nothing else; the gap that opens between the disc
+        # and the dead-reckoned icon IS the extrapolation.  Identical to
+        # lat/lon on a zero-age entry, and rounded the same way.
+        "solve_lat": round(r["lat"], 5),
+        "solve_lon": round(r["lon"], 5),
         # Real age of the solve, not 0 — see the matching note on the tracker
         # path.  Guarded because timestamp_ms is absent in some fixtures.
         "seen": round(max(0.0, time.time() - r["timestamp_ms"] / 1000.0), 1) if r.get("timestamp_ms") else 0,
@@ -151,6 +168,22 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
     entry["adsb_assisted"] = _assisted
     if _assisted:
         entry["adsb_hex"] = key[len(_MN_ADSB_PREFIX) :]
+    # Calibrated position uncertainty for the map's disc and the detail
+    # panel — see services/solve_uncertainty.py for the model and the
+    # 2026-09-05 fit.  Both fields are optional on the wire: sigma is None
+    # (and the pair omitted) only when the solve carries no n_nodes, which
+    # leaves no floor to apply.  Lane matters: the dark lane had no ADS-B fix
+    # seeding the guess and no pinned altitude, so it is inflated — and
+    # _assisted is the same key-prefix truth the lane fields above use, not
+    # anything read off r.  Both describe THE SOLVE EPOCH, ungrown, and the
+    # map now draws the disc that way too (2026-09-06) at solve_lat/solve_lon
+    # above.  pos_sigma_vel_ms stays on the wire — the detail panel, the solve
+    # history and the drift budgets still read it — it just no longer inflates
+    # a drawn radius with age.
+    _pos_sigma_m = solve_sigma_m(r, dark=not _assisted)
+    if _pos_sigma_m is not None:
+        entry["pos_sigma_m"] = round(_pos_sigma_m, 1)
+        entry["pos_sigma_vel_ms"] = round(velocity_sigma_ms(key), 1)
     if _gs_source_kf:
         entry["gs_source"] = "kf"
     if _vel_untrusted:
@@ -159,6 +192,71 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
             del entry["gs"]
             del entry["track"]
     return entry
+
+
+# One multinode entry failing is a bug worth a log line, but the feed builds
+# at 1 Hz over ~40 live keys, so an unguarded logger would turn one sick
+# aircraft into thousands of identical lines an hour and bury everything else.
+# Same shape of throttle detection_mirror.py uses for its dropped-frame line.
+_MN_ENTRY_FAIL_LOG_INTERVAL_S = 60.0
+_mn_entry_fail_logged_at = 0.0
+_mn_entry_fail_count = 0
+
+
+def _note_multinode_entry_failure(key: str) -> None:
+    """Count a skipped multinode entry, logging at most once a minute."""
+    global _mn_entry_fail_logged_at, _mn_entry_fail_count
+    _mn_entry_fail_count += 1
+    now = time.monotonic()
+    if now - _mn_entry_fail_logged_at < _MN_ENTRY_FAIL_LOG_INTERVAL_S:
+        return
+    _mn_entry_fail_logged_at = now
+    logging.exception(
+        "Multinode feed entry failed for key=%s, skipping it (%d total since boot)",
+        key,
+        _mn_entry_fail_count,
+    )
+
+
+def _multinode_entry(key: str, r: dict, now: float) -> dict:
+    """One multinode solve as a feed entry, dead-reckoned to ``now``.
+
+    Split out of build_combined_aircraft_json so the whole per-entry
+    computation — multinode_to_aircraft, the learned-velocity lookup, the
+    dead-reckon — sits behind one try/except there.  Inline, an exception
+    from any of them took the entire flush with it.
+    """
+    ac = multinode_to_aircraft(key, r)
+    # Dead-reckon position using solver velocity (vel_east/vel_north in
+    # m/s), capped at MN_DR_CAP_S: beyond that a velocity error dominates
+    # any solve accuracy, so an old solve holds its last dead-reckoned
+    # point until the entry expiry rather than drifting further.
+    ts_fix = r.get("timestamp_ms", 0) / 1000.0
+    elapsed = min(now - ts_fix, MN_DR_CAP_S)
+    vel_east_m_s = r.get("vel_east", 0.0)
+    vel_north_m_s = r.get("vel_north", 0.0)
+    # TRACK_DR_SOURCE, read per call like TRACK_SMOOTHER: "kf" (default)
+    # dead-reckons with the display filter's LEARNED velocity when one
+    # exists — the solved velocity this block used to trust was measured
+    # (2026-08-09, n=93) at median 127 m/s vector error, i.e. ~3.8 km of
+    # drift at the 30 s cap below, worse than the solve error itself.
+    # "solve" restores the old behaviour (rollback, env only).  The KF
+    # accessor returns None whenever the KF never saw this key (smoother
+    # in ewma/off mode, first solve, TTL-swept) so the fallback below is
+    # also the natural off-path, not a separate mode.
+    if (os.getenv("TRACK_DR_SOURCE", "kf") or "kf").strip().lower() != "solve":
+        _lv = track_filter.learned_velocity(key)
+        if _lv is not None:
+            vel_east_m_s, vel_north_m_s = _lv[0], _lv[1]
+    if elapsed > 0.0 and (vel_east_m_s != 0.0 or vel_north_m_s != 0.0):
+        _dr_lat, _dr_lon = offset_latlon_m(
+            ac["lat"],
+            ac["lon"],
+            east_m=vel_east_m_s * elapsed,
+            north_m=vel_north_m_s * elapsed,
+        )
+        ac["lat"], ac["lon"] = round(_dr_lat, 5), round(_dr_lon, 5)
+    return ac
 
 
 def _claimed_single_node_entries(now: float) -> list[dict]:
@@ -212,6 +310,19 @@ def _claimed_single_node_entries(now: float) -> list[dict]:
         lat, lon = fix.get("lat"), fix.get("lon")
         if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
             continue
+        # A HELD claim (known_claiming path H) carries the LAST fix the
+        # transponder ever gave, however old — the hold is a radar link, not a
+        # position report.  This section draws the fix itself, so once that fix
+        # is past the claiming path's own freshness cap there is nothing here
+        # worth drawing: the icon would sit where the aircraft was, not where
+        # it is, and grow more wrong the longer the hold succeeds.  Skipped
+        # rather than dead-reckoned — one node's claim gives an arc, not a
+        # position, so there is no honest estimate to put in its place.  Two or
+        # more claiming nodes are unaffected: those are the known lane's, and
+        # it solves them (see known_lane._build_solver_input's stale-fix seed).
+        _fix_age_s = (float(newest["ts_ms"]) - float(fix.get("fix_ts_ms") or 0)) / 1000.0
+        if newest.get("hold") and _fix_age_s > KNOWN_CLAIM_MAX_FIX_AGE_S:
+            continue
         node_id = newest["node_id"]
         delay_us = float(newest.get("delay_us") or 0.0)
 
@@ -244,6 +355,12 @@ def _claimed_single_node_entries(now: float) -> list[dict]:
                 "seen": round(max(0.0, now - float(newest["ts_ms"]) / 1000.0), 1),
                 "multinode": False,
                 "position_source": "adsb_single_node",
+                # True when the drawn fix is no longer being refreshed by a
+                # transponder (a hold still inside the freshness cap, or a
+                # cached fix that has aged during this claim's own lifetime),
+                # so the map can say the position is coasting rather than
+                # measured.  Absent-as-false for every claim made today.
+                "adsb_stale": _fix_age_s > 0.0 and bool(newest.get("hold")),
                 # Mandatory: the live/owner WS feeds drop any entry whose
                 # node_id is not in the connection's node set.
                 "node_id": node_id,
@@ -323,55 +440,50 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             aircraft.append(entry)
 
     # 3. Multi-node solver
-    stale_mn = []
-    for key, r in list(state.multinode_tracks.items()):
+    # Expiry is services.feed_gc.prune_multinode_tracks', run on the GC timer
+    # so the store is aged even when this build is stalled or skipped.  The
+    # call here is the idempotent belt-and-braces copy: it costs one pass over
+    # a dict this function is about to iterate anyway, and it means the
+    # snapshot below cannot contain an entry the display gates would have to
+    # re-derive an expiry for.  Everything from here down only READS.
+    prune_multinode_tracks(now)
+    # Snapshot under the solver's track lock: the solver worker iterates
+    # state.multinode_tracks inside multinode_key_decision while holding it,
+    # and a pop from this thread mid-iteration raised "dictionary changed size
+    # during iteration" live (2026-09-05).  Lazy import: solver.py owns the
+    # lock and importing it at module level here would create a cycle through
+    # the task modules.
+    from services.tasks import solver as _solver_mod
+
+    with _solver_mod._MN_TRACKS_LOCK:
+        _mn_snapshot = list(state.multinode_tracks.items())
+    for key, r in _mn_snapshot:
         age_s = now - r.get("timestamp_ms", 0) / 1000
-        if age_s > 60:
-            stale_mn.append(key)
-            continue
         # Display gates below are NOT staleness — a gated entry stays in
         # state.multinode_tracks so the next solve can confirm it (n=2) or
-        # supersede it, and only the age_s > 60 branch above discards its
-        # anomaly hex.  A one-shot solve renders nothing at all: a 2-node
+        # supersede it, and only expiry (prune_multinode_tracks, above and on
+        # the GC timer) discards its anomaly hex.  A one-shot solve renders nothing at all: a 2-node
         # track needs a second solve to prove it isn't a mirror-point ghost,
         # and a 3+-node one-shot gets a short preview window instead of the
-        # full 60 s entry lifetime before it either confirms or expires.
+        # full entry lifetime before it either confirms or expires.
         solve_count = int(r.get("solve_count") or 1)
         if r.get("n_nodes") == 2 and solve_count < MN_N2_MIN_SOLVES:
             continue
         if r.get("n_nodes", 0) >= 3 and solve_count == 1 and age_s > MN_ONESHOT_TTL_S:
             continue
-        ac = multinode_to_aircraft(key, r)
-        # Dead-reckon position using solver velocity (vel_east/vel_north in
-        # m/s), capped at 30 s: beyond that a velocity error dominates any
-        # solve accuracy (a 15 m/s error is already 450 m of drift at the
-        # cap), so an old solve holds its last dead-reckoned point until the
-        # 60 s entry expiry rather than drifting further.
-        ts_fix = r.get("timestamp_ms", 0) / 1000.0
-        elapsed = min(now - ts_fix, 30.0)
-        vel_east_m_s = r.get("vel_east", 0.0)
-        vel_north_m_s = r.get("vel_north", 0.0)
-        # TRACK_DR_SOURCE, read per call like TRACK_SMOOTHER: "kf" (default)
-        # dead-reckons with the display filter's LEARNED velocity when one
-        # exists — the solved velocity this block used to trust was measured
-        # (2026-08-09, n=93) at median 127 m/s vector error, i.e. ~3.8 km of
-        # drift at the 30 s cap below, worse than the solve error itself.
-        # "solve" restores the old behaviour (rollback, env only).  The KF
-        # accessor returns None whenever the KF never saw this key (smoother
-        # in ewma/off mode, first solve, TTL-swept) so the fallback below is
-        # also the natural off-path, not a separate mode.
-        if (os.getenv("TRACK_DR_SOURCE", "kf") or "kf").strip().lower() != "solve":
-            _lv = track_filter.learned_velocity(key)
-            if _lv is not None:
-                vel_east_m_s, vel_north_m_s = _lv[0], _lv[1]
-        if elapsed > 0.0 and (vel_east_m_s != 0.0 or vel_north_m_s != 0.0):
-            _dr_lat, _dr_lon = offset_latlon_m(
-                ac["lat"],
-                ac["lon"],
-                east_m=vel_east_m_s * elapsed,
-                north_m=vel_north_m_s * elapsed,
-            )
-            ac["lat"], ac["lon"] = round(_dr_lat, 5), round(_dr_lon, 5)
+        # One sick solve must not cost the whole broadcast.  Everything from
+        # here to the append reads a single multinode entry, and an exception
+        # anywhere in it used to propagate out of the flush task ("Aircraft
+        # flush failed") and drop the ENTIRE tick's feed — every other
+        # aircraft with it — for one bad key.  A skipped entry ages out of
+        # state.multinode_tracks on its own within 60 s, so degrading to
+        # "this one aircraft is missing for a few ticks" is strictly better
+        # than an empty map.
+        try:
+            ac = _multinode_entry(key, r, now)
+        except Exception:
+            _note_multinode_entry_failure(key)
+            continue
         if ac["hex"] not in seen_hex:
             seen_hex.add(ac["hex"])
             append_track_history(ac["hex"], ac["lat"], ac["lon"], ac["alt_baro"], now)
@@ -386,16 +498,6 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             ac["recent_positions"] = list(state.track_histories_public.get(ac["hex"], []))
             ac["ground_truth_hex"] = resolve_ground_truth_hex(ac["hex"], ac["lat"], ac["lon"])
             aircraft.append(ac)
-    for k in stale_mn:
-        # Must use the same derivation as insertion (multinode_to_aircraft →
-        # multinode_hex_from_key). This previously used an obsolete 4-char
-        # format that never matched the mn<sha256[:10]> actually inserted, so
-        # no multinode anomaly hex was ever evicted and anomaly_hexes grew
-        # without bound — enough to trip the anomaly_flood health check.
-        with state.anomaly_lock:
-            state.anomaly_hexes.discard(multinode_hex_from_key(k))
-        state.multinode_tracks.pop(k, None)
-
     # 3b. Singly-claimed ADS-B targets — no seen_hex guard on purpose.  A
     # partially-claimed aircraft can still carry a tracker track keyed by the
     # same hex, and the ADS-B fix is the better of the two positions, so the
@@ -403,8 +505,11 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     # here by append order.
     aircraft.extend(_claimed_single_node_entries(now))
 
-    # 4/4b. Stale-store GC — services.feed_gc.
-    prune_stale_stores(now)
+    # 4/4b. Stale-store GC no longer runs here — it is on its own 5 s timer
+    # (services.tasks.feed_gc_task).  A feed build happens only when the flush
+    # task reaches it, which a slow websocket broadcast or an idle
+    # state.aircraft_dirty can defer indefinitely; the stores it prunes are
+    # written by frame workers and solver threads that never stop.
 
     # 5. Pending detection arcs from tracker tracks not yet geolocated.
     # These arcs appear immediately on each detection without waiting for
@@ -447,7 +552,12 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
                     # aircraft with no arc at all once dedup collapsed their
                     # per-node entries.  Every promoted track now emits its
                     # measured-delay arc.
-                meas = track.history.get("measurements")
+                # This builder runs on the flush executor, not the frame worker
+                # that owns the tracker, and history["measurements"] is a bounded
+                # deque — iterating it with Python-level code while that worker
+                # appends raises RuntimeError.  list() is one C call and so an
+                # atomic snapshot under the GIL; take it before the reverse scan.
+                meas = list(track.history.get("measurements") or ())
                 if not meas:
                     continue
                 latest = next((m for m in reversed(meas) if m is not None), None)

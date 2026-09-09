@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
+from config.constants import is_num
 from core import state
 
 # The API-key rule (and its production fail-fast) lives beside the other
@@ -82,6 +83,11 @@ async def push_ground_truth_snapshot(body: dict = Body(...), _key=Depends(_verif
             "speed_ms": ac.get("speed_ms", 0),
             "heading": ac.get("heading", 0),
             "has_adsb": ac.get("has_adsb", False),
+            # Transponder present but silent right now (simulator outage).
+            # has_adsb stays true, so the dark count is unaffected — this is
+            # what tells the known-track hold apart from a genuinely dark
+            # aircraft.
+            "adsb_silent": ac.get("adsb_silent", False),
             "adsb_callsign": ac.get("adsb_callsign"),
             "anomaly_event": ac.get("anomaly_event"),
         }
@@ -109,6 +115,22 @@ async def push_ground_truth_snapshot(body: dict = Body(...), _key=Depends(_verif
     return {"status": "ok", "received": len(aircraft_list), "tracked_hex": len(state.ground_truth_trails)}
 
 
+def _sim_push_ts_ms(body: dict, now_s: float) -> int:
+    """The push's capture time, in epoch ms, bounded forwards only.
+
+    ts_ms is caller-supplied, and feed_gc is the only pruner of adsb_aircraft:
+    a stamp ahead of us gives a permanently negative age, so the record would
+    read fresh to every 60 s gate and never be collected.  The past is left
+    alone deliberately — a backdated push ages out on its own, and replay
+    depends on being able to say when a position was really measured.
+    """
+    ts_ms = body.get("ts_ms")
+    now_ms = int(now_s * 1000)
+    if not is_num(ts_ms) or ts_ms <= 0 or ts_ms > now_ms:
+        return now_ms
+    return int(ts_ms)
+
+
 @router.post("/api/sim/adsb/push")
 async def sim_push_adsb_positions(body: dict = Body(...), _key=Depends(_verify_sim_key)):
     """Simulator pushes live ADS-B positions every second directly into state.adsb_aircraft.
@@ -125,7 +147,7 @@ async def sim_push_adsb_positions(body: dict = Body(...), _key=Depends(_verify_s
     a decoy whose delay/Doppler a wrong echo matches by coincidence, and each
     such bind put a plane icon on the map that no radar ever measured.
     """
-    ts_ms = body.get("ts_ms", int(time.time() * 1000))
+    ts_ms = _sim_push_ts_ms(body, time.time())
     aircraft_list = body.get("aircraft", [])
     if not isinstance(aircraft_list, list):
         raise HTTPException(status_code=400, detail="aircraft list required")

@@ -15,6 +15,8 @@ from core import state
 from core.users import require_admin
 from pipeline.passive_radar import PassiveRadarPipeline
 from services import node_registration
+from services.node_config import canonical_config
+from services.node_pipeline import config_hash
 from services.public_location import public_latlon
 from services.publication import is_private
 from services.tcp_handler import is_synthetic_node
@@ -128,17 +130,20 @@ async def ingest_detections(
     frames = body.frames if body.frames is not None else [body_dict]
 
     if node_id not in state.connected_nodes:
+        # This path carries no geometry at all: the node is counted, and stays
+        # unplaced until it configures itself over TCP or the v1 API.
+        legacy_config = canonical_config({"node_id": node_id})
         with state.connected_nodes_lock:
             state.connected_nodes[node_id] = {
                 "config_hash": "",
-                "config": {"node_id": node_id},
+                "config": legacy_config,
                 "status": "active",
                 "last_heartbeat": datetime.now(timezone.utc).isoformat(),
                 "peer": "http",
                 "is_synthetic": is_synthetic_node(node_id),
                 "capabilities": {},
             }
-        await node_registration.register_node(node_id, {"node_id": node_id})
+        await node_registration.register_node(node_id, legacy_config)
     else:
         with state.connected_nodes_lock:
             state.connected_nodes[node_id]["status"] = "active"
@@ -176,12 +181,33 @@ async def ingest_detections_bulk(
     for entry in body.nodes:
         node_id = entry.node_id
         frames = entry.frames
-        entry_config = entry.config or {"node_id": node_id}
 
-        if node_id not in state.connected_nodes:
+        with state.connected_nodes_lock:
+            known = state.connected_nodes.get(node_id)
+            if known is not None and entry.config is None:
+                # A follow-up call that omits config says nothing about the
+                # node's geometry; it is not a claim that the config is now
+                # the trivial {"node_id": node_id} dict. That dict never
+                # hashes to match a real stored config, so treat this as no
+                # change rather than re-registering on every such call.
+                changed = False
+            else:
+                entry_config = entry.config or {"node_id": node_id}
+                # Hashed as declared, stored canonical: see register_with_pipeline.
+                entry_hash = config_hash(entry_config)
+                entry_config = canonical_config(entry_config)
+                # A hash mismatch only triggers re-registration for a node this
+                # endpoint itself created. Otherwise a caller holding RADAR_API_KEY
+                # could strip a live v1 or TCP node's geometry by naming it in a
+                # bulk entry, until that node's next config PUT restores it.
+                changed = (
+                    known is not None and known.get("peer") == "http-bulk" and known.get("config_hash") != entry_hash
+                )
+
+        if known is None or changed:
             with state.connected_nodes_lock:
                 state.connected_nodes[node_id] = {
-                    "config_hash": "",
+                    "config_hash": entry_hash,
                     "config": entry_config,
                     "status": "active",
                     "last_heartbeat": datetime.now(timezone.utc).isoformat(),
@@ -189,6 +215,9 @@ async def ingest_detections_bulk(
                     "is_synthetic": is_synthetic_node(node_id),
                     "capabilities": {},
                 }
+            # A cached pipeline was built from the config that was active when
+            # it was created, and nothing else refreshes it.
+            node_registration.evict_pipeline(node_id)
             await node_registration.register_node(node_id, entry_config)
             registered += 1
         else:

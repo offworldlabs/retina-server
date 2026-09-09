@@ -305,13 +305,12 @@ async def test_a_blocked_node_s_frames_stay_out_of_the_pipeline(registered_node,
 
 
 async def test_a_frame_from_a_node_absent_from_the_pipeline_is_not_filed(registered_node, node_client):
-    """Not filed, because frame_processor would solve it against the wrong geometry.
+    """Not filed, because this server holds no configuration for the node at all.
 
-    `get_or_create_node_pipeline` falls back to the process-wide default
-    pipeline for a node it holds no configuration for, so the frame would reach
-    the map as a plausible detection against somebody else's receiver and
-    transmitter, with an ack claiming it was accepted. Wrong data is worse than
-    the gap, and the gap is at most one heartbeat interval wide.
+    There is no config_hash to check staleness against and nothing to place,
+    count or attribute the frame under, with an ack claiming it was accepted
+    regardless. Wrong data is worse than the gap, and the gap is at most one
+    heartbeat interval wide.
     """
     token, _ = registered_node
     state.connected_nodes.clear()
@@ -582,3 +581,80 @@ async def test_both_paths_need_a_live_bearer(registered_node, node_client, path,
 
     assert response.status_code == 401
     assert _queued() == []
+
+
+# ── detection mirror ─────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def armed_mirror():
+    """The mirror pointed at a target nothing in the suite will contact."""
+    from services import detection_mirror
+
+    detection_mirror.configure_from_env({"DETECTION_MIRROR_URL": "https://sink.invalid", "DETECTION_MIRROR_KEY": "k"})
+    yield detection_mirror
+    detection_mirror.configure_from_env({})
+
+
+async def test_an_accepted_frame_is_offered_to_the_mirror(registered_node, node_client, armed_mirror):
+    token, node_id = registered_node
+
+    response = node_client.post(DETECTION, headers=_auth(token), json=_frame())
+
+    assert response.status_code == 202
+    assert response.json()["accepted"] == 2
+    assert [queued_id for queued_id, _ in armed_mirror.drain()] == [node_id]
+
+
+async def test_a_declined_frame_is_not_offered(registered_node, node_client, armed_mirror):
+    """A node absent from the registries is declined, and must not be mirrored:
+    the receiving environment would otherwise hold frames production refused."""
+    token, node_id = registered_node
+    with state.connected_nodes_lock:
+        state.connected_nodes.pop(node_id, None)
+
+    response = node_client.post(DETECTION, headers=_auth(token), json=_frame())
+
+    assert response.status_code == 202
+    assert response.json()["accepted"] == 0
+    assert armed_mirror.drain() == []
+
+
+async def test_ingest_path_does_no_io_even_with_the_mirror_armed(
+    registered_node, node_client, armed_mirror, monkeypatch
+):
+    """Pins the property the whole design rests on: `offer()` only enqueues.
+
+    A regression that put a synchronous HTTP call inside `offer()`, even
+    behind a try/except, would pass every other test in this module. Poisoning
+    every way to construct an httpx client or issue a request catches it
+    either way such a regression could go wrong: unguarded, it raises into the
+    response; guarded, the frame the assertion looks for on the queue would
+    never arrive there because offer() never got to put_nowait.
+    """
+    import httpx
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("the ingest path must not construct an httpx client or issue a request")
+
+    for name in ("AsyncClient", "Client", "request", "get", "post", "put", "stream"):
+        monkeypatch.setattr(httpx, name, _boom)
+
+    token, node_id = registered_node
+    response = node_client.post(DETECTION, headers=_auth(token), json=_frame())
+
+    assert response.status_code == 202
+    assert response.json()["accepted"] == 2
+    assert [queued_id for queued_id, _ in armed_mirror.drain()] == [node_id]
+
+
+async def test_the_ack_is_unchanged_with_the_mirror_unarmed(registered_node, node_client):
+    from services import detection_mirror
+
+    detection_mirror.configure_from_env({})
+    token, _ = registered_node
+
+    response = node_client.post(DETECTION, headers=_auth(token), json=_frame())
+
+    assert response.status_code == 202
+    assert response.json() == {"accepted": 2, "config_stale": False, "streaming_allowed": True}

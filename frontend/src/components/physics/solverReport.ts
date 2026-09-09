@@ -7,16 +7,39 @@
 
 export interface SolverStats {
   window_minutes: number;
+  /** How much of window_minutes the backend's solve-history stores actually
+   * hold.  Lower than window_minutes means the answer is truncated.  Absent
+   * from an older cached payload. */
+  window_effective_minutes?: number;
+  /** Records in the window per solver lane — the denominator the dark funnel
+   * below excludes.  Absent from an older cached payload. */
+  lane_split?: { dark: number; adsb: number; known: number };
+  // attempts / published / rejects / position_error_km / fragmentation are
+  // the DARK lane only (the multinode lane with no transponder), which is
+  // the lane a publication funnel describes.  The known lane has its own
+  // block server-side and never published through this funnel; it used to be
+  // counted in it anyway, which put its success label at the top of the
+  // reject table and made 94% of "attempts" belong to another lane.
   attempts: number;
   published: { total: number; n2: number; n3plus: number };
   rejects: { total: number; by_reason: Record<string, number> };
   position_error_km: { median: number | null; p90: number | null; n: number };
   ghosts: {
+    /** Always "dark" — precision is scored over dark tracks only. */
+    scope?: string;
     live_tracks: number;
+    /** Informational; excluded from the precision denominator. */
     adsb_associated: number;
+    /** The precision denominator: dark tracks with a position. */
+    dark_tracks?: number;
     gt_matched: number;
+    /** Dark tracks rescued by nearby real ADS-B traffic rather than GT. */
+    adsb_near?: number;
     ghost_tracks: number;
-    precision_pct: number;
+    /** null when there are no dark tracks to score — formatPct renders "—".
+     * It used to read a flat 100 in that case, which is the shape a healthy
+     * dark lane and a completely dead one share. */
+    precision_pct: number | null;
   };
   consensus: {
     mode: string;

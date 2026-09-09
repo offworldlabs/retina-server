@@ -12,9 +12,9 @@ TCP frame (node)
     │
     ├─ ADS-B fast-path → state.adsb_aircraft (immediate, no queuing)
     │
-    └─ frame queue (asyncio, capacity 10 000)
+    └─ frame queue (asyncio, capacity 10 000, sharded: crc32(node_id) % FRAME_WORKERS)
            │
-           └─ FRAME_WORKERS thread pool
+           └─ FRAME_WORKERS workers, one per shard → thread pool
                   │
                   ├─ PassiveRadarPipeline.process_frame()
                   │       ├─ Tracker.process_frame()  (Kalman + GNN)
@@ -57,6 +57,23 @@ On receipt the server does two things in parallel:
 
 2. **Frame queue**: the frame is enqueued for CPU-bound processing by the
    `FRAME_WORKERS` thread pool. `FRAME_WORKERS=8` on the production server.
+
+   The queue is sharded by node: a frame goes to shard
+   `crc32(node_id) % FRAME_WORKERS`, and each worker drains exactly one shard,
+   awaiting one frame's executor call before it takes the next. So a node's
+   frames are processed one at a time and in arrival order, while frames from
+   nodes on other shards run in parallel. This is not a tuning choice: the
+   per-node `Tracker` has no locking, and while every worker drained one shared
+   queue two frames from the same node could mutate the same track list from two
+   threads — an `IndexError` out of `_associate` (frame dropped), or, silently,
+   out-of-order Kalman predict/update pairs. `FRAME_WORKERS=1` is a single shard
+   and therefore a plain FIFO. Depth (`frame_queue_depth`,
+   `frame_queue_saturated`) counts every shard, and the capacity of 10 000 is
+   the budget for the queue as a whole.
+
+   The cost of the mapping is that two busy nodes can land on one shard while
+   another shard idles, so raise `FRAME_WORKERS` rather than expecting perfect
+   balance from a fleet smaller than the worker count.
 
 ---
 
@@ -182,8 +199,31 @@ When a geolocated track has an `adsb_hex` and there's a fresh ADS-B fix in
 - `position_source` is set to `"adsb_associated"`.
 - No ambiguity arc is emitted — the position is already known precisely.
 
-ADS-B entries expire after 60 s. After expiry the aircraft falls back to the
-solver position.
+ADS-B entries expire 60 s after the position was *captured*, which is the
+timestamp on the frame that carried it rather than the moment the backend
+stored it. The two differ under queue backlog, and it is the capture time that
+the staleness gates need. Where a frame carries no usable timestamp, receipt
+time stands in and `adsb_capture_ts_fallback` counts it. The bound is
+asymmetric: a frame may be `ADSB_CAPTURE_MAX_SKEW_S` behind server time,
+because backlog makes that honest, but only `ADSB_CAPTURE_MAX_LEAD_S` ahead,
+because a stamp in the future is never stale to any gate. After expiry the
+aircraft falls back to the solver position.
+
+Records also carry `recv_ms`, the server clock at the moment the position was
+stored. Rules that compare a fix against another server-stamped event need
+that one: `record_adsb_calibration` bounds the fix against the node's last
+detection, and comparing a node-clock stamp against a server-clock one would
+make that an NTP test rather than a co-timing test. Writes are guarded so a
+replayed or backlogged frame cannot walk `last_seen_ms` backwards.
+
+External truth (`state.external_adsb_cache`, polled from adsb.lol) is stamped
+the same way, from each feed's own position time. `AdsbLolClient` resolves
+tar1090's `seen_pos` against its own fetch and publishes an absolute
+`captured_at`, so a row it serves again from its last-good cache during an
+outage keeps its real age. Entries stay servable for `EXTERNAL_ADSB_MAX_AGE_S`
+and are therefore tens of seconds old by construction, so the tighter gates
+refuse them, calibration's 10 s among them. Consumers scoring solves against
+them apply `EXTERNAL_TRUTH_MAX_AGE_S` instead, which is tighter again.
 
 ---
 
@@ -201,7 +241,22 @@ for deduplicated hex codes:
    tracks that don't have a known ADS-B position.
 
 The result is broadcast to all WebSocket clients and written to
-`tar1090_data/aircraft.json`.
+`tar1090_data/aircraft.json`. The broadcast fans its sends out with
+`asyncio.gather`, so it costs one 5 s send timeout in total no matter how many
+clients are wedged (`ws_send_timeouts` in `/api/admin/metrics` counts the
+clients dropped that way).
+
+**Stale-store GC does not run here.** `services/feed_gc.py`
+(`prune_stale_stores` for `adsb_aircraft`, `known_claims`,
+`ground_truth_trails`, `track_histories`, `track_arc_motion`,
+`track_last_emit`/`track_gate_hold`, plus `prune_multinode_tracks` for the
+lane-aware `multinode_tracks` expiry) runs on its own 5 s timer,
+`services/tasks/feed_gc.py::feed_gc_task`. It used to run inside this builder,
+which meant a stalled broadcast — or an idle `state.aircraft_dirty`, which
+skips the build entirely — stopped GC server-wide while frame workers and
+solver threads kept writing those stores. The builder still calls
+`prune_multinode_tracks` (idempotent) before reading its snapshot, and then
+only reads.
 
 ---
 

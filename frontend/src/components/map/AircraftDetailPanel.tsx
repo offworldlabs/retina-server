@@ -5,6 +5,7 @@ import { classifyHex, emergencySquawkLabel } from "./hexInfo";
 import { trailToCsv, downloadCsv } from "./trailExport";
 import { copyToClipboard, toast } from "./toast";
 import { M_PER_FT, KNOTS_PER_MS, MS_PER_KNOT } from "./units";
+import { solveUncertaintyRadiusM, solveUncertaintyRadius95M } from "./uncertainty";
 
 export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError, detectingNodes = [], solveHistory = null }) {
   if (!ac) return null;
@@ -22,6 +23,16 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
   // hex-range badge if it lands in a known range.
   const hexInfo = classifyHex(ac.hex);
   const emergency = emergencySquawkLabel(ac.squawk);
+
+  // Position-uncertainty radii, from the same helpers as the map disc so the
+  // panel and the circle can never quote different numbers.  The map draws
+  // the 68% ring (readable at map scale); the panel shows it beside the 95%
+  // figure, which is the number anyone asking "how sure are you?" expects and
+  // which the ring stopped being on 2026-09-06.  Both describe the LAST
+  // solve and hold until the next one, so there is no "now" distinct from
+  // "at solve".
+  const uncertaintyM = solveUncertaintyRadiusM(ac);
+  const uncertainty95M = solveUncertaintyRadius95M(ac);
 
   const handleExportTrail = () => {
     // `trails` (prop) is the canonical solved-position trail buffer maintained
@@ -227,6 +238,12 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
             <Field label="Nodes" value={ac.n_nodes} />
             <Field label="RMS Delay" value={`${ac.rms_delay ?? "\u2014"} \u03bcs`} />
             <Field label="RMS Doppler" value={`${ac.rms_doppler ?? "\u2014"} Hz`} />
+            {uncertaintyM > 0 && (
+              <Field
+                label="Accuracy"
+                value={`\u00b1${formatUncertaintyRadius(uncertaintyM)} (68%) \u00b7 \u00b1${formatUncertaintyRadius(uncertainty95M)} (95%)`}
+              />
+            )}
           </div>
         )}
 
@@ -384,6 +401,13 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
       </div>
     </div>
   );
+}
+
+/** Uncertainty radius for display: rounded to 10 m, switching to km with one
+ *  decimal above 2 km where the extra digits are noise. */
+function formatUncertaintyRadius(m) {
+  if (m > 2000) return `${(m / 1000).toFixed(1)} km`;
+  return `${Math.round(m / 10) * 10} m`;
 }
 
 function Field({ label, value }) {

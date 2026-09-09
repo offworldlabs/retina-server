@@ -59,6 +59,53 @@ def _build_real_only_payload(aircraft_data: dict) -> bytes:
     return filter_payload_to_nodes(aircraft_data, real_node_ids)
 
 
+# Per-client send budget for one broadcast.  The sends are fanned out with
+# asyncio.gather, so this is the bound on the WHOLE broadcast rather than on
+# each client in turn: before the fan-out, N wedged clients cost N x 5 s of
+# serialised wall time inside the flush task, and every store GC that used to
+# hang off the feed build stopped with it.
+WS_SEND_TIMEOUT_S = 5.0
+
+
+async def _fan_out_sends(pairs: list) -> set:
+    """Send each (websocket, payload) pair concurrently; return the failures.
+
+    Returns the set of clients whose send raised or timed out — the caller
+    treats them exactly as the old per-client ``except`` branch did (drop from
+    the registry, then close).  Timeouts are counted separately: a send that
+    raises is a client that has already gone away, a send that times out is one
+    that was still holding the broadcast open.
+    """
+    if not pairs:
+        return set()
+    results = await asyncio.gather(
+        *(asyncio.wait_for(ws.send_text(payload), timeout=WS_SEND_TIMEOUT_S) for ws, payload in pairs),
+        return_exceptions=True,
+    )
+    stale = set()
+    for (ws, _payload), result in zip(pairs, results):
+        if isinstance(result, BaseException):
+            if isinstance(result, (asyncio.TimeoutError, TimeoutError)):
+                state.bump_counter("ws_send_timeouts")
+            stale.add(ws)
+    return stale
+
+
+async def _close_all(clients) -> None:
+    """Close dropped clients concurrently, ignoring every failure.
+
+    Concurrent for the same reason the sends are: a client wedged badly enough
+    to miss its send is exactly the one whose close can hang, and a serial
+    close loop would just move the stall one line down.
+    """
+    if not clients:
+        return
+    await asyncio.gather(
+        *(asyncio.wait_for(ws.close(), timeout=WS_SEND_TIMEOUT_S) for ws in clients),
+        return_exceptions=True,
+    )
+
+
 async def broadcast_aircraft(aircraft_data: dict, aircraft_bytes: bytes):
     """Push updated aircraft data to all connected WebSocket clients.
 
@@ -79,6 +126,9 @@ async def broadcast_aircraft(aircraft_data: dict, aircraft_bytes: bytes):
     Redacting nothing returns the identical object, so the common case reuses
     the bytes the flush already serialised rather than paying for a second
     orjson pass at 1 Hz.
+
+    All three client sets are sent to with _fan_out_sends, so the broadcast
+    costs one WS_SEND_TIMEOUT_S at worst no matter how many clients are wedged.
     """
     public_data = public_aircraft_payload(aircraft_data)
     if public_data is aircraft_data:
@@ -95,33 +145,27 @@ async def broadcast_aircraft(aircraft_data: dict, aircraft_bytes: bytes):
 
     if state.ws_live_clients:
         real_payload = real_bytes.decode()
-        stale_live = set()
-        for ws in list(state.ws_live_clients):
-            try:
-                await asyncio.wait_for(ws.send_text(real_payload), timeout=5.0)
-            except Exception:
-                stale_live.add(ws)
+        stale_live = await _fan_out_sends([(ws, real_payload) for ws in list(state.ws_live_clients)])
         state.ws_live_clients.difference_update(stale_live)
-        for ws in stale_live:
-            try:
-                await ws.close()
-            except Exception:
-                pass
+        await _close_all(stale_live)
 
     if state.ws_owner_clients:
+        # The per-owner payload is built BEFORE the gather, not inside it: the
+        # filtering is per-client CPU on the event loop either way, but doing
+        # it here keeps the sends themselves concurrent.  A client whose filter
+        # raises is stale without ever being sent to, which is what the old
+        # try-block around both steps did.
+        owner_pairs = []
         stale_owner = set()
         for ws, owned in list(state.ws_owner_clients.items()):
             try:
-                owner_payload = filter_payload_to_nodes(aircraft_data, owned).decode()
-                await asyncio.wait_for(ws.send_text(owner_payload), timeout=5.0)
+                owner_pairs.append((ws, filter_payload_to_nodes(aircraft_data, owned).decode()))
             except Exception:
                 stale_owner.add(ws)
+        stale_owner |= await _fan_out_sends(owner_pairs)
         for ws in stale_owner:
             state.ws_owner_clients.pop(ws, None)
-            try:
-                await ws.close()
-            except Exception:
-                pass
+        await _close_all(stale_owner)
 
     if not state.ws_clients:
         return
@@ -132,18 +176,9 @@ async def broadcast_aircraft(aircraft_data: dict, aircraft_bytes: bytes):
     gt_slim = {hex_code: [positions[-1]] for hex_code, positions in gt_full.items() if positions}
     slim_data = {**public_data, "ground_truth": gt_slim}
     payload = orjson.dumps(slim_data, option=orjson.OPT_SERIALIZE_NUMPY).decode()
-    stale = set()
-    for ws in list(state.ws_clients):
-        try:
-            await asyncio.wait_for(ws.send_text(payload), timeout=5.0)
-        except Exception:
-            stale.add(ws)
+    stale = await _fan_out_sends([(ws, payload) for ws in list(state.ws_clients)])
     state.ws_clients.difference_update(stale)
-    for ws in stale:
-        try:
-            await ws.close()
-        except Exception:
-            pass
+    await _close_all(stale)
 
 
 async def aircraft_flush_task(default_pipeline):
@@ -184,5 +219,5 @@ async def aircraft_flush_task(default_pipeline):
             await broadcast_aircraft(aircraft_data, aircraft_bytes)
             state.task_last_success["aircraft_flush"] = time.time()
         except Exception:
-            state.task_error_counts["aircraft_flush"] += 1
+            state.bump_task_error("aircraft_flush")
             logging.exception("Aircraft flush failed")

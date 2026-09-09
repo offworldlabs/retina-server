@@ -31,3 +31,11 @@ FastAPI backend and React front-ends for the RETINA passive-radar network.
   the test droplet, `testmap.retina.fm` for staging (Claude: use the Chrome
   browser tools) — and confirm the map renders, aircraft and solves appear,
   and the change behaves as intended before calling the deploy done.
+- **An automated browser can show `0 aircraft` on a map that real users see
+  working.** The count in the toolbar and the live-stats panel comes from the
+  map's own update loop, which a scripted session does not always drive. Judge
+  it by `aircraft_on_map` in `/api/test/dashboard` instead, and confirm the
+  data path with `/api/radar/data/aircraft.json` from the page's own origin: a
+  200 carrying aircraft means the server and the seam are fine and only the
+  rendering was not exercised. Nodes, basemap and controls do render, so a
+  blank map is still worth chasing — it is the aircraft count alone that lies.

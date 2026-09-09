@@ -11,8 +11,21 @@ export {
   yagiSectorPositions,
   uncertaintyDiscRadiusM,
 } from "./geo";
+export {
+  UNCERTAINTY_K68,
+  UNCERTAINTY_K95,
+  UNCERTAINTY_MAX_RADIUS_M,
+  UNCERTAINTY_RING_ONLY_ABOVE_M,
+  solveAgeS,
+  solveSigmaM,
+  solveDiscCenter,
+  solveUncertaintyRadiusM,
+  solveUncertaintyRadius95M,
+  isRingOnlyRadius,
+} from "./uncertainty";
+export { MLAT_HISTORY_REFRESH_MS, newSolveArrived } from "./mlatHistory";
 export { mergeTrailPositions, sampleTrailPositions, buildTrailSegments } from "./trails";
-export { PLANE_PATH, getAircraftColor, altitudeColor, ALTITUDE_LEGEND, aircraftIconSize, makeAircraftIcon, makeDroneIcon, nodeIcon, drDriftM, hideDrIcon } from "./icons";
+export { PLANE_PATH, getAircraftColor, altitudeColor, ALTITUDE_LEGEND, aircraftIconSize, makeAircraftIcon, makeDroneIcon, nodeIcon, drDriftM, drGsKt, drIconBudgetM, drIconState, hideDrIcon, isDarkMultinodeSolve, isMultinodeSolve } from "./icons";
 export { FitBounds, ViewportTracker, MapClickClear } from "./MapControls";
 export { useAircraftFeed, useNodes, useAuth } from "./hooks";
 export { default as NodeOwnerControl } from "./NodeOwnerControl";

@@ -159,5 +159,5 @@ async def users_backup_task():
             await loop.run_in_executor(None, run_users_db_backup)
             state.task_last_success["users_db_backup"] = time.time()
         except Exception:
-            state.task_error_counts["users_db_backup"] += 1
+            state.bump_task_error("users_db_backup")
             logger.exception("users_db backup failed")

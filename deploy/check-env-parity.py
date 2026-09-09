@@ -52,7 +52,7 @@ _LABEL_WIDTH = max(len(env) for env in OVERLAYS)
 
 # Every vhost the template defines must be TLS in a deployed environment. Update
 # this alongside the template if a vhost is added or removed.
-EXPECTED_TLS_VHOSTS = 7
+EXPECTED_TLS_VHOSTS = 8
 
 # Key paths permitted to differ between the environments, as regexes matched
 # against the dotted path into the merged compose tree.
@@ -111,6 +111,19 @@ ALLOWED_DIVERGENCE = (
     # three overlays join retina-edge identically and any difference is a
     # server silently off the network — which 502s /api/towers, and is exactly
     # what this check exists to catch.
+    # The dark-solver configuration the test droplet is measured under (PR
+    # #306): free-altitude solve, the per-node frame interval the synthetic
+    # fleet's ~1 Hz cadence needs, the stale-track cutoff tuned to its miss
+    # rate, and the dark track-following lane in binding mode after two
+    # solves. Test only, on purpose: the code defaults (sweep / 1.0 / 3 s /
+    # shadow / 3) are what staging and production run until the numbers from
+    # the test droplet say the defaults should move, which is a code change
+    # in backend/core/state.py and config/constants.py, not an overlay one.
+    (
+        "test",
+        r"^services\.server\.environment\.(SOLVER_ALT_MODE|NODE_FRAME_MIN_INTERVAL_S"
+        r"|TRACK_MAX_STALE_S|DARK_FOLLOW_MODE|DARK_FOLLOW_MIN_SOLVES)$",
+    ),
     # Compose records the file list it was assembled from.
     r"^name$",
     r"^services\.[^.]+\.(build|image)\.?.*labels.*$",
@@ -151,6 +164,7 @@ HOST_VARS = (
     "HOST_MAP",
     "HOST_DASH",
     "HOST_ADMIN",
+    "HOST_DATA",
     "HOST_TESTMAP",
     "HOST_LEGACY_REDIRECT",
     "CSP_CONNECT_SRC",

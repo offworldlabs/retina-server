@@ -42,6 +42,39 @@ give you:
      to gate on confidence (map rendering, anomaly detectors) get a real
      number instead of nothing.
 
+The CV model is CONSTANT-VELOCITY, not constant-anything-else, and an
+aircraft in a coordinated turn is neither: at 250 m/s a 1 deg/s turn pulls
+4.4 m/s^2 and a standard-rate 3 deg/s turn 13.1 m/s^2 of lateral
+acceleration, an order of magnitude past what a process noise of
+_KF_SIGMA_A_MS2 = 1.5 m^2/s^3 admits.  Simulated against the shipped
+constants, a converged filter entering a 3 deg/s turn used to breach the
+chi-squared gate after 108-110 degrees of turn at every solve cadence
+(2.3 s, 4.6 s, 12 s) with a velocity error of 280-290 m/s — more than the
+aircraft's own speed — and the gate then re-anchored the track, because the
+code read a breach as an identity break by definition.  Downstream that
+mints a second mn-dark-* key for one aircraft (learned_velocity is what
+solver.py's _entry_dr_velocity dead-reckons the key decision with) and drops
+the dark_follow target for its 30 s cooldown (the re-anchored velocity sigma
+of 150 m/s is above DARK_FOLLOW_MAX_VEL_SIGMA_MS = 60).
+
+So sigma_a is MANOEUVRE-ADAPTIVE rather than constant, in two coupled parts
+(see _entry_sigma_a, _update_manoeuvre and the gate block in _smooth_kf):
+an entry that gets a surprising update — normalised innovation d^2 past
+_KF_MANOEUVRE_D2 — raises its process noise toward
+_KF_SIGMA_A_MANOEUVRE_MS2 and holds it there, decaying back on a
+_KF_MANOEUVRE_TAU_S clock once the surprises stop; and a gate breach is
+RETRIED once with the manoeuvre process noise before it is allowed to
+re-anchor, so only an innovation no plausible acceleration explains is
+treated as an identity break.  Both are inert in straight flight — an entry
+that has never been surprised runs the same sigma_a = 1.5 CV filter as
+before, which is what keeps TestStoneSoupOracle's step-by-step equality
+valid — and both are env-tunable (TRACK_KF_SIGMA_A_MANOEUVRE,
+TRACK_KF_MANOEUVRE_D2, TRACK_KF_MANOEUVRE_TAU_S), with the manoeuvre sigma
+set at or below the base disabling the whole path.  Measured on the same
+3 deg/s / 180-degree synthetic turn: re-anchors 1 -> 0 at all three
+cadences, peak in-turn velocity error 346-353 -> 261-286 m/s, and the
+straight-flight RMSE gain against raw solves 37.4% -> 35.1%.
+
 The filter is EWMA-compatible where it needs to be: first solve for a key is
 raw passthrough (no prior to smooth against, exactly like _ewma_smooth_track
 returning raw below len(positions) < 2), a gap past _KF_MAX_GAP_S re-anchors
@@ -80,9 +113,18 @@ import threading
 from dataclasses import dataclass
 
 import numpy as np
+from retina_analytics.association import ADSB_SEED_MAX_DR_AGE_S
 
 from core import state
 from services.geo import M_PER_DEG_LAT, km_per_deg_lon, offset_latlon_m
+from services.id_utils import is_transponder_hex
+
+# Maximum age of a cached ADS-B fix whose gs/track may still steer a live
+# radar track — the same 45 s cap services.known_claiming aliases as
+# KNOWN_CLAIM_MAX_FIX_AGE_S.  Taken from the library rather than from that
+# module because known_claiming reaches this one through services.dark_follow,
+# so importing it back here would close an import cycle.
+_ADSB_VEL_MAX_AGE_S = ADSB_SEED_MAX_DR_AGE_S
 
 # ── Tunables ──────────────────────────────────────────────────────────────
 # Read once at import — these are physical/model constants, not per-call
@@ -96,11 +138,85 @@ from services.geo import M_PER_DEG_LAT, km_per_deg_lon, offset_latlon_m
 # module's Q against Stone-Soup's own to 1e-6).
 _KF_SIGMA_A_MS2 = float(os.getenv("TRACK_KF_SIGMA_A", "1.5"))
 
+# ...but 1.5 is a STRAIGHT-FLIGHT number, and a turning aircraft is not in
+# straight flight.  A coordinated turn at 250 m/s pulls 4.4 m/s^2 at 1 deg/s
+# and 13.1 m/s^2 at the standard 3 deg/s — an order of magnitude more lateral
+# acceleration than a spectral density of 1.5 m^2/s^3 admits.  Simulated
+# against the shipped constants (R sigma 1200 m, gate 13.8), a converged
+# filter entering a 3 deg/s turn breaches the chi-squared gate after 108-110
+# degrees of turn at EVERY solve cadence (2.3 s, 4.6 s, 12 s), with the
+# filter's velocity error already at 280-290 m/s — larger than the aircraft's
+# own speed — by the time it does; at 1 deg/s the breach lands after 60-80
+# degrees.  The live CV batch fit tells the same story from the other side: a
+# chi2/dof of 1.8 median in straight flight against 17.6 in turns >= 2 deg/s.
+#
+# The old gate comment read that breach as an identity break and re-anchored.
+# That premise is false for the manoeuvre band, and the re-anchor is
+# expensive: it resets the velocity state to the solver's own (untrusted on
+# ~54% of records) with sigma _KF_VEL_SIGMA_SOLVE_MS = 150 m/s, which is above
+# dark_follow's DARK_FOLLOW_MAX_VEL_SIGMA_MS = 60, so the follow lane drops
+# the target for its 30 s cooldown; and learned_velocity — what solver.py's
+# _entry_dr_velocity dead-reckons the key decision with, and what
+# aircraft_feed draws with — is wrong by up to the aircraft's own speed on the
+# way there, which is what mints a second mn-dark-* key for one aircraft.
+#
+# So sigma_a is now ADAPTIVE rather than constant: each entry carries an EWMA
+# of the normalised innovation d^2 (Mahalanobis, 2 dof, so a well-matched
+# filter sits at ~2 and this one, with its deliberately inflated R, sits well
+# below), and sigma_a ramps from the base toward _KF_SIGMA_A_MANOEUVRE_MS2 as
+# that EWMA rises above _KF_MANOEUVRE_D2, saturating at twice the threshold.
+# Straight flight never reaches the threshold, so the shipped CV model — and
+# the Stone-Soup oracle that pins it — is bit-for-bit unchanged there.
+_KF_SIGMA_A_MANOEUVRE_MS2 = float(os.getenv("TRACK_KF_SIGMA_A_MANOEUVRE", "800"))
+
+# Trigger level for the normalised-innovation EWMA above.  d^2 is chi-squared
+# with 2 dof for a correctly-specified filter (mean 2), and this filter's R is
+# deliberately inflated well past the true measurement noise (see
+# _KF_R_INFLATE), so straight flight runs an order of magnitude under this.
+# The ramp is linear from here to 2x here, where sigma_a saturates at the
+# manoeuvre value.
+_KF_MANOEUVRE_D2 = float(os.getenv("TRACK_KF_MANOEUVRE_D2", "2.0"))
+
+# Time constant of the innovation EWMA, in seconds — it sets BOTH how fast
+# the filter enters manoeuvre mode (a couple of solves at any cadence, since
+# one surprising update alone engages it fully) and how fast it leaves: once
+# the surprises stop, engagement decays as exp(-t/tau), so it is under a tenth
+# of full 2.3 tau (35 s) later and under a hundredth inside 70 s.  Note that
+# "engagement near zero" and "sigma_a exactly back at base" are not the same
+# claim — with a manoeuvre sigma ~500x the base, a residual engagement of 5%
+# is still a sigma_a of ~40 — which is why the tests measure the decay on the
+# engagement level rather than on sigma_a.
+_KF_MANOEUVRE_TAU_S = float(os.getenv("TRACK_KF_MANOEUVRE_TAU_S", "15"))
+
 # Base position-noise floor, applied to EVERY solve (variance = this
 # squared) — see _measurement_R below for why this is now additive rather
 # than a fallback-only default.  cov absent -> R is EXACTLY this, the cov=0
 # limit of the same formula, not a separate code path.
 _KF_DEFAULT_POS_SIGMA_M = float(os.getenv("TRACK_KF_POS_SIGMA_M", "1200"))
+
+# The same floor for an n=2 solve, which is a different measurement in all but
+# name.  With altitude pinned, an n=2 fit has 5 unknowns against 4 residuals:
+# it is under-determined, its residuals go to ~0 whether or not the answer is
+# right (see solver.py's _SOLVER_RMS_DELAY_MAX_US and _N2_REQUIRE_CONFIRMED),
+# and the position it returns is largely the initial guess pulled along the
+# under-determined direction.  Measured live over 20-minute test-droplet
+# captures: bottom-up n=2 publishes sit 2.3 km from truth at the median and
+# anchored follow-lane ones 1.4 km, against 0.3–0.5 km for n>=3.
+#
+# Feeding those to the filter at the n>=3 base sigma was actively destructive,
+# not merely noisy.  When anchored n=2 follow solves started publishing, the
+# n=3 publishes on the SAME keys went from a 0.44 km median error to 1.40 km:
+# each n=2 update dragged the state, the next claim round dead-reckoned from
+# the dragged state, and the lane walked its own tracks off the target.  At
+# 2500 m the n=2 solve still keeps the key alive and still nudges it toward
+# the evidence, but its Kalman gain is roughly (1200/2500)^2 ≈ 4x smaller, so
+# it cannot pull an established n>=3 trajectory off truth on its own.
+#
+# ADS-B-identified tracks are deliberately excluded (see _base_pos_sigma_m):
+# their displayed position comes from the transponder, and their solves are
+# judged against a fix that is already ~100 m from truth, so none of the
+# measurement above describes them.
+_KF_N2_POS_SIGMA_M = float(os.getenv("TRACK_KF_N2_POS_SIGMA_M", "2500"))
 
 # cov_en_km2, when present, comes from the LM fit's Jacobian: a formal
 # measurement-noise-propagation covariance, and ONLY that.  It has no way to
@@ -195,9 +311,16 @@ _KF_VEL_SIGMA_SOLVE_MS = float(os.getenv("TRACK_KF_VEL_SIGMA_SOLVE", "150"))
 _KF_MAX_GAP_S = 160.0
 
 # 99.9th percentile of chi-squared, 2 degrees of freedom.  An innovation this
-# far outside the filter's own predicted uncertainty means the measurement
-# does not belong to the track being carried — not that the aircraft turned
-# hard.  Smoothing across a jump that size would be actively wrong.
+# far outside the filter's own predicted uncertainty is either a manoeuvre the
+# process noise did not admit or a measurement that does not belong to the
+# track being carried at all — and those two need different answers, so the
+# gate is applied TWICE (see _smooth_kf): once against the current sigma_a,
+# and, if that breaches, once more against a predict redone with the manoeuvre
+# sigma_a.  Surviving the second attempt means the innovation was a turn and
+# the filter simply had too little process noise; breaching it as well means
+# the measurement really is somewhere the aircraft could not have got to under
+# any plausible acceleration, and re-anchoring is right.  The VALUE stays 13.8
+# for both attempts on purpose: a 10 km jump breaches either way.
 _KF_GATE_CHI2 = 13.8
 
 # Dict-level TTL, mirrors solver.py's _MN_HISTORY_TTL_S / _sweep_mn_history —
@@ -226,6 +349,15 @@ class _TrackKF:
     x: np.ndarray  # state [e_m, ve_ms, n_m, vn_ms] — THIS ORDER, see module doc
     P: np.ndarray  # 4x4 covariance, same ordering
     last_ts_s: float
+    # Manoeuvre engagement, 0.0 (straight flight, base process noise) to 1.0
+    # (fully inflated).  Raised by a surprising update, then HELD and decayed
+    # on a clock rather than re-derived from the innovations — see
+    # _update_manoeuvre for why a plain innovation EWMA cannot work here.
+    # 0.0 on a fresh entry is the honest "no evidence of a manoeuvre yet"
+    # start, and it is deliberately not carried across a re-anchor: a
+    # re-anchor means the track identity is in question, so its innovation
+    # history is too.
+    manoeuvre: float = 0.0
 
 
 # key -> _TrackKF.  Same shape as solver.py's _MN_POS_HISTORY: one entry per
@@ -234,6 +366,23 @@ _KF_TRACKS: dict[str, _TrackKF] = {}
 _KF_LOCK = threading.Lock()
 _kf_last_sweep = 0.0
 
+# Since-boot outcome counters for the chi-squared gate, both guarded by
+# _KF_LOCK (they are only ever touched inside _smooth_kf's critical section).
+# Module-level rather than core.state counters because nothing else in this
+# module touches state's counter block and there is no lock-order story to
+# get wrong here; routes/test.py reads them through filter_stats().
+#
+# _kf_reanchors counts gate breaches that survived the manoeuvre retry and
+# therefore re-anchored — the honest identity-break tally.  _kf_manoeuvre_
+# rescues counts the ones the retry saved, which before this existed were
+# indistinguishable from the first group and were the dominant half of it:
+# every turn past ~60-110 degrees produced one.  A rescue rate that collapses
+# to zero means the adaptive path has stopped firing; a re-anchor rate that
+# climbs back to the old level means the manoeuvre sigma is too small for the
+# turns being flown.
+_kf_reanchors = 0
+_kf_manoeuvre_rescues = 0
+
 # H matrices are fixed by the state ordering, never rebuilt per call.
 _H_POS = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]])
 _H_VEL = np.array([[0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]])
@@ -241,10 +390,35 @@ _H_VEL = np.array([[0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]])
 
 def reset() -> None:
     """Restore this module's private state to boot values.  Tests only."""
-    global _kf_last_sweep
+    global _kf_last_sweep, _kf_reanchors, _kf_manoeuvre_rescues
     with _KF_LOCK:
         _KF_TRACKS.clear()
         _kf_last_sweep = 0.0
+        _kf_reanchors = 0
+        _kf_manoeuvre_rescues = 0
+
+
+def filter_stats() -> dict:
+    """Since-boot chi-squared-gate outcomes plus a live manoeuvre gauge.
+
+    Surfaced on /api/test/solver-stats under "display_filter" (see
+    routes/test.py's _solver_window_stats) because the two counters are the
+    only way to tell a turn from an identity break from outside this module —
+    the per-solve payload carries neither, and both look identical downstream
+    (a raw, unsmoothed result).
+
+    reanchors / manoeuvre_rescues are cumulative, matching that endpoint's
+    since-boot convention for counters.  manoeuvre_active is a GAUGE: how many
+    live entries are currently running an inflated sigma_a, out of `tracks`.
+    """
+    with _KF_LOCK:
+        active = sum(1 for e in _KF_TRACKS.values() if _entry_sigma_a(e) > _KF_SIGMA_A_MS2)
+        return {
+            "reanchors": _kf_reanchors,
+            "manoeuvre_rescues": _kf_manoeuvre_rescues,
+            "manoeuvre_active": active,
+            "tracks": len(_KF_TRACKS),
+        }
 
 
 def drop_key(track_key: str) -> None:
@@ -270,13 +444,36 @@ def learned_velocity(track_key: str) -> tuple[float, float, float, float] | None
     filter.  _KF_LOCK is a leaf lock (see module docstring), so taking it here
     keeps the established solver.py -> track_filter order; callers must not
     hold it already.
+
+    The sqrt is clamped for the same reason _smooth_kf's kf_pos_sigma_m one
+    is: this is a read-only accessor on a hot display path with two callers
+    that each lose real work when it throws — solver.py's
+    multinode_key_decision (drops that solve) and aircraft_feed's
+    multinode_to_aircraft (drops the whole broadcast) — so a pathological
+    filter state must degrade to "sigma 0", never to a ValueError.  An
+    accessor is the wrong place to discover a covariance is sick; the
+    invariant is enforced upstream in _measurement_R and _kf_correct.
     """
     with _KF_LOCK:
         entry = _KF_TRACKS.get(track_key)
         if entry is None:
             return None
-        vel_sigma = math.sqrt(0.5 * (entry.P[1, 1] + entry.P[3, 3]))
+        vel_sigma = math.sqrt(max(0.0, 0.5 * (entry.P[1, 1] + entry.P[3, 3])))
         return float(entry.x[1]), float(entry.x[3]), float(vel_sigma), float(entry.last_ts_s)
+
+
+def _kf_reanchor() -> None:
+    """Count a gate breach that the manoeuvre retry could not explain.
+    Caller holds _KF_LOCK."""
+    global _kf_reanchors
+    _kf_reanchors += 1
+
+
+def _kf_manoeuvre_rescue() -> None:
+    """Count a gate breach the manoeuvre retry rescued.  Caller holds
+    _KF_LOCK."""
+    global _kf_manoeuvre_rescues
+    _kf_manoeuvre_rescues += 1
 
 
 def _sweep(now_s: float) -> None:
@@ -325,7 +522,60 @@ def _enu_offset_m(ref_lat: float, ref_lon: float, lat: float, lon: float) -> tup
 # ── Kalman math ───────────────────────────────────────────────────────────
 
 
-def _f_q(dt: float) -> tuple[np.ndarray, np.ndarray]:
+def _entry_sigma_a(entry: "_TrackKF") -> float:
+    """Process-noise spectral density for this entry's NEXT predict.
+
+    A linear blend from the straight-flight base to
+    _KF_SIGMA_A_MANOEUVRE_MS2 on the entry's manoeuvre engagement level.  An
+    entry that has never been surprised sits at engagement 0.0 and therefore
+    at exactly the shipped CV model — which is what keeps straight flight, and
+    the Stone-Soup oracle that pins it, bit-for-bit unchanged.  A blend rather
+    than a step because the detector is noisy at a 2.3 s cadence and a step
+    would chatter between two very different filters on the borderline; a
+    blend just makes a marginally surprising track marginally less rigid.
+
+    Configuring the manoeuvre sigma at or below the base disables the whole
+    adaptive path (the ramp can then only ever return the base), which is what
+    the tests use to reproduce the pre-adaptive behaviour.
+    """
+    if _KF_SIGMA_A_MANOEUVRE_MS2 <= _KF_SIGMA_A_MS2 or _KF_MANOEUVRE_D2 <= 0:
+        return _KF_SIGMA_A_MS2
+    return _KF_SIGMA_A_MS2 + entry.manoeuvre * (_KF_SIGMA_A_MANOEUVRE_MS2 - _KF_SIGMA_A_MS2)
+
+
+def _update_manoeuvre(entry: "_TrackKF", dt: float, d2: float) -> None:
+    """Re-arm or decay this entry's manoeuvre engagement after an update.
+
+    RE-ARM on surprise: an update whose normalised innovation exceeds
+    _KF_MANOEUVRE_D2 raises the engagement immediately, linearly to full at
+    twice the threshold.  DECAY on the clock: exp(-dt/_KF_MANOEUVRE_TAU_S),
+    so an entry that stops being surprised is under a tenth of full engagement
+    2.3 tau (35 s) later and under a hundredth inside 70 s.
+
+    Why a HELD, clock-decayed level rather than the obvious EWMA of d^2: the
+    inflated Q suppresses the very statistic that raised it.  Once sigma_a is
+    up, S widens, d^2 collapses to a fraction of its pre-inflation value, and
+    an EWMA-driven sigma_a would disengage a second or two into the turn and
+    re-engage only after the velocity error had rebuilt to hundreds of m/s —
+    measured, at 3 deg/s and a 4.6 s cadence: an EWMA-driven version left the
+    peak in-turn velocity error at ~330 m/s, barely better than the 353 m/s
+    of the fixed-sigma_a filter, while the held version lands at ~155 m/s.
+    Holding is also the physically honest reading: aircraft turns last tens of
+    seconds, not one solve interval, so "was surprised recently" is a much
+    better predictor of "is manoeuvring now" than "is surprised right now" —
+    and at these R sigmas (1200 m floor) a filter that IS keeping up with a
+    3 deg/s turn only sees ~140 m of per-step innovation, which is not
+    detectable against the measurement noise at all.  The detector can only
+    ever fire on the accumulated error, so the response has to outlive it.
+    """
+    decayed = entry.manoeuvre * math.exp(-dt / _KF_MANOEUVRE_TAU_S) if _KF_MANOEUVRE_TAU_S > 0 else 0.0
+    trigger = 0.0
+    if _KF_MANOEUVRE_D2 > 0 and d2 > _KF_MANOEUVRE_D2:
+        trigger = min(1.0, (d2 - _KF_MANOEUVRE_D2) / _KF_MANOEUVRE_D2)
+    entry.manoeuvre = max(decayed, trigger)
+
+
+def _f_q(dt: float, sigma_a: float | None = None) -> tuple[np.ndarray, np.ndarray]:
     """State-transition F and process-noise Q for a CV model over dt seconds.
 
     State order [e, ve, n, vn]: the east axis occupies indices (0, 1), the
@@ -338,12 +588,16 @@ def _f_q(dt: float) -> tuple[np.ndarray, np.ndarray]:
     sigma_a * [[dt^3/3, dt^2/2], [dt^2/2, dt]] — EXACTLY this discretisation,
     unsquared sigma_a, matching Stone-Soup's ConstantVelocity(noise_diff_coeff)
     to 1e-6 (see TestStoneSoupOracle).
+
+    sigma_a defaults to the straight-flight base _KF_SIGMA_A_MS2; callers pass
+    the entry's adaptive value (_entry_sigma_a) so Q is rebuilt per predict
+    rather than frozen at import.
     """
     f = np.eye(4)
     f[0, 1] = dt
     f[2, 3] = dt
 
-    q_block = _KF_SIGMA_A_MS2 * np.array(
+    q_block = (_KF_SIGMA_A_MS2 if sigma_a is None else sigma_a) * np.array(
         [
             [dt**3 / 3.0, dt**2 / 2.0],
             [dt**2 / 2.0, dt],
@@ -382,7 +636,23 @@ def _kf_correct(
     return x_new, p_new, y, s
 
 
-def _measurement_R(result: dict) -> np.ndarray:
+def _base_pos_sigma_m(result: dict, adsb_hex: str | None = None) -> float:
+    """The unmodeled-error floor this solve carries, in metres.
+
+    _KF_DEFAULT_POS_SIGMA_M for everything except a DARK n=2 solve, which gets
+    the wider _KF_N2_POS_SIGMA_M — see that constant for the live measurement
+    and for why the ADS-B lane is excluded.  ``adsb_hex`` is tested with
+    is_transponder_hex rather than for mere presence because the simulator's
+    ``obj-*`` object ids ride in the same field and are NOT transponder
+    identities: they are dark-lane solves and belong on the wide sigma, which
+    is the same predicate solver.py keys them into ``mn-dark-*`` with.
+    """
+    if int(result.get("n_nodes") or 0) != 2 or is_transponder_hex(adsb_hex):
+        return _KF_DEFAULT_POS_SIGMA_M
+    return _KF_N2_POS_SIGMA_M
+
+
+def _measurement_R(result: dict, adsb_hex: str | None = None) -> np.ndarray:
     """Per-solve position measurement covariance, in m^2.
 
     ADDITIVE composition (see the _KF_R_INFLATE comment above for the
@@ -391,11 +661,16 @@ def _measurement_R(result: dict) -> np.ndarray:
     not one scaled version of the other, so they add rather than one
     replacing the other:
 
-        cov present and sane:  R = (_KF_R_INFLATE**2) * cov_m2 + base
+        cov present and PSD:   R = (_KF_R_INFLATE**2) * cov_m2 + base
         cov absent/degenerate: R = base                          (cov=0 limit)
 
-    where base = diag(_KF_DEFAULT_POS_SIGMA_M**2, _KF_DEFAULT_POS_SIGMA_M**2)
-    is added UNCONDITIONALLY — the no-cov fallback is not a separate branch,
+    "Degenerate" now includes a cov that is not positive-semidefinite, which
+    an ill-conditioned solve really does produce — see the determinant check
+    in the body for why that has to be rejected rather than passed through.
+
+    where base = diag(sigma**2, sigma**2) for the per-solve floor
+    _base_pos_sigma_m picks (_KF_DEFAULT_POS_SIGMA_M, or the wider
+    _KF_N2_POS_SIGMA_M for a dark n=2 solve) and is added UNCONDITIONALLY — the no-cov fallback is not a separate branch,
     it is exactly this same formula evaluated at cov_m2 = 0.  This is what
     lets a well-conditioned solve (small cov_m2) and a poorly-conditioned one
     (large cov_m2) still land at meaningfully different R after inflation,
@@ -408,13 +683,43 @@ def _measurement_R(result: dict) -> np.ndarray:
     diagonal.  The floor is mostly inert now (see that constant's comment);
     the cap still matters for a badly-conditioned Jacobian.
     """
-    base = np.diag([_KF_DEFAULT_POS_SIGMA_M**2, _KF_DEFAULT_POS_SIGMA_M**2])
+    base_sigma_m = _base_pos_sigma_m(result, adsb_hex)
+    base = np.diag([base_sigma_m**2, base_sigma_m**2])
     r = base
     cov = result.get("cov_en_km2")
     if cov is not None:
         arr = np.asarray(cov, dtype=float) * 1e6  # km^2 -> m^2
-        if arr.shape == (2, 2) and np.all(np.isfinite(arr)) and arr[0, 0] > 0 and arr[1, 1] > 0:
-            r = (_KF_R_INFLATE**2) * arr + base  # independent noise sources -> variances add
+        if arr.shape == (2, 2) and np.all(np.isfinite(arr)):
+            arr = (arr + arr.T) / 2.0
+            # PSD, not just positive-diagonal.  A 2x2 symmetric matrix is PSD
+            # iff both diagonals are >= 0 AND the determinant is >= 0; the
+            # determinant is the half that was missing, and it is not a
+            # theoretical gap.  cov_en_km2 is the top-left 2x2 block of
+            # s2 * inv(JtJ) for the solver's 5-state fit, and the solver
+            # falls back to pinv only on an outright LinAlgError — an
+            # ill-conditioned-but-not-singular JtJ (near-parallel baselines,
+            # the same degenerate tail that puts the formal sigma's p99 at
+            # 3.8e6 km) inverts to numerical garbage that is INDEFINITE while
+            # still having both diagonals positive, so it passed both this
+            # check and the solver's own.
+            #
+            # An indefinite R is not survivable downstream.  _kf_correct's
+            # Joseph form preserves positive-semidefiniteness for any gain,
+            # but only GIVEN PSD P and R — its K R K^T term inherits R's
+            # negative eigenvalue directly — and _init_entry seeds P's
+            # position block from this matrix, so a sick R poisons the filter
+            # at birth as well as on every update.  Once P's velocity
+            # diagonals go negative, learned_velocity's sqrt raises: on the
+            # test droplet that was 91 tracebacks in 40 minutes, each one
+            # costing either a solve or an entire feed broadcast.
+            #
+            # Rejecting is the honest response rather than repairing by
+            # eigenvalue clipping: a covariance this degenerate carries no
+            # trustworthy relative weighting to preserve, and "R = base" is
+            # already this function's documented answer for a degenerate cov.
+            det = arr[0, 0] * arr[1, 1] - arr[0, 1] * arr[1, 0]
+            if arr[0, 0] > 0 and arr[1, 1] > 0 and det >= 0:
+                r = (_KF_R_INFLATE**2) * arr + base  # independent noise sources -> variances add
 
     s = math.sqrt(0.5 * (r[0, 0] + r[1, 1]))
     if s < _KF_MIN_POS_SIGMA_M:
@@ -424,15 +729,43 @@ def _measurement_R(result: dict) -> np.ndarray:
     return r
 
 
-def _adsb_velocity(adsb_hex: str | None) -> tuple[bool, float, float]:
+def _adsb_velocity(adsb_hex: str | None, now_ms: float | None = None) -> tuple[bool, float, float]:
     """(has_live_entry, v_east_ms, v_north_ms) from core.state.adsb_aircraft.
 
     Mirrors _ewma_smooth_track's ADS-B branch exactly: gs in knots * 0.514444
     -> m/s, track in degrees (0=N, 90=E) -> (sin, cos) east/north components.
+
+    THE STALE-FIX GUARD.  ``state.adsb_aircraft`` keeps an entry long after
+    the transponder stops reporting, and gs/track on it are then a heading
+    from minutes ago.  The known lane exists precisely to keep solving such
+    an aircraft from radar alone — so when it TURNS during the silence, an
+    unaged gs/track pulls the filter's velocity back toward the pre-silence
+    heading, the dead-reckoned prior walks off along the old course, and the
+    honest solves that follow are measured against it and labelled ghosts.
+    Live traffic in the same cache is unaffected: its fix is seconds old.
+
+    Only STALENESS is guarded, in one direction: a fix stamped AHEAD of the
+    solve is not a stale heading (it is a fresher one, and clock skew between
+    a node and the ADS-B feed produces exactly that), so it is used.
+
+    ``now_ms`` is the epoch the velocity is wanted FOR (the solve's own
+    ``timestamp_ms``), never wall clock — a replay or a backlogged node must
+    see the same verdict the live path saw.  Omitted, the entry is used
+    unaged, which is the pre-guard behaviour for callers with no epoch of
+    their own.  An entry carrying no timestamp at all is likewise used: no
+    live writer produces one, so the only sources are pre-timestamp records
+    and tests, and rejecting those would silently disable the velocity seed
+    rather than the stale-heading case this guard is about.
     """
     adsb = state.adsb_aircraft.get(adsb_hex) if adsb_hex else None
     if not adsb:
         return False, 0.0, 0.0
+    if now_ms is not None:
+        # adsb_derived_fields stamps timestamp_ms; the raw record carries
+        # last_seen_ms.  Either answers "when was this fix reported".
+        fix_ts_ms = adsb.get("timestamp_ms") or adsb.get("last_seen_ms") or 0
+        if fix_ts_ms and (float(now_ms) - float(fix_ts_ms)) / 1000.0 > _ADSB_VEL_MAX_AGE_S:
+            return False, 0.0, 0.0
     gs_knots = float(adsb.get("gs", 0) or 0)
     track_deg = float(adsb.get("track", 0) or 0)
     v_ms = gs_knots * 0.514444
@@ -472,6 +805,30 @@ def _init_entry(
     return _TrackKF(ref_lat=r_lat, ref_lon=r_lon, x=x, P=p, last_ts_s=ts_s)
 
 
+def _predict_update(
+    entry: _TrackKF, dt: float, z: np.ndarray, r_pos: np.ndarray, sigma_a: float
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """One predict+update pass at a given process-noise density.
+
+    Returns (x, P, d2).  Split out of _smooth_kf so the manoeuvre retry can
+    run the SAME arithmetic again with a bigger Q instead of a near-copy of
+    it — the two attempts must not be able to drift apart.  Reads entry.x /
+    entry.P and writes nothing: the caller decides which attempt (if either)
+    becomes the new state.
+    """
+    f, q = _f_q(dt, sigma_a)
+    x_pred = f @ entry.x
+    p_pred = f @ entry.P @ f.T + q
+    # Symmetrize here too, not only in _kf_correct: F P F^T is symmetric
+    # in exact arithmetic but drifts by roundoff, and this filter composes
+    # predict and update thousands of times over a track's life.
+    p_pred = (p_pred + p_pred.T) / 2.0
+
+    x_upd, p_upd, y, s_cov = _kf_correct(x_pred, p_pred, z, _H_POS, r_pos)
+    d2 = float(y @ np.linalg.solve(s_cov, y))
+    return x_upd, p_upd, d2
+
+
 def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
     """The "kf" branch of smooth_solve — see that function's docstring for
     the mode dispatch this is reached through."""
@@ -479,8 +836,8 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
     r_lon = result["lon"]
     ts_s = result.get("timestamp_ms", 0) / 1000.0
 
-    has_adsb_vel, v0e, v0n = _adsb_velocity(adsb_hex)
-    r_pos = _measurement_R(result)
+    has_adsb_vel, v0e, v0n = _adsb_velocity(adsb_hex, result.get("timestamp_ms"))
+    r_pos = _measurement_R(result, adsb_hex)
 
     with _KF_LOCK:
         _sweep(ts_s)
@@ -507,23 +864,42 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
             _KF_TRACKS[track_key] = _init_entry(r_lat, r_lon, ts_s, result, has_adsb_vel, v0e, v0n, r_pos)
             return result
 
-        f, q = _f_q(dt)
-        x_pred = f @ entry.x
-        p_pred = f @ entry.P @ f.T + q
-
         z_e, z_n = _enu_offset_m(entry.ref_lat, entry.ref_lon, r_lat, r_lon)
         z = np.array([z_e, z_n])
-        x_upd, p_upd, y, s_cov = _kf_correct(x_pred, p_pred, z, _H_POS, r_pos)
-        d2 = float(y @ np.linalg.solve(s_cov, y))
+
+        # sigma_a is per-predict, from this entry's own innovation history:
+        # base in straight flight, ramped toward the manoeuvre value while
+        # the filter is being consistently surprised.  See _entry_sigma_a.
+        sigma_a = _entry_sigma_a(entry)
+        x_upd, p_upd, d2 = _predict_update(entry, dt, z, r_pos, sigma_a)
+        d2_observed = d2
 
         if d2 > _KF_GATE_CHI2:
-            # This measurement is not a plausible continuation of the track
-            # this filter has been carrying — track identity broke (a merge,
-            # a re-association, a genuinely different aircraft), not a sharp
-            # manoeuvre.  Re-anchor at the new position instead of smearing
-            # the estimate across two aircraft.
-            _KF_TRACKS[track_key] = _init_entry(r_lat, r_lon, ts_s, result, has_adsb_vel, v0e, v0n, r_pos)
-            return result
+            # A breach is NOT self-evidently an identity break — see the
+            # _KF_GATE_CHI2 comment for the simulation and the live chi2/dof
+            # measurement that killed that premise.  Before writing the track
+            # off, redo the same predict+update once with the manoeuvre
+            # process noise: if the innovation is explained by an
+            # acceleration this aircraft could actually have pulled, the
+            # aircraft turned and the filter merely had too little Q.
+            x_try, p_try, d2_try = _predict_update(entry, dt, z, r_pos, _KF_SIGMA_A_MANOEUVRE_MS2)
+            if d2_try <= _KF_GATE_CHI2 and _KF_SIGMA_A_MANOEUVRE_MS2 > _KF_SIGMA_A_MS2:
+                _kf_manoeuvre_rescue()
+                x_upd, p_upd = x_try, p_try
+                # The EWMA records the ORIGINAL d2, not the retry's: the
+                # entry needs to remember how surprising this update was
+                # against the Q it had, which is what keeps sigma_a inflated
+                # for the rest of the turn instead of collapsing back to base
+                # the moment the retry succeeds.
+            else:
+                # Beyond any plausible acceleration too — the measurement
+                # does not belong to the track this filter has been carrying
+                # (a merge, a re-association, a genuinely different
+                # aircraft).  Re-anchor rather than smear the estimate across
+                # two aircraft.
+                _kf_reanchor()
+                _KF_TRACKS[track_key] = _init_entry(r_lat, r_lon, ts_s, result, has_adsb_vel, v0e, v0n, r_pos)
+                return result
 
         # Velocity measurement update: ADS-B ONLY.  Solved vel_east/vel_north
         # is deliberately NOT applied here — see the _KF_VEL_SIGMA_SOLVE_MS
@@ -545,6 +921,7 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
         entry.x = x_upd
         entry.P = p_upd
         entry.last_ts_s = ts_s
+        _update_manoeuvre(entry, dt, d2_observed)
 
         lat_s, lon_s = offset_latlon_m(entry.ref_lat, entry.ref_lon, east_m=float(x_upd[0]), north_m=float(x_upd[2]))
         smoothed = dict(result)

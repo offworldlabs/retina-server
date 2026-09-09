@@ -119,3 +119,32 @@ class TestTaskTimestamps:
         state.task_error_counts["test_task"] = orig + 1
         assert state.task_error_counts["test_task"] == orig + 1
         state.task_error_counts.pop("test_task", None)
+
+    def test_bump_task_error_is_atomic_under_threads(self):
+        """N threads bumping the same key concurrently must end at N.
+
+        The bare ``task_error_counts[name] += 1`` this replaced is a
+        read-modify-write; the bump sites run on the event loop, the frame
+        workers and the solver threads at once, so a lost update turned a
+        failing task into a quiet one.
+        """
+        import threading
+
+        state.task_error_counts.pop("race_task", None)
+        n_threads, per_thread = 16, 500
+        start = threading.Barrier(n_threads)
+
+        def worker():
+            start.wait()
+            for _ in range(per_thread):
+                state.bump_task_error("race_task")
+
+        threads = [threading.Thread(target=worker) for _ in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        try:
+            assert state.task_error_counts["race_task"] == n_threads * per_thread
+        finally:
+            state.task_error_counts.pop("race_task", None)
