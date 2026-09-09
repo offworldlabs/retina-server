@@ -181,7 +181,7 @@ positions are smoothed per key (`TRACK_SMOOTHER=kf|ewma|off`, default `kf` —
 a CV Kalman filter; `ewma` is the env-only rollback).
 
 Multi-node solved aircraft appear in the output with `type = "multinode_solve"`,
-`n_nodes` set, and `contributing_node_ids` listed. No ambiguity arc is emitted
+`n_nodes` set, and `contributing_node_refs` listed. No ambiguity arc is emitted
 for these since the position is precisely known.
 
 ---

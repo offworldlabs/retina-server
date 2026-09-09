@@ -854,6 +854,11 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
           <CircleMarker
             center={[n.rx_lat, n.rx_lon]}
             radius={5}
+            // Purely a handle for the E2E suite, and top-level for the reason
+            // the CoverageLayer note gives: a class in pathOptions is dropped.
+            // The real node's divIcon carries `node-marker`, so the two kinds
+            // are tellable apart in the DOM without reading the popup.
+            className="node-marker-synthetic"
             pathOptions={{ color: "#facc15", fillColor: "#facc15", fillOpacity: 0.55, weight: 1.5 }}
             bubblingMouseEvents={false}
             eventHandlers={{ click: () => onSelectNode(n.node_ref) }}

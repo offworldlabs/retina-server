@@ -28,8 +28,10 @@ const HOSTS = {
     // too. That name's record is Cloudflare-side and points at whichever box
     // currently hosts the demo, so keying CI to it would fail the suite for the
     // duration of any DNS move, including the one that first brings it here.
-    // staging-map serves byte-identical data: usesRealOnlyFeed is anchored to
-    // `^map\.` exactly, so neither host filters to the real-only feed.
+    // staging-map serves byte-identical data: both are public demo surfaces, so
+    // both stay on the unfiltered feed (usesRealOnlyFeed is anchored to `^map\.`
+    // exactly) and both drop the real fleet client-side via hidesRealNodes. What
+    // the suite sees on either is the synthetic fleet and only that.
     testmap:   "https://staging-map.retina.fm",
     dash:      "https://staging-dash.retina.fm",
     // Same bundle as dash; the hostname is what selects the admin route table.

@@ -9,14 +9,20 @@
  *   usesRealOnlyFeed    — hits /ws/aircraft/live so the synthetic fleet never
  *                         appears, even if a node leaks through a bad filter.
  *   defaultsGroundTruthOff — ADS-B ground truth starts hidden.
+ *   hidesRealNodes      — drops the real fleet out of the unfiltered feed, so a
+ *                         public demo shows the synthetic nodes and nothing else.
  *
- * The last two are both asking "is this the production real-radar surface?",
- * which is `map.retina.fm` and nothing else. Every other map surface — testmap,
- * staging, the test droplet, the laptop — is fed by the synthetic fleet, where
- * the real-only feed would be empty and the ground-truth overlay is the
- * reference you are there to look at. They stay separate exports because the
- * call sites read better naming the decision than the environment, but they are
- * deliberately one test.
+ * usesRealOnlyFeed and defaultsGroundTruthOff are both asking "is this the
+ * production real-radar surface?", which is `map.retina.fm` and nothing else.
+ * Every other map surface (testmap, staging, the test droplet, the laptop) is
+ * fed by the synthetic fleet, where the real-only feed would be empty and the
+ * ground-truth overlay is the reference you are there to look at. They stay
+ * separate exports because the call sites read better naming the decision than
+ * the environment, but they are deliberately one test.
+ *
+ * hidesRealNodes asks the opposite question and is a third state, not a wider
+ * version of the first: production wants real and not synthetic, the public
+ * demo wants synthetic and not real, the laptop wants both.
  *
  * Hostnames covered by isMapDomain:
  *   map.*                              production (the only real-radar surface)
@@ -47,3 +53,15 @@ const isProdRealRadar = /^map\./i.test(HOSTNAME) && !/\.localhost$/i.test(HOSTNA
 
 export const usesRealOnlyFeed = isProdRealRadar;
 export const defaultsGroundTruthOff = isProdRealRadar;
+
+// The public demo surfaces. Widening usesRealOnlyFeed to cover them is the
+// change this exists to prevent: the real-only feed carries no synthetic fleet,
+// so it would empty the very map they exist to demonstrate. They stay on the
+// unfiltered feed and the real nodes come off client-side instead, decided from
+// the server's is_synthetic flag (see utils/nodeKind.ts).
+const isPublicDemo = /^(staging-)?testmap\./i.test(HOSTNAME) || /^staging-map\./i.test(HOSTNAME);
+
+// Ruled out on the laptop by the same suffix test as isProdRealRadar: a local
+// stack has no public audience, and hiding half its fleet would only make the
+// dev map disagree with the feed behind it.
+export const hidesRealNodes = isPublicDemo && !/\.localhost$/i.test(HOSTNAME);

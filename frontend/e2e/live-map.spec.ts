@@ -158,6 +158,43 @@ test.describe("Live Map — aircraft list panel", { tag: "@live" }, () => {
   });
 });
 
+// What a node may be called on a public surface: a published node_ref, or a
+// synthetic fleet id, which is published unchanged because it names nothing
+// private. `ret` + 8 hex is the private node id and must never appear.
+const PUBLISHED_IDENTITY = /^(nde[0-9a-z]{12}|(?:synth|e2e|test|realnode)-\S+)$/;
+const PRIVATE_NODE_ID = /^ret[0-9a-f]{8}$/;
+
+test.describe("Live Map — node markers", { tag: "@live" }, () => {
+  test("every node marker is a synthetic one", async ({ page }) => {
+    await page.goto(BASE);
+    await waitForLive(page);
+
+    // `.node-marker` is the divIcon NodeMarkersLayer gives a NON-synthetic
+    // node, so a single hit is a real node on a public demo.
+    await expect(page.locator(".node-marker-synthetic").first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.locator(".node-marker")).toHaveCount(0);
+  });
+
+  test("node popup names a published identity, never the private node id", async ({ page }) => {
+    await page.goto(BASE);
+    await waitForLive(page);
+
+    const marker = page.locator(".node-marker-synthetic").first();
+    await expect(marker).toBeVisible({ timeout: 30_000 });
+    // Aircraft icons sit in the pane above and can briefly cover a 5 px node
+    // disc; they move, so Playwright's actionability retry clears it.
+    await marker.click();
+
+    const identity = page.locator(".leaflet-popup-content strong").first();
+    await expect(identity).toBeVisible({ timeout: 5_000 });
+    const name = ((await identity.textContent()) ?? "").trim();
+    expect(name, `node popup identity: ${name}`).toMatch(PUBLISHED_IDENTITY);
+    expect(name, `node popup identity: ${name}`).not.toMatch(PRIVATE_NODE_ID);
+  });
+});
+
 test.describe("Live Map — toolbar toggles", () => {
   test("Coverage toggle adds/removes active class", async ({ page }) => {
     await page.goto(BASE);
