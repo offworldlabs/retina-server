@@ -25,7 +25,7 @@ from services.geo import bearing_deg, bistatic_delay_us, haversine_km, node_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
 from services.node_config import position_status
-from services.node_refs import public_identity
+from services.node_refs import public_analytics, public_identity
 from services.node_sites import log_colocation_audit
 from services.public_location import (
     fuzz_enabled,
@@ -309,15 +309,6 @@ def _public_location_block(node_id: str, cfg: dict) -> dict:
     }
 
 
-def _keyed_on_refs(by_node_id: dict) -> dict:
-    """A node_id-keyed map re-keyed on the published handle.
-
-    A node with no handle is dropped, not published under its id.  Every filter
-    that matches against node_id-keyed state must run before this.
-    """
-    return {ref: v for nid, v in by_node_id.items() if (ref := public_identity(nid))}
-
-
 def _refresh_analytics_and_nodes():
     """Heavy work: recompute analytics, nodes, and overlaps → store as bytes."""
     from services.tcp_handler import is_synthetic_node
@@ -342,23 +333,28 @@ def _refresh_analytics_and_nodes():
     # public_summaries drops it before public_node_summaries rewrites what is
     # left.  Two separate promises, applied in the order they compose — there
     # is nothing to translate for a node that is not being published.
-    # Both variants are keyed on the published handle, so the node_id-keyed map
-    # is kept alongside: the real-only filter below matches against it.
-    _summaries = public_node_summaries(public_summaries(state.node_analytics.get_all_summaries()))
+    # public_analytics then keys both variants on the published handle and takes
+    # the private ids out of the values; the node_id-keyed map is kept alongside
+    # because the real-only filter below matches against it.  It is handed the
+    # unfiltered fleet because cross_node still names the nodes public_summaries
+    # has just dropped.
+    _fleet = state.node_analytics.get_all_summaries()
+    _summaries = public_node_summaries(public_summaries(_fleet))
     _cross_node = public_cross_node(state.node_analytics.get_cross_node_analysis())
-    analytics_data = {"nodes": _keyed_on_refs(_summaries), "cross_node": _cross_node}
+    analytics_data = public_analytics(_summaries, _cross_node, _fleet)
     state.latest_analytics_bytes = orjson.dumps(analytics_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
     # Real-only variant: strip synthetic nodes so map.retina.fm never receives them
     with state.connected_nodes_lock:
         real_node_ids = {nid for nid, info in state.connected_nodes.items() if not info.get("is_synthetic", True)}
-    # Intersect first, re-key second.  real_node_ids comes from
+    # Intersect first, publish second.  real_node_ids comes from
     # state.connected_nodes, which is keyed on node_id, so an intersection
-    # against the re-keyed map would match nothing and empty the variant.
-    analytics_real_data = {
-        "nodes": _keyed_on_refs({k: v for k, v in _summaries.items() if k in real_node_ids}),
-        "cross_node": _cross_node,
-    }
+    # against the ref-keyed map would match nothing and empty the variant.
+    analytics_real_data = public_analytics(
+        {k: v for k, v in _summaries.items() if k in real_node_ids},
+        _cross_node,
+        _fleet,
+    )
     state.latest_analytics_real_bytes = orjson.dumps(analytics_real_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
     # Nodes — snapshot once to avoid RuntimeError from concurrent TCP handler mutations

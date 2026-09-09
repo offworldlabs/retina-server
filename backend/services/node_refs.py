@@ -18,6 +18,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Iterable
+from typing import NamedTuple
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.pool import NullPool
@@ -211,3 +213,111 @@ def substitute_identities(data: dict) -> dict:
     if "messages" in data:
         out["messages"] = len(aircraft)
     return out
+
+
+# A node id spelled into free text becomes this when the node has no published
+# handle. Prose is not an identity field, so the sentence survives with the name
+# taken out of it rather than being dropped along with its container.
+_REDACTED = "[unpublished node]"
+
+# Marks a value that named a node which must not be published.
+_DROP = object()
+
+
+class _Vocabulary(NamedTuple):
+    """Every node id that could appear in a payload, and what it publishes as.
+
+    `by_id` answers the exact matches, which are identities. `longest_first`
+    drives the free-text pass in an order where an id that is a prefix of
+    another cannot rewrite it.
+    """
+
+    by_id: dict[str, str | None]
+    longest_first: tuple[tuple[str, str | None], ...]
+
+
+def _vocabulary(known_ids: Iterable[str]) -> _Vocabulary:
+    """The registry plus whatever ids the caller names.
+
+    Synthetic nodes are left out: they publish as themselves, so substituting
+    one changes nothing and every comparison against one is wasted.
+    """
+    _refresh()
+    ids = set(_forward) | {i for i in known_ids if i}
+    by_id = {nid: public_identity(nid) for nid in ids if not is_synthetic_node(nid)}
+    return _Vocabulary(by_id, tuple(sorted(by_id.items(), key=lambda p: -len(p[0]))))
+
+
+def _republished(value, owner_id: str | None, vocab: _Vocabulary):
+    """`value` with every node id in it replaced by what that node publishes as.
+
+    Structural rather than path-named, so a node id that appears upstream under
+    a key nobody here has heard of is caught by the same walk. Three rules:
+
+    * A `node_id` field naming the node the entry is already keyed on is
+      dropped; one naming any other node becomes `node_ref`, because a field
+      called `node_id` holding a ref is the confusion this boundary removes.
+    * A string that IS a node id is an identity: it becomes the ref, or `_DROP`
+      when the node has no handle, and a container that named it goes with it.
+      In a list only that element goes, which is what drops half a pair.
+    * A node id INSIDE a longer string is prose (a reputation penalty names the
+      neighbour it disagreed with), so it is rewritten in place.
+
+    Dict keys are resolved too: a map keyed on node ids is the same disclosure
+    as a field holding one.
+    """
+    if isinstance(value, str):
+        if value in vocab.by_id:
+            ref = vocab.by_id[value]
+            return ref if ref is not None else _DROP
+        for nid, ref in vocab.longest_first:
+            if nid in value:
+                value = value.replace(nid, ref or _REDACTED)
+        return value
+
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if k == "node_id" and v == owner_id:
+                continue
+            key = "node_ref" if k == "node_id" else k
+            if key in vocab.by_id:
+                key = vocab.by_id[key]
+                if key is None:
+                    continue
+            republished = _republished(v, owner_id, vocab)
+            if republished is _DROP:
+                return _DROP
+            out[key] = republished
+        return out
+
+    if isinstance(value, list):
+        return [r for v in value if (r := _republished(v, owner_id, vocab)) is not _DROP]
+
+    return value
+
+
+def public_analytics(summaries: dict, cross_node: dict, known_ids: Iterable[str] = ()) -> dict:
+    """The /api/radar/analytics payload under published identities.
+
+    Keyed on the published handle with the private id gone from the values as
+    well as from the keys. An entry carrying both would hand out the very
+    mapping this boundary keeps, on a route with no authentication, and every
+    other public surface is de-anonymised from it.
+
+    `known_ids` is every node id the analytics manager holds, including the ones
+    the publication filter has already dropped from `summaries`: `cross_node` is
+    built from the same manager state and still names them, so the vocabulary
+    has to be wider than the map being published.
+    """
+    vocab = _vocabulary(known_ids)
+    nodes = {}
+    for nid, summary in summaries.items():
+        ref = public_identity(nid)
+        if ref is None:
+            continue
+        republished = _republished(summary, nid, vocab)
+        if republished is not _DROP:
+            nodes[ref] = republished
+    cross = _republished(cross_node, None, vocab)
+    return {"nodes": nodes, "cross_node": {} if cross is _DROP else cross}

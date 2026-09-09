@@ -12,6 +12,7 @@ not reach them — and seeding is what actually proves the wiring.
 
 import asyncio
 import os
+import time
 
 import orjson
 import pytest
@@ -23,7 +24,7 @@ from core import state  # noqa: E402
 from core.nodes import Node  # noqa: E402
 from core.users import async_session_maker  # noqa: E402
 from main import app  # noqa: E402
-from services import node_refs, publication  # noqa: E402
+from services import node_auth, node_refs, publication  # noqa: E402
 from services.publication import (  # noqa: E402
     is_private,
     private_node_ids,
@@ -35,14 +36,17 @@ _PRIV = "privnode01"
 _PUB = "pubnode01"
 
 
-def _seed_ref(node_id: str) -> str:
-    """A well-formed NodeRef for a seeded row.
+_MINTED: dict[str, str] = {}
 
-    Must satisfy routes/node_schemas.NodeRef, ``^(nde|sim)[0-9a-z]{12}$``: a ref
-    the schema would reject proves nothing about a boundary that publishes it.
+
+def _seed_ref(node_id: str) -> str:
+    """The ref a seeded row carries, minted once per node id and then stable.
+
+    Minted the way node_auth does rather than derived from the node id: a ref
+    that spells its own node id out makes "the id never reaches the wire"
+    unassertable, because every such assertion matches the ref as well.
     """
-    body = "".join(c if c.isalnum() else "0" for c in node_id.lower())
-    return "nde" + body[-12:].rjust(12, "0")
+    return _MINTED.setdefault(node_id, node_auth.mint_node_ref())
 
 
 @pytest.fixture()
@@ -415,6 +419,100 @@ class TestRadarNodesPayload:
 
         real = orjson.loads(state.latest_analytics_real_bytes)["nodes"]
         assert list(real) == [_seed_ref("ret1a2b3c4d")]
+
+
+class TestAnalyticsPayloadIdentities:
+    """/api/radar/analytics is the one surface that could give the map away.
+
+    It is unauthenticated and it names the whole fleet, so an entry keyed on a
+    ref while still carrying the node id behind it de-anonymises the aircraft
+    feed, the arcs and the overlaps in a single request.
+    """
+
+    _A = "ret1a2b3c4d"
+    _B = "ret9f8e7d6c"
+    # Analytics knows this one; the registry does not, so it has no handle.
+    _GHOST = "ret0badcafe"
+    _CFG = {"rx_lat": 34.0, "rx_lon": -82.0, "tx_lat": 35.0, "tx_lon": -83.0}
+
+    @pytest.fixture()
+    def refreshed(self, seed_nodes):
+        from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
+
+        seed_nodes(**{self._A: "public", self._B: "public"})
+        for nid in (self._A, self._B, self._GHOST):
+            state.connected_nodes[nid] = {
+                "status": "active",
+                "is_synthetic": False,
+                "config": {**self._CFG, "node_id": nid},
+            }
+            state.node_analytics.register_node(nid, {"node_id": nid, **self._CFG})
+        # Prose, not an identity field: a reputation penalty spells the
+        # neighbour it disagreed with into a sentence.
+        for nid in (self._B, self._GHOST):
+            state.node_analytics.reputations[self._A].apply_penalty(
+                0.08, f"Inconsistent with trusted neighbour {nid} (overlap=0.03)"
+            )
+        state.node_analytics._summaries_cache = None
+        # Seeded rather than provoked: the pair overlaps are computed from real
+        # geometry, and what is under test is the transform on the way out.
+        state.node_analytics._cross_node_cache = {
+            "pair_overlaps": [
+                {"node_a": self._A, "node_b": self._B, "overlap_ratio": 0.4},
+                {"node_a": self._A, "node_b": self._GHOST, "overlap_ratio": 0.4},
+            ],
+            "coverage_suggestions": [],
+            "blocked_nodes": [self._B, self._GHOST],
+        }
+        state.node_analytics._cross_node_cache_ts = time.monotonic()
+        try:
+            _refresh_analytics_and_nodes()
+            yield
+        finally:
+            for nid in (self._A, self._B, self._GHOST):
+                state.connected_nodes.pop(nid, None)
+                state.node_analytics.retire_node(nid)
+            state.node_analytics._summaries_cache = None
+            state.node_analytics._cross_node_cache = None
+
+    def test_no_node_id_reaches_the_published_bytes(self, refreshed):
+        """At any depth, in either variant. The refs are minted, so this
+        assertion means what it says (see _seed_ref)."""
+        for raw in (state.latest_analytics_bytes, state.latest_analytics_real_bytes):
+            for nid in (self._A, self._B, self._GHOST):
+                assert nid.encode() not in raw
+
+    def test_the_entry_names_the_node_once_and_by_ref(self, refreshed):
+        """Every nested node_id repeated the map key, so all of them go."""
+        entry = orjson.loads(state.latest_analytics_bytes)["nodes"][_seed_ref(self._A)]
+        assert "node_id" not in entry
+        for block in ("trust", "metrics", "reputation", "coverage_map", "detection_area"):
+            assert "node_id" not in entry[block]
+
+    def test_a_node_id_written_into_prose_is_rewritten_not_dropped(self, refreshed):
+        entry = orjson.loads(state.latest_analytics_bytes)["nodes"][_seed_ref(self._A)]
+        reasons = [p["reason"] for p in entry["reputation"]["recent_penalties"]]
+        assert any(_seed_ref(self._B) in r for r in reasons)
+        # The unresolvable neighbour loses its name, not the whole sentence.
+        assert any("neighbour [unpublished node]" in r for r in reasons)
+
+    def test_cross_node_carries_refs_and_drops_the_unresolvable(self, refreshed):
+        cross = orjson.loads(state.latest_analytics_bytes)["cross_node"]
+        assert cross["blocked_nodes"] == [_seed_ref(self._B)]
+        # Half a named pair still describes a baseline, so the zone goes whole.
+        assert cross["pair_overlaps"] == [
+            {"node_a": _seed_ref(self._A), "node_b": _seed_ref(self._B), "overlap_ratio": 0.4}
+        ]
+
+    def test_the_fuzz_still_keys_on_the_node_id(self, refreshed):
+        """The offset is HMAC-keyed on node_id; re-keying it would move the
+        whole fleet, and the analytics payload is where the map reads rx."""
+        from services.public_location import public_latlon
+
+        entry = orjson.loads(state.latest_analytics_bytes)["nodes"][_seed_ref(self._A)]
+        expected_lat, expected_lon = public_latlon(34.0, -82.0, self._A)
+        assert entry["detection_area"]["rx"]["lat"] == pytest.approx(expected_lat)
+        assert entry["detection_area"]["rx"]["lon"] == pytest.approx(expected_lon)
 
 
 class TestOverlapsPayload:

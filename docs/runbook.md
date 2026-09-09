@@ -101,7 +101,8 @@ mirrored frames and nothing else. It logs `detection mirror failing` on the
 transition and once a minute after that, and raises a `detection_mirror` admin
 event on each transition. Silence in the admin event log with frames still
 arriving on production means it is working; confirm it positively by checking
-that the real node ids appear in the test droplet's `/api/radar/analytics`.
+that the real nodes appear in the test droplet's `/api/radar/analytics`, which
+names them by `node_ref` rather than by node id.
 
 Real receiver and transmitter geometry now lands on a droplet running
 `AUTH_ALLOW_ANONYMOUS_ADMIN=1`.
