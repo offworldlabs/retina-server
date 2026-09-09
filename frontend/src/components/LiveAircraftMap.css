@@ -848,22 +848,28 @@
   position: relative;
 }
 
-/* Right-aligned to the button: the View group sits at the end of the layer
-   row, so a left-aligned popover runs off the right edge of the window. */
+/* Fixed, and placed by script rather than anchored to a side.  Neither side
+   works on its own: pinned left it runs off the right of the window with the
+   View group at the end of the layer row, and pinned right it runs off the LEFT
+   once that row wraps and the button moves inboard.  Both were shipped.  The
+   component measures the button and clamps the popover into the viewport, which
+   is the only version that holds at every width. */
 .filters-popover {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
+  position: fixed;
   z-index: 1200;
   width: 232px;
-  max-width: calc(100vw - 24px);
+  max-width: calc(100vw - 16px);
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--panel-shadow);
 }
 
-.filters-popover .card-header {
+/* Scoped to the surface so it outranks `.app.map-surface .card-header`, which
+   is more specific than a bare `.filters-popover .card-header` and was silently
+   winning — this header rendered at that rule's 13px while every other panel
+   header on the map used the 11px micro-label. */
+.app.map-surface .filters-popover .card-header {
   display: flex;
   align-items: center;
   justify-content: space-between;

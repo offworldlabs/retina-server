@@ -44,6 +44,7 @@ import {
   FitBounds,
   ViewportTracker,
   MapClickClear,
+  InvalidateSizeOnResize,
   useAircraftFeed,
   useNodes,
   useAuth,
@@ -74,6 +75,13 @@ import { detectingNodeIdsFor } from "./map/detections";
 import { ensureDebugPanes, DEBUG_PASSIVE_PANE, GT_CLICK_PANE } from "./map/panes";
 import { ARC_TOTAL_LIFE_MS } from "./map/constants";
 import { useMapTheme, usePalette } from "./map/useMapTheme";
+import { DEFAULT_MAP_THEME } from "./map/mapPalette";
+
+// Each theme has a basemap its colours were picked against: Positron for light,
+// Voyager tinted down for dark. Voyager under the light palette reads as two
+// maps at once, and Positron under the dark one is a white sheet behind navy
+// panels. The cycle in the toolbar can still take you anywhere, including OSM.
+const DEFAULT_BASEMAP = { dark: "voyager", light: "positron" };
 import { reconcileAdsbPairs, snapTrack, sweepStaleRadar } from "./map/trackStores";
 import StatsOverlay from "./map/StatsOverlay";
 import ShortcutHelp from "./map/ShortcutHelp";
@@ -529,6 +537,14 @@ const MlatSolveHistoryLayer = memo(function MlatSolveHistoryLayer({ solves }) {
       imperatively at 60fps via markerRegistry → marker.setLatLng() in the RAF loop,
       completely bypassing React reconcile. ── */
 const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, isStale, showLabels, colorByAlt, onSelect, markerRegistry }) {
+  // Subscribing to the palette here is what makes a theme switch reach the
+  // icons.  makeAircraftIcon reads the active palette when it is CALLED, and
+  // the memo below deliberately ignores everything but the fields that change
+  // an icon — so without this the markers already on the map kept the old
+  // theme's colours until something unrelated invalidated them.  A context
+  // change re-renders its consumers whatever the memo comparator says, which
+  // is precisely the escape hatch this needs.
+  const palette = usePalette();
   const altBand = Math.floor((ac.alt_baro ?? 0) / 5000);
   const markerRef = useRef(null);
 
@@ -545,7 +561,7 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, isStale, s
       ? makeDroneIcon(ac, showLabels, isSelected)
       : makeAircraftIcon(ac, showLabels, isSelected, colorByAlt, isStale),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [ac.hex, isSelected, isStale, showLabels, colorByAlt, ac.flight, ac.target_class, altBand, ac.position_source, ac.adsb_assisted],
+    [ac.hex, isSelected, isStale, showLabels, colorByAlt, ac.flight, ac.target_class, altBand, ac.position_source, ac.adsb_assisted, palette],
   );
   const handlers = useMemo(() => ({ click: () => onSelect(ac.hex) }), [ac.hex, onSelect]);
   return <Marker ref={markerRef} position={[ac.lat, ac.lon]} icon={icon} eventHandlers={handlers} />;
@@ -1187,20 +1203,21 @@ export default function LiveAircraftMap() {
   // distance column in the list panel.
   const [userLoc, setUserLoc] = useState(null); // { lat, lon } | null
   // Tile theme — voyager (default dark-ish), positron (light), osm (classic).
-  // Each theme has a basemap its colours were picked against: Positron for
-  // light, Voyager tinted down for dark. Voyager under the light palette reads
-  // as two maps at once, and Positron under the dark one is a white sheet
-  // behind navy panels.
-  const [tileTheme, setTileTheme] = usePersistedState("tf.tile.theme", "voyager");
+  const [tileTheme, setTileTheme] = usePersistedState("tf.tile.theme", DEFAULT_BASEMAP[DEFAULT_MAP_THEME]);
 
-  // Switching theme moves the basemap with it, but only on an actual switch —
-  // seeding from `theme` on every mount would silently undo a basemap the user
-  // picked, every reload.
+  // Switching theme moves the basemap with it, but only when the basemap is
+  // still the one the OLD theme picked.  Anyone who has cycled it by hand has
+  // said what they want the tiles to be, and a theme switch is not a request to
+  // undo that — a guard that only checked "is this a mount?" still clobbered
+  // an OSM basemap the moment the theme changed.
   const prevThemeRef = useRef(theme);
   useEffect(() => {
-    if (prevThemeRef.current === theme) return;
+    const prev = prevThemeRef.current;
+    if (prev === theme) return;
     prevThemeRef.current = theme;
-    setTileTheme(theme === "dark" ? "voyager" : "positron");
+    setTileTheme((current) =>
+      current === DEFAULT_BASEMAP[prev] ? DEFAULT_BASEMAP[theme] : current,
+    );
   }, [theme, setTileTheme]);
 
   const animationFrameRef = useRef(null);
@@ -1975,6 +1992,7 @@ export default function LiveAircraftMap() {
                 interactive={false}
               />
             )}
+            <InvalidateSizeOnResize />
             <MapClickClear onClear={handleMapClick} />
             <FitBounds aircraft={radarAircraft} nodes={nodes} selectedHex={selectedHex} focusNonce={focusNonce} />
             <FollowController followSelected={followSelected} selectedHex={selectedHex} smoothRef={smoothRef} onDisengage={() => setFollowSelected(false)} />

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 /**
  * Two rows in one bar.
@@ -261,7 +261,13 @@ export default function Toolbar({
             >
               Filters{activeFilterCount(filters) > 0 ? ` (${activeFilterCount(filters)})` : ""}
             </button>
-            {showFilters && <FiltersPopover filters={filters} onChange={onFiltersChange} />}
+            {showFilters && (
+              <FiltersPopover
+                filters={filters}
+                onChange={onFiltersChange}
+                anchorRef={filtersRef}
+              />
+            )}
           </div>
           <button
             className={`toggle-btn${showStats ? " active" : ""}`}
@@ -290,11 +296,39 @@ function activeFilterCount(filters) {
   return n;
 }
 
-function FiltersPopover({ filters, onChange }) {
+const POPOVER_WIDTH = 232;
+const VIEWPORT_MARGIN = 8;
+
+function FiltersPopover({ filters, onChange, anchorRef }) {
   const set = (patch) => onChange((f) => ({ ...f, ...patch }));
 
+  // Placed against the button's measured position and clamped into the
+  // viewport, because the button moves: the layer row wraps on a narrow window,
+  // so the View group can sit anywhere from the right edge to the left one.
+  // Re-measured on resize and scroll, since the popover is `fixed` and would
+  // otherwise drift away from its button.
+  const [pos, setPos] = useState({ top: -9999, left: -9999 });
+  useLayoutEffect(() => {
+    const place = () => {
+      const r = anchorRef?.current?.getBoundingClientRect();
+      if (!r) return;
+      const maxLeft = window.innerWidth - POPOVER_WIDTH - VIEWPORT_MARGIN;
+      setPos({
+        top: r.bottom + 6,
+        left: Math.max(VIEWPORT_MARGIN, Math.min(r.left, maxLeft)),
+      });
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [anchorRef]);
+
   return (
-    <div className="filters-popover">
+    <div className="filters-popover" style={{ top: pos.top, left: pos.left }}>
       <div className="card-header">
         Filters
         <button

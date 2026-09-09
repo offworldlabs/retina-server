@@ -284,3 +284,36 @@ describe("makeAircraftIcon stale rendering", () => {
       .toBe(makeAircraftIcon(ac, false, false, false, false).options.html);
   });
 });
+
+describe("makeAircraftIcon follows the active palette", () => {
+  const ac = { hex: "mn1", position_source: "multinode_solve", adsb_assisted: true, track: 0, alt_baro: 30000 };
+  const fillOf = () => {
+    const html = makeAircraftIcon(ac, false, false, false).options.html as string;
+    return html.match(/fill="(#[0-9a-f]{6})"/i)?.[1];
+  };
+
+  afterEach(() => setActivePalette(PALETTES.dark));
+
+  // The icon factory reads the palette when it is CALLED, which is what lets a
+  // theme switch reach markers already on the map — provided the caller
+  // re-renders. AircraftMarker subscribes via usePalette() for exactly that
+  // reason; this pins the half of the contract that can be tested headlessly.
+  it("draws the lane in whichever palette is active", () => {
+    setActivePalette(PALETTES.dark);
+    expect(fillOf()).toBe(PALETTES.dark.LANE_MN_ADSB);
+    setActivePalette(PALETTES.light);
+    expect(fillOf()).toBe(PALETTES.light.LANE_MN_ADSB);
+    expect(PALETTES.dark.LANE_MN_ADSB).not.toBe(PALETTES.light.LANE_MN_ADSB);
+  });
+
+  it("takes the halo and shadow from the palette too", () => {
+    setActivePalette(PALETTES.light);
+    const light = makeAircraftIcon(ac, false, false, false).options.html as string;
+    setActivePalette(PALETTES.dark);
+    const dark = makeAircraftIcon(ac, false, false, false).options.html as string;
+    expect(light).toContain(PALETTES.light.ICON_SHADOW);
+    expect(dark).toContain(PALETTES.dark.ICON_SHADOW);
+    expect(light).toContain(`stroke-opacity="${PALETTES.light.ICON_HALO_OPACITY}"`);
+    expect(dark).toContain(`stroke-opacity="${PALETTES.dark.ICON_HALO_OPACITY}"`);
+  });
+});

@@ -9,7 +9,7 @@ import { solveUncertaintyRadiusM, solveUncertaintyRadius95M } from "./uncertaint
 import { usePalette } from "./useMapTheme";
 
 export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError, detectingNodes = [], solveHistory = null }) {
-  const { ANOMALY, GOOD, INK_MUTED, INK_SUBTLE, LANE_MN_ADSB, WARN } = usePalette();
+  const { ANOMALY, DRONE, GOOD, INK_MUTED, INK_SUBTLE, LANE_MN_ADSB, WARN } = usePalette();
   if (!ac) return null;
 
   const err = computeError(ac.hex, ac);
@@ -137,7 +137,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
                 <Field
                   label="Target class"
                   value={
-                    <span style={{ color: isDrone ? WARN : LANE_MN_ADSB, fontWeight: 600 }}>
+                    <span style={{ color: isDrone ? DRONE : LANE_MN_ADSB, fontWeight: 600 }}>
                       {isDrone ? "\u{1F6F8} Drone" : "\u2708\uFE0F Aircraft"}
                     </span>
                   }

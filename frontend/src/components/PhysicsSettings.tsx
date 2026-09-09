@@ -91,7 +91,7 @@ function objectTypes() {
     color: SIM_DRONE,
     Icon: DroneIcon,
     description: "Low-altitude, slow-moving quadrotor — no ADS-B transponder.",
-    mapNote: "Amber X-frame icon on map",
+    mapNote: "Orange X-frame icon on map",
     maxPct: 40,
   },
   {
@@ -610,7 +610,7 @@ export default function PhysicsSettings() {
             </div>
             <div className="ps-type-meta">
               <span className="ps-type-name">Commercial</span>
-              <span className="ps-type-note">Sky-blue aircraft icon · ADS-B transponder</span>
+              <span className="ps-type-note">Drawn as ground truth · ADS-B transponder</span>
             </div>
             <div className="ps-type-badge" style={{ background: "var(--accent-light)", color: SIM_COMMERCIAL }}>
               derived
@@ -820,7 +820,7 @@ export default function PhysicsSettings() {
         function acColor(a) {
           if (a.is_anomalous)           return SIM_ANOMALOUS;
           if (a.object_type === "drone") return SIM_DRONE;
-          if (a.object_type === "dark")  return INK_MUTED;
+          if (a.object_type === "dark")  return SIM_DARK;
           return SIM_COMMERCIAL;
         }
 

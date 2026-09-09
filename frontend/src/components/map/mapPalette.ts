@@ -88,9 +88,15 @@ export interface MapPalette {
   WARN: string;
   BAD: string;
 
-  /* Simulation object classes — the Physics tab's legend and the truth dots
-     the fleet spawns. Aliases of the values above rather than new ones, so the
-     legend and the map cannot drift apart. */
+  /* Simulation object classes — the Physics tab's legend, its ground-truth
+     preview map, and the truth dots the fleet spawns.
+     
+     Aliases of the values above rather than new ones, and specifically of the
+     TRUTH pair rather than of a lane: what the Physics tab draws IS the ground
+     truth the live map overlays, so a plain simulated aircraft has to be the
+     same colour on both screens. Pointing SIM_COMMERCIAL at a lane instead put
+     a cyan dot on one screen and a near-black one on the other for the same
+     aircraft. */
   SIM_COMMERCIAL: string;
   SIM_DARK: string;
   SIM_DRONE: string;
@@ -146,10 +152,10 @@ const LIGHT: MapPalette = {
   WARN: "#d97706", // amber-600
   BAD: "#e11d48", // rose-600
 
-  SIM_COMMERCIAL: "#0891b2",
-  SIM_DARK: "#475569",
-  SIM_DRONE: "#ea580c",
-  SIM_ANOMALOUS: "#dc2626",
+  SIM_COMMERCIAL: "#1e293b", // = TRUTH
+  SIM_DARK: "#64748b", // = TRUTH_DARK
+  SIM_DRONE: "#ea580c", // = DRONE
+  SIM_ANOMALOUS: "#dc2626", // = ANOMALY
   SIM_SCENE: "#a21caf",
 
   ALT_BANDS: [
@@ -204,10 +210,10 @@ const DARK: MapPalette = {
   WARN: "#fbbf24",
   BAD: "#f43f5e",
 
-  SIM_COMMERCIAL: "#22d3ee",
-  SIM_DARK: "#94a3b8",
-  SIM_DRONE: "#f59e0b",
-  SIM_ANOMALOUS: "#ef4444",
+  SIM_COMMERCIAL: "#f8fafc", // = TRUTH
+  SIM_DARK: "#94a3b8", // = TRUTH_DARK
+  SIM_DRONE: "#f59e0b", // = DRONE
+  SIM_ANOMALOUS: "#ef4444", // = ANOMALY
   SIM_SCENE: "#d8b4fe",
 
   ALT_BANDS: [
