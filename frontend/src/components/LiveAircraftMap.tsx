@@ -81,7 +81,6 @@ import {
   GOOD,
   ILLUMINATOR,
   INK_SUBTLE,
-  INK,
   LANE_MN_ADSB,
   LANE_MN_DARK,
   MLAT,
@@ -137,7 +136,11 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
       // Selection ring is ink so it reads against all fill colours — on a pale
       // basemap the white ring it used to be disappeared into the tiles.  The
       // other borders are a shade darker than the fill they edge.
-      const border  = isSel ? INK : isAnom ? "#e11d48" : isDrone ? "#d97706" : isDark ? "#64748b" : "#67e8f9";
+      // Each dot takes an edge a shade darker than its own fill.  Selection is
+      // the amber the map already uses for a selected glyph, its arcs and its
+      // trail: truth is near-white now, so the white ring it used to get would
+      // sit a single shade from the fill it rings.
+      const border  = isSel ? SELECTED : isAnom ? "#991b1b" : isDrone ? "#b45309" : isDark ? "#334155" : "#020617";
       const baseR   = isDrone ? 6 : isAnom ? 8 : 9;
       const radius  = isSel ? baseR + 4 : baseR;
       const weight  = isSel ? 4 : 3;

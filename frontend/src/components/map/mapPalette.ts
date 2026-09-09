@@ -9,23 +9,40 @@
  * "dark aircraft" grey was `#94a3b8` on the Physics tab's icon and `#64748b` on
  * its own legend two elements away.
  *
- * Values are unchanged from the ones they replace. This is a move, not a
- * redesign; anything that looks different after it is a mistake.
+ * Chosen by measurement rather than by eye, against the navy canvas. Two things
+ * are checked: WCAG contrast against that background, so a mark can be seen at
+ * all, and CIEDE2000 between marks, so two of them can be told apart. The
+ * second is the one that gets forgotten — a set can clear contrast everywhere
+ * and still be unreadable, which is what this one was.
+ *
+ *   worst lane pair    20.6 -> 28.1
+ *   worst pair at all  11.6 -> 20.0
+ *   worst contrast     4.73 -> 4.62   (floor held at 4.5:1 throughout)
+ *
+ * Four of the eight values are unchanged, so this still reads as the map it has
+ * always been. The lanes carry the hard constraint because they share one
+ * glyph; nodes, illuminators and anomalies have shapes of their own and need
+ * only clear everything else, by less.
  */
 
 /* ── Track lanes ──────────────────────────────────────────────────────────
-   Four position sources, four colours. The two blues sit next to each other
-   because both lanes know the transponder identity; violet is the odd one out
-   because a dark solve does not. */
+   Four position sources, four colours. All four draw the SAME plane glyph, so
+   colour is the only thing telling them apart, and they are chosen to be as
+   far apart as the canvas allows: no lane pair is closer than CIEDE2000 28.1,
+   against 20.6 before.
+
+   Blue and cyan still sit next to each other because both those lanes know the
+   transponder identity; purple is the odd one out because a dark solve does
+   not. */
 
 /** Multi-node solve that carried a transponder tag (mn-adsb-*). */
-export const LANE_MN_ADSB = "#38bdf8"; // sky-400
+export const LANE_MN_ADSB = "#22d3ee"; // cyan-400
 /** Multi-node solve with no transponder identity (mn-dark-*). */
-export const LANE_MN_DARK = "#a78bfa"; // violet-400
+export const LANE_MN_DARK = "#d8b4fe"; // purple-300
 /** Single node claiming a target off its real ADS-B fix. */
 export const LANE_ADSB_SINGLE = "#3b82f6"; // blue-500
 /** Solver run seeded from an ADS-B position. */
-export const LANE_SOLVER_SEED = "#2dd4bf"; // teal-400
+export const LANE_SOLVER_SEED = "#4ade80"; // green-400
 
 /* ── Map furniture ───────────────────────────────────────────────────────── */
 
@@ -40,11 +57,16 @@ export const COVERAGE = "#22c55e"; // green-500
 /** The selection highlight: selected track, its arcs, its range rings. */
 export const SELECTED = "#fbbf24"; // amber-400
 /** Anomalous tracks, and the pulsing ring around them. */
-export const ANOMALY = "#f43f5e"; // rose-500
+export const ANOMALY = "#ef4444"; // red-500
 /** Drones, which are not aircraft and should not be read as one. */
 export const DRONE = "#f59e0b"; // amber-500
-/** ADS-B ground truth: the reference dot, its trail, the error lines. */
-export const TRUTH = "#22d3ee"; // cyan-400
+/** ADS-B ground truth: the reference dot, its trail, the error lines.
+ *
+ *  Neutral, and at the far end of the ramp from the canvas. Truth is what the
+ *  solved lanes are measured against, not a fifth lane, and the cyan it used to
+ *  wear sat CIEDE2000 11.6 from the multi-node lane — the worst confusion on
+ *  the map, and between the two marks a reader most needs to tell apart. */
+export const TRUTH = "#f8fafc"; // slate-50
 /** The "dark aircraft" ground-truth dot: a simulated target flying without
  *  ADS-B. Grey, so a viewer can tell at a glance which truth dots the radar
  *  has to find on its own. */
@@ -52,10 +74,12 @@ export const TRUTH_DARK = "#94a3b8"; // slate-400
 /** MLAT verification overlay. */
 export const MLAT = "#e879f9"; // fuchsia-400
 
-/* ── Neutrals for map-drawn geometry and text ────────────────────────────── */
+/* ── Neutrals for map-drawn geometry and text ──────────────────────────────
+   INK goes with this commit. It was #f8fafc and existed only as the
+   ground-truth dot's selection ring; truth is now that value, and no shade
+   near enough to still read as "ink" is far enough to ring it. Selection uses
+   SELECTED there instead, which is what marks it everywhere else. */
 
-/** Reads against every fill on the map — the selection ring on a truth dot. */
-export const INK = "#f8fafc";
 export const INK_MUTED = "#94a3b8";
 export const INK_SUBTLE = "#64748b";
 
