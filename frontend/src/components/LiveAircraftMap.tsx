@@ -44,6 +44,7 @@ import {
   FitBounds,
   ViewportTracker,
   MapClickClear,
+  InvalidateSizeOnResize,
   useAircraftFeed,
   useNodes,
   useAuth,
@@ -51,6 +52,7 @@ import {
   AircraftListPanel,
   AircraftDetailPanel,
   Toolbar,
+  MapLegend,
   PlaybackBar,
   DetectionArcs,
   ClaimedArcs,
@@ -78,8 +80,8 @@ import {
   DRONE,
   GOOD,
   ILLUMINATOR,
+  INK_SUBTLE,
   INK,
-  INK_MUTED,
   LANE_MN_ADSB,
   LANE_MN_DARK,
   MLAT,
@@ -89,6 +91,7 @@ import {
   TRUTH_DARK,
   WARN,
 } from "./map/mapPalette";
+
 import { reconcileAdsbPairs, snapTrack, sweepStaleRadar } from "./map/trackStores";
 import StatsOverlay from "./map/StatsOverlay";
 import ShortcutHelp from "./map/ShortcutHelp";
@@ -131,7 +134,9 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
       const isDark  = !isAnom && !isDrone && ac.has_adsb === false;
       const isSel   = ac.hex === selectedHex;
       const color   = isAnom ? ANOMALY : isDrone ? DRONE : isDark ? TRUTH_DARK : TRUTH;
-      // Selection ring is white so it reads against all fill colors.
+      // Selection ring is ink so it reads against all fill colours — on a pale
+      // basemap the white ring it used to be disappeared into the tiles.  The
+      // other borders are a shade darker than the fill they edge.
       const border  = isSel ? INK : isAnom ? "#e11d48" : isDrone ? "#d97706" : isDark ? "#64748b" : "#67e8f9";
       const baseR   = isDrone ? 6 : isAnom ? 8 : 9;
       const radius  = isSel ? baseR + 4 : baseR;
@@ -508,7 +513,7 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
       (≤60 dots for one selected track), so React CircleMarkers are fine. ── */
 const MlatSolveHistoryLayer = memo(function MlatSolveHistoryLayer({ solves }) {
   const errColor = (e) =>
-    e == null ? INK_MUTED : e < 3 ? GOOD : e < 8 ? WARN : ANOMALY;
+    e == null ? INK_SUBTLE : e < 3 ? GOOD : e < 8 ? WARN : ANOMALY;
   return (
     <>
       {solves.slice(0, 60).map((s, i) =>
@@ -1874,13 +1879,15 @@ export default function LiveAircraftMap() {
         onToggleArcs={() => setShowArcs((v) => !v)}
         onToggleUncertainty={() => setShowUncertainty((v) => !v)}
         onToggleSound={() => setSoundOn((v) => !v)}
-        onCycleTheme={() => setTileTheme((t) => t === "voyager" ? "positron" : t === "positron" ? "osm" : "voyager")}
+        onCycleTheme={() => setTileTheme((t) => t === "positron" ? "voyager" : t === "voyager" ? "osm" : "positron")}
         onShare={shareLink}
         onLocate={locateMe}
         onExportAll={exportAllTrails}
         onShowHelp={() => setShowShortcutHelp(true)}
         onTogglePause={handleTogglePause}
         onFit={() => setFocusNonce((n) => n + 1)}
+        filters={filters}
+        onFiltersChange={setFilters}
       />
 
       <div className="live-map-body">
@@ -1922,44 +1929,12 @@ export default function LiveAircraftMap() {
               onToggle={() => setShowStats((v) => !v)}
             />
           </div>
-          {showFilters && (
-            <div style={{
-              position: "absolute", top: 12, left: 52, zIndex: 1000,
-              background: "rgba(2,6,23,0.9)", color: "#e2e8f0", border: "1px solid #1e293b",
-              borderRadius: 8, padding: "10px 12px", fontSize: 12, display: "flex",
-              flexDirection: "column", gap: 8, boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
-            }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <strong>Filters</strong>
-                <button
-                  onClick={() => setFilters({ minFl: "", maxFl: "", minGs: "", type: "all" })}
-                  style={{ background: "none", border: "none", color: INK_MUTED, cursor: "pointer", fontSize: 11 }}
-                >clear</button>
-              </div>
-              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                FL
-                <input type="number" placeholder="min" value={filters.minFl} style={{ width: 56 }}
-                  onChange={(e) => setFilters((f) => ({ ...f, minFl: e.target.value }))} />
-                –
-                <input type="number" placeholder="max" value={filters.maxFl} style={{ width: 56 }}
-                  onChange={(e) => setFilters((f) => ({ ...f, maxFl: e.target.value }))} />
-              </label>
-              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                Min speed (kt)
-                <input type="number" placeholder="0" value={filters.minGs} style={{ width: 56 }}
-                  onChange={(e) => setFilters((f) => ({ ...f, minGs: e.target.value }))} />
-              </label>
-              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                Type
-                <select value={filters.type} onChange={(e) => setFilters((f) => ({ ...f, type: e.target.value }))}>
-                  <option value="all">All</option>
-                  <option value="aircraft">Aircraft</option>
-                  <option value="drone">Drones</option>
-                  <option value="multinode">Multi-node only</option>
-                </select>
-              </label>
-            </div>
-          )}
+          <MapLegend
+            colorByAlt={colorByAlt}
+            showGroundTruth={showGroundTruth}
+            showIlluminators={showIlluminators}
+            hasPlayback={paused && historyRef.current.length > 0}
+          />
           <MapContainer
             center={[initialHash.lat ?? 34.85, initialHash.lon ?? -82.39]}
             zoom={initialHash.z ?? 9}
@@ -1991,6 +1966,7 @@ export default function LiveAircraftMap() {
                 interactive={false}
               />
             )}
+            <InvalidateSizeOnResize />
             <MapClickClear onClear={handleMapClick} />
             <FitBounds aircraft={radarAircraft} nodes={nodes} selectedHex={selectedHex} focusNonce={focusNonce} />
             <FollowController followSelected={followSelected} selectedHex={selectedHex} smoothRef={smoothRef} onDisengage={() => setFollowSelected(false)} />

@@ -1,0 +1,327 @@
+/**
+ * The live map's chrome, as tokens.
+ *
+ * Scoped to `.app.map-surface`, a class App sets only on map hostnames (see
+ * utils/domains.ts). Tower Finder shares this bundle and is untouched.
+ *
+ * The names are dash.retina.fm's, value for value where the two surfaces agree
+ * on a role (dashboard/src/App.css). Duplicated rather than shared because the
+ * two apps build separately, but kept deliberately parallel: one vocabulary
+ * across both consoles, so a card, a badge or a micro-label reads the same in
+ * either. Change a name here only by changing it in dash first.
+ *
+ * The VALUES are the map's own — the navy console it has always been. What
+ * this buys is not a new look but a single place to state one: the same
+ * hairline was previously written as `rgba(100, 180, 255, 0.1)` in four rules
+ * and `…0.08`, `…0.06`, `…0.05` and `…0.04` in five more, none of the
+ * differences meaning anything.
+ */
+
+.app.map-surface {
+  --bg-primary: #0d1b2a;
+  --bg-secondary: #132240;
+  --bg-card: #132240;
+  --bg-card-hover: #1a2b4d;
+  --bg-input: rgba(15, 30, 55, 0.9);
+  /* The guide's third surface tier (§3). Dark inverts the ramp — the card is
+     lighter than the canvas — so a recessed pane needs a colour of its own
+     rather than being made by letting the canvas show through. */
+  --bg-sunk: #0f2035;
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --border: rgba(100, 180, 255, 0.14);
+  --border-light: rgba(100, 180, 255, 0.28);
+  --accent: #38bdf8;
+  --accent-hover: #7dd3fc;
+  --accent-light: rgba(56, 189, 248, 0.16);
+  /* The wash at hover strength. Below --accent-light on purpose, so a hovered
+     row and a selected one stay apart. */
+  --accent-tint: rgba(56, 189, 248, 0.07);
+  --success: #4ade80;
+  --success-light: rgba(74, 222, 128, 0.15);
+  --warning: #fbbf24;
+  --warning-light: rgba(251, 191, 36, 0.15);
+  --error: #f43f5e;
+  --error-light: rgba(244, 63, 94, 0.15);
+  --header-height: 44px;
+  --radius: 8px;
+  --radius-sm: 4px;
+
+  /* Panels float over the map rather than sitting on a page. On a dark surface
+     a soft shadow does nothing, so the elevation comes from the panel being
+     lighter than the canvas — the shadow only sharpens the edge. */
+  --panel-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
+
+  /* The things a map needs and dash has no equivalent for: how far the basemap
+     is pushed back, the chips drawn onto it, and ink that has to sit on a
+     semantic wash. */
+  --tile-filter: saturate(0.85) brightness(0.78) opacity(0.82);
+  --attribution-bg: rgba(13, 27, 42, 0.85);
+  --map-chip-bg: rgba(8, 18, 38, 0.78);
+  --map-chip-ink: #ffffff;
+  --error-ink: #fca5a5;
+  --warning-ink: #fcd34d;
+  --violet: #a78bfa;
+  --violet-hover: #c4b5fd;
+
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+/* ── Header ───────────────────────────────────────────────────────────────
+   One slim identity bar. Status, search and the layer controls live in the
+   toolbar directly beneath it, and the two read as a single header block. */
+
+.app.map-surface .app-header {
+  height: var(--header-height);
+  padding: 0 16px;
+  gap: 10px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border);
+  box-shadow: none;
+}
+
+.app.map-surface .header-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--bg-primary);
+  font-size: 0.95rem;
+}
+
+.app.map-surface .app-header h1 {
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.app.map-surface .app-header .subtitle {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-muted);
+  opacity: 1;
+  letter-spacing: 0;
+}
+
+/* Tabs are dash's underline tabs, sat on the header's own bottom rule. */
+.app.map-surface .header-tabs {
+  margin-left: auto;
+  gap: 0;
+  align-self: stretch;
+}
+
+.app.map-surface .tab-btn {
+  padding: 0 16px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.app.map-surface .tab-btn:hover {
+  background: none;
+  color: var(--text-primary);
+}
+
+.app.map-surface .tab-btn.active {
+  background: none;
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* ── dash component idioms ────────────────────────────────────────────────
+   The map's panels are built from these rather than from one-off inline
+   styles, so a stats panel and a filter popover are the same object. */
+
+.app.map-surface .card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--panel-shadow);
+  overflow: hidden;
+}
+
+.app.map-surface .card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.app.map-surface .card-body {
+  padding: 10px 12px;
+}
+
+/* The micro-label. Panel headers, stat labels, group titles, table headers —
+   the single most reused idiom on the surface. */
+.app.map-surface .label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.app.map-surface .badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.app.map-surface .badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.app.map-surface .badge.online {
+  background: var(--success-light);
+  color: var(--success);
+}
+.app.map-surface .badge.online::before {
+  background: var(--success);
+}
+
+.app.map-surface .badge.warning {
+  background: var(--warning-light);
+  color: var(--warning);
+}
+.app.map-surface .badge.warning::before {
+  background: var(--warning);
+}
+
+.app.map-surface .badge.offline {
+  background: var(--error-light);
+  color: var(--error);
+}
+.app.map-surface .badge.offline::before {
+  background: var(--error);
+}
+
+/* A badge with no leading dot, for counts and tags. */
+.app.map-surface .badge.plain::before {
+  display: none;
+}
+
+.app.map-surface .badge.plain {
+  background: var(--accent-light);
+  color: var(--accent-hover);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.app.map-surface .btn {
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: all 0.15s;
+}
+
+.app.map-surface .btn-primary {
+  background: var(--accent);
+  color: var(--bg-primary);
+}
+.app.map-surface .btn-primary:hover {
+  background: var(--accent-hover);
+}
+
+.app.map-surface .btn-secondary {
+  background: transparent;
+  border: 1px solid var(--border-light);
+  color: var(--text-secondary);
+}
+.app.map-surface .btn-secondary:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.app.map-surface .btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* Form controls, so a filter input matches a console input. */
+.app.map-surface input[type="text"],
+.app.map-surface input[type="number"],
+.app.map-surface input[type="search"],
+.app.map-surface select {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 6px;
+  outline: none;
+}
+
+.app.map-surface input:focus,
+.app.map-surface select:focus {
+  border-color: var(--accent);
+}
+
+.app.map-surface ::placeholder {
+  color: var(--text-muted);
+}
+
+/* ── Scrollbars ──────────────────────────────────────────────────────────── */
+
+.app.map-surface ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.app.map-surface ::-webkit-scrollbar-track {
+  background: transparent;
+}
+.app.map-surface ::-webkit-scrollbar-thumb {
+  background: var(--border-light);
+  border-radius: 3px;
+}
+.app.map-surface ::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* ── Focus ───────────────────────────────────────────────────────────────
+   None of the four surfaces defines one; keyboard focus rides the browser
+   default. This surface does. */
+
+.app.map-surface :focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-radius: var(--radius-sm);
+}
+
+/* ── Reduced motion ──────────────────────────────────────────────────────
+   The live pulse, the anomaly ring and the detail panel's slide-in all loop
+   or move; honour the preference that asks them not to. */
+
+@media (prefers-reduced-motion: reduce) {
+  .app.map-surface *,
+  .app.map-surface *::before,
+  .app.map-surface *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

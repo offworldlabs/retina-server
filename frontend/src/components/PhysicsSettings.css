@@ -1,10 +1,18 @@
+/* ── Physics object layer ─────────────────────────────────────────────────
+   The map surface's sibling tab, on the same dash tokens defined in
+   map-surface.css. It only renders inside `.app.map-surface` (App gates the
+   tab on isMapDomain), so the var() calls always resolve.
+
+   Object-class colours are NOT set here: they come from mapPalette.ts via the
+   component, so this legend and the map cannot drift apart. */
+
 /* ── Container ───────────────────────────────────────────────── */
 .ps-container {
-  max-width: 760px;
+  max-width: 780px;
   margin: 0 auto;
-  padding: 2rem 1.5rem 3rem;
-  color: #e2e8f0;
-  background: #060d18;
+  padding: 24px 24px 48px;
+  color: var(--text-primary);
+  background: var(--bg-primary);
   min-height: 100%;
 }
 
@@ -15,90 +23,98 @@
   padding: 4rem;
 }
 
-.ps-loading-text { color: #94a3b8; }
-.ps-error        { color: #f87171; }
+.ps-loading-text {
+  color: var(--text-muted);
+}
+.ps-error {
+  color: var(--error);
+}
 
-/* ── Header ─────────────────────────────────────────────────── */
+/* ── Header ─────────────────────────────────────────────────────
+   dash's page-header proportions: 24px bold title over 14px secondary. */
 .ps-header h2 {
-  font-size: 1.35rem;
-  font-weight: 600;
-  color: #f8fafc;
-  margin: 0 0 0.3rem;
-  letter-spacing: 0.02em;
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0 0 4px;
+  letter-spacing: -0.01em;
 }
 
 .ps-subtitle {
-  font-size: 0.83rem;
-  color: #64748b;
-  margin: 0 0 1.75rem;
+  font-size: 14px;
+  color: var(--text-secondary);
+  margin: 0 0 24px;
   line-height: 1.55;
 }
 
-/* ── Live Count Grid ────────────────────────────────────────── */
+/* ── Live count grid ────────────────────────────────────────────
+   dash's stat cards: uppercase micro-label under a large tabular value. The
+   accent rule on top is how each card says which object class it counts. */
 .ps-count-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 0.65rem;
-  margin-bottom: 1.5rem;
+  gap: 12px;
+  margin-bottom: 24px;
 }
 
 .ps-count-card {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.35rem;
-  padding: 0.85rem 0.5rem;
-  background: #0f172a;
-  border: 1px solid #1e293b;
-  border-top: 2px solid var(--accent, #38bdf8);
-  border-radius: 8px;
+  gap: 6px;
+  padding: 16px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-top: 2px solid var(--accent, #3b82f6);
+  border-radius: var(--radius);
   transition: background 0.15s;
 }
 
 .ps-count-card:hover {
-  background: #111827;
+  background: var(--bg-card-hover);
 }
 
 .ps-count-total {
-  background: linear-gradient(135deg, #0c1829 0%, #0f172a 100%);
-  border-top-color: #38bdf8;
+  background: var(--bg-card);
 }
 
 .ps-count-num {
-  font-size: 1.6rem;
+  font-size: 28px;
   font-weight: 700;
-  color: var(--accent, #38bdf8);
+  color: var(--accent, #3b82f6);
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
 
 .ps-count-lbl {
-  font-size: 0.68rem;
-  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.07em;
+  letter-spacing: 0.05em;
   text-align: center;
 }
 
-/* ── Composition Bar ────────────────────────────────────────── */
+/* ── Composition bar ────────────────────────────────────────── */
 .ps-comp-section {
-  margin-bottom: 1.75rem;
+  margin-bottom: 24px;
 }
 
 .ps-comp-label {
-  font-size: 0.72rem;
-  color: #475569;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.07em;
-  margin-bottom: 0.5rem;
+  letter-spacing: 0.05em;
+  margin-bottom: 8px;
 }
 
 .ps-comp-bar {
   display: flex;
   height: 10px;
-  border-radius: 6px;
+  border-radius: 5px;
   overflow: hidden;
-  background: #1e293b;
+  background: var(--border);
   gap: 2px;
 }
 
@@ -110,42 +126,44 @@
 .ps-comp-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.75rem 1.5rem;
-  margin-top: 0.55rem;
-  font-size: 0.72rem;
+  gap: 8px 20px;
+  margin-top: 10px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
-/* ── Type Cards ─────────────────────────────────────────────── */
+/* ── Type cards ─────────────────────────────────────────────── */
 .ps-sliders {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
-  margin-bottom: 1.5rem;
+  gap: 12px;
+  margin-bottom: 24px;
 }
 
 .ps-type-card {
-  padding: 0.9rem 1rem 0.75rem;
-  background: #0b1120;
-  border: 1px solid #1e293b;
-  border-left: 3px solid var(--accent, #38bdf8);
-  border-radius: 8px;
+  padding: 14px 16px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent, #3b82f6);
+  border-radius: var(--radius);
   transition: background 0.15s;
 }
 
 .ps-type-card:hover {
-  background: #0d1527;
+  background: var(--bg-card-hover);
 }
 
+/* Commercial is derived from the other three rather than set, so it reads as
+   a result and not a control. */
 .ps-commercial {
-  opacity: 0.65;
+  opacity: 0.75;
 }
 
 .ps-type-header {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 0.4rem;
+  gap: 12px;
+  margin-bottom: 6px;
 }
 
 .ps-type-icon-wrap {
@@ -160,34 +178,34 @@
   flex: 1;
   display: flex;
   flex-direction: column;
-  gap: 0.1rem;
+  gap: 2px;
 }
 
 .ps-type-name {
-  font-size: 0.9rem;
+  font-size: 14px;
   font-weight: 600;
-  color: #f1f5f9;
+  color: var(--text-primary);
 }
 
 .ps-type-note {
-  font-size: 0.7rem;
-  color: #475569;
+  font-size: 11px;
+  color: var(--text-muted);
   font-style: italic;
 }
 
 .ps-type-badge {
-  font-size: 0.7rem;
-  padding: 0.15rem 0.55rem;
-  border-radius: 999px;
+  font-size: 11px;
+  padding: 2px 9px;
+  border-radius: 12px;
   font-weight: 600;
   white-space: nowrap;
   letter-spacing: 0.03em;
 }
 
 .ps-type-desc {
-  font-size: 0.77rem;
-  color: #64748b;
-  margin: 0 0 0.65rem;
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin: 0 0 10px;
   line-height: 1.45;
 }
 
@@ -195,33 +213,36 @@
 .ps-slider-row {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 12px;
 }
 
 .ps-range {
   flex: 1;
   -webkit-appearance: none;
+  appearance: none;
   height: 5px;
   border-radius: 3px;
   outline: none;
   cursor: pointer;
   background: linear-gradient(
     to right,
-    var(--thumb-color, #38bdf8) 0%,
-    var(--thumb-color, #38bdf8) var(--fill-pct, 0%),
-    #1e293b var(--fill-pct, 0%),
-    #1e293b 100%
+    var(--thumb-color, #3b82f6) 0%,
+    var(--thumb-color, #3b82f6) var(--fill-pct, 0%),
+    var(--border) var(--fill-pct, 0%),
+    var(--border) 100%
   );
 }
 
+/* The thumb sits in a gap the colour of the card behind it, so the ring reads
+   as a gap in either theme rather than as a second colour. */
 .ps-range::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: var(--thumb-color, #38bdf8);
-  border: 2px solid #0b1120;
-  box-shadow: 0 0 0 2px var(--thumb-color, #38bdf8);
+  background: var(--thumb-color, #3b82f6);
+  border: 2px solid var(--bg-card);
+  box-shadow: 0 0 0 2px var(--thumb-color, #3b82f6);
   cursor: pointer;
   transition: transform 0.1s, box-shadow 0.1s;
 }
@@ -234,15 +255,16 @@
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: var(--thumb-color, #38bdf8);
-  border: 2px solid #0b1120;
+  background: var(--thumb-color, #3b82f6);
+  border: 2px solid var(--bg-card);
+  box-shadow: 0 0 0 2px var(--thumb-color, #3b82f6);
   cursor: pointer;
 }
 
 .ps-pct-val {
   min-width: 3.2rem;
   text-align: right;
-  font-size: 0.88rem;
+  font-size: 14px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -251,7 +273,7 @@
 .ps-derived-track {
   flex: 1;
   height: 5px;
-  background: #1e293b;
+  background: var(--border);
   border-radius: 3px;
   overflow: hidden;
 }
@@ -264,13 +286,13 @@
 
 /* ── Warning ─────────────────────────────────────────────────── */
 .ps-warn {
-  background: #3b0a0a;
-  border: 1px solid #7f1d1d;
-  color: #fca5a5;
-  border-radius: 6px;
-  padding: 0.6rem 0.9rem;
-  font-size: 0.82rem;
-  margin-bottom: 1.25rem;
+  background: var(--error-light);
+  border: 1px solid var(--error);
+  color: var(--error-ink);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-size: 13px;
+  margin-bottom: 20px;
 }
 
 /* Drift banner — the config moved under the page (usually a backend
@@ -279,24 +301,24 @@
 .ps-drift {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  gap: 12px;
   flex-wrap: wrap;
-  border-radius: 6px;
-  padding: 0.6rem 0.9rem;
-  font-size: 0.82rem;
-  margin-bottom: 1.25rem;
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-size: 13px;
+  margin-bottom: 20px;
 }
 
 .ps-drift-stale {
-  background: #3b2708;
-  border: 1px solid #92400e;
-  color: #fcd34d;
+  background: var(--warning-light);
+  border: 1px solid var(--warning);
+  color: var(--warning-ink);
 }
 
 .ps-drift-resynced {
-  background: #0f172a;
-  border: 1px solid #334155;
-  color: #94a3b8;
+  background: var(--bg-card-hover);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
 }
 
 .ps-drift-btn {
@@ -304,279 +326,277 @@
   background: transparent;
   border: 1px solid currentColor;
   color: inherit;
-  border-radius: 4px;
-  padding: 0.3rem 0.7rem;
-  font-size: 0.78rem;
+  border-radius: var(--radius-sm);
+  padding: 4px 11px;
+  font: inherit;
+  font-size: 12px;
   cursor: pointer;
 }
 
 .ps-drift-btn:hover {
-  background: rgba(255, 255, 255, 0.07);
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
 }
 
 /* ── Settings grid ──────────────────────────────────────────── */
 .ps-settings-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 0.75rem;
-  margin-bottom: 1.5rem;
+  gap: 12px;
+  margin-bottom: 24px;
 }
 
 .ps-settings-card {
-  padding: 0.85rem 1rem;
-  background: #0b1120;
-  border: 1px solid #1e293b;
-  border-radius: 8px;
+  padding: 14px 16px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
 }
 
 .ps-settings-label {
-  font-size: 0.75rem;
-  color: #64748b;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
-  margin-bottom: 0.6rem;
+  letter-spacing: 0.05em;
+  margin-bottom: 10px;
 }
 
 .ps-settings-sublabel {
   text-transform: none;
   letter-spacing: 0;
-  color: #475569;
-  font-size: 0.72rem;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 400;
 }
 
 .ps-count-inputs {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin-top: 0.4rem;
+  gap: 8px;
+  margin-top: 6px;
 }
 
 .ps-count-field {
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
+  gap: 4px;
   align-items: center;
 }
 
 .ps-count-field-lbl {
-  font-size: 0.65rem;
-  color: #475569;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
 
 .ps-count-sep {
-  color: #334155;
+  color: var(--text-muted);
   font-size: 1rem;
   padding-top: 1rem;
 }
 
 .ps-number-input {
   width: 72px;
-  background: #0f172a;
-  border: 1px solid #334155;
-  border-radius: 5px;
-  color: #e2e8f0;
-  padding: 0.35rem 0.5rem;
-  font-size: 0.88rem;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 14px;
   text-align: center;
   transition: border-color 0.15s;
 }
 
 .ps-number-input:focus {
   outline: none;
-  border-color: #38bdf8;
+  border-color: var(--accent);
 }
 
-/* ── Apply ───────────────────────────────────────────────────── */
+/* ── Apply ───────────────────────────────────────────────────
+   Flat solid accent, as dash's primary button is. The old gradient-and-lift
+   treatment belongs to the marketing surfaces, not a console. */
 .ps-actions {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  margin-bottom: 2rem;
+  gap: 16px;
+  margin-bottom: 32px;
 }
 
 .ps-apply-btn {
-  padding: 0.6rem 1.6rem;
-  background: linear-gradient(135deg, #0284c7, #0ea5e9);
+  padding: 9px 22px;
+  background: var(--accent);
   color: #fff;
   border: none;
-  border-radius: 7px;
-  font-size: 0.9rem;
-  font-weight: 600;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
   cursor: pointer;
-  letter-spacing: 0.02em;
-  transition: opacity 0.15s, transform 0.1s, box-shadow 0.15s;
-  box-shadow: 0 2px 8px rgba(14,165,233,0.3);
+  transition: background 0.15s;
 }
 
 .ps-apply-btn:hover:not(:disabled) {
-  opacity: 0.9;
-  transform: translateY(-1px);
-  box-shadow: 0 4px 14px rgba(14,165,233,0.4);
-}
-
-.ps-apply-btn:active:not(:disabled) {
-  transform: translateY(0);
+  background: var(--accent-hover);
 }
 
 .ps-apply-btn:disabled {
-  opacity: 0.35;
+  opacity: 0.4;
   cursor: not-allowed;
-  box-shadow: none;
 }
 
-.ps-save-msg  { font-size: 0.82rem; color: #4ade80; }
-.ps-save-err  { color: #f87171; }
+.ps-save-msg {
+  font-size: 13px;
+  color: var(--success);
+}
+.ps-save-err {
+  color: var(--error);
+}
 
-/* ── Fleet Scene ─────────────────────────────────────────────── */
+/* ── Fleet scene ─────────────────────────────────────────────── */
 .ps-scene-section {
-  background: #0f172a;
-  border: 1px solid #1e293b;
-  border-radius: 12px;
+  background: var(--bg-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   padding: 18px;
-  margin-bottom: 1.5rem;
+  margin-bottom: 24px;
 }
 
 .ps-scene-title {
-  font-size: 0.85rem;
+  font-size: 11px;
   font-weight: 600;
-  color: #cbd5e1;
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.05em;
   margin-bottom: 8px;
 }
 
 .ps-scene-running {
-  font-size: 0.8rem;
-  color: #94a3b8;
+  font-size: 13px;
+  color: var(--text-secondary);
   margin: 0 0 14px;
 }
 
 .ps-scene-warning {
-  background: #3b0a0a;
-  border: 1px solid #7f1d1d;
-  color: #fca5a5;
-  border-radius: 6px;
-  padding: 0.6rem 0.9rem;
-  font-size: 0.8rem;
-  margin-bottom: 1rem;
+  background: var(--error-light);
+  border: 1px solid var(--error);
+  color: var(--error-ink);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-size: 13px;
+  margin-bottom: 16px;
 }
 
+/* Violet, because respawning the world is not one of the object-class
+   controls above it. */
 .ps-scene-apply-btn {
-  padding: 0.6rem 1.6rem;
-  background: linear-gradient(135deg, #6d28d9, #a78bfa);
+  padding: 9px 22px;
+  background: var(--violet);
   color: #fff;
   border: none;
-  border-radius: 7px;
-  font-size: 0.9rem;
-  font-weight: 600;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 500;
   cursor: pointer;
-  letter-spacing: 0.02em;
-  transition: opacity 0.15s, transform 0.1s, box-shadow 0.15s, background 0.15s;
-  box-shadow: 0 2px 8px rgba(167,139,250,0.3);
+  transition: background 0.15s;
 }
 
 .ps-scene-apply-btn:hover:not(:disabled) {
-  opacity: 0.9;
-  transform: translateY(-1px);
+  background: var(--violet-hover);
 }
 
 .ps-scene-apply-btn:disabled {
-  opacity: 0.35;
+  opacity: 0.4;
   cursor: not-allowed;
-  box-shadow: none;
 }
 
+/* Armed: the next click actually restarts the fleet, so it turns into the
+   destructive colour first. */
 .ps-scene-apply-armed {
-  background: linear-gradient(135deg, #b91c1c, #ef4444);
-  box-shadow: 0 2px 8px rgba(239,68,68,0.4);
+  background: var(--error);
+}
+
+.ps-scene-apply-armed:hover:not(:disabled) {
+  background: var(--error);
 }
 
 .ps-scene-pending-chip {
-  font-size: 0.78rem;
-  color: #fbbf24;
-  background: #78350f33;
-  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--warning);
+  background: var(--warning-light);
+  border-radius: 12px;
   padding: 3px 10px;
 }
 
-/* ── Doppler Arc Guide ──────────────────────────────────────── */
+/* ── Doppler arc guide ──────────────────────────────────────── */
 .ps-doppler-guide {
-  background: #080e19;
-  border: 1px solid #1e3a5f;
-  border-radius: 8px;
-  padding: 1rem 1.1rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
 }
 
 .ps-doppler-title {
-  font-size: 0.8rem;
+  font-size: 11px;
   font-weight: 600;
-  color: #60a5fa;
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.07em;
-  margin-bottom: 0.55rem;
+  letter-spacing: 0.05em;
+  margin-bottom: 9px;
 }
 
 .ps-doppler-body {
-  font-size: 0.8rem;
-  color: #94a3b8;
-  margin: 0 0 0.75rem;
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin: 0 0 12px;
   line-height: 1.5;
 }
 
 .ps-doppler-gradient-row {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 0.65rem;
+  gap: 12px;
+  margin-bottom: 10px;
 }
 
 .ps-doppler-end {
-  font-size: 0.7rem;
-  color: #475569;
+  font-size: 11px;
+  color: var(--text-muted);
   white-space: nowrap;
 }
 
+/* These five stops are _DOPPLER_STOPS from map/constants.ts, in order. The
+   guide has to show the ramp the arcs are actually drawn with, and the old
+   grey centre stop was from before that centre became cyan. */
+/* The stops are DOPPLER_STOPS from map/mapPalette.ts, in order: the guide has
+   to show the ramp the arcs are actually drawn with. */
 .ps-doppler-bar {
   flex: 1;
   height: 8px;
   border-radius: 4px;
-  background: linear-gradient(to right,
-    #1e3a8a,
-    #3b82f6,
-    #94a3b8,
-    #f87171,
-    #991b1b
-  );
+  background: linear-gradient(to right, #1e3a8a, #60a5fa, #22d3ee, #f87171, #991b1b);
 }
 
 .ps-doppler-hint {
-  font-size: 0.77rem;
-  color: #475569;
+  font-size: 12px;
+  color: var(--text-secondary);
   margin: 0;
   line-height: 1.5;
 }
 
 .ps-doppler-hint strong {
-  color: #64748b;
+  color: var(--text-primary);
 }
 
-/* ── Responsive ─────────────────────────────────────────────── */
-@media (max-width: 600px) {
-  .ps-count-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-  .ps-settings-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* ── Ground Truth Map ────────────────────────────────────────── */
+/* ── Ground truth map ────────────────────────────────────────── */
 .ps-gt-section {
-  background: #0f172a;
-  border: 1px solid #1e293b;
-  border-radius: 12px;
+  background: var(--bg-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   padding: 18px;
   margin-bottom: 16px;
 }
@@ -589,24 +609,25 @@
 }
 
 .ps-gt-title {
-  font-size: 0.85rem;
+  font-size: 11px;
   font-weight: 600;
-  color: #cbd5e1;
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.05em;
 }
 
 .ps-gt-count {
-  font-size: 0.75rem;
-  color: #475569;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 .ps-gt-map {
   width: 100%;
   height: 320px;
-  border-radius: 8px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
-  border: 1px solid #1e293b;
+  border: 1px solid var(--border);
 }
 
 .ps-gt-legend {
@@ -614,25 +635,25 @@
   gap: 16px;
   flex-wrap: wrap;
   margin-top: 10px;
-  font-size: 0.73rem;
-  color: #94a3b8;
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
-/* ── Solver Performance ──────────────────────────────────────── */
+/* ── Solver performance ──────────────────────────────────────── */
 .ps-perf-section {
-  background: #0f172a;
-  border: 1px solid #1e293b;
-  border-radius: 12px;
+  background: var(--bg-sunk);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   padding: 18px;
   margin-bottom: 16px;
 }
 
 .ps-perf-title {
-  font-size: 0.85rem;
+  font-size: 11px;
   font-weight: 600;
-  color: #cbd5e1;
+  color: var(--text-muted);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.05em;
   margin-bottom: 14px;
 }
 
@@ -642,15 +663,10 @@
   gap: 10px;
 }
 
-@media (max-width: 600px) {
-  .ps-perf-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
 .ps-perf-card {
-  background: #1e293b;
-  border-radius: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   padding: 12px 10px;
   display: flex;
   flex-direction: column;
@@ -658,41 +674,45 @@
   gap: 4px;
 }
 
+/* The headline rate is the one figure worth colouring. */
 .ps-perf-rate {
-  background: #172554;
-  border: 1px solid #1e40af44;
+  background: var(--accent-light);
+  border-color: var(--accent);
 }
 
 .ps-perf-val {
-  font-size: 1.35rem;
+  font-size: 22px;
   font-weight: 700;
-  color: #e2e8f0;
+  color: var(--text-primary);
   line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
 .ps-perf-rate .ps-perf-val {
-  color: #60a5fa;
+  color: var(--accent-hover);
 }
 
 .ps-perf-lbl {
-  font-size: 0.7rem;
-  color: #475569;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
   text-align: center;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.05em;
 }
 
 .ps-perf-sublbl {
   text-transform: none;
   letter-spacing: normal;
-  color: #64748b;
+  font-weight: 400;
+  color: var(--text-secondary);
 }
 
 /* ── Publication funnel ─────────────────────────────────────── */
 .ps-funnel-section {
   margin-top: 16px;
   padding-top: 14px;
-  border-top: 1px solid #1e293b;
+  border-top: 1px solid var(--border);
 }
 
 .ps-funnel-bar {
@@ -700,7 +720,7 @@
   height: 10px;
   border-radius: 5px;
   overflow: hidden;
-  background: #1e293b;
+  background: var(--border);
 }
 
 .ps-funnel-seg {
@@ -712,13 +732,13 @@
   gap: 14px;
   flex-wrap: wrap;
   margin-top: 8px;
-  font-size: 0.72rem;
+  font-size: 12px;
 }
 
 .ps-funnel-caption {
-  margin-top: 4px;
-  font-size: 0.68rem;
-  color: #475569;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .ps-reject-reasons {
@@ -733,11 +753,11 @@
   grid-template-columns: 7rem 1fr 2.5rem;
   align-items: center;
   gap: 8px;
-  font-size: 0.72rem;
+  font-size: 12px;
 }
 
 .ps-reject-label {
-  color: #94a3b8;
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.03em;
   overflow: hidden;
@@ -748,26 +768,27 @@
 .ps-reject-track {
   height: 6px;
   border-radius: 3px;
-  background: #1e293b;
+  background: var(--border);
   overflow: hidden;
 }
 
 .ps-reject-fill {
   height: 100%;
-  background: #f43f5e;
+  background: var(--error);
   border-radius: 3px;
 }
 
 .ps-reject-count {
-  color: #cbd5e1;
+  color: var(--text-primary);
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Consensus row ──────────────────────────────────────────── */
 .ps-consensus-row {
   margin-top: 14px;
   padding-top: 14px;
-  border-top: 1px solid #1e293b;
+  border-top: 1px solid var(--border);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -775,39 +796,54 @@
 }
 
 .ps-consensus-badge {
-  font-size: 0.68rem;
-  font-weight: 700;
+  font-size: 11px;
+  font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  padding: 3px 9px;
-  border-radius: 999px;
+  padding: 3px 10px;
+  border-radius: 12px;
 }
 
 .ps-consensus-off {
-  background: #1e293b;
-  color: #64748b;
+  background: var(--bg-card-hover);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
 }
 
 .ps-consensus-shadow {
-  background: #78350f33;
-  color: #f59e0b;
+  background: var(--warning-light);
+  color: var(--warning);
 }
 
 .ps-consensus-active {
-  background: #14532d33;
-  color: #4ade80;
+  background: var(--success-light);
+  color: var(--success);
 }
 
 .ps-consensus-chip {
-  font-size: 0.72rem;
-  color: #94a3b8;
-  background: #1e293b;
-  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-card-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   padding: 3px 8px;
 }
 
 .ps-consensus-caption {
   margin-left: auto;
-  font-size: 0.68rem;
-  color: #475569;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* ── Responsive ─────────────────────────────────────────────── */
+@media (max-width: 600px) {
+  .ps-count-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .ps-settings-grid {
+    grid-template-columns: 1fr;
+  }
+  .ps-perf-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
