@@ -407,10 +407,11 @@ No immediate action required. Watch `solver_queue_pct` over the next few minutes
 **Trigger:** Active connected nodes < 80% of peak since startup (and peak > 10).  
 **What it means:** A significant fraction of the fleet went offline unexpectedly.
 
-**Check which nodes are gone:**
+**Check which nodes are gone:** the payload is `{"nodes": {node_ref: {…}}, …}`,
+so the identity is the key and a disconnected node is named by its ref.
 ```bash
 curl -sk https://localhost/api/radar/nodes | python3 -c \
-  "import sys,json; nodes=json.load(sys.stdin); [print(n['node_id'], n['status']) for n in nodes if n['status']=='disconnected']"
+  "import sys,json; nodes=json.load(sys.stdin)['nodes']; [print(r, n['status']) for r, n in nodes.items() if n['status']=='disconnected']"
 ```
 
 **Common causes:**
@@ -613,6 +614,33 @@ curl -sk https://localhost/api/health
 ```
 
 > **Always `git push` before deploying.** `git pull` on the server does nothing if the commit isn't pushed.
+
+### Which connected nodes have no public handle
+Every public surface names a node by its `node_ref`, and a node whose registry
+row is missing or carries no ref is dropped from all of them rather than
+published under its `node_id`. This asks, for each connected non-synthetic
+node, whether such a row exists. It is a database question, not an API one:
+`/api/radar/nodes` serves only what already resolves, so it can never report
+what is missing.
+
+Run it before a deploy that moves a surface into ref space, where the answer
+must be "none" or those nodes vanish from the map:
+```bash
+cd /opt/retina-server && docker compose exec -T server python3 - <<'PY'
+import json, sqlite3, urllib.request
+
+fleet = json.load(urllib.request.urlopen("http://localhost:8000/api/radar/nodes"))["nodes"]
+# Keyed on node_id on a server that predates the migration and on node_ref
+# after it, which is why an upgraded server answers "none" unconditionally.
+ids = {k for k, v in fleet.items() if not v.get("is_synthetic")}
+db = sqlite3.connect("file:/app/backend/data/users.db?mode=ro", uri=True)
+have = {r[0] for r in db.execute("SELECT node_id FROM nodes WHERE node_ref IS NOT NULL AND node_ref != ''")}
+print(f"{len(ids & have)} of {len(ids)} connected real nodes have a node_ref")
+print("no handle:", sorted(ids - have) or "none")
+PY
+```
+
+Anything listed needs a `nodes` row with a ref minted for it before the deploy.
 
 ### Restart without deploying
 ```bash
