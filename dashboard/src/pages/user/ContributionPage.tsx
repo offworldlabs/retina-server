@@ -174,9 +174,9 @@ export default function ContributionPage() {
               </thead>
               <tbody>
                 {leaderboard.slice(0, 10).map((entry, i) => (
-                  <tr key={entry.node_id || i}>
+                  <tr key={entry.node_ref || i}>
                     <td style={{ fontWeight: 600, color: i < 3 ? "var(--accent)" : "var(--text-muted)" }}>{i + 1}</td>
-                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(entry.node_id || "").slice(-12)}</td>
+                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(entry.node_ref || "").slice(-12)}</td>
                     <td>{(entry.detections || 0).toLocaleString()}</td>
                     <td>{((entry.trust || 0) * 100).toFixed(0)}%</td>
                   </tr>

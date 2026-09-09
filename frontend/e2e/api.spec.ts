@@ -148,7 +148,7 @@ test.describe("API admin endpoints", () => {
     // Each entry has required fields
     if (body.leaderboard.length > 0) {
       const first = body.leaderboard[0];
-      expect(first).toHaveProperty("node_id");
+      expect(first).toHaveProperty("node_ref");
       expect(first).toHaveProperty("name");
     }
   });

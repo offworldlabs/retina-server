@@ -45,7 +45,7 @@ from core.users import (
     require_admin,
     user_to_dict,
 )
-from services.node_refs import id_for_ref
+from services.node_refs import id_for_ref, public_identity, public_name
 
 logger = logging.getLogger(__name__)
 
@@ -515,27 +515,37 @@ async def leaderboard(_user=Depends(get_current_user)):
         except Exception:
             logger.debug("analytics snapshot bytes unparseable", exc_info=True)
     if summaries:
-        # The snapshot is built for publication, so it is keyed on node_ref;
-        # everything below reads node_id-keyed state.  A synthetic node
-        # publishes as itself and has no reverse row, hence the fallback.  Both
-        # sources have to land in the same key space or this route reports ids
-        # or refs depending on whether the refresh has run yet.
-        summaries = {(id_for_ref(ref) or ref): s for ref, s in summaries.items()}
+        # The snapshot is built for publication, so it is already keyed on
+        # node_ref, which is what this route reports.  The node_id rides
+        # alongside because everything else read below is node_id-keyed; a
+        # synthetic node publishes as itself and has no reverse row, hence the
+        # fallback.
+        rows = [(ref, id_for_ref(ref) or ref, s) for ref, s in summaries.items()]
     else:
-        # Fall back to live computation only if the snapshot is empty
+        # Fall back to live computation only if the snapshot is empty.  Keyed
+        # on node_id, so it passes the boundary the snapshot has already been
+        # through, and a node with no handle is left out rather than named.
         loop = asyncio.get_running_loop()
-        summaries = await loop.run_in_executor(_admin_executor, state.node_analytics.get_all_summaries)
+        live = await loop.run_in_executor(_admin_executor, state.node_analytics.get_all_summaries)
+        rows = [(ref, nid, s) for nid, s in live.items() if (ref := public_identity(nid))]
 
     entries = []
-    for node_id, s in summaries.items():
+    with state.connected_nodes_lock:
+        connected = dict(state.connected_nodes)
+    # Rows carry the same metrics /api/radar/analytics publishes per node_ref,
+    # so naming the node_id here would let any logged-in caller join the two
+    # and recover the mapping the boundary exists to withhold.
+    for node_ref, node_id, s in rows:
         m = s.get("metrics", {})
         t = s.get("trust", {})
         r = s.get("reputation", {})
         miss = state.latest_missed_detections.get(node_id, {})
         entries.append(
             {
-                "node_id": node_id,
-                "name": state.connected_nodes.get(node_id, {}).get("config", {}).get("name", node_id),
+                "node_ref": node_ref,
+                "name": public_name(
+                    connected.get(node_id, {}).get("config", {}).get("name"), node_ref, connected.keys()
+                ),
                 "detections": m.get("total_detections", 0),
                 "frames": m.get("total_frames", 0),
                 "tracks": m.get("total_tracks", 0),
@@ -543,7 +553,7 @@ async def leaderboard(_user=Depends(get_current_user)):
                 "avg_snr": m.get("avg_snr", 0),
                 "trust_score": t.get("trust_score", 0),
                 "reputation": r.get("reputation", 0),
-                "online": state.connected_nodes.get(node_id, {}).get("status") not in ("disconnected", None),
+                "online": connected.get(node_id, {}).get("status") not in ("disconnected", None),
                 "in_range": miss.get("in_range", 0),
                 "detected_in_range": miss.get("detected", 0),
                 "missed": miss.get("missed", 0),

@@ -68,7 +68,7 @@ export default function LeaderboardPage() {
           <div className="card-header"><h3>Top Performers</h3></div>
           <div className="card-body" style={{ display: "flex", gap: 16, justifyContent: "center", flexWrap: "wrap" }}>
             {top3.map((entry, i) => (
-              <div key={entry.node_id} style={{
+              <div key={entry.node_ref} style={{
                 textAlign: "center",
                 padding: "20px 24px",
                 borderRadius: "var(--radius)",
@@ -83,7 +83,7 @@ export default function LeaderboardPage() {
                   #{i + 1}
                 </div>
                 <div style={{ fontSize: 12, fontFamily: "monospace", color: "var(--accent)", marginBottom: 4 }}>
-                  {(entry.name || entry.node_id).slice(-12)}
+                  {(entry.name || entry.node_ref).slice(-12)}
                 </div>
                 <div style={{ fontSize: 20, fontWeight: 700 }}>{entry.detections.toLocaleString()}</div>
                 <div style={{ fontSize: 11, color: "var(--text-muted)" }}>detections</div>
@@ -127,7 +127,7 @@ export default function LeaderboardPage() {
         <div className="card-header"><h3>Rankings</h3></div>
         {(() => {
           const filtered = search
-            ? sorted.filter((e) => ((e.name || e.node_id || "")).toLowerCase().includes(search.toLowerCase()))
+            ? sorted.filter((e) => ((e.name || e.node_ref || "")).toLowerCase().includes(search.toLowerCase()))
             : sorted;
           const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
           const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -153,10 +153,10 @@ export default function LeaderboardPage() {
                   </thead>
                   <tbody>
                     {paged.map((entry, i) => (
-                      <tr key={entry.node_id}>
+                      <tr key={entry.node_ref}>
                         <td style={{ fontWeight: 600, color: "var(--text-primary)" }}>{offset + i + 1}</td>
                         <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
-                          {(entry.name || entry.node_id).slice(-12)}
+                          {(entry.name || entry.node_ref).slice(-12)}
                         </td>
                         <td>
                           <span className={`badge ${entry.online ? "online" : "offline"}`}>

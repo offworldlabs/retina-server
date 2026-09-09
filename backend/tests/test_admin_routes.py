@@ -155,7 +155,8 @@ class TestLeaderboard:
             r = client.get("/api/admin/leaderboard")
             assert r.status_code == 200
             entries = r.json()["leaderboard"]
-            found = [e for e in entries if e["node_id"] == "test-lb-1"]
+            # A synthetic node publishes under its own id, so ref and id agree.
+            found = [e for e in entries if e["node_ref"] == "test-lb-1"]
             assert len(found) == 1
             assert found[0]["detections"] == 42
             assert found[0]["rank"] >= 1
@@ -163,22 +164,15 @@ class TestLeaderboard:
             state.latest_analytics_bytes = orig
             state.connected_nodes.pop("test-lb-1", None)
 
-    def test_leaderboard_resolves_a_real_nodes_ref_back_to_its_id(self, client):
-        """The snapshot is keyed on node_ref; connected_nodes and
-        latest_missed_detections are keyed on node_id.  Read the key as an id
-        and a real node loses its name, reads offline and zeroes all four miss
-        fields.  The test above never saw it because a synthetic id publishes
-        as itself.
-        """
+    @staticmethod
+    def _seed_node(nid: str) -> str:
+        """A registry row for a real node id, returning the ref it carries."""
         import asyncio
-
-        import orjson
 
         from core.nodes import Node
         from core.users import async_session_maker
         from services import node_auth, node_refs
 
-        nid = "ret9f8e7d6c"
         ref = node_auth.mint_node_ref()
 
         async def _seed():
@@ -191,6 +185,23 @@ class TestLeaderboard:
         # restores one for the same reason.
         asyncio.set_event_loop(asyncio.new_event_loop())
         node_refs._reset_for_tests()
+        return ref
+
+    def test_leaderboard_reports_the_ref_and_still_reads_id_keyed_state(self, client):
+        """The snapshot is keyed on node_ref and so is this route; that is the
+        key space /api/radar/analytics publishes the same metrics in, and a row
+        naming both would hand out the mapping to any logged-in caller.
+
+        connected_nodes and latest_missed_detections are still keyed on
+        node_id, so the reverse lookup has to survive: read the key as an id
+        and a real node loses its name, reads offline and zeroes all four miss
+        fields.  The test above never saw it because a synthetic id publishes
+        as itself.
+        """
+        import orjson
+
+        nid = "ret9f8e7d6c"
+        ref = self._seed_node(nid)
 
         state.connected_nodes[nid] = {"status": "active", "config": {"name": "Example Site 1"}, "is_synthetic": False}
         state.latest_missed_detections[nid] = {"in_range": 10, "detected": 7, "missed": 3, "miss_rate": 0.3}
@@ -202,34 +213,84 @@ class TestLeaderboard:
             r = client.get("/api/admin/leaderboard")
             assert r.status_code == 200
             entries = r.json()["leaderboard"]
+            body = r.text
         finally:
             state.latest_analytics_bytes = orig
             state.connected_nodes.pop(nid, None)
             state.latest_missed_detections.pop(nid, None)
 
-        (entry,) = [e for e in entries if e["node_id"] == nid]
+        (entry,) = [e for e in entries if e["node_ref"] == ref]
+        assert "node_id" not in entry
+        assert nid not in body
         assert entry["name"] == "Example Site 1"
         assert entry["online"] is True
         assert entry["detections"] == 42
         assert (entry["missed"], entry["miss_rate"]) == (3, 0.3)
 
     def test_leaderboard_names_nodes_the_same_way_with_a_cold_snapshot(self, client):
-        """The fallback recomputes from a node_id-keyed source, so without the
-        resolution above this route would answer in ids or in refs depending on
-        whether the refresh had run yet."""
+        """The fallback recomputes from a node_id-keyed source, so without a
+        pass through the boundary this route would answer in ids or in refs
+        depending on whether the refresh had run yet."""
         nid = "ret9f8e7d6c"
+        ref = self._seed_node(nid)
         orig = state.latest_analytics_bytes
         state.latest_analytics_bytes = b"{}"
         state.node_analytics.register_node(nid, {"node_id": nid})
         state.node_analytics._summaries_cache = None
         try:
-            entries = client.get("/api/admin/leaderboard").json()["leaderboard"]
+            r = client.get("/api/admin/leaderboard")
+            entries = r.json()["leaderboard"]
+            body = r.text
         finally:
             state.latest_analytics_bytes = orig
             state.node_analytics.retire_node(nid)
             state.node_analytics._summaries_cache = None
 
-        assert nid in [e["node_id"] for e in entries]
+        assert ref in [e["node_ref"] for e in entries]
+        assert nid not in body
+
+    def test_leaderboard_leaves_out_a_node_with_no_registry_row(self, client):
+        """The cold path is keyed on node_id, and a node with no handle cannot
+        be named at all: publishing the id as a fallback is the disclosure."""
+        nid = "ret0badcafe"
+        orig = state.latest_analytics_bytes
+        state.latest_analytics_bytes = b"{}"
+        state.node_analytics.register_node(nid, {"node_id": nid})
+        state.node_analytics._summaries_cache = None
+        try:
+            body = client.get("/api/admin/leaderboard").text
+        finally:
+            state.latest_analytics_bytes = orig
+            state.node_analytics.retire_node(nid)
+            state.node_analytics._summaries_cache = None
+
+        assert nid not in body
+
+    def test_leaderboard_does_not_publish_a_name_that_is_a_node_id(self, client):
+        """`name` comes off the node's own config, which nothing validates."""
+        import orjson
+
+        nid = "ret9f8e7d6c"
+        other = "ret1a2b3c4d"
+        ref = self._seed_node(nid)
+        self._seed_node(other)
+
+        state.connected_nodes[nid] = {"status": "active", "config": {"name": other}, "is_synthetic": False}
+        orig = state.latest_analytics_bytes
+        state.latest_analytics_bytes = orjson.dumps(
+            {"nodes": {ref: {"metrics": {"total_detections": 1}, "trust": {}, "reputation": {}}}}
+        )
+        try:
+            r = client.get("/api/admin/leaderboard")
+            entries = r.json()["leaderboard"]
+            body = r.text
+        finally:
+            state.latest_analytics_bytes = orig
+            state.connected_nodes.pop(nid, None)
+
+        (entry,) = [e for e in entries if e["node_ref"] == ref]
+        assert entry["name"] == ref
+        assert other not in body
 
 
 # ── Alerts ───────────────────────────────────────────────────────────────────
