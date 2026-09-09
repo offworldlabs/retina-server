@@ -298,37 +298,68 @@ function activeFilterCount(filters) {
 
 const POPOVER_WIDTH = 232;
 const VIEWPORT_MARGIN = 8;
+const GAP = 6;
 
 function FiltersPopover({ filters, onChange, anchorRef }) {
   const set = (patch) => onChange((f) => ({ ...f, ...patch }));
 
-  // Placed against the button's measured position and clamped into the
-  // viewport, because the button moves: the layer row wraps on a narrow window,
-  // so the View group can sit anywhere from the right edge to the left one.
-  // Re-measured on resize and scroll, since the popover is `fixed` and would
-  // otherwise drift away from its button.
-  const [pos, setPos] = useState({ top: -9999, left: -9999 });
+  // Placed against the button's measured position and clamped into the viewport
+  // on BOTH axes, because the button moves: the layer row wraps on a narrow
+  // window, so the View group can sit anywhere from the right edge to the left
+  // one, and a short window leaves no room below it.
+  //
+  // Measuring the popover itself rather than assuming its size: its height
+  // depends on content, and its width is capped by a max-width on a narrow
+  // screen, so a hardcoded figure would clamp against the wrong number exactly
+  // when the clamping matters.
+  const popRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+
   useLayoutEffect(() => {
+    const anchor = anchorRef?.current;
+    if (!anchor) return;
+
     const place = () => {
-      const r = anchorRef?.current?.getBoundingClientRect();
-      if (!r) return;
-      const maxLeft = window.innerWidth - POPOVER_WIDTH - VIEWPORT_MARGIN;
-      setPos({
-        top: r.bottom + 6,
-        left: Math.max(VIEWPORT_MARGIN, Math.min(r.left, maxLeft)),
-      });
+      const a = anchor.getBoundingClientRect();
+      const el = popRef.current;
+      const w = el?.offsetWidth || POPOVER_WIDTH;
+      const h = el?.offsetHeight || 0;
+      const maxLeft = Math.max(VIEWPORT_MARGIN, window.innerWidth - w - VIEWPORT_MARGIN);
+      // Below the button, or above it when below would overflow the bottom.
+      const below = a.bottom + GAP;
+      const top =
+        below + h > window.innerHeight - VIEWPORT_MARGIN && a.top - GAP - h > VIEWPORT_MARGIN
+          ? a.top - GAP - h
+          : Math.min(below, Math.max(VIEWPORT_MARGIN, window.innerHeight - h - VIEWPORT_MARGIN));
+      setPos({ top, left: Math.max(VIEWPORT_MARGIN, Math.min(a.left, maxLeft)) });
     };
+
     place();
     window.addEventListener("resize", place);
     window.addEventListener("scroll", place, true);
+    // The toolbar rewraps on its own — a filter count appearing on the button
+    // widens it, which can move the whole View group to another line while the
+    // popover is open. Watching the anchor catches that; a resize listener
+    // cannot, because the window never changed.
+    const ro =
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(place) : null;
+    ro?.observe(anchor);
+    ro?.observe(document.documentElement);
     return () => {
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
+      ro?.disconnect();
     };
   }, [anchorRef]);
 
   return (
-    <div className="filters-popover" style={{ top: pos.top, left: pos.left }}>
+    <div
+      ref={popRef}
+      className="filters-popover"
+      // Hidden until measured, so it can never be seen at a placeholder
+      // position — the failure mode of placing in an effect.
+      style={pos ? { top: pos.top, left: pos.left } : { visibility: "hidden", top: 0, left: 0 }}
+    >
       <div className="card-header">
         Filters
         <button
