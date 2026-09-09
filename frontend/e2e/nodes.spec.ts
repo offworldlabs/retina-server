@@ -572,6 +572,8 @@ describeUnlessProd("Node registration — main integration suite", () => {
       // would otherwise surface four times as an undefined property rather
       // than once as the status that actually explains it.
       expect(placedStatus).toBe(200);
+      expect(typeof placedBody).toBe("object");
+      expect(placedBody).not.toBeNull();
     });
 
     test("detection_area block is present with all expected geometry keys", () => {
@@ -629,12 +631,17 @@ describeUnlessProd("Node registration — main integration suite", () => {
       expect((da.furthest_detections as unknown[]).length).toBe(0);
     });
 
-    test("an unconfigured legacy node is given no detection_area", () => {
+    test("an unconfigured node is given no detection_area", () => {
       // The other half of the pair above, and the reason this block reads two
       // nodes. POST /api/radar/detections registers without coordinates, and
       // canonical_config leaves them null rather than the (0, 0) it once
       // coerced them to. No detection area is what keeps such a node off the
       // map, so its absence here is the contract, not a gap in the payload.
+      //
+      // Gated on the status: an absence assertion passes against an error body
+      // too, so without this the test could go green on a failed request. The
+      // metrics/trust assertions below would also catch that, but this names it.
+      expect(analyticsStatus).toBe(200);
       expect(analyticsBody).not.toHaveProperty("detection_area");
       // Still counted and still described: only the footprint is withheld.
       expect(analyticsBody.metrics).toBeDefined();
