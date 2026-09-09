@@ -252,9 +252,14 @@ export function makeDroneIcon(ac, showLabel, isSelected) {
 // not: a light halo on light tiles is invisible, so the outer rings are drawn
 // at higher opacity and the glow is an ink drop instead.  A function rather
 // than a constant, for the same reason droneSvg is one.
+const _nodeIcons = new WeakMap<object, L.DivIcon>();
+
 export function nodeIcon() {
-  const { NODE, ICON_SHADOW } = activePalette();
-  return L.divIcon({
+  const palette = activePalette();
+  const cached = _nodeIcons.get(palette);
+  if (cached) return cached;
+  const { NODE, ICON_SHADOW } = palette;
+  const icon = L.divIcon({
   className: "node-marker",
   html: `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24"
     style="display:block;filter:${ICON_SHADOW};">
@@ -265,4 +270,6 @@ export function nodeIcon() {
   iconSize: [22, 22],
   iconAnchor: [11, 11],
   });
+  _nodeIcons.set(palette, icon);
+  return icon;
 }

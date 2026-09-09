@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { MapContainer, TileLayer, CircleMarker, Tooltip } from "react-leaflet";
 import "./PhysicsSettings.css";
 
@@ -71,8 +71,8 @@ function AnomalousIcon({ size = 26 }) {
 
 // Object type definitions — colours and SVG icons match LiveAircraftMap
 // rendering precisely. A function because the colours are per-theme.
-function objectTypes() {
-  const { SIM_ANOMALOUS, SIM_DRONE, SIM_DARK } = activePalette();
+function objectTypes(palette) {
+  const { SIM_ANOMALOUS, SIM_DRONE, SIM_DARK } = palette;
   return [
   {
     key: "frac_anomalous",
@@ -134,8 +134,10 @@ function serverToScene(data) {
 
 export default function PhysicsSettings() {
   const palette = usePalette();
-  const { ACCENT_STRONG, BAD, INK_MUTED, SIM_ANOMALOUS, SIM_COMMERCIAL, SIM_DARK, SIM_DRONE, SIM_SCENE } =
-    palette;
+  const { ACCENT_STRONG, BAD, SIM_ANOMALOUS, SIM_COMMERCIAL, SIM_DARK, SIM_DRONE, SIM_SCENE } = palette;
+  // Both depend on the palette and nothing else, so neither is rebuilt on the
+  // slider drags that dominate this page's re-renders.
+  const types = useMemo(() => objectTypes(palette), [palette]);
   // The guide has to show the ramp the arcs are actually drawn with, so it is
   // built from the same stops dopplerColor interpolates rather than restated.
   const dopplerRamp = palette.DOPPLER_STOPS.map(
@@ -549,7 +551,7 @@ export default function PhysicsSettings() {
             <div className="ps-comp-seg" style={{ flex: draft.frac_drone, background: SIM_DRONE }} />
           )}
           {draft.frac_dark > 0 && (
-            <div className="ps-comp-seg" style={{ flex: draft.frac_dark, background: INK_MUTED }} />
+            <div className="ps-comp-seg" style={{ flex: draft.frac_dark, background: SIM_DARK }} />
           )}
           {fracCommercial > 0 && (
             <div className="ps-comp-seg" style={{ flex: fracCommercial, background: SIM_COMMERCIAL }} />
@@ -558,14 +560,14 @@ export default function PhysicsSettings() {
         <div className="ps-comp-legend">
           <span style={{ color: SIM_ANOMALOUS }}>■ {pct(draft.frac_anomalous)}% anomalous</span>
           <span style={{ color: SIM_DRONE }}>■ {pct(draft.frac_drone)}% drone</span>
-          <span style={{ color: INK_MUTED }}>■ {pct(draft.frac_dark)}% dark</span>
+          <span style={{ color: SIM_DARK }}>■ {pct(draft.frac_dark)}% dark</span>
           <span style={{ color: SIM_COMMERCIAL }}>■ {pct(fracCommercial)}% commercial</span>
         </div>
       </div>
 
       {/* ── Type Sliders ────────────────────────────────────────────── */}
       <div className="ps-sliders">
-        {objectTypes().map(({ key, label, countKey, color, Icon, description, mapNote, maxPct }) => {
+        {types.map(({ key, label, countKey, color, Icon, description, mapNote, maxPct }) => {
           const fillPct = (pct(draft[key]) / maxPct) * 100;
           return (
             <div key={key} className="ps-type-card" style={{ "--accent": color }}>

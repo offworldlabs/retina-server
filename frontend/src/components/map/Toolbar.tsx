@@ -344,7 +344,6 @@ function FiltersPopover({ filters, onChange, anchorRef }) {
     const ro =
       typeof ResizeObserver !== "undefined" ? new ResizeObserver(place) : null;
     ro?.observe(anchor);
-    ro?.observe(document.documentElement);
     return () => {
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
