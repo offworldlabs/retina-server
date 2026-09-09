@@ -42,13 +42,23 @@ NODE_PATH_PREFIX = "/v1/nodes"
 # and no client can have depended on either, since the server has never emitted
 # one. See 86cb6d7cq for the configuration one, which comes back with the limit.
 #
-# Publishing NodeConfig would be the minor bump, since that is the one thing
-# here a client cannot already do (86cb6d7he).
+# 1.1.3 makes the six coordinate fields of the configuration nullable, so a node
+# whose owner cannot supply the geometry can still register. A patch rather than
+# a minor bump because the document gained no field a client could read.
 #
-# 1.1.3 makes the six coordinate fields of NodeConfig nullable, so a node whose
-# owner cannot supply the geometry can still register. A patch rather than a
-# minor bump for the same reason as above: NodeConfig is not published, so the
-# document gains no field and no capability a client can read (86cb6d7he).
+# 1.1.3 also publishes the configuration schema, built from the same tables the
+# validator enforces (86cb6d7he), and the version does not move for it: the
+# server accepts and refuses exactly what it did, so there is no change in
+# behaviour for a version to describe.
+#
+# What did change is the document, and not additively. Where `config` was an
+# object with no required keys and `additionalProperties: true`, it is now
+# fifteen required fields with unknown keys forbidden, and its generated type is
+# named NodeConfig where it was Config. So the document narrows, to what this
+# server has always enforced, and renames. Two documents therefore carry this
+# version and a client cannot tell them apart by it: a payload the earlier one
+# called valid, one omitting cpi_s say, the later one rejects, and a client
+# regenerated against the later one renames its config type.
 NODE_API_VERSION = "1.1.3"
 
 # No tag here: each sub-router carries the contract's own grouping, since those
