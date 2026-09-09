@@ -337,7 +337,7 @@ docker compose exec server vi /app/backend/data/runtime/blah2_nodes.json
 
 Restart the container afterwards; the list is read once, at startup.
 
-`backend/config/blah2_nodes.json` in the repo is the shipped default that seeds that overlay on first boot. Once the overlay exists it wins, so editing the repo copy will not change a running deployment. `BLAH2_NODES_FILE` overrides the path entirely.
+`backend/config/blah2_nodes.json` in the repo seeds that overlay on first boot, but it is a template of invented hosts and coordinates: this repo is public and receiver positions are not. A fresh deployment must write the real list into the overlay, or point `BLAH2_NODES_FILE` at it, before the bridge polls anything. Once the overlay exists it wins, so editing the repo copy will not change a running deployment.
 
 After a change, confirm the node registered and is solving sensibly:
 

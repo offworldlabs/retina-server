@@ -870,4 +870,4 @@ class TestWorldGate:
 
     def test_unregistered_node_falls_back_to_the_prefix_rule(self):
         assert state.node_world("synth-GVL-0001") == "sim"
-        assert state.node_world("radar3-retnode") == "real"
+        assert state.node_world("example-node-a") == "real"

@@ -1,12 +1,15 @@
 """Tests for the config-driven blah2 bridge."""
 
 import json
+import re
 import time
 
 import pytest
 
+from core.runtime_config import default_source_path
 from core.task_registry import TASK_EXPECTED_INTERVAL_S
 from services.blah2_bridge import (
+    CONFIG_FILENAME,
     Blah2ConfigError,
     _build_node,
     _convert_frame,
@@ -41,43 +44,52 @@ def _write(tmp_path, payload):
 
 
 class TestShippedConfig:
+    """The tracked config is a template: no real node, no real geometry.
+
+    So these assert the shape a deployment's own file must keep, not values.
+    The live geometry lives in the runtime copy or under BLAH2_NODES_FILE and
+    is verified against the node's own ADS-B truth, not here.
+
+    Read the tracked file directly, never config_file_path(): that prefers a
+    runtime overlay, so on a developer machine these would test whatever is
+    installed there.
+    """
+
+    @staticmethod
+    def _shipped():
+        return load_nodes(default_source_path(CONFIG_FILENAME))
+
     def test_default_config_loads(self):
-        nodes = load_nodes(config_file_path())
-        assert {n.node_id for n in nodes} == {"radar3-retnode", "radar3a-retnode"}
+        assert len(self._shipped()) == 2
 
     def test_nodes_are_real_not_synthetic(self):
         """Registered with is_synthetic=False, so they must not trip the prefix
         classifier that strips synthetic nodes from the public feed."""
-        for node in load_nodes(config_file_path()):
+        for node in self._shipped():
             assert is_synthetic_node(node.node_id) is False
 
-    def test_radar3a_geometry(self):
-        """radar3a shares radar3's receiver but is illuminated by WGTV (RF ch 7,
-        Stone Mountain), not WXIA — reusing radar3's TX/FC misplaces every target."""
-        by_id = {n.node_id: n.config for n in load_nodes(config_file_path())}
-        r3, r3a = by_id["radar3-retnode"], by_id["radar3a-retnode"]
-        assert (r3a["rx_lat"], r3a["rx_lon"]) == (r3["rx_lat"], r3["rx_lon"])
-        assert (r3a["tx_lat"], r3a["tx_lon"]) == (33.805000, -84.144444)
-        assert r3a["fc_hz"] == 177_000_000
-        assert r3a["fc_hz"] != r3["fc_hz"]
+    def test_the_template_carries_no_real_identity(self):
+        """A leak here is a leak in the public repo and in every image built
+        from it."""
+        for node in self._shipped():
+            assert not re.search(r"radar3a?[-.]retnode|ret[0-9a-f]{8}", node.node_id + node.detection_url)
 
-    def test_radar3_tx_is_wxia_not_a_copy_of_rx(self):
-        """Regression: tx_lat was once byte-identical to rx_lat, putting the
-        illuminator ~20 km north of WXIA-TV and biasing every radar3 solve.
-        A wrong coordinate is silent — only the delay residual shows it."""
-        r3 = next(n.config for n in load_nodes(config_file_path()) if n.node_id == "radar3-retnode")
-        assert r3["tx_lat"] != r3["rx_lat"]
-        assert (r3["tx_lat"], r3["tx_lon"]) == (33.756667, -84.331944)
-        assert r3["fc_hz"] == 195_000_000
+    def test_co_located_nodes_do_not_share_an_illuminator(self):
+        """Two receivers on one roof still need their own TX and fc: reusing
+        the other's misplaces every target from that node."""
+        a, b = (n.config for n in self._shipped())
+        assert (a["rx_lat"], a["rx_lon"]) == (b["rx_lat"], b["rx_lon"])
+        assert (a["tx_lat"], a["tx_lon"]) != (b["tx_lat"], b["tx_lon"])
+        assert a["fc_hz"] != b["fc_hz"]
 
     def test_every_node_tx_differs_from_its_rx(self):
         """A bistatic pair with TX on top of RX has no baseline to solve against."""
-        for node in load_nodes(config_file_path()):
+        for node in self._shipped():
             c = node.config
             assert (c["tx_lat"], c["tx_lon"]) != (c["rx_lat"], c["rx_lon"]), node.node_id
 
     def test_registers_a_staleness_key_per_node(self):
-        for node in load_nodes(config_file_path()):
+        for node in self._shipped():
             assert task_key(node.node_id) in TASK_EXPECTED_INTERVAL_S
 
 
@@ -210,7 +222,7 @@ class TestConvertFrame:
     def test_tags_frame_with_its_own_node_id(self):
         """Frames from different nodes must stay attributable in the shared queue."""
         now_ms = int(time.time() * 1000)
-        for node_id in ("radar3-retnode", "radar3a-retnode"):
+        for node_id in ("example-node-a", "example-node-b"):
             assert _convert_frame(self._raw(now_ms), node_id)["_node_id"] == node_id
 
     def test_delay_converted_km_to_us(self):

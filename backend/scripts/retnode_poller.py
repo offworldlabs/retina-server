@@ -2,27 +2,26 @@
 """
 retnode_poller.py — Live-node bridge for RETINA passive radar network.
 
-Polls the blah2 HTTP API on a real retnode (e.g. radar3.retnode.com) and
-feeds detection frames into the RETINA tracker backend over the standard
-TCP protocol, so the live node appears as a connected node in the dashboard.
+Polls the blah2 HTTP API on a live retnode and feeds detection frames into the
+RETINA tracker backend over the standard TCP protocol, so the live node appears
+as a connected node in the dashboard.
 
 This is an interim approach until nodes connect directly via mTLS.
 
+The node's URL and id are yours to supply: naming a node here is deployment
+state, and this repo is public.
+
 Usage:
     # Against local dev server
-    python retnode_poller.py
+    python retnode_poller.py --node-url https://<node-host> --node-id <node-id>
 
     # Against production server
-    python retnode_poller.py --server <prod-host> --port 3012
-
-    # Custom node URL / ID
-    python retnode_poller.py \\
-        --node-url http://radar3.retnode.com \\
-        --node-id radar3 \\
-        --server localhost --port 3012
+    python retnode_poller.py --node-url https://<node-host> --node-id <node-id> \\
+        --server <prod-host> --port 3012
 
     # Override reference transmitter location
-    python retnode_poller.py --tx-lat 33.75667 --tx-lon -84.331844 --tx-alt-ft 1600
+    python retnode_poller.py --node-url https://<node-host> --node-id <node-id> \\
+        --tx-lat 33.75667 --tx-lon -84.331844 --tx-alt-ft 1600
 
 Config is automatically fetched from <node-url>/api/config on startup.
 Detections are polled from <node-url>/api/detection at --poll-interval seconds.
@@ -87,6 +86,7 @@ def _http_get(url: str, timeout: float = 5.0) -> dict | None:
 def _build_retina_config(
     raw_cfg: dict,
     node_id: str,
+    node_url: str,
     tx_lat: float,
     tx_lon: float,
     tx_alt_ft: float,
@@ -138,7 +138,7 @@ def _build_retina_config(
         "doppler_max": float(ambiguity.get("dopplerMax", 300)),
         "min_doppler": float(detection_cfg.get("minDoppler", 15)),
         # Preserve original blah2 config for reference / display
-        "source_url": "https://radar3.retnode.com",
+        "source_url": node_url,
         "source_config": raw_cfg,
     }
 
@@ -366,7 +366,7 @@ def run_poller(
             print("[poller] Config not available, retrying in 5s...", file=sys.stderr)
             time.sleep(5)
 
-    cfg = _build_retina_config(raw_cfg, node_id, tx_lat, tx_lon, tx_alt_ft)
+    cfg = _build_retina_config(raw_cfg, node_id, node_url, tx_lat, tx_lon, tx_alt_ft)
     cfg_hash = _config_hash(cfg)
     print(
         f"[poller] Config ready: "
@@ -463,13 +463,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--node-url",
-        default="https://radar3.retnode.com",
-        help="Base URL of the retnode (default: https://radar3.retnode.com)",
+        required=True,
+        help="Base URL of the retnode, e.g. https://<node-host>",
     )
     parser.add_argument(
         "--node-id",
-        default="radar3",
-        help="Node ID to register in the RETINA server (default: radar3)",
+        required=True,
+        help="Node ID to register in the RETINA server",
     )
     parser.add_argument(
         "--server",

@@ -178,7 +178,7 @@ class TestLeaderboard:
         from core.users import async_session_maker
         from services import node_auth, node_refs
 
-        nid = "ret5cb8c964"
+        nid = "ret9f8e7d6c"
         ref = node_auth.mint_node_ref()
 
         async def _seed():
@@ -217,7 +217,7 @@ class TestLeaderboard:
         """The fallback recomputes from a node_id-keyed source, so without the
         resolution above this route would answer in ids or in refs depending on
         whether the refresh had run yet."""
-        nid = "ret5cb8c964"
+        nid = "ret9f8e7d6c"
         orig = state.latest_analytics_bytes
         state.latest_analytics_bytes = b"{}"
         state.node_analytics.register_node(nid, {"node_id": nid})

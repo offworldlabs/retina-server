@@ -129,8 +129,8 @@ class TestIsSyntheticNode:
     def test_non_synthetic(self):
         assert is_synthetic_node("net13") is False
 
-    def test_real_retnode(self):
-        assert is_synthetic_node("radar3-retnode") is False
+    def test_a_hardware_node_id(self):
+        assert is_synthetic_node("example-node-a") is False
 
     def test_empty(self):
         assert is_synthetic_node("") is False

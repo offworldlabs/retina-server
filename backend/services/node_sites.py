@@ -1,8 +1,8 @@
 """Which nodes sit at one receive site, so the fuzz can move them as one.
 
-Two receivers can share an address: one roof, one operator, two illuminators —
-``radar3-retnode`` and ``radar3a-retnode`` are exactly that, configured at the
-same coordinates on purpose.  Fuzzing them independently publishes two points
+Two receivers can share an address: one roof, one operator, two illuminators,
+configured at the same coordinates on purpose; the shipped ``blah2_nodes.json``
+template shows the shape.  Fuzzing them independently publishes two points
 drawn from the same true position, and two samples are worth far more to an
 attacker than one.  Each published point says "the receiver is somewhere in
 this annulus", and the annuli intersect:

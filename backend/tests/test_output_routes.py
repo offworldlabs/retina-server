@@ -308,7 +308,9 @@ class TestApiDocs:
     def test_the_worked_example_names_no_real_node(self, client):
         """The docs were the one place more disclosive than the payload."""
         html = client.get("/api/v1/docs").text
-        assert "radar3-retnode" not in html
+        # Spelt as a pattern, not a literal: the literal is itself a real
+        # identity, banned from the tree by test_no_real_identities.py.
+        assert not re.search(r"radar3a?-retnode|ret[0-9a-f]{8}", html)
         assert re.search(r'"node_ref": "(nde|sim)[0-9a-z]{12}"', html)
 
     def test_the_documented_fields_are_the_published_ones(self, client):
