@@ -34,19 +34,17 @@ _lock = threading.Lock()
 _forward: dict[str, str] = {}
 _reverse: dict[str, str] = {}
 _expires_at: float = 0.0
-_have_data: bool = False
 
 _engine = None
 
 
 def _reset_for_tests() -> None:
     """Drop the cached maps. Tests only."""
-    global _expires_at, _have_data, _engine
+    global _forward, _reverse, _expires_at, _engine
     with _lock:
-        _forward.clear()
-        _reverse.clear()
+        _forward = {}
+        _reverse = {}
         _expires_at = 0.0
-        _have_data = False
         if _engine is not None:
             _engine.dispose()
             _engine = None
@@ -70,18 +68,25 @@ def _load() -> tuple[dict[str, str], dict[str, str]]:
 
 
 def _refresh() -> None:
-    """Repopulate both maps if the TTL has passed.
+    """Repopulate both maps once the TTL has passed.
 
-    On error the previous maps are kept and the retry is short: an empty map
-    would fail every node closed at the boundary, which blanks the map for a
-    database blip.
+    The check is unconditional on time, whether or not a load has ever
+    succeeded: a failed load backs off for `_ERROR_RETRY_S` the same way a
+    successful one waits out `_TTL_S`, so a database outage before the first
+    refresh is throttled exactly like one after, instead of re-querying on
+    every call. A successful load rebinds `_forward` and `_reverse` to freshly
+    built dicts, one assignment each, rather than clearing and refilling the
+    existing ones, so a reader that is not holding the lock always sees a
+    complete map, the old one or the new one, never one caught mid-update.
+    Before the first success there is no previous map to fall back on and both
+    stay empty, the same fallback services/publication.py uses.
     """
-    global _expires_at, _have_data
+    global _forward, _reverse, _expires_at
     now = time.monotonic()
-    if _have_data and now < _expires_at:
+    if now < _expires_at:
         return
     with _lock:
-        if _have_data and time.monotonic() < _expires_at:
+        if time.monotonic() < _expires_at:
             return
         try:
             forward, reverse = _load()
@@ -89,11 +94,8 @@ def _refresh() -> None:
             log.exception("node_ref map refresh failed; keeping the previous one")
             _expires_at = time.monotonic() + _ERROR_RETRY_S
             return
-        _forward.clear()
-        _forward.update(forward)
-        _reverse.clear()
-        _reverse.update(reverse)
-        _have_data = True
+        _forward = forward
+        _reverse = reverse
         _expires_at = time.monotonic() + _TTL_S
 
 
