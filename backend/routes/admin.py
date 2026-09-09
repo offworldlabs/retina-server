@@ -45,6 +45,7 @@ from core.users import (
     require_admin,
     user_to_dict,
 )
+from services.node_refs import id_for_ref
 
 logger = logging.getLogger(__name__)
 
@@ -513,8 +514,15 @@ async def leaderboard(_user=Depends(get_current_user)):
             summaries = orjson.loads(raw).get("nodes", {})
         except Exception:
             logger.debug("analytics snapshot bytes unparseable", exc_info=True)
-    # Fall back to live computation only if the snapshot is empty
-    if not summaries:
+    if summaries:
+        # The snapshot is built for publication, so it is keyed on node_ref;
+        # everything below reads node_id-keyed state.  A synthetic node
+        # publishes as itself and has no reverse row, hence the fallback.  Both
+        # sources have to land in the same key space or this route reports ids
+        # or refs depending on whether the refresh has run yet.
+        summaries = {(id_for_ref(ref) or ref): s for ref, s in summaries.items()}
+    else:
+        # Fall back to live computation only if the snapshot is empty
         loop = asyncio.get_running_loop()
         summaries = await loop.run_in_executor(_admin_executor, state.node_analytics.get_all_summaries)
 

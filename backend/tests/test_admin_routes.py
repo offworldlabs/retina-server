@@ -163,6 +163,74 @@ class TestLeaderboard:
             state.latest_analytics_bytes = orig
             state.connected_nodes.pop("test-lb-1", None)
 
+    def test_leaderboard_resolves_a_real_nodes_ref_back_to_its_id(self, client):
+        """The snapshot is keyed on node_ref; connected_nodes and
+        latest_missed_detections are keyed on node_id.  Read the key as an id
+        and a real node loses its name, reads offline and zeroes all four miss
+        fields.  The test above never saw it because a synthetic id publishes
+        as itself.
+        """
+        import asyncio
+
+        import orjson
+
+        from core.nodes import Node
+        from core.users import async_session_maker
+        from services import node_auth, node_refs
+
+        nid = "ret5cb8c964"
+        ref = node_auth.mint_node_ref()
+
+        async def _seed():
+            async with async_session_maker() as session:
+                session.add(Node(node_id=nid, node_ref=ref, publication="public"))
+                await session.commit()
+
+        asyncio.run(_seed())
+        # asyncio.run() clears the loop on exit (3.12); conftest's _clean_db
+        # restores one for the same reason.
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        node_refs._reset_for_tests()
+
+        state.connected_nodes[nid] = {"status": "active", "config": {"name": "Fairforest-1"}, "is_synthetic": False}
+        state.latest_missed_detections[nid] = {"in_range": 10, "detected": 7, "missed": 3, "miss_rate": 0.3}
+        orig = state.latest_analytics_bytes
+        state.latest_analytics_bytes = orjson.dumps(
+            {"nodes": {ref: {"metrics": {"total_detections": 42}, "trust": {}, "reputation": {}}}}
+        )
+        try:
+            r = client.get("/api/admin/leaderboard")
+            assert r.status_code == 200
+            entries = r.json()["leaderboard"]
+        finally:
+            state.latest_analytics_bytes = orig
+            state.connected_nodes.pop(nid, None)
+            state.latest_missed_detections.pop(nid, None)
+
+        (entry,) = [e for e in entries if e["node_id"] == nid]
+        assert entry["name"] == "Fairforest-1"
+        assert entry["online"] is True
+        assert entry["detections"] == 42
+        assert (entry["missed"], entry["miss_rate"]) == (3, 0.3)
+
+    def test_leaderboard_names_nodes_the_same_way_with_a_cold_snapshot(self, client):
+        """The fallback recomputes from a node_id-keyed source, so without the
+        resolution above this route would answer in ids or in refs depending on
+        whether the refresh had run yet."""
+        nid = "ret5cb8c964"
+        orig = state.latest_analytics_bytes
+        state.latest_analytics_bytes = b"{}"
+        state.node_analytics.register_node(nid, {"node_id": nid})
+        state.node_analytics._summaries_cache = None
+        try:
+            entries = client.get("/api/admin/leaderboard").json()["leaderboard"]
+        finally:
+            state.latest_analytics_bytes = orig
+            state.node_analytics.retire_node(nid)
+            state.node_analytics._summaries_cache = None
+
+        assert nid in [e["node_id"] for e in entries]
+
 
 # ── Alerts ───────────────────────────────────────────────────────────────────
 
