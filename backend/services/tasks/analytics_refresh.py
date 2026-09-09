@@ -25,7 +25,7 @@ from services.geo import bearing_deg, bistatic_delay_us, haversine_km, node_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
 from services.node_config import position_status
-from services.node_refs import public_analytics, public_identity
+from services.node_refs import public_analytics, public_identity, public_name
 from services.node_sites import log_colocation_audit
 from services.public_location import (
     fuzz_enabled,
@@ -395,11 +395,18 @@ def _refresh_analytics_and_nodes():
     _published_nodes = [
         (ref, nid, info) for nid, info in _nodes_snapshot if nid not in _private and (ref := public_identity(nid))
     ]
+    # The v1 config schema carries no `name` and forbids extra keys, but
+    # canonical_config passes unknown keys through unvalidated, so a node
+    # connecting over TCP supplies one regardless, and it goes out beside the
+    # ref standing in for its id.  Wider than the registry for the same reason
+    # public_analytics takes the unfiltered fleet: a connected node with no row
+    # is still a node whose id must not appear in someone else's name.
+    _fleet_ids = {nid for nid, _ in _nodes_snapshot}
     nodes_data = {
         "nodes": {
             ref: {
                 "status": info.get("status"),
-                "name": info.get("config", {}).get("name", ref),
+                "name": public_name(info.get("config", {}).get("name"), ref, _fleet_ids),
                 "config_hash": info.get("config_hash"),
                 "last_heartbeat": info.get("last_heartbeat"),
                 "peer": info.get("peer"),

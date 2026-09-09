@@ -405,6 +405,60 @@ class TestRadarNodesPayload:
         assert ref.startswith("nde")
         assert body["nodes"][ref]["name"] == ref
 
+    def test_a_name_that_is_a_node_id_is_replaced_by_the_ref(self, seed_nodes):
+        """`name` is not in the v1 config schema, which forbids extra keys, but
+        canonical_config passes unknown keys through unvalidated, so a node
+        connecting over TCP supplies one and it goes out beside the ref
+        standing in for its id.  Asserted against the bytes: a name is not the
+        only place a value can surface."""
+        from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
+
+        registered, unregistered, plain = "ret1a2b3c4d", "ret0badcafe", "ret2b3c4d5e"
+        seed_nodes(**{registered: "public", plain: "public"})
+        cfg = {"rx_lat": 34.0, "rx_lon": -82.0, "rx_alt_ft": 100.0}
+        names = {
+            # Its neighbour's id, and the id of a node connected with no row.
+            registered: unregistered,
+            plain: registered,
+            unregistered: "Example Site 2",
+        }
+        for nid, name in names.items():
+            state.connected_nodes[nid] = {
+                "status": "active",
+                "is_synthetic": False,
+                "config": {**cfg, "node_id": nid, "name": name},
+            }
+        try:
+            _refresh_analytics_and_nodes()
+        finally:
+            for nid in names:
+                state.connected_nodes.pop(nid, None)
+
+        raw = state.latest_nodes_bytes
+        for nid in names:
+            assert nid.encode() not in raw
+        nodes = orjson.loads(raw)["nodes"]
+        assert nodes[_seed_ref(registered)]["name"] == _seed_ref(registered)
+        assert nodes[_seed_ref(plain)]["name"] == _seed_ref(plain)
+
+    def test_a_name_that_is_not_a_node_id_is_published_unchanged(self, seed_nodes):
+        """The fallback is for the names that name a node, not for all of them."""
+        from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
+
+        seed_nodes(**{"ret1a2b3c4d": "public"})
+        state.connected_nodes["ret1a2b3c4d"] = {
+            "status": "active",
+            "is_synthetic": False,
+            "config": {"rx_lat": 34.0, "rx_lon": -82.0, "node_id": "ret1a2b3c4d", "name": "Example Site 3"},
+        }
+        try:
+            _refresh_analytics_and_nodes()
+        finally:
+            state.connected_nodes.pop("ret1a2b3c4d", None)
+
+        nodes = orjson.loads(state.latest_nodes_bytes)["nodes"]
+        assert nodes[_seed_ref("ret1a2b3c4d")]["name"] == "Example Site 3"
+
     def test_the_fuzzed_position_does_not_move_when_the_key_changes(self, seed_nodes):
         """The offset is HMAC-keyed on node_id; re-keying it would move the
         whole fleet, so the published position must be unchanged."""
@@ -669,6 +723,64 @@ class TestOverlapsPayload:
         assert body["registered_nodes"] == [_seed_ref("ret1a2b3c4d"), _seed_ref("ret9f8e7d6c")]
         assert body["overlaps"] == [
             {"node_a": _seed_ref("ret1a2b3c4d"), "node_b": _seed_ref("ret9f8e7d6c"), "has_overlap": True}
+        ]
+
+
+class TestAssociationStatusPayload:
+    """/api/radar/association/status names the same pairs as its sibling.
+
+    Unauthenticated, and /api/radar/association/overlaps publishes that pair
+    list under refs with a grid_points count that fingerprints each pair, so
+    one payload naming a pair by id is a join on a shared key and the mapping
+    falls out of the two together.
+    """
+
+    _A = "ret1a2b3c4d"
+    _B = "ret9f8e7d6c"
+    # Known to the associator, absent from the registry, so it has no handle.
+    _GHOST = "ret0badcafe"
+
+    class _Assoc:
+        node_geometries: dict = {}
+        overlap_zones: dict = {}
+        claim_mode = "off"
+        adsb_seed_mode = "off"
+
+        def __init__(self, pending, overlaps):
+            self._pending_tracks = pending
+            self._overlaps = overlaps
+
+        def get_overlap_summary(self):
+            return self._overlaps
+
+    @pytest.fixture()
+    def body(self, client, seed_nodes, monkeypatch):
+        seed_nodes(**{self._A: "public", self._B: "public"})
+        monkeypatch.setattr(
+            state,
+            "node_associator",
+            self._Assoc(
+                {self._A: [object(), object()], self._B: [object()], self._GHOST: [object()]},
+                [
+                    {"node_a": self._A, "node_b": self._B, "grid_points": 512, "has_overlap": True},
+                    {"node_a": self._A, "node_b": self._GHOST, "grid_points": 77, "has_overlap": True},
+                ],
+            ),
+        )
+        return client.get("/api/radar/association/status")
+
+    def test_no_node_id_reaches_the_response(self, body):
+        assert body.status_code == 200
+        for nid in (self._A, self._B, self._GHOST):
+            assert nid not in body.text
+        assert not list(_keys_named(body.json(), "node_id"))
+
+    def test_pending_tracks_is_keyed_on_refs_and_drops_the_unresolvable(self, body):
+        assert body.json()["pending_tracks"] == {_seed_ref(self._A): 2, _seed_ref(self._B): 1}
+
+    def test_the_pairs_carry_refs_and_the_half_named_zone_goes(self, body):
+        assert body.json()["overlaps"] == [
+            {"node_a": _seed_ref(self._A), "node_b": _seed_ref(self._B), "grid_points": 512, "has_overlap": True}
         ]
 
 

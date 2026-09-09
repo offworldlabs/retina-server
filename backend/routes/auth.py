@@ -34,7 +34,7 @@ from core.users import (
     get_or_create_oauth_user,
 )
 from services.node_config import position_status
-from services.node_refs import public_identity
+from services.node_refs import owner_identity
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -266,7 +266,7 @@ async def my_nodes(request: Request):
         out.append(
             {
                 "node_id": nid,
-                "node_ref": public_identity(nid),
+                "node_ref": owner_identity(nid),
                 "name": cfg.get("name", nid),
                 "status": info.get("status", "never_connected"),
                 "last_heartbeat": info.get("last_heartbeat"),

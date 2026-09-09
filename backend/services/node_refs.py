@@ -142,6 +142,44 @@ def id_for_identity(identity: str | None) -> str | None:
     return id_for_ref(identity)
 
 
+def _names_a_node(value: str, known_ids: Iterable[str]) -> bool:
+    """Whether a string is the private id of a node.
+
+    Synthetic nodes are excluded: they publish under their own ids anyway.
+    `known_ids` widens the registry with ids the caller holds, for the node
+    that is connected and carries no row.
+    """
+    if is_synthetic_node(value):
+        return False
+    _refresh()
+    return value in _forward or value in known_ids
+
+
+def public_name(name, fallback: str, known_ids: Iterable[str] = ()) -> str:
+    """A node-supplied display name, or `fallback` when it names a node.
+
+    Nodes fill this field in themselves and nothing validates it, so a name
+    equal to a node id would publish that id beside the ref standing in for it.
+    """
+    if not isinstance(name, str) or not name or _names_a_node(name, known_ids):
+        return fallback
+    return name
+
+
+def owner_identity(node_id: str | None) -> str | None:
+    """What a node publishes as, for a caller that already knows the node.
+
+    The same answer `public_identity` gives, without its log line: on an
+    owner-scoped route a node with no handle is a null field, not a
+    contribution being dropped from a public feed.
+    """
+    if not node_id:
+        return None
+    if is_synthetic_node(node_id):
+        return node_id
+    return ref_for(node_id)
+
+
 def public_identity(node_id: str | None) -> str | None:
     """What a node id is published as, or None if it must not be published.
 
@@ -157,9 +195,7 @@ def public_identity(node_id: str | None) -> str | None:
     """
     if not node_id:
         return None
-    if is_synthetic_node(node_id):
-        return node_id
-    ref = ref_for(node_id)
+    ref = owner_identity(node_id)
     if ref is None:
         with _lock:
             first_report = node_id not in _logged_unresolved
@@ -192,7 +228,7 @@ def substitute_identities(data: dict) -> dict:
     aircraft = []
     for ac in data.get("aircraft", []):
         if "contributing_node_ids" in ac:
-            contributors = ac["contributing_node_ids"]
+            contributors = ac["contributing_node_ids"] or []
             kept = [r for r in (public_identity(n) for n in contributors) if r]
             if contributors and not kept:
                 continue
@@ -200,8 +236,10 @@ def substitute_identities(data: dict) -> dict:
         if "node_id" in ac:
             node_id = ac["node_id"]
             ref = public_identity(node_id)
-            # A null node_id is a multinode entry with no single detector, not
-            # an unresolvable node, so it is published as a null ref.
+            # A null node_id is a single-node entry whose config carries no
+            # node_id (services/track_gates.py), not an unresolvable node, so
+            # it is published as a null ref.  A multinode entry has no node_id
+            # key at all and never reaches this branch.
             if node_id is not None and ref is None:
                 continue
             ac = _renamed(ac, "node_id", "node_ref", ref)

@@ -11,7 +11,7 @@ from retina_analytics.trust import AdsReportEntry
 
 from core import state
 from services import node_bias
-from services.node_refs import id_for_identity, public_analytics
+from services.node_refs import id_for_identity, public_analytics, public_identity
 from services.public_location import public_node_summary
 from services.publication import is_private
 
@@ -107,7 +107,9 @@ async def association_overlaps():
     ``NodeAssociator.get_overlap_summary()`` emits only the two node ids, a
     grid-point count, the delay/Doppler gates and a has_overlap flag — no
     coordinates, no grid, no extent.  Both ids are published as node_refs, as
-    is every entry of ``registered_nodes``.
+    is every entry of ``registered_nodes``; the same is true of the copy
+    ``/api/radar/association/status`` serves, which must stay in ref space or
+    the two payloads join on a shared pair to give the mapping away.
     A pair count and a gate width constrain the inter-node distance far too
     loosely to locate either node, so admin-gating this would cost the map its
     coverage layer and buy nothing.  If this payload ever grows a lat/lon (a
@@ -133,8 +135,26 @@ async def association_status():
     over — so all three had been reporting empty or zero, indefinitely, while
     looking like live telemetry.  They are replaced by the counters that do
     move on the path in use.
+
+    Unauthenticated, and its sibling ``/api/radar/association/overlaps``
+    publishes the same pair list under refs, so every identifier here is a ref
+    too: one payload naming a pair by id beside another naming it by ref is a
+    join on a shared key, and the mapping comes out of it.
     """
     _a = state.node_associator
+    _pending = {
+        ref: len(tracks)
+        for nid, tracks in list(_a._pending_tracks.items())
+        if (ref := public_identity(nid)) is not None
+    }
+    # A zone names both of its nodes, so it survives only if both resolve, the
+    # same rule the overlaps payload applies.
+    _overlaps = []
+    for _z in _a.get_overlap_summary():
+        _ra, _rb = public_identity(_z["node_a"]), public_identity(_z["node_b"])
+        if _ra is None or _rb is None:
+            continue
+        _overlaps.append({**_z, "node_a": _ra, "node_b": _rb})
     return {
         "registered_nodes": len(_a.node_geometries),
         "overlap_zones": len(_a.overlap_zones),
@@ -148,7 +168,7 @@ async def association_status():
         "assoc_world_skipped_pairs": getattr(_a, "assoc_world_skipped_pairs", 0),
         # Confirmed single-node tracks each node last submitted; these are what
         # pairings are drawn from.
-        "pending_tracks": {nid: len(tracks) for nid, tracks in list(_a._pending_tracks.items())},
+        "pending_tracks": _pending,
         # Track-pairing outcomes since boot.  gated is everything past the
         # coarse delay grid; unfitted counts the pairings handed to the solver
         # worker (which runs the fit and the n=2 gate); deferred counts rounds
@@ -209,7 +229,7 @@ async def association_status():
             "tracklets_excluded": getattr(_a, "adsb_tracklets_excluded", 0),
             "inputs_emitted": getattr(_a, "adsb_inputs_emitted", 0),
         },
-        "overlaps": _a.get_overlap_summary(),
+        "overlaps": _overlaps,
     }
 
 
