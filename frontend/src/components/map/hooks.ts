@@ -6,6 +6,7 @@ import { mergeTrailPositions } from "./trails";
 import { validLatLon } from "./geo";
 import type { RadarNode } from "../../types";
 import { usesRealOnlyFeed } from "../../utils/domains";
+import { isSyntheticNode } from "../../utils/nodeKind";
 import { fetchMe, fetchMyNodes } from "../../api";
 
 /**
@@ -316,18 +317,11 @@ export function useNodes() {
         if (controller.signal.aborted) return;
         const nodeList: RadarNode[] = [];
         for (const [id, info] of Object.entries(data.nodes || {})) {
-          // Mirror backend's is_synthetic_node() prefix list. The backend
-          // already strips these from real_only feeds, but the analytics
-          // endpoint without real_only=true returns them. Also catch any
-          // leftover e2e/test-leak via a defensive client filter.
-          if (
-            usesRealOnlyFeed && (
-              id.startsWith("synth-") ||
-              id.startsWith("e2e-") ||
-              id.startsWith("test-") ||
-              id.startsWith("realnode-")
-            )
-          ) continue;
+          // The backend already strips synthetic nodes from real_only feeds;
+          // this is defence in depth against a leftover leak, decided from
+          // the server's own is_synthetic flag rather than parsed from id —
+          // see utils/nodeKind.ts.
+          if (usesRealOnlyFeed && isSyntheticNode(info as { is_synthetic?: boolean }, id)) continue;
           const da = (info as any).detection_area;
           const ec = (info as any).empirical_coverage;
           if (da) {
@@ -373,6 +367,7 @@ export function useNodes() {
               max_bistatic_range_km: da.max_bistatic_range_km ?? null,
               empirical_polygon: ec?.polygon ?? null,
               empirical_n_points: ec?.n_points ?? 0,
+              is_synthetic: isSyntheticNode(info as { is_synthetic?: boolean }, id),
             });
           }
         }

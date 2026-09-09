@@ -573,6 +573,75 @@ class TestAnalyticsPayloadIdentities:
         assert entry["detection_area"]["rx"]["lon"] == pytest.approx(expected_lon)
 
 
+class TestAnalyticsPayloadIsSynthetic:
+    """/api/radar/analytics carries is_synthetic per node so the client can stop
+    guessing it from the identifier (see frontend/src/utils/nodeKind.ts): once
+    identity is published as node_ref, no prefix survives to match. This must
+    agree with /api/radar/nodes, which the same refresh cycle derives it for.
+    """
+
+    _REAL = "ret1a2b3c4d"
+    # An id with no prefix a client would recognise as synthetic, but flagged
+    # synthetic explicitly in connected_nodes: proves the flag comes from that
+    # info, not a guess re-run on whatever the entry ends up keyed on.
+    _FLAGGED = "ret9f8e7d6c"
+    _CFG = {"rx_lat": 34.0, "rx_lon": -82.0, "tx_lat": 35.0, "tx_lon": -83.0}
+
+    @pytest.fixture()
+    def refreshed(self, seed_nodes):
+        from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
+
+        seed_nodes(**{self._REAL: "public", self._FLAGGED: "public"})
+        state.connected_nodes[self._REAL] = {
+            "status": "active",
+            "is_synthetic": False,
+            "config": {**self._CFG, "node_id": self._REAL},
+        }
+        state.connected_nodes[self._FLAGGED] = {
+            "status": "active",
+            "is_synthetic": True,
+            "config": {**self._CFG, "node_id": self._FLAGGED},
+        }
+        for nid in (self._REAL, self._FLAGGED):
+            state.node_analytics.register_node(nid, {"node_id": nid, **self._CFG})
+        state.node_analytics._summaries_cache = None
+        try:
+            _refresh_analytics_and_nodes()
+            yield
+        finally:
+            for nid in (self._REAL, self._FLAGGED):
+                state.connected_nodes.pop(nid, None)
+                state.node_analytics.retire_node(nid)
+            state.node_analytics._summaries_cache = None
+
+    def test_full_variant_carries_the_flag_per_node(self, refreshed):
+        nodes = orjson.loads(state.latest_analytics_bytes)["nodes"]
+        assert nodes[_seed_ref(self._REAL)]["is_synthetic"] is False
+        assert nodes[_seed_ref(self._FLAGGED)]["is_synthetic"] is True
+
+    def test_the_flag_is_not_derived_from_the_published_ref(self, refreshed):
+        """Neither ref starts with a recognised prefix, so a derivation that
+        ran is_synthetic_node on the ref instead of the true node_id would
+        report both nodes as real regardless of the override."""
+        ref = _seed_ref(self._FLAGGED)
+        assert not ref.startswith(("synth-", "e2e-", "test-", "realnode-"))
+        nodes = orjson.loads(state.latest_analytics_bytes)["nodes"]
+        assert nodes[ref]["is_synthetic"] is True
+
+    def test_real_only_variant_also_carries_the_flag(self, refreshed):
+        real = orjson.loads(state.latest_analytics_real_bytes)["nodes"]
+        assert list(real) == [_seed_ref(self._REAL)]
+        assert real[_seed_ref(self._REAL)]["is_synthetic"] is False
+
+    def test_matches_the_nodes_payload_for_the_same_node(self, refreshed):
+        """/api/radar/nodes and /api/radar/analytics feed the same client-side
+        discriminator, so the two must not disagree about one node."""
+        ref = _seed_ref(self._FLAGGED)
+        analytics_entry = orjson.loads(state.latest_analytics_bytes)["nodes"][ref]
+        nodes_entry = orjson.loads(state.latest_nodes_bytes)["nodes"][ref]
+        assert analytics_entry["is_synthetic"] == nodes_entry["is_synthetic"] is True
+
+
 class TestOverlapsPayload:
     """/api/radar/overlaps names nodes and nothing else, so the names are refs."""
 

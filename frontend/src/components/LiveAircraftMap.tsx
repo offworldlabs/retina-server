@@ -59,6 +59,7 @@ import {
 
 import { fetchMlatVerification, fetchMlatHistory } from "../api";
 import { defaultsGroundTruthOff } from "../utils/domains";
+import { isSyntheticNode } from "../utils/nodeKind";
 import { withCartoKey } from "../utils/basemap";
 import { usePersistedState } from "./map/usePersistedState";
 import { parseHash, useHashWriter, encodeLayers, decodeLayers } from "./map/useUrlHashState";
@@ -817,7 +818,7 @@ const BasemapLayer = memo(function BasemapLayer({ url }) {
       so it gets the larger glowing divIcon (a handful of DOM nodes is fine). ── */
 const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelectNode }) {
   return visibleNodes.map((n) => {
-    const isSynth = n.node_id?.startsWith("synth-");
+    const isSynth = isSyntheticNode(n, n.node_id);
     // Every published rx coordinate is displaced by the backend; the disc is
     // how the map admits it, at the radius the feed itself declares.  Not
     // special-cased by node kind — a synthetic node that ever carries the

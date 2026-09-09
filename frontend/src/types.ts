@@ -162,4 +162,9 @@ export interface RadarNode {
   max_bistatic_range_km: number | null;
   empirical_polygon: [number, number][] | null;
   empirical_n_points: number;
+  /**
+   * Server-derived, not parsed from node_id: see utils/nodeKind.ts. Once
+   * identities publish as node_ref, no prefix in the id survives to match.
+   */
+  is_synthetic: boolean;
 }

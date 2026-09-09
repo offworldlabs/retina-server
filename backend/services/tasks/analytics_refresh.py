@@ -340,13 +340,26 @@ def _refresh_analytics_and_nodes():
     # has just dropped.
     _fleet = state.node_analytics.get_all_summaries()
     _summaries = public_node_summaries(public_summaries(_fleet))
+
+    # is_synthetic goes on here, a copy per entry, while _summaries is still
+    # keyed on the true node_id: public_analytics re-keys the map on the
+    # published ref below, and is_synthetic_node is prefix-based, so deriving
+    # this after that point would test the ref's prefix instead of the node's
+    # and every real node would come back False. The same snapshot answers
+    # the real-only split just below it, so the two cannot disagree.
+    with state.connected_nodes_lock:
+        _connected_snapshot = dict(state.connected_nodes)
+    real_node_ids = {nid for nid, info in _connected_snapshot.items() if not info.get("is_synthetic", True)}
+    _summaries = {
+        nid: {**summary, "is_synthetic": _connected_snapshot.get(nid, {}).get("is_synthetic", is_synthetic_node(nid))}
+        for nid, summary in _summaries.items()
+    }
+
     _cross_node = public_cross_node(state.node_analytics.get_cross_node_analysis())
     analytics_data = public_analytics(_summaries, _cross_node, _fleet)
     state.latest_analytics_bytes = orjson.dumps(analytics_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
-    # Real-only variant: strip synthetic nodes so map.retina.fm never receives them
-    with state.connected_nodes_lock:
-        real_node_ids = {nid for nid, info in state.connected_nodes.items() if not info.get("is_synthetic", True)}
+    # Real-only variant: strip synthetic nodes so map.retina.fm never receives them.
     # Intersect first, publish second.  real_node_ids comes from
     # state.connected_nodes, which is keyed on node_id, so an intersection
     # against the ref-keyed map would match nothing and empty the variant.
