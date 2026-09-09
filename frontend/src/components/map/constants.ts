@@ -1,3 +1,5 @@
+import { DOPPLER_STOPS } from "./mapPalette";
+
 export const API_BASE = "/api";
 export const STALE_AIRCRAFT_MS = 8000;
 export const MAX_HISTORY = 150;
@@ -49,7 +51,7 @@ export const POSITION_SOURCE_ADSB_SINGLE = "adsb_single_node";
 // is the odd one out because a dark solve does not.  Teal #2dd4bf stays on the
 // ADS-B-seeded solver source, and cyan doubles as the fallback colour for the
 // rare solver_single_node relic.
-export const ADSB_SINGLE_COLOR = "#3b82f6";
+export { LANE_ADSB_SINGLE as ADSB_SINGLE_COLOR } from "./mapPalette";
 
 // The claimed arc is drawn at a FIXED SCREEN LENGTH — a multiple of the plane
 // icon it sits under — rather than a fixed ground length.  The locus spans
@@ -146,14 +148,8 @@ export const DR_UNKNOWN_GS_KT = 250;
 // Doppler colour gradient — dark blue (approaching) → light blue → cyan → light red → dark red (receding)
 // Centre stop is bright cyan so near-zero-doppler arcs are always visible on light basemaps.
 // t ∈ [-1, +1] maps linearly across the 5 stops.
-const _DOPPLER_STOPS = [
-  [0x1e, 0x3a, 0x8a], // -1.0  dark blue
-  [0x60, 0xa5, 0xfa], // -0.5  light blue
-  [0x22, 0xd3, 0xee], //  0.0  cyan-400 (replaces grey — visible on any basemap)
-  [0xf8, 0x71, 0x71], // +0.5  light red
-  [0x99, 0x1b, 0x1b], // +1.0  dark red
-];
 export function dopplerColor(doppler_hz, maxDop = 200) {
+  const _DOPPLER_STOPS = DOPPLER_STOPS;
   const t = Math.max(-1, Math.min(1, doppler_hz / maxDop)); // [-1, +1]
   const pos = (t + 1) / 2 * (_DOPPLER_STOPS.length - 1);   // [0, 4]
   const lo = Math.floor(pos);

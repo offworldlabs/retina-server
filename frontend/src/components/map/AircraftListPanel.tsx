@@ -2,6 +2,7 @@ import { useEffect, useRef, useMemo, useState, useCallback } from "react";
 import { PLANE_PATH, getAircraftColor } from "./icons";
 import { POSITION_SOURCE_ARC_ONLY, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
 import { classifyHex } from "./hexInfo";
+import { LANE_SOLVER_SEED, NODE } from "./mapPalette";
 import { distanceKm } from "./distance";
 import { M_PER_FT } from "./units";
 
@@ -188,7 +189,7 @@ export default function AircraftListPanel({
               <div style={{ position: "absolute", top: offsetY, left: 0, right: 0 }}>
                 {visibleItems.map((ac) => {
                   const isSolved = ac._isSolved;
-                  const color = !isSolved ? "#2dd4bf" : getAircraftColor(ac);
+                  const color = !isSolved ? LANE_SOLVER_SEED : getAircraftColor(ac);
                   const callsign =
                     ac.flight?.trim() || ac.hex?.slice(-6).toUpperCase() || ac.hex;
                   // Nullish checks: 0 ft, 0 kt and 0° (due north) are real
@@ -261,7 +262,8 @@ export default function AircraftListPanel({
                               style={{
                                 background: "none",
                                 border: "none",
-                                color: pinSet.has(ac.hex) ? "#facc15" : "#475569",
+                                // Not INK_SUBTLE: the unpinned glyph is a shade darker than that.
+                                color: pinSet.has(ac.hex) ? NODE : "#475569",
                                 cursor: "pointer",
                                 fontSize: 12,
                                 padding: 0,
