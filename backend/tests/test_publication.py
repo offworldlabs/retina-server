@@ -11,12 +11,15 @@ not reach them — and seeding is what actually proves the wiring.
 """
 
 import asyncio
+import hashlib
 import os
 import time
 
 import orjson
 import pytest
 from fastapi.testclient import TestClient
+from retina_custody.models import NodeIdentity
+from retina_custody.packet_signer import canonicalize
 
 os.environ.setdefault("RETINA_ENV", "test")
 
@@ -76,6 +79,22 @@ def seed_nodes():
 def client():
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
+
+
+def _keys_named(value, name: str):
+    """Every value carried under `name`, however deep.
+
+    A structural walk rather than a named path, so a field this test has never
+    heard of is caught by the same pass.
+    """
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if k == name:
+                yield v
+            yield from _keys_named(v, name)
+    elif isinstance(value, list):
+        for v in value:
+            yield from _keys_named(v, name)
 
 
 # ── The cache ────────────────────────────────────────────────────────────────
@@ -672,6 +691,17 @@ class TestSingleNodeSurfaces:
         # TX is a licensed broadcast tower and is unaffected either way.
         assert cfg["tx_lat"] == DEFAULT_NODE_CONFIG["tx_lat"]
 
+    def test_radar_status_names_no_node(self, client, seed_nodes):
+        """The field names a process default with no registry row, so it is
+        null whatever that default is pointed at."""
+        from pipeline.passive_radar import DEFAULT_NODE_CONFIG
+
+        seed_nodes(**{DEFAULT_NODE_CONFIG["node_id"]: "public"})
+        body = client.get("/api/radar/status")
+        assert body.json()["node_ref"] is None
+        assert "node_id" not in body.json()
+        assert DEFAULT_NODE_CONFIG["node_id"] not in body.text
+
 
 class TestFuzzDoesNotGateThis:
     """Publication enforcement is a stronger, separate promise from the fuzz."""
@@ -718,16 +748,79 @@ class TestPublicPathParameters:
         finally:
             state.chain_entries.pop(_PUB, None)
 
-    def test_the_signed_entry_bodies_are_left_alone(self, client, seed_nodes):
+    def test_the_signed_entry_bodies_are_withheld(self, client, seed_nodes):
         """Each entry's node_id is inside the ECDSA preimage the node signed,
-        and the server holds only public keys, so it cannot be rewritten."""
+        and the server holds only public keys, so it can be neither published
+        under the ref nor rewritten.  The metadata goes out without it."""
         seed_nodes(**{_PUB: "public"})
         self._store_chain(_PUB)
         try:
-            entries = client.get(f"/api/custody/chain/{_seed_ref(_PUB)}").json()["entries"]
+            body = client.get(f"/api/custody/chain/{_seed_ref(_PUB)}")
         finally:
             state.chain_entries.pop(_PUB, None)
-        assert [e["node_id"] for e in entries] == [_PUB]
+        assert "entries" not in body.json()
+        assert body.json()["chain_length"] == 1
+        assert body.json()["latest_hour"] == "2026-09-09T00"
+        assert body.json()["latest_verified"] is True
+        assert body.json()["verified_entries"] == 1
+
+    def test_the_custody_chain_carries_no_node_id_at_any_depth(self, client, seed_nodes):
+        """Refs are enumerable, so one request per ref would otherwise hand out
+        the whole mapping."""
+        seed_nodes(**{_PUB: "public"})
+        state.node_identities[_PUB] = NodeIdentity(
+            node_id=_PUB,
+            public_key_pem="-----BEGIN PUBLIC KEY-----\nfake\n-----END PUBLIC KEY-----",
+            public_key_fingerprint="ff00",
+            serial_number="SER-1",
+            signing_mode="software",
+            registered_at="2026-09-09T00:00:00Z",
+        )
+        self._store_chain(_PUB)
+        try:
+            body = client.get(f"/api/custody/chain/{_seed_ref(_PUB)}")
+        finally:
+            state.chain_entries.pop(_PUB, None)
+            state.node_identities.pop(_PUB, None)
+        assert body.status_code == 200
+        assert body.json()["identity"]["node_ref"] == _seed_ref(_PUB)
+        assert _PUB not in body.text
+        assert not list(_keys_named(body.json(), "node_id"))
+
+    def test_custody_verify_issues_carry_no_node_id(self, client, seed_nodes):
+        """The verifier spells the node's id into an issue when it holds no key
+        for it; the boundary rewrites it inside the sentence."""
+        seed_nodes(**{_PUB: "public"})
+        state.node_identities[_PUB] = NodeIdentity(
+            node_id=_PUB,
+            public_key_pem="",
+            public_key_fingerprint="",
+            serial_number="",
+            signing_mode="software",
+        )
+        entry = {
+            "node_id": _PUB,
+            "hour_utc": "2026-09-09T00:00:00Z",
+            "prev_hash": "genesis",
+            "detections_hash": "d" * 64,
+            "n_detections": 1,
+            "node_config_hash": "c" * 64,
+            "firmware_version": "1.0",
+            "timestamp_utc": "2026-09-09T00:00:00Z",
+        }
+        entry_hash = hashlib.sha256(canonicalize(entry)).hexdigest()
+        state.chain_entries[_PUB] = [{**entry, "entry_hash": entry_hash, "signature": "", "signing_mode": "software"}]
+        try:
+            body = client.get(f"/api/custody/verify/{_seed_ref(_PUB)}")
+        finally:
+            state.chain_entries.pop(_PUB, None)
+            state.node_identities.pop(_PUB, None)
+        assert body.status_code == 200
+        # The issue is the one that names the node, so this asserts the rename
+        # rather than the absence of any issue at all.
+        assert any("no public key" in i for i in body.json()["issues"])
+        assert _PUB not in body.text
+        assert _seed_ref(_PUB) in body.text
 
     def test_custody_verify_takes_a_ref_and_not_the_node_id(self, client, seed_nodes):
         seed_nodes(**{_PUB: "public"})

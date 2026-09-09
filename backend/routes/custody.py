@@ -190,15 +190,22 @@ async def custody_node_chain(node_ref: str):
     if identity:
         published_identity = {k: v for k, v in identity.to_dict().items() if k != "node_id"}
         published_identity["node_ref"] = node_ref
+    # The signed entry bodies are withheld, not rewritten.  Each carries the
+    # node_id it was signed over, inside the ECDSA preimage
+    # (retina_custody/hash_chain.py), and the server holds only public keys: the
+    # bodies cannot be published under the ref without publishing the mapping,
+    # and cannot be rewritten without breaking the signature.  Refs are
+    # enumerable from /api/radar/nodes, so one request each would otherwise
+    # de-anonymise the whole fleet.  What is left is the metadata a caller can
+    # act on without the bodies; the bodies themselves need an authenticated
+    # surface.
     return {
         "node_ref": node_ref,
         "identity": published_identity,
         "chain_length": len(entries),
-        # The entries keep the node_id they were signed with.  It sits inside
-        # the ECDSA preimage (retina_custody/hash_chain.py), and the server
-        # holds only public keys, so substituting it here would break every
-        # signature a client re-checks against the chain.
-        "entries": entries,
+        "latest_hour": entries[-1].get("hour_utc"),
+        "latest_verified": entries[-1].get("_verified"),
+        "verified_entries": sum(1 for e in entries if e.get("_verified")),
     }
 
 
@@ -216,8 +223,10 @@ async def custody_verify_chain(node_ref: str):
         entry_objs = [HashChainEntry.from_dict(e) for e in entries]
         verifier = HashChainVerifier(lambda nid: state.sig_verifier.get_key(nid))
         valid, issues = verifier.verify_chain(entry_objs)
-        # An issue is free text and the verifier spells the node's id into some
-        # of them, so the same rename applies inside the sentence.
+        # An issue is the verifier's own summary rather than a quoted entry
+        # body, and the only identifier it interpolates is the entry's node_id,
+        # which both ingest paths key the chain on, so the rename covers every
+        # id an issue can carry.  Everything else in one is a hash prefix.
         issues = [i.replace(node_id, node_ref) for i in issues]
         return {"node_ref": node_ref, "chain_length": len(entries), "valid": valid, "issues": issues}
     except Exception:
