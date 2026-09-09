@@ -63,11 +63,10 @@ services:
       # at boot to render deploy/nginx/nginx.conf.template. One template serves
       # both environments; only these values change.
       #
-      # Every vhost is defined here even where no DNS record exists yet
-      # (staging-admin): the Cloudflare origin cert is
-      # *.retina.fm, so an unresolved name costs nothing, and keeping the two
-      # variable sets the same shape is what lets the parity check assert the
-      # rendered configs are identical.
+      # Every vhost is defined here whether or not its name resolves: the
+      # Cloudflare origin cert is *.retina.fm, so an unresolved name costs
+      # nothing, and keeping the two variable sets the same shape is what lets
+      # the parity check assert the rendered configs are identical.
       - HOST_MAIN=staging-towers.retina.fm
       - HOST_API=staging-api.retina.fm
       - HOST_MAP=staging-map.retina.fm

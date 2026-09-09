@@ -28,6 +28,7 @@ import { test, expect, request as playwrightRequest, type Page } from "@playwrig
 import { hosts } from "../playwright.config";
 
 const DASH = hosts.dash;
+const ADMIN = hosts.admin;
 const API = hosts.api;
 
 type AuthMode = "oauth" | "bypass";
@@ -97,6 +98,76 @@ test.describe("Dashboard — unauthenticated access (real auth mode)", () => {
     await page.goto(`${DASH}/login`);
     await page.waitForLoadState("networkidle");
     expect(errors).toHaveLength(0);
+  });
+});
+
+/**
+ * Whether a hostname resolves at all, as distinct from what it answers.
+ *
+ * e2e-staging is a `needs:` of deploy-production exactly as staging-smoke-tests
+ * is, so this suite can block a release for the same reason that one can. That
+ * one reports an unresolvable name as a warning rather than a failure, because
+ * staging-admin.retina.fm's record is young and nothing monitors it; without
+ * the same tolerance here a DNS wobble still holds up every deploy, through the
+ * sibling gate.
+ *
+ * Narrow on purpose. Only a name that does not resolve is tolerated: any
+ * response, a 5xx included, means the vhost is reachable and the test should
+ * assert on what came back.
+ */
+async function resolves(url: string): Promise<boolean> {
+  const ctx = await playwrightRequest.newContext();
+  try {
+    await ctx.get(url, { timeout: 15_000 });
+    return true;
+  } catch (err) {
+    // Node reports DNS failure on the cause, not the message ("fetch failed").
+    let text = "";
+    for (let e: unknown = err, depth = 0; e && depth < 5; depth++) {
+      text += String(e);
+      e = (e as { cause?: unknown }).cause;
+    }
+    if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(text)) {
+      console.warn(`WARN ${url} does not resolve, so the admin surface went untested.`);
+      return false;
+    }
+    return true;
+  } finally {
+    await ctx.dispose();
+  }
+}
+
+test.describe("Admin surface selection", () => {
+  // The whole point of the admin vhost: same bundle as dash, different route
+  // table, chosen client-side from the hostname. Null on prod (see
+  // playwright.config.ts) so a wobble here cannot roll production back.
+  test.skip(!ADMIN, "no admin surface on this environment");
+
+  // The mode is a property of the deployment, not of either test. beforeEach
+  // runs per test, so cache it; the skip itself has to stay in beforeEach,
+  // which is where Playwright accepts it. The value is cached rather than the
+  // promise, so a request that fails leaves the next test free to try again
+  // instead of inheriting a rejection.
+  let authMode: AuthMode | undefined;
+  let adminResolves: boolean | undefined;
+  test.beforeEach(async () => {
+    adminResolves ??= await resolves(ADMIN!);
+    test.skip(!adminResolves, `${ADMIN} does not resolve`);
+    authMode ??= await serverAuthMode();
+    test.skip(authMode === "oauth", "surface is only visible past the login card");
+  });
+
+  // Separate tests, not two assertions in one: the dash half is the control
+  // that tells "admin selection broke" apart from "the sidebar markup changed
+  // and both are wrong", and a shared body would stop at the first failure.
+  test("the admin vhost renders the admin console", async ({ page }) => {
+    await page.goto(ADMIN!);
+    await expect(page.locator(".brand-sub")).toHaveText("Admin Console", { timeout: 10_000 });
+  });
+
+  test("the dash vhost renders the user dashboard", async ({ page }) => {
+    await page.goto(DASH);
+    await expect(page.locator(".brand-sub")).toHaveText("Node Dashboard", { timeout: 10_000 });
   });
 });
 

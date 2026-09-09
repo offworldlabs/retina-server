@@ -10,14 +10,13 @@ set -euo pipefail
 BASE_URL="https://staging-towers.retina.fm"
 API_URL="https://staging-api.retina.fm"
 DASH_URL="https://staging-dash.retina.fm"
-# The admin bundle's own vhost. Probed only for the tower seam below — the
-# dashboard checks elsewhere use DASH_URL, since both serve dashboard/dist and
-# the admin routes are gated client-side on the user's role, not by hostname.
+# The admin bundle's own vhost. Both it and DASH_URL serve dashboard/dist; the
+# hostname is what selects the admin route table (dashboard/src/utils/surface.ts),
+# so this is the only name here that renders the admin console.
 ADMIN_URL="https://staging-admin.retina.fm"
-# The public data explorer (data-explorer/, static). Like staging-admin, this
-# name has no DNS record yet — the vhost renders and the parity check proves it
-# is identical to production's, and the probes below start asserting the moment
-# a record appears. See NO_DNS_BY_DESIGN.
+# The public data explorer (data-explorer/, static). Like the admin vhost, its
+# record is recent and unmonitored, so its probes are guarded rather than
+# assumed. See DNS_NOT_DEPLOY_BLOCKING.
 DATA_URL="https://staging-data.retina.fm"
 # Both vhosts are rooted at frontend/dist and so serve the tower finder too.
 # testmap is the public demo (prod parks the name as testmap-retired).
@@ -27,8 +26,9 @@ TESTMAP_URL="https://testmap.retina.fm"
 # shellcheck source=deploy/tower-contract.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tower-contract.sh"
 CURL="curl -s --connect-timeout 10 --max-time 30"
-PASS=0
-FAIL=0
+# PASS/FAIL/WARN and smoke_summary, shared with the production suite in ci.yml.
+# shellcheck source=deploy/smoke-tally.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/smoke-tally.sh"
 
 check() {
     local name="$1" url="$2" expected="$3"
@@ -96,34 +96,57 @@ check_contract() {
     fi
 }
 
-# Vhosts that render (and so are covered by the parity check) but have no DNS
-# record on this environment by design. A probe against one is skipped rather
-# than failed, and starts asserting the moment a record appears — narrowly, so a
-# real DNS outage on any other vhost still fails the run.
-NO_DNS_BY_DESIGN="staging-admin.retina.fm staging-data.retina.fm"
-in_no_dns_list() {
-    case " ${NO_DNS_BY_DESIGN} " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+# Vhosts that render, and so are covered by the parity check, but have no DNS
+# record on this environment. Their absence is the expected state, so a probe is
+# skipped and asserts in full the moment a record appears. Empty today: every
+# rendered vhost resolves.
+NO_DNS_EXPECTED=""
+
+# Vhosts whose record exists and is expected to, but whose absence must not
+# fail the run: staging-smoke-tests is a `needs:` of deploy-production
+# (ci.yml), so a hard failure here would let a Cloudflare wobble block every
+# release. Reported as WARN and tallied separately, because a deleted record
+# must still be visible: skipping it silently would retire the only check on a
+# vhost nothing else monitors.
+DNS_NOT_DEPLOY_BLOCKING="staging-admin.retina.fm staging-data.retina.fm"
+
+# Decides what to do about $1 not resolving, prints it, and returns 0 when the
+# caller should skip its probe. Membership is tested before the lookup, which is
+# only interesting for a host that is exempt. Both lists are narrow on purpose:
+# an unresolvable name on any other vhost falls through and fails the run.
+handle_unresolvable() {
+    local host="$1" label="$2"
+    case " ${NO_DNS_EXPECTED} ${DNS_NOT_DEPLOY_BLOCKING} " in
+        *" ${host} "*) ;;
+        *) return 1 ;;
+    esac
+    getent hosts "$host" >/dev/null 2>&1 && return 1
+    case " ${NO_DNS_EXPECTED} " in *" ${host} "*)
+        printf "  %-40s SKIP (no DNS record on this environment)\n" "$label"
+        return 0 ;;
+    esac
+    printf "  %-40s WARN (record missing; not blocking the deploy)\n" "$label"
+    # Only Actions reads this prefix; anywhere else it is noise in the output.
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then
+        echo "::warning::${host} no longer resolves, so its vhost went untested. The record is expected to exist; restore it."
+    fi
+    WARN=$((WARN+1))
+    return 0
 }
 
-# A check_* wrapper for a vhost on that list: skip while the name does not
-# resolve, run the check once it does.
+# The _if_dns wrappers: as check_status/check_header, but tolerating a name on
+# one of the lists above rather than failing on it.
 check_status_if_dns() {
     local name="$1" url="$2" expected_code="$3" host
     host="${url#https://}"; host="${host%%/*}"
-    if in_no_dns_list "$host" && ! getent hosts "$host" >/dev/null 2>&1; then
-        printf "  %-40s SKIP (vhost has no DNS record by design)\n" "$name"
-        return
-    fi
+    if handle_unresolvable "$host" "$name"; then return; fi
     check_status "$name" "$url" "$expected_code"
 }
 
 check_header_if_dns() {
     local name="$1" url="$2" header="$3" host
     host="${url#https://}"; host="${host%%/*}"
-    if in_no_dns_list "$host" && ! getent hosts "$host" >/dev/null 2>&1; then
-        printf "  %-40s SKIP (vhost has no DNS record by design)\n" "$name"
-        return
-    fi
+    if handle_unresolvable "$host" "$name"; then return; fi
     check_header "$name" "$url" "$header"
 }
 
@@ -270,21 +293,8 @@ for endpoint in "${BASE_URL}/api/towers" "${MAP_URL}/api/towers" \
                 "${TESTMAP_URL}/api/towers" "${API_URL}/towers" \
                 "${DASH_URL}/api/towers" "${ADMIN_URL}/api/towers" \
                 "${DATA_URL}/api/towers"; do
-    # staging-admin has an nginx vhost but deliberately no DNS record —
-    # docker-compose.staging.yml documents the trade: the origin cert is
-    # *.retina.fm so an unresolved name costs nothing, and keeping HOST_*
-    # the same shape across environments is what lets the parity check
-    # assert the rendered configs are identical. The admin seam is still
-    # asserted where it is reachable: prod smoke probes admin.retina.fm,
-    # and the parity check proves staging renders that identical vhost.
-    # Guarded on resolution rather than dropped, so the probe starts
-    # asserting the moment a record appears — and narrowly, so a real DNS
-    # outage on any other vhost still fails the run.
     host="${endpoint#https://}"; host="${host%%/*}"
-    if in_no_dns_list "$host" && ! getent hosts "$host" >/dev/null 2>&1; then
-        printf "  %-40s SKIP (vhost has no DNS record by design)\n" "$host"
-        continue
-    fi
+    if handle_unresolvable "$host" "$host"; then continue; fi
     check_contract "${endpoint#https://}" "$endpoint"
 done
 # The other half of the seam: a sibling /api/ path on the same vhost is still
@@ -315,7 +325,7 @@ fi
 if [ "$EL_RC" = 0 ]; then
     echo "OK"; PASS=$((PASS+1))
 elif [ "$EL_RC" = 2 ]; then
-    echo "WARN"; printf '    %s\n' "$REASON"; PASS=$((PASS+1))
+    echo "WARN"; printf '    %s\n' "$REASON"; WARN=$((WARN+1))
 else
     echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
 fi
@@ -348,7 +358,7 @@ check_json_field "Active nodes > 0"         "${BASE_URL}/api/test/dashboard" "['
 
 echo ""
 echo "═══════════════════════════════════════════════════"
-echo "  Results: ${PASS} passed, ${FAIL} failed"
+smoke_summary
 echo "═══════════════════════════════════════════════════"
 
 if [ "$FAIL" -gt 0 ]; then
