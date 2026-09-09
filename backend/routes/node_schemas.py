@@ -34,6 +34,8 @@ from pydantic import (
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema
 
+from services.node_config import config_json_schema
+
 
 def _reject_non_number(value: Any) -> Any:
     """Three shapes that are not a JSON `number` but that Pydantic's lax mode
@@ -153,7 +155,12 @@ class RegisterRequest(_RequestModel):
     # resolution and making the response an oracle for which identities exist.
     # Validation is services/node_config.validate_config, called from inside the
     # handler once the identity has resolved.
-    config: dict[str, Any]
+    #
+    # Described without being enforced: WithJsonSchema replaces what is published
+    # and leaves validation alone, so the shape reaches a client generating from
+    # the contract while the refusal stays behind identity resolution. Anything
+    # this schema forbids still reaches the handler and is refused there.
+    config: Annotated[dict[str, Any], WithJsonSchema(config_json_schema())]
 
 
 class RegisterResponse(BaseModel):

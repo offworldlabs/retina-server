@@ -200,8 +200,11 @@ twice, once per copy of the shared standard in this repo. A change can pass
 `ruff check` and `ruff format` by hand and still fail CI on dead code.
 
 Touching a node route or one of its models also moves the node API's wire
-contract, which is generated rather than written. Regenerate it in the same
-commit, or CI fails on a file you never edited:
+contract, which is generated rather than written. So does changing a
+configuration bound: the schema published for `config` is built from the
+validator's own tables, so `backend/services/node_config.py` moves the contract
+with no route touched. Regenerate it in the same commit, or CI fails on a file
+you never edited:
 
 ```bash
 cd backend && RETINA_ENV=dev .venv/bin/python -m scripts.generate_openapi

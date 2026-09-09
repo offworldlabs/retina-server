@@ -42,13 +42,17 @@ NODE_PATH_PREFIX = "/v1/nodes"
 # and no client can have depended on either, since the server has never emitted
 # one. See 86cb6d7cq for the configuration one, which comes back with the limit.
 #
-# Publishing NodeConfig would be the minor bump, since that is the one thing
-# here a client cannot already do (86cb6d7he).
+# 1.1.3 makes the six coordinate fields of the configuration nullable, so a node
+# whose owner cannot supply the geometry can still register. A patch rather than
+# a minor bump because the document gained no field a client could read.
 #
-# 1.1.3 makes the six coordinate fields of NodeConfig nullable, so a node whose
-# owner cannot supply the geometry can still register. A patch rather than a
-# minor bump for the same reason as above: NodeConfig is not published, so the
-# document gains no field and no capability a client can read (86cb6d7he).
+# 1.1.3 also publishes the configuration schema, built from the same tables the
+# validator enforces (86cb6d7he), and the version does not move for it: the
+# server accepts and refuses exactly what it did, and only the description
+# changed. Two documents therefore carry this version, the later a superset of
+# the earlier, so a client pinned to 1.1.3 may or may not have the fifteen
+# configuration fields and cannot tell which it holds from the version alone.
+# Published without being enforced: see routes/node_schemas.py, RegisterRequest.
 NODE_API_VERSION = "1.1.3"
 
 # No tag here: each sub-router carries the contract's own grouping, since those

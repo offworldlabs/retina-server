@@ -11,11 +11,14 @@ deliberately: finding a stale contract at `pytest` time is a regeneration, and
 finding it in CI is a round trip.
 """
 
+import math
+
 import pytest
 import yaml
 
 from routes.nodes import NODE_API_SERVERS, NODE_API_VERSION
 from scripts.generate_openapi import CONTRACT_PATH, contract, render
+from services.node_config import _NULLABLE, _NULLABLE_BEAM, _NUMERIC_BOUNDS, _REQUIRED
 
 FRAME = {
     "t": 1753900000.123,
@@ -175,6 +178,85 @@ def test_the_timestamps_are_still_typed_as_datetimes(document):
 
     for model in ("RegisterResponse", "HeartbeatResponse"):
         assert schemas[model]["properties"]["server_time"]["format"] == "date-time"
+
+
+# ── the configuration schema ─────────────────────────────────────────────────
+#
+# Built from the validator's own tables rather than written beside them. What
+# wants testing here is the document: that both
+# operations describe one object, and that every field and bound the server
+# enforces reaches it. Where those bounds actually sit is pinned against
+# validate_config itself in tests/test_node_config_validation.py, which is the
+# half that catches a bound moving.
+
+
+def _published_configs(document):
+    """The configuration schema as each of the two operations publishes it.
+
+    Inline in both, rather than one component the two reference: Pydantic
+    resolves every `$ref` it emits against its own definitions, and this schema
+    is not one of its models.
+    """
+    yield (
+        "POST /v1/nodes/register",
+        document["components"]["schemas"]["RegisterRequest"]["properties"]["config"],
+    )
+    yield (
+        "PUT /v1/nodes/config",
+        document["paths"]["/v1/nodes/config"]["put"]["requestBody"]["content"]["application/json"]["schema"],
+    )
+
+
+def test_the_two_operations_publish_one_configuration_schema(document):
+    """It is the same object on the wire. A client that generated two
+    incompatible types from these has been told something untrue, and the PUT
+    is the one a node reaches for after a `config_stale`."""
+    published = dict(_published_configs(document))
+
+    assert published["POST /v1/nodes/register"] == published["PUT /v1/nodes/config"]
+
+
+def test_every_field_the_validator_requires_is_published_and_required(document):
+    for name, schema in _published_configs(document):
+        assert set(schema["properties"]) == _REQUIRED, name
+        assert set(schema["required"]) == _REQUIRED, name
+        # The validator names an unknown key back to the caller rather than
+        # ignoring it, so a document permitting one would describe a different
+        # server.
+        assert schema["additionalProperties"] is False, name
+
+
+def test_every_bound_the_validator_enforces_reaches_the_schema(document):
+    """Inclusive bounds as `minimum`/`maximum` and exclusive ones as their
+    `exclusive*` counterparts. A client checks a value against these before
+    sending, so an inclusivity published the wrong way round rejects a config
+    the server accepts."""
+    for name, schema in _published_configs(document):
+        for field, (low, high, low_inclusive, high_inclusive) in _NUMERIC_BOUNDS.items():
+            published = schema["properties"][field]
+            numeric = published["anyOf"][0] if "anyOf" in published else published
+
+            assert numeric["minimum" if low_inclusive else "exclusiveMinimum"] == low, f"{name} {field}"
+            if math.isinf(high):
+                # The two tolerances have no ceiling, which JSON Schema says by
+                # omission. A published `.inf` would state a limit that is not
+                # there and that no client could act on.
+                assert "maximum" not in numeric and "exclusiveMaximum" not in numeric, f"{name} {field}"
+            else:
+                assert numeric["maximum" if high_inclusive else "exclusiveMaximum"] == high, f"{name} {field}"
+
+
+def test_the_nullable_fields_publish_a_null_branch(document):
+    """The six coordinates, so a node whose owner cannot supply the geometry
+    still registers, and the two beam fields, which no node has characterised.
+    A client generated from a document that omitted these cannot express the
+    config the fleet actually sends."""
+    for name, schema in _published_configs(document):
+        nullable = {
+            field for field, published in schema["properties"].items() if {"type": "null"} in published.get("anyOf", [])
+        }
+
+        assert nullable == _NULLABLE | _NULLABLE_BEAM, name
 
 
 # ── the credential ───────────────────────────────────────────────────────────

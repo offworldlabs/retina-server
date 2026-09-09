@@ -2,7 +2,13 @@ import math
 
 import pytest
 
-from services.node_config import ConfigInvalid, canonical_config, position_status, validate_config
+from services.node_config import (
+    ConfigInvalid,
+    canonical_config,
+    config_json_schema,
+    position_status,
+    validate_config,
+)
 
 VALID = {
     "rx_lat": 51.42,
@@ -645,3 +651,70 @@ def test_canonicalising_twice_changes_nothing():
     raw = {"lat": "51.42", "lon": "-0.91", "tx_lat": 0.0, "tx_lon": 0.0, "rx_alt_ft": None}
     once = canonical_config(raw)
     assert canonical_config(once) == once
+
+
+# ── the published schema against the checks it describes ─────────────────────
+#
+# config_json_schema builds twelve of the fifteen from _NUMERIC_BOUNDS, which
+# the loop in validate_config reads too, so those cannot drift. The callsign and
+# the two beam fields are written out beside checks that read their own
+# literals, and those can. Both halves are pinned the same way here, against the
+# boundary rather than against the table: what a client generating from the
+# contract is entitled to rely on is that a value the document permits is one
+# this end accepts.
+
+
+def _numeric_branch(published: dict) -> dict:
+    """The number branch of a published property, nullable or not."""
+    return published["anyOf"][0] if "anyOf" in published else published
+
+
+@pytest.mark.parametrize("field", NUMERIC_FIELDS)
+def test_every_published_bound_is_where_the_validator_refuses(field):
+    schema = _numeric_branch(config_json_schema()["properties"][field])
+
+    for keyword, outward in (("minimum", -math.inf), ("maximum", math.inf)):
+        if keyword in schema:
+            # Inclusive: the bound itself passes and the very next float out
+            # does not. nextafter rather than an epsilon, so the assertion sits
+            # on the bound rather than near it.
+            validate_config(dict(VALID, **{field: schema[keyword]}))
+            with pytest.raises(ConfigInvalid) as refusal:
+                validate_config(dict(VALID, **{field: math.nextafter(schema[keyword], outward)}))
+            assert refusal.value.field == field
+
+    for keyword, inward in (("exclusiveMinimum", math.inf), ("exclusiveMaximum", -math.inf)):
+        if keyword in schema:
+            # Exclusive: the bound itself is refused, and the first float on the
+            # permitted side of it is not.
+            with pytest.raises(ConfigInvalid) as refusal:
+                validate_config(dict(VALID, **{field: schema[keyword]}))
+            assert refusal.value.field == field
+            validate_config(dict(VALID, **{field: math.nextafter(schema[keyword], inward)}))
+
+
+def test_the_published_callsign_length_is_where_the_validator_refuses():
+    schema = config_json_schema()["properties"]["tx_callsign"]
+
+    for length in (schema["minLength"], schema["maxLength"]):
+        validate_config(dict(VALID, tx_callsign="x" * length))
+
+    for length in (schema["minLength"] - 1, schema["maxLength"] + 1):
+        with pytest.raises(ConfigInvalid) as refusal:
+            validate_config(dict(VALID, tx_callsign="x" * length))
+        assert refusal.value.field == "tx_callsign"
+
+
+def test_a_null_is_accepted_for_exactly_the_fields_published_as_nullable():
+    published = config_json_schema()["properties"]
+    nullable = {field for field, schema in published.items() if {"type": "null"} in schema.get("anyOf", [])}
+
+    # All six coordinates at once: a latitude without its longitude is refused,
+    # so the pairs cannot be exercised one field at a time.
+    accepted = validate_config(dict(VALID, **dict.fromkeys(nullable)))
+    assert {field for field in nullable if accepted[field] is None} == nullable
+
+    for field in set(published) - nullable:
+        with pytest.raises(ConfigInvalid) as refusal:
+            validate_config(dict(VALID, **{field: None}))
+        assert refusal.value.field == field
