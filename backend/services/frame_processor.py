@@ -612,16 +612,17 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
                         )
     _d_assoc = time.thread_time() - _t2
 
-    # ADS-B extraction: TCP handler runs _apply_synthetic_adsb for synth nodes
-    # before queuing.  For non-TCP sources (e.g. blah2_bridge) the adsb list
-    # arrives here still unextracted — store those positions now so the
-    # verification and accuracy pipelines can reference them.
+    # ADS-B extraction.  Only TCP frames still reach here carrying an `adsb`
+    # list: v1 files its association under `adsb_hex` and the legacy radar routes
+    # carry no list at all.  _apply_synthetic_adsb has already read it for its
+    # own purposes without consuming it, so these positions are stored again
+    # here, where the verification and accuracy pipelines can reference them.
     _adsb_list = frame.get("adsb")
     if _adsb_list:
         _recv_s = time.time()
         _ts_ms = adsb_capture_ts_ms(frame, _recv_s)
         _recv_ms = int(_recv_s * 1000)
-        # Same world stamp the TCP fast-path applies — a blah2 node's list is
+        # Same world stamp the TCP fast-path applies — a real node's list is
         # real traffic, a test frame's is simulated; claiming keys on it.
         _world = state.node_world(node_id)
         for _ae in _adsb_list:

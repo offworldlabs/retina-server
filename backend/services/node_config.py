@@ -1,11 +1,13 @@
 """The one configuration validator, shared by registration and PUT /nodes/config,
 and the one normaliser every in-process copy of a node's config passes through.
 
-Bounds are the wire contract's, at version 1.1.1. Three checks are here and not
-there because a JSON schema cannot express them: a receiver and illuminator at
-the same point give the solver a degenerate baseline; bool is a subclass of int
-in Python, so a plain range check accepts True as a latitude of 1; and NaN
-compares false against every bound, so it survives a range check untouched.
+These bounds are the wire contract's, and they are its source: config_json_schema
+below is what the document publishes, so the contract is built from this module
+rather than copied into it. Three checks cannot travel with them, because a JSON
+schema expresses none of them: a receiver and illuminator at the same point give
+the solver a degenerate baseline; bool is a subclass of int in Python, so a plain
+range check accepts True as a latitude of 1; and NaN compares false against every
+bound, so it survives a range check untouched.
 
 A leaf on purpose. It takes a dict and returns a dict, knowing nothing of identity,
 HTTP or status codes, so both callers can share it and it stays testable without a
@@ -13,6 +15,7 @@ database. Nothing beyond the standard library may be imported here.
 """
 
 import math
+from copy import deepcopy
 from typing import Any, Literal
 
 # About 0.11 m. Below this the receiver and illuminator are the same point as far as
@@ -56,7 +59,98 @@ _NUMERIC_BOUNDS: dict[str, tuple[float, float, bool, bool]] = {
 # zero wherever the geodesy reads it.
 _NULLABLE = {"rx_lat", "rx_lon", "rx_alt_ft", "tx_lat", "tx_lon", "tx_alt_ft"}
 
-_REQUIRED = set(_NUMERIC_BOUNDS) | {"tx_callsign", "beam_width_deg", "beam_azimuth_deg"}
+# The three fields the table above does not carry: the callsign, which is not
+# numeric, and the two beam fields, whose bounds are checked beside it because
+# both are nullable. Written out rather than derived, so
+# tests/test_node_config_validation.py exercises every bound published here
+# against what validate_config actually accepts: that is what stops these
+# drifting from the checks below, since they are not the same literals.
+_UNTABLED_PROPERTIES: dict[str, dict[str, Any]] = {
+    "tx_callsign": {"type": "string", "minLength": 1, "maxLength": 32},
+    "beam_width_deg": {"type": "number", "exclusiveMinimum": 0.0, "maximum": 360.0},
+    "beam_azimuth_deg": {"type": "number", "minimum": 0.0, "exclusiveMaximum": 360.0},
+}
+
+# Derived from the two tables rather than listed again, so a field added to
+# either is required by this validator and published as required in the same
+# edit.
+_REQUIRED = set(_NUMERIC_BOUNDS) | set(_UNTABLED_PROPERTIES)
+
+# Nullable beyond the coordinates, and for a different reason: no node has its
+# antenna characterised, so null is what the whole fleet sends for both.
+_NULLABLE_BEAM = {"beam_width_deg", "beam_azimuth_deg"}
+
+_SCHEMA_DESCRIPTION = """\
+The receiver and illuminator geometry, the radio parameters and the association
+tolerances. Every field is required.
+
+The six coordinate fields are nullable, for a node whose owner cannot supply the
+geometry. Such a node registers and streams, and its detections are counted, but
+it places nothing on the map until a position arrives. A latitude and its
+longitude are given together or both null.
+
+Necessary but not sufficient. A receiver and illuminator at the same point are
+refused, as is a value that is not a finite number, and neither is expressible
+here: both answer `400 invalid_config` naming the field."""
+
+
+def _numeric_property(low: float, high: float, low_inclusive: bool, high_inclusive: bool) -> dict[str, Any]:
+    # An unbounded end is what JSON Schema says by omission: neither an infinity
+    # nor a NaN is a bound, and either would publish a ceiling the server does
+    # not have in a literal no JSON parser can read. Both ends are guarded, so
+    # adding an unbounded low to the table cannot slip one out.
+    schema: dict[str, Any] = {"type": "number"}
+    if math.isfinite(low):
+        schema["minimum" if low_inclusive else "exclusiveMinimum"] = float(low)
+    if math.isfinite(high):
+        schema["maximum" if high_inclusive else "exclusiveMaximum"] = float(high)
+    return schema
+
+
+def config_json_schema() -> dict[str, Any]:
+    """The configuration's published JSON Schema, built from the tables above.
+
+    Generated from what this module enforces rather than written beside it, so
+    the document a node is built against cannot state a bound the server does
+    not apply. Describing the shape is not enforcing it; registration's body
+    stays untyped, for the reason routes/node_register.py gives.
+
+    Fresh every call, nested dicts included. Two callers publish this and the
+    frameworks under both mutate schema dicts in place, so a shared sub-dict
+    would let one operation's published bounds rewrite the other's.
+    """
+    properties = {field: _numeric_property(*bounds) for field, bounds in _NUMERIC_BOUNDS.items()}
+    properties |= deepcopy(_UNTABLED_PROPERTIES)
+    nullable = _NULLABLE | _NULLABLE_BEAM
+    return {
+        "type": "object",
+        "title": "NodeConfig",
+        "description": _SCHEMA_DESCRIPTION,
+        "properties": {
+            field: {"anyOf": [schema, {"type": "null"}]} if field in nullable else schema
+            for field, schema in properties.items()
+        },
+        # Sorted for the same reason the refusals above are: a document that
+        # reordered between runs would show as a diff in the CI gate.
+        "required": sorted(_REQUIRED),
+        # The validator names an unknown key back to the caller rather than
+        # ignoring it.
+        "additionalProperties": False,
+    }
+
+
+def numeric_branch(published: dict[str, Any]) -> dict[str, Any]:
+    """The number half of a published property, whether or not it is nullable.
+
+    Beside the builder because it is how the builder's output is read back, and
+    the alternative is each caller re-deriving where the bounds live. Selects on
+    the type rather than on position in the `anyOf`, so reordering the branches
+    cannot leave a caller reading the null one and finding no bounds at all.
+    """
+    for alternative in published.get("anyOf", [published]):
+        if alternative.get("type") == "number":
+            return alternative
+    return published
 
 
 def _as_finite_float(value: Any) -> tuple[float | None, str]:

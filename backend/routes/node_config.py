@@ -22,7 +22,7 @@ from core.users import get_async_session
 from routes.node_responses import INVALID_CONFIG, NODE_BODY_LIMITS, SERVER_ERROR, TOO_LARGE, UNAUTHORIZED
 from routes.node_schemas import ConfigResponse, ErrorBody
 from services.node_auth import bearer_node, node_bearer_scheme
-from services.node_config import ConfigInvalid, validate_config
+from services.node_config import ConfigInvalid, config_json_schema, validate_config
 from services.node_config_store import upsert_config
 from services.node_pipeline import register_with_pipeline
 
@@ -83,17 +83,13 @@ response does not mention it, and nothing about streaming depends on the node no
         "x-max-body-bytes": NODE_BODY_LIMITS["/v1/nodes/config"],
         # The body is read inside the handler rather than declared, so FastAPI has
         # nothing to describe it with and the published operation would otherwise
-        # take no body at all. This says only what registration's `config` already
-        # says — a free-form object — so it is not a second statement of the
-        # bounds, which stay in services/node_config.py. Publishing the closed
-        # schema from that module's own table is 86cb6d7he.
+        # take no body at all. The same object registration's `config` publishes,
+        # which scripts/generate_openapi.py then hoists into the one component
+        # both operations reference.
         "requestBody": {
             "required": True,
-            "description": (
-                "The full configuration, in the same shape as `config` on `POST /v1/nodes/register`. "
-                "Free-form here for the reason given on that endpoint."
-            ),
-            "content": {"application/json": {"schema": {"type": "object", "additionalProperties": True}}},
+            "description": "The full configuration, in the same shape as `config` on `POST /v1/nodes/register`.",
+            "content": {"application/json": {"schema": config_json_schema()}},
         },
     },
 )

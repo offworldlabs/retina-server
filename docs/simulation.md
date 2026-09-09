@@ -123,11 +123,6 @@ changes, not code changes. Current staging scale (`docker-compose.staging.yml`):
 | `FLEET_MODE` | `adsb` | Merge the real ADS-B feed |
 | `FLEET_INTERVAL` | 0.5 s | Frame interval per node |
 
-Two real hardware nodes (via the blah2 bridge) connect alongside the synthetic
-fleet. Their geometry is deployment state, held in the runtime copy of
-`blah2_nodes.json` under `backend/data/runtime/`; the tracked
-`backend/config/blah2_nodes.json` is a placeholder template.
-
 ---
 
 ## Real ADS-B Feed (`AdsbLolClient`)

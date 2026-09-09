@@ -456,12 +456,6 @@ CHAIN_ENTRIES_MAX_PER_NODE = 500  # Max chain entries per node (rolling)
 IQ_COMMITMENTS_MAX_PER_NODE = 200  # Max IQ commitments per node (rolling)
 RATE_BUCKETS_MAX_IPS = 10_000  # Max unique IPs in rate limiter
 
-# ── blah2 bridge ─────────────────────────────────────────────────────────────
-BLAH2_POLL_INTERVAL_S = 1.0  # blah2 API poll cadence (s)
-BLAH2_STALE_THRESHOLD_S = 10.0  # Ignore frames older than this (s)
-BLAH2_RECONNECT_DELAY_S = 5.0  # Backoff after failures (s)
-BLAH2_MAX_FAILURES = 5  # Failures before backing off
-
 # ── Node retirement ──────────────────────────────────────────────────────────
 # Which node ids the admin route will force-retire.  Empty, the default,
 # imposes no restriction, which is what production wants: a decommissioned

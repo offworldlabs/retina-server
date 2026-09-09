@@ -19,7 +19,9 @@ Everything in the output comes from the application: the descriptions and the
 models, the security scheme from the dependency, and `info.description` from the
 application's own. The three constants this file reaches for by name
 (`NODE_API_VERSION`, `NODE_API_TAGS`, `NODE_API_SERVERS`) live in routes/nodes.py
-beside the router they describe.
+beside the router they describe. It also reaches for `config_json_schema`, to
+recognise the configuration schema in the document and hoist it into a component
+the two operations reference; see `_hoisted`.
 
 Numeric bounds publish as floats (`minimum: 1.0` rather than `1`) because
 FastAPI validates its own output through `openapi.models`, whose
@@ -42,6 +44,7 @@ import yaml
 
 from main import app
 from routes.nodes import NODE_API_SERVERS, NODE_API_TAGS, NODE_API_VERSION, is_node_path
+from services.node_config import config_json_schema
 
 TITLE = "RETINA node ingest"
 
@@ -50,6 +53,15 @@ TITLE = "RETINA node ingest"
 CONTRACT_PATH = Path(__file__).resolve().parents[2] / "contracts" / "nodes-v1.openapi.yaml"
 
 _REF_PREFIX = "#/components/schemas/"
+
+# The configuration schema is the one component this file names into existence
+# rather than finding among the application's models. Both operations that take
+# a configuration carry it inline, because Pydantic resolves every `$ref` it
+# emits against its own definitions and this schema is not one of its models, so
+# the reference is made here: this is already the layer that shapes the
+# document, and one component is what a generated client needs to produce one
+# type for one wire object.
+_CONFIG_SCHEMA_NAME = "NodeConfig"
 
 
 def _referenced(node: Any, found: set[str]) -> None:
@@ -85,6 +97,27 @@ def _closure(paths: dict[str, Any], schemas: dict[str, Any]) -> dict[str, Any]:
     return {name: schemas[name] for name in sorted(found) if name in schemas}
 
 
+def _hoisted(node: Any, inline: dict[str, Any]) -> Any:
+    """`node` with every inline copy of `inline` replaced by a `$ref` to it.
+
+    Rebuilds rather than mutates: `app.openapi()` caches its result, and editing
+    it in place would leave the application's own docs holding a reference to a
+    component only this document defines.
+
+    Matched by equality on the whole schema, so a partial copy is left alone
+    rather than silently referred to something it does not equal.
+    tests/test_node_openapi.py holds the other end, that both operations really
+    do end up referring to it.
+    """
+    if isinstance(node, dict):
+        if node == inline:
+            return {"$ref": _REF_PREFIX + _CONFIG_SCHEMA_NAME}
+        return {key: _hoisted(value, inline) for key, value in node.items()}
+    if isinstance(node, list):
+        return [_hoisted(item, inline) for item in node]
+    return node
+
+
 def _node_paths(paths: dict[str, Any]) -> dict[str, Any]:
     """The four operations, with FastAPI's automatic 422 dropped.
 
@@ -113,8 +146,16 @@ def _node_paths(paths: dict[str, Any]) -> dict[str, Any]:
 
 def contract() -> dict[str, Any]:
     schema = app.openapi()
-    paths = _node_paths(schema["paths"])
-    components: dict[str, Any] = {"schemas": _closure(paths, schema["components"]["schemas"])}
+    inline_config = config_json_schema()
+    declared = schema["components"]["schemas"]
+    if _CONFIG_SCHEMA_NAME in declared:
+        # A Pydantic model of this name anywhere in the application would be
+        # published under it instead, silently, and a pinned consumer would see
+        # one type become another. Refused rather than clobbered.
+        raise RuntimeError(f"{_CONFIG_SCHEMA_NAME} is already an application model; the contract cannot inject it")
+    paths = _hoisted(_node_paths(schema["paths"]), inline_config)
+    schemas = _hoisted(declared, inline_config) | {_CONFIG_SCHEMA_NAME: inline_config}
+    components: dict[str, Any] = {"schemas": _closure(paths, schemas)}
     # Only the node routes declare one today, but filtering keeps that true
     # rather than assuming it.
     declared = schema.get("components", {}).get("securitySchemes", {})
