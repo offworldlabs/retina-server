@@ -210,7 +210,7 @@ class TestBothIngestPathsUseIt:
     """The helper is only worth anything if the two store sites call it.
 
     They are separate paths: the TCP fast-path stores before queuing, the
-    frame processor stores for sources that arrive unextracted (blah2_bridge),
+    frame processor stores for sources that arrive unextracted,
     and each had its own `int(time.time() * 1000)`.
     """
 

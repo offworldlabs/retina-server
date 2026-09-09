@@ -33,19 +33,7 @@ TASK_EXPECTED_INTERVAL_S: dict[str, int] = {
     "storage_refresh": 720,  # expected every 300 s; alert if >2× late
     "track_archive_flush": 180,  # flush every 60 s; alert if >3× late
     "users_db_backup": 86400 * 2,  # daily; alert if it hasn't run in 2 days
-    # The blah2 bridge registers one key per configured live node at startup
-    # (see services/blah2_bridge.load_nodes) — its node list is config-driven,
-    # so those keys cannot be enumerated here.
 }
-
-
-def register_task(name: str, expected_interval_s: int) -> None:
-    """Add a dynamically-discovered task to the staleness registry.
-
-    For tasks whose number is not known until config is read. Idempotent, so
-    re-reading a config file does not disturb an already-registered task.
-    """
-    TASK_EXPECTED_INTERVAL_S.setdefault(name, expected_interval_s)
 
 
 def get_stale_tasks() -> list[str]:

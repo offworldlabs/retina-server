@@ -51,6 +51,14 @@ from services.public_location import public_latlon
 from services.publication import is_private
 
 # ─── Node Configuration ─────────────────────────────────────────────
+# Fallback geometry for a frame whose node has no configuration of its own: a
+# real receiver and its illuminator, kept because they are a self-consistent
+# bistatic pair. Which site, and the fit behind the numbers, is in ClickUp
+# 86cb6385b rather than here: a receiver position is someone's home and this
+# repo is public.
+#
+# __init__ takes this branch for any falsy node_config, an empty dict included,
+# so being registered is not on its own enough to be solved against your own.
 DEFAULT_NODE_CONFIG = {
     "node_id": "net13",
     "Fs": 2_000_000,  # Sample rate Hz

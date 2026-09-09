@@ -10,8 +10,7 @@ client's 30 s timeout.
 
 `services/tcp_handler.py` already dispatches registration to a dedicated
 executor. These tests hold every other path to the same rule: both HTTP ingest
-endpoints, the v1 pipeline path in `services/node_pipeline.py`, and the blah2
-bridge.
+endpoints and the v1 pipeline path in `services/node_pipeline.py`.
 """
 
 import asyncio
@@ -162,12 +161,11 @@ class TestRegistrationStillHappens:
         assert [nid for nid, _ in seen] == ["test-passthrough"]
 
 
-# ── The paths that do not go through an HTTP handler ──────────────────────────
+# ── The path that does not go through an HTTP handler ─────────────────────────
 #
-# The two below reach the same registration from elsewhere: `node_pipeline` on
-# the v1 path (POST /v1/nodes/register in-request, and once per node at
-# startup), and `blah2_bridge` for the real receivers. Neither can be driven
-# through the ASGI client, so they are timed directly.
+# `node_pipeline` reaches the same registration from elsewhere on the v1 path
+# (POST /v1/nodes/register in-request, and once per node at startup). It cannot
+# be driven through the ASGI client, so it is timed directly.
 
 # The v1 node's stored configuration. Of these only beam_width_deg is nullable,
 # and it is given a value here rather than the null a real node carries: a null
@@ -253,7 +251,7 @@ async def v1_node(node_session):
     # a second cleanup path to keep in step with the first.
 
 
-class TestTheNonHttpPathsDoNotBlockTheLoop:
+class TestTheNonHttpPathDoesNotBlockTheLoop:
     async def test_v1_pipeline_registration_leaves_the_loop_free(self, node_session, v1_node, slow_registration):
         from services.node_pipeline import register_with_pipeline
 
@@ -261,27 +259,8 @@ class TestTheNonHttpPathsDoNotBlockTheLoop:
 
         assert stall < RESPONSIVE_S
 
-    async def test_blah2_bridge_registration_leaves_the_loop_free(self, slow_registration):
-        from services.blah2_bridge import _build_node, _register_node
 
-        node = _build_node(
-            {
-                "node_id": "test-loop-blah2",
-                "detection_url": "https://example.test/api/detection",
-                "rx_lat": 33.9,
-                "rx_lon": -84.6,
-                "tx_lat": 33.8,
-                "tx_lon": -84.1,
-                "fc_hz": 177_000_000,
-            }
-        )
-
-        stall = await _longest_stall_during(_register_node(node))
-
-        assert stall < RESPONSIVE_S
-
-
-class TestTheNonHttpRegistrationsStillHappen:
+class TestTheNonHttpRegistrationStillHappens:
     async def test_the_v1_node_reaches_the_registries(self, node_session, v1_node):
         from core import state
         from services.node_pipeline import register_with_pipeline
@@ -291,24 +270,3 @@ class TestTheNonHttpRegistrationsStillHappen:
         assert state.connected_nodes[_V1_NODE_ID]["peer"] == "v1"
         assert state.node_associator.node_geometries[_V1_NODE_ID].rx_lat == _V1_CONFIG["rx_lat"]
         assert state.node_analytics.detection_areas[_V1_NODE_ID].rx_lat == _V1_CONFIG["rx_lat"]
-
-    async def test_the_blah2_node_reaches_the_registries(self):
-        from core import state
-        from services.blah2_bridge import _build_node, _register_node
-
-        node = _build_node(
-            {
-                "node_id": "test-registered-blah2",
-                "detection_url": "https://example.test/api/detection",
-                "rx_lat": 33.9,
-                "rx_lon": -84.6,
-                "tx_lat": 33.8,
-                "tx_lon": -84.1,
-                "fc_hz": 177_000_000,
-            }
-        )
-
-        await _register_node(node)
-
-        assert state.connected_nodes["test-registered-blah2"]["peer"] == node.peer
-        assert state.node_associator.node_geometries["test-registered-blah2"].rx_lat == 33.9

@@ -1,4 +1,4 @@
-"""A v1 node has to look to the pipeline exactly like a blah2_bridge node.
+"""A v1 node has to look to the pipeline like any other source.
 
 The assertions here read the real registries rather than spying on calls:
 what matters is that analytics and the associator end up knowing the node's
@@ -104,7 +104,7 @@ async def test_registration_reaches_analytics_and_the_associator(node_session, n
     assert state.node_associator.node_geometries[NODE_ID].rx_lat == 51.42
 
 
-async def test_the_pipeline_config_carries_the_defaults_blah2_bridge_supplies(node_session, node):
+async def test_the_pipeline_config_carries_the_defaults_the_wire_config_omits(node_session, node):
     await register_with_pipeline(node_session, node)
 
     config = state.connected_nodes[NODE_ID]["config"]
@@ -329,11 +329,7 @@ async def test_startup_priming_loads_the_fleet_from_the_app_session(tmp_path, no
 
 
 async def test_startup_priming_survives_a_database_failure(monkeypatch):
-    """A nodes table that is not there yet must not take the whole API down.
-
-    blah2_bridge is this phase's rollback and runs in the same process, so a
-    priming failure that killed startup would take the fallback with it.
-    """
+    """A nodes table that is not there yet must not take the whole API down."""
 
     def _no_such_table():
         raise OperationalError("SELECT nodes.node_id FROM nodes", {}, Exception("no such table: nodes"))

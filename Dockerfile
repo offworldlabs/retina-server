@@ -108,11 +108,6 @@ RUN chmod +x /app/deploy/start.sh
 # nodes_config.json is runtime-editable and stays in the volume; constants.py
 # is source code and must follow the image.
 #
-# blah2_nodes.json is runtime-editable too, but it also has to be *seedable*:
-# on an existing deployment the volume masks backend/config, so a copy shipped
-# only there would be invisible and the bridge would poll nothing. The pristine
-# copy is what runtime_config.default_source_path() seeds the overlay from.
-#
 # Layout: /app/deploy/config-image/config/constants.py (no __init__.py so
 # Python treats 'config' as a namespace package and merges all 'config/'
 # dirs on sys.path).  start.sh prepends /app/deploy/config-image to
@@ -120,8 +115,7 @@ RUN chmod +x /app/deploy/start.sh
 # copy at /app/backend/config/constants.py — even when the volume is
 # root-owned and the cp refresh fails.
 RUN mkdir -p /app/deploy/config-image/config && \
-    cp /app/backend/config/constants.py /app/deploy/config-image/config/constants.py && \
-    cp /app/backend/config/blah2_nodes.json /app/deploy/config-image/config/blah2_nodes.json
+    cp /app/backend/config/constants.py /app/deploy/config-image/config/constants.py
 
 # ── Non-root user ────────────────────────────────────────────────────────────
 RUN useradd -r -s /usr/sbin/nologin appuser && \
