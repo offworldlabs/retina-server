@@ -157,3 +157,69 @@ class TestRefreshIsAtomic:
         # under whoever still holds a reference to them.
         assert old_forward == {"ret1a2b3c4d": "nde1a2b3c4d00"}
         assert old_reverse == {"nde1a2b3c4d00": "ret1a2b3c4d"}
+
+
+_SYNTH = "synth-GVL-0002"
+
+
+class TestSubstituteIdentities:
+    def test_a_single_node_entry_carries_the_ref(self, seed):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        out = node_refs.substitute_identities({"aircraft": [{"hex": "abc123", "node_id": "ret1a2b3c4d"}]})
+        assert out["aircraft"] == [{"hex": "abc123", "node_id": "nde1a2b3c4d00"}]
+
+    def test_contributing_ids_are_substituted(self, seed):
+        seed(ret1a2b3c4d="nde1a2b3c4d00", ret9f8e7d6c="nde9f8e7d6c00")
+        out = node_refs.substitute_identities(
+            {
+                "aircraft": [
+                    {
+                        "hex": "abc123",
+                        "multinode": True,
+                        "contributing_node_ids": ["ret1a2b3c4d", "ret9f8e7d6c"],
+                    }
+                ]
+            }
+        )
+        assert out["aircraft"][0]["contributing_node_ids"] == ["nde1a2b3c4d00", "nde9f8e7d6c00"]
+
+    def test_a_synthetic_node_passes_through_unchanged(self, seed):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        out = node_refs.substitute_identities({"aircraft": [{"hex": "abc123", "node_id": _SYNTH}]})
+        assert out["aircraft"] == [{"hex": "abc123", "node_id": _SYNTH}]
+
+    def test_an_unresolvable_real_node_is_dropped_not_published(self, seed):
+        """Fail closed: publishing the private id as a fallback is the bug."""
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        out = node_refs.substitute_identities({"aircraft": [{"hex": "abc123", "node_id": "ret0badcafe"}]})
+        assert out["aircraft"] == []
+
+    def test_arcs_and_detecting_nodes_are_substituted(self, seed):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        out = node_refs.substitute_identities(
+            {
+                "aircraft": [],
+                "detection_arcs": [{"hex": "abc123", "node_id": "ret1a2b3c4d"}],
+                "detecting_nodes": {"abc123": ["ret1a2b3c4d", "ret0badcafe"]},
+            }
+        )
+        assert out["detection_arcs"] == [{"hex": "abc123", "node_id": "nde1a2b3c4d00"}]
+        assert out["detecting_nodes"] == {"abc123": ["nde1a2b3c4d00"]}
+
+    def test_a_hex_left_with_no_nodes_loses_its_entry(self, seed):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        out = node_refs.substitute_identities({"aircraft": [], "detecting_nodes": {"abc123": ["ret0badcafe"]}})
+        assert out["detecting_nodes"] == {}
+
+    def test_the_messages_count_follows_what_survives(self, seed):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        out = node_refs.substitute_identities(
+            {
+                "messages": 2,
+                "aircraft": [
+                    {"hex": "a", "node_id": "ret1a2b3c4d"},
+                    {"hex": "b", "node_id": "ret0badcafe"},
+                ],
+            }
+        )
+        assert out["messages"] == 1

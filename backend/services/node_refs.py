@@ -24,6 +24,7 @@ from sqlalchemy.pool import NullPool
 
 from core.nodes import Node
 from core.users import DATABASE_URL
+from services.tcp_handler import is_synthetic_node
 
 log = logging.getLogger(__name__)
 
@@ -113,3 +114,68 @@ def id_for_ref(node_ref: str | None) -> str | None:
         return None
     _refresh()
     return _reverse.get(node_ref)
+
+
+def public_identity(node_id: str | None) -> str | None:
+    """What a node id is published as, or None if it must not be published.
+
+    Synthetic nodes pass through: they are not hardware at anyone's address,
+    and the map identifies them by these ids. A real node with no registry row
+    yields None and its entry is dropped, because publishing the private id as
+    a fallback is the failure this boundary exists to prevent.
+    """
+    if not node_id:
+        return None
+    if is_synthetic_node(node_id):
+        return node_id
+    ref = ref_for(node_id)
+    if ref is None:
+        log.error("no node_ref for %s; dropping its contribution from the public feed", node_id)
+    return ref
+
+
+def substitute_identities(data: dict) -> dict:
+    """A feed payload with every published node identity replaced by its ref.
+
+    Runs last on each publication path, after the private-node redaction in
+    services/publication.py and after every node_id-keyed filter in
+    services/tasks/aircraft_flush.py. Those filters match ids against
+    state.connected_nodes, so substituting before them empties the feed.
+    """
+    aircraft = []
+    for ac in data.get("aircraft", []):
+        contributors = ac.get("contributing_node_ids")
+        if contributors:
+            kept = [r for r in (public_identity(n) for n in contributors) if r]
+            if not kept:
+                continue
+            ac = {**ac, "contributing_node_ids": kept}
+        if ac.get("node_id") is not None:
+            ref = public_identity(ac.get("node_id"))
+            if ref is None:
+                continue
+            ac = {**ac, "node_id": ref}
+        aircraft.append(ac)
+
+    out = {**data, "aircraft": aircraft}
+
+    if "detection_arcs" in data:
+        arcs = []
+        for arc in data.get("detection_arcs", []):
+            ref = public_identity(arc.get("node_id"))
+            if ref is None:
+                continue
+            arcs.append({**arc, "node_id": ref})
+        out["detection_arcs"] = arcs
+
+    detecting = data.get("detecting_nodes")
+    if isinstance(detecting, dict):
+        out["detecting_nodes"] = {
+            hex_code: kept
+            for hex_code, nids in detecting.items()
+            if (kept := [r for r in (public_identity(n) for n in nids) if r])
+        }
+
+    if "messages" in data:
+        out["messages"] = len(aircraft)
+    return out
