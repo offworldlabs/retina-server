@@ -18,6 +18,7 @@ from services import dark_follow, known_claiming, track_filter
 from services.frame_processor import resolve_ground_truth_hex
 from services.geo import haversine_km
 from services.id_utils import is_transponder_hex, normalize_hex_key
+from services.public_geometry import without_receiver_geometry
 from services.public_location import fuzz_enabled, public_latlon, translate_polygon
 from services.tasks import solver as solver_mod
 
@@ -731,11 +732,18 @@ def _mlat_verification_summary() -> dict:
 
 @router.get("/api/test/node/{node_id}/verification")
 async def node_verification(node_id: str):
-    """Return pre-computed solver-vs-ADS-B verification stats for one node."""
-    return Response(
-        content=state.latest_node_verification_bytes.get(node_id, b"{}"),
-        media_type="application/json",
-    )
+    """Return pre-computed solver-vs-ADS-B verification stats for one node.
+
+    Unauthenticated, and everything in a track entry is measured from this one
+    node's true receiver, so the entries are served node-scoped: the per-track
+    delays and the node's own solve position go, the errors beside them stay.
+    Stripped at the route rather than in the store, because it is this
+    route's one-node addressing that makes the solve position
+    receiver-relative; the store holds the computation's own output.
+    """
+    raw = state.latest_node_verification_bytes.get(node_id, b"{}")
+    payload = without_receiver_geometry(orjson.loads(raw), node_scoped=True)
+    return Response(content=orjson.dumps(payload), media_type="application/json")
 
 
 @router.get("/api/test/mlat-verification")
@@ -904,7 +912,7 @@ async def mlat_history(
             "n_records": len(skips),
             "records": skips[:limit],
         }
-        return Response(content=orjson.dumps(payload), media_type="application/json")
+        return Response(content=orjson.dumps(without_receiver_geometry(payload)), media_type="application/json")
 
     merged = _merged_solve_history()
     effective_minutes = _window_effective_minutes(merged, minutes)
@@ -927,7 +935,7 @@ async def mlat_history(
             "n_records": len(records),
             "records": _cap_per_lane(records, limit),
         }
-        return Response(content=orjson.dumps(payload), media_type="application/json")
+        return Response(content=orjson.dumps(without_receiver_geometry(payload)), media_type="application/json")
 
     norm = (hex or "").strip().lower()
     if not norm:
@@ -966,7 +974,7 @@ async def mlat_history(
             "records": rejects_nearby[:200],
         },
     }
-    return Response(content=orjson.dumps(payload), media_type="application/json")
+    return Response(content=orjson.dumps(without_receiver_geometry(payload)), media_type="application/json")
 
 
 # ── Solver Report (full funnel/error/ghost/consensus picture) ─────────────────
@@ -1722,7 +1730,7 @@ async def node_detection_range(node_id: str):
             status_code=404,
         )
 
-    summary = {k: v for k, v in area.summary().items() if k != "furthest_detections"}
+    summary = without_receiver_geometry(area.summary())
     rx = summary.get("rx") or {}
     pub_lat, pub_lon = public_latlon(rx.get("lat"), rx.get("lon"), node_id)
     summary["rx"] = {**rx, "lat": pub_lat, "lon": pub_lon}

@@ -26,6 +26,7 @@ from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
 from services.node_config import position_status
 from services.node_sites import log_colocation_audit
+from services.public_geometry import without_receiver_geometry
 from services.public_location import (
     fuzz_enabled,
     location_uncertainty_km,
@@ -1280,6 +1281,19 @@ def _refresh_mlat_accuracy_stats() -> None:
     )
 
 
+def _publish_mlat_verification(result: dict) -> None:
+    """Serialise a verification result onto the store the public route serves.
+
+    Both writers go through here so a third cannot reach those bytes without
+    the receiver-geometry pass. The store's only readers are unauthenticated
+    (GET /api/test/mlat-verification, and the dashboard summary beside it), so
+    nothing downstream wants the withheld fields back.
+    """
+    state.latest_mlat_verification_bytes = orjson.dumps(
+        without_receiver_geometry(result), option=orjson.OPT_SERIALIZE_NUMPY
+    )
+
+
 def _refresh_mlat_verification():
     """Compare multinode solve results to ground-truth trails pushed by the fleet orchestrator.
 
@@ -1406,7 +1420,7 @@ def _refresh_mlat_verification():
         # /api/test/mlat-accuracy silently serves numbers frozen at the moment
         # the truth feed stopped, with nothing marking them stale.
         _refresh_mlat_accuracy_stats()
-        state.latest_mlat_verification_bytes = orjson.dumps(
+        _publish_mlat_verification(
             {
                 "computed_at": round(now, 1),
                 "skip_reason": "no_truth_candidates",
@@ -1428,8 +1442,7 @@ def _refresh_mlat_verification():
                     "nearest_truth": {"mean_km": None, "median_km": None, "p95_km": None},
                     "tracks": [],
                 },
-            },
-            option=orjson.OPT_SERIALIZE_NUMPY,
+            }
         )
         return
 
@@ -1752,7 +1765,7 @@ def _refresh_mlat_verification():
             "tracks": sorted(unmatched, key=lambda x: x.get("nearest_truth_km") or 999)[:50],
         },
     }
-    state.latest_mlat_verification_bytes = orjson.dumps(result, option=orjson.OPT_SERIALIZE_NUMPY)
+    _publish_mlat_verification(result)
 
 
 def _ensure_custody_data():
