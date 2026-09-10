@@ -43,6 +43,7 @@ from services.mender import MenderUnreachable, lookup_device
 from services.node_auth import mint_node_ref, mint_token, revoke_tokens
 from services.node_config import ConfigInvalid, validate_config
 from services.node_config_store import upsert_config
+from services.node_contact_store import delete_contact
 from services.node_pipeline import register_with_pipeline
 from services.node_rate_limits import Refusal, registration_limiter
 from services.node_refusals import REFUSAL_BODY, refusal_retry_after
@@ -235,10 +236,11 @@ async def register_node(
         # committed and takes the re-registration path.
         #
         # Any integrity violation is read as a lost race rather than only those
-        # two constraints, which is safe because the transaction writes five
-        # known rows and nothing else. A sixth write added here would want that
-        # revisited: it would be turned into a routine refusal rather than
-        # surfacing.
+        # two constraints, which is safe because the transaction's writes are
+        # known: five rows, plus the delete of the node's contact row on the
+        # reissue path, which has no dependents and so cannot violate a
+        # constraint. A write added here that could would want this revisited:
+        # it would be turned into a routine refusal rather than surfacing.
         await session.rollback()
         return _refuse()
 
@@ -295,6 +297,11 @@ async def _write_registration(
         # make a reflash the way to undo an operator's decision.
         node.board_model = request.board_model
         await revoke_tokens(session, request.node_id, reason="reflash")
+        # The contact details belonged to whoever set the board up last. A
+        # reflash can be a board changing hands, and a row kept across one names
+        # the wrong person to an operator reading it as current. The new owner's
+        # node reports its own on PUT /v1/nodes/contact, or nobody's is held.
+        await delete_contact(session, request.node_id)
 
     _apply_agreements(node, request.agreements)
     # The version the server holds, which is 1 only for a node it has not seen.
