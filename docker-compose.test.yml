@@ -65,6 +65,12 @@ services:
       # Anonymous admin, asked for explicitly since ClickUp 86cb49d29 took it
       # off RETINA_ENV. No OAuth is configured here either.
       - AUTH_ALLOW_ANONYMOUS_ADMIN=1
+      # Audience of this environment's Access application, on test-admin.retina.fm.
+      # Pinning it is what stops a token minted for one of the fleet's node
+      # applications being accepted here; the team domain they share is in the
+      # base compose file. Staging and production carry their own once their
+      # applications exist.
+      - CF_ACCESS_AUD=e5ff9de8d1ca5fbc62b38d102d92a1fc7d910d5f89ef388caf63c83e828493b3
       # The simulation subsystem, likewise asked for by name rather than
       # inherited from what this environment is called. This droplet is a
       # synthetic fleet and nothing else, so the ingest write path main.py gates
