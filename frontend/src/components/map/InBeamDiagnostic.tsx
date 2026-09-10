@@ -10,7 +10,7 @@ import { groundTruthKey } from "./constants";
       dashed red polyline from the node's RX position to the aircraft —
       one per (aircraft, node) pair — so the "missing link" is
       geometrically visible.  Reads detectionsRef as the recently-detected
-      oracle — a "hex|node_id" → ts map covering every detection shape
+      oracle, a "hex|node_ref" → ts map covering every detection shape
       (single-node and multinode), TTL-pruned so its grace period matches
       the spec (don't flag a detection that only just expired).  Thresholds
       are tightened to 0.9 × beam width and 0.95 × max range to avoid
@@ -19,7 +19,7 @@ import { groundTruthKey } from "./constants";
 const BEAM_WIDTH_FACTOR = 0.9;
 const MAX_RANGE_FACTOR = 0.95;
 
-const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundTruthRef, nodesByIdRef, smoothRef }) {
+const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundTruthRef, nodesByRefRef, smoothRef }) {
   const map = useMap();
   const polyMapRef = useRef(new Map()); // pairKey → L.polyline
 
@@ -27,13 +27,13 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundT
     const polyMap = polyMapRef.current;
 
     const tick = () => {
-      // "(hex, node_id) recently detected" map, maintained in the aircraft
+      // "(hex, node_ref) recently detected" map, maintained in the aircraft
       // feed. A present key means that node contributed a detection for that
       // aircraft within the grace window (ARC_TOTAL_LIFE_MS).
       const recentDetections = detectionsRef.current || {};
 
       const truth = groundTruthRef.current || {};
-      const nodes = nodesByIdRef?.current || {};
+      const nodes = nodesByRefRef?.current || {};
       const seen = new Set();
 
       const smooth = smoothRef?.current || {};
@@ -49,14 +49,14 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundT
       // geometry from the same anchor, so in-beam rays drawn from it agree
       // with the served arcs by construction.
       const nodeList = [];
-      for (const [nodeId, node] of Object.entries(nodes)) {
+      for (const [nodeRef, node] of Object.entries(nodes)) {
         const rxLat = node.rx_lat;
         const rxLon = node.rx_lon;
         const { beam_azimuth_deg: azimuth, beam_width_deg: beamWidth, max_range_km: maxRange } = node;
         if (rxLat == null || rxLon == null || azimuth == null || beamWidth == null || maxRange == null) continue;
         const reachKm = maxRange * MAX_RANGE_FACTOR;
         nodeList.push({
-          nodeId, rxLat, rxLon, azimuth, beamWidth, reachKm,
+          nodeRef, rxLat, rxLon, azimuth, beamWidth, reachKm,
           latPadDeg: reachKm / 111 + 0.01,
         });
       }
@@ -85,11 +85,11 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundT
           // Cheap box reject before any trig.
           if (Math.abs(beamLat - n.rxLat) > n.latPadDeg) continue;
           if (Math.abs(beamLon - n.rxLon) * kmPerDegLon > n.reachKm + 1) continue;
-          if (recentDetections[`${hex}|${n.nodeId}`] != null) continue;
+          if (recentDetections[`${hex}|${n.nodeRef}`] != null) continue;
 
           if (!isInBeam(n.rxLat, n.rxLon, n.azimuth, n.beamWidth * BEAM_WIDTH_FACTOR, n.reachKm, beamLat, beamLon)) continue;
 
-          const pairKey = `${hex}|${n.nodeId}`;
+          const pairKey = `${hex}|${n.nodeRef}`;
           seen.add(pairKey);
 
           const latLngs = [[n.rxLat, n.rxLon], [acLat, acLon]];
@@ -126,7 +126,7 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundT
       for (const line of polyMap.values()) line.remove();
       polyMap.clear();
     };
-  }, [map, detectionsRef, groundTruthRef, nodesByIdRef, smoothRef]);
+  }, [map, detectionsRef, groundTruthRef, nodesByRefRef, smoothRef]);
 
   return null;
 });

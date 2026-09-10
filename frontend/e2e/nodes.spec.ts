@@ -86,7 +86,7 @@ const PLACED_NODE_ID      = runNodeId("e2e-placed");
 // Full geographic config sent with BULK_B — used to verify config propagation into analytics.
 const BULK_B_CONFIG = {
   node_id: BULK_B_NODE_ID,
-  rx_lat: 33.94, rx_lon: -84.65, rx_alt_ft: 950,
+  rx_lat: 33.9, rx_lon: -84.6, rx_alt_ft: 950,
   tx_lat: 33.76, tx_lon: -84.33, tx_alt_ft: 1600,
   beam_width_deg: 45,
   max_range_km: 50,
@@ -523,20 +523,27 @@ describeUnlessProd("Node registration — main integration suite", () => {
       expect(analyticsBody).not.toBeNull();
     });
 
-    test("response root contains node_id matching the requested ID", () => {
-      expect(analyticsBody.node_id).toBe(REAL_NODE_ID);
+    test("response root contains node_ref matching the requested ID", () => {
+      // The route answers under the published identity, and a synthetic id
+      // publishes as itself, so the ref echoes back what was asked for. The
+      // private node_id is not on the wire at all.
+      expect(analyticsBody.node_ref).toBe(REAL_NODE_ID);
+      expect(analyticsBody).not.toHaveProperty("node_id");
     });
 
     test("metrics block is present with all expected keys", () => {
       const m = analyticsBody.metrics as Record<string, unknown>;
       expect(m).toBeDefined();
       for (const k of [
-        "node_id", "uptime_s", "total_frames", "total_detections",
+        "uptime_s", "total_frames", "total_detections",
         "avg_detections_per_frame", "avg_snr", "max_snr",
         "total_tracks", "geolocated_tracks", "track_quality",
       ]) {
         expect(m, `metrics missing key: ${k}`).toHaveProperty(k);
       }
+      // Scrubbed from every nested block: the entry is already named by ref at
+      // the root, so a node_id beside it would publish the mapping between them.
+      expect(m).not.toHaveProperty("node_id");
     });
 
     test("metrics.uptime_s is a non-negative number", () => {
@@ -556,9 +563,10 @@ describeUnlessProd("Node registration — main integration suite", () => {
     test("trust block is present with all expected keys and fresh-node values", () => {
       const t = analyticsBody.trust as Record<string, unknown>;
       expect(t).toBeDefined();
-      for (const k of ["node_id", "trust_score", "n_samples", "rms_delay_error_us", "rms_doppler_error_hz"]) {
+      for (const k of ["trust_score", "n_samples", "rms_delay_error_us", "rms_doppler_error_hz"]) {
         expect(t, `trust missing key: ${k}`).toHaveProperty(k);
       }
+      expect(t).not.toHaveProperty("node_id");
       // No ADS-B correlation samples yet for a freshly registered node
       expect(t.trust_score).toBe(0);
       expect(t.n_samples).toBe(0);
@@ -582,7 +590,7 @@ describeUnlessProd("Node registration — main integration suite", () => {
       const rx = da.rx as Record<string, unknown> | undefined;
       const fuzzed = ((rx?.location_uncertainty_km as number) ?? 0) > 0;
       const keys = [
-        "node_id", "rx", "tx", "beam_azimuth_deg", "beam_width_deg", "max_range_km",
+        "rx", "tx", "beam_azimuth_deg", "beam_width_deg", "max_range_km",
         "n_detections", "observed_delay_range_us", "observed_doppler_range_hz",
         "estimated_max_range_km",
       ];
@@ -590,6 +598,7 @@ describeUnlessProd("Node registration — main integration suite", () => {
       for (const k of keys) {
         expect(da, `detection_area missing key: ${k}`).toHaveProperty(k);
       }
+      expect(da).not.toHaveProperty("node_id");
       if (fuzzed) {
         // Redacted at the serialization edge: each entry pairs a real fix
         // with its distance from the TRUE receiver — a ranging circle that
@@ -651,9 +660,10 @@ describeUnlessProd("Node registration — main integration suite", () => {
     test("reputation block: initial reputation is 1.0, not blocked, no penalties", () => {
       const rep = analyticsBody.reputation as Record<string, unknown>;
       expect(rep).toBeDefined();
-      for (const k of ["node_id", "reputation", "blocked", "block_reason", "n_penalties", "recent_penalties"]) {
+      for (const k of ["reputation", "blocked", "block_reason", "n_penalties", "recent_penalties"]) {
         expect(rep, `reputation missing key: ${k}`).toHaveProperty(k);
       }
+      expect(rep).not.toHaveProperty("node_id");
       expect(rep.reputation).toBe(1);
       expect(rep.blocked).toBe(false);
       expect(rep.n_penalties).toBe(0);

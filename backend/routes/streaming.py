@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from core import state
 from core.auth import get_user_nodes
 from core.users import AUTH_BYPASS, read_user_from_token
-from services.tasks.aircraft_flush import filter_payload_to_nodes
+from services.tasks.aircraft_flush import filter_payload_to_nodes, published_bytes
 
 router = APIRouter()
 
@@ -63,7 +63,7 @@ async def websocket_aircraft(ws: WebSocket):
 @router.websocket("/ws/aircraft/live")
 async def websocket_aircraft_live(ws: WebSocket):
     """Real-node-only aircraft feed — excludes synthetic simulation nodes.
-    Used by map.retina.fm showing only radar3.retnode.com data.
+    Used by map.retina.fm, which shows live hardware only.
     """
     if not await _authenticate_ws(ws):
         return
@@ -114,7 +114,10 @@ async def websocket_aircraft_owner(ws: WebSocket):
     logging.info("WS owner client connected (%d nodes, %d total)", len(owned), len(state.ws_owner_clients))
     try:
         if state.latest_aircraft_json.get("aircraft"):
-            await ws.send_text(filter_payload_to_nodes(state.latest_aircraft_json, owned).decode())
+            # Filter the unredacted frame by owned node_id, then publish: the
+            # filter matches ids, so substitution cannot precede it.
+            snapshot = published_bytes(filter_payload_to_nodes(state.latest_aircraft_json, owned))
+            await ws.send_text(snapshot.decode())
         while True:
             await ws.receive_text()
     except WebSocketDisconnect:

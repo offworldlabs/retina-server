@@ -5,7 +5,13 @@ import { updateDetections } from "./detections";
 import { mergeTrailPositions } from "./trails";
 import { validLatLon } from "./geo";
 import type { RadarNode } from "../../types";
-import { usesRealOnlyFeed } from "../../utils/domains";
+import { hidesRealNodes, usesRealOnlyFeed } from "../../utils/domains";
+import { isSyntheticNode } from "../../utils/nodeKind";
+import {
+  fromSyntheticNode,
+  scrubToSyntheticNodes,
+  syntheticDetectingNodes,
+} from "./syntheticOnly";
 import { fetchMe, fetchMyNodes } from "../../api";
 
 /**
@@ -45,17 +51,17 @@ export function useAircraftFeed(ownerOnly = false) {
   const lastMsgRef = useRef(Date.now());
 
   // Detection arc accumulation buffer: key → ArcBufferEntry (see arcBuffer.ts:
-  // {hex, node_id, ambiguity_arc, delay_us, alt_baro, doppler_hz,
+  // {hex, node_ref, ambiguity_arc, delay_us, alt_baro, doppler_hz,
   // target_class, ts}).  Keyed by hex + node + measured delay (quantized to
   // 0.1 µs) so an unchanged measurement refreshes one entry's fade clock
   // rather than stacking parallel strokes.  Entries persist for
   // ARC_TOTAL_LIFE_MS after last refresh, enabling fade-out per detection.
   const arcsBufferRef = useRef({});
 
-  // Detection-presence oracle: "hex|node_id" → ts of last time that node
+  // Detection-presence oracle: "hex|node_ref" → ts of last time that node
   // contributed to a track for that aircraft.  Populated from EVERY detection
   // shape (single-node arc, single-node no-arc, and multinode via
-  // contributing_node_ids), so it is a complete "is this aircraft currently
+  // contributing_node_refs), so it is a complete "is this aircraft currently
   // detected by this node" record — unlike the arc buffer, which only holds
   // arc-bearing single-node detections.  TTL-pruned on the same grace window
   // as the arc buffer (don't flag a detection that only just expired).
@@ -107,7 +113,24 @@ export function useAircraftFeed(ownerOnly = false) {
 
   // Shared history + state update
   const ingestAircraft = useCallback(
-    (newAircraft, groundTruth, groundTruthMeta, anomalyHexes, detectingNodes, detectionArcs) => {
+    (rawAircraft, groundTruth, groundTruthMeta, anomalyHexes, rawDetectingNodes, rawArcs) => {
+      // A public demo reads the unfiltered feed, because the real-only one
+      // carries no synthetic fleet to show, so the real nodes come off here
+      // instead. Everything node-attributed goes together or the map contradicts
+      // itself: an aircraft kept without its node is a detection nothing on the
+      // map made, and the detail panel prints detecting_nodes by name. Each kept
+      // entry is then scrubbed as well, because one can name both fleets at once
+      // (see syntheticOnly.ts).
+      const newAircraft = hidesRealNodes
+        ? (rawAircraft || []).filter(fromSyntheticNode).map(scrubToSyntheticNodes)
+        : rawAircraft;
+      const detectionArcs = hidesRealNodes
+        ? (rawArcs || []).filter(fromSyntheticNode).map(scrubToSyntheticNodes)
+        : rawArcs;
+      const detectingNodes = hidesRealNodes
+        ? syntheticDetectingNodes(rawDetectingNodes)
+        : rawDetectingNodes;
+
       historyRef.current.push({ aircraft: newAircraft, ts: Date.now() });
       if (historyRef.current.length > MAX_HISTORY) historyRef.current.shift();
 
@@ -315,19 +338,18 @@ export function useNodes() {
         const data = await res.json();
         if (controller.signal.aborted) return;
         const nodeList: RadarNode[] = [];
-        for (const [id, info] of Object.entries(data.nodes || {})) {
-          // Mirror backend's is_synthetic_node() prefix list. The backend
-          // already strips these from real_only feeds, but the analytics
-          // endpoint without real_only=true returns them. Also catch any
-          // leftover e2e/test-leak via a defensive client filter.
-          if (
-            usesRealOnlyFeed && (
-              id.startsWith("synth-") ||
-              id.startsWith("e2e-") ||
-              id.startsWith("test-") ||
-              id.startsWith("realnode-")
-            )
-          ) continue;
+        // The analytics nodes map is keyed on node_ref; the values carry no
+        // identifier of their own.
+        for (const [ref, info] of Object.entries(data.nodes || {})) {
+          // The backend already strips synthetic nodes from real_only feeds;
+          // this is defence in depth against a leftover leak, decided from
+          // the server's own is_synthetic flag rather than parsed from the
+          // identifier. See utils/nodeKind.ts.
+          if (usesRealOnlyFeed && isSyntheticNode(info as { is_synthetic?: boolean }, ref)) continue;
+          // The mirror, and the only filter standing between a real node and a
+          // public demo: this listing has no real_only-style parameter for
+          // "synthetic only", so the surface has to drop them itself.
+          if (hidesRealNodes && !isSyntheticNode(info as { is_synthetic?: boolean }, ref)) continue;
           const da = (info as any).detection_area;
           const ec = (info as any).empirical_coverage;
           if (da) {
@@ -344,7 +366,7 @@ export function useNodes() {
             const rxLon = da.rx.lon;
             if (Math.abs(rxLat) < 1e-6 && Math.abs(rxLon) < 1e-6) continue;
             nodeList.push({
-              node_id: id,
+              node_ref: ref,
               // Already privacy-fuzzed by the backend; used as served. The
               // backend builds its published arcs around this same anchor, so
               // a client-side rebuild lands on the backend's curve.
@@ -373,6 +395,7 @@ export function useNodes() {
               max_bistatic_range_km: da.max_bistatic_range_km ?? null,
               empirical_polygon: ec?.polygon ?? null,
               empirical_n_points: ec?.n_points ?? 0,
+              is_synthetic: isSyntheticNode(info as { is_synthetic?: boolean }, ref),
             });
           }
         }
@@ -394,12 +417,12 @@ export function useNodes() {
 
 /**
  * Resolves the current user (via the shared auth_token cookie) and the set of
- * node ids they own. `user` is null when not authenticated. Used to gate the
+ * node refs they own. `user` is null when not authenticated. Used to gate the
  * node-owner view on the testmap.
  */
 export function useAuth() {
   const [user, setUser] = useState(null);
-  const [ownedNodeIds, setOwnedNodeIds] = useState([]);
+  const [ownedNodeRefs, setOwnedNodeRefs] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -410,12 +433,16 @@ export function useAuth() {
       if (me && me.email) {
         setUser(me);
         const myNodes = await fetchMyNodes();
-        if (!cancelled) setOwnedNodeIds((myNodes || []).map((n) => n.node_id));
+        // /api/auth/me/nodes carries both identifiers; take the ref, which is
+        // the key space the analytics node map and the aircraft feed use. It
+        // is null for an owned node with no registry row, and a null in this
+        // list counts as a node the owner has on the map.
+        if (!cancelled) setOwnedNodeRefs((myNodes || []).map((n) => n.node_ref).filter(Boolean));
       }
       if (!cancelled) setLoading(false);
     })();
     return () => { cancelled = true; };
   }, []);
 
-  return { user, ownedNodeIds, loading };
+  return { user, ownedNodeRefs, loading };
 }

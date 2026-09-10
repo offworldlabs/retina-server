@@ -12,13 +12,13 @@ os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
 from core import state  # noqa: E402
 from services.tasks.aircraft_flush import (  # noqa: E402
-    _build_real_only_payload,
+    _real_only_dict,
     broadcast_aircraft,
     filter_payload_to_nodes,
 )
 
 
-class TestBuildRealOnlyPayload:
+class TestRealOnlyDict:
     def test_filters_to_real_nodes(self, monkeypatch):
         # Two nodes: one real, one synthetic.
         monkeypatch.setattr(
@@ -40,7 +40,7 @@ class TestBuildRealOnlyPayload:
                 {"id": "arc2", "node_id": "synth1"},
             ],
         }
-        out = orjson.loads(_build_real_only_payload(data))
+        out = _real_only_dict(data)
         assert [a["hex"] for a in out["aircraft"]] == ["A1"]
         assert [a["id"] for a in out["detection_arcs"]] == ["arc1"]
         assert out["messages"] == 1
@@ -73,7 +73,7 @@ class TestBuildRealOnlyPayload:
             ],
             "detection_arcs": [],
         }
-        out = orjson.loads(_build_real_only_payload(data))
+        out = _real_only_dict(data)
         hexes = [a["hex"] for a in out["aircraft"]]
         assert "MN1" in hexes
         assert "MN2" not in hexes
@@ -92,14 +92,14 @@ class TestFilterPayloadToNodes:
                 {"id": "arc2", "node_id": "theirs"},
             ],
         }
-        out = orjson.loads(filter_payload_to_nodes(data, {"mine"}))
+        out = filter_payload_to_nodes(data, {"mine"})
         assert [a["hex"] for a in out["aircraft"]] == ["A1"]
         assert [a["id"] for a in out["detection_arcs"]] == ["arc1"]
         assert out["messages"] == 1
 
     def test_empty_node_set_yields_nothing(self):
         data = {"now": 1.0, "aircraft": [{"hex": "A1", "node_id": "mine"}], "detection_arcs": []}
-        out = orjson.loads(filter_payload_to_nodes(data, set()))
+        out = filter_payload_to_nodes(data, set())
         assert out["aircraft"] == []
         assert out["messages"] == 0
 
@@ -116,7 +116,7 @@ class TestFilterPayloadToNodes:
             ],
             "detection_arcs": [],
         }
-        out = orjson.loads(filter_payload_to_nodes(data, {"mine"}))
+        out = filter_payload_to_nodes(data, {"mine"})
         assert [a["hex"] for a in out["aircraft"]] == ["MN1"]
 
 
@@ -137,7 +137,10 @@ class _FakeWS:
 
 class TestBroadcastAircraft:
     async def test_updates_state_and_sends_to_clients(self, monkeypatch):
-        monkeypatch.setattr(state, "connected_nodes", {"n1": {"is_synthetic": False}})
+        # Synthetic-prefixed id: it is published as itself, so the served bytes
+        # differ from this frame only in the field name.  An unregistered real
+        # id has no node_ref and is dropped at the publication boundary.
+        monkeypatch.setattr(state, "connected_nodes", {"test-n1": {"is_synthetic": False}})
         state.ws_clients.clear()
         state.ws_live_clients.clear()
 
@@ -148,14 +151,14 @@ class TestBroadcastAircraft:
 
         data = {
             "now": 1.0,
-            "aircraft": [{"hex": "X1", "node_id": "n1"}],
+            "aircraft": [{"hex": "X1", "node_id": "test-n1"}],
             "detection_arcs": [],
             "ground_truth": {},
         }
-        payload_bytes = orjson.dumps(data)
+        payload_bytes = orjson.dumps({**data, "aircraft": [{"hex": "X1", "node_ref": "test-n1"}]})
 
         try:
-            await broadcast_aircraft(data, payload_bytes)
+            await broadcast_aircraft(data)
         finally:
             state.ws_clients.discard(real_ws)
             state.ws_live_clients.discard(live_ws)
@@ -174,10 +177,7 @@ class TestBroadcastAircraft:
         broken = _FakeWS(fail=True)
         state.ws_live_clients.add(broken)
         try:
-            await broadcast_aircraft(
-                {"now": 1.0, "aircraft": [], "detection_arcs": [], "ground_truth": {}},
-                b"{}",
-            )
+            await broadcast_aircraft({"now": 1.0, "aircraft": [], "detection_arcs": [], "ground_truth": {}})
         finally:
             # Broken socket should have been removed from the set
             assert broken not in state.ws_live_clients
@@ -190,18 +190,20 @@ class TestBroadcastAircraft:
         state.ws_owner_clients.clear()
 
         owner_ws = _FakeWS()
-        state.ws_owner_clients[owner_ws] = {"mine"}
+        # Synthetic-prefixed ids for the same reason as above: this is about
+        # which entries the owner filter keeps, not about node_ref resolution.
+        state.ws_owner_clients[owner_ws] = {"test-mine"}
         data = {
             "now": 1.0,
             "aircraft": [
-                {"hex": "MINE", "node_id": "mine"},
-                {"hex": "THEIRS", "node_id": "theirs"},
+                {"hex": "MINE", "node_id": "test-mine"},
+                {"hex": "THEIRS", "node_id": "test-theirs"},
             ],
             "detection_arcs": [],
             "ground_truth": {},
         }
         try:
-            await broadcast_aircraft(data, orjson.dumps(data))
+            await broadcast_aircraft(data)
         finally:
             state.ws_owner_clients.pop(owner_ws, None)
 
@@ -218,10 +220,7 @@ class TestBroadcastAircraft:
         broken = _FakeWS(fail=True)
         state.ws_owner_clients[broken] = {"mine"}
         try:
-            await broadcast_aircraft(
-                {"now": 1.0, "aircraft": [], "detection_arcs": [], "ground_truth": {}},
-                b"{}",
-            )
+            await broadcast_aircraft({"now": 1.0, "aircraft": [], "detection_arcs": [], "ground_truth": {}})
         finally:
             assert broken not in state.ws_owner_clients
             assert broken.closed
@@ -242,7 +241,7 @@ class TestBroadcastAircraft:
             },
         }
         try:
-            await broadcast_aircraft(data, orjson.dumps(data))
+            await broadcast_aircraft(data)
         finally:
             state.ws_clients.discard(sink)
 

@@ -281,7 +281,11 @@ async def radar_status():
             _default_pipeline.config.get("node_id"),
         )
     return {
-        "node_id": _default_pipeline.node_id,
+        # Always null: the default pipeline is a process-wide fallback with no
+        # registry row, so it has no ref, and its node_id must not stand in for
+        # one here.  The key stays present so a consumer reads an explicit null
+        # rather than a missing field.
+        "node_ref": None,
         "total_tracks": len(_default_pipeline.tracker.tracks),
         "geolocated_tracks": len(_default_pipeline.geolocated_tracks),
         "multinode_tracks": len(state.multinode_tracks),

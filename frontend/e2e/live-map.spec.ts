@@ -158,6 +158,43 @@ test.describe("Live Map — aircraft list panel", { tag: "@live" }, () => {
   });
 });
 
+// What a node may be called on THIS surface: a synthetic fleet id, published
+// unchanged because it names nothing private. A real node reaches the browser
+// as a published node_ref (nde + 12), so that is what a leak looks like here;
+// the private `ret` + 8 hex id no longer reaches the wire at all, and asserting
+// against it would assert nothing.
+const SYNTHETIC_IDENTITY = /^(?:synth|e2e|test|realnode)-\S+$/;
+
+test.describe("Live Map — node markers", { tag: "@live" }, () => {
+  test("every node marker is a synthetic one", async ({ page }) => {
+    await page.goto(BASE);
+    await waitForLive(page);
+
+    // `.node-marker` is the divIcon NodeMarkersLayer gives a NON-synthetic
+    // node, so a single hit is a real node on a public demo.
+    await expect(page.locator(".node-marker-synthetic").first()).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.locator(".node-marker")).toHaveCount(0);
+  });
+
+  test("node popup names a synthetic fleet id, not a real node's ref", async ({ page }) => {
+    await page.goto(BASE);
+    await waitForLive(page);
+
+    const marker = page.locator(".node-marker-synthetic").first();
+    await expect(marker).toBeVisible({ timeout: 30_000 });
+    // Aircraft icons sit in the pane above and can briefly cover a 5 px node
+    // disc; they move, so Playwright's actionability retry clears it.
+    await marker.click();
+
+    const identity = page.locator(".leaflet-popup-content strong").first();
+    await expect(identity).toBeVisible({ timeout: 5_000 });
+    const name = ((await identity.textContent()) ?? "").trim();
+    expect(name, `node popup identity: ${name}`).toMatch(SYNTHETIC_IDENTITY);
+  });
+});
+
 test.describe("Live Map — toolbar toggles", () => {
   test("Coverage toggle adds/removes active class", async ({ page }) => {
     await page.goto(BASE);

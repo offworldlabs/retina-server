@@ -213,7 +213,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
         {isAdsbSingleNode && (
           <div className="detail-section">
             <div className="detail-section-title">Claimed detection</div>
-            <Field label="Claiming node" value={ac.node_id || "—"} />
+            <Field label="Claiming node" value={ac.node_ref || "—"} />
             <Field
               label="ADS-B fix age"
               value={ac.adsb_fix_age_s != null ? `${ac.adsb_fix_age_s}s` : "—"}

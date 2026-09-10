@@ -25,7 +25,9 @@ from services.geo import bearing_deg, bistatic_delay_us, haversine_km, node_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
 from services.node_config import position_status
+from services.node_refs import public_analytics, public_identity, public_name
 from services.node_sites import log_colocation_audit
+from services.public_geometry import without_receiver_geometry
 from services.public_location import (
     fuzz_enabled,
     location_uncertainty_km,
@@ -332,19 +334,41 @@ def _refresh_analytics_and_nodes():
     # public_summaries drops it before public_node_summaries rewrites what is
     # left.  Two separate promises, applied in the order they compose — there
     # is nothing to translate for a node that is not being published.
-    analytics_data = {
-        "nodes": public_node_summaries(public_summaries(state.node_analytics.get_all_summaries())),
-        "cross_node": public_cross_node(state.node_analytics.get_cross_node_analysis()),
+    # public_analytics then keys both variants on the published handle and takes
+    # the private ids out of the values; the node_id-keyed map is kept alongside
+    # because the real-only filter below matches against it.  It is handed the
+    # unfiltered fleet because cross_node still names the nodes public_summaries
+    # has just dropped.
+    _fleet = state.node_analytics.get_all_summaries()
+    _summaries = public_node_summaries(public_summaries(_fleet))
+
+    # is_synthetic goes on here, a copy per entry, while _summaries is still
+    # keyed on the true node_id: public_analytics re-keys the map on the
+    # published ref below, and is_synthetic_node is prefix-based, so deriving
+    # this after that point would test the ref's prefix instead of the node's
+    # and every real node would come back False. The same snapshot answers
+    # the real-only split just below it, so the two cannot disagree.
+    with state.connected_nodes_lock:
+        _connected_snapshot = dict(state.connected_nodes)
+    real_node_ids = {nid for nid, info in _connected_snapshot.items() if not info.get("is_synthetic", True)}
+    _summaries = {
+        nid: {**summary, "is_synthetic": _connected_snapshot.get(nid, {}).get("is_synthetic", is_synthetic_node(nid))}
+        for nid, summary in _summaries.items()
     }
+
+    _cross_node = public_cross_node(state.node_analytics.get_cross_node_analysis())
+    analytics_data = public_analytics(_summaries, _cross_node, _fleet)
     state.latest_analytics_bytes = orjson.dumps(analytics_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
-    # Real-only variant: strip synthetic nodes so map.retina.fm never receives them
-    with state.connected_nodes_lock:
-        real_node_ids = {nid for nid, info in state.connected_nodes.items() if not info.get("is_synthetic", True)}
-    analytics_real_data = {
-        "nodes": {k: v for k, v in analytics_data["nodes"].items() if k in real_node_ids},
-        "cross_node": analytics_data["cross_node"],
-    }
+    # Real-only variant: strip synthetic nodes so map.retina.fm never receives them.
+    # Intersect first, publish second.  real_node_ids comes from
+    # state.connected_nodes, which is keyed on node_id, so an intersection
+    # against the ref-keyed map would match nothing and empty the variant.
+    analytics_real_data = public_analytics(
+        {k: v for k, v in _summaries.items() if k in real_node_ids},
+        _cross_node,
+        _fleet,
+    )
     state.latest_analytics_real_bytes = orjson.dumps(analytics_real_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
     # Nodes — snapshot once to avoid RuntimeError from concurrent TCP handler mutations
@@ -364,13 +388,26 @@ def _refresh_analytics_and_nodes():
     # down, and those are internal bookkeeping that must keep seeing the whole
     # fleet — a private node whose pipeline stopped being evicted would leak a
     # pipeline per node for the process lifetime.
+    # Carries both identifiers: the ref keys the published entry, the node_id
+    # still keys everything the entry is built from.  A node with no ref is
+    # dropped here for the same reason a private one is, so the counts, taken
+    # from this same list, stay consistent with what is listed.
     _private = private_node_ids()
-    _published_nodes = [(nid, info) for nid, info in _nodes_snapshot if nid not in _private]
+    _published_nodes = [
+        (ref, nid, info) for nid, info in _nodes_snapshot if nid not in _private and (ref := public_identity(nid))
+    ]
+    # The v1 config schema carries no `name` and forbids extra keys, but
+    # canonical_config passes unknown keys through unvalidated, so a node
+    # connecting over TCP supplies one regardless, and it goes out beside the
+    # ref standing in for its id.  Wider than the registry for the same reason
+    # public_analytics takes the unfiltered fleet: a connected node with no row
+    # is still a node whose id must not appear in someone else's name.
+    _fleet_ids = {nid for nid, _ in _nodes_snapshot}
     nodes_data = {
         "nodes": {
-            nid: {
+            ref: {
                 "status": info.get("status"),
-                "name": info.get("config", {}).get("name", nid),
+                "name": public_name(info.get("config", {}).get("name"), ref, _fleet_ids),
                 "config_hash": info.get("config_hash"),
                 "last_heartbeat": info.get("last_heartbeat"),
                 "peer": info.get("peer"),
@@ -382,21 +419,37 @@ def _refresh_analytics_and_nodes():
                     or info.get("config", {}).get("frequency")
                 ),
                 "sample_rate": (info.get("config", {}).get("Fs") or info.get("config", {}).get("fs_hz")),
+                # node_id, never ref: the fuzz offset is HMAC-keyed on it, so
+                # re-keying moves every receiver in the fleet to a new
+                # published position.
                 "location": _public_location_block(nid, info.get("config", {})),
                 "position_status": position_status(info.get("config", {})),
             }
-            for nid, info in _published_nodes
+            for ref, nid, info in _published_nodes
         },
-        "connected": sum(1 for _, n in _published_nodes if n.get("status") not in ("disconnected",)),
+        "connected": sum(1 for _, _, n in _published_nodes if n.get("status") not in ("disconnected",)),
         "total": len(_published_nodes),
-        "synthetic": sum(1 for _, n in _published_nodes if n.get("is_synthetic")),
+        "synthetic": sum(1 for _, _, n in _published_nodes if n.get("is_synthetic")),
     }
     state.latest_nodes_bytes = orjson.dumps(nodes_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
-    # Overlaps — only include zones with actual overlap to keep payload small
+    # Overlaps: only include zones with actual overlap to keep payload small.
+    # A zone names both of its nodes, so it survives only if both resolve: half
+    # a pair describes a baseline between a known node and an unnamed one.
+    _overlaps = []
+    for _z in state.node_associator.get_overlap_summary():
+        if not _z["has_overlap"]:
+            continue
+        _a, _b = public_identity(_z["node_a"]), public_identity(_z["node_b"])
+        if _a is None or _b is None:
+            continue
+        _overlaps.append({**_z, "node_a": _a, "node_b": _b})
+    # Keys snapshotted before resolving them: a ref lookup can block on a cache
+    # refresh, and the associator registers nodes from another thread.
+    _registered = list(state.node_associator.node_geometries.keys())
     overlaps_data = {
-        "overlaps": [z for z in state.node_associator.get_overlap_summary() if z["has_overlap"]],
-        "registered_nodes": list(state.node_associator.node_geometries.keys()),
+        "overlaps": _overlaps,
+        "registered_nodes": [r for r in (public_identity(n) for n in _registered) if r],
     }
     state.latest_overlaps_bytes = orjson.dumps(overlaps_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
@@ -1752,7 +1805,13 @@ def _refresh_mlat_verification():
             "tracks": sorted(unmatched, key=lambda x: x.get("nearest_truth_km") or 999)[:50],
         },
     }
-    state.latest_mlat_verification_bytes = orjson.dumps(result, option=orjson.OPT_SERIALIZE_NUMPY)
+    # /api/test/mlat-verification serves these bytes as they are, to anyone, so
+    # the withholding happens here rather than at the route.  The walk copies,
+    # so `matches` keeps max_bistatic_angle_deg for the rolling sample buffer
+    # below, which the good-geometry split reads and nothing publishes.
+    state.latest_mlat_verification_bytes = orjson.dumps(
+        without_receiver_geometry(result), option=orjson.OPT_SERIALIZE_NUMPY
+    )
 
 
 def _ensure_custody_data():

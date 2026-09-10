@@ -28,9 +28,14 @@ export default function NodeManagementPage() {
   if (loading) return <div className="empty-state">Loading…</div>;
 
   const rawSummaries = analytics?.nodes || {};
-  const summaries = Array.isArray(rawSummaries) ? rawSummaries : Object.values(rawSummaries);
+  // Keyed on node_ref, the same key space `nodes` (built above) uses; summary
+  // values no longer carry node_id to key off instead.
   const summaryMap = {};
-  summaries.forEach((s) => { summaryMap[s.node_id] = s; });
+  if (Array.isArray(rawSummaries)) {
+    rawSummaries.forEach((s) => { summaryMap[s.node_ref] = s; });
+  } else {
+    Object.entries(rawSummaries).forEach(([ref, s]) => { summaryMap[ref] = s; });
+  }
 
   const filtered = search
     ? nodes.filter((n) => ((n.node_id || n.id || n.name || "")).toLowerCase().includes(search.toLowerCase()))

@@ -101,7 +101,8 @@ mirrored frames and nothing else. It logs `detection mirror failing` on the
 transition and once a minute after that, and raises a `detection_mirror` admin
 event on each transition. Silence in the admin event log with frames still
 arriving on production means it is working; confirm it positively by checking
-that the real node ids appear in the test droplet's `/api/radar/analytics`.
+that the real nodes appear in the test droplet's `/api/radar/analytics`, which
+names them by `node_ref` rather than by node id.
 
 Real receiver and transmitter geometry now lands on a droplet running
 `AUTH_ALLOW_ANONYMOUS_ADMIN=1`.
@@ -331,8 +332,10 @@ curl -sk https://localhost/api/radar/nodes | jq '.nodes | keys'
 ```
 
 ```bash
-NODE_ID=ret0123abcd; curl -sk "https://localhost/api/test/node/$NODE_ID/verification" | jq '{n_tracks, n_matched, position}'
+NODE_REF=nde0123abcdef; curl -sk "https://localhost/api/test/node/$NODE_REF/verification" | jq '{n_tracks, n_matched, position}'
 ```
+
+Public routes address a node by its `node_ref`, which is the key the first command prints; the private `node_id` does not resolve on them.
 
 A node missing from the first list has not registered, or has no active configuration. An invalid one is refused at the config PUT with a 4xx naming the offending field (`services/node_config.py`), so it never reaches this list to be missing from.
 
@@ -404,10 +407,11 @@ No immediate action required. Watch `solver_queue_pct` over the next few minutes
 **Trigger:** Active connected nodes < 80% of peak since startup (and peak > 10).  
 **What it means:** A significant fraction of the fleet went offline unexpectedly.
 
-**Check which nodes are gone:**
+**Check which nodes are gone:** the payload is `{"nodes": {node_ref: {…}}, …}`,
+so the identity is the key and a disconnected node is named by its ref.
 ```bash
 curl -sk https://localhost/api/radar/nodes | python3 -c \
-  "import sys,json; nodes=json.load(sys.stdin); [print(n['node_id'], n['status']) for n in nodes if n['status']=='disconnected']"
+  "import sys,json; nodes=json.load(sys.stdin)['nodes']; [print(r, n['status']) for r, n in nodes.items() if n['status']=='disconnected']"
 ```
 
 **Common causes:**
@@ -611,6 +615,35 @@ curl -sk https://localhost/api/health
 
 > **Always `git push` before deploying.** `git pull` on the server does nothing if the commit isn't pushed.
 
+### Which connected nodes have no public handle
+Every public surface names a node by its `node_ref`, and a node whose registry
+row is missing or carries no ref is dropped from all of them rather than
+published under its `node_id`. This asks, for each connected non-synthetic
+node, whether such a row exists. It is a database question, not an API one:
+`/api/radar/nodes` serves only what already resolves, so it can never report
+what is missing.
+
+Run it before a deploy that moves a surface into ref space, where the answer
+must be "none" or those nodes vanish from the map:
+```bash
+cd /opt/retina-server && docker compose exec -T server python3 - <<'PY'
+import json, sqlite3, urllib.request
+
+fleet = json.load(urllib.request.urlopen("http://localhost:8000/api/radar/nodes"))["nodes"]
+# Keyed on node_id on a server that predates the migration and on node_ref
+# after it, so `have` holds both columns of every row that carries a ref and a
+# listing in either key space is answered against the same set.
+ids = {k for k, v in fleet.items() if not v.get("is_synthetic")}
+db = sqlite3.connect("file:/app/backend/data/users.db?mode=ro", uri=True)
+rows = db.execute("SELECT node_id, node_ref FROM nodes WHERE node_ref IS NOT NULL AND node_ref != ''")
+have = {col for row in rows for col in row}
+print(f"{len(ids & have)} of {len(ids)} connected real nodes have a node_ref")
+print("no handle:", sorted(ids - have) or "none")
+PY
+```
+
+Anything listed needs a `nodes` row with a ref minted for it before the deploy.
+
 ### Restart without deploying
 ```bash
 cd /opt/retina-server && docker compose restart
@@ -691,8 +724,8 @@ summarized per node in `/api/radar/analytics` (`empirical_coverage.fov`:
 `n_pos`, `bins_observed/prior/closed`, `max_limit_km`). Sanity rule for
 **synthetic** nodes: open bins must fit the 42° wedge — `bins_observed`
 persistently above ~12 means a calibration leak, not real coverage (the
-simulator only generates detections in-wedge). Real nodes (radar3/radar3a)
-legitimately learn near-omni.
+simulator only generates detections in-wedge). Real nodes legitimately learn
+near-omni.
 
 To force a fleet-wide relearn (e.g. after a calibration-semantics change):
 bump `CALIBRATION_SCHEMA` in

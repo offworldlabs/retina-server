@@ -138,10 +138,25 @@ class TestMyNodes:
         try:
             nodes = client.get("/api/auth/me/nodes").json()
             node = next(n for n in nodes if n["node_id"] == "field-check-node")
-            for field in ("node_id", "name", "status", "is_synthetic", "position_status"):
+            for field in ("node_id", "node_ref", "name", "status", "is_synthetic", "position_status"):
                 assert field in node, f"Missing field: {field}"
         finally:
             asyncio.run(set_node_owner("field-check-node", None))
+
+    def test_an_owned_node_carries_the_ref_the_public_surfaces_key_on(self, client):
+        """Authenticated and scoped to the owner, so node_id stays; the ref
+        rides along so a consumer can join this list with a public one."""
+        from core.auth import set_node_owner
+        from core.users import ANONYMOUS_USER
+
+        node_id = "test-ref-join-node"  # synthetic: publishes under its own id
+        asyncio.run(set_node_owner(node_id, ANONYMOUS_USER["id"]))
+        try:
+            nodes = client.get("/api/auth/me/nodes").json()
+            node = next(n for n in nodes if n["node_id"] == node_id)
+            assert node["node_ref"] == node_id
+        finally:
+            asyncio.run(set_node_owner(node_id, None))
 
     def test_my_nodes_entry_carries_position_status_for_a_private_node(self, client):
         """A private node is filtered out of /api/radar/nodes entirely, so

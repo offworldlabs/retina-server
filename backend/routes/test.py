@@ -18,6 +18,8 @@ from services import dark_follow, known_claiming, track_filter
 from services.frame_processor import resolve_ground_truth_hex
 from services.geo import haversine_km
 from services.id_utils import is_transponder_hex, normalize_hex_key
+from services.node_refs import id_for_identity, public_records
+from services.public_geometry import without_receiver_geometry
 from services.public_location import fuzz_enabled, public_latlon, translate_polygon
 from services.tasks import solver as solver_mod
 
@@ -725,13 +727,27 @@ def _mlat_verification_summary() -> dict:
 # ── Per-node solver verification ──────────────────────────────────────────────
 
 
-@router.get("/api/test/node/{node_id}/verification")
-async def node_verification(node_id: str):
-    """Return pre-computed solver-vs-ADS-B verification stats for one node."""
-    return Response(
-        content=state.latest_node_verification_bytes.get(node_id, b"{}"),
-        media_type="application/json",
-    )
+@router.get("/api/test/node/{node_ref}/verification")
+async def node_verification(node_ref: str):
+    """Return pre-computed solver-vs-ADS-B verification stats for one node.
+
+    Unauthenticated, so it is addressed and answered in published identities: a
+    ref that resolves to nothing gets the empty body an unknown node already
+    gets, and the payload names the node by the ref rather than by the id the
+    refresh task keyed it under.
+
+    Everything in a track entry is measured from this one node's true receiver,
+    so the entries are served node-scoped (services/public_geometry.py): the
+    per-track delays and the node's own solve position go, the errors beside
+    them stay.  The store keeps the whole record for an authenticated surface.
+    """
+    node_id = id_for_identity(node_ref)
+    raw = state.latest_node_verification_bytes.get(node_id, b"{}") if node_id else b"{}"
+    payload = without_receiver_geometry(orjson.loads(raw), node_scoped=True)
+    if "node_id" in payload:
+        payload = {k: v for k, v in payload.items() if k != "node_id"}
+        payload["node_ref"] = node_ref
+    return Response(content=orjson.dumps(payload), media_type="application/json")
 
 
 @router.get("/api/test/mlat-verification")
@@ -834,6 +850,24 @@ def _cap_per_lane(records: list[dict], limit: int) -> list[dict]:
     return kept
 
 
+def _published_records(records) -> list[dict]:
+    """Solve records as this unauthenticated route serves them.
+
+    Withhold the geometry, then republish the identities, in that order: the
+    withheld fields sit beside the node id they were measured for, and one of
+    them (`foreign_node_ids`) is an identity field as well as a measurement, so
+    it has to go before the identity pass renames it.
+
+    Both passes are structural (services/public_geometry.py for the geometry,
+    services/node_refs.public_records for the identities) because these
+    records are written by a dozen solver call sites under whatever keys each
+    one chose.  One missed identity key would publish a raw id beside the
+    adsb_hex the aircraft feed carries against contributing_node_refs, which
+    recovers the mapping for the whole fleet from two anonymous requests.
+    """
+    return public_records(without_receiver_geometry(r) for r in records)
+
+
 @router.get("/api/test/mlat-history")
 async def mlat_history(
     hex: str | None = None,
@@ -868,6 +902,11 @@ async def mlat_history(
 
     ``window_effective_minutes`` is how much of the requested window the
     stores actually hold — below ``window_minutes`` the answer is truncated.
+
+    Unauthenticated, so every record list below is served in published
+    identities and without the receiver-relative geometry; the counts beside
+    them are taken from the stores and so are unaffected by a record dropped
+    for naming a node with no handle.  See _published_records.
     """
     if lane not in ("all", *_LANES):
         return Response(
@@ -898,7 +937,7 @@ async def mlat_history(
             "lane": lane,
             "lane_counts": {ln: sum(1 for s in skips if s["lane"] == ln) for ln in _LANES},
             "n_records": len(skips),
-            "records": skips[:limit],
+            "records": _published_records(skips[:limit]),
         }
         return Response(content=orjson.dumps(payload), media_type="application/json")
 
@@ -921,7 +960,7 @@ async def mlat_history(
             # window actually held.
             "lane_counts": lane_counts,
             "n_records": len(records),
-            "records": _cap_per_lane(records, limit),
+            "records": _published_records(_cap_per_lane(records, limit)),
         }
         return Response(content=orjson.dumps(payload), media_type="application/json")
 
@@ -952,14 +991,14 @@ async def mlat_history(
         "lane": lane,
         "lane_counts": lane_counts,
         "n_solves": len(solves),
-        "solves": solves[:500],
+        "solves": _published_records(solves[:500]),
         "rejects_nearby": {
             "n": len(rejects_nearby),
             "by_outcome": {
                 o: sum(1 for r in rejects_nearby if r["outcome"] == o)
                 for o in sorted({r["outcome"] for r in rejects_nearby})
             },
-            "records": rejects_nearby[:200],
+            "records": _published_records(rejects_nearby[:200]),
         },
     }
     return Response(content=orjson.dumps(payload), media_type="application/json")
@@ -1695,13 +1734,15 @@ async def mlat_accuracy():
     )
 
 
-@router.get("/api/test/node/{node_id}/detection-range")
-async def node_detection_range(node_id: str):
+@router.get("/api/test/node/{node_ref}/detection-range")
+async def node_detection_range(node_ref: str):
     """Return one node's empirical detection range and coverage polygon.
 
-    Unauthenticated, so the receiver geometry here is the published geometry:
-    ``rx`` is the fuzzed coordinate and the polygon is translated rigidly by
-    the same offset, exactly as on /api/radar/analytics.
+    Unauthenticated, so both the identity and the geometry are the published
+    ones: the node is addressed and named by its ref, an unresolvable ref gets
+    the same answer as an unregistered node, ``rx`` is the fuzzed coordinate
+    and the polygon is translated rigidly by the same offset, exactly as on
+    /api/radar/analytics.
 
     ``furthest_detections`` used to ride along and no longer does.  Each entry
     was a real aircraft's lat/lon together with its distance from the true
@@ -1710,15 +1751,17 @@ async def node_detection_range(node_id: str):
     sharper disclosure than the position field it sat next to, and no caller
     (frontend, dashboard, or test) reads it.
     """
-    area = state.node_analytics.detection_areas.get(node_id)
+    node_id = id_for_identity(node_ref)
+    area = state.node_analytics.detection_areas.get(node_id) if node_id else None
     if not area:
         return Response(
-            content=orjson.dumps({"error": f"node {node_id} not registered"}),
+            content=orjson.dumps({"error": "node not registered"}),
             media_type="application/json",
             status_code=404,
         )
 
-    summary = {k: v for k, v in area.summary().items() if k != "furthest_detections"}
+    summary = {k: v for k, v in area.summary().items() if k not in ("furthest_detections", "node_id")}
+    summary["node_ref"] = node_ref
     rx = summary.get("rx") or {}
     pub_lat, pub_lon = public_latlon(rx.get("lat"), rx.get("lon"), node_id)
     summary["rx"] = {**rx, "lat": pub_lat, "lon": pub_lon}

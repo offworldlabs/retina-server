@@ -33,14 +33,18 @@ export default function ContributionPage() {
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
-  // analytics.nodes is a dict {node_id: summary} from the backend
+  // analytics.nodes is a dict {node_ref: summary} from the backend; the ref
+  // is the map key, values no longer carry node_id.
   const rawNodes = analytics?.nodes || {};
   const summaries = Array.isArray(rawNodes) ? rawNodes : Object.values(rawNodes);
+  const nodeEntries: [string, any][] = Array.isArray(rawNodes)
+    ? rawNodes.map((n) => [n.node_ref || "", n])
+    : Object.entries(rawNodes);
   const crossNode = analytics?.cross_node || analytics?.cross_node_analysis || {};
 
   // Build contribution chart — top 20 by detections
-  const chartDataAll = summaries.map((n) => ({
-    name: (n.node_id || n.name || "").slice(-8),
+  const chartDataAll = nodeEntries.map(([ref, n]) => ({
+    name: (ref || n.name || "").slice(-8),
     detections: n.metrics?.total_detections || n.detection_area?.n_detections || 0,
     trust: Math.round((n.trust?.trust_score || 0) * 100),
   })).sort((a, b) => b.detections - a.detections);
@@ -170,9 +174,9 @@ export default function ContributionPage() {
               </thead>
               <tbody>
                 {leaderboard.slice(0, 10).map((entry, i) => (
-                  <tr key={entry.node_id || i}>
+                  <tr key={entry.node_ref || i}>
                     <td style={{ fontWeight: 600, color: i < 3 ? "var(--accent)" : "var(--text-muted)" }}>{i + 1}</td>
-                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(entry.node_id || "").slice(-12)}</td>
+                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(entry.node_ref || "").slice(-12)}</td>
                     <td>{(entry.detections || 0).toLocaleString()}</td>
                     <td>{((entry.trust || 0) * 100).toFixed(0)}%</td>
                   </tr>

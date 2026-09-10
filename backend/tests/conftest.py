@@ -160,6 +160,7 @@ def _reset_module_state():
         frame_processor,
         known_claiming,
         node_bias,
+        node_refs,
         publication,
         tcp_handler,
         track_gates,
@@ -180,6 +181,7 @@ def _reset_module_state():
         known_claiming,
         dark_follow,
         node_bias,
+        node_refs,
         publication,
         periodic,
     ):

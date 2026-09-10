@@ -20,16 +20,16 @@ from core import state  # noqa: E402
 from services.geo import bistatic_delay_us  # noqa: E402
 from services.tasks.analytics_refresh import _refresh_node_verification  # noqa: E402
 
-_RADAR3_NODE_ID = "radar3-retnode"
+_NODE_ID = "example-node-a"
 
 RX = (34.85, -82.40)
 TX = (34.90, -82.20)
 TARGET = (34.88, -82.35)
 
 
-def _radar3_cfg() -> dict:
+def _node_cfg() -> dict:
     return {
-        "node_id": _RADAR3_NODE_ID,
+        "node_id": _NODE_ID,
         "rx_lat": RX[0],
         "rx_lon": RX[1],
         "tx_lat": TX[0],
@@ -67,9 +67,9 @@ class TestGroundTruthAltitudeUnits:
         # Trail index 2 is METRES.
         state.ground_truth_trails["gt1"] = deque([[TARGET[0], TARGET[1], 10000.0, time.time()]])
         delay = bistatic_delay_us(TX[0], TX[1], RX[0], RX[1], TARGET[0], TARGET[1])
-        state.active_geo_aircraft["r3trk"] = (_track(delay), _radar3_cfg())
-        _refresh_node_verification(_RADAR3_NODE_ID)
-        return orjson.loads(state.latest_node_verification_bytes[_RADAR3_NODE_ID])
+        state.active_geo_aircraft["r3trk"] = (_track(delay), _node_cfg())
+        _refresh_node_verification(_NODE_ID)
+        return orjson.loads(state.latest_node_verification_bytes[_NODE_ID])
 
     def test_gt_altitude_is_metres_not_reconverted_feet(self):
         data = self._run_with_gt(speed_ms=189.7)

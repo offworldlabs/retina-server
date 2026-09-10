@@ -20,14 +20,14 @@ export default function OverviewPage() {
     // an unauthenticated view of this page must still render the rest.
     Promise.all([api.nodes(), api.analytics(), api.aircraft(), api.myNodes().catch(() => [])])
       .then(([n, a, ac, mine]) => {
-        // n.nodes is a dict {node_id: {status, ...}}
+        // Both are dicts keyed on node_ref, and the values carry no identifier of
+        // their own, so the key is the identity.
         const nodeMap = n.nodes || {};
-        // a.nodes is a dict {node_id: {trust, metrics, detection_area, reputation}}
         const analyticsMap = a?.nodes || {};
-        const nodeList = Object.entries(nodeMap).map(([id, info]: [string, any]) => ({
-          node_id: id,
+        const nodeList = Object.entries(nodeMap).map(([ref, info]: [string, any]) => ({
+          node_ref: ref,
           ...info,
-          _analytics: analyticsMap[id] || {},
+          _analytics: analyticsMap[ref] || {},
         }));
         setNodes(nodeList);
         setMyNodes(Array.isArray(mine) ? mine : []);
@@ -51,9 +51,15 @@ export default function OverviewPage() {
   // Merged with the owner's own nodes, because /api/radar/nodes drops private
   // ones: a private node with no position would otherwise appear nowhere its
   // owner looks, and this list is the only place they are told.
-  const byId = new Map<string, any>(nodeList.map((n) => [n.node_id, n]));
-  for (const n of myNodes) if (!byId.has(n.node_id)) byId.set(n.node_id, n);
-  const needsAttention = [...byId.values()].filter((n) => n.position_status && n.position_status !== "positioned");
+  // Joined on node_ref, the one key space both sides share: /api/auth/me/nodes
+  // also carries node_id, and keying on that would list every node twice.
+  // A node with no ref is on no public surface, so its node_id cannot collide.
+  const byRef = new Map<string, any>(nodeList.map((n) => [n.node_ref, n]));
+  for (const n of myNodes) {
+    const key = n.node_ref || n.node_id;
+    if (!byRef.has(key)) byRef.set(key, n);
+  }
+  const needsAttention = [...byRef.values()].filter((n) => n.position_status && n.position_status !== "positioned");
   // detection_area.n_detections is the most reliably populated counter
   const totalFrameDetections = nodeList.reduce(
     (s, n) => s + (n._analytics?.metrics?.total_detections || n._analytics?.detection_area?.n_detections || 0),
@@ -62,7 +68,7 @@ export default function OverviewPage() {
 
   // Build a simple detection-over-index chart from node data
   const chartData = nodeList.map((n, i) => ({
-    name: n.name || n.node_id || `Node ${i + 1}`,
+    name: n.name || n.node_ref || `Node ${i + 1}`,
     detections: n._analytics?.metrics?.total_detections || n._analytics?.detection_area?.n_detections || 0,
     tracks: n._analytics?.metrics?.total_tracks || 0,
   }));
@@ -111,10 +117,20 @@ export default function OverviewPage() {
               </thead>
               <tbody>
                 {needsAttention.map((node) => {
-                  const id = node.node_id || node.id;
+                  // The detail page addresses the node on public routes, which
+                  // take the ref.  A node with no ref is on no public surface,
+                  // so its row is still listed (this is the only place its
+                  // owner is told) but it is not a link to a 404.
+                  const ref = node.node_ref;
                   return (
-                    <tr key={id} style={{ cursor: "pointer" }} onClick={() => navigate(`/nodes/${id}`)}>
-                      <td style={{ color: "var(--accent)" }}>{node.name || id}</td>
+                    <tr
+                      key={ref || node.node_id || node.id}
+                      style={ref ? { cursor: "pointer" } : undefined}
+                      onClick={ref ? () => navigate(`/nodes/${ref}`) : undefined}
+                    >
+                      <td style={{ color: ref ? "var(--accent)" : undefined }}>
+                        {node.name || ref || node.node_id || node.id}
+                      </td>
                       <td><PositionStatusBadge status={node.position_status} /></td>
                     </tr>
                   );
@@ -165,7 +181,7 @@ export default function OverviewPage() {
         </div>
         <div className="node-grid" style={{ padding: 16 }}>
           {nodeList.map((node) => {
-            const id = node.node_id || node.id;
+            const id = node.node_ref || node.id;
             const online = node.status !== "disconnected" && node.status != null;
             return (
               <div
