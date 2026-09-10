@@ -26,8 +26,8 @@ HEARTBEAT_TS = "2026-05-04T12:00:00+00:00"
 
 _NODE_CONFIG = {
     "node_id": NODE_ID,
-    "rx_lat": 33.94,
-    "rx_lon": -84.65,
+    "rx_lat": 33.9,
+    "rx_lon": -84.6,
     "rx_alt_ft": 950,
     "tx_lat": 33.76,
     "tx_lon": -84.33,

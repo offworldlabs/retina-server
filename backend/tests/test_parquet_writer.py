@@ -227,10 +227,10 @@ def test_schema_includes_geometry_and_rf_columns(tmp_path: Path):
     frames = [_frame(timestamp_ms=1700000000000, n_dets=3)]
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
     cfg = {
-        "rx_lat": 33.939,
-        "rx_lon": -84.652,
+        "rx_lat": 33.9,
+        "rx_lon": -84.62,
         "rx_alt_ft": 920,
-        "tx_lat": 33.939,
+        "tx_lat": 33.9,
         "tx_lon": -84.331,
         "tx_alt_ft": 1200,
         "fc_hz": 195_000_000,
@@ -262,8 +262,8 @@ def test_schema_includes_geometry_and_rf_columns(tmp_path: Path):
     rows = table.to_pylist()
     # One published coordinate for the whole file, and it is not the true one.
     assert len({r["rx_lat"] for r in rows}) == 1
-    assert all(r["rx_lat"] != 33.939 for r in rows)
-    assert all(r["rx_lon"] != -84.652 for r in rows)
+    assert all(r["rx_lat"] != 33.9 for r in rows)
+    assert all(r["rx_lon"] != -84.62 for r in rows)
     assert all(r["tx_lon"] == -84.331 for r in rows)
     assert all(r["fc_hz"] == 195_000_000 for r in rows)
     assert all(r["fs_hz"] == 2_000_000 for r in rows)

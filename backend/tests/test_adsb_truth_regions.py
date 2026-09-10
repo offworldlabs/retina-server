@@ -23,7 +23,7 @@ from core import state
 from services.adsb_regions import Region, regions_for_nodes
 from services.tasks import periodic
 
-ATLANTA = (33.939182, -84.388)
+ATLANTA = (33.75, -84.39)
 MASSACHUSETTS = (42.5, -71.5)
 SACRAMENTO = (38.6, -121.5)
 
