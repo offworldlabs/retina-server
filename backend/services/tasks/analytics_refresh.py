@@ -1846,18 +1846,30 @@ async def analytics_refresh_task():
     loop = asyncio.get_event_loop()
     await asyncio.sleep(5)
     while True:
+        started = time.monotonic()
         try:
             await loop.run_in_executor(_analytics_executor, _refresh_analytics_and_nodes)
             await loop.run_in_executor(_analytics_executor, state.node_analytics.maybe_auto_save)
             from routes.admin import check_node_health
 
             check_node_health()
-            logging.debug("Analytics refresh completed")
             state.task_last_success["analytics_refresh"] = time.time()
+            # Fixed-rate: sleeping the interval flat would make the period the
+            # interval plus the cycle, and frontend/e2e/nodes.spec.ts sizes its
+            # wait on the period. Floored rather than clamped to zero so an
+            # overrunning cycle still yields the box.
+            elapsed = time.monotonic() - started
+            # Success only: the runbook greps this line to judge the task's
+            # health, so a failed cycle must not report a duration.
+            logging.info("Analytics refresh completed in %.1fs", elapsed)
         except Exception:
             state.bump_task_error("analytics_refresh")
             logging.exception("Analytics refresh failed")
-        await asyncio.sleep(ANALYTICS_REFRESH_INTERVAL_S)
+            # A failure waits the whole interval. Pacing a failed cycle would
+            # retry a broken dependency every few seconds, and nothing else here
+            # backs off.
+            elapsed = 0.0
+        await asyncio.sleep(max(ANALYTICS_REFRESH_INTERVAL_S * 0.1, ANALYTICS_REFRESH_INTERVAL_S - elapsed))
 
 
 async def coverage_constraints_task():

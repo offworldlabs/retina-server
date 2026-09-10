@@ -122,9 +122,31 @@ function kmBetween(lat1: number, lon1: number, lat2: number, lon2: number): numb
 // metres past the declared radius; allow that on top of the uncertainty.
 const FUZZ_ROUNDING_SLACK_KM = 0.05;
 
-// latest_nodes_bytes and latest_overlaps_bytes are rebuilt in the same 30 s background
-// function. Add a 5 s buffer over the full cycle.
-const CACHE_TIMEOUT_MS = 35_000;
+// One period plus one cycle: a node registered after a cycle has read its inputs waits
+// out the rest of that period, then the next cycle's own work. The interval comes from
+// the running server, so retuning it cannot leave this window stale, which is what went
+// wrong with the hardcoded one. Resolved in the first beforeAll; the initial value only
+// covers anything reading it before that.
+const FALLBACK_REFRESH_INTERVAL_S = 30;
+const cacheWindowMs = (intervalS: number) => 2 * 1_000 * intervalS;
+let CACHE_TIMEOUT_MS = cacheWindowMs(FALLBACK_REFRESH_INTERVAL_S);
+
+/** Ask the server for its refresh cadence; fall back rather than fail the suite. */
+async function resolveCacheTimeout(ctx: Ctx): Promise<number> {
+  let intervalS = FALLBACK_REFRESH_INTERVAL_S;
+  try {
+    const res = await ctx.get(`${API}/api/test/dashboard`);
+    if (res.ok()) {
+      const reported = (await res.json())?.cadence?.analytics_refresh_interval_s;
+      if (typeof reported === "number" && Number.isFinite(reported) && reported > 0) {
+        intervalS = reported;
+      }
+    }
+  } catch {
+    // A diagnostics hiccup must not decide the gate; the default still holds.
+  }
+  return cacheWindowMs(intervalS);
+}
 
 type Ctx = Awaited<ReturnType<typeof request.newContext>>;
 type NodeMap = Record<string, Record<string, unknown>>;
@@ -282,9 +304,13 @@ describeUnlessProd("Node registration — main integration suite", () => {
   let singleResponseBody: { status: string; frames_queued: number; tracks: number };
 
   test.beforeAll(async () => {
-    test.setTimeout(90_000); // covers 35 s cache wait + registration + buffer
     if (!API_KEY) test.skip();
     ctx = await request.newContext();
+    CACHE_TIMEOUT_MS = await resolveCacheTimeout(ctx);
+    // Cache wait + registration + buffer. Both hooks are retried twice, so the
+    // suite's floor is 3 * (this + the overlaps hook below); keep that under the
+    // e2e jobs' step timeout-minutes, and raise those with any widening here.
+    test.setTimeout(CACHE_TIMEOUT_MS + 60_000);
 
     // ── Single-node registration (REAL + SYNTH) ────────────────────────────
     // REAL: include one valid frame so we can verify frames_queued response field.
@@ -775,17 +801,30 @@ describeUnlessProd("Node registration — main integration suite", () => {
     let overlapsBody: { overlaps: Record<string, unknown>[]; registered_nodes: string[] };
 
     test.beforeAll(async () => {
-      test.setTimeout(90_000);
-      // Both latest_nodes_bytes and latest_overlaps_bytes are rebuilt in the same
-      // 30 s background task. Poll until BULK_B_NODE appears in registered_nodes —
-      // it needs the associator cycle to fire after its bulk registration.
+      test.setTimeout(CACHE_TIMEOUT_MS + 30_000);
+      // Both latest_nodes_bytes and latest_overlaps_bytes are rebuilt by the same
+      // background task, so one window covers both. Poll until BULK_B_NODE appears
+      // in registered_nodes: it needs the associator cycle to fire after its bulk
+      // registration.
       const deadline = Date.now() + CACHE_TIMEOUT_MS;
+      let found = false;
       while (Date.now() < deadline) {
         const res = await ctx.get(`${API}/api/radar/association/overlaps`);
         expect(res.status()).toBe(200);
         overlapsBody = await res.json();
-        if (overlapsBody.registered_nodes.includes(BULK_B_NODE_ID)) break;
+        if (overlapsBody.registered_nodes.includes(BULK_B_NODE_ID)) {
+          found = true;
+          break;
+        }
         await new Promise((r) => setTimeout(r, 2_000));
+      }
+      // Falling out of the loop leaves overlapsBody holding a response that never
+      // carried the node; say so here rather than letting the tests below assert
+      // against it and fail somewhere less informative.
+      if (!found) {
+        throw new Error(
+          `${BULK_B_NODE_ID} did not reach registered_nodes within ${CACHE_TIMEOUT_MS} ms`,
+        );
       }
     });
 
