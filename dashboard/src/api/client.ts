@@ -114,6 +114,7 @@ export const api = {
 
   // Admin: node ownership
   adminNodeOwners: () => request("/api/admin/node-owners"),
+  adminNodeContacts: () => request("/api/admin/node-contacts"),
   adminSetNodeOwner: (nodeId, userId) =>
     request(`/api/admin/nodes/${encodeURIComponent(nodeId)}/owner`, {
       method: "PUT",

@@ -11,21 +11,40 @@ import type { LocationPrivacyState } from "../../types";
 
 const PAGE_SIZE = 25;
 
+// Every field is independently optional server side, so a contact can be a
+// phone number and nothing else; falling through to it is what keeps such a
+// node from reading as "nobody reported anything".
+export function contactLabel(contact) {
+  if (!contact) return "—";
+  const name = [contact.first_name, contact.last_name].filter(Boolean).join(" ");
+  return name || contact.email || contact.phone || "—";
+}
+
 export default function NodeManagementPage() {
   const [nodes, setNodes] = useState([]);
   const [analytics, setAnalytics] = useState(null);
+  const [contacts, setContacts] = useState({});
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
   const navigate = useNavigate();
 
   useEffect(() => {
-    Promise.all([api.nodes(), api.analytics()])
-      .then(([n, a]) => {
+    // Contacts are caught on their own so a failure there costs the contact
+    // cells rather than the node list. Logged before the fallback: an empty
+    // object is also what "nobody has reported one" looks like, and the two
+    // should not be indistinguishable in the console.
+    const contactsOrNone = api.adminNodeContacts().catch((e) => {
+      console.error("contacts unavailable", e);
+      return {};
+    });
+    Promise.all([api.nodes(), api.analytics(), contactsOrNone])
+      .then(([n, a, c]) => {
         const nodeMap = n.nodes || {};
         const nodeList = Object.entries(nodeMap).map(([id, info]: [string, any]) => ({ node_id: id, ...info }));
         setNodes(nodeList);
         setAnalytics(a);
+        setContacts(c);
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -88,6 +107,12 @@ export default function NodeManagementPage() {
           const id = node.node_id || node.id;
           const online = node.status !== "disconnected" && node.status != null;
           const summary = summaryMap[id] || {};
+          const contact = contacts[id];
+          const contactText = contactLabel(contact);
+          // The label is the name when there is one, so the address is worth a
+          // tooltip only then; otherwise it is already what the cell shows.
+          const named = Boolean(contact?.first_name || contact?.last_name);
+          const contactTitle = named ? contact.email || undefined : undefined;
           return (
             <div className="node-card" key={id} onClick={() => navigate(`/nodes/${id}`)}>
               <div className="node-name">
@@ -114,6 +139,8 @@ export default function NodeManagementPage() {
                 <span>{(summary.metrics?.avg_snr || 0).toFixed(1)} dB</span>
                 <span className="meta-label">Uptime</span>
                 <span>{formatUptime(summary.metrics?.uptime_s || 0)}</span>
+                <span className="meta-label">Contact</span>
+                <span title={contactTitle}>{contactText}</span>
               </div>
               <NodeLocationPrivacy nodeId={id} />
             </div>
