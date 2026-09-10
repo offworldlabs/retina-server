@@ -1791,7 +1791,14 @@ def _refresh_mlat_verification():
             "p95_m": round(_percentile(alt_errors, 95), 0),
         },
         "by_node_count": by_node_count_out,
-        "tracks": matches[:100],
+        # These bytes are what /api/test/mlat-verification serves, unauthenticated,
+        # so max_bistatic_angle_deg does not go out in them.  Its vertex is the
+        # truth position in the same entry and one of its arms is the published
+        # transmitter, which leaves the angle naming the direction from a known
+        # point to the true receiver of one of the contributing nodes; a second
+        # entry crosses the first.  It stays on `matches` for the rolling sample
+        # buffer below, which the good-geometry split reads and nothing publishes.
+        "tracks": [{k: v for k, v in m.items() if k != "max_bistatic_angle_deg"} for m in matches[:100]],
         "unmatched": {
             "n": len(unmatched),
             "nearest_truth": {

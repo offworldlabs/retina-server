@@ -278,6 +278,45 @@ _REDACTED = "[unpublished node]"
 _DROP = object()
 
 
+def _published_key(key):
+    """The published name of a field that holds node identities.
+
+    Suffix-matched, because a payload spells them several ways:
+    `node_id`, `contributing_node_ids`, `dropped_node_id`. A field called
+    `node_id` holding a ref is the confusion this boundary removes, so the name
+    moves with the value. Anything else is returned unchanged, which is also
+    what marks a key as an identity field: `_published_key(k) != k`.
+    """
+    if not isinstance(key, str):
+        return key
+    if key.endswith("node_ids"):
+        return f"{key[:-3]}refs"
+    if key.endswith("node_id"):
+        return f"{key[:-2]}ref"
+    return key
+
+
+def _named_node_ids(value) -> set[str]:
+    """Every node id a payload names under an identity field, however deep.
+
+    Collected by field name, the only thing that marks a string as an identity
+    rather than as prose, and used to widen the vocabulary past the registry:
+    a node that connected, was never registered and has since gone is in
+    neither the map nor the caller's fleet, and its id would otherwise pass the
+    walk untouched.
+    """
+    found: set[str] = set()
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if _published_key(k) != k:
+                found.update(s for s in (v if isinstance(v, list) else [v]) if isinstance(s, str) and s)
+            found |= _named_node_ids(v)
+    elif isinstance(value, list):
+        for v in value:
+            found |= _named_node_ids(v)
+    return found
+
+
 class _Vocabulary(NamedTuple):
     """Every node id that could appear in a payload, and what it publishes as.
 
@@ -309,8 +348,9 @@ def _republished(value, owner_id: str | None, vocab: _Vocabulary):
     a key nobody here has heard of is caught by the same walk. Three rules:
 
     * A `node_id` field naming the node the entry is already keyed on is
-      dropped; one naming any other node becomes `node_ref`, because a field
-      called `node_id` holding a ref is the confusion this boundary removes.
+      dropped; one naming any other node is renamed by `_published_key`,
+      because a field called `node_id` holding a ref is the confusion this
+      boundary removes.
     * A string that IS a node id is an identity: it becomes the ref, or `_DROP`
       when the node has no handle, and a container that named it goes with it.
       In a list only that element goes, which is what drops half a pair.
@@ -334,7 +374,7 @@ def _republished(value, owner_id: str | None, vocab: _Vocabulary):
         for k, v in value.items():
             if k == "node_id" and v == owner_id:
                 continue
-            key = "node_ref" if k == "node_id" else k
+            key = _published_key(k)
             if key in vocab.by_id:
                 key = vocab.by_id[key]
                 if key is None:
@@ -349,6 +389,33 @@ def _republished(value, owner_id: str | None, vocab: _Vocabulary):
         return [r for v in value if (r := _republished(v, owner_id, vocab)) is not _DROP]
 
     return value
+
+
+def public_records(records: Iterable[dict], known_ids: Iterable[str] = ()) -> list[dict]:
+    """Diagnostic records under published identities.
+
+    For the solver's own history and skip stores, whose entries are written by
+    a dozen call sites and carry ids under whatever key each one chose. The
+    walk is structural for that reason: a field added upstream is republished
+    by the same pass rather than by an update here that nobody remembers to
+    make.
+
+    A record naming a node with no handle loses the name; where the name is a
+    field's whole value rather than one element of a list, the record goes with
+    it, which is `_republished`'s rule and the conservative direction.
+
+    The vocabulary is widened with the ids the records themselves name (see
+    `_named_node_ids`), so a 30-minute store outliving a node's connection
+    still resolves what it holds.
+    """
+    records = list(records)
+    vocab = _vocabulary({*(known_ids or ()), *_named_node_ids(records)})
+    out = []
+    for rec in records:
+        republished = _republished(rec, None, vocab)
+        if republished is not _DROP:
+            out.append(republished)
+    return out
 
 
 def public_analytics(summaries: dict, cross_node: dict, known_ids: Iterable[str] = ()) -> dict:

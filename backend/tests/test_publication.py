@@ -1062,3 +1062,282 @@ class TestPublicPathParameters:
         response-body change reaches."""
         assert client.get("/api/test/radar3/verification").status_code == 404
         assert client.get("/api/test/radar3/detection-range").status_code == 404
+
+
+# ── The solver's diagnostic stores ───────────────────────────────────────────
+
+
+class TestMlatHistoryPayload:
+    """/api/test/mlat-history is unauthenticated and dumps solver records whole.
+
+    Two things ride out on them. Every record carries ``adsb_hex``, which the
+    aircraft feed publishes beside ``contributing_node_refs``, so one record
+    naming its nodes by node_id hands over the mapping for the whole fleet in
+    two anonymous requests. And a beam entry measures a range and a bearing
+    from the node's true receiver to an aircraft the same record locates, which
+    is a position fix whatever identifier it is filed under.
+    """
+
+    _A = "ret1a2b3c4d"
+    _B = "ret9f8e7d6c"
+    # Named by a record and absent from the registry, so it has no handle.
+    _GHOST = "ret0badcafe"
+
+    def _beam(self, node_id):
+        """A beam entry with every field the gate stamps on one."""
+        return {
+            "node_id": node_id,
+            "range_km": 6.2,
+            "max_range_km": 150.0,
+            "bistatic_km": 12.4,
+            "max_bistatic_range_km": 200.0,
+            "bearing_off_deg": 73.9,
+            "half_width_deg": 30.0,
+            "rule": "bearing",
+            "fov_state": "closed",
+            "fov_limit_km": 41.5,
+        }
+
+    @pytest.fixture()
+    def seeded(self, seed_nodes):
+        seed_nodes(**{self._A: "public", self._B: "public"})
+        now_ms = int(time.time() * 1000)
+        state.mlat_solve_history.extend(
+            [
+                {
+                    "ts_ms": now_ms,
+                    "outcome": "published",
+                    "solve_key": "mn-dark-0123456789",
+                    "solver_hex": "mn0123456789",
+                    "adsb_hex": None,
+                    "n_nodes": 2,
+                    "contributing_node_ids": [self._A, self._B],
+                    "trimmed_node_ids": [self._B],
+                    "foreign_node_ids": [self._B],
+                    "adopt_meta": {
+                        "pool_n": 3,
+                        "adopted_node_ids": [self._A],
+                        "dropped_node_id": self._B,
+                        "outcome": "widened",
+                    },
+                    "raw_lat": 34.0,
+                    "raw_lon": -82.0,
+                },
+                {
+                    "ts_ms": now_ms,
+                    "outcome": "rejected_beam",
+                    "solve_key": None,
+                    "solver_hex": None,
+                    "adsb_hex": "abc123",
+                    "n_nodes": 2,
+                    "contributing_node_ids": [self._A],
+                    "beam_failures": [self._beam(self._A), self._beam(self._GHOST)],
+                    "fov_verdict": [{"node_id": self._A, "today_pass": False, "fov_verdict": True}],
+                    "raw_lat": 34.0,
+                    "raw_lon": -82.0,
+                },
+                {
+                    "ts_ms": now_ms,
+                    "outcome": "rejected_rms_delay",
+                    "solve_key": None,
+                    "solver_hex": None,
+                    "adsb_hex": "def456",
+                    "n_nodes": 2,
+                    "contributing_node_ids": [self._A, self._GHOST],
+                    "raw_lat": 34.0,
+                    "raw_lon": -82.0,
+                },
+            ]
+        )
+        state.solver_resolve_skips_recent.append(
+            {
+                "ts_ms": now_ms,
+                "lane": "dark",
+                "track_ids": ["260909-00001A"],
+                "n_nodes": 3,
+                "blocking": [{"track_id": "260909-00001A", "held_ts": 1.5, "held_n": 3}],
+                "guess_lat": 34.0,
+                "guess_lon": -82.0,
+            }
+        )
+        try:
+            yield
+        finally:
+            state.mlat_solve_history.clear()
+            state.solver_resolve_skips_recent.clear()
+
+    @pytest.fixture()
+    def bodies(self, client, seeded):
+        """Every shape the route answers in: the dump, one marker, the skips."""
+        return {
+            "all": client.get("/api/test/mlat-history?all=1"),
+            "hex": client.get("/api/test/mlat-history?hex=mn0123456789"),
+            "skips": client.get("/api/test/mlat-history?kind=resolve_skips"),
+        }
+
+    def test_no_node_id_reaches_the_response(self, bodies):
+        """Values and field names both. Every identity key the solver writes
+        (node_id, contributing_node_ids, trimmed_node_ids, foreign_node_ids,
+        adopted_node_ids, dropped_node_id) carries that substring, so one
+        assertion covers the lot, including a key added upstream later."""
+        for shape, body in bodies.items():
+            assert body.status_code == 200, shape
+            assert "node_id" not in body.text, shape
+            for nid in (self._A, self._B, self._GHOST):
+                assert nid not in body.text, (shape, nid)
+
+    def test_the_identity_fields_move_with_their_values(self, bodies):
+        rec = {r["outcome"]: r for r in bodies["all"].json()["records"]}["published"]
+        assert rec["contributing_node_refs"] == [_seed_ref(self._A), _seed_ref(self._B)]
+        assert rec["trimmed_node_refs"] == [_seed_ref(self._B)]
+        assert rec["foreign_node_refs"] == [_seed_ref(self._B)]
+        assert rec["adopt_meta"]["adopted_node_refs"] == [_seed_ref(self._A)]
+        assert rec["adopt_meta"]["dropped_node_ref"] == _seed_ref(self._B)
+
+    def test_a_node_with_no_handle_loses_its_place_in_the_listing(self, bodies):
+        by_outcome = {r["outcome"]: r for r in bodies["all"].json()["records"]}
+        assert by_outcome["rejected_rms_delay"]["contributing_node_refs"] == [_seed_ref(self._A)]
+        # ...and its own beam entry goes rather than being published anonymously.
+        assert [b["node_ref"] for b in by_outcome["rejected_beam"]["beam_failures"]] == [_seed_ref(self._A)]
+
+    def test_the_beam_entry_keeps_the_verdict_and_loses_the_geometry(self, bodies):
+        """Exact equality, so it pins what survives as well as what does not.
+
+        What is left is the gate that refused the node and the envelope
+        /api/radar/analytics already publishes for it per node; what goes is
+        every margin, each measured from the true receiver to the aircraft this
+        same record gives the position of.
+        """
+        by_outcome = {r["outcome"]: r for r in bodies["all"].json()["records"]}
+        assert by_outcome["rejected_beam"]["beam_failures"] == [
+            {
+                "node_ref": _seed_ref(self._A),
+                "max_range_km": 150.0,
+                "max_bistatic_range_km": 200.0,
+                "half_width_deg": 30.0,
+                "rule": "bearing",
+            }
+        ]
+
+    def test_no_receiver_relative_geometry_at_any_depth(self, bodies):
+        """A structural walk rather than a text scan: `range_km` is a substring
+        of the `max_range_km` that legitimately stays."""
+        for shape, body in bodies.items():
+            for field in ("range_km", "bearing_off_deg", "bistatic_km", "fov_limit_km", "fov_state"):
+                assert not list(_keys_named(body.json(), field)), (shape, field)
+
+    def test_the_shadow_verdict_is_a_verdict_and_survives(self, bodies):
+        """The FOV shadow comparison is an outcome, not a margin."""
+        by_outcome = {r["outcome"]: r for r in bodies["all"].json()["records"]}
+        assert by_outcome["rejected_beam"]["fov_verdict"] == [
+            {"node_ref": _seed_ref(self._A), "today_pass": False, "fov_verdict": True}
+        ]
+
+    def test_one_markers_solves_are_published_the_same_way(self, bodies):
+        solves = bodies["hex"].json()["solves"]
+        assert [s["contributing_node_refs"] for s in solves] == [[_seed_ref(self._A), _seed_ref(self._B)]]
+
+    def test_the_skip_store_goes_through_the_same_boundary_intact(self, bodies):
+        """It names no node today; it is republished anyway, and must come back
+        unchanged rather than mangled by the walk."""
+        records = bodies["skips"].json()["records"]
+        assert records == [
+            {
+                "ts_ms": records[0]["ts_ms"],
+                "lane": "dark",
+                "track_ids": ["260909-00001A"],
+                "n_nodes": 3,
+                "blocking": [{"track_id": "260909-00001A", "held_ts": 1.5, "held_n": 3}],
+                "guess_lat": 34.0,
+                "guess_lon": -82.0,
+            }
+        ]
+
+
+class TestNodeVerificationPayload:
+    """/api/test/node/{node_ref}/verification is unauthenticated and per node.
+
+    Each matched track pairs a delay with the truth position it was measured
+    against, and the delay is the bistatic range from the true receiver to that
+    position: fifty of them intersect well inside the displacement the same
+    node's published coordinate carries.
+    """
+
+    def test_the_per_track_delays_are_withheld_and_the_errors_are_not(self, client, seed_nodes):
+        seed_nodes(**{_PUB: "public"})
+        state.latest_node_verification_bytes[_PUB] = orjson.dumps(
+            {
+                "node_id": _PUB,
+                "n_matched": 1,
+                "tracks": [
+                    {
+                        "hex": "abc123",
+                        "matched_adsb_hex": "abc123",
+                        "delay_match_us": 1.2,
+                        "measured_delay_us": 84.6,
+                        "truth_lat": 34.0,
+                        "truth_lon": -82.0,
+                        "position_error_km": 1.5,
+                    }
+                ],
+            }
+        )
+        try:
+            body = client.get(f"/api/test/node/{_seed_ref(_PUB)}/verification")
+        finally:
+            state.latest_node_verification_bytes.pop(_PUB, None)
+        assert body.json()["tracks"] == [
+            {
+                "hex": "abc123",
+                "matched_adsb_hex": "abc123",
+                "truth_lat": 34.0,
+                "truth_lon": -82.0,
+                "position_error_km": 1.5,
+            }
+        ]
+
+
+class TestMlatVerificationPayload:
+    """/api/test/mlat-verification serves the refresh task's bytes unchanged, so
+    what must not be published cannot be in them."""
+
+    _A = "ret1a2b3c4d"
+
+    def test_the_bistatic_angle_is_computed_and_not_published(self):
+        """Both halves matter: the angle has to have been computed for the
+        assertion to mean anything, since it is absent from a track that never
+        had one."""
+        from services.tasks.analytics_refresh import _refresh_mlat_verification
+
+        now = time.time()
+        state.connected_nodes[self._A] = {
+            "status": "active",
+            "config": {"node_id": self._A, "rx_lat": 34.0, "rx_lon": -82.0, "tx_lat": 35.0, "tx_lon": -83.0},
+        }
+        state.multinode_tracks["mn-dark-0123456789"] = {
+            "lat": 34.5,
+            "lon": -82.5,
+            "alt_m": 10000.0,
+            "vel_east": 200.0,
+            "vel_north": 50.0,
+            "n_nodes": 2,
+            "rms_delay": 0.5,
+            "rms_doppler": 5.0,
+            "contributing_node_ids": [self._A],
+            "timestamp_ms": int(now * 1000),
+        }
+        state.ground_truth_trails["abc123"] = [[34.5, -82.5, 10000.0, now - 5.0]]
+        state.ground_truth_meta["abc123"] = {"speed_ms": 206.0, "object_type": "aircraft"}
+        try:
+            _refresh_mlat_verification()
+            data = orjson.loads(state.latest_mlat_verification_bytes)
+            assert data["n_matched"] == 1
+            assert state.mlat_samples[-1]["max_bistatic_deg"] is not None
+            assert "max_bistatic_angle_deg" not in data["tracks"][0]
+        finally:
+            state.connected_nodes.pop(self._A, None)
+            state.multinode_tracks.clear()
+            state.ground_truth_trails.clear()
+            state.ground_truth_meta.clear()
+            state.mlat_samples.clear()
+            state.latest_mlat_verification_bytes = b"{}"
