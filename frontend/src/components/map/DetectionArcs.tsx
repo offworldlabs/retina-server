@@ -4,10 +4,7 @@ import { useMap } from "react-leaflet";
 import L from "leaflet";
 import { ARC_HOLD_MS, ARC_FADE_MS, ARC_TOTAL_LIFE_MS, dopplerColor } from "./constants";
 import { buildBistaticArc } from "./bistaticArc";
-import { SELECTED } from "./mapPalette";
-// The drone arc is a lighter orange than the drone glyph, so the arc under a
-// drone reads as its arc rather than as a second drone.
-const DRONE_ARC = "#fb923c";
+import { usePalette } from "./useMapTheme";
 
 /* ── DetectionArcs: imperative Leaflet polylines with timer-driven opacity fade.
 
@@ -17,6 +14,7 @@ const DRONE_ARC = "#fb923c";
       interval is 250 ms which is enough resolution for visibly smooth decay
       without React re-render cost. ── */
 const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, onSelect, onSelectNode, nodesByIdRef }) {
+  const { DRONE_ARC, SELECTED } = usePalette();
   const map = useMap();
   const polyMapRef = useRef(new Map()); // key → { line: L.polyline, ts, hex, node_id, ... }
   const onSelectRef = useRef(onSelect);
@@ -139,7 +137,7 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
       for (const info of polyMap.values()) info.line.remove();
       polyMap.clear();
     };
-  }, [map, arcsBufferRef, nodesByIdRef]);
+  }, [map, arcsBufferRef, nodesByIdRef, DRONE_ARC, SELECTED]);
 
   return null;
 });

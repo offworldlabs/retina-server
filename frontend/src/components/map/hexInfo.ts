@@ -44,7 +44,7 @@ const RANGES: Range[] = [
   // Canadian forces
   { start: 0xc20000, end: 0xc3ffff, category: "military", label: "CA Military",  color: "#dc2626" },
   // Eurocontrol / test / unallocated
-  { start: 0x4d0000, end: 0x4d03ff, category: "test",     label: "Eurocontrol",  color: "#0ea5e9" },
+  { start: 0x4d0000, end: 0x4d03ff, category: "test",     label: "Eurocontrol",  color: "#0284c7" },
 ];
 
 function parseHex(hex: string | null | undefined): number | null {

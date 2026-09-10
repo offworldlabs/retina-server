@@ -4,9 +4,7 @@ import { useMap } from "react-leaflet";
 import L from "leaflet";
 import { isInBeam } from "./geo";
 import { groundTruthKey } from "./constants";
-// Deliberately not ANOMALY: a beam gap is a property of a node, and the two
-// reds have to stay apart where a gap line crosses an anomalous track.
-const BEAM_GAP = "#ef4444";
+import { usePalette } from "./useMapTheme";
 
 /* ── InBeamDiagnostic: flags ADS-B aircraft inside a node's beam that
       have no recent confirmed detection from that node.  Renders a
@@ -23,6 +21,7 @@ const BEAM_WIDTH_FACTOR = 0.9;
 const MAX_RANGE_FACTOR = 0.95;
 
 const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundTruthRef, nodesByIdRef, smoothRef }) {
+  const { BEAM_GAP } = usePalette();
   const map = useMap();
   const polyMapRef = useRef(new Map()); // pairKey → L.polyline
 
@@ -129,7 +128,7 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundT
       for (const line of polyMap.values()) line.remove();
       polyMap.clear();
     };
-  }, [map, detectionsRef, groundTruthRef, nodesByIdRef, smoothRef]);
+  }, [map, detectionsRef, groundTruthRef, nodesByIdRef, smoothRef, BEAM_GAP]);
 
   return null;
 });

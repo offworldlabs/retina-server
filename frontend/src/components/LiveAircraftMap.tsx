@@ -44,6 +44,7 @@ import {
   FitBounds,
   ViewportTracker,
   MapClickClear,
+  InvalidateSizeOnResize,
   useAircraftFeed,
   useNodes,
   useAuth,
@@ -51,6 +52,7 @@ import {
   AircraftListPanel,
   AircraftDetailPanel,
   Toolbar,
+  MapLegend,
   PlaybackBar,
   DetectionArcs,
   ClaimedArcs,
@@ -72,23 +74,14 @@ import { arcNearestPoint } from "./map/arcErrors";
 import { detectingNodeIdsFor } from "./map/detections";
 import { ensureDebugPanes, DEBUG_PASSIVE_PANE, GT_CLICK_PANE } from "./map/panes";
 import { ARC_TOTAL_LIFE_MS } from "./map/constants";
-import {
-  ANOMALY,
-  COVERAGE,
-  DRONE,
-  GOOD,
-  ILLUMINATOR,
-  INK,
-  INK_MUTED,
-  LANE_MN_ADSB,
-  LANE_MN_DARK,
-  MLAT,
-  NODE,
-  SELECTED,
-  TRUTH,
-  TRUTH_DARK,
-  WARN,
-} from "./map/mapPalette";
+import { useMapTheme, usePalette } from "./map/useMapTheme";
+import { DEFAULT_MAP_THEME } from "./map/mapPalette";
+
+// Each theme has a basemap its colours were picked against: Positron for light,
+// Voyager tinted down for dark. Voyager under the light palette reads as two
+// maps at once, and Positron under the dark one is a white sheet behind navy
+// panels. The cycle in the toolbar can still take you anywhere, including OSM.
+const DEFAULT_BASEMAP = { dark: "voyager", light: "positron" };
 import { reconcileAdsbPairs, snapTrack, sweepStaleRadar } from "./map/trackStores";
 import StatsOverlay from "./map/StatsOverlay";
 import ShortcutHelp from "./map/ShortcutHelp";
@@ -110,6 +103,7 @@ L.Icon.Default.mergeOptions({
 const _gtCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: GT_CLICK_PANE }) : null;
 
 const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, onSelect, selectedHex }) {
+  const { ANOMALY, DRONE, SELECTED, TRUTH, TRUTH_DARK } = usePalette();
   const map = useMap();
   const markerMapRef = useRef(new Map()); // hex → L.circleMarker — incremental diff
   const onSelectRef  = useRef(onSelect);
@@ -131,8 +125,11 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
       const isDark  = !isAnom && !isDrone && ac.has_adsb === false;
       const isSel   = ac.hex === selectedHex;
       const color   = isAnom ? ANOMALY : isDrone ? DRONE : isDark ? TRUTH_DARK : TRUTH;
-      // Selection ring is white so it reads against all fill colors.
-      const border  = isSel ? INK : isAnom ? "#e11d48" : isDrone ? "#d97706" : isDark ? "#64748b" : "#67e8f9";
+      // Each dot takes an edge a shade darker than its own fill.  Selection is
+      // the amber the map already uses for a selected glyph, its arcs and its
+      // trail: truth is the theme's neutral extreme, so a neutral ring would
+      // sit a single shade from the fill it rings.
+      const border  = isSel ? SELECTED : isAnom ? "#991b1b" : isDrone ? "#b45309" : isDark ? "#334155" : "#020617";
       const baseR   = isDrone ? 6 : isAnom ? 8 : 9;
       const radius  = isSel ? baseR + 4 : baseR;
       const weight  = isSel ? 4 : 3;
@@ -168,7 +165,7 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
         markerMap.delete(hex);
       }
     }
-  }, [aircraft, map, selectedHex]);
+  }, [aircraft, map, selectedHex, ANOMALY, DRONE, SELECTED, TRUTH, TRUTH_DARK]);
 
   // Full cleanup on unmount
   useEffect(() => {
@@ -193,6 +190,7 @@ const _mgCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane:
 // mounts once instead of keying on the 2 Hz radarAircraft array identity —
 // which tore down and recreated every dot and line twice a second.
 const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAircraftRef, groundTruthRef, smoothRef, nodesByIdRef }) {
+  const { NODE, TRUTH } = usePalette();
   const map = useMap();
   const markersRef = useRef(new Map());  // gtHex → { dot: L.circleMarker, line: L.polyline | null (arc-only track with no arc this frame) }
 
@@ -325,7 +323,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
       }
       markers.clear();
     };
-  }, [map, radarAircraftRef, groundTruthRef, smoothRef]);
+  }, [map, radarAircraftRef, groundTruthRef, smoothRef, NODE, TRUTH]);
 
   return null;
 });
@@ -348,6 +346,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
 const _mlatCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: DEBUG_PASSIVE_PANE }) : null;
 
 const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthRef, smoothRef }) {
+  const { MLAT, MLAT_VECTOR } = usePalette();
   const map = useMap();
   const markersRef = useRef(new Map());
   // Tracks fetched from the verification API. Mutable so the render tick
@@ -456,7 +455,7 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
           });
           const line = L.polyline(
             [[drTruthLat, drTruthLon], [drSolverLat, drSolverLon]],
-            { renderer: _mlatCanvas, interactive: false, color: "#f0abfc", weight: 1.5, opacity: 0.7, dashArray: "3 4" },
+            { renderer: _mlatCanvas, interactive: false, color: MLAT_VECTOR, weight: 1.5, opacity: 0.7, dashArray: "3 4" },
           );
           line.bindTooltip(
             `${t.position_error_km.toFixed(1)} km`,
@@ -496,7 +495,7 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
       }
       markers.clear();
     };
-  }, [map, groundTruthRef, smoothRef]);
+  }, [map, groundTruthRef, smoothRef, MLAT, MLAT_VECTOR]);
 
   return null;
 });
@@ -507,8 +506,9 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
       the detail panel's solve-history table is the lookup surface.  Bounded
       (≤60 dots for one selected track), so React CircleMarkers are fine. ── */
 const MlatSolveHistoryLayer = memo(function MlatSolveHistoryLayer({ solves }) {
+  const { ANOMALY, GOOD, INK_SUBTLE, WARN } = usePalette();
   const errColor = (e) =>
-    e == null ? INK_MUTED : e < 3 ? GOOD : e < 8 ? WARN : ANOMALY;
+    e == null ? INK_SUBTLE : e < 3 ? GOOD : e < 8 ? WARN : ANOMALY;
   return (
     <>
       {solves.slice(0, 60).map((s, i) =>
@@ -538,6 +538,14 @@ const MlatSolveHistoryLayer = memo(function MlatSolveHistoryLayer({ solves }) {
       imperatively at 60fps via markerRegistry → marker.setLatLng() in the RAF loop,
       completely bypassing React reconcile. ── */
 const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, isStale, showLabels, colorByAlt, onSelect, markerRegistry }) {
+  // Subscribing to the palette here is what makes a theme switch reach the
+  // icons.  makeAircraftIcon reads the active palette when it is CALLED, and
+  // the memo below deliberately ignores everything but the fields that change
+  // an icon — so without this the markers already on the map kept the old
+  // theme's colours until something unrelated invalidated them.  A context
+  // change re-renders its consumers whatever the memo comparator says, which
+  // is precisely the escape hatch this needs.
+  const palette = usePalette();
   const altBand = Math.floor((ac.alt_baro ?? 0) / 5000);
   const markerRef = useRef(null);
 
@@ -554,7 +562,7 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, isStale, s
       ? makeDroneIcon(ac, showLabels, isSelected)
       : makeAircraftIcon(ac, showLabels, isSelected, colorByAlt, isStale),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [ac.hex, isSelected, isStale, showLabels, colorByAlt, ac.flight, ac.target_class, altBand, ac.position_source, ac.adsb_assisted],
+    [ac.hex, isSelected, isStale, showLabels, colorByAlt, ac.flight, ac.target_class, altBand, ac.position_source, ac.adsb_assisted, palette],
   );
   const handlers = useMemo(() => ({ click: () => onSelect(ac.hex) }), [ac.hex, onSelect]);
   return <Marker ref={markerRef} position={[ac.lat, ac.lon]} icon={icon} eventHandlers={handlers} />;
@@ -597,6 +605,7 @@ const _trailsCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, p
 // visibleAircraft array identity destroyed and rebuilt every polyline twice a
 // second, and the 500 ms interval below essentially never fired twice.
 const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftRef, frontendTrailsRef, selectedHex }) {
+  const { WARN } = usePalette();
   const map = useMap();
   const linesRef = useRef(new Map()); // hex → L.polyline
 
@@ -644,7 +653,7 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftR
       for (const line of lines.values()) line.remove();
       lines.clear();
     };
-  }, [map, visibleAircraftRef, frontendTrailsRef, selectedHex]);
+  }, [map, visibleAircraftRef, frontendTrailsRef, selectedHex, WARN]);
 
   return null;
 });
@@ -833,6 +842,7 @@ const BasemapLayer = memo(function BasemapLayer({ url }) {
       tracking, and a 5 px disc was getting lost under nearby aircraft icons —
       so it gets the larger glowing divIcon (a handful of DOM nodes is fine). ── */
 const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelectNode }) {
+  const { NODE } = usePalette();
   return visibleNodes.map((n) => {
     const isSynth = n.node_id?.startsWith("synth-");
     // Every published rx coordinate is displaced by the backend; the disc is
@@ -894,7 +904,7 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
         {disc}
         <Marker
           position={[n.rx_lat, n.rx_lon]}
-          icon={nodeIcon}
+          icon={nodeIcon()}
           zIndexOffset={1000}
           eventHandlers={{ click: () => onSelectNode(n.node_id) }}
         >
@@ -917,6 +927,7 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
 
 /* ── CoverageLayer: memoized — only re-renders when nodes or showCoverage changes ── */
 const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }) {
+  const { COVERAGE, NODE } = usePalette();
   if (!showCoverage) return null;
   return visibleNodes.map((n) => {
     if (n.empirical_polygon && n.empirical_polygon.length >= 3) {
@@ -974,6 +985,7 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
       list of nodes that bounce off it. Only the illuminators our own nodes use,
       not every broadcast tower in range (that would be unreadable clutter). ── */
 const IlluminatorsLayer = memo(function IlluminatorsLayer({ visibleNodes, showIlluminators }) {
+  const { ILLUMINATOR } = usePalette();
   if (!showIlluminators) return null;
   const byTx = new Map();
   for (const n of visibleNodes) {
@@ -1035,6 +1047,7 @@ const FollowController = memo(function FollowController({ followSelected, select
       it needs `useMap()` to access the live smoothed position via
       `smoothRef`, which other map children already pattern. ── */
 const HashSync = memo(function HashSync({ onMove, showRangeRings, selectedHex, smoothRef }) {
+  const { LANE_MN_ADSB } = usePalette();
   const map = useMapEvents({
     moveend: () => {
       const c = map.getCenter();
@@ -1072,6 +1085,8 @@ const HashSync = memo(function HashSync({ onMove, showRangeRings, selectedHex, s
 /* ── Main component ───────────────────────────────────────────── */
 
 export default function LiveAircraftMap() {
+  const { ANOMALY, COVERAGE, LANE_MN_ADSB, LANE_MN_DARK, SELECTED, WARN } = usePalette();
+  const { theme, setTheme } = useMapTheme();
   /* ── Node-owner view ─────────────────────────────────────────── */
   // Resolved before the feed so `ownerOnly` can pick the server-filtered
   // /ws/aircraft/owner endpoint. Only takes effect once the user is logged in.
@@ -1189,7 +1204,22 @@ export default function LiveAircraftMap() {
   // distance column in the list panel.
   const [userLoc, setUserLoc] = useState(null); // { lat, lon } | null
   // Tile theme — voyager (default dark-ish), positron (light), osm (classic).
-  const [tileTheme, setTileTheme] = usePersistedState("tf.tile.theme", "voyager");
+  const [tileTheme, setTileTheme] = usePersistedState("tf.tile.theme", DEFAULT_BASEMAP[DEFAULT_MAP_THEME]);
+
+  // Switching theme moves the basemap with it, but only when the basemap is
+  // still the one the OLD theme picked.  Anyone who has cycled it by hand has
+  // said what they want the tiles to be, and a theme switch is not a request to
+  // undo that — a guard that only checked "is this a mount?" still clobbered
+  // an OSM basemap the moment the theme changed.
+  const prevThemeRef = useRef(theme);
+  useEffect(() => {
+    const prev = prevThemeRef.current;
+    if (prev === theme) return;
+    prevThemeRef.current = theme;
+    setTileTheme((current) =>
+      current === DEFAULT_BASEMAP[prev] ? DEFAULT_BASEMAP[theme] : current,
+    );
+  }, [theme, setTileTheme]);
 
   const animationFrameRef = useRef(null);
   const fixesRef = useRef({});   // hex → last server fix
@@ -1874,13 +1904,17 @@ export default function LiveAircraftMap() {
         onToggleArcs={() => setShowArcs((v) => !v)}
         onToggleUncertainty={() => setShowUncertainty((v) => !v)}
         onToggleSound={() => setSoundOn((v) => !v)}
-        onCycleTheme={() => setTileTheme((t) => t === "voyager" ? "positron" : t === "positron" ? "osm" : "voyager")}
+        onCycleTheme={() => setTileTheme((t) => t === "positron" ? "voyager" : t === "voyager" ? "osm" : "positron")}
         onShare={shareLink}
         onLocate={locateMe}
         onExportAll={exportAllTrails}
         onShowHelp={() => setShowShortcutHelp(true)}
         onTogglePause={handleTogglePause}
         onFit={() => setFocusNonce((n) => n + 1)}
+        filters={filters}
+        onFiltersChange={setFilters}
+        theme={theme}
+        onToggleTheme={() => setTheme(theme === "dark" ? "light" : "dark")}
       />
 
       <div className="live-map-body">
@@ -1922,44 +1956,12 @@ export default function LiveAircraftMap() {
               onToggle={() => setShowStats((v) => !v)}
             />
           </div>
-          {showFilters && (
-            <div style={{
-              position: "absolute", top: 12, left: 52, zIndex: 1000,
-              background: "rgba(2,6,23,0.9)", color: "#e2e8f0", border: "1px solid #1e293b",
-              borderRadius: 8, padding: "10px 12px", fontSize: 12, display: "flex",
-              flexDirection: "column", gap: 8, boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
-            }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <strong>Filters</strong>
-                <button
-                  onClick={() => setFilters({ minFl: "", maxFl: "", minGs: "", type: "all" })}
-                  style={{ background: "none", border: "none", color: INK_MUTED, cursor: "pointer", fontSize: 11 }}
-                >clear</button>
-              </div>
-              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                FL
-                <input type="number" placeholder="min" value={filters.minFl} style={{ width: 56 }}
-                  onChange={(e) => setFilters((f) => ({ ...f, minFl: e.target.value }))} />
-                –
-                <input type="number" placeholder="max" value={filters.maxFl} style={{ width: 56 }}
-                  onChange={(e) => setFilters((f) => ({ ...f, maxFl: e.target.value }))} />
-              </label>
-              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                Min speed (kt)
-                <input type="number" placeholder="0" value={filters.minGs} style={{ width: 56 }}
-                  onChange={(e) => setFilters((f) => ({ ...f, minGs: e.target.value }))} />
-              </label>
-              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                Type
-                <select value={filters.type} onChange={(e) => setFilters((f) => ({ ...f, type: e.target.value }))}>
-                  <option value="all">All</option>
-                  <option value="aircraft">Aircraft</option>
-                  <option value="drone">Drones</option>
-                  <option value="multinode">Multi-node only</option>
-                </select>
-              </label>
-            </div>
-          )}
+          <MapLegend
+            colorByAlt={colorByAlt}
+            showGroundTruth={showGroundTruth}
+            showIlluminators={showIlluminators}
+            hasPlayback={paused && historyRef.current.length > 0}
+          />
           <MapContainer
             center={[initialHash.lat ?? 34.85, initialHash.lon ?? -82.39]}
             zoom={initialHash.z ?? 9}
@@ -1991,6 +1993,7 @@ export default function LiveAircraftMap() {
                 interactive={false}
               />
             )}
+            <InvalidateSizeOnResize />
             <MapClickClear onClear={handleMapClick} />
             <FitBounds aircraft={radarAircraft} nodes={nodes} selectedHex={selectedHex} focusNonce={focusNonce} />
             <FollowController followSelected={followSelected} selectedHex={selectedHex} smoothRef={smoothRef} onDisengage={() => setFollowSelected(false)} />

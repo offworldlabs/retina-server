@@ -1,15 +1,7 @@
 import { useMemo } from "react";
-import { ADSB_SINGLE_COLOR, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
+import { POSITION_SOURCE_ADSB_SINGLE } from "./constants";
 import { drIconState } from "./icons";
-import {
-  ANOMALY,
-  DRONE,
-  INK_MUTED,
-  INK_SUBTLE,
-  LANE_MN_ADSB,
-  LANE_MN_DARK,
-  LANE_SOLVER_SEED,
-} from "./mapPalette";
+import { usePalette } from "./useMapTheme";
 import { M_PER_FT } from "./units";
 
 interface StatsOverlayProps {
@@ -30,6 +22,8 @@ interface StatsOverlayProps {
  * it never hides a target the user is trying to click.
  */
 export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, onToggle }: StatsOverlayProps) {
+  const { ANOMALY, DRONE, LANE_ADSB_SINGLE, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED } =
+    usePalette();
   const stats = useMemo(() => {
     const now = Date.now();
     const total = aircraft.length;
@@ -95,117 +89,94 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
     };
   }, [aircraft, truth]);
 
-  const containerStyle: React.CSSProperties = {
-    background: "rgba(2, 6, 23, 0.92)",
-    color: "#e2e8f0",
-    border: "1px solid #1e293b",
-    borderRadius: 8,
-    boxShadow: "0 2px 8px rgba(0, 0, 0, 0.4)",
-    fontSize: 12,
-    minWidth: visible ? 200 : undefined,
-    overflow: "hidden",
-  };
-  const headerStyle: React.CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: visible ? "8px 12px" : "6px 10px",
-    cursor: "pointer",
-    gap: 8,
-    background: visible ? "rgba(15, 23, 42, 0.6)" : "transparent",
-    borderBottom: visible ? "1px solid #1e293b" : "none",
-    userSelect: "none",
-  };
-  const bodyStyle: React.CSSProperties = {
-    padding: "8px 12px",
-    display: "grid",
-    gridTemplateColumns: "auto 1fr",
-    rowGap: 4,
-    columnGap: 10,
-    alignItems: "baseline",
-  };
-
   return (
-    <div style={containerStyle} role="region" aria-label="Live stats">
-      <div style={headerStyle} onClick={onToggle} title={visible ? "Collapse stats" : "Show stats"}>
-        <strong style={{ letterSpacing: 0.3 }}>{visible ? "Live stats" : `📊 ${stats.total}`}</strong>
-        <span style={{ color: INK_MUTED, fontSize: 11 }}>{visible ? "▲" : "▼"}</span>
-      </div>
-      {visible && (
-        <div style={bodyStyle}>
-          <span style={{ color: INK_MUTED }}>Total</span>
-          <span><strong>{stats.total}</strong>{stats.truth ? ` + ${stats.truth} truth` : ""}</span>
+    <div className={`stats-panel${visible ? "" : " collapsed"}`} role="region" aria-label="Live stats">
+      <button
+        className="stats-panel-header"
+        onClick={onToggle}
+        aria-expanded={visible}
+        title={visible ? "Collapse stats" : "Show stats"}
+      >
+        <span>{visible ? "Live stats" : `${stats.total} tracks`}</span>
+        <span aria-hidden="true">{visible ? "▾" : "▸"}</span>
+      </button>
 
-          <span style={{ color: INK_MUTED }}>MLAT+ADS‑B</span>
-          <span>
+      {visible && (
+        <div className="stats-panel-body">
+          <Row label="Total">
+            <strong>{stats.total}</strong>
+            {stats.truth ? <span className="stats-note">+{stats.truth} truth</span> : null}
+          </Row>
+
+          <Row label="MLAT+ADS‑B">
             <strong style={{ color: LANE_MN_ADSB }}>{stats.mnAssisted}</strong>
             {stats.mnAssistedHidden > 0 && (
-              <span style={{ color: INK_SUBTLE, marginLeft: 5, fontSize: 11 }}
-                    title="Dead-reckoned past the drift budget — no icon drawn">
+              <span className="stats-note" title="Dead-reckoned past the drift budget — no icon drawn">
                 {stats.mnAssistedHidden} hidden
               </span>
             )}
-          </span>
+          </Row>
 
-          <span style={{ color: INK_MUTED }}>MLAT dark</span>
-          <span>
+          <Row label="MLAT dark">
             <strong style={{ color: LANE_MN_DARK }}>{stats.mnDark}</strong>
             {stats.mnDarkStale > 0 && (
-              <span style={{ color: INK_SUBTLE, marginLeft: 5, fontSize: 11 }}
-                    title="Drawn in the degraded stale-solve style — solved, but past the drift budget">
+              <span
+                className="stats-note"
+                title="Drawn in the degraded stale-solve style — solved, but past the drift budget"
+              >
                 {stats.mnDarkStale} stale
               </span>
             )}
-          </span>
+          </Row>
 
-          <span style={{ color: INK_MUTED }}>Solver+ADS‑B</span>
-          <span><strong style={{ color: LANE_SOLVER_SEED }}>{stats.adsbSeed}</strong></span>
+          <Row label="Solver+ADS‑B">
+            <strong style={{ color: LANE_SOLVER_SEED }}>{stats.adsbSeed}</strong>
+          </Row>
 
-          <span style={{ color: INK_MUTED }}>ADS‑B·1N</span>
-          <span><strong style={{ color: ADSB_SINGLE_COLOR }}>{stats.adsbSingle}</strong></span>
+          <Row label="ADS‑B·1N">
+            <strong style={{ color: LANE_ADSB_SINGLE }}>{stats.adsbSingle}</strong>
+          </Row>
 
-          <span style={{ color: INK_MUTED }}>Arc·1N</span>
-          <span>{stats.arcOnly}</span>
-
-          <span style={{ color: INK_MUTED }}>Solver·1N</span>
-          <span>{stats.solverOnly}</span>
+          <Row label="Arc·1N">{stats.arcOnly}</Row>
+          <Row label="Solver·1N">{stats.solverOnly}</Row>
 
           {stats.drones > 0 && (
-            <>
-              <span style={{ color: INK_MUTED }}>Drones</span>
-              <span style={{ color: DRONE }}>{stats.drones}</span>
-            </>
+            <Row label="Drones">
+              <strong style={{ color: DRONE }}>{stats.drones}</strong>
+            </Row>
           )}
 
           {anomalyCount > 0 && (
-            <>
-              <span style={{ color: INK_MUTED }}>Anomalies</span>
-              <span style={{ color: ANOMALY }}>⚠ {anomalyCount}</span>
-            </>
+            <Row label="Anomalies">
+              <strong style={{ color: ANOMALY }}>⚠ {anomalyCount}</strong>
+            </Row>
           )}
 
           {stats.meanAltFt != null && (
-            <>
-              <span style={{ color: INK_MUTED }}>Mean alt</span>
-              <span>FL{Math.round(stats.meanAltFt / 100)}</span>
-            </>
+            <Row label="Mean alt">FL{Math.round(stats.meanAltFt / 100)}</Row>
           )}
 
           {stats.maxGs > 0 && (
-            <>
-              <span style={{ color: INK_MUTED }}>Fastest</span>
-              <span title={stats.maxGsCallsign}>
-                {stats.maxGs} kt
-                {stats.maxGsCallsign && (
-                  <span style={{ color: INK_MUTED, marginLeft: 4, fontSize: 11 }}>
-                    {stats.maxGsCallsign.slice(0, 8)}
-                  </span>
-                )}
-              </span>
-            </>
+            <Row label="Fastest">
+              <span title={stats.maxGsCallsign}>{stats.maxGs} kt</span>
+              {stats.maxGsCallsign && (
+                <span className="stats-note">{stats.maxGsCallsign.slice(0, 8)}</span>
+              )}
+            </Row>
           )}
         </div>
       )}
     </div>
+  );
+}
+
+/** One label/value pair. The grid lives on the body, so each row is just its
+ *  two cells — a fragment, not a wrapper that would break the column tracks. */
+function Row({ label, children }) {
+  return (
+    <>
+      <span className="stats-row-label">{label}</span>
+      <span className="stats-row-value">{children}</span>
+    </>
   );
 }

@@ -100,6 +100,13 @@ body {
   padding: 0;
 }
 
+/* The Physics tab only renders on map hostnames, and there it is a light
+   surface like the rest of the map chrome. The dark rule above stays for the
+   Tower Finder build, which never reaches this tab. */
+.app.map-surface .app-body.physics-active {
+  background: var(--bg-primary);
+}
+
 .app-body.live-active {
   padding: 0;
   max-width: none;
