@@ -19,6 +19,28 @@ TOWER_CONTRACT_ECHO='"user_frequencies_mhz":[1234.5]'
 # and measures ~3s; this is the outage threshold, not the expected time.
 TOWER_CONTRACT_MAX_TIME=45
 
+# Cloudflare Access service-token credentials, for the admin vhosts that sit
+# behind an Access application. Without them the edge answers a browserless
+# request with a 302 to its login page, which arrives here as `got HTTP 302`
+# and reads like a routing fault rather than a missing credential.
+#
+# Empty unless the environment supplies both, so an ungated hostname and a
+# developer running this by hand behave exactly as before. The token only buys
+# passage through the edge: it carries no email claim, so the origin treats it
+# as nobody and it cannot reach an admin route.
+TOWER_CONTRACT_CF_HEADERS=()
+if [ -n "${CF_ACCESS_CLIENT_ID:-}" ] && [ -n "${CF_ACCESS_CLIENT_SECRET:-}" ]; then
+    TOWER_CONTRACT_CF_HEADERS=(
+        -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}"
+        -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}"
+    )
+fi
+
+# Every call site expands it as ${TOWER_CONTRACT_CF_HEADERS[@]+"${...[@]}"}:
+# expanding an empty array is an unbound-variable error under `set -u` before
+# bash 4.4, and staging-smoke-test.sh sources this with `set -euo pipefail`.
+# The `+` guard expands to nothing at all when the array is empty.
+
 # assert_tower_contract <endpoint-url>
 # Endpoint, not host: the api vhost publishes this as /towers, everyone else as
 # /api/towers. Prints why it failed on stdout; returns non-zero.
@@ -27,7 +49,8 @@ assert_tower_contract() {
     # Two attempts: the endpoint depends on third-party APIs, and a blip there
     # must not read as a routing fault and block a release.
     for attempt in 1 2; do
-        resp=$(curl -s --connect-timeout 10 --max-time "$TOWER_CONTRACT_MAX_TIME" \
+        resp=$(curl -s ${TOWER_CONTRACT_CF_HEADERS[@]+"${TOWER_CONTRACT_CF_HEADERS[@]}"} \
+            --connect-timeout 10 --max-time "$TOWER_CONTRACT_MAX_TIME" \
             -w '\n%{http_code}' "${endpoint}?${TOWER_CONTRACT_QUERY}" 2>/dev/null) || {
             [ "$attempt" = 1 ] && { sleep 5; continue; }
             echo "unreachable after 2 attempts: ${endpoint}"
@@ -87,7 +110,8 @@ _assert_json_keys() {
     # Two attempts, same reasoning as assert_tower_contract: elevation fans out
     # to a third party, and a blip there must not read as a routing fault.
     for attempt in 1 2; do
-        resp=$(curl -s --connect-timeout 10 --max-time "$TOWER_CONTRACT_MAX_TIME" \
+        resp=$(curl -s ${TOWER_CONTRACT_CF_HEADERS[@]+"${TOWER_CONTRACT_CF_HEADERS[@]}"} \
+            --connect-timeout 10 --max-time "$TOWER_CONTRACT_MAX_TIME" \
             -w '\n%{http_code}' "$url" 2>/dev/null) || {
             [ "$attempt" = 1 ] && { sleep 5; continue; }
             echo "${label}: unreachable after 2 attempts: ${url}"
@@ -136,7 +160,8 @@ assert_elevation_contract() {
     local url="${1}?${TOWER_CONTRACT_ELEVATION_QUERY}" body code resp attempt
     # Two attempts, as the siblings above: a blip must not read as a routing fault.
     for attempt in 1 2; do
-        resp=$(curl -s --connect-timeout 10 --max-time "$TOWER_CONTRACT_MAX_TIME" \
+        resp=$(curl -s ${TOWER_CONTRACT_CF_HEADERS[@]+"${TOWER_CONTRACT_CF_HEADERS[@]}"} \
+            --connect-timeout 10 --max-time "$TOWER_CONTRACT_MAX_TIME" \
             -w '\n%{http_code}' "$url" 2>/dev/null) || {
             [ "$attempt" = 1 ] && { sleep 5; continue; }
             echo "elevation: unreachable after 2 attempts: ${url}"
