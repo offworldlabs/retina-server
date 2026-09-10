@@ -1,6 +1,15 @@
 import { useMemo } from "react";
 import { ADSB_SINGLE_COLOR, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
 import { drIconState } from "./icons";
+import {
+  ANOMALY,
+  DRONE,
+  INK_MUTED,
+  INK_SUBTLE,
+  LANE_MN_ADSB,
+  LANE_MN_DARK,
+  LANE_SOLVER_SEED,
+} from "./mapPalette";
 import { M_PER_FT } from "./units";
 
 interface StatsOverlayProps {
@@ -120,75 +129,75 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
     <div style={containerStyle} role="region" aria-label="Live stats">
       <div style={headerStyle} onClick={onToggle} title={visible ? "Collapse stats" : "Show stats"}>
         <strong style={{ letterSpacing: 0.3 }}>{visible ? "Live stats" : `📊 ${stats.total}`}</strong>
-        <span style={{ color: "#94a3b8", fontSize: 11 }}>{visible ? "▲" : "▼"}</span>
+        <span style={{ color: INK_MUTED, fontSize: 11 }}>{visible ? "▲" : "▼"}</span>
       </div>
       {visible && (
         <div style={bodyStyle}>
-          <span style={{ color: "#94a3b8" }}>Total</span>
+          <span style={{ color: INK_MUTED }}>Total</span>
           <span><strong>{stats.total}</strong>{stats.truth ? ` + ${stats.truth} truth` : ""}</span>
 
-          <span style={{ color: "#94a3b8" }}>MLAT+ADS‑B</span>
+          <span style={{ color: INK_MUTED }}>MLAT+ADS‑B</span>
           <span>
-            <strong style={{ color: "#38bdf8" }}>{stats.mnAssisted}</strong>
+            <strong style={{ color: LANE_MN_ADSB }}>{stats.mnAssisted}</strong>
             {stats.mnAssistedHidden > 0 && (
-              <span style={{ color: "#64748b", marginLeft: 5, fontSize: 11 }}
+              <span style={{ color: INK_SUBTLE, marginLeft: 5, fontSize: 11 }}
                     title="Dead-reckoned past the drift budget — no icon drawn">
                 {stats.mnAssistedHidden} hidden
               </span>
             )}
           </span>
 
-          <span style={{ color: "#94a3b8" }}>MLAT dark</span>
+          <span style={{ color: INK_MUTED }}>MLAT dark</span>
           <span>
-            <strong style={{ color: "#a78bfa" }}>{stats.mnDark}</strong>
+            <strong style={{ color: LANE_MN_DARK }}>{stats.mnDark}</strong>
             {stats.mnDarkStale > 0 && (
-              <span style={{ color: "#64748b", marginLeft: 5, fontSize: 11 }}
+              <span style={{ color: INK_SUBTLE, marginLeft: 5, fontSize: 11 }}
                     title="Drawn in the degraded stale-solve style — solved, but past the drift budget">
                 {stats.mnDarkStale} stale
               </span>
             )}
           </span>
 
-          <span style={{ color: "#94a3b8" }}>Solver+ADS‑B</span>
-          <span><strong style={{ color: "#2dd4bf" }}>{stats.adsbSeed}</strong></span>
+          <span style={{ color: INK_MUTED }}>Solver+ADS‑B</span>
+          <span><strong style={{ color: LANE_SOLVER_SEED }}>{stats.adsbSeed}</strong></span>
 
-          <span style={{ color: "#94a3b8" }}>ADS‑B·1N</span>
+          <span style={{ color: INK_MUTED }}>ADS‑B·1N</span>
           <span><strong style={{ color: ADSB_SINGLE_COLOR }}>{stats.adsbSingle}</strong></span>
 
-          <span style={{ color: "#94a3b8" }}>Arc·1N</span>
+          <span style={{ color: INK_MUTED }}>Arc·1N</span>
           <span>{stats.arcOnly}</span>
 
-          <span style={{ color: "#94a3b8" }}>Solver·1N</span>
+          <span style={{ color: INK_MUTED }}>Solver·1N</span>
           <span>{stats.solverOnly}</span>
 
           {stats.drones > 0 && (
             <>
-              <span style={{ color: "#94a3b8" }}>Drones</span>
-              <span style={{ color: "#f59e0b" }}>{stats.drones}</span>
+              <span style={{ color: INK_MUTED }}>Drones</span>
+              <span style={{ color: DRONE }}>{stats.drones}</span>
             </>
           )}
 
           {anomalyCount > 0 && (
             <>
-              <span style={{ color: "#94a3b8" }}>Anomalies</span>
-              <span style={{ color: "#f43f5e" }}>⚠ {anomalyCount}</span>
+              <span style={{ color: INK_MUTED }}>Anomalies</span>
+              <span style={{ color: ANOMALY }}>⚠ {anomalyCount}</span>
             </>
           )}
 
           {stats.meanAltFt != null && (
             <>
-              <span style={{ color: "#94a3b8" }}>Mean alt</span>
+              <span style={{ color: INK_MUTED }}>Mean alt</span>
               <span>FL{Math.round(stats.meanAltFt / 100)}</span>
             </>
           )}
 
           {stats.maxGs > 0 && (
             <>
-              <span style={{ color: "#94a3b8" }}>Fastest</span>
+              <span style={{ color: INK_MUTED }}>Fastest</span>
               <span title={stats.maxGsCallsign}>
                 {stats.maxGs} kt
                 {stats.maxGsCallsign && (
-                  <span style={{ color: "#94a3b8", marginLeft: 4, fontSize: 11 }}>
+                  <span style={{ color: INK_MUTED, marginLeft: 4, fontSize: 11 }}>
                     {stats.maxGsCallsign.slice(0, 8)}
                   </span>
                 )}
