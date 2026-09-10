@@ -3,6 +3,7 @@ import { PLANE_PATH, getAircraftColor } from "./icons";
 import { POSITION_SOURCE_ARC_ONLY, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
 import { classifyHex } from "./hexInfo";
 import { usePalette } from "./useMapTheme";
+import { truthClass, truthFill } from "./truthColor";
 import { distanceKm } from "./distance";
 import { M_PER_FT } from "./units";
 
@@ -27,7 +28,8 @@ export default function AircraftListPanel({
   onTogglePin,
   userLoc,
 }) {
-  const { INK_SUBTLE, NODE, TRUTH } = usePalette();
+  const palette = usePalette();
+  const { INK_SUBTLE, NODE } = palette;
   const containerRef     = useRef(null);
   const [scrollTop, setScrollTop]         = useState(0);
   const [containerHeight, setContainerHeight] = useState(600);
@@ -190,7 +192,8 @@ export default function AircraftListPanel({
               <div style={{ position: "absolute", top: offsetY, left: 0, right: 0 }}>
                 {visibleItems.map((ac) => {
                   const isSolved = ac._isSolved;
-                  const color = !isSolved ? TRUTH : getAircraftColor(ac);
+                  // Truth-only rows take the same class colour as their dot.
+                  const color = !isSolved ? truthFill(truthClass(ac), palette) : getAircraftColor(ac);
                   const callsign =
                     ac.flight?.trim() || ac.hex?.slice(-6).toUpperCase() || ac.hex;
                   // Nullish checks: 0 ft, 0 kt and 0° (due north) are real

@@ -325,6 +325,12 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
         {isTruthOnly && (
           <div className="detail-section">
             <div className="detail-section-title">Simulation (debug)</div>
+            {ac.source && (
+              <Field
+                label="Source"
+                value={ac.source === "live" ? "Live ADS-B feed (real aircraft, echoed by synthetic nodes)" : "Simulated spawn"}
+              />
+            )}
             <Field
               label="ADS-B"
               value={

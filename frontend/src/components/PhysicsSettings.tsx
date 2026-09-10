@@ -7,6 +7,7 @@ import { PLANE_PATH } from "./map/icons";
 // One palette for both tabs, so this legend and the map cannot disagree.
 import { usePalette } from "./map/useMapTheme";
 import { activePalette, activeTheme } from "./map/mapPalette";
+import { truthClass, truthFill, truthLegend } from "./map/truthColor";
 import { withCartoKey } from "../utils/basemap";
 import {
   formatKm,
@@ -139,7 +140,7 @@ function serverToScene(data) {
 export default function PhysicsSettings() {
   const palette = usePalette();
   const theme = activeTheme();
-  const { ACCENT_STRONG, BAD, SIM_ANOMALOUS, SIM_COMMERCIAL, SIM_DARK, SIM_DRONE, SIM_SCENE } = palette;
+  const { ACCENT_STRONG, BAD, SIM_ANOMALOUS, SIM_COMMERCIAL, SIM_DARK, SIM_DRONE, SIM_SCENE, TRUTH_LIVE, TRUTH_LIVE_DARK } = palette;
   // Both depend on the palette and nothing else, so neither is rebuilt on the
   // slider drags that dominate this page's re-renders.
   const types = useMemo(() => objectTypes(palette), [palette]);
@@ -692,7 +693,7 @@ export default function PhysicsSettings() {
             Deliberately its own card, not a segment of the composition bar:
             the feed sets the live headcount, so it is not a share of the
             synthetic mix and must not be summed with it. */}
-        <div className="ps-settings-card ps-live-card" style={{ "--accent": SIM_DARK }}>
+        <div className="ps-settings-card ps-live-card" style={{ "--accent": TRUTH_LIVE_DARK }}>
           <div className="ps-settings-label">
             Live ADS-B traffic
             <span className="ps-settings-sublabel"> (real aircraft from adsb.retina.fm, echoed by the synthetic nodes)</span>
@@ -708,8 +709,10 @@ export default function PhysicsSettings() {
               }}
             />
             <span className="ps-toggle-text">Pull live aircraft into the simulation</span>
-            <span className="ps-type-badge" style={{ background: SIM_DARK + "22", color: SIM_DARK }}>
-              {counts.live ?? 0} live · {counts.live_dark ?? 0} dark
+            <span className="ps-type-badge" style={{ background: TRUTH_LIVE_DARK + "22", color: TRUTH_LIVE }}>
+              <span style={{ color: TRUTH_LIVE }}>● {counts.live_adsb ?? 0} ADS-B</span>
+              {" · "}
+              <span style={{ color: TRUTH_LIVE_DARK }}>● {counts.live_dark ?? 0} dark</span>
             </span>
           </label>
           <div className="ps-settings-label ps-live-sublabel">
@@ -728,11 +731,11 @@ export default function PhysicsSettings() {
               className="ps-range"
               aria-label="Dark share of live aircraft"
               style={{
-                "--thumb-color": SIM_DARK,
+                "--thumb-color": TRUTH_LIVE_DARK,
                 "--fill-pct":    `${pct(draft.frac_live_dark)}%`,
               }}
             />
-            <span className="ps-pct-val" style={{ color: SIM_DARK }}>{pct(draft.frac_live_dark)}%</span>
+            <span className="ps-pct-val" style={{ color: TRUTH_LIVE_DARK }}>{pct(draft.frac_live_dark)}%</span>
           </div>
           <p className="ps-type-desc ps-settings-desc">
             Independent of the synthetic mix above: the dark slider and the objects target only govern
@@ -886,13 +889,13 @@ export default function PhysicsSettings() {
         const centerLat = centerSrc.reduce((s, a) => s + a.lat, 0) / centerSrc.length;
         const centerLon = centerSrc.reduce((s, a) => s + a.lon, 0) / centerSrc.length;
 
+        // Same resolver as the live map's truth dots (map/truthColor): the
+        // four plain-aircraft classes (simulated / live-feed × ADS-B / dark)
+        // plus anomalous and drone, so a dot here is the colour it is there.
+        // The "dark" object_type literal is kept for older payloads.
         function acColor(a) {
-          if (a.is_anomalous)           return SIM_ANOMALOUS;
-          if (a.object_type === "drone") return SIM_DRONE;
-          // The backend reports dark aircraft as object_type "aircraft" with
-          // has_adsb false (the "dark" literal is kept for older payloads).
-          if (a.object_type === "dark" || a.has_adsb === false) return SIM_DARK;
-          return SIM_COMMERCIAL;
+          if (a.object_type === "dark") return SIM_DARK;
+          return truthFill(truthClass(a), palette);
         }
 
         return (
@@ -930,9 +933,6 @@ export default function PhysicsSettings() {
                       fillColor:   acColor(a),
                       fillOpacity: 0.85,
                       weight:      a.is_anomalous ? 2 : 1,
-                      // Live-feed aircraft get a dashed ring so real and
-                      // synthetic trajectories can be told apart at a glance.
-                      dashArray:   a.source === "live" ? "2 2" : undefined,
                     }}
                   >
                     <Tooltip>
@@ -945,11 +945,11 @@ export default function PhysicsSettings() {
               </MapContainer>
             </div>
             <div className="ps-gt-legend">
-              <span style={{ color: SIM_COMMERCIAL }}>● Commercial</span>
-              <span style={{ color: SIM_DARK }}>● Dark</span>
+              {truthLegend(palette).map((t) => (
+                <span key={t.cls} style={{ color: t.color }}>● {t.label.replace("Truth: ", "")}</span>
+              ))}
               <span style={{ color: SIM_DRONE }}>● Drone</span>
               <span style={{ color: SIM_ANOMALOUS }}>● Anomalous</span>
-              <span>◌ dashed = live feed</span>
             </div>
           </div>
         );
