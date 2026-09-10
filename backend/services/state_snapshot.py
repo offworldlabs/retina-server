@@ -107,6 +107,8 @@ _SIM_CONFIG_RESTORE_KEYS = frozenset(
         "frac_drone",
         "frac_dark",
         "frac_adsb_outage",
+        "frac_live_dark",
+        "live_adsb_enabled",
         "min_aircraft",
         "max_aircraft",
         "max_range_km",

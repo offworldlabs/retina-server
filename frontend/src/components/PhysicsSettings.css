@@ -369,6 +369,44 @@
   font-weight: 400;
 }
 
+.ps-settings-desc {
+  margin: 8px 0 0;
+}
+
+/* Live ADS-B card — toggle row above the dark-share slider. */
+.ps-live-card {
+  grid-column: 1 / -1;
+}
+
+.ps-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.ps-toggle-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.ps-toggle-text {
+  flex: 1;
+}
+
+.ps-live-sublabel {
+  margin-top: 4px;
+}
+
+.ps-range:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .ps-count-inputs {
   display: flex;
   align-items: center;

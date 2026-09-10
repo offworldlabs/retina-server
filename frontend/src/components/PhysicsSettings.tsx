@@ -121,6 +121,10 @@ function serverToDraft(data) {
     frac_dark:      data.frac_dark,
     min_aircraft:   data.min_aircraft ?? 20,
     max_aircraft:   data.max_aircraft ?? 40,
+    // Live ADS-B seeding — an older backend ships neither key; the
+    // fallbacks match core/state.py's defaults.
+    frac_live_dark:    data.frac_live_dark ?? 0.15,
+    live_adsb_enabled: data.live_adsb_enabled ?? true,
   };
 }
 
@@ -346,6 +350,10 @@ export default function PhysicsSettings() {
           frac_dark:      draft.frac_dark,
           min_aircraft:   Number(draft.min_aircraft),
           max_aircraft:   Number(draft.max_aircraft),
+          // Live-feed knobs: in-process too (the simulator re-casts the live
+          // aircraft already in the air at its next config poll).
+          frac_live_dark:    draft.frac_live_dark,
+          live_adsb_enabled: Boolean(draft.live_adsb_enabled),
         }),
       });
       const body = await res.json().catch(() => ({}));
@@ -359,7 +367,7 @@ export default function PhysicsSettings() {
       lastStampRef.current = typeof stamp === "number" ? stamp : null;
       dirtyRef.current = false;
       setDrift(null);
-      setSaveMsg("Applied — new objects will spawn with updated fractions.");
+      setSaveMsg("Applied — live aircraft are re-cast within ~5 s; new synthetic objects spawn with the updated fractions.");
       setTimeout(() => setSaveMsg(null), 4000);
       await fetchConfig();
     } catch (e) {
@@ -673,6 +681,63 @@ export default function PhysicsSettings() {
               {draft.max_aircraft}
             </span>
           </div>
+          <p className="ps-type-desc ps-settings-desc">
+            Synthetic aircraft only — the live feed below adds its own on top of this.
+          </p>
+        </div>
+
+        {/* Live ADS-B traffic. Real aircraft over the metro (adsb.retina.fm)
+            join the simulated world and are echoed by the synthetic nodes;
+            the slider decides how many of THOSE fly without a transponder.
+            Deliberately its own card, not a segment of the composition bar:
+            the feed sets the live headcount, so it is not a share of the
+            synthetic mix and must not be summed with it. */}
+        <div className="ps-settings-card ps-live-card" style={{ "--accent": SIM_DARK }}>
+          <div className="ps-settings-label">
+            Live ADS-B traffic
+            <span className="ps-settings-sublabel"> (real aircraft from adsb.retina.fm, echoed by the synthetic nodes)</span>
+          </div>
+          <label className="ps-toggle-row">
+            <input
+              type="checkbox"
+              checked={Boolean(draft.live_adsb_enabled)}
+              onChange={e => {
+                const on = e.target.checked;
+                dirtyRef.current = true;
+                setDraft(prev => ({ ...prev, live_adsb_enabled: on }));
+              }}
+            />
+            <span className="ps-toggle-text">Pull live aircraft into the simulation</span>
+            <span className="ps-type-badge" style={{ background: SIM_DARK + "22", color: SIM_DARK }}>
+              {counts.live ?? 0} live · {counts.live_dark ?? 0} dark
+            </span>
+          </label>
+          <div className="ps-settings-label ps-live-sublabel">
+            Dark share of live aircraft
+            <span className="ps-settings-sublabel"> — cast without their transponder; the rest keep their real ADS-B</span>
+          </div>
+          <div className="ps-slider-row">
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={pct(draft.frac_live_dark)}
+              disabled={!draft.live_adsb_enabled}
+              onChange={e => handleSlider("frac_live_dark", Number(e.target.value))}
+              className="ps-range"
+              aria-label="Dark share of live aircraft"
+              style={{
+                "--thumb-color": SIM_DARK,
+                "--fill-pct":    `${pct(draft.frac_live_dark)}%`,
+              }}
+            />
+            <span className="ps-pct-val" style={{ color: SIM_DARK }}>{pct(draft.frac_live_dark)}%</span>
+          </div>
+          <p className="ps-type-desc ps-settings-desc">
+            Independent of the synthetic mix above: the dark slider and the objects target only govern
+            aircraft the simulator spawns itself. Moving this re-casts the live aircraft already in the air.
+          </p>
         </div>
       </div>
 
@@ -824,7 +889,9 @@ export default function PhysicsSettings() {
         function acColor(a) {
           if (a.is_anomalous)           return SIM_ANOMALOUS;
           if (a.object_type === "drone") return SIM_DRONE;
-          if (a.object_type === "dark")  return SIM_DARK;
+          // The backend reports dark aircraft as object_type "aircraft" with
+          // has_adsb false (the "dark" literal is kept for older payloads).
+          if (a.object_type === "dark" || a.has_adsb === false) return SIM_DARK;
           return SIM_COMMERCIAL;
         }
 
@@ -863,9 +930,16 @@ export default function PhysicsSettings() {
                       fillColor:   acColor(a),
                       fillOpacity: 0.85,
                       weight:      a.is_anomalous ? 2 : 1,
+                      // Live-feed aircraft get a dashed ring so real and
+                      // synthetic trajectories can be told apart at a glance.
+                      dashArray:   a.source === "live" ? "2 2" : undefined,
                     }}
                   >
-                    <Tooltip>{a.object_type}{a.is_anomalous ? " ⚠ anomalous" : ""} · {Math.round(a.alt_m)} m</Tooltip>
+                    <Tooltip>
+                      {a.object_type}{a.has_adsb === false && a.object_type === "aircraft" ? " (dark)" : ""}
+                      {a.is_anomalous ? " ⚠ anomalous" : ""}{a.source === "live" ? " · live feed" : ""}
+                      {" · "}{Math.round(a.alt_m)} m
+                    </Tooltip>
                   </CircleMarker>
                 ))}
               </MapContainer>
@@ -875,6 +949,7 @@ export default function PhysicsSettings() {
               <span style={{ color: SIM_DARK }}>● Dark</span>
               <span style={{ color: SIM_DRONE }}>● Drone</span>
               <span style={{ color: SIM_ANOMALOUS }}>● Anomalous</span>
+              <span>◌ dashed = live feed</span>
             </div>
           </div>
         );
