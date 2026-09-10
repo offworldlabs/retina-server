@@ -75,6 +75,16 @@ export interface MapPalette {
   /** The "dark aircraft" ground-truth dot: a simulated target flying without
    *  ADS-B. Grey, and far enough from TRUTH to read beside it. */
   TRUTH_DARK: string;
+  /** Ground truth mirrored from the live ADS-B feed (a real aircraft the
+   *  simulator flies and the synthetic nodes echo), with and without its
+   *  transponder. Teal — the one hue family no lane or furniture uses, so
+   *  the pair reads as "truth, but real" beside the neutral simulated pair
+   *  without borrowing a lane. Measured like the rest: every value clears
+   *  its theme's contrast floor and sits CIEDE2000 ≥ 13 from every other
+   *  mark (worst: teal-600 vs the solver-seed lane on light, 13.5), ≥ 22
+   *  from the neutral truth pair, and ≥ 24 from its own partner. */
+  TRUTH_LIVE: string;
+  TRUTH_LIVE_DARK: string;
   /** MLAT verification overlay: the solve dot, and the dashed vector to the
    *  position it is being checked against. */
   MLAT: string;
@@ -150,6 +160,8 @@ const LIGHT: MapPalette = {
   BEAM_GAP: "#b91c1c", // red-700
   TRUTH: "#1e293b", // slate-800
   TRUTH_DARK: "#64748b", // slate-500
+  TRUTH_LIVE: "#134e4a", // teal-900 — 8.9:1, ΔE 17.0 from the seed lane
+  TRUTH_LIVE_DARK: "#0d9488", // teal-600 — 3.5:1, ΔE 13.5 from the seed lane
   MLAT: "#c026d3", // fuchsia-600
   MLAT_VECTOR: "#a21caf", // fuchsia-700
 
@@ -210,6 +222,8 @@ const DARK: MapPalette = {
   BEAM_GAP: "#f87171", // red-400
   TRUTH: "#f8fafc", // slate-50 — the neutral extreme, mirroring light's ink
   TRUTH_DARK: "#94a3b8", // slate-400
+  TRUTH_LIVE: "#99f6e4", // teal-200 — 13.8:1, ΔE 17.6 from the mn-adsb lane
+  TRUTH_LIVE_DARK: "#0d9488", // teal-600 — 4.7:1, ΔE 22.9 from the mn-adsb lane
   MLAT: "#e879f9", // fuchsia-400
   MLAT_VECTOR: "#f0abfc", // fuchsia-300
 
