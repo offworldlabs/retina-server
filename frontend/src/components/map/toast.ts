@@ -1,3 +1,5 @@
+import { activePalette, activeTheme } from "./mapPalette";
+
 /**
  * Tiny toast system — no library, no provider. A singleton mounts itself
  * lazily into `document.body` the first time `toast()` is called and
@@ -18,19 +20,28 @@ let _container: HTMLDivElement | null = null;
 let _entries: ToastEntry[] = [];
 let _idSeq = 1;
 
-const TONE_BG: Record<Tone, string> = {
-  info: "#1e293b",
-  success: "#065f46",
-  error: "#7f1d1d",
-  warn: "#78350f",
-};
-
-const TONE_BORDER: Record<Tone, string> = {
-  info: "#334155",
-  success: "#10b981",
-  error: "#f43f5e",
-  warn: "#f59e0b",
-};
+// Toasts mount on document.body, outside the `.app.map-surface` subtree the
+// tokens are scoped to, so a var() here resolves to nothing. They read the
+// active palette instead — hardcoding either theme would leave every toast
+// mismatched with the surface it appears over half the time.
+function toneColours(): { bg: Record<Tone, string>; border: Record<Tone, string>; ink: string } {
+  const p = activePalette();
+  const wash = (hex: string, alpha: number) => {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+  };
+  const dark = activeTheme() === "dark";
+  return {
+    bg: {
+      info: dark ? "#132240" : "#ffffff",
+      success: wash(p.GOOD, dark ? 0.18 : 0.1),
+      error: wash(p.BAD, dark ? 0.18 : 0.1),
+      warn: wash(p.WARN, dark ? 0.18 : 0.1),
+    },
+    border: { info: dark ? "#334155" : "#e2e8f0", success: p.GOOD, error: p.BAD, warn: p.WARN },
+    ink: dark ? "#e2e8f0" : "#0f172a",
+  };
+}
 
 function ensureContainer(): HTMLDivElement {
   if (_container && document.body.contains(_container)) return _container;
@@ -54,18 +65,19 @@ function ensureContainer(): HTMLDivElement {
 
 function render() {
   const c = ensureContainer();
+  const tones = toneColours();
   c.innerHTML = "";
   for (const e of _entries) {
     const el = document.createElement("div");
     el.textContent = e.text;
     Object.assign(el.style, {
-      background: TONE_BG[e.tone],
-      border: `1px solid ${TONE_BORDER[e.tone]}`,
-      color: "#e2e8f0",
+      background: tones.bg[e.tone],
+      border: `1px solid ${tones.border[e.tone]}`,
+      color: tones.ink,
       padding: "8px 12px",
-      borderRadius: "6px",
+      borderRadius: "8px",
       fontSize: "13px",
-      boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+      boxShadow: "0 4px 12px rgba(15,23,42,0.35)",
       pointerEvents: "auto",
       maxWidth: "320px",
     } as CSSStyleDeclaration);

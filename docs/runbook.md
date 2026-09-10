@@ -322,6 +322,14 @@ docker compose logs --tail=500 | grep -i "error\|exception\|traceback" | tail -2
 
 `frame_processor` stale is the most serious — it means detection frames are piling up unprocessed or the loop crashed. If the loop crashed, the container needs a restart (tasks are daemon threads and will not restart themselves).
 
+`analytics_refresh` reports its cycle's cost on success only, so a steady stream of these means the work is running rather than merely being attempted:
+
+```bash
+docker compose logs --tail=500 server | grep "Analytics refresh completed"
+```
+
+It paces fixed-rate against `ANALYTICS_REFRESH_INTERVAL_S`, so durations should sit well below it. A duration at or over the interval means the cycle has become the period, and the node cache stops keeping up with registrations; `frontend/e2e/nodes.spec.ts` starts failing its cache wait shortly after.
+
 ### Checking a node's configured geometry
 
 After a node's geometry changes, confirm it registered and is solving sensibly:

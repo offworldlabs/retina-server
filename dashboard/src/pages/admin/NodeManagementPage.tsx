@@ -6,6 +6,7 @@ import {
   LocationPrivacyBadge,
   LocationPrivacyControl,
 } from "../../components/LocationPrivacyControl";
+import { RetnodeLink } from "../../components/RetnodeLink";
 import type { LocationPrivacyState } from "../../types";
 
 const PAGE_SIZE = 25;
@@ -94,7 +95,9 @@ export default function NodeManagementPage() {
                   {online ? "Online" : "Offline"}
                 </span>
                 <PositionStatusBadge status={node.position_status} />
-                {node.name || id}
+                <RetnodeLink nodeId={id} synthetic={node.is_synthetic}>
+                  {node.name || id}
+                </RetnodeLink>
               </div>
               <div className="node-meta">
                 <span className="meta-label">Frequency</span>

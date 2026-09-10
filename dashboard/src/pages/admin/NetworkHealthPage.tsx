@@ -4,6 +4,7 @@ import {
 } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import { api } from "../../api/client";
+import { RetnodeLink } from "../../components/RetnodeLink";
 
 const PAGE_SIZE = 25;
 
@@ -230,7 +231,7 @@ export default function NetworkHealthPage() {
                       return (
                         <tr key={id}>
                           <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
-                            {id}
+                            <RetnodeLink nodeId={id} synthetic={node.is_synthetic} />
                           </td>
                           <td>
                             <span className={`badge ${online ? "online" : "offline"}`}>

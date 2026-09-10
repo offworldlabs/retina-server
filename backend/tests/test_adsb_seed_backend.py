@@ -578,7 +578,7 @@ class TestWorldStamp:
         from services.tcp_handler import _apply_synthetic_adsb
 
         entry = {"hex": "wrld02", "lat": 33.9, "lon": -84.6}
-        _apply_synthetic_adsb({"data": {"timestamp": 1000, "adsb": [entry]}}, "radar3-retnode")
+        _apply_synthetic_adsb({"data": {"timestamp": 1000, "adsb": [entry]}}, "example-node-a")
         assert state.adsb_aircraft["wrld02"]["world"] == "real"
 
     def test_tcp_writer_honours_the_handshake_verdict(self):

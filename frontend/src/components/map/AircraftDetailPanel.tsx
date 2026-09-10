@@ -6,8 +6,10 @@ import { trailToCsv, downloadCsv } from "./trailExport";
 import { copyToClipboard, toast } from "./toast";
 import { M_PER_FT, KNOTS_PER_MS, MS_PER_KNOT } from "./units";
 import { solveUncertaintyRadiusM, solveUncertaintyRadius95M } from "./uncertainty";
+import { usePalette } from "./useMapTheme";
 
 export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError, detectingNodes = [], solveHistory = null }) {
+  const { ANOMALY, DRONE, GOOD, INK_MUTED, INK_SUBTLE, LANE_MN_ADSB } = usePalette();
   if (!ac) return null;
 
   const err = computeError(ac.hex, ac);
@@ -93,17 +95,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
       </div>
       <div className="detail-panel-body">
         {emergency && (
-          <div
-            style={{
-              background: "rgba(244, 63, 94, 0.15)",
-              border: "1px solid #f43f5e",
-              color: "#fecaca",
-              padding: "8px 10px",
-              borderRadius: 6,
-              marginBottom: 10,
-              fontWeight: 600,
-              fontSize: 13,
-            }}
+          <div className="detail-alert"
             title="Emergency squawk code reported by aircraft transponder"
           >
             ⚠ {emergency}
@@ -145,7 +137,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
                 <Field
                   label="Target class"
                   value={
-                    <span style={{ color: isDrone ? "#f59e0b" : "#38bdf8", fontWeight: 600 }}>
+                    <span style={{ color: isDrone ? DRONE : LANE_MN_ADSB, fontWeight: 600 }}>
                       {isDrone ? "\u{1F6F8} Drone" : "\u2708\uFE0F Aircraft"}
                     </span>
                   }
@@ -200,7 +192,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
           {isSolverOnly && (
             <Field
               label="Note"
-              value={<span style={{ color: "#94a3b8", fontStyle: "italic" }}>Position uncertain — single node, no arc</span>}
+              value={<span style={{ color: INK_SUBTLE, fontStyle: "italic" }}>Position uncertain — single node, no arc</span>}
             />
           )}
         </div>
@@ -223,7 +215,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
             <Field
               label="Note"
               value={
-                <span style={{ color: "#94a3b8", fontStyle: "italic" }}>
+                <span style={{ color: INK_SUBTLE, fontStyle: "italic" }}>
                   Position is the ADS-B fix; the arc is the delay locus from the claiming node
                 </span>
               }
@@ -250,13 +242,13 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
         {/* Anomaly detection */}
         {ac.is_anomalous && (
           <div className="detail-section">
-            <div className="detail-section-title" style={{ color: "#f43f5e" }}>
+            <div className="detail-section-title" style={{ color: ANOMALY }}>
               ⚠ Anomaly Detected
             </div>
             <Field
               label="Type"
               value={
-                <span style={{ color: "#f43f5e", fontWeight: 600 }}>
+                <span style={{ color: ANOMALY, fontWeight: 600 }}>
                   {(ac.anomaly_types || []).map(t => ({
                     supersonic: "Supersonic",
                     // Not a claim about the aircraft — a claim about our own
@@ -337,8 +329,8 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
               label="ADS-B"
               value={
                 ac.has_adsb
-                  ? <span style={{ color: "#34d399", fontWeight: 600 }}>yes</span>
-                  : <span style={{ color: "#64748b", fontWeight: 600 }}>no — dark target</span>
+                  ? <span style={{ color: GOOD, fontWeight: 600 }}>yes</span>
+                  : <span style={{ color: INK_MUTED, fontWeight: 600 }}>no — dark target</span>
               }
             />
             <Field label="Callsign" value={ac.adsb_callsign || "—"} />
@@ -347,7 +339,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
               <Field
                 label="Anomaly event"
                 value={
-                  <span style={{ color: "#f43f5e", fontWeight: 600 }}>
+                  <span style={{ color: ANOMALY, fontWeight: 600 }}>
                     {ac.anomaly_event || "anomalous"}
                   </span>
                 }
@@ -360,10 +352,10 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
                   ? (
                     <span style={{ wordBreak: "break-word" }}>
                       {detectingNodes.join(", ")}
-                      <span style={{ color: "#64748b" }}> ({detectingNodes.length})</span>
+                      <span style={{ color: INK_MUTED }}> ({detectingNodes.length})</span>
                     </span>
                   )
-                  : <span style={{ color: "#64748b" }}>no nodes right now</span>
+                  : <span style={{ color: INK_MUTED }}>no nodes right now</span>
               }
             />
           </div>
@@ -378,21 +370,12 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
         )}
 
         {/* Export — handy for enthusiasts pulling tracks into KML/QGIS. */}
-        <div className="detail-section" style={{ borderTop: "1px solid #1e293b", paddingTop: 10 }}>
+        <div className="detail-section detail-actions">
           <button
             type="button"
+            className="btn btn-secondary"
             onClick={handleExportTrail}
-            style={{
-              width: "100%",
-              background: "#1e293b",
-              border: "1px solid #334155",
-              color: "#e2e8f0",
-              padding: "8px 10px",
-              borderRadius: 6,
-              cursor: "pointer",
-              fontSize: 12,
-              fontWeight: 500,
-            }}
+            style={{ width: "100%" }}
             title="Download recent positions as CSV (lat, lon, alt, timestamp)"
           >
             ⇩ Export trail (CSV)
@@ -420,6 +403,7 @@ function Field({ label, value }) {
 }
 
 function MlatVerificationSection({ solverHex }) {
+  const { MLAT } = usePalette();
   const [data, setData] = useState(null);
   const [accuracy, setAccuracy] = useState(null);
 
@@ -448,7 +432,7 @@ function MlatVerificationSection({ solverHex }) {
 
   return (
     <div className="detail-section">
-      <div className="detail-section-title" style={{ color: "#e879f9" }}>
+      <div className="detail-section-title" style={{ color: MLAT }}>
         MLAT Verification
       </div>
       {match && (
@@ -478,6 +462,7 @@ function MlatVerificationSection({ solverHex }) {
 }
 
 function MlatSolveHistorySection({ history }) {
+  const { ANOMALY, GOOD, INK_MUTED, INK_SUBTLE, MLAT, WARN } = usePalette();
   // Per-solve records behind this marker over the last ~30 min, newest first
   // (GET /api/test/mlat-history?hex=...).  gt_error_km is frozen at solve
   // time against the nearest GT trail point — independent of the display's
@@ -492,7 +477,7 @@ function MlatSolveHistorySection({ history }) {
   // inline — heading_err_deg is None whenever truth is near-hover or the
   // solve has no meaningful velocity, which errClass's km buckets don't fit.
   const hdgErrColor = (e) =>
-    e == null ? "#64748b" : e < 15 ? "#34d399" : e < 45 ? "#f59e0b" : "#f43f5e";
+    e == null ? INK_MUTED : e < 15 ? GOOD : e < 45 ? WARN : ANOMALY;
   const ago = (ts) => {
     const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
     return s < 60 ? `-${s}s` : `-${Math.round(s / 60)}m`;
@@ -501,14 +486,14 @@ function MlatSolveHistorySection({ history }) {
 
   return (
     <div className="detail-section">
-      <div className="detail-section-title" style={{ color: "#e879f9" }}>
+      <div className="detail-section-title" style={{ color: MLAT }}>
         Solve History ({solves.length} in {history.window_minutes} min)
       </div>
       {solves.length > 0 && (
         <div style={{ maxHeight: 180, overflowY: "auto", fontSize: 11 }}>
           <table style={{ borderCollapse: "collapse", width: "100%" }}>
             <thead>
-              <tr style={{ color: "#64748b", textAlign: "left" }}>
+              <tr style={{ color: INK_MUTED, textAlign: "left" }}>
                 <th style={cell}>t</th>
                 <th style={cell}>N</th>
                 <th style={cell}>GT err</th>
@@ -520,8 +505,8 @@ function MlatSolveHistorySection({ history }) {
             </thead>
             <tbody>
               {solves.map((s, i) => (
-                <tr key={`${s.ts_ms}-${i}`} style={{ borderTop: "1px solid #1e293b" }}>
-                  <td style={{ ...cell, color: "#94a3b8" }}>{ago(s.ts_ms)}</td>
+                <tr key={`${s.ts_ms}-${i}`} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={{ ...cell, color: INK_SUBTLE }}>{ago(s.ts_ms)}</td>
                   <td style={cell}>{s.n_nodes}</td>
                   <td style={cell}>
                     <span className={errClass(s.gt_error_km)}>
@@ -535,7 +520,7 @@ function MlatSolveHistorySection({ history }) {
                   </td>
                   <td style={cell}>{s.rms_delay}</td>
                   <td style={cell}>{s.rms_doppler}</td>
-                  <td style={{ ...cell, color: "#94a3b8" }}>{s.gt_hex || "—"}</td>
+                  <td style={{ ...cell, color: INK_SUBTLE }}>{s.gt_hex || "—"}</td>
                 </tr>
               ))}
             </tbody>
@@ -546,7 +531,7 @@ function MlatSolveHistorySection({ history }) {
         <Field
           label="Rejects nearby"
           value={
-            <span style={{ color: "#f59e0b" }} title="Gate-rejected solves within 10 km of the latest published solve">
+            <span style={{ color: WARN }} title="Gate-rejected solves within 10 km of the latest published solve">
               {Object.entries(rejects.by_outcome || {})
                 .map(([k, v]) => `${k.replace(/^rejected_|^n2_/, "")}:${v}`)
                 .join("  ") || rejects.n}
