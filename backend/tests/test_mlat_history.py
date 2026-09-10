@@ -135,6 +135,33 @@ class TestRecording:
         assert rec["outcome"] == "n2_unconfirmed"
         assert rec["chi2_per_dof"] is None
 
+    def test_n2_reject_says_which_of_the_two_causes_it_was(self, monkeypatch):
+        """An unfitted reject and a badly fitted one want opposite fixes.
+
+        Measured on the test droplet, 142 of 165 n2_unconfirmed rejects had no
+        fit at all (association attaches cv_epochs only once both node tracks
+        span N2_CONFIRM_MIN_SPAN_S) and 23 had a fit at chi2/dof 18-43.  One
+        outcome string covered both, so the dump could not tell them apart.
+        """
+        monkeypatch.setattr(solver_mod, "_resolve_n2_chi2", lambda *a: None)
+        self._run({"n_nodes": 2, "n_epochs": 3, "track_ids": [11, 22]}, _solve_fn())
+        rec = self._only_record()
+        assert rec["n2_reason"] == "unfitted"
+        assert rec["n_epochs"] == 3
+        assert rec["cv_epochs_present"] is False
+        # Rejects carry an empty source_track_ids (that is rebuilt post-trim on
+        # the publish path only), so without this a rejected pairing could not
+        # be followed across rounds to see whether it ever earned its way in.
+        assert rec["track_ids"] == [11, 22]
+
+    def test_a_badly_fitted_n2_reject_is_labelled_chi2(self, monkeypatch):
+        monkeypatch.setattr(solver_mod, "_resolve_n2_chi2", lambda *a: 31.0)
+        self._run({"n_nodes": 2, "n_epochs": 9, "cv_epochs": [{}, {}]}, _solve_fn())
+        rec = self._only_record()
+        assert rec["outcome"] == "n2_unconfirmed"
+        assert rec["n2_reason"] == "chi2"
+        assert rec["cv_epochs_present"] is True
+
     def test_unconverged_is_recorded(self):
         self._run(_CONFIRMED_N2, _solve_fn(success=False))
         assert self._only_record()["outcome"] == "unconverged"
@@ -147,17 +174,19 @@ class TestRecording:
         assert outcomes == ["published"]
 
     def test_published_record_carries_the_calibrated_sigma(self):
-        """sigma_m is the disc radius the map draws, stamped into history so
-        the 2026-09-05 calibration can be re-run from /api/test/mlat-history
-        alone (fraction(gt_error_km*1000 <= 2.448*sigma_m) ~ 0.95)."""
+        """sigma_m is the sigma behind the disc the map draws, stamped into
+        history so the calibration can be re-run from /api/test/mlat-history
+        alone — which is how the dark floors were fitted (2026-09-06:
+        fraction(gt_error_km*1000 <= 1.5096*sigma_m) ~ 0.68 on the dark lane,
+        <= 2.448*sigma_m ~ 0.95 on the known one)."""
         self._run(_CONFIRMED_N2, _solve_fn(n_nodes=2))
         rec = self._only_record()
         assert rec["outcome"] == "published"
         # Dark lane (no adsb_hex on the input, so the key is minted
-        # mn-dark-*): the n=2 floor of 650 m times the 1.5 dark gain.  No
+        # mn-dark-*): the dark n=2 floor, not the known-lane one.  No
         # pos_sigma_km on this fixture, so the formal term contributes 0.
         assert rec["solve_key"].startswith("mn-dark-")
-        assert rec["sigma_m"] == pytest.approx(975.0)
+        assert rec["sigma_m"] == pytest.approx(2100.0)
 
     def test_known_lane_record_is_not_dark_inflated(self):
         s_in = dict(_CONFIRMED_N2)
@@ -297,9 +326,89 @@ class TestDisplacementCapByLane:
         assert rec["displacement_cap_km"] == 3.0
 
 
+class TestAnchoredN2DisplacementCap:
+    """An ANCHORED n=2 solve is judged at _DARK_FOLLOW_N2_MAX_DISP_KM, which
+    is tighter than either lane cap — see that constant for the live numbers.
+
+    The wide dark cap exists for anchor uncertainty (a 3 km association
+    lattice point); a follow input's guess is the lane's own dead-reckoned
+    prediction instead, so the allowance does not apply, while the n=2 fit is
+    under-determined and needs the tighter leash.  The bottom-up n=2 case is
+    here too because it must NOT move: nothing about its guess changed.
+    """
+
+    KM_DEG = 1.0 / 111.32
+    ANCHOR = "mn-dark-0001"
+
+    def setup_method(self):
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+
+    def teardown_method(self):
+        solver_mod._reset_for_tests()
+
+    def _run_displaced(self, km, *, anchored=True, n_nodes=2):
+        """Solve at (LAT, LON) whose guess sits ``km`` south of it."""
+        s_in = dict(_CONFIRMED_N2)
+        s_in["n_nodes"] = n_nodes
+        s_in["initial_guess"] = {"lat": LAT - km * self.KM_DEG, "lon": LON, "alt_km": 9.0}
+        if anchored:
+            s_in["anchor_key"] = self.ANCHOR
+        result = solver_mod._process_solver_item((s_in, {}, time.time()), _solve_fn())
+        assert len(state.mlat_solve_history) == 1
+        return result, state.mlat_solve_history[0]
+
+    def test_default_cap_is_1_5_km(self):
+        assert solver_mod._DARK_FOLLOW_N2_MAX_DISP_KM == 1.5
+
+    def test_anchored_n2_past_the_tight_cap_is_rejected(self):
+        """3 km: inside the dark lane cap (6 km) that would otherwise judge
+        it, well past the anchored-n2 one."""
+        result, rec = self._run_displaced(3.0)
+        assert result is None
+        assert rec["outcome"] == "rejected_displacement"
+        assert rec["displacement_cap_km"] == solver_mod._DARK_FOLLOW_N2_MAX_DISP_KM
+        assert rec["displacement_km"] == pytest.approx(3.0, abs=0.05)
+        # The reject is the point: it counts toward the follow lane's
+        # two-consecutive-rejects drop, which is the intended guard.
+        assert state.solver_fail_displacement == 1
+        assert state.solver_fail_displacement_dark == 1
+
+    def test_anchored_n2_inside_the_tight_cap_is_published(self):
+        result, rec = self._run_displaced(1.0)
+        assert result is not None and result["success"]
+        assert rec["outcome"] == "published"
+        assert rec["displacement_cap_km"] == solver_mod._DARK_FOLLOW_N2_MAX_DISP_KM
+
+    def test_bottom_up_n2_keeps_the_lane_cap(self):
+        """No anchor_key: an ordinary dark n=2 pairing, whose guess IS the
+        3 km lattice point the wide cap was measured for."""
+        result, rec = self._run_displaced(3.0, anchored=False)
+        assert result is not None and result["success"]
+        assert rec["outcome"] == "published"
+        assert rec["displacement_cap_km"] == solver_mod._MAX_DISPLACEMENT_KM_DARK
+
+    def test_anchored_n3_keeps_the_lane_cap(self):
+        """The tight cap is about the n=2 fit, not about being anchored: at
+        n=3 the fit is determined and the wide cap still applies."""
+        result, rec = self._run_displaced(3.0, n_nodes=3)
+        assert result is not None and result["success"]
+        assert rec["outcome"] == "published"
+        assert rec["displacement_cap_km"] == solver_mod._MAX_DISPLACEMENT_KM_DARK
+
+    def test_cap_is_tunable_without_a_deploy(self, monkeypatch):
+        """The resolved value is what the gate reads, so widening it takes
+        the 3 km reject above back to a publish."""
+        monkeypatch.setattr(solver_mod, "_DARK_FOLLOW_N2_MAX_DISP_KM", 5.0)
+        result, rec = self._run_displaced(3.0)
+        assert result is not None and result["success"]
+        assert rec["outcome"] == "published"
+        assert rec["displacement_cap_km"] == 5.0
+
+
 class TestKeyDecisionObservability:
-    """key_how / key_dist_km on the history record, and the dark key-decision
-    counters behind them.
+    """key_how / key_dist_km / key_dt_s on the history record, and the dark
+    key-decision counters behind them.
 
     Fragmentation is decided in multinode_key_decision and nowhere else, but
     until these fields existed the record kept only the key that came OUT: a
@@ -329,8 +438,10 @@ class TestKeyDecisionObservability:
         rec = state.mlat_solve_history[-1]
         assert rec["outcome"] == "published"
         assert rec["key_how"] == "minted"
-        # Nothing was matched, so there is no distance to report.
+        # Nothing was matched, so there is neither a distance nor a
+        # measurement gap to report.
         assert rec["key_dist_km"] is None
+        assert rec["key_dt_s"] is None
         assert state.solver_key_minted_dark == 1
         assert state.solver_key_proximity_dark == 0
 
@@ -342,8 +453,35 @@ class TestKeyDecisionObservability:
         rec = state.mlat_solve_history[-1]
         assert rec["key_how"] == "proximity"
         assert rec["key_dist_km"] == pytest.approx(3.0, abs=0.3)
+        # Both solves were measured at (near enough) the same instant, so the
+        # signed measurement gap to the matched entry is ~0 and, in
+        # particular, not negative.
+        assert rec["key_dt_s"] == pytest.approx(0.0, abs=0.2)
         assert state.solver_key_minted_dark == 1
         assert state.solver_key_proximity_dark == 1
+        assert state.solver_key_proximity_negdt == 0
+
+    def test_a_solve_measured_before_the_entry_it_joins_is_still_a_re_key(self):
+        """The out-of-order case, end to end.  The second solve's own
+        measurement epoch is 2 s OLDER than the entry the first one published
+        — routine between the dark-follow and bottom-up lanes and across the
+        solver pool's workers — and until the signed dt window it minted a
+        second key for an aircraft that already had one (16 of 67 dark mints
+        in a 22 min live window).  It now joins, and the record carries the
+        negative gap that says which population this re-key came from."""
+        now_ms = int(time.time() * 1000)
+        self._run(_CONFIRMED_N2, _solve_fn(timestamp_ms=now_ms))
+        self._run(
+            _CONFIRMED_N2,
+            _solve_fn(lat=LAT + 1.0 * self.KM_DEG, timestamp_ms=now_ms - 2000),
+        )
+        assert len(state.multinode_tracks) == 1
+        rec = state.mlat_solve_history[-1]
+        assert rec["key_how"] == "proximity"
+        assert rec["key_dt_s"] == pytest.approx(-2.0, abs=0.1)
+        assert state.solver_key_minted_dark == 1
+        assert state.solver_key_proximity_dark == 1
+        assert state.solver_key_proximity_negdt == 1
 
     def test_adsb_lane_records_its_branch_and_no_distance(self):
         """The ADS-B lane keys off the transponder hex unconditionally — a
@@ -363,6 +501,7 @@ class TestKeyDecisionObservability:
         rec = state.mlat_solve_history[-1]
         assert rec["outcome"] == "rejected_rms_delay"
         assert rec["key_how"] is None
+        assert rec["key_dt_s"] is None
         assert rec["key_dist_km"] is None
         assert state.solver_key_minted_dark == 0
 
@@ -523,6 +662,34 @@ class TestGtIdentityBinding:
             raw_lon=lon,
         )
         return state.mlat_solve_history[-1]
+
+    def test_record_carries_alt_source(self):
+        """Which altitude a solve was seeded with has to reach the record.
+
+        gt_error split by alt_source at n=2 is the only way to see whether
+        inheriting an established key's altitude actually moved the position
+        error, and /api/test/mlat-history is where that split is taken.
+        """
+        solver_mod._record_solve_history(
+            "rejected_gate",
+            {
+                "timestamp_ms": int(time.time() * 1000),
+                "initial_guess": {"lat": LAT, "lon": LON, "alt_km": 10.4},
+                "alt_source": "key",
+                "n_nodes": 2,
+            },
+            None,
+            solve_key="mn-dark-test",
+            raw_lat=LAT,
+            raw_lon=LON,
+        )
+        rec = state.mlat_solve_history[-1]
+        assert rec["alt_source"] == "key"
+        assert rec["guess_alt_km"] == 10.4
+
+    def test_record_alt_source_absent_is_none(self):
+        rec = self._record(adsb_hex=None)
+        assert rec["alt_source"] is None
 
     def test_dark_record_keeps_proximity_scan(self):
         _put_gt("abc123")

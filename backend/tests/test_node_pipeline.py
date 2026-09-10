@@ -1,4 +1,4 @@
-"""A v1 node has to look to the pipeline exactly like a blah2_bridge node.
+"""A v1 node has to look to the pipeline like any other source.
 
 The assertions here read the real registries rather than spying on calls:
 what matters is that analytics and the associator end up knowing the node's
@@ -10,6 +10,8 @@ needs a node with a configuration row attached.
 """
 
 import asyncio
+import hashlib
+import json
 import logging
 from datetime import UTC, datetime
 
@@ -24,7 +26,9 @@ from core import state
 from core.nodes import Node, NodeConfig
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from services.frame_processor import get_or_create_node_pipeline
+from services.node_config import position_status
 from services.node_pipeline import (
+    _pipeline_config,
     prime_pipeline,
     prime_pipeline_at_startup,
     register_with_pipeline,
@@ -100,13 +104,60 @@ async def test_registration_reaches_analytics_and_the_associator(node_session, n
     assert state.node_associator.node_geometries[NODE_ID].rx_lat == 51.42
 
 
-async def test_the_pipeline_config_carries_the_defaults_blah2_bridge_supplies(node_session, node):
+async def test_the_pipeline_config_carries_the_defaults_the_wire_config_omits(node_session, node):
     await register_with_pipeline(node_session, node)
 
     config = state.connected_nodes[NODE_ID]["config"]
     assert config["doppler_min"] == -300
     assert config["doppler_max"] == 300
     assert config["min_doppler"] == 15
+
+
+async def test_a_row_with_no_position_registers_unplaced_and_keeps_its_nulls(node_session):
+    """The in-memory copy keeps the row's honest nulls, altitude included.
+
+    Registration resolves nothing: this config is what /api/radar/nodes
+    publishes and what the Parquet archive snapshots, and a terrain default
+    written here would be indistinguishable downstream from a survey. Geometry
+    resolves the altitude at its own boundary instead, and a node with no
+    coordinates builds no pipeline at all."""
+    unplaced = await _seed(
+        node_session,
+        NODE_ID,
+        rx_lat=None,
+        rx_lon=None,
+        rx_alt_ft=None,
+        tx_lat=None,
+        tx_lon=None,
+        tx_alt_ft=None,
+    )
+
+    await register_with_pipeline(node_session, unplaced)
+
+    config = state.connected_nodes[NODE_ID]["config"]
+    assert position_status(config) == "missing_both"
+    assert config["rx_alt_ft"] is None
+    assert config["tx_alt_ft"] is None
+    assert get_or_create_node_pipeline(NODE_ID, PassiveRadarPipeline(DEFAULT_NODE_CONFIG)) is None
+
+
+async def test_the_config_hash_is_computed_before_canonicalisation(node_session):
+    """The TCP heartbeat compares a node's own hash against the stored one, so
+    canonicalisation must not move it: the whole fleet would report config drift
+    on the deploy that introduced it."""
+    # The (0, 0) sentinel, which canonicalisation collapses to a null pair. A
+    # null altitude no longer serves here: it is left null on both sides now,
+    # so the two hashes would agree and the assertion below would pin nothing.
+    node = await _seed(node_session, NODE_ID, rx_lat=0.0, rx_lon=0.0)
+    row_config = await _pipeline_config(node_session, NODE_ID)
+    expected = hashlib.sha256(json.dumps(row_config, sort_keys=True).encode()).hexdigest()[:16]
+
+    await register_with_pipeline(node_session, node)
+
+    entry = state.connected_nodes[NODE_ID]
+    assert entry["config_hash"] == expected
+    stored = hashlib.sha256(json.dumps(entry["config"], sort_keys=True).encode()).hexdigest()[:16]
+    assert stored != expected, "the two forms must differ here, or this pins nothing"
 
 
 async def test_an_aimed_node_keeps_the_azimuth_it_was_configured_with(node_session):
@@ -278,11 +329,7 @@ async def test_startup_priming_loads_the_fleet_from_the_app_session(tmp_path, no
 
 
 async def test_startup_priming_survives_a_database_failure(monkeypatch):
-    """A nodes table that is not there yet must not take the whole API down.
-
-    blah2_bridge is this phase's rollback and runs in the same process, so a
-    priming failure that killed startup would take the fallback with it.
-    """
+    """A nodes table that is not there yet must not take the whole API down."""
 
     def _no_such_table():
         raise OperationalError("SELECT nodes.node_id FROM nodes", {}, Exception("no such table: nodes"))

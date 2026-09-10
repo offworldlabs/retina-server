@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RETINA node ingest
-  version: 1.1.2
+  version: 1.2.0
   description: |
     The RETINA server's HTTP API. The paths under `/v1/nodes` are the RETINA node
     ingest contract, generated from the server and versioned as a unit; everything
@@ -17,7 +17,7 @@ info:
 
     | Status | Means |
     |---|---|
-    | `400` | The body was refused. `invalid_config` for a configuration that failed validation, `invalid_body` for one that failed the schema |
+    | `400` | The body was refused. `invalid_config` for a configuration that failed validation, `invalid_contact` for contact details that failed it, `invalid_body` for a body that failed the schema |
     | `401` | The bearer token is bad, revoked or expired |
     | `403` | Registration refused, without saying why |
     | `409` | The frame names a `config_version` this server never issued |
@@ -71,6 +71,8 @@ tags:
   description: The hot path, plus the liveness signal that runs alongside it.
 - name: configuration
   description: Receiver and transmitter geometry, versioned by the server.
+- name: contact
+  description: Whom to contact about the node, reported by the node itself.
 paths:
   /v1/nodes/register:
     post:
@@ -195,12 +197,10 @@ paths:
       operationId: putConfig
       requestBody:
         description: The full configuration, in the same shape as `config` on `POST /v1/nodes/register`.
-          Free-form here for the reason given on that endpoint.
         content:
           application/json:
             schema:
-              additionalProperties: true
-              type: object
+              $ref: '#/components/schemas/NodeConfig'
         required: true
       responses:
         '200':
@@ -257,6 +257,114 @@ paths:
       - bearerAuth: []
       x-cadence: on local configuration change, on `config_stale`, and on a 409 from a frame
       x-max-body-bytes: 8192
+  /v1/nodes/contact:
+    put:
+      tags:
+      - contact
+      summary: Report the owner's contact details.
+      description: |-
+        Whom to contact about this node. Sent when the details change locally, and not otherwise:
+        nothing on the server asks for them, and no response marks them stale.
+
+        The document is replaced wholesale, so a field omitted or sent as null is cleared. Every
+        field is optional; a node with nothing to report need never call this.
+
+        What is stored is unverified and is used to reach the owner about their own node. It is
+        not an account, and it grants nothing.
+      operationId: putContact
+      requestBody:
+        description: The full contact document. Fields omitted are cleared.
+        content:
+          application/json:
+            schema:
+              properties:
+                first_name:
+                  anyOf:
+                  - type: string
+                    maxLength: 64
+                  - type: 'null'
+                last_name:
+                  anyOf:
+                  - type: string
+                    maxLength: 64
+                  - type: 'null'
+                email:
+                  anyOf:
+                  - type: string
+                    maxLength: 255
+                  - type: 'null'
+                phone:
+                  anyOf:
+                  - type: string
+                    maxLength: 32
+                  - type: 'null'
+              additionalProperties: false
+              type: object
+              required: []
+              title: NodeContact
+              description: |-
+                Whom to contact about this node, as its owner gave them. Every field is optional
+                and nullable, and an absent field means the same as a null one: the document is
+                replaced wholesale, so a field left out is cleared.
+
+                None of it is verified, and none of it identifies anyone to the server: it is
+                carried so that a fault we can see and the owner cannot has somewhere to go.
+        required: true
+      responses:
+        '200':
+          description: When the stored details last changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactResponse'
+        '400':
+          description: The contact details failed validation, as `invalid_contact`. A body that is not
+            JSON at all lands here too, since the remedy is the same. `detail` names the offending field
+            and nothing else, so retina-gui can put the message next to the input it belongs to. Retrying
+            unchanged will not help.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: false
+        '401':
+          description: 'Token bad, revoked or expired. Stop streaming, surface it locally, and keep heartbeating.
+            Do not re-register: recovering a token needs an operator to reactivate the node, and treating
+            a 401 as the trigger turns a deliberate revocation into a registration storm.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: true
+        '413':
+          description: 'The body exceeded this path''s cap, which is checked from `Content-Length` before
+            parsing. Per-field bounds in the schemas do not make this unreachable: `HeartbeatRequest.errors`
+            alone permits 16 KiB of strings, `RegisterRequest.config` carries no bound at all, and JSON
+            puts no length limit on a number''s text, so a schema-valid body can still exceed it.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: false
+        5XX:
+          description: 'Server side, though a 502 or 504 is the edge''s own response rather than the origin''s,
+            and carries whatever body that gateway sends instead of this `Error`. Abandon the request
+            and retry, backing off with jitter if it persists: on detection and heartbeat that retry is
+            the node''s next frame or beat rather than a resend of this one, while registration and configuration
+            retry the identical body.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: backoff
+          x-terminal: false
+      security:
+      - bearerAuth: []
+      x-cadence: on local change only
+      x-max-body-bytes: 2048
   /v1/nodes/detection:
     post:
       tags:
@@ -533,6 +641,16 @@ components:
       required:
       - config_version
       title: ConfigResponse
+    ContactResponse:
+      properties:
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - updated_at
+      title: ContactResponse
     DetectionAck:
       properties:
         accepted:
@@ -704,6 +822,113 @@ components:
       - streaming_allowed
       - node_ref
       title: HeartbeatResponse
+    NodeConfig:
+      type: object
+      title: NodeConfig
+      description: |-
+        The receiver and illuminator geometry, the radio parameters and the association
+        tolerances. Every field is required.
+
+        The six coordinate fields are nullable, for a node whose owner cannot supply the
+        geometry. Such a node registers and streams, and its detections are counted, but
+        it places nothing on the map until a position arrives. A latitude and its
+        longitude are given together or both null.
+
+        Necessary but not sufficient. A receiver and illuminator at the same point are
+        refused, as is a value that is not a finite number, and neither is expressible
+        here: both answer `400 invalid_config` naming the field.
+      properties:
+        rx_lat:
+          anyOf:
+          - type: number
+            minimum: -90.0
+            maximum: 90.0
+          - type: 'null'
+        rx_lon:
+          anyOf:
+          - type: number
+            minimum: -180.0
+            maximum: 180.0
+          - type: 'null'
+        rx_alt_ft:
+          anyOf:
+          - type: number
+            minimum: -1500.0
+            maximum: 30000.0
+          - type: 'null'
+        tx_lat:
+          anyOf:
+          - type: number
+            minimum: -90.0
+            maximum: 90.0
+          - type: 'null'
+        tx_lon:
+          anyOf:
+          - type: number
+            minimum: -180.0
+            maximum: 180.0
+          - type: 'null'
+        tx_alt_ft:
+          anyOf:
+          - type: number
+            minimum: -1500.0
+            maximum: 30000.0
+          - type: 'null'
+        fc_hz:
+          type: number
+          minimum: 1000000.0
+          maximum: 6000000000.0
+        fs_hz:
+          type: number
+          minimum: 100000.0
+          maximum: 20000000.0
+        max_range_km:
+          type: number
+          exclusiveMinimum: 0.0
+          maximum: 1000.0
+        cpi_s:
+          type: number
+          exclusiveMinimum: 0.0
+          maximum: 10.0
+        delay_tolerance_us:
+          type: number
+          exclusiveMinimum: 0.0
+        doppler_tolerance_hz:
+          type: number
+          exclusiveMinimum: 0.0
+        tx_callsign:
+          type: string
+          minLength: 1
+          maxLength: 32
+        beam_width_deg:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+            maximum: 360.0
+          - type: 'null'
+        beam_azimuth_deg:
+          anyOf:
+          - type: number
+            minimum: 0.0
+            exclusiveMaximum: 360.0
+          - type: 'null'
+      required:
+      - beam_azimuth_deg
+      - beam_width_deg
+      - cpi_s
+      - delay_tolerance_us
+      - doppler_tolerance_hz
+      - fc_hz
+      - fs_hz
+      - max_range_km
+      - rx_alt_ft
+      - rx_lat
+      - rx_lon
+      - tx_alt_ft
+      - tx_callsign
+      - tx_lat
+      - tx_lon
+      additionalProperties: false
     NodeHealth:
       properties:
         cpu_pct:
@@ -807,8 +1032,25 @@ components:
       - choice
       title: PublicationChoice
       description: |-
-        Whether the owner chose to publish this node's detections. `choice` is
-        required, with no default: a node must send an explicit value.
+        Whether this node's location is published, which is the only thing the
+        choice governs. Either way the node runs its full pipeline, joins track
+        association and contributes to multinode solves, and the network keeps
+        everything it detects.
+
+        `public`: the receiver appears on the public map at an approximate position,
+        displaced by the deployment's location fuzz, with the uncertainty radius
+        declared beside it. There is no option to publish a precise position.
+
+        `private`: nothing that locates the receiver is published — no marker, no
+        uncertainty disc, no coverage polygon, no ambiguity arcs, no single-node
+        aircraft, no receiver coordinate, no archive listing. Solves the node
+        contributed to are still published; the node's id is struck from the
+        membership lists they carry.
+
+        `choice` is required, with no default: a node must send an explicit value.
+        The choice can also be set later from the dashboard, by the node's owner or
+        an admin, and that later answer outranks this one — so what is sent here is
+        the answer at onboarding rather than the last word.
     RegisterRequest:
       properties:
         node_id:
@@ -822,9 +1064,7 @@ components:
         agreements:
           $ref: '#/components/schemas/Agreements'
         config:
-          additionalProperties: true
-          type: object
-          title: Config
+          $ref: '#/components/schemas/NodeConfig'
       additionalProperties: false
       type: object
       required:

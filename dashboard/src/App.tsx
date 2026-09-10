@@ -3,6 +3,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import { useAuth } from "./context/AuthContext";
 import LoginPage from "./pages/LoginPage";
 import DashboardLayout from "./components/DashboardLayout";
+import { resolveSurface, warnIfModeIgnored } from "./utils/surface";
 
 // User pages — lazy-loaded so each chunk is only downloaded when first visited
 const OverviewPage = lazy(() => import("./pages/user/OverviewPage"));
@@ -32,9 +33,14 @@ const ConfigPage = lazy(() => import("./pages/admin/ConfigPage"));
 const SystemMetricsPage = lazy(() => import("./pages/admin/SystemMetricsPage"));
 const MlatVerificationPage = lazy(() => import("./pages/admin/MlatVerificationPage"));
 
-const isAdminSite =
-  window.location.hostname.startsWith("admin.") ||
-  new URLSearchParams(window.location.search).get("mode") === "admin";
+const { isAdmin: isAdminSite, modeParamIgnored } = resolveSurface(
+  window.location.hostname,
+  window.location.search
+);
+
+// `?mode=admin` used to work on any host, so say why it stopped rather than
+// quietly rendering the wrong surface to someone following an old link.
+warnIfModeIgnored(modeParamIgnored);
 
 function RequireAuth({ children }) {
   const { user, loading } = useAuth();

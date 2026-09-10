@@ -4,9 +4,12 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { PositionStatusBadge, POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
+import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
 
 export default function OverviewPage() {
   const [nodes, setNodes] = useState([]);
+  const [myNodes, setMyNodes] = useState([]);
   const [analytics, setAnalytics] = useState(null);
   const [aircraftCount, setAircraftCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -14,8 +17,10 @@ export default function OverviewPage() {
   const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
   const fetchData = () => {
-    Promise.all([api.nodes(), api.analytics(), api.aircraft()])
-      .then(([n, a, ac]) => {
+    // myNodes fails soft: it is only needed for the needs-attention list, and
+    // an unauthenticated view of this page must still render the rest.
+    Promise.all([api.nodes(), api.analytics(), api.aircraft(), api.myNodes().catch(() => [])])
+      .then(([n, a, ac, mine]) => {
         // n.nodes is a dict {node_id: {status, ...}}
         const nodeMap = n.nodes || {};
         // a.nodes is a dict {node_id: {trust, metrics, detection_area, reputation}}
@@ -26,6 +31,7 @@ export default function OverviewPage() {
           _analytics: analyticsMap[id] || {},
         }));
         setNodes(nodeList);
+        setMyNodes(Array.isArray(mine) ? mine : []);
         setAnalytics(a);
         setAircraftCount((ac.aircraft || []).length);
       })
@@ -43,6 +49,19 @@ export default function OverviewPage() {
 
   const nodeList = Array.isArray(nodes) ? nodes : [];
   const onlineCount = nodeList.filter((n) => n.status !== "disconnected" && n.status != null).length;
+  // Merged with the owner's own nodes, because /api/radar/nodes drops private
+  // ones: a private node with no position would otherwise appear nowhere its
+  // owner looks, and this list is the only place they are told.
+  const byId = new Map<string, any>(nodeList.map((n) => [n.node_id, n]));
+  for (const n of myNodes) if (!byId.has(n.node_id)) byId.set(n.node_id, n);
+  const needsAttention = [...byId.values()].filter((n) => n.position_status && n.position_status !== "positioned");
+  // Same reason the merge exists at all: a private node is dropped from
+  // /api/radar/nodes, so its owner would otherwise not find it in the grid
+  // below — the one place they are told it is private.
+  const myNodeCards = [...byId.values()];
+  const privateById = new Map<string, boolean>(
+    myNodes.map((n) => [n.node_id, !!n.location_private]),
+  );
   // detection_area.n_detections is the most reliably populated counter
   const totalFrameDetections = nodeList.reduce(
     (s, n) => s + (n._analytics?.metrics?.total_detections || n._analytics?.detection_area?.n_detections || 0),
@@ -81,6 +100,38 @@ export default function OverviewPage() {
           <div className="stat-value">{nodeList.length}</div>
         </div>
       </div>
+
+      {needsAttention.length > 0 && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header">
+            <h3>Needs Attention</h3>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              {POSITION_STATUS_EXPLANATION}
+            </span>
+          </div>
+          <div className="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>Node</th>
+                  <th>Position</th>
+                </tr>
+              </thead>
+              <tbody>
+                {needsAttention.map((node) => {
+                  const id = node.node_id || node.id;
+                  return (
+                    <tr key={id} style={{ cursor: "pointer" }} onClick={() => navigate(`/nodes/${id}`)}>
+                      <td style={{ color: "var(--accent)" }}>{node.name || id}</td>
+                      <td><PositionStatusBadge status={node.position_status} /></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {chartData.length > 0 && (
         <div className="card" style={{ marginBottom: 24 }}>
@@ -121,7 +172,7 @@ export default function OverviewPage() {
           <h3>My Nodes</h3>
         </div>
         <div className="node-grid" style={{ padding: 16 }}>
-          {nodeList.map((node) => {
+          {myNodeCards.map((node) => {
             const id = node.node_id || node.id;
             const online = node.status !== "disconnected" && node.status != null;
             return (
@@ -134,6 +185,7 @@ export default function OverviewPage() {
                   <span className={`badge ${online ? "online" : "offline"}`}>
                     {online ? "Online" : "Offline"}
                   </span>
+                  <LocationPrivacyBadge isPrivate={privateById.get(id)} />
                   {node.name || id}
                 </div>
                 <div className="node-meta">
@@ -153,7 +205,7 @@ export default function OverviewPage() {
               </div>
             );
           })}
-          {nodeList.length === 0 && (
+          {myNodeCards.length === 0 && (
             <div className="empty-state">No nodes connected yet</div>
           )}
         </div>

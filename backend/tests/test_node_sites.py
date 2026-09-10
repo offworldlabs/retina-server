@@ -22,8 +22,9 @@ from services.geo import haversine_km  # noqa: E402
 
 _SALT = "test-salt-for-node-sites"
 
-# One roof, two receivers, two illuminators — the shape of radar3/radar3a.
-_SITE_LAT, _SITE_LON = 33.939182, -84.65191
+# One roof, two receivers, two illuminators. Invented coordinates: the real
+# receive sites are private, and this repo is public.
+_SITE_LAT, _SITE_LON = 34.0, -84.0
 
 
 @pytest.fixture(autouse=True)
@@ -58,16 +59,16 @@ class TestSiteIdentity:
         assert ns.site_identity("solo") == "solo"
 
     def test_co_located_nodes_key_on_the_lowest_id(self):
-        _connect("radar3-retnode", _SITE_LAT, _SITE_LON)
-        _connect("radar3a-retnode", _SITE_LAT, _SITE_LON)
-        assert ns.site_identity("radar3-retnode") == "radar3-retnode"
-        assert ns.site_identity("radar3a-retnode") == "radar3-retnode"
+        _connect("example-node-a", _SITE_LAT, _SITE_LON)
+        _connect("example-node-b", _SITE_LAT, _SITE_LON)
+        assert ns.site_identity("example-node-a") == "example-node-a"
+        assert ns.site_identity("example-node-b") == "example-node-a"
 
     def test_a_third_node_joins_the_same_site(self):
-        for node_id in ("radar3-retnode", "radar3a-retnode", "radar3b-retnode"):
+        for node_id in ("example-node-a", "example-node-b", "example-node-c"):
             _connect(node_id, _SITE_LAT, _SITE_LON)
-        identities = {ns.site_identity(n) for n in ("radar3-retnode", "radar3a-retnode", "radar3b-retnode")}
-        assert identities == {"radar3-retnode"}
+        identities = {ns.site_identity(n) for n in ("example-node-a", "example-node-b", "example-node-c")}
+        assert identities == {"example-node-a"}
 
     def test_a_disconnected_site_mate_does_not_dissolve_the_site(self):
         """The map must not move a node because its neighbour dropped off.
@@ -77,13 +78,13 @@ class TestSiteIdentity:
         re-fuzz the survivor on every disconnect, which is a second sample of
         the site handed out for free.
         """
-        _connect("radar3-retnode", _SITE_LAT, _SITE_LON)
-        _connect("radar3a-retnode", _SITE_LAT, _SITE_LON)
-        assert ns.site_identity("radar3a-retnode") == "radar3-retnode"
+        _connect("example-node-a", _SITE_LAT, _SITE_LON)
+        _connect("example-node-b", _SITE_LAT, _SITE_LON)
+        assert ns.site_identity("example-node-b") == "example-node-a"
 
-        del state.connected_nodes["radar3-retnode"]
+        del state.connected_nodes["example-node-a"]
         ns._expires_at = 0.0  # force the refresh a disconnect would eventually cause
-        assert ns.site_identity("radar3a-retnode") == "radar3-retnode"
+        assert ns.site_identity("example-node-b") == "example-node-a"
 
     def test_a_node_with_no_known_position_keys_on_itself(self):
         assert ns.site_identity("never-seen") == "never-seen"
@@ -103,17 +104,17 @@ class TestSiteIdentity:
 
 class TestSharedOffset:
     def test_co_located_nodes_publish_the_same_point(self):
-        _connect("radar3-retnode", _SITE_LAT, _SITE_LON)
-        _connect("radar3a-retnode", _SITE_LAT, _SITE_LON)
-        first = pl.public_latlon(_SITE_LAT, _SITE_LON, "radar3-retnode")
-        second = pl.public_latlon(_SITE_LAT, _SITE_LON, "radar3a-retnode")
+        _connect("example-node-a", _SITE_LAT, _SITE_LON)
+        _connect("example-node-b", _SITE_LAT, _SITE_LON)
+        first = pl.public_latlon(_SITE_LAT, _SITE_LON, "example-node-a")
+        second = pl.public_latlon(_SITE_LAT, _SITE_LON, "example-node-b")
         assert first == second
 
     def test_the_shared_point_is_still_displaced(self):
         """Sharing an offset must not mean sharing the true position."""
-        _connect("radar3-retnode", _SITE_LAT, _SITE_LON)
-        _connect("radar3a-retnode", _SITE_LAT, _SITE_LON)
-        lat, lon = pl.public_latlon(_SITE_LAT, _SITE_LON, "radar3a-retnode")
+        _connect("example-node-a", _SITE_LAT, _SITE_LON)
+        _connect("example-node-b", _SITE_LAT, _SITE_LON)
+        lat, lon = pl.public_latlon(_SITE_LAT, _SITE_LON, "example-node-b")
         assert haversine_km(_SITE_LAT, _SITE_LON, lat, lon) >= 0.4
 
     def test_the_centroid_attack_gains_nothing(self):
@@ -125,10 +126,10 @@ class TestSharedOffset:
         leaves the attacker one sample: the centroid of the published points is
         the published point, which is a whole displacement away from home.
         """
-        for node_id in ("radar3-retnode", "radar3a-retnode", "radar3b-retnode"):
+        for node_id in ("example-node-a", "example-node-b", "example-node-c"):
             _connect(node_id, _SITE_LAT, _SITE_LON)
         points = [
-            pl.public_latlon(_SITE_LAT, _SITE_LON, n) for n in ("radar3-retnode", "radar3a-retnode", "radar3b-retnode")
+            pl.public_latlon(_SITE_LAT, _SITE_LON, n) for n in ("example-node-a", "example-node-b", "example-node-c")
         ]
         centroid_lat = sum(p[0] for p in points) / len(points)
         centroid_lon = sum(p[1] for p in points) / len(points)
@@ -156,19 +157,19 @@ class TestSharedOffset:
         anchor, so a site-mate whose delta was computed from its own id would
         put its arc and its trail around a point its marker is not on.
         """
-        _connect("radar3-retnode", _SITE_LAT, _SITE_LON)
-        _connect("radar3a-retnode", _SITE_LAT, _SITE_LON)
-        assert pl.public_point_delta(_SITE_LAT, "radar3a-retnode") == pl.public_point_delta(_SITE_LAT, "radar3-retnode")
+        _connect("example-node-a", _SITE_LAT, _SITE_LON)
+        _connect("example-node-b", _SITE_LAT, _SITE_LON)
+        assert pl.public_point_delta(_SITE_LAT, "example-node-b") == pl.public_point_delta(_SITE_LAT, "example-node-a")
         vertices = [[_SITE_LAT, _SITE_LON], [_SITE_LAT + 0.1, _SITE_LON + 0.1]]
-        assert pl.translate_polygon(vertices, "radar3a-retnode") == pl.translate_polygon(vertices, "radar3-retnode")
+        assert pl.translate_polygon(vertices, "example-node-b") == pl.translate_polygon(vertices, "example-node-a")
 
 
 class TestAudit:
     def test_a_shared_site_is_reported(self):
-        _connect("radar3-retnode", _SITE_LAT, _SITE_LON)
-        _connect("radar3a-retnode", _SITE_LAT, _SITE_LON)
+        _connect("example-node-a", _SITE_LAT, _SITE_LON)
+        _connect("example-node-b", _SITE_LAT, _SITE_LON)
         report = ns.colocation_report()
-        assert report["shared_sites"] == {"radar3-retnode": ["radar3-retnode", "radar3a-retnode"]}
+        assert report["shared_sites"] == {"example-node-a": ["example-node-a", "example-node-b"]}
         assert report["near_misses"] == []
 
     def test_a_near_miss_is_reported_not_merged(self):
@@ -211,28 +212,28 @@ class TestAudit:
 
 class TestSources:
     def test_a_file_defined_node_is_a_site(self, monkeypatch, tmp_path):
-        """radar3/radar3a live in a runtime file, not in the database."""
+        """The blah2 bridge nodes live in a runtime file, not in the database."""
         doc = tmp_path / "blah2_nodes.json"
         doc.write_text(
             '{"nodes": ['
-            f'{{"node_id": "radar3-retnode", "rx_lat": {_SITE_LAT}, "rx_lon": {_SITE_LON}}},'
-            f'{{"node_id": "radar3a-retnode", "rx_lat": {_SITE_LAT}, "rx_lon": {_SITE_LON}}}'
+            f'{{"node_id": "example-node-a", "rx_lat": {_SITE_LAT}, "rx_lon": {_SITE_LON}}},'
+            f'{{"node_id": "example-node-b", "rx_lat": {_SITE_LAT}, "rx_lon": {_SITE_LON}}}'
             "]}",
             encoding="utf-8",
         )
         monkeypatch.setattr(ns, "_NODE_FILES", ("blah2_nodes.json",))
         monkeypatch.setattr(ns, "runtime_path", lambda name: tmp_path / name)
         ns._reset_for_tests()
-        assert ns.site_identity("radar3a-retnode") == "radar3-retnode"
+        assert ns.site_identity("example-node-b") == "example-node-a"
 
     def test_a_failing_source_does_not_break_the_others(self, monkeypatch):
         def boom():
             raise RuntimeError("database is gone")
 
         monkeypatch.setattr(ns, "_positions_from_db", boom)
-        _connect("radar3-retnode", _SITE_LAT, _SITE_LON)
-        _connect("radar3a-retnode", _SITE_LAT, _SITE_LON)
-        assert ns.site_identity("radar3a-retnode") == "radar3-retnode"
+        _connect("example-node-a", _SITE_LAT, _SITE_LON)
+        _connect("example-node-b", _SITE_LAT, _SITE_LON)
+        assert ns.site_identity("example-node-b") == "example-node-a"
 
     def test_a_site_is_not_invented_from_a_missing_source(self, monkeypatch):
         def boom():

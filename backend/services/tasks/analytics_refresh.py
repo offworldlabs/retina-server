@@ -24,8 +24,10 @@ from core import state
 from services.geo import bearing_deg, bistatic_delay_us, haversine_km, node_beam_params, point_in_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
+from services.node_config import position_status
 from services.node_ref import public_node_ref
 from services.node_sites import log_colocation_audit
+from services.public_geometry import without_receiver_geometry
 from services.public_location import (
     fuzz_enabled,
     location_uncertainty_km,
@@ -394,6 +396,7 @@ def _refresh_analytics_and_nodes():
                 ),
                 "sample_rate": (info.get("config", {}).get("Fs") or info.get("config", {}).get("fs_hz")),
                 "location": _public_location_block(nid, info.get("config", {})),
+                "position_status": position_status(info.get("config", {})),
             }
             for nid, info in _published_nodes
         },
@@ -621,18 +624,18 @@ def _refresh_missed_detections(nodes_snapshot: list):
         if info.get("status") == "disconnected":
             continue
         cfg = info.get("config", {})
+        if position_status(cfg) != "positioned":
+            continue
         rx_lat = cfg.get("rx_lat")
         rx_lon = cfg.get("rx_lon")
         tx_lat = cfg.get("tx_lat")
         tx_lon = cfg.get("tx_lon")
-        if not all((rx_lat, rx_lon, tx_lat, tx_lon)):
-            continue
 
         # Resolved the same way every module resolves it: explicit aim, else
         # broadside off the RX→TX baseline (Yagi sits perpendicular to it),
         # else omnidirectional; width falls back to the shared YAGI default.
-        # tx_lat/tx_lon are already known truthy from the `all(...)` check
-        # above, so beam_azimuth can't come back None here.
+        # The position_status gate above admits only a node with both ends
+        # placed, so beam_azimuth cannot come back None here.
         params = node_beam_params(cfg)
         beam_width = params["beam_width_deg"]
         max_range = params["max_range_km"]
@@ -969,12 +972,12 @@ def _refresh_node_verification(node_id: str):
         if not measured_delay_us or measured_delay_us <= 0:
             continue
 
-        tx_lat = cfg.get("tx_lat") or 0.0
-        tx_lon = cfg.get("tx_lon") or 0.0
-        rx_lat = cfg.get("rx_lat") or 0.0
-        rx_lon = cfg.get("rx_lon") or 0.0
-        if not tx_lat or not rx_lat:
+        if position_status(cfg) != "positioned":
             continue
+        tx_lat = cfg.get("tx_lat")
+        tx_lon = cfg.get("tx_lon")
+        rx_lat = cfg.get("rx_lat")
+        rx_lon = cfg.get("rx_lon")
 
         solver_lat = getattr(track, "lat", 0.0) or 0.0
         solver_lon = getattr(track, "lon", 0.0) or 0.0
@@ -1290,6 +1293,19 @@ def _refresh_mlat_accuracy_stats() -> None:
     )
 
 
+def _publish_mlat_verification(result: dict) -> None:
+    """Serialise a verification result onto the store the public route serves.
+
+    Both writers go through here so a third cannot reach those bytes without
+    the receiver-geometry pass. The store's only readers are unauthenticated
+    (GET /api/test/mlat-verification, and the dashboard summary beside it), so
+    nothing downstream wants the withheld fields back.
+    """
+    state.latest_mlat_verification_bytes = orjson.dumps(
+        without_receiver_geometry(result), option=orjson.OPT_SERIALIZE_NUMPY
+    )
+
+
 def _refresh_mlat_verification():
     """Compare multinode solve results to ground-truth trails pushed by the fleet orchestrator.
 
@@ -1416,7 +1432,7 @@ def _refresh_mlat_verification():
         # /api/test/mlat-accuracy silently serves numbers frozen at the moment
         # the truth feed stopped, with nothing marking them stale.
         _refresh_mlat_accuracy_stats()
-        state.latest_mlat_verification_bytes = orjson.dumps(
+        _publish_mlat_verification(
             {
                 "computed_at": round(now, 1),
                 "skip_reason": "no_truth_candidates",
@@ -1438,8 +1454,7 @@ def _refresh_mlat_verification():
                     "nearest_truth": {"mean_km": None, "median_km": None, "p95_km": None},
                     "tracks": [],
                 },
-            },
-            option=orjson.OPT_SERIALIZE_NUMPY,
+            }
         )
         return
 
@@ -1629,19 +1644,15 @@ def _refresh_mlat_verification():
         max_bistatic_deg: float | None = None
         for cid in r.get("contributing_node_ids", []):
             cfg = node_cfg_snap.get(cid, {})
-            t_tx_lat = cfg.get("tx_lat")
-            t_tx_lon = cfg.get("tx_lon")
-            t_rx_lat = cfg.get("rx_lat")
-            t_rx_lon = cfg.get("rx_lon")
-            if not all((t_tx_lat, t_tx_lon, t_rx_lat, t_rx_lon)):
+            if position_status(cfg) != "positioned":
                 continue
             ang = _bistatic_angle_deg(
                 solver_lat,
                 solver_lon,
-                float(t_tx_lat),
-                float(t_tx_lon),
-                float(t_rx_lat),
-                float(t_rx_lon),
+                cfg["tx_lat"],
+                cfg["tx_lon"],
+                cfg["rx_lat"],
+                cfg["rx_lon"],
             )
             if max_bistatic_deg is None or ang > max_bistatic_deg:
                 max_bistatic_deg = ang
@@ -1766,7 +1777,7 @@ def _refresh_mlat_verification():
             "tracks": sorted(unmatched, key=lambda x: x.get("nearest_truth_km") or 999)[:50],
         },
     }
-    state.latest_mlat_verification_bytes = orjson.dumps(result, option=orjson.OPT_SERIALIZE_NUMPY)
+    _publish_mlat_verification(result)
 
 
 def _ensure_custody_data():
@@ -1860,18 +1871,30 @@ async def analytics_refresh_task():
     loop = asyncio.get_event_loop()
     await asyncio.sleep(5)
     while True:
+        started = time.monotonic()
         try:
             await loop.run_in_executor(_analytics_executor, _refresh_analytics_and_nodes)
             await loop.run_in_executor(_analytics_executor, state.node_analytics.maybe_auto_save)
             from routes.admin import check_node_health
 
             check_node_health()
-            logging.debug("Analytics refresh completed")
             state.task_last_success["analytics_refresh"] = time.time()
+            # Fixed-rate: sleeping the interval flat would make the period the
+            # interval plus the cycle, and frontend/e2e/nodes.spec.ts sizes its
+            # wait on the period. Floored rather than clamped to zero so an
+            # overrunning cycle still yields the box.
+            elapsed = time.monotonic() - started
+            # Success only: the runbook greps this line to judge the task's
+            # health, so a failed cycle must not report a duration.
+            logging.info("Analytics refresh completed in %.1fs", elapsed)
         except Exception:
-            state.task_error_counts["analytics_refresh"] += 1
+            state.bump_task_error("analytics_refresh")
             logging.exception("Analytics refresh failed")
-        await asyncio.sleep(ANALYTICS_REFRESH_INTERVAL_S)
+            # A failure waits the whole interval. Pacing a failed cycle would
+            # retry a broken dependency every few seconds, and nothing else here
+            # backs off.
+            elapsed = 0.0
+        await asyncio.sleep(max(ANALYTICS_REFRESH_INTERVAL_S * 0.1, ANALYTICS_REFRESH_INTERVAL_S - elapsed))
 
 
 async def coverage_constraints_task():
@@ -1894,6 +1917,6 @@ async def coverage_constraints_task():
             await loop.run_in_executor(_coverage_executor, _refresh_coverage_constraints)
             state.task_last_success["coverage_constraints"] = time.time()
         except Exception:
-            state.task_error_counts["coverage_constraints"] += 1
+            state.bump_task_error("coverage_constraints")
             logging.exception("Coverage constraint refresh failed")
         await asyncio.sleep(COVERAGE_REFRESH_INTERVAL_S)

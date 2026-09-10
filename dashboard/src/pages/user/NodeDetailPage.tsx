@@ -4,19 +4,52 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { RetnodeLink } from "../../components/RetnodeLink";
+import { POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
+import {
+  LocationPrivacyBadge,
+  LocationPrivacyControl,
+} from "../../components/LocationPrivacyControl";
+import type { LocationPrivacyState, PositionStatus } from "../../types";
+
+const POSITION_FIX_HINT: Record<Exclude<PositionStatus, "positioned">, string> = {
+  missing_rx: "Add its receiver position in the node configuration.",
+  missing_tx: "Add its illuminator position in the node configuration.",
+  missing_both: "Add its receiver and illuminator positions in the node configuration.",
+};
 
 export default function NodeDetailPage() {
   const { nodeId } = useParams();
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [nodeInfo, setNodeInfo] = useState(null);
+  const [privacy, setPrivacy] = useState<LocationPrivacyState | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([api.nodeAnalytics(nodeId), api.nodes()])
-      .then(([analytics, nodeData]) => {
+    Promise.all([
+      api.nodeAnalytics(nodeId),
+      // Both of these fail soft: a private node is absent from /api/radar/nodes
+      // and myNodes 401s for a signed-out viewer, but the per-node analytics
+      // route answers its owner, so the page must render on that alone.
+      api.nodes().catch(() => ({ nodes: {} })),
+      api.myNodes().catch(() => []),
+    ])
+      .then(([analytics, nodeData, mine]) => {
         setData(analytics);
-        setNodeInfo((nodeData.nodes || {})[nodeId] || null);
+        setNodeInfo((nodeData?.nodes || {})[nodeId] || null);
+        const owned = (Array.isArray(mine) ? mine : []).find((n) => n.node_id === nodeId);
+        // Ownership, not presence in the node list, is what earns the privacy
+        // card — the node the card matters most for is the one missing there.
+        setPrivacy(
+          owned
+            ? {
+                node_id: owned.node_id,
+                location_private: !!owned.location_private,
+                location_privacy_source: owned.location_privacy_source || "default",
+              }
+            : null,
+        );
       })
       .catch(() => setData(null))
       .finally(() => setLoading(false));
@@ -25,6 +58,7 @@ export default function NodeDetailPage() {
   if (loading) return <div className="empty-state">Loading…</div>;
   if (!data) return <div className="empty-state">Node not found</div>;
 
+  const id = data.node_id || nodeId;
   const metrics = data.metrics || data;
   const trust = data.trust || {};
   const reputation = data.reputation || {};
@@ -42,7 +76,7 @@ export default function NodeDetailPage() {
       <div className="page-header">
         <h1 style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <button className="btn btn-outline btn-sm" onClick={() => navigate(-1)}>← Back</button>
-          {data.node_id || nodeId}
+          <RetnodeLink nodeId={id} synthetic={nodeInfo?.is_synthetic} />
         </h1>
         <p>Detailed metrics and trust analysis</p>
       </div>
@@ -120,6 +154,27 @@ export default function NodeDetailPage() {
         </div>
       </div>
 
+      {/* Location privacy — owners only; the control writes the /me routes. */}
+      {privacy && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header">
+            <h3>Location privacy</h3>
+            <LocationPrivacyBadge isPrivate={privacy.location_private} />
+          </div>
+          <div className="card-body">
+            <LocationPrivacyControl
+              nodeId={privacy.node_id}
+              isPrivate={privacy.location_private}
+              source={privacy.location_privacy_source}
+              uncertaintyKm={data.detection_area?.rx?.location_uncertainty_km}
+              onSave={(next) => api.myNodeLocationPrivacy(privacy.node_id, next)}
+              onReset={() => api.clearMyNodeLocationPrivacy(privacy.node_id)}
+              onApplied={setPrivacy}
+            />
+          </div>
+        </div>
+      )}
+
       {/* Detection Area */}
       {data.detection_area && (
         <div className="card" style={{ marginBottom: 24 }}>
@@ -133,6 +188,25 @@ export default function NodeDetailPage() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* Position completeness is orthogonal to the node's liveness (`status`):
+          a positionless node can be actively detecting and perfectly healthy. */}
+      {nodeInfo?.position_status && nodeInfo.position_status !== "positioned" && (
+        <div
+          style={{
+            marginBottom: 24,
+            padding: "12px 16px",
+            borderRadius: 8,
+            border: "1px solid var(--warning)",
+            background: "var(--warning-light)",
+            fontSize: 13,
+          }}
+        >
+          <strong>Position not configured.</strong>{" "}
+          {POSITION_STATUS_EXPLANATION}{" "}
+          {POSITION_FIX_HINT[nodeInfo.position_status as Exclude<PositionStatus, "positioned">]}
         </div>
       )}
 

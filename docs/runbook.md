@@ -313,9 +313,7 @@ The health check only monitors these three tasks (defined in `_CRITICAL_TASKS` i
 | `aircraft_flush` | ~5 s | 15 s |
 | `analytics_refresh` | 30 s | 120 s |
 
-The blah2 bridge tasks and `solver` update `task_last_success` but are **not** checked by `/api/health` — their alerts fire via separate mechanisms (`solver_latency_high`, `solver_queue_drops`).
-
-The bridge reports one task key per live node — `blah2_bridge:<node_id>` — so a single node going dark is visible on its own instead of being masked by its neighbours. The keys are registered at startup from the node list, which is config, not code (see below).
+`solver` updates `task_last_success` but is **not** checked by `/api/health`: its alerts fire via separate mechanisms (`solver_latency_high`, `solver_queue_drops`).
 
 **Check logs for exceptions in the named task:**
 ```bash
@@ -324,33 +322,31 @@ docker compose logs --tail=500 | grep -i "error\|exception\|traceback" | tail -2
 
 `frame_processor` stale is the most serious — it means detection frames are piling up unprocessed or the loop crashed. If the loop crashed, the container needs a restart (tasks are daemon threads and will not restart themselves).
 
-A stale `blah2_bridge:<node_id>` means that node's `/api/detection` is unreachable or serving only stale frames; other nodes are unaffected. Stale bridge keys are expected wherever there is no upstream retnode access — safe to ignore there.
-
-### Adding or changing a live blah2 node
-
-The node list is `blah2_nodes.json` — url, rx, tx, fc and friends per node — read through the runtime-config overlay, so this is a config change with no rebuild:
+`analytics_refresh` reports its cycle's cost on success only, so a steady stream of these means the work is running rather than merely being attempted:
 
 ```bash
-docker compose exec server vi /app/backend/data/runtime/blah2_nodes.json
+docker compose logs --tail=500 server | grep "Analytics refresh completed"
 ```
 
-Restart the container afterwards; the list is read once, at startup.
+It paces fixed-rate against `ANALYTICS_REFRESH_INTERVAL_S`, so durations should sit well below it. A duration at or over the interval means the cycle has become the period, and the node cache stops keeping up with registrations; `frontend/e2e/nodes.spec.ts` starts failing its cache wait shortly after.
 
-`backend/config/blah2_nodes.json` in the repo is the shipped default that seeds that overlay on first boot. Once the overlay exists it wins, so editing the repo copy will not change a running deployment. `BLAH2_NODES_FILE` overrides the path entirely.
+### Checking a node's configured geometry
 
-After a change, confirm the node registered and is solving sensibly:
+After a node's geometry changes, confirm it registered and is solving sensibly:
 
 ```bash
 curl -sk https://localhost/api/radar/nodes | jq '.nodes | keys'
 ```
 
 ```bash
-curl -sk https://localhost/api/test/node/radar3a-retnode/verification | jq '{n_tracks, n_matched, position}'
+NODE_ID=ret0123abcd; curl -sk "https://localhost/api/test/node/$NODE_ID/verification" | jq '{n_tracks, n_matched, position}'
 ```
 
-A node missing from the first list failed validation — the reason is logged at error level, naming the offending field.
+A node missing from the first list has not registered, or has no active configuration. An invalid one is refused at the config PUT with a 4xx naming the offending field (`services/node_config.py`), so it never reaches this list to be missing from.
 
-Bad geometry passes validation, and `position.median_km` will *not* reliably catch it: that figure is dominated by the single-node solver's own ~25–35 km uncertainty. A deliberate 20 km TX error moved it by about 5 km, inside the run-to-run spread. To check tx/rx/fc against the hardware, compare the node's published `adsb[].expected_delay` with the bistatic delay computed from the configured geometry — correct config agrees to tens of metres, a 20 km TX error to tens of kilometres.
+Bad geometry passes validation, and `position.median_km` will *not* reliably catch it: that figure is dominated by the single-node solver's own ~25–35 km uncertainty. A deliberate 20 km TX error moved it by about 5 km, inside the run-to-run spread.
+
+What does catch it is the delay residual: compare the node's published `adsb[].expected_delay` with the bistatic delay computed from the configured geometry, which agrees to tens of metres when the config is right and to tens of kilometres under a 20 km TX error. This needs a node that publishes that array. A v1 node sends `adsb_hex` alone, so it has no equivalent check yet (86cb7fdhg).
 
 ---
 

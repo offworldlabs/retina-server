@@ -287,8 +287,8 @@ class TestSnapshotCompat:
 class TestSurfacing:
     def test_node_analytics_includes_bias_block(self, client, now_ms):
         for i in range(15):
-            node_bias.record_claim_residual("surf-1", f"hex{i % 4}", 3.0, -7.0, now_ms + i * 1000)
-        r = client.get("/api/radar/analytics/surf-1")
+            node_bias.record_claim_residual("test-surf-1", f"hex{i % 4}", 3.0, -7.0, now_ms + i * 1000)
+        r = client.get("/api/radar/analytics/test-surf-1")
         assert r.status_code == 200
         bias = r.json()["node_bias"]
         assert bias["mature"] is True
@@ -296,7 +296,7 @@ class TestSurfacing:
         assert bias["n_hexes"] == 4
 
     def test_node_analytics_omits_bias_block_when_unknown(self, client):
-        state.node_analytics.register_node("surf-2", {"name": "Test"})
-        r = client.get("/api/radar/analytics/surf-2")
+        state.node_analytics.register_node("test-surf-2", {"name": "Test"})
+        r = client.get("/api/radar/analytics/test-surf-2")
         assert r.status_code == 200
         assert "node_bias" not in r.json()

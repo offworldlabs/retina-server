@@ -391,7 +391,9 @@ class TestSaltPersistence:
 
 # ── The payloads ─────────────────────────────────────────────────────────────
 
-_NODE_ID = "fuzz-int-1"
+# Synthetic, so it publishes under its own id and the public routes below can be
+# addressed without a registry row; these are geometry tests, not identity ones.
+_NODE_ID = "test-fuzz-int-1"
 _TRUE_RX_LAT, _TRUE_RX_LON = 34.851234, -82.401234
 _TRUE_TX_LAT, _TRUE_TX_LON = 34.901234, -82.301234
 _NODE_CFG = {

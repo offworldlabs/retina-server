@@ -11,8 +11,9 @@ import {
 } from "./map";
 import { withCartoKey } from "../utils/basemap";
 
-// Marietta GA — same coords as the production radar3-retnode site.
-const MARIETTA = { lat: 33.9526, lon: -84.5499 };
+// An invented site. Nothing here needs a real one, and a real one in a
+// public repo is a receiver position the API is built to withhold.
+const TEST_SITE = { lat: 34.0, lon: -84.0 };
 
 // Compute (range_km, bearing_deg) from a fixed RX to a given lat/lon. Lets
 // the simulator march the aircraft in absolute world coordinates while still
@@ -95,10 +96,10 @@ export default function TestRadar() {
   // Autopilot state: a single simulated aircraft flying straight at a fixed
   // ground speed and heading.  Lives in world coords (lat/lon) so motion
   // looks identical to a production track — radar polar coords are derived
-  // for the arc builder.  Initial state: 25 km east of Marietta, heading
+  // for the arc builder.  Initial state: 25 km east of the test site, heading
   // north-east at 480 kt, cruise altitude.
-  const [posLat, setPosLat] = useState(MARIETTA.lat);
-  const [posLon, setPosLon] = useState(MARIETTA.lon + 0.27); // ~25 km east at 34°N
+  const [posLat, setPosLat] = useState(TEST_SITE.lat);
+  const [posLon, setPosLon] = useState(TEST_SITE.lon + 0.27); // ~25 km east at 34°N
   const [gs, setGs] = useState(480); // knots
   const [track, setTrack] = useState(45); // degrees
   const [flying, setFlying] = useState(true);
@@ -128,15 +129,15 @@ export default function TestRadar() {
       setPosLon((lon) => {
         // Use the freshest lat for cos(lat) — slight staleness is fine since
         // dt is tens of ms; an exact value would need useRef.  Wrap on range.
-        const cosLat = Math.cos((MARIETTA.lat * Math.PI) / 180) || 1;
+        const cosLat = Math.cos((TEST_SITE.lat * Math.PI) / 180) || 1;
         const nextLon = lon + (gs_ms * Math.sin(rad)) / (111_320 * cosLat) * dt;
         // Recompute range from the *next* lat/lon to decide wrap.  We can't
         // read posLat synchronously here, so approximate with the freshest
         // value seen in this scope.
-        const { rangeKm } = rangeBearingFromRx(MARIETTA.lat, MARIETTA.lon, posLat, nextLon);
+        const { rangeKm } = rangeBearingFromRx(TEST_SITE.lat, TEST_SITE.lon, posLat, nextLon);
         if (rangeKm > WRAP_RANGE_KM) {
-          setPosLat(MARIETTA.lat);
-          return MARIETTA.lon + START_LON_OFFSET;
+          setPosLat(TEST_SITE.lat);
+          return TEST_SITE.lon + START_LON_OFFSET;
         }
         return nextLon;
       });
@@ -149,11 +150,11 @@ export default function TestRadar() {
   // Geometry derived from the current aircraft position.  Memoised so
   // identity is stable when the position doesn't change.
   const { rangeKm: aircraftRangeKm, bearingDeg: aircraftBearing } = useMemo(
-    () => rangeBearingFromRx(MARIETTA.lat, MARIETTA.lon, posLat, posLon),
+    () => rangeBearingFromRx(TEST_SITE.lat, TEST_SITE.lon, posLat, posLon),
     [posLat, posLon],
   );
   const arc = useMemo(
-    () => buildArc(MARIETTA.lat, MARIETTA.lon, aircraftRangeKm, aircraftBearing),
+    () => buildArc(TEST_SITE.lat, TEST_SITE.lon, aircraftRangeKm, aircraftBearing),
     [aircraftBearing, aircraftRangeKm],
   );
   const aircraftPos = useMemo(() => arcMidpoint(arc), [arc]);
@@ -168,7 +169,7 @@ export default function TestRadar() {
       track,
       gs,
       position_source: "single_node_ellipse_arc",
-      node_id: "radar3-retnode",
+      node_id: "synth-test-radar",
       ambiguity_arc: arc,
       doppler_hz: 0,
     }),
@@ -332,7 +333,7 @@ export default function TestRadar() {
             {flying ? "FLYING" : "PAUSED"}
           </button>
           <button
-            onClick={() => { setPosLat(MARIETTA.lat); setPosLon(MARIETTA.lon + 0.27); }}
+            onClick={() => { setPosLat(TEST_SITE.lat); setPosLon(TEST_SITE.lon + 0.27); }}
             style={{
               padding: "6px 10px",
               border: "1px solid #334155",
@@ -389,7 +390,7 @@ export default function TestRadar() {
 
       <main style={{ flex: 1, position: "relative" }}>
         <MapContainer
-          center={[MARIETTA.lat, MARIETTA.lon]}
+          center={[TEST_SITE.lat, TEST_SITE.lon]}
           zoom={10}
           style={{ height: "100%", width: "100%" }}
         >
@@ -400,23 +401,23 @@ export default function TestRadar() {
 
           {(nodeStyle === "circle" || nodeStyle === "both") && (
             <CircleMarker
-              center={[MARIETTA.lat, MARIETTA.lon]}
+              center={[TEST_SITE.lat, TEST_SITE.lon]}
               radius={5}
               pathOptions={{ color: "#facc15", fillColor: "#facc15", fillOpacity: 0.55, weight: 1.5 }}
             >
-              <Popup>radar3-retnode (CircleMarker, prod style)</Popup>
+              <Popup>synth-test-radar (CircleMarker, prod style)</Popup>
             </CircleMarker>
           )}
 
           {(nodeStyle === "divicon" || nodeStyle === "both") && (
             <Marker
               position={[
-                MARIETTA.lat,
-                nodeStyle === "both" ? MARIETTA.lon + 0.04 : MARIETTA.lon,
+                TEST_SITE.lat,
+                nodeStyle === "both" ? TEST_SITE.lon + 0.04 : TEST_SITE.lon,
               ]}
-              icon={nodeIcon}
+              icon={nodeIcon()}
             >
-              <Popup>radar3-retnode (divIcon, icons.ts)</Popup>
+              <Popup>synth-test-radar (divIcon, icons.ts)</Popup>
             </Marker>
           )}
 

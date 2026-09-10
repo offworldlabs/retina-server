@@ -71,7 +71,8 @@ git submodule update --init --recursive
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
-pip install -e ../libs/retina-geolocator -e ../libs/retina-tracker
+pip install -e ../libs/retina-geolocator -e ../libs/retina-tracker \
+  -e ../libs/retina-custody -e ../libs/retina-simulation -e ../libs/retina-analytics
 cp .env.example .env          # fill in what you need (see below)
 RETINA_ENV=dev AUTH_ALLOW_ANONYMOUS_ADMIN=1 SYNTHETIC_FLEET_ENABLED=1 uvicorn main:app --reload
 ```
@@ -199,8 +200,11 @@ twice, once per copy of the shared standard in this repo. A change can pass
 `ruff check` and `ruff format` by hand and still fail CI on dead code.
 
 Touching a node route or one of its models also moves the node API's wire
-contract, which is generated rather than written. Regenerate it in the same
-commit, or CI fails on a file you never edited:
+contract, which is generated rather than written. So does changing a
+configuration bound: the schema published for `config` is built from the
+validator's own tables, so `backend/services/node_config.py` moves the contract
+with no route touched. Regenerate it in the same commit, or CI fails on a file
+you never edited:
 
 ```bash
 cd backend && RETINA_ENV=dev .venv/bin/python -m scripts.generate_openapi
@@ -228,6 +232,7 @@ CI runs on every PR, on push to `main`, and on demand through
 1. Any PR, whatever its base: `backend-tests`, `frontend-build`,
    `dashboard-build`, `docker-build`, `env-parity`, plus an automated review.
 2. Merge to `main` → deploy to **staging** → staging smoke + Playwright E2E → deploy to **production** → prod smoke + Playwright E2E.
+   A markdown-only merge skips that chain; the `changes` job has the exceptions.
 
 So merging to `main` deploys to production automatically. Work on a feature
 branch, open a PR, get it green, then merge.

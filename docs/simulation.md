@@ -70,8 +70,11 @@ tab (or `PUT /api/simulation/config`, admin-authed) can change at runtime:
 |-----|---------|---------|
 | `frac_anomalous` | 0.0 | Fraction of spawns with anomalous behaviour |
 | `frac_drone` | 0.0 | Drone fraction (off by default; enable for drone scenarios) |
-| `frac_dark` | 0.15 | Non-ADS-B ("dark") fraction |
-| `min_aircraft` / `max_aircraft` | *(unset)* | Steady-state aircraft bounds |
+| `frac_dark` | 0.15 | Non-ADS-B ("dark") fraction of the synthetic spawns |
+| `frac_adsb_outage` | 0.0 | Fraction of ADS-B aircraft that go transponder-silent mid-flight (outside the sum above) |
+| `frac_live_dark` | 0.15 | Share of the **live-feed** aircraft cast as dark (outside the sum above) — see below |
+| `live_adsb_enabled` | true | Pull live aircraft from the feed into the world (off removes them) |
+| `min_aircraft` / `max_aircraft` | *(unset)* | Steady-state bounds for the **synthetic** aircraft |
 | `n_nodes` / `dual_fraction` / `max_range_km` | *(unset)* | Fleet-scene keys — applying one **restarts the fleet** for regeneration |
 
 The fractions and aircraft counts apply in-process to *new spawns*. The scene
@@ -103,7 +106,10 @@ the bearing away from the world center and retires only once beyond that
 edge — the viewer watches it leave. A 900 s exit grace backstops genuinely
 stuck aircraft; drones keep the old 2×-lifetime churn (an amber X-frame
 vanishing reads as turnover, not a tracking bug). On the map, ADS-B truth
-dots are blue and dark aircraft grey, matching the Physics-tab legend.
+dots take the neutral extreme of whichever theme is active — near-black on
+light, near-white on dark — and dark aircraft grey: truth is the reference the solved
+lanes are measured against, so it is deliberately the one thing out there
+wearing no lane colour.
 
 ---
 
@@ -130,14 +136,44 @@ under `backend/data/runtime/`.
 
 ---
 
-## Real ADS-B Feed (`AdsbLolClient`)
+## Live ADS-B seeding (`LiveAdsbClient`)
 
-With `--mode adsb`, a background task polls `api.adsb.lol` for the metro's
-bounding box every 10 s and merges results into the world: hexes matching a
-simulated aircraft update it in place; new hexes join as real aircraft.
-Ground truth (positions + per-object metadata) is pushed to the server
-(`POST /api/sim/ground-truth`) for accuracy evaluation and the debug-truth
-map layer.
+With `--live-adsb-url` (the fleet entrypoint defaults it to
+`https://adsb.retina.fm`; `FLEET_LIVE_ADSB_URL=` turns it off), the
+orchestrator polls the feed's `/v2/point/{lat}/{lon}/{radius_nm}` for the
+`--metro` area every 5 s and merges the result into the world
+(`SimulationWorld.ingest_live_aircraft`). Each real aircraft becomes a
+`live-<hex>` world aircraft flying its reported position, altitude, ground
+speed, track and vertical rate — extrapolated from the fix's capture time,
+dead-reckoned between polls, dropped 60 s after the feed last reported it.
+The synthetic nodes echo it like any other aircraft (delay/Doppler from its
+real kinematics), so the fleet flies real traffic.
+
+The feed owns these aircraft: no waypoints, no separation slowing, no
+lifetime, and they never count toward `min_aircraft` / `max_aircraft` —
+those, with `frac_dark`, keep governing the synthetic aircraft the world
+spawns on top, so the two populations are adjusted independently.
+
+`frac_live_dark` casts a share of the live aircraft as **dark**: the world
+mirrors them without their transponder (`has_adsb` off, `adsb_hex` None), so
+the node frames carry no tag for them, the 1 Hz ADS-B push omits them and the
+ground truth keys them by object id — a synthetic dark spawn's shape with a
+real trajectory underneath. The rest keep their real hex and callsign and are
+pushed as simulated-world ADS-B. The cast is a stable per-hex hash, so
+moving the knob re-partitions the aircraft already in the air (raising it
+only ever adds dark aircraft) at the next config poll, not the next fleet
+turnover. The Physics tab's "Live ADS-B traffic" card holds the toggle and
+the slider; `GET /api/simulation/config` reports `live` / `live_adsb` /
+`live_dark` counts.
+
+Production sets `FLEET_LIVE_ADSB_URL=` (off): its real hardware nodes claim
+the same real hexes in the "real" world, and a simulated fleet mirroring
+those aircraft would push the same keys into the server's one ADS-B cache
+as simulated-world traffic.
+
+The older opt-in `--real-adsb` relay (adsb.lol → `POST /api/sim/adsb/push`
+tagged `source=real`, display-only for claiming) still exists but is
+ignored while seeding runs, for the same one-cache reason.
 
 ---
 

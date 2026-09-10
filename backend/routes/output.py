@@ -137,6 +137,10 @@ async def ground_truth_aircraft():
                 "has_adsb": meta.get("has_adsb", False),
                 "adsb_callsign": meta.get("adsb_callsign"),
                 "anomaly_event": meta.get("anomaly_event"),
+                # A transponder that is silent right now (simulator outage) — the
+                # aircraft still has ADS-B (has_adsb stays true), it is just not
+                # broadcasting, which is what the known-track hold is measured on.
+                "adsb_silent": meta.get("adsb_silent", False),
                 "trail": list(trail)[-30:],
             }
         )
@@ -329,7 +333,7 @@ _DOCS_HTML = """<!DOCTYPE html>
       "multinode": false,
       "n_nodes": 1,
       "flight": "DAL1234",
-      "node_id": "radar3-retnode",
+      "node_id": "ret1a2b3c4d",
       "target_class": "aircraft",
       "delay_us": 14.22,
       "doppler_hz": -83.4,

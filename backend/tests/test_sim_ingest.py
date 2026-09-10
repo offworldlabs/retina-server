@@ -80,6 +80,25 @@ class TestGroundTruthPush:
         assert meta["adsb_callsign"] is None
         assert meta["anomaly_event"] is None
 
+    def test_stores_adsb_silent_flag(self, client):
+        # Transponder outage: has_adsb stays true (the aircraft HAS one), the
+        # silent flag is what the known-track hold is verified against.
+        r = client.post(
+            "/api/test/ground-truth/push",
+            headers=_KEY,
+            json={"aircraft": [_ac(adsb_silent=True)]},
+        )
+        assert r.status_code == 200
+        meta = state.ground_truth_meta["a1b2c3"]
+        assert meta["adsb_silent"] is True
+        assert meta["has_adsb"] is True
+
+    def test_adsb_silent_defaults_false_for_older_fleets(self, client):
+        legacy = {k: v for k, v in _ac().items() if k != "adsb_silent"}
+        r = client.post("/api/test/ground-truth/push", headers=_KEY, json={"aircraft": [legacy]})
+        assert r.status_code == 200
+        assert state.ground_truth_meta["a1b2c3"]["adsb_silent"] is False
+
     def test_anomalous_push_flags_hex_and_logs_event(self, client):
         r = client.post(
             "/api/test/ground-truth/push",
@@ -170,7 +189,110 @@ class TestSimulationConfig:
             }
         )
         counts = client.get("/api/simulation/config").json()["ground_truth_counts"]
-        assert counts == {"anomalous": 1, "drone": 1, "aircraft": 1, "dark": 1, "total": 4}
+        assert counts == {
+            "anomalous": 1,
+            "drone": 1,
+            "aircraft": 1,
+            "dark": 1,
+            "adsb_silent": 0,
+            "live": 0,
+            "live_adsb": 0,
+            "live_dark": 0,
+            "total": 4,
+        }
+
+    def test_counts_split_live_feed_aircraft_by_cast(self, client):
+        # Live-feed aircraft are ALSO counted in their type bucket (an ADS-B
+        # one under "aircraft", a dark-cast one under "dark"): the live
+        # counters overlap the type buckets, like adsb_silent does, so the
+        # frac_live_dark knob can be read off in one call without the type
+        # counts losing the live population.
+        state.ground_truth_meta.update(
+            {
+                "ab1388": {"object_type": "aircraft", "has_adsb": True, "source": "live"},
+                "live-a9c2d1": {"object_type": "aircraft", "has_adsb": False, "source": "live"},
+                "obj-00001": {"object_type": "aircraft", "has_adsb": False, "source": "sim"},
+                "aaa111": {"object_type": "aircraft", "has_adsb": True},  # pre-source fleet
+            }
+        )
+        counts = client.get("/api/simulation/config").json()["ground_truth_counts"]
+        assert counts["live"] == 2
+        assert counts["live_adsb"] == 1
+        assert counts["live_dark"] == 1
+        assert counts["aircraft"] == 2
+        assert counts["dark"] == 2
+
+    def test_live_knobs_default_on_with_dark_share(self, client):
+        cfg = client.get("/api/simulation/config").json()
+        assert cfg["live_adsb_enabled"] is True
+        assert cfg["frac_live_dark"] == 0.15
+
+    def test_live_knobs_accepted_and_echoed(self, client):
+        r = client.put("/api/simulation/config", json={"frac_live_dark": 0.6, "live_adsb_enabled": False})
+        assert r.status_code == 200
+        assert r.json()["config"]["frac_live_dark"] == 0.6
+        assert r.json()["config"]["live_adsb_enabled"] is False
+        echoed = client.get("/api/simulation/config").json()
+        assert echoed["frac_live_dark"] == 0.6
+        assert echoed["live_adsb_enabled"] is False
+        client.put("/api/simulation/config", json={"frac_live_dark": 0.15, "live_adsb_enabled": True})
+
+    def test_live_knobs_validated(self, client):
+        assert client.put("/api/simulation/config", json={"frac_live_dark": 1.5}).status_code == 400
+        assert client.put("/api/simulation/config", json={"live_adsb_enabled": 1}).status_code == 400
+        assert client.put("/api/simulation/config", json={"live_adsb_enabled": "yes"}).status_code == 400
+
+    def test_frac_live_dark_is_outside_the_frac_sum_constraint(self, client):
+        # A fraction OF the live population: a scene at the synthetic type-sum
+        # ceiling must still be able to cast every live aircraft dark.
+        r = client.put(
+            "/api/simulation/config",
+            json={"frac_anomalous": 0.1, "frac_drone": 0.1, "frac_dark": 0.8, "frac_live_dark": 1.0},
+        )
+        assert r.status_code == 200
+        assert r.json()["config"]["frac_live_dark"] == 1.0
+        client.put("/api/simulation/config", json={"frac_live_dark": 0.15})
+
+    def test_adsb_outage_default_is_off(self, client):
+        # Default 0.0 so nothing changes for a deployment that never sets it.
+        assert client.get("/api/simulation/config").json()["frac_adsb_outage"] == 0.0
+
+    def test_adsb_outage_accepted_and_echoed(self, client):
+        r = client.put("/api/simulation/config", json={"frac_adsb_outage": 0.3})
+        assert r.status_code == 200
+        assert r.json()["config"]["frac_adsb_outage"] == 0.3
+        assert client.get("/api/simulation/config").json()["frac_adsb_outage"] == 0.3
+
+    def test_adsb_outage_out_of_range_rejected(self, client):
+        assert client.put("/api/simulation/config", json={"frac_adsb_outage": 1.5}).status_code == 400
+        assert client.put("/api/simulation/config", json={"frac_adsb_outage": -0.1}).status_code == 400
+
+    def test_adsb_outage_is_outside_the_frac_sum_constraint(self, client):
+        # It is a fraction OF the ADS-B aircraft, orthogonal to the spawn-type
+        # roll: a scene at the 1.0 type-sum ceiling must still be able to take
+        # its transponder aircraft silent.
+        r = client.put(
+            "/api/simulation/config",
+            json={"frac_anomalous": 0.1, "frac_drone": 0.1, "frac_dark": 0.8, "frac_adsb_outage": 1.0},
+        )
+        assert r.status_code == 200
+        assert r.json()["config"]["frac_adsb_outage"] == 1.0
+
+    def test_counts_report_silent_transponders_alongside_their_type(self, client):
+        # A silent aircraft is still a commercial aircraft (has_adsb stays
+        # true) — it must NOT be counted as dark, or the outage knob would be
+        # indistinguishable from frac_dark.
+        state.ground_truth_meta.update(
+            {
+                "aaa111": {"object_type": "aircraft", "has_adsb": True, "adsb_silent": True},
+                "bbb222": {"object_type": "aircraft", "has_adsb": True, "adsb_silent": False},
+                "obj-00001": {"object_type": "aircraft", "has_adsb": False},
+            }
+        )
+        counts = client.get("/api/simulation/config").json()["ground_truth_counts"]
+        assert counts["adsb_silent"] == 1
+        assert counts["aircraft"] == 2
+        assert counts["dark"] == 1
 
     def test_scene_keys_absent_by_default(self, client):
         # Only-if-set pattern (state.py): a fresh backend never ships

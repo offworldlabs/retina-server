@@ -45,6 +45,7 @@ from core.users import (
     require_admin,
     user_to_dict,
 )
+from services import publication
 
 logger = logging.getLogger(__name__)
 
@@ -276,6 +277,117 @@ async def admin_set_node_owner(
     return {"ok": True, "node_id": node_id, "user_id": body.user_id}
 
 
+# ── Node location privacy ─────────────────────────────────────────────────────
+#
+# The same override the owner sets from their own dashboard
+# (routes/auth.py, /me/nodes/{node_id}/location-privacy), reachable for any node
+# id rather than only an owned one.  That is the point of having it here: most
+# of what a deployment carries has no owner row and never registered — the
+# synthetic fleet, mirrored nodes, anything predating the v1 handshake — so on
+# the test droplet this is the only way to make a node private at all.
+#
+# Admin sees the raw pieces the owner routes do not, because an admin is
+# answering "why is this node in this state" rather than choosing their own.
+
+
+class NodeLocationPrivacyUpdate(BaseModel):
+    private: bool
+
+
+@router.get("/nodes/{node_id}/location-privacy")
+async def admin_get_node_location_privacy(node_id: str, _admin=Depends(require_admin)):
+    """Effective state, its source, and both rows behind it.
+
+    Answers for an id nothing has ever heard of rather than 404ing on one: the
+    override table accepts any string, so "no registration, no override, public
+    by default" is the true and useful answer for a node an admin is about to
+    hide before it has ever connected.
+    """
+    return await publication.location_privacy(node_id)
+
+
+@router.put("/nodes/{node_id}/location-privacy")
+async def admin_set_node_location_privacy(
+    node_id: str,
+    body: NodeLocationPrivacyUpdate,
+    admin=Depends(require_admin),
+):
+    """Set the override on any node, as an admin."""
+    await publication.set_location_privacy(node_id, body.private, set_by=f"admin:{admin['email']}")
+    publication.invalidate()
+    # Logged like the owner-assignment route above: an admin changing what
+    # another operator's node publishes is exactly the kind of act the event log
+    # exists to make answerable afterwards.  The owner routes are not logged —
+    # an owner acting on their own node is not an intervention.
+    log_event(
+        "user",
+        f"Node {node_id} location set {'private' if body.private else 'public'}",
+        "info",
+        {"node_id": node_id, "private": body.private, "by": admin["email"]},
+    )
+    return {
+        "node_id": node_id,
+        "location_private": body.private,
+        "location_privacy_source": publication.SOURCE_OVERRIDE,
+    }
+
+
+@router.delete("/nodes/{node_id}/location-privacy")
+async def admin_clear_node_location_privacy(node_id: str, admin=Depends(require_admin)):
+    """Drop the override, returning the node to its registration choice."""
+    await publication.clear_location_privacy(node_id)
+    publication.invalidate()
+    after = await publication.location_privacy(node_id)
+    log_event(
+        "user",
+        f"Node {node_id} location privacy override cleared",
+        "info",
+        {"node_id": node_id, "by": admin["email"], "location_private": after["location_private"]},
+    )
+    return {
+        "node_id": node_id,
+        "location_private": after["location_private"],
+        "location_privacy_source": after["location_privacy_source"],
+    }
+
+
+@router.get("/node-contacts")
+async def admin_list_node_contacts(
+    session: AsyncSession = Depends(get_async_session),
+    _admin=Depends(require_admin),
+):
+    """Return {node_id: {first_name, last_name, email, phone, updated_at}} for every node that reported any.
+
+    The one route that serves these. They are kept off the node and analytics
+    payloads the map and dashboard poll broadly, so personal data has a single
+    door rather than riding every refresh.
+    """
+    from services.node_contact_store import list_contacts
+
+    return await list_contacts(session)
+
+
+@router.delete("/nodes/{node_id}/contact")
+async def admin_delete_node_contact(
+    node_id: str,
+    session: AsyncSession = Depends(get_async_session),
+    admin=Depends(require_admin),
+):
+    """Erase a node's contact details. The path that exists so erasure does not need the database."""
+    from services.node_contact_store import delete_contact
+
+    deleted = await delete_contact(session, node_id)
+    await session.commit()
+    if deleted:
+        log_event(
+            "user",
+            f"Contact details cleared for node {node_id}",
+            "info",
+            {"node_id": node_id, "by": admin["email"]},
+        )
+    return {"ok": True, "node_id": node_id, "deleted": deleted}
+
+
 # ── Node retirement ───────────────────────────────────────────────────────────
 
 
@@ -423,7 +535,8 @@ async def get_tower_config(_admin=Depends(require_admin)):
         cfg = info.get("config", {})
         tx_lat = cfg.get("tx_lat")
         tx_lon = cfg.get("tx_lon")
-        if tx_lat and tx_lon:
+        # A transmitter on the equator or the prime meridian is a real tower.
+        if tx_lat is not None and tx_lon is not None:
             key = f"{tx_lat:.4f},{tx_lon:.4f}"
             if key not in towers:
                 towers[key] = {
@@ -579,13 +692,17 @@ async def system_metrics(_user=Depends(require_admin)):
 
     return {
         "task_last_success": dict(state.task_last_success),
-        "task_error_counts": dict(state.task_error_counts),
+        # Snapshot under the same lock bump_task_error takes: a bare dict()
+        # over a dict a worker thread is inserting into can raise
+        # "dictionary changed size during iteration" on this request path.
+        "task_error_counts": state.task_error_snapshot(),
         "frame_queue_depth": state.frame_queue.qsize(),
         "frame_queue_max": state.frame_queue.maxsize,
         "frames_dropped": state.frames_dropped,
         "frames_processed": state.frames_processed,
         "solver_successes": state.solver_successes,
         "solver_failures": state.solver_failures,
+        "solver_pool_timeouts": state.solver_pool_timeouts,
         "solver_queue_depth": state.solver_queue.qsize(),
         "solver_queue_drops": state.solver_queue_drops,
         "solver_stale_drops": state.solver_stale_drops,
@@ -605,10 +722,13 @@ async def system_metrics(_user=Depends(require_admin)):
         # Store sizes that used to grow without bound — exposed so a soak can
         # watch them plateau instead of trusting the fix.
         "track_arc_motion": len(state.track_arc_motion),
+        "track_last_emit": len(state.track_last_emit),
+        "track_gate_hold": len(state.track_gate_hold),
         "mn_pos_history": _mn_pos_history_size(),
         "track_histories": len(state.track_histories),
         "ground_truth_trails": len(state.ground_truth_trails),
         "ws_clients": len(state.ws_clients),
+        "ws_send_timeouts": state.ws_send_timeouts,
         "ws_live_clients": len(state.ws_live_clients),
         "stale_tasks": _get_stale_tasks(),
         "process_rss_mb": round(rss_mb, 1),

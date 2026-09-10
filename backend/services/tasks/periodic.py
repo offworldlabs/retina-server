@@ -70,7 +70,7 @@ async def archive_flush_task():
             await loop.run_in_executor(None, flush_all_archive_buffers)
             state.task_last_success["archive_flush"] = time.time()
         except Exception:
-            state.task_error_counts["archive_flush"] += 1
+            state.bump_task_error("archive_flush")
             logging.exception("Archive batch flush failed")
 
 
@@ -85,7 +85,7 @@ async def archive_lifecycle_task():
             await loop.run_in_executor(None, run_archive_lifecycle)
             state.task_last_success["archive_lifecycle"] = time.time()
         except Exception:
-            state.task_error_counts["archive_lifecycle"] += 1
+            state.bump_task_error("archive_lifecycle")
             logging.exception("Archive lifecycle failed")
 
 
@@ -100,7 +100,7 @@ async def reputation_evaluator():
             )
             state.task_last_success["reputation_evaluator"] = time.time()
         except Exception:
-            state.task_error_counts["reputation_evaluator"] += 1
+            state.bump_task_error("reputation_evaluator")
             logging.exception("Reputation evaluation failed")
 
 
@@ -142,7 +142,7 @@ async def prune_synthetic_nodes():
                 logging.info("Pruned %d old synthetic nodes: %s", len(pruned), pruned[:5])
             state.task_last_success["prune_synthetic_nodes"] = time.time()
         except Exception:
-            state.task_error_counts["prune_synthetic_nodes"] += 1
+            state.bump_task_error("prune_synthetic_nodes")
             logging.exception("Node pruning failed")
 
 
@@ -214,7 +214,7 @@ async def adsb_truth_fetcher():
                 backoff = ADSB_BACKOFF_S
             state.task_last_success["adsb_truth_fetcher"] = time.time()
         except Exception:
-            state.task_error_counts["adsb_truth_fetcher"] += 1
+            state.bump_task_error("adsb_truth_fetcher")
             logging.exception("External ADS-B fetch failed")
 
 

@@ -35,8 +35,10 @@ import {
   makeDroneIcon,
   drIconState,
   getAircraftColor,
+  solveDiscCenter,
   solveUncertaintyRadiusM,
   nodeSiteIcon,
+  isRingOnlyRadius,
   uncertaintyDiscRadiusM,
   nodeLabel,
   groupNodesBySite,
@@ -44,6 +46,7 @@ import {
   FitBounds,
   ViewportTracker,
   MapClickClear,
+  InvalidateSizeOnResize,
   useAircraftFeed,
   useNodes,
   useAuth,
@@ -51,6 +54,7 @@ import {
   AircraftListPanel,
   AircraftDetailPanel,
   Toolbar,
+  MapLegend,
   PlaybackBar,
   DetectionArcs,
   ClaimedArcs,
@@ -72,6 +76,14 @@ import { arcNearestPoint } from "./map/arcErrors";
 import { detectingNodeIdsFor } from "./map/detections";
 import { ensureDebugPanes, DEBUG_PASSIVE_PANE, GT_CLICK_PANE } from "./map/panes";
 import { ARC_TOTAL_LIFE_MS } from "./map/constants";
+import { useMapTheme, usePalette } from "./map/useMapTheme";
+import { DEFAULT_MAP_THEME } from "./map/mapPalette";
+
+// Each theme has a basemap its colours were picked against: Positron for light,
+// Voyager tinted down for dark. Voyager under the light palette reads as two
+// maps at once, and Positron under the dark one is a white sheet behind navy
+// panels. The cycle in the toolbar can still take you anywhere, including OSM.
+const DEFAULT_BASEMAP = { dark: "voyager", light: "positron" };
 import { reconcileAdsbPairs, snapTrack, sweepStaleRadar } from "./map/trackStores";
 import StatsOverlay from "./map/StatsOverlay";
 import ShortcutHelp from "./map/ShortcutHelp";
@@ -93,6 +105,7 @@ L.Icon.Default.mergeOptions({
 const _gtCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: GT_CLICK_PANE }) : null;
 
 const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, onSelect, selectedHex }) {
+  const { ANOMALY, DRONE, SELECTED, TRUTH, TRUTH_DARK } = usePalette();
   const map = useMap();
   const markerMapRef = useRef(new Map()); // hex → L.circleMarker — incremental diff
   const onSelectRef  = useRef(onSelect);
@@ -113,9 +126,12 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
       // entries without the field (older payloads) keep the ADS-B blue.
       const isDark  = !isAnom && !isDrone && ac.has_adsb === false;
       const isSel   = ac.hex === selectedHex;
-      const color   = isAnom ? "#f43f5e" : isDrone ? "#f59e0b" : isDark ? "#94a3b8" : "#22d3ee";
-      // Selection ring is white so it reads against all fill colors.
-      const border  = isSel ? "#f8fafc" : isAnom ? "#e11d48" : isDrone ? "#d97706" : isDark ? "#64748b" : "#67e8f9";
+      const color   = isAnom ? ANOMALY : isDrone ? DRONE : isDark ? TRUTH_DARK : TRUTH;
+      // Each dot takes an edge a shade darker than its own fill.  Selection is
+      // the amber the map already uses for a selected glyph, its arcs and its
+      // trail: truth is the theme's neutral extreme, so a neutral ring would
+      // sit a single shade from the fill it rings.
+      const border  = isSel ? SELECTED : isAnom ? "#991b1b" : isDrone ? "#b45309" : isDark ? "#334155" : "#020617";
       const baseR   = isDrone ? 6 : isAnom ? 8 : 9;
       const radius  = isSel ? baseR + 4 : baseR;
       const weight  = isSel ? 4 : 3;
@@ -151,7 +167,7 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
         markerMap.delete(hex);
       }
     }
-  }, [aircraft, map, selectedHex]);
+  }, [aircraft, map, selectedHex, ANOMALY, DRONE, SELECTED, TRUTH, TRUTH_DARK]);
 
   // Full cleanup on unmount
   useEffect(() => {
@@ -176,6 +192,7 @@ const _mgCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane:
 // mounts once instead of keying on the 2 Hz radarAircraft array identity —
 // which tore down and recreated every dot and line twice a second.
 const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAircraftRef, groundTruthRef, smoothRef, nodesByIdRef }) {
+  const { NODE, TRUTH } = usePalette();
   const map = useMap();
   const markersRef = useRef(new Map());  // gtHex → { dot: L.circleMarker, line: L.polyline | null (arc-only track with no arc this frame) }
 
@@ -242,7 +259,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
           const line = L.polyline([[gtLat, gtLon], [rLat, rLon]], {
             renderer: _mgCanvas,
             interactive: false,
-            color: "#facc15",
+            color: NODE,
             weight: 1.5,
             opacity: 0.6,
             dashArray: "3 4",
@@ -258,9 +275,9 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
             renderer: _mgCanvas,
             interactive: false,
             radius: 5,
-            color: "#22d3ee",
+            color: TRUTH,
             weight: 2,
-            fillColor: "#22d3ee",
+            fillColor: TRUTH,
             fillOpacity: 0.8,
           });
           dot.addTo(map);
@@ -308,7 +325,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
       }
       markers.clear();
     };
-  }, [map, radarAircraftRef, groundTruthRef, smoothRef]);
+  }, [map, radarAircraftRef, groundTruthRef, smoothRef, NODE, TRUTH]);
 
   return null;
 });
@@ -331,6 +348,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
 const _mlatCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: DEBUG_PASSIVE_PANE }) : null;
 
 const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthRef, smoothRef }) {
+  const { MLAT, MLAT_VECTOR } = usePalette();
   const map = useMap();
   const markersRef = useRef(new Map());
   // Tracks fetched from the verification API. Mutable so the render tick
@@ -432,14 +450,14 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
             renderer: _mlatCanvas,
             interactive: false,
             radius: 4,
-            color: "#e879f9",
+            color: MLAT,
             weight: 2,
-            fillColor: "#e879f9",
+            fillColor: MLAT,
             fillOpacity: 0.85,
           });
           const line = L.polyline(
             [[drTruthLat, drTruthLon], [drSolverLat, drSolverLon]],
-            { renderer: _mlatCanvas, interactive: false, color: "#f0abfc", weight: 1.5, opacity: 0.7, dashArray: "3 4" },
+            { renderer: _mlatCanvas, interactive: false, color: MLAT_VECTOR, weight: 1.5, opacity: 0.7, dashArray: "3 4" },
           );
           line.bindTooltip(
             `${t.position_error_km.toFixed(1)} km`,
@@ -479,7 +497,7 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
       }
       markers.clear();
     };
-  }, [map, groundTruthRef, smoothRef]);
+  }, [map, groundTruthRef, smoothRef, MLAT, MLAT_VECTOR]);
 
   return null;
 });
@@ -490,8 +508,9 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
       the detail panel's solve-history table is the lookup surface.  Bounded
       (≤60 dots for one selected track), so React CircleMarkers are fine. ── */
 const MlatSolveHistoryLayer = memo(function MlatSolveHistoryLayer({ solves }) {
+  const { ANOMALY, GOOD, INK_SUBTLE, WARN } = usePalette();
   const errColor = (e) =>
-    e == null ? "#94a3b8" : e < 3 ? "#34d399" : e < 8 ? "#f59e0b" : "#f43f5e";
+    e == null ? INK_SUBTLE : e < 3 ? GOOD : e < 8 ? WARN : ANOMALY;
   return (
     <>
       {solves.slice(0, 60).map((s, i) =>
@@ -521,6 +540,14 @@ const MlatSolveHistoryLayer = memo(function MlatSolveHistoryLayer({ solves }) {
       imperatively at 60fps via markerRegistry → marker.setLatLng() in the RAF loop,
       completely bypassing React reconcile. ── */
 const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, isStale, showLabels, colorByAlt, onSelect, markerRegistry }) {
+  // Subscribing to the palette here is what makes a theme switch reach the
+  // icons.  makeAircraftIcon reads the active palette when it is CALLED, and
+  // the memo below deliberately ignores everything but the fields that change
+  // an icon — so without this the markers already on the map kept the old
+  // theme's colours until something unrelated invalidated them.  A context
+  // change re-renders its consumers whatever the memo comparator says, which
+  // is precisely the escape hatch this needs.
+  const palette = usePalette();
   const altBand = Math.floor((ac.alt_baro ?? 0) / 5000);
   const markerRef = useRef(null);
 
@@ -537,7 +564,7 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, isStale, s
       ? makeDroneIcon(ac, showLabels, isSelected)
       : makeAircraftIcon(ac, showLabels, isSelected, colorByAlt, isStale),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [ac.hex, isSelected, isStale, showLabels, colorByAlt, ac.flight, ac.target_class, altBand, ac.position_source, ac.adsb_assisted],
+    [ac.hex, isSelected, isStale, showLabels, colorByAlt, ac.flight, ac.target_class, altBand, ac.position_source, ac.adsb_assisted, palette],
   );
   const handlers = useMemo(() => ({ click: () => onSelect(ac.hex) }), [ac.hex, onSelect]);
   return <Marker ref={markerRef} position={[ac.lat, ac.lon]} icon={icon} eventHandlers={handlers} />;
@@ -580,6 +607,7 @@ const _trailsCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, p
 // visibleAircraft array identity destroyed and rebuilt every polyline twice a
 // second, and the 500 ms interval below essentially never fired twice.
 const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftRef, frontendTrailsRef, selectedHex }) {
+  const { WARN } = usePalette();
   const map = useMap();
   const linesRef = useRef(new Map()); // hex → L.polyline
 
@@ -602,7 +630,7 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftR
           line = L.polyline(positions, {
             renderer: _trailsCanvas,
             interactive: false,
-            color: "#f59e0b",
+            color: WARN,
             weight: 1.2,
             opacity: 0.5,
             lineCap: "round",
@@ -627,23 +655,37 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftR
       for (const line of lines.values()) line.remove();
       lines.clear();
     };
-  }, [map, visibleAircraftRef, frontendTrailsRef, selectedHex]);
+  }, [map, visibleAircraftRef, frontendTrailsRef, selectedHex, WARN]);
 
   return null;
 });
 
 /* ── SolveUncertaintyLayer: one soft L.circle per visible multi-node solve,
-      radius = the calibrated 95% position-confidence radius (map/uncertainty.ts)
-      which grows while the icon dead-reckons between solves.
+      radius = the calibrated 68% position-confidence radius of the LAST SOLVE
+      (map/uncertainty.ts), centred on where that solve was (solveDiscCenter →
+      the feed's solve_lat/solve_lon).  Neither moves nor grows until the next
+      solve lands: the icon dead-reckons out of the disc, and that separation
+      is the extrapolation made visible.
+
+      68%, not 95%, since 2026-09-06: dark solve error is heavy-tailed, so a
+      95% ring on a GOOD solve is ~8x its median error and a viewport of them
+      is a wash.  The 95% figure stays in the detail panel.
+
+      Two renderings, one threshold (UNCERTAINTY_RING_ONLY_ABOVE_M): a normal
+      solve gets the soft filled disc, and anything above 3 km — a degenerate
+      solve, or a dark n=2 fix whose floor alone is 2.1 km — gets a dashed
+      hairline OUTLINE with no fill.  It still says where the aircraft might
+      be, without painting over the solves that are worth reading.
 
       Same shape as AircraftTrailsLayer: one shared L.canvas renderer in the
       passive pane, ref-driven so the 2 Hz display array does not tear the
       circles down and rebuild them twice a second, updated on a 500 ms tick.
 
-      Follows the icon exactly (drIconState): drawn whenever an icon is drawn,
-      degraded "stale solve" icons included, and dropped when the icon is.  A
-      disc with no plane inside it reads as a phantom target; a stale plane with
-      no disc hides the one number that says how little the position is worth.
+      Shown and hidden with the icon (drIconState): drawn whenever an icon is
+      drawn, degraded "stale solve" icons included, and dropped when the icon
+      is.  A disc with no plane anywhere near it reads as a phantom target; a
+      stale plane with no disc hides the one number that says how little the
+      position is worth.
       ── */
 const _uncertaintyCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: DEBUG_PASSIVE_PANE }) : null;
 
@@ -664,32 +706,43 @@ const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircr
         // Ref, not a prop: keying this effect on selectedHex would tear every
         // disc down and rebuild it on each selection change.
         if (drIconState(ac, markerNow, ac.hex === selectedHexRef?.current) === "hidden") continue;
-        const radius = solveUncertaintyRadiusM(ac, markerNow);
+        const radius = solveUncertaintyRadiusM(ac);
         // 0 = the feed never stated a sigma for this solve; draw nothing
         // rather than assert a precision it did not promise.
         if (radius <= 0) continue;
+        // Solve epoch, not the icon: an older backend without solve_lat/lon
+        // falls back to the dead-reckoned position inside the helper.
+        const center = solveDiscCenter(ac);
+        if (!center) continue;
         live.add(ac.hex);
         // Same colour rule as the icon, including the colour-by-altitude toggle.
         const color = getAircraftColor(ac, colorByAlt);
+        // A big ring is drawn as an outline; a normal one keeps the fill.
+        const ringOnly = isRingOnlyRadius(radius);
+        const shapeStyle = ringOnly
+          ? { fillOpacity: 0, weight: 1, opacity: 0.7, dashArray: "4 5" }
+          : // Fill strong enough to read against the light basemap: a 0.10
+            // fill was invisible at the 10-20 px radii a typical solve draws.
+            { fillOpacity: 0.28, weight: 1.5, opacity: 0.8, dashArray: undefined };
         let circle = circles.get(ac.hex);
         if (circle) {
-          circle.setLatLng([ac.lat, ac.lon]);
+          circle.setLatLng(center);
           circle.setRadius(radius);
           // Lane colour can flip mid-flight (a solve gaining or losing its
-          // transponder tag) — keep the disc in step with the icon.
-          if (circle.options.color !== color) circle.setStyle({ color, fillColor: color });
+          // transponder tag), and a re-solve can cross the ring-only
+          // threshold in either direction — keep both in step with the icon.
+          const wasRingOnly = circle.options.fillOpacity === 0;
+          if (circle.options.color !== color || wasRingOnly !== ringOnly) {
+            circle.setStyle({ color, fillColor: color, ...shapeStyle });
+          }
         } else {
-          circle = L.circle([ac.lat, ac.lon], {
+          circle = L.circle(center, {
             radius,
             renderer: _uncertaintyCanvas,
             interactive: false,
             color,
             fillColor: color,
-            // Strong enough to read against the light basemap: a 0.10 fill
-            // was invisible at the 10-20 px radii a typical solve draws.
-            fillOpacity: 0.28,
-            weight: 1.5,
-            opacity: 0.8,
+            ...shapeStyle,
           });
           circle.addTo(map);
           circles.set(ac.hex, circle);
@@ -801,6 +854,7 @@ const BasemapLayer = memo(function BasemapLayer({ url }) {
       nodes is fine).  A site counts as synthetic only when every node at it
       is: one real receiver there means the site is real. ── */
 const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelectNode, selectedNodeId }) {
+  const { NODE } = usePalette();
   return groupNodesBySite(visibleNodes).map((site) => {
     const multi = site.nodes.length > 1;
     // Every published rx coordinate is displaced by the backend; the disc is
@@ -822,9 +876,9 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
         radius={discRadiusM}
         className="node-uncertainty-disc"
         pathOptions={{
-          color: "#facc15",
+          color: NODE,
           weight: 0,
-          fillColor: "#facc15",
+          fillColor: NODE,
           fillOpacity: 0.16,
         }}
         interactive={false}
@@ -871,7 +925,7 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
           <CircleMarker
             center={[site.rx_lat, site.rx_lon]}
             radius={5}
-            pathOptions={{ color: "#facc15", fillColor: "#facc15", fillOpacity: 0.55, weight: 1.5 }}
+            pathOptions={{ color: NODE, fillColor: NODE, fillOpacity: 0.55, weight: 1.5 }}
             bubblingMouseEvents={false}
             eventHandlers={clickHandlers}
           >
@@ -898,6 +952,7 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
 
 /* ── CoverageLayer: memoized — only re-renders when nodes or showCoverage changes ── */
 const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }) {
+  const { COVERAGE } = usePalette();
   if (!showCoverage) return null;
   return visibleNodes.map((n) => {
     // Measured coverage or nothing.  A node with no polygon used to get a
@@ -924,8 +979,8 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
         // verified live.  Top-level props do reach the constructor options.
         className="coverage-fuzzy"
         pathOptions={{
-          color: "#22c55e",
-          fillColor: "#22c55e",
+          color: COVERAGE,
+          fillColor: COVERAGE,
           fillOpacity: 0.14,
           weight: 0,
         }}
@@ -941,6 +996,7 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
       list of nodes that bounce off it. Only the illuminators our own nodes use,
       not every broadcast tower in range (that would be unreadable clutter). ── */
 const IlluminatorsLayer = memo(function IlluminatorsLayer({ visibleNodes, showIlluminators }) {
+  const { ILLUMINATOR } = usePalette();
   if (!showIlluminators) return null;
   const byTx = new Map();
   for (const n of visibleNodes) {
@@ -956,7 +1012,7 @@ const IlluminatorsLayer = memo(function IlluminatorsLayer({ visibleNodes, showIl
       key={`illum-${key}`}
       center={[tx.lat, tx.lon]}
       radius={6}
-      pathOptions={{ color: "#f472b6", fillColor: "#f472b6", fillOpacity: 0.7, weight: 1.5 }}
+      pathOptions={{ color: ILLUMINATOR, fillColor: ILLUMINATOR, fillOpacity: 0.7, weight: 1.5 }}
       bubblingMouseEvents={false}
     >
       <Popup>
@@ -1003,6 +1059,7 @@ const FollowController = memo(function FollowController({ followSelected, select
       it needs `useMap()` to access the live smoothed position via
       `smoothRef`, which other map children already pattern. ── */
 const HashSync = memo(function HashSync({ onMove, showRangeRings, selectedHex, smoothRef }) {
+  const { LANE_MN_ADSB } = usePalette();
   const map = useMapEvents({
     moveend: () => {
       const c = map.getCenter();
@@ -1030,7 +1087,7 @@ const HashSync = memo(function HashSync({ onMove, showRangeRings, selectedHex, s
           key={r}
           center={[sm.lat, sm.lon]}
           radius={r}
-          pathOptions={{ color: "#38bdf8", weight: 1, opacity: 0.5, fill: false, dashArray: "4 4" }}
+          pathOptions={{ color: LANE_MN_ADSB, weight: 1, opacity: 0.5, fill: false, dashArray: "4 4" }}
         />
       ))}
     </>
@@ -1040,6 +1097,8 @@ const HashSync = memo(function HashSync({ onMove, showRangeRings, selectedHex, s
 /* ── Main component ───────────────────────────────────────────── */
 
 export default function LiveAircraftMap() {
+  const { ANOMALY, COVERAGE, LANE_MN_ADSB, LANE_MN_DARK, SELECTED, WARN } = usePalette();
+  const { theme, setTheme } = useMapTheme();
   /* ── Node-owner view ─────────────────────────────────────────── */
   // Resolved before the feed so `ownerOnly` can pick the server-filtered
   // /ws/aircraft/owner endpoint. Only takes effect once the user is logged in.
@@ -1140,7 +1199,7 @@ export default function LiveAircraftMap() {
   const [showInBeamDiag, setShowInBeamDiag] = usePersistedState("tf.layer.inBeamDiag.v2", initialLayers?.inBeamDiag ?? false);
   // Detection arcs default ON — preserves the previously-unconditional render.
   const [showArcs, setShowArcs] = usePersistedState("tf.layer.arcs", initialLayers?.arcs ?? true);
-  // 95% position-uncertainty disc around multi-node solves. Default ON: the
+  // 68% position-uncertainty disc around multi-node solves. Default ON: the
   // disc is the honest reading of a solved position, and hiding it by default
   // would leave the icon looking more precise than it is.
   const [showUncertainty, setShowUncertainty] = usePersistedState("tf.layer.uncertainty", initialLayers?.uncertainty ?? true);
@@ -1166,7 +1225,22 @@ export default function LiveAircraftMap() {
   // distance column in the list panel.
   const [userLoc, setUserLoc] = useState(null); // { lat, lon } | null
   // Tile theme — voyager (default dark-ish), positron (light), osm (classic).
-  const [tileTheme, setTileTheme] = usePersistedState("tf.tile.theme", "voyager");
+  const [tileTheme, setTileTheme] = usePersistedState("tf.tile.theme", DEFAULT_BASEMAP[DEFAULT_MAP_THEME]);
+
+  // Switching theme moves the basemap with it, but only when the basemap is
+  // still the one the OLD theme picked.  Anyone who has cycled it by hand has
+  // said what they want the tiles to be, and a theme switch is not a request to
+  // undo that — a guard that only checked "is this a mount?" still clobbered
+  // an OSM basemap the moment the theme changed.
+  const prevThemeRef = useRef(theme);
+  useEffect(() => {
+    const prev = prevThemeRef.current;
+    if (prev === theme) return;
+    prevThemeRef.current = theme;
+    setTileTheme((current) =>
+      current === DEFAULT_BASEMAP[prev] ? DEFAULT_BASEMAP[theme] : current,
+    );
+  }, [theme, setTileTheme]);
 
   const animationFrameRef = useRef(null);
   const fixesRef = useRef({});   // hex → last server fix
@@ -1851,13 +1925,17 @@ export default function LiveAircraftMap() {
         onToggleArcs={() => setShowArcs((v) => !v)}
         onToggleUncertainty={() => setShowUncertainty((v) => !v)}
         onToggleSound={() => setSoundOn((v) => !v)}
-        onCycleTheme={() => setTileTheme((t) => t === "voyager" ? "positron" : t === "positron" ? "osm" : "voyager")}
+        onCycleTheme={() => setTileTheme((t) => t === "positron" ? "voyager" : t === "voyager" ? "osm" : "positron")}
         onShare={shareLink}
         onLocate={locateMe}
         onExportAll={exportAllTrails}
         onShowHelp={() => setShowShortcutHelp(true)}
         onTogglePause={handleTogglePause}
         onFit={() => setFocusNonce((n) => n + 1)}
+        filters={filters}
+        onFiltersChange={setFilters}
+        theme={theme}
+        onToggleTheme={() => setTheme(theme === "dark" ? "light" : "dark")}
       />
 
       <div className="live-map-body">
@@ -1899,44 +1977,12 @@ export default function LiveAircraftMap() {
               onToggle={() => setShowStats((v) => !v)}
             />
           </div>
-          {showFilters && (
-            <div style={{
-              position: "absolute", top: 12, left: 52, zIndex: 1000,
-              background: "rgba(2,6,23,0.9)", color: "#e2e8f0", border: "1px solid #1e293b",
-              borderRadius: 8, padding: "10px 12px", fontSize: 12, display: "flex",
-              flexDirection: "column", gap: 8, boxShadow: "0 2px 8px rgba(0,0,0,0.4)",
-            }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <strong>Filters</strong>
-                <button
-                  onClick={() => setFilters({ minFl: "", maxFl: "", minGs: "", type: "all" })}
-                  style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 11 }}
-                >clear</button>
-              </div>
-              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                FL
-                <input type="number" placeholder="min" value={filters.minFl} style={{ width: 56 }}
-                  onChange={(e) => setFilters((f) => ({ ...f, minFl: e.target.value }))} />
-                –
-                <input type="number" placeholder="max" value={filters.maxFl} style={{ width: 56 }}
-                  onChange={(e) => setFilters((f) => ({ ...f, maxFl: e.target.value }))} />
-              </label>
-              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                Min speed (kt)
-                <input type="number" placeholder="0" value={filters.minGs} style={{ width: 56 }}
-                  onChange={(e) => setFilters((f) => ({ ...f, minGs: e.target.value }))} />
-              </label>
-              <label style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                Type
-                <select value={filters.type} onChange={(e) => setFilters((f) => ({ ...f, type: e.target.value }))}>
-                  <option value="all">All</option>
-                  <option value="aircraft">Aircraft</option>
-                  <option value="drone">Drones</option>
-                  <option value="multinode">Multi-node only</option>
-                </select>
-              </label>
-            </div>
-          )}
+          <MapLegend
+            colorByAlt={colorByAlt}
+            showGroundTruth={showGroundTruth}
+            showIlluminators={showIlluminators}
+            hasPlayback={paused && historyRef.current.length > 0}
+          />
           <MapContainer
             center={[initialHash.lat ?? 34.85, initialHash.lon ?? -82.39]}
             zoom={initialHash.z ?? 9}
@@ -1964,10 +2010,11 @@ export default function LiveAircraftMap() {
               <CircleMarker
                 center={[userLoc.lat, userLoc.lon]}
                 radius={7}
-                pathOptions={{ color: "#38bdf8", fillColor: "#38bdf8", fillOpacity: 0.7, weight: 2 }}
+                pathOptions={{ color: LANE_MN_ADSB, fillColor: LANE_MN_ADSB, fillOpacity: 0.7, weight: 2 }}
                 interactive={false}
               />
             )}
+            <InvalidateSizeOnResize />
             <MapClickClear onClear={handleMapClick} />
             <FitBounds aircraft={radarAircraft} nodes={nodes} selectedHex={selectedHex} focusNonce={focusNonce} />
             <FollowController followSelected={followSelected} selectedHex={selectedHex} smoothRef={smoothRef} onDisengage={() => setFollowSelected(false)} />
@@ -2006,8 +2053,8 @@ export default function LiveAircraftMap() {
                       // className stays top-level — see the CoverageLayer note
                       className="coverage-fuzzy"
                       pathOptions={{
-                        color: "#22c55e",
-                        fillColor: "#22c55e",
+                        color: COVERAGE,
+                        fillColor: COVERAGE,
                         fillOpacity: 0.30,
                         weight: 0,
                       }}
@@ -2025,7 +2072,7 @@ export default function LiveAircraftMap() {
                     <CircleMarker
                       center={[sn.tx_lat, sn.tx_lon]}
                       radius={8}
-                      pathOptions={{ color: "#f59e0b", weight: 2.5, fillColor: "#fbbf24", fillOpacity: 0.7 }}
+                      pathOptions={{ color: WARN, weight: 2.5, fillColor: SELECTED, fillOpacity: 0.7 }}
                       bubblingMouseEvents={false}
                     >
                       <Popup><strong>TX Tower</strong><br />{sn.tx_lat.toFixed(4)}, {sn.tx_lon.toFixed(4)}</Popup>
@@ -2039,7 +2086,7 @@ export default function LiveAircraftMap() {
                   {validLatLon(sn.tx_lat, sn.tx_lon) && (
                     <Polyline
                       positions={[[sn.rx_lat, sn.rx_lon], [sn.tx_lat, sn.tx_lon]]}
-                      pathOptions={{ color: "#f59e0b", weight: 1.5, opacity: 0.6, dashArray: "4 6" }}
+                      pathOptions={{ color: WARN, weight: 1.5, opacity: 0.6, dashArray: "4 6" }}
                       interactive={false}
                     />
                   )}
@@ -2050,7 +2097,7 @@ export default function LiveAircraftMap() {
                         <Polyline
                           key={`node-det-${ac.hex}`}
                           positions={ac.ambiguity_arc}
-                          pathOptions={{ color: "#fbbf24", weight: 5, opacity: 0.55, lineCap: "round" }}
+                          pathOptions={{ color: SELECTED, weight: 5, opacity: 0.55, lineCap: "round" }}
                           interactive={false}
                         />
                       );
@@ -2061,7 +2108,7 @@ export default function LiveAircraftMap() {
                           key={`node-det-${ac.hex}`}
                           center={[ac.lat, ac.lon]}
                           radius={12}
-                          pathOptions={{ color: "#fbbf24", weight: 2, fillOpacity: 0, dashArray: "4 4" }}
+                          pathOptions={{ color: SELECTED, weight: 2, fillOpacity: 0, dashArray: "4 4" }}
                           interactive={false}
                         />
                       );
@@ -2092,8 +2139,8 @@ export default function LiveAircraftMap() {
                         // className stays top-level — see the CoverageLayer note
                         className="coverage-fuzzy"
                         pathOptions={{
-                          color: "#a78bfa",
-                          fillColor: "#a78bfa",
+                          color: LANE_MN_DARK,
+                          fillColor: LANE_MN_DARK,
                           fillOpacity: 0.18,
                           weight: 0,
                         }}
@@ -2104,14 +2151,14 @@ export default function LiveAircraftMap() {
                     <CircleMarker
                       center={[cn.rx_lat, cn.rx_lon]}
                       radius={14}
-                      pathOptions={{ color: "#a78bfa", weight: 3, fillColor: "#a78bfa", fillOpacity: 0.25 }}
+                      pathOptions={{ color: LANE_MN_DARK, weight: 3, fillColor: LANE_MN_DARK, fillOpacity: 0.25 }}
                       interactive={false}
                     />
                     {/* Connection line from aircraft to contributing node */}
                     {selectedAc.lat && selectedAc.lon && (
                       <Polyline
                         positions={[[selectedAc.lat, selectedAc.lon], [cn.rx_lat, cn.rx_lon]]}
-                        pathOptions={{ color: "#a78bfa", weight: 1.5, opacity: 0.5, dashArray: "6 4" }}
+                        pathOptions={{ color: LANE_MN_DARK, weight: 1.5, opacity: 0.5, dashArray: "6 4" }}
                         interactive={false}
                       />
                     )}
@@ -2133,12 +2180,12 @@ export default function LiveAircraftMap() {
                     <CircleMarker
                       center={[dn.rx_lat, dn.rx_lon]}
                       radius={14}
-                      pathOptions={{ color: "#fbbf24", weight: 3, fillColor: "#fbbf24", fillOpacity: 0.25 }}
+                      pathOptions={{ color: SELECTED, weight: 3, fillColor: SELECTED, fillOpacity: 0.25 }}
                       interactive={false}
                     />
                     <Polyline
                       positions={[[selectedAc.lat, selectedAc.lon], [dn.rx_lat, dn.rx_lon]]}
-                      pathOptions={{ color: "#fbbf24", weight: 1.5, opacity: 0.6, dashArray: "6 4" }}
+                      pathOptions={{ color: SELECTED, weight: 1.5, opacity: 0.6, dashArray: "6 4" }}
                       interactive={false}
                     />
                   </React.Fragment>
@@ -2157,13 +2204,13 @@ export default function LiveAircraftMap() {
                   <CircleMarker
                     center={[sn.rx_lat, sn.rx_lon]}
                     radius={14}
-                    pathOptions={{ color: "#fbbf24", weight: 3, fillColor: "#fbbf24", fillOpacity: 0.25 }}
+                    pathOptions={{ color: SELECTED, weight: 3, fillColor: SELECTED, fillOpacity: 0.25 }}
                     interactive={false}
                   />
                   {selectedAc.lat && selectedAc.lon && (
                     <Polyline
                       positions={[[selectedAc.lat, selectedAc.lon], [sn.rx_lat, sn.rx_lon]]}
-                      pathOptions={{ color: "#fbbf24", weight: 1.5, opacity: 0.6, dashArray: "6 4" }}
+                      pathOptions={{ color: SELECTED, weight: 1.5, opacity: 0.6, dashArray: "6 4" }}
                       interactive={false}
                     />
                   )}
@@ -2183,7 +2230,7 @@ export default function LiveAircraftMap() {
               />
             )}
 
-            {/* 95% position-uncertainty disc around each multi-node solve. */}
+            {/* 68% position-uncertainty disc around each multi-node solve. */}
             {showUncertainty && (
               <SolveUncertaintyLayer visibleAircraftRef={visibleAircraftRef} colorByAlt={colorByAlt} selectedHexRef={selectedHexRef} />
             )}
@@ -2196,7 +2243,7 @@ export default function LiveAircraftMap() {
                   key={`trail-${selectedHex}-seg${i}`}
                   positions={seg.positions}
                   pathOptions={{
-                    color: "#f59e0b",
+                    color: WARN,
                     weight: seg.weight,
                     opacity: isArcTrack ? seg.opacity * 0.6 : seg.opacity,
                     lineCap: "round",
@@ -2286,7 +2333,7 @@ export default function LiveAircraftMap() {
                   // className stays top-level — see the CoverageLayer note
                   className="anomaly-ring"
                   pathOptions={{
-                    color: "#f43f5e",
+                    color: ANOMALY,
                     weight: 2.5,
                     fillOpacity: 0,
                     dashArray: "5 5",

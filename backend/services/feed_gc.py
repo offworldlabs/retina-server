@@ -1,12 +1,30 @@
 """Stale-store garbage collection for the aircraft feed.
 
 Extracted from build_combined_aircraft_json section 4/4b — pure GC with no
-output, run once per feed build.  Bounds memory and keeps
-resolve_ground_truth_hex's O(N) scans cheap.
+output.  Bounds memory and keeps resolve_ground_truth_hex's O(N) scans cheap.
+
+These run on their own timer (services.tasks.feed_gc_task), NOT off the back
+of the feed build: the build only happens when the flush task gets round to
+it, and the flush task can be held for seconds behind a websocket broadcast or
+skipped entirely while state.aircraft_dirty is False — while frame workers and
+solver threads keep writing every store below.
 """
 
-from config.constants import GT_DISPLAY_STALE_S, KNOWN_CLAIMS_STALE_S, TRAIL_STALE_S
+from config.constants import GT_DISPLAY_STALE_S, KNOWN_CLAIMS_STALE_S, MN_DARK_EXPIRY_S, TRAIL_STALE_S
 from core import state
+from services.id_utils import multinode_hex_from_key
+
+# Key prefix marking a transponder-anchored (assisted) multinode entry; every
+# other key is a dark solve.  Lives here rather than in aircraft_feed because
+# the expiry that reads it does, and aircraft_feed imports this module.
+MN_ADSB_PREFIX = "mn-adsb-"
+
+# Assisted entries keep the historic 60 s: the entry is anchored to a
+# transponder hex, so a long gap is the ADS-B feed breathing.  A dark entry has
+# nothing holding it in place — at the current 1-3 s dark solve cadence a
+# MN_DARK_EXPIRY_S gap is a lost track, and the 30-60 s band measured 3.99 km
+# median error (32% over 5 km): a confident icon kilometres from any aircraft.
+MN_ASSISTED_EXPIRY_S = 60.0
 
 
 def prune_stale_stores(now: float) -> None:
@@ -34,6 +52,19 @@ def prune_stale_stores(now: float) -> None:
     ]
     for h in stale_claims:
         state.known_claims.pop(h, None)
+
+    # 4a-bis. Known-track holds, on the same rule and for the same reason.
+    # The claiming path expires a node's own entries against ITS frame clock,
+    # which never ticks again for a node that stopped sending — so a node that
+    # disconnects mid-claim would pin one entry per hex it ever held.  Pruned
+    # per hex (not per node) so a still-live node keeps the tracks it is still
+    # holding.
+    for nid, holds in list(state.known_track_holds.items()):
+        for h, e in list(holds.items()):
+            if (now - e.get("ts_ms", 0) / 1000.0) > KNOWN_CLAIMS_STALE_S:
+                holds.pop(h, None)
+        if not holds:
+            state.known_track_holds.pop(nid, None)
 
     # 4b. Prune stale ground-truth trails and track histories to bound
     # memory and keep resolve_ground_truth_hex O(N) scans cheap.
@@ -65,12 +96,12 @@ def prune_stale_stores(now: float) -> None:
         # outlived its true counterpart would keep being served for a hex
         # nothing else in the process still knows about.
         state.track_histories_public.pop(h, None)
-        # NOTE: do NOT prune track_last_emit here.  track_histories ages out
-        # via the ~5 m dedup even when the track is still actively emitting
-        # the same arc midpoint.  Clearing the speed-gate reference would
-        # then let the next bad measurement leak through unchecked.
-        # track_last_emit is pruned when the track itself goes stale
-        # (see stale_geo cleanup above).
+        # NOTE: do NOT prune track_last_emit on *this* verdict.
+        # track_histories ages out via the ~5 m dedup even when the track is
+        # still actively emitting the same arc midpoint.  Clearing the
+        # speed-gate reference would then let the next bad measurement leak
+        # through unchecked.  track_last_emit has its own age sweep below,
+        # keyed on its own timestamp rather than the history's.
 
     # Arc-motion logs: also swept by the stale_geo cleanup, but tracks that
     # never enter active_geo_aircraft (default-pipeline path) would leak one
@@ -81,3 +112,64 @@ def prune_stale_stores(now: float) -> None:
     ]
     for h in stale_motion:
         state.track_arc_motion.pop(h, None)
+
+    # Speed-gate references and gate holds: same bug class as the arc-motion
+    # log above, and written on the same line-block.  track_entry() runs from
+    # two places — the active_geo_aircraft sweep, whose stale pass pops all
+    # three, and the default-pipeline branch, which pops none.  A hex that
+    # only ever reaches the feed on the second path (nodes registered without
+    # rx_lat/tx_lat, HTTP/sim ingest, and every per-track-id pr* hex, which
+    # never repeats) left an entry no code path could remove.
+    #
+    # TRAIL_STALE_S (300 s) is far longer than the 60 s window the speed gate
+    # itself will act on (track_gates: `if 0 < _dt < 60`) and than
+    # GATE_MAX_HOLD_S, so nothing here can weaken either gate: every entry
+    # dropped is one both gates would already ignore.  The two are swept
+    # together because the hold is meaningless without the reference it
+    # reverts to, and the hold carries its anchor timestamp at v[0] against
+    # last_emit's v[2].
+    stale_emit = [h for h, v in list(state.track_last_emit.items()) if not v or (now - v[2]) > TRAIL_STALE_S]
+    for h in stale_emit:
+        state.track_last_emit.pop(h, None)
+        state.track_gate_hold.pop(h, None)
+    stale_hold = [h for h, v in list(state.track_gate_hold.items()) if not v or (now - v[0]) > TRAIL_STALE_S]
+    for h in stale_hold:
+        state.track_gate_hold.pop(h, None)
+
+
+def prune_multinode_tracks(now: float) -> None:
+    """Age out state.multinode_tracks, discarding each entry's anomaly hex.
+
+    Snapshot and evict under the solver's track lock: the solver worker
+    iterates state.multinode_tracks inside multinode_key_decision while holding
+    it, and a pop from another thread mid-iteration raised "dictionary changed
+    size during iteration" live (2026-09-05).  Lazy import: solver.py owns the
+    lock and importing it at module level here would create a cycle through the
+    task modules.
+
+    This is the ONLY pruner of the store the solver writes at full rate.  It
+    used to live inside the feed build, which meant a stalled flush — or a feed
+    build skipped because nothing marked the feed dirty — left it growing
+    unbounded.  It is idempotent, so the feed build still calls it before
+    reading its snapshot and gets a store with nothing expired in it.
+    """
+    from services.tasks import solver as _solver_mod
+
+    with _solver_mod._MN_TRACKS_LOCK:
+        snapshot = list(state.multinode_tracks.items())
+    stale = []
+    for key, r in snapshot:
+        age_s = now - r.get("timestamp_ms", 0) / 1000
+        expiry_s = MN_ASSISTED_EXPIRY_S if key.startswith(MN_ADSB_PREFIX) else MN_DARK_EXPIRY_S
+        if age_s > expiry_s:
+            stale.append(key)
+    for k in stale:
+        # Must use the same derivation as insertion (multinode_to_aircraft ->
+        # multinode_hex_from_key).  This previously used an obsolete 4-char
+        # format that never matched the mn<sha256[:10]> actually inserted, so
+        # no multinode anomaly hex was ever evicted and anomaly_hexes grew
+        # without bound — enough to trip the anomaly_flood health check.
+        with state.anomaly_lock:
+            state.anomaly_hexes.discard(multinode_hex_from_key(k))
+        with _solver_mod._MN_TRACKS_LOCK:
+            state.multinode_tracks.pop(k, None)

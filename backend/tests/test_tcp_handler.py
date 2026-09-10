@@ -11,6 +11,7 @@ import time
 import pytest
 
 from core import state
+from services.node_config import position_status
 from services.tcp_handler import (
     _apply_synthetic_adsb,
     _enqueue_detection,
@@ -37,17 +38,18 @@ def _make_hello(node_id: str = "test-node-1", is_synthetic: bool = False) -> byt
     )
 
 
-def _make_config(node_id: str = "test-node-1", is_synthetic: bool = False) -> bytes:
+def _make_config(node_id: str = "test-node-1", is_synthetic: bool = False, config: dict | None = None) -> bytes:
     return _msg(
         {
             "type": "CONFIG",
             "node_id": node_id,
             "config_hash": "abc123",
             "is_synthetic": is_synthetic,
-            "config": {
+            "config": config
+            or {
                 "node_id": node_id,
-                "rx_lat": 33.94,
-                "rx_lon": -84.65,
+                "rx_lat": 33.9,
+                "rx_lon": -84.6,
                 "rx_alt_ft": 950,
                 "tx_lat": 33.76,
                 "tx_lon": -84.33,
@@ -125,10 +127,10 @@ class TestIsSyntheticNode:
         assert is_synthetic_node("realnode-mommpy5s") is True
 
     def test_non_synthetic(self):
-        assert is_synthetic_node("net13") is False
+        assert is_synthetic_node("default-node") is False
 
-    def test_real_retnode(self):
-        assert is_synthetic_node("radar3-retnode") is False
+    def test_a_hardware_node_id(self):
+        assert is_synthetic_node("example-node-a") is False
 
     def test_empty(self):
         assert is_synthetic_node("") is False
@@ -159,6 +161,33 @@ class TestHandshake:
         node = state.connected_nodes["test-node-1"]
         assert node["config_hash"] == "abc123"
         assert node["status"] == "disconnected"  # set in finally block after EOF
+
+    def test_the_stored_config_is_canonical(self):
+        """_validate_node_config accepts the legacy flat spelling, so a node
+        sending it is placed and must read as placed everywhere downstream —
+        the archive included, which is a permanent record. The handler stores
+        the canonical form: folded and coerced, with the declared altitude left
+        alone for geometry to resolve at its own boundary."""
+        reader = MockStreamReader(
+            [
+                _make_hello("test-node-1"),
+                _make_config(
+                    "test-node-1",
+                    config={"node_id": "test-node-1", "lat": "33.9", "lon": "-84.6", "tx_lat": 0.0, "tx_lon": 0.0},
+                ),
+                b"",
+            ]
+        )
+        writer = MockStreamWriter()
+
+        asyncio.run(handle_tcp_client(reader, writer))
+
+        config = state.connected_nodes["test-node-1"]["config"]
+        assert (config["rx_lat"], config["rx_lon"]) == (33.9, -84.6)
+        assert "lat" not in config and "lon" not in config
+        assert config["tx_lat"] is None and config["tx_lon"] is None
+        assert config["rx_alt_ft"] is None and config["tx_alt_ft"] is None
+        assert position_status(config) == "missing_tx"
 
     def test_config_ack_sent(self):
         """Server replies with CONFIG_ACK after receiving CONFIG."""
@@ -250,8 +279,8 @@ class TestConfigReplacementEvictsCachedPipeline:
                 "is_synthetic": False,
                 "config": {
                     "node_id": node_id,
-                    "rx_lat": 33.94,
-                    "rx_lon": -84.65,
+                    "rx_lat": 33.9,
+                    "rx_lon": -84.6,
                     "rx_alt_ft": 950,
                     "tx_lat": 33.76,
                     "tx_lon": -84.33,

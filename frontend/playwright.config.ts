@@ -32,6 +32,8 @@ const HOSTS = {
     // `^map\.` exactly, so neither host filters to the real-only feed.
     testmap:   "https://staging-map.retina.fm",
     dash:      "https://staging-dash.retina.fm",
+    // Same bundle as dash; the hostname is what selects the admin route table.
+    admin:     "https://staging-admin.retina.fm",
   },
   prod: {
     frontend:  "https://towers.retina.fm",
@@ -39,6 +41,10 @@ const HOSTS = {
     map:       "https://map.retina.fm",
     testmap:   null,
     dash:      "https://dash.retina.fm",
+    // Null on prod, like testmap and for the same reason: a failed production
+    // E2E rolls production back, and the surface selection this would assert is
+    // client-side, so staging exercises the identical bundle at no such cost.
+    admin:     null,
   },
   local: {
     frontend:  "http://localhost:5173",
@@ -46,6 +52,11 @@ const HOSTS = {
     map:       "http://localhost:5173",
     testmap:   "http://localhost:5173",
     dash:      "http://localhost:5174",
+    // Null for a different reason than prod: the dev server answers on one
+    // origin, so no hostname there selects the admin surface. Every value here
+    // is a bare origin that call sites append paths to, and `?mode=admin` is a
+    // query rather than an origin, so it cannot live in this table.
+    admin:     null,
   },
 } as const;
 

@@ -304,7 +304,7 @@ class TestTCPDetectionEnqueue:
                 "type": "CONFIG",
                 "node_id": _NODE_ID,
                 "config_hash": "badhash",
-                "config": {"rx_lat": 999.0, "rx_lon": -84.65, "tx_lat": 33.76, "tx_lon": -84.33},
+                "config": {"rx_lat": 999.0, "rx_lon": -84.6, "tx_lat": 33.76, "tx_lon": -84.33},
             }
         )
         reader = _FakeReader([_hello(), bad, b""])

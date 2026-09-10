@@ -4,6 +4,7 @@ Covers:
   /api/auth/me, /api/auth/logout
   /api/auth/me/claim-codes  (GET / POST / DELETE)
   /api/auth/me/nodes
+  /api/auth/me/nodes/{id}/location-privacy (PUT / DELETE)
   OAuth state token (CSRF + open-redirect guards)
   /api/admin/invites         (GET / POST / DELETE)
   /api/admin/node-owners     (GET)
@@ -138,10 +139,178 @@ class TestMyNodes:
         try:
             nodes = client.get("/api/auth/me/nodes").json()
             node = next(n for n in nodes if n["node_id"] == "field-check-node")
-            for field in ("node_id", "name", "status", "is_synthetic"):
+            for field in ("node_id", "name", "status", "is_synthetic", "position_status"):
                 assert field in node, f"Missing field: {field}"
         finally:
             asyncio.run(set_node_owner("field-check-node", None))
+
+    def test_my_nodes_entry_carries_position_status_for_a_private_node(self, client):
+        """A private node is filtered out of /api/radar/nodes entirely, so
+        its owner has nowhere else to learn it needs a position."""
+        from core import state
+        from core.auth import set_node_owner
+        from core.users import ANONYMOUS_USER
+
+        node_id = "position-status-node"
+        asyncio.run(set_node_owner(node_id, ANONYMOUS_USER["id"]))
+        with state.connected_nodes_lock:
+            state.connected_nodes[node_id] = {
+                "status": "active",
+                "config": {"rx_lat": None, "rx_lon": None, "tx_lat": None, "tx_lon": None},
+            }
+        try:
+            nodes = client.get("/api/auth/me/nodes").json()
+            node = next(n for n in nodes if n["node_id"] == node_id)
+            assert node["position_status"] == "missing_both"
+        finally:
+            asyncio.run(set_node_owner(node_id, None))
+            with state.connected_nodes_lock:
+                state.connected_nodes.pop(node_id, None)
+
+
+# ── /api/auth/me/nodes/{id}/location-privacy ─────────────────────────────────
+
+
+class TestMyNodeLocationPrivacy:
+    """The owner's half of the location-privacy switch.
+
+    The suite runs with core.users' anonymous-admin bypass opted in, so the
+    caller is that admin and "owning" a node is a node_owners row against its
+    all-zero uuid.  These go through the HTTP routes rather than the storage
+    helpers — tests/test_publication.py owns the precedence rule; what is
+    asserted here is the ownership gate, the shape on the wire, and that the
+    cache is dropped so a change is visible immediately.
+    """
+
+    NODE = "privacy-route-node"
+
+    @pytest.fixture()
+    def owned(self):
+        from core.auth import set_node_owner
+        from core.users import ANONYMOUS_USER
+
+        asyncio.run(set_node_owner(self.NODE, ANONYMOUS_USER["id"]))
+        try:
+            yield self.NODE
+        finally:
+            asyncio.run(set_node_owner(self.NODE, None))
+
+    @staticmethod
+    def _register(node_id, choice):
+        from core.nodes import Node
+        from core.users import async_session_maker
+
+        async def _go():
+            async with async_session_maker() as session:
+                session.add(Node(node_id=node_id, node_ref=f"nde-{node_id}"[:15], publication=choice))
+                await session.commit()
+
+        asyncio.run(_go())
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+    def test_setting_privacy_on_a_node_you_do_not_own_is_404(self, client):
+        """404 rather than 403: the two answers differ only in confirming the id
+        exists, and node ids are guessable."""
+        r = client.put("/api/auth/me/nodes/not-mine/location-privacy", json={"private": True})
+        assert r.status_code == 404
+        assert r.json()["detail"] == "Node not found"
+
+    def test_clearing_privacy_on_a_node_you_do_not_own_is_404(self, client):
+        r = client.delete("/api/auth/me/nodes/not-mine/location-privacy")
+        assert r.status_code == 404
+        assert r.json()["detail"] == "Node not found"
+
+    def test_setting_private_returns_the_override_state(self, client, owned):
+        r = client.put(f"/api/auth/me/nodes/{owned}/location-privacy", json={"private": True})
+        assert r.status_code == 200
+        assert r.json() == {
+            "node_id": owned,
+            "location_private": True,
+            "location_privacy_source": "override",
+        }
+
+    def test_setting_private_takes_effect_without_waiting_for_the_ttl(self, client, owned):
+        """The route calls publication.invalidate() after its commit, so the
+        next 1 Hz flush honours the change rather than one up to 30 s later."""
+        from services.publication import is_private
+
+        assert not is_private(owned)
+        client.put(f"/api/auth/me/nodes/{owned}/location-privacy", json={"private": True})
+        assert is_private(owned)
+
+    def test_setting_public_overrides_a_private_registration(self, client, owned):
+        from services.publication import is_private
+
+        self._register(owned, "private")
+        assert is_private(owned)
+        r = client.put(f"/api/auth/me/nodes/{owned}/location-privacy", json={"private": False})
+        assert r.json()["location_private"] is False
+        assert not is_private(owned)
+
+    def test_clearing_returns_the_node_to_its_registration_choice(self, client, owned):
+        from services.publication import is_private
+
+        self._register(owned, "private")
+        client.put(f"/api/auth/me/nodes/{owned}/location-privacy", json={"private": False})
+        assert not is_private(owned)
+
+        r = client.delete(f"/api/auth/me/nodes/{owned}/location-privacy")
+        assert r.status_code == 200
+        assert r.json() == {
+            "node_id": owned,
+            "location_private": True,
+            "location_privacy_source": "registration",
+        }
+        assert is_private(owned)
+
+    def test_clearing_a_node_that_never_registered_falls_back_to_the_default(self, client, owned):
+        client.put(f"/api/auth/me/nodes/{owned}/location-privacy", json={"private": True})
+        r = client.delete(f"/api/auth/me/nodes/{owned}/location-privacy")
+        assert r.json() == {
+            "node_id": owned,
+            "location_private": False,
+            "location_privacy_source": "default",
+        }
+
+    def test_a_body_without_private_is_rejected(self, client, owned):
+        assert client.put(f"/api/auth/me/nodes/{owned}/location-privacy", json={}).status_code == 422
+
+
+class TestMyNodesCarriesLocationPrivacy:
+    """All three sources, on the listing the dashboard renders the card from."""
+
+    @pytest.fixture()
+    def owned(self):
+        from core.auth import set_node_owner
+        from core.users import ANONYMOUS_USER
+
+        node_id = "privacy-listing-node"
+        asyncio.run(set_node_owner(node_id, ANONYMOUS_USER["id"]))
+        try:
+            yield node_id
+        finally:
+            asyncio.run(set_node_owner(node_id, None))
+
+    def _entry(self, client, node_id):
+        return next(n for n in client.get("/api/auth/me/nodes").json() if n["node_id"] == node_id)
+
+    def test_a_node_with_neither_row_reads_public_by_default(self, client, owned):
+        entry = self._entry(client, owned)
+        assert entry["location_private"] is False
+        assert entry["location_privacy_source"] == "default"
+
+    def test_a_registered_node_names_its_registration(self, client, owned):
+        TestMyNodeLocationPrivacy._register(owned, "private")
+        entry = self._entry(client, owned)
+        assert entry["location_private"] is True
+        assert entry["location_privacy_source"] == "registration"
+
+    def test_an_override_outranks_it_and_says_so(self, client, owned):
+        TestMyNodeLocationPrivacy._register(owned, "private")
+        client.put(f"/api/auth/me/nodes/{owned}/location-privacy", json={"private": False})
+        entry = self._entry(client, owned)
+        assert entry["location_private"] is False
+        assert entry["location_privacy_source"] == "override"
 
 
 # ── OAuth state token (CSRF + open-redirect) ──────────────────────────────────

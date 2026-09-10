@@ -18,7 +18,6 @@ from config.constants import (
     ARC_REFRESH_S,
     CLAIMED_DISPLAY_FRESH_S,
     GT_REFRESH_S,
-    MN_DARK_EXPIRY_S,
     MN_DR_CAP_S,
     MN_N2_MIN_SOLVES,
     MN_ONESHOT_TTL_S,
@@ -27,7 +26,8 @@ from config.constants import (
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
 from services import track_filter
-from services.feed_gc import prune_stale_stores
+from services.feed_gc import MN_ADSB_PREFIX as _MN_ADSB_PREFIX
+from services.feed_gc import prune_multinode_tracks
 from services.feed_helpers import (
     append_track_history,
     dedup_aircraft,
@@ -39,6 +39,7 @@ from services.id_utils import (
     normalize_hex_key,
     passive_track_hex,
 )
+from services.known_claiming import KNOWN_CLAIM_MAX_FIX_AGE_S
 from services.public_location import fuzz_node_cfg
 from services.solve_uncertainty import solve_sigma_m, velocity_sigma_ms
 from services.track_gates import (
@@ -71,9 +72,6 @@ def _reset_for_tests() -> None:
     # silence the next test's.
     _mn_entry_fail_logged_at = 0.0
     _mn_entry_fail_count = 0
-
-
-_MN_ADSB_PREFIX = "mn-adsb-"
 
 
 def multinode_to_aircraft(key: str, r: dict) -> dict:
@@ -135,6 +133,15 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
         "track": round(heading, 1),
         "lat": round(r["lat"], 5),
         "lon": round(r["lon"], 5),
+        # The SOLVE-EPOCH position: what the solver measured, before the
+        # caller (_multinode_entry) dead-reckons lat/lon forward up to
+        # MN_DR_CAP_S.  The map's 95% uncertainty disc is drawn here rather
+        # than on the icon, because pos_sigma_m below is the accuracy of this
+        # measurement and of nothing else; the gap that opens between the disc
+        # and the dead-reckoned icon IS the extrapolation.  Identical to
+        # lat/lon on a zero-age entry, and rounded the same way.
+        "solve_lat": round(r["lat"], 5),
+        "solve_lon": round(r["lon"], 5),
         # Real age of the solve, not 0 — see the matching note on the tracker
         # path.  Guarded because timestamp_ms is absent in some fixtures.
         "seen": round(max(0.0, time.time() - r["timestamp_ms"] / 1000.0), 1) if r.get("timestamp_ms") else 0,
@@ -168,10 +175,11 @@ def multinode_to_aircraft(key: str, r: dict) -> dict:
     # leaves no floor to apply.  Lane matters: the dark lane had no ADS-B fix
     # seeding the guess and no pinned altitude, so it is inflated — and
     # _assisted is the same key-prefix truth the lane fields above use, not
-    # anything read off r.  Shipped AT THE SOLVE EPOCH, ungrown: `seen`
-    # already carries the solve age and the frontend grows the disc itself
-    # with pos_sigma_vel_ms at its own display tick, which is finer-grained
-    # than this 1 Hz flush can be.
+    # anything read off r.  Both describe THE SOLVE EPOCH, ungrown, and the
+    # map now draws the disc that way too (2026-09-06) at solve_lat/solve_lon
+    # above.  pos_sigma_vel_ms stays on the wire — the detail panel, the solve
+    # history and the drift budgets still read it — it just no longer inflates
+    # a drawn radius with age.
     _pos_sigma_m = solve_sigma_m(r, dark=not _assisted)
     if _pos_sigma_m is not None:
         entry["pos_sigma_m"] = round(_pos_sigma_m, 1)
@@ -302,6 +310,19 @@ def _claimed_single_node_entries(now: float) -> list[dict]:
         lat, lon = fix.get("lat"), fix.get("lon")
         if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
             continue
+        # A HELD claim (known_claiming path H) carries the LAST fix the
+        # transponder ever gave, however old — the hold is a radar link, not a
+        # position report.  This section draws the fix itself, so once that fix
+        # is past the claiming path's own freshness cap there is nothing here
+        # worth drawing: the icon would sit where the aircraft was, not where
+        # it is, and grow more wrong the longer the hold succeeds.  Skipped
+        # rather than dead-reckoned — one node's claim gives an arc, not a
+        # position, so there is no honest estimate to put in its place.  Two or
+        # more claiming nodes are unaffected: those are the known lane's, and
+        # it solves them (see known_lane._build_solver_input's stale-fix seed).
+        _fix_age_s = (float(newest["ts_ms"]) - float(fix.get("fix_ts_ms") or 0)) / 1000.0
+        if newest.get("hold") and _fix_age_s > KNOWN_CLAIM_MAX_FIX_AGE_S:
+            continue
         node_id = newest["node_id"]
         delay_us = float(newest.get("delay_us") or 0.0)
 
@@ -334,6 +355,12 @@ def _claimed_single_node_entries(now: float) -> list[dict]:
                 "seen": round(max(0.0, now - float(newest["ts_ms"]) / 1000.0), 1),
                 "multinode": False,
                 "position_source": "adsb_single_node",
+                # True when the drawn fix is no longer being refreshed by a
+                # transponder (a hold still inside the freshness cap, or a
+                # cached fix that has aged during this claim's own lifetime),
+                # so the map can say the position is coasting rather than
+                # measured.  Absent-as-false for every claim made today.
+                "adsb_stale": _fix_age_s > 0.0 and bool(newest.get("hold")),
                 # Mandatory: the live/owner WS feeds drop any entry whose
                 # node_id is not in the connection's node set.
                 "node_id": node_id,
@@ -413,34 +440,29 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             aircraft.append(entry)
 
     # 3. Multi-node solver
-    stale_mn = []
-    # Snapshot and evict under the solver's track lock: the solver worker
-    # iterates state.multinode_tracks inside multinode_key_decision while
-    # holding it, and a pop from this thread mid-iteration raised
-    # "dictionary changed size during iteration" live (2026-09-05).  Lazy
-    # import: solver.py owns the lock and importing it at module level here
-    # would create a cycle through the task modules.
+    # Expiry is services.feed_gc.prune_multinode_tracks', run on the GC timer
+    # so the store is aged even when this build is stalled or skipped.  The
+    # call here is the idempotent belt-and-braces copy: it costs one pass over
+    # a dict this function is about to iterate anyway, and it means the
+    # snapshot below cannot contain an entry the display gates would have to
+    # re-derive an expiry for.  Everything from here down only READS.
+    prune_multinode_tracks(now)
+    # Snapshot under the solver's track lock: the solver worker iterates
+    # state.multinode_tracks inside multinode_key_decision while holding it,
+    # and a pop from this thread mid-iteration raised "dictionary changed size
+    # during iteration" live (2026-09-05).  Lazy import: solver.py owns the
+    # lock and importing it at module level here would create a cycle through
+    # the task modules.
     from services.tasks import solver as _solver_mod
 
     with _solver_mod._MN_TRACKS_LOCK:
         _mn_snapshot = list(state.multinode_tracks.items())
     for key, r in _mn_snapshot:
         age_s = now - r.get("timestamp_ms", 0) / 1000
-        # Lane-aware expiry, on the same key-prefix truth multinode_to_aircraft
-        # reads adsb_assisted off.  An assisted entry is anchored to a
-        # transponder hex, so a long gap is the ADS-B feed breathing and the
-        # historic 60 s still fits it.  A dark entry has nothing holding it in
-        # place: at the current 1–3 s dark solve cadence a 30 s gap is a lost
-        # track, and the 30–60 s band measured 3.99 km median error (32% over
-        # 5 km) — a confident icon kilometres from any aircraft.
-        _expiry_s = 60.0 if key.startswith(_MN_ADSB_PREFIX) else MN_DARK_EXPIRY_S
-        if age_s > _expiry_s:
-            stale_mn.append(key)
-            continue
         # Display gates below are NOT staleness — a gated entry stays in
         # state.multinode_tracks so the next solve can confirm it (n=2) or
-        # supersede it, and only the expiry branch above discards its
-        # anomaly hex.  A one-shot solve renders nothing at all: a 2-node
+        # supersede it, and only expiry (prune_multinode_tracks, above and on
+        # the GC timer) discards its anomaly hex.  A one-shot solve renders nothing at all: a 2-node
         # track needs a second solve to prove it isn't a mirror-point ghost,
         # and a 3+-node one-shot gets a short preview window instead of the
         # full entry lifetime before it either confirms or expires.
@@ -476,17 +498,6 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             ac["recent_positions"] = list(state.track_histories_public.get(ac["hex"], []))
             ac["ground_truth_hex"] = resolve_ground_truth_hex(ac["hex"], ac["lat"], ac["lon"])
             aircraft.append(ac)
-    for k in stale_mn:
-        # Must use the same derivation as insertion (multinode_to_aircraft →
-        # multinode_hex_from_key). This previously used an obsolete 4-char
-        # format that never matched the mn<sha256[:10]> actually inserted, so
-        # no multinode anomaly hex was ever evicted and anomaly_hexes grew
-        # without bound — enough to trip the anomaly_flood health check.
-        with state.anomaly_lock:
-            state.anomaly_hexes.discard(multinode_hex_from_key(k))
-        with _solver_mod._MN_TRACKS_LOCK:
-            state.multinode_tracks.pop(k, None)
-
     # 3b. Singly-claimed ADS-B targets — no seen_hex guard on purpose.  A
     # partially-claimed aircraft can still carry a tracker track keyed by the
     # same hex, and the ADS-B fix is the better of the two positions, so the
@@ -494,8 +505,11 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     # here by append order.
     aircraft.extend(_claimed_single_node_entries(now))
 
-    # 4/4b. Stale-store GC — services.feed_gc.
-    prune_stale_stores(now)
+    # 4/4b. Stale-store GC no longer runs here — it is on its own 5 s timer
+    # (services.tasks.feed_gc_task).  A feed build happens only when the flush
+    # task reaches it, which a slow websocket broadcast or an idle
+    # state.aircraft_dirty can defer indefinitely; the stores it prunes are
+    # written by frame workers and solver threads that never stop.
 
     # 5. Pending detection arcs from tracker tracks not yet geolocated.
     # These arcs appear immediately on each detection without waiting for
@@ -538,7 +552,12 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
                     # aircraft with no arc at all once dedup collapsed their
                     # per-node entries.  Every promoted track now emits its
                     # measured-delay arc.
-                meas = track.history.get("measurements")
+                # This builder runs on the flush executor, not the frame worker
+                # that owns the tracker, and history["measurements"] is a bounded
+                # deque — iterating it with Python-level code while that worker
+                # appends raises RuntimeError.  list() is one C call and so an
+                # atomic snapshot under the GIL; take it before the reverse scan.
+                meas = list(track.history.get("measurements") or ())
                 if not meas:
                     continue
                 latest = next((m for m in reversed(meas) if m is not None), None)

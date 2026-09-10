@@ -64,6 +64,124 @@ class TestUsers:
         assert r.status_code == 404
 
 
+# ── Node location privacy ─────────────────────────────────────────────────────
+
+
+class TestAdminNodeLocationPrivacy:
+    """The admin half of the switch, reachable for any node id.
+
+    Deliberately exercised against an id that has never registered and has no
+    owner: that is the fleet on the test droplet, and the case the whole table
+    exists for.  tests/test_publication.py owns the precedence rule; what is
+    asserted here is the route surface, the raw pieces admin gets and owners do
+    not, the cache drop, and the event-log entry.
+    """
+
+    NODE = "admin-privacy-node"
+
+    @staticmethod
+    def _register(node_id, choice):
+        import asyncio
+
+        from core.nodes import Node
+        from core.users import async_session_maker
+
+        async def _go():
+            async with async_session_maker() as session:
+                session.add(Node(node_id=node_id, node_ref=f"nde-{node_id}"[:15], publication=choice))
+                await session.commit()
+
+        asyncio.run(_go())
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+    def test_get_answers_for_a_node_nothing_has_ever_heard_of(self, client):
+        """Not a 404: "no registration, no override, public by default" is the
+        true answer for a node an admin is about to hide before it has ever
+        connected."""
+        r = client.get(f"/api/admin/nodes/{self.NODE}/location-privacy")
+        assert r.status_code == 200
+        assert r.json() == {
+            "node_id": self.NODE,
+            "location_private": False,
+            "location_privacy_source": "default",
+            "registration_choice": None,
+            "override": None,
+        }
+
+    def test_get_reports_the_registration_choice_as_a_raw_piece(self, client):
+        self._register(self.NODE, "private")
+        body = client.get(f"/api/admin/nodes/{self.NODE}/location-privacy").json()
+        assert body["location_privacy_source"] == "registration"
+        assert body["registration_choice"] == "private"
+        assert body["override"] is None
+
+    def test_put_sets_the_override_and_records_who_set_it(self, client):
+        from core.users import ANONYMOUS_USER
+
+        r = client.put(f"/api/admin/nodes/{self.NODE}/location-privacy", json={"private": True})
+        assert r.status_code == 200
+        assert r.json() == {
+            "node_id": self.NODE,
+            "location_private": True,
+            "location_privacy_source": "override",
+        }
+        override = client.get(f"/api/admin/nodes/{self.NODE}/location-privacy").json()["override"]
+        assert override["private"] is True
+        # `admin:<email>` rather than a bare id, so an owner's choice and an
+        # intervention are told apart in the row itself.
+        assert override["set_by"] == f"admin:{ANONYMOUS_USER['email']}"
+        assert override["set_at"] > 0
+
+    def test_put_takes_effect_without_waiting_for_the_ttl(self, client):
+        from services.publication import is_private
+
+        assert not is_private(self.NODE)
+        client.put(f"/api/admin/nodes/{self.NODE}/location-privacy", json={"private": True})
+        assert is_private(self.NODE)
+
+    def test_put_is_logged_like_the_owner_assignment_route(self, client):
+        """An admin changing what another operator's node publishes is exactly
+        what the event log exists to make answerable afterwards."""
+        client.put(f"/api/admin/nodes/{self.NODE}/location-privacy", json={"private": True})
+        events = client.get("/api/admin/events").json()
+        assert any(e["meta"].get("node_id") == self.NODE and e["meta"].get("private") is True for e in events)
+
+    def test_delete_returns_the_node_to_its_registration_choice(self, client):
+        from services.publication import is_private
+
+        self._register(self.NODE, "private")
+        client.put(f"/api/admin/nodes/{self.NODE}/location-privacy", json={"private": False})
+        assert not is_private(self.NODE)
+
+        r = client.delete(f"/api/admin/nodes/{self.NODE}/location-privacy")
+        assert r.status_code == 200
+        assert r.json() == {
+            "node_id": self.NODE,
+            "location_private": True,
+            "location_privacy_source": "registration",
+        }
+        assert is_private(self.NODE)
+
+    def test_delete_is_logged_too(self, client):
+        client.put(f"/api/admin/nodes/{self.NODE}/location-privacy", json={"private": True})
+        client.delete(f"/api/admin/nodes/{self.NODE}/location-privacy")
+        events = client.get("/api/admin/events").json()
+        assert any("location privacy override cleared" in e["message"] for e in events)
+
+    @pytest.mark.parametrize(
+        ("method", "kwargs"),
+        [("get", {}), ("put", {"json": {"private": True}}), ("delete", {})],
+    )
+    def test_all_three_are_behind_require_admin(self, client, method, kwargs):
+        """With the anonymous-admin bypass off and no cookie, every one of them
+        is 401 rather than an answer about somebody's node."""
+        from unittest.mock import patch
+
+        with patch("core.users.AUTH_BYPASS", False):
+            r = getattr(client, method)(f"/api/admin/nodes/{self.NODE}/location-privacy", **kwargs)
+        assert r.status_code == 401
+
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 
@@ -352,3 +470,62 @@ class TestNodeReconnectEvent:
             if e.get("meta", {}).get("reconnect") is True and e.get("meta", {}).get("node_id") == "fresh-node-test"
         ]
         assert len(reconnect_events) == 0, "Fresh connect should not have reconnect flag"
+
+
+class TestNodeContacts:
+    """The one route that serves contact details, and the one that erases them."""
+
+    async def _seed(self, session, node_id="ret1a2b3c4d", **fields):
+        from core.nodes import Node
+        from services.node_contact_store import upsert_contact
+
+        session.add(Node(node_id=node_id, node_ref=f"nde{node_id[3:]:0>12}", status="active"))
+        await session.flush()
+        contact = {"first_name": "Ada", "last_name": "Lovelace", "email": "ada@example.com", "phone": None}
+        await upsert_contact(session, node_id, contact | fields)
+        await session.commit()
+
+    async def test_it_lists_what_the_store_holds(self, node_client, node_session):
+        await self._seed(node_session)
+
+        body = node_client.get("/api/admin/node-contacts").json()
+
+        assert body["ret1a2b3c4d"]["email"] == "ada@example.com"
+        assert body["ret1a2b3c4d"]["phone"] is None
+
+    async def test_a_node_that_reported_nothing_is_absent(self, node_client, node_session):
+        from core.nodes import Node
+
+        node_session.add(Node(node_id="ret9f8e7d6c", node_ref="nde000000000002", status="active"))
+        await node_session.commit()
+
+        assert node_client.get("/api/admin/node-contacts").json() == {}
+
+    async def test_deleting_removes_the_row(self, node_client, node_session):
+        await self._seed(node_session)
+
+        body = node_client.delete("/api/admin/nodes/ret1a2b3c4d/contact").json()
+
+        assert body["deleted"] is True
+        assert node_client.get("/api/admin/node-contacts").json() == {}
+
+    async def test_deleting_what_is_not_there_is_not_an_error(self, node_client):
+        body = node_client.delete("/api/admin/nodes/retdeadbeef/contact").json()
+
+        assert body["deleted"] is False
+
+    def test_both_routes_are_gated_on_require_admin(self):
+        """The suite runs with AUTH_ALLOW_ANONYMOUS_ADMIN=1, so no request here can
+        be refused. The gate is asserted where it is declared instead."""
+        from core.users import require_admin
+        from main import app
+
+        gated = {
+            route.path
+            for route in app.routes
+            if getattr(route, "dependant", None)
+            and any(dep.call is require_admin for dep in route.dependant.dependencies)
+        }
+
+        assert "/api/admin/node-contacts" in gated
+        assert "/api/admin/nodes/{node_id}/contact" in gated

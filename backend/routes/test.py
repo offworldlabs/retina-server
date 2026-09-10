@@ -10,13 +10,15 @@ import orjson
 from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from fastapi.responses import Response
 
-from config.constants import FT_TO_M, is_num
+from config.constants import ANALYTICS_REFRESH_INTERVAL_S, FT_TO_M, is_num
 from core import state
 from core.task_registry import get_stale_tasks
 from core.users import require_admin
+from services import dark_follow, known_claiming, track_filter
 from services.frame_processor import resolve_ground_truth_hex
 from services.geo import haversine_km
 from services.id_utils import is_transponder_hex, normalize_hex_key
+from services.public_geometry import without_receiver_geometry
 from services.public_location import fuzz_enabled, public_latlon, translate_polygon
 from services.tasks import solver as solver_mod
 
@@ -136,6 +138,10 @@ def _build_dashboard_data() -> bytes:
                 "blocked_nodes": blocked_nodes,
             },
             "association": {"overlap_zones": n_overlaps},
+            # Published so frontend/e2e/nodes.spec.ts can size its node-cache wait
+            # from the running server rather than from a copy of this constant,
+            # which is what went stale before (86cb5b4tt).
+            "cadence": {"analytics_refresh_interval_s": ANALYTICS_REFRESH_INTERVAL_S},
             "streaming": {
                 "websocket_clients": ws_clients,
                 "external_adsb_cached": ext_adsb,
@@ -279,7 +285,7 @@ def _build_dashboard_data() -> bytes:
             "mlat_verification": _mlat_verification_summary(),
             "task_health": {
                 "last_success": dict(state.task_last_success),
-                "error_counts": dict(state.task_error_counts),
+                "error_counts": state.task_error_snapshot(),
                 "stale_tasks": _get_stale_tasks(),
             },
         }
@@ -466,15 +472,68 @@ async def get_anomaly_log():
     )
 
 
+# ── Known-track hold (path H) ─────────────────────────────────────────────────
+
+
+@router.get("/api/test/known-hold")
+async def get_known_hold():
+    """Current hold window, in seconds of frame time (0 = feature off)."""
+    return {"max_gap_s": known_claiming.KNOWN_HOLD_MAX_GAP_S}
+
+
+@router.put("/api/test/known-hold")
+async def put_known_hold(body: dict = Body(...), _admin=Depends(require_admin)):
+    """Set the hold window live, so the feature can be A/B'd on a running
+    backend without a redeploy.  0 turns path H off entirely — the store stops
+    being written as well, so "off" is the behaviour that predates the hold
+    rather than a hold that never matches.
+
+    Admin-gated on the same precedent as put_simulation_config: this changes
+    which detections leave the dark pool for every node at once.
+    """
+    v = body.get("max_gap_s")
+    if not isinstance(v, (int, float)) or isinstance(v, bool) or not (0 <= v <= 300):
+        raise HTTPException(400, detail="max_gap_s must be 0-300")
+    known_claiming.KNOWN_HOLD_MAX_GAP_S = float(v)
+    if v == 0:
+        # Off means off: a store left behind would come back the moment the
+        # window was reopened, holding tracks from before the experiment.
+        state.known_track_holds.clear()
+    return {"max_gap_s": known_claiming.KNOWN_HOLD_MAX_GAP_S}
+
+
 # ── Simulation physics config ─────────────────────────────────────────────────
 
 
 @router.get("/api/simulation/config")
 async def get_simulation_config():
     """Return current simulation physics configuration plus live object-type counts."""
-    counts: dict[str, int] = {"anomalous": 0, "drone": 0, "aircraft": 0, "dark": 0, "total": 0}
+    counts: dict[str, int] = {
+        "anomalous": 0,
+        "drone": 0,
+        "aircraft": 0,
+        "dark": 0,
+        # Transponder-equipped aircraft currently inside an outage.  Counted
+        # alongside (not instead of) its type bucket: a silent aircraft is
+        # still a commercial aircraft, it just is not broadcasting, so this
+        # is the one count that overlaps the others.
+        "adsb_silent": 0,
+        # Aircraft mirrored from the live ADS-B feed, split by the cast the
+        # simulator gave them.  Like adsb_silent these overlap the type
+        # buckets above (a live aircraft is also an "aircraft" or "dark"),
+        # so the frac_live_dark knob is verifiable in one call.
+        "live": 0,
+        "live_adsb": 0,
+        "live_dark": 0,
+        "total": 0,
+    }
     for meta in list(state.ground_truth_meta.values()):
         counts["total"] += 1
+        if meta.get("adsb_silent"):
+            counts["adsb_silent"] += 1
+        if meta.get("source") == "live":
+            counts["live"] += 1
+            counts["live_adsb" if meta.get("has_adsb") else "live_dark"] += 1
         if meta.get("is_anomalous"):
             counts["anomalous"] += 1
         elif meta.get("object_type") == "drone":
@@ -497,6 +556,12 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
 
     Accepted keys: frac_anomalous, frac_drone, frac_dark (0.0–1.0 each).
     Sum of the three must not exceed 1.0 — the remainder is commercial aircraft.
+    frac_adsb_outage (0.0–1.0) is deliberately OUTSIDE that sum: it is the
+    fraction OF the ADS-B aircraft that go transponder-silent mid-flight,
+    orthogonal to the spawn-type roll.
+    frac_live_dark (0.0–1.0) is likewise outside it: the share of the
+    aircraft the simulator mirrors from the live ADS-B feed that it casts
+    as dark.  live_adsb_enabled (bool) pauses that feed.
     Optional: max_range_km (0 = auto, or 10–400), min_aircraft (1–500),
     max_aircraft (1–500).
 
@@ -510,6 +575,9 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
         "frac_anomalous",
         "frac_drone",
         "frac_dark",
+        "frac_adsb_outage",
+        "frac_live_dark",
+        "live_adsb_enabled",
         "max_range_km",
         "min_aircraft",
         "max_aircraft",
@@ -520,7 +588,10 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
     for k in allowed:
         if k in body:
             v = body[k]
-            if k.startswith("frac_"):
+            if k == "live_adsb_enabled":
+                if not isinstance(v, bool):
+                    raise HTTPException(400, detail=f"{k} must be true or false")
+            elif k.startswith("frac_"):
                 if not isinstance(v, (int, float)) or not (0.0 <= v <= 1.0):
                     raise HTTPException(400, detail=f"{k} must be 0.0–1.0")
             elif k in ("max_range_km",):
@@ -542,6 +613,8 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
                     raise HTTPException(400, detail=f"{k} must be 0.0–1.0")
             updated[k] = v
 
+    # frac_adsb_outage and frac_live_dark are intentionally absent here —
+    # see the docstring.
     total_frac = (
         updated.get("frac_anomalous", state.simulation_config["frac_anomalous"])
         + updated.get("frac_drone", state.simulation_config["frac_drone"])
@@ -598,6 +671,8 @@ async def get_simulation_ground_truth():
                 "ts": round(ts, 3),
                 "object_type": meta.get("object_type", "aircraft"),
                 "is_anomalous": meta.get("is_anomalous", False),
+                "has_adsb": meta.get("has_adsb", False),
+                "source": meta.get("source", "sim"),
             }
         )
 
@@ -675,22 +750,21 @@ def _mlat_verification_summary() -> dict:
 
 # ── Per-node solver verification ──────────────────────────────────────────────
 
-_RADAR3_NODE_ID = "radar3-retnode"
-
 
 @router.get("/api/test/node/{node_id}/verification")
 async def node_verification(node_id: str):
-    """Return pre-computed solver-vs-ADS-B verification stats for one node."""
-    return Response(
-        content=state.latest_node_verification_bytes.get(node_id, b"{}"),
-        media_type="application/json",
-    )
+    """Return pre-computed solver-vs-ADS-B verification stats for one node.
 
-
-@router.get("/api/test/radar3/verification")
-async def radar3_verification():
-    """Back-compat alias for the radar3 node's verification stats."""
-    return await node_verification(_RADAR3_NODE_ID)
+    Unauthenticated, and everything in a track entry is measured from this one
+    node's true receiver, so the entries are served node-scoped: the per-track
+    delays and the node's own solve position go, the errors beside them stay.
+    Stripped at the route rather than in the store, because it is this
+    route's one-node addressing that makes the solve position
+    receiver-relative; the store holds the computation's own output.
+    """
+    raw = state.latest_node_verification_bytes.get(node_id, b"{}")
+    payload = without_receiver_geometry(orjson.loads(raw), node_scoped=True)
+    return Response(content=orjson.dumps(payload), media_type="application/json")
 
 
 @router.get("/api/test/mlat-verification")
@@ -859,7 +933,7 @@ async def mlat_history(
             "n_records": len(skips),
             "records": skips[:limit],
         }
-        return Response(content=orjson.dumps(payload), media_type="application/json")
+        return Response(content=orjson.dumps(without_receiver_geometry(payload)), media_type="application/json")
 
     merged = _merged_solve_history()
     effective_minutes = _window_effective_minutes(merged, minutes)
@@ -882,7 +956,7 @@ async def mlat_history(
             "n_records": len(records),
             "records": _cap_per_lane(records, limit),
         }
-        return Response(content=orjson.dumps(payload), media_type="application/json")
+        return Response(content=orjson.dumps(without_receiver_geometry(payload)), media_type="application/json")
 
     norm = (hex or "").strip().lower()
     if not norm:
@@ -921,7 +995,7 @@ async def mlat_history(
             "records": rejects_nearby[:200],
         },
     }
-    return Response(content=orjson.dumps(payload), media_type="application/json")
+    return Response(content=orjson.dumps(without_receiver_geometry(payload)), media_type="application/json")
 
 
 # ── Solver Report (full funnel/error/ghost/consensus picture) ─────────────────
@@ -933,6 +1007,75 @@ _ERR_GT_GATE_KM = 15.0
 # as "the aircraft was there" for ghost detection.
 _GHOST_GT_MAX_AGE_S = 90.0
 _ADSB_FRESH_S = 60.0
+
+
+def _n_nodes_bucket(n_nodes) -> str:
+    """The by_n_nodes bucket one record falls in.
+
+    2/3/4 are their own buckets because that is where the interesting cliff
+    sits — an n=2 solve is a bistatic intersection, n=3 is barely
+    overdetermined, n>=4 is where the dark lane behaves.  Everything from 5 up
+    is one bucket ("5+") for the same reason the funnel above stops at n3plus:
+    the sample thins out fast and the differences stop being informative.
+    "<2" catches records that carry no usable node count (0, 1 or a missing
+    field, which some early reject paths write) so the buckets still sum to
+    attempts rather than quietly losing rows.
+    """
+    n = int(n_nodes or 0)
+    if n < 2:
+        return "<2"
+    if n >= 5:
+        return "5+"
+    return str(n)
+
+
+def _by_n_nodes(records: list[dict]) -> dict:
+    """Per-attempt outcomes bucketed by how many nodes went into the solve.
+
+    The question this answers is "what fraction of n-node candidates actually
+    reach the map, and what stops the rest?" — until it existed that needed an
+    offline pass over a history dump, which is how the 3-node dark starvation
+    was found in the first place.  Windowed over the same records the funnel
+    above uses, and the reject-reason stripping is deliberately identical to
+    the by_reason code there so the two tables can be added up.
+
+    gt_err_median_km carries the same <= _ERR_GT_GATE_KM gate as the top-level
+    position_error_km, so the per-bucket medians and the overall one are the
+    same population split up rather than two different ones.
+    """
+    buckets: dict[str, dict] = {}
+    for r in records:
+        b = buckets.setdefault(
+            _n_nodes_bucket(r.get("n_nodes")), {"attempts": 0, "published": 0, "rejects": {}, "errs": []}
+        )
+        b["attempts"] += 1
+        outcome = r.get("outcome")
+        if outcome == "published":
+            b["published"] += 1
+            err = r.get("gt_error_km")
+            if err is not None and err <= _ERR_GT_GATE_KM:
+                b["errs"].append(err)
+        else:
+            reason = outcome[len("rejected_") :] if outcome.startswith("rejected_") else outcome
+            b["rejects"][reason] = b["rejects"].get(reason, 0) + 1
+
+    out: dict[str, dict] = {}
+    for label, b in buckets.items():
+        errs = sorted(b["errs"])
+        top = sorted(b["rejects"].items(), key=lambda kv: (-kv[1], kv[0]))[:4]
+        out[label] = {
+            "attempts": b["attempts"],
+            "published": b["published"],
+            "publish_rate": round(b["published"] / b["attempts"], 3) if b["attempts"] else None,
+            # Top four reasons only: the tail is long (every gate in the solver
+            # has a label) and the whole distribution is already in by_reason.
+            "rejects": dict(top),
+            "gt_err_median_km": errs[len(errs) // 2] if errs else None,
+        }
+    # Sorted so the JSON reads 2, 3, 4, 5+ rather than in dict-insertion order,
+    # which is whatever order the window happened to arrive in.
+    order = {"<2": 0, "2": 1, "3": 2, "4": 3, "5+": 4}
+    return {k: out[k] for k in sorted(out, key=lambda k: order.get(k, 9))}
 
 
 def _solver_window_stats(minutes: float) -> dict:
@@ -1093,6 +1236,24 @@ def _solver_window_stats(minutes: float) -> dict:
     spk_p90 = counts_sorted[int(0.9 * (n_keys - 1))] if n_keys else None
     anchored_pct = round(100.0 * anchored_published / len(published_records), 1) if published_records else 0.0
 
+    # ── node pool ───────────────────────────────────────────────────────────
+    # "Could this round have solved the aircraft with more nodes than it did?"
+    # pool_n_nodes is stamped on the solver input by the association stage (the
+    # node set of the shared-track component the input was clustered out of, see
+    # InterNodeAssociator._shared_track_pools), so it is the number of nodes
+    # that PAIRED on this aircraft this round — the denominator n_nodes should
+    # be read against.  narrower_than_pool counts published dark solves that
+    # left at least one paired node out; the shortfall mean says how many.
+    #
+    # Records without the stamp are records the question does not apply to —
+    # anchored/known-lane inputs and dark-follow predictions never went through
+    # that clustering — so they are excluded from the denominator rather than
+    # counted as zero shortfall.  records_with_pool against len(published_records)
+    # is how much of the window the number actually speaks for.
+    pooled = [r for r in published_records if r.get("pool_n_nodes") is not None]
+    shortfalls = [int(r["pool_n_nodes"]) - int(r.get("n_nodes") or 0) for r in pooled]
+    narrower = sum(1 for d in shortfalls if d > 0)
+
     # ── ghosts (DARK tracks only) ───────────────────────────────────────────
     # The question this answers is "of the multinode tracks we put on the map
     # with no transponder to lean on, what fraction are real?", so an
@@ -1181,12 +1342,39 @@ def _solver_window_stats(minutes: float) -> dict:
         kl_no_converge = getattr(state, "known_lane_no_converge", 0)
         kl_published = getattr(state, "known_lane_published", 0)
         kl_publish_errors = getattr(state, "known_lane_publish_errors", 0)
+        kl_reanchored = getattr(state, "known_lane_reanchored", 0)
         kc_made = state.known_claims_made
         kc_contentions = state.known_claim_contentions
         kc_bound = state.known_claims_bound
         kc_visibility_rejects = state.known_claims_visibility_rejects
         kc_world_rejects = state.known_claims_world_rejects
         kc_errors = state.known_claims_errors
+        kh_claims = state.known_hold_claims
+        kh_expired = state.known_hold_expired
+        kh_disagree = state.known_hold_dropped_disagree
+        kf_claims = state.known_follow_claims
+        # Same one-lock snapshot for the follow lane's funnel and the
+        # per-reason ineligibility tally beside it: the two are only readable
+        # against each other (see the dark_follow block below), so they must
+        # not be sampled a rebuild apart.
+        df_targets = state.dark_follow_targets
+        df_inputs = state.dark_follow_inputs
+        df_published = state.dark_follow_published
+        df_dropped = state.dark_follow_dropped
+        df_n2_withheld = state.dark_follow_n2_withheld
+        df_n2_skipped = state.dark_follow_n2_skipped
+        df_inelig = {
+            reason: getattr(state, f"dark_follow_inelig_{reason}")
+            for reason in (
+                "cooldown",
+                "no_pos",
+                "age",
+                "min_solves",
+                "min_nodes",
+                "no_filter",
+                "vel_sigma",
+            )
+        }
 
     return {
         "window_minutes": minutes,
@@ -1203,6 +1391,14 @@ def _solver_window_stats(minutes: float) -> dict:
         "published": {"total": n2 + n3plus, "n2": n2, "n3plus": n3plus},
         "rejects": {"total": reject_total, "by_reason": by_reason},
         "position_error_km": {"median": median_err, "p90": p90_err, "n": n_err},
+        # The funnel again, split by how many nodes each attempt had — the
+        # dark lane's behaviour is not uniform in n and the aggregate hides
+        # it.  Same window and same records as attempts/published/rejects
+        # above, so the buckets sum back to them.  See _by_n_nodes.
+        "by_n_nodes": _by_n_nodes(records),
+        # ...and the same table for the known lane's own records, which do not
+        # pass through the funnel above (see the docstring).
+        "by_n_nodes_known": _by_n_nodes(known_records),
         # Both windowed and both DARK-lane, like the funnel above them.
         "contamination": contamination,
         "resolve_skips": resolve_skips,
@@ -1270,6 +1466,12 @@ def _solver_window_stats(minutes: float) -> dict:
             "no_converge": kl_no_converge,
             "published": kl_published,
             "publish_errors": kl_publish_errors,
+            # Ghost solves the lane re-anchored onto instead (see
+            # known_lane._reanchor): the kf-seeded prior had drifted — the
+            # aircraft turned while silent — and two consecutive solves agreed
+            # with each other rather than with it.  They are published like a
+            # truth_match and are NOT part of the ghost count.
+            "reanchored": kl_reanchored,
             # The one WINDOWED entry in this since-boot block (it carries its
             # own window_minutes so it cannot be misread as cumulative):
             # solver-vs-ADS-B error over this lane's records in the window,
@@ -1288,6 +1490,35 @@ def _solver_window_stats(minutes: float) -> dict:
         # made > 0 with bound == 0 is the shadow-soak signature.  errors
         # nonzero means the claiming stage is throwing and the lane is
         # silently contributing nothing.
+        # Dark track following (services/dark_follow.py), since boot except
+        # targets_now, a live gauge of the current pseudo-state list.  The
+        # funnel repeats three of the "counters" entries below because it is
+        # only readable beside "ineligible", which is the other half of the
+        # same walk: every dark key in state.multinode_tracks is either a
+        # target or one of those reasons, re-tested on every rebuild.
+        #
+        # ineligible IS IN KEY-SECONDS, the funnel is in events.  The target
+        # list is rebuilt once a second and every dark key is re-tested, so a
+        # key that is ineligible for a minute adds ~60 to its reason.  Compare
+        # the reasons with each other (which gate holds the lane back) and
+        # with targets_now; do NOT divide them by inputs or published.
+        "dark_follow": {
+            "mode": dark_follow.mode(),
+            "targets_now": df_targets,
+            "inputs": df_inputs,
+            "published": df_published,
+            "dropped": df_dropped,
+            # The two n=2 sparings, in events like the rest of the funnel.
+            # n2_skipped is the follow input never built because the claim
+            # round matched only two nodes and DARK_FOLLOW_N2_ADMIT is off;
+            # n2_withheld is the n2_unconfirmed verdict that was not charged to
+            # the key's reject streak.  Both are subtractions from "dropped"
+            # and from ineligible["cooldown"] — the bucket they were the
+            # dominant source of — so read them beside those two.
+            "n2_withheld": df_n2_withheld,
+            "n2_skipped": df_n2_skipped,
+            "ineligible": df_inelig,
+        },
         "known_claims": {
             "made": kc_made,
             "contentions": kc_contentions,
@@ -1295,6 +1526,32 @@ def _solver_window_stats(minutes: float) -> dict:
             "visibility_rejects": kc_visibility_rejects,
             "world_rejects": kc_world_rejects,
             "errors": kc_errors,
+            # Path H (services/known_claiming._claim_holds).  claims is the
+            # detections held onto a hex after its transponder stopped
+            # explaining them; disagree the ghost-lock guard firing (a fresh
+            # fix contradicted the held track); holds the CURRENT size of the
+            # store, a gauge, summed over nodes — read beside claims, since a
+            # store that grows while claims does not is holds that never match.
+            "hold_claims": kh_claims,
+            "hold_expired": kh_expired,
+            "hold_dropped_disagree": kh_disagree,
+            # Follow claims (services/known_claiming._follow_states): claims a
+            # node made against the lane's own published position for a hex
+            # whose transponder went stale, having no hold of its own — the
+            # detections that would otherwise have started a dark twin.
+            "follow_claims": kf_claims,
+            "holds": sum(len(h) for h in list(state.known_track_holds.values())),
+        },
+        # Dark published solves against the node pool their round had for the
+        # same aircraft (see the pooled/shortfalls block above).  pct is null
+        # rather than 0 when nothing in the window carried the stamp, because
+        # "no solve was narrower than its pool" and "no solve was measured" are
+        # not the same answer.
+        "pool": {
+            "records_with_pool": len(pooled),
+            "narrower_than_pool": narrower,
+            "pct": round(100.0 * narrower / len(pooled), 1) if pooled else None,
+            "mean_shortfall_nodes": round(sum(shortfalls) / len(shortfalls), 3) if shortfalls else None,
         },
         "fragmentation": {
             "distinct_keys": len(key_counts),
@@ -1312,6 +1569,19 @@ def _solver_window_stats(minutes: float) -> dict:
             # the windowed version when one is needed.
             "dark_keys_minted": state.solver_key_minted_dark,
             "dark_keys_proximity": state.solver_key_proximity_dark,
+            # ...and the re-keys the node-track evidence decided rather than
+            # distance alone (solver.py's TRACK_LINK_AGE_S) — a shared tracker
+            # track id inside the gate, including the follow-owned keys that
+            # are joined on two of them.  Each one is a key birth the
+            # distance-only rule would have made, or a solve it would have
+            # discarded.
+            "dark_keys_tracks": state.solver_key_tracks,
+            # ...and how many of those re-keys matched an entry measured
+            # AFTER the solve that joined it (signed dt < 0).  Those entries
+            # were invisible to the scan until _MN_ASSOC_MAX_NEG_DT_S, so
+            # this number is the fragmentation the signed window reclaims —
+            # every one of them was a dark_keys_minted before.
+            "dark_keys_proximity_negdt": state.solver_key_proximity_negdt,
             # Supersession, also since boot: entries popped because a new
             # solve was judged to be the same aircraft (solver.py's
             # _supersession_match), against entries that shared a source
@@ -1331,10 +1601,29 @@ def _solver_window_stats(minutes: float) -> dict:
             "mn_superseded_blocked": state.mn_superseded_blocked,
             "mn_superseded_blocked_alt": state.mn_superseded_blocked_alt,
         },
+        # Display smoother (services/track_filter.py), since boot except
+        # manoeuvre_active, which is a live gauge.  reanchors are chi-squared
+        # gate breaches that the manoeuvre retry could NOT explain — genuine
+        # identity breaks; manoeuvre_rescues are the ones it could, which
+        # before the adaptive process noise existed were counted in the first
+        # group and were most of it (every turn past ~60-110 degrees produced
+        # one).  A rising re-anchor count with rescues near zero means the
+        # manoeuvre sigma is too small for the turns being flown.
+        "display_filter": track_filter.filter_stats(),
         "counters": {
             "successes": state.solver_successes,
             "failures": state.solver_failures,
+            # Pool round trips abandoned at SOLVER_POOL_CALL_TIMEOUT_S and
+            # retried inline.  A stuck-but-alive child used to hold one of the
+            # two worker threads forever with every counter reading healthy.
+            "pool_timeouts": state.solver_pool_timeouts,
             "n2_unconfirmed": state.n2_unconfirmed,
+            # n=2 solves published without a constant-velocity fit because an
+            # anchored follow input vouched for the pairing (dark_follow.
+            # DARK_FOLLOW_N2_ADMIT).  Read against n2_unconfirmed: this is the
+            # share of the n=2 gate the follow lane is now walking past.
+            "n2_anchored_admitted": state.n2_anchored_admitted,
+            "n2_fit_position_published": state.n2_fit_position_published,
             "solver_trimmed": state.solver_trimmed,
             "stale_drops": state.solver_stale_drops,
             "resolve_skips": state.solver_resolve_skips,
@@ -1343,6 +1632,20 @@ def _solver_window_stats(minutes: float) -> dict:
             # Dark share of the line above.  The windowed version, with the
             # blocking claims, is the "resolve_skips" block further up.
             "resolve_skips_dark": state.solver_resolve_skips_dark,
+            # Candidates admitted by the 3+-node refresh rule that the width
+            # rule alone would have skipped (solver.py's
+            # _SOLVER_RESOLVE_REFRESH_S).  Extra solves bought on purpose, so
+            # that an entry nothing else refreshes stops dead-reckoning the
+            # whole 12 s window.
+            "resolve_refresh": state.solver_resolve_refresh,
+            # Pool adoption (solver.py's _adopt_pool_nodes): dark candidates
+            # solved narrower than the round's node pool, how many were
+            # re-solved wider once the narrow solve vouched for the extra
+            # node's delay/Doppler, and how many node-measurements that added.
+            "adopt_eligible": state.solver_adopt_eligible,
+            "adopt_widened": state.solver_adopt_widened,
+            "adopt_nodes_added": state.solver_adopt_nodes_added,
+            "adopt_rejected": state.solver_adopt_rejected,
             "queue_drops": state.solver_queue_drops,
             # Frames the per-node rate limiter refused before the tracker ever
             # saw them (tcp_handler's NODE_FRAME_MIN_INTERVAL_S).  Not the
@@ -1351,6 +1654,11 @@ def _solver_window_stats(minutes: float) -> dict:
             "node_frames_rate_limited": state.node_frames_rate_limited,
             "worker_errors": state.solver_worker_errors,
             "vel_untrusted_published": state.solver_vel_untrusted_published,
+            # n=2 inputs whose initial-guess altitude came from an established
+            # 3+-node dark key rather than the association grid (solver.py's
+            # _inherit_key_altitude).  The per-solve evidence is alt_source on
+            # the history records; this is the since-boot rate.
+            "n2_alt_inherited": state.solver_n2_alt_inherited,
             # Dark track following (services/dark_follow.py), since boot except
             # targets, which is a live gauge of the current pseudo-state list.
             # The funnel is targets -> claims -> inputs -> published; dropped is
@@ -1360,6 +1668,8 @@ def _solver_window_stats(minutes: float) -> dict:
             "dark_follow_inputs": state.dark_follow_inputs,
             "dark_follow_published": state.dark_follow_published,
             "dark_follow_dropped": state.dark_follow_dropped,
+            "dark_follow_n2_withheld": state.dark_follow_n2_withheld,
+            "dark_follow_n2_skipped": state.dark_follow_n2_skipped,
             # The other side of the lane: bottom-up dark solves refused at
             # keying because the follow lane owns the key they landed on.  It
             # belongs beside the funnel because it is the same trade — the
@@ -1382,6 +1692,22 @@ async def solver_stats(minutes: float = 10.0):
     counts for the window and ``known_lane`` the known lane's own numbers.
     See ``_solver_window_stats`` for why, plus the ghost definition and the
     gate constants.
+
+    Two blocks answer "why is the dark lane doing this?" rather than "what is
+    it doing":
+
+    ``by_n_nodes`` (and ``by_n_nodes_known``) re-splits the same windowed
+    records by the node count of each attempt — attempts, published,
+    publish_rate, the top four reject reasons and the median GT error per
+    bucket (2 / 3 / 4 / 5+, with "<2" for records carrying no node count).
+    The dark lane is not uniform in n and the aggregate funnel hides it.
+
+    ``dark_follow`` is the follow lane's funnel plus ``ineligible``, a
+    per-reason tally of the dark keys the lane refused to follow, one entry
+    per gate in ``dark_follow._build_targets``.  Those counters are
+    KEY-SECONDS (the target list is rebuilt once a second and re-tests every
+    dark key), so they are read against each other and against
+    ``targets_now``, never against ``inputs``/``published``.
     """
     minutes = max(1.0, min(minutes, 35.0))
     payload = _solver_window_stats(minutes)
@@ -1425,7 +1751,7 @@ async def node_detection_range(node_id: str):
             status_code=404,
         )
 
-    summary = {k: v for k, v in area.summary().items() if k != "furthest_detections"}
+    summary = without_receiver_geometry(area.summary())
     rx = summary.get("rx") or {}
     pub_lat, pub_lon = public_latlon(rx.get("lat"), rx.get("lon"), node_id)
     summary["rx"] = {**rx, "lat": pub_lat, "lon": pub_lon}
@@ -1452,9 +1778,3 @@ async def node_detection_range(node_id: str):
         ),
         media_type="application/json",
     )
-
-
-@router.get("/api/test/radar3/detection-range")
-async def radar3_detection_range():
-    """Back-compat alias for the radar3 node's detection range."""
-    return await node_detection_range(_RADAR3_NODE_ID)

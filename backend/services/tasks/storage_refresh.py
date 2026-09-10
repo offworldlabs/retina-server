@@ -190,6 +190,6 @@ async def storage_refresh_task():
             state.latest_storage_bytes = result_bytes
             state.task_last_success["storage_refresh"] = time.time()
         except Exception:
-            state.task_error_counts["storage_refresh"] += 1
+            state.bump_task_error("storage_refresh")
             logger.exception("Storage stats refresh failed")
         await asyncio.sleep(STORAGE_CACHE_TTL_S)

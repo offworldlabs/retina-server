@@ -27,10 +27,22 @@ from services.frame_processor import (
     normalize_hex_key,
     position_distance_km,
     process_one_frame,
+    resolve_altitudes,
     resolve_ground_truth_hex,
 )
+from tests.node_helpers import register_test_node
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+# A placed node, for the paths process_one_frame only enters for one.
+_PLACED_CFG = {
+    "rx_lat": 34.0,
+    "rx_lon": -84.0,
+    "tx_lat": 33.8,
+    "tx_lon": -83.8,
+    "fc_hz": 195e6,
+    "max_range_km": 150.0,
+}
 
 
 def _make_frame(ts: int = None, n: int = 3) -> dict:
@@ -158,6 +170,66 @@ class TestGetNodeConfigs:
         configs = get_node_configs()
         assert "test-cfg-2" not in configs
 
+    def test_resolves_a_null_altitude(self):
+        """The solver's snapshot feeds retina_geolocator, which multiplies an
+        altitude by a metre conversion the moment it is handed one."""
+        state.connected_nodes["test-cfg-3"] = {
+            "config": {"rx_lat": 33.9, "rx_lon": -84.6, "rx_alt_ft": None, "tx_alt_ft": None},
+            "status": "active",
+        }
+        configs = get_node_configs()
+        assert configs["test-cfg-3"]["rx_alt_ft"] == 900.0
+        assert configs["test-cfg-3"]["tx_alt_ft"] == 1200.0
+
+    def test_leaves_the_stored_config_alone(self):
+        """resolve_altitudes copies. Defaulting in place would write the
+        working figure back into the dict publication and the archive read."""
+        stored = {"rx_lat": 33.9, "rx_lon": -84.6, "rx_alt_ft": None}
+        state.connected_nodes["test-cfg-4"] = {"config": stored, "status": "active"}
+        get_node_configs()
+        assert stored["rx_alt_ft"] is None
+
+    def test_omits_an_unplaced_node(self):
+        """The snapshot is the placement gate for everything drawn from it.
+
+        Consumers test `nid in node_cfgs` and treat that as "can be solved
+        with", which is only true if an unplaced node never appears: it has no
+        geometry to solve against, and its None coordinates would otherwise
+        reach the solver queue through known_lane's dark-follow claim filter.
+        """
+        state.connected_nodes["test-cfg-5"] = {
+            "config": {"rx_lat": None, "rx_lon": None, "tx_lat": None, "tx_lon": None},
+            "status": "active",
+        }
+        assert "test-cfg-5" not in get_node_configs()
+
+    def test_wanted_narrows_the_snapshot(self):
+        """A config is copied per node, so a caller that can only reach a
+        handful says so rather than paying for the fleet."""
+        for nid in ("test-cfg-6", "test-cfg-7"):
+            state.connected_nodes[nid] = {
+                "config": {"rx_lat": 33.9, "rx_lon": -84.6},
+                "status": "active",
+            }
+        configs = get_node_configs({"test-cfg-6"})
+        assert "test-cfg-6" in configs
+        assert "test-cfg-7" not in configs
+
+
+class TestResolveAltitudes:
+    def test_sea_level_survives(self):
+        """0 ft is a real altitude, not an absent one: a truthiness fallback
+        would silently lift every sea-level receiver to 900 ft."""
+        assert resolve_altitudes({"rx_alt_ft": 0.0})["rx_alt_ft"] == 0.0
+
+    def test_a_null_takes_the_terrain_default(self):
+        resolved = resolve_altitudes({"rx_alt_ft": None, "tx_alt_ft": None})
+        assert resolved["rx_alt_ft"] == 900.0
+        assert resolved["tx_alt_ft"] == 1200.0
+
+    def test_an_absent_altitude_takes_the_terrain_default(self):
+        assert resolve_altitudes({})["rx_alt_ft"] == 900.0
+
 
 # ── Pipeline factory ─────────────────────────────────────────────────────────
 
@@ -195,10 +267,34 @@ class TestGetOrCreateNodePipeline:
         p2 = get_or_create_node_pipeline("test-cached", default)
         assert p1 is p2
 
-    def test_falls_back_to_default(self):
+    def test_returns_none_for_a_node_with_no_usable_position(self):
+        """Not a fall-back to `default`: solving an unplaceable node's frames
+        against the shared pipeline's fixed geometry would geolocate them at
+        somebody else's receiver and illuminator."""
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         p = get_or_create_node_pipeline("test-noconfig", default)
-        assert p is default
+        assert p is None
+
+    def test_null_altitudes_default_rather_than_reach_the_geolocator_as_none(self):
+        """PassiveRadarPipeline._init_geolocator multiplies the altitude by
+        FT_TO_M unconditionally, so a null altitude must be resolved before it
+        gets here. Registration is what resolves it, so the node is registered
+        rather than written straight into connected_nodes."""
+        default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        register_test_node(
+            "test-null-altitude",
+            {
+                "rx_lat": 34.0,
+                "rx_lon": -84.0,
+                "rx_alt_ft": None,
+                "tx_lat": 33.8,
+                "tx_lon": -83.8,
+                "tx_alt_ft": None,
+            },
+        )
+        p = get_or_create_node_pipeline("test-null-altitude", default)
+        assert p.config["rx_alt_ft"] == 900
+        assert p.config["tx_alt_ft"] == 1200
 
 
 # ── Frame processing ─────────────────────────────────────────────────────────
@@ -207,9 +303,13 @@ class TestGetOrCreateNodePipeline:
 class TestProcessOneFrame:
     def test_process_valid_frame(self):
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        register_test_node("test-proc", _PLACED_CFG)
         frame = _make_frame()
         # Should not raise
         process_one_frame("test-proc", frame, default)
+        # The node's own pipeline saw the frame; an unregistered node would
+        # have had none and the whole per-node half would have been skipped.
+        assert state.node_pipelines["test-proc"].config["rx_lat"] == 34.0
 
     def test_sets_aircraft_dirty_with_adsb(self):
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
@@ -270,6 +370,9 @@ class TestProcessOneFrame:
         # also guarantees only this frame's item is seen.
         monkeypatch.setattr(state, "solver_queue", queue.Queue())
 
+        # A positioned node: process_one_frame only reaches submit_tracks_round
+        # (where the stub above is installed) for a node it can place.
+        register_test_node("test-anchor", _PLACED_CFG)
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
         process_one_frame("test-anchor", _make_frame(), default)
 
@@ -389,6 +492,11 @@ class TestMultinodeToAircraft:
         assert ac["n_nodes"] == 3
         assert ac["lat"] == 33.9
         assert ac["lon"] == -84.6
+        # Solve-epoch pair: identical here (the caller dead-reckons lat/lon
+        # afterwards, this function does not), and the anchor for the map's
+        # uncertainty disc.
+        assert ac["solve_lat"] == 33.9
+        assert ac["solve_lon"] == -84.6
         assert ac["alt_baro"] == 10000  # 3048m / 0.3048
 
     def test_supersonic_speed_is_not_flagged(self):
@@ -956,10 +1064,20 @@ class TestGroundTruthGhostPruning:
                 d.pop(k, None)
 
     def _build(self):
+        """One GC pass plus one feed build, in production order.
+
+        The stale-store pruning these tests assert on moved out of the feed
+        build onto its own 5 s timer (services.tasks.feed_gc) — a slow
+        websocket client used to stall the flush task and take server-wide GC
+        down with it.  The build still runs here because the pruning has to
+        hold against a feed that is being rebuilt over it.
+        """
         import types
 
         from services.frame_processor import build_combined_aircraft_json
+        from services.tasks.feed_gc import run_feed_gc
 
+        run_feed_gc()
         pipeline = types.SimpleNamespace(geolocated_tracks={}, config={})
         build_combined_aircraft_json(pipeline)
 

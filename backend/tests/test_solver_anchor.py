@@ -100,7 +100,7 @@ class TestMultinodeKeyDecision:
 
     def test_adsb_takes_precedence_over_an_anchor(self):
         tracks = {"mn-dark-1": _anchor_track()}
-        key, how, _dist = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = solver_mod.multinode_key_decision(
             tracks,
             {"lat": LAT, "lon": LON, "timestamp_ms": 1000},
             "abc123",
@@ -111,7 +111,7 @@ class TestMultinodeKeyDecision:
     def test_anchor_hit_when_close_and_still_live(self):
         tracks = {"mn-dark-anchor": _anchor_track()}
         # ~1.1 km away — comfortably inside the 6 km default.
-        key, how, _dist = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = solver_mod.multinode_key_decision(
             tracks,
             {"lat": LAT + 0.01, "lon": LON, "timestamp_ms": 1000},
             None,
@@ -122,7 +122,7 @@ class TestMultinodeKeyDecision:
     def test_missing_anchor_key_falls_back_to_mint(self):
         """anchor_key points at nothing live, and there is nothing else to
         fall back to by proximity either — mints, same as no anchor at all."""
-        key, how, _dist = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = solver_mod.multinode_key_decision(
             {},
             {"lat": LAT, "lon": LON, "timestamp_ms": 1000},
             None,
@@ -135,7 +135,7 @@ class TestMultinodeKeyDecision:
         tracks = {"mn-dark-anchor": _anchor_track()}
         # ~11 km away — past the 6 km default max_dist_km.  The consensus-
         # anchored-displacement edge case this distance check exists for.
-        key, how, _dist = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = solver_mod.multinode_key_decision(
             tracks,
             {"lat": LAT + 0.1, "lon": LON, "timestamp_ms": 1000},
             None,
@@ -149,7 +149,7 @@ class TestMultinodeKeyDecision:
         (should never happen — only dark tracks are claim_eligible — but the
         rule itself must refuse it, not trust the caller)."""
         tracks = {"mn-adsb-abc": _anchor_track()}
-        key, how, _dist = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = solver_mod.multinode_key_decision(
             tracks,
             {"lat": LAT, "lon": LON, "timestamp_ms": 1000},
             None,
@@ -158,7 +158,7 @@ class TestMultinodeKeyDecision:
         assert how != "anchor"
 
     def test_mints_a_new_key_with_no_anchor_and_no_claimant(self):
-        key, how, _dist = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = solver_mod.multinode_key_decision(
             {},
             {"lat": LAT, "lon": LON, "timestamp_ms": 1000},
             None,
@@ -173,7 +173,7 @@ class TestMultinodeKeyDecision:
         put dark targets in the ADS-B lane and starved mn-dark-* entirely
         (observed live 2026-08-26)."""
         tracks = {"mn-dark-1": _anchor_track()}
-        key, how, _dist = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = solver_mod.multinode_key_decision(
             tracks,
             {"lat": LAT, "lon": LON, "timestamp_ms": int(time.time() * 1000)},
             "obj-01373",
@@ -183,7 +183,7 @@ class TestMultinodeKeyDecision:
         assert key == "mn-dark-1"
 
     def test_tisb_tilde_adsb_hex_still_takes_the_adsb_branch(self):
-        key, how, _dist = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = solver_mod.multinode_key_decision(
             {},
             {"lat": LAT, "lon": LON, "timestamp_ms": 1000},
             "~abc123",
@@ -247,7 +247,7 @@ class TestAgeScaledProximityGate:
         """The 6-10 km re-key band: 8 km is past the flat 6 km and inside
         the 9.9 km gate a 30 s-old entry earns."""
         tracks = {"mn-dark-old": _dark_entry(ts_ms=100_000)}
-        key, how, dist = self._decide(tracks, 130_000, 8.0)
+        key, how, dist, _dt = self._decide(tracks, 130_000, 8.0)
         assert (key, how) == ("mn-dark-old", "proximity")
         assert dist == pytest.approx(8.0, abs=0.1)
 
@@ -255,23 +255,23 @@ class TestAgeScaledProximityGate:
         """Nothing has been widened for a fresh entry: at dt=2 the gate is
         6.26 km, so 8 km is still a different aircraft."""
         tracks = {"mn-dark-fresh": _dark_entry(ts_ms=100_000)}
-        key, how, dist = self._decide(tracks, 102_000, 8.0)
+        key, how, dist, _dt = self._decide(tracks, 102_000, 8.0)
         assert how == "minted"
         assert key.startswith("mn-dark-102000-")
         assert dist is None
 
     def test_the_cap_holds_at_the_age_limit(self):
         tracks = {"mn-dark-ancient": _dark_entry(ts_ms=100_000)}
-        _, how_in, _ = self._decide(tracks, 160_000, 11.5)
+        _, how_in, _, _dt = self._decide(tracks, 160_000, 11.5)
         assert how_in == "proximity"
-        _, how_out, _ = self._decide(tracks, 160_000, 12.5)
+        _, how_out, _, _dt = self._decide(tracks, 160_000, 12.5)
         assert how_out == "minted"
 
     def test_the_age_window_itself_is_unchanged(self):
         """Past _MN_ASSOC_MAX_AGE_S the entry is one the map has already
         dropped — the wider gate must not reach across the expiry."""
         tracks = {"mn-dark-expired": _dark_entry(ts_ms=100_000)}
-        _, how, _ = self._decide(tracks, 170_000, 1.0)
+        _, how, _, _dt = self._decide(tracks, 170_000, 1.0)
         assert how == "minted"
 
     # ── competition between candidates ──────────────────────────────────────
@@ -281,7 +281,7 @@ class TestAgeScaledProximityGate:
             "mn-dark-far-old": _dark_entry(ts_ms=100_000),
             "mn-dark-near-fresh": dict(_dark_entry(ts_ms=139_000), lat=_north_of(1.0)[0]),
         }
-        key, how, _ = self._decide(tracks, 140_000, 1.0)
+        key, how, _, _dt = self._decide(tracks, 140_000, 1.0)
         assert (key, how) == ("mn-dark-near-fresh", "proximity")
 
     def test_normalising_by_the_gate_beats_ranking_on_raw_kilometres(self):
@@ -295,7 +295,7 @@ class TestAgeScaledProximityGate:
             "mn-dark-fresh-7km": dict(_dark_entry(ts_ms=139_000), lat=_north_of(15.0)[0]),
             "mn-dark-old-8km": _dark_entry(ts_ms=100_000),
         }
-        key, how, dist = self._decide(tracks, 140_000, 8.0)
+        key, how, dist, _dt = self._decide(tracks, 140_000, 8.0)
         assert (key, how) == ("mn-dark-old-8km", "proximity")
         assert dist == pytest.approx(8.0, abs=0.1)
 
@@ -308,7 +308,7 @@ class TestAgeScaledProximityGate:
         solve to a track that is not under it on the map."""
         tracks = {"mn-dark-kf": _dark_entry(ts_ms=100_000, vel_north=-300.0)}
         # 20 s later: raw DR puts the entry 6 km south, learned DR 6 km north.
-        key, how, dist = self._decide(tracks, 120_000, 6.0, learned_vel_fn=lambda _k: (0.0, 300.0, 5.0, 0.0))
+        key, how, dist, _dt = self._decide(tracks, 120_000, 6.0, learned_vel_fn=lambda _k: (0.0, 300.0, 5.0, 0.0))
         assert (key, how) == ("mn-dark-kf", "proximity")
         assert dist == pytest.approx(0.0, abs=0.1)
 
@@ -318,7 +318,7 @@ class TestAgeScaledProximityGate:
         This is also the off-path: TRACK_SMOOTHER != kf, a first solve, a
         TTL-swept key, and the offline bench all arrive here."""
         tracks = {"mn-dark-kf": _dark_entry(ts_ms=100_000, vel_north=-300.0)}
-        _, how, _ = self._decide(tracks, 120_000, 6.0, learned_vel_fn=lambda _k: None)
+        _, how, _, _dt = self._decide(tracks, 120_000, 6.0, learned_vel_fn=lambda _k: None)
         assert how == "minted"
 
     def test_track_dr_source_solve_pins_the_entrys_own_velocity(self, monkeypatch):
@@ -326,7 +326,7 @@ class TestAgeScaledProximityGate:
         two cannot end up dead-reckoning the same entry differently."""
         monkeypatch.setenv("TRACK_DR_SOURCE", "solve")
         tracks = {"mn-dark-kf": _dark_entry(ts_ms=100_000, vel_north=-300.0)}
-        _, how, _ = self._decide(tracks, 120_000, 6.0, learned_vel_fn=lambda _k: (0.0, 300.0, 5.0, 0.0))
+        _, how, _, _dt = self._decide(tracks, 120_000, 6.0, learned_vel_fn=lambda _k: (0.0, 300.0, 5.0, 0.0))
         assert how == "minted"
 
     # ── the anchor branch is deliberately not age-scaled ────────────────────
@@ -338,17 +338,96 @@ class TestAgeScaledProximityGate:
         dead-reckoning question and gets no drift allowance.  The key still
         comes out the same here — by proximity, on its own merits."""
         tracks = {"mn-dark-anchored": _dark_entry(ts_ms=100_000)}
-        key, how, _ = self._decide(tracks, 130_000, 8.0, anchor_key="mn-dark-anchored")
+        key, how, _, _dt = self._decide(tracks, 130_000, 8.0, anchor_key="mn-dark-anchored")
         assert key == "mn-dark-anchored"
         assert how == "proximity"
 
     def test_an_anchor_inside_the_flat_radius_still_reports_its_distance(self):
         tracks = {"mn-dark-anchored": _dark_entry(ts_ms=100_000)}
-        key, how, dist = self._decide(tracks, 130_000, 2.0, anchor_key="mn-dark-anchored")
+        key, how, dist, _dt = self._decide(tracks, 130_000, 2.0, anchor_key="mn-dark-anchored")
         assert (key, how) == ("mn-dark-anchored", "anchor")
         # Flat, un-dead-reckoned distance — the anchor branch measures against
         # the entry as it stands, not against a prediction.
         assert dist == pytest.approx(2.0, abs=0.1)
+
+
+class TestOutOfOrderMeasurementEpochs:
+    """A solve may be matched to an entry measured AFTER it (signed dt < 0).
+
+    Solves do not reach the keying rule in measurement order.  Two lanes now
+    solve the same dark aircraft from different epochs (the top-down
+    dark-follow lane and the bottom-up association lane) and the solver pool
+    runs several workers, so a solve 1-4 s older than the entry just published
+    for that aircraft is routine: 56 of 920 consecutive dark publishes on test
+    (2026-09-06) had measurement time going backwards.  The old
+    ``0.0 <= dt`` rule skipped those entries outright, and 16 of the 67 dark
+    keys minted in that window were duplicates of a key published 0.0-1.8 s of
+    wall time earlier and 0.1-3.8 km away — well inside the gate.  These are
+    that population.
+    """
+
+    def setup_method(self):
+        _reset()
+
+    def teardown_method(self):
+        _reset()
+
+    def _decide(self, tracks, solve_ts_ms, lat, lon):
+        return solver_mod.multinode_key_decision(
+            tracks,
+            {"lat": lat, "lon": lon, "timestamp_ms": solve_ts_ms},
+            None,
+            None,
+            learned_vel_fn=lambda _k: None,
+        )
+
+    def test_a_solve_two_seconds_older_than_the_entry_joins_it(self):
+        tracks = {"mn-dark-ahead": _dark_entry(ts_ms=100_000)}
+        lat, lon = _north_of(1.0)
+        key, how, dist, dt = self._decide(tracks, 98_000, lat, lon)
+        assert (key, how) == ("mn-dark-ahead", "proximity")
+        assert dist == pytest.approx(1.0, abs=0.05)
+        assert dt == pytest.approx(-2.0)
+
+    def test_a_solve_far_older_than_the_entry_still_mints(self):
+        """Past _MN_ASSOC_MAX_NEG_DT_S the ordering is a stale queue item
+        rather than lane or pool jitter, and the old refusal holds."""
+        tracks = {"mn-dark-ahead": _dark_entry(ts_ms=100_000)}
+        lat, lon = _north_of(1.0)
+        _key, how, dist, dt = self._decide(tracks, 85_000, lat, lon)
+        assert how == "minted"
+        assert dist is None
+        assert dt is None
+
+    def test_the_entry_is_dead_reckoned_backwards_not_forwards(self):
+        """The entry is at LAT/LON at t=100 s doing 200 m/s east, and this
+        solve's epoch is 3 s EARLIER — so the aircraft was 600 m WEST of the
+        entry when it was measured.  Both placements are inside the 6 km
+        gate, so what proves the sign is the reported distance: ~0 km for the
+        one the backwards prediction lands on, ~1.2 km for its mirror."""
+        tracks = {"mn-dark-east": _dark_entry(ts_ms=100_000, vel_east=200.0)}
+        behind_lat, behind_lon = offset_latlon_m(LAT, LON, east_m=-600.0, north_m=0.0)
+        key, how, dist_behind, dt = self._decide(tracks, 97_000, behind_lat, behind_lon)
+        assert (key, how) == ("mn-dark-east", "proximity")
+        assert dt == pytest.approx(-3.0)
+        assert dist_behind == pytest.approx(0.0, abs=0.05)
+
+        ahead_lat, ahead_lon = offset_latlon_m(LAT, LON, east_m=600.0, north_m=0.0)
+        key2, how2, dist_ahead, _dt2 = self._decide(tracks, 97_000, ahead_lat, ahead_lon)
+        assert (key2, how2) == ("mn-dark-east", "proximity")
+        assert dist_ahead == pytest.approx(1.2, abs=0.05)
+
+    def test_a_negative_dt_candidate_gets_no_drift_allowance(self):
+        """_mn_assoc_gate_km clamps dt at 0, so an out-of-order candidate is
+        judged against the flat base gate — the drift measurement behind the
+        growth term never covered this direction."""
+        tracks = {"mn-dark-ahead": _dark_entry(ts_ms=100_000)}
+        lat_in, lon_in = _north_of(5.9)
+        _k, how_in, _d, _dt = self._decide(tracks, 95_000, lat_in, lon_in)
+        assert how_in == "proximity"
+        lat_out, lon_out = _north_of(6.1)
+        _k2, how_out, _d2, _dt2 = self._decide(tracks, 95_000, lat_out, lon_out)
+        assert how_out == "minted"
 
 
 class TestProcessSolverItemAnchorHonoring:

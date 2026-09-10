@@ -38,6 +38,7 @@ def _rec(
     known_lane=False,
     displacement_km=None,
     lane=None,
+    pool_n_nodes=None,
 ):
     return {
         "ts_ms": int((time.time() - age_s) * 1000),
@@ -50,6 +51,7 @@ def _rec(
         "known_lane": known_lane,
         "displacement_km": displacement_km,
         "lane": lane,
+        "pool_n_nodes": pool_n_nodes,
     }
 
 
@@ -250,6 +252,8 @@ class TestConsensusAndCounters:
         state.solver_successes = 5
         state.solver_failures = 2
         state.n2_unconfirmed = 1
+        state.n2_anchored_admitted = 20
+        state.n2_fit_position_published = 25
         state.solver_trimmed = 3
         state.solver_stale_drops = 4
         state.solver_resolve_skips = 12
@@ -259,36 +263,56 @@ class TestConsensusAndCounters:
         state.solver_consensus_fallback = 9
         state.solver_consensus_shadow = 10
         state.solver_vel_untrusted_published = 11
+        state.solver_n2_alt_inherited = 26
         state.dark_follow_targets = 13
         state.dark_follow_claims = 14
         state.dark_follow_inputs = 15
         state.dark_follow_published = 16
         state.dark_follow_dropped = 17
+        state.dark_follow_n2_withheld = 18
+        state.dark_follow_n2_skipped = 19
         state.dark_bottomup_shadowed = 18
         state.tracks_stale_skipped = 13
         state.solver_epoch_align_skipped = 14
         state.solver_resolve_skips_dark = 9
+        state.solver_resolve_refresh = 3
         state.node_frames_rate_limited = 13
+        state.solver_pool_timeouts = 19
+        state.solver_adopt_eligible = 21
+        state.solver_adopt_widened = 22
+        state.solver_adopt_nodes_added = 23
+        state.solver_adopt_rejected = 24
         out = _solver_window_stats(10.0)
         assert out["counters"] == {
             "successes": 5,
             "failures": 2,
+            "pool_timeouts": 19,
             "n2_unconfirmed": 1,
+            "n2_anchored_admitted": 20,
+            "n2_fit_position_published": 25,
             "solver_trimmed": 3,
             "stale_drops": 4,
             "resolve_skips": 12,
             "tracks_stale_skipped": 13,
             "epoch_align_skipped": 14,
             "resolve_skips_dark": 9,
+            "resolve_refresh": 3,
+            "adopt_eligible": 21,
+            "adopt_widened": 22,
+            "adopt_nodes_added": 23,
+            "adopt_rejected": 24,
             "queue_drops": 6,
             "node_frames_rate_limited": 13,
             "worker_errors": 0,
             "vel_untrusted_published": 11,
+            "n2_alt_inherited": 26,
             "dark_follow_targets": 13,
             "dark_follow_claims": 14,
             "dark_follow_inputs": 15,
             "dark_follow_published": 16,
             "dark_follow_dropped": 17,
+            "dark_follow_n2_withheld": 18,
+            "dark_follow_n2_skipped": 19,
             "dark_bottomup_shadowed": 18,
         }
         assert out["consensus"]["selected"] == 7
@@ -399,6 +423,7 @@ class TestKnownLaneAndClaimsPassthrough:
             "no_converge": 1,
             "published": 4,
             "publish_errors": 1,
+            "reanchored": 0,
             # Windowed, and empty here — these are since-boot counters bumped
             # directly, with no history records behind them.
             "position_error_km": {"median": None, "p90": None, "n": 0, "window_minutes": 10.0},
@@ -422,6 +447,11 @@ class TestKnownLaneAndClaimsPassthrough:
             "visibility_rejects": 6,
             "world_rejects": 3,
             "errors": 1,
+            "hold_claims": 0,
+            "hold_expired": 0,
+            "hold_dropped_disagree": 0,
+            "holds": 0,
+            "follow_claims": 0,
         }
 
     def test_both_blocks_zero_on_a_fresh_process(self):
@@ -435,6 +465,11 @@ class TestKnownLaneAndClaimsPassthrough:
             "visibility_rejects": 0,
             "world_rejects": 0,
             "errors": 0,
+            "hold_claims": 0,
+            "hold_expired": 0,
+            "hold_dropped_disagree": 0,
+            "holds": 0,
+            "follow_claims": 0,
         }
 
     def test_lane_counters_absent_from_state_read_as_zero(self, monkeypatch):
@@ -493,6 +528,8 @@ class TestFragmentation:
             "anchored_pct": 0.0,
             "dark_keys_minted": 0,
             "dark_keys_proximity": 0,
+            "dark_keys_tracks": 0,
+            "dark_keys_proximity_negdt": 0,
             "mn_superseded": 0,
             "mn_superseded_blocked": 0,
             "mn_superseded_blocked_alt": 0,
@@ -506,9 +543,16 @@ class TestFragmentation:
         lane from a busy one."""
         state.solver_key_minted_dark = 4
         state.solver_key_proximity_dark = 11
+        state.solver_key_proximity_negdt = 3
+        state.solver_key_tracks = 7
         out = _solver_window_stats(10.0)
         assert out["fragmentation"]["dark_keys_minted"] == 4
         assert out["fragmentation"]["dark_keys_proximity"] == 11
+        # Re-keys the node-track evidence decided rather than distance alone.
+        assert out["fragmentation"]["dark_keys_tracks"] == 7
+        # The out-of-order subset of those re-keys — every one of them a
+        # dark_keys_minted before the signed dt window.
+        assert out["fragmentation"]["dark_keys_proximity_negdt"] == 3
 
     def test_supersession_counters_are_surfaced(self):
         """Entries popped as the same aircraft against shared-id entries the
@@ -529,10 +573,14 @@ class TestFragmentation:
     def test_dark_key_decision_counters_reset_with_state(self):
         state.solver_key_minted_dark = 4
         state.solver_key_proximity_dark = 11
+        state.solver_key_proximity_negdt = 3
+        state.solver_key_tracks = 7
         state._reset_for_tests()
         out = _solver_window_stats(10.0)
         assert out["fragmentation"]["dark_keys_minted"] == 0
         assert out["fragmentation"]["dark_keys_proximity"] == 0
+        assert out["fragmentation"]["dark_keys_tracks"] == 0
+        assert out["fragmentation"]["dark_keys_proximity_negdt"] == 0
 
 
 class TestEmptyState:
@@ -582,6 +630,8 @@ class TestEndpoint:
             "anchored_pct",
             "dark_keys_minted",
             "dark_keys_proximity",
+            "dark_keys_tracks",
+            "dark_keys_proximity_negdt",
             "mn_superseded",
             "mn_superseded_blocked",
             "mn_superseded_blocked_alt",
@@ -592,6 +642,24 @@ class TestEndpoint:
             "would_pass",
             "would_reject",
             "neg_events",
+        }
+
+    def test_display_filter_block_present(self):
+        """services/track_filter.py's chi-squared-gate outcomes ride on this
+        endpoint (they are module-level counters, not core.state ones, so this
+        is the only place they surface).  reanchors are identity breaks the
+        manoeuvre retry could not explain, manoeuvre_rescues the turns it
+        could, manoeuvre_active a live gauge over tracks."""
+        from services import track_filter
+
+        track_filter.reset()
+        resp = _client().get("/api/test/solver-stats")
+        data = resp.json()
+        assert data["display_filter"] == {
+            "reanchors": 0,
+            "manoeuvre_rescues": 0,
+            "manoeuvre_active": 0,
+            "tracks": 0,
         }
 
     def test_known_lane_and_known_claims_blocks_present(self):
@@ -605,6 +673,7 @@ class TestEndpoint:
             "no_converge",
             "published",
             "publish_errors",
+            "reanchored",
             "position_error_km",
         }
         assert data["known_claims"].keys() == {
@@ -614,6 +683,11 @@ class TestEndpoint:
             "visibility_rejects",
             "world_rejects",
             "errors",
+            "hold_claims",
+            "hold_expired",
+            "hold_dropped_disagree",
+            "holds",
+            "follow_claims",
         }
 
     def test_minutes_clamp_low(self):
@@ -943,3 +1017,164 @@ class TestContaminationBlock:
         rec["known_lane"] = True
         state.mlat_solve_history_known.append(rec)
         assert _solver_window_stats(10.0)["contamination"]["records_with_gt"] == 0
+
+
+class TestByNNodes:
+    """The funnel re-split by how many nodes each attempt used — the question
+    "what fraction of 3-node candidates actually publish?", which before this
+    block needed an offline pass over a history dump."""
+
+
+class TestNodePool:
+    """``pool`` answers "could the round have solved this aircraft wider?".
+
+    pool_n_nodes is stamped on the solver input by the association stage — the
+    node set of the shared-track component the input was clustered out of — so
+    a published record whose n_nodes is below it is a solve the round had the
+    measurements for and did not make.  This is the counter that separates "the
+    third node never paired" from "it paired and the clustering did not take
+    it", which is the 3-node dark case we could not previously diagnose.
+    """
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_published_and_rejected_land_in_their_own_buckets(self):
+        state.mlat_solve_history.append(_rec("published", n_nodes=3, gt_error_km=0.4))
+        state.mlat_solve_history.append(_rec("rejected_beam", n_nodes=2))
+        out = _solver_window_stats(10.0)["by_n_nodes"]
+        assert out["3"] == {
+            "attempts": 1,
+            "published": 1,
+            "publish_rate": 1.0,
+            "rejects": {},
+            "gt_err_median_km": 0.4,
+        }
+        assert out["2"] == {
+            "attempts": 1,
+            "published": 0,
+            "publish_rate": 0.0,
+            # Same strip as the by_reason table, so the two can be added up.
+            "rejects": {"beam": 1},
+            "gt_err_median_km": None,
+        }
+
+    def test_buckets_sum_back_to_the_funnel(self):
+        for n in (2, 3, 4, 5, 9):
+            state.mlat_solve_history.append(_rec("published", n_nodes=n))
+            state.mlat_solve_history.append(_rec("rejected_rms", n_nodes=n))
+        out = _solver_window_stats(10.0)
+        by_n = out["by_n_nodes"]
+        # 5 and 9 share the 5+ bucket; everything else is its own.
+        assert sorted(by_n) == ["2", "3", "4", "5+"]
+        assert by_n["5+"]["attempts"] == 4
+        assert sum(b["attempts"] for b in by_n.values()) == out["attempts"]
+        assert sum(b["published"] for b in by_n.values()) == out["published"]["total"]
+
+    def test_a_record_with_no_node_count_is_kept_not_dropped(self):
+        """Some reject paths write no n_nodes; they still have to appear, or
+        the buckets stop summing to attempts."""
+        state.mlat_solve_history.append(_rec("rejected_geometry", n_nodes=None))
+        out = _solver_window_stats(10.0)
+        assert out["by_n_nodes"]["<2"]["attempts"] == 1
+        assert sum(b["attempts"] for b in out["by_n_nodes"].values()) == out["attempts"]
+
+    def test_gt_error_beyond_the_gate_is_excluded_like_the_top_level_median(self):
+        state.mlat_solve_history.append(_rec("published", n_nodes=4, gt_error_km=_ERR_GT_GATE_KM + 1))
+        out = _solver_window_stats(10.0)["by_n_nodes"]
+        assert out["4"]["published"] == 1
+        assert out["4"]["gt_err_median_km"] is None
+
+    def test_only_the_top_four_reject_reasons_are_listed(self):
+        for i in range(6):
+            for _ in range(6 - i):
+                state.mlat_solve_history.append(_rec(f"rejected_r{i}", n_nodes=3))
+        rejects = _solver_window_stats(10.0)["by_n_nodes"]["3"]["rejects"]
+        assert list(rejects) == ["r0", "r1", "r2", "r3"]
+        assert rejects["r0"] == 6
+
+    def test_the_known_lane_gets_its_own_table(self):
+        state.mlat_solve_history_known.append(_rec("published", n_nodes=4, known_lane=True))
+        out = _solver_window_stats(10.0)
+        assert out["by_n_nodes"] == {}
+        assert out["by_n_nodes_known"]["4"]["published"] == 1
+
+
+class TestDarkFollowBlock:
+    """The follow lane's funnel and, beside it, why the keys it did not follow
+    were refused."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+
+    def test_ineligibility_reasons_are_reported_per_reason(self):
+        state.bump_counter("dark_follow_inelig_vel_sigma", 7)
+        state.bump_counter("dark_follow_inelig_min_nodes", 3)
+        state.dark_follow_inputs = 5
+        state.dark_follow_published = 4
+        out = _solver_window_stats(10.0)["dark_follow"]
+        assert out["inputs"] == 5
+        assert out["published"] == 4
+        assert out["ineligible"] == {
+            "cooldown": 0,
+            "no_pos": 0,
+            "age": 0,
+            "min_solves": 0,
+            "min_nodes": 3,
+            "no_filter": 0,
+            "vel_sigma": 7,
+        }
+
+    def test_the_two_n2_sparings_are_reported_beside_the_funnel(self):
+        """Being withheld for lack of a third node is not evidence against the
+        prediction, so neither sparing shows up as a drop — they are only
+        visible as their own keys."""
+        state.bump_counter("dark_follow_n2_withheld", 11)
+        state.bump_counter("dark_follow_n2_skipped", 6)
+        out = _solver_window_stats(10.0)["dark_follow"]
+        assert out["n2_withheld"] == 11
+        assert out["n2_skipped"] == 6
+        assert out["dropped"] == 0
+
+    def test_an_empty_lane_reports_zeroes_not_a_missing_block(self):
+        out = _solver_window_stats(10.0)["dark_follow"]
+        assert out["targets_now"] == 0
+        assert set(out["ineligible"].values()) == {0}
+
+    def test_counts_published_solves_narrower_than_their_pool(self):
+        _push(_rec("published", n_nodes=2, pool_n_nodes=3))
+        _push(_rec("published", n_nodes=3, pool_n_nodes=3))
+        out = _solver_window_stats(10.0)
+        assert out["pool"] == {
+            "records_with_pool": 2,
+            "narrower_than_pool": 1,
+            "pct": 50.0,
+            "mean_shortfall_nodes": 0.5,
+        }
+
+    def test_unstamped_and_unpublished_records_stay_out_of_the_denominator(self):
+        """Only DARK PUBLISHED records carrying the stamp can answer this.
+
+        An anchored or known-lane input never went through the clustering that
+        computes the pool, and a reject has no solve to be narrow; counting
+        either as a zero shortfall would dilute the number towards "fine".
+        """
+        _push(_rec("published", n_nodes=2, pool_n_nodes=3))
+        _push(_rec("published", n_nodes=2))  # dark, but no stamp
+        _push(_rec("rejected_beam", n_nodes=2, pool_n_nodes=4))
+        _push(_rec("published", n_nodes=2, pool_n_nodes=4, known_lane=True))
+        out = _solver_window_stats(10.0)
+        assert out["pool"]["records_with_pool"] == 1
+        assert out["pool"]["narrower_than_pool"] == 1
+        assert out["pool"]["pct"] == 100.0
+
+    def test_no_stamped_records_reports_null_not_zero(self):
+        """Nothing measured is not the same answer as nothing narrow."""
+        _push(_rec("published", n_nodes=2))
+        out = _solver_window_stats(10.0)
+        assert out["pool"] == {
+            "records_with_pool": 0,
+            "narrower_than_pool": 0,
+            "pct": None,
+            "mean_shortfall_nodes": None,
+        }

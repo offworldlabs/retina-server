@@ -1,7 +1,7 @@
-"""The v1 node API: prefix, tags, body caps and error taxonomy for the four node
+"""The v1 node API: prefix, tags, body caps and error taxonomy for the five node
 endpoints.
 
-The handlers live in three sibling modules mounted below, so that work on one
+The handlers live in four sibling modules mounted below, so that work on one
 endpoint never touches another's lines. This module holds only the wiring.
 
 The exception handlers are here rather than in an endpoint module because only
@@ -21,6 +21,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
 
 from routes.node_config import router as node_config_router
+from routes.node_contact import router as node_contact_router
 from routes.node_register import router as node_register_router
 from routes.node_responses import NODE_BODY_LIMITS as NODE_BODY_LIMITS
 from routes.node_schemas import ErrorBody
@@ -42,9 +43,40 @@ NODE_PATH_PREFIX = "/v1/nodes"
 # and no client can have depended on either, since the server has never emitted
 # one. See 86cb6d7cq for the configuration one, which comes back with the limit.
 #
-# Publishing NodeConfig would be the minor bump, since that is the one thing
-# here a client cannot already do (86cb6d7he).
-NODE_API_VERSION = "1.1.2"
+# 1.1.3 makes the six coordinate fields of the configuration nullable, so a node
+# whose owner cannot supply the geometry can still register. A patch rather than
+# a minor bump because the document gained no field a client could read.
+#
+# 1.1.3 also publishes the configuration schema, built from the same tables the
+# validator enforces (86cb6d7he), and the version does not move for it: the
+# server accepts and refuses exactly what it did, so there is no change in
+# behaviour for a version to describe.
+#
+# What did change is the document, and not additively. Where `config` was an
+# object with no required keys and `additionalProperties: true`, it is now
+# fifteen required fields with unknown keys forbidden, and its generated type is
+# named NodeConfig where it was Config. So the document narrows, to what this
+# server has always enforced, and renames. Two documents therefore carry this
+# version and a client cannot tell them apart by it: a payload the earlier one
+# called valid, one omitting cpi_s say, the later one rejects, and a client
+# regenerated against the later one renames its config type.
+# 1.1.4 rewrites what the publication choice means, and nothing else. The
+# description on PublicationChoice said "whether the owner chose to publish this
+# node's detections", which was never what the server did with the answer: a
+# private node's detections are kept, solved against and archived, and what is
+# withheld is everything that locates the receiver. A client reading the old
+# text would have told its owner they were declining to contribute. A patch
+# because the change is wire-visible but not structural — same fields, same
+# bounds, same two enum values, same behaviour on both sides.
+#
+# 1.2.0 adds PUT /v1/nodes/contact, on which a node reports whom to contact
+# about it. A minor rather than a patch because it is new surface: an endpoint,
+# a schema and a refusal slug a client can now read. Nothing existing moves, so
+# a 1.1.4 node stays conformant and simply never calls it.
+#
+# Contact is not configuration and is not versioned: it is one mutable row per
+# node, so nothing here stamps a detection frame.
+NODE_API_VERSION = "1.2.0"
 
 # No tag here: each sub-router carries the contract's own grouping, since those
 # are what a generated client is built around.
@@ -55,6 +87,7 @@ NODE_API_TAGS = [
     {"name": "registration", "description": "One-off handshake that mints the node's bearer token."},
     {"name": "streaming", "description": "The hot path, plus the liveness signal that runs alongside it."},
     {"name": "configuration", "description": "Receiver and transmitter geometry, versioned by the server."},
+    {"name": "contact", "description": "Whom to contact about the node, reported by the node itself."},
 ]
 
 # Where the contract is served, for the client generated from it. Declared here
@@ -72,10 +105,11 @@ NODE_API_SERVERS = [
 
 router.include_router(node_register_router)
 router.include_router(node_config_router)
+router.include_router(node_contact_router)
 router.include_router(node_stream_router)
 
 # NODE_BODY_LIMITS itself is first-class in routes/node_responses.py, where the
-# three endpoint modules above can also reach it without a cycle back through
+# four endpoint modules above can also reach it without a cycle back through
 # this module. Imported here (explicit self-alias, so the re-export is not
 # read as an unused import) for main.py's LimitUploadSize middleware and for
 # tests, both of which already know this module as where the node API's wiring
@@ -155,7 +189,7 @@ def _field(exc: RequestValidationError) -> str:
         return "body"
     location = first.get("loc", ())
     # The leading "body" is the same on every one of these and says nothing:
-    # none of the four endpoints declares a query or path parameter.
+    # none of the five endpoints declares a query or path parameter.
     if location and location[0] == "body":
         location = location[1:]
     return ".".join(str(part) for part in location)[:_MAX_DETAIL] or "body"

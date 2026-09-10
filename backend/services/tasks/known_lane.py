@@ -61,6 +61,7 @@ merged or not.
 
 import logging
 import math
+import os
 import threading
 import time
 
@@ -69,6 +70,7 @@ from core import state
 from services import dark_follow, track_filter
 from services.geo import haversine_km, offset_latlon_m
 from services.id_utils import normalize_hex_key
+from services.known_claiming import KNOWN_CLAIM_MAX_FIX_AGE_S
 
 # Deliberate one-way dependency: this module reuses the solver worker's
 # record store, gates, publication lock and smoother so known-lane records
@@ -91,6 +93,7 @@ _COUNTERS = (
     "known_lane_no_converge",
     "known_lane_published",
     "known_lane_publish_errors",
+    "known_lane_reanchored",
 )
 for _name in _COUNTERS:
     if not hasattr(state, _name):
@@ -147,6 +150,19 @@ _last_sample_mono: dict[str, float] = {}
 _last_follow_mono: dict[str, float] = {}
 _last_follow_ts_ms: dict[str, int] = {}
 
+# ── Re-anchoring after a kf-seeded ghost ──────────────────────────────────────
+# How many CONSECUTIVE self-consistent kf-seeded ghosts it takes to conclude
+# that the prior, not the solve, is what moved.  2 = the solve said the same
+# thing twice in a row; 0 disables re-anchoring and restores the pre-feature
+# classification exactly.
+KNOWN_LANE_REANCHOR_STREAK = int(os.getenv("KNOWN_LANE_REANCHOR_STREAK", "2"))
+# Last kf-seeded ghost per hex: {"lat", "lon", "ts_ms", "streak"}.  Written
+# only from _attempt, i.e. single-writer under _PASS_LOCK like the maps above.
+# A memory older than this is no evidence about the current solve — it is the
+# lane's own claim-staleness scale, comfortably longer than the pass interval.
+_REANCHOR_TTL_S = 60.0
+_reanchor_mem: dict[str, dict] = {}
+
 
 def _reset_for_tests() -> None:
     """Restore this module's private state to boot values.  Tests only."""
@@ -157,6 +173,7 @@ def _reset_for_tests() -> None:
         _last_sample_mono.clear()
         _last_follow_mono.clear()
         _last_follow_ts_ms.clear()
+        _reanchor_mem.clear()
     with state.counters_lock:
         for name in _COUNTERS:
             setattr(state, name, 0)
@@ -257,6 +274,45 @@ def _build_solver_input(hexn: str, claims: dict[str, dict]) -> dict | None:
         east_m=vel_east * dt_s,
         north_m=vel_north * dt_s,
     )
+    seed_source = "fix"
+
+    # A HELD claim (known_claiming path H) can outlive its transponder by any
+    # amount — that is the point of the hold — and the fix above is then a
+    # position from minutes ago propagated at a heading from minutes ago.  Its
+    # dead-reckoned guess drifts kilometres, _attempt measures displacement
+    # against it, labels the honest solve a "ghost", and the aircraft stops
+    # being published exactly when it stopped being visible any other way.
+    # Past the fix-age cap the lane's OWN last solve for this hex is the better
+    # prior: it is a radar measurement, seconds old, of the same aircraft, and
+    # the filter has a velocity for it.  Altitude still comes from the fix —
+    # a barometric altitude does not go stale the way a position does, and it
+    # remains the best altitude information anyone has.
+    if abs(dt_s) > KNOWN_CLAIM_MAX_FIX_AGE_S:
+        prev = state.multinode_tracks.get(f"mn-adsb-{hexn}")
+        prev_lat = prev.get("lat") if isinstance(prev, dict) else None
+        prev_lon = prev.get("lon") if isinstance(prev, dict) else None
+        prev_ts_ms = _num(prev.get("timestamp_ms"), 0) if isinstance(prev, dict) else 0
+        if isinstance(prev_lat, (int, float)) and isinstance(prev_lon, (int, float)) and prev_ts_ms:
+            learned = track_filter.learned_velocity(f"mn-adsb-{hexn}")
+            if learned is not None:
+                seed_ve, seed_vn = float(learned[0]), float(learned[1])
+            else:
+                seed_ve = _num(prev.get("vel_east"))
+                seed_vn = _num(prev.get("vel_north"))
+            coast_s = (newest_ts_ms - int(prev_ts_ms)) / 1000.0
+            guess_lat, guess_lon = offset_latlon_m(
+                float(prev_lat),
+                float(prev_lon),
+                east_m=seed_ve * coast_s,
+                north_m=seed_vn * coast_s,
+            )
+            # The velocity seed moves with the guess: seeding a position from
+            # the radar track and a heading from a stale transponder report
+            # would be two different aircraft's worth of prior.
+            vel_east, vel_north = seed_ve, seed_vn
+            seed_source = "kf"
+    # No prior solve leaves seed_source "fix" and today's dead-reckoned guess:
+    # a drifting prior still beats no prior, and the classification says so.
 
     return {
         "initial_guess": {
@@ -264,6 +320,7 @@ def _build_solver_input(hexn: str, claims: dict[str, dict]) -> dict | None:
             "lon": guess_lon,
             "alt_km": _num(fix.get("alt_baro")) * FT_TO_M / 1000.0,
         },
+        "seed_source": seed_source,
         "initial_velocity": {
             "vel_east_ms": vel_east,
             "vel_north_ms": vel_north,
@@ -288,6 +345,53 @@ def _build_solver_input(hexn: str, claims: dict[str, dict]) -> dict | None:
         "adsb_hex": hexn,
         "known_lane": True,
     }
+
+
+def _reanchor(hexn: str, raw_lat: float, raw_lon: float, ts_ms: int) -> bool:
+    """True when this kf-seeded ghost is the point at which the LANE, not the
+    solve, should move.
+
+    The kf seed is a prior, not a measurement: the lane's own last published
+    position dead-reckoned forward.  When the aircraft turns during its
+    silence the prior keeps flying the old heading, the solves keep landing on
+    the aircraft, and displacement against the prior crosses the ghost
+    threshold — after which nothing is published, the prior stops being
+    refreshed, and the gap grows without limit.  Every later solve is then
+    measured against a position the aircraft left minutes ago, so the lane can
+    never recover on its own.  Live captures show exactly that: 25 consecutive
+    ghosts, all within 0.6 km of truth, against a prior 13 km away.
+
+    What distinguishes a moved prior from a genuinely wrong solve is
+    REPEATABILITY: a wrong solve is wrong somewhere new each time, while the
+    aircraft is where it is.  So two consecutive ghost solves that agree with
+    EACH OTHER to within the same displacement cap are taken as the truth and
+    the prior is abandoned.
+
+    A fix-seeded ghost never reaches here (see the caller): a live transponder
+    is the lane's truth gate, and re-anchoring away from it would let the lane
+    publish a position the aircraft's own fix contradicts.
+    """
+    if KNOWN_LANE_REANCHOR_STREAK <= 0:
+        return False
+    now_s = ts_ms / 1000.0
+    for h, m in list(_reanchor_mem.items()):
+        if abs(now_s - m["ts_ms"] / 1000.0) > _REANCHOR_TTL_S:
+            _reanchor_mem.pop(h, None)
+    prev = _reanchor_mem.get(hexn)
+    streak = 1
+    if (
+        prev is not None
+        and 0.0 <= now_s - prev["ts_ms"] / 1000.0 <= _REANCHOR_TTL_S
+        and haversine_km(prev["lat"], prev["lon"], raw_lat, raw_lon) <= solver_mod._MAX_DISPLACEMENT_KM
+    ):
+        streak = int(prev["streak"]) + 1
+    if streak >= KNOWN_LANE_REANCHOR_STREAK:
+        # Spent: the next solve is measured against the position this one
+        # publishes, so the streak starts over from the new anchor.
+        _reanchor_mem.pop(hexn, None)
+        return True
+    _reanchor_mem[hexn] = {"lat": raw_lat, "lon": raw_lon, "ts_ms": ts_ms, "streak": streak}
+    return False
 
 
 def _record_accuracy(hexn: str, err_km: float, label: str, n_nodes: int, ts_s: float) -> None:
@@ -365,7 +469,7 @@ def _publish(hexn: str, s_in: dict, result: dict) -> str:
     result["vel_untrusted"] = bool(result.get("vz_saturated")) or int(result.get("n_nodes") or 0) <= 3
 
     with solver_mod._MN_TRACKS_LOCK:
-        key, _how, _dist_km = solver_mod.multinode_key_decision(state.multinode_tracks, result, hexn, None)
+        key, _how, _dist_km, _dt_s = solver_mod.multinode_key_decision(state.multinode_tracks, result, hexn, None)
         smoothed = track_filter.smooth_solve(result, key, hexn, ewma_fn=solver_mod._ewma_smooth_track)
         prev = state.multinode_tracks.get(key)
         if prev:
@@ -423,7 +527,13 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
             "known_no_converge",
             s_in,
             result if isinstance(result, dict) else None,
-            extra={"known_lane": True, "label": "no_converge", "published": False, **epoch_meta},
+            extra={
+                "known_lane": True,
+                "label": "no_converge",
+                "published": False,
+                "seed_source": s_in.get("seed_source", "fix"),
+                **epoch_meta,
+            },
         )
         return
 
@@ -431,11 +541,20 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
     raw_lat, raw_lon = float(result["lat"]), float(result["lon"])
     err_km = haversine_km(float(ig["lat"]), float(ig["lon"]), raw_lat, raw_lon)
     label = "truth_match" if err_km <= solver_mod._MAX_DISPLACEMENT_KM else "ghost"
+    # The prior is only a prior — when it is the lane's OWN dead-reckoned
+    # solve rather than a transponder fix, a repeated self-consistent
+    # disagreement means the prior moved, not the solve.  See _reanchor.
+    if (
+        label == "ghost"
+        and s_in.get("seed_source") == "kf"
+        and _reanchor(hexn, raw_lat, raw_lon, int(s_in["timestamp_ms"]))
+    ):
+        label = "reanchored"
     state.bump_counter(f"known_lane_{label}")
     n_nodes = int(result.get("n_nodes") or s_in.get("n_nodes") or 0)
     _record_accuracy(hexn, err_km, label, n_nodes, s_in["timestamp_ms"] / 1000.0)
 
-    published = mode == "binding" and label == "truth_match"
+    published = mode == "binding" and label in ("truth_match", "reanchored")
     solve_key = None
     if published:
         # A failing publish must cost this ONE hex its publish, never the
@@ -463,7 +582,13 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
         raw_lat=raw_lat,
         raw_lon=raw_lon,
         displacement_km=err_km,
-        extra={"known_lane": True, "label": label, "published": published, **epoch_meta},
+        extra={
+            "known_lane": True,
+            "label": label,
+            "published": published,
+            "seed_source": s_in.get("seed_source", "fix"),
+            **epoch_meta,
+        },
     )
 
 
@@ -692,14 +817,39 @@ def run_dark_follow_pass(solve_fn, node_cfgs: dict | None = None, mode: str | No
             from services.frame_processor import get_node_configs
 
             node_cfgs = get_node_configs()
-        # A node whose config has gone (disconnected since the claim) cannot be
-        # solved with: the LM needs its geometry.  Drop the node rather than
-        # the key — the remaining nodes are still a solve if there are two.
+        # A node absent from the snapshot cannot be solved with: the LM needs
+        # its geometry, and get_node_configs returns the placed nodes only, so
+        # this drops both a node that disconnected since the claim and one that
+        # re-registered without its position while these claims were held.
+        # Drop the node rather than the key: the remaining nodes are still a
+        # solve if there are two of them.
         claims = {nid: c for nid, c in claims.items() if nid in node_cfgs}
         if len(claims) < 2:
             continue
         newest_ts = max(int(c["ts_ms"]) for c in claims.values())
         if _last_follow_ts_ms.get(key, -1) >= newest_ts:
+            continue
+        # An n=2 follow input is a solve that cannot publish.  A follow input
+        # carries no cv_epochs (see _build_follow_solver_input), so unless the
+        # anchored bypass is on it dies at the solver's n=2 confirmation gate
+        # with outcome n2_unconfirmed every time — 37-67 of them per 20-minute
+        # capture on the test droplet, one every DARK_FOLLOW_INTERVAL_S for as
+        # long as a followed aircraft sits in 2-node coverage, each costing a
+        # pool solve for nothing.  So don't build it.  The target stays alive
+        # (no record_outcome call, deliberately: flying into a coverage gap is
+        # not evidence against the prediction) and simply ages out on
+        # DARK_FOLLOW_MAX_AGE_S if no wider claim ever comes.  The dedup stamps
+        # are written exactly as an enqueued input would write them, so the
+        # rate limit and the newest-claim check behave identically either way.
+        #
+        # This gates the FOLLOW path only.  Nothing here touches what the claim
+        # round did to the dark pool: the detections were already claimed and
+        # (in binding mode) already stripped, upstream in known_claiming, so
+        # the bottom-up lane sees exactly what it saw before.
+        if len(claims) == 2 and not dark_follow.DARK_FOLLOW_N2_ADMIT:
+            _last_follow_mono[key] = now_mono
+            _last_follow_ts_ms[key] = newest_ts
+            state.bump_counter("dark_follow_n2_skipped")
             continue
         s_in = _build_follow_solver_input(key, claims)
         if s_in is None:

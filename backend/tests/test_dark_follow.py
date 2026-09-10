@@ -37,10 +37,11 @@ from core import state
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from services import dark_follow, track_filter
 from services import known_claiming as kc
-from services.frame_processor import process_one_frame
+from services.frame_processor import get_or_create_node_pipeline, process_one_frame
 from services.geo import offset_latlon_m
 from services.tasks import known_lane
 from services.tasks import solver as solver_mod
+from tests.node_helpers import register_test_node
 
 _NODE_CFG = {
     "rx_lat": 34.85,
@@ -220,6 +221,29 @@ class TestPseudoStates:
 
         assert dark_follow.follow_targets() == []
 
+    def test_a_narrow_last_solve_on_a_wide_key_is_still_a_target(self, monkeypatch):
+        """Eligibility is the key's widest solve, not its most recent one.
+
+        A followed aircraft that flies out of 3-node coverage now publishes at
+        n=2 (the anchored bypass at the solver's n=2 gate), which writes
+        n_nodes 2 onto the record.  Judging on that alone would drop the key on
+        the very rebuild after the first such publish — dropping exactly the
+        track this lane exists to carry through the thin patch.
+        """
+        ts = int(time.time() * 1000) - 2000
+        _install(monkeypatch, ts, n_nodes=2, max_n_nodes=4)
+
+        (t,) = dark_follow.follow_targets()
+
+        assert t["key"] == _KEY
+
+    def test_a_key_that_was_never_wide_is_not_a_target(self, monkeypatch):
+        """The high-water mark has to be real, not merely present."""
+        ts = int(time.time() * 1000) - 2000
+        _install(monkeypatch, ts, n_nodes=2, max_n_nodes=2)
+
+        assert dark_follow.follow_targets() == []
+
     def test_no_filter_state_is_not(self, monkeypatch):
         """The velocity and its sigma ARE the prediction; without them there is
         nothing to dead-reckon with and no honest way to widen a gate."""
@@ -248,6 +272,86 @@ class TestPseudoStates:
         _install(monkeypatch, ts, mode="off")
 
         assert dark_follow.follow_targets() == []
+
+
+class TestIneligibilityCounters:
+    """One counter per gate in _build_targets, because the only other record of
+    why a key is not followed is a debug log the deployed log level never
+    emits — finding the 3-node starvation without these took an offline
+    simulation of the filter.
+
+    They are key-seconds: _build_targets re-tests every dark key on every
+    rebuild, so one pass over one key is one bump.
+    """
+
+    def test_a_noisy_velocity_is_counted_by_reason(self, monkeypatch):
+        _install(monkeypatch, int(time.time() * 1000) - 2000)
+        _kf(monkeypatch, vel_sigma=dark_follow.DARK_FOLLOW_MAX_VEL_SIGMA_MS + 1.0)
+        dark_follow._reset_for_tests()
+
+        assert dark_follow.follow_targets() == []
+        assert state.dark_follow_inelig_vel_sigma == 1
+        # ...and the drop still happens: the two counters answer different
+        # questions (key-seconds over the ceiling vs keys dropped).
+        assert state.dark_follow_dropped == 1
+
+    def test_the_cooldown_a_drop_starts_is_counted_on_the_next_rebuild(self, monkeypatch):
+        """The second pass sees the key in cooldown, not over sigma — so it
+        must not double-count the sigma gate."""
+        _install(monkeypatch, int(time.time() * 1000) - 2000)
+        _kf(monkeypatch, vel_sigma=dark_follow.DARK_FOLLOW_MAX_VEL_SIGMA_MS + 1.0)
+        dark_follow._reset_for_tests()
+        dark_follow.follow_targets()
+
+        dark_follow._expire_targets_for_tests()
+        assert dark_follow.follow_targets() == []
+        assert state.dark_follow_inelig_cooldown == 1
+        assert state.dark_follow_inelig_vel_sigma == 1
+
+    @pytest.mark.parametrize(
+        "counter,kwargs",
+        [
+            ("dark_follow_inelig_no_pos", {"lat": None}),
+            ("dark_follow_inelig_min_solves", {"solve_count": dark_follow.DARK_FOLLOW_MIN_SOLVES - 1}),
+            ("dark_follow_inelig_min_nodes", {"n_nodes": 2}),
+        ],
+    )
+    def test_each_gate_has_its_own_counter(self, monkeypatch, counter, kwargs):
+        _install(monkeypatch, int(time.time() * 1000) - 2000, **kwargs)
+
+        assert dark_follow.follow_targets() == []
+        assert getattr(state, counter) == 1
+
+    def test_a_stale_track_is_counted_as_age(self, monkeypatch):
+        ts = int((time.time() - dark_follow.DARK_FOLLOW_MAX_AGE_S - 5) * 1000)
+        _install(monkeypatch, ts)
+
+        assert dark_follow.follow_targets() == []
+        assert state.dark_follow_inelig_age == 1
+
+    def test_no_filter_state_is_counted(self, monkeypatch):
+        _install(monkeypatch, int(time.time() * 1000) - 2000, kf=False)
+
+        assert dark_follow.follow_targets() == []
+        assert state.dark_follow_inelig_no_filter == 1
+
+    def test_an_adsb_key_is_not_in_the_population_at_all(self, monkeypatch):
+        """mn-adsb-* is not a dark key, so it is neither a target nor
+        ineligible — counting it would put the wrong denominator under the
+        whole block."""
+        _install(monkeypatch, int(time.time() * 1000) - 2000, key="mn-adsb-abc123")
+
+        assert dark_follow.follow_targets() == []
+        assert state.dark_follow_inelig_no_pos == 0
+        assert state.dark_follow_inelig_age == 0
+        assert state.dark_follow_inelig_no_filter == 0
+
+    def test_an_eligible_key_bumps_nothing(self, monkeypatch):
+        _install(monkeypatch, int(time.time() * 1000) - 2000)
+
+        assert len(dark_follow.follow_targets()) == 1
+        assert state.dark_follow_inelig_cooldown == 0
+        assert state.dark_follow_inelig_vel_sigma == 0
 
 
 class TestClaiming:
@@ -352,6 +456,17 @@ class TestFollowPass:
         import queue
 
         monkeypatch.setattr(state, "solver_queue", queue.Queue(maxsize=200))
+
+    @pytest.fixture(autouse=True)
+    def _admit_n2(self, monkeypatch):
+        """These tests exercise the pass MECHANICS — the rate limit, the
+        newest-claim dedup, the missing-config drop, shadow's own solve — on
+        the smallest claim set that produces an input, which is two nodes.
+        With DARK_FOLLOW_N2_ADMIT off (the default) the pass now declines to
+        build an n=2 input at all, so turn the bypass on here and let
+        TestN2InputsAreSkipped below own that gate.
+        """
+        monkeypatch.setattr(dark_follow, "DARK_FOLLOW_N2_ADMIT", True)
 
     def test_three_nodes_produce_one_anchored_queue_item(self):
         ts = int(time.time() * 1000)
@@ -470,11 +585,73 @@ class TestFollowPass:
         assert known_lane.run_known_lane_pass(lambda s, c: None, self._CFGS, mode="shadow") == 0
 
 
+class TestN2InputsAreSkipped:
+    """A follow input from exactly two nodes is a solve that cannot publish.
+
+    A follow input carries no cv_epochs, so unless the anchored bypass is on it
+    dies at the solver's n=2 confirmation gate every time — 37-67 per 20-minute
+    capture on the test droplet, each a pool solve spent for nothing and, worse,
+    each an n2_unconfirmed verdict the ghost guard used to charge to the key.
+    """
+
+    _CFGS = {"n1": _NODE_CFG, "n2": _NODE_CFG, "n3": _NODE_CFG}
+
+    @pytest.fixture(autouse=True)
+    def _private_queue(self, monkeypatch):
+        import queue
+
+        monkeypatch.setattr(state, "solver_queue", queue.Queue(maxsize=200))
+
+    def test_two_nodes_are_not_enqueued_when_the_bypass_is_off(self, monkeypatch):
+        monkeypatch.setattr(dark_follow, "DARK_FOLLOW_N2_ADMIT", False)
+        _install_follow_claims(["n1", "n2"], int(time.time() * 1000))
+
+        assert known_lane.run_dark_follow_pass(None, self._CFGS, mode="binding") == 0
+        assert _drain_queue() == []
+        assert state.dark_follow_inputs == 0
+        assert state.dark_follow_n2_skipped == 1
+
+    def test_two_nodes_are_enqueued_when_the_bypass_is_on(self, monkeypatch):
+        monkeypatch.setattr(dark_follow, "DARK_FOLLOW_N2_ADMIT", True)
+        _install_follow_claims(["n1", "n2"], int(time.time() * 1000))
+
+        assert known_lane.run_dark_follow_pass(None, self._CFGS, mode="binding") == 1
+        assert len(_drain_queue()) == 1
+        assert state.dark_follow_inputs == 1
+        assert state.dark_follow_n2_skipped == 0
+
+    def test_a_third_node_is_unaffected(self, monkeypatch):
+        monkeypatch.setattr(dark_follow, "DARK_FOLLOW_N2_ADMIT", False)
+        _install_follow_claims(["n1", "n2", "n3"], int(time.time() * 1000))
+
+        assert known_lane.run_dark_follow_pass(None, self._CFGS, mode="binding") == 1
+        assert state.dark_follow_n2_skipped == 0
+
+    def test_the_skipped_key_keeps_its_target_status(self, monkeypatch):
+        """The whole point: flying into a coverage gap is not evidence against
+        the prediction, so no reject reaches the guard and the key stays
+        followable until DARK_FOLLOW_MAX_AGE_S ends it."""
+        monkeypatch.setattr(dark_follow, "DARK_FOLLOW_N2_ADMIT", False)
+        monkeypatch.setattr(dark_follow, "DARK_FOLLOW_INTERVAL_S", 0.0)
+        ts = int(time.time() * 1000)
+        for i in range(4):
+            _install_follow_claims(["n1", "n2"], ts + i)
+            known_lane.run_dark_follow_pass(None, self._CFGS, mode="binding")
+
+        assert state.dark_follow_n2_skipped == 4
+        assert state.dark_follow_dropped == 0
+        assert dark_follow._reject_streak.get(_KEY, 0) == 0
+
+
 class TestModesInProcessOneFrame:
     """Binding removes the followed detections from the frame the dark lane
     processes; shadow leaves the frame whole."""
 
     def _run(self, monkeypatch, mode):
+        # Registered through the shared helper, not the associator alone: a node
+        # absent from connected_nodes cannot be placed, so it gets no pipeline
+        # and process_one_frame skips every per-node branch this class names.
+        register_test_node(_NODE_ID, _NODE_CFG)
         ts = int(time.time() * 1000)
         geo = _install(monkeypatch, ts - 2000, mode=mode)
         monkeypatch.setattr(state, "KNOWN_LANE_MODE", "binding")
@@ -482,8 +659,11 @@ class TestModesInProcessOneFrame:
         frame = _frame(ts, [pd, pd + 500.0], [pf, pf + 500.0])
 
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+        # The node's own pipeline, built from its own geometry, is what
+        # process_one_frame hands the frame to; `default` never sees it.
         seen = []
-        monkeypatch.setattr(default, "process_frame", lambda f: seen.append(f))
+        node_pipeline = get_or_create_node_pipeline(_NODE_ID, default)
+        monkeypatch.setattr(node_pipeline, "process_frame", lambda f: seen.append(f))
         process_one_frame(_NODE_ID, frame, default)
         assert len(seen) == 1
         return frame, seen[0]
@@ -557,6 +737,44 @@ class TestGhostGuard:
         assert dark_follow.follow_targets() == []
         assert state.dark_follow_dropped == 1
 
+    def test_an_n2_unconfirmed_record_is_withheld_not_charged(self, monkeypatch):
+        """Being withheld for lack of a third node is not a refutation.
+
+        With DARK_FOLLOW_N2_ADMIT off, an n=2 follow input cannot clear the
+        confirmation gate however right the prediction was, so charging the
+        n2_unconfirmed verdict to the key's streak dropped targets that had
+        merely flown into 2-node coverage — 43-56 drops per 20-minute capture
+        on the test droplet, the dominant source of the lane's `cooldown`
+        ineligibility.  The guard hears nothing at all: not a reject, and not
+        an ok either.
+        """
+        self._armed(monkeypatch)
+        s_in = {"follow_key": _KEY, "lane": "dark_follow", "n_nodes": 2}
+
+        for _ in range(4):
+            solver_mod._record_solve_history("n2_unconfirmed", s_in, _reject_result())
+
+        dark_follow._expire_targets_for_tests()
+        assert len(dark_follow.follow_targets()) == 1
+        assert state.dark_follow_dropped == 0
+        assert state.dark_follow_n2_withheld == 4
+        assert dark_follow._reject_streak.get(_KEY, 0) == 0
+
+    def test_a_withheld_record_does_not_clear_an_existing_streak(self, monkeypatch):
+        """A withheld solve is not an ok either: it earned no
+        confirmation either, so a real reject on each side of it still drops
+        the key."""
+        self._armed(monkeypatch)
+        s_in = {"follow_key": _KEY, "lane": "dark_follow", "n_nodes": 2}
+
+        solver_mod._record_solve_history("rejected_rms_delay", s_in, _reject_result())
+        solver_mod._record_solve_history("n2_unconfirmed", s_in, _reject_result())
+        solver_mod._record_solve_history("rejected_rms_delay", s_in, _reject_result())
+
+        dark_follow._expire_targets_for_tests()
+        assert dark_follow.follow_targets() == []
+        assert state.dark_follow_dropped == 1
+
     def test_a_published_record_counts_and_clears(self, monkeypatch):
         self._armed(monkeypatch)
         s_in = {"follow_key": _KEY, "lane": "dark_follow", "n_nodes": 3}
@@ -596,7 +814,7 @@ class TestAnchorDeadReckoning:
         """15 s of coasting at 270 m/s is 4.05 km of travel; a solve 2 km past
         that is 6.05 km from where the entry was last STORED — outside the flat
         6 km gate, purely because the aircraft moved."""
-        key, how, _d = solver_mod.multinode_key_decision(
+        key, how, _d, _dt = solver_mod.multinode_key_decision(
             self._tracks(15.0, 270.0),
             self._result(6.05),
             None,
@@ -606,7 +824,7 @@ class TestAnchorDeadReckoning:
         assert how != "anchor"
 
     def test_dead_reckoning_honours_it(self):
-        key, how, dist = solver_mod.multinode_key_decision(
+        key, how, dist, _dt = solver_mod.multinode_key_decision(
             self._tracks(15.0, 270.0),
             self._result(6.05),
             None,
@@ -620,7 +838,7 @@ class TestAnchorDeadReckoning:
     def test_dead_reckoning_still_refuses_a_far_solve(self):
         """The check's job is unchanged: an anchor whose solve converged
         somewhere else entirely is not honoured just because it was named."""
-        key, how, _d = solver_mod.multinode_key_decision(
+        key, how, _d, _dt = solver_mod.multinode_key_decision(
             self._tracks(15.0, 270.0),
             self._result(30.0),
             None,
@@ -682,7 +900,7 @@ class TestKeyOwnership:
     def test_a_solve_next_to_a_freshly_followed_key_is_shadowed(self, monkeypatch):
         monkeypatch.setattr(state, "DARK_FOLLOW_MODE", "binding")
         dark_follow.note_follow_publish(_KEY, self._TS_S - 2.0)
-        key, how, dist = self._decide(1.0)
+        key, how, dist, _dt = self._decide(1.0)
         assert (key, how) == (_KEY, "shadowed")
         assert dist == pytest.approx(1.0, abs=0.05)
 
@@ -693,7 +911,7 @@ class TestKeyOwnership:
         one's."""
         monkeypatch.setattr(state, "DARK_FOLLOW_MODE", "binding")
         dark_follow.note_follow_publish(_KEY, self._TS_S - 2.0)
-        key, how, _dist = self._decide(4.0)
+        key, how, _dist, _dt = self._decide(4.0)
         assert how == "minted"
         assert key != _KEY
 
@@ -703,14 +921,14 @@ class TestKeyOwnership:
         it back."""
         monkeypatch.setattr(state, "DARK_FOLLOW_MODE", "binding")
         dark_follow.note_follow_publish(_KEY, self._TS_S - 20.0)
-        key, how, _dist = self._decide(1.0)
+        key, how, _dist, _dt = self._decide(1.0)
         assert (key, how) == (_KEY, "proximity")
 
     @pytest.mark.parametrize("mode", ["shadow", "off"])
     def test_the_inert_modes_key_exactly_as_before(self, monkeypatch, mode):
         monkeypatch.setattr(state, "DARK_FOLLOW_MODE", mode)
         dark_follow.note_follow_publish(_KEY, self._TS_S - 2.0)
-        key, how, _dist = self._decide(1.0)
+        key, how, _dist, _dt = self._decide(1.0)
         assert (key, how) == (_KEY, "proximity")
 
     def test_the_follow_lanes_own_solve_still_lands_on_its_key(self, monkeypatch):
@@ -720,7 +938,7 @@ class TestKeyOwnership:
         off the map."""
         monkeypatch.setattr(state, "DARK_FOLLOW_MODE", "binding")
         dark_follow.note_follow_publish(_KEY, self._TS_S - 2.0)
-        key, how, dist = self._decide(1.0, anchor_key=_KEY)
+        key, how, dist, _dt = self._decide(1.0, anchor_key=_KEY)
         assert (key, how) == (_KEY, "anchor")
         assert dist == pytest.approx(1.0, abs=0.05)
 
@@ -732,7 +950,7 @@ class TestKeyOwnership:
         dark_follow.note_follow_publish(_KEY, self._TS_S - 2.0)
         result = self._result(1.5)
         result["n_nodes"] = 2
-        key, how, _dist = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = solver_mod.multinode_key_decision(
             self._tracks(),
             result,
             None,

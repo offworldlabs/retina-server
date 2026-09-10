@@ -4,6 +4,7 @@ import {
 } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import { api } from "../../api/client";
+import { RetnodeLink } from "../../components/RetnodeLink";
 
 const PAGE_SIZE = 25;
 
@@ -134,7 +135,9 @@ export default function NetworkHealthPage() {
 
       {/* Node location map */}
       {(() => {
-        const geoNodes = nodes.filter((n) => n.location?.rx_lat && n.location?.rx_lon);
+        const geoNodes = nodes.filter(
+          (n) => n.location?.rx_lat != null && n.location?.rx_lon != null,
+        );
         if (geoNodes.length === 0) return null;
         const avgLat = geoNodes.reduce((s, n) => s + n.location.rx_lat, 0) / geoNodes.length;
         const avgLon = geoNodes.reduce((s, n) => s + n.location.rx_lon, 0) / geoNodes.length;
@@ -228,7 +231,7 @@ export default function NetworkHealthPage() {
                       return (
                         <tr key={id}>
                           <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
-                            {id}
+                            <RetnodeLink nodeId={id} synthetic={node.is_synthetic} />
                           </td>
                           <td>
                             <span className={`badge ${online ? "online" : "offline"}`}>

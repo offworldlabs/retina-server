@@ -1,11 +1,10 @@
 """Which nodes sit at one receive site, so the fuzz can move them as one.
 
-Two receivers can share an address: one roof, one operator, two illuminators —
-``radar3-retnode`` and ``radar3a-retnode`` are exactly that, configured at the
-same coordinates on purpose.  Fuzzing them independently publishes two points
-drawn from the same true position, and two samples are worth far more to an
-attacker than one.  Each published point says "the receiver is somewhere in
-this annulus", and the annuli intersect:
+Two receivers can share an address: one roof, one operator, two illuminators,
+configured at the same coordinates on purpose.  Fuzzing them independently
+publishes two points drawn from the same true position, and two samples are
+worth far more to an attacker than one.  Each published point says "the
+receiver is somewhere in this annulus", and the annuli intersect:
 
 ===============  ======================================================
 co-located       region consistent with EVERY published point, at the
@@ -77,8 +76,10 @@ _ERROR_RETRY_S = 5.0
 # config files already use.
 _SITE_DECIMALS = 6
 
-# The runtime files that define nodes this deployment did not register: the
-# blah2 bridge's node list and the synthetic fleet's config.
+# The runtime files that define nodes this deployment did not register: a
+# legacy geometry list and the synthetic fleet's config. Nothing writes
+# blah2_nodes.json any more, but a deployment seeded before the poller was
+# removed still has one, and its nodes still share a roof.
 _NODE_FILES = ("blah2_nodes.json", "nodes_config.json")
 
 _lock = threading.Lock()
@@ -126,9 +127,9 @@ def _positions_from_live() -> dict[str, tuple[float, float]]:
 def _positions_from_files() -> dict[str, tuple[float, float]]:
     """Nodes defined by a runtime file rather than by registration.
 
-    The blah2 bridge's nodes and the synthetic fleet's live here and never
-    reach the database, so a site shared between two of them — which is the
-    case this module exists for — is invisible without reading the files.
+    These nodes and the synthetic fleet's never reach the database, so a site
+    shared between two of them — which is the case this module exists for — is
+    invisible without reading the files.
     """
     out = {}
     for name in _NODE_FILES:

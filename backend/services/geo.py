@@ -88,9 +88,14 @@ def node_beam_params(node_cfg: dict) -> dict:
     ``beam_azimuth_deg`` is None when the node declares no aim *and* has no TX
     to derive broadside from; callers should then skip the bearing test rather
     than invent a direction.
+
+    The four coordinates are passed through as the caller's config holds them,
+    a float or None each; see services.node_config.canonical_config, which
+    every in-process config goes through. Callers wanting a placed node should
+    gate on ``position_status`` first.
     """
-    rx_lat = float(node_cfg.get("rx_lat") or node_cfg.get("lat") or 0)
-    rx_lon = float(node_cfg.get("rx_lon") or node_cfg.get("lon") or 0)
+    rx_lat = node_cfg.get("rx_lat")
+    rx_lon = node_cfg.get("rx_lon")
     tx_lat = node_cfg.get("tx_lat")
     tx_lon = node_cfg.get("tx_lon")
 
@@ -110,10 +115,13 @@ def node_beam_params(node_cfg: dict) -> dict:
     if explicit_az is not None and not math.isfinite(explicit_az):
         explicit_az = None
 
+    # A broadside aim needs both ends of the baseline. Truthiness here scored a
+    # transmitter on the equator or the prime meridian as no transmitter at
+    # all, and the node came out omnidirectional.
     if explicit_az is not None:
         beam_az = explicit_az
-    elif tx_lat and tx_lon:
-        beam_az = (bearing_deg(rx_lat, rx_lon, float(tx_lat), float(tx_lon)) + 90.0) % 360.0
+    elif None not in (rx_lat, rx_lon, tx_lat, tx_lon):
+        beam_az = (bearing_deg(rx_lat, rx_lon, tx_lat, tx_lon) + 90.0) % 360.0
     else:
         beam_az = None
 
@@ -144,8 +152,8 @@ def node_beam_params(node_cfg: dict) -> dict:
     return {
         "rx_lat": rx_lat,
         "rx_lon": rx_lon,
-        "tx_lat": float(tx_lat) if tx_lat else None,
-        "tx_lon": float(tx_lon) if tx_lon else None,
+        "tx_lat": tx_lat,
+        "tx_lon": tx_lon,
         "beam_azimuth_deg": beam_az,
         "beam_width_deg": beam_width_deg,
         "max_range_km": max_range_km,

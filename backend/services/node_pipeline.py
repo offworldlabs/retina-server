@@ -1,9 +1,8 @@
-"""Make a v1 node indistinguishable from a blah2_bridge node to the pipeline.
+"""Put a v1 node into the pipeline the way every other source does.
 
-The bridge is the working reference: services/blah2_bridge.py puts a node into
-connected_nodes, hands it to services/node_registration, and pushes frames onto
-one queue. This does the same, so a v1 node reaches the map without anything
-downstream knowing the difference.
+A node reaches the map by landing in connected_nodes, going through
+services/node_registration, and having its frames pushed onto one queue. This
+does those three, so nothing downstream needs to know where the node came from.
 """
 
 import hashlib
@@ -17,14 +16,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core import state
 from core.nodes import Node, NodeConfig
 from services import node_registration
+from services.node_config import canonical_config
 
 if TYPE_CHECKING:
     from routes.node_schemas import DetectionFrame
 
 logger = logging.getLogger(__name__)
 
-# The pipeline expects three fields the v1 wire config does not carry.
-# Values copied from services/blah2_bridge.py rather than invented.
+# The pipeline expects three fields the v1 wire config does not carry. The same
+# triple is in pipeline/passive_radar.py's DEFAULT_NODE_CONFIG and again as
+# frame_processor's cfg.get fallbacks; all three have to move together.
 _PIPELINE_DEFAULTS = {"doppler_min": -300, "doppler_max": 300, "min_doppler": 15}
 
 # beam_azimuth_deg is passed through rather than defaulted: null is broadside
@@ -64,13 +65,12 @@ async def _pipeline_config(session: AsyncSession, node_id: str) -> dict:
 
 
 def pipeline_frame(frame: "DetectionFrame") -> dict:
-    """The wire frame in the shape services/blah2_bridge.py puts on the queue.
+    """The wire frame in the shape the frame queue's readers expect.
 
-    `timestamp` is milliseconds because that is what the queue's readers expect.
-    `delay` needs no conversion: it is microseconds on the wire, where the bridge
-    has to convert from kilometres.
+    `timestamp` is milliseconds, and `delay` needs no conversion: it is
+    microseconds on the wire and microseconds on the queue.
 
-    `adsb_hex` travels under its own key rather than the bridge's `adsb`, which
+    `adsb_hex` travels under its own key rather than `adsb`, which
     frame_processor reads as position reports. The contract's array is an
     association and carries no lat/lon, so filing it there would be filing an
     empty position for every detection.
@@ -98,9 +98,15 @@ def config_hash(config: dict) -> str:
 
 async def register_with_pipeline(session: AsyncSession, node: Node) -> None:
     config = await _pipeline_config(session, node.node_id)
+    # Hashed before canonicalisation, and it must stay that way: the TCP
+    # heartbeat compares a node's own hash against this one, and hashing the
+    # canonical form would report config drift across the whole fleet on the
+    # deploy that introduced it.
+    declared_hash = config_hash(config)
+    config = canonical_config(config)
     with state.connected_nodes_lock:
         state.connected_nodes[node.node_id] = {
-            "config_hash": config_hash(config),
+            "config_hash": declared_hash,
             "config": config,
             "status": "active",
             "last_heartbeat": "",
@@ -153,8 +159,7 @@ async def prime_pipeline_at_startup() -> int:
 
     A failure here costs the v1 fleet its pipeline membership until the next
     restart, which is bad but recoverable. Raising instead would abort the
-    lifespan and take the whole API with it, including the blah2_bridge path
-    this phase deliberately keeps running as its rollback.
+    lifespan and take the whole API down with it.
     """
     import core.users
     from services.alerting import send_alert

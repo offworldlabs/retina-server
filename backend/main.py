@@ -64,6 +64,7 @@ from services.background import (
     archive_flush_task,
     archive_lifecycle_task,
     coverage_constraints_task,
+    feed_gc_task,
     frame_processor_loop,
     health_monitor_task,
     heartbeat_task,
@@ -74,8 +75,6 @@ from services.background import (
     track_flush_task,
     users_backup_task,
 )
-from services.blah2_bridge import blah2_bridge_task
-from services.blah2_bridge import load_nodes as load_blah2_nodes
 from services.runtime_coverage import start as _start_coverage
 from services.runtime_coverage import stop as _stop_coverage
 from services.state_snapshot import SAVE_INTERVAL_S, restore_snapshot, save_snapshot
@@ -144,10 +143,6 @@ async def lifespan(app: FastAPI):
 
     migrate_defaults_into_runtime()
 
-    # Live blah2 nodes are config-driven — read after the overlay is seeded so
-    # the runtime copy wins, and before the task list is built below.
-    blah2_nodes = load_blah2_nodes()
-
     # No-op everywhere except tests (RETINA_SCHEMA_SOURCE guards create_all off
     # otherwise). The schema comes from Alembic migrations instead: deploy/start.sh
     # runs them before uvicorn starts, and `just setup` runs them for local dev.
@@ -205,6 +200,10 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(prune_synthetic_nodes()),
             asyncio.create_task(adsb_truth_fetcher()),
             asyncio.create_task(aircraft_flush_task(radar_pipeline)),
+            # Feed-store GC on its own timer: it used to run only inside the
+            # feed build, so a slow websocket client stalling the flush task
+            # stalled server-wide GC with it.
+            asyncio.create_task(feed_gc_task()),
             asyncio.create_task(archive_flush_task()),
             asyncio.create_task(track_flush_task()),
             asyncio.create_task(archive_lifecycle_task()),
@@ -213,7 +212,6 @@ async def lifespan(app: FastAPI):
             asyncio.create_task(coverage_constraints_task()),
             asyncio.create_task(storage_refresh_task()),
             asyncio.create_task(detection_mirror.mirror_task()),
-            *[asyncio.create_task(blah2_bridge_task(n)) for n in blah2_nodes],
             asyncio.create_task(health_monitor_task()),
             asyncio.create_task(heartbeat_task()),
             asyncio.create_task(_snapshot_loop()),

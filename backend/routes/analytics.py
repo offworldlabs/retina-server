@@ -5,35 +5,103 @@ import time
 from collections import Counter
 
 import orjson
-from fastapi import APIRouter, Body, Header, HTTPException
+from fastapi import APIRouter, Body, Header, HTTPException, Request
 from fastapi.responses import Response
 from retina_analytics.trust import AdsReportEntry
 
 from core import state
+from core.auth import get_user_nodes
+from core.users import ANONYMOUS_USER, AUTH_BYPASS, read_user_from_token
 from services import node_bias
 from services.node_ref import public_node_ref
 from services.public_location import public_node_summary
-from services.publication import is_private
+from services.publication import is_private, private_node_ids
 
 _RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
 
 router = APIRouter()
 
 
+async def _optional_owned_nodes(request: Request) -> set[str]:
+    """Node ids the caller owns, or the empty set — never a 401.
+
+    Both analytics routes are public surfaces that happen to be able to say more
+    to a logged-in owner.  A helper that raised on a missing or expired cookie
+    would turn the map into an authenticated surface for everyone whose session
+    lapsed, so every failure to identify a caller is the empty set here and the
+    route serves exactly what it serves an anonymous client.
+
+    Reads the cookie directly through ``read_user_from_token`` and honours
+    AUTH_BYPASS the same way the owner websocket in routes/streaming.py does:
+    the opted-in anonymous admin owns whatever rows are assigned to the all-zero
+    uuid, which on a real deployment is nothing.
+    """
+    if AUTH_BYPASS:
+        return set(await get_user_nodes(ANONYMOUS_USER["id"]))
+    user = await read_user_from_token(request.cookies.get("auth_token"))
+    if user is None or not user.is_active:
+        return set()
+    return set(await get_user_nodes(str(user.id)))
+
+
 @router.get("/api/radar/analytics")
-async def radar_analytics(real_only: bool = False):
-    if real_only:
-        return Response(content=state.latest_analytics_real_bytes, media_type="application/json")
-    return Response(content=state.latest_analytics_bytes, media_type="application/json")
+async def radar_analytics(request: Request, real_only: bool = False):
+    """The public per-node analytics map, plus the caller's own private nodes.
+
+    An owner who sets a node private loses it from this payload along with
+    everyone else, and this payload is where the map gets its node markers,
+    uncertainty discs and coverage polygons — so without this the switch also
+    hides the node from the one person entitled to see it, on their own
+    dashboard, with no way to get it back.
+
+    Their node comes back through ``public_node_summary``, the same fuzzed frame
+    an anonymous client would have received.  An owner is not an admin: they
+    already know where their own receiver is, so serving the truth here would
+    buy them nothing and would make this route a second, quieter place the
+    unfuzzed geometry is published from.
+
+    Everyone else gets the cached bytes as they are — the same object, not a
+    re-serialisation — so the unauthenticated path costs one identity check and
+    not a parse per request.  The check itself is skipped entirely when nothing
+    is private, which is the fleet most of the time.
+    """
+    cached = state.latest_analytics_real_bytes if real_only else state.latest_analytics_bytes
+    private = private_node_ids()
+    if not private:
+        return Response(content=cached, media_type="application/json")
+
+    owned_private = private & await _optional_owned_nodes(request)
+    if not owned_private:
+        return Response(content=cached, media_type="application/json")
+
+    payload = orjson.loads(cached)
+    nodes = payload.setdefault("nodes", {})
+    for nid in owned_private:
+        summary = state.node_analytics.get_node_summary(nid)
+        # A node the analytics manager has never seen answers with its own id
+        # and nothing else; adding that would put an empty marker on the map
+        # rather than tell the owner anything.
+        if summary.keys() == {"node_id"}:
+            continue
+        nodes[nid] = public_node_summary(nid, summary)
+    return Response(
+        content=orjson.dumps(payload, option=orjson.OPT_SERIALIZE_NUMPY),
+        media_type="application/json",
+    )
 
 
 @router.get("/api/radar/analytics/{node_id}")
-async def radar_node_analytics(node_id: str):
-    # A node whose owner registered it private is 404 here, not 403: the two
+async def radar_node_analytics(node_id: str, request: Request):
+    # A node whose owner chose to keep it private is 404 here, not 403: the two
     # answers differ only in whether they confirm the node exists, and this
     # route is reachable by anyone with a node id to try.  Same status the
     # cached listing produces by omission, so the two surfaces agree.
-    if is_private(node_id):
+    #
+    # Its owner is the exception, and gets the same fuzzed summary as the
+    # listing above rather than the truth, for the same reason.  The ownership
+    # lookup is behind the is_private check so a public node still costs no
+    # authentication work.
+    if is_private(node_id) and node_id not in await _optional_owned_nodes(request):
         raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
     summary = state.node_analytics.get_node_summary(node_id)
     if summary.keys() == {"node_id"}:

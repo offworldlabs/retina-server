@@ -46,7 +46,7 @@ labeled on the arrow.
 
 ```mermaid
 flowchart TD
-    ingest["Ingest: 5 producers"] --> fq[["frame_queue asyncio.Queue"]]
+    ingest["Ingest: 4 producers"] --> fq[["frame_queue asyncio.Queue"]]
     fq --> fp["frame_processor_loop: process_one_frame"]
 
     fp --> known["Known lane: claiming"]
@@ -94,9 +94,8 @@ own. Everything that reaches a solve passes through one gate stack
 
 ```mermaid
 flowchart TD
-    subgraph producers["Five producers"]
+    subgraph producers["Four producers"]
         p1["TCP (primary)<br/>tcp_handler._enqueue_detection"]
-        p2["blah2 bridge<br/>blah2_bridge.blah2_bridge_task"]
         p3["v1 node HTTP API<br/>node_stream._file_frame"]
         p4["Legacy HTTP radar routes<br/>radar.ingest_detections(_bulk)"]
         p5["Startup priming<br/>node_pipeline.prime_pipeline"]
@@ -111,7 +110,6 @@ flowchart TD
     gC -->|"yes"| dropC["frames_dropped counter<br/>+ rate-limited warning"]:::inert
     gC -->|"no"| fq[["frame_queue"]]
 
-    p2 --> fq
     p3 --> gD{"node in<br/>state.connected_nodes?"}
     gD -->|"no"| dropD["frames_dropped + refused"]:::inert
     gD -->|"yes"| fq
@@ -143,6 +141,49 @@ load-bearing, not incidental: claiming (2.3) runs **before** ADS-B seeding
 and both run **before** the tracker (2.5) so that, in `binding` mode, a
 claimed detection never reaches the dark-lane tracker or association at all
 — see the ordering comment at the head of `process_one_frame`'s claiming step.
+
+**Path H (the hold).** Paths 1 and 2 re-ask every frame whether a transponder
+fix explains a detection, so when the tags stop and the cached fix ages past
+`KNOWN_CLAIM_MAX_FIX_AGE_S` an aircraft that has done nothing unusual falls
+into the dark pool and comes back as a freshly-minted `mn-dark-*` ghost beside
+itself.  A claim is evidence on its own terms — this node's echo of this hex
+sat at that (delay, Doppler) — so `state.known_track_holds` keeps the last two
+samples per (node, hex) and path H predicts the next frame from them, delay
+propagated from the measured Doppler (`d(delay_us)/dt = -doppler_hz * 1e6 /
+fc_hz`).  It runs **after path 1 and before path 2**, which is the requirement
+rather than an implementation detail: a linked track must not be peelable to
+another hex's dead-reckoned fix.  There is no maximum hold duration — as long
+as the track keeps matching, it stays linked — but a hold may never contradict
+a live transponder: with a fresh fix on file the matched detection must pass
+path 2's gate for that hex too, or the hold is dropped
+(`known_hold_dropped_disagree`).  Downstream, `known_lane._build_solver_input`
+seeds a stale-fix solve from the lane's own last published `mn-adsb-<hex>`
+solve instead of the drifting dead-reckoned fix (`seed_source: "kf"`), and
+`aircraft_feed._claimed_single_node_entries` skips a singly-claimed hold whose
+fix has aged out rather than drawing the aircraft at a position nothing
+measured.
+
+**Follow and re-anchor (the silent aircraft's other two failure modes).**  A
+hold only helps the nodes that already had the aircraft: a node that ACQUIRES
+one mid-silence has no tag, no fresh fix and no hold, so its detections start a
+dark twin beside the lane's own entry.  `known_claiming._follow_states` offers
+the lane's published `mn-adsb-<hex>` position (at most `KNOWN_FOLLOW_MAX_AGE_S`
+old, `KNOWN_FOLLOW_MIN_SOLVES` solves behind it, velocity from the filter) to
+path 2 as an ordinary candidate — same visibility gate, prescreen, age-scaled
+gates and Hungarian — and the resulting claim carries the hex's ORIGINAL stale
+fix plus `follow: True` (`known_follow_claims`), so the new node holds the
+track from the next frame on.  And because a kf seed is a prior rather than a
+measurement, a turn during the silence drifts it along the old heading until
+the honest solves fall outside `_MAX_DISPLACEMENT_KM` of it and stop being
+published, which freezes the prior and makes the state permanent.
+`known_lane._reanchor` breaks that: `KNOWN_LANE_REANCHOR_STREAK` consecutive
+kf-seeded ghosts that agree with EACH OTHER (a wrong solve is wrong somewhere
+new each time) are published as label `reanchored` (`known_lane_reanchored`).
+A fix-seeded ghost never re-anchors — a live transponder stays the lane's truth
+gate.  Both counters ride the solver-stats `known_claims` / `known_lane`
+blocks.  Related: `track_filter._adsb_velocity` now ignores a cached fix older
+than `KNOWN_CLAIM_MAX_FIX_AGE_S`, so a pre-silence heading can no longer pull
+the filter's velocity (and with it the dead-reckoned prior) off the turn.
 Frame-level gates (A/B/C on TCP, plus the connected-node check on the v1 API)
 sit ahead of everything else; nothing downstream sees a frame that failed
 one of them.
@@ -155,7 +196,6 @@ one of them.
 | `process_one_frame` entry | — | `services/frame_processor.py` |
 | Ordering rationale (claim → seed → tracker) | — | `frame_processor.process_one_frame` |
 | Gate 2.10: `n_nodes < 2` skip | — | `frame_processor.process_one_frame` |
-| blah2 poll interval | 1.0 s | `config/constants.py` (`BLAH2_POLL_INTERVAL_S`) |
 
 ---
 
@@ -167,6 +207,7 @@ flowchart TD
     entry -->|"no"| dark0["untouched -> dark lane"]:::inert
     entry -->|"yes, but exception"| failopen["known_claims_errors<br/>FAIL OPEN to dark lane"]:::inert
     entry -->|"yes"| path1["Path 1: node-tagged<br/>frame['adsb'] index-aligned"]
+    entry --> pathH["Path H: Hungarian over<br/>this node's HELD tracks<br/>(state.known_track_holds)"]
     entry --> path2["Path 2: Hungarian over<br/>cached ADS-B (state._adsb_for_seeding)"]
 
     path1 --> gP1{"dict, normalizable hex,<br/>hex unclaimed, finite lat/lon"}
@@ -185,6 +226,16 @@ flowchart TD
     gGate -->|"infeasible"| infeasible["cost = 1.0e6, excluded<br/>by linear_sum_assignment"]:::inert
     gGate -->|"feasible"| claim2["claim recorded<br/>(REPORTED ADS-B position,<br/>not the DR position)"]
 
+    pathH --> gGap{"frame-time gap<br/><= KNOWN_HOLD_MAX_GAP_S 8s"}
+    gGap -->|"no"| expired["entry dropped,<br/>known_hold_expired"]:::inert
+    gGap -->|"yes"| predH["predict from the node's OWN<br/>last claim: delay += -doppler*1e6/fc * dt,<br/>doppler += clipped rate * dt"]
+    predH --> gGateH{"gate = 1.5us + 1.0us/s * dt,<br/>20Hz + 10Hz/s * dt"}
+    gGateH -->|"infeasible"| infeasible
+    gGateH -->|"feasible"| gAgree{"fresh cached fix for this hex?<br/>must ALSO pass path 2's gate"}
+    gAgree -->|"disagrees"| dropH["hold dropped,<br/>known_hold_dropped_disagree;<br/>hex falls through to path 2"]:::inert
+    gAgree -->|"agrees, or fix stale/absent"| claimH["claim recorded, hold=True,<br/>hold_gap_s, STORED fix<br/>(original fix_ts_ms)"]
+
+    claimH --> contest
     claim1 --> contest{"Contention check<br/>vs claim_eligible dark tracks<br/>(n_nodes>=3 OR solve_count>=2)"}
     claim2 --> contest
     contest -->|"residual within gate"| contested["flagged + counted,<br/>dark track kept"]
@@ -286,6 +337,11 @@ LM's SNR weighting maps to a uniform weight of 1.0.
 | `CLAIM_MAX_DR_AGE_S` (contention DR window) | 30.0 s | `association.py` |
 | `CLAIM_ELIGIBLE_MIN_N_NODES` / `MIN_SOLVE_COUNT` | 3 / 2 | `association.py` |
 | `KNOWN_CLAIMS_PER_HEX_MAX` | 64 | `core/state.py` |
+| `KNOWN_HOLD_MAX_GAP_S` (path H window; **0 = feature off**, live-settable via `PUT /api/test/known-hold`) | 8.0 s of frame time | `known_claiming.py` |
+| Path H gates: `KNOWN_HOLD_DELAY_GATE_US` + `KNOWN_HOLD_DELAY_RATE_US_PER_S` * dt / `KNOWN_HOLD_DOPPLER_GATE_HZ` + `KNOWN_HOLD_DOPPLER_RATE_HZ_PER_S` * dt | 1.5 us + 1.0 us/s / 20 Hz + 10 Hz/s | `known_claiming.py` |
+| `KNOWN_HOLD_MAX_DOPPLER_RATE_HZ_S` / `KNOWN_HOLD_RATE_MAX_SPAN_S` | 15 Hz/s / 5.0 s | `known_claiming.py` |
+| `KNOWN_FOLLOW_MAX_AGE_S` / `KNOWN_FOLLOW_MIN_SOLVES` (follow candidates; **0 = off**) | 20.0 s / 3 | `known_claiming.py` |
+| `KNOWN_LANE_REANCHOR_STREAK` (**0 = off**) | 2 | `services/tasks/known_lane.py` |
 | `_PASS_MIN_INTERVAL_S` | 2.0 s | `services/tasks/known_lane.py` |
 | `_CLAIM_MAX_AGE_S` / `_CLAIM_SPREAD_S` | 45.0 s / 5.0 s | `known_lane.py` |
 | `_ATTEMPT_TTL_S` | 600 s | `known_lane.py` |
@@ -316,6 +372,24 @@ Node-track ids were the obvious cheaper mechanism and are not safe: attaching
 each solve to the newest key sharing a `source_track_ids` entry linked the
 **wrong aircraft 12%** of the time in a dense metro cluster — the same reason
 `_supersession_match` (§6) stopped trusting a bare shared id.
+
+Node track ids do earn a place *inside* the gate, and only there — the
+`"tracks"` verdict. Each `mn-dark-*` entry remembers the tracker track ids its
+recent solves were built from (`recent_track_ids`, pruned to
+`TRACK_LINK_AGE_S` = 40 s, because an id lives a median 7 s in solve records),
+and a solve sharing them with a candidate the proximity gate already admits is
+84-94% the same aircraft (measured 2026-09-07: 1 shared id 0.71-1.00 by
+distance band, >=2 shared 0.60-1.00, both against 0.24-0.67 for none). Past the
+gate the same evidence is 0.15-0.42 precise — that is the 12% mislink above,
+seen from the other side — so shared ids **never widen the gate**; they only
+re-rank inside it, with the candidate score becoming `d/gate` divided by
+`1 + min(shared, 3)`. The one place they change a verdict rather than an
+ordering is key ownership: a key the follow lane owns is joined outright on
+`TRACK_LINK_MIN_SHARED_JOIN` (2) shared ids inside the gate, and on exactly one
+shared id the solve is refused as a duplicate ("shadowed") even beyond
+`DARK_FOLLOW_SHADOW_KM`, rather than minting the second key for an aircraft
+that already has one — the dominant measured duplicate mechanism, 15 of 35
+mints with a same-aircraft predecessor within 40 s.
 
 ```mermaid
 flowchart TD
@@ -740,7 +814,7 @@ flowchart TD
     lock --> ident{"multinode_key_decision"}
     ident -->|"1. adsb_hex present"| kADSB["mn-adsb-hex"]
     ident -->|"2. anchor_key mn-dark-*,<br/>live, within 6.0km"| kAnchor["reuse anchor key"]
-    ident -->|"3. DR proximity scan,<br/>0<=dt<=60s, best d/gate_km<br/>gate = 6.0 + 0.13*dt km, cap 12.0"| kDR["reuse best-scoring mn-dark-*"]
+    ident -->|"3. DR proximity scan,<br/>-10s<=dt<=60s (signed DR), best d/gate_km<br/>gate = 6.0 + 0.13*max(dt,0) km, cap 12.0"| kDR["reuse best-scoring mn-dark-*"]
     ident -->|"4. none match"| kMint["mint mn-dark-ts-lat-lon"]
 
     kADSB --> smooth["track_filter.smooth_solve<br/>(TRACK_SMOOTHER: kf/ewma/off)"]
@@ -785,8 +859,9 @@ flowchart TD
 | Constant | Value | Defined in |
 |---|---|---|
 | `_MN_ASSOC_MAX_DIST_KM` / `_MN_ASSOC_MAX_AGE_S` (identity step 2/3) | 6.0 km / 60.0 s | `services/tasks/solver.py` |
+| `_MN_ASSOC_MAX_NEG_DT_S` (step 3 and supersession — how far the matched entry's measurement epoch may be AFTER the solve's own; the entry is then dead-reckoned BACKWARDS over the signed dt, with no drift allowance because `_mn_assoc_gate_km` clamps dt at 0) | 10.0 s | `services/tasks/solver.py` |
 | `_MN_ASSOC_DRIFT_KM_PER_S` / `_MN_ASSOC_MAX_DIST_CAP_KM` (step 3 only — the gate grows with the matched entry's age) | 0.13 km/s / 12.0 km | `services/tasks/solver.py` |
-| Supersession gate (`_supersession_match`) — the same age-scaled `_mn_assoc_gate_km` and `_MN_ASSOC_MAX_AGE_S` as step 3, applied to the solve's RAW position | 6.0 + 0.13·dt km, cap 12.0 / 60.0 s | `services/tasks/solver.py` |
+| Supersession gate (`_supersession_match`) — the same age-scaled `_mn_assoc_gate_km` and the same signed dt window (`_MN_ASSOC_MAX_NEG_DT_S`..`_MN_ASSOC_MAX_AGE_S`) as step 3, applied to the solve's RAW position | 6.0 + 0.13·dt km, cap 12.0 / −10.0..60.0 s | `services/tasks/solver.py` |
 | `CV_VEL_ADOPT_CHI2_MAX` | 5.0 | `config/constants.py` |
 | `MN_N2_MIN_SOLVES` | 2 | `config/constants.py` |
 | `MN_ONESHOT_TTL_S` | 15.0 s | `config/constants.py` |
@@ -865,8 +940,15 @@ reached a solve.
   a lost track rather than a cadence gap and extrapolating it only invents
   motion. `mn-adsb-*` entries keep the 60 s expiry: a transponder hex anchors
   them, so the same gap is the ADS-B feed breathing. The frontend's matching
-  budgets are `DR_ICON_HIDE_DISTANCE_DARK_M` (3 km) and `UNCERTAINTY_DR_CAP_S`
-  (30 s).
+  budgets are `DR_ICON_HIDE_DISTANCE_DARK_M` (3 km) and
+  `DR_ICON_MAX_AGE_DARK_S` (12 s), which withdraw the icon — and with it the
+  uncertainty disc, which since 2026-09-06 is the last solve's accuracy drawn
+  at `solve_lat`/`solve_lon`, no longer grows with solve age, and is drawn at
+  the **68%** radius rather than 95% (dark error is heavy-tailed, so an honest
+  95% ring on a good solve is ~13x its median error; the detail panel quotes
+  both). The dark lane has its own 68%-calibrated sigma floors —
+  2100/850/240 m for n=2/3/>=4 — instead of the old flat 1.5x gain on the
+  known-lane floors (`docs/design-notes/2026-09-05-solve-uncertainty-disc.md`).
 - **Node-trust residuals are measure-only.** `node_bias.py` computes them but
   nothing in the solver consumes them yet (`node_bias.py` module docstring).
 - **`docs/pipeline.md` §3 is stale.** It predates the known lane and the

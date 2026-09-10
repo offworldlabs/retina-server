@@ -27,14 +27,14 @@ class _FakeTrack:
         self.alt_m = alt_m
 
 
-# ─── Minimal node config (Atlanta-area bistatic geometry) ───────────────────
+# ─── Minimal node config (invented bistatic geometry) ───────────────────────
 
 _NODE_CFG = {
     "node_id": "test_node",
-    "rx_lat": 33.939182,
-    "rx_lon": -84.651910,
-    "tx_lat": 33.756670,
-    "tx_lon": -84.331844,
+    "rx_lat": 33.9,
+    "rx_lon": -84.6,
+    "tx_lat": 33.7,
+    "tx_lon": -84.3,
     "beam_width_deg": 90,
     "max_range_km": 100,
     # beam_azimuth_deg intentionally omitted → auto-computed from TX/RX bearing
@@ -91,7 +91,7 @@ class TestBearingDeg:
 class TestEnuToLla:
     def test_zero_enu_is_rx(self):
         """Zero offset → returns the RX position."""
-        rx_lat, rx_lon = 33.939182, -84.651910
+        rx_lat, rx_lon = 33.9, -84.6
         lat, lon = _enu_to_lla(rx_lat, rx_lon, 0.0, 0.0)
         assert abs(lat - rx_lat) < 1e-6
         assert abs(lon - rx_lon) < 1e-6

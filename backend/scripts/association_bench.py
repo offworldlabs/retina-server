@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import itertools
 import math
 import os
 import statistics
@@ -95,10 +96,12 @@ from services.geo import (
     node_beam_params,  # noqa: E402
 )
 from services.geo import haversine_km as _haversine_km  # noqa: E402
+from services.node_config import position_status  # noqa: E402
 from services.tasks.solver import (  # noqa: E402
     _ewma_smooth_track,
     claim_decision,
     fov_gate_verdict,
+    merge_recent_track_ids,
     multinode_key_decision,
     resolve_n2_chi2,
 )
@@ -420,6 +423,13 @@ def _beam_gate_ok(out: dict, s_in: dict, node_cfgs: dict, fov_provider) -> bool:
         cfg = node_cfgs.get(nid)
         if not cfg:
             continue
+        # The same placement guard solver.py applies before its range/bearing
+        # work: node_beam_params stopped coercing a missing coordinate to 0.0,
+        # so an unplaced node reaches the haversine below as None.  A snapshot
+        # read from a live server carries only placed nodes, but this leg is
+        # also pointed at recorded ones.
+        if position_status(cfg) not in ("positioned", "missing_tx"):
+            continue
         p = node_beam_params(cfg)
         rx_lat, rx_lon = p["rx_lat"], p["rx_lon"]
         range_km = _haversine_km(rx_lat, rx_lon, out["lat"], out["lon"])
@@ -457,6 +467,45 @@ def _beam_gate_ok(out: dict, s_in: dict, node_cfgs: dict, fov_provider) -> bool:
         if node_fail:
             return False
     return True
+
+
+def _n2_fit_positions(s_in: dict, out: dict, node_cfgs: dict) -> dict:
+    """The two fit positions a published n=2 solve could have been given.
+
+    Runs the SHIPPED swap (solver._apply_n2_fit_position) twice over a throwaway
+    copy of the result, once with the altitude pin off and once on, so the bench
+    measures the code that ships rather than a reimplementation of it — the same
+    reason DeferredN2Gate calls the worker's own chi2 resolver.  The two fits
+    cache under different keys on s_in, so neither run disturbs the other or the
+    chi2 the confirmation gate already decided on.
+
+    Returns {"free": {...} | None, "pinned": {...} | None}, each a copy of `out`
+    with lat/lon/alt_m as that variant would have published them.
+    """
+    from services.tasks import solver as _solver_mod
+
+    variants: dict = {}
+    _saved_publish = _solver_mod._N2_PUBLISH_FIT_POSITION
+    _saved_pin = _solver_mod._N2_FIT_FIX_ALTITUDE
+    _solver_mod._N2_PUBLISH_FIT_POSITION = True
+    try:
+        for name, pin in (("free", False), ("pinned", True)):
+            _solver_mod._N2_FIT_FIX_ALTITUDE = pin
+            probe = dict(out)
+            _solver_mod._apply_n2_fit_position(s_in, probe, node_cfgs)
+            # The swap declines on an input with no epochs to refit from, and
+            # on a fit that did not converge — those are not a position.
+            variants[name] = probe if probe.get("pos_source") == "cv_fit" else None
+    finally:
+        _solver_mod._N2_PUBLISH_FIT_POSITION = _saved_publish
+        _solver_mod._N2_FIT_FIX_ALTITUDE = _saved_pin
+    # The free variant deliberately does NOT publish the fit's altitude (that
+    # is the fix under test), so read the altitude off the fit itself: the
+    # question this block answers is what the free fit's z was worth.
+    _free_fit = s_in.get("_cv_fit")
+    if variants["free"] is not None and _free_fit is not None and _free_fit.get("alt_m") is not None:
+        variants["free"] = dict(variants["free"], alt_m=float(_free_fit["alt_m"]))
+    return variants
 
 
 class DeferredN2Gate:
@@ -613,6 +662,18 @@ class Result:
     # Position clusters that held two different tracks of one node and were
     # split into one solver input each, straight off the associator.
     cluster_splits: int = 0
+    # Three-way position comparison for every PUBLISHED n=2 solve that bound to
+    # a truth aircraft: the single-epoch LM solve that is published today, the
+    # free-altitude constant-velocity fit, and the same fit with altitude
+    # pinned to the LM solve's own initial guess.  Kilometres from truth at the
+    # solve epoch, plus |altitude - truth| for each, because the pin exists
+    # precisely because the free fit's altitude is not an estimate of anything.
+    n2_pos_solve_km: list = None
+    n2_pos_fit_free_km: list = None
+    n2_pos_fit_pinned_km: list = None
+    n2_alt_solve_km: list = None
+    n2_alt_fit_free_km: list = None
+    n2_alt_fit_pinned_km: list = None
     # Deferred mode only: what the *solver-side* n=2 gate did.  In production the
     # associator emits unscored pairings and this gate is the one that runs, so
     # without these the shipped configuration's selection is invisible.
@@ -650,6 +711,16 @@ class Result:
     # honored or falls through.
     anchored_published: int = 0
     anchor_fallbacks: int = 0
+    # The keying verdict itself, histogrammed (multinode_key_decision's `how`
+    # for dark solves): minted is a key birth, proximity a distance-only
+    # re-key, tracks a re-key the shared node-track evidence decided
+    # (solver.TRACK_LINK_AGE_S), shadowed a bottom-up solve refused in favour
+    # of a followed key.  minted is the fragmentation number the continuity
+    # work moves; the other three are where the mints went.
+    key_minted: int = 0
+    key_proximity: int = 0
+    key_tracks: int = 0
+    key_shadowed: int = 0
     # Distinct state.multinode_tracks-equivalent keys minted over the whole
     # run (bench_mn) — the acceptance metric claiming exists to move:
     # distinct published keys should drop toward O(targets).  keys_real/
@@ -717,6 +788,12 @@ class Result:
         self.speed_err_by_n = defaultdict(list)
         self.dopp_rms_by_n = defaultdict(list)
         self.claim_chi2_drift = []
+        self.n2_pos_solve_km = []
+        self.n2_pos_fit_free_km = []
+        self.n2_pos_fit_pinned_km = []
+        self.n2_alt_solve_km = []
+        self.n2_alt_fit_free_km = []
+        self.n2_alt_fit_pinned_km = []
         self.cluster_sizes = Counter()
         self.track_n = defaultdict(Counter)
         self.solve_ms = []
@@ -786,6 +863,10 @@ class Result:
         "anchored_inputs",
         "anchored_published",
         "anchor_fallbacks",
+        "key_minted",
+        "key_proximity",
+        "key_tracks",
+        "key_shadowed",
         "distinct_keys",
         "keys_real",
         "keys_ghost",
@@ -805,6 +886,12 @@ class Result:
         "speed_err_ms",
         "claim_chi2_drift",
         "solve_ms",
+        "n2_pos_solve_km",
+        "n2_pos_fit_free_km",
+        "n2_pos_fit_pinned_km",
+        "n2_alt_solve_km",
+        "n2_alt_fit_free_km",
+        "n2_alt_fit_pinned_km",
     )
     _COUNTER_FIELDS = ("n_nodes_matched", "n_nodes_ghost", "cluster_sizes")
 
@@ -956,6 +1043,7 @@ def run(
     mode="detection",
     chi2_max=2.0,
     min_span_s=12.0,
+    min_epochs=4,
     history_n=20,
     exclusive=True,
     cv_fit_mode="inline",
@@ -1050,6 +1138,7 @@ def run(
         cv_fit=(fit_constant_velocity if (mode == "track" and not deferred) else None),
         cv_chi2_max=chi2_max,
         cv_min_span_s=min_span_s,
+        cv_min_epochs=min_epochs,
         cv_exclusive=exclusive,
         **_cluster_kwargs,
     )
@@ -1146,6 +1235,10 @@ def run(
         # Carry the object id so a real target keeps one identity across
         # solves — keying on a position would mint a new track per epoch.
         truth = [(ac.lat, ac.lon, ac.object_id, ac.speed_km_s * 1000.0) for ac in world.aircraft]
+        # Altitude is not in `truth` because nothing else needed it; the n=2
+        # position comparison below does, since the whole finding is about what
+        # an unobservable z does to a published fix.
+        truth_alt_km = {ac.object_id: ac.alt_km for ac in world.aircraft}
         for nid in due_nodes:
             next_send[nid] += frame_interval
             frame = world.generate_detections_for_node(nid, ts_ms)
@@ -1240,7 +1333,25 @@ def run(
                 # block runs (after every gate above, before GT matching).
                 if mode == "track":
                     _anchor_key = s_in.get("anchor_key")
-                    _key, _how, _dist_km = multinode_key_decision(bench_mn, out, None, _anchor_key)
+                    _key, _how, _dist_km, _dt_s = multinode_key_decision(
+                        bench_mn,
+                        out,
+                        None,
+                        _anchor_key,
+                        # Node-track continuity reads the same field the
+                        # shipped caller passes (s_in["track_ids"]) against the
+                        # memory the bench entry carries below.
+                        track_ids=s_in.get("track_ids"),
+                    )
+                    if _key.startswith("mn-dark-"):
+                        if _how == "minted":
+                            res.key_minted += 1
+                        elif _how == "proximity":
+                            res.key_proximity += 1
+                        elif _how == "tracks":
+                            res.key_tracks += 1
+                        elif _how == "shadowed":
+                            res.key_shadowed += 1
                     if _anchor_key:
                         res.anchored_published += 1
                         if _how != "anchor":
@@ -1268,6 +1379,15 @@ def run(
                         "n_nodes": out.get("n_nodes", s_in.get("n_nodes", 0)),
                         "solve_count": (_prev_mn.get("solve_count", 0) if _prev_mn else 0) + 1,
                         "source_track_ids": sorted(_new_ids),
+                        # Mirrors solver.py's write: the ids this solve was
+                        # built from merged into the entry's short memory, so
+                        # the bench's next decision sees what production's
+                        # would.
+                        "recent_track_ids": merge_recent_track_ids(
+                            (_prev_mn or {}).get("recent_track_ids"),
+                            _new_ids,
+                            ts_ms / 1000.0,
+                        ),
                     }
                     if recorder is not None:
                         recorder.record_publish(
@@ -1317,6 +1437,28 @@ def run(
                             res.published_contaminated += 1
                     res.errors_km.append(d)
                     res.n_nodes_matched[nn] += 1
+                    if nn == 2 and deferred and best_id is not None:
+                        # Three-way position comparison, published n=2 only.
+                        # The LM solve is what ships today; the two fits are
+                        # what the swap would publish with z free and with z
+                        # pinned to the solve's own initial guess.  Scored
+                        # against the SAME aircraft `d` bound to, not against
+                        # each variant's own nearest truth, or a variant could
+                        # look good by landing near a different aeroplane.
+                        _t_lat, _t_lon = next(((a, b) for a, b, oid, _ in truth if oid == best_id), (None, None))
+                        _t_alt_km = truth_alt_km.get(best_id)
+                        if _t_lat is not None and _t_alt_km is not None:
+                            _vars = _n2_fit_positions(s_in, out, node_cfgs)
+                            if _vars["free"] is not None and _vars["pinned"] is not None:
+                                res.n2_pos_solve_km.append(d)
+                                res.n2_alt_solve_km.append(abs(out.get("alt_m", 0.0) / 1000.0 - _t_alt_km))
+                                for _name, _bucket, _abucket in (
+                                    ("free", res.n2_pos_fit_free_km, res.n2_alt_fit_free_km),
+                                    ("pinned", res.n2_pos_fit_pinned_km, res.n2_alt_fit_pinned_km),
+                                ):
+                                    _v = _vars[_name]
+                                    _bucket.append(_haversine_km(_v["lat"], _v["lon"], _t_lat, _t_lon))
+                                    _abucket.append(abs(_v.get("alt_m", 0.0) / 1000.0 - _t_alt_km))
                     # Broken out because the whole dual-site hypothesis is
                     # about the n=2 case specifically: whether two illuminators
                     # sharing one receiver confine the fix better than two
@@ -1517,6 +1659,21 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
                 f"      n={nn}: {len(v):>4} solves   median {statistics.median(v):5.2f} km"
                 f"   p90 {v[int(0.9 * (len(v) - 1))]:5.2f}"
             )
+    if r.n2_pos_solve_km:
+
+        def _mp(v):
+            v = sorted(v)
+            return statistics.median(v), v[int(0.9 * (len(v) - 1))]
+
+        print(f"  n=2 position source comparison (published, truth-matched, N={len(r.n2_pos_solve_km)}):")
+        for _name, _pos, _alt in (
+            ("solve     ", r.n2_pos_solve_km, r.n2_alt_solve_km),
+            ("fit_free  ", r.n2_pos_fit_free_km, r.n2_alt_fit_free_km),
+            ("fit_pinned", r.n2_pos_fit_pinned_km, r.n2_alt_fit_pinned_km),
+        ):
+            _pm, _pp = _mp(_pos)
+            _am, _ap = _mp(_alt)
+            print(f"      {_name}: pos med {_pm:6.2f} km  p90 {_pp:6.2f}   |alt err| med {_am:6.2f} km  p90 {_ap:6.2f}")
     if r.speed_err_ms:
         e = sorted(r.speed_err_ms)
         print(
@@ -1597,6 +1754,11 @@ def report(label: str, r: Result, truth_max_kt: float | None = None):
     print(f"  solver rejects/failures: {r.solver_rejects}  beam gate rejects: {r.beam_rejects}")
     # Top-down claiming.  Gated on either counter moving: shadow mode counts
     # without ever emitting an anchored_input, active mode does both.
+    if r.key_minted + r.key_proximity + r.key_tracks + r.key_shadowed > 0:
+        print(
+            f"  dark key decisions: {r.key_minted} minted, {r.key_proximity} proximity, "
+            f"{r.key_tracks} tracks, {r.key_shadowed} shadowed"
+        )
     if r.claims_matched + r.anchored_inputs > 0:
         print(
             f"  claiming: {r.claims_matched} matched, {r.claim_conflicts} "
@@ -1671,7 +1833,23 @@ def main():
     )
     p.add_argument("--chi2-max", type=float, nargs="+", default=[2.0], help="track mode: chi2/dof ceiling(s) to sweep")
     p.add_argument(
-        "--min-span-s", type=float, default=12.0, help="track mode: observation span before a pairing is fitted"
+        "--min-span-s",
+        "--cv-min-span-s",
+        dest="min_span_s",
+        type=float,
+        nargs="+",
+        default=[12.0],
+        help="track mode: observation span(s) to sweep before a pairing is fitted "
+        "(deferred mode: before its epochs are attached at all). Production is 12 "
+        "(N2_CONFIRM_MIN_SPAN_S); several values sweep like --chi2-max does.",
+    )
+    p.add_argument(
+        "--cv-min-epochs",
+        dest="min_epochs",
+        type=int,
+        default=4,
+        help="track mode: merged epochs a pairing needs before it is fitted "
+        "(deferred mode: before its epochs are attached). Production is 4.",
     )
     p.add_argument("--history-n", type=int, default=20, help="track mode: samples of per-node track history to fit")
     p.add_argument(
@@ -1876,7 +2054,7 @@ def main():
         f"{args.seconds:.0f}s @ {args.frame_interval:.0f}s frames, seed {args.seed}, "
         f"{'BLIND' if args.blind else 'ADS-B-tagged'}, mode={args.mode}"
         + (
-            f", span>={args.min_span_s:.0f}s, cv-fit={args.cv_fit_mode}, claim-mode={args.claim_mode}"
+            f", epochs>={args.min_epochs}, cv-fit={args.cv_fit_mode}, claim-mode={args.claim_mode}"
             if args.mode == "track"
             else ""
         )
@@ -1888,8 +2066,9 @@ def main():
 
     # chi2 only means anything in track mode; keep one pass otherwise.
     chi2_values = args.chi2_max if args.mode == "track" else [None]
+    span_values = args.min_span_s if args.mode == "track" else [args.min_span_s[0]]
     for interval in args.assoc_interval:
-        for chi2_max in chi2_values:
+        for min_span_s, chi2_max in itertools.product(span_values, chi2_values):
             for estimator_name in args.estimator:
                 solve_fn = _ESTIMATORS[estimator_name]
                 rates, solve_rates, reals, fakes, speed_errs = [], [], [], [], []
@@ -1916,7 +2095,8 @@ def main():
                         args.blind,
                         args.mode,
                         chi2_max if chi2_max is not None else 2.0,
-                        args.min_span_s,
+                        min_span_s,
+                        args.min_epochs,
                         args.history_n,
                         args.exclusive,
                         args.cv_fit_mode,
@@ -1948,7 +2128,7 @@ def main():
                     med_errs.append(statistics.median(last.errors_km) if last.errors_km else float("nan"))
                 label = f"assoc_interval={interval:g}s"
                 if chi2_max is not None:
-                    label += f"  chi2/dof<={chi2_max:g}"
+                    label += f"  span>={min_span_s:g}s  chi2/dof<={chi2_max:g}"
                 label += f"  estimator={estimator_name}"
                 if args.repeat > 1:
                     label += f"  (pooled over {args.repeat} seeds)"

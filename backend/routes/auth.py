@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 
 from core import state
 from core.auth import (
@@ -33,6 +34,8 @@ from core.users import (
     get_jwt_strategy,
     get_or_create_oauth_user,
 )
+from services import publication
+from services.node_config import position_status
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -243,6 +246,25 @@ async def logout():
 # ── Node ownership self-service ───────────────────────────────────────────────
 
 
+class LocationPrivacyUpdate(BaseModel):
+    private: bool
+
+
+async def _owned_node(request: Request, node_id: str) -> dict:
+    """The caller, having established they own `node_id`.  404 if they do not.
+
+    404 rather than 403, deliberately, and the same wording as a node that does
+    not exist: the two answers differ only in confirming the id is real, node
+    ids are guessable, and an id that resolves is already a hint about where a
+    receiver is.  The per-node analytics route makes the same trade for the same
+    reason.
+    """
+    user = await get_current_user(request)
+    if node_id not in await get_user_nodes(user["id"]):
+        raise HTTPException(status_code=404, detail="Node not found")
+    return user
+
+
 @router.get("/me/nodes")
 async def my_nodes(request: Request):
     user = await get_current_user(request)
@@ -250,9 +272,15 @@ async def my_nodes(request: Request):
     out = []
     with state.connected_nodes_lock:
         snapshot = {nid: dict(state.connected_nodes.get(nid, {})) for nid in node_ids}
+    # One pair of queries for the whole list rather than a lookup per node, and
+    # read here rather than from services.publication's 30 s cache: this is the
+    # page an owner has just changed the setting on, and showing them a stale
+    # answer for up to half a minute is how a working switch reads as broken.
+    privacy = await publication.location_privacy_map(node_ids)
     for nid in node_ids:
         info = snapshot.get(nid) or {}
         cfg = info.get("config", {}) or {}
+        private, source = privacy.get(nid, (False, publication.SOURCE_DEFAULT))
         out.append(
             {
                 "node_id": nid,
@@ -262,10 +290,55 @@ async def my_nodes(request: Request):
                 "is_synthetic": info.get("is_synthetic", False),
                 "rx_lat": cfg.get("rx_lat"),
                 "rx_lon": cfg.get("rx_lon"),
+                "position_status": position_status(cfg),
                 "frequency": cfg.get("FC", cfg.get("frequency")),
+                "location_private": private,
+                "location_privacy_source": source,
             }
         )
     return out
+
+
+@router.put("/me/nodes/{node_id}/location-privacy")
+async def set_my_node_location_privacy(node_id: str, body: LocationPrivacyUpdate, request: Request):
+    """Set this node's location privacy, overriding whatever registration said.
+
+    The answer is always `override` as the source: writing the row is what this
+    route does, and it outranks the registration choice whichever way the two
+    happen to agree.  An owner who wants the registration choice back sends the
+    DELETE below rather than a PUT that matches it, so that a later reflash
+    changing the registration choice still reaches them.
+    """
+    user = await _owned_node(request, node_id)
+    await publication.set_location_privacy(node_id, body.private, set_by=user["id"])
+    # After the commit, so the next refresh cannot read the pre-write state and
+    # cache it for another _TTL_S.
+    publication.invalidate()
+    return {
+        "node_id": node_id,
+        "location_private": body.private,
+        "location_privacy_source": publication.SOURCE_OVERRIDE,
+    }
+
+
+@router.delete("/me/nodes/{node_id}/location-privacy")
+async def clear_my_node_location_privacy(node_id: str, request: Request):
+    """Drop the override and return the node to its registration choice.
+
+    Returns the effective state rather than an `{"ok": true}`: what the node
+    falls back to is the whole point of the call and the caller has no way to
+    work it out, since a node that never registered and one registered public
+    are both published and only the source tells them apart.
+    """
+    await _owned_node(request, node_id)
+    await publication.clear_location_privacy(node_id)
+    publication.invalidate()
+    state_after = await publication.location_privacy(node_id)
+    return {
+        "node_id": node_id,
+        "location_private": state_after["location_private"],
+        "location_privacy_source": state_after["location_privacy_source"],
+    }
 
 
 @router.get("/me/claim-codes")

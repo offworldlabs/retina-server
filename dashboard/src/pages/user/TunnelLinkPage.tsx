@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { api } from "../../api/client";
+import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
 
 const PAGE_SIZE = 25;
 
@@ -33,7 +34,7 @@ export default function TunnelLinkPage() {
           <p style={{ color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.8 }}>
             Each Retina node runs a local web display showing real-time radar data.
             When tunnel access is enabled, you can view this display remotely through
-            a secure connection, similar to <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 3 }}>radar3.retnode.com</code>.
+            a secure connection, similar to <code style={{ background: "var(--bg-input)", padding: "2px 6px", borderRadius: 3 }}>your-node.retnode.com</code>.
           </p>
           <p style={{ color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.8, marginTop: 8 }}>
             You can also generate a public shareable link to let others view your node&apos;s display
@@ -87,7 +88,8 @@ export default function TunnelLinkPage() {
                       return (
                         <tr key={id}>
                           <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
-                            {node.name || id}
+                            {node.name || id}{" "}
+                            <LocationPrivacyBadge isPrivate={node.location_private} />
                           </td>
                           <td>
                             <span className={`badge ${online ? "online" : "offline"}`}>

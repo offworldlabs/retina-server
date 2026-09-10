@@ -16,6 +16,7 @@ os.environ.setdefault("RETINA_ENV", "test")
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
 from core import state  # noqa: E402
+from services import dark_follow  # noqa: E402
 from services.geo import in_node_beam  # noqa: E402
 from services.tasks import solver as solver_mod  # noqa: E402
 
@@ -36,9 +37,12 @@ def _reset_state():
     state.solver_total_latency_s = 0.0
     state.solver_last_latency_s = 0.0
     state.n2_unconfirmed = 0
+    state.n2_anchored_admitted = 0
+    state.n2_fit_position_published = 0
     state.solver_stale_drops = 0
     state.solver_resolve_skips = 0
     state.solver_resolve_skips_dark = 0
+    state.solver_resolve_refresh = 0
     state.multinode_tracks.clear()
     state.task_last_success.clear()
 
@@ -406,6 +410,59 @@ class TestResolveSuppression:
         self._publish(["a1", "b1"], now=now)
         assert self._covered(["a1", "b1"], now=now) is False
 
+    def test_a_3_node_candidate_refreshes_an_aged_claim(self, monkeypatch):
+        """The width rule alone would keep this candidate out for 12 s.
+
+        The entry the claim stands for has been dead-reckoning for 7 s by
+        then, and dark position error roughly triples across the window, so a
+        3+-node re-solve is admitted even though the claim is wider.
+        """
+        monkeypatch.setattr(solver_mod, "_SOLVER_RESOLVE_REFRESH_S", 6.0)
+        now = time.time()
+        self._publish(["a1", "b1"], n_nodes=8, now=now - 7.0)
+        assert self._covered(["a1", "b1"], n_nodes=3, now=now) is False
+
+    def test_a_fresh_claim_still_covers_a_3_node_candidate(self, monkeypatch):
+        """The refresh is not a licence to solve every copy: inside the
+        refresh window the duplicate is still the waste the rule exists for."""
+        monkeypatch.setattr(solver_mod, "_SOLVER_RESOLVE_REFRESH_S", 6.0)
+        now = time.time()
+        self._publish(["a1", "b1"], n_nodes=8, now=now - 3.0)
+        assert self._covered(["a1", "b1"], n_nodes=3, now=now) is True
+
+    def test_a_2_node_candidate_never_refreshes(self, monkeypatch):
+        """n=2 publishes 6–9% of the time and lands 2.7 km from truth when it
+        does — worse than dead-reckoning the solve it would displace."""
+        monkeypatch.setattr(solver_mod, "_SOLVER_RESOLVE_REFRESH_S", 6.0)
+        now = time.time()
+        self._publish(["a1", "b1"], n_nodes=8, now=now - 7.0)
+        assert self._covered(["a1", "b1"], n_nodes=2, now=now) is True
+
+    def test_every_blocking_claim_must_be_aged_to_refresh(self, monkeypatch):
+        """One young claim is enough to hold the candidate: part of this
+        aircraft was on the map 1 s ago."""
+        monkeypatch.setattr(solver_mod, "_SOLVER_RESOLVE_REFRESH_S", 6.0)
+        now = time.time()
+        self._publish(["a1"], n_nodes=8, now=now - 7.0)
+        self._publish(["b1"], n_nodes=8, now=now - 1.0)
+        assert self._covered(["a1", "b1"], n_nodes=3, now=now) is True
+
+    def test_zero_refresh_restores_the_width_rule(self, monkeypatch):
+        monkeypatch.setattr(solver_mod, "_SOLVER_RESOLVE_REFRESH_S", 0.0)
+        now = time.time()
+        self._publish(["a1", "b1"], n_nodes=8, now=now - 7.0)
+        assert self._covered(["a1", "b1"], n_nodes=3, now=now) is True
+
+    def test_only_the_refreshed_admission_sets_the_flag(self, monkeypatch):
+        """_resolve_slot_state's third value is what the counter is bumped
+        from, so it must be True only for the refresh path — not for a
+        candidate no claim covered in the first place."""
+        monkeypatch.setattr(solver_mod, "_SOLVER_RESOLVE_REFRESH_S", 6.0)
+        now = time.time()
+        assert solver_mod._resolve_slot_state(self._s_in(["a1", "b1"], 3), now) == (False, [], False)
+        self._publish(["a1", "b1"], n_nodes=8, now=now - 7.0)
+        assert solver_mod._resolve_slot_state(self._s_in(["a1", "b1"], 3), now) == (False, [], True)
+
     def test_the_check_names_every_blocking_claim(self):
         now = time.time()
         self._publish(["a1", "b1"], n_nodes=4, now=now)
@@ -602,6 +659,174 @@ class TestSolveBestAltitude:
         assert result is not None
         assert result["alt_m"] == pytest.approx(9000.0)
         assert state.solver_successes == 1
+
+    def test_n2_inherits_altitude_from_an_established_key(self):
+        """An n=2 input under a solved 3-node dark key borrows its altitude.
+
+        The n=2 solve is exactly determined in (x, y) once altitude is pinned,
+        so its position error is its altitude error; a key already solved at
+        n>=3 has a measured altitude where the association grid has a weighted
+        mean over layers.  Dark targets drop from 3-node to 2-node coverage
+        constantly, which is exactly when this fires.
+        """
+        _reset_state()
+        state.multinode_tracks.clear()
+        state.solver_n2_alt_inherited = 0
+        state.multinode_tracks["mn-dark-established"] = {
+            "lat": 37.5,
+            "lon": -122.1,
+            "alt_m": 10400.0,
+            "vel_east": 0.0,
+            "vel_north": 0.0,
+            "n_nodes": 3,
+            "max_n_nodes": 3,
+            "timestamp_ms": 7000,
+        }
+        s_in = {
+            **_CONFIRMED_N2,
+            "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 7.5},
+            "timestamp_ms": 8000,
+            "measurements": [],
+        }
+        solver_mod._inherit_key_altitude(s_in, learned_vel_fn=None)
+        assert s_in["initial_guess"]["alt_km"] == pytest.approx(10.4)
+        assert s_in["alt_source"] == "key"
+        assert state.solver_n2_alt_inherited == 1
+
+    def test_n2_keeps_the_grid_altitude_with_no_key_in_range(self):
+        """A key 40 km away is a different aircraft, not an altitude source."""
+        _reset_state()
+        state.multinode_tracks.clear()
+        state.solver_n2_alt_inherited = 0
+        state.multinode_tracks["mn-dark-far"] = {
+            "lat": 37.5,
+            "lon": -121.6,  # ~44 km east at this latitude
+            "alt_m": 10400.0,
+            "vel_east": 0.0,
+            "vel_north": 0.0,
+            "n_nodes": 4,
+            "max_n_nodes": 4,
+            "timestamp_ms": 7000,
+        }
+        s_in = {
+            **_CONFIRMED_N2,
+            "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 7.5},
+            "timestamp_ms": 8000,
+            "measurements": [],
+        }
+        solver_mod._inherit_key_altitude(s_in, learned_vel_fn=None)
+        assert s_in["initial_guess"]["alt_km"] == pytest.approx(7.5)
+        assert s_in["alt_source"] == "grid"
+        assert state.solver_n2_alt_inherited == 0
+
+    def test_n2_does_not_inherit_from_a_two_node_key(self):
+        """An n=2 donor's altitude IS a grid altitude — inheriting it would
+        launder a guess into a measurement and let one bad grid pick spread
+        across every n=2 solve that lands near it."""
+        _reset_state()
+        state.multinode_tracks.clear()
+        state.solver_n2_alt_inherited = 0
+        state.multinode_tracks["mn-dark-thin"] = {
+            "lat": 37.5,
+            "lon": -122.1,
+            "alt_m": 10400.0,
+            "vel_east": 0.0,
+            "vel_north": 0.0,
+            "n_nodes": 2,
+            "max_n_nodes": 2,
+            "timestamp_ms": 7000,
+        }
+        s_in = {
+            **_CONFIRMED_N2,
+            "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 7.5},
+            "timestamp_ms": 8000,
+            "measurements": [],
+        }
+        solver_mod._inherit_key_altitude(s_in, learned_vel_fn=None)
+        assert s_in["initial_guess"]["alt_km"] == pytest.approx(7.5)
+        assert s_in["alt_source"] == "grid"
+        assert state.solver_n2_alt_inherited == 0
+
+    def test_stale_key_is_not_a_donor(self):
+        """Past N2_ALT_INHERIT_MAX_AGE_S the altitude is older than the climb
+        it is meant to track."""
+        _reset_state()
+        state.multinode_tracks.clear()
+        state.solver_n2_alt_inherited = 0
+        state.multinode_tracks["mn-dark-stale"] = {
+            "lat": 37.5,
+            "lon": -122.1,
+            "alt_m": 10400.0,
+            "vel_east": 0.0,
+            "vel_north": 0.0,
+            "n_nodes": 5,
+            "max_n_nodes": 5,
+            "timestamp_ms": 8000 - int(solver_mod.N2_ALT_INHERIT_MAX_AGE_S * 1000) - 5000,
+        }
+        s_in = {
+            **_CONFIRMED_N2,
+            "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 7.5},
+            "timestamp_ms": 8000,
+            "measurements": [],
+        }
+        solver_mod._inherit_key_altitude(s_in, learned_vel_fn=None)
+        assert s_in["alt_source"] == "grid"
+
+    def test_anchored_input_keeps_the_anchor_altitude(self):
+        """The follow lane's target already carries the anchor's own solved
+        altitude (tasks/known_lane.py), so there is nothing to inherit and
+        overwriting it would swap a per-key prediction for a neighbour's."""
+        _reset_state()
+        state.multinode_tracks.clear()
+        state.solver_n2_alt_inherited = 0
+        state.multinode_tracks["mn-dark-neighbour"] = {
+            "lat": 37.5,
+            "lon": -122.1,
+            "alt_m": 10400.0,
+            "vel_east": 0.0,
+            "vel_north": 0.0,
+            "n_nodes": 4,
+            "max_n_nodes": 4,
+            "timestamp_ms": 7000,
+        }
+        s_in = {
+            **_CONFIRMED_N2,
+            "initial_guess": {"lat": 37.5, "lon": -122.1, "alt_km": 5.5},
+            "timestamp_ms": 8000,
+            "anchor_key": "mn-dark-followed",
+            "measurements": [],
+        }
+        solver_mod._inherit_key_altitude(s_in, learned_vel_fn=None)
+        assert s_in["initial_guess"]["alt_km"] == pytest.approx(5.5)
+        assert s_in["alt_source"] == "anchor"
+        assert state.solver_n2_alt_inherited == 0
+
+    def test_nearest_qualifying_key_wins(self):
+        _reset_state()
+        state.multinode_tracks.clear()
+        state.solver_n2_alt_inherited = 0
+        for name, lon, alt_m in (
+            ("mn-dark-near", -122.10, 10400.0),
+            ("mn-dark-nearer", -122.101, 4200.0),
+        ):
+            state.multinode_tracks[name] = {
+                "lat": 37.5,
+                "lon": lon,
+                "alt_m": alt_m,
+                "vel_east": 0.0,
+                "vel_north": 0.0,
+                "n_nodes": 3,
+                "max_n_nodes": 3,
+                "timestamp_ms": 7500,
+            }
+        s_in = {
+            **_CONFIRMED_N2,
+            "initial_guess": {"lat": 37.5, "lon": -122.1012, "alt_km": 7.5},
+            "timestamp_ms": 8000,
+            "measurements": [],
+        }
+        solver_mod._inherit_key_altitude(s_in, learned_vel_fn=None)
+        assert s_in["initial_guess"]["alt_km"] == pytest.approx(4.2)
 
     def test_n2_uses_initial_guess_altitude_directly(self, monkeypatch):
         """For n_nodes=2, solver is called once with initial_guess.alt_km.
@@ -915,6 +1140,74 @@ class TestN2ConfirmationGate:
         assert not state.multinode_tracks
         assert state.n2_unconfirmed == 1
 
+    def _anchored(self, monkeypatch, *, solve_count, admit=True):
+        """An n=2 input anchored onto an existing dark key with ``solve_count``.
+
+        The anchor names a live entry, which is what the bypass checks: a key
+        the follow lane could actually be following, not a bare string.
+        """
+        monkeypatch.setattr(state, "node_analytics", _StubAnalytics())
+        monkeypatch.setattr(dark_follow, "DARK_FOLLOW_N2_ADMIT", admit)
+        state.multinode_tracks["mn-dark-1-abc"] = {
+            "lat": 37.5,
+            "lon": -122.1,
+            "n_nodes": 3,
+            "solve_count": solve_count,
+            "timestamp_ms": 7000,
+        }
+        # No chi2 and no epochs to fit from — the shape 142 of 165 measured
+        # rejects had, and the one the fit can never rescue.
+        return {"n_nodes": 2, "anchor_key": "mn-dark-1-abc", "lane": "dark_follow"}
+
+    def test_anchored_follow_of_an_established_key_publishes(self, monkeypatch):
+        """The claim round already vetted this pairing against the followed
+        track's predicted delay and Doppler, so the fit is redundant here."""
+        _reset_state()
+        s_in = self._anchored(monkeypatch, solve_count=dark_follow.DARK_FOLLOW_MIN_SOLVES)
+        solver_mod._process_solver_item((s_in, {}, time.time()), self._solve_fn)
+
+        # Published onto the anchor itself — the whole point of the anchor is
+        # that this solve continues that track rather than minting a new key.
+        rec = state.multinode_tracks["mn-dark-1-abc"]
+        assert rec["timestamp_ms"] == 7100
+        assert state.n2_anchored_admitted == 1
+        assert state.n2_unconfirmed == 0
+        # ...and the key keeps the width that made it followable, so the next
+        # dark_follow._build_targets rebuild does not drop it on this n=2.
+        assert rec["n_nodes"] == 2
+        assert rec["max_n_nodes"] == 3
+
+    def test_anchored_follow_of_a_young_key_is_still_gated(self, monkeypatch):
+        """A key with one solve behind it is what the bottom-up lane mints for
+        a mis-associated fragment; it vouches for nothing."""
+        _reset_state()
+        s_in = self._anchored(monkeypatch, solve_count=1)
+        solver_mod._process_solver_item((s_in, {}, time.time()), self._solve_fn)
+
+        assert not any(k.startswith("mn-dark-7100-") for k in state.multinode_tracks)
+        assert state.n2_unconfirmed == 1
+        assert state.n2_anchored_admitted == 0
+
+    def test_the_bypass_can_be_switched_off(self, monkeypatch):
+        _reset_state()
+        s_in = self._anchored(monkeypatch, solve_count=dark_follow.DARK_FOLLOW_MIN_SOLVES, admit=False)
+        solver_mod._process_solver_item((s_in, {}, time.time()), self._solve_fn)
+
+        assert not any(k.startswith("mn-dark-7100-") for k in state.multinode_tracks)
+        assert state.n2_unconfirmed == 1
+        assert state.n2_anchored_admitted == 0
+
+    def test_an_unknown_anchor_key_admits_nothing(self, monkeypatch):
+        """An anchor naming a key that is no longer on the map is not evidence
+        — the entry may have been superseded or expired since the claim."""
+        _reset_state()
+        s_in = self._anchored(monkeypatch, solve_count=dark_follow.DARK_FOLLOW_MIN_SOLVES)
+        state.multinode_tracks.clear()
+        solver_mod._process_solver_item((s_in, {}, time.time()), self._solve_fn)
+
+        assert state.n2_unconfirmed == 1
+        assert state.n2_anchored_admitted == 0
+
     def test_n3_is_unaffected(self, monkeypatch):
         """n>=3 is overdetermined, so its residual gates already work."""
         _reset_state()
@@ -932,6 +1225,172 @@ class TestN2ConfirmationGate:
         assert any(k.startswith("mn-dark-7100-") for k in state.multinode_tracks)
         assert state.solver_successes == 1
         assert state.n2_unconfirmed == 0
+
+
+class TestN2FitPositionPublish:
+    """A confirmed n=2 publishes the fit position, not the single-epoch one.
+
+    The fit is an over-determined estimate of the same target — every epoch of
+    the pairing, 4K measurements — while the LM solve it replaces is 4
+    residuals at one epoch.  The position swap runs against the PINNED-altitude
+    fit (_N2_FIT_FIX_ALTITUDE, the default): at n=2 the free fit's z is an
+    unobservable direction full of noise, and it drags x/y with it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _gate_on(self, monkeypatch):
+        monkeypatch.setattr(solver_mod, "_N2_REQUIRE_CONFIRMED", True)
+        monkeypatch.setattr(solver_mod, "_N2_PUBLISH_FIT_POSITION", True)
+        monkeypatch.setattr(solver_mod, "_N2_FIT_FIX_ALTITUDE", True)
+
+    _FIT = {
+        "success": True,
+        "lat": 37.6,
+        "lon": -122.2,
+        "alt_m": 9000.0,
+        "vel_east": 100.0,
+        "vel_north": 0.0,
+        "vel_up": 0.0,
+        "chi2_per_dof": 0.5,
+        "n_epochs": 8,
+        "altitude_fixed": True,
+        "timestamp_ms": 7100,
+    }
+
+    def _input(self, **fit_overrides):
+        """A confirmed n=2 input carrying an already-resolved fit.
+
+        Seeded straight onto the fit cache rather than through cv_epochs:
+        _resolve_cv_fit returns the cached dict untouched, so this exercises
+        the publish decision without a pool solve.  Which cache key depends on
+        the pin flag — the pinned fit is cached separately from the free one so
+        the confirmation gate keeps reading the dof it was calibrated against.
+        """
+        s_in = dict(_CONFIRMED_N2)
+        if fit_overrides.get("_absent"):
+            return s_in
+        key = "_cv_fit_pinned" if solver_mod._N2_FIT_FIX_ALTITUDE else "_cv_fit"
+        s_in[key] = {**self._FIT, **fit_overrides}
+        return s_in
+
+    @staticmethod
+    def _published(monkeypatch, s_in):
+        monkeypatch.setattr(state, "node_analytics", _StubAnalytics())
+        solver_mod._process_solver_item((s_in, {}, time.time()), TestN2ConfirmationGate._solve_fn)
+        recs = [r for r in state.mlat_solve_history if r["outcome"] == "published"]
+        assert len(recs) == 1
+        return recs[0]
+
+    def test_fit_position_is_published_and_the_solve_kept_alongside(self, monkeypatch):
+        _reset_state()
+        state.mlat_solve_history.clear()
+        rec = self._published(monkeypatch, self._input())
+
+        # raw_lat/raw_lon is the position that went to the smoother.
+        assert (rec["raw_lat"], rec["raw_lon"]) == (37.6, -122.2)
+        assert rec["alt_m"] == 9000.0
+        assert rec["pos_source"] == "cv_fit"
+        # ...and the single-epoch solve is still on the record, which is what
+        # makes gt_error comparable between the two without a second deploy.
+        assert (rec["solve_raw_lat"], rec["solve_raw_lon"]) == (37.5, -122.1)
+        assert rec["fit_vs_solve_km"] == pytest.approx(14.0, abs=1.0)
+        assert rec["fit_altitude_fixed"] is True
+        assert state.n2_fit_position_published == 1
+        assert state.n2_unconfirmed == 0
+
+    def test_a_free_fits_altitude_is_never_published(self, monkeypatch):
+        """Position from the fit, altitude from the solve, when z was free.
+
+        This is the live finding the pin exists for: with two nodes the
+        vertical direction is unobservable, so a free fit put published n=2
+        altitudes at -1721 m, -466 m and 15249 m — |alt - truth| at a 4.57 km
+        median against 2.94 km for the ladder guess the solve pinned.  The
+        horizontal answer is still worth taking (4K measurements against 4);
+        the altitude is not, because neither estimate constrains it.
+        """
+        _reset_state()
+        state.mlat_solve_history.clear()
+        monkeypatch.setattr(solver_mod, "_N2_FIT_FIX_ALTITUDE", False)
+        rec = self._published(monkeypatch, self._input(alt_m=-1721.0, altitude_fixed=False))
+
+        assert (rec["raw_lat"], rec["raw_lon"]) == (37.6, -122.2)
+        assert rec["pos_source"] == "cv_fit"
+        # The solve's pinned altitude, NOT the fit's -1721 m.
+        assert rec["alt_m"] == 8000.0
+        assert rec["fit_altitude_fixed"] is False
+        assert state.n2_fit_position_published == 1
+
+    def test_the_pin_can_be_switched_off_without_losing_the_swap(self, monkeypatch):
+        """N2_FIT_FIX_ALTITUDE=0 is the way back to the free fit's position."""
+        _reset_state()
+        state.mlat_solve_history.clear()
+        monkeypatch.setattr(solver_mod, "_N2_FIT_FIX_ALTITUDE", False)
+        s_in = self._input(altitude_fixed=False)
+
+        assert "_cv_fit" in s_in and "_cv_fit_pinned" not in s_in
+        rec = self._published(monkeypatch, s_in)
+        assert rec["pos_source"] == "cv_fit"
+        assert rec["fit_altitude_fixed"] is False
+
+    def test_an_earlier_fit_epoch_is_propagated_to_the_solve_epoch(self, monkeypatch):
+        """The fit evaluates at its own last epoch; publishing it under this
+        solve's timestamp without propagating would be an epoch mismatch."""
+        _reset_state()
+        state.mlat_solve_history.clear()
+        # 2 s before the solve at 100 m/s east ⇒ 200 m of longitude.
+        rec = self._published(monkeypatch, self._input(timestamp_ms=5100))
+
+        _exp_lat, _exp_lon = solver_mod.offset_latlon_m(37.6, -122.2, east_m=200.0, north_m=0.0)
+        assert rec["raw_lat"] == pytest.approx(_exp_lat, abs=1e-5)
+        assert rec["raw_lon"] == pytest.approx(_exp_lon, abs=1e-5)
+        assert rec["raw_lon"] > -122.2  # moved east, not back along the track
+        assert state.n2_fit_position_published == 1
+
+    def test_the_swap_can_be_switched_off(self, monkeypatch):
+        _reset_state()
+        state.mlat_solve_history.clear()
+        monkeypatch.setattr(solver_mod, "_N2_PUBLISH_FIT_POSITION", False)
+        rec = self._published(monkeypatch, self._input())
+
+        assert (rec["raw_lat"], rec["raw_lon"]) == (37.5, -122.1)
+        assert rec["pos_source"] == "solve"
+        assert rec["fit_vs_solve_km"] is None
+        assert rec["fit_altitude_fixed"] is None
+        assert state.n2_fit_position_published == 0
+
+    def test_an_unusable_fit_keeps_the_solve_position(self, monkeypatch):
+        """No fit on this side is the normal case for an inline-fitted pairing
+        (chi2 arrives set, no cv_epochs survive to refit from), and a fit that
+        did not converge is not a position at all.  Both still publish."""
+        for s_in in (
+            self._input(_absent=True),
+            self._input(success=False),
+            self._input(lat=None),
+            self._input(n_epochs=2),
+        ):
+            _reset_state()
+            state.mlat_solve_history.clear()
+            rec = self._published(monkeypatch, s_in)
+
+            assert (rec["raw_lat"], rec["raw_lon"]) == (37.5, -122.1)
+            assert rec["pos_source"] == "solve"
+            assert state.n2_fit_position_published == 0
+            assert state.solver_successes == 1
+
+    def test_an_unconfirmed_pairing_never_reaches_the_swap(self, monkeypatch):
+        """The chi2 gate is untouched: a pairing that fails it is withheld
+        whether or not a fit position exists for it."""
+        _reset_state()
+        state.mlat_solve_history.clear()
+        monkeypatch.setattr(state, "node_analytics", _StubAnalytics())
+        s_in = {"n_nodes": 2, "chi2_per_dof": 40.0, "n_epochs": 8, "_cv_fit_pinned": dict(self._FIT)}
+        result = solver_mod._process_solver_item((s_in, {}, time.time()), TestN2ConfirmationGate._solve_fn)
+
+        assert not state.multinode_tracks
+        assert state.n2_unconfirmed == 1
+        assert state.n2_fit_position_published == 0
+        assert result["lat"] == 37.5
+        assert result.get("pos_source") is None
 
 
 class TestCoverageCalibration:
@@ -1075,8 +1534,9 @@ class TestFitRunsOnThisSideOfTheQueue:
     def test_deferred_fit_is_run_here(self, monkeypatch):
         called = {}
 
-        def fake_fit(fit_input, cfgs):
+        def fake_fit(fit_input, cfgs, *, fix_altitude=False):
             called["epochs"] = len(fit_input["epochs"])
+            called["fix_altitude"] = fix_altitude
             return {
                 "success": True,
                 "chi2_per_dof": 0.4,
@@ -1101,8 +1561,19 @@ class TestFitRunsOnThisSideOfTheQueue:
         }
         assert solver_mod._resolve_n2_chi2(s_in, {"n1": {}, "n2": {}}) == 0.4
         assert called["epochs"] == 6
+        # The confirmation gate reads the FREE fit: its chi2 threshold was
+        # calibrated against the 6-state dof, and the pin only serves position.
+        assert called["fix_altitude"] is False
         # Cached, so a retry of the same item does not refit.
         assert s_in["chi2_per_dof"] == 0.4
+
+        # The pinned fit is a separate call cached under a separate key, so it
+        # cannot overwrite the chi2 the gate already decided on.
+        pinned = solver_mod._resolve_cv_fit(s_in, {"n1": {}, "n2": {}}, fix_altitude=True)
+        assert pinned is not None
+        assert called["fix_altitude"] is True
+        assert s_in["_cv_fit_pinned"] is pinned
+        assert s_in["_cv_fit"] is not pinned
 
     def test_an_already_fitted_input_is_not_refitted(self, monkeypatch):
         import retina_geolocator.multinode_solver as mns
@@ -1346,6 +1817,46 @@ class TestSolverProcessPool:
         assert events == ["shutdown"]
         assert solver_mod._solver_pool is replacement
         monkeypatch.setattr(solver_mod, "_solver_pool", None)
+
+    def test_hung_child_times_out_counts_and_falls_back_inline(self, monkeypatch):
+        """A child that is alive but stuck must cost one solve, not the lane.
+
+        Without a timeout, `.result()` blocks one of only SOLVER_WORKERS (2)
+        threads for the process lifetime and no counter anywhere moves.
+        """
+        import concurrent.futures
+
+        events = []
+        hung = concurrent.futures.Future()  # never set — the wedged child
+
+        class _HungPool:
+            def submit(self, fn, *args):
+                return hung
+
+            def shutdown(self, wait=False):
+                events.append("shutdown")
+
+        replacement = object()
+        pool = _HungPool()
+        monkeypatch.setattr(solver_mod, "_solver_pool", pool)
+        monkeypatch.setattr(solver_mod, "_make_solver_pool", lambda: replacement)
+        monkeypatch.setattr(solver_mod, "_POOL_CALL_TIMEOUT_S", 0.05)
+        before = state.solver_pool_timeouts
+        errors_before = state.task_error_counts.get("solver_pool", 0)
+
+        try:
+            # First arg is the s_in dict the real solve calls pass, so the
+            # n_nodes the warning logs comes off a realistic shape.
+            assert solver_mod._pool_call(_marker_fn, {"n_nodes": 3}) == {"marker": {"n_nodes": 3}}
+            assert state.solver_pool_timeouts == before + 1
+            assert state.task_error_counts["solver_pool"] == errors_before + 1
+            # The wedged executor is torn down and replaced, exactly as the
+            # broken-pool branch does — a stuck child never frees its slot.
+            assert events == ["shutdown"]
+            assert solver_mod._solver_pool is replacement
+        finally:
+            monkeypatch.setattr(solver_mod, "_solver_pool", None)
+            state.task_error_counts.pop("solver_pool", None)
 
 
 class TestDarkSolveSmoothing:

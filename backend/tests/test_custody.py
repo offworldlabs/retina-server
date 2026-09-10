@@ -244,7 +244,7 @@ class TestHashChainBuilder:
     @pytest.fixture()
     def builder(self, crypto, tmp_path):
         chain_dir = str(tmp_path / "chains" / "test-node-01")
-        node_config = {"node_id": "test-node-01", "rx_lat": 33.939, "rx_lon": -84.651}
+        node_config = {"node_id": "test-node-01", "rx_lat": 33.9, "rx_lon": -84.6}
         return HashChainBuilder(
             node_id="test-node-01",
             crypto=crypto,
@@ -291,7 +291,7 @@ class TestHashChainBuilder:
 
     def test_chain_log_persisted(self, crypto, tmp_path):
         chain_dir = str(tmp_path / "chains" / "test-node-01")
-        node_config = {"node_id": "test-node-01", "rx_lat": 33.939, "rx_lon": -84.651}
+        node_config = {"node_id": "test-node-01", "rx_lat": 33.9, "rx_lon": -84.6}
         builder = HashChainBuilder(
             node_id="test-node-01",
             crypto=crypto,
@@ -322,7 +322,7 @@ class TestHashChainVerifier:
     @pytest.fixture()
     def chain_entries(self, crypto, tmp_path):
         chain_dir = str(tmp_path / "chains" / "test-node-01")
-        node_config = {"node_id": "test-node-01", "rx_lat": 33.939, "rx_lon": -84.651}
+        node_config = {"node_id": "test-node-01", "rx_lat": 33.9, "rx_lon": -84.6}
         builder = HashChainBuilder(
             node_id="test-node-01",
             crypto=crypto,
@@ -368,7 +368,7 @@ class TestHashChainVerifier:
 class TestChainRecovery:
     def test_recovered_prev_hash(self, crypto, tmp_path):
         chain_dir = str(tmp_path / "chains" / "test-node-01")
-        node_config = {"node_id": "test-node-01", "rx_lat": 33.939, "rx_lon": -84.651}
+        node_config = {"node_id": "test-node-01", "rx_lat": 33.9, "rx_lon": -84.6}
 
         builder = HashChainBuilder(
             node_id="test-node-01",
@@ -398,7 +398,7 @@ class TestChainRecovery:
 class TestEdgeCases:
     def test_close_hour_no_detections_returns_none(self, crypto, tmp_path):
         chain_dir = str(tmp_path / "chains" / "empty")
-        node_config = {"node_id": "test-node-01", "rx_lat": 33.939, "rx_lon": -84.651}
+        node_config = {"node_id": "test-node-01", "rx_lat": 33.9, "rx_lon": -84.6}
         builder = HashChainBuilder(
             node_id="test-node-01",
             crypto=crypto,
@@ -445,7 +445,7 @@ class TestModelsSerialization:
 
     def test_hash_chain_entry_round_trip(self, crypto, tmp_path):
         chain_dir = str(tmp_path / "chains" / "test-node-01")
-        node_config = {"node_id": "test-node-01", "rx_lat": 33.939, "rx_lon": -84.651}
+        node_config = {"node_id": "test-node-01", "rx_lat": 33.9, "rx_lon": -84.6}
         builder = HashChainBuilder(
             node_id="test-node-01",
             crypto=crypto,

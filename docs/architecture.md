@@ -70,8 +70,9 @@ are in [`arc-display.md`](arc-display.md).
   HMAC-derived ref of the same shape (fuzz salt, `node_ref|` domain) when it
   did not. See [`pipeline.md`](pipeline.md) §7.
 - **`services/tasks/`** — background async tasks: `aircraft_flush` (broadcast),
-  `solver` workers, `analytics_refresh`, archive lifecycle, snapshots,
-  `health_monitor` + `heartbeat` (see [`alerting.md`](alerting.md)).
+  `feed_gc` (stale-store GC on its own 5 s timer, deliberately not tied to the
+  feed build), `solver` workers, `analytics_refresh`, archive lifecycle,
+  snapshots, `health_monitor` + `heartbeat` (see [`alerting.md`](alerting.md)).
 - **`core/state.py`** — the in-memory world: connected nodes, tracks, aircraft,
   arc buffers, WebSocket client sets, latest JSON payloads.
 - **`core/users.py` + `core/auth.py`** — fastapi-users (cookie JWT, Google/GitHub

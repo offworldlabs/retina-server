@@ -34,6 +34,8 @@ from pydantic import (
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema
 
+from services.node_config import config_json_schema
+
 
 def _reject_non_number(value: Any) -> Any:
     """Three shapes that are not a JSON `number` but that Pydantic's lax mode
@@ -124,15 +126,34 @@ class AcceptanceRecord(_RequestModel):
 
 
 class PublicationChoice(_RequestModel):
-    """Whether the owner chose to publish this node's detections. `choice` is
-    required, with no default: a node must send an explicit value.
+    """Whether this node's location is published, which is the only thing the
+    choice governs. Either way the node runs its full pipeline, joins track
+    association and contributes to multinode solves, and the network keeps
+    everything it detects.
+
+    `public`: the receiver appears on the public map at an approximate position,
+    displaced by the deployment's location fuzz, with the uncertainty radius
+    declared beside it. There is no option to publish a precise position.
+
+    `private`: nothing that locates the receiver is published — no marker, no
+    uncertainty disc, no coverage polygon, no ambiguity arcs, no single-node
+    aircraft, no receiver coordinate, no archive listing. Solves the node
+    contributed to are still published; the node's id is struck from the
+    membership lists they carry.
+
+    `choice` is required, with no default: a node must send an explicit value.
+    The choice can also be set later from the dashboard, by the node's owner or
+    an admin, and that later answer outranks this one — so what is sent here is
+    the answer at onboarding rather than the last word.
     """
 
     version: str = Field(max_length=32)
     accepted_at: AwareDatetime
     # The onboarding flow's own design preselects `public`; a default here
     # would let a body that never named the choice pass regardless, which is a
-    # weaker check than that flow asks for.
+    # weaker check than that flow asks for. Two values and no third: a per-node
+    # opt-out of the fuzz was considered and rejected, the fuzz being the
+    # deployment's floor rather than a preference.
     choice: Literal["public", "private"]
 
 
@@ -148,12 +169,15 @@ class RegisterRequest(_RequestModel):
     node_id: NodeId
     board_model: str = Field(max_length=64)
     agreements: Agreements
-    # Deliberately untyped. A Pydantic model here would 422 on a bad value before
-    # the handler runs, putting a config-shaped rejection in front of identity
-    # resolution and making the response an oracle for which identities exist.
-    # Validation is services/node_config.validate_config, called from inside the
-    # handler once the identity has resolved.
-    config: dict[str, Any]
+    # Deliberately untyped, for the reason routes/node_register.py's module
+    # docstring gives: a Pydantic model here would refuse a bad value before the
+    # handler runs, ahead of identity resolution. Validation is
+    # services/node_config.validate_config, from inside the handler.
+    #
+    # WithJsonSchema describes without enforcing: it replaces what is published
+    # and leaves validation alone, so anything this schema forbids still reaches
+    # the handler and is refused there.
+    config: Annotated[dict[str, Any], WithJsonSchema(config_json_schema())]
 
 
 class RegisterResponse(BaseModel):
@@ -253,6 +277,10 @@ class HeartbeatResponse(BaseModel):
 
 class ConfigResponse(BaseModel):
     config_version: ConfigVersion
+
+
+class ContactResponse(BaseModel):
+    updated_at: ServerTime
 
 
 class ErrorBody(BaseModel):

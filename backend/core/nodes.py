@@ -8,7 +8,7 @@ is here for.
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.users import Base
@@ -39,6 +39,44 @@ class Node(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class NodeLocationPrivacy(Base):
+    """An owner's or an admin's answer to "publish this node's location", set
+    outside registration and outranking what registration recorded.
+
+    `Node.publication` above is written once, by a board coming through the v1
+    registration handshake, and is rewritten by a reflash. Neither is a place an
+    owner can change their mind from, and most of what the server carries never
+    registered at all: a legacy TCP node, the synthetic fleet, a node mirrored
+    onto the test droplet. This table is the choice made from the dashboard, for
+    any node id the system knows by string.
+
+    So no foreign key to `nodes`, deliberately, and `String(255)` rather than
+    the `String(32)` of `Node.node_id` — the same key space as
+    `node_owners.node_id`, which is what the owner routes join against and which
+    likewise accepts ids that never registered. A row here for an id nothing has
+    ever heard of is inert rather than an error, which is the behaviour a
+    pre-registration override needs.
+
+    A row wins over the registration choice and deleting it hands the node back
+    to that choice, so a reflash rewriting `Node.publication` cannot quietly
+    republish a node its owner hid; `services/publication.effective_privacy`
+    states the rule and is the only place it is stated.
+
+    `set_by` and `set_at` are provenance, not an audit log: the dashboard shows
+    the owner when and by whom the current state was set, and an admin change is
+    additionally recorded through `log_event`. `set_by` is a user id for an
+    owner and `admin:<email>` for an admin, the two being distinguishable
+    without a second column because a uuid cannot contain a colon.
+    """
+
+    __tablename__ = "node_location_privacy"
+
+    node_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    private: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    set_by: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    set_at: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
+
+
 class NodeConfig(Base):
     """One row per configuration version, append-only.
 
@@ -53,12 +91,15 @@ class NodeConfig(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     node_id: Mapped[str] = mapped_column(String(32), ForeignKey("nodes.node_id"), index=True)
     version: Mapped[int] = mapped_column(Integer)
-    rx_lat: Mapped[float] = mapped_column(Float)
-    rx_lon: Mapped[float] = mapped_column(Float)
-    rx_alt_ft: Mapped[float] = mapped_column(Float)
-    tx_lat: Mapped[float] = mapped_column(Float)
-    tx_lon: Mapped[float] = mapped_column(Float)
-    tx_alt_ft: Mapped[float] = mapped_column(Float)
+    # Nullable since contract 1.1.3: an owner cannot always supply the geometry
+    # at setup, and such a node is carried without being placed. Latitude and
+    # longitude are validated as a pair; altitude stands alone.
+    rx_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rx_lon: Mapped[float | None] = mapped_column(Float, nullable=True)
+    rx_alt_ft: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tx_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tx_lon: Mapped[float | None] = mapped_column(Float, nullable=True)
+    tx_alt_ft: Mapped[float | None] = mapped_column(Float, nullable=True)
     tx_callsign: Mapped[str] = mapped_column(String(32))
     fc_hz: Mapped[float] = mapped_column(Float)
     fs_hz: Mapped[float] = mapped_column(Float)
@@ -79,6 +120,29 @@ class NodeConfig(Base):
     doppler_tolerance_hz: Mapped[float] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class NodeContact(Base):
+    """Whom to contact about a node, as its owner reported it.
+
+    Unverified by construction: it arrives over the node's bearer token, so
+    whoever holds that token can set it. A support artefact, never an identity;
+    when claiming binds a node to an account the account's verified email is the
+    source of truth and this is the fallback for unclaimed nodes.
+
+    Mutable, one row per node, unlike NodeConfig above. A frame references a
+    configuration version for as long as the archive holds it, so personal data
+    there could be neither corrected nor removed.
+    """
+
+    __tablename__ = "node_contacts"
+
+    node_id: Mapped[str] = mapped_column(String(32), ForeignKey("nodes.node_id"), primary_key=True)
+    first_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class NodeToken(Base):

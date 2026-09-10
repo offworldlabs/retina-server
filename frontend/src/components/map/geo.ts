@@ -66,7 +66,7 @@ export function getFocusPoints(aircraft, nodes, selectedHex) {
   }
 
   return nodes
-    .filter((n) => n.rx_lat && n.rx_lon)
+    .filter((n) => validLatLon(n.rx_lat, n.rx_lon))
     .map((n) => [n.rx_lat, n.rx_lon]);
 }
 

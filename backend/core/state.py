@@ -18,6 +18,7 @@ from retina_custody.models import NodeIdentity
 
 from config.constants import (
     ANOMALY_LOG_MAX,  # noqa: F401 — re-exported, used via state.ANOMALY_LOG_MAX
+    ASSOC_ALT_LAYERS_KM,
     ASSOC_GRID_STEP_KM,
     ASSOC_MAX_NEIGHBORS,
     ASSOC_MAX_PAIRS_PER_ROUND,
@@ -314,6 +315,11 @@ def _adsb_for_seeding() -> dict[str, dict]:
 
 node_associator = InterNodeAssociator(
     grid_step_km=ASSOC_GRID_STEP_KM,
+    # 1 km layers from 1 to 12 km instead of the library's six-layer default.
+    # The association altitude is what an n=2 solve's position error is made
+    # of (see constants._assoc_alt_layers_km for the measurement), and the
+    # library keeps the old ladder so its own tests and bench are unchanged.
+    altitudes_km=ASSOC_ALT_LAYERS_KM,
     coverage_provider=_coverage_limit_for,
     # Active only (see _learned_fov_for) — shadow still computes/counts the
     # FOV verdict at the solver gate, but must not touch the overlap grid,
@@ -413,6 +419,30 @@ adsb_aircraft: dict[str, dict] = {}
 # cadence — enough history for a residual trend, bounded per hex.
 KNOWN_CLAIMS_PER_HEX_MAX = 64
 known_claims: dict[str, deque] = {}
+
+# ── Known-track holds: the link a claim leaves behind ─────────────────────────
+# Written by services/known_claiming.py on every claim for (node, hex); read
+# by the same module's hold path on the next frame from that node.
+#   node_id -> hex -> {"delay_us", "doppler_hz", "ts_ms",
+#                      "prev_delay_us", "prev_doppler_hz", "prev_ts_ms",
+#                      "fix": the claim's adsb_fix (original fix_ts_ms),
+#                      "world", "n_claims", "n_hold"}
+# A claim is evidence that THIS node's echo of THIS hex sits at that
+# (delay, Doppler); the transponder fix that first supplied the identity is
+# not needed to keep believing it one frame later.  So the entry is the node's
+# own measured track of the aircraft, and the hold path predicts the next
+# frame's observation from it — which is what keeps a linked track linked
+# after the tags stop and the cached fix ages out, instead of falling into the
+# dark pool as a fresh ghost beside the aircraft it belongs to.
+# Two samples, not one: the Doppler rate needs a difference, and a rate from
+# ADS-B would re-introduce the dependency the hold exists to drop.
+# Same unlocked discipline as known_claims above (single writer per node — the
+# frame worker — dict writes atomic under the GIL).  Bounded three ways:
+# entries older than KNOWN_HOLD_MAX_GAP_S are dropped when that node's next
+# frame is processed, feed_gc.prune_stale_stores prunes per hex for a node
+# that stopped sending entirely, and a hold is one entry per (node, hex) that
+# ever claimed — the same population known_claims is keyed by.
+known_track_holds: dict[str, dict[str, dict]] = {}
 
 # ── Track history: rolling position buffer per aircraft hex ───────────────────
 # The TRUE frame.  Everything internal compares against it — the speed gate's
@@ -582,6 +612,22 @@ known_claims_world_rejects: int = 0
 # Claiming-stage exceptions absorbed by frame_processor's fail-open guard.
 # Nonzero means the known lane is broken and silently contributing nothing.
 known_claims_errors: int = 0
+# Known-track hold (see known_track_holds above and services/known_claiming.py).
+# claims counts detections claimed by the hold path — the ones that would have
+# fallen into the dark pool as the tags stopped; expired counts hold entries
+# dropped for exceeding KNOWN_HOLD_MAX_GAP_S; dropped_disagree counts holds
+# discarded because a FRESH ADS-B fix for the same hex contradicted the held
+# track (the ghost-lock guard: the hold may outlive the transponder, never
+# disagree with it while it is still reporting).
+known_hold_claims: int = 0
+known_hold_expired: int = 0
+known_hold_dropped_disagree: int = 0
+# Known-track FOLLOW (services/known_claiming._follow_states): detections
+# claimed against the known lane's OWN published position for a hex whose
+# transponder has gone stale, on a node that has no hold of its own.  It is
+# what stops a node that newly acquires a silent aircraft from feeding the
+# dark pool and minting a twin key beside the lane's entry.
+known_follow_claims: int = 0
 # Dark track following (DARK_FOLLOW_MODE) — see services/dark_follow.py.
 # targets is a GAUGE (the size of the current pseudo-state list, assigned on
 # every rebuild), the other four are since-boot counters.  The funnel reads
@@ -593,6 +639,51 @@ dark_follow_claims: int = 0
 dark_follow_inputs: int = 0
 dark_follow_published: int = 0
 dark_follow_dropped: int = 0
+# Why the keys that are NOT followed were rejected, one counter per test in
+# dark_follow._build_targets, in the order the function applies them.  These
+# are KEY-SECONDS, not events: the target list is rebuilt every
+# dark_follow._TARGETS_TTL_S (1 s) and every dark key is re-tested on every
+# rebuild, so a key that stays ineligible for a minute adds ~60.  They are
+# therefore only meaningful against EACH OTHER (which gate is holding the lane
+# back) and against dark_follow_targets (the eligible side of the same walk) —
+# never against dark_follow_claims/inputs/published, which count events.
+#
+# WHY THESE EXIST.  The lane had one counter (dropped) and a debug log the
+# deployed WARNING-level config never emits, so "why is this aircraft not
+# followed?" was unanswerable from the API.  Measured on test: dark aircraft
+# whose widest solve is 3 nodes got 0-3 follow solves each against 30-100 for
+# 4+-node aircraft, and finding out why took an offline simulation of the
+# filter — the 1200 m R floor puts velocity sigma at 150/112/74/51 m/s over
+# successive solves, so a 3-node key only clears DARK_FOLLOW_MAX_VEL_SIGMA_MS
+# on its fourth solve.  vel_sigma dominating this block is that finding, live.
+dark_follow_inelig_cooldown: int = 0
+dark_follow_inelig_no_pos: int = 0
+dark_follow_inelig_age: int = 0
+dark_follow_inelig_min_solves: int = 0
+dark_follow_inelig_min_nodes: int = 0
+dark_follow_inelig_no_filter: int = 0
+dark_follow_inelig_vel_sigma: int = 0
+# The two ways an n=2 follow input is now spared instead of held against the
+# key it was predicted from.  Both exist because being withheld for lack of a
+# third node is not evidence that the prediction was wrong, and the follow
+# guard used to treat it as such: two consecutive rejected follow-solves drop
+# the target for 30 s, and with DARK_FOLLOW_N2_ADMIT off an n=2 follow input
+# dies at the solver's confirmation gate (outcome n2_unconfirmed) every single
+# time.  Measured on the test droplet over 20-minute captures, that made
+# `cooldown` the lane's biggest ineligibility bucket by far — 1146-1409
+# key-seconds per window from 43-56 target drops, while the bottom-up lane had
+# to re-find each dropped aircraft from scratch at a 5-8% publish rate for its
+# own n=2 candidates.
+#
+# n2_withheld counts follow-solve records whose n2_unconfirmed outcome was NOT
+# fed to the guard (solver._record_solve_history); n2_skipped counts follow
+# inputs never built at all because the claim round matched only two nodes and
+# the bypass is off (known_lane.run_dark_follow_pass), each of which also saves
+# a pool solve that could never have published.  Read them against
+# dark_follow_inputs: skipped is the input that no longer happens, withheld the
+# verdict that no longer counts.
+dark_follow_n2_withheld: int = 0
+dark_follow_n2_skipped: int = 0
 # Bottom-up dark solves refused at keying because the follow lane owns the key
 # they landed on (solver.multinode_key_decision's "shadowed" verdict, binding
 # mode only).  They passed every gate, so they are counted in solver_successes
@@ -604,6 +695,23 @@ dark_bottomup_shadowed: int = 0
 # the solve succeeded, it simply has not earned publication, and a real target
 # is published as soon as it accumulates the observation span to justify itself.
 n2_unconfirmed: int = 0
+# n=2 solves admitted PAST that gate because they were anchored onto an
+# established dark track (services/dark_follow.py, DARK_FOLLOW_N2_ADMIT).  The
+# complement of n2_unconfirmed on the follow lane: measured on the test
+# droplet, 165 of 321 n=2 records were rejected as n2_unconfirmed and 86% of
+# those sat within 5 km of a real aircraft, 14 per capture of them anchored
+# follow inputs whose identity the claim round had already established.  A
+# separate counter because this is the one place a pairing is published
+# without a constant-velocity fit behind it, so its rate is what says whether
+# the bypass is worth the ghost risk.
+n2_anchored_admitted: int = 0
+# Confirmed n=2 solves published at the constant-velocity fit's position
+# instead of the single-epoch LM one (solver._apply_n2_fit_position,
+# N2_PUBLISH_FIT_POSITION).  Read against solver_successes for the n=2 lane:
+# the shortfall is confirmed pairings whose fit could not be reconstructed on
+# this side — association fitted them inline and kept no epochs — and those
+# still publish, at the old position.
+n2_fit_position_published: int = 0
 # Overlap-grid rebuilds triggered by a node's empirical coverage tightening.
 # A counter rather than a log line: the server emits WARNING and above, so an
 # INFO message about this is invisible in every deployed environment — the same
@@ -633,6 +741,20 @@ tracks_stale_skipped: int = 0
 solver_epoch_align_skipped: int = 0
 
 solver_queue_drops: int = 0
+
+# WebSocket clients whose aircraft-feed send hit the broadcast timeout.  The
+# broadcast fans its sends out with asyncio.gather, so a wedged client costs
+# one timeout rather than serialising the whole flush behind it — this counter
+# is the only place that stall is now visible.  Nonzero and climbing means
+# clients are being dropped mid-broadcast; the feed itself is unaffected.
+ws_send_timeouts: int = 0
+
+# Solve calls that hit SOLVER_POOL_CALL_TIMEOUT_S waiting on a pool child and
+# were retried inline (services/tasks/solver._pool_call).  A stuck-but-alive
+# child used to block one of the two solver worker threads for the process
+# lifetime with no counter moving anywhere; nonzero here means the pool was
+# torn down and rebuilt at least that many times.
+solver_pool_timeouts: int = 0
 # Queue items discarded unsolved because they aged past _SOLVER_MAX_QUEUE_AGE_S
 # waiting for a worker.  Was only a DEBUG log, which staging does not emit —
 # the drain-rate collapse behind the August latency incident was invisible in
@@ -660,6 +782,30 @@ solver_resolve_skips: int = 0
 # same predicate routes.test._record_lane falls back to for a record that
 # never got a key — and a skip never gets one.
 solver_resolve_skips_dark: int = 0
+
+# Candidates the resolve-slot rule would have skipped on width alone but let
+# through because every claim blocking them was older than
+# _SOLVER_RESOLVE_REFRESH_S and they carry 3+ nodes (solver.py's
+# _resolve_slot_state).  These are extra solves bought deliberately: the map
+# entry behind such a claim has been dead-reckoning for 6 s or more, and dark
+# position error roughly triples across the 12 s window.  Read against
+# solver_resolve_skips — the refresh is meant to move a slice of that counter
+# here, not to replace it.
+solver_resolve_refresh: int = 0
+
+# Pool adoption (solver.py's _adopt_pool_nodes).  A dark candidate solved with
+# fewer nodes than the association round paired for it is "eligible"; when the
+# extra node's measured delay/Doppler agree with what the narrow solve
+# predicts for that node it is adopted and the candidate re-solved wider.
+# Live baseline the stage was built against: 72% of published dark solves sit
+# below their pool (mean shortfall 2.27 nodes), and 390 of 481 rejected n=2
+# candidates had a pool of 3+.  Read widened/eligible as the hit rate and
+# nodes_added/widened as the average width bought; rejected counts eligible
+# candidates where nothing passed the gates or the wider solve was refused.
+solver_adopt_eligible: int = 0
+solver_adopt_widened: int = 0
+solver_adopt_nodes_added: int = 0
+solver_adopt_rejected: int = 0
 
 # The last few hundred resolve-slot skips, with the claims that blocked them.
 # Deliberately NOT the solve-history deque: a skip is not a solve outcome, and
@@ -748,6 +894,31 @@ solver_anchored_published: int = 0
 # transponder hex unconditionally and has no decision to observe.
 solver_key_minted_dark: int = 0
 solver_key_proximity_dark: int = 0
+# ...and the subset of those proximity re-keys whose matched entry carried a
+# LATER measurement epoch than the solve itself (signed dt < 0).  Solves reach
+# the keying rule out of measurement order as a matter of course — two dark
+# lanes and a multi-worker solver pool — and until _MN_ASSOC_MAX_NEG_DT_S the
+# scan skipped those entries outright, so each one became a second key for an
+# aircraft that already had one.  This counter is the reclaimed population:
+# measured live, 16 of 67 dark mints in 22 min were of exactly this shape.
+solver_key_proximity_negdt: int = 0
+# Dark re-keys decided by NODE-TRACK CONTINUITY rather than by distance alone
+# (solver.py's TRACK_LINK_AGE_S): a candidate that shared tracker track ids with
+# this solve and so outranked a nearer stranger inside the gate, or a key the
+# follow lane owns that was joined on >= TRACK_LINK_MIN_SHARED_JOIN shared ids.
+# Kept apart from solver_key_proximity_dark so the two rules can be read against
+# each other — under the distance-only rule every one of these was either a
+# fresh key for an aircraft that already had one or a solve thrown away.
+solver_key_tracks: int = 0
+
+# n=2 solver inputs that took their initial-guess altitude from an established
+# multi-node dark key instead of the association grid (solver.py's
+# _solve_best_altitude_n2 and N2_ALT_INHERIT_KM).  The n=2 solve is exactly
+# determined in (x, y) once altitude is pinned, so a key that has already been
+# solved at n>=3 knows the altitude far better than a weighted mean over grid
+# layers does — this counts how often that inheritance actually fires, and the
+# matching per-solve evidence is alt_source="key" on the history records.
+solver_n2_alt_inherited: int = 0
 
 # Publishes whose velocity carried the vel_untrusted flag (vz saturated, or
 # raw-solve velocity at n<=3) — the denominator is solver_successes.
@@ -831,6 +1002,31 @@ def bump_counter(name: str, n: int = 1) -> None:
 task_last_success: dict[str, float] = {}  # task_name → last success epoch
 task_error_counts: dict[str, int] = defaultdict(int)  # task_name → cumulative errors
 
+
+def bump_task_error(name: str, n: int = 1) -> None:
+    """Thread-safe increment for a task_error_counts entry.
+
+    The bare ``task_error_counts[name] += 1`` this replaces is a
+    read-modify-write on a shared dict, and the bump sites run on the event
+    loop, the frame workers and the solver threads at once — the same
+    lost-update shape bump_counter() exists for.  Reuses counters_lock: the
+    two never nest, and the critical section is one dict slot.
+    """
+    with counters_lock:
+        task_error_counts[name] += n
+
+
+def task_error_snapshot() -> dict[str, int]:
+    """Copy of task_error_counts, taken under the bump lock.
+
+    A bare ``dict(task_error_counts)`` on a request thread can raise
+    "dictionary changed size during iteration" while a worker inserts a
+    first-ever key for its task.
+    """
+    with counters_lock:
+        return dict(task_error_counts)
+
+
 # ── Accuracy tracking (haversine solver vs ADS-B) ────────────────────────────
 # Rolling buffer of {hex, error_km, position_source, ts} samples.
 ACCURACY_MAX_SAMPLES = 5000
@@ -888,18 +1084,30 @@ def _reset_for_tests() -> None:
     global adsb_seed_frames_autotagged, adsb_capture_ts_fallback
     global known_claims_made, known_claim_contentions, known_claims_bound
     global known_claims_errors, known_claims_visibility_rejects, known_claims_world_rejects
+    global known_hold_claims, known_hold_expired, known_hold_dropped_disagree
+    global known_follow_claims
     global dark_follow_targets, dark_follow_claims, dark_follow_inputs
     global dark_follow_published, dark_follow_dropped, dark_bottomup_shadowed
-    global n2_unconfirmed, coverage_rebuilds, coverage_rebuild_nodes
+    global dark_follow_inelig_cooldown, dark_follow_inelig_no_pos
+    global dark_follow_inelig_age, dark_follow_inelig_min_solves
+    global dark_follow_inelig_min_nodes, dark_follow_inelig_no_filter
+    global dark_follow_inelig_vel_sigma
+    global dark_follow_n2_withheld, dark_follow_n2_skipped
+    global n2_unconfirmed, n2_anchored_admitted, coverage_rebuilds, coverage_rebuild_nodes
+    global n2_fit_position_published
     global coverage_rebuild_backlog, tracks_stale_skipped, solver_epoch_align_skipped
     global solver_queue_drops, solver_stale_drops, solver_resolve_skips
-    global solver_resolve_skips_dark
+    global ws_send_timeouts
+    global solver_pool_timeouts
+    global solver_resolve_skips_dark, solver_resolve_refresh
+    global solver_adopt_eligible, solver_adopt_widened, solver_adopt_nodes_added, solver_adopt_rejected
     global mn_superseded, mn_superseded_blocked, mn_superseded_blocked_alt, solver_trimmed
     global solver_consensus_selected, solver_consensus_filtered
     global solver_consensus_fallback, solver_consensus_shadow
     global solver_anchor_hits, solver_anchor_fallbacks, solver_anchored_published
-    global solver_key_minted_dark, solver_key_proximity_dark
-    global solver_vel_untrusted_published
+    global solver_key_minted_dark, solver_key_proximity_dark, solver_key_proximity_negdt
+    global solver_key_tracks
+    global solver_vel_untrusted_published, solver_n2_alt_inherited
     global fov_shadow_agree, fov_shadow_would_pass, fov_shadow_would_reject
     global fov_neg_events
     global solver_worker_errors
@@ -918,6 +1126,7 @@ def _reset_for_tests() -> None:
         multinode_tracks,
         adsb_aircraft,
         known_claims,
+        known_track_holds,
         track_histories,
         track_histories_public,
         track_last_emit,
@@ -977,24 +1186,37 @@ def _reset_for_tests() -> None:
     with counters_lock:
         frames_dropped = frames_processed = node_frames_rate_limited = 0
         solver_successes = solver_failures = n2_unconfirmed = 0
+        n2_anchored_admitted = n2_fit_position_published = 0
         adsb_seed_frames_autotagged = adsb_capture_ts_fallback = 0
         known_claims_made = known_claim_contentions = known_claims_bound = 0
         known_claims_errors = known_claims_visibility_rejects = 0
         known_claims_world_rejects = 0
+        known_hold_claims = known_hold_expired = known_hold_dropped_disagree = 0
+        known_follow_claims = 0
         dark_follow_targets = dark_follow_claims = dark_follow_inputs = 0
         dark_follow_published = dark_follow_dropped = 0
+        dark_follow_inelig_cooldown = dark_follow_inelig_no_pos = 0
+        dark_follow_inelig_age = dark_follow_inelig_min_solves = 0
+        dark_follow_inelig_min_nodes = dark_follow_inelig_no_filter = 0
+        dark_follow_inelig_vel_sigma = 0
+        dark_follow_n2_withheld = dark_follow_n2_skipped = 0
         dark_bottomup_shadowed = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
+        ws_send_timeouts = 0
+        solver_pool_timeouts = 0
         coverage_rebuild_backlog = 0
         tracks_stale_skipped = solver_epoch_align_skipped = 0
         solver_stale_drops = 0
-        solver_resolve_skips = solver_resolve_skips_dark = 0
+        solver_resolve_skips = solver_resolve_skips_dark = solver_resolve_refresh = 0
+        solver_adopt_eligible = solver_adopt_widened = solver_adopt_nodes_added = solver_adopt_rejected = 0
         mn_superseded = mn_superseded_blocked = mn_superseded_blocked_alt = 0
         solver_trimmed = 0
         solver_consensus_selected = solver_consensus_filtered = 0
         solver_consensus_fallback = solver_consensus_shadow = 0
         solver_anchor_hits = solver_anchor_fallbacks = solver_anchored_published = 0
-        solver_key_minted_dark = solver_key_proximity_dark = 0
+        solver_key_minted_dark = solver_key_proximity_dark = solver_key_proximity_negdt = 0
+        solver_key_tracks = 0
+        solver_n2_alt_inherited = 0
         solver_vel_untrusted_published = 0
         fov_shadow_agree = fov_shadow_would_pass = fov_shadow_would_reject = 0
         fov_neg_events = 0
@@ -1072,6 +1294,25 @@ def _seed_sim_fracs_from_env() -> dict:
 simulation_config: dict = {
     **_seed_sim_fracs_from_env(),
     # aircraft (commercial) fraction = 1 - sum of above
+    #
+    # Transponder outages: the fraction of ADS-B-equipped aircraft the
+    # simulator takes silent mid-flight (has_adsb stays true, the broadcast
+    # stops).  Deliberately NOT part of the frac_* sum above and NOT env-seeded
+    # with them: it is a fraction OF the ADS-B population, orthogonal to the
+    # spawn-type roll, so folding it into that sum would make a scene with lots
+    # of dark traffic silently unable to test outages.  0.0 = off.
+    "frac_adsb_outage": 0.0,
+    #
+    # Live ADS-B seeding: the fleet pulls real aircraft over its metro from
+    # adsb.retina.fm into the simulated world and the synthetic nodes echo
+    # them (retina_simulation.orchestrator._seed_live_adsb).  frac_live_dark
+    # is the share of THOSE aircraft the simulator mirrors without their
+    # transponder — outside the frac_* sum for the same reason as the outage
+    # knob: it is a fraction of the live population, orthogonal to how the
+    # simulator's own spawns are rolled.  live_adsb_enabled pauses the pull
+    # (and removes the live aircraft) without a fleet restart.
+    "frac_live_dark": 0.15,
+    "live_adsb_enabled": True,
     #
     # Deliberately NO defaults for max_range_km / min_aircraft / max_aircraft:
     # the fleet orchestrator applies those keys only when present, falling back

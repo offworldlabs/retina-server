@@ -4,6 +4,7 @@ import { useMap } from "react-leaflet";
 import L from "leaflet";
 import { pointInPolygon, haversineDistanceKm } from "./geo";
 import { groundTruthKey } from "./constants";
+import { usePalette } from "./useMapTheme";
 
 /* ── InBeamDiagnostic: flags ADS-B aircraft inside a node's MEASURED
       coverage that have no recent confirmed detection from that node.
@@ -25,6 +26,7 @@ import { groundTruthKey } from "./constants";
       nothing to be missing from. ── */
 
 const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundTruthRef, nodesByIdRef, smoothRef }) {
+  const { BEAM_GAP } = usePalette();
   const map = useMap();
   const polyMapRef = useRef(new Map()); // pairKey → L.polyline
 
@@ -110,7 +112,7 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundT
             existing.setLatLngs(latLngs);
           } else {
             const line = L.polyline(latLngs, {
-              color: "#ef4444", // red-500
+              color: BEAM_GAP,
               weight: 1.5,
               opacity: 0.7,
               dashArray: "4 6",
@@ -138,7 +140,7 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundT
       for (const line of polyMap.values()) line.remove();
       polyMap.clear();
     };
-  }, [map, detectionsRef, groundTruthRef, nodesByIdRef, smoothRef]);
+  }, [map, detectionsRef, groundTruthRef, nodesByIdRef, smoothRef, BEAM_GAP]);
 
   return null;
 });

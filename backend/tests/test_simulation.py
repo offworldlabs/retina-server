@@ -14,8 +14,8 @@ class TestSimulationWorld:
         world.add_node(
             SimNodeConfig(
                 node_id="sim-node-1",
-                rx_lat=33.939,
-                rx_lon=-84.651,
+                rx_lat=33.9,
+                rx_lon=-84.6,
                 tx_lat=33.756,
                 tx_lon=-84.331,
                 beam_width_deg=41,
@@ -31,8 +31,8 @@ class TestSimulationWorld:
         world.add_node(
             SimNodeConfig(
                 node_id="sim-node-1",
-                rx_lat=33.939,
-                rx_lon=-84.651,
+                rx_lat=33.9,
+                rx_lon=-84.6,
                 tx_lat=33.756,
                 tx_lon=-84.331,
                 beam_width_deg=41,
@@ -46,8 +46,8 @@ class TestSimulationWorld:
         world.add_node(
             SimNodeConfig(
                 node_id="sim-node-1",
-                rx_lat=33.939,
-                rx_lon=-84.651,
+                rx_lat=33.9,
+                rx_lon=-84.6,
                 tx_lat=33.756,
                 tx_lon=-84.331,
                 beam_width_deg=41,
@@ -67,8 +67,8 @@ class TestSimulationWorld:
         world.add_node(
             SimNodeConfig(
                 node_id="sim-node-1",
-                rx_lat=33.939,
-                rx_lon=-84.651,
+                rx_lat=33.9,
+                rx_lon=-84.6,
                 tx_lat=33.756,
                 tx_lon=-84.331,
                 beam_width_deg=41,

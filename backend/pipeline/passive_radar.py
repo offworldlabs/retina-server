@@ -51,12 +51,22 @@ from services.public_location import public_latlon
 from services.publication import is_private
 
 # ─── Node Configuration ─────────────────────────────────────────────
+# Fallback geometry for a frame whose node has no configuration of its own.
+# The receiver is invented and must stay invented: /api/radar/status publishes
+# this pipeline's position through the fuzz, so a true position here would sit
+# in a public repo beside its own displaced output, one subtraction from the
+# offset. The illuminator is a licensed broadcast transmitter, public by
+# definition, and the pair is far enough apart to be a plausible bistatic
+# geometry.
+#
+# __init__ takes this branch for any falsy node_config, an empty dict included,
+# so being registered is not on its own enough to be solved against your own.
 DEFAULT_NODE_CONFIG = {
-    "node_id": "net13",
+    "node_id": "default-node",
     "Fs": 2_000_000,  # Sample rate Hz
     "FC": 195_000_000,  # Center frequency Hz
-    "rx_lat": 33.939182,
-    "rx_lon": -84.651910,
+    "rx_lat": 34.0,
+    "rx_lon": -84.0,
     "rx_alt_ft": 950,
     "tx_lat": 33.75667,
     "tx_lon": -84.331844,
@@ -258,7 +268,7 @@ class PassiveRadarPipeline:
     def __init__(self, node_config: dict = None):
         config = node_config or DEFAULT_NODE_CONFIG
         self.config = config
-        self.node_id = config.get("node_id", "net13")
+        self.node_id = config.get("node_id", "default-node")
 
         # Set up retina-tracker with in-memory event writer
         self.event_writer = InMemoryEventWriter()

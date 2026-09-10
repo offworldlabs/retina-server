@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "../../context/AuthContext";
 import { api } from "../../api/client";
+import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
 
 export default function SettingsPage() {
   const { user } = useAuth();
@@ -71,7 +72,10 @@ export default function SettingsPage() {
                   {nodes.map((n) => (
                     <tr key={n.node_id}>
                       <td style={{ color: "var(--text-muted)" }}>Node</td>
-                      <td style={{ fontFamily: "monospace", fontSize: 12 }}>{n.name || n.node_id}</td>
+                      <td style={{ fontFamily: "monospace", fontSize: 12 }}>
+                        {n.name || n.node_id}{" "}
+                        <LocationPrivacyBadge isPrivate={n.location_private} />
+                      </td>
                       <td style={{ color: "var(--text-muted)" }}>Frequency</td>
                       <td>{n.frequency ? `${(n.frequency / 1e6).toFixed(1)} MHz` : "—"}</td>
                       <td style={{ color: "var(--text-muted)" }}>Status</td>

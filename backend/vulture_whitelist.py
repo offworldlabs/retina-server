@@ -115,7 +115,7 @@ resolve_n2_chi2
 # deleted because it looks unreferenced is a field the node sends and the
 # server then rejects. The handlers that read them land with 86cb2cy3v.
 #
-# Only the names not already listed above appear here, and only those the four
+# Only the names not already listed above appear here, and only those the five
 # endpoints' request and response bodies actually carry.
 remote_management
 server_time
@@ -199,6 +199,13 @@ known_claims_world_rejects
 # Same string-keyed bump_counter shape, from routes/sim_ingest.py's
 # transponder-hex gate on /api/sim/adsb/push.
 sim_adsb_push_rejected_hex
+
+# Dark-follow ineligibility counters (services/dark_follow.py _build_targets),
+# bumped by name through state.bump_counter like the rest of the funnel.
+# vulture flags only these two of the seven because the other names also
+# appear as substrings of read sites; the reason is the same for all seven.
+dark_follow_inelig_min_solves
+dark_follow_inelig_min_nodes
 
 
 # ── Framework attributes (previously CI --ignore-names) ───────────────────────

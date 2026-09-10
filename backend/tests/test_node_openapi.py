@@ -11,11 +11,14 @@ deliberately: finding a stale contract at `pytest` time is a regeneration, and
 finding it in CI is a round trip.
 """
 
+import math
+
 import pytest
 import yaml
 
 from routes.nodes import NODE_API_SERVERS, NODE_API_VERSION
 from scripts.generate_openapi import CONTRACT_PATH, contract, render
+from services.node_config import _NULLABLE, _NULLABLE_BEAM, _NUMERIC_BOUNDS, _REQUIRED, numeric_branch
 
 FRAME = {
     "t": 1753900000.123,
@@ -28,13 +31,15 @@ FRAME = {
     "adsb_hex": [],
 }
 
-# The four the frozen 1.1.1 published. A generated client turns these into method
-# names, so they are as much part of the contract as any field.
+# Every operationId the contract has published: the four the frozen 1.1.1
+# document carried, plus 1.2.0's `putContact`. A generated client turns these
+# into method names, so they are as much part of the contract as any field.
 OPERATION_IDS = {
     ("/v1/nodes/register", "post"): "registerNode",
     ("/v1/nodes/detection", "post"): "postDetection",
     ("/v1/nodes/heartbeat", "post"): "postHeartbeat",
     ("/v1/nodes/config", "put"): "putConfig",
+    ("/v1/nodes/contact", "put"): "putContact",
 }
 
 X_RETRY_VALUES = {"never", "retry-after", "backoff"}
@@ -97,7 +102,7 @@ def test_the_contract_carries_the_node_apis_own_version(document):
     assert document["info"]["version"] == NODE_API_VERSION
 
 
-def test_it_describes_the_four_node_endpoints_and_nothing_else(document):
+def test_it_describes_the_five_node_endpoints_and_nothing_else(document):
     assert {(path, method) for path, method, _ in _operations(document)} == set(OPERATION_IDS)
 
 
@@ -177,11 +182,103 @@ def test_the_timestamps_are_still_typed_as_datetimes(document):
         assert schemas[model]["properties"]["server_time"]["format"] == "date-time"
 
 
+# ── the configuration schema ─────────────────────────────────────────────────
+#
+# Built from the validator's own tables rather than written beside them. What
+# wants testing here is the document: that both operations reach one object, and
+# that every field and bound the server enforces reaches it. Where those bounds
+# actually sit is pinned against validate_config itself in
+# tests/test_node_config_validation.py, which is the half that catches a bound
+# moving.
+
+CONFIG_REF = {"$ref": "#/components/schemas/NodeConfig"}
+
+# The two places a configuration enters the API.
+CONFIG_BODIES = {
+    "POST /v1/nodes/register": lambda document: document["components"]["schemas"]["RegisterRequest"]["properties"][
+        "config"
+    ],
+    "PUT /v1/nodes/config": lambda document: document["paths"]["/v1/nodes/config"]["put"]["requestBody"]["content"][
+        "application/json"
+    ]["schema"],
+}
+
+
+def _published_config(document):
+    return document["components"]["schemas"]["NodeConfig"]
+
+
+def test_both_operations_reach_one_configuration_component(document):
+    """It is the same object on the wire, so a client that generated two
+    incompatible types from it has been told something untrue.
+
+    Neither operation can emit this `$ref` itself, so the generator makes it.
+    That is exactly the sort of substitution that fails by doing nothing, which
+    is what this catches: both bodies are the reference and nothing else.
+    """
+    for name, body in CONFIG_BODIES.items():
+        assert body(document) == CONFIG_REF, name
+
+    assert _published_config(document)["title"] == "NodeConfig"
+
+
+def test_every_field_the_validator_requires_is_published_and_required(document):
+    schema = _published_config(document)
+
+    assert set(schema["properties"]) == _REQUIRED
+    assert set(schema["required"]) == _REQUIRED
+    # The validator names an unknown key back to the caller rather than ignoring
+    # it, so a document permitting one would describe a different server.
+    assert schema["additionalProperties"] is False
+
+
+def test_every_bound_the_validator_enforces_reaches_the_schema(document):
+    """Inclusive bounds as `minimum`/`maximum` and exclusive ones as their
+    `exclusive*` counterparts. A client checks a value against these before
+    sending, so an inclusivity published the wrong way round rejects a config
+    the server accepts."""
+    properties = _published_config(document)["properties"]
+
+    for field, (low, high, low_inclusive, high_inclusive) in _NUMERIC_BOUNDS.items():
+        numeric = numeric_branch(properties[field])
+
+        assert numeric["minimum" if low_inclusive else "exclusiveMinimum"] == low, field
+        if math.isinf(high):
+            # The two tolerances have no ceiling, which JSON Schema says by
+            # omission. A published `.inf` would state a limit that is not
+            # there and that no client could act on.
+            assert "maximum" not in numeric and "exclusiveMaximum" not in numeric, field
+        else:
+            assert numeric["maximum" if high_inclusive else "exclusiveMaximum"] == high, field
+
+
+def test_the_nullable_fields_publish_a_null_branch(document):
+    """The six coordinates, so a node whose owner cannot supply the geometry
+    still registers, and the two beam fields, which no node has characterised.
+    A client generated from a document that omitted these cannot express the
+    config the fleet actually sends."""
+    properties = _published_config(document)["properties"]
+    nullable = {field for field, published in properties.items() if {"type": "null"} in published.get("anyOf", [])}
+
+    assert nullable == _NULLABLE | _NULLABLE_BEAM
+
+
+def test_the_contact_schema_published_is_the_validators_own(document):
+    """One operation carries it, so it stays inline rather than being hoisted
+    into a component the way the configuration is. What matters is the same
+    either way: the bounds published are the ones the validator applies."""
+    from services.node_contact import contact_json_schema
+
+    operation = document["paths"]["/v1/nodes/contact"]["put"]
+
+    assert operation["requestBody"]["content"]["application/json"]["schema"] == contact_json_schema()
+
+
 # ── the credential ───────────────────────────────────────────────────────────
 
 
 def test_the_bearer_scheme_is_published(document):
-    """Without it a generated client sends no credential at all, and the three
+    """Without it a generated client sends no credential at all, and the four
     authenticated endpoints look open."""
     assert document["components"]["securitySchemes"]["bearerAuth"]["scheme"] == "bearer"
 
@@ -212,6 +309,7 @@ def test_only_a_refused_credential_is_terminal(document):
 
     assert terminal == {
         "PUT /v1/nodes/config 401",
+        "PUT /v1/nodes/contact 401",
         "POST /v1/nodes/detection 401",
         "POST /v1/nodes/heartbeat 401",
     }
