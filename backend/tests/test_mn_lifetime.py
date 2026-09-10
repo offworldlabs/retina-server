@@ -622,3 +622,88 @@ class TestFeedGates:
         monkeypatch.setattr(aircraft_feed_mod, "MN_N2_MIN_SOLVES", 1)
         state.multinode_tracks["k"] = _mn_entry(n_nodes=2, age_s=1.0, solve_count=1)
         assert len(self._mn_aircraft()) == 1
+
+
+class TestForgetMnKey:
+    """_forget_mn_key erases all four multinode stores — entry, anomaly hex,
+    smoother position history, Kalman state.  Supersession is its only caller
+    today; any future removal path must go through it, or the next key minted
+    at the same place inherits the dead one's filter."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+
+    def teardown_method(self):
+        solver_mod._reset_for_tests()
+
+    def test_all_four_stores_are_cleared(self):
+        from services import track_filter
+
+        key = "mn-dark-forget"
+        state.multinode_tracks[key] = _mn_entry(3, age_s=1.0, solve_count=2)
+        with state.anomaly_lock:
+            state.anomaly_hexes.add(multinode_hex_from_key(key))
+        with solver_mod._MN_POS_HISTORY_LOCK:
+            solver_mod._MN_POS_HISTORY[key] = [(LAT, LON, 1_000)]
+        track_filter.smooth_solve({"success": True, "lat": LAT, "lon": LON, "timestamp_ms": 1_000_000}, key, None)
+        assert key in track_filter._KF_TRACKS
+
+        with solver_mod._MN_TRACKS_LOCK:
+            solver_mod._forget_mn_key(key)
+
+        assert key not in state.multinode_tracks
+        assert multinode_hex_from_key(key) not in state.anomaly_hexes
+        assert key not in solver_mod._MN_POS_HISTORY
+        assert key not in track_filter._KF_TRACKS
+
+    def test_forgetting_an_unknown_key_is_a_no_op(self):
+        with solver_mod._MN_TRACKS_LOCK:
+            solver_mod._forget_mn_key("mn-dark-never-existed")
+
+
+class TestHistoryRecordKfAction:
+    """The display filter's kf_action / kf_d2 / kf_innov_m ride onto the
+    history record so a capture can attribute every published position."""
+
+    def setup_method(self):
+        state._reset_for_tests()
+        solver_mod._reset_for_tests()
+
+    def teardown_method(self):
+        solver_mod._reset_for_tests()
+
+    @staticmethod
+    def _run(solve_fn):
+        # A fresh item per call and no track_ids: identical ids on two solves
+        # within the resolve window make the second a refresh of the first
+        # (same record, same epoch), not a new publish for the filter to
+        # update over.
+        return solver_mod._process_solver_item(({"n_nodes": 3}, {}, time.time()), solve_fn)
+
+    def test_published_records_carry_the_filter_action(self, monkeypatch):
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+
+        self._run(_solve_fn())
+        first = state.mlat_solve_history[-1]
+        assert first["outcome"] == "published"
+        assert (first["kf_action"], first["kf_d2"], first["kf_innov_m"]) == ("init", None, None)
+
+        time.sleep(0.05)  # a later epoch, so the filter has a dt > 0 to update over
+        lat, lon = offset_latlon_m(LAT, LON, east_m=0.0, north_m=200.0)
+        self._run(_solve_fn(lat, lon))
+        second = state.mlat_solve_history[-1]
+        assert len(state.multinode_tracks) == 1  # joined the first key, not re-minted
+        assert second["outcome"] == "published"
+        assert second["kf_action"] == "smoothed"
+        assert second["kf_d2"] is not None
+        assert second["kf_innov_m"] is not None
+
+    def test_reject_record_carries_none(self):
+        solver_mod._process_solver_item(
+            ({"n_nodes": 3, "track_ids": ["t1"]}, {}, time.time()),
+            lambda s_in, cfgs: {"success": False},
+        )
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "unconverged"
+        assert (rec["kf_action"], rec["kf_d2"], rec["kf_innov_m"]) == (None, None, None)

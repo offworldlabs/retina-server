@@ -476,6 +476,32 @@ def _kf_manoeuvre_rescue() -> None:
     _kf_manoeuvre_rescues += 1
 
 
+def _stamp(result: dict, action: str, d2: float | None = None, innov_m: float | None = None) -> dict:
+    """Record WHICH branch of _smooth_kf produced this result, and the two
+    numbers that branch decided on.
+
+    Every return path stamps, because these fields are a measurement:
+    solver.py copies them onto the history record, so a capture can say how
+    each published position came about — "smoothed" (in-gate update),
+    "manoeuvre_rescued" (gate breach explained by the manoeuvre process
+    noise), "reanchored" (breach nothing explained; identity reset) — and
+    what the innovation was in each case.  kf_d2 is the normalised innovation
+    against the BASE process noise, the number the gate was first judged on,
+    so a rescued update still shows the surprise that triggered the retry.
+    d2/innov_m are None on the paths that never computed an innovation —
+    first solve, gap re-init, duplicate timestamp — rather than 0, which would
+    read as "the innovation was zero".
+
+    Stamped IN PLACE on the raw-passthrough paths: those return the caller's
+    own dict by identity (the EWMA contract this filter kept), and copying
+    just to add three diagnostic fields would break that.
+    """
+    result["kf_action"] = action
+    result["kf_d2"] = round(d2, 2) if d2 is not None else None
+    result["kf_innov_m"] = round(innov_m, 1) if innov_m is not None else None
+    return result
+
+
 def _sweep(now_s: float) -> None:
     """Drop keys whose last update is stale.  Caller holds _KF_LOCK.
 
@@ -807,10 +833,12 @@ def _init_entry(
 
 def _predict_update(
     entry: _TrackKF, dt: float, z: np.ndarray, r_pos: np.ndarray, sigma_a: float
-) -> tuple[np.ndarray, np.ndarray, float]:
+) -> tuple[np.ndarray, np.ndarray, float, float]:
     """One predict+update pass at a given process-noise density.
 
-    Returns (x, P, d2).  Split out of _smooth_kf so the manoeuvre retry can
+    Returns (x, P, d2, innov_m) — innov_m is the innovation's magnitude in
+    metres, the same vector d2 normalises, kept for the kf_innov_m stamp.
+    Split out of _smooth_kf so the manoeuvre retry can
     run the SAME arithmetic again with a bigger Q instead of a near-copy of
     it — the two attempts must not be able to drift apart.  Reads entry.x /
     entry.P and writes nothing: the caller decides which attempt (if either)
@@ -826,7 +854,7 @@ def _predict_update(
 
     x_upd, p_upd, y, s_cov = _kf_correct(x_pred, p_pred, z, _H_POS, r_pos)
     d2 = float(y @ np.linalg.solve(s_cov, y))
-    return x_upd, p_upd, d2
+    return x_upd, p_upd, d2, float(np.hypot(y[0], y[1]))
 
 
 def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
@@ -845,7 +873,7 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
 
         if entry is None:
             _KF_TRACKS[track_key] = _init_entry(r_lat, r_lon, ts_s, result, has_adsb_vel, v0e, v0n, r_pos)
-            return result  # first solve for this key — nothing to smooth against yet
+            return _stamp(result, "init")  # first solve for this key — nothing to smooth against yet
 
         dt = ts_s - entry.last_ts_s
         if dt <= 0:
@@ -856,13 +884,13 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
             # rounds re-solved the same epoch.  Fusing them would
             # double-count the same underlying measurements rather than add
             # independent evidence, so this stays a no-op, same as the EWMA.
-            return result
+            return _stamp(result, "passthrough")
 
         if dt > _KF_MAX_GAP_S:
             # Too long a gap to bridge with any confidence — start over here,
             # same threshold and same rationale as solver.py's _MN_DR_MAX_AGE_S.
             _KF_TRACKS[track_key] = _init_entry(r_lat, r_lon, ts_s, result, has_adsb_vel, v0e, v0n, r_pos)
-            return result
+            return _stamp(result, "init")
 
         z_e, z_n = _enu_offset_m(entry.ref_lat, entry.ref_lon, r_lat, r_lon)
         z = np.array([z_e, z_n])
@@ -871,8 +899,9 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
         # base in straight flight, ramped toward the manoeuvre value while
         # the filter is being consistently surprised.  See _entry_sigma_a.
         sigma_a = _entry_sigma_a(entry)
-        x_upd, p_upd, d2 = _predict_update(entry, dt, z, r_pos, sigma_a)
+        x_upd, p_upd, d2, innov_m = _predict_update(entry, dt, z, r_pos, sigma_a)
         d2_observed = d2
+        action = "smoothed"
 
         if d2 > _KF_GATE_CHI2:
             # A breach is NOT self-evidently an identity break — see the
@@ -882,10 +911,11 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
             # process noise: if the innovation is explained by an
             # acceleration this aircraft could actually have pulled, the
             # aircraft turned and the filter merely had too little Q.
-            x_try, p_try, d2_try = _predict_update(entry, dt, z, r_pos, _KF_SIGMA_A_MANOEUVRE_MS2)
+            x_try, p_try, d2_try, _ = _predict_update(entry, dt, z, r_pos, _KF_SIGMA_A_MANOEUVRE_MS2)
             if d2_try <= _KF_GATE_CHI2 and _KF_SIGMA_A_MANOEUVRE_MS2 > _KF_SIGMA_A_MS2:
                 _kf_manoeuvre_rescue()
                 x_upd, p_upd = x_try, p_try
+                action = "manoeuvre_rescued"
                 # The EWMA records the ORIGINAL d2, not the retry's: the
                 # entry needs to remember how surprising this update was
                 # against the Q it had, which is what keeps sigma_a inflated
@@ -899,7 +929,7 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
                 # two aircraft.
                 _kf_reanchor()
                 _KF_TRACKS[track_key] = _init_entry(r_lat, r_lon, ts_s, result, has_adsb_vel, v0e, v0n, r_pos)
-                return result
+                return _stamp(result, "reanchored", d2_observed, innov_m)
 
         # Velocity measurement update: ADS-B ONLY.  Solved vel_east/vel_north
         # is deliberately NOT applied here — see the _KF_VEL_SIGMA_SOLVE_MS
@@ -942,7 +972,7 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
             lon_s,
             smoothed["kf_pos_sigma_m"],
         )
-        return smoothed
+        return _stamp(smoothed, action, d2_observed, innov_m)
 
 
 # ── Public API ────────────────────────────────────────────────────────────

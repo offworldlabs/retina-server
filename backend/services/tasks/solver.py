@@ -1817,6 +1817,25 @@ def multinode_key_decision(
     return f"mn-dark-{result.get('timestamp_ms', 0)}-{lat:.3f}-{lon:.3f}", "minted", None, None
 
 
+def _forget_mn_key(old_key: str) -> None:
+    """Erase every trace of ``old_key`` from the multinode stores.
+
+    The four stores are the entry itself, its anomaly hex (the feed reads that
+    set independently of multinode_tracks, so an entry popped without it keeps
+    flagging a hex nothing renders), the smoother's position history, and the
+    Kalman state.  Every removal path has to erase all four or the next key
+    minted at the same place inherits the dead one's filter.  Caller holds
+    _MN_TRACKS_LOCK; _MN_POS_HISTORY_LOCK is taken inside, which is the lock
+    order everywhere else in this module.
+    """
+    state.multinode_tracks.pop(old_key, None)
+    with state.anomaly_lock:
+        state.anomaly_hexes.discard(multinode_hex_from_key(old_key))
+    with _MN_POS_HISTORY_LOCK:
+        _MN_POS_HISTORY.pop(old_key, None)
+    track_filter.drop_key(old_key)
+
+
 def _supersession_match(
     old_key: str,
     old_r: dict,
@@ -2901,6 +2920,16 @@ def _record_solve_history(
         # never touched (rejects, off/ewma mode, first-ever solve for a key).
         "pos_sigma_km": round(float(r["pos_sigma_km"]), 3) if r.get("pos_sigma_km") is not None else None,
         "kf_pos_sigma_m": r.get("kf_pos_sigma_m"),
+        # Which branch of the display filter produced this position, and the
+        # two numbers it decided from: kf_d2 is the innovation's chi² against
+        # the filter's own covariance, kf_innov_m the innovation magnitude in
+        # metres.  Present on every result the KF touched (see
+        # track_filter._stamp), None on rejects and in off/ewma mode.  They
+        # let a capture say how a key's bad joins arrived — "reanchored" vs
+        # "manoeuvre_rescued" vs "smoothed" — without flipping any policy.
+        "kf_action": r.get("kf_action"),
+        "kf_d2": r.get("kf_d2"),
+        "kf_innov_m": r.get("kf_innov_m"),
         # The calibrated display sigma (services/solve_uncertainty.py), stamped
         # here so the calibration that produced it can be re-run from
         # /api/test/mlat-history alone: fraction(gt_error_km*1000 <=
@@ -3911,12 +3940,7 @@ def _process_solver_item(
                             if _supersession_match(old_key, old_r, new_ids, _raw_lat, _raw_lon, _ts_ms)[0]:
                                 state.bump_counter("mn_superseded_blocked_alt")
                             continue
-                        state.multinode_tracks.pop(old_key, None)
-                        with state.anomaly_lock:
-                            state.anomaly_hexes.discard(multinode_hex_from_key(old_key))
-                        with _MN_POS_HISTORY_LOCK:
-                            _MN_POS_HISTORY.pop(old_key, None)
-                        track_filter.drop_key(old_key)
+                        _forget_mn_key(old_key)
                         max_superseded_count = max(max_superseded_count, old_r.get("solve_count", 0))
                         max_superseded_n_nodes = max(
                             max_superseded_n_nodes,
