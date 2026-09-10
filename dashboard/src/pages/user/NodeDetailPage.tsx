@@ -6,7 +6,11 @@ import {
 import { api } from "../../api/client";
 import { RetnodeLink } from "../../components/RetnodeLink";
 import { POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
-import type { PositionStatus } from "../../types";
+import {
+  LocationPrivacyBadge,
+  LocationPrivacyControl,
+} from "../../components/LocationPrivacyControl";
+import type { LocationPrivacyState, PositionStatus } from "../../types";
 
 const POSITION_FIX_HINT: Record<Exclude<PositionStatus, "positioned">, string> = {
   missing_rx: "Add its receiver position in the node configuration.",
@@ -19,13 +23,33 @@ export default function NodeDetailPage() {
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [nodeInfo, setNodeInfo] = useState(null);
+  const [privacy, setPrivacy] = useState<LocationPrivacyState | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    Promise.all([api.nodeAnalytics(nodeId), api.nodes()])
-      .then(([analytics, nodeData]) => {
+    Promise.all([
+      api.nodeAnalytics(nodeId),
+      // Both of these fail soft: a private node is absent from /api/radar/nodes
+      // and myNodes 401s for a signed-out viewer, but the per-node analytics
+      // route answers its owner, so the page must render on that alone.
+      api.nodes().catch(() => ({ nodes: {} })),
+      api.myNodes().catch(() => []),
+    ])
+      .then(([analytics, nodeData, mine]) => {
         setData(analytics);
-        setNodeInfo((nodeData.nodes || {})[nodeId] || null);
+        setNodeInfo((nodeData?.nodes || {})[nodeId] || null);
+        const owned = (Array.isArray(mine) ? mine : []).find((n) => n.node_id === nodeId);
+        // Ownership, not presence in the node list, is what earns the privacy
+        // card — the node the card matters most for is the one missing there.
+        setPrivacy(
+          owned
+            ? {
+                node_id: owned.node_id,
+                location_private: !!owned.location_private,
+                location_privacy_source: owned.location_privacy_source || "default",
+              }
+            : null,
+        );
       })
       .catch(() => setData(null))
       .finally(() => setLoading(false));
@@ -129,6 +153,27 @@ export default function NodeDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* Location privacy — owners only; the control writes the /me routes. */}
+      {privacy && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header">
+            <h3>Location privacy</h3>
+            <LocationPrivacyBadge isPrivate={privacy.location_private} />
+          </div>
+          <div className="card-body">
+            <LocationPrivacyControl
+              nodeId={privacy.node_id}
+              isPrivate={privacy.location_private}
+              source={privacy.location_privacy_source}
+              uncertaintyKm={data.detection_area?.rx?.location_uncertainty_km}
+              onSave={(next) => api.myNodeLocationPrivacy(privacy.node_id, next)}
+              onReset={() => api.clearMyNodeLocationPrivacy(privacy.node_id)}
+              onApplied={setPrivacy}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Detection Area */}
       {data.detection_area && (

@@ -126,15 +126,34 @@ class AcceptanceRecord(_RequestModel):
 
 
 class PublicationChoice(_RequestModel):
-    """Whether the owner chose to publish this node's detections. `choice` is
-    required, with no default: a node must send an explicit value.
+    """Whether this node's location is published, which is the only thing the
+    choice governs. Either way the node runs its full pipeline, joins track
+    association and contributes to multinode solves, and the network keeps
+    everything it detects.
+
+    `public`: the receiver appears on the public map at an approximate position,
+    displaced by the deployment's location fuzz, with the uncertainty radius
+    declared beside it. There is no option to publish a precise position.
+
+    `private`: nothing that locates the receiver is published — no marker, no
+    uncertainty disc, no coverage polygon, no ambiguity arcs, no single-node
+    aircraft, no receiver coordinate, no archive listing. Solves the node
+    contributed to are still published; the node's id is struck from the
+    membership lists they carry.
+
+    `choice` is required, with no default: a node must send an explicit value.
+    The choice can also be set later from the dashboard, by the node's owner or
+    an admin, and that later answer outranks this one — so what is sent here is
+    the answer at onboarding rather than the last word.
     """
 
     version: str = Field(max_length=32)
     accepted_at: AwareDatetime
     # The onboarding flow's own design preselects `public`; a default here
     # would let a body that never named the choice pass regardless, which is a
-    # weaker check than that flow asks for.
+    # weaker check than that flow asks for. Two values and no third: a per-node
+    # opt-out of the fuzz was considered and rejected, the fuzz being the
+    # deployment's floor rather than a preference.
     choice: Literal["public", "private"]
 
 

@@ -2,7 +2,12 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
 import { PositionStatusBadge } from "../../components/PositionStatusBadge";
+import {
+  LocationPrivacyBadge,
+  LocationPrivacyControl,
+} from "../../components/LocationPrivacyControl";
 import { RetnodeLink } from "../../components/RetnodeLink";
+import type { LocationPrivacyState } from "../../types";
 
 const PAGE_SIZE = 25;
 
@@ -110,6 +115,7 @@ export default function NodeManagementPage() {
                 <span className="meta-label">Uptime</span>
                 <span>{formatUptime(summary.metrics?.uptime_s || 0)}</span>
               </div>
+              <NodeLocationPrivacy nodeId={id} />
             </div>
           );
         })}
@@ -123,6 +129,52 @@ export default function NodeManagementPage() {
         </div>
       )}
     </>
+  );
+}
+
+/** Per-node location privacy for the admin list. The admin API answers one
+ *  node at a time, so each card asks for its own — which keeps the requests to
+ *  the page of cards actually on screen instead of the whole fleet. Clicks are
+ *  stopped here: the card around it navigates to the node page. */
+function NodeLocationPrivacy({ nodeId }: { nodeId: string }) {
+  const [state, setState] = useState<LocationPrivacyState | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .adminNodeLocationPrivacy(nodeId)
+      .then((s) => { if (!cancelled) setState(s); })
+      .catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
+  }, [nodeId]);
+
+  return (
+    <div
+      style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-muted)" }}>
+          Location privacy
+        </span>
+        <LocationPrivacyBadge isPrivate={state?.location_private} />
+      </div>
+      {failed && <div className="privacy-source">Could not load location privacy.</div>}
+      {!failed && !state && <div className="privacy-source">Loading…</div>}
+      {state && (
+        <LocationPrivacyControl
+          compact
+          nodeId={nodeId}
+          isPrivate={state.location_private}
+          source={state.location_privacy_source}
+          setAt={state.override?.set_at ?? null}
+          onSave={(next) => api.setAdminNodeLocationPrivacy(nodeId, next)}
+          onReset={() => api.clearAdminNodeLocationPrivacy(nodeId)}
+          onApplied={setState}
+        />
+      )}
+    </div>
   );
 }
 

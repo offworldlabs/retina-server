@@ -5,6 +5,7 @@ import {
 } from "recharts";
 import { api } from "../../api/client";
 import { PositionStatusBadge, POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
+import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
 
 export default function OverviewPage() {
   const [nodes, setNodes] = useState([]);
@@ -54,6 +55,13 @@ export default function OverviewPage() {
   const byId = new Map<string, any>(nodeList.map((n) => [n.node_id, n]));
   for (const n of myNodes) if (!byId.has(n.node_id)) byId.set(n.node_id, n);
   const needsAttention = [...byId.values()].filter((n) => n.position_status && n.position_status !== "positioned");
+  // Same reason the merge exists at all: a private node is dropped from
+  // /api/radar/nodes, so its owner would otherwise not find it in the grid
+  // below — the one place they are told it is private.
+  const myNodeCards = [...byId.values()];
+  const privateById = new Map<string, boolean>(
+    myNodes.map((n) => [n.node_id, !!n.location_private]),
+  );
   // detection_area.n_detections is the most reliably populated counter
   const totalFrameDetections = nodeList.reduce(
     (s, n) => s + (n._analytics?.metrics?.total_detections || n._analytics?.detection_area?.n_detections || 0),
@@ -164,7 +172,7 @@ export default function OverviewPage() {
           <h3>My Nodes</h3>
         </div>
         <div className="node-grid" style={{ padding: 16 }}>
-          {nodeList.map((node) => {
+          {myNodeCards.map((node) => {
             const id = node.node_id || node.id;
             const online = node.status !== "disconnected" && node.status != null;
             return (
@@ -177,6 +185,7 @@ export default function OverviewPage() {
                   <span className={`badge ${online ? "online" : "offline"}`}>
                     {online ? "Online" : "Offline"}
                   </span>
+                  <LocationPrivacyBadge isPrivate={privateById.get(id)} />
                   {node.name || id}
                 </div>
                 <div className="node-meta">
@@ -196,7 +205,7 @@ export default function OverviewPage() {
               </div>
             );
           })}
-          {nodeList.length === 0 && (
+          {myNodeCards.length === 0 && (
             <div className="empty-state">No nodes connected yet</div>
           )}
         </div>

@@ -40,6 +40,19 @@ export const api = {
   revokeClaimCode: (code) =>
     request(`/api/auth/me/claim-codes/${encodeURIComponent(code)}`, { method: "DELETE" }),
 
+  // Location privacy (owner). A node the caller does not own is a 404 here,
+  // not a 403 — the id space is guessable and the two answers would differ
+  // only in confirming the id exists.
+  myNodeLocationPrivacy: (nodeId, isPrivate) =>
+    request(`/api/auth/me/nodes/${encodeURIComponent(nodeId)}/location-privacy`, {
+      method: "PUT",
+      body: JSON.stringify({ private: isPrivate }),
+    }),
+  clearMyNodeLocationPrivacy: (nodeId) =>
+    request(`/api/auth/me/nodes/${encodeURIComponent(nodeId)}/location-privacy`, {
+      method: "DELETE",
+    }),
+
   // Radar / nodes
   nodes: () => request("/api/radar/nodes"),
   status: () => request("/api/radar/status"),
@@ -105,5 +118,19 @@ export const api = {
     request(`/api/admin/nodes/${encodeURIComponent(nodeId)}/owner`, {
       method: "PUT",
       body: JSON.stringify({ user_id: userId }),
+    }),
+
+  // Admin: node location privacy. The GET also returns the raw pieces
+  // (registration_choice, override) behind the effective answer.
+  adminNodeLocationPrivacy: (nodeId) =>
+    request(`/api/admin/nodes/${encodeURIComponent(nodeId)}/location-privacy`),
+  setAdminNodeLocationPrivacy: (nodeId, isPrivate) =>
+    request(`/api/admin/nodes/${encodeURIComponent(nodeId)}/location-privacy`, {
+      method: "PUT",
+      body: JSON.stringify({ private: isPrivate }),
+    }),
+  clearAdminNodeLocationPrivacy: (nodeId) =>
+    request(`/api/admin/nodes/${encodeURIComponent(nodeId)}/location-privacy`, {
+      method: "DELETE",
     }),
 };

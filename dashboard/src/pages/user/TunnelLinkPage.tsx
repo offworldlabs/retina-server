@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { api } from "../../api/client";
+import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
 
 const PAGE_SIZE = 25;
 
@@ -87,7 +88,8 @@ export default function TunnelLinkPage() {
                       return (
                         <tr key={id}>
                           <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
-                            {node.name || id}
+                            {node.name || id}{" "}
+                            <LocationPrivacyBadge isPrivate={node.location_private} />
                           </td>
                           <td>
                             <span className={`badge ${online ? "online" : "offline"}`}>
