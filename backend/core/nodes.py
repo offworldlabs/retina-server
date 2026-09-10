@@ -122,6 +122,29 @@ class NodeConfig(Base):
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class NodeContact(Base):
+    """Whom to contact about a node, as its owner reported it.
+
+    Unverified by construction: it arrives over the node's bearer token, so
+    whoever holds that token can set it. A support artefact, never an identity;
+    when claiming binds a node to an account the account's verified email is the
+    source of truth and this is the fallback for unclaimed nodes.
+
+    Mutable, one row per node, unlike NodeConfig above. A frame references a
+    configuration version for as long as the archive holds it, so personal data
+    there could be neither corrected nor removed.
+    """
+
+    __tablename__ = "node_contacts"
+
+    node_id: Mapped[str] = mapped_column(String(32), ForeignKey("nodes.node_id"), primary_key=True)
+    first_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class NodeToken(Base):
     """A node's bearer credential, stored only as a SHA-256.
 

@@ -351,6 +351,43 @@ async def admin_clear_node_location_privacy(node_id: str, admin=Depends(require_
     }
 
 
+@router.get("/node-contacts")
+async def admin_list_node_contacts(
+    session: AsyncSession = Depends(get_async_session),
+    _admin=Depends(require_admin),
+):
+    """Return {node_id: {first_name, last_name, email, phone, updated_at}} for every node that reported any.
+
+    The one route that serves these. They are kept off the node and analytics
+    payloads the map and dashboard poll broadly, so personal data has a single
+    door rather than riding every refresh.
+    """
+    from services.node_contact_store import list_contacts
+
+    return await list_contacts(session)
+
+
+@router.delete("/nodes/{node_id}/contact")
+async def admin_delete_node_contact(
+    node_id: str,
+    session: AsyncSession = Depends(get_async_session),
+    admin=Depends(require_admin),
+):
+    """Erase a node's contact details. The path that exists so erasure does not need the database."""
+    from services.node_contact_store import delete_contact
+
+    deleted = await delete_contact(session, node_id)
+    await session.commit()
+    if deleted:
+        log_event(
+            "user",
+            f"Contact details cleared for node {node_id}",
+            "info",
+            {"node_id": node_id, "by": admin["email"]},
+        )
+    return {"ok": True, "node_id": node_id, "deleted": deleted}
+
+
 # ── Node retirement ───────────────────────────────────────────────────────────
 
 

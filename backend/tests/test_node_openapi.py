@@ -31,13 +31,15 @@ FRAME = {
     "adsb_hex": [],
 }
 
-# The four the frozen 1.1.1 published. A generated client turns these into method
-# names, so they are as much part of the contract as any field.
+# Every operationId the contract has published: the four the frozen 1.1.1
+# document carried, plus 1.2.0's `putContact`. A generated client turns these
+# into method names, so they are as much part of the contract as any field.
 OPERATION_IDS = {
     ("/v1/nodes/register", "post"): "registerNode",
     ("/v1/nodes/detection", "post"): "postDetection",
     ("/v1/nodes/heartbeat", "post"): "postHeartbeat",
     ("/v1/nodes/config", "put"): "putConfig",
+    ("/v1/nodes/contact", "put"): "putContact",
 }
 
 X_RETRY_VALUES = {"never", "retry-after", "backoff"}
@@ -100,7 +102,7 @@ def test_the_contract_carries_the_node_apis_own_version(document):
     assert document["info"]["version"] == NODE_API_VERSION
 
 
-def test_it_describes_the_four_node_endpoints_and_nothing_else(document):
+def test_it_describes_the_five_node_endpoints_and_nothing_else(document):
     assert {(path, method) for path, method, _ in _operations(document)} == set(OPERATION_IDS)
 
 
@@ -261,11 +263,22 @@ def test_the_nullable_fields_publish_a_null_branch(document):
     assert nullable == _NULLABLE | _NULLABLE_BEAM
 
 
+def test_the_contact_schema_published_is_the_validators_own(document):
+    """One operation carries it, so it stays inline rather than being hoisted
+    into a component the way the configuration is. What matters is the same
+    either way: the bounds published are the ones the validator applies."""
+    from services.node_contact import contact_json_schema
+
+    operation = document["paths"]["/v1/nodes/contact"]["put"]
+
+    assert operation["requestBody"]["content"]["application/json"]["schema"] == contact_json_schema()
+
+
 # ── the credential ───────────────────────────────────────────────────────────
 
 
 def test_the_bearer_scheme_is_published(document):
-    """Without it a generated client sends no credential at all, and the three
+    """Without it a generated client sends no credential at all, and the four
     authenticated endpoints look open."""
     assert document["components"]["securitySchemes"]["bearerAuth"]["scheme"] == "bearer"
 
@@ -296,6 +309,7 @@ def test_only_a_refused_credential_is_terminal(document):
 
     assert terminal == {
         "PUT /v1/nodes/config 401",
+        "PUT /v1/nodes/contact 401",
         "POST /v1/nodes/detection 401",
         "POST /v1/nodes/heartbeat 401",
     }

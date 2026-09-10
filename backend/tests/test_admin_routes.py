@@ -470,3 +470,62 @@ class TestNodeReconnectEvent:
             if e.get("meta", {}).get("reconnect") is True and e.get("meta", {}).get("node_id") == "fresh-node-test"
         ]
         assert len(reconnect_events) == 0, "Fresh connect should not have reconnect flag"
+
+
+class TestNodeContacts:
+    """The one route that serves contact details, and the one that erases them."""
+
+    async def _seed(self, session, node_id="ret1a2b3c4d", **fields):
+        from core.nodes import Node
+        from services.node_contact_store import upsert_contact
+
+        session.add(Node(node_id=node_id, node_ref=f"nde{node_id[3:]:0>12}", status="active"))
+        await session.flush()
+        contact = {"first_name": "Ada", "last_name": "Lovelace", "email": "ada@example.com", "phone": None}
+        await upsert_contact(session, node_id, contact | fields)
+        await session.commit()
+
+    async def test_it_lists_what_the_store_holds(self, node_client, node_session):
+        await self._seed(node_session)
+
+        body = node_client.get("/api/admin/node-contacts").json()
+
+        assert body["ret1a2b3c4d"]["email"] == "ada@example.com"
+        assert body["ret1a2b3c4d"]["phone"] is None
+
+    async def test_a_node_that_reported_nothing_is_absent(self, node_client, node_session):
+        from core.nodes import Node
+
+        node_session.add(Node(node_id="ret9f8e7d6c", node_ref="nde000000000002", status="active"))
+        await node_session.commit()
+
+        assert node_client.get("/api/admin/node-contacts").json() == {}
+
+    async def test_deleting_removes_the_row(self, node_client, node_session):
+        await self._seed(node_session)
+
+        body = node_client.delete("/api/admin/nodes/ret1a2b3c4d/contact").json()
+
+        assert body["deleted"] is True
+        assert node_client.get("/api/admin/node-contacts").json() == {}
+
+    async def test_deleting_what_is_not_there_is_not_an_error(self, node_client):
+        body = node_client.delete("/api/admin/nodes/retdeadbeef/contact").json()
+
+        assert body["deleted"] is False
+
+    def test_both_routes_are_gated_on_require_admin(self):
+        """The suite runs with AUTH_ALLOW_ANONYMOUS_ADMIN=1, so no request here can
+        be refused. The gate is asserted where it is declared instead."""
+        from core.users import require_admin
+        from main import app
+
+        gated = {
+            route.path
+            for route in app.routes
+            if getattr(route, "dependant", None)
+            and any(dep.call is require_admin for dep in route.dependant.dependencies)
+        }
+
+        assert "/api/admin/node-contacts" in gated
+        assert "/api/admin/nodes/{node_id}/contact" in gated

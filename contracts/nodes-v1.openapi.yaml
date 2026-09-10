@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RETINA node ingest
-  version: 1.1.4
+  version: 1.2.0
   description: |
     The RETINA server's HTTP API. The paths under `/v1/nodes` are the RETINA node
     ingest contract, generated from the server and versioned as a unit; everything
@@ -17,7 +17,7 @@ info:
 
     | Status | Means |
     |---|---|
-    | `400` | The body was refused. `invalid_config` for a configuration that failed validation, `invalid_body` for one that failed the schema |
+    | `400` | The body was refused. `invalid_config` for a configuration that failed validation, `invalid_contact` for contact details that failed it, `invalid_body` for a body that failed the schema |
     | `401` | The bearer token is bad, revoked or expired |
     | `403` | Registration refused, without saying why |
     | `409` | The frame names a `config_version` this server never issued |
@@ -71,6 +71,8 @@ tags:
   description: The hot path, plus the liveness signal that runs alongside it.
 - name: configuration
   description: Receiver and transmitter geometry, versioned by the server.
+- name: contact
+  description: Whom to contact about the node, reported by the node itself.
 paths:
   /v1/nodes/register:
     post:
@@ -255,6 +257,114 @@ paths:
       - bearerAuth: []
       x-cadence: on local configuration change, on `config_stale`, and on a 409 from a frame
       x-max-body-bytes: 8192
+  /v1/nodes/contact:
+    put:
+      tags:
+      - contact
+      summary: Report the owner's contact details.
+      description: |-
+        Whom to contact about this node. Sent when the details change locally, and not otherwise:
+        nothing on the server asks for them, and no response marks them stale.
+
+        The document is replaced wholesale, so a field omitted or sent as null is cleared. Every
+        field is optional; a node with nothing to report need never call this.
+
+        What is stored is unverified and is used to reach the owner about their own node. It is
+        not an account, and it grants nothing.
+      operationId: putContact
+      requestBody:
+        description: The full contact document. Fields omitted are cleared.
+        content:
+          application/json:
+            schema:
+              properties:
+                first_name:
+                  anyOf:
+                  - type: string
+                    maxLength: 64
+                  - type: 'null'
+                last_name:
+                  anyOf:
+                  - type: string
+                    maxLength: 64
+                  - type: 'null'
+                email:
+                  anyOf:
+                  - type: string
+                    maxLength: 255
+                  - type: 'null'
+                phone:
+                  anyOf:
+                  - type: string
+                    maxLength: 32
+                  - type: 'null'
+              additionalProperties: false
+              type: object
+              required: []
+              title: NodeContact
+              description: |-
+                Whom to contact about this node, as its owner gave them. Every field is optional
+                and nullable, and an absent field means the same as a null one: the document is
+                replaced wholesale, so a field left out is cleared.
+
+                None of it is verified, and none of it identifies anyone to the server: it is
+                carried so that a fault we can see and the owner cannot has somewhere to go.
+        required: true
+      responses:
+        '200':
+          description: When the stored details last changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactResponse'
+        '400':
+          description: The contact details failed validation, as `invalid_contact`. A body that is not
+            JSON at all lands here too, since the remedy is the same. `detail` names the offending field
+            and nothing else, so retina-gui can put the message next to the input it belongs to. Retrying
+            unchanged will not help.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: false
+        '401':
+          description: 'Token bad, revoked or expired. Stop streaming, surface it locally, and keep heartbeating.
+            Do not re-register: recovering a token needs an operator to reactivate the node, and treating
+            a 401 as the trigger turns a deliberate revocation into a registration storm.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: true
+        '413':
+          description: 'The body exceeded this path''s cap, which is checked from `Content-Length` before
+            parsing. Per-field bounds in the schemas do not make this unreachable: `HeartbeatRequest.errors`
+            alone permits 16 KiB of strings, `RegisterRequest.config` carries no bound at all, and JSON
+            puts no length limit on a number''s text, so a schema-valid body can still exceed it.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: false
+        5XX:
+          description: 'Server side, though a 502 or 504 is the edge''s own response rather than the origin''s,
+            and carries whatever body that gateway sends instead of this `Error`. Abandon the request
+            and retry, backing off with jitter if it persists: on detection and heartbeat that retry is
+            the node''s next frame or beat rather than a resend of this one, while registration and configuration
+            retry the identical body.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: backoff
+          x-terminal: false
+      security:
+      - bearerAuth: []
+      x-cadence: on local change only
+      x-max-body-bytes: 2048
   /v1/nodes/detection:
     post:
       tags:
@@ -531,6 +641,16 @@ components:
       required:
       - config_version
       title: ConfigResponse
+    ContactResponse:
+      properties:
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - updated_at
+      title: ContactResponse
     DetectionAck:
       properties:
         accepted:

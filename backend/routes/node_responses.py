@@ -1,4 +1,4 @@
-"""What the four node endpoints publish for each failure, and the `x-` vocabulary.
+"""What the five node endpoints publish for each failure, and the `x-` vocabulary.
 
 The generated OpenAPI schema is the node API's wire contract (86cb2d059). A
 schema carries shapes and status codes but not behaviour, and the half a node
@@ -22,14 +22,14 @@ RETRY_AFTER_HEADER = "retry-after"
 RETRY_BACKOFF = "backoff"
 
 # Per-path request body caps: 8 KiB for registration, heartbeat and
-# configuration, 64 KiB for a detection frame. Published per operation as
-# `x-max-body-bytes` (see the four routes' `openapi_extra`) so a node author can
-# read the number off the contract rather than discover it by testing. Keys are
-# full app paths, since the contract's server URL already carries the `/v1`
-# prefix.
+# configuration, 64 KiB for a detection frame, 2 KiB for contact. Published per
+# operation as `x-max-body-bytes` (see the five routes' `openapi_extra`) so a
+# node author can read the number off the contract rather than discover it by
+# testing. Keys are full app paths, since the contract's server URL already
+# carries the `/v1` prefix.
 #
 # Defined here rather than in routes/nodes.py, which is where the taxonomy and
-# the router live: the three endpoint modules need this to annotate their own
+# the router live: the four endpoint modules need this to annotate their own
 # routes, and routes/nodes.py imports those modules, so a definition there
 # would be a cycle. routes/nodes.py re-exports it for main.py's
 # LimitUploadSize middleware.
@@ -38,6 +38,7 @@ NODE_BODY_LIMITS: dict[str, int] = {
     "/v1/nodes/config": 8 * 1024,
     "/v1/nodes/heartbeat": 8 * 1024,
     "/v1/nodes/detection": 64 * 1024,
+    "/v1/nodes/contact": 2 * 1024,
 }
 
 API_DESCRIPTION = """\
@@ -55,7 +56,7 @@ this API answers in FastAPI's `{"detail": ...}`, which its own callers parse.
 
 | Status | Means |
 |---|---|
-| `400` | The body was refused. `invalid_config` for a configuration that failed validation, `invalid_body` for one that failed the schema |
+| `400` | The body was refused. `invalid_config` for a configuration that failed validation, `invalid_contact` for contact details that failed it, `invalid_body` for a body that failed the schema |
 | `401` | The bearer token is bad, revoked or expired |
 | `403` | Registration refused, without saying why |
 | `409` | The frame names a `config_version` this server never issued |
@@ -181,6 +182,11 @@ INVALID_REGISTRATION = _refused_body(
 
 INVALID_CONFIG = _refused_body(
     "The configuration failed validation, as `invalid_config`. A body that is not JSON at all "
+    "lands here too, since the remedy is the same."
+)
+
+INVALID_CONTACT = _refused_body(
+    "The contact details failed validation, as `invalid_contact`. A body that is not JSON at all "
     "lands here too, since the remedy is the same."
 )
 
