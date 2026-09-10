@@ -1,7 +1,7 @@
-"""The v1 node API: prefix, tags, body caps and error taxonomy for the four node
+"""The v1 node API: prefix, tags, body caps and error taxonomy for the five node
 endpoints.
 
-The handlers live in three sibling modules mounted below, so that work on one
+The handlers live in four sibling modules mounted below, so that work on one
 endpoint never touches another's lines. This module holds only the wiring.
 
 The exception handlers are here rather than in an endpoint module because only
@@ -21,6 +21,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
 
 from routes.node_config import router as node_config_router
+from routes.node_contact import router as node_contact_router
 from routes.node_register import router as node_register_router
 from routes.node_responses import NODE_BODY_LIMITS as NODE_BODY_LIMITS
 from routes.node_schemas import ErrorBody
@@ -67,7 +68,15 @@ NODE_PATH_PREFIX = "/v1/nodes"
 # text would have told its owner they were declining to contribute. A patch
 # because the change is wire-visible but not structural — same fields, same
 # bounds, same two enum values, same behaviour on both sides.
-NODE_API_VERSION = "1.1.4"
+#
+# 1.2.0 adds PUT /v1/nodes/contact, on which a node reports whom to contact
+# about it. A minor rather than a patch because it is new surface: an endpoint,
+# a schema and a refusal slug a client can now read. Nothing existing moves, so
+# a 1.1.4 node stays conformant and simply never calls it.
+#
+# Contact is not configuration and is not versioned: it is one mutable row per
+# node, so nothing here stamps a detection frame.
+NODE_API_VERSION = "1.2.0"
 
 # No tag here: each sub-router carries the contract's own grouping, since those
 # are what a generated client is built around.
@@ -78,6 +87,7 @@ NODE_API_TAGS = [
     {"name": "registration", "description": "One-off handshake that mints the node's bearer token."},
     {"name": "streaming", "description": "The hot path, plus the liveness signal that runs alongside it."},
     {"name": "configuration", "description": "Receiver and transmitter geometry, versioned by the server."},
+    {"name": "contact", "description": "Whom to contact about the node, reported by the node itself."},
 ]
 
 # Where the contract is served, for the client generated from it. Declared here
@@ -95,10 +105,11 @@ NODE_API_SERVERS = [
 
 router.include_router(node_register_router)
 router.include_router(node_config_router)
+router.include_router(node_contact_router)
 router.include_router(node_stream_router)
 
 # NODE_BODY_LIMITS itself is first-class in routes/node_responses.py, where the
-# three endpoint modules above can also reach it without a cycle back through
+# four endpoint modules above can also reach it without a cycle back through
 # this module. Imported here (explicit self-alias, so the re-export is not
 # read as an unused import) for main.py's LimitUploadSize middleware and for
 # tests, both of which already know this module as where the node API's wiring
@@ -178,7 +189,7 @@ def _field(exc: RequestValidationError) -> str:
         return "body"
     location = first.get("loc", ())
     # The leading "body" is the same on every one of these and says nothing:
-    # none of the four endpoints declares a query or path parameter.
+    # none of the five endpoints declares a query or path parameter.
     if location and location[0] == "body":
         location = location[1:]
     return ".".join(str(part) for part in location)[:_MAX_DETAIL] or "body"

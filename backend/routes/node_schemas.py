@@ -279,6 +279,10 @@ class ConfigResponse(BaseModel):
     config_version: ConfigVersion
 
 
+class ContactResponse(BaseModel):
+    updated_at: ServerTime
+
+
 class ErrorBody(BaseModel):
     """The shape every node-API refusal wears. `error` is a stable slug;
     `detail`, present only when it applies, names the offending field or value

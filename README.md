@@ -118,7 +118,7 @@ development.
 
 ### The v1 node API
 
-The four endpoints under `/v1/nodes` that receiver nodes talk to are a versioned
+The five endpoints under `/v1/nodes` that receiver nodes talk to are a versioned
 wire contract, published at [`contracts/nodes-v1.openapi.yaml`](contracts/nodes-v1.openapi.yaml).
 The node client and the conformance harness are independent implementations of
 it, so it is the one part of this API with consumers holding a pinned version.

@@ -28,13 +28,14 @@ FRAME = {
 }
 BEAT = {"state": "streaming", "uptime_s": 1, "boot_id": "k3n8v2qp71ab", "config_version": 1}
 
-# The three bearer-authenticated paths, with a body each handler would accept if
+# The four bearer-authenticated paths, with a body each handler would accept if
 # the credential resolved. A body that would itself be refused would not tell us
 # which of the two refusals we were looking at.
 AUTHENTICATED = [
     ("POST", "/v1/nodes/detection", FRAME),
     ("POST", "/v1/nodes/heartbeat", BEAT),
     ("PUT", "/v1/nodes/config", {}),
+    ("PUT", "/v1/nodes/contact", {}),
 ]
 
 
