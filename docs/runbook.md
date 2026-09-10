@@ -631,10 +631,12 @@ import json, sqlite3, urllib.request
 
 fleet = json.load(urllib.request.urlopen("http://localhost:8000/api/radar/nodes"))["nodes"]
 # Keyed on node_id on a server that predates the migration and on node_ref
-# after it, which is why an upgraded server answers "none" unconditionally.
+# after it, so `have` holds both columns of every row that carries a ref and a
+# listing in either key space is answered against the same set.
 ids = {k for k, v in fleet.items() if not v.get("is_synthetic")}
 db = sqlite3.connect("file:/app/backend/data/users.db?mode=ro", uri=True)
-have = {r[0] for r in db.execute("SELECT node_id FROM nodes WHERE node_ref IS NOT NULL AND node_ref != ''")}
+rows = db.execute("SELECT node_id, node_ref FROM nodes WHERE node_ref IS NOT NULL AND node_ref != ''")
+have = {col for row in rows for col in row}
 print(f"{len(ids & have)} of {len(ids)} connected real nodes have a node_ref")
 print("no handle:", sorted(ids - have) or "none")
 PY
