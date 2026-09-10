@@ -90,6 +90,9 @@ async def push_ground_truth_snapshot(body: dict = Body(...), _key=Depends(_verif
             "adsb_silent": ac.get("adsb_silent", False),
             "adsb_callsign": ac.get("adsb_callsign"),
             "anomaly_event": ac.get("anomaly_event"),
+            # "live" for an aircraft the simulator mirrored from the ADS-B
+            # feed, "sim" for its own spawns (older fleets send neither).
+            "source": ac.get("source") or "sim",
         }
         # Flag anomalous objects and log events
         if ac.get("is_anomalous"):

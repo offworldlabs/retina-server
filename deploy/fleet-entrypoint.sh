@@ -29,6 +29,14 @@ VALIDATE="${FLEET_VALIDATE:-false}"
 # synthetic echoes to — the ghost planes on the map. Only set this once the
 # server tags/gates claiming by world (known_claims_world_rejects counter).
 REAL_ADSB="${FLEET_REAL_ADSB:-false}"
+# Live ADS-B seeding: real aircraft over the metro are pulled from this feed
+# INTO the simulated world and echoed by the synthetic nodes (the backend's
+# frac_live_dark casts a share of them as dark; live_adsb_enabled pauses it at
+# runtime). Any adsb.lol-shaped /v2/point server works. Set it empty to run a
+# purely synthetic fleet — production does, because its real hardware nodes
+# and the simulated fleet would otherwise both claim the same real hexes.
+LIVE_ADSB_URL="${FLEET_LIVE_ADSB_URL-https://adsb.retina.fm}"
+LIVE_ADSB_INTERVAL="${FLEET_LIVE_ADSB_INTERVAL:-5}"
 N_CLUSTER="${FLEET_N_CLUSTER:-16}"
 N_CLUSTERS="${FLEET_N_CLUSTERS:-1}"
 # ring | dual | scatter — see generator.py --layout.  The orchestrator reads the
@@ -50,6 +58,7 @@ echo "  Server:     ${HOST}:${PORT}"
 echo "  Interval:   ${INTERVAL}s"
 echo "  Time scale: ${TIME_SCALE}x"
 echo "  Aircraft:   ${MIN_AIRCRAFT}-${MAX_AIRCRAFT}"
+echo "  Live ADS-B: ${LIVE_ADSB_URL:-off}"
 echo "  Validate:   ${VALIDATE}"
 echo "═══════════════════════════════════════════════════"
 
@@ -155,6 +164,9 @@ if [ "${VALIDATE}" = "true" ]; then
 fi
 if [ "${REAL_ADSB}" = "true" ]; then
     ARGS="${ARGS} --real-adsb"
+fi
+if [ -n "${LIVE_ADSB_URL}" ]; then
+    ARGS="${ARGS} --live-adsb-url ${LIVE_ADSB_URL} --live-adsb-interval ${LIVE_ADSB_INTERVAL}"
 fi
 
 # Launch fleet orchestrator

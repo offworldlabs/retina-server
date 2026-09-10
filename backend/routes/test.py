@@ -517,12 +517,22 @@ async def get_simulation_config():
         # still a commercial aircraft, it just is not broadcasting, so this
         # is the one count that overlaps the others.
         "adsb_silent": 0,
+        # Aircraft mirrored from the live ADS-B feed, split by the cast the
+        # simulator gave them.  Like adsb_silent these overlap the type
+        # buckets above (a live aircraft is also an "aircraft" or "dark"),
+        # so the frac_live_dark knob is verifiable in one call.
+        "live": 0,
+        "live_adsb": 0,
+        "live_dark": 0,
         "total": 0,
     }
     for meta in list(state.ground_truth_meta.values()):
         counts["total"] += 1
         if meta.get("adsb_silent"):
             counts["adsb_silent"] += 1
+        if meta.get("source") == "live":
+            counts["live"] += 1
+            counts["live_adsb" if meta.get("has_adsb") else "live_dark"] += 1
         if meta.get("is_anomalous"):
             counts["anomalous"] += 1
         elif meta.get("object_type") == "drone":
@@ -548,6 +558,9 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
     frac_adsb_outage (0.0–1.0) is deliberately OUTSIDE that sum: it is the
     fraction OF the ADS-B aircraft that go transponder-silent mid-flight,
     orthogonal to the spawn-type roll.
+    frac_live_dark (0.0–1.0) is likewise outside it: the share of the
+    aircraft the simulator mirrors from the live ADS-B feed that it casts
+    as dark.  live_adsb_enabled (bool) pauses that feed.
     Optional: max_range_km (0 = auto, or 10–400), min_aircraft (1–500),
     max_aircraft (1–500).
 
@@ -562,6 +575,8 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
         "frac_drone",
         "frac_dark",
         "frac_adsb_outage",
+        "frac_live_dark",
+        "live_adsb_enabled",
         "max_range_km",
         "min_aircraft",
         "max_aircraft",
@@ -572,7 +587,10 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
     for k in allowed:
         if k in body:
             v = body[k]
-            if k.startswith("frac_"):
+            if k == "live_adsb_enabled":
+                if not isinstance(v, bool):
+                    raise HTTPException(400, detail=f"{k} must be true or false")
+            elif k.startswith("frac_"):
                 if not isinstance(v, (int, float)) or not (0.0 <= v <= 1.0):
                     raise HTTPException(400, detail=f"{k} must be 0.0–1.0")
             elif k in ("max_range_km",):
@@ -594,7 +612,8 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
                     raise HTTPException(400, detail=f"{k} must be 0.0–1.0")
             updated[k] = v
 
-    # frac_adsb_outage is intentionally absent here — see the docstring.
+    # frac_adsb_outage and frac_live_dark are intentionally absent here —
+    # see the docstring.
     total_frac = (
         updated.get("frac_anomalous", state.simulation_config["frac_anomalous"])
         + updated.get("frac_drone", state.simulation_config["frac_drone"])
@@ -651,6 +670,8 @@ async def get_simulation_ground_truth():
                 "ts": round(ts, 3),
                 "object_type": meta.get("object_type", "aircraft"),
                 "is_anomalous": meta.get("is_anomalous", False),
+                "has_adsb": meta.get("has_adsb", False),
+                "source": meta.get("source", "sim"),
             }
         )
 
