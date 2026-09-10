@@ -329,6 +329,20 @@ class TestGoldenPath_Layer3_HttpApi:
         assert body["nodes"]["active"] >= 1, "Node with status=active must be counted"
         assert body["pipeline"]["node_pipelines"] >= 1
 
+    def test_dashboard_publishes_the_refresh_cadence(self, client):
+        """frontend/e2e/nodes.spec.ts sizes its node-cache wait from this.
+
+        It falls back to a default when the field is missing, so dropping the
+        field would not fail the E2E suite: it would quietly put the window back
+        on a hardcoded number and let it drift, which is the bug 86cb5b4tt fixed.
+        """
+        from config.constants import ANALYTICS_REFRESH_INTERVAL_S
+
+        cadence = client.get("/api/test/dashboard").json()["cadence"]
+        reported = cadence["analytics_refresh_interval_s"]
+        assert isinstance(reported, (int, float)) and reported > 0
+        assert reported == ANALYTICS_REFRESH_INTERVAL_S
+
     def test_radar_nodes_returns_json(self, client):
         """GET /api/radar/nodes returns 200 with parseable JSON."""
         r = client.get("/api/radar/nodes")

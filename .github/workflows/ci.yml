@@ -331,7 +331,11 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci --legacy-peer-deps
       - name: Run E2E tests (staging)
-        timeout-minutes: 15
+        # Has to stay above what nodes.spec.ts's two retried beforeAll hooks can
+        # reach, so a node that never propagates fails an assertion rather than
+        # timing the step out and losing the report. That spec derives its hook
+        # budgets from the server's refresh cadence; raise this if it widens.
+        timeout-minutes: 20
         run: E2E_ENV=staging npx playwright test
         env:
           CI: "true"
@@ -380,7 +384,9 @@ jobs:
       # badly enough to hang Playwright is exactly when the rollback is wanted.
       - name: Run E2E tests (production)
         id: e2e
-        timeout-minutes: 15
+        # See the staging job: the step cap has to clear nodes.spec.ts's retried
+        # hooks. It matters more here, where a timed-out step rolls production back.
+        timeout-minutes: 20
         run: E2E_ENV=prod npx playwright test
         env:
           CI: "true"

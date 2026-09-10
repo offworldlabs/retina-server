@@ -10,7 +10,7 @@ import orjson
 from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from fastapi.responses import Response
 
-from config.constants import FT_TO_M, is_num
+from config.constants import ANALYTICS_REFRESH_INTERVAL_S, FT_TO_M, is_num
 from core import state
 from core.task_registry import get_stale_tasks
 from core.users import require_admin
@@ -137,6 +137,10 @@ def _build_dashboard_data() -> bytes:
                 "blocked_nodes": blocked_nodes,
             },
             "association": {"overlap_zones": n_overlaps},
+            # Published so frontend/e2e/nodes.spec.ts can size its node-cache wait
+            # from the running server rather than from a copy of this constant,
+            # which is what went stale before (86cb5b4tt).
+            "cadence": {"analytics_refresh_interval_s": ANALYTICS_REFRESH_INTERVAL_S},
             "streaming": {
                 "websocket_clients": ws_clients,
                 "external_adsb_cached": ext_adsb,
