@@ -340,6 +340,11 @@ jobs:
         env:
           CI: "true"
           RADAR_API_KEY: ${{ secrets.STAGING_RADAR_API_KEY }}
+          # Passage through Access for the admin surface. Playwright follows the
+          # edge's 302, so without these the admin tests would parse Cloudflare's
+          # login page as the app. Empty secrets render empty and send nothing.
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
 
   e2e-prod:
     name: Playwright E2E (production)
