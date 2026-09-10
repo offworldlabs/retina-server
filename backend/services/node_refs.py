@@ -166,6 +166,23 @@ def public_name(name, fallback: str, known_ids: Iterable[str] = ()) -> str:
     return name
 
 
+def _mirrored_ref(node_id: str) -> str | None:
+    """The ref another environment resolved for a node it mirrors to us.
+
+    A mirrored node has no row here: its detections arrive over the bulk
+    endpoint (routes/radar.py) from the environment that holds its registry,
+    which sends the ref along with them. Read only when the local registry has
+    nothing, so a real row always wins, and the value is only as trusted as the
+    API key the bulk endpoint is gated on.
+    """
+    from core import state
+
+    with state.connected_nodes_lock:
+        known = state.connected_nodes.get(node_id)
+        ref = known.get("node_ref") if known else None
+    return ref if isinstance(ref, str) and ref else None
+
+
 def owner_identity(node_id: str | None) -> str | None:
     """What a node publishes as, for a caller that already knows the node.
 
@@ -177,7 +194,7 @@ def owner_identity(node_id: str | None) -> str | None:
         return None
     if is_synthetic_node(node_id):
         return node_id
-    return ref_for(node_id)
+    return ref_for(node_id) or _mirrored_ref(node_id)
 
 
 def public_identity(node_id: str | None) -> str | None:

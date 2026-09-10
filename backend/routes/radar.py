@@ -36,6 +36,10 @@ class DetectionRequest(BaseModel):
 
 class BulkNodeEntry(BaseModel):
     node_id: str = Field(default="http-node", max_length=128)
+    # The handle the sending environment publishes this node under. Mirrored
+    # nodes have no row here, so it is the only ref this server can name one
+    # by; see services/node_refs._mirrored_ref.
+    node_ref: str | None = Field(default=None, max_length=15)
     config: dict | None = None
     frames: list[dict] = Field(default_factory=list)
 
@@ -214,6 +218,7 @@ async def ingest_detections_bulk(
                     "peer": "http-bulk",
                     "is_synthetic": is_synthetic_node(node_id),
                     "capabilities": {},
+                    "node_ref": entry.node_ref,
                 }
             # A cached pipeline was built from the config that was active when
             # it was created, and nothing else refreshes it.
