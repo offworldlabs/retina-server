@@ -29,6 +29,7 @@ from core.nodes import Node  # noqa: E402
 from core.users import async_session_maker  # noqa: E402
 from main import app  # noqa: E402
 from services import node_auth, node_refs, publication  # noqa: E402
+from services.public_geometry import without_receiver_geometry  # noqa: E402
 from services.publication import (  # noqa: E402
     is_private,
     private_node_ids,
@@ -1282,6 +1283,42 @@ class TestMlatHistoryPayload:
                 "guess_lon": -82.0,
             }
         ]
+
+
+class TestFurthestDetectionsClassification:
+    """furthest_detections belongs in public_geometry._RECEIVER_RELATIVE by the
+    module's own rule: each entry is a real aircraft fix plus its distance
+    from the true receiver.  Neither route that actually withholds it today
+    goes through without_receiver_geometry, though: routes/test.py's
+    detection-range route and public_location.public_node_summary each drop
+    it with their own dict comprehension, so it is those two drops, pinned by
+    TestDetectionRangeRoute.test_furthest_detections_are_gone and
+    TestPerNodeAnalyticsRoute.test_furthest_detections_are_not_published in
+    test_public_location.py, that a live payload actually depends on.  This
+    pins the module's own classification directly, independent of that route
+    plumbing, so a future caller that does route detection-area data through
+    the shared pass inherits the same protection without having to notice.
+    """
+
+    def test_stripped_at_any_depth(self):
+        payload = {
+            "detection_area": {
+                "rx": {"lat": 1.0, "lon": 2.0},
+                "furthest_detections": [{"lat": 3.0, "lon": 4.0, "distance_km": 12.5}],
+            },
+            "nested": [{"deeper": {"furthest_detections": ["anything"]}}],
+        }
+        stripped = without_receiver_geometry(payload)
+        assert "furthest_detections" not in stripped["detection_area"]
+        assert stripped["detection_area"]["rx"] == {"lat": 1.0, "lon": 2.0}
+        assert "furthest_detections" not in stripped["nested"][0]["deeper"]
+
+    def test_the_walk_matches_the_name_not_the_shape(self):
+        """The docstring's corrected claim: known names at any nesting, not
+        any name.  A value moved to a name the set has never seen is not
+        caught by the same walk."""
+        renamed = {"detection_area": {"furthest_hits": [{"distance_km": 5}]}}
+        assert without_receiver_geometry(renamed) == renamed
 
 
 class TestNodeVerificationPayload:

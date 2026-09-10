@@ -11,9 +11,11 @@ The line, applied field by field below: a per-node constant is the envelope and
 may be published; a per-record value that varies with the true geometry is a
 measurement and is withheld. Every unauthenticated diagnostic payload that
 names a node passes through `without_receiver_geometry`, and the pass is
-structural, so a field that appears under a new key or one level deeper than
-the fields here is withheld by the same walk rather than by a per-route list
-someone has to remember to widen.
+structural over containers: a field listed below is withheld at any nesting
+depth, without a per-route list someone has to remember to widen. It matches
+on the leaf key name alone, though, not on shape or position, so the same
+quantity published under a name this module has not seen is not withheld
+until that name is added below.
 
 What stays on a beam entry is `max_range_km`, `max_bistatic_range_km`,
 `half_width_deg` and `rule`. The first three are the per-node constants
@@ -55,8 +57,20 @@ _RECEIVER_RELATIVE = frozenset(
         # sample against the published beam. /api/test/solver-stats reads the
         # stamp from the store rather than from a published record, so the
         # contamination block is unaffected.
+        #
+        # Exception: /api/test/solver-stats builds its own dict and never
+        # calls without_receiver_geometry. Its contamination.contaminated is
+        # a windowed count sharing this name, not this field, and routing
+        # that route through this pass would delete the count.
         "foreign_node_ids",
         "contaminated",
+        # Real aircraft fix plus its distance from the true receiver
+        # (DetectionAreaState.record_verified_detection); each entry is a
+        # ranging circle on the receiver. routes/test.py's detection-range
+        # route and public_location.public_node_summary both drop it
+        # per-route already, on paths that do not call
+        # without_receiver_geometry, so those drops stay.
+        "furthest_detections",
         # Per-node verification tracks: measured_delay_us is the bistatic range
         # from the true receiver to the truth position beside it, and
         # delay_match_us its residual against the range predicted from that
