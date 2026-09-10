@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 import os
 import time
+from types import SimpleNamespace
 
 import orjson
 import pytest
@@ -1113,7 +1114,14 @@ class TestMlatHistoryPayload:
                     "n_nodes": 2,
                     "contributing_node_ids": [self._A, self._B],
                     "trimmed_node_ids": [self._B],
+                    # The contamination stamp and the point it was taken at:
+                    # solver._stamp_foreign_nodes writes both onto a dark
+                    # record that matched ground truth.
                     "foreign_node_ids": [self._B],
+                    "contaminated": True,
+                    "gt_hex": "gt1",
+                    "gt_lat": 34.0,
+                    "gt_lon": -82.0,
                     "adopt_meta": {
                         "pool_n": 3,
                         "adopted_node_ids": [self._A],
@@ -1190,7 +1198,6 @@ class TestMlatHistoryPayload:
         rec = {r["outcome"]: r for r in bodies["all"].json()["records"]}["published"]
         assert rec["contributing_node_refs"] == [_seed_ref(self._A), _seed_ref(self._B)]
         assert rec["trimmed_node_refs"] == [_seed_ref(self._B)]
-        assert rec["foreign_node_refs"] == [_seed_ref(self._B)]
         assert rec["adopt_meta"]["adopted_node_refs"] == [_seed_ref(self._A)]
         assert rec["adopt_meta"]["dropped_node_ref"] == _seed_ref(self._B)
 
@@ -1223,15 +1230,38 @@ class TestMlatHistoryPayload:
         """A structural walk rather than a text scan: `range_km` is a substring
         of the `max_range_km` that legitimately stays."""
         for shape, body in bodies.items():
-            for field in ("range_km", "bearing_off_deg", "bistatic_km", "fov_limit_km", "fov_state"):
+            for field in (
+                "range_km",
+                "bearing_off_deg",
+                "bistatic_km",
+                "fov_limit_km",
+                "fov_state",
+                "fov_verdict",
+                "today_pass",
+                "foreign_node_ids",
+                "foreign_node_refs",
+                "contaminated",
+            ):
                 assert not list(_keys_named(body.json(), field)), (shape, field)
 
-    def test_the_shadow_verdict_is_a_verdict_and_survives(self, bodies):
-        """The FOV shadow comparison is an outcome, not a margin."""
+    def test_the_contamination_stamp_goes_with_the_geometry_it_measures(self, bodies):
+        """`foreign_node_ids` is a per-node in-or-out verdict against the beam
+        /api/radar/analytics publishes per node, taken at the ground-truth point
+        the same record still carries. That makes it a labelled sample of a
+        known shape rather than only an identity field."""
+        rec = {r["outcome"]: r for r in bodies["all"].json()["records"]}["published"]
+        assert (rec["gt_lat"], rec["gt_lon"]) == (34.0, -82.0)
+        assert "foreign_node_refs" not in rec
+        assert "contaminated" not in rec
+
+    def test_the_shadow_verdicts_go_and_the_refusal_stays(self, bodies):
+        """Each shadow entry is a containment test at the true bearing and
+        range, stamped for the nodes that PASSED as well as the ones that
+        failed, so it bounds the receiver where a failure only excludes it.
+        With both verdicts out the entry says nothing, so the block goes."""
         by_outcome = {r["outcome"]: r for r in bodies["all"].json()["records"]}
-        assert by_outcome["rejected_beam"]["fov_verdict"] == [
-            {"node_ref": _seed_ref(self._A), "today_pass": False, "fov_verdict": True}
-        ]
+        assert "fov_verdict" not in by_outcome["rejected_beam"]
+        assert by_outcome["rejected_beam"]["beam_failures"]
 
     def test_one_markers_solves_are_published_the_same_way(self, bodies):
         solves = bodies["hex"].json()["solves"]
@@ -1257,44 +1287,89 @@ class TestMlatHistoryPayload:
 class TestNodeVerificationPayload:
     """/api/test/node/{node_ref}/verification is unauthenticated and per node.
 
-    Each matched track pairs a delay with the truth position it was measured
-    against, and the delay is the bistatic range from the true receiver to that
-    position: fifty of them intersect well inside the displacement the same
-    node's published coordinate carries.
+    Everything in a track entry is measured from that one node's true receiver.
+    The delays are bistatic ranges to a position the same entry publishes, so
+    each entry is a locus the receiver sits on. solver_lat/solver_lon is the
+    node's own single-node solve in the true frame, and the aircraft feed
+    publishes those same two fields displaced with the icon
+    (services/track_gates.py), so the pair differences to the displacement.
+
+    The payload is built by the refresh task rather than written out here: an
+    invented fixture pins a shape the route never answers in, which is how
+    solver_lat/solver_lon reached production unnoticed.
     """
 
-    def test_the_per_track_delays_are_withheld_and_the_errors_are_not(self, client, seed_nodes):
+    # One decimal place: far enough out that no fixture here sits inside the
+    # published fuzz annulus of a real site (tests/test_no_real_identities.py).
+    _RX = (34.9, -82.4)
+    _TX = (35.0, -82.2)
+    _TRUTH = (34.8, -82.3)
+    _SOLVED = (34.7, -82.2)
+
+    _WITHHELD = ("solver_lat", "solver_lon", "measured_delay_us", "delay_match_us")
+
+    @pytest.fixture()
+    def stored(self, seed_nodes):
+        """One real verification record, from the task that writes them.
+
+        The delay carried by the track is the bistatic range to the ADS-B
+        candidate, so the matcher pairs the two exactly as it does live.
+        """
+        from services.geo import bistatic_delay_us
+        from services.tasks.analytics_refresh import _refresh_node_verification
+
         seed_nodes(**{_PUB: "public"})
-        state.latest_node_verification_bytes[_PUB] = orjson.dumps(
-            {
-                "node_id": _PUB,
-                "n_matched": 1,
-                "tracks": [
-                    {
-                        "hex": "abc123",
-                        "matched_adsb_hex": "abc123",
-                        "delay_match_us": 1.2,
-                        "measured_delay_us": 84.6,
-                        "truth_lat": 34.0,
-                        "truth_lon": -82.0,
-                        "position_error_km": 1.5,
-                    }
-                ],
-            }
+        cfg = {
+            "node_id": _PUB,
+            "rx_lat": self._RX[0],
+            "rx_lon": self._RX[1],
+            "tx_lat": self._TX[0],
+            "tx_lon": self._TX[1],
+        }
+        track = SimpleNamespace(
+            latest_delay_us=bistatic_delay_us(*self._TX, *self._RX, *self._TRUTH),
+            wall_clock_ts=time.time(),
+            lat=self._SOLVED[0],
+            lon=self._SOLVED[1],
+            vel_east=180.0,
+            vel_north=60.0,
+            alt_m=10050.0,
         )
+        state.active_geo_aircraft["abc123"] = (track, cfg)
+        state.adsb_aircraft["abc123"] = {
+            "lat": self._TRUTH[0],
+            "lon": self._TRUTH[1],
+            "alt_baro": 33000,
+            "gs": 400,
+            "last_seen_ms": int(time.time() * 1000),
+        }
         try:
-            body = client.get(f"/api/test/node/{_seed_ref(_PUB)}/verification")
+            _refresh_node_verification(_PUB)
+            yield orjson.loads(state.latest_node_verification_bytes[_PUB])
         finally:
+            state.active_geo_aircraft.clear()
+            state.adsb_aircraft.clear()
             state.latest_node_verification_bytes.pop(_PUB, None)
-        assert body.json()["tracks"] == [
-            {
-                "hex": "abc123",
-                "matched_adsb_hex": "abc123",
-                "truth_lat": 34.0,
-                "truth_lon": -82.0,
-                "position_error_km": 1.5,
-            }
-        ]
+
+    def test_the_store_keeps_what_the_route_must_not_publish(self, stored):
+        """Both halves of the assertion below: the fields have to be in the
+        record for their absence from the response to mean anything, and the
+        store is where an authenticated surface would still find them."""
+        (entry,) = stored["tracks"]
+        assert set(self._WITHHELD) <= set(entry)
+        assert entry["solver_lat"] == self._SOLVED[0]
+
+    def test_the_published_entry_is_the_stored_one_minus_those_fields(self, client, stored):
+        """Exact equality against the real record, so it pins what stays as
+        well as what goes."""
+        (entry,) = stored["tracks"]
+        body = client.get(f"/api/test/node/{_seed_ref(_PUB)}/verification")
+        assert body.json()["tracks"] == [{k: v for k, v in entry.items() if k not in self._WITHHELD}]
+
+    def test_no_true_frame_position_at_any_depth(self, client, stored):
+        body = client.get(f"/api/test/node/{_seed_ref(_PUB)}/verification")
+        for field in self._WITHHELD:
+            assert not list(_keys_named(body.json(), field)), field
 
 
 class TestMlatVerificationPayload:
@@ -1334,6 +1409,11 @@ class TestMlatVerificationPayload:
             assert data["n_matched"] == 1
             assert state.mlat_samples[-1]["max_bistatic_deg"] is not None
             assert "max_bistatic_angle_deg" not in data["tracks"][0]
+            # A multinode position has no single receiver behind it, so it is
+            # not node-scoped and keeps the solve the map draws its error line
+            # from.  Withholding it here would be a different route's rule
+            # applied to this one.
+            assert data["tracks"][0]["solver_lat"] == 34.5
         finally:
             state.connected_nodes.pop(self._A, None)
             state.multinode_tracks.clear()

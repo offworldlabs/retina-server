@@ -294,3 +294,23 @@ class TestSubstituteIdentities:
             }
         )
         assert out["messages"] == 1
+
+
+class TestPublicRecords:
+    """The structural walk over diagnostic records.
+
+    A tuple serialises as a JSON array, so an id inside one publishes exactly
+    as an id inside a list would.
+    """
+
+    def test_a_node_id_inside_a_tuple_is_republished(self, seed):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        (out,) = node_refs.public_records([{"contributing_node_ids": ("ret1a2b3c4d",)}])
+        assert out == {"contributing_node_refs": ["nde1a2b3c4d00"]}
+
+    def test_an_unresolvable_id_inside_a_tuple_loses_its_place(self, seed):
+        """Also pins the vocabulary half: the second id has no registry row, so
+        it is dropped only if the pass that collects named ids reads tuples."""
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        (out,) = node_refs.public_records([{"contributing_node_ids": ("ret1a2b3c4d", "ret0badcafe")}])
+        assert out == {"contributing_node_refs": ["nde1a2b3c4d00"]}

@@ -27,6 +27,7 @@ from services.id_utils import multinode_hex_from_key
 from services.node_config import position_status
 from services.node_refs import public_analytics, public_identity, public_name
 from services.node_sites import log_colocation_audit
+from services.public_geometry import without_receiver_geometry
 from services.public_location import (
     fuzz_enabled,
     location_uncertainty_km,
@@ -1791,14 +1792,7 @@ def _refresh_mlat_verification():
             "p95_m": round(_percentile(alt_errors, 95), 0),
         },
         "by_node_count": by_node_count_out,
-        # These bytes are what /api/test/mlat-verification serves, unauthenticated,
-        # so max_bistatic_angle_deg does not go out in them.  Its vertex is the
-        # truth position in the same entry and one of its arms is the published
-        # transmitter, which leaves the angle naming the direction from a known
-        # point to the true receiver of one of the contributing nodes; a second
-        # entry crosses the first.  It stays on `matches` for the rolling sample
-        # buffer below, which the good-geometry split reads and nothing publishes.
-        "tracks": [{k: v for k, v in m.items() if k != "max_bistatic_angle_deg"} for m in matches[:100]],
+        "tracks": matches[:100],
         "unmatched": {
             "n": len(unmatched),
             "nearest_truth": {
@@ -1811,7 +1805,13 @@ def _refresh_mlat_verification():
             "tracks": sorted(unmatched, key=lambda x: x.get("nearest_truth_km") or 999)[:50],
         },
     }
-    state.latest_mlat_verification_bytes = orjson.dumps(result, option=orjson.OPT_SERIALIZE_NUMPY)
+    # /api/test/mlat-verification serves these bytes as they are, to anyone, so
+    # the withholding happens here rather than at the route.  The walk copies,
+    # so `matches` keeps max_bistatic_angle_deg for the rolling sample buffer
+    # below, which the good-geometry split reads and nothing publishes.
+    state.latest_mlat_verification_bytes = orjson.dumps(
+        without_receiver_geometry(result), option=orjson.OPT_SERIALIZE_NUMPY
+    )
 
 
 def _ensure_custody_data():

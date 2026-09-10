@@ -304,14 +304,20 @@ def _named_node_ids(value) -> set[str]:
     a node that connected, was never registered and has since gone is in
     neither the map nor the caller's fleet, and its id would otherwise pass the
     walk untouched.
+
+    The vocabulary therefore widens only from keys `_published_key` recognises,
+    which is a constraint on whoever writes these payloads: an unregistered id
+    filed under some other key name, or used as a dict key, is invisible here
+    and is published raw. Anything upstream that holds a node id must spell the
+    key `…node_id`/`…node_ids`.
     """
     found: set[str] = set()
     if isinstance(value, dict):
         for k, v in value.items():
             if _published_key(k) != k:
-                found.update(s for s in (v if isinstance(v, list) else [v]) if isinstance(s, str) and s)
+                found.update(s for s in (v if isinstance(v, list | tuple) else [v]) if isinstance(s, str) and s)
             found |= _named_node_ids(v)
-    elif isinstance(value, list):
+    elif isinstance(value, list | tuple):
         for v in value:
             found |= _named_node_ids(v)
     return found
@@ -359,6 +365,9 @@ def _republished(value, owner_id: str | None, vocab: _Vocabulary):
 
     Dict keys are resolved too: a map keyed on node ids is the same disclosure
     as a field holding one.
+
+    A tuple is walked as a list and comes back as one, which is what orjson
+    would have serialised it as anyway.
     """
     if isinstance(value, str):
         if value in vocab.by_id:
@@ -385,7 +394,7 @@ def _republished(value, owner_id: str | None, vocab: _Vocabulary):
             out[key] = republished
         return out
 
-    if isinstance(value, list):
+    if isinstance(value, list | tuple):
         return [r for v in value if (r := _republished(v, owner_id, vocab)) is not _DROP]
 
     return value

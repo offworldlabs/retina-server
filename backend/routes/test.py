@@ -19,6 +19,7 @@ from services.frame_processor import resolve_ground_truth_hex
 from services.geo import haversine_km
 from services.id_utils import is_transponder_hex, normalize_hex_key
 from services.node_refs import id_for_identity, public_records
+from services.public_geometry import without_receiver_geometry
 from services.public_location import fuzz_enabled, public_latlon, translate_polygon
 from services.tasks import solver as solver_mod
 
@@ -725,16 +726,6 @@ def _mlat_verification_summary() -> dict:
 
 # ── Per-node solver verification ──────────────────────────────────────────────
 
-# The two delays in a verification track entry, withheld from the entry.  Each
-# is the bistatic range between the node's TRUE receiver and an aircraft the
-# same entry gives the position of: measured_delay_us is that range, and
-# delay_match_us its residual against the range predicted from the true
-# position, so the predicted one follows from the pair.  Every entry is
-# therefore a locus the receiver sits on, and fifty of them per node intersect
-# well inside the displacement services/public_location.py applies.  The errors
-# beside them are differences between two published positions and stay.
-_MATCH_DELAY_FIELDS = frozenset({"measured_delay_us", "delay_match_us"})
-
 
 @router.get("/api/test/node/{node_ref}/verification")
 async def node_verification(node_ref: str):
@@ -743,18 +734,19 @@ async def node_verification(node_ref: str):
     Unauthenticated, so it is addressed and answered in published identities: a
     ref that resolves to nothing gets the empty body an unknown node already
     gets, and the payload names the node by the ref rather than by the id the
-    refresh task keyed it under.  It is also where the per-track delays are
-    withheld (see _MATCH_DELAY_FIELDS).
+    refresh task keyed it under.
+
+    Everything in a track entry is measured from this one node's true receiver,
+    so the entries are served node-scoped (services/public_geometry.py): the
+    per-track delays and the node's own solve position go, the errors beside
+    them stay.  The store keeps the whole record for an authenticated surface.
     """
     node_id = id_for_identity(node_ref)
     raw = state.latest_node_verification_bytes.get(node_id, b"{}") if node_id else b"{}"
-    payload = orjson.loads(raw)
+    payload = without_receiver_geometry(orjson.loads(raw), node_scoped=True)
     if "node_id" in payload:
         payload = {k: v for k, v in payload.items() if k != "node_id"}
         payload["node_ref"] = node_ref
-    tracks = payload.get("tracks")
-    if isinstance(tracks, list):
-        payload["tracks"] = [{k: v for k, v in t.items() if k not in _MATCH_DELAY_FIELDS} for t in tracks]
     return Response(content=orjson.dumps(payload), media_type="application/json")
 
 
@@ -858,53 +850,22 @@ def _cap_per_lane(records: list[dict], limit: int) -> list[dict]:
     return kept
 
 
-# Per-node beam-gate fields withheld from a published record.  Each is measured
-# from the node's TRUE receiver position to an aircraft the same record locates,
-# and a range and a bearing to a known point is a fix: it trilaterates straight
-# through the displacement services/public_location.py applies, which is what
-# every published receiver coordinate rests on.  bistatic_km goes with them:
-# the transmitter is published untranslated, so the differential range fixes the
-# receiver on a hyperbola through two known foci.
-#
-# The verdict is not withheld.  A published entry still says which node refused
-# the solve and under which rule, against the envelope /api/radar/analytics
-# already publishes per node in its detection_area block (max_range_km,
-# max_bistatic_range_km, beam_width_deg, of which half_width_deg is half).
-# Those are per-node constants; the withheld fields are per-record measurements.
-# fov_limit_km and fov_state fall on the measurement side of that line despite
-# reading as envelope: both are looked up at the true bearing to the aircraft,
-# and the learned coverage they are looked up in is itself published as a
-# polygon, so a value read off it inverts to that bearing.
-_BEAM_GEOMETRY_FIELDS = frozenset({"range_km", "bearing_off_deg", "bistatic_km", "fov_limit_km", "fov_state"})
-
-
-def _without_beam_geometry(rec: dict) -> dict:
-    """One solve record with the receiver-relative beam geometry taken out."""
-    entries = rec.get("beam_failures")
-    if not isinstance(entries, list):
-        return rec
-    return {
-        **rec,
-        "beam_failures": [
-            {k: v for k, v in e.items() if k not in _BEAM_GEOMETRY_FIELDS} if isinstance(e, dict) else e
-            for e in entries
-        ],
-    }
-
-
 def _published_records(records) -> list[dict]:
     """Solve records as this unauthenticated route serves them.
 
     Withhold the geometry, then republish the identities, in that order: the
-    fields being removed sit beside the node id they were measured for.
+    withheld fields sit beside the node id they were measured for, and one of
+    them (`foreign_node_ids`) is an identity field as well as a measurement, so
+    it has to go before the identity pass renames it.
 
-    The identity pass is structural (services/node_refs.public_records): these
-    records name nodes under half a dozen keys, from a dozen solver call sites,
-    and one missed key would publish a raw id beside the adsb_hex the aircraft
-    feed carries against contributing_node_refs, which recovers the mapping for
-    the whole fleet from two anonymous requests.
+    Both passes are structural — services/public_geometry.py for the geometry,
+    services/node_refs.public_records for the identities — because these
+    records are written by a dozen solver call sites under whatever keys each
+    one chose.  One missed identity key would publish a raw id beside the
+    adsb_hex the aircraft feed carries against contributing_node_refs, which
+    recovers the mapping for the whole fleet from two anonymous requests.
     """
-    return public_records(_without_beam_geometry(r) for r in records)
+    return public_records(without_receiver_geometry(r) for r in records)
 
 
 @router.get("/api/test/mlat-history")
@@ -943,9 +904,9 @@ async def mlat_history(
     stores actually hold — below ``window_minutes`` the answer is truncated.
 
     Unauthenticated, so every record list below is served in published
-    identities and without the receiver-relative beam geometry; the counts
-    beside them are taken from the stores and so are unaffected by a record
-    dropped for naming a node with no handle.  See _published_records.
+    identities and without the receiver-relative geometry; the counts beside
+    them are taken from the stores and so are unaffected by a record dropped
+    for naming a node with no handle.  See _published_records.
     """
     if lane not in ("all", *_LANES):
         return Response(
