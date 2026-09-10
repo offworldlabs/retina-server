@@ -222,8 +222,8 @@ class TestDelayRatePhysics:
         world = SimulationWorld(center_lat=34.0, center_lon=-84.0)
         node = SimNodeConfig(
             node_id="sim-hold-1",
-            rx_lat=33.939,
-            rx_lon=-84.651,
+            rx_lat=33.9,
+            rx_lon=-84.6,
             tx_lat=33.756,
             tx_lon=-84.331,
             beam_width_deg=90,

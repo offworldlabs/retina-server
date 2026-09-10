@@ -333,7 +333,7 @@ _DOCS_HTML = """<!DOCTYPE html>
       "multinode": false,
       "n_nodes": 1,
       "flight": "DAL1234",
-      "node_id": "radar3-retnode",
+      "node_id": "ret1a2b3c4d",
       "target_class": "aircraft",
       "delay_us": 14.22,
       "doppler_hz": -83.4,

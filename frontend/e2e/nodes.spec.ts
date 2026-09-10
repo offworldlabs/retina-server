@@ -86,7 +86,7 @@ const PLACED_NODE_ID      = runNodeId("e2e-placed");
 // Full geographic config sent with BULK_B — used to verify config propagation into analytics.
 const BULK_B_CONFIG = {
   node_id: BULK_B_NODE_ID,
-  rx_lat: 33.94, rx_lon: -84.65, rx_alt_ft: 950,
+  rx_lat: 34.0, rx_lon: -84.0, rx_alt_ft: 950,
   tx_lat: 33.76, tx_lon: -84.33, tx_alt_ft: 1600,
   beam_width_deg: 45,
   max_range_km: 50,

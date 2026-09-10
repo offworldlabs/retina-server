@@ -29,7 +29,7 @@ from services.adsb_regions import (
 from services.geo import R_EARTH_KM, haversine_km
 
 # Real metros, far enough apart that no two can share a 400 km cell.
-ATLANTA = (33.939182, -84.388)
+ATLANTA = (33.75, -84.39)
 MASSACHUSETTS = (42.5, -71.5)
 SACRAMENTO = (38.6, -121.5)
 
