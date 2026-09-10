@@ -203,7 +203,7 @@ class TestGeolocatedTrack:
 class TestPipelineInit:
     def test_creates_with_default_config(self):
         p = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
-        assert p.node_id == "net13"
+        assert p.node_id == "default-node"
         assert p.tracker is not None
         assert p.event_writer is not None
         assert p.geometry is not None

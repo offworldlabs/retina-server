@@ -63,7 +63,7 @@ async def websocket_aircraft(ws: WebSocket):
 @router.websocket("/ws/aircraft/live")
 async def websocket_aircraft_live(ws: WebSocket):
     """Real-node-only aircraft feed — excludes synthetic simulation nodes.
-    Used by map.retina.fm showing only radar3.retnode.com data.
+    Used by map.retina.fm, which shows live hardware only.
     """
     if not await _authenticate_ws(ws):
         return
