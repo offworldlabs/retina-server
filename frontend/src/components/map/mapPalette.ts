@@ -81,8 +81,10 @@ export interface MapPalette {
    *  the pair reads as "truth, but real" beside the neutral simulated pair
    *  without borrowing a lane. Measured like the rest: every value clears
    *  its theme's contrast floor and sits CIEDE2000 ≥ 13 from every other
-   *  mark (worst: teal-600 vs the solver-seed lane on light, 13.5), ≥ 22
-   *  from the neutral truth pair, and ≥ 24 from its own partner. */
+   *  mark (worst: teal-800 vs the solver-seed lane on light, 13.1), ≥ 22
+   *  from the neutral truth pair, and ≥ 19 from its own partner. teal-800
+   *  rather than teal-900 on light: measured 21.9 from near-black, but on
+   *  the map a 9 px teal-900 dot beside a slate-800 one read as two blacks. */
   TRUTH_LIVE: string;
   TRUTH_LIVE_DARK: string;
   /** MLAT verification overlay: the solve dot, and the dashed vector to the
@@ -160,8 +162,8 @@ const LIGHT: MapPalette = {
   BEAM_GAP: "#b91c1c", // red-700
   TRUTH: "#1e293b", // slate-800
   TRUTH_DARK: "#64748b", // slate-500
-  TRUTH_LIVE: "#134e4a", // teal-900 — 8.9:1, ΔE 17.0 from the seed lane
-  TRUTH_LIVE_DARK: "#0d9488", // teal-600 — 3.5:1, ΔE 13.5 from the seed lane
+  TRUTH_LIVE: "#115e59", // teal-800 — 7.1:1, ΔE 13.1 from the seed lane, 25.5 from TRUTH
+  TRUTH_LIVE_DARK: "#0d9488", // teal-600 — 3.5:1, ΔE 13.5 from the seed lane, 19.3 from TRUTH_LIVE
   MLAT: "#c026d3", // fuchsia-600
   MLAT_VECTOR: "#a21caf", // fuchsia-700
 
