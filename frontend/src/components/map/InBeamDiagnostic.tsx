@@ -10,7 +10,7 @@ import { groundTruthKey } from "./constants";
       dashed red polyline from the node's RX position to the aircraft —
       one per (aircraft, node) pair — so the "missing link" is
       geometrically visible.  Reads detectionsRef as the recently-detected
-      oracle — a "hex|node_ref" → ts map covering every detection shape
+      oracle, a "hex|node_ref" → ts map covering every detection shape
       (single-node and multinode), TTL-pruned so its grace period matches
       the spec (don't flag a detection that only just expired).  Thresholds
       are tightened to 0.9 × beam width and 0.95 × max range to avoid

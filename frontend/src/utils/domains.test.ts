@@ -26,16 +26,16 @@ describe("feed selection by surface", () => {
     }
   });
 
-  it("the laptop shows everything", async () => {
-    for (const host of ["map.localhost", "testmap.localhost"]) {
+  it("the test droplet counts as a public demo, since its surfaces resolve publicly", async () => {
+    for (const host of ["test-map.retina.fm", "test-testmap.retina.fm"]) {
       const m = await loadFor(host);
       expect(m.usesRealOnlyFeed, host).toBe(false);
-      expect(m.hidesRealNodes, host).toBe(false);
+      expect(m.hidesRealNodes, host).toBe(true);
     }
   });
 
-  it("the test droplet shows everything", async () => {
-    for (const host of ["test-map.retina.fm", "test-testmap.retina.fm"]) {
+  it("the laptop shows everything", async () => {
+    for (const host of ["map.localhost", "testmap.localhost"]) {
       const m = await loadFor(host);
       expect(m.usesRealOnlyFeed, host).toBe(false);
       expect(m.hidesRealNodes, host).toBe(false);

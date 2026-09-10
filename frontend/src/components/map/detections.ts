@@ -5,7 +5,7 @@
 // detection for that aircraft.  Two sources are unioned:
 //
 //  - per-aircraft signals from the feed entries (node_ref for single-node
-//    tracks, contributing_node_refs for multinode solves) — keyed on
+//    tracks, contributing_node_refs for multinode solves), keyed on
 //    ground_truth_hex when present so a multinode track (whose own hex is
 //    synthetic) still joins to its aircraft;
 //  - the top-level detecting_nodes feed key (hex → [node_ref]), which carries

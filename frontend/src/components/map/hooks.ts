@@ -344,7 +344,7 @@ export function useNodes() {
           // The backend already strips synthetic nodes from real_only feeds;
           // this is defence in depth against a leftover leak, decided from
           // the server's own is_synthetic flag rather than parsed from the
-          // identifier — see utils/nodeKind.ts.
+          // identifier. See utils/nodeKind.ts.
           if (usesRealOnlyFeed && isSyntheticNode(info as { is_synthetic?: boolean }, ref)) continue;
           // The mirror, and the only filter standing between a real node and a
           // public demo: this listing has no real_only-style parameter for

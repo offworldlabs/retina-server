@@ -433,7 +433,7 @@ def _refresh_analytics_and_nodes():
     }
     state.latest_nodes_bytes = orjson.dumps(nodes_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
-    # Overlaps — only include zones with actual overlap to keep payload small.
+    # Overlaps: only include zones with actual overlap to keep payload small.
     # A zone names both of its nodes, so it survives only if both resolve: half
     # a pair describes a baseline between a known node and an unnamed one.
     _overlaps = []

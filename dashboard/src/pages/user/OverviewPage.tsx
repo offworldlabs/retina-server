@@ -20,7 +20,7 @@ export default function OverviewPage() {
     // an unauthenticated view of this page must still render the rest.
     Promise.all([api.nodes(), api.analytics(), api.aircraft(), api.myNodes().catch(() => [])])
       .then(([n, a, ac, mine]) => {
-        // Both are dicts keyed on node_ref — the values carry no identifier of
+        // Both are dicts keyed on node_ref, and the values carry no identifier of
         // their own, so the key is the identity.
         const nodeMap = n.nodes || {};
         const analyticsMap = a?.nodes || {};

@@ -15,7 +15,7 @@ from services import node_refs  # noqa: E402
 
 @pytest.fixture()
 def seed():
-    """seed(node_id=node_ref, ...) — write rows and drop the cache."""
+    """seed(node_id=node_ref, ...): write rows and drop the cache."""
 
     def _seed(**pairs: str) -> None:
         async def _go():

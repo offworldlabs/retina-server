@@ -188,7 +188,7 @@ async def broadcast_aircraft(aircraft_data: dict):
     if not state.ws_clients:
         return
     # The full feed (map + simulation fleet) is unauthenticated, so it is built
-    # from the published payload like every other public surface — "full" here
+    # from the published payload like every other public surface: "full" here
     # means "not filtered to real nodes", not "not filtered at all".
     gt_full = public_out.get("ground_truth") or {}
     gt_slim = {hex_code: [positions[-1]] for hex_code, positions in gt_full.items() if positions}

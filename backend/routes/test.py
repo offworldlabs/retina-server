@@ -858,8 +858,8 @@ def _published_records(records) -> list[dict]:
     them (`foreign_node_ids`) is an identity field as well as a measurement, so
     it has to go before the identity pass renames it.
 
-    Both passes are structural — services/public_geometry.py for the geometry,
-    services/node_refs.public_records for the identities — because these
+    Both passes are structural (services/public_geometry.py for the geometry,
+    services/node_refs.public_records for the identities) because these
     records are written by a dozen solver call sites under whatever keys each
     one chose.  One missed identity key would publish a raw id beside the
     adsb_hex the aircraft feed carries against contributing_node_refs, which

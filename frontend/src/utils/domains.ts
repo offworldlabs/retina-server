@@ -4,13 +4,14 @@
  * The backend serves several user-facing surfaces from one app, distinguished
  * only by subdomain. Each predicate here captures one concrete decision:
  *
- *   isMapDomain         — any "map" surface, on any environment. Used to default
- *                         to the Live Radar tab and hide tower search.
- *   usesRealOnlyFeed    — hits /ws/aircraft/live so the synthetic fleet never
- *                         appears, even if a node leaks through a bad filter.
- *   defaultsGroundTruthOff — ADS-B ground truth starts hidden.
- *   hidesRealNodes      — drops the real fleet out of the unfiltered feed, so a
- *                         public demo shows the synthetic nodes and nothing else.
+ *   isMapDomain:            any "map" surface, on any environment. Used to
+ *                           default to the Live Radar tab and hide tower search.
+ *   usesRealOnlyFeed:       hits /ws/aircraft/live so the synthetic fleet never
+ *                           appears, even if a node leaks through a bad filter.
+ *   defaultsGroundTruthOff: ADS-B ground truth starts hidden.
+ *   hidesRealNodes:         drops the real fleet out of the unfiltered feed, so
+ *                           a public demo shows the synthetic nodes and nothing
+ *                           else.
  *
  * usesRealOnlyFeed and defaultsGroundTruthOff are both asking "is this the
  * production real-radar surface?", which is `map.retina.fm` and nothing else.
@@ -54,12 +55,16 @@ const isProdRealRadar = /^map\./i.test(HOSTNAME) && !/\.localhost$/i.test(HOSTNA
 export const usesRealOnlyFeed = isProdRealRadar;
 export const defaultsGroundTruthOff = isProdRealRadar;
 
-// The public demo surfaces. Widening usesRealOnlyFeed to cover them is the
-// change this exists to prevent: the real-only feed carries no synthetic fleet,
-// so it would empty the very map they exist to demonstrate. They stay on the
-// unfiltered feed and the real nodes come off client-side instead, decided from
-// the server's is_synthetic flag (see utils/nodeKind.ts).
-const isPublicDemo = /^(staging-)?testmap\./i.test(HOSTNAME) || /^staging-map\./i.test(HOSTNAME);
+// The public demo surfaces: every map surface that is not production. Derived
+// from isMapDomain rather than matched against its own prefix list, so a
+// hostname added to that regex is covered here without a second edit.
+//
+// Widening usesRealOnlyFeed to cover these is the change this exists to
+// prevent: the real-only feed carries no synthetic fleet, so it would empty the
+// very map they exist to demonstrate. They stay on the unfiltered feed and the
+// real nodes come off client-side instead, decided from the server's
+// is_synthetic flag (see utils/nodeKind.ts).
+const isPublicDemo = isMapDomain && !isProdRealRadar;
 
 // Ruled out on the laptop by the same suffix test as isProdRealRadar: a local
 // stack has no public audience, and hiding half its fleet would only make the

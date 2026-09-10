@@ -1,4 +1,4 @@
-"""Tests for aircraft flush — _real_only_dict and broadcast_aircraft."""
+"""Tests for aircraft flush: _real_only_dict and broadcast_aircraft."""
 
 import os
 
