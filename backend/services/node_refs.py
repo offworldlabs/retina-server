@@ -24,6 +24,7 @@ from typing import NamedTuple
 from sqlalchemy import create_engine, select
 from sqlalchemy.pool import NullPool
 
+from core import state
 from core.nodes import Node
 from core.users import DATABASE_URL
 from services.tcp_handler import is_synthetic_node
@@ -171,15 +172,17 @@ def _mirrored_ref(node_id: str) -> str | None:
 
     A mirrored node has no row here: its detections arrive over the bulk
     endpoint (routes/radar.py) from the environment that holds its registry,
-    which sends the ref along with them. Read only when the local registry has
-    nothing, so a real row always wins, and the value is only as trusted as the
-    API key the bulk endpoint is gated on.
-    """
-    from core import state
+    which sends the ref along with them, validated there against the same
+    pattern a minted one must match. Read only when the local registry has
+    nothing, so a real row always wins.
 
-    with state.connected_nodes_lock:
-        known = state.connected_nodes.get(node_id)
-        ref = known.get("node_ref") if known else None
+    Unlocked: both reads are single dict lookups, and an entry is replaced
+    wholesale rather than edited field by field, so a concurrent write yields
+    the old entry or the new one. Taking connected_nodes_lock here would put it
+    on the 1 Hz publication path, contending with the ingest that writes it.
+    """
+    known = state.connected_nodes.get(node_id)
+    ref = known.get("node_ref") if known else None
     return ref if isinstance(ref, str) and ref else None
 
 

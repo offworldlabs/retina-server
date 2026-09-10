@@ -12,9 +12,10 @@ from pydantic import BaseModel, Field
 
 from config.constants import RATE_BUCKETS_MAX_IPS
 from core import state
+from routes.node_schemas import NodeRef
 from core.users import require_admin
 from pipeline.passive_radar import PassiveRadarPipeline
-from services import node_registration
+from services import node_refs, node_registration
 from services.node_config import canonical_config
 from services.node_pipeline import config_hash
 from services.public_location import public_latlon
@@ -38,8 +39,10 @@ class BulkNodeEntry(BaseModel):
     node_id: str = Field(default="http-node", max_length=128)
     # The handle the sending environment publishes this node under. Mirrored
     # nodes have no row here, so it is the only ref this server can name one
-    # by; see services/node_refs._mirrored_ref.
-    node_ref: str | None = Field(default=None, max_length=15)
+    # by (services/node_refs._mirrored_ref), which is why it is validated
+    # against the same pattern a minted ref must match: a value shaped like a
+    # node_id would otherwise be published as one.
+    node_ref: NodeRef | None = None
     config: dict | None = None
     frames: list[dict] = Field(default_factory=list)
 
@@ -171,6 +174,21 @@ async def ingest_detections(
     }
 
 
+def _record_mirrored_ref(node_id: str, node_ref: str | None) -> None:
+    """Record the handle the sending environment publishes this node under.
+
+    Refused when another node already publishes under it: two nodes sharing a
+    handle would both answer to it on every surface while the reverse map named
+    only one, so the collision is dropped rather than resolved silently.
+    """
+    if not node_ref or node_refs.id_for_ref(node_ref) not in (None, node_id):
+        return
+    with state.connected_nodes_lock:
+        known = state.connected_nodes.get(node_id)
+        if known is not None:
+            known["node_ref"] = node_ref
+
+
 @router.post("/api/radar/detections/bulk")
 async def ingest_detections_bulk(
     request: Request,
@@ -220,6 +238,7 @@ async def ingest_detections_bulk(
                     "capabilities": {},
                     "node_ref": entry.node_ref,
                 }
+            _record_mirrored_ref(node_id, entry.node_ref)
             # A cached pipeline was built from the config that was active when
             # it was created, and nothing else refreshes it.
             node_registration.evict_pipeline(node_id)
@@ -229,6 +248,11 @@ async def ingest_detections_bulk(
             with state.connected_nodes_lock:
                 state.connected_nodes[node_id]["status"] = "active"
                 state.connected_nodes[node_id]["last_heartbeat"] = datetime.now(timezone.utc).isoformat()
+            # Also on the unchanged path: a sender that starts sending refs
+            # against entries this server already holds moves neither `known`
+            # nor `changed`, so writing it only at registration would leave
+            # every existing node without one until a restart.
+            _record_mirrored_ref(node_id, entry.node_ref)
 
         for frame in frames:
             if "timestamp" not in frame:

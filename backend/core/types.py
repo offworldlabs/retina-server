@@ -20,6 +20,7 @@ class NodeState(TypedDict, total=False):
     peer: str
     is_synthetic: bool
     capabilities: dict
+    node_ref: str  # mirrored nodes only; see services/node_refs._mirrored_ref
 
 
 class AircraftPosition(TypedDict, total=False):
