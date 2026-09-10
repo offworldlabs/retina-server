@@ -2,7 +2,7 @@
 
 A `node_id` comes off the board and is what Mender, the TCP handler and every
 config file know the node as.  It is also, on this deployment, a name its owner
-chose — `radar3-retnode` names a machine, and a run of them names a fleet's
+chose — a name like `<site>-<board>` names a machine, and a run of them names a fleet's
 naming convention — so printing it on a public map hands a stranger a
 correlation key the node's owner never agreed to publish.  `core.nodes.Node`
 already carries the answer: `node_ref`, minted at registration
@@ -14,8 +14,8 @@ table only holds nodes that registered through `/v1/nodes`; the blah2 bridge's
 receivers and anything speaking the plain TCP protocol never do, and on the
 test deployment (2026-09-06) that is all seven of them.  So a ref has to exist
 for an unregistered node too, and it has to be indistinguishable from a minted
-one — a map where some nodes show `ndeXXXXXXXXXXXX` and the rest show
-`radar3-retnode` publishes exactly the ids it was trying not to.
+one — a map where some nodes show `ndeXXXXXXXXXXXX` and the rest show their
+operator-chosen names publishes exactly the ids it was trying not to.
 
 For those, the ref is derived: `HMAC-SHA256(fuzz salt, "node_ref|" + node_id)`
 rendered in the same base36 alphabet, truncated to the same 12 characters.
