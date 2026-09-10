@@ -475,6 +475,97 @@ tr:hover td {
   background: var(--warning);
 }
 
+/* Neutral on purpose: a private node is a normal node with its location
+   withheld, not a warning state. */
+.badge.private {
+  background: rgba(15, 23, 42, 0.06);
+  color: var(--text-secondary);
+}
+.badge.private::before {
+  background: var(--text-muted);
+}
+
+/* ── Location privacy control ────────────────────────────────────────────── */
+.privacy-options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.privacy-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.privacy-option:hover {
+  border-color: var(--accent);
+}
+
+.privacy-option input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+
+.privacy-option input:disabled {
+  cursor: not-allowed;
+}
+
+.privacy-option-title {
+  display: block;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.privacy-option-desc {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.privacy-source {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.privacy-saving {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.privacy-error {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--error);
+}
+
+.link-button {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.link-button:disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
 /* ── Grid layouts ────────────────────────────────────────────────────────── */
 .grid-2 {
   display: grid;

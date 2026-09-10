@@ -20,11 +20,13 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("RETINA_ENV", "test")
 
 from core import state  # noqa: E402
-from core.nodes import Node  # noqa: E402
+from core.nodes import Node, NodeLocationPrivacy  # noqa: E402
 from core.users import async_session_maker  # noqa: E402
 from main import app  # noqa: E402
 from services import publication  # noqa: E402
+from services.public_location import public_node_summary  # noqa: E402
 from services.publication import (  # noqa: E402
+    effective_privacy,
     is_private,
     private_node_ids,
     public_aircraft_payload,
@@ -49,6 +51,31 @@ def seed_nodes():
         asyncio.run(_go())
         # asyncio.run() clears the loop on exit (3.12); conftest's _clean_db
         # restores one for the same reason.
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        publication._reset_for_tests()
+
+    return _seed
+
+
+@pytest.fixture()
+def seed_override():
+    """seed_override(node_id=True|False, …) — write override rows, drop the cache.
+
+    Writes the row directly rather than going through the route, so the
+    precedence tests below fail on the precedence rule rather than on anything
+    the routes do around it.
+    """
+
+    def _seed(**overrides: bool) -> None:
+        async def _go():
+            async with async_session_maker() as session:
+                for nid, private in overrides.items():
+                    session.add(
+                        NodeLocationPrivacy(node_id=nid, private=private, set_by="test", set_at=1_700_000_000.0)
+                    )
+                await session.commit()
+
+        asyncio.run(_go())
         asyncio.set_event_loop(asyncio.new_event_loop())
         publication._reset_for_tests()
 
@@ -133,6 +160,160 @@ class TestPrivateNodeIds:
         private_node_ids()
         private_node_ids()
         assert len(calls) == 1
+
+
+# ── The override and the precedence rule ─────────────────────────────────────
+
+
+class TestEffectivePrivacy:
+    """The rule itself, on its own, before anything reads a database.
+
+    Four inputs, and the pair that looks redundant is the one worth pinning: a
+    node registered public and a node that never registered are both published,
+    and only the source distinguishes them.  The dashboard's wording depends on
+    that difference — "set at onboarding" is a lie about a node that never
+    onboarded.
+    """
+
+    def test_an_override_wins_over_the_registration_choice(self):
+        assert effective_privacy("private", False) == (False, "override")
+        assert effective_privacy("public", True) == (True, "override")
+
+    def test_without_an_override_the_registration_choice_stands(self):
+        assert effective_privacy("private", None) == (True, "registration")
+        assert effective_privacy("public", None) == (False, "registration")
+
+    def test_with_neither_the_node_is_public_by_default(self):
+        assert effective_privacy(None, None) == (False, "default")
+
+    def test_an_override_alone_needs_no_registration(self):
+        assert effective_privacy(None, True) == (True, "override")
+
+
+class TestPrecedenceOverTheFleet:
+    """The same rule composed by _query over both tables."""
+
+    def test_a_private_registration_with_no_override_is_private(self, seed_nodes):
+        seed_nodes(**{_PRIV: "private"})
+        assert is_private(_PRIV)
+
+    def test_a_public_override_unhides_a_private_registration(self, seed_nodes, seed_override):
+        """The owner changed their mind after onboarding."""
+        seed_nodes(**{_PRIV: "private"})
+        seed_override(**{_PRIV: False})
+        assert not is_private(_PRIV)
+
+    def test_a_private_override_hides_a_node_that_never_registered(self, seed_override):
+        """The synthetic fleet and every mirrored node: no row in `nodes` at all.
+
+        This is the case the table exists for — on the test droplet it is the
+        only way to make anything private.
+        """
+        seed_override(**{"never-registered": True})
+        assert is_private("never-registered")
+
+    def test_a_private_override_hides_a_publicly_registered_node(self, seed_nodes, seed_override):
+        seed_nodes(**{_PUB: "public"})
+        seed_override(**{_PUB: True})
+        assert is_private(_PUB)
+
+    def test_deleting_the_override_returns_the_registration_choice(self, seed_nodes, seed_override):
+        """A reflash rewrites Node.publication and does not touch the override,
+        so the fallback has to still be there when the override goes."""
+        seed_nodes(**{_PRIV: "private"})
+        seed_override(**{_PRIV: False})
+        assert not is_private(_PRIV)
+
+        asyncio.run(publication.clear_location_privacy(_PRIV))
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        publication.invalidate()
+        assert is_private(_PRIV)
+
+    def test_deleting_an_override_on_an_unregistered_node_leaves_it_public(self, seed_override):
+        seed_override(**{"never-registered": True})
+        assert is_private("never-registered")
+
+        asyncio.run(publication.clear_location_privacy("never-registered"))
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        publication.invalidate()
+        assert not is_private("never-registered")
+
+
+class TestInvalidate:
+    def test_invalidate_makes_the_next_call_re_query(self, seed_nodes, monkeypatch):
+        """Without this a dashboard change is honoured somewhere in the next
+        30 s, which on a switch that hides a node reads as nothing happening."""
+        seed_nodes(**{_PRIV: "private"})
+        assert private_node_ids() == frozenset({_PRIV})
+        monkeypatch.setattr(publication, "_query", lambda: frozenset({"someone-else"}))
+        assert private_node_ids() == frozenset({_PRIV})
+
+        publication.invalidate()
+        assert private_node_ids() == frozenset({"someone-else"})
+
+    def test_invalidate_does_not_blank_the_answer_it_is_dropping(self, seed_nodes, monkeypatch):
+        """The window between the drop and the next refresh must not publish a
+        private node, and a failure in that window must still be a failure
+        rather than a silent fail-open."""
+        seed_nodes(**{_PRIV: "private"})
+        assert private_node_ids() == frozenset({_PRIV})
+
+        def _boom():
+            raise RuntimeError("database is gone")
+
+        monkeypatch.setattr(publication, "_query", _boom)
+        publication.invalidate()
+        assert private_node_ids() == frozenset({_PRIV})
+
+
+class TestLocationPrivacyStorage:
+    """The async accessors the routes are built on."""
+
+    def _state(self, node_id):
+        out = asyncio.run(publication.location_privacy(node_id))
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        return out
+
+    def test_an_unknown_node_reports_the_default_with_no_rows(self):
+        assert self._state("never-heard-of-it") == {
+            "node_id": "never-heard-of-it",
+            "location_private": False,
+            "location_privacy_source": "default",
+            "registration_choice": None,
+            "override": None,
+        }
+
+    def test_the_registration_choice_is_reported_raw_beside_the_effective_state(self, seed_nodes):
+        seed_nodes(**{_PRIV: "private"})
+        assert self._state(_PRIV) == {
+            "node_id": _PRIV,
+            "location_private": True,
+            "location_privacy_source": "registration",
+            "registration_choice": "private",
+            "override": None,
+        }
+
+    def test_an_override_is_reported_with_its_provenance(self, seed_nodes, seed_override):
+        seed_nodes(**{_PRIV: "private"})
+        seed_override(**{_PRIV: False})
+        state_now = self._state(_PRIV)
+        assert state_now["location_private"] is False
+        assert state_now["location_privacy_source"] == "override"
+        assert state_now["registration_choice"] == "private"
+        assert state_now["override"] == {"private": False, "set_by": "test", "set_at": 1_700_000_000.0}
+
+    def test_setting_twice_corrects_the_row_rather_than_adding_one(self):
+        asyncio.run(publication.set_location_privacy(_PUB, True, set_by="user-a"))
+        asyncio.run(publication.set_location_privacy(_PUB, False, set_by="user-b"))
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        override = self._state(_PUB)["override"]
+        assert override["private"] is False
+        assert override["set_by"] == "user-b"
+
+    def test_clearing_a_node_with_no_override_is_not_an_error(self):
+        asyncio.run(publication.clear_location_privacy("never-heard-of-it"))
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        assert self._state("never-heard-of-it")["override"] is None
 
 
 # ── The aircraft feed ────────────────────────────────────────────────────────
@@ -305,6 +486,151 @@ class TestRadarNodesPayload:
         assert _PRIV not in body["nodes"]
         assert _PUB in body["nodes"]
         assert body["total"] == 1
+
+
+class TestOwnerSeesTheirOwnPrivateNodeInAnalytics:
+    """/api/radar/analytics is where the map gets its node markers, discs and
+    coverage, so dropping a private node from it hides that node from its own
+    owner's dashboard as well as from the public.  These pin the exception: the
+    owner's node comes back, in the same fuzzed frame everyone else would have
+    got, and nothing about the unauthenticated answer moves.
+
+    The suite runs with core.users' anonymous-admin bypass opted in, so "the
+    logged-in caller" here is that anonymous admin and ownership is a
+    ``node_owners`` row against its all-zero uuid.  The unauthenticated test
+    below switches the bypass off in the route module to get a genuinely
+    anonymous caller.
+    """
+
+    # Both coordinate pairs: without a transmitter the analytics manager
+    # builds no detection area, and the fuzzed `rx` block this asserts on
+    # lives inside it.
+    RX = {"node_id": _PRIV, "rx_lat": 34.0, "rx_lon": -82.0, "tx_lat": 34.2, "tx_lon": -82.3}
+    # Whitespace orjson would never emit, so a route that parsed and re-dumped
+    # this cannot hand it back unchanged.  That is the whole assertion for the
+    # unauthenticated path: identity, not equality of meaning.
+    CACHED = b'{"nodes":   {"other-node": {"node_id": "other-node"}},   "cross_node": {}}'
+
+    @pytest.fixture()
+    def analytics_node(self):
+        import services.public_location as pl
+
+        # The fuzz is what the owner's copy has to come back through, and
+        # another test in this file turns it off by environment; reset the
+        # module so this one cannot inherit that answer.
+        pl._reset_for_tests()
+        state.node_analytics.register_node(_PRIV, dict(self.RX))
+        state.latest_analytics_bytes = self.CACHED
+        state.latest_analytics_real_bytes = self.CACHED
+        try:
+            yield _PRIV
+        finally:
+            state.node_analytics.retire_node(_PRIV)
+
+    @staticmethod
+    def _own(node_id, user_id):
+        from core.auth import set_node_owner
+
+        asyncio.run(set_node_owner(node_id, user_id))
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+    def test_an_unauthenticated_caller_gets_the_cached_bytes_verbatim(
+        self, client, seed_nodes, analytics_node, monkeypatch
+    ):
+        import routes.analytics as an
+
+        monkeypatch.setattr(an, "AUTH_BYPASS", False)
+        seed_nodes(**{_PRIV: "private"})
+        assert client.get("/api/radar/analytics").content == self.CACHED
+
+    def test_a_public_fleet_costs_no_identity_check_at_all(self, client, analytics_node, monkeypatch):
+        """Nothing private, nothing to add — and the ownership lookup is skipped
+        rather than run and discarded, which is what keeps the common case one
+        cached-bytes write."""
+        import routes.analytics as an
+
+        def _never(_request):
+            raise AssertionError("the owner lookup ran with nothing private")
+
+        monkeypatch.setattr(an, "_optional_owned_nodes", _never)
+        assert client.get("/api/radar/analytics").content == self.CACHED
+
+    def test_an_owner_gets_their_private_nodes_summary_back(self, client, seed_nodes, analytics_node):
+        from core.users import ANONYMOUS_USER
+
+        seed_nodes(**{_PRIV: "private"})
+        self._own(_PRIV, ANONYMOUS_USER["id"])
+        try:
+            body = client.get("/api/radar/analytics").json()
+        finally:
+            self._own(_PRIV, None)
+        assert _PRIV in body["nodes"]
+        # The rest of the cached payload rides along untouched.
+        assert body["nodes"]["other-node"] == {"node_id": "other-node"}
+
+    def test_the_owners_copy_is_the_same_fuzzed_frame_the_public_would_get(self, client, seed_nodes, analytics_node):
+        """An owner is not an admin.  They already know where their own receiver
+        is, so serving the truth here buys them nothing and makes this route a
+        second, quieter place the real geometry is published from."""
+        from core.users import ANONYMOUS_USER
+
+        seed_nodes(**{_PRIV: "private"})
+        self._own(_PRIV, ANONYMOUS_USER["id"])
+        try:
+            body = client.get("/api/radar/analytics").json()
+        finally:
+            self._own(_PRIV, None)
+
+        expected = orjson.loads(
+            orjson.dumps(
+                public_node_summary(_PRIV, state.node_analytics.get_node_summary(_PRIV)),
+                option=orjson.OPT_SERIALIZE_NUMPY,
+            )
+        )
+        assert body["nodes"][_PRIV] == expected
+        rx = body["nodes"][_PRIV]["detection_area"]["rx"]
+        assert rx["lat"] != self.RX["rx_lat"]
+        assert "location_uncertainty_km" in rx
+
+    def test_a_logged_in_non_owner_does_not(self, client, seed_nodes, analytics_node):
+        """The node is owned — by somebody else."""
+        seed_nodes(**{_PRIV: "private"})
+        self._own(_PRIV, "11111111-1111-1111-1111-111111111111")
+        try:
+            assert client.get("/api/radar/analytics").content == self.CACHED
+        finally:
+            self._own(_PRIV, None)
+
+    def test_the_real_only_variant_merges_the_same_way(self, client, seed_nodes, analytics_node):
+        from core.users import ANONYMOUS_USER
+
+        seed_nodes(**{_PRIV: "private"})
+        self._own(_PRIV, ANONYMOUS_USER["id"])
+        try:
+            body = client.get("/api/radar/analytics?real_only=true").json()
+        finally:
+            self._own(_PRIV, None)
+        assert _PRIV in body["nodes"]
+
+    def test_the_per_node_route_answers_the_owner(self, client, seed_nodes, analytics_node):
+        from core.users import ANONYMOUS_USER
+
+        seed_nodes(**{_PRIV: "private"})
+        self._own(_PRIV, ANONYMOUS_USER["id"])
+        try:
+            r = client.get(f"/api/radar/analytics/{_PRIV}")
+        finally:
+            self._own(_PRIV, None)
+        assert r.status_code == 200
+        assert r.json()["node_id"] == _PRIV
+
+    def test_the_per_node_route_is_still_404_for_everyone_else(self, client, seed_nodes, analytics_node):
+        seed_nodes(**{_PRIV: "private"})
+        self._own(_PRIV, "11111111-1111-1111-1111-111111111111")
+        try:
+            assert client.get(f"/api/radar/analytics/{_PRIV}").status_code == 404
+        finally:
+            self._own(_PRIV, None)
 
 
 # ── The archive ──────────────────────────────────────────────────────────────

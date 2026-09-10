@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RETINA node ingest
-  version: 1.1.3
+  version: 1.1.4
   description: |
     The RETINA server's HTTP API. The paths under `/v1/nodes` are the RETINA node
     ingest contract, generated from the server and versioned as a unit; everything
@@ -912,8 +912,25 @@ components:
       - choice
       title: PublicationChoice
       description: |-
-        Whether the owner chose to publish this node's detections. `choice` is
-        required, with no default: a node must send an explicit value.
+        Whether this node's location is published, which is the only thing the
+        choice governs. Either way the node runs its full pipeline, joins track
+        association and contributes to multinode solves, and the network keeps
+        everything it detects.
+
+        `public`: the receiver appears on the public map at an approximate position,
+        displaced by the deployment's location fuzz, with the uncertainty radius
+        declared beside it. There is no option to publish a precise position.
+
+        `private`: nothing that locates the receiver is published — no marker, no
+        uncertainty disc, no coverage polygon, no ambiguity arcs, no single-node
+        aircraft, no receiver coordinate, no archive listing. Solves the node
+        contributed to are still published; the node's id is struck from the
+        membership lists they carry.
+
+        `choice` is required, with no default: a node must send an explicit value.
+        The choice can also be set later from the dashboard, by the node's owner or
+        an admin, and that later answer outranks this one — so what is sent here is
+        the answer at onboarding rather than the last word.
     RegisterRequest:
       properties:
         node_id:

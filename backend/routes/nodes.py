@@ -59,7 +59,15 @@ NODE_PATH_PREFIX = "/v1/nodes"
 # version and a client cannot tell them apart by it: a payload the earlier one
 # called valid, one omitting cpi_s say, the later one rejects, and a client
 # regenerated against the later one renames its config type.
-NODE_API_VERSION = "1.1.3"
+# 1.1.4 rewrites what the publication choice means, and nothing else. The
+# description on PublicationChoice said "whether the owner chose to publish this
+# node's detections", which was never what the server did with the answer: a
+# private node's detections are kept, solved against and archived, and what is
+# withheld is everything that locates the receiver. A client reading the old
+# text would have told its owner they were declining to contribute. A patch
+# because the change is wire-visible but not structural — same fields, same
+# bounds, same two enum values, same behaviour on both sides.
+NODE_API_VERSION = "1.1.4"
 
 # No tag here: each sub-router carries the contract's own grouping, since those
 # are what a generated client is built around.

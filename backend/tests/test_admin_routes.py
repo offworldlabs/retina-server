@@ -64,6 +64,124 @@ class TestUsers:
         assert r.status_code == 404
 
 
+# ── Node location privacy ─────────────────────────────────────────────────────
+
+
+class TestAdminNodeLocationPrivacy:
+    """The admin half of the switch, reachable for any node id.
+
+    Deliberately exercised against an id that has never registered and has no
+    owner: that is the fleet on the test droplet, and the case the whole table
+    exists for.  tests/test_publication.py owns the precedence rule; what is
+    asserted here is the route surface, the raw pieces admin gets and owners do
+    not, the cache drop, and the event-log entry.
+    """
+
+    NODE = "admin-privacy-node"
+
+    @staticmethod
+    def _register(node_id, choice):
+        import asyncio
+
+        from core.nodes import Node
+        from core.users import async_session_maker
+
+        async def _go():
+            async with async_session_maker() as session:
+                session.add(Node(node_id=node_id, node_ref=f"nde-{node_id}"[:15], publication=choice))
+                await session.commit()
+
+        asyncio.run(_go())
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+    def test_get_answers_for_a_node_nothing_has_ever_heard_of(self, client):
+        """Not a 404: "no registration, no override, public by default" is the
+        true answer for a node an admin is about to hide before it has ever
+        connected."""
+        r = client.get(f"/api/admin/nodes/{self.NODE}/location-privacy")
+        assert r.status_code == 200
+        assert r.json() == {
+            "node_id": self.NODE,
+            "location_private": False,
+            "location_privacy_source": "default",
+            "registration_choice": None,
+            "override": None,
+        }
+
+    def test_get_reports_the_registration_choice_as_a_raw_piece(self, client):
+        self._register(self.NODE, "private")
+        body = client.get(f"/api/admin/nodes/{self.NODE}/location-privacy").json()
+        assert body["location_privacy_source"] == "registration"
+        assert body["registration_choice"] == "private"
+        assert body["override"] is None
+
+    def test_put_sets_the_override_and_records_who_set_it(self, client):
+        from core.users import ANONYMOUS_USER
+
+        r = client.put(f"/api/admin/nodes/{self.NODE}/location-privacy", json={"private": True})
+        assert r.status_code == 200
+        assert r.json() == {
+            "node_id": self.NODE,
+            "location_private": True,
+            "location_privacy_source": "override",
+        }
+        override = client.get(f"/api/admin/nodes/{self.NODE}/location-privacy").json()["override"]
+        assert override["private"] is True
+        # `admin:<email>` rather than a bare id, so an owner's choice and an
+        # intervention are told apart in the row itself.
+        assert override["set_by"] == f"admin:{ANONYMOUS_USER['email']}"
+        assert override["set_at"] > 0
+
+    def test_put_takes_effect_without_waiting_for_the_ttl(self, client):
+        from services.publication import is_private
+
+        assert not is_private(self.NODE)
+        client.put(f"/api/admin/nodes/{self.NODE}/location-privacy", json={"private": True})
+        assert is_private(self.NODE)
+
+    def test_put_is_logged_like_the_owner_assignment_route(self, client):
+        """An admin changing what another operator's node publishes is exactly
+        what the event log exists to make answerable afterwards."""
+        client.put(f"/api/admin/nodes/{self.NODE}/location-privacy", json={"private": True})
+        events = client.get("/api/admin/events").json()
+        assert any(e["meta"].get("node_id") == self.NODE and e["meta"].get("private") is True for e in events)
+
+    def test_delete_returns_the_node_to_its_registration_choice(self, client):
+        from services.publication import is_private
+
+        self._register(self.NODE, "private")
+        client.put(f"/api/admin/nodes/{self.NODE}/location-privacy", json={"private": False})
+        assert not is_private(self.NODE)
+
+        r = client.delete(f"/api/admin/nodes/{self.NODE}/location-privacy")
+        assert r.status_code == 200
+        assert r.json() == {
+            "node_id": self.NODE,
+            "location_private": True,
+            "location_privacy_source": "registration",
+        }
+        assert is_private(self.NODE)
+
+    def test_delete_is_logged_too(self, client):
+        client.put(f"/api/admin/nodes/{self.NODE}/location-privacy", json={"private": True})
+        client.delete(f"/api/admin/nodes/{self.NODE}/location-privacy")
+        events = client.get("/api/admin/events").json()
+        assert any("location privacy override cleared" in e["message"] for e in events)
+
+    @pytest.mark.parametrize(
+        ("method", "kwargs"),
+        [("get", {}), ("put", {"json": {"private": True}}), ("delete", {})],
+    )
+    def test_all_three_are_behind_require_admin(self, client, method, kwargs):
+        """With the anonymous-admin bypass off and no cookie, every one of them
+        is 401 rather than an answer about somebody's node."""
+        from unittest.mock import patch
+
+        with patch("core.users.AUTH_BYPASS", False):
+            r = getattr(client, method)(f"/api/admin/nodes/{self.NODE}/location-privacy", **kwargs)
+        assert r.status_code == 401
+
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 
