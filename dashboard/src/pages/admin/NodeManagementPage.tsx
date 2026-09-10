@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
 import { PositionStatusBadge } from "../../components/PositionStatusBadge";
+import { RetnodeLink } from "../../components/RetnodeLink";
 
 const PAGE_SIZE = 25;
 
@@ -89,7 +90,9 @@ export default function NodeManagementPage() {
                   {online ? "Online" : "Offline"}
                 </span>
                 <PositionStatusBadge status={node.position_status} />
-                {node.name || id}
+                <RetnodeLink nodeId={id} synthetic={node.is_synthetic}>
+                  {node.name || id}
+                </RetnodeLink>
               </div>
               <div className="node-meta">
                 <span className="meta-label">Frequency</span>
