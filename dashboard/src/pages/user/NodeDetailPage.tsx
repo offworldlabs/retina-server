@@ -4,6 +4,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { RetnodeLink } from "../../components/RetnodeLink";
 import { POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
 import type { PositionStatus } from "../../types";
 
@@ -33,6 +34,7 @@ export default function NodeDetailPage() {
   if (loading) return <div className="empty-state">Loading…</div>;
   if (!data) return <div className="empty-state">Node not found</div>;
 
+  const id = data.node_id || nodeId;
   const metrics = data.metrics || data;
   const trust = data.trust || {};
   const reputation = data.reputation || {};
@@ -50,7 +52,7 @@ export default function NodeDetailPage() {
       <div className="page-header">
         <h1 style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <button className="btn btn-outline btn-sm" onClick={() => navigate(-1)}>← Back</button>
-          {data.node_id || nodeId}
+          <RetnodeLink nodeId={id} synthetic={nodeInfo?.is_synthetic} />
         </h1>
         <p>Detailed metrics and trust analysis</p>
       </div>
