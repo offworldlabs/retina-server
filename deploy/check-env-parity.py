@@ -119,10 +119,14 @@ ALLOWED_DIVERGENCE = (
     # shadow / 3) are what staging and production run until the numbers from
     # the test droplet say the defaults should move, which is a code change
     # in backend/core/state.py and config/constants.py, not an overlay one.
+    # TRACKER_PROCESS_NOISE_DOPPLER is the same shape: the test droplet runs
+    # the turn-break A/B at 20 while staging and production keep the tracker
+    # library's packaged 0.5 until the live numbers say otherwise.
     (
         "test",
         r"^services\.server\.environment\.(SOLVER_ALT_MODE|NODE_FRAME_MIN_INTERVAL_S"
-        r"|TRACK_MAX_STALE_S|DARK_FOLLOW_MODE|DARK_FOLLOW_MIN_SOLVES)$",
+        r"|TRACK_MAX_STALE_S|DARK_FOLLOW_MODE|DARK_FOLLOW_MIN_SOLVES"
+        r"|TRACKER_PROCESS_NOISE_DOPPLER)$",
     ),
     # Compose records the file list it was assembled from.
     r"^name$",

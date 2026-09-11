@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import os
+import threading
 import time
 
 import yaml
@@ -284,8 +285,10 @@ _TRACKER_PROCESS_NOISE_ENV = {
 _TRACKER_PROCESS_NOISE_DEFAULTS = {"doppler": 0.5, "delay": 0.1}
 # One pipeline is constructed per node (dozens of them), and the environment
 # does not change between them, so the effective override is logged once per
-# process rather than once per instance.
+# process rather than once per instance. Pipelines are built lazily from the
+# frame worker threads, so the check-and-set is guarded by a lock.
 _tracker_env_override_logged = False
+_tracker_env_override_lock = threading.Lock()
 
 
 def _apply_tracker_env_overrides(tracker_config: dict) -> dict:
@@ -315,14 +318,20 @@ def _apply_tracker_env_overrides(tracker_config: dict) -> dict:
         if not math.isfinite(value) or value <= 0:
             logger.warning("Ignoring %s=%r: must be a positive number", var, raw)
             continue
-        section = tracker_config.setdefault("process_noise", {})
+        # A YAML header with nothing under it parses as None, which setdefault
+        # would hand back unchanged; normalise to a dict before writing into it.
+        section = tracker_config.get("process_noise") or {}
+        tracker_config["process_noise"] = section
         previous = section.get(key, _TRACKER_PROCESS_NOISE_DEFAULTS[key])
         section[key] = value
         applied.append(f"{key} {previous} -> {value} ({var})")
 
-    if applied and not _tracker_env_override_logged:
-        _tracker_env_override_logged = True
-        logger.info("tracker process noise: %s", ", ".join(applied))
+    if applied:
+        with _tracker_env_override_lock:
+            first = not _tracker_env_override_logged
+            _tracker_env_override_logged = True
+        if first:
+            logger.info("tracker process noise: %s", ", ".join(applied))
     return tracker_config
 
 
@@ -361,7 +370,8 @@ class PassiveRadarPipeline:
         # the Tracker object). Also done when the packaged config.yaml is
         # missing but an env override applied: otherwise the override would
         # reach the Tracker's own dict and never the filter that reads it.
-        if packaged_config_found or tracker_config.get("process_noise") != process_noise_before:
+        process_noise_after = tracker_config.get("process_noise") or {}
+        if packaged_config_found or process_noise_after != process_noise_before:
             _set_tracker_global_config(tracker_config)
 
         self.tracker = RetinaTracker(
