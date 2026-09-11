@@ -53,8 +53,10 @@ function isSyntheticNode(node: RadarNode): boolean {
  * that way: co-located nodes are *configured* at one coordinate, so equality
  * is what a shared site looks like in the data, and a proximity rule would
  * make a node's marker depend on which of its neighbours happened to be
- * online.  Five decimals is the precision the polygon apex is served at, so
- * two nodes the backend published at one point compare equal here.
+ * online.  The backend serves receiver coordinates at four decimals
+ * (public_location.py) and the polygon apex at five; the key uses five, the
+ * finer of the two, so two nodes published at one point compare equal here
+ * and nothing the feed kept apart is ever merged.
  */
 export function groupNodesBySite(nodes: RadarNode[]): NodeSite[] {
   const sites = new Map<string, NodeSite>();
