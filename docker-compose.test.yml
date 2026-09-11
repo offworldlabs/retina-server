@@ -61,7 +61,7 @@ services:
       # falls outside the chi-square gate and the track dies mid-turn. Offline
       # replay put 20 at a tenth of the turning breaks for 20% worse Doppler RMS;
       # main keeps the library's 0.5 until this measures the same live.
-      - TRACKER_PROCESS_NOISE_DOPPLER=20
+      - TRACKER_PROCESS_NOISE_DOPPLER=50
       # Anonymous admin, asked for explicitly since ClickUp 86cb49d29 took it
       # off RETINA_ENV. No OAuth is configured here either.
       - AUTH_ALLOW_ANONYMOUS_ADMIN=1
