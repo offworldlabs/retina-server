@@ -115,6 +115,19 @@ class TestRegisteredRef:
         assert _REF_RE.match(other)
         assert other != "nde0123456789ab"
 
+    def test_a_failed_refresh_keeps_the_last_snapshot(self, seed_node, monkeypatch):
+        """A database blip must not rename a registered node to a derived ref."""
+        seed_node(_ID, "nde0123456789ab")
+        assert public_node_ref(_ID) == "nde0123456789ab"
+
+        def _boom():
+            raise RuntimeError("database unavailable")
+
+        monkeypatch.setattr(node_ref, "_refs_from_db", _boom)
+        # Expire the snapshot so the next lookup has to refresh — and fail.
+        monkeypatch.setattr(node_ref, "_expires_at", 0.0)
+        assert public_node_ref(_ID) == "nde0123456789ab"
+
 
 class TestPerNodeAnalyticsRoute:
     """GET /api/radar/analytics/{node_id} is built fresh, not from the cache.

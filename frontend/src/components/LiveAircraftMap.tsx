@@ -855,7 +855,11 @@ const BasemapLayer = memo(function BasemapLayer({ url }) {
       is: one real receiver there means the site is real. ── */
 const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelectNode, selectedNodeId }) {
   const { NODE } = usePalette();
-  return groupNodesBySite(visibleNodes).map((site) => {
+  // Grouped once per node refresh, not per selection: selectedNodeId only
+  // flips a Show/Hide label inside a popup, and it changes on every click, so
+  // without this the whole fleet would be re-grouped for each one.
+  const sites = useMemo(() => groupNodesBySite(visibleNodes), [visibleNodes]);
+  return sites.map((site) => {
     const multi = site.nodes.length > 1;
     // Every published rx coordinate is displaced by the backend; the disc is
     // how the map admits it, at the radius the feed itself declares.  One per
@@ -2022,8 +2026,11 @@ export default function LiveAircraftMap() {
             {/* Coverage zones — memoized, only re-renders on nodes/showCoverage change */}
             <CoverageLayer visibleNodes={visibleNodes} showCoverage={showCoverage} />
 
-            {/* Node markers — uses full `nodes` list (not viewport-culled) so it only
-                re-renders every 30s when node data refreshes, not on every pan/zoom.
+            {/* Node markers — uses full `nodes` list (not viewport-culled) so the
+                site grouping is redone only every 30s when node data refreshes,
+                never on pan/zoom.  A selection change re-renders the layer (the
+                popup's Show/Hide label reads it) but reuses the memoised
+                grouping, and react-leaflet leaves unchanged markers alone.
                 SVG circles all share one composited layer — no per-element pan cost. */}
             <NodeMarkersLayer visibleNodes={nodes} onSelectNode={handleSelectNode} selectedNodeId={selectedNodeId} />
 

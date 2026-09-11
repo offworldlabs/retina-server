@@ -124,14 +124,20 @@ def _snapshot() -> dict[str, str]:
         if time.monotonic() < _expires_at:
             return _db_refs
         try:
+            # Fetch first, swap second: a failed read leaves the previous
+            # snapshot in place rather than an empty one, so a transient
+            # database blip cannot flip a registered node to a derived name
+            # and back (services/node_sites.py keeps its snapshot the same
+            # way).  The stale answer is the last good answer, not a wrong one.
+            fresh = _refs_from_db()
             _db_refs.clear()
-            _db_refs.update(_refs_from_db())
+            _db_refs.update(fresh)
             _expires_at = time.monotonic() + _TTL_S
         except Exception:
-            # No database, no table, or a transient failure.  Every node then
-            # derives its ref, which is the answer for an unregistered node
-            # anyway — so this degrades to "nothing is registered", never to
-            # publishing an id.
+            # No database, no table, or a transient failure.  With no snapshot
+            # yet, every node derives its ref, which is the answer for an
+            # unregistered node anyway — so this degrades to "nothing is
+            # registered", never to publishing an id.
             if not _db_unavailable_logged:
                 _db_unavailable_logged = True
                 logger.exception("node_ref: no node registry available, deriving every public ref")

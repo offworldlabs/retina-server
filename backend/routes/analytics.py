@@ -83,7 +83,10 @@ async def radar_analytics(request: Request, real_only: bool = False):
         # rather than tell the owner anything.
         if summary.keys() == {"node_id"}:
             continue
-        nodes[nid] = public_node_summary(nid, summary)
+        # Built fresh like the per-node route below, so it carries the same
+        # public handle the cached listing does — or the owner's own node is
+        # the one node on their map without a name.
+        nodes[nid] = {**public_node_summary(nid, summary), "node_ref": public_node_ref(nid)}
     return Response(
         content=orjson.dumps(payload, option=orjson.OPT_SERIALIZE_NUMPY),
         media_type="application/json",
