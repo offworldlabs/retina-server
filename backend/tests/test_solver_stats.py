@@ -409,12 +409,16 @@ class TestKnownLaneAndClaimsPassthrough:
             ("known_lane_no_converge", 1),
             ("known_lane_published", 4),
             ("known_lane_publish_errors", 1),
+            ("known_lane_publish_rms_rejected", 2),
         ):
             state.bump_counter(name, n)
         out = _solver_window_stats(10.0)
-        # publish_errors accounts for the truth_match minus published gap: 5
-        # classified truth_match, 4 on the map, 1 that threw on the way there
-        # (see known_lane._attempt's publish catch).
+        # publish_errors and publish_rms_rejected between them account for the
+        # truth_match minus published gap: 5 classified truth_match, 4 on the
+        # map... which only adds up because these are raw counters bumped
+        # directly here, not one lane's arithmetic — see known_lane._attempt
+        # for the two real causes (a publish that threw, and a solve withheld
+        # by the rms_delay gate).
         assert out["known_lane"] == {
             "mode": state.KNOWN_LANE_MODE,
             "attempts": 9,
@@ -424,6 +428,7 @@ class TestKnownLaneAndClaimsPassthrough:
             "published": 4,
             "publish_errors": 1,
             "reanchored": 0,
+            "publish_rms_rejected": 2,
             # Windowed, and empty here — these are since-boot counters bumped
             # directly, with no history records behind them.
             "position_error_km": {"median": None, "p90": None, "n": 0, "window_minutes": 10.0},
@@ -674,6 +679,7 @@ class TestEndpoint:
             "published",
             "publish_errors",
             "reanchored",
+            "publish_rms_rejected",
             "position_error_km",
         }
         assert data["known_claims"].keys() == {

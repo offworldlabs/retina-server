@@ -34,12 +34,17 @@ Modes (state.KNOWN_LANE_MODE, owned by slice A; absent means "off"):
   shadow  — solve + record outcomes, accuracy samples and counters, but
             never touch the live feed: a shadow run produces comparison
             data with zero behaviour change.
-  binding — additionally publish truth_match solves into
-            state.multinode_tracks under the hex's own key (mn-adsb-*),
-            exactly as today's tagged solves are, superseding the regular
-            pipeline's output for that hex.  Ghosts are recorded but never
-            published: a displaced solve under a real hex is a wrong map
-            marker, the same reason the regular displacement gate exists.
+  binding — additionally publish truth_match/reanchored solves whose
+            rms_delay passes the regular lane's bound (see
+            KNOWN_PUBLISH_MAX_RMS_DELAY_US) into state.multinode_tracks under
+            the hex's own key (mn-adsb-*), exactly as today's tagged solves
+            are, superseding the regular pipeline's output for that hex.
+            Ghosts are recorded but never published: a displaced solve under a
+            real hex is a wrong map marker, the same reason the regular
+            displacement gate exists.  The residual gate protects the MAP
+            only — the classification, the accuracy sample and the history
+            outcome are identical whether it passes or not, so the free-solve
+            measurement below stays free.
 
 A SECOND PASS lives here too: the dark-follow lane (DARK_FOLLOW_MODE, see
 services/dark_follow.py) applies the same inversion to aircraft that have no
@@ -94,6 +99,7 @@ _COUNTERS = (
     "known_lane_published",
     "known_lane_publish_errors",
     "known_lane_reanchored",
+    "known_lane_publish_rms_rejected",
 )
 for _name in _COUNTERS:
     if not hasattr(state, _name):
@@ -132,6 +138,20 @@ _ACCURACY_SAMPLE_INTERVAL_S = 10.0
 # churn would otherwise grow it for the process lifetime.  Comfortably longer
 # than the interval it guards, so a live hex is never swept mid-window.
 _ACCURACY_TTL_S = 300.0
+
+# ── Publish residual gate ─────────────────────────────────────────────────────
+# Same default, same units and same meaning as the regular lane's
+# solver_mod._SOLVER_RMS_DELAY_MAX_US: a solve whose per-node delay residual
+# exceeds it is not a fix of THIS aircraft — the measurements it was built from
+# cannot all belong to one target.  Identity gives this lane its correspondence
+# for free, which is why it skips the rest of the dark gate stack; it does not
+# make a claim set immune to contamination, and the displacement classifier
+# alone cannot see it (a contaminated solve can land within 2 km of truth and
+# still be fitting the wrong equations).  2026-09-10/11 on test+staging, the
+# tail of mn-adsb-a85f17 (N6389R, PA-28) published rms_delay 9.9-11.2 µs at
+# n=2-3 with a formal pos_sigma_km of 1.9e7.  Own env key rather than the
+# solver's so the map can be tightened here without moving the dark lane.
+KNOWN_PUBLISH_MAX_RMS_DELAY_US = float(os.getenv("KNOWN_PUBLISH_MAX_RMS_DELAY_US", "3.0"))
 
 # One pass at a time.  maybe_run_pass is called from every solver worker
 # thread's loop; a try-lock (never blocking) means a second worker skips the
@@ -554,7 +574,23 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
     n_nodes = int(result.get("n_nodes") or s_in.get("n_nodes") or 0)
     _record_accuracy(hexn, err_km, label, n_nodes, s_in["timestamp_ms"] / 1000.0)
 
-    published = mode == "binding" and label in ("truth_match", "reanchored")
+    # Residual gate on the PUBLISH only (see KNOWN_PUBLISH_MAX_RMS_DELAY_US).
+    # The regular lane's idiom verbatim, including its two silences: a missing
+    # or None rms_delay passes, and an n=2 solve — exactly determined, so it
+    # fits its own two equations perfectly and carries 0.0 — passes too.  The
+    # displacement classifier therefore remains the only check n=2 has, as
+    # today; this gate can only take publishes away from the overdetermined
+    # solves whose residual actually means something.
+    rms_ok = (result.get("rms_delay") or 0) <= KNOWN_PUBLISH_MAX_RMS_DELAY_US
+    published = mode == "binding" and label in ("truth_match", "reanchored") and rms_ok
+    # Named in the record because the counter alone cannot say WHICH solve was
+    # withheld, and "published False under a truth_match label in binding" is
+    # otherwise indistinguishable from a publish that threw.  None whenever the
+    # gate was not what stopped it — including in shadow, where nothing was
+    # going to publish anyway and a rejection would be a phantom.
+    gated = mode == "binding" and label in ("truth_match", "reanchored") and not rms_ok
+    if gated:
+        state.bump_counter("known_lane_publish_rms_rejected")
     solve_key = None
     if published:
         # A failing publish must cost this ONE hex its publish, never the
@@ -586,6 +622,7 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
             "known_lane": True,
             "label": label,
             "published": published,
+            "publish_gate": "rms_delay" if gated else None,
             "seed_source": s_in.get("seed_source", "fix"),
             **epoch_meta,
         },
