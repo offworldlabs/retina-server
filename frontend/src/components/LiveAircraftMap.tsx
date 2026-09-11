@@ -27,6 +27,9 @@ import {
   applyGroundTruthFixes,
   pruneGroundTruthFixes,
   sweepStaleGroundTruthFixes,
+  truthClass,
+  truthFill,
+  truthBorder,
   isPointInViewport,
   isAircraftInViewport,
   sampleTrailPositions,
@@ -103,7 +106,7 @@ L.Icon.Default.mergeOptions({
 const _gtCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: GT_CLICK_PANE }) : null;
 
 const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, onSelect, selectedHex }) {
-  const { ANOMALY, DRONE, SELECTED, TRUTH, TRUTH_DARK } = usePalette();
+  const palette = usePalette();
   const map = useMap();
   const markerMapRef = useRef(new Map()); // hex → L.circleMarker — incremental diff
   const onSelectRef  = useRef(onSelect);
@@ -116,20 +119,17 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
 
     for (const ac of aircraft) {
       seen.add(ac.hex);
-      const isAnom  = ac.is_anomalous;
-      const isDrone = ac.object_type === "drone";
-      // Dark = simulated aircraft flying without ADS-B.  Grey, matching the
-      // Physics tab's Dark Aircraft legend, so a viewer can tell at a glance
-      // which truth dots the radar must find on its own.  Strict === false:
-      // entries without the field (older payloads) keep the ADS-B blue.
-      const isDark  = !isAnom && !isDrone && ac.has_adsb === false;
+      // Four plain-aircraft classes — simulated vs live-feed, with vs without
+      // a transponder — plus anomalous and drone, resolved in one place
+      // (map/truthColor) so the legend, the list and the Physics tab agree
+      // with the dot.  A dark dot is one the radar must find on its own; a
+      // teal one is a real aircraft the synthetic nodes are echoing.
+      const cls     = truthClass(ac);
+      const isAnom  = cls === "anomalous";
+      const isDrone = cls === "drone";
       const isSel   = ac.hex === selectedHex;
-      const color   = isAnom ? ANOMALY : isDrone ? DRONE : isDark ? TRUTH_DARK : TRUTH;
-      // Each dot takes an edge a shade darker than its own fill.  Selection is
-      // the amber the map already uses for a selected glyph, its arcs and its
-      // trail: truth is the theme's neutral extreme, so a neutral ring would
-      // sit a single shade from the fill it rings.
-      const border  = isSel ? SELECTED : isAnom ? "#991b1b" : isDrone ? "#b45309" : isDark ? "#334155" : "#020617";
+      const color   = truthFill(cls, palette);
+      const border  = truthBorder(cls, isSel, palette);
       const baseR   = isDrone ? 6 : isAnom ? 8 : 9;
       const radius  = isSel ? baseR + 4 : baseR;
       const weight  = isSel ? 4 : 3;
@@ -165,7 +165,7 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
         markerMap.delete(hex);
       }
     }
-  }, [aircraft, map, selectedHex, ANOMALY, DRONE, SELECTED, TRUTH, TRUTH_DARK]);
+  }, [aircraft, map, selectedHex, palette]);
 
   // Full cleanup on unmount
   useEffect(() => {
