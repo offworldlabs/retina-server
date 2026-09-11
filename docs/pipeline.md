@@ -290,7 +290,33 @@ evidence independent of both, and only from *detections*:
   active FOV gate it once formed a ghost → positive → wider-gate feedback
   loop.
 
-`CALIBRATION_SCHEMA` (currently 5) versions what a stored positive *means*;
+**What is published as the detection area is evidence only.** Under
+`FOV_MODE=off` — the default, and what production and test run —
+`empirical_coverage.polygon` in `/api/radar/analytics` is built by
+`EmpiricalCoverageState.to_polygon(evidence_only=True)`: a bin is drawn only
+when its own count reaches `FOV_OPEN_MIN_POINTS`, at its own clamped P85;
+holes of at most `EVIDENCE_GAP_MAX_BINS` (2 bins, 10°) inside a lobe are
+bridged; every other unobserved bearing collapses to the receiver apex. There
+is no theoretical clip. It used to be clipped to the node's declared
+`beam_azimuth_deg`/`beam_width_deg`, which are configuration — most nodes'
+aim was never surveyed — so measured bins outside the declared wedge were
+zeroed (radar3, 2026-09-06: evidence in all 72 bins reaching 17–65 km,
+published as a 120° pie slice). The theoretical beam is never published as a
+detection area, and the map draws nothing for a node with no polygon rather
+than a sector nobody measured. Under `FOV_MODE=shadow|active` the published
+polygon is the learned wedge instead, which is itself evidence-derived.
+
+**Every public node payload carries a `node_ref`.** `/api/radar/analytics`
+(both variants), `/api/radar/analytics/{node_id}` and `/api/radar/nodes` each
+carry one per node: the registry's `Node.node_ref` for a node registered
+through `/v1/nodes`, and otherwise an HMAC-derived ref of the same
+`nde` + 12 base36 shape, keyed on the node fuzz salt under a `node_ref|`
+domain (`backend/services/node_ref.py`). Nodes on the blah2 bridge or the
+plain TCP protocol have no registry row, so without the derivation half the
+fleet would have no public name at all. The map shows only `node_ref`; the
+`node_id` remains the join key on the wire and in the client.
+
+`CALIBRATION_SCHEMA` (currently 6) versions what a stored positive *means*;
 persisted state with an older schema is discarded and relearned at node
 registration, on every deployment, with no operator action (the ledger of
 past bumps is in `empirical_coverage.py`).

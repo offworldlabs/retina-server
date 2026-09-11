@@ -64,6 +64,11 @@ are in [`arc-display.md`](arc-display.md).
   geometry (`beam_azimuth_deg`, `beam_width_deg`, `max_range_km`,
   `max_bistatic_range_km`) flows from node registration into the per-node
   pipelines, the arc builder, and inter-node association — one contract.
+- **`services/node_ref.py`** — the public handle for a node. Every payload a
+  stranger can fetch names a node by `node_ref`, never by `node_id`: the
+  registry's ref when the node registered through `/v1/nodes`, an
+  HMAC-derived ref of the same shape (fuzz salt, `node_ref|` domain) when it
+  did not. See [`pipeline.md`](pipeline.md) §7.
 - **`services/tasks/`** — background async tasks: `aircraft_flush` (broadcast),
   `feed_gc` (stale-store GC on its own 5 s timer, deliberately not tied to the
   feed build), `solver` workers, `analytics_refresh`, archive lifecycle,

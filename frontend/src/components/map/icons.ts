@@ -254,22 +254,53 @@ export function makeDroneIcon(ac, showLabel, isSelected) {
 // than a constant, for the same reason droneSvg is one.
 const _nodeIcons = new WeakMap<object, L.DivIcon>();
 
-export function nodeIcon() {
-  const palette = activePalette();
-  const cached = _nodeIcons.get(palette);
-  if (cached) return cached;
-  const { NODE, ICON_SHADOW } = palette;
-  const icon = L.divIcon({
-  className: "node-marker",
-  html: `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24"
+function nodeGlyphSvg({ NODE, ICON_SHADOW }: { NODE: string; ICON_SHADOW: string }) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24"
     style="display:block;filter:${ICON_SHADOW};">
     <circle cx="12" cy="12" r="3.2" fill="${NODE}"/>
     <circle cx="12" cy="12" r="6.5" fill="none" stroke="${NODE}" stroke-width="1.5" opacity="0.75"/>
     <circle cx="12" cy="12" r="10.5" fill="none" stroke="${NODE}" stroke-width="1" opacity="0.4"/>
-  </svg>`,
-  iconSize: [22, 22],
-  iconAnchor: [11, 11],
+  </svg>`;
+}
+
+export function nodeIcon() {
+  const palette = activePalette();
+  const cached = _nodeIcons.get(palette);
+  if (cached) return cached;
+  const icon = L.divIcon({
+    className: "node-marker",
+    html: nodeGlyphSvg(palette),
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
   });
   _nodeIcons.set(palette, icon);
+  return icon;
+}
+
+// One marker per receive SITE, so a site with two co-located receivers needs
+// to say so: the glyph is unchanged (same size, same glow, same anchor) with a
+// small count badge on its shoulder.  Two stacked glyphs used to be the only
+// hint, and being identical and coincident they read as one node.  Cached per
+// (palette, count) — a divIcon is immutable and a fleet has two or three
+// distinct counts, so rebuilding one per render would churn DOM for nothing.
+const _nodeSiteIcons = new WeakMap<object, Map<number, L.DivIcon>>();
+
+export function nodeSiteIcon(count: number): L.DivIcon {
+  if (!(count > 1)) return nodeIcon();
+  const palette = activePalette();
+  let byCount = _nodeSiteIcons.get(palette);
+  if (!byCount) {
+    byCount = new Map();
+    _nodeSiteIcons.set(palette, byCount);
+  }
+  const cached = byCount.get(count);
+  if (cached) return cached;
+  const icon = L.divIcon({
+    className: "node-marker",
+    html: `<div style="position:relative;width:22px;height:22px;">${nodeGlyphSvg(palette)}<span class="node-badge">${count}</span></div>`,
+    iconSize: [22, 22],
+    iconAnchor: [11, 11],
+  });
+  byCount.set(count, icon);
   return icon;
 }

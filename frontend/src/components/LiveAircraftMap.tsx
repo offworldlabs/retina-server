@@ -37,10 +37,12 @@ import {
   getAircraftColor,
   solveDiscCenter,
   solveUncertaintyRadiusM,
+  nodeSiteIcon,
   isRingOnlyRadius,
-  nodeIcon,
-  yagiSectorPositions,
   uncertaintyDiscRadiusM,
+  nodeLabel,
+  groupNodesBySite,
+  polygonMaxReachKm,
   FitBounds,
   ViewportTracker,
   MapClickClear,
@@ -834,22 +836,38 @@ const BasemapLayer = memo(function BasemapLayer({ url }) {
   );
 });
 
-/* ── NodeMarkersLayer: SVG CircleMarkers for synthetic nodes + divIcon for the
-      real radar node.
-      Background reason: 914 DOM divs with drop-shadow filters caused severe
-      pan/zoom jank, so the bulk synthetic fleet stays on cheap SVG circles in
-      a single overlay.  But the real node is the one the user is actually
-      tracking, and a 5 px disc was getting lost under nearby aircraft icons —
-      so it gets the larger glowing divIcon (a handful of DOM nodes is fine). ── */
-const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelectNode }) {
+/* ── NodeMarkersLayer: one marker per receive SITE, not per node.
+      Co-located receivers are published at exactly equal coordinates on
+      purpose — they share one fuzz offset so the pair leaks one sample of its
+      position instead of two (backend/services/node_sites.py).  A marker per
+      node therefore stacked two identical glyphs and two identical
+      uncertainty discs on one point: the lower node could not be clicked at
+      all, and the doubled fill made a shared site look MORE precisely located
+      than a lone one.  Sites carry a count badge instead, and the popup lists
+      each node at the site.
+
+      Background reason for the two glyph kinds: 914 DOM divs with drop-shadow
+      filters caused severe pan/zoom jank, so the bulk synthetic fleet stays on
+      cheap SVG circles in a single overlay.  But a real node is the one the
+      user is actually tracking, and a 5 px disc was getting lost under nearby
+      aircraft icons — so it gets the larger glowing divIcon (a handful of DOM
+      nodes is fine).  A site counts as synthetic only when every node at it
+      is: one real receiver there means the site is real. ── */
+const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelectNode, selectedNodeId }) {
   const { NODE } = usePalette();
-  return visibleNodes.map((n) => {
-    const isSynth = n.node_id?.startsWith("synth-");
+  // Grouped once per node refresh, not per selection: selectedNodeId only
+  // flips a Show/Hide label inside a popup, and it changes on every click, so
+  // without this the whole fleet would be re-grouped for each one.
+  const sites = useMemo(() => groupNodesBySite(visibleNodes), [visibleNodes]);
+  return sites.map((site) => {
+    const multi = site.nodes.length > 1;
     // Every published rx coordinate is displaced by the backend; the disc is
-    // how the map admits it, at the radius the feed itself declares.  Not
-    // special-cased by node kind — a synthetic node that ever carries the
+    // how the map admits it, at the radius the feed itself declares.  One per
+    // site — the members share the coordinate and therefore the disc, and two
+    // stacked fills would read as a tighter answer than either node gave.
+    // Not special-cased by node kind — a synthetic node that ever carries the
     // field gets one too, because the disclosure follows the data.
-    const discRadiusM = uncertaintyDiscRadiusM(n.location_uncertainty_km);
+    const discRadiusM = uncertaintyDiscRadiusM(site.location_uncertainty_km);
     // A soft blob, not a ring: a crisp edge would read as a surveyed
     // boundary, and the true receiver is no likelier just inside the rim than
     // at the centre.  The blur is a CSS filter (screen-space, so the edge
@@ -858,7 +876,7 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
     // which is also what keeps the node reachable at far zoom.
     const disc = discRadiusM > 0 ? (
       <Circle
-        center={[n.rx_lat, n.rx_lon]}
+        center={[site.rx_lat, site.rx_lon]}
         radius={discRadiusM}
         className="node-uncertainty-disc"
         pathOptions={{
@@ -870,55 +888,66 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
         interactive={false}
       />
     ) : null;
-    const uncertaintyLine = discRadiusM > 0
-      ? <>Location approximate: &plusmn;{n.location_uncertainty_km} km<br /></>
-      : null;
-    if (isSynth) {
+    const popup = (
+      <Popup>
+        {multi && <><strong>{site.nodes.length} nodes at this site</strong><br /></>}
+        {discRadiusM > 0 && <>Location approximate: &plusmn;{site.location_uncertainty_km} km<br /></>}
+        {site.nodes.map((n, i) => (
+          <React.Fragment key={`site-node-${n.node_id}`}>
+            {i > 0 && <br />}
+            <strong>{nodeLabel(n)}</strong><br />
+            {/* Only measured coverage is quoted.  The declared beam azimuth,
+                width and range used to be printed here; they are
+                configuration, most nodes' aim was never surveyed, and beside
+                a calibration-point count they read as measurements. */}
+            {n.empirical_polygon && n.empirical_polygon.length >= 3
+              ? <>Coverage: measured from {n.empirical_n_points} calibration pts,
+                  reach &le; {polygonMaxReachKm(n.rx_lat, n.rx_lon, n.empirical_polygon)} km</>
+              : <>Coverage: not yet measured ({n.empirical_n_points || 0} calibration pts)</>}
+            {multi && (
+              <>
+                <br />
+                {/* At a shared site the marker click can no longer stand for
+                    "select this node" — there are two — so each block carries
+                    its own control and the click just opens the popup. */}
+                <button className="node-select" onClick={() => onSelectNode(n.node_id)}>
+                  {selectedNodeId === n.node_id ? "Hide" : "Show"}
+                </button>
+              </>
+            )}
+          </React.Fragment>
+        ))}
+      </Popup>
+    );
+    // A single-node site keeps the old behaviour: clicking the marker toggles
+    // that node's overlay and opens the popup.
+    const clickHandlers = multi ? undefined : { click: () => onSelectNode(site.nodes[0].node_id) };
+    if (site.isSynth) {
       return (
-        <React.Fragment key={`node-${n.node_id}`}>
+        <React.Fragment key={`site-${site.key}`}>
           {disc}
           <CircleMarker
-            center={[n.rx_lat, n.rx_lon]}
+            center={[site.rx_lat, site.rx_lon]}
             radius={5}
             pathOptions={{ color: NODE, fillColor: NODE, fillOpacity: 0.55, weight: 1.5 }}
             bubblingMouseEvents={false}
-            eventHandlers={{ click: () => onSelectNode(n.node_id) }}
+            eventHandlers={clickHandlers}
           >
-            <Popup>
-              <strong>{n.node_id}</strong><br />
-              {uncertaintyLine}
-              Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
-              {n.max_bistatic_range_km != null
-                ? <>Bistatic range: {n.max_bistatic_range_km} km<br /></>
-                : <>Range: {n.max_range_km} km<br /></>}
-              {n.empirical_polygon && n.empirical_polygon.length >= 3
-                ? <>Coverage: empirical, {n.empirical_n_points} calibration pts</>
-                : <>Coverage: theoretical ({n.empirical_n_points || 0} calibration pts)</>}
-            </Popup>
+            {popup}
           </CircleMarker>
         </React.Fragment>
       );
     }
     return (
-      <React.Fragment key={`node-${n.node_id}`}>
+      <React.Fragment key={`site-${site.key}`}>
         {disc}
         <Marker
-          position={[n.rx_lat, n.rx_lon]}
-          icon={nodeIcon()}
+          position={[site.rx_lat, site.rx_lon]}
+          icon={nodeSiteIcon(site.nodes.length)}
           zIndexOffset={1000}
-          eventHandlers={{ click: () => onSelectNode(n.node_id) }}
+          eventHandlers={clickHandlers}
         >
-          <Popup>
-            <strong>{n.node_id}</strong><br />
-            {uncertaintyLine}
-            Beam: {n.beam_azimuth_deg}&deg; / {n.beam_width_deg}&deg;<br />
-            {n.max_bistatic_range_km != null
-              ? <>Bistatic range: {n.max_bistatic_range_km} km<br /></>
-              : <>Range: {n.max_range_km} km<br /></>}
-            {n.empirical_polygon && n.empirical_polygon.length >= 3
-              ? <>Coverage: empirical, {n.empirical_n_points} calibration pts</>
-              : <>Coverage: theoretical ({n.empirical_n_points || 0} calibration pts)</>}
-          </Popup>
+          {popup}
         </Marker>
       </React.Fragment>
     );
@@ -927,52 +956,38 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
 
 /* ── CoverageLayer: memoized — only re-renders when nodes or showCoverage changes ── */
 const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }) {
-  const { COVERAGE, NODE } = usePalette();
+  const { COVERAGE } = usePalette();
   if (!showCoverage) return null;
   return visibleNodes.map((n) => {
-    if (n.empirical_polygon && n.empirical_polygon.length >= 3) {
-      // Blurred edge as presentational honesty, not as the privacy mechanism:
-      // the coordinates underneath are already fuzzed server-side, and the
-      // polygon is approximate by construction anyway (a rigid translation of
-      // the calibrated shape onto a fuzzed anchor).  A 1.5 px stroke under the
-      // blur reads as a glow, i.e. as a boundary the data never established —
-      // so the outline goes and the fill alone carries the region.
-      return (
-        <Polygon
-          key={`beam-${n.node_id}`}
-          positions={n.empirical_polygon}
-          // className rides top-level, never inside pathOptions: react-leaflet
-          // applies pathOptions with setStyle() after the layer exists, but
-          // Leaflet only stamps options.className onto the element once, in
-          // Renderer._initPath at construction.  A class in pathOptions is
-          // therefore silently dropped and the blur below never applies —
-          // verified live.  Top-level props do reach the constructor options.
-          className="coverage-fuzzy"
-          pathOptions={{
-            color: COVERAGE,
-            fillColor: COVERAGE,
-            fillOpacity: 0.14,
-            weight: 0,
-          }}
-          interactive={false}
-        />
-      );
-    }
-    // The theoretical fallback stays sharp on purpose: it is a declared model
-    // sector, already dashed to say so, and blurring it would conflate "we
-    // measured this, roughly" with "we never measured this at all".
+    // Measured coverage or nothing.  A node with no polygon used to get a
+    // dashed theoretical Yagi sector drawn from its declared azimuth and
+    // width — numbers nobody surveyed — which put a confident wedge on the map
+    // for a node that had never been shown to detect anything.  "We have not
+    // measured this yet" is drawn as empty space, which is what it is.
+    if (!n.empirical_polygon || n.empirical_polygon.length < 3) return null;
+    // Blurred edge as presentational honesty, not as the privacy mechanism:
+    // the coordinates underneath are already fuzzed server-side, and the
+    // polygon is approximate by construction anyway (a rigid translation of
+    // the calibrated shape onto a fuzzed anchor).  A 1.5 px stroke under the
+    // blur reads as a glow, i.e. as a boundary the data never established —
+    // so the outline goes and the fill alone carries the region.
     return (
       <Polygon
-        key={`beam-${n.node_id}`}
-        positions={yagiSectorPositions(
-          n.rx_lat, n.rx_lon,
-          n.tx_lat, n.tx_lon,
-          n.beam_azimuth_deg,
-          n.beam_width_deg ?? 42,
-          n.max_range_km ?? 50,
-          n.max_bistatic_range_km,
-        )}
-        pathOptions={{ color: NODE, fillColor: NODE, fillOpacity: 0.1, weight: 1.5, dashArray: "4 4" }}
+        key={`coverage-${n.node_id}`}
+        positions={n.empirical_polygon}
+        // className rides top-level, never inside pathOptions: react-leaflet
+        // applies pathOptions with setStyle() after the layer exists, but
+        // Leaflet only stamps options.className onto the element once, in
+        // Renderer._initPath at construction.  A class in pathOptions is
+        // therefore silently dropped and the blur below never applies —
+        // verified live.  Top-level props do reach the constructor options.
+        className="coverage-fuzzy"
+        pathOptions={{
+          color: COVERAGE,
+          fillColor: COVERAGE,
+          fillOpacity: 0.14,
+          weight: 0,
+        }}
         interactive={false}
       />
     );
@@ -993,7 +1008,8 @@ const IlluminatorsLayer = memo(function IlluminatorsLayer({ visibleNodes, showIl
     if (Math.abs(n.tx_lat) < 1e-6 && Math.abs(n.tx_lon) < 1e-6) continue;
     const key = `${n.tx_lat.toFixed(4)},${n.tx_lon.toFixed(4)}`;
     if (!byTx.has(key)) byTx.set(key, { lat: n.tx_lat, lon: n.tx_lon, nodes: [] });
-    byTx.get(key).nodes.push(n.node_id);
+    // Labels, not ids: this popup is as public as the node popups are.
+    byTx.get(key).nodes.push(nodeLabel(n));
   }
   return [...byTx.entries()].map(([key, tx]) => (
     <CircleMarker
@@ -1128,6 +1144,15 @@ export default function LiveAircraftMap() {
     for (const n of nodes) m[n.node_id] = n;
     nodesByIdRef.current = m;
   }, [nodes]);
+  // Node id → the handle the UI may print.  The id remains the join key for
+  // everything the feed carries (ac.node_id, contributing_node_ids, the
+  // detecting-node lists); this is the only thing that turns one into text.
+  const nodesById = useMemo(() => {
+    const m = {};
+    for (const n of nodes) m[n.node_id] = n;
+    return m;
+  }, [nodes]);
+  const nodeLabelFor = useCallback((nodeId) => nodeLabel(nodesById[nodeId]), [nodesById]);
 
   /* ── Local UI state ─────────────────────────────────────────── */
   // URL-hash deep-link state — parsed once at mount.  Anything we find here
@@ -1168,10 +1193,10 @@ export default function LiveAircraftMap() {
   const [showFilters, setShowFilters] = useState(false);
   const [showStats, setShowStats] = usePersistedState("tf.layer.stats", initialLayers?.stats ?? true);
   const [showRangeRings, setShowRangeRings] = usePersistedState("tf.layer.rangeRings", initialLayers?.rangeRings ?? false);
-  // Beam-gap diagnostic defaults OFF: it draws one line per (aircraft, node)
-  // pair, so a metro-scoped fleet whose nodes all cover the same airspace turns
-  // the map into a thicket. Still available from the "Beam gaps" toolbar button
-  // and the `b` URL-hash layer.
+  // Coverage-gap diagnostic defaults OFF: it draws one line per (aircraft,
+  // node) pair, so a metro-scoped fleet whose nodes all cover the same airspace
+  // turns the map into a thicket. Still available from the "Coverage gaps"
+  // toolbar button and the `b` URL-hash layer.
   // Storage key is versioned (.v2) so the new default reaches anyone who
   // already has the old `tf.layer.inBeamDiag: true` persisted in localStorage —
   // without it, every existing user keeps seeing the lines.
@@ -2001,10 +2026,13 @@ export default function LiveAircraftMap() {
             {/* Coverage zones — memoized, only re-renders on nodes/showCoverage change */}
             <CoverageLayer visibleNodes={visibleNodes} showCoverage={showCoverage} />
 
-            {/* Node markers — uses full `nodes` list (not viewport-culled) so it only
-                re-renders every 30s when node data refreshes, not on every pan/zoom.
+            {/* Node markers — uses full `nodes` list (not viewport-culled) so the
+                site grouping is redone only every 30s when node data refreshes,
+                never on pan/zoom.  A selection change re-renders the layer (the
+                popup's Show/Hide label reads it) but reuses the memoised
+                grouping, and react-leaflet leaves unchanged markers alone.
                 SVG circles all share one composited layer — no per-element pan cost. */}
-            <NodeMarkersLayer visibleNodes={nodes} onSelectNode={handleSelectNode} />
+            <NodeMarkersLayer visibleNodes={nodes} onSelectNode={handleSelectNode} selectedNodeId={selectedNodeId} />
 
             {/* Illuminators (TX towers our nodes use) — off by default, deduped per transmitter */}
             <IlluminatorsLayer visibleNodes={nodes} showIlluminators={showIlluminators} />
@@ -2014,14 +2042,6 @@ export default function LiveAircraftMap() {
               const sn = visibleNodes.find((n) => n.node_id === selectedNodeId) || nodes.find((n) => n.node_id === selectedNodeId);
               if (!sn) return null;
               const hasEmpirical = Array.isArray(sn.empirical_polygon) && sn.empirical_polygon.length >= 3;
-              const conePositions = yagiSectorPositions(
-                sn.rx_lat, sn.rx_lon,
-                sn.tx_lat, sn.tx_lon,
-                sn.beam_azimuth_deg,
-                sn.beam_width_deg ?? 42,
-                sn.max_range_km ?? 50,
-                sn.max_bistatic_range_km,
-              );
               // Find aircraft detected by this node (those whose node_id matches)
               const nodeAircraft = radarAircraft.filter((ac) => ac.node_id === selectedNodeId);
               return (
@@ -2048,21 +2068,12 @@ export default function LiveAircraftMap() {
                       interactive={false}
                     />
                   )}
-                  {/* Theoretical Yagi cone — stays sharp and dashed like the
-                      always-on fallback: a declared model sector must not borrow
-                      the blurred edge that means "measured, roughly".  Faint
-                      reference behind empirical; full highlight when no empirical data */}
-                  <Polygon
-                    positions={conePositions}
-                    pathOptions={{
-                      color: SELECTED,
-                      fillColor: SELECTED,
-                      fillOpacity: hasEmpirical ? 0.04 : 0.15,
-                      weight: hasEmpirical ? 1 : 2,
-                      dashArray: "6 3",
-                    }}
-                    interactive={false}
-                  />
+                  {/* No theoretical cone here either: selecting a node used to
+                      draw its declared Yagi sector, faint behind the measured
+                      area and at full strength when there was none — so the
+                      node with the LEAST evidence got the boldest wedge.  A
+                      node with nothing measured now shows its marker, its
+                      transmitter and its detections, and no area at all. */}
                   {/* TX tower marker */}
                   {sn.tx_lat && sn.tx_lon && (
                     <CircleMarker
@@ -2123,12 +2134,13 @@ export default function LiveAircraftMap() {
                 const hasEmpirical = Array.isArray(cn.empirical_polygon) && cn.empirical_polygon.length >= 3;
                 return (
                   <React.Fragment key={`contrib-group-${nid}`}>
-                    {/* Coverage area — the empirical polygon carries the same soft,
+                    {/* Coverage area — the measured polygon, with the same soft,
                         strokeless edge as the always-on CoverageLayer (see the note
-                        there); the Yagi fallback below stays sharp and dashed because
-                        it is a declared model, not a measurement.  Fill raised to 0.18
-                        to replace the prominence of the dropped 1.5 px stroke. */}
-                    {hasEmpirical ? (
+                        there).  Fill raised to 0.18 to replace the prominence of the
+                        dropped 1.5 px stroke.  A contributing node with nothing
+                        measured contributes no area: it keeps the ring and the line
+                        to the aircraft, which is what says it contributed. */}
+                    {hasEmpirical && (
                       <Polygon
                         positions={cn.empirical_polygon}
                         // className stays top-level — see the CoverageLayer note
@@ -2139,19 +2151,6 @@ export default function LiveAircraftMap() {
                           fillOpacity: 0.18,
                           weight: 0,
                         }}
-                        interactive={false}
-                      />
-                    ) : (
-                      <Polygon
-                        positions={yagiSectorPositions(
-                          cn.rx_lat, cn.rx_lon,
-                          cn.tx_lat, cn.tx_lon,
-                          cn.beam_azimuth_deg,
-                          cn.beam_width_deg ?? 40,
-                          cn.max_range_km ?? 50,
-                          cn.max_bistatic_range_km,
-                        )}
-                        pathOptions={{ color: LANE_MN_DARK, fillColor: LANE_MN_DARK, fillOpacity: 0.08, weight: 1.5, dashArray: "5 3" }}
                         interactive={false}
                       />
                     )}
@@ -2398,6 +2397,7 @@ export default function LiveAircraftMap() {
               computeError={computeError}
               detectingNodes={selectedTruthDetectingNodes}
               solveHistory={mlatHistory}
+              nodeLabelFor={nodeLabelFor}
             />
           )}
 
