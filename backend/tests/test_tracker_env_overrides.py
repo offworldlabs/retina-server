@@ -53,6 +53,15 @@ class TestApplyTrackerEnvOverrides:
         # Untouched sections survive.
         assert cfg["tracker"] == {"m_threshold": 3}
 
+    def test_null_process_noise_section_is_replaced(self, monkeypatch):
+        """A `process_noise:` header with nothing under it parses as None."""
+        monkeypatch.setenv("TRACKER_PROCESS_NOISE_DOPPLER", "20")
+        cfg = {"process_noise": None}
+
+        passive_radar._apply_tracker_env_overrides(cfg)
+
+        assert cfg["process_noise"] == {"doppler": 20.0}
+
     def test_no_env_leaves_config_untouched(self):
         cfg = {"process_noise": {"doppler": 0.5, "delay": 0.1}}
 
@@ -115,6 +124,16 @@ class TestPipelineProcessNoise:
         assert rt_config.PROCESS_NOISE_DOPPLER() == PACKAGED_DOPPLER
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert any("TRACKER_PROCESS_NOISE_DOPPLER" in r.getMessage() for r in warnings)
+
+    def test_no_override_without_a_packaged_config_leaves_singleton(self, monkeypatch):
+        """No config.yaml and no env: the library singleton is not clobbered."""
+        monkeypatch.setattr(retina_tracker, "__file__", "/nonexistent/retina_tracker/__init__.py")
+        rt_config.set_config({"process_noise": {"doppler": 7.0}, "tracker": {"min_snr": 6.0}})
+
+        PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
+
+        assert rt_config.PROCESS_NOISE_DOPPLER() == 7.0
+        assert rt_config.MIN_SNR() == 6.0
 
     def test_override_applies_without_a_packaged_config(self, monkeypatch):
         """The global singleton still moves when config.yaml is not found."""
