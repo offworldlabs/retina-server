@@ -257,6 +257,75 @@ class GeolocatedTrack:
         return self.alt_m / FT_TO_M
 
 
+# ─── Tracker process noise: server-side env overrides ────────────────
+# The Kalman filter reads PROCESS_NOISE_DOPPLER()/PROCESS_NOISE_DELAY() from
+# retina-tracker's module-level config singleton on every predict. The
+# packaged default q_doppler=0.5 sustains only ~2 Hz/s of Doppler
+# acceleration — about a 0.7 deg/s turn at 250 m/s on 195 MHz — so a 3 deg/s
+# turn (8-17 Hz/s) puts the second turn frame outside the chi-square gate:
+# the track coasts, dies, and a new track id is born mid-turn. Measured on the
+# test fleet, per-node track rebirths run 0.6-0.8/min on straight legs against
+# 1.3-1.9/min while turning, and solve-record breaks 2.6-3.5/min against
+# 9-12/min in hard turns. An offline replay of this tracker code at
+# q_doppler=20 cut 3 deg/s breaks from 4.55 to 0.45/min and straight-leg
+# breaks from 1.54 to 0.86/min, with the clutter track count unchanged and
+# Doppler RMS 20% worse.
+#
+# This is deliberately a SERVER-side knob rather than a library default: node
+# deployments run their own pinned retina-tracker image with their own YAML,
+# so the library and its packaged config.yaml stay untouched and only this
+# process's singleton moves.
+_TRACKER_PROCESS_NOISE_ENV = {
+    "doppler": "TRACKER_PROCESS_NOISE_DOPPLER",
+    "delay": "TRACKER_PROCESS_NOISE_DELAY",
+}
+# Only used to name the starting point in the log line when the loaded tracker
+# config carries no value of its own; they match retina_tracker.config.
+_TRACKER_PROCESS_NOISE_DEFAULTS = {"doppler": 0.5, "delay": 0.1}
+# One pipeline is constructed per node (dozens of them), and the environment
+# does not change between them, so the effective override is logged once per
+# process rather than once per instance.
+_tracker_env_override_logged = False
+
+
+def _apply_tracker_env_overrides(tracker_config: dict) -> dict:
+    """Apply TRACKER_PROCESS_NOISE_* env overrides to a tracker config dict.
+
+    A set, non-empty variable must parse as a float > 0; anything else is
+    ignored with a warning naming the variable, so a typo degrades to the
+    packaged default instead of silently disarming the tracker. The dict is
+    mutated in place (and returned), creating the ``process_noise`` section if
+    the loaded config has none.
+    """
+    global _tracker_env_override_logged
+
+    applied = []
+    for key, var in _TRACKER_PROCESS_NOISE_ENV.items():
+        raw = os.environ.get(var)
+        if raw is None:
+            continue
+        if not raw.strip():
+            logger.warning("Ignoring empty %s; keeping the packaged process noise", var)
+            continue
+        try:
+            value = float(raw)
+        except ValueError:
+            logger.warning("Ignoring %s=%r: not a number", var, raw)
+            continue
+        if not math.isfinite(value) or value <= 0:
+            logger.warning("Ignoring %s=%r: must be a positive number", var, raw)
+            continue
+        section = tracker_config.setdefault("process_noise", {})
+        previous = section.get(key, _TRACKER_PROCESS_NOISE_DEFAULTS[key])
+        section[key] = value
+        applied.append(f"{key} {previous} -> {value} ({var})")
+
+    if applied and not _tracker_env_override_logged:
+        _tracker_env_override_logged = True
+        logger.info("tracker process noise: %s", ", ".join(applied))
+    return tracker_config
+
+
 # ─── Pipeline: Detection → retina-tracker → retina-geolocator → tar1090 ────
 
 
@@ -278,12 +347,21 @@ class PassiveRadarPipeline:
 
         tracker_config_path = os.path.join(os.path.dirname(_rt_pkg.__file__), "config.yaml")
         tracker_config = {}
-        if os.path.exists(tracker_config_path):
+        packaged_config_found = os.path.exists(tracker_config_path)
+        if packaged_config_found:
             with open(tracker_config_path) as f:
-                tracker_config = yaml.safe_load(f)
-            # Propagate to the global config so MIN_SNR() / M_THRESHOLD() etc.
-            # read the correct values (they use a module-level singleton, not
-            # the per-instance config dict stored on the Tracker object).
+                tracker_config = yaml.safe_load(f) or {}
+
+        process_noise_before = dict(tracker_config.get("process_noise") or {})
+        tracker_config = _apply_tracker_env_overrides(tracker_config)
+
+        # Propagate to the global config so MIN_SNR() / M_THRESHOLD() /
+        # PROCESS_NOISE_DOPPLER() etc. read the correct values (they use a
+        # module-level singleton, not the per-instance config dict stored on
+        # the Tracker object). Also done when the packaged config.yaml is
+        # missing but an env override applied: otherwise the override would
+        # reach the Tracker's own dict and never the filter that reads it.
+        if packaged_config_found or tracker_config.get("process_noise") != process_noise_before:
             _set_tracker_global_config(tracker_config)
 
         self.tracker = RetinaTracker(
