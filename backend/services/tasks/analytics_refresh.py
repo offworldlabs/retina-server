@@ -305,7 +305,7 @@ def _public_location_block(node_id: str, cfg: dict) -> dict:
         "tx_lat": cfg.get("tx_lat"),
         "tx_lon": cfg.get("tx_lon"),
         "tx_alt_ft": cfg.get("tx_alt_ft"),
-        "location_uncertainty_km": location_uncertainty_km() if fuzz_enabled() else 0.0,
+        "location_uncertainty_km": location_uncertainty_km(node_id) if fuzz_enabled() else 0.0,
     }
 
 
