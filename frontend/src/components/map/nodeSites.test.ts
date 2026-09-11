@@ -66,7 +66,7 @@ describe("groupNodesBySite", () => {
 
     const mixed = groupNodesBySite([
       node({ node_id: "synth-1" }),
-      node({ node_id: "ret7e2ca6f6" }),
+      node({ node_id: "ret1a2b3c4d" }),
     ]);
     expect(mixed[0].isSynth).toBe(false);
   });

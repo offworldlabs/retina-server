@@ -20,7 +20,7 @@ from services import node_ref, public_location  # noqa: E402
 from services.node_ref import public_node_ref  # noqa: E402
 
 _SALT = "test-salt-for-node-ref"
-_ID = "radar3-retnode"
+_ID = "alpha-site-node"
 
 # What mint_node_ref produces: "nde" and twelve base36 characters.
 _REF_RE = re.compile(r"^nde[0-9a-z]{12}$")
@@ -68,7 +68,7 @@ class TestDerivedRef:
         assert public_node_ref(_ID) == first
 
     def test_different_nodes_get_different_refs(self):
-        assert public_node_ref(_ID) != public_node_ref("radar3a-retnode")
+        assert public_node_ref(_ID) != public_node_ref("bravo-site-node")
 
     def test_the_salt_moves_every_ref(self, monkeypatch):
         """Rotating the fuzz salt re-anonymises nodes, as it does positions."""
@@ -78,7 +78,7 @@ class TestDerivedRef:
         assert public_node_ref(_ID) != before
 
     def test_it_is_never_the_node_id(self):
-        for node_id in (_ID, "ret7e2ca6f6", "", "nde000000000000"):
+        for node_id in (_ID, "ret1a2b3c4d", "", "nde000000000000"):
             assert public_node_ref(node_id) != node_id
 
     def test_a_missing_id_does_not_pass_through(self):
@@ -111,7 +111,7 @@ class TestRegisteredRef:
 
     def test_an_unregistered_node_still_derives(self, seed_node):
         seed_node(_ID, "nde0123456789ab")
-        other = public_node_ref("ret7e2ca6f6")
+        other = public_node_ref("ret1a2b3c4d")
         assert _REF_RE.match(other)
         assert other != "nde0123456789ab"
 
