@@ -446,6 +446,25 @@ async def test_re_registration_revokes_the_previous_token(node_client, accepted_
     assert [a[0] for a in alerts] == ["registration_held"]
 
 
+async def test_re_registration_clears_the_previous_owners_contact(
+    node_client, accepted_in_mender, node_session, alerts
+):
+    """A reflash can be a board changing hands, and the contact row would
+    otherwise go on naming the previous owner as the person to call."""
+    accepted_in_mender(NODE_ID)
+    token = _register(node_client).json()["token"]
+    node_client.put(
+        "/v1/nodes/contact",
+        json={"first_name": "Ada", "last_name": "Lovelace", "email": "ada@example.com", "phone": None},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert _committed(node_session, "SELECT count(*) FROM node_contacts") == [(1,)]
+
+    _register(node_client)
+
+    assert _committed(node_session, "SELECT count(*) FROM node_contacts") == [(0,)]
+
+
 def test_the_hold_alert_fires_after_the_commit(node_client, accepted_in_mender, node_session, monkeypatch):
     """A rolled back registration must not alert about a revocation that did not
     happen, so the alert is asserted on what was committed when it fired rather

@@ -121,6 +121,65 @@ describe("PhysicsSettings", () => {
     });
   });
 
+  // ── Live ADS-B knobs ──────────────────────────────────────────────────
+  // Real aircraft pulled from adsb.retina.fm into the simulated world; the
+  // dark share of THOSE is its own slider, outside the synthetic mix.
+
+  it("falls back to the live-feed defaults when the payload omits them, and sends both on Apply", async () => {
+    const fetchMock = installFetchMock();
+    render(<PhysicsSettings />);
+    await waitFor(() => {
+      expect(screen.getByText(/spawns 20–40/)).toBeInTheDocument();
+    });
+
+    const liveSlider = screen.getByLabelText("Dark share of live aircraft") as HTMLInputElement;
+    expect(liveSlider.value).toBe("15");
+    expect(liveSlider.disabled).toBe(false);
+    const toggle = screen.getByRole("checkbox") as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+
+    fireEvent.change(liveSlider, { target: { value: "60" } });
+    expect(liveSlider.value).toBe("60");
+
+    fireEvent.click(screen.getByRole("button", { name: /Apply to Simulator/i }));
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([, opts]: any) => opts?.method === "PUT" && "frac_live_dark" in JSON.parse(opts.body),
+      );
+      expect(call).toBeTruthy();
+      const body = JSON.parse((call as any)[1].body);
+      expect(body.frac_live_dark).toBe(0.6);
+      expect(body.live_adsb_enabled).toBe(true);
+      // Still the synthetic knobs alongside — one PUT, never a scene restart.
+      expect(body).toHaveProperty("frac_dark");
+      expect(body).not.toHaveProperty("n_nodes");
+    });
+  });
+
+  it("disables the live dark-share slider when the feed is switched off, and sends the flag", async () => {
+    const fetchMock = installFetchMock({
+      current: { ...BARE_CONFIG, frac_live_dark: 0.3, live_adsb_enabled: true },
+    });
+    render(<PhysicsSettings />);
+    await waitFor(() => {
+      expect(screen.getByText(/spawns 20–40/)).toBeInTheDocument();
+    });
+    const liveSlider = screen.getByLabelText("Dark share of live aircraft") as HTMLInputElement;
+    expect(liveSlider.value).toBe("30");
+
+    fireEvent.click(screen.getByRole("checkbox"));
+    expect(liveSlider.disabled).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: /Apply to Simulator/i }));
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([, opts]: any) => opts?.method === "PUT" && "live_adsb_enabled" in JSON.parse(opts.body),
+      );
+      expect(call).toBeTruthy();
+      expect(JSON.parse((call as any)[1].body).live_adsb_enabled).toBe(false);
+    });
+  });
+
   // ── Drift detection ───────────────────────────────────────────────────
   // A backend restart drops simulation_config back to boot state and
   // re-stamps _updated_at at import. The drafts used to seed once and never

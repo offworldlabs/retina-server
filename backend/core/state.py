@@ -1303,6 +1303,17 @@ simulation_config: dict = {
     # of dark traffic silently unable to test outages.  0.0 = off.
     "frac_adsb_outage": 0.0,
     #
+    # Live ADS-B seeding: the fleet pulls real aircraft over its metro from
+    # adsb.retina.fm into the simulated world and the synthetic nodes echo
+    # them (retina_simulation.orchestrator._seed_live_adsb).  frac_live_dark
+    # is the share of THOSE aircraft the simulator mirrors without their
+    # transponder — outside the frac_* sum for the same reason as the outage
+    # knob: it is a fraction of the live population, orthogonal to how the
+    # simulator's own spawns are rolled.  live_adsb_enabled pauses the pull
+    # (and removes the live aircraft) without a fleet restart.
+    "frac_live_dark": 0.15,
+    "live_adsb_enabled": True,
+    #
     # Deliberately NO defaults for max_range_km / min_aircraft / max_aircraft:
     # the fleet orchestrator applies those keys only when present, falling back
     # to its own deployment env (FLEET_MIN_AIRCRAFT etc.).  Defaults here are a

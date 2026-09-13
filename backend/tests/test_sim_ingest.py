@@ -195,8 +195,63 @@ class TestSimulationConfig:
             "aircraft": 1,
             "dark": 1,
             "adsb_silent": 0,
+            "live": 0,
+            "live_adsb": 0,
+            "live_dark": 0,
             "total": 4,
         }
+
+    def test_counts_split_live_feed_aircraft_by_cast(self, client):
+        # Live-feed aircraft are ALSO counted in their type bucket (an ADS-B
+        # one under "aircraft", a dark-cast one under "dark"): the live
+        # counters overlap the type buckets, like adsb_silent does, so the
+        # frac_live_dark knob can be read off in one call without the type
+        # counts losing the live population.
+        state.ground_truth_meta.update(
+            {
+                "ab1388": {"object_type": "aircraft", "has_adsb": True, "source": "live"},
+                "live-a9c2d1": {"object_type": "aircraft", "has_adsb": False, "source": "live"},
+                "obj-00001": {"object_type": "aircraft", "has_adsb": False, "source": "sim"},
+                "aaa111": {"object_type": "aircraft", "has_adsb": True},  # pre-source fleet
+            }
+        )
+        counts = client.get("/api/simulation/config").json()["ground_truth_counts"]
+        assert counts["live"] == 2
+        assert counts["live_adsb"] == 1
+        assert counts["live_dark"] == 1
+        assert counts["aircraft"] == 2
+        assert counts["dark"] == 2
+
+    def test_live_knobs_default_on_with_dark_share(self, client):
+        cfg = client.get("/api/simulation/config").json()
+        assert cfg["live_adsb_enabled"] is True
+        assert cfg["frac_live_dark"] == 0.15
+
+    def test_live_knobs_accepted_and_echoed(self, client):
+        r = client.put("/api/simulation/config", json={"frac_live_dark": 0.6, "live_adsb_enabled": False})
+        assert r.status_code == 200
+        assert r.json()["config"]["frac_live_dark"] == 0.6
+        assert r.json()["config"]["live_adsb_enabled"] is False
+        echoed = client.get("/api/simulation/config").json()
+        assert echoed["frac_live_dark"] == 0.6
+        assert echoed["live_adsb_enabled"] is False
+        client.put("/api/simulation/config", json={"frac_live_dark": 0.15, "live_adsb_enabled": True})
+
+    def test_live_knobs_validated(self, client):
+        assert client.put("/api/simulation/config", json={"frac_live_dark": 1.5}).status_code == 400
+        assert client.put("/api/simulation/config", json={"live_adsb_enabled": 1}).status_code == 400
+        assert client.put("/api/simulation/config", json={"live_adsb_enabled": "yes"}).status_code == 400
+
+    def test_frac_live_dark_is_outside_the_frac_sum_constraint(self, client):
+        # A fraction OF the live population: a scene at the synthetic type-sum
+        # ceiling must still be able to cast every live aircraft dark.
+        r = client.put(
+            "/api/simulation/config",
+            json={"frac_anomalous": 0.1, "frac_drone": 0.1, "frac_dark": 0.8, "frac_live_dark": 1.0},
+        )
+        assert r.status_code == 200
+        assert r.json()["config"]["frac_live_dark"] == 1.0
+        client.put("/api/simulation/config", json={"frac_live_dark": 0.15})
 
     def test_adsb_outage_default_is_off(self, client):
         # Default 0.0 so nothing changes for a deployment that never sets it.

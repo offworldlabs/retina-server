@@ -31,69 +31,33 @@ const SHORTCUTS: Array<[string, string]> = [
 export default function ShortcutHelp({ visible, onClose }: ShortcutHelpProps) {
   if (!visible) return null;
   return (
-    <div
-      onClick={onClose}
-      style={{
-        position: "absolute",
-        inset: 0,
-        background: "rgba(2, 6, 23, 0.55)",
-        zIndex: 1500,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
+    <div className="shortcut-backdrop" onClick={onClose}>
       <div
+        className="shortcut-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Keyboard shortcuts"
         onClick={(e) => e.stopPropagation()}
-        style={{
-          background: "#020617",
-          border: "1px solid #1e293b",
-          borderRadius: 12,
-          padding: "20px 24px",
-          color: "#e2e8f0",
-          fontSize: 13,
-          minWidth: 340,
-          boxShadow: "0 10px 30px rgba(0, 0, 0, 0.5)",
-        }}
       >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-          <strong style={{ fontSize: 15 }}>Keyboard shortcuts</strong>
-          <button
-            onClick={onClose}
-            style={{ background: "none", border: "none", color: "#94a3b8", fontSize: 18, cursor: "pointer", lineHeight: 1 }}
-            title="Close"
-          >
+        <div className="shortcut-dialog-header">
+          <strong>Keyboard shortcuts</strong>
+          <button className="shortcut-dialog-close" onClick={onClose} title="Close">
             ×
           </button>
         </div>
-        <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        <table>
           <tbody>
             {SHORTCUTS.map(([key, label]) => (
               <tr key={key}>
-                <td style={{ padding: "4px 12px 4px 0", verticalAlign: "top" }}>
-                  <kbd
-                    style={{
-                      background: "#1e293b",
-                      border: "1px solid #334155",
-                      borderRadius: 4,
-                      padding: "2px 8px",
-                      fontFamily: "ui-monospace, SFMono-Regular, monospace",
-                      fontSize: 12,
-                      color: "#e2e8f0",
-                      minWidth: 28,
-                      display: "inline-block",
-                      textAlign: "center",
-                    }}
-                  >
-                    {key}
-                  </kbd>
+                <td>
+                  <kbd className="shortcut-key">{key}</kbd>
                 </td>
-                <td style={{ padding: "4px 0", color: "#cbd5e1" }}>{label}</td>
+                <td>{label}</td>
               </tr>
             ))}
           </tbody>
         </table>
-        <div style={{ marginTop: 12, color: "#64748b", fontSize: 11 }}>
+        <div className="shortcut-dialog-footer">
           Shortcuts are ignored while typing in the search box.
         </div>
       </div>

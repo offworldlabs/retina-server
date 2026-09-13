@@ -26,7 +26,7 @@ from core.users import get_async_session
 _ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
 
 # Declared purely so the generated contract carries `bearerAuth`. Without it the
-# schema describes the four endpoints with no credential at all, and a client
+# schema describes the five endpoints with no credential at all, and a client
 # generated from the published file would not send the header the server
 # requires. The routers that authenticate depend on this; `bearer_node` below
 # still reads the header itself.

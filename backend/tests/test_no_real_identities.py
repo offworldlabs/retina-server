@@ -66,6 +66,7 @@ ALLOWED = {
     "ret0123abcd",
     # The dashboard's worked example of a node's own tunnel hostname.
     "your-node.retnode.com",
+    "ret0a1b2c3d",
 }
 
 # Decimal literals of two or more places, the precision at which a coordinate

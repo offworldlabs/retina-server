@@ -107,6 +107,9 @@ export interface GroundTruthMeta {
   has_adsb?: boolean;
   adsb_callsign?: string | null;
   anomaly_event?: string | null;
+  /** "live" for an aircraft the simulator mirrored from the ADS-B feed,
+   *  "sim" for one it spawned itself; absent from older fleets. */
+  source?: "live" | "sim";
 }
 
 /** Data returned by useAircraftFeed() */
@@ -128,6 +131,16 @@ export interface AircraftFeedReturn {
 
 /** Radar node metadata from /api/radar/analytics (as shaped by useNodes) */
 export interface RadarNode {
+  /**
+   * The public handle for this node, and the only identifier the client ever
+   * sees: the registry's ref when it has one, an HMAC-derived ref of the same
+   * shape when it does not (see backend/services/node_ref.py).  It is also
+   * the join key — it matches `Aircraft.node_ref`, `contributing_node_refs`,
+   * the detecting-node lists and the map's own selection state — because the
+   * private `node_id` is no longer published on any unauthenticated surface.
+   * Render it through `nodeLabel()` (map/nodeSites.ts), which names a node
+   * with no ref "unlisted node".
+   */
   node_ref: string;
   /**
    * Receiver position as served. The backend displaces it deterministically
@@ -155,6 +168,14 @@ export interface RadarNode {
    */
   rx_alt_m: number | null;
   tx_alt_m: number | null;
+  /**
+   * Declared antenna geometry and range limits: arc-rebuild parity only,
+   * never displayed and never used to draw a detection area.  They exist here
+   * because map/bistaticArc.ts rebuilds the backend's published arc
+   * client-side and has to mirror the geometry the backend used.  What the
+   * node can actually see is `empirical_polygon`, which is measured; these
+   * four are configuration, and most nodes' aim was never surveyed.
+   */
   beam_azimuth_deg: number;
   beam_width_deg: number;
   max_range_km: number;

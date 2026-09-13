@@ -270,7 +270,7 @@ default — a typo should degrade to the inert mode, not the acting one):
 |---|---|---|---|---|
 | `off` | never runs | untouched | returns 0 immediately (`known_lane.run_known_lane_pass`); worker never even calls it (`solver._run_solver_worker`) | none |
 | `shadow` | runs, records claims + residuals + counters | untouched | runs: solves, classifies, records accuracy samples | never |
-| `binding` | runs | `strip_claimed_detections` removes claimed indices (called from `frame_processor.process_one_frame`) | runs | `truth_match` results publish into `state.multinode_tracks` as `mn-adsb-<hex>`; ghosts never publish |
+| `binding` | runs | `strip_claimed_detections` removes claimed indices (called from `frame_processor.process_one_frame`) | runs | `truth_match` results whose `rms_delay` passes `KNOWN_PUBLISH_MAX_RMS_DELAY_US` publish into `state.multinode_tracks` as `mn-adsb-<hex>`; ghosts never publish |
 
 `strip_claimed_detections` (`services/known_claiming.py`) returns a copy
 with claimed indices removed from `delay`/`doppler`/`snr`/`adsb`; the
@@ -314,9 +314,19 @@ flowchart TD
     glabel -->|"no"| gh["label = ghost<br/>history known_ghost"]
     tm --> gpub{"mode == binding<br/>AND label == truth_match?"}
     gh --> gpub
-    gpub -->|"yes"| publish["_publish: multinode_key_decision<br/>-> mn-adsb-hex, smooth_solve,<br/>supersession, solve_count+=1"]
+    gpub -->|"yes"| grms{"rms_delay <=<br/>KNOWN_PUBLISH_MAX_RMS_DELAY_US 3.0us?<br/>(missing/None passes; n=2 carries 0.0)"}
+    grms -->|"no"| gated["known_lane_publish_rms_rejected<br/>publish_gate='rms_delay'<br/>accuracy sample STILL recorded"]:::inert
+    grms -->|"yes"| publish["_publish: multinode_key_decision<br/>-> mn-adsb-hex, smooth_solve,<br/>supersession, solve_count+=1"]
     gpub -->|"no"| noop["accuracy sample only,<br/>no feed entry"]:::inert
 ```
+
+The residual gate is on the PUBLISH alone: label, accuracy sample and history
+outcome are identical whether it passes or not, so the free-solve measurement
+below keeps measuring the solves it withholds. It exists because a
+truth_match displacement was this lane's only publish check — on test and
+staging (2026-09-10/11) the tail of `mn-adsb-a85f17` (N6389R, a PA-28) put
+solves with `rms_delay` 9.9-11.2 µs and a formal `pos_sigma_km` of 1.9e7 on
+the map.
 
 The module docstring of `services/tasks/known_lane.py` calls this the "free
 solve invariant": the ADS-B fix seeds the initial guess and pins altitude,
@@ -342,6 +352,7 @@ LM's SNR weighting maps to a uniform weight of 1.0.
 | `KNOWN_HOLD_MAX_DOPPLER_RATE_HZ_S` / `KNOWN_HOLD_RATE_MAX_SPAN_S` | 15 Hz/s / 5.0 s | `known_claiming.py` |
 | `KNOWN_FOLLOW_MAX_AGE_S` / `KNOWN_FOLLOW_MIN_SOLVES` (follow candidates; **0 = off**) | 20.0 s / 3 | `known_claiming.py` |
 | `KNOWN_LANE_REANCHOR_STREAK` (**0 = off**) | 2 | `services/tasks/known_lane.py` |
+| `KNOWN_PUBLISH_MAX_RMS_DELAY_US` (publish gate only) | 3.0 µs (= `SOLVER_RMS_DELAY_MAX_US`) | `services/tasks/known_lane.py` |
 | `_PASS_MIN_INTERVAL_S` | 2.0 s | `services/tasks/known_lane.py` |
 | `_CLAIM_MAX_AGE_S` / `_CLAIM_SPREAD_S` | 45.0 s / 5.0 s | `known_lane.py` |
 | `_ATTEMPT_TTL_S` | 600 s | `known_lane.py` |

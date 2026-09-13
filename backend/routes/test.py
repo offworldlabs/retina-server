@@ -10,7 +10,7 @@ import orjson
 from fastapi import APIRouter, Body, Depends, Header, HTTPException
 from fastapi.responses import Response
 
-from config.constants import FT_TO_M, is_num
+from config.constants import ANALYTICS_REFRESH_INTERVAL_S, FT_TO_M, is_num
 from core import state
 from core.task_registry import get_stale_tasks
 from core.users import require_admin
@@ -139,6 +139,10 @@ def _build_dashboard_data() -> bytes:
                 "blocked_nodes": blocked_nodes,
             },
             "association": {"overlap_zones": n_overlaps},
+            # Published so frontend/e2e/nodes.spec.ts can size its node-cache wait
+            # from the running server rather than from a copy of this constant,
+            # which is what went stale before (86cb5b4tt).
+            "cadence": {"analytics_refresh_interval_s": ANALYTICS_REFRESH_INTERVAL_S},
             "streaming": {
                 "websocket_clients": ws_clients,
                 "external_adsb_cached": ext_adsb,
@@ -515,12 +519,22 @@ async def get_simulation_config():
         # still a commercial aircraft, it just is not broadcasting, so this
         # is the one count that overlaps the others.
         "adsb_silent": 0,
+        # Aircraft mirrored from the live ADS-B feed, split by the cast the
+        # simulator gave them.  Like adsb_silent these overlap the type
+        # buckets above (a live aircraft is also an "aircraft" or "dark"),
+        # so the frac_live_dark knob is verifiable in one call.
+        "live": 0,
+        "live_adsb": 0,
+        "live_dark": 0,
         "total": 0,
     }
     for meta in list(state.ground_truth_meta.values()):
         counts["total"] += 1
         if meta.get("adsb_silent"):
             counts["adsb_silent"] += 1
+        if meta.get("source") == "live":
+            counts["live"] += 1
+            counts["live_adsb" if meta.get("has_adsb") else "live_dark"] += 1
         if meta.get("is_anomalous"):
             counts["anomalous"] += 1
         elif meta.get("object_type") == "drone":
@@ -546,6 +560,9 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
     frac_adsb_outage (0.0–1.0) is deliberately OUTSIDE that sum: it is the
     fraction OF the ADS-B aircraft that go transponder-silent mid-flight,
     orthogonal to the spawn-type roll.
+    frac_live_dark (0.0–1.0) is likewise outside it: the share of the
+    aircraft the simulator mirrors from the live ADS-B feed that it casts
+    as dark.  live_adsb_enabled (bool) pauses that feed.
     Optional: max_range_km (0 = auto, or 10–400), min_aircraft (1–500),
     max_aircraft (1–500).
 
@@ -560,6 +577,8 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
         "frac_drone",
         "frac_dark",
         "frac_adsb_outage",
+        "frac_live_dark",
+        "live_adsb_enabled",
         "max_range_km",
         "min_aircraft",
         "max_aircraft",
@@ -570,7 +589,10 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
     for k in allowed:
         if k in body:
             v = body[k]
-            if k.startswith("frac_"):
+            if k == "live_adsb_enabled":
+                if not isinstance(v, bool):
+                    raise HTTPException(400, detail=f"{k} must be true or false")
+            elif k.startswith("frac_"):
                 if not isinstance(v, (int, float)) or not (0.0 <= v <= 1.0):
                     raise HTTPException(400, detail=f"{k} must be 0.0–1.0")
             elif k in ("max_range_km",):
@@ -592,7 +614,8 @@ async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_a
                     raise HTTPException(400, detail=f"{k} must be 0.0–1.0")
             updated[k] = v
 
-    # frac_adsb_outage is intentionally absent here — see the docstring.
+    # frac_adsb_outage and frac_live_dark are intentionally absent here —
+    # see the docstring.
     total_frac = (
         updated.get("frac_anomalous", state.simulation_config["frac_anomalous"])
         + updated.get("frac_drone", state.simulation_config["frac_drone"])
@@ -649,6 +672,8 @@ async def get_simulation_ground_truth():
                 "ts": round(ts, 3),
                 "object_type": meta.get("object_type", "aircraft"),
                 "is_anomalous": meta.get("is_anomalous", False),
+                "has_adsb": meta.get("has_adsb", False),
+                "source": meta.get("source", "sim"),
             }
         )
 
@@ -939,7 +964,7 @@ async def mlat_history(
             "n_records": len(skips),
             "records": _published_records(skips[:limit]),
         }
-        return Response(content=orjson.dumps(payload), media_type="application/json")
+        return Response(content=orjson.dumps(without_receiver_geometry(payload)), media_type="application/json")
 
     merged = _merged_solve_history()
     effective_minutes = _window_effective_minutes(merged, minutes)
@@ -962,7 +987,7 @@ async def mlat_history(
             "n_records": len(records),
             "records": _published_records(_cap_per_lane(records, limit)),
         }
-        return Response(content=orjson.dumps(payload), media_type="application/json")
+        return Response(content=orjson.dumps(without_receiver_geometry(payload)), media_type="application/json")
 
     norm = (hex or "").strip().lower()
     if not norm:
@@ -1001,7 +1026,7 @@ async def mlat_history(
             "records": _published_records(rejects_nearby[:200]),
         },
     }
-    return Response(content=orjson.dumps(payload), media_type="application/json")
+    return Response(content=orjson.dumps(without_receiver_geometry(payload)), media_type="application/json")
 
 
 # ── Solver Report (full funnel/error/ghost/consensus picture) ─────────────────
@@ -1349,6 +1374,7 @@ def _solver_window_stats(minutes: float) -> dict:
         kl_published = getattr(state, "known_lane_published", 0)
         kl_publish_errors = getattr(state, "known_lane_publish_errors", 0)
         kl_reanchored = getattr(state, "known_lane_reanchored", 0)
+        kl_publish_rms_rejected = getattr(state, "known_lane_publish_rms_rejected", 0)
         kc_made = state.known_claims_made
         kc_contentions = state.known_claim_contentions
         kc_bound = state.known_claims_bound
@@ -1478,6 +1504,15 @@ def _solver_window_stats(minutes: float) -> dict:
             # with each other rather than with it.  They are published like a
             # truth_match and are NOT part of the ghost count.
             "reanchored": kl_reanchored,
+            # Solves binding WOULD have published, held off the map because
+            # their rms_delay failed the regular lane's bound (see
+            # known_lane.KNOWN_PUBLISH_MAX_RMS_DELAY_US).  Like publish_errors
+            # it accounts for part of the truth_match+reanchored minus
+            # published gap, and it stays zero in shadow — nothing was going to
+            # publish there.  The withheld solves are still classified, still
+            # sampled and still in position_error_km below: the gate protects
+            # the map, not the measurement.
+            "publish_rms_rejected": kl_publish_rms_rejected,
             # The one WINDOWED entry in this since-boot block (it carries its
             # own window_minutes so it cannot be misread as cumulative):
             # solver-vs-ADS-B error over this lane's records in the window,
@@ -1760,7 +1795,11 @@ async def node_detection_range(node_ref: str):
             status_code=404,
         )
 
-    summary = {k: v for k, v in area.summary().items() if k not in ("furthest_detections", "node_id")}
+    # Geometry first (services/public_geometry.py withholds furthest_detections
+    # and anything else receiver-relative, at any depth), then the identity: the
+    # node is named by the ref it was addressed as, never by the id the store
+    # keys it under.
+    summary = {k: v for k, v in without_receiver_geometry(area.summary()).items() if k != "node_id"}
     summary["node_ref"] = node_ref
     rx = summary.get("rx") or {}
     pub_lat, pub_lon = public_latlon(rx.get("lat"), rx.get("lon"), node_id)

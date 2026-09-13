@@ -32,9 +32,10 @@ from services.geo import C_KM_US  # noqa: E402
 from services.tasks.aircraft_flush import filter_payload_to_nodes  # noqa: E402
 from tests.probe_helpers import run_probe  # noqa: E402
 
-# Invented but self-consistent bistatic geometry: the arc assertions below are
-# worthless against a node the builder would decline for reasons other than the
-# one under test.
+# An invented bistatic geometry, translated as one piece from test_arc_builder's:
+# the arc assertions below are worthless against a node the builder would decline
+# for reasons other than the one under test, so the shape has to survive even
+# though the position is not a real site.
 _NODE_CFG = {
     "node_id": "node-a",
     "rx_lat": 34.0,

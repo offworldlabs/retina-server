@@ -544,21 +544,32 @@ def node_fuzz_max_km() -> float:
     return max(value, node_fuzz_min_km())
 
 
-# Two receivers closer than this that are NOT configured at the same
-# coordinates are almost certainly one site entered twice.  services/
-# node_sites.py groups on exact equality and reports these instead of merging
-# them — see that module on why proximity must not decide a node's offset.
-# 150 m is comfortably wider than the scatter between two typed-in fixes for
-# one roof and far narrower than the gap between two operators' houses.
-NODE_FUZZ_SITE_AUDIT_KM_DEFAULT = 0.15
+# A receiver alone at its coordinates but within this distance of an existing
+# receive site is that site: it is published from the site's position with the
+# site's offset (services/node_sites.py, which explains the two-pass rule and
+# why a greedy join is stable).  Two receivers on one roof are routinely two
+# independently typed fixes tens of metres apart — the fleet has a 56 m and a
+# 16 m case — and published separately they are two samples of one address.
+# 150 m is comfortably wider than that scatter and far narrower than the gap
+# between two operators' houses.  It is also well under NODE_FUZZ_MIN_KM, so
+# the snap never brings a published point nearer the truth than the donut
+# floor.  0 disables the proximity rule and leaves exact equality alone.
+# Pairs up to twice this distance that did not merge are logged.
+NODE_FUZZ_SITE_KM_DEFAULT = 0.15
 
 
-def node_fuzz_site_audit_km() -> float:
-    """Distance under which two differently-configured nodes are flagged (km)."""
+def node_fuzz_site_km() -> float:
+    """Radius within which a lone receiver joins an existing receive site (km).
+
+    Also read from NODE_FUZZ_SITE_AUDIT_KM, the variable's name while the
+    distance only drove a log line, so a deployment that tuned it keeps its
+    value.
+    """
+    raw = os.getenv("NODE_FUZZ_SITE_KM") or os.getenv("NODE_FUZZ_SITE_AUDIT_KM")
     try:
-        return float(os.getenv("NODE_FUZZ_SITE_AUDIT_KM") or NODE_FUZZ_SITE_AUDIT_KM_DEFAULT)
+        return max(0.0, float(raw)) if raw else NODE_FUZZ_SITE_KM_DEFAULT
     except ValueError:
-        return NODE_FUZZ_SITE_AUDIT_KM_DEFAULT
+        return NODE_FUZZ_SITE_KM_DEFAULT
 
 
 def node_fuzz_salt() -> str:

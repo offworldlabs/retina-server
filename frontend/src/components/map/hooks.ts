@@ -366,6 +366,9 @@ export function useNodes() {
             const rxLon = da.rx.lon;
             if (Math.abs(rxLat) < 1e-6 && Math.abs(rxLon) < 1e-6) continue;
             nodeList.push({
+              // The map's key for this node: the analytics listing is keyed
+              // on the public ref and the values carry no id of their own, so
+              // the ref is both the join key and the label helper's input.
               node_ref: ref,
               // Already privacy-fuzzed by the backend; used as served. The
               // backend builds its published arcs around this same anchor, so

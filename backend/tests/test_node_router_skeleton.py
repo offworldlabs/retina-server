@@ -15,14 +15,15 @@ from routes.nodes import NODE_BODY_LIMITS
 # is built without the context-manager form that would run it.
 client = TestClient(main.app, raise_server_exceptions=False)
 
-# The method each path answers to, from the wire contract: config is a PUT, the
-# rest are POSTs. Sending the wrong verb would still exercise the middleware,
-# but it would stop doing so the moment a handler landed.
+# The method each path answers to, from the wire contract: config and contact
+# are PUTs, the rest are POSTs. Sending the wrong verb would still exercise the
+# middleware, but it would stop doing so the moment a handler landed.
 NODE_METHODS = {
     "/v1/nodes/register": "POST",
     "/v1/nodes/config": "PUT",
     "/v1/nodes/heartbeat": "POST",
     "/v1/nodes/detection": "POST",
+    "/v1/nodes/contact": "PUT",
 }
 
 KIB = 1024
@@ -70,13 +71,23 @@ def test_a_trailing_slash_does_not_escape_the_cap(path):
     assert r.json() == {"error": "too_large"}
 
 
+def test_every_capped_path_has_a_method_and_vice_versa():
+    """Guards against a new endpoint landing in one table but not the other.
+
+    `NODE_METHODS` drives the parametrised cap tests above; `NODE_BODY_LIMITS`
+    drives the middleware. A path in only one would either go untested here or
+    make `_send` raise a `KeyError` no test surfaces.
+    """
+    assert set(NODE_METHODS) == set(NODE_BODY_LIMITS)
+
+
 def test_detection_cap_is_larger_than_the_other_three():
     """The 64 KiB detection cap is real, not a copy-paste of 8 KiB.
 
     Same `!= 413` reasoning as above.
     """
     assert NODE_BODY_LIMITS["/v1/nodes/detection"] == 64 * KIB
-    assert set(NODE_BODY_LIMITS.values()) == {8 * KIB, 64 * KIB}
+    assert set(NODE_BODY_LIMITS.values()) == {2 * KIB, 8 * KIB, 64 * KIB}
     r = _send("/v1/nodes/detection", b"x" * (8 * KIB + 1))
     assert r.status_code != 413
 

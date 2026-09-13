@@ -6,10 +6,13 @@ it — and by nothing else.  This module is the single place that turns a true
 receiver position into the one an unauthenticated client is allowed to see.
 
 **One offset per site, not per node.**  The identity hashed is the node's
-site: receivers configured at the same coordinates share an offset and are
-published at one point, because two independent offsets around one house are
-two samples of it and an attacker intersects them.  services/node_sites.py
-resolves that identity and explains what the intersection costs.
+site: receivers configured at the same coordinates, or within NODE_FUZZ_SITE_KM
+of a site's anchor, share an offset and are published at one point, because
+two independent offsets around one house are two samples of it and an attacker
+intersects them.  A receiver that joined a site by proximity is published from
+the anchor's position, not its own, so the gap between the two receivers is
+not on the wire either.  services/node_sites.py resolves the identity and the
+position and explains what the intersection costs.
 
 **Where this belongs.**  Call it at the boundary where bytes leave for a public
 client (a JSON payload, a websocket entry, an archive row), never upstream of
@@ -68,10 +71,11 @@ from config.constants import (
     node_fuzz_min_km,
     node_fuzz_mode,
     node_fuzz_salt,
+    node_fuzz_site_km,
 )
 from core.runtime_config import RUNTIME_DIR, runtime_path, write_runtime_file
 from services.geo import KM_PER_DEG_LAT, km_per_deg_lon, offset_latlon
-from services.node_sites import site_identity
+from services.node_sites import site_identity, site_is_snapped, site_position, site_shift_deg
 
 logger = logging.getLogger(__name__)
 
@@ -122,14 +126,24 @@ def fuzz_enabled() -> bool:
     return node_fuzz_mode() != "off"
 
 
-def location_uncertainty_km() -> float:
+def location_uncertainty_km(node_id: str | None = None) -> float:
     """Radius a client should draw to represent an honest published position.
 
     The outer edge of the donut: the true receiver is somewhere within this
     distance of the coordinate served, and the client is told so rather than
     left to infer a precision that is not there.
+
+    Wider by NODE_FUZZ_SITE_KM for a node at a site with a member published
+    from the anchor's position rather than its own: that member's receiver can
+    be up to the merge radius further out than the donut alone allows, and the
+    site publishes one point, so every member declares the one radius that is
+    honest for all of them.  Without a node id the plain donut edge is
+    returned, which is right for any node the caller cannot name.
     """
-    return node_fuzz_max_km()
+    radius = node_fuzz_max_km()
+    if node_id and site_is_snapped(node_id):
+        radius += node_fuzz_site_km()
+    return radius
 
 
 def _persisted_salt() -> str:
@@ -243,6 +257,15 @@ def public_latlon(lat, lon, node_id: str | None) -> tuple[float, float]:
     if not _is_num(lat) or not _is_num(lon):
         return (lat, lon)
 
+    # A node that joined a site by proximity is published from the anchor's
+    # configured position — the same input its site-mates are published from —
+    # so the rounding below lands every member on the identical coordinate.
+    # Substituted outright rather than shifted: adding a shift to the caller's
+    # unrounded value could straddle a 4-decimal boundary the anchor does not.
+    anchor = site_position(node_id)
+    if anchor is not None:
+        lat, lon = anchor
+
     east_km, north_km = public_offset_km(node_id)
     fuzzed_lat, fuzzed_lon = offset_latlon(float(lat), float(lon), east_km, north_km)
     return (round(fuzzed_lat, _PUBLIC_DECIMALS), round(fuzzed_lon, _PUBLIC_DECIMALS))
@@ -286,10 +309,25 @@ def translate_polygon(
     if not _is_num(anchor_lat):
         return verts
 
-    east_km, north_km = public_offset_km(node_id)
-    dlat = north_km / KM_PER_DEG_LAT
-    dlon = east_km / km_per_deg_lon(float(anchor_lat))
+    dlat, dlon = _public_delta_deg(float(anchor_lat), node_id)
     return [[v[0] + dlat, v[1] + dlon] for v in verts]
+
+
+def _public_delta_deg(lat: float, node_id: str | None) -> tuple[float, float]:
+    """The whole (dlat, dlon) from a node's true frame to its public one.
+
+    Two parts, applied together so every artefact of a node moves rigidly with
+    its marker: the site's fuzz offset, and — for a node published from its
+    anchor's position rather than its own — the shift from the node's own
+    configured position to the anchor's.  A node published from its own
+    coordinates has a zero shift and gets the offset alone, as before.
+    """
+    east_km, north_km = public_offset_km(node_id)
+    shift_lat, shift_lon = site_shift_deg(node_id)
+    return (
+        shift_lat + north_km / KM_PER_DEG_LAT,
+        shift_lon + east_km / km_per_deg_lon(lat),
+    )
 
 
 def public_point_delta(lat, node_id: str | None) -> tuple[float, float]:
@@ -317,9 +355,7 @@ def public_point_delta(lat, node_id: str | None) -> tuple[float, float]:
     """
     if not fuzz_enabled() or not _is_num(lat):
         return (0.0, 0.0)
-
-    east_km, north_km = public_offset_km(node_id)
-    return (north_km / KM_PER_DEG_LAT, east_km / km_per_deg_lon(float(lat)))
+    return _public_delta_deg(float(lat), node_id)
 
 
 def fuzz_node_cfg(node_cfg: dict | None) -> dict | None:
@@ -388,7 +424,7 @@ def public_node_summary(node_id: str | None, summary):
                 **rx,
                 "lat": pub_lat,
                 "lon": pub_lon,
-                "location_uncertainty_km": location_uncertainty_km(),
+                "location_uncertainty_km": location_uncertainty_km(node_id),
             }
         out = {**out, "detection_area": area_out}
 

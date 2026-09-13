@@ -115,7 +115,7 @@ resolve_n2_chi2
 # deleted because it looks unreferenced is a field the node sends and the
 # server then rejects. The handlers that read them land with 86cb2cy3v.
 #
-# Only the names not already listed above appear here, and only those the four
+# Only the names not already listed above appear here, and only those the five
 # endpoints' request and response bodies actually carry.
 remote_management
 server_time

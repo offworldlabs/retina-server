@@ -11,9 +11,11 @@ import {
 } from "./map";
 import { withCartoKey } from "../utils/basemap";
 
-// Invented site. Nothing here needs a real receiver, and the coordinates of
-// the real ones are private.
+// An invented site. Nothing here needs a real one, and a real one in a
+// public repo is a receiver position the API is built to withhold.
 const TEST_SITE = { lat: 34.0, lon: -84.0 };
+// Named by a ref, like every published node: the private id is not a thing
+// the client speaks any more.
 const TEST_NODE_REF = "ndetestradar001";
 
 // Compute (range_km, bearing_deg) from a fixed RX to a given lat/lon. Lets
@@ -416,7 +418,7 @@ export default function TestRadar() {
                 TEST_SITE.lat,
                 nodeStyle === "both" ? TEST_SITE.lon + 0.04 : TEST_SITE.lon,
               ]}
-              icon={nodeIcon}
+              icon={nodeIcon()}
             >
               <Popup>{TEST_NODE_REF} (divIcon, icons.ts)</Popup>
             </Marker>

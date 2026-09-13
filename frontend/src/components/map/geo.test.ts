@@ -7,6 +7,7 @@ import {
   nearestPointOnPolyline,
   yagiSectorPositions,
   uncertaintyDiscRadiusM,
+  pointInPolygon,
 } from "./geo";
 
 describe("haversineDistanceKm", () => {
@@ -226,5 +227,37 @@ describe("uncertaintyDiscRadiusM", () => {
     expect(uncertaintyDiscRadiusM(-3)).toBe(0);
     expect(uncertaintyDiscRadiusM(NaN)).toBe(0);
     expect(uncertaintyDiscRadiusM(Infinity)).toBe(0);
+  });
+});
+
+describe("pointInPolygon", () => {
+  // A square degree, so "inside" is easy to reason about.
+  const square: [number, number][] = [[0, 0], [0, 1], [1, 1], [1, 0], [0, 0]];
+
+  it("accepts an interior point", () => {
+    expect(pointInPolygon(0.5, 0.5, square)).toBe(true);
+  });
+
+  it("rejects an exterior point", () => {
+    expect(pointInPolygon(0.5, 1.5, square)).toBe(false);
+    expect(pointInPolygon(-0.5, 0.5, square)).toBe(false);
+  });
+
+  it("rejects a degenerate or missing ring", () => {
+    expect(pointInPolygon(0.5, 0.5, null)).toBe(false);
+    expect(pointInPolygon(0.5, 0.5, [[0, 0], [1, 1]])).toBe(false);
+  });
+
+  it("handles a coverage lobe that wraps around north", () => {
+    // A star-shaped ring around (0, 0): apex on the southern side, arms at
+    // bearings 350°, 0° and 10° — the wrap the coverage polygon actually
+    // produces, where consecutive vertices straddle north.
+    const rad = (deg: number) => (deg * Math.PI) / 180;
+    const arm = (deg: number): [number, number] => [Math.cos(rad(deg)), Math.sin(rad(deg))];
+    const lobe: [number, number][] = [arm(0), arm(10), [0, 0], arm(350), arm(0)];
+    expect(pointInPolygon(0.9, 0.02, lobe)).toBe(true);   // just east of north
+    expect(pointInPolygon(0.9, -0.02, lobe)).toBe(true);  // just west of north
+    expect(pointInPolygon(-0.5, 0, lobe)).toBe(false);    // due south, outside
+    expect(pointInPolygon(0.2, 0.9, lobe)).toBe(false);   // due east, outside
   });
 });

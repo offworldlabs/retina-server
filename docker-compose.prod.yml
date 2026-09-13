@@ -125,6 +125,12 @@ services:
       - FLEET_MAX_AIRCRAFT=30
       - FLEET_BEAM_WIDTH_DEG=0
       - FLEET_MAX_RANGE_KM=0
+      # No live ADS-B seeding here (the entrypoint default is adsb.retina.fm):
+      # production has real hardware nodes whose echoes claim real hexes in the
+      # "real" world, and a simulated fleet mirroring the same aircraft would
+      # push those hexes into the same server cache as simulated-world
+      # traffic — the two writers would take turns owning each entry.
+      - FLEET_LIVE_ADSB_URL=
       - FLEET_CONCURRENCY=20
       # `restart: unless-stopped` recovers the fleet if the app restarts, so we
       # no longer need the script's 999-retry hack — but keep a healthy margin

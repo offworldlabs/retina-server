@@ -4,11 +4,11 @@ import { useMap } from "react-leaflet";
 import L from "leaflet";
 import {
   ADSB_SINGLE_ARC_ICON_MULTIPLE,
-  ADSB_SINGLE_COLOR,
   POSITION_SOURCE_ADSB_SINGLE,
 } from "./constants";
 import { aircraftIconSize } from "./icons";
 import { trimAroundAnchor } from "./arcTrim";
+import { usePalette } from "./useMapTheme";
 
 /* ── ClaimedArcs: the short locus section under a single-node-claimed aircraft.
 
@@ -25,6 +25,7 @@ import { trimAroundAnchor } from "./arcTrim";
       the projection or the fix moves — hence the tick and the zoomend hook,
       not a one-shot at creation. ── */
 const ClaimedArcs = memo(function ClaimedArcs({ aircraftRef, onSelect }) {
+  const { LANE_ADSB_SINGLE } = usePalette();
   const map = useMap();
   const polyMapRef = useRef(new Map()); // hex → { line: L.polyline }
   const onSelectRef = useRef(onSelect);
@@ -69,7 +70,7 @@ const ClaimedArcs = memo(function ClaimedArcs({ aircraftRef, onSelect }) {
         } else {
           const hex = ac.hex;
           const line = L.polyline(latlngs, {
-            color: ADSB_SINGLE_COLOR,
+            color: LANE_ADSB_SINGLE,
             weight: 2,
             opacity: 0.9,
             lineCap: "round",
@@ -106,7 +107,7 @@ const ClaimedArcs = memo(function ClaimedArcs({ aircraftRef, onSelect }) {
       for (const info of polyMap.values()) info.line.remove();
       polyMap.clear();
     };
-  }, [map, aircraftRef]);
+  }, [map, aircraftRef, LANE_ADSB_SINGLE]);
 
   return null;
 });

@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
+import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
+import type { LocationPrivacySource } from "../../types";
 
 type ClaimCode = {
   code: string;
@@ -19,6 +21,8 @@ type OwnedNode = {
   rx_lat: number | null;
   rx_lon: number | null;
   frequency: number | null;
+  location_private: boolean;
+  location_privacy_source: LocationPrivacySource;
 };
 
 export default function OnboardingPage() {
@@ -213,7 +217,10 @@ export default function OnboardingPage() {
                     return (
                       <tr key={n.node_id}>
                         <td style={{ fontFamily: "monospace", fontSize: 12 }}>{n.node_id}</td>
-                        <td>{n.name}</td>
+                        <td>
+                          {n.name}{" "}
+                          <LocationPrivacyBadge isPrivate={n.location_private} />
+                        </td>
                         <td>
                           <span className={`badge ${online ? "online" : "offline"}`}>
                             {online ? "Online" : n.status === "never_connected" ? "Never connected" : "Offline"}

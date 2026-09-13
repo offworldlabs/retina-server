@@ -45,6 +45,7 @@ from core.users import (
     require_admin,
     user_to_dict,
 )
+from services import publication
 from services.node_refs import id_for_ref, public_identity, public_name
 
 logger = logging.getLogger(__name__)
@@ -275,6 +276,117 @@ async def admin_set_node_owner(
         {"node_id": node_id, "user_id": body.user_id, "by": admin["email"]},
     )
     return {"ok": True, "node_id": node_id, "user_id": body.user_id}
+
+
+# ── Node location privacy ─────────────────────────────────────────────────────
+#
+# The same override the owner sets from their own dashboard
+# (routes/auth.py, /me/nodes/{node_id}/location-privacy), reachable for any node
+# id rather than only an owned one.  That is the point of having it here: most
+# of what a deployment carries has no owner row and never registered — the
+# synthetic fleet, mirrored nodes, anything predating the v1 handshake — so on
+# the test droplet this is the only way to make a node private at all.
+#
+# Admin sees the raw pieces the owner routes do not, because an admin is
+# answering "why is this node in this state" rather than choosing their own.
+
+
+class NodeLocationPrivacyUpdate(BaseModel):
+    private: bool
+
+
+@router.get("/nodes/{node_id}/location-privacy")
+async def admin_get_node_location_privacy(node_id: str, _admin=Depends(require_admin)):
+    """Effective state, its source, and both rows behind it.
+
+    Answers for an id nothing has ever heard of rather than 404ing on one: the
+    override table accepts any string, so "no registration, no override, public
+    by default" is the true and useful answer for a node an admin is about to
+    hide before it has ever connected.
+    """
+    return await publication.location_privacy(node_id)
+
+
+@router.put("/nodes/{node_id}/location-privacy")
+async def admin_set_node_location_privacy(
+    node_id: str,
+    body: NodeLocationPrivacyUpdate,
+    admin=Depends(require_admin),
+):
+    """Set the override on any node, as an admin."""
+    await publication.set_location_privacy(node_id, body.private, set_by=f"admin:{admin['email']}")
+    publication.invalidate()
+    # Logged like the owner-assignment route above: an admin changing what
+    # another operator's node publishes is exactly the kind of act the event log
+    # exists to make answerable afterwards.  The owner routes are not logged —
+    # an owner acting on their own node is not an intervention.
+    log_event(
+        "user",
+        f"Node {node_id} location set {'private' if body.private else 'public'}",
+        "info",
+        {"node_id": node_id, "private": body.private, "by": admin["email"]},
+    )
+    return {
+        "node_id": node_id,
+        "location_private": body.private,
+        "location_privacy_source": publication.SOURCE_OVERRIDE,
+    }
+
+
+@router.delete("/nodes/{node_id}/location-privacy")
+async def admin_clear_node_location_privacy(node_id: str, admin=Depends(require_admin)):
+    """Drop the override, returning the node to its registration choice."""
+    await publication.clear_location_privacy(node_id)
+    publication.invalidate()
+    after = await publication.location_privacy(node_id)
+    log_event(
+        "user",
+        f"Node {node_id} location privacy override cleared",
+        "info",
+        {"node_id": node_id, "by": admin["email"], "location_private": after["location_private"]},
+    )
+    return {
+        "node_id": node_id,
+        "location_private": after["location_private"],
+        "location_privacy_source": after["location_privacy_source"],
+    }
+
+
+@router.get("/node-contacts")
+async def admin_list_node_contacts(
+    session: AsyncSession = Depends(get_async_session),
+    _admin=Depends(require_admin),
+):
+    """Return {node_id: {first_name, last_name, email, phone, updated_at}} for every node that reported any.
+
+    The one route that serves these. They are kept off the node and analytics
+    payloads the map and dashboard poll broadly, so personal data has a single
+    door rather than riding every refresh.
+    """
+    from services.node_contact_store import list_contacts
+
+    return await list_contacts(session)
+
+
+@router.delete("/nodes/{node_id}/contact")
+async def admin_delete_node_contact(
+    node_id: str,
+    session: AsyncSession = Depends(get_async_session),
+    admin=Depends(require_admin),
+):
+    """Erase a node's contact details. The path that exists so erasure does not need the database."""
+    from services.node_contact_store import delete_contact
+
+    deleted = await delete_contact(session, node_id)
+    await session.commit()
+    if deleted:
+        log_event(
+            "user",
+            f"Contact details cleared for node {node_id}",
+            "info",
+            {"node_id": node_id, "by": admin["email"]},
+        )
+    return {"ok": True, "node_id": node_id, "deleted": deleted}
 
 
 # ── Node retirement ───────────────────────────────────────────────────────────

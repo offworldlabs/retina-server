@@ -98,7 +98,7 @@ def _clean_db():
     """
     from sqlalchemy import delete
 
-    from core.nodes import Node, NodeConfig, NodeToken
+    from core.nodes import Node, NodeConfig, NodeLocationPrivacy, NodeToken
     from core.users import ClaimCode, Invite, NodeOwner, async_session_maker, create_db_and_tables
 
     async def _setup():
@@ -107,6 +107,9 @@ def _clean_db():
             await session.execute(delete(ClaimCode))
             await session.execute(delete(NodeOwner))
             await session.execute(delete(Invite))
+            # No foreign key to nodes, by design (core/nodes.py), so its order
+            # here is free — it sits with the other keyed-by-node-id tables.
+            await session.execute(delete(NodeLocationPrivacy))
             # Children before parent: node_configs and node_tokens both carry a
             # foreign key to nodes, and PRAGMA foreign_keys=ON (core/users.py)
             # enforces it on every connection.

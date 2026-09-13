@@ -5,6 +5,7 @@ import {
 } from "recharts";
 import { api } from "../../api/client";
 import { PositionStatusBadge, POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
+import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
 
 export default function OverviewPage() {
   const [nodes, setNodes] = useState([]);
@@ -54,12 +55,23 @@ export default function OverviewPage() {
   // Joined on node_ref, the one key space both sides share: /api/auth/me/nodes
   // also carries node_id, and keying on that would list every node twice.
   // A node with no ref is on no public surface, so its node_id cannot collide.
-  const byRef = new Map<string, any>(nodeList.map((n) => [n.node_ref, n]));
+  const keyOf = (n: any) => n.node_ref || n.node_id || n.id;
+  const byRef = new Map<string, any>(nodeList.map((n) => [keyOf(n), n]));
   for (const n of myNodes) {
-    const key = n.node_ref || n.node_id;
+    const key = keyOf(n);
     if (!byRef.has(key)) byRef.set(key, n);
   }
   const needsAttention = [...byRef.values()].filter((n) => n.position_status && n.position_status !== "positioned");
+  // Same reason the merge exists at all: a private node is dropped from
+  // /api/radar/nodes, so its owner would otherwise not find it in the grid
+  // below — the one place they are told it is private.
+  const myNodeCards = [...byRef.values()];
+  // Keyed the same way the merge above is, not on node_id: a public node
+  // reaches the grid from the ref-keyed listing and only its owner's copy
+  // carries the flag, so the two have to meet in one key space.
+  const privateByKey = new Map<string, boolean>(
+    myNodes.map((n) => [keyOf(n), !!n.location_private]),
+  );
   // detection_area.n_detections is the most reliably populated counter
   const totalFrameDetections = nodeList.reduce(
     (s, n) => s + (n._analytics?.metrics?.total_detections || n._analytics?.detection_area?.n_detections || 0),
@@ -180,19 +192,26 @@ export default function OverviewPage() {
           <h3>My Nodes</h3>
         </div>
         <div className="node-grid" style={{ padding: 16 }}>
-          {nodeList.map((node) => {
-            const id = node.node_ref || node.id;
+          {myNodeCards.map((node) => {
+            // The card links to the detail page, which addresses a node on the
+            // public routes and so takes the ref.  A node with no ref is on no
+            // public surface: its card is still shown — this list is the only
+            // place its owner is told about it — but it is not a link to a 404.
+            const ref = node.node_ref;
+            const id = keyOf(node);
             const online = node.status !== "disconnected" && node.status != null;
             return (
               <div
                 className="node-card"
                 key={id}
-                onClick={() => navigate(`/nodes/${id}`)}
+                style={ref ? undefined : { cursor: "default" }}
+                onClick={ref ? () => navigate(`/nodes/${ref}`) : undefined}
               >
                 <div className="node-name">
                   <span className={`badge ${online ? "online" : "offline"}`}>
                     {online ? "Online" : "Offline"}
                   </span>
+                  <LocationPrivacyBadge isPrivate={privateByKey.get(id)} />
                   {node.name || id}
                 </div>
                 <div className="node-meta">
@@ -212,7 +231,7 @@ export default function OverviewPage() {
               </div>
             );
           })}
-          {nodeList.length === 0 && (
+          {myNodeCards.length === 0 && (
             <div className="empty-state">No nodes connected yet</div>
           )}
         </div>

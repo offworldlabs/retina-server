@@ -1303,3 +1303,88 @@ class TestN2WeakUpdate:
         # A result with no n_nodes at all (the field is conditional on the
         # producer) must not accidentally land on the n=2 branch either.
         assert track_filter._base_pos_sigma_m(make_result(35.0, -82.0, 1_000)) == (track_filter._KF_DEFAULT_POS_SIGMA_M)
+
+
+class TestKfActionStamp:
+    """kf_action / kf_d2 / kf_innov_m: which branch of _smooth_kf produced a
+    result and the innovation it decided on.  solver.py copies the three onto
+    the history record, so a capture can attribute every published position
+    — smoothed, manoeuvre-rescued, re-anchored — without flipping any policy.
+    The stamps must be on EVERY return path, and None exactly where no
+    innovation was computed.
+    """
+
+    def setup_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def teardown_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def test_stamped_on_every_path(self, monkeypatch):
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        key = "stamp-paths"
+        ts = 1_000_000
+
+        first = track_filter.smooth_solve(make_result(35.0, -82.0, ts), key, None)
+        assert (first["kf_action"], first["kf_d2"], first["kf_innov_m"]) == ("init", None, None)
+
+        dup = track_filter.smooth_solve(make_result(35.0, -82.0, ts), key, None)
+        assert (dup["kf_action"], dup["kf_d2"], dup["kf_innov_m"]) == ("passthrough", None, None)
+
+        lat, lon = offset_latlon_m(35.0, -82.0, east_m=250.0 * 5.0, north_m=0.0)
+        second = track_filter.smooth_solve(make_result(lat, lon, ts + 5_000), key, None)
+        assert second["kf_action"] == "smoothed"
+        assert second["kf_d2"] is not None and second["kf_d2"] < track_filter._KF_GATE_CHI2
+        assert second["kf_innov_m"] is not None and second["kf_innov_m"] >= 0.0
+
+        gap = make_result(lat, lon, ts + 5_000 + int(track_filter._KF_MAX_GAP_S * 1000) + 1_000)
+        assert track_filter.smooth_solve(gap, key, None)["kf_action"] == "init"
+
+    def test_a_reanchor_is_stamped_with_the_breaching_innovation(self, monkeypatch):
+        """Same jump as TestManoeuvreAdaptiveQ's ten-kilometre test: the
+        re-anchor passthrough carries the d2 that breached and the ~10 km
+        innovation, which is what makes a bad join attributable after the
+        fact."""
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        key = "stamp-jump"
+        lat0, lon0 = 35.0, -82.0
+        ts = 1_000_000
+        for i in range(6):
+            lat, lon = offset_latlon_m(lat0, lon0, east_m=250.0 * 4.6 * i, north_m=0.0)
+            track_filter.smooth_solve(make_result(lat, lon, ts + int(i * 4600)), key, None)
+        jump_lat, jump_lon = offset_latlon_m(lat0, lon0, east_m=250.0 * 4.6 * 6 + 10_000.0, north_m=0.0)
+        out = track_filter.smooth_solve(make_result(jump_lat, jump_lon, ts + int(6 * 4600)), key, None)
+        assert "smoother" not in out  # raw passthrough
+        assert out["kf_action"] == "reanchored"
+        assert out["kf_d2"] > track_filter._KF_GATE_CHI2
+        assert out["kf_innov_m"] == pytest.approx(10_000.0, rel=0.1)
+        assert track_filter.filter_stats()["reanchors"] == 1
+
+    def test_a_manoeuvre_rescue_is_stamped_as_such(self, monkeypatch):
+        """Same displacement as TestManoeuvreAdaptiveQ's rescue test.  The
+        action names the retry, and kf_d2 is the BASE-Q surprise (> gate),
+        not the retry's — the capture must see what triggered the retry."""
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        key = "stamp-rescue"
+        lat0, lon0 = 35.0, -82.0
+        ts = 1_000_000
+        cadence = 12.0
+        for i in range(25):
+            lat, lon = offset_latlon_m(lat0, lon0, east_m=250.0 * cadence * i, north_m=0.0)
+            track_filter.smooth_solve(make_result(lat, lon, ts + int(i * cadence * 1000)), key, None)
+        lat, lon = offset_latlon_m(lat0, lon0, east_m=250.0 * cadence * 25, north_m=5_200.0)
+        out = track_filter.smooth_solve(make_result(lat, lon, ts + int(25 * cadence * 1000)), key, None)
+        assert track_filter.filter_stats()["manoeuvre_rescues"] == 1
+        assert out["smoother"] == "kf"
+        assert out["kf_action"] == "manoeuvre_rescued"
+        assert out["kf_d2"] > track_filter._KF_GATE_CHI2
+        assert out["kf_innov_m"] == pytest.approx(5_200.0, rel=0.15)
+
+    def test_off_and_ewma_modes_do_not_stamp(self, monkeypatch):
+        """The stamp is a KF measurement; the other smoothers leave the
+        result untouched, and solver.py records None for them."""
+        monkeypatch.setenv("TRACK_SMOOTHER", "off")
+        out = track_filter.smooth_solve(make_result(35.0, -82.0, 1_000_000), "stamp-off", None)
+        assert "kf_action" not in out

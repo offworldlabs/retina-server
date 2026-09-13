@@ -24,6 +24,15 @@ full on the authenticated owner feed; enforcement lives on the public path
 only, which is why services/tasks/aircraft_flush.py redacts a sibling payload
 rather than the one the owner filter reads.
 
+**Two sources, one answer.**  Registration is not the only place the choice is
+made.  ``node_location_privacy`` (core/nodes.py) carries the answer an owner or
+an admin gives from the dashboard, for any node id the system knows by string —
+which includes every node that never registered.  An override row outranks the
+registration choice and deleting it hands the node back to that choice, so a
+reflash rewriting ``Node.publication`` cannot republish a node its owner hid.
+``effective_privacy`` below is the whole of that rule and the only statement of
+it; ``_query`` composes it over the fleet and the routes ask it per node.
+
 **Failure.**  The two wrong answers are not symmetric but they are both wrong:
 answer "everything is private" on a dropped connection and the map goes blank
 for a database hiccup; answer "nothing is private" and a hiccup publishes what
@@ -40,11 +49,11 @@ import logging
 import threading
 import time
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, select
 from sqlalchemy.pool import NullPool
 
-from core.nodes import Node
-from core.users import DATABASE_URL
+from core.nodes import Node, NodeLocationPrivacy
+from core.users import DATABASE_URL, async_session_maker
 
 logger = logging.getLogger(__name__)
 
@@ -112,20 +121,96 @@ def _sync_engine():
     return _engine
 
 
+# The three answers to "why is this node private", in the order they outrank
+# each other.  Published on the owner and admin routes so a dashboard can say
+# where the state came from rather than only what it is.
+SOURCE_DEFAULT = "default"
+SOURCE_REGISTRATION = "registration"
+SOURCE_OVERRIDE = "override"
+
+
+def effective_privacy(registration_choice: str | None, override: bool | None) -> tuple[bool, str]:
+    """One node's effective privacy and where it came from.
+
+    The precedence rule, stated once.  An override row wins outright; with no
+    override the registration choice stands; with neither the node is public,
+    for the reason ``private_node_ids`` gives — absence is not a choice to
+    withhold, and defaulting the other way would retire most of the map.
+
+    ``registration_choice`` is ``Node.publication`` or None when the node has no
+    row in ``nodes`` at all, which is most of what a deployment carries.
+    ``override`` is ``NodeLocationPrivacy.private`` or None when there is no
+    override row.  Note that the two Nones mean different things and only the
+    source says so: a node registered public and a node that never registered
+    are both published, but only the first made that choice.
+    """
+    if override is not None:
+        return override, SOURCE_OVERRIDE
+    if registration_choice is not None:
+        return registration_choice == "private", SOURCE_REGISTRATION
+    return False, SOURCE_DEFAULT
+
+
 def _query() -> frozenset[str]:
+    """The private set, composed from both tables in one connection.
+
+    Two selects rather than a join: the tables have no foreign key between them
+    (an override may name a node that never registered), so the union of their
+    key sets is what has to be walked, and an outer join in SQLite would buy
+    nothing over doing it in Python over a fleet of this size.  One connection
+    for both, so the two reads cannot straddle a write and produce a set that
+    was never true — the override table is written by routes that then call
+    ``invalidate()``, which is exactly when a split read would be observed.
+
+    ``Node.publication`` is read for every node rather than filtered to the
+    private ones, because a node registered *public* with a private override is
+    in the answer and a filter would drop the row that says so.
+    """
     with _sync_engine().connect() as conn:
-        rows = conn.execute(select(Node.node_id).where(Node.publication == "private"))
-        return frozenset(r[0] for r in rows if r[0])
+        registration = {nid: choice for nid, choice in conn.execute(select(Node.node_id, Node.publication)) if nid}
+        overrides = {
+            nid: bool(private)
+            for nid, private in conn.execute(select(NodeLocationPrivacy.node_id, NodeLocationPrivacy.private))
+            if nid
+        }
+    return frozenset(
+        nid
+        for nid in registration.keys() | overrides.keys()
+        if effective_privacy(registration.get(nid), overrides.get(nid))[0]
+    )
+
+
+def invalidate() -> None:
+    """Drop the cached answer so the next call re-reads both tables.
+
+    Called by every route that writes an override.  Without it a change made
+    from the dashboard would be honoured somewhere between immediately and
+    _TTL_S later, which reads as a bug on a switch whose whole promise is that a
+    node stops being published: an owner watching the map would see their node
+    for another half minute and reasonably conclude nothing happened.
+
+    Only the expiry is dropped, not ``_cached`` or ``_have_data``.  Clearing the
+    set would make the window between this call and the next refresh publish
+    every node, and clearing ``_have_data`` would turn a database failure during
+    that window into a silent fail-open instead of the logged "serving the last
+    known set" the failure semantics promise.
+    """
+    global _expires_at
+    with _lock:
+        _expires_at = 0.0
 
 
 def private_node_ids() -> frozenset[str]:
     """Node ids whose owner chose not to publish, as of at most _TTL_S ago.
 
-    A node absent from the table is public: registration is what records the
+    A node absent from both tables is public: registration is what records the
     choice, and the synthetic fleet and any pre-registration node never made
     one.  The default is public because that is what the fleet was before the
     column was enforced, and silently retiring nodes from the map on a schema
-    reading would be its own kind of wrong.
+    reading would be its own kind of wrong.  Such a node is not stuck there —
+    the override table takes an id the ``nodes`` table has never seen, which on
+    a deployment whose fleet never registered is the only way to make one
+    private.
     """
     global _cached, _expires_at, _have_data
     now = time.monotonic()
@@ -243,3 +328,96 @@ def public_summaries(summaries: dict) -> dict:
     if not private:
         return summaries
     return {nid: s for nid, s in summaries.items() if nid not in private}
+
+
+# ── Reading and writing the override ─────────────────────────────────────────
+#
+# The cache above is the hot path and reaches the database through its own
+# synchronous engine for the reasons _sync_engine() gives.  Everything below is
+# a route handler's path — a handful of calls a day, always inside a request's
+# event loop — so it goes through core.users.async_session_maker like the rest
+# of the application, and pays a round trip rather than reading a cache that
+# would be up to _TTL_S stale in exactly the moment a dashboard is watching it.
+
+
+async def _read_choices(node_ids: list[str]) -> dict[str, tuple[str | None, NodeLocationPrivacy | None]]:
+    """(registration choice, override row) for each of `node_ids`, in one session.
+
+    Both lookups are `IN` queries rather than a loop of gets, so listing an
+    owner's nodes costs two statements regardless of how many they own.  Ids
+    with neither row come back as (None, None), which ``effective_privacy``
+    reads as the default — so a caller never has to distinguish "no row" from
+    "not asked for".
+    """
+    if not node_ids:
+        return {}
+    async with async_session_maker() as session:
+        registrations = (
+            await session.execute(select(Node.node_id, Node.publication).where(Node.node_id.in_(node_ids)))
+        ).all()
+        overrides = (
+            await session.execute(select(NodeLocationPrivacy).where(NodeLocationPrivacy.node_id.in_(node_ids)))
+        ).scalars()
+        choices = {nid: choice for nid, choice in registrations}
+        rows = {row.node_id: row for row in overrides}
+    return {nid: (choices.get(nid), rows.get(nid)) for nid in node_ids}
+
+
+async def location_privacy_map(node_ids: list[str]) -> dict[str, tuple[bool, str]]:
+    """{node_id: (effective private, source)} for a list of ids."""
+    return {
+        nid: effective_privacy(choice, None if row is None else row.private)
+        for nid, (choice, row) in (await _read_choices(node_ids)).items()
+    }
+
+
+async def location_privacy(node_id: str) -> dict:
+    """One node's effective state, its source, and the two rows behind it.
+
+    The raw pieces are what an admin surface needs to explain a state it did not
+    set — a node showing as public because an override says so reads very
+    differently from one showing as public because nobody ever chose.  The owner
+    routes return only the first two keys; the extra ones are additive, so the
+    same function serves both rather than the admin route re-querying.
+    """
+    choice, row = (await _read_choices([node_id]))[node_id]
+    private, source = effective_privacy(choice, None if row is None else row.private)
+    return {
+        "node_id": node_id,
+        "location_private": private,
+        "location_privacy_source": source,
+        "registration_choice": choice,
+        "override": None if row is None else {"private": row.private, "set_by": row.set_by, "set_at": row.set_at},
+    }
+
+
+async def set_location_privacy(node_id: str, private: bool, set_by: str) -> None:
+    """Write (or rewrite) the override row.  Caller invalidates the cache.
+
+    Upsert rather than insert: setting the same node twice is a correction, not
+    a second opinion, and a history of corrections is not what this table is
+    for.  ``invalidate()`` is deliberately not called here — the routes call it
+    once after their own commit, so a caller that batches writes is not forced
+    into a cache drop per row.
+    """
+    async with async_session_maker() as session:
+        row = await session.get(NodeLocationPrivacy, node_id)
+        if row is None:
+            session.add(NodeLocationPrivacy(node_id=node_id, private=private, set_by=set_by, set_at=time.time()))
+        else:
+            row.private = private
+            row.set_by = set_by
+            row.set_at = time.time()
+        await session.commit()
+
+
+async def clear_location_privacy(node_id: str) -> None:
+    """Remove the override, returning the node to its registration choice.
+
+    A no-op on a node with no override, rather than an error: the route's answer
+    is the effective state afterwards either way, and a 404 here would leak
+    whether an override existed to a caller who is already entitled to set one.
+    """
+    async with async_session_maker() as session:
+        await session.execute(delete(NodeLocationPrivacy).where(NodeLocationPrivacy.node_id == node_id))
+        await session.commit()
