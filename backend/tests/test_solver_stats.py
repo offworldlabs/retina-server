@@ -136,42 +136,122 @@ class TestPositionErrorGate:
 
 
 class TestGhosts:
+    """``ghosts`` is windowed over published dark records; ``ghosts.live`` is
+    the point-in-time scan of state.multinode_tracks it used to be."""
+
     def setup_method(self):
         state._reset_for_tests()
 
-    def test_adsb_associated_by_key_prefix(self):
-        state.multinode_tracks["mn-adsb-abc123"] = {"lat": 35.0, "lon": -82.0}
-        out = _solver_window_stats(10.0)
-        assert out["ghosts"]["live_tracks"] == 1
-        assert out["ghosts"]["adsb_associated"] == 1
-        assert out["ghosts"]["ghost_tracks"] == 0
+    # ── windowed ────────────────────────────────────────────────────────────
 
-    def test_adsb_associated_by_result_field(self):
+    def test_windowed_ghost_is_a_published_dark_solve_past_the_gate(self):
+        assert _GHOST_GATE_KM == 5.0
+        _push(_rec("published", n_nodes=3, solve_key="mn-dark-1", gt_error_km=0.4))
+        _push(_rec("published", n_nodes=3, solve_key="mn-dark-2", gt_error_km=5.2))
+        g = _solver_window_stats(10.0)["ghosts"]
+        assert g["scope"] == "dark"
+        assert g["gate_km"] == 5.0
+        assert (g["published"], g["judged"], g["ghosts"]) == (2, 2, 1)
+        assert g["precision_pct"] == 50.0
+        assert g["by_n_nodes"] == {"3": {"judged": 2, "ghosts": 1, "ghost_pct": 50.0}}
+
+    def test_one_shot_ghosts_are_counted_separately(self):
+        # The n=3 preview the feed withdraws after MN_ONESHOT_TTL_S — the
+        # population the live scan could never catch.
+        r = _rec("published", n_nodes=3, solve_key="mn-dark-1", gt_error_km=8.0)
+        r["solve_count"] = 1
+        _push(r)
+        r2 = _rec("published", n_nodes=3, solve_key="mn-dark-2", gt_error_km=8.0)
+        r2["solve_count"] = 4
+        _push(r2)
+        g = _solver_window_stats(10.0)["ghosts"]
+        assert (g["ghosts"], g["one_shot_ghosts"]) == (2, 1)
+
+    def test_unstamped_record_is_not_judged(self):
+        # No ground truth near the solve epoch: solver._gt_nearest leaves the
+        # stamp None, and the record must not count as clean OR as a ghost.
+        _push(_rec("published", n_nodes=3, solve_key="mn-dark-1", gt_error_km=None))
+        g = _solver_window_stats(10.0)["ghosts"]
+        assert (g["published"], g["judged"], g["ghosts"]) == (1, 0, 0)
+        assert g["precision_pct"] is None
+
+    def test_real_world_node_solve_is_not_judged(self):
+        # A hardware node's solve carries the distance to the nearest
+        # SIMULATED trail (no distance cap in _gt_nearest) — hundreds of km —
+        # which is not a ghost verdict, it is the absence of any truth.
+        r = _rec("published", n_nodes=3, solve_key="mn-dark-1", gt_error_km=212.0)
+        r["contributing_node_ids"] = ["synth-a", "hw-node-1", "synth-b"]
+        _push(r)
+        g = _solver_window_stats(10.0)["ghosts"]
+        assert (g["judged"], g["ghosts"], g["unjudged_real_world"]) == (0, 0, 1)
+        assert g["precision_pct"] is None
+
+    def test_synthetic_node_solve_is_judged(self):
+        r = _rec("published", n_nodes=3, solve_key="mn-dark-1", gt_error_km=12.0)
+        r["contributing_node_ids"] = ["synth-a", "synth-b", "synth-c"]
+        _push(r)
+        g = _solver_window_stats(10.0)["ghosts"]
+        assert (g["judged"], g["ghosts"]) == (1, 1)
+        assert g["precision_pct"] == 0.0
+
+    def test_windowed_counts_dark_lane_only(self):
+        # Known-lane and dark-follow records have their own blocks; an
+        # ADS-B-keyed solve is not a dark-lane product either.
+        _push(_rec("published", n_nodes=5, solve_key="mn-adsb-abc", gt_error_km=9.0))
+        _push(_rec("known_truth_match", n_nodes=5, known_lane=True, gt_error_km=9.0))
+        _push(_rec("published", n_nodes=5, solve_key="mn-dark-f", lane="dark_follow", gt_error_km=9.0))
+        _push(_rec("rejected_beam", n_nodes=3, gt_error_km=9.0))
+        g = _solver_window_stats(10.0)["ghosts"]
+        assert (g["published"], g["judged"], g["ghosts"]) == (0, 0, 0)
+        assert g["precision_pct"] is None
+
+    def test_window_excludes_old_ghosts(self):
+        _push(_rec("published", n_nodes=3, solve_key="mn-dark-old", gt_error_km=9.0, age_s=20 * 60))
+        g = _solver_window_stats(10.0)["ghosts"]
+        assert g["published"] == 0
+
+    def test_precision_is_none_with_nothing_judged(self):
+        # The structural lie this replaces: nothing scoreable used to read as
+        # a confident 100 % — the shape a healthy dark lane and a completely
+        # dead one share.
+        g = _solver_window_stats(10.0)["ghosts"]
+        assert g["judged"] == 0
+        assert g["precision_pct"] is None
+
+    # ── live scan (``ghosts.live``) ─────────────────────────────────────────
+
+    def test_live_adsb_associated_by_key_prefix(self):
+        state.multinode_tracks["mn-adsb-abc123"] = {"lat": 35.0, "lon": -82.0}
+        g = _solver_window_stats(10.0)["ghosts"]["live"]
+        assert g["live_tracks"] == 1
+        assert g["adsb_associated"] == 1
+        assert g["ghost_tracks"] == 0
+
+    def test_live_adsb_associated_by_result_field(self):
         # Same association signal, this time via the result's own adsb_hex
         # field rather than the key prefix (belt-and-suspenders per spec).
         state.multinode_tracks["mn-dark-1"] = {"lat": 35.0, "lon": -82.0, "adsb_hex": "abc123"}
-        out = _solver_window_stats(10.0)
-        assert out["ghosts"]["adsb_associated"] == 1
+        g = _solver_window_stats(10.0)["ghosts"]["live"]
+        assert g["adsb_associated"] == 1
 
-    def test_close_to_ground_truth_is_matched_not_ghost(self):
-        assert _GHOST_GATE_KM == 5.0
+    def test_live_close_to_ground_truth_is_matched_not_ghost(self):
         state.multinode_tracks["mn-dark-1"] = {"lat": 35.0, "lon": -82.0}
         # ~1 km north of the track.
         state.ground_truth_trails["gt1"] = deque([[35.009, -82.0, 9000.0, time.time()]])
-        out = _solver_window_stats(10.0)
-        assert out["ghosts"]["gt_matched"] == 1
-        assert out["ghosts"]["ghost_tracks"] == 0
+        g = _solver_window_stats(10.0)["ghosts"]["live"]
+        assert g["gt_matched"] == 1
+        assert g["ghost_tracks"] == 0
 
-    def test_far_from_everything_is_a_ghost(self):
+    def test_live_far_from_everything_is_a_ghost(self):
         state.multinode_tracks["mn-dark-1"] = {"lat": 35.0, "lon": -82.0}
         # ~50 km away — outside both gates.
         state.ground_truth_trails["gt1"] = deque([[35.45, -82.0, 9000.0, time.time()]])
-        out = _solver_window_stats(10.0)
-        assert out["ghosts"]["gt_matched"] == 0
-        assert out["ghosts"]["ghost_tracks"] == 1
-        assert out["ghosts"]["precision_pct"] == 0.0
+        g = _solver_window_stats(10.0)["ghosts"]["live"]
+        assert g["gt_matched"] == 0
+        assert g["ghost_tracks"] == 1
+        assert g["precision_pct"] == 0.0
 
-    def test_close_to_fresh_adsb_is_not_a_ghost(self):
+    def test_live_close_to_fresh_adsb_is_not_a_ghost(self):
         state.multinode_tracks["mn-dark-1"] = {"lat": 35.0, "lon": -82.0}
         # ~1 km away, fresh (just seen).
         state.adsb_aircraft["dead1"] = {
@@ -179,10 +259,10 @@ class TestGhosts:
             "lon": -82.0,
             "last_seen_ms": int(time.time() * 1000),
         }
-        out = _solver_window_stats(10.0)
-        assert out["ghosts"]["ghost_tracks"] == 0
+        g = _solver_window_stats(10.0)["ghosts"]["live"]
+        assert g["ghost_tracks"] == 0
 
-    def test_stale_adsb_entry_does_not_rescue(self):
+    def test_live_stale_adsb_entry_does_not_rescue(self):
         state.multinode_tracks["mn-dark-1"] = {"lat": 35.0, "lon": -82.0}
         # ~1 km away but last seen 5 minutes ago — past the 60 s freshness gate.
         state.adsb_aircraft["dead1"] = {
@@ -190,37 +270,32 @@ class TestGhosts:
             "lon": -82.0,
             "last_seen_ms": int((time.time() - 300) * 1000),
         }
-        out = _solver_window_stats(10.0)
-        assert out["ghosts"]["ghost_tracks"] == 1
+        g = _solver_window_stats(10.0)["ghosts"]["live"]
+        assert g["ghost_tracks"] == 1
 
-    def test_precision_pct_denominator_is_dark_only(self):
+    def test_live_precision_pct_denominator_is_dark_only(self):
         # One tagged track and one dark ghost.  The old denominator was
         # live_tracks, which scored this 50% — half the "precision" being an
         # ADS-B track that the ghost scan never even looked at.  Every dark
         # track here is a ghost, so dark precision is 0%.
         state.multinode_tracks["mn-adsb-a"] = {"lat": 35.0, "lon": -82.0}
         state.multinode_tracks["mn-dark-1"] = {"lat": 10.0, "lon": 10.0}  # ghost, nothing nearby
-        out = _solver_window_stats(10.0)
-        assert out["ghosts"]["live_tracks"] == 2
-        assert out["ghosts"]["adsb_associated"] == 1
-        assert out["ghosts"]["dark_tracks"] == 1
-        assert out["ghosts"]["ghost_tracks"] == 1
-        assert out["ghosts"]["precision_pct"] == 0.0
+        g = _solver_window_stats(10.0)["ghosts"]["live"]
+        assert g["live_tracks"] == 2
+        assert g["adsb_associated"] == 1
+        assert g["dark_tracks"] == 1
+        assert g["ghost_tracks"] == 1
+        assert g["precision_pct"] == 0.0
 
-    def test_precision_is_none_with_no_dark_tracks(self):
-        # The structural lie this replaces: ADS-B tracks only, so the ghost
-        # scan has nothing to score, and the answer used to be a confident
-        # 100% precision with gt_matched pinned at 0 — indistinguishable from
-        # a perfectly healthy dark lane.
+    def test_live_precision_is_none_with_no_dark_tracks(self):
         state.multinode_tracks["mn-adsb-a"] = {"lat": 35.0, "lon": -82.0}
         state.multinode_tracks["mn-adsb-b"] = {"lat": 35.1, "lon": -82.0}
-        out = _solver_window_stats(10.0)
-        assert out["ghosts"]["dark_tracks"] == 0
-        assert out["ghosts"]["gt_matched"] == 0
-        assert out["ghosts"]["precision_pct"] is None
-        assert out["ghosts"]["scope"] == "dark"
+        g = _solver_window_stats(10.0)["ghosts"]["live"]
+        assert g["dark_tracks"] == 0
+        assert g["gt_matched"] == 0
+        assert g["precision_pct"] is None
 
-    def test_dark_partition_adds_up(self):
+    def test_live_dark_partition_adds_up(self):
         # gt_matched + adsb_near + ghost_tracks == dark_tracks, exactly.
         now = time.time()
         state.multinode_tracks["mn-adsb-a"] = {"lat": 35.0, "lon": -82.0}
@@ -229,16 +304,16 @@ class TestGhosts:
         state.multinode_tracks["mn-dark-ghost"] = {"lat": 10.0, "lon": 10.0}
         state.ground_truth_trails["gt1"] = deque([[35.009, -82.0, 9000.0, now]])
         state.adsb_aircraft["real1"] = {"lat": 36.009, "lon": -82.0, "last_seen_ms": int(now * 1000)}
-        g = _solver_window_stats(10.0)["ghosts"]
+        g = _solver_window_stats(10.0)["ghosts"]["live"]
         assert g["dark_tracks"] == 3
         assert (g["gt_matched"], g["adsb_near"], g["ghost_tracks"]) == (1, 1, 1)
         assert g["gt_matched"] + g["adsb_near"] + g["ghost_tracks"] == g["dark_tracks"]
         # 2 of 3 dark tracks corroborated.
         assert g["precision_pct"] == 66.7
 
-    def test_positionless_dark_track_is_out_of_the_denominator(self):
+    def test_live_positionless_dark_track_is_out_of_the_denominator(self):
         state.multinode_tracks["mn-dark-1"] = {"lat": None, "lon": None}
-        g = _solver_window_stats(10.0)["ghosts"]
+        g = _solver_window_stats(10.0)["ghosts"]["live"]
         assert g["live_tracks"] == 1
         assert g["dark_tracks"] == 0
         assert g["precision_pct"] is None
@@ -598,7 +673,7 @@ class TestEmptyState:
         assert out["published"] == {"total": 0, "n2": 0, "n3plus": 0}
         assert out["rejects"] == {"total": 0, "by_reason": {}}
         assert out["position_error_km"] == {"median": None, "p90": None, "n": 0}
-        assert out["ghosts"]["live_tracks"] == 0
+        assert out["ghosts"]["live"]["live_tracks"] == 0
         assert out["ghosts"]["precision_pct"] is None
         assert out["lane_split"] == {"dark": 0, "adsb": 0, "known": 0, "dark_follow": 0}
         assert out["window_effective_minutes"] == 0.0
@@ -873,7 +948,7 @@ class TestLiveStateSnapshots:
 
         monkeypatch.setattr(state, "multinode_tracks", _Tracks({"mn-dark-1": {"lat": 35.0, "lon": -82.0}}))
         out = _solver_window_stats(10.0)
-        assert out["ghosts"]["dark_tracks"] == 1
+        assert out["ghosts"]["live"]["dark_tracks"] == 1
         assert seen and all(seen), "multinode_tracks was iterated without _MN_TRACKS_LOCK"
 
     def test_concurrent_track_insert_does_not_raise(self):
@@ -883,7 +958,7 @@ class TestLiveStateSnapshots:
         # Pre-fix this raised RuntimeError: dictionary changed size during
         # iteration, and the endpoint returned a 500.
         out = _solver_window_stats(10.0)
-        assert out["ghosts"]["live_tracks"] == 2
+        assert out["ghosts"]["live"]["live_tracks"] == 2
 
     def test_concurrent_ground_truth_trail_insert_does_not_raise(self):
         now = time.time()
@@ -895,7 +970,7 @@ class TestLiveStateSnapshots:
 
         state.multinode_tracks["mn-dark-1"] = {"lat": 35.0, "lon": -82.0}
         state.ground_truth_trails["gt1"] = _MutatingTrail([[35.009, -82.0, 9000.0, now]])
-        assert _solver_window_stats(10.0)["ghosts"]["gt_matched"] == 1
+        assert _solver_window_stats(10.0)["ghosts"]["live"]["gt_matched"] == 1
 
     def test_concurrent_adsb_insert_does_not_raise(self):
         now_ms = int(time.time() * 1000)
@@ -907,7 +982,7 @@ class TestLiveStateSnapshots:
 
         state.multinode_tracks["mn-dark-1"] = {"lat": 35.0, "lon": -82.0}
         state.adsb_aircraft["real1"] = _MutatingFix({"lat": 35.009, "lon": -82.0, "last_seen_ms": now_ms})
-        assert _solver_window_stats(10.0)["ghosts"]["ghost_tracks"] == 0
+        assert _solver_window_stats(10.0)["ghosts"]["live"]["ghost_tracks"] == 0
 
 
 def _skip_rec(lane="dark", age_s=0.0, track_ids=("a1",), n_nodes=3):
