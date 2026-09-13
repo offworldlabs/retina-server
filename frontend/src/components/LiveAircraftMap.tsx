@@ -843,8 +843,9 @@ const BasemapLayer = memo(function BasemapLayer({ url }) {
       node therefore stacked two identical glyphs and two identical
       uncertainty discs on one point: the lower node could not be clicked at
       all, and the doubled fill made a shared site look MORE precisely located
-      than a lone one.  Sites carry a count badge instead, and the popup lists
-      each node at the site.
+      than a lone one.  A shared site's glyph has its disc cut into one slice
+      per node instead (nodeSiteIcon), and the popup lists each node at the
+      site.
 
       Background reason for the two glyph kinds: 914 DOM divs with drop-shadow
       filters caused severe pan/zoom jank, so the bulk synthetic fleet stays on
@@ -923,6 +924,10 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
     // that node's overlay and opens the popup.
     const clickHandlers = multi ? undefined : { click: () => onSelectNode(site.nodes[0].node_id) };
     if (site.isSynth) {
+      // No per-node slices here: a CircleMarker is one canvas path with no
+      // markup to cut, and the synthetic fleet is placed at distinct
+      // coordinates so shared synthetic sites are not expected; the popup
+      // still lists every node either way.
       return (
         <React.Fragment key={`site-${site.key}`}>
           {disc}
