@@ -196,6 +196,16 @@ known_claims_bound
 known_claims_visibility_rejects
 known_claims_world_rejects
 
+# Same string-keyed bump_counter shape, from services/known_claiming.py's
+# calibration rule (the five rejects are bumped through an f-string, which
+# vulture cannot resolve at all).
+calibration_points_recorded
+calibration_claims_rejected_hold
+calibration_claims_rejected_stale_fix
+calibration_claims_rejected_residual
+calibration_claims_rejected_contested
+calibration_claims_rejected_immature
+
 # Same string-keyed bump_counter shape, from routes/sim_ingest.py's
 # transponder-hex gate on /api/sim/adsb/push.
 sim_adsb_push_rejected_hex

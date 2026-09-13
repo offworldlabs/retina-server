@@ -62,6 +62,7 @@ transponder — see the consistency rule in _claim_holds.
 import logging
 import math
 import os
+import time
 from collections import deque
 
 import numpy as np
@@ -81,9 +82,18 @@ from retina_analytics.association import (
 from retina_analytics.constants import KM_PER_DEG_LAT, km_per_deg_lon, offset_latlon_m
 from scipy.optimize import linear_sum_assignment
 
-from config.constants import FT_TO_M, as_num
+from config.constants import (
+    CAL_CLAIM_DELAY_US,
+    CAL_CLAIM_DOPPLER_HZ,
+    CAL_CLAIM_MIN_CLAIMS,
+    CAL_CLAIM_STREAK_GAP_S,
+    CAL_MAX_ADSB_AGE_S,
+    FT_TO_M,
+    as_num,
+)
 from core import state
 from services import dark_follow, track_filter
+from services.calibration import record_claim_calibration
 from services.id_utils import normalize_hex_key
 from services.node_config import position_status
 
@@ -184,12 +194,164 @@ def _node_bias():
 
 
 def _reset_for_tests() -> None:
-    """Forget the node_bias import verdict.  Tests only — lets a test inject
-    a fake services.node_bias after an earlier test already cached the
-    ImportError."""
+    """Forget the node_bias import verdict and the calibration streak store.
+    Tests only — lets a test inject a fake services.node_bias after an earlier
+    test already cached the ImportError, and keeps one test's claim streaks
+    from maturing the next test's first claim."""
     global _node_bias_mod, _node_bias_unavailable
     _node_bias_mod = None
     _node_bias_unavailable = False
+    _claim_streaks.clear()
+
+
+# ── Calibration from claims (see services/calibration.py's fourth rule) ──────
+# Key under which a claim carries the position a calibration point from it
+# would record, from where it is computed (the assignment's dead reckoning, or
+# a node tag's own lat/lon) to where it is read.  Filtered out again before the
+# claim is written to state.known_claims, so the registry record is unchanged.
+_CAL_DR_KEY = "_cal_dr"
+
+# (node_id, hexn) -> [n_consecutive_claims, last_ts_ms].  The maturity bar's
+# state, and deliberately NOT the hold store: KNOWN_HOLD_MAX_GAP_S <= 0 is a
+# supported rollback that disables holds entirely, and calibration must not
+# switch off with it.  Frame time throughout, like every other gate here.
+_claim_streaks: dict[tuple[str, str], list] = {}
+# Prune trigger and horizon.  A live fleet holds one entry per (node, hex)
+# pair currently claiming, which is bounded by traffic — the cap exists for the
+# pathological case (a node churning through hexes) rather than the normal one,
+# and 120 s is 12x the gap that would have broken any streak still in here.
+_CLAIM_STREAK_MAX_KEYS = 5000
+_CLAIM_STREAK_PRUNE_AGE_S = 120.0
+
+
+def _touch_claim_streak(node_id: str, hexn: str, ts_ms: int) -> int:
+    """Advance this node's claim streak for this hex and return its length.
+
+    Called for every non-hold, non-follow claim — including the ones that go
+    on to fail the residual or exclusivity rules.  A claim that misses those
+    is still evidence that this node keeps binding this hex frame after frame,
+    which is the only question maturity asks; withholding it would make a
+    node's first CLEAN sample its third clean one, and on a noisy link the
+    third clean sample may never arrive.
+    """
+    key = (node_id, hexn)
+    e = _claim_streaks.get(key)
+    if e is None or not (0.0 <= (ts_ms - e[1]) / 1000.0 <= CAL_CLAIM_STREAK_GAP_S):
+        # A gap too large, or time running backwards (replay, a node whose
+        # clock stepped): either way the link is not the one this entry was
+        # counting, so the count restarts at this claim.
+        _claim_streaks[key] = [1, ts_ms]
+        if len(_claim_streaks) > _CLAIM_STREAK_MAX_KEYS:
+            _prune_claim_streaks(ts_ms)
+        return 1
+    e[0] += 1
+    e[1] = ts_ms
+    return e[0]
+
+
+def _prune_claim_streaks(ts_ms: int) -> None:
+    """Drop entries no streak could still be running through."""
+    cutoff = ts_ms - _CLAIM_STREAK_PRUNE_AGE_S * 1000.0
+    for key in [k for k, e in _claim_streaks.items() if e[1] < cutoff]:
+        _claim_streaks.pop(key, None)
+
+
+def _has_rival_candidate(cands: list, hexn: str, d_meas: float, f_meas: float) -> bool:
+    """Is some OTHER known aircraft's prediction also inside the claim gate of
+    this detection?
+
+    Exclusivity, and the reason it is judged against the FULL age-scaled claim
+    gate rather than the tight calibration residual: the question is not "would
+    another hex have been a better explanation" but "could this detection have
+    been another hex at all".  Anything the lane would have been willing to
+    bind here makes the attribution a coin-toss the coverage polygon must not
+    inherit — the measured failure mode, where a 42-degree node had 47% of its
+    points outside its own wedge.
+
+    A path-1 tag whose hex is not in the cache is judged against the cache
+    candidates only; there is no other population to ask.
+    """
+    for c_hex, _st, pred_d, pred_f, scale, _dlat, _dlon in cands:
+        if c_hex == hexn:
+            continue
+        if (
+            abs(pred_d - d_meas) <= KNOWN_CLAIM_DELAY_GATE_US * scale
+            and abs(pred_f - f_meas) <= KNOWN_CLAIM_DOPPLER_GATE_HZ * scale
+        ):
+            return True
+    return False
+
+
+def _calibration_from_claim(
+    node_id: str,
+    hexn: str,
+    fix: dict,
+    extra: dict,
+    d_meas: float,
+    f_meas: float,
+    pred_d: float,
+    pred_f: float,
+    frame_ts_s: float,
+    ts_ms: int,
+    contested: bool,
+    cands: list,
+    rejects: dict,
+) -> bool:
+    """Record this claim as an empirical-coverage calibration point, or say
+    which of the five rules stopped it.
+
+    Claiming binds what it can explain; calibration records what it could not
+    have explained any other way.  The five rules, in the order they are
+    charged to a counter:
+
+      1. a HOLD or FOLLOW claim has no fresh transponder fix behind it — a
+         hold is this node's own prediction of its own measurement, and a
+         follow is the lane's own published solve, so recording either would
+         feed the polygon the very estimates it is used to judge;
+      2. the fix must be fresh at the FRAME instant (CAL_MAX_ADSB_AGE_S);
+      3. the residual must be tight, unscaled by fix age (CAL_CLAIM_DELAY_US /
+         CAL_CLAIM_DOPPLER_HZ) — the claim gate is where it has to be to bind
+         an echo, not where it has to be to believe one;
+      4. the detection must be UNCONTESTED: no dark projection inside the
+         claim gate (the existing contested flag) and no other known hex's
+         prediction inside it either (_has_rival_candidate);
+      5. the link must be MATURE: CAL_CLAIM_MIN_CLAIMS claims of this hex by
+         this node with no gap over CAL_CLAIM_STREAK_GAP_S.
+
+    ``rejects`` is a per-frame tally, so the counters cost one lock per frame
+    rather than one per claim.
+    """
+    if extra.get("hold") or extra.get("follow"):
+        rejects["hold"] += 1
+        return False
+    # Before the remaining gates: maturity counts CLAIMS, not clean samples.
+    n_claims = _touch_claim_streak(node_id, hexn, ts_ms)
+    fix_age_s = frame_ts_s - float(fix.get("fix_ts_ms") or 0) / 1000.0
+    if fix_age_s > CAL_MAX_ADSB_AGE_S:
+        rejects["stale_fix"] += 1
+        return False
+    if abs(d_meas - pred_d) > CAL_CLAIM_DELAY_US or abs(f_meas - pred_f) > CAL_CLAIM_DOPPLER_HZ:
+        rejects["residual"] += 1
+        return False
+    if contested or _has_rival_candidate(cands, hexn, d_meas, f_meas):
+        rejects["contested"] += 1
+        return False
+    if n_claims < CAL_CLAIM_MIN_CLAIMS:
+        rejects["immature"] += 1
+        return False
+    pos = extra.get(_CAL_DR_KEY)
+    if not pos:
+        return False
+    # Wall clock, not frame time: the stamp is what the bin's positive history
+    # is read against, and every other writer of it (track.last_detection_wall_ts
+    # through record_adsb_calibration) uses the server's clock.
+    return record_claim_calibration(
+        node_id,
+        pos[0],
+        pos[1],
+        fix_age_s=fix_age_s,
+        detection_ts=time.time(),
+    )
 
 
 def _gate_scale(age_s: float) -> float:
@@ -856,7 +1018,9 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
                 "track": tag.get("track"),
                 "fix_ts_ms": ts_ms,
             }
-            claims.append((i, hexn, fix, pred_d, pred_f, {}))
+            # The tag position as-is: the node correlated this fix against
+            # this frame, so there is nothing to dead-reckon it across.
+            claims.append((i, hexn, fix, pred_d, pred_f, {_CAL_DR_KEY: (lat, lon)}))
             claimed_idx.add(i)
             claimed_hexes.add(hexn)
 
@@ -876,161 +1040,193 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
         claimed_hexes.add(hold_claim[1])
 
     # ── Path 2: assignment over untagged detections × fresh cached states ────
+    # The candidate list is built for EVERY frame that carries detections, not
+    # only when something is left free, and WITHOUT skipping the hexes paths 1
+    # and H already took.  It is two things now: the columns of the assignment
+    # below (which do skip them — see cols), and the reference population the
+    # calibration rule's exclusivity test reads.  A path-1 tag's detection has
+    # to be judged against the other aircraft the cache knows about too, and
+    # those are exactly the candidates the old early-out threw away.
     free = [i for i in range(len(delays)) if i not in claimed_idx]
-    if free:
-        cands = []
-        visibility_rejects = 0
-        world_rejects = 0
-        node_world = state.node_world(node_id)
-        # Prescreen constants, hoisted: geo is fixed for the whole loop, and
-        # these cost a haversine and a cos each.  See the prescreen below.
-        screen_r0_km = geo.effective_radius_km * _SCREEN_MARGIN
-        screen_r_max_km = screen_r0_km + _V_MAX_MS * KNOWN_CLAIM_MAX_FIX_AGE_S / 1000.0
-        # km per degree of longitude at the highest |latitude| any candidate
-        # inside the screen could sit at, not at rx_lat: cos shrinks away from
-        # the equator, so this is the SMALLEST scale factor in play and the
-        # east-west term can only ever be understated.  Understating widens
-        # the screen, which is the safe direction; using rx_lat would overstate
-        # it for a candidate poleward of the node and could reject one the gate
-        # would have passed.
-        screen_km_per_lon = km_per_deg_lon(abs(geo.rx_lat) + screen_r_max_km / KM_PER_DEG_LAT)
-        # The cached fixes plus the lane's own published positions for hexes
-        # whose fix has gone stale (see _follow_states).  update() rather than
-        # a second loop so each hex appears exactly once in the assignment;
-        # the snapshot _adsb_for_seeding returns is freshly built per call, so
-        # writing into it cannot touch the cache.
-        cand_states = state._adsb_for_seeding()
-        cand_states.update(_follow_states(frame_ts_s, claimed_hexes))
-        for hexn, st in cand_states.items():
-            if hexn in claimed_hexes:
-                continue
-            # World gate: a synthetic node's echoes can only ever be of
-            # simulated aircraft, and a hardware node's only of real ones, so
-            # a candidate from the other world is no candidate whatever its
-            # residuals say — delay/Doppler are two numbers a wrong aircraft
-            # matches by coincidence, and the visibility gate cannot help
-            # when real traffic is injected over the same footprint the
-            # simulated fleet flies in.  Untagged entries pass: no writer in
-            # this tree leaves world unset, so an untagged entry is prior
-            # state (tests, a not-yet-updated pusher) where rejecting would
-            # silently disable the lane rather than fail toward dark.
-            cand_world = st.get("world")
-            if cand_world is not None and cand_world != node_world:
-                world_rejects += 1
-                continue
-            age_s = frame_ts_s - st.get("timestamp_ms", 0) / 1000.0
-            if abs(age_s) > KNOWN_CLAIM_MAX_FIX_AGE_S:
-                continue
-            # Range prescreen on the REPORTED position, ahead of the DR offset
-            # and _point_in_beam's haversine + bearing.  Provably weaker than
-            # the gate, so it can only reject what the gate rejects too:
-            #   * every branch of _point_in_beam starts by failing anything
-            #     farther from rx than effective_radius_km (footprint widened
-            #     to the learned FOV's reach) and only tightens from there, so
-            #     that radius is the gate's hard ceiling;
-            #   * the gate tests the DEAD-RECKONED position, which sits at most
-            #     _V_MAX_MS * |age_s| from the reported one — no aircraft in
-            #     this system exceeds that speed (association._V_MAX_MS is the
-            #     library's own ceiling on a physically possible velocity);
-            #   * equirectangular distance overstates the great-circle one only
-            #     by a third-order term in the angular separation (well under
-            #     0.1% at these ranges) once the longitude scale is taken at the
-            #     poleward end as above, and _SCREEN_MARGIN leaves 2% on top.
-            # Squared comparison — the sqrt buys nothing a squared radius can't
-            # answer, and this runs per cached aircraft per frame per node.
-            dy = (st["lat"] - geo.rx_lat) * KM_PER_DEG_LAT
-            # Wrapped to (-180, 180]: the raw difference reads ~359 degrees for
-            # a close neighbour across the antimeridian, which would fail the
-            # screen for a candidate the gate's haversine (which measures the
-            # short way round) passes.
-            dlon = st["lon"] - geo.rx_lon
-            if dlon > 180.0:
-                dlon -= 360.0
-            elif dlon < -180.0:
-                dlon += 360.0
-            dx = dlon * screen_km_per_lon
-            screen_r_km = screen_r0_km + _V_MAX_MS * abs(age_s) / 1000.0
-            if dx * dx + dy * dy > screen_r_km * screen_r_km:
-                # A prescreen failure IS a visibility reject — same event, same
-                # tally, so the published rate keeps meaning what it did.
-                visibility_rejects += 1
-                continue
-            dr_lat, dr_lon = offset_latlon_m(
-                st["lat"],
-                st["lon"],
-                east_m=st.get("vel_east", 0.0) * age_s,
-                north_m=st.get("vel_north", 0.0) * age_s,
-            )
-            # A false reject costs a claim the dark lane can still solve; a
-            # false accept puts a fix this node never saw into the known lane
-            # and charges its residual to the node's trust.  The asymmetry is
-            # why this is the associator's own visibility predicate applied
-            # whole (beam wedge, footprint, learned FOV, coverage prior)
-            # rather than a looser bespoke one — claiming and the dark lane
-            # must mean the same thing by "this node can see there".
-            if not _point_in_beam(dr_lat, dr_lon, geo):
-                visibility_rejects += 1
-                continue
-            pred_d, pred_f = predict_observation(
-                geo,
-                dr_lat,
-                dr_lon,
-                st.get("alt_m", 0.0) / 1000.0,
-                st.get("vel_east", 0.0),
-                st.get("vel_north", 0.0),
-            )
-            cands.append((hexn, st, pred_d, pred_f, _gate_scale(age_s)))
+    # (hexn, state, pred_delay_us, pred_doppler_hz, gate_scale, dr_lat, dr_lon)
+    cands = []
+    visibility_rejects = 0
+    world_rejects = 0
+    node_world = state.node_world(node_id)
+    # Prescreen constants, hoisted: geo is fixed for the whole loop, and
+    # these cost a haversine and a cos each.  See the prescreen below.
+    screen_r0_km = geo.effective_radius_km * _SCREEN_MARGIN
+    screen_r_max_km = screen_r0_km + _V_MAX_MS * KNOWN_CLAIM_MAX_FIX_AGE_S / 1000.0
+    # km per degree of longitude at the highest |latitude| any candidate
+    # inside the screen could sit at, not at rx_lat: cos shrinks away from
+    # the equator, so this is the SMALLEST scale factor in play and the
+    # east-west term can only ever be understated.  Understating widens
+    # the screen, which is the safe direction; using rx_lat would overstate
+    # it for a candidate poleward of the node and could reject one the gate
+    # would have passed.
+    screen_km_per_lon = km_per_deg_lon(abs(geo.rx_lat) + screen_r_max_km / KM_PER_DEG_LAT)
+    # The cached fixes plus the lane's own published positions for hexes
+    # whose fix has gone stale (see _follow_states).  update() rather than
+    # a second loop so each hex appears exactly once in the assignment;
+    # the snapshot _adsb_for_seeding returns is freshly built per call, so
+    # writing into it cannot touch the cache.
+    cand_states = state._adsb_for_seeding()
+    cand_states.update(_follow_states(frame_ts_s, claimed_hexes))
+    for hexn, st in cand_states.items():
+        # No claimed_hexes skip here — it moved to the column build below,
+        # so an already-claimed hex stays visible to the exclusivity test
+        # while still being unassignable.  The published reject tallies are
+        # what the ASSIGNMENT rejected, though, and widening the candidate
+        # population must not silently inflate them: a hex another path
+        # already took was never a path-2 candidate, and a frame with nothing
+        # free never ran path 2 at all.  Both are counted exactly as they were
+        # before the widening.
+        counts_as_reject = bool(free) and hexn not in claimed_hexes
+        # World gate: a synthetic node's echoes can only ever be of
+        # simulated aircraft, and a hardware node's only of real ones, so
+        # a candidate from the other world is no candidate whatever its
+        # residuals say — delay/Doppler are two numbers a wrong aircraft
+        # matches by coincidence, and the visibility gate cannot help
+        # when real traffic is injected over the same footprint the
+        # simulated fleet flies in.  Untagged entries pass: no writer in
+        # this tree leaves world unset, so an untagged entry is prior
+        # state (tests, a not-yet-updated pusher) where rejecting would
+        # silently disable the lane rather than fail toward dark.
+        cand_world = st.get("world")
+        if cand_world is not None and cand_world != node_world:
+            world_rejects += int(counts_as_reject)
+            continue
+        age_s = frame_ts_s - st.get("timestamp_ms", 0) / 1000.0
+        if abs(age_s) > KNOWN_CLAIM_MAX_FIX_AGE_S:
+            continue
+        # Range prescreen on the REPORTED position, ahead of the DR offset
+        # and _point_in_beam's haversine + bearing.  Provably weaker than
+        # the gate, so it can only reject what the gate rejects too:
+        #   * every branch of _point_in_beam starts by failing anything
+        #     farther from rx than effective_radius_km (footprint widened
+        #     to the learned FOV's reach) and only tightens from there, so
+        #     that radius is the gate's hard ceiling;
+        #   * the gate tests the DEAD-RECKONED position, which sits at most
+        #     _V_MAX_MS * |age_s| from the reported one — no aircraft in
+        #     this system exceeds that speed (association._V_MAX_MS is the
+        #     library's own ceiling on a physically possible velocity);
+        #   * equirectangular distance overstates the great-circle one only
+        #     by a third-order term in the angular separation (well under
+        #     0.1% at these ranges) once the longitude scale is taken at the
+        #     poleward end as above, and _SCREEN_MARGIN leaves 2% on top.
+        # Squared comparison — the sqrt buys nothing a squared radius can't
+        # answer, and this runs per cached aircraft per frame per node.
+        dy = (st["lat"] - geo.rx_lat) * KM_PER_DEG_LAT
+        # Wrapped to (-180, 180]: the raw difference reads ~359 degrees for
+        # a close neighbour across the antimeridian, which would fail the
+        # screen for a candidate the gate's haversine (which measures the
+        # short way round) passes.
+        dlon = st["lon"] - geo.rx_lon
+        if dlon > 180.0:
+            dlon -= 360.0
+        elif dlon < -180.0:
+            dlon += 360.0
+        dx = dlon * screen_km_per_lon
+        screen_r_km = screen_r0_km + _V_MAX_MS * abs(age_s) / 1000.0
+        if dx * dx + dy * dy > screen_r_km * screen_r_km:
+            # A prescreen failure IS a visibility reject — same event, same
+            # tally, so the published rate keeps meaning what it did.
+            visibility_rejects += int(counts_as_reject)
+            continue
+        dr_lat, dr_lon = offset_latlon_m(
+            st["lat"],
+            st["lon"],
+            east_m=st.get("vel_east", 0.0) * age_s,
+            north_m=st.get("vel_north", 0.0) * age_s,
+        )
+        # A false reject costs a claim the dark lane can still solve; a
+        # false accept puts a fix this node never saw into the known lane
+        # and charges its residual to the node's trust.  The asymmetry is
+        # why this is the associator's own visibility predicate applied
+        # whole (beam wedge, footprint, learned FOV, coverage prior)
+        # rather than a looser bespoke one — claiming and the dark lane
+        # must mean the same thing by "this node can see there".
+        if not _point_in_beam(dr_lat, dr_lon, geo):
+            visibility_rejects += int(counts_as_reject)
+            continue
+        pred_d, pred_f = predict_observation(
+            geo,
+            dr_lat,
+            dr_lon,
+            st.get("alt_m", 0.0) / 1000.0,
+            st.get("vel_east", 0.0),
+            st.get("vel_north", 0.0),
+        )
+        # dr_lat/dr_lon ride along: they are the position a calibration
+        # point from this claim records, and re-deriving them at the
+        # recording site would be a second offset_latlon_m that could
+        # silently disagree with the one the prediction was built from.
+        cands.append((hexn, st, pred_d, pred_f, _gate_scale(age_s), dr_lat, dr_lon))
 
-        # Once per frame, not per candidate: one lock acquisition on a path
-        # that runs for every frame every node sends.
-        if visibility_rejects:
-            state.bump_counter("known_claims_visibility_rejects", visibility_rejects)
-        if world_rejects:
-            state.bump_counter("known_claims_world_rejects", world_rejects)
+    # Once per frame, not per candidate: one lock acquisition on a path
+    # that runs for every frame every node sends.
+    if visibility_rejects:
+        state.bump_counter("known_claims_visibility_rejects", visibility_rejects)
+    if world_rejects:
+        state.bump_counter("known_claims_world_rejects", world_rejects)
 
-        if cands:
-            cost = np.full((len(free), len(cands)), _GATE_INFEASIBLE)
-            for c, (_hexn, _st, pred_d, pred_f, scale) in enumerate(cands):
-                d_gate = KNOWN_CLAIM_DELAY_GATE_US * scale
-                f_gate = KNOWN_CLAIM_DOPPLER_GATE_HZ * scale
-                for r, i in enumerate(free):
-                    d_res = abs(pred_d - float(delays[i]))
-                    f_res = abs(pred_f - float(dopplers[i]))
-                    if d_res > d_gate or f_res > f_gate:
-                        continue
-                    cost[r, c] = d_res / d_gate + f_res / f_gate
-            rows, cols = linear_sum_assignment(cost)
-            for r, c in zip(rows, cols):
-                if cost[r, c] >= _GATE_INFEASIBLE:
+    # The assignment's columns: the candidates minus the hexes paths 1 and
+    # H already claimed, in the same order the single pre-exclusivity loop
+    # produced — so the cost matrix, and therefore every claim, is exactly
+    # what it was before the candidate list was widened.
+    col_cands = [c for c in cands if c[0] not in claimed_hexes]
+    if free and col_cands:
+        cost = np.full((len(free), len(col_cands)), _GATE_INFEASIBLE)
+        for c, (_hexn, _st, pred_d, pred_f, scale, _dlat, _dlon) in enumerate(col_cands):
+            d_gate = KNOWN_CLAIM_DELAY_GATE_US * scale
+            f_gate = KNOWN_CLAIM_DOPPLER_GATE_HZ * scale
+            for r, i in enumerate(free):
+                d_res = abs(pred_d - float(delays[i]))
+                f_res = abs(pred_f - float(dopplers[i]))
+                if d_res > d_gate or f_res > f_gate:
                     continue
-                i = free[r]
-                hexn, st, pred_d, pred_f, _scale = cands[c]
-                # A follow candidate carries the hex's ORIGINAL (stale) fix
-                # rather than a fix record built from itself — see
-                # _follow_fix_record.  "follow": True marks the claim for the
-                # lane and for the operator; everything else about it is an
-                # ordinary path-2 claim, including the hold it goes on to
-                # create, which is the point: from the next frame this node
-                # holds the track on its own measurements.
-                follow_fix = st.get("_follow_fix")
-                claims.append(
-                    (
-                        i,
-                        hexn,
-                        follow_fix if isinstance(follow_fix, dict) else _fix_record(st),
-                        pred_d,
-                        pred_f,
-                        {"follow": True} if isinstance(follow_fix, dict) else {},
-                    )
+                cost[r, c] = d_res / d_gate + f_res / f_gate
+        rows, cols = linear_sum_assignment(cost)
+        for r, c in zip(rows, cols):
+            if cost[r, c] >= _GATE_INFEASIBLE:
+                continue
+            i = free[r]
+            hexn, st, pred_d, pred_f, _scale, dr_lat, dr_lon = col_cands[c]
+            # A follow candidate carries the hex's ORIGINAL (stale) fix
+            # rather than a fix record built from itself — see
+            # _follow_fix_record.  "follow": True marks the claim for the
+            # lane and for the operator; everything else about it is an
+            # ordinary path-2 claim, including the hold it goes on to
+            # create, which is the point: from the next frame this node
+            # holds the track on its own measurements.
+            follow_fix = st.get("_follow_fix")
+            extra = {"follow": True} if isinstance(follow_fix, dict) else {}
+            # Private to this function: popped before the claim record is
+            # written, so the registry entry is byte-identical to what it
+            # has always been.  See _CAL_DR_KEY.
+            extra[_CAL_DR_KEY] = (dr_lat, dr_lon)
+            claims.append(
+                (
+                    i,
+                    hexn,
+                    follow_fix if isinstance(follow_fix, dict) else _fix_record(st),
+                    pred_d,
+                    pred_f,
+                    extra,
                 )
-                if isinstance(follow_fix, dict):
-                    state.bump_counter("known_follow_claims")
-                claimed_idx.add(i)
+            )
+            if isinstance(follow_fix, dict):
+                state.bump_counter("known_follow_claims")
+            claimed_idx.add(i)
 
-    # ── Contention, registry, counters, residual hook ─────────────────────────
+    # ── Contention, registry, counters, calibration, residual hook ───────────
     projections = _dark_global_projections(geo, frame_ts_s) if claims else []
     nb = _node_bias() if claims else None
     node_world_tag = state.node_world(node_id) if claims else None
+    # Per-frame calibration tallies, flushed once below — see
+    # _calibration_from_claim.
+    cal_rejects = {"hold": 0, "stale_fix": 0, "residual": 0, "contested": 0, "immature": 0}
+    cal_recorded = 0
     for i, hexn, fix, pred_d, pred_f, extra in claims:
         d_meas = float(delays[i])
         f_meas = float(dopplers[i])
@@ -1055,10 +1251,32 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
                 "adsb_fix": fix,
                 "contested": contested,
                 # "hold": True / "hold_gap_s" on a path-H claim; absent
-                # otherwise, so every existing reader is unchanged.
-                **extra,
+                # otherwise, so every existing reader is unchanged.  The
+                # calibration position rides on `extra` from where it is
+                # computed to _calibration_from_claim, and is filtered back
+                # out here — see _CAL_DR_KEY.
+                **{k: v for k, v in extra.items() if k != _CAL_DR_KEY},
             }
         )
+        # The only calibration source while the lane runs (services/calibration.py's
+        # fourth rule).  After the registry write, so a claim is recorded as a
+        # claim whatever calibration decides about it.
+        if _calibration_from_claim(
+            node_id,
+            hexn,
+            fix,
+            extra,
+            d_meas,
+            f_meas,
+            pred_d,
+            pred_f,
+            frame_ts_s,
+            ts_ms,
+            contested,
+            cands,
+            cal_rejects,
+        ):
+            cal_recorded += 1
         # Every claim is a fresh measurement of this node's track of this hex,
         # whichever path made it — that is what the hold store holds.  A hold
         # claim passes fix=None so the stored (older) fix and its fix_ts_ms
@@ -1081,6 +1299,12 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
             # per-node bias, and |residual| throws away the direction that
             # makes a bias a bias.
             nb.record_claim_residual(node_id, hexn, d_meas - pred_d, f_meas - pred_f, ts_ms)
+
+    if cal_recorded:
+        state.bump_counter("calibration_points_recorded", cal_recorded)
+    for reason, n in cal_rejects.items():
+        if n:
+            state.bump_counter(f"calibration_claims_rejected_{reason}", n)
 
     # ── Path 3: dark track following ─────────────────────────────────────────
     # Last, on what the ADS-B paths left behind — see _claim_dark_follow for
