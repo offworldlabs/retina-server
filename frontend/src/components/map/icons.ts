@@ -362,7 +362,10 @@ export function nodeSiteGlyphSvg({ NODE, ICON_SHADOW }: { NODE: string; ICON_SHA
 }
 
 export function nodeSiteIcon(count: number): L.DivIcon {
-  if (!(count > 1)) return nodeIcon();
+  // The only caller passes an array length, but a fractional or infinite
+  // count would otherwise mint a "2.5 nodes" title and its own cache entry.
+  count = Math.floor(count);
+  if (!(count > 1) || !Number.isFinite(count)) return nodeIcon();
   const palette = activePalette();
   let byCount = _nodeSiteIcons.get(palette);
   if (!byCount) {

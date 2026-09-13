@@ -337,6 +337,24 @@ describe("nodeSiteIcon slices the disc per co-located node", () => {
     expect(wedgeCount(htmlOf(4))).toBe(4);
   });
 
+  it("emits well-formed wedge paths for every count up to and past the cap", () => {
+    for (let n = 2; n <= NODE_SITE_MAX_SLICES + 1; n++) {
+      const html = htmlOf(n);
+      expect(html).not.toContain("NaN");
+      const ds = [...html.matchAll(/ d="([^"]+)"/g)].map((m) => m[1]);
+      expect(ds).toHaveLength(Math.min(n, NODE_SITE_MAX_SLICES));
+      for (const d of ds) expect(d).toMatch(/^M[-\d. ]+L[-\d. ]+A[-\d. ]+Z$/);
+    }
+  });
+
+  it("floors fractional counts and falls back to the plain glyph for junk", () => {
+    expect(nodeSiteIcon(2.5)).toBe(nodeSiteIcon(2));
+    expect(nodeSiteIcon(Infinity)).toBe(nodeIcon());
+    expect(nodeSiteIcon(NaN)).toBe(nodeIcon());
+    expect(nodeSiteIcon(0)).toBe(nodeIcon());
+    expect(nodeSiteIcon(undefined as unknown as number)).toBe(nodeIcon());
+  });
+
   it("caps the slice count but keeps the true number in the hover title", () => {
     const html = htmlOf(12);
     expect(wedgeCount(html)).toBe(NODE_SITE_MAX_SLICES);
