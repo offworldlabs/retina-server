@@ -964,7 +964,7 @@ async def mlat_history(
             "n_records": len(skips),
             "records": _published_records(skips[:limit]),
         }
-        return Response(content=orjson.dumps(without_receiver_geometry(payload)), media_type="application/json")
+        return Response(content=orjson.dumps(payload), media_type="application/json")
 
     merged = _merged_solve_history()
     effective_minutes = _window_effective_minutes(merged, minutes)
@@ -987,7 +987,7 @@ async def mlat_history(
             "n_records": len(records),
             "records": _published_records(_cap_per_lane(records, limit)),
         }
-        return Response(content=orjson.dumps(without_receiver_geometry(payload)), media_type="application/json")
+        return Response(content=orjson.dumps(payload), media_type="application/json")
 
     norm = (hex or "").strip().lower()
     if not norm:
@@ -1026,7 +1026,7 @@ async def mlat_history(
             "records": _published_records(rejects_nearby[:200]),
         },
     }
-    return Response(content=orjson.dumps(without_receiver_geometry(payload)), media_type="application/json")
+    return Response(content=orjson.dumps(payload), media_type="application/json")
 
 
 # ── Solver Report (full funnel/error/ghost/consensus picture) ─────────────────
