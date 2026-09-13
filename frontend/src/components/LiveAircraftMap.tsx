@@ -21,6 +21,9 @@ import {
   GT_PRUNE_GRACE_MS,
   POSITION_SOURCE_ARC_ONLY,
   ARC_DR_MAX_S,
+  TRAIL_SMOOTH_K,
+  TRAIL_SOLVE_SIGMA_FALLBACK_M,
+  SOLVE_TRAIL_MAX_POINTS,
   MLAT_HISTORY_REFRESH_MS,
   newSolveArrived,
   groundTruthKey,
@@ -34,10 +37,12 @@ import {
   isAircraftInViewport,
   sampleTrailPositions,
   buildTrailSegments,
+  smoothTrailPositions,
   makeAircraftIcon,
   makeDroneIcon,
   drIconState,
   getAircraftColor,
+  isDarkMultinodeSolve,
   solveDiscCenter,
   solveUncertaintyRadiusM,
   nodeSiteIcon,
@@ -595,57 +600,132 @@ const AircraftMarker = memo(function AircraftMarker({ ac, isSelected, isStale, s
   prev.onSelect === next.onSelect
 );
 
-/* ── AircraftTrailsLayer: imperative L.polyline per visible aircraft, fed by
-      frontendTrailsRef (per-hex buffer of smoothed positions sampled at 2 Hz).
+/* ── AircraftTrailsLayer: imperative L.polyline per visible aircraft.
       Updated at 2 Hz so 100+ trails stay cheap; uses a single L.canvas
       renderer so all trails draw on one canvas tile instead of N <path>
       elements.  Skips the selected aircraft (its prominent trail is rendered
-      separately by the existing selectedTrailPositions block). ── */
+      separately by the existing selectedTrail block).
+
+      Two substrates, picked per track by lane:
+
+      - DARK multinode solves draw solveTrailsRef — the solve-epoch positions
+        (solve_lat/solve_lon) — under a centred moving average
+        (map/trails.ts smoothTrailPositions, TRAIL_SMOOTH_K).  That buffer has
+        neither the backend's dead-reckoning sawtooth nor the 0.55 s glide
+        hook in it, so the drawn line is the solver's own path with its
+        scatter averaged down ~3x.  The newest floor(k/2) solves cannot be
+        centred yet: they continue DASHED to the live icon, which is both
+        honest about their being un-averaged and covers the ~1.2 s of lag.
+      - Everything else keeps frontendTrailsRef, the 2 Hz sample of the icon's
+        glide path.  An arc-only track has no other source at all (its backend
+        recent_positions stays at one point), and single-node positions get
+        WORSE under a centred window — the capture measured deviation p90
+        8 m → 16 m, because the arc midpoint teleports along the locus and the
+        average smears across the jumps instead of following them.
+      A dark track with no usable solve buffer yet (no solve_lat from an older
+      backend, or a fresh key) falls back to the 2 Hz path rather than
+      vanishing. ── */
 const _trailsCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: DEBUG_PASSIVE_PANE }) : null;
+
+/** Dash pattern for an un-averaged / estimated trail segment — the same
+ *  pattern the arc-only selected trail uses, for the same reason: the line is
+ *  a weaker claim than a solid one. */
+const TRAIL_DASH = "5 7";
+
+/**
+ * Smoothed polyline for one dark track, memoised per hex on the buffer's
+ * identity.  The 2 Hz tick would otherwise re-average every buffer on every
+ * tick; the 1–3 s dark solve cadence means most ticks change nothing.  The
+ * version is length AND newest timestamp because the buffer is capped at
+ * SOLVE_TRAIL_MAX_POINTS — once saturated, length alone stops changing.
+ */
+function cachedSmoothedTrail(cache, hex: string, buf) {
+  const version = `${buf.length}:${buf[buf.length - 1][2]}`;
+  const hit = cache.get(hex);
+  if (hit && hit.version === version) return hit;
+  const entry = { version, ...smoothTrailPositions(buf, { k: TRAIL_SMOOTH_K, sigmaFallbackM: TRAIL_SOLVE_SIGMA_FALLBACK_M }) };
+  cache.set(hex, entry);
+  return entry;
+}
 
 // Ref-driven (see MatchedGroundTruthLayer): keying the effect on the 2 Hz
 // visibleAircraft array identity destroyed and rebuilt every polyline twice a
 // second, and the 500 ms interval below essentially never fired twice.
-const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftRef, frontendTrailsRef, selectedHex }) {
+const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftRef, frontendTrailsRef, solveTrailsRef, smoothRef, selectedHex }) {
   const { WARN } = usePalette();
   const map = useMap();
-  const linesRef = useRef(new Map()); // hex → L.polyline
+  const linesRef = useRef(new Map()); // hex → L.polyline (solid body)
+  const headsRef = useRef(new Map()); // hex → L.polyline (dashed un-averaged head)
+  const smoothCacheRef = useRef(new Map()); // hex → { version, smoothed, head }
 
   useEffect(() => {
     ensureDebugPanes(map);
     const lines = linesRef.current;
+    const heads = headsRef.current;
+    const smoothCache = smoothCacheRef.current;
+    const style = (dashed: boolean) => ({
+      renderer: _trailsCanvas,
+      interactive: false,
+      color: WARN,
+      weight: 1.2,
+      opacity: dashed ? 0.35 : 0.5,
+      lineCap: "round" as const,
+      lineJoin: "round" as const,
+      dashArray: dashed ? TRAIL_DASH : undefined,
+    });
+    const upsert = (store, hex: string, positions, dashed: boolean) => {
+      const line = store.get(hex);
+      if (line) { line.setLatLngs(positions); return; }
+      const created = L.polyline(positions, style(dashed));
+      created.addTo(map);
+      store.set(hex, created);
+    };
     const tick = () => {
       const trails = frontendTrailsRef.current || {};
+      const solves = solveTrailsRef.current || {};
       const seen = new Set();
+      const headSeen = new Set();
       for (const ac of visibleAircraftRef.current || []) {
         if (!ac.hex || ac.hex === selectedHex) continue;
+        const solveBuf = isDarkMultinodeSolve(ac) ? solves[ac.hex] : null;
+        if (solveBuf && solveBuf.length >= 2) {
+          const { smoothed, head } = cachedSmoothedTrail(smoothCache, ac.hex, solveBuf);
+          if (smoothed.length >= 2) {
+            seen.add(ac.hex);
+            upsert(lines, ac.hex, smoothed, false);
+          }
+          // Dashed continuation: last averaged point → the un-centreable
+          // solves → wherever the icon is being drawn right now.
+          const sm = smoothRef.current?.[ac.hex];
+          const tail = [
+            ...(smoothed.length ? [smoothed[smoothed.length - 1]] : []),
+            ...head,
+            ...(sm ? [[sm.lat, sm.lon]] : []),
+          ];
+          if (tail.length >= 2) {
+            headSeen.add(ac.hex);
+            upsert(heads, ac.hex, tail, true);
+          }
+          continue;
+        }
         const buf = trails[ac.hex];
         if (!buf || buf.length < 2) continue;
         seen.add(ac.hex);
-        const positions = buf.map((p) => [p[0], p[1]]);
-        let line = lines.get(ac.hex);
-        if (line) {
-          line.setLatLngs(positions);
-        } else {
-          line = L.polyline(positions, {
-            renderer: _trailsCanvas,
-            interactive: false,
-            color: WARN,
-            weight: 1.2,
-            opacity: 0.5,
-            lineCap: "round",
-            lineJoin: "round",
-          });
-          line.addTo(map);
-          lines.set(ac.hex, line);
-        }
+        upsert(lines, ac.hex, buf.map((p) => [p[0], p[1]]), false);
       }
       // Remove trails for aircraft no longer in viewport / selected.
       for (const [hex, line] of lines) {
-        if (!seen.has(hex)) {
-          line.remove();
-          lines.delete(hex);
-        }
+        if (!seen.has(hex)) { line.remove(); lines.delete(hex); }
+      }
+      for (const [hex, line] of heads) {
+        if (!headSeen.has(hex)) { line.remove(); heads.delete(hex); }
+      }
+      // The memo cache is pruned against BOTH sets, not against `lines`: a
+      // buffer too short to average yet draws only a dashed head, so keying
+      // the prune off the solid line would leak one entry per dark key that
+      // never reached three solves — and dark keys churn at several a minute.
+      for (const hex of smoothCache.keys()) {
+        if (!seen.has(hex) && !headSeen.has(hex)) smoothCache.delete(hex);
       }
     };
     tick();
@@ -654,8 +734,11 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftR
       clearInterval(id);
       for (const line of lines.values()) line.remove();
       lines.clear();
+      for (const line of heads.values()) line.remove();
+      heads.clear();
+      smoothCache.clear();
     };
-  }, [map, visibleAircraftRef, frontendTrailsRef, selectedHex, WARN]);
+  }, [map, visibleAircraftRef, frontendTrailsRef, solveTrailsRef, smoothRef, selectedHex, WARN]);
 
   return null;
 });
@@ -1275,6 +1358,15 @@ export default function LiveAircraftMap() {
   // without needing backend changes.  Bounded to 60 samples per hex (30 s).
   const frontendTrailsRef = useRef({});  // hex → Array<[lat, lon, ts_sec]>
   const lastTrailSampleRef = useRef({}); // hex → last sample timestamp (ms)
+  // Per-hex buffer of SOLVE-EPOCH positions for dark multinode tracks — the
+  // feed's solve_lat/solve_lon, which only move when a new solve lands.  This
+  // is a different substrate from frontendTrailsRef, not a different filter:
+  // the 2 Hz buffer samples the icon, so it carries the backend's
+  // dead-reckoning sawtooth (re-anchor step p90 116 m) and the 0.55 s glide
+  // hook on top of the solver's scatter.  Averaging over solve epochs
+  // (map/trails.ts smoothTrailPositions) removes both and cuts the remaining
+  // scatter ~3x.  Bounded to 40 solves ≈ 40–120 s at the 1–3 s dark cadence.
+  const solveTrailsRef = useRef({});  // hex → Array<[lat, lon, ts_sec, sigma_m?]>
   // One bundle over all eight per-object stores, so the prune paths are
   // three callers of trackStores.forgetTrack instead of three hand-kept
   // subsets (see map/trackStores.ts for the history).
@@ -1288,6 +1380,7 @@ export default function LiveAircraftMap() {
       get latLng() { return latLngCacheRef.current; },
       get trails() { return frontendTrailsRef.current; },
       get lastTrailSample() { return lastTrailSampleRef.current; },
+      get solveTrails() { return solveTrailsRef.current; },
       get markerRegistry() { return markerRegistryRef.current; },
     };
   }
@@ -1343,6 +1436,38 @@ export default function LiveAircraftMap() {
         _fixTs: posChanged ? now : (prev._fixTs ?? now),
         _updatedAt: now,
       };
+
+      // Per-solve buffer for DARK multinode tracks (see solveTrailsRef).
+      // Restricted to this one lane on purpose: single-node sources get WORSE
+      // under a centred window — an arc-only track's position is the arc
+      // midpoint, which teleports along the locus between detections, and the
+      // capture measured solver_single_node deviation p90 8 m → 16 m at k=3
+      // (the average smears across the jumps instead of following them).
+      // adsb_assisted solves are excluded because their position is already
+      // anchored by a transponder fix, so there is nothing to average down.
+      if (ac.position_source === "multinode_solve" && !ac.adsb_assisted
+          && validLatLon(ac.solve_lat, ac.solve_lon)) {
+        let solves = solveTrailsRef.current[ac.hex];
+        if (!solves) { solves = []; solveTrailsRef.current[ac.hex] = solves; }
+        const lastSolve = solves[solves.length - 1];
+        // solve_lat/solve_lon only change when a NEW solve lands; the feed
+        // re-broadcasts the same pair at 1 Hz in between, and appending those
+        // would weight one solve by however many flushes it survived.
+        if (!lastSolve
+            || Math.abs(lastSolve[0] - ac.solve_lat) > 1e-5
+            || Math.abs(lastSolve[1] - ac.solve_lon) > 1e-5) {
+          // A missing pos_sigma_m stays missing: the smoother only weights
+          // by inverse variance when EVERY point in a window states one, so
+          // an assumed value here would silently re-rank real sigmas.  The
+          // fallback is applied inside smoothTrailPositions to the jump gate
+          // alone (TRAIL_SOLVE_SIGMA_FALLBACK_M).
+          const sigma = typeof ac.pos_sigma_m === "number" && ac.pos_sigma_m > 0 ? ac.pos_sigma_m : undefined;
+          solves.push(sigma === undefined
+            ? [ac.solve_lat, ac.solve_lon, now / 1000]
+            : [ac.solve_lat, ac.solve_lon, now / 1000, sigma]);
+          if (solves.length > SOLVE_TRAIL_MAX_POINTS) solves.shift();
+        }
+      }
     }
     // One icon per physical aircraft across a lane transition: the ICAO-keyed
     // and mn<sha>-keyed entries for the same transponder are resolved down to
@@ -1591,41 +1716,76 @@ export default function LiveAircraftMap() {
     );
   }, [selectedHex, trailTick, viewport]);
 
-  const selectedTrailPositions = useMemo(() => {
-    if (!selectedHex) return [];
-    // Start from backend's recent_positions if present.
-    const pts = [];
-    if (visibleTrailEntries.length) {
-      const [, positions] = visibleTrailEntries[0];
-      for (const p of sampleTrailPositions(positions)) pts.push([p[0], p[1]]);
-    }
-    // Merge in the frontend trail (per-hex smoothed samples at 2 Hz).
-    // For arc-only tracks the backend recent_positions stays at 1 point
-    // because the arc midpoint doesn't move between detections, so without
-    // this fallback the selected aircraft would render no trail at all.
-    // Skip front samples already covered by the backend tail to avoid
-    // doubling up on the very recent positions.
-    const frontTrail =
-      frontendTrailsRef.current[selectedHex] ?? frontendTrailsRef.current[groundTruthKey(selectedHex)];
-    if (frontTrail && frontTrail.length) {
-      const lastBack = pts[pts.length - 1];
-      for (const [lat, lon] of frontTrail) {
-        if (lastBack && Math.abs(lastBack[0] - lat) < 1e-5 && Math.abs(lastBack[1] - lon) < 1e-5) continue;
-        pts.push([lat, lon]);
-      }
-    }
+  // { body, head }: `body` is the solid gradient trail, `head` the dashed
+  // continuation to the live icon.  `head` is only ever non-empty for a dark
+  // multinode selection, where it carries the newest floor(k/2) solves that
+  // the centred average cannot reach yet (see AircraftTrailsLayer).
+  const selectedTrail = useMemo(() => {
+    if (!selectedHex) return { body: [], head: [] };
     // smoothRef is updated at 60fps (vs displayedAircraftRef which is only 2fps)
     // so the trail tip connects exactly to the current smoothed position.
     // A truth-only selection has no radar entry under its bare hex; fall back
     // to the namespaced ground-truth key so its trail tip still tracks.
     const animated = smoothRef.current[selectedHex] ?? smoothRef.current[groundTruthKey(selectedHex)];
-    if (animated?.lat && animated?.lon) {
-      const last = pts[pts.length - 1];
-      if (!last || Math.abs(last[0] - animated.lat) > 0.00001 || Math.abs(last[1] - animated.lon) > 0.00001) {
-        pts.push([animated.lat, animated.lon]);
+    const tip = animated?.lat && animated?.lon ? [animated.lat, animated.lon] : null;
+
+    // Dark multinode: draw the SOLVE path, averaged, exactly as the unselected
+    // trails do — and nothing else.  The backend's recent_positions are the
+    // dead-reckoned 1 Hz flushes (re-anchor step p90 116 m) and the frontend
+    // buffer is the icon's glide path, so splicing either one in would put the
+    // two error sources this substrate exists to remove back into the line.
+    const solveBuf = solveTrailsRef.current[selectedHex];
+    if (solveBuf && solveBuf.length >= 2) {
+      const { smoothed, head } = smoothTrailPositions(solveBuf, { k: TRAIL_SMOOTH_K, sigmaFallbackM: TRAIL_SOLVE_SIGMA_FALLBACK_M });
+      const tail = [
+        ...(smoothed.length ? [smoothed[smoothed.length - 1]] : []),
+        ...head,
+        ...(tip ? [tip] : []),
+      ];
+      return { body: smoothed, head: tail.length >= 2 ? tail : [] };
+    }
+
+    // Start from backend's recent_positions if present.
+    const pts = [];
+    let lastBackTs = -Infinity;
+    if (visibleTrailEntries.length) {
+      const [, positions] = visibleTrailEntries[0];
+      const sampled = sampleTrailPositions(positions);
+      for (const p of sampled) pts.push([p[0], p[1]]);
+      // recent_positions tuples are [lat, lon, alt, ts_sec] (types.TrailPoint,
+      // and mergeTrailPositions orders on that index), so the backend tail's
+      // own timestamp is available and nothing has to be inferred.
+      lastBackTs = sampled.length ? (sampled[sampled.length - 1]?.[3] ?? -Infinity) : -Infinity;
+    }
+    // Merge in the frontend trail (per-hex smoothed samples at 2 Hz).
+    // For arc-only tracks the backend recent_positions stays at 1 point
+    // because the arc midpoint doesn't move between detections, so without
+    // this fallback the selected aircraft would render no trail at all.
+    //
+    // Only samples NEWER than the backend tail are appended.  The two buffers
+    // overlap: recent_positions runs up to the last flush while the frontend
+    // buffer holds a full 30 s, so concatenating the whole of it made the
+    // polyline run to now, jump back 30 s, and re-traverse the same ground —
+    // the "doubled head".  The old dedup only dropped a frontend sample
+    // COINCIDENT with the backend tail, which a dead-reckoned tail almost
+    // never is, so it fired essentially never.
+    const frontTrail =
+      frontendTrailsRef.current[selectedHex] ?? frontendTrailsRef.current[groundTruthKey(selectedHex)];
+    if (frontTrail && frontTrail.length) {
+      for (const [lat, lon, ts] of frontTrail) {
+        if (ts <= lastBackTs) continue;
+        const last = pts[pts.length - 1];
+        if (last && Math.abs(last[0] - lat) < 1e-5 && Math.abs(last[1] - lon) < 1e-5) continue;
+        pts.push([lat, lon]);
       }
     }
-    return pts;
+    if (tip) {
+      const last = pts[pts.length - 1];
+      if (!last || Math.abs(last[0] - tip[0]) > 0.00001 || Math.abs(last[1] - tip[1]) > 0.00001) {
+        pts.push(tip);
+      }
+    }
+    return { body: pts, head: [] };
   }, [selectedHex, visibleTrailEntries]);
 
   const selectedAc = selectedHex
@@ -2245,6 +2405,8 @@ export default function LiveAircraftMap() {
               <AircraftTrailsLayer
                 visibleAircraftRef={visibleAircraftRef}
                 frontendTrailsRef={frontendTrailsRef}
+                solveTrailsRef={solveTrailsRef}
+                smoothRef={smoothRef}
                 selectedHex={selectedHex}
               />
             )}
@@ -2255,9 +2417,9 @@ export default function LiveAircraftMap() {
             )}
 
             {/* Selected trail — gradient fade; dashed for arc-type tracks */}
-            {showTrails && selectedTrailPositions.length >= 2 && (() => {
+            {showTrails && selectedTrail.body.length >= 2 && (() => {
               const isArcTrack = selectedAc?.position_source === POSITION_SOURCE_ARC_ONLY;
-              return buildTrailSegments(selectedTrailPositions).map((seg, i) => (
+              return buildTrailSegments(selectedTrail.body).map((seg, i) => (
                 <Polyline
                   key={`trail-${selectedHex}-seg${i}`}
                   positions={seg.positions}
@@ -2267,12 +2429,30 @@ export default function LiveAircraftMap() {
                     opacity: isArcTrack ? seg.opacity * 0.6 : seg.opacity,
                     lineCap: "round",
                     lineJoin: "round",
-                    dashArray: isArcTrack ? "5 7" : undefined,
+                    dashArray: isArcTrack ? TRAIL_DASH : undefined,
                   }}
                   interactive={false}
                 />
               ));
             })()}
+            {/* Dashed continuation of a dark selection's trail: the newest
+                 solves the centred average cannot reach, then the live icon.
+                 Full weight of the gradient's bright end so it reads as the
+                 same line, dashed because those points are un-averaged. */}
+            {showTrails && selectedTrail.head.length >= 2 && (
+              <Polyline
+                positions={selectedTrail.head}
+                pathOptions={{
+                  color: WARN,
+                  weight: 3.5,
+                  opacity: 0.7,
+                  lineCap: "round",
+                  lineJoin: "round",
+                  dashArray: TRAIL_DASH,
+                }}
+                interactive={false}
+              />
+            )}
 
             {/* Detection arcs — imperative Leaflet layer, 4Hz opacity fade, sourced from raw WS buffer */}
             {showArcs && (
