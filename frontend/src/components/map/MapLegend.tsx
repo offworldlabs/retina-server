@@ -1,4 +1,5 @@
 import { altitudeLegend } from "./icons";
+import { truthLegend } from "./truthColor";
 import { usePalette } from "./useMapTheme";
 import { usePersistedState } from "./usePersistedState";
 
@@ -11,7 +12,8 @@ import { usePersistedState } from "./usePersistedState";
  * its header for anyone who has learnt the colours.
  */
 export default function MapLegend({ colorByAlt, showGroundTruth, showIlluminators, hasPlayback }) {
-  const { ILLUMINATOR, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED, NODE, TRUTH } = usePalette();
+  const palette = usePalette();
+  const { ILLUMINATOR, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED, NODE } = palette;
   const [open, setOpen] = usePersistedState("tf.legendOpen", true);
 
   return (
@@ -38,7 +40,12 @@ export default function MapLegend({ colorByAlt, showGroundTruth, showIlluminator
                   one. */}
               <LegendItem color={LANE_MN_ADSB} label="MLAT + ADS-B" />
               <LegendItem color={LANE_MN_DARK} label="MLAT dark" />
-              {showGroundTruth && <LegendItem color={TRUTH} label="Ground truth" />}
+              {/* Truth splits four ways: simulated vs live-feed (neutral vs
+                  teal) and with vs without a transponder (bright vs dark),
+                  the same resolver the dots are drawn with. */}
+              {showGroundTruth && truthLegend(palette).map((t) => (
+                <LegendItem key={t.cls} color={t.color} label={t.label} />
+              ))}
             </>
           )}
           <LegendItem color={NODE} label="Node" />

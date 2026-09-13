@@ -107,6 +107,9 @@ export interface GroundTruthMeta {
   has_adsb?: boolean;
   adsb_callsign?: string | null;
   anomaly_event?: string | null;
+  /** "live" for an aircraft the simulator mirrored from the ADS-B feed,
+   *  "sim" for one it spawned itself; absent from older fleets. */
+  source?: "live" | "sim";
 }
 
 /** Data returned by useAircraftFeed() */

@@ -22,7 +22,7 @@ import { mToFt, msToKnots } from "./units";
  *
  * @param fixes   the fixesRef store, mutated
  * @param snapshot  hex → trail, each point [lat, lon, alt_m, ts]
- * @param meta      hex → { speed_ms, heading, object_type, is_anomalous }
+ * @param meta      hex → { speed_ms, heading, object_type, is_anomalous, has_adsb, source }
  * @param now       ms epoch used as the dead-reckoning anchor
  * @returns the set of store keys this snapshot vouches for
  */
@@ -54,6 +54,9 @@ export function applyGroundTruthFixes(fixes, snapshot, meta, now) {
       // Simulated parameters for the debug detail panel.  "Dark" objects are
       // object_type "aircraft" with has_adsb false.
       has_adsb: m.has_adsb,
+      // Provenance: "live" = mirrored from the ADS-B feed, "sim" = spawned.
+      // Colours the dot (map/truthColor) and labels the detail panel.
+      source: m.source,
       adsb_callsign: m.adsb_callsign,
       anomaly_event: m.anomaly_event,
       points: positions.length,
