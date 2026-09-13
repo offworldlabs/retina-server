@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { nodeLabel, groupNodesBySite, polygonMaxReachKm } from "./nodeSites";
+import { nodeLabel, groupNodesBySite, polygonMaxReachKm, coverageLine } from "./nodeSites";
 import type { RadarNode } from "../../types";
 
 const node = (extra: Partial<RadarNode> = {}): RadarNode => ({
@@ -17,6 +17,7 @@ const node = (extra: Partial<RadarNode> = {}): RadarNode => ({
   max_bistatic_range_km: null,
   empirical_polygon: null,
   empirical_n_points: 0,
+  empirical_polygon_source: "evidence",
   is_synthetic: false,
   ...extra,
 });
@@ -94,5 +95,42 @@ describe("polygonMaxReachKm", () => {
   it("is null when there is no polygon to measure", () => {
     expect(polygonMaxReachKm(0, 0, null)).toBeNull();
     expect(polygonMaxReachKm(0, 0, [])).toBeNull();
+  });
+});
+
+describe("coverageLine", () => {
+  // ~1° of latitude from the receiver, so reach rounds to 111 km.
+  const lobe: [number, number][] = [[34.85, -82.4], [35.85, -82.4], [34.85, -82.3]];
+
+  it("quotes the declared beam only for a node the backend marked declared", () => {
+    expect(
+      coverageLine(node({ empirical_polygon_source: "declared", empirical_polygon: lobe })),
+    ).toBe("Coverage: declared beam (synthetic node), reach ≤ 111 km");
+  });
+
+  it("quotes measured coverage for a real node, whatever it declares", () => {
+    // Same polygon, same declared beam fields — only the source differs, and
+    // it is the source that decides what the map is allowed to call it.
+    expect(
+      coverageLine(node({ empirical_polygon: lobe, empirical_n_points: 240 })),
+    ).toBe("Coverage: measured from 240 calibration pts, reach ≤ 111 km");
+  });
+
+  it("says nothing is measured yet when there is no polygon", () => {
+    expect(coverageLine(node({ empirical_n_points: 7 }))).toBe(
+      "Coverage: not yet measured (7 calibration pts)",
+    );
+  });
+
+  it("does not quote a reach it was not given", () => {
+    expect(coverageLine(node({ empirical_polygon_source: "declared" }))).toBe(
+      "Coverage: declared beam (synthetic node)",
+    );
+  });
+
+  it("treats the learned wedge as measured, not declared", () => {
+    expect(
+      coverageLine(node({ empirical_polygon_source: "learned", empirical_polygon: lobe })),
+    ).toBe("Coverage: measured from 0 calibration pts, reach ≤ 111 km");
   });
 });

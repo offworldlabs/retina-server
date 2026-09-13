@@ -184,6 +184,16 @@ export interface RadarNode {
   empirical_polygon: [number, number][] | null;
   empirical_n_points: number;
   /**
+   * Which rule produced `empirical_polygon`, decided by the backend:
+   * `declared` for a synthetic node, whose declared cone is what the
+   * simulator enforces and so IS its detection area; `evidence` for a real
+   * node under FOV_MODE=off, drawn only from what it has been seen to
+   * detect; `learned` for the FOV_MODE shadow/active wedge, itself derived
+   * from evidence.  Only `declared` lets the map call a declared beam
+   * coverage — see components/map/nodeSites.ts::coverageLine.
+   */
+  empirical_polygon_source: "declared" | "evidence" | "learned";
+  /**
    * Server-derived, not parsed from the identifier: see utils/nodeKind.ts.
    * Identities publish as node_ref, so no prefix survives to match on.
    */

@@ -13,7 +13,7 @@ export {
   uncertaintyDiscRadiusM,
   pointInPolygon,
 } from "./geo";
-export { nodeLabel, groupNodesBySite, polygonMaxReachKm } from "./nodeSites";
+export { nodeLabel, groupNodesBySite, polygonMaxReachKm, coverageLine } from "./nodeSites";
 export {
   UNCERTAINTY_K68,
   UNCERTAINTY_K95,
