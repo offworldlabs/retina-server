@@ -145,9 +145,14 @@ orchestrator polls the feed's `/v2/point/{lat}/{lon}/{radius_nm}` for the
 (`SimulationWorld.ingest_live_aircraft`). Each real aircraft becomes a
 `live-<hex>` world aircraft flying its reported position, altitude, ground
 speed, track and vertical rate — extrapolated from the fix's capture time,
-dead-reckoned between polls, dropped 60 s after the feed last reported it.
-The synthetic nodes echo it like any other aircraft (delay/Doppler from its
-real kinematics), so the fleet flies real traffic.
+dead-reckoned between polls, dropped 60 s after its last fix (not after the
+feed last echoed a stale row for it), and retired on the spot when the feed
+reports it on the ground. The feed is not trusted blindly: a row whose fix is
+already older than that window is ignored, and an altitude that jumps more
+than 1 km from the coasted one is held off unless it persists, self-consistently,
+for a minute (adsb.retina.fm has been seen serving another aircraft's cruise
+altitude in a low GA row). The synthetic nodes echo it like any other aircraft
+(delay/Doppler from its real kinematics), so the fleet flies real traffic.
 
 The feed owns these aircraft: no waypoints, no separation slowing, no
 lifetime, and they never count toward `min_aircraft` / `max_aircraft` —
