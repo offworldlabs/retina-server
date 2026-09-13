@@ -47,6 +47,14 @@ def make_result(lat, lon, ts_ms, vel_east=None, vel_north=None, cov_en_km2=None)
     return result
 
 
+def _counts():
+    """The four per-outcome counters filter_stats reports beside the two gate
+    ones, as a dict — asserted whole so an increment landing on the WRONG
+    outcome fails as loudly as a missing one."""
+    stats = track_filter.filter_stats()
+    return {k: stats[k] for k in ("init", "gap_reinit", "passthrough", "smoothed")}
+
+
 class TestModes:
     """TRACK_SMOOTHER selects the smoothing strategy: off / ewma / kf, and
     any unrecognised value falls back to kf."""
@@ -120,18 +128,33 @@ class TestKFBasics:
         assert out is result
         assert "smoother" not in out
 
-    def test_duplicate_and_out_of_order_are_passthrough(self, monkeypatch):
+    def test_duplicate_and_out_of_order_hold_the_filter_position(self, monkeypatch):
+        """dt <= 0 leaves the filter STATE alone (a same-epoch burst is the
+        same evidence twice, not new evidence) but must not move the published
+        point either: the result carries the entry's current posterior, which
+        after a single init solve is that solve's own position."""
         monkeypatch.setenv("TRACK_SMOOTHER", "kf")
         key = "basics-2"
-        track_filter.smooth_solve(make_result(35.0, -82.0, 1_000), key, None)
+        first = track_filter.smooth_solve(make_result(35.0, -82.0, 1_000), key, None)
+        assert first is not None
+        state_before = (track_filter._KF_TRACKS[key].x.copy(), track_filter._KF_TRACKS[key].last_ts_s)
 
         dup = make_result(35.001, -82.0, 1_000)  # dt == 0
         out_dup = track_filter.smooth_solve(dup, key, None)
-        assert out_dup is dup
+        assert out_dup is not dup  # a copy: the position is rewritten
+        assert dup["lat"] == 35.001  # ...and the caller's raw dict is untouched
+        assert (out_dup["lat"], out_dup["lon"]) == (35.0, -82.0)  # held, not the 111 m-away raw
+        assert out_dup["kf_action"] == "passthrough_held"
+        assert out_dup["timestamp_ms"] == 1_000  # every non-position field is the new solve's
 
         earlier = make_result(35.001, -82.0, 500)  # dt < 0
         out_earlier = track_filter.smooth_solve(earlier, key, None)
-        assert out_earlier is earlier
+        assert (out_earlier["lat"], out_earlier["lon"]) == (35.0, -82.0)
+        assert out_earlier["kf_action"] == "passthrough_held"
+
+        # Neither call touched the filter state.
+        assert np.allclose(track_filter._KF_TRACKS[key].x, state_before[0])
+        assert track_filter._KF_TRACKS[key].last_ts_s == state_before[1]
 
     def test_large_gap_reinits_then_next_solve_behaves_like_second_ever(self, monkeypatch):
         monkeypatch.setenv("TRACK_SMOOTHER", "kf")
@@ -1205,7 +1228,16 @@ class TestManoeuvreAdaptiveQ:
 
         assert all(s["sigma_a"] == track_filter._KF_SIGMA_A_MS2 for s in solves)
         stats = track_filter.filter_stats()
-        assert stats == {"reanchors": 0, "manoeuvre_rescues": 0, "manoeuvre_active": 0, "tracks": 1}
+        assert stats == {
+            "init": 1,
+            "gap_reinit": 0,
+            "passthrough": 0,
+            "smoothed": len(solves) - 1,
+            "reanchors": 0,
+            "manoeuvre_rescues": 0,
+            "manoeuvre_active": 0,
+            "tracks": 1,
+        }
 
 
 class TestN2WeakUpdate:
@@ -1331,7 +1363,7 @@ class TestKfActionStamp:
         assert (first["kf_action"], first["kf_d2"], first["kf_innov_m"]) == ("init", None, None)
 
         dup = track_filter.smooth_solve(make_result(35.0, -82.0, ts), key, None)
-        assert (dup["kf_action"], dup["kf_d2"], dup["kf_innov_m"]) == ("passthrough", None, None)
+        assert (dup["kf_action"], dup["kf_d2"], dup["kf_innov_m"]) == ("passthrough_held", None, None)
 
         lat, lon = offset_latlon_m(35.0, -82.0, east_m=250.0 * 5.0, north_m=0.0)
         second = track_filter.smooth_solve(make_result(lat, lon, ts + 5_000), key, None)
@@ -1388,3 +1420,186 @@ class TestKfActionStamp:
         monkeypatch.setenv("TRACK_SMOOTHER", "off")
         out = track_filter.smooth_solve(make_result(35.0, -82.0, 1_000_000), "stamp-off", None)
         assert "kf_action" not in out
+
+
+class TestHeldSameEpochPassthrough:
+    """A second solve at an epoch the filter has already updated over must not
+    move the published position.
+
+    solver.py writes smooth_solve's return value straight into
+    state.multinode_tracks (services/tasks/solver.py, the
+    ``state.multinode_tracks[key] = result`` line), so the pre-hold behaviour —
+    return the raw solve on dt <= 0 — replaced the smoothed point with an
+    unsmoothed one for the SAME epoch, a full solve-scatter step onto the
+    displayed track.  In production this is not an edge case: it fires as an
+    association burst, several solves for one key sharing one
+    measurement_ts_ms (see the module docstring).
+    """
+
+    def setup_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def teardown_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def test_same_epoch_second_solve_keeps_the_published_position(self, monkeypatch):
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        key = "held-1"
+        lat0, lon0 = 35.0, -82.0
+        ts = 1_000_000
+        cadence_ms = 5_000
+
+        # Five solves of straight flight: the last one is a real smoothed
+        # publish, which is what the burst below must not overwrite.
+        for i in range(5):
+            lat, lon = offset_latlon_m(lat0, lon0, east_m=250.0 * 5.0 * i, north_m=0.0)
+            published = track_filter.smooth_solve(make_result(lat, lon, ts + i * cadence_ms), key, None)
+        assert published["kf_action"] == "smoothed"
+        held_from = (published["lat"], published["lon"])
+
+        # Same measurement_ts_ms as the solve just published, 2 km north of it.
+        burst_lat, burst_lon = offset_latlon_m(lat0, lon0, east_m=250.0 * 5.0 * 4, north_m=2_000.0)
+        burst = make_result(burst_lat, burst_lon, ts + 4 * cadence_ms)
+        burst["rms_us"] = 1.23
+        burst["n_nodes"] = 4
+        out = track_filter.smooth_solve(burst, key, None)
+
+        # The position is the previous publish's, to the last decimal place...
+        assert (out["lat"], out["lon"]) == held_from
+        assert abs(out["lat"] - burst_lat) > 0.01  # ...and nowhere near the raw burst solve
+        # ...while every other field is this solve's, and the filter labels it.
+        assert (out["rms_us"], out["n_nodes"]) == (1.23, 4)
+        assert out["kf_action"] == "passthrough_held"
+        assert out["smoother"] == "kf"
+        assert out["kf_pos_sigma_m"] == published["kf_pos_sigma_m"]
+
+        # And the hold is not a one-shot: a whole burst holds the same point.
+        for extra in range(3):
+            again = make_result(burst_lat, burst_lon, ts + 4 * cadence_ms)
+            out_again = track_filter.smooth_solve(again, key, None)
+            assert (out_again["lat"], out_again["lon"]) == held_from, extra
+
+        # The next genuine epoch still updates normally — holding does not
+        # stall the filter (its last_ts_s never moved, so dt is the real one).
+        lat5, lon5 = offset_latlon_m(lat0, lon0, east_m=250.0 * 5.0 * 5, north_m=0.0)
+        nxt = track_filter.smooth_solve(make_result(lat5, lon5, ts + 5 * cadence_ms), key, None)
+        assert nxt["kf_action"] == "smoothed"
+        assert (nxt["lat"], nxt["lon"]) != held_from
+
+    def test_a_burst_right_after_init_holds_the_init_position(self, monkeypatch):
+        """The first solve of a key still returns raw (no posterior to hold);
+        a same-epoch burst on top of it holds THAT position, which is the
+        point the map is already showing."""
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        key = "held-2"
+        first = track_filter.smooth_solve(make_result(35.0, -82.0, 1_000_000), key, None)
+        assert first["kf_action"] == "init"
+        assert "kf_pos_sigma_m" not in first  # unchanged: init is still raw
+
+        out = track_filter.smooth_solve(make_result(35.02, -82.02, 1_000_000), key, None)
+        assert (out["lat"], out["lon"]) == (35.0, -82.0)
+        assert out["kf_action"] == "passthrough_held"
+
+
+class TestOutcomeCounters:
+    """filter_stats' six outcome counters: one increment per _smooth_kf call,
+    mutually exclusive, so init + gap_reinit + passthrough over their sum is
+    the share of published positions the filter did NOT smooth — the leak rate
+    the KF had no way to report before."""
+
+    def setup_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def teardown_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def test_counters_track_each_outcome(self, monkeypatch):
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        key = "counters-1"
+        lat0, lon0 = 35.0, -82.0
+        ts = 1_000_000
+
+        assert track_filter.filter_stats()["init"] == 0
+
+        # init
+        track_filter.smooth_solve(make_result(lat0, lon0, ts), key, None)
+        assert _counts() == {"init": 1, "gap_reinit": 0, "passthrough": 0, "smoothed": 0}
+
+        # smoothed
+        lat1, lon1 = offset_latlon_m(lat0, lon0, east_m=250.0 * 5.0, north_m=0.0)
+        ts1 = ts + 5_000
+        track_filter.smooth_solve(make_result(lat1, lon1, ts1), key, None)
+        assert _counts() == {"init": 1, "gap_reinit": 0, "passthrough": 0, "smoothed": 1}
+
+        # passthrough (same epoch as the update just applied)
+        track_filter.smooth_solve(make_result(lat1, lon1, ts1), key, None)
+        assert _counts() == {"init": 1, "gap_reinit": 0, "passthrough": 1, "smoothed": 1}
+
+        # gap re-init — counted apart from a fresh key's init, and NOT as one
+        gap_ts = ts1 + int(track_filter._KF_MAX_GAP_S * 1000) + 1_000
+        out = track_filter.smooth_solve(make_result(lat1, lon1, gap_ts), key, None)
+        assert out["kf_action"] == "init"  # the stamp is unchanged; the counter is finer
+        assert _counts() == {"init": 1, "gap_reinit": 1, "passthrough": 1, "smoothed": 1}
+
+        # A second key's first solve is an init, not a gap_reinit.
+        track_filter.smooth_solve(make_result(lat0, lon0, gap_ts), "counters-2", None)
+        assert _counts() == {"init": 2, "gap_reinit": 1, "passthrough": 1, "smoothed": 1}
+
+        stats = track_filter.filter_stats()
+        assert stats["reanchors"] == 0 and stats["manoeuvre_rescues"] == 0
+        assert stats["tracks"] == 2
+
+    def test_every_call_increments_exactly_one_counter(self, monkeypatch):
+        """The sum is the number of solves the filter saw — the property that
+        makes a ratio out of these counters meaningful.  Driven over a track
+        that takes every branch: init, smoothed, a burst, a gap re-init and a
+        re-anchoring jump."""
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        key = "counters-3"
+        lat0, lon0 = 35.0, -82.0
+        ts = 1_000_000
+        calls = 0
+
+        for i in range(6):
+            lat, lon = offset_latlon_m(lat0, lon0, east_m=250.0 * 4.6 * i, north_m=0.0)
+            track_filter.smooth_solve(make_result(lat, lon, ts + int(i * 4600)), key, None)
+            calls += 1
+        # a same-epoch burst
+        track_filter.smooth_solve(make_result(lat0, lon0, ts + int(5 * 4600)), key, None)
+        calls += 1
+        # a 50 km jump: gate breach nothing explains
+        jump_lat, jump_lon = offset_latlon_m(lat0, lon0, east_m=50_000.0, north_m=0.0)
+        track_filter.smooth_solve(make_result(jump_lat, jump_lon, ts + int(6 * 4600)), key, None)
+        calls += 1
+        # a gap re-init
+        gap_ts = ts + int(6 * 4600) + int(track_filter._KF_MAX_GAP_S * 1000) + 1_000
+        track_filter.smooth_solve(make_result(jump_lat, jump_lon, gap_ts), key, None)
+        calls += 1
+
+        stats = track_filter.filter_stats()
+        total = sum(
+            stats[k] for k in ("init", "gap_reinit", "passthrough", "smoothed", "reanchors", "manoeuvre_rescues")
+        )
+        assert total == calls, stats
+        assert (stats["init"], stats["gap_reinit"], stats["passthrough"], stats["reanchors"]) == (1, 1, 1, 1)
+
+    def test_reset_clears_the_counters(self, monkeypatch):
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        track_filter.smooth_solve(make_result(35.0, -82.0, 1_000_000), "counters-4", None)
+        assert track_filter.filter_stats()["init"] == 1
+        track_filter.reset()
+        assert _counts() == {"init": 0, "gap_reinit": 0, "passthrough": 0, "smoothed": 0}
+
+    def test_off_and_ewma_modes_count_nothing(self, monkeypatch):
+        """The counters measure _smooth_kf, not smooth_solve: the other modes
+        never reach it, so a deployment on TRACK_SMOOTHER=off reports zeroes
+        rather than phantom outcomes."""
+        monkeypatch.setenv("TRACK_SMOOTHER", "off")
+        track_filter.smooth_solve(make_result(35.0, -82.0, 1_000_000), "counters-off", None)
+        monkeypatch.setenv("TRACK_SMOOTHER", "ewma")
+        track_filter.smooth_solve(make_result(35.0, -82.0, 1_000_000), "counters-ewma", None)
+        assert _counts() == {"init": 0, "gap_reinit": 0, "passthrough": 0, "smoothed": 0}

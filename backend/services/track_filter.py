@@ -77,17 +77,26 @@ straight-flight RMSE gain against raw solves 37.4% -> 35.1%.
 
 The filter is EWMA-compatible where it needs to be: first solve for a key is
 raw passthrough (no prior to smooth against, exactly like _ewma_smooth_track
-returning raw below len(positions) < 2), a gap past _KF_MAX_GAP_S re-anchors
-instead of bridging — the same threshold solver.py's _MN_DR_MAX_AGE_S uses
-for the same reason (a multi-minute gap is not the same aircraft's
-continuous track) — and duplicate/out-of-order timestamps (dt <= 0) are raw
-passthrough, same as the EWMA.  That last case is not a rare edge condition
-in production: it fires mostly as an association burst, several solves for
-one key sharing a single measurement_ts_ms because overlapping single-node
-association rounds re-solved the same epoch's measurements.  Fusing those
-would double-count the same underlying evidence rather than add independent
-information, so a no-op here is intentional, not a gap in the model — see
-the comment at the dt <= 0 check in _smooth_kf.
+returning raw below len(positions) < 2) and a gap past _KF_MAX_GAP_S
+re-anchors instead of bridging — the same threshold solver.py's
+_MN_DR_MAX_AGE_S uses for the same reason (a multi-minute gap is not the same
+aircraft's continuous track).
+
+Duplicate/out-of-order timestamps (dt <= 0) are a NO-OP ON THE STATE but no
+longer a raw passthrough of the POSITION.  That case is not a rare edge
+condition in production: it fires mostly as an association burst, several
+solves for one key sharing a single measurement_ts_ms because overlapping
+single-node association rounds re-solved the same epoch's measurements.
+Fusing those would double-count the same underlying evidence rather than add
+independent information, so the filter state is left untouched — but the
+EWMA's habit of returning the RAW solve there leaked an unsmoothed position
+into state.multinode_tracks, overwriting the smoothed point this filter had
+just published for the same epoch and putting a solve-scatter-sized step into
+the displayed track.  A same-epoch burst carries no new kinematic
+information, so it must not move the published point either: the result now
+carries the entry's current posterior position (kf_action
+"passthrough_held") with every other field from the new solve.  See the
+comment at the dt <= 0 check in _smooth_kf.
 
 Env gate — TRACK_SMOOTHER, read PER CALL (not cached) so tests can flip it
 without reimporting:
@@ -383,6 +392,20 @@ _kf_last_sweep = 0.0
 _kf_reanchors = 0
 _kf_manoeuvre_rescues = 0
 
+# Since-boot tally of the OTHER _smooth_kf outcomes, same lock and same
+# reasoning as the two counters above.  Together with _kf_reanchors and
+# _kf_manoeuvre_rescues these six are mutually exclusive and exhaustive —
+# exactly one is incremented per _smooth_kf call — so their sum is the number
+# of solves the filter saw, and "init + gap_reinit + passthrough" over that
+# sum is the share of published positions the filter did NOT smooth.  That
+# share was unmeasurable before (the payload's kf_action says it per solve,
+# but nothing aggregated it), which is why a young-filter / association-burst
+# leak rate could only be estimated from captures.  gap_reinit is split out
+# from init even though both stamp kf_action "init": a fresh key is normal
+# churn, while a re-init on a live key means _KF_MAX_GAP_S is being crossed
+# and the track is losing its velocity state mid-flight.
+_kf_outcomes: dict[str, int] = {"init": 0, "gap_reinit": 0, "passthrough": 0, "smoothed": 0}
+
 # H matrices are fixed by the state ordering, never rebuilt per call.
 _H_POS = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]])
 _H_VEL = np.array([[0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]])
@@ -396,24 +419,33 @@ def reset() -> None:
         _kf_last_sweep = 0.0
         _kf_reanchors = 0
         _kf_manoeuvre_rescues = 0
+        for k in _kf_outcomes:
+            _kf_outcomes[k] = 0
 
 
 def filter_stats() -> dict:
-    """Since-boot chi-squared-gate outcomes plus a live manoeuvre gauge.
+    """Since-boot _smooth_kf outcome counts plus a live manoeuvre gauge.
 
     Surfaced on /api/test/solver-stats under "display_filter" (see
-    routes/test.py's _solver_window_stats) because the two counters are the
-    only way to tell a turn from an identity break from outside this module —
-    the per-solve payload carries neither, and both look identical downstream
-    (a raw, unsmoothed result).
+    routes/test.py's _solver_window_stats) because these counters are the only
+    way to see from outside this module how a published position came about —
+    the per-solve payload carries kf_action, but nothing aggregates it, and a
+    turn, an identity break and an unsmoothed (init / gap / same-epoch) result
+    all look alike downstream.
 
-    reanchors / manoeuvre_rescues are cumulative, matching that endpoint's
-    since-boot convention for counters.  manoeuvre_active is a GAUGE: how many
-    live entries are currently running an inflated sigma_a, out of `tracks`.
+    All six outcome counters are cumulative, matching that endpoint's
+    since-boot convention, and mutually exclusive: init, gap_reinit,
+    passthrough, smoothed, reanchors and manoeuvre_rescues sum to the number
+    of solves the filter has seen.  manoeuvre_active is a GAUGE: how many live
+    entries are currently running an inflated sigma_a, out of `tracks`.
     """
     with _KF_LOCK:
         active = sum(1 for e in _KF_TRACKS.values() if _entry_sigma_a(e) > _KF_SIGMA_A_MS2)
         return {
+            "init": _kf_outcomes["init"],
+            "gap_reinit": _kf_outcomes["gap_reinit"],
+            "passthrough": _kf_outcomes["passthrough"],
+            "smoothed": _kf_outcomes["smoothed"],
             "reanchors": _kf_reanchors,
             "manoeuvre_rescues": _kf_manoeuvre_rescues,
             "manoeuvre_active": active,
@@ -484,17 +516,21 @@ def _stamp(result: dict, action: str, d2: float | None = None, innov_m: float | 
     solver.py copies them onto the history record, so a capture can say how
     each published position came about — "smoothed" (in-gate update),
     "manoeuvre_rescued" (gate breach explained by the manoeuvre process
-    noise), "reanchored" (breach nothing explained; identity reset) — and
-    what the innovation was in each case.  kf_d2 is the normalised innovation
+    noise), "reanchored" (breach nothing explained; identity reset), "init"
+    (first solve for the key, or a gap re-init), "passthrough_held"
+    (same-epoch burst: the new solve's fields, the filter's held position) —
+    and what the innovation was in each case.  kf_d2 is the normalised innovation
     against the BASE process noise, the number the gate was first judged on,
     so a rescued update still shows the surprise that triggered the retry.
     d2/innov_m are None on the paths that never computed an innovation —
     first solve, gap re-init, duplicate timestamp — rather than 0, which would
     read as "the innovation was zero".
 
-    Stamped IN PLACE on the raw-passthrough paths: those return the caller's
-    own dict by identity (the EWMA contract this filter kept), and copying
-    just to add three diagnostic fields would break that.
+    Stamped IN PLACE on the RAW paths — first solve, gap re-init, re-anchor:
+    those return the caller's own dict by identity (the EWMA contract this
+    filter kept), and copying just to add three diagnostic fields would break
+    that.  The held same-epoch passthrough is already a copy (it rewrites the
+    position), so nothing is stamped in place there.
     """
     result["kf_action"] = action
     result["kf_d2"] = round(d2, 2) if d2 is not None else None
@@ -857,6 +893,47 @@ def _predict_update(
     return x_upd, p_upd, d2, float(np.hypot(y[0], y[1]))
 
 
+def _posterior_fields(entry: _TrackKF) -> tuple[float, float, float]:
+    """(lat, lon, pos_sigma_m) of this entry's CURRENT posterior.  Caller holds
+    _KF_LOCK.
+
+    The one place the filter state is turned back into a publishable position,
+    shared by the smoothed path and the held same-epoch passthrough so the two
+    cannot disagree about what "the filter's position" means.
+
+    The sqrt is clamped for the same reason learned_velocity's is: a float
+    subtraction in _kf_correct must never be able to throw on this hot path —
+    see that function for the roundoff mode this is the second line of defence
+    against.
+    """
+    lat, lon = offset_latlon_m(entry.ref_lat, entry.ref_lon, east_m=float(entry.x[0]), north_m=float(entry.x[2]))
+    sigma_m = math.sqrt(max(0.0, 0.5 * (entry.P[0, 0] + entry.P[2, 2])))
+    return lat, lon, sigma_m
+
+
+def _hold_position(result: dict, entry: _TrackKF) -> dict:
+    """This solve's fields, the FILTER's position.  Caller holds _KF_LOCK.
+
+    Used on the dt <= 0 path: a same-epoch (or out-of-order) solve carries no
+    new kinematic information, so the filter state is not updated and the
+    published point must not move either.  Everything the new solve does say —
+    rms, n_nodes, covariances, node lists, altitude, its own timestamp — is
+    kept; only lat/lon/kf_pos_sigma_m come from the entry's last posterior.
+
+    A copy, not the caller's dict: unlike the init / re-anchor passthroughs
+    (which return raw and may keep their identity), this result differs from
+    what was handed in, and solver.py holds the raw lat/lon separately for the
+    history record.
+    """
+    lat_h, lon_h, sigma_m = _posterior_fields(entry)
+    held = dict(result)
+    held["lat"] = round(lat_h, 6)
+    held["lon"] = round(lon_h, 6)
+    held["smoother"] = "kf"
+    held["kf_pos_sigma_m"] = round(sigma_m, 1)
+    return _stamp(held, "passthrough_held")
+
+
 def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
     """The "kf" branch of smooth_solve — see that function's docstring for
     the mode dispatch this is reached through."""
@@ -873,6 +950,7 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
 
         if entry is None:
             _KF_TRACKS[track_key] = _init_entry(r_lat, r_lon, ts_s, result, has_adsb_vel, v0e, v0n, r_pos)
+            _kf_outcomes["init"] += 1
             return _stamp(result, "init")  # first solve for this key — nothing to smooth against yet
 
         dt = ts_s - entry.last_ts_s
@@ -883,13 +961,26 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
             # measurement_ts_ms because overlapping single-node association
             # rounds re-solved the same epoch.  Fusing them would
             # double-count the same underlying measurements rather than add
-            # independent evidence, so this stays a no-op, same as the EWMA.
-            return _stamp(result, "passthrough")
+            # independent evidence, so the STATE is left untouched, same as
+            # the EWMA.
+            #
+            # The published POSITION is held at the filter's last posterior
+            # rather than replaced by this solve's raw one, which is where
+            # this departs from the EWMA: solver.py writes whatever comes back
+            # here straight into state.multinode_tracks, so returning raw let
+            # the second solve of a burst overwrite the smoothed point for the
+            # SAME epoch with a full solve-scatter step.  A same-epoch burst
+            # is not new kinematic information, so it must not move the point.
+            # (The very first solve of a key still returns raw above — there
+            # is no posterior to hold yet.)
+            _kf_outcomes["passthrough"] += 1
+            return _hold_position(result, entry)
 
         if dt > _KF_MAX_GAP_S:
             # Too long a gap to bridge with any confidence — start over here,
             # same threshold and same rationale as solver.py's _MN_DR_MAX_AGE_S.
             _KF_TRACKS[track_key] = _init_entry(r_lat, r_lon, ts_s, result, has_adsb_vel, v0e, v0n, r_pos)
+            _kf_outcomes["gap_reinit"] += 1
             return _stamp(result, "init")
 
         z_e, z_n = _enu_offset_m(entry.ref_lat, entry.ref_lon, r_lat, r_lon)
@@ -953,15 +1044,15 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
         entry.last_ts_s = ts_s
         _update_manoeuvre(entry, dt, d2_observed)
 
-        lat_s, lon_s = offset_latlon_m(entry.ref_lat, entry.ref_lon, east_m=float(x_upd[0]), north_m=float(x_upd[2]))
+        # Reads the entry, which the three lines above just became: same
+        # numbers as x_upd/p_upd, one definition of "the filter's position"
+        # shared with the held passthrough (see _posterior_fields).
+        lat_s, lon_s, sigma_m = _posterior_fields(entry)
         smoothed = dict(result)
         smoothed["lat"] = round(lat_s, 6)
         smoothed["lon"] = round(lon_s, 6)
         smoothed["smoother"] = "kf"
-        # Clamped: a sqrt of a float subtraction result must never be able to
-        # throw on this hot path — see _kf_correct for the roundoff mode this
-        # is the second line of defence against.
-        smoothed["kf_pos_sigma_m"] = round(math.sqrt(max(0.0, 0.5 * (p_upd[0, 0] + p_upd[2, 2]))), 1)
+        smoothed["kf_pos_sigma_m"] = round(sigma_m, 1)
         logging.debug(
             "KF: key=%s dt=%.1f raw=(%.4f,%.4f) -> smooth=(%.4f,%.4f) sigma=%.1fm",
             track_key,
@@ -972,6 +1063,11 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
             lon_s,
             smoothed["kf_pos_sigma_m"],
         )
+        # "smoothed" only — a rescued update is already counted by
+        # _kf_manoeuvre_rescue, and the six outcome counters have to stay
+        # mutually exclusive for filter_stats' sum to mean anything.
+        if action == "smoothed":
+            _kf_outcomes["smoothed"] += 1
         return _stamp(smoothed, action, d2_observed, innov_m)
 
 
