@@ -12,6 +12,7 @@ from pipeline.passive_radar import (
     InMemoryEventWriter,
     PassiveRadarPipeline,
 )
+from services import public_location as pl
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -297,6 +298,10 @@ class TestPipelineProcessFrame:
         result = p.generate_receiver_json()
         assert "lat" in result
         assert "lon" in result
-        assert result["lat"] != DEFAULT_NODE_CONFIG["rx_lat"]
-        assert result["lon"] != DEFAULT_NODE_CONFIG["rx_lon"]
+        # The published coordinate itself, not "!= the true one": a fuzz offset
+        # pointing almost due east/west leaves the rounded latitude unchanged.
+        assert (result["lat"], result["lon"]) == pl.public_latlon(
+            DEFAULT_NODE_CONFIG["rx_lat"], DEFAULT_NODE_CONFIG["rx_lon"], DEFAULT_NODE_CONFIG["node_id"]
+        )
+        assert (result["lat"], result["lon"]) != (DEFAULT_NODE_CONFIG["rx_lat"], DEFAULT_NODE_CONFIG["rx_lon"])
         assert p.config["rx_lat"] == DEFAULT_NODE_CONFIG["rx_lat"]
