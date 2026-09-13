@@ -223,9 +223,9 @@ export default function Toolbar({
           <button
             className={`toggle-btn${showInBeamDiag ? " active" : ""}`}
             onClick={onToggleInBeamDiag}
-            title="Show red lines from a node to in-beam aircraft it is NOT currently detecting (beam-coverage gaps)"
+            title="Show red lines from a node to aircraft inside its measured coverage that it is NOT currently detecting (coverage gaps)"
           >
-            Beam gaps
+            Coverage gaps
           </button>
           <button
             className={`toggle-btn${showUncertainty ? " active" : ""}`}

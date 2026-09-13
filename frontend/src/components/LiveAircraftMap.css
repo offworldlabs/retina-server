@@ -1158,6 +1158,46 @@
   border: none !important;
 }
 
+/* Count badge on a receive site shared by more than one node.  Sits on the
+   glyph's shoulder rather than beside it so the marker's anchor — and
+   therefore the point it claims to be at — does not move when a site gains a
+   second receiver. */
+.node-badge {
+  position: absolute;
+  top: -3px;
+  right: -5px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 2px;
+  border-radius: 6px;
+  background: #facc15;
+  color: #0a162a;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 12px;
+  text-align: center;
+  box-shadow: 0 0 4px rgba(250, 204, 21, 0.75);
+}
+
+/* Per-node "Show"/"Hide" control in a shared site's popup.  A site with two
+   receivers has no single node for a marker click to select, so the choice
+   moves into the popup. */
+.node-select {
+  margin-top: 3px;
+  padding: 1px 7px;
+  border: 1px solid rgba(250, 204, 21, 0.5);
+  border-radius: 3px;
+  background: rgba(250, 204, 21, 0.12);
+  color: #facc15;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.node-select:hover {
+  background: rgba(250, 204, 21, 0.24);
+}
+
 /* ── Bottom playback bar ─────────────────────────────────────── */
 
 .playback-bar {

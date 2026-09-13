@@ -95,5 +95,7 @@ pins their position to the arc midpoint, so a long glide walks the reference
 off the measured locus.
 
 Selecting an arc track (from the list panel or by clicking the arc) highlights
-its arcs in amber, draws the detecting node's beam wedge, and centers the map
-on the arc midpoint.
+its arcs in amber, draws the detecting node's measured coverage polygon (the
+empirical detection area — nothing at all for a node that has none yet; the
+theoretical beam wedge is never drawn), and centers the map on the arc
+midpoint.

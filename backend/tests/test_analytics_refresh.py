@@ -413,3 +413,55 @@ class TestMissedDetectionsCountsClaimsAsDetections:
         assert entry["detected"] == 0
         assert entry["missed"] == 1
         assert entry["miss_rate"] == 1.0
+
+
+# ── Public node identifiers ──────────────────────────────────────────────────
+
+
+class TestNodeRefInPublicPayloads:
+    """Every payload that names a node carries its public handle.
+
+    The map has to print something for a node, and the node id is the name its
+    owner gave the machine — see services/node_ref.py.  Added before the
+    real-only split, so both analytics variants and /api/radar/nodes agree.
+    """
+
+    NODE = "test-noderef-1"
+
+    @pytest.fixture(autouse=True)
+    def _a_connected_node(self):
+        from core import state
+
+        state.node_analytics.register_node(self.NODE, {"rx_lat": 33.45, "rx_lon": -112.07, "max_range_km": 50})
+        state.connected_nodes[self.NODE] = {
+            "status": "connected",
+            "config": {"name": "noderef-test", "rx_lat": 33.45, "rx_lon": -112.07},
+            "is_synthetic": False,
+        }
+        yield
+        state.connected_nodes.pop(self.NODE, None)
+        state.node_analytics.retire_node(self.NODE)
+
+    def _refresh(self):
+        from services.tasks.analytics_refresh import _refresh_analytics_and_nodes
+
+        _refresh_analytics_and_nodes()
+
+    def test_both_analytics_variants_carry_it(self):
+        from core import state
+        from services.node_ref import public_node_ref
+
+        self._refresh()
+        expected = public_node_ref(self.NODE)
+        for raw in (state.latest_analytics_bytes, state.latest_analytics_real_bytes):
+            node = orjson.loads(raw)["nodes"][self.NODE]
+            assert node["node_ref"] == expected
+            assert node["node_ref"] != self.NODE
+
+    def test_the_nodes_payload_carries_it(self):
+        from core import state
+        from services.node_ref import public_node_ref
+
+        self._refresh()
+        node = orjson.loads(state.latest_nodes_bytes)["nodes"][self.NODE]
+        assert node["node_ref"] == public_node_ref(self.NODE)

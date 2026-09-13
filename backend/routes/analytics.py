@@ -13,6 +13,7 @@ from core import state
 from core.auth import get_user_nodes
 from core.users import ANONYMOUS_USER, AUTH_BYPASS, read_user_from_token
 from services import node_bias
+from services.node_ref import public_node_ref
 from services.public_location import public_node_summary
 from services.publication import is_private, private_node_ids
 
@@ -82,7 +83,10 @@ async def radar_analytics(request: Request, real_only: bool = False):
         # rather than tell the owner anything.
         if summary.keys() == {"node_id"}:
             continue
-        nodes[nid] = public_node_summary(nid, summary)
+        # Built fresh like the per-node route below, so it carries the same
+        # public handle the cached listing does — or the owner's own node is
+        # the one node on their map without a name.
+        nodes[nid] = {**public_node_summary(nid, summary), "node_ref": public_node_ref(nid)}
     return Response(
         content=orjson.dumps(payload, option=orjson.OPT_SERIALIZE_NUMPY),
         media_type="application/json",
@@ -109,6 +113,10 @@ async def radar_node_analytics(node_id: str, request: Request):
     # the same receiver-geometry rewrite has to happen here too, or this route
     # is the hole the cached one closed.  See services/public_location.py.
     summary = public_node_summary(node_id, summary)
+    # The same public handle the cached listing carries, for the same reason:
+    # this route is built fresh, so anything the listing adds has to be added
+    # here too or the two surfaces disagree.  See services/node_ref.py.
+    summary = {**summary, "node_ref": public_node_ref(node_id)}
     # Backend-computed bias estimate from claim residuals — same conditional
     # shape as the manager's own blocks: present only once the node has
     # residual history.  The trust block above already blends backend-fed

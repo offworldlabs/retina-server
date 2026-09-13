@@ -244,6 +244,41 @@ export function nearestPointOnPolyline(
 }
 
 
+/**
+ * Is (lat, lon) inside the ring `poly` ([[lat, lon], …], closed or not)?
+ *
+ * Even-odd ray casting in the plane, treating lon as x and lat as y.  Flat is
+ * exact enough here: the rings this tests are node coverage polygons, tens of
+ * km across, and the question is which side of an edge a point falls on, not
+ * how far.
+ *
+ * A ring that wraps around north needs no special handling — the coverage
+ * polygon is star-shaped around the receiver and its vertices are emitted in
+ * angular order, so "wrapping north" is just an ordinary edge between two
+ * vertices, not a discontinuity.  (A polygon crossing the antimeridian would
+ * be one, and nothing in this system produces one.)
+ */
+export function pointInPolygon(
+  lat: number,
+  lon: number,
+  poly: [number, number][] | null | undefined,
+): boolean {
+  if (!Array.isArray(poly) || poly.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    const [latI, lonI] = poly[i];
+    const [latJ, lonJ] = poly[j];
+    // Half-open in latitude (one endpoint counted, the other not) so a ray
+    // passing exactly through a vertex crosses once rather than twice.
+    const straddles = latI > lat !== latJ > lat;
+    if (!straddles) continue;
+    const lonAtLat = lonI + ((lat - latI) / (latJ - latI)) * (lonJ - lonI);
+    if (lon < lonAtLat) inside = !inside;
+  }
+  return inside;
+}
+
+
 /** True when both coordinates are usable.  null/undefined and the (0, 0)
  *  broken-config sentinel are invalid, but a legitimate 0 on a single axis
  *  (equator / prime meridian) is not — the widespread `!lat || !lon` form

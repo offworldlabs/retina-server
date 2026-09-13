@@ -568,6 +568,22 @@ class TestOwnerSeesTheirOwnPrivateNodeInAnalytics:
         # The rest of the cached payload rides along untouched.
         assert body["nodes"]["other-node"] == {"node_id": "other-node"}
 
+    def test_the_owners_private_node_carries_a_node_ref_too(self, client, seed_nodes, analytics_node):
+        """Built fresh, like the per-node route — so it has to be given the
+        public handle the cached listing already carries, or the owner's own
+        node is the one node on their map without a name."""
+        from core.users import ANONYMOUS_USER
+        from services.node_ref import public_node_ref
+
+        seed_nodes(**{_PRIV: "private"})
+        self._own(_PRIV, ANONYMOUS_USER["id"])
+        try:
+            body = client.get("/api/radar/analytics").json()
+        finally:
+            self._own(_PRIV, None)
+        assert body["nodes"][_PRIV]["node_ref"] == public_node_ref(_PRIV)
+        assert body["nodes"][_PRIV]["node_ref"] != _PRIV
+
     def test_the_owners_copy_is_the_same_fuzzed_frame_the_public_would_get(self, client, seed_nodes, analytics_node):
         """An owner is not an admin.  They already know where their own receiver
         is, so serving the truth here buys them nothing and makes this route a
@@ -587,7 +603,13 @@ class TestOwnerSeesTheirOwnPrivateNodeInAnalytics:
                 option=orjson.OPT_SERIALIZE_NUMPY,
             )
         )
-        assert body["nodes"][_PRIV] == expected
+        # The public handle rides on top of the fuzzed frame; everything under
+        # it must be exactly what the public would get.  uptime_s is the one
+        # field that legitimately differs between two summaries taken a few
+        # milliseconds apart (rounded to 0.1 s), so it is compared separately.
+        got = {k: v for k, v in body["nodes"][_PRIV].items() if k != "node_ref"}
+        assert abs(got["metrics"].pop("uptime_s") - expected["metrics"].pop("uptime_s")) < 5.0
+        assert got == expected
         rx = body["nodes"][_PRIV]["detection_area"]["rx"]
         assert rx["lat"] != self.RX["rx_lat"]
         assert "location_uncertainty_km" in rx
