@@ -8,6 +8,11 @@ import {
   hideDrIcon,
   isDarkMultinodeSolve,
   makeAircraftIcon,
+  nodeIcon,
+  nodeSiteGlyphSvg,
+  nodeSiteIcon,
+  NODE_SITE_MAX_SLICES,
+  sectorPath,
 } from "./icons";
 import {
   DR_ICON_HIDE_DISTANCE_DARK_M,
@@ -315,5 +320,119 @@ describe("makeAircraftIcon follows the active palette", () => {
     expect(dark).toContain(PALETTES.dark.ICON_SHADOW);
     expect(light).toContain(`stroke-opacity="${PALETTES.light.ICON_HALO_OPACITY}"`);
     expect(dark).toContain(`stroke-opacity="${PALETTES.dark.ICON_HALO_OPACITY}"`);
+  });
+});
+
+describe("nodeSiteIcon slices the disc per co-located node", () => {
+  const wedgeCount = (html: string) => (html.match(/<path /g) ?? []).length;
+  const htmlOf = (count: number) => nodeSiteIcon(count).options.html as string;
+
+  beforeEach(() => setActivePalette(PALETTES.dark, "dark"));
+  afterEach(() => setActivePalette(PALETTES.dark, "dark"));
+
+  it("draws one wedge per node and no count badge", () => {
+    const html = htmlOf(2);
+    expect(wedgeCount(html)).toBe(2);
+    expect(html).not.toContain("node-badge");
+    expect(wedgeCount(htmlOf(4))).toBe(4);
+  });
+
+  it("emits well-formed wedge paths for every count up to and past the cap", () => {
+    for (let n = 2; n <= NODE_SITE_MAX_SLICES + 1; n++) {
+      const html = htmlOf(n);
+      expect(html).not.toContain("NaN");
+      const ds = [...html.matchAll(/ d="([^"]+)"/g)].map((m) => m[1]);
+      expect(ds).toHaveLength(Math.min(n, NODE_SITE_MAX_SLICES));
+      for (const d of ds) expect(d).toMatch(/^M[-\d. ]+L[-\d. ]+A[-\d. ]+Z$/);
+    }
+  });
+
+  it("floors fractional counts and falls back to the plain glyph for junk", () => {
+    expect(nodeSiteIcon(2.5)).toBe(nodeSiteIcon(2));
+    expect(nodeSiteIcon(Infinity)).toBe(nodeIcon());
+    expect(nodeSiteIcon(NaN)).toBe(nodeIcon());
+    expect(nodeSiteIcon(0)).toBe(nodeIcon());
+    expect(nodeSiteIcon(undefined as unknown as number)).toBe(nodeIcon());
+  });
+
+  it("caps the slice count but keeps the true number in the hover title", () => {
+    const html = htmlOf(12);
+    expect(wedgeCount(html)).toBe(NODE_SITE_MAX_SLICES);
+    expect(html).toContain("<title>12 nodes at this site</title>");
+  });
+
+  it("keeps the outer ring, size and anchor so the claimed position does not move", () => {
+    const icon = nodeSiteIcon(3);
+    const html = icon.options.html as string;
+    expect(html).toContain('r="10.5"');
+    expect(html).toContain(PALETTES.dark.ICON_SHADOW);
+    expect(icon.options.iconSize).toEqual([22, 22]);
+    expect(icon.options.iconAnchor).toEqual([11, 11]);
+  });
+
+  it("falls back to the plain node glyph for one (or no) node", () => {
+    expect(nodeSiteIcon(1)).toBe(nodeIcon());
+    expect(nodeSiteIcon(0)).toBe(nodeIcon());
+    expect(nodeSiteIcon(NaN)).toBe(nodeIcon());
+    expect(nodeSiteIcon(undefined as unknown as number)).toBe(nodeIcon());
+  });
+
+  it("returns the same DivIcon for repeated calls with the same count", () => {
+    expect(nodeSiteIcon(2)).toBe(nodeSiteIcon(2));
+    expect(nodeSiteIcon(2)).not.toBe(nodeSiteIcon(3));
+  });
+
+  it("follows the active palette", () => {
+    setActivePalette(PALETTES.light, "light");
+    expect(htmlOf(2)).toContain(`fill="${PALETTES.light.NODE}"`);
+    setActivePalette(PALETTES.dark, "dark");
+    expect(htmlOf(2)).toContain(`fill="${PALETTES.dark.NODE}"`);
+  });
+
+  it("puts the first cut at 12 o'clock", () => {
+    const html = nodeSiteGlyphSvg({ NODE: "#f59e0b", ICON_SHADOW: "none" }, 2);
+    // Two wedges: -90..90 (right half) and 90..270 (left half).
+    const ds = [...html.matchAll(/ d="([^"]+)"/g)].map((m) => m[1]);
+    expect(ds).toHaveLength(2);
+    expect(ds[0]).toContain(sectorPath(12, 12, 5.5, -90, 90, 1.6));
+    expect(ds[1]).toContain(sectorPath(12, 12, 5.5, 90, 270, 1.6));
+  });
+});
+
+describe("sectorPath", () => {
+  const parse = (d: string) => {
+    const m = d.match(/^M([-\d.]+) ([-\d.]+)L([-\d.]+) ([-\d.]+)A([-\d.]+) ([-\d.]+) 0 ([01]) 1 ([-\d.]+) ([-\d.]+)Z$/);
+    if (!m) throw new Error(`unparsed path: ${d}`);
+    const n = m.slice(1).map(Number);
+    return { apex: [n[0], n[1]], start: [n[2], n[3]], r: n[4], largeArc: n[6], end: [n[7], n[8]] };
+  };
+
+  it("starts at the top of the circle for a0 = -90", () => {
+    const p = parse(sectorPath(12, 12, 5.5, -90, 0));
+    expect(p.apex[0]).toBeCloseTo(12, 3);
+    expect(p.apex[1]).toBeCloseTo(12, 3);
+    expect(p.start[0]).toBeCloseTo(12, 3);
+    expect(p.start[1]).toBeCloseTo(12 - 5.5, 3);
+    // a1 = 0 is 3 o'clock.
+    expect(p.end[0]).toBeCloseTo(12 + 5.5, 3);
+    expect(p.end[1]).toBeCloseTo(12, 3);
+    expect(p.largeArc).toBe(0);
+  });
+
+  it("uses the large-arc flag for sectors wider than a half turn", () => {
+    expect(parse(sectorPath(12, 12, 5, -90, 150)).largeArc).toBe(1);
+    expect(parse(sectorPath(12, 12, 5, -90, 90)).largeArc).toBe(0);
+  });
+
+  it("insets both straight edges by half the gap", () => {
+    const gap = 1.6;
+    const p = parse(sectorPath(12, 12, 5.5, -90, 90, gap));
+    // Right half: the apex sits gap/2 to the right of centre and both arc
+    // endpoints are pulled gap/2 to the right of the vertical cut.
+    expect(p.apex[0]).toBeCloseTo(12 + gap / 2, 3);
+    expect(p.apex[1]).toBeCloseTo(12, 3);
+    expect(p.start[0]).toBeCloseTo(12 + gap / 2, 3);
+    expect(p.end[0]).toBeCloseTo(12 + gap / 2, 3);
+    expect(Math.hypot(p.start[0] - 12, p.start[1] - 12)).toBeCloseTo(5.5, 3);
   });
 });

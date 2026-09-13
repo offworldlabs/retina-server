@@ -277,16 +277,95 @@ export function nodeIcon() {
   return icon;
 }
 
-// One marker per receive SITE, so a site with two co-located receivers needs
-// to say so: the glyph is unchanged (same size, same glow, same anchor) with a
-// small count badge on its shoulder.  Two stacked glyphs used to be the only
-// hint, and being identical and coincident they read as one node.  Cached per
-// (palette, count) — a divIcon is immutable and a fleet has two or three
-// distinct counts, so rebuilding one per render would churn DOM for nothing.
+// One marker per receive SITE, so a site with several co-located receivers
+// needs to say so.  The glyph's central disc is cut into one pie slice per
+// node — two halves, three thirds, four quadrants — with thin transparent
+// gaps the basemap shows through.  A numeric badge on the glyph's shoulder
+// was tried first and looked awkward (a tiny yellow pill hanging off a ring);
+// two stacked glyphs before that were identical and coincident and read as
+// one node.  Slices keep the marker the same size and anchor (the point it
+// claims to be at does not move when a site gains a receiver) and need no
+// extra DOM: it is still one SVG.  The number itself survives only as the
+// SVG <title> hover hint; the popup lists the nodes.
+//
+// Cached per (palette, count) — a divIcon is immutable and a fleet has two or
+// three distinct counts, so rebuilding one per render would churn DOM for
+// nothing.
 const _nodeSiteIcons = new WeakMap<object, Map<number, L.DivIcon>>();
 
+/** Slices beyond this get too thin for a 1.5 px gap to read at 22 px. */
+export const NODE_SITE_MAX_SLICES = 8;
+
+// Sliced disc radius, in viewBox units.  The single-node dot (r=3.2) is too
+// small to cut legibly, so the sliced disc fills the space inside the r=6.5
+// ring (stroke 1.5, inner edge at 5.75) instead: the ring frames the pie and
+// the glyph keeps its three-ring family resemblance.
+const NODE_SITE_DISC_R = 5.5;
+// Gap between slices, in viewBox units, measured across the cut (1.6 units at
+// the 22/24 render scale is ~1.5 px).  Applied as a parallel offset of each
+// straight edge — not an angular trim — so the slot is the same width from
+// rim to centre and the slices read as a cut pie rather than a fan.
+const NODE_SITE_GAP = 1.6;
+
+const DEG = Math.PI / 180;
+const fmt = (v: number) => Number(v.toFixed(3)).toString();
+
+/**
+ * SVG path for a filled circular sector of radius `r` about (`cx`,`cy`), from
+ * `a0Deg` to `a1Deg` clockwise, angles measured from 3 o'clock like the SVG
+ * axes (so -90 is 12 o'clock).  With `gap` > 0 both straight edges are pushed
+ * inward by `gap / 2`, which moves the apex off centre along the bisector and
+ * shortens the arc by the matching chord, leaving a uniform transparent slot
+ * between neighbouring sectors of a full disc.
+ */
+export function sectorPath(cx: number, cy: number, r: number, a0Deg: number, a1Deg: number, gap = 0): string {
+  const half = (a1Deg - a0Deg) / 2; // degrees
+  const d = gap / 2;
+  // Parallel edge offset: where the offset edge line meets the circle.
+  const trim = d > 0 ? Math.asin(Math.min(1, d / r)) / DEG : 0;
+  const s = (a0Deg + trim) * DEG;
+  const e = (a1Deg - trim) * DEG;
+  // Where the two offset edges meet, measured along the bisector.
+  const apexDist = d > 0 ? d / Math.sin(half * DEG) : 0;
+  const m = (a0Deg + half) * DEG;
+  const ax = cx + apexDist * Math.cos(m);
+  const ay = cy + apexDist * Math.sin(m);
+  const sx = cx + r * Math.cos(s);
+  const sy = cy + r * Math.sin(s);
+  const ex = cx + r * Math.cos(e);
+  const ey = cy + r * Math.sin(e);
+  const largeArc = a1Deg - a0Deg - 2 * trim > 180 ? 1 : 0;
+  return `M${fmt(ax)} ${fmt(ay)}L${fmt(sx)} ${fmt(sy)}A${fmt(r)} ${fmt(r)} 0 ${largeArc} 1 ${fmt(ex)} ${fmt(ey)}Z`;
+}
+
+/**
+ * The glyph for a site shared by `count` nodes: nodeGlyphSvg with the central
+ * dot replaced by a disc cut into min(count, NODE_SITE_MAX_SLICES) sectors.
+ * The first cut is at 12 o'clock so two nodes read as left/right halves and
+ * four as quadrants split by a vertical and a horizontal line.  Built from
+ * plain <path> wedges rather than a <mask>/<clipPath>: those need element ids
+ * and many identical divIcons share one document.
+ */
+export function nodeSiteGlyphSvg({ NODE, ICON_SHADOW }: { NODE: string; ICON_SHADOW: string }, count: number) {
+  const n = Math.min(Math.max(2, Math.floor(count)), NODE_SITE_MAX_SLICES);
+  const step = 360 / n;
+  const wedges = Array.from({ length: n }, (_, i) =>
+    `<path d="${sectorPath(12, 12, NODE_SITE_DISC_R, -90 + i * step, -90 + (i + 1) * step, NODE_SITE_GAP)}" fill="${NODE}"/>`,
+  ).join("\n    ");
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24"
+    style="display:block;filter:${ICON_SHADOW};">
+    <title>${count} nodes at this site</title>
+    ${wedges}
+    <circle cx="12" cy="12" r="6.5" fill="none" stroke="${NODE}" stroke-width="1.5" opacity="0.75"/>
+    <circle cx="12" cy="12" r="10.5" fill="none" stroke="${NODE}" stroke-width="1" opacity="0.4"/>
+  </svg>`;
+}
+
 export function nodeSiteIcon(count: number): L.DivIcon {
-  if (!(count > 1)) return nodeIcon();
+  // The only caller passes an array length, but a fractional or infinite
+  // count would otherwise mint a "2.5 nodes" title and its own cache entry.
+  count = Math.floor(count);
+  if (!(count > 1) || !Number.isFinite(count)) return nodeIcon();
   const palette = activePalette();
   let byCount = _nodeSiteIcons.get(palette);
   if (!byCount) {
@@ -297,7 +376,7 @@ export function nodeSiteIcon(count: number): L.DivIcon {
   if (cached) return cached;
   const icon = L.divIcon({
     className: "node-marker",
-    html: `<div style="position:relative;width:22px;height:22px;">${nodeGlyphSvg(palette)}<span class="node-badge">${count}</span></div>`,
+    html: nodeSiteGlyphSvg(palette, count),
     iconSize: [22, 22],
     iconAnchor: [11, 11],
   });
