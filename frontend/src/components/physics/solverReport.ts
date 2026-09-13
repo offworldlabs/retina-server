@@ -25,21 +25,41 @@ export interface SolverStats {
   rejects: { total: number; by_reason: Record<string, number> };
   position_error_km: { median: number | null; p90: number | null; n: number };
   ghosts: {
-    /** Always "dark" — precision is scored over dark tracks only. */
+    /** Always "dark" — precision is scored over dark-lane solves only. */
     scope?: string;
-    live_tracks: number;
-    /** Informational; excluded from the precision denominator. */
-    adsb_associated: number;
-    /** The precision denominator: dark tracks with a position. */
-    dark_tracks?: number;
-    gt_matched: number;
-    /** Dark tracks rescued by nearby real ADS-B traffic rather than GT. */
-    adsb_near?: number;
-    ghost_tracks: number;
-    /** null when there are no dark tracks to score — formatPct renders "—".
-     * It used to read a flat 100 in that case, which is the shape a healthy
-     * dark lane and a completely dead one share. */
+    /** gt_error_km above which a published dark solve counts as a ghost. */
+    gate_km?: number;
+    /** Windowed over the funnel's published dark records (same window as
+     * position_error_km).  judged = records with a ground-truth stamp whose
+     * nodes are all simulated; a real node's solve has no truth to be judged
+     * against and is counted in unjudged_real_world instead. */
+    published: number;
+    judged: number;
+    unjudged_real_world?: number;
+    ghosts: number;
+    /** Ghosts that were an n>=3 one-shot preview (solve_count 1) — the
+     * population a live snapshot of the track store almost never catches. */
+    one_shot_ghosts?: number;
+    /** null when nothing in the window could be judged — formatPct renders
+     * "—".  It used to read a flat 100 in that case, which is the shape a
+     * healthy dark lane and a completely dead one share. */
     precision_pct: number | null;
+    by_n_nodes?: Record<string, { judged: number; ghosts: number; ghost_pct: number | null }>;
+    /** The point-in-time scan of the live track store the block used to
+     * consist of.  Kept for the map-state view; it cannot see short-lived
+     * ghosts, which is why the headline moved to the window. */
+    live: {
+      live_tracks: number;
+      /** Informational; excluded from the precision denominator. */
+      adsb_associated: number;
+      /** The precision denominator: dark tracks with a position. */
+      dark_tracks?: number;
+      gt_matched: number;
+      /** Dark tracks rescued by nearby real ADS-B traffic rather than GT. */
+      adsb_near?: number;
+      ghost_tracks: number;
+      precision_pct: number | null;
+    };
   };
   consensus: {
     mode: string;

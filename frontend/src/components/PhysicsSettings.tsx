@@ -966,16 +966,22 @@ export default function PhysicsSettings() {
             </div>
             <div
               className="ps-perf-card"
-              title="Live multinode tracks with no ADS-B tag, more than 5 km from every ground-truth trail and every fresh ADS-B fix. Precision is scored over dark tracks only — ADS-B-tagged tracks are not evidence either way — and reads — when there are none."
+              title={
+                "Dark-lane published solves this window that landed more than " +
+                `${solverStats?.ghosts.gate_km ?? 5} km from every ground-truth trail at the solve epoch. ` +
+                "Precision is scored over judged solves only (simulated nodes with a ground-truth stamp) and reads — when there are none. " +
+                `Live now: ${solverStats?.ghosts.live.ghost_tracks ?? "—"} ghost of ${solverStats?.ghosts.live.dark_tracks ?? "—"} dark tracks on the map.`
+              }
             >
               <span className="ps-perf-val">
-                {solverStats ? solverStats.ghosts.ghost_tracks : "—"}
+                {solverStats ? solverStats.ghosts.ghosts : "—"}
               </span>
               <span className="ps-perf-lbl">
-                Ghost Tracks
+                Ghost Solves
                 {solverStats && (
                   <span className="ps-perf-sublbl">
                     {" "}· {formatPct(solverStats.ghosts.precision_pct)} precision
+                    {solverStats.ghosts.judged > 0 && ` · ${solverStats.ghosts.judged} judged`}
                   </span>
                 )}
               </span>

@@ -1060,6 +1060,63 @@ def _n_nodes_bucket(n_nodes) -> str:
     return str(n)
 
 
+def _windowed_ghosts(published_records: list[dict]) -> dict:
+    """Ghost count over one window's published DARK records.
+
+    judged     — records with a gt_error_km stamp whose contributing nodes are
+                 all simulated (state.node_world == "sim").  A real node's
+                 solve has no trail to be judged against: solver._gt_nearest
+                 has no distance cap, so it would carry the distance to the
+                 nearest SIMULATED trail — hundreds of km — and read as a
+                 ghost.  A record with no node ids cannot be placed in a world
+                 and is judged on its stamp alone.
+    ghosts     — judged records with gt_error_km > _GHOST_GATE_KM.
+    one_shot   — of those, records whose solve_count is 1: the n>=3 preview
+                 that aircraft_feed withdraws after MN_ONESHOT_TTL_S, which is
+                 the population a live snapshot almost never catches.
+    by_n_nodes — judged/ghosts/ghost_pct per _n_nodes_bucket, because the
+                 ghost rate is a function of n (n=3 is where it lives) and
+                 the total alone hides that.
+    """
+    judged = 0
+    ghosts = 0
+    one_shot = 0
+    unjudged_real = 0
+    buckets: dict[str, list[int]] = {}
+    for r in published_records:
+        err = r.get("gt_error_km")
+        if err is None:
+            continue
+        if any(state.node_world(nid) != "sim" for nid in (r.get("contributing_node_ids") or [])):
+            unjudged_real += 1
+            continue
+        judged += 1
+        b = buckets.setdefault(_n_nodes_bucket(r.get("n_nodes")), [0, 0])
+        b[0] += 1
+        if err > _GHOST_GATE_KM:
+            ghosts += 1
+            b[1] += 1
+            if r.get("solve_count") == 1:
+                one_shot += 1
+    order = {"<2": 0, "2": 1, "3": 2, "4": 3, "5+": 4}
+    return {
+        "published": len(published_records),
+        "judged": judged,
+        "unjudged_real_world": unjudged_real,
+        "ghosts": ghosts,
+        "one_shot_ghosts": one_shot,
+        "precision_pct": round((judged - ghosts) / judged * 100, 1) if judged else None,
+        "by_n_nodes": {
+            label: {
+                "judged": b[0],
+                "ghosts": b[1],
+                "ghost_pct": round(b[1] / b[0] * 100, 1) if b[0] else None,
+            }
+            for label, b in sorted(buckets.items(), key=lambda kv: order.get(kv[0], 99))
+        },
+    }
+
+
 def _by_n_nodes(records: list[dict]) -> dict:
     """Per-attempt outcomes bucketed by how many nodes went into the solve.
 
@@ -1134,19 +1191,30 @@ def _solver_window_stats(minutes: float) -> dict:
     Funnel, reject-reason and position-error stats are windowed over the last
     ``minutes`` of both solve-history deques merged (idiom shared with
     mlat-history), with ``window_effective_minutes`` reporting how much of
-    that window is actually held.  Ghost detection and consensus/counters read
-    *current* live state (multinode_tracks / ground_truth_trails /
-    adsb_aircraft) rather than the window — a live track is either a ghost
-    right now or it isn't.
+    that window is actually held.  Consensus/counters read *current* live
+    state rather than the window.
 
-    Ghost definition: a currently-live state.multinode_tracks entry that is
-    (1) not ADS-B-associated (no adsb_hex on the result and its key doesn't
-    start with mn-adsb-, solver.py:615), (2) more than _GHOST_GATE_KM from
-    the time-nearest (<= _GHOST_GT_MAX_AGE_S old) point of every ground-truth
-    trail, AND (3) more than _GHOST_GATE_KM from every adsb_aircraft entry
-    fresh within _ADSB_FRESH_S. Both distance gates are required because
-    staging injects real adsb.lol traffic alongside the simulated fleet — "no
-    GT match" alone would mislabel every real-traffic track as a ghost.
+    GHOSTS ARE WINDOWED TOO (``ghosts``), over the same published dark
+    records as the funnel: a ghost is a published dark solve whose stamped
+    gt_error_km (solver._gt_nearest — distance to the time-nearest point of
+    the nearest ground-truth trail at the solve epoch) exceeds _GHOST_GATE_KM.
+    Records with no GT stamp, and records with a contributing node from the
+    real world (state.node_world) — where no trail exists to judge against —
+    are "not judged" and stay out of the denominator, so precision_pct is
+    None rather than 100 where nothing could be scored.
+
+    It used to be a point-in-time scan of state.multinode_tracks instead,
+    and that scan is still published as ``ghosts.live`` — but it could not
+    see the ghosts that matter.  The dark lane's ghosts are overwhelmingly
+    short-lived: an n=3 one-shot is withdrawn after MN_ONESHOT_TTL_S (15 s)
+    and a wrong mint is superseded or expires within a minute, so a snapshot
+    taken at request time reported 0 ghosts / 100 % precision on a test
+    droplet whose solve history held 58 published dark solves more than 3 km
+    from any truth in the same 35 minutes.  The window sees every one of
+    them.  The live scan's ADS-B rescue (``adsb_near``) is not needed by the
+    windowed number: a sim node's solves are judged against the simulated
+    world, which now mirrors the live traffic it echoes, and real-node solves
+    are not judged at all.
     """
     cutoff_ms = int((time.time() - minutes * 60.0) * 1000)
     merged = _merged_solve_history()
@@ -1357,6 +1425,17 @@ def _solver_window_stats(minutes: float) -> dict:
             ghost_tracks += 1
 
     precision_pct = round((dark_tracks - ghost_tracks) / dark_tracks * 100, 1) if dark_tracks else None
+    live_ghosts = {
+        "live_tracks": live_tracks,
+        # Informational — excluded from the precision denominator.
+        "adsb_associated": adsb_associated,
+        "dark_tracks": dark_tracks,
+        "gt_matched": gt_matched,
+        "adsb_near": adsb_near,
+        "ghost_tracks": ghost_tracks,
+        "precision_pct": precision_pct,
+    }
+    windowed_ghosts = _windowed_ghosts(published_records)
 
     # ── known lane / claiming counters ──────────────────────────────────────
     # One counters_lock acquisition for both blocks below, so the two are a
@@ -1435,17 +1514,14 @@ def _solver_window_stats(minutes: float) -> dict:
         "contamination": contamination,
         "resolve_skips": resolve_skips,
         "ghosts": {
-            # Scoped to dark tracks: precision_pct's denominator is
-            # dark_tracks, and it is None (not 100.0) when there are none.
+            # Windowed over the funnel's published dark records (see the
+            # docstring); precision_pct is None (not 100.0) when nothing in
+            # the window could be judged.  ``live`` is the point-in-time scan
+            # of state.multinode_tracks the block used to consist of.
             "scope": "dark",
-            "live_tracks": live_tracks,
-            # Informational — excluded from the precision denominator.
-            "adsb_associated": adsb_associated,
-            "dark_tracks": dark_tracks,
-            "gt_matched": gt_matched,
-            "adsb_near": adsb_near,
-            "ghost_tracks": ghost_tracks,
-            "precision_pct": precision_pct,
+            "gate_km": _GHOST_GATE_KM,
+            **windowed_ghosts,
+            "live": live_ghosts,
         },
         "consensus": {
             "mode": solver_mod._CONSENSUS_MODE,
