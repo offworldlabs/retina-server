@@ -273,9 +273,76 @@ positives open a bin; 10 extend range to P95 × 1.25); shrinking requires
 negative evidence over time (≥3 recorded disappearances spanning ≥10 min,
 newer than the bin's last positive) — absence of traffic never shrinks.
 
-**What counts as a calibration positive is deliberately narrow.** The polygon
-is used to judge solves and gate association, so it must be built only from
-evidence independent of both, and only from *detections*:
+**Under `KNOWN_LANE_MODE != off` the CLAIM lane is the only calibration
+source.** The emit-loop path below is silenced, for a different reason per
+mode. In `binding` (the default since #240, 2026-08-25) claiming strips every
+detection it binds from the frame *before* the tracker sees it, so
+`track.last_detection_adsb_hex` — the thing that path gates on — is only ever
+set by the tagged detections claiming did **not** take: adverse selection, the
+worst binds, and for a synthetic node nothing at all. Measured on the test
+deployment 2026-09-13: every synthetic node's newest calibration point was
+dated 2026-08-25, i.e. the path had been dead for 19 days, and the trickle real
+nodes still received (newest 3–6 days old) was 5–41 % out of the node's own
+declared wedge. In `shadow` nothing is stripped, so both paths would see the
+same detection and record it twice.
+
+**What counts as a calibration positive from a claim is deliberately narrow.**
+`services/known_claiming.py::_calibration_from_claim` runs on every claim the
+lane makes and records a point only when all five hold. They are charged in
+order, so exactly one counter moves per claim and the six sum to the claim
+count (`known_claims.calibration_recorded` /
+`known_claims.calibration_rejected.*` in `/api/test/solver-stats`):
+
+1. **not a hold or follow claim** (`calibration_claims_rejected_hold`) —
+   neither has a fresh transponder fix behind it: a hold is the node's own
+   prediction of its own measurement, a follow is the lane's own published
+   solve, and both would feed the polygon what the polygon is used to judge;
+2. **fresh fix at the frame instant** — `CAL_MAX_ADSB_AGE_S` (10 s), the same
+   rule the emit path uses (`rejected_stale_fix`). Claiming itself tolerates
+   45 s, because dead reckoning is what its age-scaled gate is for;
+3. **tight residual, unscaled by fix age** — `CAL_CLAIM_DELAY_US` (3 µs) and
+   `CAL_CLAIM_DOPPLER_HZ` (8 Hz) against the claim's own prediction
+   (`rejected_residual`). The claim gate is 10 µs / 25 Hz, which is where it
+   has to be to bind an echo at all; simulator measurement noise is σ 0.1–0.2
+   µs / 2–4 Hz, so 3 µs / 8 Hz is still > 5σ at the noisy end while shrinking
+   the delay × Doppler area a wrong aircraft can land in by ~10×;
+4. **uncontested and exclusive** (`rejected_contested`) — no established dark
+   global's projection inside the claim gate (the existing `contested` flag),
+   **and** no other known hex whose predicted (delay, Doppler) for this frame
+   lies inside the full age-scaled claim gate of this detection. The second
+   half is why the path-2 candidate list is now built for every frame carrying
+   detections and without skipping already-claimed hexes — the
+   `claimed_hexes` skip moved to the assignment's column build, so claiming is
+   unchanged and a path-1 tag is still judged against the rest of the cache;
+5. **mature link** (`rejected_immature`) — `CAL_CLAIM_MIN_CLAIMS` (3) claims
+   of this hex by this node with no gap over `CAL_CLAIM_STREAK_GAP_S` (10 s,
+   frame time). The counterpart of the emit path's `n_detections >= 3`, kept
+   in its own store in `known_claiming.py` rather than in the hold store,
+   which `KNOWN_HOLD_MAX_GAP_S <= 0` disables entirely. Every non-hold,
+   non-follow claim advances the streak, including ones that fail rules 3–4:
+   those are still evidence of the link, just not clean samples.
+
+The position recorded is the claim's fix **dead-reckoned to the frame
+instant** — the position the assignment gated on, not the reported one — which
+is why `record_claim_calibration` does not apply
+`CAL_FIX_DETECTION_SKEW_S`: dead reckoning makes that skew zero by
+construction.
+
+Measured offline (`backend/scripts/calibration_attribution_bench.py`, 20
+synthetic nodes, 3 seeds × 5 simulated minutes, truth read off the simulator's
+per-detection hex before the tags are stripped): the greedy
+`associate_detections_to_adsb` tags that fed the old path are 8.9–11.0 %
+wrong-hex and 8.1–10.0 % out-of-wedge; every claim recorded ungated is
+0.9–3.5 % / 0–1.3 %; the five rules give **0.0–0.1 % wrong-hex and 0.0 %
+out-of-wedge at 51–82 points per node-minute**. The one exception is a node
+with no ADS-B tags *and* path H enabled, where the yield collapses to ~0.1
+points per node-minute because path H outranks path 2 and rule 1 refuses hold
+claims — see the note at the end of this section.
+
+**Under `KNOWN_LANE_MODE=off` the emit-loop path is unchanged**, and its own
+rules still stand. The polygon is used to judge solves and gate association,
+so it must be built only from evidence independent of both, and only from
+*detections*:
 
 - the position recorded is the aircraft's **reported ADS-B fix** (≤ 10 s old,
   `services/calibration.py`) — never a solver output;
@@ -285,10 +352,27 @@ evidence independent of both, and only from *detections*:
 - that newest detection must itself carry the track's own ADS-B tag — a track
   that identity-swaps onto an untagged target keeps a stale hex and would
   otherwise record the departed aircraft's position;
-- published solves record **nothing** for their contributing nodes: that
-  attribution rides on the very association the polygon judges, and under an
-  active FOV gate it once formed a ghost → positive → wider-gate feedback
-  loop.
+- the fix must be taken within `CAL_FIX_DETECTION_SKEW_S` (2 s) of the
+  detection it is attributed to (the exit-smear rule; staging 2026-08-10);
+- published solves record **nothing** for their contributing nodes, in every
+  mode: that attribution rides on the very association the polygon judges, and
+  under an active FOV gate it once formed a ghost → positive → wider-gate
+  feedback loop.
+
+**Known gap: a tagless node stops calibrating after one frame per link.**
+Path H (the hold) runs *before* path 2 and every claim creates a hold, so from
+the second frame of a link onwards a node that sends no `frame["adsb"]` is
+claiming through path H — which rule 1 refuses, and which does not advance the
+maturity streak either. Such a link therefore never reaches
+`CAL_CLAIM_MIN_CLAIMS`. Nodes that do send tags are unaffected (path 1
+outranks path H), which is the whole synthetic fleet and any receiver with its
+own ADS-B correlation. The bench quantifies it: blind, holds on, 0.11–0.13
+points per node-minute with 97 % of claims charged to `rejected_hold`; the
+same run with `KNOWN_HOLD_MAX_GAP_S=0` gives 51–71. The fix is to let a hold
+claim that was *refreshed against a live transponder fix*
+(`extra["fix_refreshed"]`, the consistency rule in `_claim_holds`) be judged
+on that fix's own prediction rather than the hold's — it is a path-2 claim in
+everything but name. Not done here.
 
 **What is published as a REAL node's detection area is evidence only.** Under
 `FOV_MODE=off` — the default, and what production and test run —

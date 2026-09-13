@@ -735,6 +735,18 @@ persistently above ~12 means a calibration leak, not real coverage (the
 simulator only generates detections in-wedge). Real nodes legitimately learn
 near-omni.
 
+Where the points come from depends on `KNOWN_LANE_MODE`. Off: the emit loop's
+ADS-B-tagged detections. Anything else (binding is the default): the CLAIM lane
+only, under five rules — see `docs/pipeline.md` §7. The funnel is
+`known_claims.calibration_recorded` and `known_claims.calibration_rejected.*`
+in `/api/test/solver-stats`; the five reject reasons are charged in order, so
+they sum with `recorded` to the non-hold claim count. `recorded` flat at zero
+with a large `immature` is a fleet whose links are too short-lived; flat with a
+large `contested` is traffic too dense to attribute exclusively; flat with a
+large `hold` on a node that sends no `frame["adsb"]` is the known path-H gap
+documented in pipeline §7 (`KNOWN_HOLD_MAX_GAP_S=0` is the lever that
+isolates it).
+
 To force a fleet-wide relearn (e.g. after a calibration-semantics change):
 bump `CALIBRATION_SCHEMA` in
 `libs/retina-analytics/src/retina_analytics/empirical_coverage.py` with a
