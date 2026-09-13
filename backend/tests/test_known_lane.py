@@ -13,6 +13,9 @@ the displacement gate would have said.  Pinned here:
   record written on all three;
 - shadow mode records but never touches the live feed; binding publishes
   truth_match solves under the hex's own mn-adsb-* key (and never ghosts);
+- the publish-only residual gate: a truth_match whose rms_delay fails the
+  regular lane's bound is classified and sampled exactly as before, but stays
+  off the map;
 - a publish that raises is contained to its own hex — counted, recorded as
   unpublished, and never allowed to abort the rest of the pass;
 - claim selection: staleness window, single-node and contested claims produce
@@ -154,27 +157,34 @@ def _install(claims, hexn=HEX):
     state.known_claims.setdefault(hexn, deque(maxlen=64)).extend(claims)
 
 
-def _stub_solve(lat_off=0.0, lon_off=0.0, success=True):
+def _stub_solve(lat_off=0.0, lon_off=0.0, success=True, rms_delay=0.5):
     """A solve_fn that converges lat_off/lon_off away from the initial guess
-    (which the known lane places at truth), or fails to converge."""
+    (which the known lane places at truth), or fails to converge.
+
+    ``rms_delay`` is the per-node delay residual the publish gate reads
+    (see known_lane.KNOWN_PUBLISH_MAX_RMS_DELAY_US); pass _SENTINEL to omit
+    the key entirely, which is what a solver build that does not report one
+    looks like."""
 
     def fn(s_in, cfgs):
         if not success:
             return {"success": False}
         ig = s_in["initial_guess"]
-        return {
+        result = {
             "success": True,
             "lat": ig["lat"] + lat_off,
             "lon": ig["lon"] + lon_off,
             "alt_m": ig["alt_km"] * 1000,
             "vel_east": 0.0,
             "vel_north": 0.0,
-            "rms_delay": 0.5,
             "rms_doppler": 2.0,
             "timestamp_ms": s_in["timestamp_ms"],
             "n_nodes": s_in["n_nodes"],
             "contributing_node_ids": [m["node_id"] for m in s_in["measurements"]],
         }
+        if rms_delay is not _SENTINEL:
+            result["rms_delay"] = rms_delay
+        return result
 
     return fn
 
@@ -419,6 +429,90 @@ class TestModeGating:
         assert entry["solve_count"] == 5
         assert entry["is_anomalous"] is True
         assert "supersonic" in entry["anomaly_types"]
+
+
+class TestPublishResidualGate:
+    """rms_delay gates the PUBLISH and nothing else.
+
+    2026-09-10/11 on test+staging: the tail of mn-adsb-a85f17 (N6389R, a PA-28)
+    published solves with rms_delay 9.9-11.2 µs — three times the regular
+    lane's bound — and a formal pos_sigma_km of 1.9e7, because a truth_match
+    displacement was this lane's only publish check.  The gate takes those off
+    the map while leaving the label, the accuracy sample and the history
+    outcome exactly as they were: the free-solve measurement stays free (see
+    the module docstring), only the feed is protected.
+    """
+
+    def test_high_rms_truth_match_is_classified_sampled_but_not_published(self):
+        _install(_mk_claims(["node_a", "node_b"]))
+        _run(_stub_solve(rms_delay=9.9), mode="binding")
+
+        # Still a truth_match, still measured — the gate is downstream of both.
+        assert state.known_lane_truth_match == 1
+        (sample,) = list(state.accuracy_samples)
+        assert sample["position_source"] == "known_lane_truth_match"
+
+        # ...and off the map.
+        assert state.known_lane_published == 0
+        assert state.known_lane_publish_rms_rejected == 1
+        assert not state.multinode_tracks
+        assert not state.track_archive_buffer
+
+        (rec,) = _known_records()
+        assert rec["outcome"] == "known_truth_match"
+        assert rec["label"] == "truth_match"
+        assert rec["published"] is False
+        assert rec["solve_key"] is None
+        assert rec["publish_gate"] == "rms_delay"
+
+    def test_low_rms_truth_match_publishes_ungated(self):
+        _install(_mk_claims(["node_a", "node_b"]))
+        _run(_stub_solve(rms_delay=0.5), mode="binding")
+
+        assert state.known_lane_published == 1
+        assert state.known_lane_publish_rms_rejected == 0
+        assert f"mn-adsb-{HEX}" in state.multinode_tracks
+        (rec,) = _known_records()
+        assert rec["published"] is True
+        assert rec["publish_gate"] is None
+
+    def test_absent_rms_delay_publishes(self):
+        """Missing/None passes, the regular lane's idiom verbatim: a solver
+        build that reports no residual must not silently empty the map."""
+        _install(_mk_claims(["node_a", "node_b"]))
+        _run(_stub_solve(rms_delay=_SENTINEL), mode="binding")
+
+        assert state.known_lane_published == 1
+        assert state.known_lane_publish_rms_rejected == 0
+        (rec,) = _known_records()
+        assert rec["publish_gate"] is None
+
+    def test_shadow_mode_never_counts_a_rejection(self):
+        """Nothing was going to publish in shadow, so a rejection there would
+        be a phantom — and would make the counter unreadable as "map entries
+        this gate cost us"."""
+        _install(_mk_claims(["node_a", "node_b"]))
+        _run(_stub_solve(rms_delay=9.9))
+
+        assert state.known_lane_truth_match == 1
+        assert state.known_lane_published == 0
+        assert state.known_lane_publish_rms_rejected == 0
+        (rec,) = _known_records()
+        assert rec["published"] is False
+        assert rec["publish_gate"] is None
+
+    def test_raising_the_bound_publishes_the_same_solve(self, monkeypatch):
+        """KNOWN_PUBLISH_MAX_RMS_DELAY_US is the whole gate — read at attempt
+        time, so the env key can move it without a code change."""
+        monkeypatch.setattr(known_lane, "KNOWN_PUBLISH_MAX_RMS_DELAY_US", 12.0)
+        _install(_mk_claims(["node_a", "node_b"]))
+        _run(_stub_solve(rms_delay=9.9), mode="binding")
+
+        assert state.known_lane_published == 1
+        assert state.known_lane_publish_rms_rejected == 0
+        (rec,) = _known_records()
+        assert rec["published"] is True
+        assert rec["publish_gate"] is None
 
 
 class TestPublishFailureContainment:

@@ -1343,6 +1343,7 @@ def _solver_window_stats(minutes: float) -> dict:
         kl_published = getattr(state, "known_lane_published", 0)
         kl_publish_errors = getattr(state, "known_lane_publish_errors", 0)
         kl_reanchored = getattr(state, "known_lane_reanchored", 0)
+        kl_publish_rms_rejected = getattr(state, "known_lane_publish_rms_rejected", 0)
         kc_made = state.known_claims_made
         kc_contentions = state.known_claim_contentions
         kc_bound = state.known_claims_bound
@@ -1472,6 +1473,15 @@ def _solver_window_stats(minutes: float) -> dict:
             # with each other rather than with it.  They are published like a
             # truth_match and are NOT part of the ghost count.
             "reanchored": kl_reanchored,
+            # Solves binding WOULD have published, held off the map because
+            # their rms_delay failed the regular lane's bound (see
+            # known_lane.KNOWN_PUBLISH_MAX_RMS_DELAY_US).  Like publish_errors
+            # it accounts for part of the truth_match+reanchored minus
+            # published gap, and it stays zero in shadow — nothing was going to
+            # publish there.  The withheld solves are still classified, still
+            # sampled and still in position_error_km below: the gate protects
+            # the map, not the measurement.
+            "publish_rms_rejected": kl_publish_rms_rejected,
             # The one WINDOWED entry in this since-boot block (it carries its
             # own window_minutes so it cannot be misread as cumulative):
             # solver-vs-ADS-B error over this lane's records in the window,
