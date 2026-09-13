@@ -5,7 +5,7 @@
 // renderer (DetectionArcs) draws one polyline per entry, each fading on its
 // own clock (entry.ts).
 //
-// Keying: `${hex}-${node_id}-d<delay quantized to 0.1 µs>`.  Keying by the
+// Keying: `${hex}-${node_ref}-d<delay quantized to 0.1 µs>`.  Keying by the
 // MEASURED delay (not the ingest timestamp) means a re-ingest of an unchanged
 // measurement refreshes ONE polyline's fade clock instead of stacking a new
 // offset stroke — staging measured 180/190 consecutive ticks where delay_us
@@ -26,7 +26,7 @@ export const ARC_DELAY_KEY_QUANT_US = 0.1;
 
 export interface ArcBufferEntry {
   hex: string;
-  node_id: string;
+  node_ref: string;
   /** Backend-built 2D locus — fallback when the client can't rebuild. */
   ambiguity_arc: [number, number][];
   /**
@@ -49,14 +49,14 @@ export interface ArcBufferEntry {
  */
 export function arcBufferKey(
   hex: string,
-  nodeId: string,
+  nodeRef: string,
   delayUs: number | null | undefined,
   nowMs: number,
 ): string {
   if (delayUs != null && Number.isFinite(delayUs)) {
-    return `${hex}-${nodeId}-d${Math.round(delayUs / ARC_DELAY_KEY_QUANT_US)}`;
+    return `${hex}-${nodeRef}-d${Math.round(delayUs / ARC_DELAY_KEY_QUANT_US)}`;
   }
-  return `${hex}-${nodeId}-t${nowMs}`;
+  return `${hex}-${nodeRef}-t${nowMs}`;
 }
 
 /**
@@ -81,7 +81,10 @@ export function upsertArcEntries(
   maxAgeMs: number,
 ): void {
   for (const ac of aircraft) {
-    if (!Array.isArray(ac.ambiguity_arc) || ac.ambiguity_arc.length < 2 || !ac.node_id) {
+    // Entries with no identifier are dropped without a trace, so a feed still
+    // publishing node_id empties the arc layer in silence: client and backend
+    // must cut over together.
+    if (!Array.isArray(ac.ambiguity_arc) || ac.ambiguity_arc.length < 2 || !ac.node_ref) {
       continue;
     }
     // Single-node-claimed ADS-B entries carry a locus too, and they satisfy
@@ -94,7 +97,7 @@ export function upsertArcEntries(
     if (ac.position_source === POSITION_SOURCE_ADSB_SINGLE) continue;
     const delayUs =
       ac.delay_us != null && Number.isFinite(ac.delay_us) ? ac.delay_us : null;
-    const key = arcBufferKey(ac.hex, ac.node_id, delayUs, nowMs);
+    const key = arcBufferKey(ac.hex, ac.node_ref, delayUs, nowMs);
     const existing = buf[key];
     if (existing) {
       // Timestamp-keyed collision (same-millisecond double ingest): keep the
@@ -112,7 +115,7 @@ export function upsertArcEntries(
     }
     buf[key] = {
       hex: ac.hex,
-      node_id: ac.node_id,
+      node_ref: ac.node_ref,
       ambiguity_arc: ac.ambiguity_arc,
       delay_us: delayUs,
       alt_baro:

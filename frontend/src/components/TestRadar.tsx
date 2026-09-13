@@ -14,6 +14,9 @@ import { withCartoKey } from "../utils/basemap";
 // An invented site. Nothing here needs a real one, and a real one in a
 // public repo is a receiver position the API is built to withhold.
 const TEST_SITE = { lat: 34.0, lon: -84.0 };
+// Named by a ref, like every published node: the private id is not a thing
+// the client speaks any more.
+const TEST_NODE_REF = "ndetestradar001";
 
 // Compute (range_km, bearing_deg) from a fixed RX to a given lat/lon. Lets
 // the simulator march the aircraft in absolute world coordinates while still
@@ -169,7 +172,7 @@ export default function TestRadar() {
       track,
       gs,
       position_source: "single_node_ellipse_arc",
-      node_id: "synth-test-radar",
+      node_ref: TEST_NODE_REF,
       ambiguity_arc: arc,
       doppler_hz: 0,
     }),
@@ -194,11 +197,11 @@ export default function TestRadar() {
       const buf = arcsBufferRef.current;
       if (arcMode === "bucketed") {
         const tsBucket = Math.floor(now / 1000);
-        const key = `${aircraft.hex}-${aircraft.node_id}-${tsBucket}`;
+        const key = `${aircraft.hex}-${aircraft.node_ref}-${tsBucket}`;
         if (!(key in buf)) {
           buf[key] = {
             hex: aircraft.hex,
-            node_id: aircraft.node_id,
+            node_ref: aircraft.node_ref,
             ambiguity_arc: arc,
             doppler_hz: aircraft.doppler_hz,
             target_class: undefined,
@@ -207,10 +210,10 @@ export default function TestRadar() {
         }
       } else if (arcMode === "pending") {
         const mid = arcMidpoint(arc);
-        const key = `det-${aircraft.node_id}-${Math.round(mid[0] * 100)}-${Math.round(mid[1] * 100)}`;
+        const key = `det-${aircraft.node_ref}-${Math.round(mid[0] * 100)}-${Math.round(mid[1] * 100)}`;
         buf[key] = {
           hex: null,
-          node_id: aircraft.node_id,
+          node_ref: aircraft.node_ref,
           ambiguity_arc: arc,
           doppler_hz: aircraft.doppler_hz,
           target_class: undefined,
@@ -228,7 +231,7 @@ export default function TestRadar() {
     writeOnce();
     const id = setInterval(writeOnce, 1000);
     return () => clearInterval(id);
-  }, [refreshOn, arcMode, arc, aircraft.hex, aircraft.node_id, aircraft.doppler_hz]);
+  }, [refreshOn, arcMode, arc, aircraft.hex, aircraft.node_ref, aircraft.doppler_hz]);
 
   const clearBuffer = () => {
     arcsBufferRef.current = {};
@@ -405,7 +408,7 @@ export default function TestRadar() {
               radius={5}
               pathOptions={{ color: "#facc15", fillColor: "#facc15", fillOpacity: 0.55, weight: 1.5 }}
             >
-              <Popup>synth-test-radar (CircleMarker, prod style)</Popup>
+              <Popup>{TEST_NODE_REF} (CircleMarker, prod style)</Popup>
             </CircleMarker>
           )}
 
@@ -417,7 +420,7 @@ export default function TestRadar() {
               ]}
               icon={nodeIcon()}
             >
-              <Popup>synth-test-radar (divIcon, icons.ts)</Popup>
+              <Popup>{TEST_NODE_REF} (divIcon, icons.ts)</Popup>
             </Marker>
           )}
 

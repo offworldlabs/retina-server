@@ -10,7 +10,7 @@ const ARC: [number, number][] = [
 function mkAc(overrides = {}) {
   return {
     hex: "abc123",
-    node_id: "node-1",
+    node_ref: "node-1",
     ambiguity_arc: ARC,
     delay_us: 46.2,
     alt_baro: 30000,
@@ -71,7 +71,7 @@ describe("upsertArcEntries", () => {
     expect(keys).toHaveLength(1);
     expect(buf[keys[0]]).toMatchObject({
       hex: "abc123",
-      node_id: "node-1",
+      node_ref: "node-1",
       delay_us: 46.2,
       alt_baro: 30000,
       doppler_hz: 12,
@@ -82,7 +82,7 @@ describe("upsertArcEntries", () => {
   });
 
   it("refuses adsb_single_node entries — ClaimedArcs owns that locus", () => {
-    // These satisfy every other admission condition (arc, node_id, delay_us),
+    // These satisfy every other admission condition (arc, node_ref, delay_us),
     // so without the source guard the full locus would be laid over the short
     // trimmed section ClaimedArcs already draws.
     const buf = {};
@@ -114,7 +114,7 @@ describe("upsertArcEntries", () => {
     const aircraftEntry = mkAc({ delay_us: 46.2 });
     const topLevelArc = {
       hex: "abc123",
-      node_id: "node-1",
+      node_ref: "node-1",
       ambiguity_arc: ARC,
       delay_us: 46.2,
       doppler_hz: 12,
@@ -130,8 +130,8 @@ describe("upsertArcEntries", () => {
     // arc per detecting node (the whole point of the top-level channel).
     const buf = {};
     upsertArcEntries(buf, [
-      { hex: "abc123", node_id: "node-1", ambiguity_arc: ARC, delay_us: 46.2, doppler_hz: 3 },
-      { hex: "abc123", node_id: "node-2", ambiguity_arc: ARC, delay_us: 61.7, doppler_hz: -8 },
+      { hex: "abc123", node_ref: "node-1", ambiguity_arc: ARC, delay_us: 46.2, doppler_hz: 3 },
+      { hex: "abc123", node_ref: "node-2", ambiguity_arc: ARC, delay_us: 61.7, doppler_hz: -8 },
     ], 1000, MAX_AGE);
     expect(Object.keys(buf)).toHaveLength(2);
   });
@@ -194,14 +194,14 @@ describe("upsertArcEntries", () => {
     expect(Object.keys(buf)).toHaveLength(1);
   });
 
-  it("ignores aircraft without an arc or node_id", () => {
+  it("ignores aircraft without an arc or node_ref", () => {
     const buf = {};
     upsertArcEntries(
       buf,
       [
         mkAc({ ambiguity_arc: null }),
         mkAc({ ambiguity_arc: [[34.0, -82.0]] }), // < 2 points
-        mkAc({ node_id: null }),
+        mkAc({ node_ref: null }),
       ],
       1000,
       MAX_AGE,

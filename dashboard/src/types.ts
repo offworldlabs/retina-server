@@ -80,7 +80,7 @@ export interface FleetDashboard {
 }
 
 export interface LeaderboardEntry {
-  node_id: string;
+  node_ref: string;
   detections: number;
   uptime_pct: number;
   reputation: number;

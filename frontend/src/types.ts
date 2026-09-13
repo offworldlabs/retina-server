@@ -38,7 +38,7 @@ export interface Aircraft {
   track?: number;
   squawk?: string;
   type?: string;
-  node_id?: string;
+  node_ref?: string;
   target_class?: string;
   object_type?: string;
   position_source?: string;
@@ -54,7 +54,7 @@ export interface Aircraft {
   max_velocity_ms?: number;
   /** Debug: emitted position teleported (solver mis-association noise). */
   position_jump?: boolean;
-  contributing_node_ids?: string[];
+  contributing_node_refs?: string[];
   ground_truth_hex?: string;
   ambiguity_arc?: [number, number][];
   /** Seconds since the newest claim/detection behind this entry. */
@@ -125,26 +125,23 @@ export interface AircraftFeedReturn {
   historyRef: React.MutableRefObject<{ aircraft: Aircraft[]; ts: number }[]>;
   setPaused: (val: boolean) => void;
   arcsBufferRef: React.MutableRefObject<Record<string, ArcEntry>>;
-  /** "hex|node_id" → timestamp of that node's most recent detection of the aircraft. */
+  /** "hex|node_ref" → timestamp of that node's most recent detection of the aircraft. */
   detectionsRef: React.MutableRefObject<Record<string, number>>;
 }
 
 /** Radar node metadata from /api/radar/analytics (as shaped by useNodes) */
 export interface RadarNode {
   /**
-   * Internal join key only: it matches `Aircraft.node_id`,
-   * `contributing_node_ids`, the detecting-node lists and the map's own
-   * selection state.  Never rendered — the node id is the name the operator
-   * gave the machine.  Use `nodeLabel()` (map/nodeSites.ts) for anything a
-   * user sees.
+   * The public handle for this node, and the only identifier the client ever
+   * sees: the registry's ref when it has one, an HMAC-derived ref of the same
+   * shape when it does not (see backend/services/node_ref.py).  It is also
+   * the join key — it matches `Aircraft.node_ref`, `contributing_node_refs`,
+   * the detecting-node lists and the map's own selection state — because the
+   * private `node_id` is no longer published on any unauthenticated surface.
+   * Render it through `nodeLabel()` (map/nodeSites.ts), which names a node
+   * with no ref "unlisted node".
    */
-  node_id: string;
-  /**
-   * The public handle for this node: the registry's ref when it has one, an
-   * HMAC-derived ref of the same shape when it does not (see
-   * backend/services/node_ref.py).  Null only when the backend predates it.
-   */
-  node_ref: string | null;
+  node_ref: string;
   /**
    * Receiver position as served. The backend displaces it deterministically
    * per node (the radius in force arrives as location_uncertainty_km,
@@ -186,4 +183,9 @@ export interface RadarNode {
   max_bistatic_range_km: number | null;
   empirical_polygon: [number, number][] | null;
   empirical_n_points: number;
+  /**
+   * Server-derived, not parsed from the identifier: see utils/nodeKind.ts.
+   * Identities publish as node_ref, so no prefix survives to match on.
+   */
+  is_synthetic: boolean;
 }

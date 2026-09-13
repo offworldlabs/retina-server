@@ -48,18 +48,22 @@ export default function AnalyticsPage() {
 
   const rawNodes = analytics?.nodes || {};
   const summaries = Array.isArray(rawNodes) ? rawNodes : Object.values(rawNodes);
+  // Node identity is the map key (node_ref); values no longer carry node_id.
+  const nodeEntries: [string, any][] = Array.isArray(rawNodes)
+    ? rawNodes.map((n) => [n.node_ref || "", n])
+    : Object.entries(rawNodes);
 
   // Trust distribution — show top N by trust, sorted descending
-  const allTrust = summaries.map((n) => ({
-    name: (n.node_id || "").slice(-8),
+  const allTrust = nodeEntries.map(([ref, n]) => ({
+    name: (ref || "").slice(-8),
     trust: Math.round((n.trust?.trust_score || 0) * 100),
     reputation: Math.round((n.reputation?.reputation || 0) * 100),
   })).sort((a, b) => b.trust - a.trust);
   const trustData = allTrust.slice(0, TOP_N_CHART);
 
   // Detection share — top 10 + "Others" bucket
-  const allDetections = summaries.map((n, i) => ({
-    name: (n.node_id || "").slice(-8),
+  const allDetections = nodeEntries.map(([ref, n]) => ({
+    name: (ref || "").slice(-8),
     value: n.metrics?.total_detections || n.detection_area?.n_detections || 0,
   })).sort((a, b) => b.value - a.value);
   const topDet = allDetections.slice(0, 10);

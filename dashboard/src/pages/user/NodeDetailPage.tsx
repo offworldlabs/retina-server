@@ -38,7 +38,13 @@ export default function NodeDetailPage() {
       .then(([analytics, nodeData, mine]) => {
         setData(analytics);
         setNodeInfo((nodeData?.nodes || {})[nodeId] || null);
-        const owned = (Array.isArray(mine) ? mine : []).find((n) => n.node_id === nodeId);
+        // The route parameter is a public identity — a node_ref, or a synthetic
+        // node's own id, which is what it publishes as. The owner's list is the
+        // one place both identifiers appear together, so it is matched on the
+        // ref first; node_id covers the synthetic case, where the two are equal.
+        const owned = (Array.isArray(mine) ? mine : []).find(
+          (n) => (n.node_ref && n.node_ref === nodeId) || n.node_id === nodeId,
+        );
         // Ownership, not presence in the node list, is what earns the privacy
         // card — the node the card matters most for is the one missing there.
         setPrivacy(
@@ -58,7 +64,14 @@ export default function NodeDetailPage() {
   if (loading) return <div className="empty-state">Loading…</div>;
   if (!data) return <div className="empty-state">Node not found</div>;
 
-  const id = data.node_id || nodeId;
+  // What this node publishes as, and what the URL addresses it by: the public
+  // analytics payload is keyed on the ref and carries no node_id of its own.
+  const nodeRef = data.node_ref || nodeId;
+  // A node's own site is named after its private node_id, so the link can only
+  // be offered to someone who already holds that id — its owner, via the
+  // owner-scoped node list. For everyone else RetnodeLink has nothing to open
+  // and renders the label as plain text, which is the whole point of the ref.
+  const ownId = privacy?.node_id || "";
   const metrics = data.metrics || data;
   const trust = data.trust || {};
   const reputation = data.reputation || {};
@@ -76,7 +89,9 @@ export default function NodeDetailPage() {
       <div className="page-header">
         <h1 style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <button className="btn btn-outline btn-sm" onClick={() => navigate(-1)}>← Back</button>
-          <RetnodeLink nodeId={id} synthetic={nodeInfo?.is_synthetic} />
+          <RetnodeLink nodeId={ownId} synthetic={nodeInfo?.is_synthetic}>
+            {nodeRef}
+          </RetnodeLink>
         </h1>
         <p>Detailed metrics and trust analysis</p>
       </div>

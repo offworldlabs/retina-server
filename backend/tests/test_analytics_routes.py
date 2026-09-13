@@ -45,13 +45,18 @@ class TestAnalytics:
         assert r.status_code == 404
 
     def test_node_analytics_found(self, client):
-        """Register a node and verify it returns analytics."""
+        """Register a node and verify it returns analytics.
+
+        A synthetic node publishes under its own id, so that id is its ref and
+        the route answers to it; the payload names it as a ref either way.
+        """
         state.node_analytics.register_node("test-an-1", {"name": "Test"})
         try:
             r = client.get("/api/radar/analytics/test-an-1")
             assert r.status_code == 200
             body = r.json()
-            assert body["node_id"] == "test-an-1"
+            assert body["node_ref"] == "test-an-1"
+            assert "node_id" not in body
         finally:
             state.node_analytics.metrics.pop("test-an-1", None)
             state.node_analytics.trust_scores.pop("test-an-1", None)

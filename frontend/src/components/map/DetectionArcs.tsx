@@ -13,10 +13,10 @@ import { usePalette } from "./useMapTheme";
       target. Each polyline fades linearly to zero over ARC_FADE_MS.  Tick
       interval is 250 ms which is enough resolution for visibly smooth decay
       without React re-render cost. ── */
-const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, onSelect, onSelectNode, nodesByIdRef }) {
+const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, onSelect, onSelectNode, nodesByRefRef }) {
   const { DRONE_ARC, SELECTED } = usePalette();
   const map = useMap();
-  const polyMapRef = useRef(new Map()); // key → { line: L.polyline, ts, hex, node_id, ... }
+  const polyMapRef = useRef(new Map()); // key → { line: L.polyline, ts, hex, node_ref, ... }
   const onSelectRef = useRef(onSelect);
   const onSelectNodeRef = useRef(onSelectNode);
   const selectedHexRef = useRef(selectedHex);
@@ -96,8 +96,8 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
           // when node geometry (useNodes still loading) or delay_us is
           // missing.
           let arcPoints = entry.ambiguity_arc;
-          if (entry.node_id && entry.delay_us != null && entry.delay_us > 0) {
-            const node = nodesByIdRef?.current?.[entry.node_id];
+          if (entry.node_ref && entry.delay_us != null && entry.delay_us > 0) {
+            const node = nodesByRefRef?.current?.[entry.node_ref];
             if (node) {
               const rebuilt = buildBistaticArc(entry.delay_us, node);
               if (rebuilt && rebuilt.length >= 2) arcPoints = rebuilt;
@@ -113,10 +113,10 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
           line.on("click", (e) => {
             L.DomEvent.stopPropagation(e);
             if (entry.hex) onSelectRef.current?.(entry.hex);
-            if (entry.node_id) onSelectNodeRef.current?.(entry.node_id);
+            if (entry.node_ref) onSelectNodeRef.current?.(entry.node_ref);
           });
           line.addTo(map);
-          polyMap.set(key, { line, ts: entry.ts, hex: entry.hex, node_id: entry.node_id });
+          polyMap.set(key, { line, ts: entry.ts, hex: entry.hex, node_ref: entry.node_ref });
         }
       }
 
@@ -137,7 +137,7 @@ const DetectionArcs = memo(function DetectionArcs({ arcsBufferRef, selectedHex, 
       for (const info of polyMap.values()) info.line.remove();
       polyMap.clear();
     };
-  }, [map, arcsBufferRef, nodesByIdRef, DRONE_ARC, SELECTED]);
+  }, [map, arcsBufferRef, nodesByRefRef, DRONE_ARC, SELECTED]);
 
   return null;
 });

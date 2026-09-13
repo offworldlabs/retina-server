@@ -9,12 +9,13 @@ import { solveUncertaintyRadiusM, solveUncertaintyRadius95M } from "./uncertaint
 import { usePalette } from "./useMapTheme";
 
 /**
- * `nodeLabelFor` maps a node id to the handle the map is allowed to print
- * (map/nodeSites.ts).  Node ids stay the join key everywhere — `ac.node_id`,
- * `detectingNodes` — and only the text changes; the default keeps the panel
- * usable on its own (in a test, say) without ever falling back to the id.
+ * `nodeLabelFor` maps a node ref to the handle the map is allowed to print
+ * (map/nodeSites.ts).  Refs are the join key everywhere — `ac.node_ref`,
+ * `detectingNodes` — and the private node id is never published, so the
+ * default keeps the panel usable on its own (in a test, say) and names an
+ * unknown node rather than echoing an identifier it cannot resolve.
  */
-export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError, detectingNodes = [], solveHistory = null, nodeLabelFor = (_nodeId) => "unlisted node" }) {
+export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError, detectingNodes = [], solveHistory = null, nodeLabelFor = (_nodeRef) => "unlisted node" }) {
   const { ANOMALY, DRONE, GOOD, INK_MUTED, INK_SUBTLE, LANE_MN_ADSB } = usePalette();
   if (!ac) return null;
 
@@ -211,7 +212,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
         {isAdsbSingleNode && (
           <div className="detail-section">
             <div className="detail-section-title">Claimed detection</div>
-            <Field label="Claiming node" value={ac.node_id ? nodeLabelFor(ac.node_id) : "—"} />
+            <Field label="Claiming node" value={ac.node_ref ? nodeLabelFor(ac.node_ref) : "—"} />
             <Field
               label="ADS-B fix age"
               value={ac.adsb_fix_age_s != null ? `${ac.adsb_fix_age_s}s` : "—"}

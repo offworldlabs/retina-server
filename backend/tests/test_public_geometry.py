@@ -94,7 +94,11 @@ class TestNodeScoped:
 # Route-level, because the helper being correct proves nothing about whether a
 # route calls it: every one of these fails if its call site is dropped.
 
-_NODE_ID = "retdeadbeef"
+# A synthetic id, which /api/test/node/{node_ref}/verification publishes and
+# answers to as itself (services/node_refs.public_identity).  A real node is
+# addressed by the ref its registry row carries, which this file has no database
+# to write — the withholding under test is the same either way.
+_NODE_ID = "test-deadbeef"
 _HEX = "mn0123456789"
 
 # The receiver-relative fields as the solver actually spells them on a record

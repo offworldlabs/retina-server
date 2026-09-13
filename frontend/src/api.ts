@@ -38,10 +38,11 @@ export async function fetchElevation(lat, lon, signal?: AbortSignal) {
   return data.elevation_m;
 }
 
-export async function fetchNodeDetectionRange(nodeId: string, signal?: AbortSignal) {
-  if (!nodeId) return null;
+export async function fetchNodeDetectionRange(nodeRef: string, signal?: AbortSignal) {
+  if (!nodeRef) return null;
+  // The route is keyed on the public ref; a node_id 404s.
   const res = await fetch(
-    `${API_BASE}/test/node/${encodeURIComponent(nodeId)}/detection-range`, { signal });
+    `${API_BASE}/test/node/${encodeURIComponent(nodeRef)}/detection-range`, { signal });
   if (!res.ok) return null;
   return res.json();
 }

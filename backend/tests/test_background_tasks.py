@@ -10,12 +10,12 @@ os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
 from core import state  # noqa: E402
 
-# ── _build_real_only_payload ─────────────────────────────────────────────────
+# ── _real_only_dict ─────────────────────────────────────────────────
 
 
-class TestBuildRealOnlyPayload:
+class TestRealOnlyDict:
     def test_filters_synthetic_nodes(self):
-        from services.tasks.aircraft_flush import _build_real_only_payload
+        from services.tasks.aircraft_flush import _real_only_dict
 
         state.connected_nodes["real-1"] = {"is_synthetic": False, "status": "active"}
         state.connected_nodes["synth-1"] = {"is_synthetic": True, "status": "active"}
@@ -31,9 +31,7 @@ class TestBuildRealOnlyPayload:
                     {"node_id": "synth-1", "arc": []},
                 ],
             }
-            import orjson
-
-            result = orjson.loads(_build_real_only_payload(data))
+            result = _real_only_dict(data)
             assert len(result["aircraft"]) == 1
             assert result["aircraft"][0]["hex"] == "R1"
             assert len(result["detection_arcs"]) == 1
@@ -43,7 +41,7 @@ class TestBuildRealOnlyPayload:
             state.connected_nodes.pop("synth-1", None)
 
     def test_includes_multinode_with_real_contributor(self):
-        from services.tasks.aircraft_flush import _build_real_only_payload
+        from services.tasks.aircraft_flush import _real_only_dict
 
         state.connected_nodes["real-1"] = {"is_synthetic": False, "status": "active"}
         state.connected_nodes["synth-1"] = {"is_synthetic": True, "status": "active"}
@@ -60,9 +58,7 @@ class TestBuildRealOnlyPayload:
                 ],
                 "detection_arcs": [],
             }
-            import orjson
-
-            result = orjson.loads(_build_real_only_payload(data))
+            result = _real_only_dict(data)
             assert len(result["aircraft"]) == 1
             assert result["aircraft"][0]["hex"] == "M1"
         finally:
@@ -70,11 +66,9 @@ class TestBuildRealOnlyPayload:
             state.connected_nodes.pop("synth-1", None)
 
     def test_empty_data(self):
-        import orjson
+        from services.tasks.aircraft_flush import _real_only_dict
 
-        from services.tasks.aircraft_flush import _build_real_only_payload
-
-        result = orjson.loads(_build_real_only_payload({"now": 0}))
+        result = _real_only_dict({"now": 0})
         assert result["aircraft"] == []
         assert result["detection_arcs"] == []
         assert result["messages"] == 0
@@ -88,18 +82,21 @@ class TestBroadcastAircraft:
     async def test_updates_state(self):
         from services.tasks.aircraft_flush import broadcast_aircraft
 
+        # Synthetic-prefixed id: it is published as itself, so the served bytes
+        # differ from this frame only in the field name.  An unregistered real
+        # id has no node_ref and is dropped at the publication boundary.
         data = {
             "now": time.time(),
-            "aircraft": [{"hex": "BC01", "node_id": "n1"}],
+            "aircraft": [{"hex": "BC01", "node_id": "test-n1"}],
             "detection_arcs": [],
             "ground_truth": {},
         }
         import orjson
 
-        data_bytes = orjson.dumps(data)
-        await broadcast_aircraft(data, data_bytes)
+        published_bytes = orjson.dumps({**data, "aircraft": [{"hex": "BC01", "node_ref": "test-n1"}]})
+        await broadcast_aircraft(data)
         assert state.latest_aircraft_json == data
-        assert state.latest_aircraft_json_bytes == data_bytes
+        assert state.latest_aircraft_json_bytes == published_bytes
         assert state.latest_real_aircraft_json_bytes != b""
 
 

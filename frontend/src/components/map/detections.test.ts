@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { updateDetections, detectingNodeIdsFor } from "./detections";
+import { updateDetections, detectingNodeRefsFor } from "./detections";
 
 const TTL = 5000;
 
@@ -7,8 +7,8 @@ describe("updateDetections", () => {
   it("records per-aircraft signals keyed on ground_truth_hex when present", () => {
     const det: Record<string, number> = {};
     updateDetections(det, [
-      { hex: "mn1234", ground_truth_hex: "abcdef", node_id: "n1",
-        contributing_node_ids: ["n2", "n3"] },
+      { hex: "mn1234", ground_truth_hex: "abcdef", node_ref: "n1",
+        contributing_node_refs: ["n2", "n3"] },
     ], null, 1000, TTL);
     expect(det).toEqual({
       "abcdef|n1": 1000,
@@ -21,7 +21,7 @@ describe("updateDetections", () => {
     const det: Record<string, number> = {};
     updateDetections(
       det,
-      [{ hex: "abcdef", node_id: "n1" }],
+      [{ hex: "abcdef", node_ref: "n1" }],
       { abcdef: ["n1", "n4"], other1: ["n9"] },
       1000,
       TTL,
@@ -46,20 +46,20 @@ describe("updateDetections", () => {
   });
 });
 
-describe("detectingNodeIdsFor", () => {
-  it("returns sorted node ids within the TTL for the hex", () => {
+describe("detectingNodeRefsFor", () => {
+  it("returns sorted node refs within the TTL for the hex", () => {
     const det = {
       "abcdef|n2": 900,
       "abcdef|n1": 1000,
       "abcdef|n3": 1000 - TTL - 1, // expired
       "other1|n4": 1000,           // different aircraft
     };
-    expect(detectingNodeIdsFor(det, "abcdef", 1000, TTL))
+    expect(detectingNodeRefsFor(det, "abcdef", 1000, TTL))
       .toEqual(["n1", "n2"]);
   });
 
   it("does not match hexes sharing a prefix", () => {
     const det = { "abcd|n1": 1000, "abcdef|n2": 1000 };
-    expect(detectingNodeIdsFor(det, "abcd", 1000, TTL)).toEqual(["n1"]);
+    expect(detectingNodeRefsFor(det, "abcd", 1000, TTL)).toEqual(["n1"]);
   });
 });

@@ -14,6 +14,7 @@ from core.auth import get_user_nodes
 from core.users import ANONYMOUS_USER, AUTH_BYPASS, read_user_from_token
 from services import node_bias
 from services.node_ref import public_node_ref
+from services.node_refs import id_for_identity, owner_identity, public_analytics, public_identity
 from services.public_location import public_node_summary
 from services.publication import is_private, private_node_ids
 
@@ -85,38 +86,50 @@ async def radar_analytics(request: Request, real_only: bool = False):
             continue
         # Built fresh like the per-node route below, so it carries the same
         # public handle the cached listing does — or the owner's own node is
-        # the one node on their map without a name.
-        nodes[nid] = {**public_node_summary(nid, summary), "node_ref": public_node_ref(nid)}
+        # the one node on their map without a name.  Keyed on that handle too,
+        # because the cached bytes it is being merged into are: an id-keyed
+        # entry beside ref-keyed ones is the mapping this boundary withholds.
+        # owner_identity, not public_identity — a node this caller owns and that
+        # has no handle is a node left out of their own map, not a contribution
+        # dropped from a public feed, so it is not logged as one.
+        ref = owner_identity(nid)
+        if ref is None:
+            continue
+        nodes[ref] = {**public_node_summary(nid, summary), "node_ref": public_node_ref(nid)}
     return Response(
         content=orjson.dumps(payload, option=orjson.OPT_SERIALIZE_NUMPY),
         media_type="application/json",
     )
 
 
-@router.get("/api/radar/analytics/{node_id}")
-async def radar_node_analytics(node_id: str, request: Request):
-    # A node whose owner chose to keep it private is 404 here, not 403: the two
-    # answers differ only in whether they confirm the node exists, and this
-    # route is reachable by anyone with a node id to try.  Same status the
-    # cached listing produces by omission, so the two surfaces agree.
+@router.get("/api/radar/analytics/{node_ref}")
+async def radar_node_analytics(node_ref: str, request: Request):
+    # Addressed in published identities: the path parameter is the handle the
+    # listing publishes, never the private id behind it.
     #
-    # Its owner is the exception, and gets the same fuzzed summary as the
-    # listing above rather than the truth, for the same reason.  The ownership
-    # lookup is behind the is_private check so a public node still costs no
-    # authentication work.
+    # Every miss is the same 404 with the same detail, and the detail does not
+    # quote what was asked for: an unknown ref, a node with no analytics and a
+    # node whose owner registered it private must be indistinguishable, or the
+    # answer confirms the existence this route is meant not to.  Same status
+    # the cached listing produces by omission, so the two surfaces agree.
+    #
+    # The node's owner is the exception, and gets the same fuzzed summary as
+    # the listing above rather than the truth, for the same reason.  The
+    # ownership lookup is behind the is_private check so a public node still
+    # costs no authentication work.
+    node_id = id_for_identity(node_ref)
+    if node_id is None:
+        raise HTTPException(status_code=404, detail="Node not found")
     if is_private(node_id) and node_id not in await _optional_owned_nodes(request):
-        raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+        raise HTTPException(status_code=404, detail="Node not found")
     summary = state.node_analytics.get_node_summary(node_id)
     if summary.keys() == {"node_id"}:
-        raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
+        raise HTTPException(status_code=404, detail="Node not found")
     # Same blocks as the cached /api/radar/analytics payload, built fresh — so
     # the same receiver-geometry rewrite has to happen here too, or this route
     # is the hole the cached one closed.  See services/public_location.py.
+    # Keyed on the node_id, which is what the fuzz offset is HMAC-keyed on.
     summary = public_node_summary(node_id, summary)
-    # The same public handle the cached listing carries, for the same reason:
-    # this route is built fresh, so anything the listing adds has to be added
-    # here too or the two surfaces disagree.  See services/node_ref.py.
-    summary = {**summary, "node_ref": public_node_ref(node_id)}
     # Backend-computed bias estimate from claim residuals — same conditional
     # shape as the manager's own blocks: present only once the node has
     # residual history.  The trust block above already blends backend-fed
@@ -124,7 +137,15 @@ async def radar_node_analytics(node_id: str, request: Request):
     bias = node_bias.node_summary(node_id)
     if bias is not None:
         summary = {**summary, "node_bias": bias}
-    return summary
+    # The identity scrub the cached listing runs, on one node's entry: naming
+    # the node by its ref while leaving raw ids in the value would publish the
+    # mapping between the two.  The fleet is the vocabulary, because a summary
+    # can name other nodes (a reputation penalty quotes the neighbour it
+    # disagreed with); it is the same 60 s-cached map the refresh task reads.
+    published = public_analytics({node_id: summary}, {}, state.node_analytics.get_all_summaries())["nodes"]
+    if node_ref not in published:
+        raise HTTPException(status_code=404, detail="Node not found")
+    return {**published[node_ref], "node_ref": node_ref}
 
 
 @router.post("/api/radar/analytics/adsb-report")
@@ -170,7 +191,10 @@ async def association_overlaps():
     overlap zones are computed FROM node positions, but
     ``NodeAssociator.get_overlap_summary()`` emits only the two node ids, a
     grid-point count, the delay/Doppler gates and a has_overlap flag — no
-    coordinates, no grid, no extent.  ``registered_nodes`` is a list of ids.
+    coordinates, no grid, no extent.  Both ids are published as node_refs, as
+    is every entry of ``registered_nodes``; the same is true of the copy
+    ``/api/radar/association/status`` serves, which must stay in ref space or
+    the two payloads join on a shared pair to give the mapping away.
     A pair count and a gate width constrain the inter-node distance far too
     loosely to locate either node, so admin-gating this would cost the map its
     coverage layer and buy nothing.  If this payload ever grows a lat/lon (a
@@ -196,8 +220,26 @@ async def association_status():
     over — so all three had been reporting empty or zero, indefinitely, while
     looking like live telemetry.  They are replaced by the counters that do
     move on the path in use.
+
+    Unauthenticated, and its sibling ``/api/radar/association/overlaps``
+    publishes the same pair list under refs, so every identifier here is a ref
+    too: one payload naming a pair by id beside another naming it by ref is a
+    join on a shared key, and the mapping comes out of it.
     """
     _a = state.node_associator
+    _pending = {
+        ref: len(tracks)
+        for nid, tracks in list(_a._pending_tracks.items())
+        if (ref := public_identity(nid)) is not None
+    }
+    # A zone names both of its nodes, so it survives only if both resolve, the
+    # same rule the overlaps payload applies.
+    _overlaps = []
+    for _z in _a.get_overlap_summary():
+        _ra, _rb = public_identity(_z["node_a"]), public_identity(_z["node_b"])
+        if _ra is None or _rb is None:
+            continue
+        _overlaps.append({**_z, "node_a": _ra, "node_b": _rb})
     return {
         "registered_nodes": len(_a.node_geometries),
         "overlap_zones": len(_a.overlap_zones),
@@ -211,7 +253,7 @@ async def association_status():
         "assoc_world_skipped_pairs": getattr(_a, "assoc_world_skipped_pairs", 0),
         # Confirmed single-node tracks each node last submitted; these are what
         # pairings are drawn from.
-        "pending_tracks": {nid: len(tracks) for nid, tracks in list(_a._pending_tracks.items())},
+        "pending_tracks": _pending,
         # Track-pairing outcomes since boot.  gated is everything past the
         # coarse delay grid; unfitted counts the pairings handed to the solver
         # worker (which runs the fit and the n=2 gate); deferred counts rounds
@@ -272,7 +314,7 @@ async def association_status():
             "tracklets_excluded": getattr(_a, "adsb_tracklets_excluded", 0),
             "inputs_emitted": getattr(_a, "adsb_inputs_emitted", 0),
         },
-        "overlaps": _a.get_overlap_summary(),
+        "overlaps": _overlaps,
     }
 
 

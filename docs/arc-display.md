@@ -76,7 +76,7 @@ enough detections for the solver — early visual feedback before any fix.
 ## Frontend Rendering (`DetectionArcs.tsx`, `arcBuffer.ts`, `bistaticArc.ts`)
 
 Arcs accumulate in an afterglow buffer keyed by
-`hex + node_id + measured delay (quantized to 0.1 µs)`:
+`hex + node_ref + measured delay (quantized to 0.1 µs)`:
 
 - Re-ingesting an **unchanged** measurement refreshes the one existing
   stroke's fade clock — a stationary target stays bright as a single stroke.

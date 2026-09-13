@@ -6,9 +6,9 @@
  * **A node is named by its `node_ref`, never by its `node_id`.**  The id comes
  * off the board and is the name its owner gave the machine; the ref is the
  * public handle the backend now serves for every node, registered or not (see
- * backend/services/node_ref.py).  The id stays the join key everywhere in the
- * client — `nodesById`, `ac.node_id`, `contributing_node_ids`, selection state
- * — and only the displayed text changes.
+ * backend/services/node_ref.py).  The id is no longer published at all, so the
+ * ref is also the join key everywhere in the client — `nodesByRef`,
+ * `ac.node_ref`, `contributing_node_refs` and selection state.
  *
  * **One marker per SITE, not per node.**  Co-located receivers are published
  * at exactly equal coordinates on purpose: they share one fuzz offset so the
@@ -41,9 +41,13 @@ export function nodeLabel(node: RadarNode | undefined | null): string {
   return node?.node_ref ?? "unlisted node";
 }
 
-/** Mirrors the backend's is_synthetic_node() prefix. */
+/**
+ * The server's own verdict, carried on the node (utils/nodeKind.ts resolves
+ * it when the listing is read).  Not a prefix test: identities publish as
+ * node_ref, and no prefix survives the substitution to match on.
+ */
 function isSyntheticNode(node: RadarNode): boolean {
-  return Boolean(node.node_id?.startsWith("synth-"));
+  return Boolean(node.is_synthetic);
 }
 
 /**

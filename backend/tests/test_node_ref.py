@@ -130,23 +130,33 @@ class TestRegisteredRef:
 
 
 class TestPerNodeAnalyticsRoute:
-    """GET /api/radar/analytics/{node_id} is built fresh, not from the cache.
+    """GET /api/radar/analytics/{node_ref} is built fresh, not from the cache.
 
     The cached listing's coverage is in test_analytics_refresh.py; this is the
     other surface, which has to be wired separately or the two disagree.
+
+    Addressed by the ref as well as answered in it: the route resolves its path
+    parameter through services/node_refs.py, so the private id is not a way in.
     """
 
-    def test_the_route_carries_the_ref(self):
+    def test_the_route_carries_the_ref(self, seed_node):
         from fastapi.testclient import TestClient
 
         from core import state
         from main import app
+        from services import node_refs
 
+        seed_node(_ID, "nde0123456789ab")
+        node_refs._reset_for_tests()
         state.node_analytics.register_node(_ID, {"rx_lat": 34.85, "rx_lon": -82.40, "max_range_km": 50})
         try:
             with TestClient(app, raise_server_exceptions=False) as client:
-                body = client.get(f"/api/radar/analytics/{_ID}").json()
+                body = client.get("/api/radar/analytics/nde0123456789ab").json()
+                by_id = client.get(f"/api/radar/analytics/{_ID}")
             assert body["node_ref"] == public_node_ref(_ID)
             assert body["node_ref"] != _ID
+            # The id the ref stands in for is not an address for it.
+            assert by_id.status_code == 404
         finally:
             state.node_analytics.retire_node(_ID)
+            node_refs._reset_for_tests()

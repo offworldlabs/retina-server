@@ -76,7 +76,7 @@ import { checkEmergencySquawks, resetEmergencyAlertCache } from "./map/emergency
 import { distanceKm } from "./map/distance";
 import { validLatLon } from "./map/geo";
 import { arcNearestPoint } from "./map/arcErrors";
-import { detectingNodeIdsFor } from "./map/detections";
+import { detectingNodeRefsFor } from "./map/detections";
 import { ensureDebugPanes, DEBUG_PASSIVE_PANE, GT_CLICK_PANE } from "./map/panes";
 import { ARC_TOTAL_LIFE_MS } from "./map/constants";
 import { useMapTheme, usePalette } from "./map/useMapTheme";
@@ -191,7 +191,7 @@ const _mgCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane:
 // Ref-driven like DetectionArcs: data is read INSIDE the tick, so the effect
 // mounts once instead of keying on the 2 Hz radarAircraft array identity —
 // which tore down and recreated every dot and line twice a second.
-const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAircraftRef, groundTruthRef, smoothRef, nodesByIdRef }) {
+const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAircraftRef, groundTruthRef, smoothRef, nodesByRefRef }) {
   const { NODE, TRUTH } = usePalette();
   const map = useMap();
   const markersRef = useRef(new Map());  // gtHex → { dot: L.circleMarker, line: L.polyline | null (arc-only track with no arc this frame) }
@@ -236,7 +236,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
         let hasAnchor = true;
         if (ac.position_source === POSITION_SOURCE_ARC_ONLY) {
           const near = arcNearestPoint(
-            ac, nodesByIdRef?.current?.[ac.node_id], gtLat, gtLon,
+            ac, nodesByRefRef?.current?.[ac.node_ref], gtLat, gtLon,
           );
           if (near) {
             rLat = near.lat;
@@ -853,9 +853,9 @@ const BasemapLayer = memo(function BasemapLayer({ url }) {
       aircraft icons — so it gets the larger glowing divIcon (a handful of DOM
       nodes is fine).  A site counts as synthetic only when every node at it
       is: one real receiver there means the site is real. ── */
-const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelectNode, selectedNodeId }) {
+const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelectNode, selectedNodeRef }) {
   const { NODE } = usePalette();
-  // Grouped once per node refresh, not per selection: selectedNodeId only
+  // Grouped once per node refresh, not per selection: selectedNodeRef only
   // flips a Show/Hide label inside a popup, and it changes on every click, so
   // without this the whole fleet would be re-grouped for each one.
   const sites = useMemo(() => groupNodesBySite(visibleNodes), [visibleNodes]);
@@ -893,7 +893,7 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
         {multi && <><strong>{site.nodes.length} nodes at this site</strong><br /></>}
         {discRadiusM > 0 && <>Location approximate: &plusmn;{site.location_uncertainty_km} km<br /></>}
         {site.nodes.map((n, i) => (
-          <React.Fragment key={`site-node-${n.node_id}`}>
+          <React.Fragment key={`site-node-${n.node_ref}`}>
             {i > 0 && <br />}
             <strong>{nodeLabel(n)}</strong><br />
             {/* Only measured coverage is quoted.  The declared beam azimuth,
@@ -910,8 +910,8 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
                 {/* At a shared site the marker click can no longer stand for
                     "select this node" — there are two — so each block carries
                     its own control and the click just opens the popup. */}
-                <button className="node-select" onClick={() => onSelectNode(n.node_id)}>
-                  {selectedNodeId === n.node_id ? "Hide" : "Show"}
+                <button className="node-select" onClick={() => onSelectNode(n.node_ref)}>
+                  {selectedNodeRef === n.node_ref ? "Hide" : "Show"}
                 </button>
               </>
             )}
@@ -921,7 +921,7 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
     );
     // A single-node site keeps the old behaviour: clicking the marker toggles
     // that node's overlay and opens the popup.
-    const clickHandlers = multi ? undefined : { click: () => onSelectNode(site.nodes[0].node_id) };
+    const clickHandlers = multi ? undefined : { click: () => onSelectNode(site.nodes[0].node_ref) };
     if (site.isSynth) {
       return (
         <React.Fragment key={`site-${site.key}`}>
@@ -929,6 +929,11 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
           <CircleMarker
             center={[site.rx_lat, site.rx_lon]}
             radius={5}
+            // Purely a handle for the E2E suite, and top-level for the reason
+            // the CoverageLayer note gives: a class in pathOptions is dropped.
+            // A real site's divIcon carries `node-marker`, so the two kinds
+            // are tellable apart in the DOM without reading the popup.
+            className="node-marker-synthetic"
             pathOptions={{ color: NODE, fillColor: NODE, fillOpacity: 0.55, weight: 1.5 }}
             bubblingMouseEvents={false}
             eventHandlers={clickHandlers}
@@ -973,7 +978,7 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
     // so the outline goes and the fill alone carries the region.
     return (
       <Polygon
-        key={`coverage-${n.node_id}`}
+        key={`coverage-${n.node_ref}`}
         positions={n.empirical_polygon}
         // className rides top-level, never inside pathOptions: react-leaflet
         // applies pathOptions with setStyle() after the layer exists, but
@@ -1106,9 +1111,9 @@ export default function LiveAircraftMap() {
   /* ── Node-owner view ─────────────────────────────────────────── */
   // Resolved before the feed so `ownerOnly` can pick the server-filtered
   // /ws/aircraft/owner endpoint. Only takes effect once the user is logged in.
-  const { user, ownedNodeIds, loading: authLoading } = useAuth();
+  const { user, ownedNodeRefs, loading: authLoading } = useAuth();
   const [ownerOnly, setOwnerOnly] = useState(false);
-  const ownedSet = useMemo(() => new Set(ownedNodeIds), [ownedNodeIds]);
+  const ownedSet = useMemo(() => new Set(ownedNodeRefs), [ownedNodeRefs]);
 
   /* ── Data feeds ─────────────────────────────────────────────── */
   const {
@@ -1131,28 +1136,30 @@ export default function LiveAircraftMap() {
   // feed is already server-filtered; this filters the node markers/coverage to
   // match. Falls back to all nodes when the toggle is off.
   const nodes = useMemo(
-    () => (ownerOnly ? allNodes.filter((n) => ownedSet.has(n.node_id)) : allNodes),
+    () => (ownerOnly ? allNodes.filter((n) => ownedSet.has(n.node_ref)) : allNodes),
     [allNodes, ownerOnly, ownedSet],
   );
   // Per-node geometry lookup for the client-side bistatic-arc rebuilder.
-  // Mirrors `nodes` content but keyed by node_id for O(1) access inside the
+  // Mirrors `nodes` content but keyed by node_ref for O(1) access inside the
   // DetectionArcs render tick.  Kept on a ref so the tick can read fresh
   // values without re-running the effect on every nodes-poll cycle (30 s).
-  const nodesByIdRef = useRef({});
+  const nodesByRefRef = useRef({});
   useEffect(() => {
     const m = {};
-    for (const n of nodes) m[n.node_id] = n;
-    nodesByIdRef.current = m;
+    for (const n of nodes) m[n.node_ref] = n;
+    nodesByRefRef.current = m;
   }, [nodes]);
-  // Node id → the handle the UI may print.  The id remains the join key for
-  // everything the feed carries (ac.node_id, contributing_node_ids, the
-  // detecting-node lists); this is the only thing that turns one into text.
-  const nodesById = useMemo(() => {
+  // Node ref → the node, for the handle the UI may print.  The ref is the
+  // join key for everything the feed carries (ac.node_ref,
+  // contributing_node_refs, the detecting-node lists), and the reactive twin
+  // of nodesByRefRef above: the label has to re-render when the fleet changes,
+  // the arc tick reads its copy imperatively.
+  const nodesByRef = useMemo(() => {
     const m = {};
-    for (const n of nodes) m[n.node_id] = n;
+    for (const n of nodes) m[n.node_ref] = n;
     return m;
   }, [nodes]);
-  const nodeLabelFor = useCallback((nodeId) => nodeLabel(nodesById[nodeId]), [nodesById]);
+  const nodeLabelFor = useCallback((nodeRef) => nodeLabel(nodesByRef[nodeRef]), [nodesByRef]);
 
   /* ── Local UI state ─────────────────────────────────────────── */
   // URL-hash deep-link state — parsed once at mount.  Anything we find here
@@ -1175,7 +1182,7 @@ export default function LiveAircraftMap() {
   const [showGroundTruth, setShowGroundTruth] = usePersistedState("tf.layer.groundTruth", initialLayers?.groundTruth ?? !defaultsGroundTruthOff);
   const [showLabels, setShowLabels] = usePersistedState("tf.layer.labels", initialLayers?.labels ?? true);
   const [selectedHex, setSelectedHex] = useState(initialHash.hex ?? null);
-  const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const [selectedNodeRef, setSelectedNodeRef] = useState(null);
   const [focusNonce, setFocusNonce] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
   const [paused, setPaused] = useState(false);
@@ -1670,7 +1677,7 @@ export default function LiveAircraftMap() {
   // feed cadence without its own timer.
   const selectedTruthDetectingNodes = useMemo(() => {
     if (!selectedAc?._isTruth) return [];
-    return detectingNodeIdsFor(
+    return detectingNodeRefsFor(
       detectionsRef.current, selectedAc.hex, Date.now(), ARC_TOTAL_LIFE_MS,
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1714,12 +1721,12 @@ export default function LiveAircraftMap() {
     setSelectedHex((prev) => (prev === hex ? null : hex));
   }, []);
 
-  const handleSelectNode = useCallback((nodeId) => {
-    setSelectedNodeId((prev) => (prev === nodeId ? null : nodeId));
+  const handleSelectNode = useCallback((nodeRef) => {
+    setSelectedNodeRef((prev) => (prev === nodeRef ? null : nodeRef));
   }, []);
 
   const handleMapClick = useCallback(() => {
-    setSelectedNodeId(null);
+    setSelectedNodeRef(null);
     setSelectedHex(null);
   }, []);
 
@@ -1877,7 +1884,7 @@ export default function LiveAircraftMap() {
     // convention, not a position estimate.
     if (ac.position_source === POSITION_SOURCE_ARC_ONLY) {
       const near = arcNearestPoint(
-        ac, nodesByIdRef.current?.[ac.node_id], gtLat, gtLon,
+        ac, nodesByRefRef.current?.[ac.node_ref], gtLat, gtLon,
       );
       if (near) return near.distKm;
     }
@@ -1964,7 +1971,7 @@ export default function LiveAircraftMap() {
           <div className="live-map-top-right-stack">
             <NodeOwnerControl
               user={user}
-              ownedCount={ownedNodeIds.length}
+              ownedCount={ownedNodeRefs.length}
               ownerOnly={ownerOnly}
               loading={authLoading}
               onToggle={(on) => {
@@ -2032,18 +2039,18 @@ export default function LiveAircraftMap() {
                 popup's Show/Hide label reads it) but reuses the memoised
                 grouping, and react-leaflet leaves unchanged markers alone.
                 SVG circles all share one composited layer — no per-element pan cost. */}
-            <NodeMarkersLayer visibleNodes={nodes} onSelectNode={handleSelectNode} selectedNodeId={selectedNodeId} />
+            <NodeMarkersLayer visibleNodes={nodes} onSelectNode={handleSelectNode} selectedNodeRef={selectedNodeRef} />
 
             {/* Illuminators (TX towers our nodes use) — off by default, deduped per transmitter */}
             <IlluminatorsLayer visibleNodes={nodes} showIlluminators={showIlluminators} />
 
             {/* Selected node: detection cone + TX tower + aircraft highlights */}
-            {selectedNodeId && (() => {
-              const sn = visibleNodes.find((n) => n.node_id === selectedNodeId) || nodes.find((n) => n.node_id === selectedNodeId);
+            {selectedNodeRef && (() => {
+              const sn = visibleNodes.find((n) => n.node_ref === selectedNodeRef) || nodes.find((n) => n.node_ref === selectedNodeRef);
               if (!sn) return null;
               const hasEmpirical = Array.isArray(sn.empirical_polygon) && sn.empirical_polygon.length >= 3;
-              // Find aircraft detected by this node (those whose node_id matches)
-              const nodeAircraft = radarAircraft.filter((ac) => ac.node_id === selectedNodeId);
+              // Find aircraft detected by this node (those whose node_ref matches)
+              const nodeAircraft = radarAircraft.filter((ac) => ac.node_ref === selectedNodeRef);
               return (
                 <>
                   {/* Empirical detection area — soft-edged and strokeless for the
@@ -2127,13 +2134,13 @@ export default function LiveAircraftMap() {
             })()}
 
             {/* Contributing node highlights — shown when a multinode-solved aircraft is selected */}
-            {selectedAc?.multinode && Array.isArray(selectedAc.contributing_node_ids) &&
-              selectedAc.contributing_node_ids.map((nid) => {
-                const cn = nodes.find((n) => n.node_id === nid);
+            {selectedAc?.multinode && Array.isArray(selectedAc.contributing_node_refs) &&
+              selectedAc.contributing_node_refs.map((nodeRef) => {
+                const cn = nodes.find((n) => n.node_ref === nodeRef);
                 if (!cn) return null;
                 const hasEmpirical = Array.isArray(cn.empirical_polygon) && cn.empirical_polygon.length >= 3;
                 return (
-                  <React.Fragment key={`contrib-group-${nid}`}>
+                  <React.Fragment key={`contrib-group-${nodeRef}`}>
                     {/* Coverage area — the measured polygon, with the same soft,
                         strokeless edge as the always-on CoverageLayer (see the note
                         there).  Fill raised to 0.18 to replace the prominence of the
@@ -2179,11 +2186,11 @@ export default function LiveAircraftMap() {
                  object.  Mirrors the multinode contributing-node treatment;
                  amber to match the single-node detection highlight. */}
             {selectedAc?._isTruth && validLatLon(selectedAc.lat, selectedAc.lon) &&
-              selectedTruthDetectingNodes.map((nid) => {
-                const dn = nodes.find((n) => n.node_id === nid);
+              selectedTruthDetectingNodes.map((nodeRef) => {
+                const dn = nodes.find((n) => n.node_ref === nodeRef);
                 if (!dn) return null;
                 return (
-                  <React.Fragment key={`gt-det-${nid}`}>
+                  <React.Fragment key={`gt-det-${nodeRef}`}>
                     <CircleMarker
                       center={[dn.rx_lat, dn.rx_lon]}
                       radius={14}
@@ -2203,8 +2210,8 @@ export default function LiveAircraftMap() {
             {/* Single-node selection — highlight the source node + connect to
                  aircraft.  Mirrors the multinode block above but for the
                  90 % of tracks that come from a single radar node. */}
-            {selectedAc && !selectedAc.multinode && selectedAc.node_id && (() => {
-              const sn = nodes.find((n) => n.node_id === selectedAc.node_id);
+            {selectedAc && !selectedAc.multinode && selectedAc.node_ref && (() => {
+              const sn = nodes.find((n) => n.node_ref === selectedAc.node_ref);
               if (!sn) return null;
               return (
                 <>
@@ -2264,7 +2271,7 @@ export default function LiveAircraftMap() {
 
             {/* Detection arcs — imperative Leaflet layer, 4Hz opacity fade, sourced from raw WS buffer */}
             {showArcs && (
-              <DetectionArcs arcsBufferRef={arcsBufferRef} selectedHex={selectedHex} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} nodesByIdRef={nodesByIdRef} />
+              <DetectionArcs arcsBufferRef={arcsBufferRef} selectedHex={selectedHex} onSelect={handleSelectAircraft} onSelectNode={handleSelectNode} nodesByRefRef={nodesByRefRef} />
             )}
             {/* Claimed single-node ADS-B arcs — a screen-length section of the
                  claiming node's locus, drawn under the plane icon. Shares the
@@ -2276,7 +2283,7 @@ export default function LiveAircraftMap() {
             {/* In-beam-no-detection diagnostic — red dashed lines from a node's RX to any
                  ADS-B aircraft sitting inside its beam that the node is NOT currently detecting. */}
             {showInBeamDiag && (
-              <InBeamDiagnostic detectionsRef={detectionsRef} groundTruthRef={groundTruthRef} nodesByIdRef={nodesByIdRef} smoothRef={smoothRef} />
+              <InBeamDiagnostic detectionsRef={detectionsRef} groundTruthRef={groundTruthRef} nodesByRefRef={nodesByRefRef} smoothRef={smoothRef} />
             )}
             {/* Aircraft position markers — radar-detected aircraft rendered as airplane icons.
                  Color encodes the lane the position came from: blue=single-node ADS-B,
@@ -2364,7 +2371,7 @@ export default function LiveAircraftMap() {
                 radarAircraftRef={radarAircraftRef}
                 groundTruthRef={groundTruthRef}
                 smoothRef={smoothRef}
-                nodesByIdRef={nodesByIdRef}
+                nodesByRefRef={nodesByRefRef}
               />
             )}
 
