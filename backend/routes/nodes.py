@@ -76,6 +76,18 @@ NODE_PATH_PREFIX = "/v1/nodes"
 #
 # Contact is not configuration and is not versioned: it is one mutable row per
 # node, so nothing here stamps a detection frame.
+#
+# 1.2.0 also covers the contact document gaining a component of its own, and the
+# 401 on that operation no longer borrowing the streaming paths' advice. The
+# version tracks the API rather than the document: the wire is byte-identical,
+# the server accepts and refuses exactly what it did, and no node changes. What
+# moves is what a client generates, since a body published inline yields no
+# request model at all under datamodel-code-generator.
+#
+# The cost is the one 1.1.3 already carries and states: two documents share this
+# version and a client cannot tell them apart by it. Accepted knowingly, and the
+# only consumer that generates from this file regenerates on the file rather
+# than on the version.
 NODE_API_VERSION = "1.2.0"
 
 # No tag here: each sub-router carries the contract's own grouping, since those
