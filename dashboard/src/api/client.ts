@@ -112,6 +112,10 @@ export const api = {
   adminRevokeInvite: (token) =>
     request(`/api/admin/invites/${encodeURIComponent(token)}`, { method: "DELETE" }),
 
+  // Admin: node identity. {node_ref: node_id} for the fleet — the one route
+  // that crosses the publication boundary, which is why it is admin-only.
+  adminNodeRefs: () => request("/api/admin/node-refs"),
+
   // Admin: node ownership
   adminNodeOwners: () => request("/api/admin/node-owners"),
   adminNodeContacts: () => request("/api/admin/node-contacts"),
