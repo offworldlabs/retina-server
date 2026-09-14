@@ -263,15 +263,29 @@ def test_the_nullable_fields_publish_a_null_branch(document):
     assert nullable == _NULLABLE | _NULLABLE_BEAM
 
 
-def test_the_contact_schema_published_is_the_validators_own(document):
-    """One operation carries it, so it stays inline rather than being hoisted
-    into a component the way the configuration is. What matters is the same
-    either way: the bounds published are the ones the validator applies."""
+def test_the_contact_operation_reaches_its_own_component(document):
+    """Hoisted like the configuration, though only one operation carries it: a
+    body published inline leaves the generated type named by whichever generator
+    a client uses, where a component names it here."""
     from services.node_contact import contact_json_schema
 
     operation = document["paths"]["/v1/nodes/contact"]["put"]
+    body = operation["requestBody"]["content"]["application/json"]["schema"]
 
-    assert operation["requestBody"]["content"]["application/json"]["schema"] == contact_json_schema()
+    assert body == {"$ref": "#/components/schemas/NodeContact"}
+    published = document["components"]["schemas"]["NodeContact"]
+    assert published == contact_json_schema()
+    assert published["title"] == "NodeContact"
+
+
+def test_every_node_operation_publishes_its_body_as_a_component(document):
+    """A generated client gets one named type per wire object, whichever
+    operation carries it. An inline body is how that stops being true without
+    anything failing."""
+    for path, methods in document["paths"].items():
+        for method, operation in methods.items():
+            body = operation.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema", {})
+            assert "$ref" in body, f"{method.upper()} {path} publishes its body inline"
 
 
 # ── the credential ───────────────────────────────────────────────────────────
