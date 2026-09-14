@@ -144,6 +144,8 @@ data to a user's own nodes.
 ## Deploy
 
 `.github/workflows/ci.yml`: push to `main` → build/test → deploy staging →
-staging smoke + E2E → deploy production → prod smoke + E2E. Deploy is an SSH
-`git reset --hard origin/main` + `docker compose up -d --build`, gated by a
+staging smoke + E2E → deploy production → prod smoke + E2E. The three staging
+steps live in `staging-deploy-verify.yml` and are called as a single job, so one
+run holds the environment until its own verification has finished. Deploy is an
+SSH `git reset --hard origin/main` + `docker compose up -d --build`, gated by a
 free-disk pre-flight. Operational detail is in [`runbook.md`](runbook.md).

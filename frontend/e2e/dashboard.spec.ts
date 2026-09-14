@@ -104,9 +104,9 @@ test.describe("Dashboard — unauthenticated access (real auth mode)", () => {
 /**
  * Whether a hostname resolves at all, as distinct from what it answers.
  *
- * e2e-staging is a `needs:` of deploy-production exactly as staging-smoke-tests
- * is, so this suite can block a release for the same reason that one can. That
- * one reports an unresolvable name as a warning rather than a failure, because
+ * This suite runs inside the `staging` job that deploy-production needs, exactly
+ * as the smoke tests do, so it can block a release for the same reason they can.
+ * They report an unresolvable name as a warning rather than a failure, because
  * staging-admin.retina.fm's record is young and nothing monitors it; without
  * the same tolerance here a DNS wobble still holds up every deploy, through the
  * sibling gate.
