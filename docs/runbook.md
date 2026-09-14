@@ -104,9 +104,6 @@ arriving on production means it is working; confirm it positively by checking
 that the real nodes appear in the test droplet's `/api/radar/analytics`, which
 names them by `node_ref` rather than by node id.
 
-Real receiver and transmitter geometry now lands on a droplet running
-`AUTH_ALLOW_ANONYMOUS_ADMIN=1`.
-
 ---
 
 ## Server basics
@@ -124,8 +121,24 @@ advertised. Get them from the DigitalOcean console or your own `~/.ssh/config`.
 | **Restart (no rebuild)** | `docker compose restart` |
 | **Rebuild and restart** | `docker compose up -d --build` (wait ~5 s before testing) |
 | **Health endpoint** | `curl -sk https://localhost/api/health` |
-| **Metrics endpoint** | `curl -sk https://localhost/api/admin/metrics` |
+| **Metrics endpoint** | `adm /api/admin/metrics` (defined below) |
 | **Dashboard** | `curl -sk https://localhost/api/test/dashboard` |
+
+`/api/admin/*` requires an administrator, and a request to localhost arrives
+below Cloudflare with no assertion for the origin to verify, so a bare `curl`
+answers 401. Define `adm` once per shell from a browser session on the console:
+
+```bash
+# Sign in at the admin console, then copy the CF_Authorization cookie
+# (devtools, Application, Cookies). It holds the same signed assertion that
+# Cloudflare injects on a proxied request, so the origin verifies it identically.
+export CF_ASSERTION='<the cookie value>'
+adm() { curl -sk -H "Cf-Access-Jwt-Assertion: ${CF_ASSERTION}" "https://localhost$1"; }
+```
+
+It expires with the Access session and carries the email of whoever signed in, so
+anything you reach with it is attributed to that person in `/api/admin/events`.
+Every `adm` below assumes it.
 
 All state is **in-memory**. A container restart loses all connected nodes, active tracks, and in-flight frame data. State is snapshotted to disk every 60 s and restored on next startup (trust scores, reputations, accuracy samples, node identities).
 
@@ -242,7 +255,7 @@ uptime monitor). Details are never exposed on the endpoint — read them from lo
 
 ```bash
 docker compose logs --tail=200 | grep "Health check degraded"
-curl -sk https://localhost/api/admin/metrics | python3 -m json.tool
+adm /api/admin/metrics | python3 -m json.tool
 ```
 
 ---
@@ -361,7 +374,7 @@ What does catch it is the delay residual: compare the node's published `adsb[].e
 
 **Check:**
 ```bash
-curl -sk https://localhost/api/admin/metrics | python3 -c \
+adm /api/admin/metrics | python3 -c \
   "import sys,json; m=json.load(sys.stdin); print('queue_pct:', m['solver_queue_pct'], 'drops:', m['solver_queue_drops'], 'avg_latency:', m['solver_avg_latency_s'])"
 ```
 
@@ -506,8 +519,8 @@ working, so this alert means a reading well outside even that.
 
 **Check per-node miss rates:**
 ```bash
-curl -sk https://localhost/api/admin/leaderboard | python3 -c \
-  "import sys,json; rows=json.load(sys.stdin); [print(r['node_id'], r.get('miss_rate','?')) for r in rows]"
+adm /api/admin/leaderboard | python3 -c \
+  "import sys,json; rows=json.load(sys.stdin)['leaderboard']; [print(r['node_ref'], r.get('miss_rate','?')) for r in rows]"
 ```
 
 **Common causes:**
@@ -534,7 +547,7 @@ its own history.
 ```bash
 # On server — check if backup exists on R2:
 # (if R2 is configured)
-curl -sk https://localhost/api/admin/storage
+adm /api/admin/storage
 ```
 
 Server will start with empty state if snapshot is corrupt. Trust scores and reputation data need to rebuild from scratch — this takes hours under normal node load. Not a functional outage.

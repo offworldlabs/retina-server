@@ -135,9 +135,16 @@ per-node trust residuals, and the feed's `adsb_single_node` display section).
 ## Auth model
 
 Cookie-based JWT issued via OAuth (Google/GitHub), shared across surfaces on the
-same origin. `AUTH_ALLOW_ANONYMOUS_ADMIN=1` with no OAuth configured grants the
-anonymous-admin bypass, independent of `RETINA_ENV`; every environment currently
-sets it while OAuth is unconfigured. Node ownership maps
+same origin. Administrators arrive instead through Cloudflare Access: the origin
+verifies the `Cf-Access-Jwt-Assertion` itself against the team's published keys,
+with `aud` pinned per environment to `CF_ACCESS_AUD`, and the verified email is
+the identity (`backend/core/access_identity.py`). Enforcement is backend-side
+because every vhost proxies `/api/` to the same app, so gating one hostname at
+the edge would protect that hostname's HTML and nothing else; it is also why
+`api.retina.fm`, the fleet's ingest hostname, carries no Access application.
+`AUTH_ALLOW_ANONYMOUS_ADMIN=1` still grants the anonymous-admin bypass,
+independent of `RETINA_ENV`, but only `docker-compose.local.yml` sets it. Node
+ownership maps
 `node_id → user_id`; the `/ws/aircraft/owner` feed and dashboard use it to scope
 data to a user's own nodes.
 

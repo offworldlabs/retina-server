@@ -39,10 +39,8 @@ services:
       # in ClickUp 86cb1emcx; revert to the real environment name there, not
       # here.
       - RETINA_ENV=test
-      # Anonymous admin, asked for explicitly since ClickUp 86cb49d29 took it
-      # off RETINA_ENV. Staging has no OAuth configured, so without this line
-      # the dashboard and every admin route start answering 401.
-      - AUTH_ALLOW_ANONYMOUS_ADMIN=1
+      # This environment's Access application, on staging-admin.retina.fm.
+      - CF_ACCESS_AUD=e81258e72360b51069e64c82ca9762b52556898d8096b20873833ff50f7eb66e
       # The E2E suite retires the nodes it registers, which needs force because
       # a registered node is live until something evicts it. Confining force to
       # the suite's own prefixes means a bug in the teardown cannot reach a real

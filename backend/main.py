@@ -112,17 +112,19 @@ _test_mod.init(radar_pipeline)
 async def lifespan(app: FastAPI):
     # The anonymous-admin bypass, said out loud once per boot.
     #
-    # AUTH_ALLOW_ANONYMOUS_ADMIN=1 is set in every environment while OAuth is
-    # unconfigured, so the flag has stopped being noticed — and it is not one
-    # guard among several, it is the whole of the admin boundary
+    # AUTH_ALLOW_ANONYMOUS_ADMIN=1 is a local-development convenience that no
+    # deployed environment sets, so this line on a droplet means the bypass has
+    # been restored to one — and it is not one guard among several, it is the
+    # whole of the admin boundary
     # (core.users._derive_auth_flags, tests/test_auth.py).  The public surfaces
     # go to some length to publish displaced receiver positions and to withhold
     # private nodes entirely; the admin surfaces behind that boundary serve the
     # true ones, and while this is set they serve them to anyone who asks.
     #
-    # A log line, not a refusal: turning it off here would take every
-    # environment's admin access with it, and the default is deliberately not
-    # this module's to change.  WARNING level so it survives the default
+    # A log line, not a refusal: local development has no Access assertion and
+    # no OAuth, so refusing here would leave a laptop with no way into the
+    # console, and the default is deliberately not this module's to change.
+    # WARNING level so it survives the default
     # LOG_LEVEL and lands in the deploy's own logs rather than only in a
     # developer's terminal.
     from core.users import AUTH_BYPASS

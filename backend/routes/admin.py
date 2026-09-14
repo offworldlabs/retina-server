@@ -363,10 +363,10 @@ async def admin_list_node_refs(_admin=Depends(require_admin)):
     the node_id-keyed admin routes beside it, and link to the node's own site —
     which is named after the node_id, not the ref.
 
-    While a deployment sets AUTH_ALLOW_ANONYMOUS_ADMIN with no OAuth configured,
-    require_admin admits every caller and this mapping is public there. Closing
-    that door is ClickUp 86cb1emcx; until it closes, treat any environment with
-    the bypass on as publishing the whole boundary, not just this route.
+    AUTH_ALLOW_ANONYMOUS_ADMIN makes require_admin admit every caller, which
+    publishes this mapping wholesale. No deployed environment sets it; only
+    docker-compose.local.yml does, so treat a laptop's console as publishing the
+    whole boundary rather than just this route.
     """
     with state.connected_nodes_lock:
         connected = list(state.connected_nodes)
