@@ -610,7 +610,13 @@ class TestNodeContacts:
 
         session.add(Node(node_id=node_id, node_ref=f"nde{node_id[3:]:0>12}", status="active"))
         await session.flush()
-        contact = {"first_name": "Ada", "last_name": "Lovelace", "email": "ada@example.com", "phone": None}
+        contact = {
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "email": "ada@example.com",
+            "phone": None,
+            "country": "GB",
+        }
         await upsert_contact(session, node_id, contact | fields)
         await session.commit()
 

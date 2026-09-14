@@ -357,7 +357,7 @@ async def admin_list_node_contacts(
     session: AsyncSession = Depends(get_async_session),
     _admin=Depends(require_admin),
 ):
-    """Return {node_id: {first_name, last_name, email, phone, updated_at}} for every node that reported any.
+    """Return {node_id: {first_name, last_name, email, phone, country, updated_at}} for every node that reported any.
 
     The one route that serves these. They are kept off the node and analytics
     payloads the map and dashboard poll broadly, so personal data has a single
