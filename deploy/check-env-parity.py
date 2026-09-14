@@ -80,6 +80,11 @@ ALLOWED_DIVERGENCE = (
     r"^services\.server\.environment\.CORS_ORIGINS$",
     r"^services\.server\.environment\.CSP_CONNECT_SRC$",
     r"^services\.server\.environment\.HOST_[A-Z_]+$",
+    # The audience tag of this environment's Cloudflare Access application. One
+    # tag per application, so it differs per environment exactly as HOST_ADMIN
+    # does; an environment with none set leaves the verifier unconfigured, which
+    # means it is never consulted. See backend/core/access_identity.py.
+    r"^services\.server\.environment\.CF_ACCESS_AUD$",
     # Staging alone runs an E2E suite that force-retires the nodes it
     # registers, so staging alone confines what force can reach. Production
     # leaves the variable unset and so unrestricted: a decommissioned real
