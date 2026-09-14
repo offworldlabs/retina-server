@@ -245,10 +245,12 @@ def run(
     random.seed(seed)
     state._reset_for_tests()
     kc._reset_for_tests()
-    # The production rollback lever, exposed because it is the single biggest
-    # determinant of this bench's answer: path H outranks path 2 and rule 1
-    # refuses hold claims, so with holds ON a node with no tags stops
-    # accumulating calibration after its first frame on each link.
+    # The production rollback lever, exposed because holds-on and holds-off
+    # are two genuinely different populations on a blind node: path H outranks
+    # path 2, so with holds ON nearly every claim after the first on a link is
+    # a hold, judged by rule 1's refreshed-hold branch, and with holds OFF the
+    # same link is path 2's alone.  Both are worth measuring; holds ON is the
+    # hardware-receiver case.
     hold_gap_before = kc.KNOWN_HOLD_MAX_GAP_S
     if hold_gap_s is not None:
         kc.KNOWN_HOLD_MAX_GAP_S = hold_gap_s
@@ -416,8 +418,8 @@ def main():
         "--hold-gap",
         type=float,
         default=None,
-        help="override KNOWN_HOLD_MAX_GAP_S for the run; 0 disables path H, which is what "
-        "isolates path 2's own attribution quality (see rule 1)",
+        help="override KNOWN_HOLD_MAX_GAP_S for the run; 0 disables path H, which isolates "
+        "path 2's own attribution quality from the refreshed holds' (see rule 1)",
     )
     args = ap.parse_args()
 

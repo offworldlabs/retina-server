@@ -270,28 +270,134 @@ class TestResidualAndFreshness:
 
 
 class TestHoldAndFollow:
-    def test_holds_outrank_path_2_from_the_second_frame(self, _binding):
-        """Path H's precedence is what decides how much this feature yields on
-        a node with no ADS-B tags, so it is pinned rather than left implicit.
+    """Path H, and the BLIND node this feature is really for.
 
-        Every claim creates a hold (_touch_hold is called for all of them), and
-        _claim_holds runs BEFORE path 2 — so a link established by path 2 is
-        claimed by path H on every subsequent frame, and rule 1 refuses those.
-        A path-2-only link therefore never reaches CAL_CLAIM_MIN_CLAIMS while
-        holds are enabled: the first claim is charged to `immature` and every
-        later one to `hold`.  Nodes that DO send tags are unaffected — path 1
-        outranks path H (see TestNodeTags).
+    Path H's precedence is what decides how much calibration a node with no
+    ADS-B tags yields.  Every claim creates a hold (_touch_hold is called for
+    all of them) and _claim_holds runs BEFORE path 2, so a link established by
+    path 2 is claimed by path H on every subsequent frame.  Refusing all of
+    those under rule 1 left such a link permanently immature — measured at
+    0.12 points per node-minute against the ~50 a tagged node gets — so rule 1
+    now refuses only a FOLLOW claim and a hold with no live transponder behind
+    it.  The three tests below are the two sides of that split and the residual
+    rule that keeps the refreshed side honest.
+    """
+
+    # The claim-lane geometry the refreshed-hold tests share: a fix 8 s old at
+    # every frame, 400 kt due east, so the dead-reckoned position is ~1.6 km
+    # (several 5° bins at this range) from the reported one and "which
+    # position was recorded" has an observable answer.
+    _FIX_AGE_S = 8.0
+    _GS_KT, _TRACK_DEG = 400.0, 90.0
+
+    def _moving_fix(self, geo):
+        """(dr_lat, dr_lon, pred_delay, pred_doppler) for that aircraft."""
+        ve = self._GS_KT * 0.514444
+        dr_lat, dr_lon = offset_latlon_m(_LAT, _LON, east_m=ve * self._FIX_AGE_S, north_m=0.0)
+        pd, pf = predict_observation(geo, dr_lat, dr_lon, _ALT_BARO_FT * FT_TO_M / 1000.0, ve, 0.0)
+        return dr_lat, dr_lon, pd, pf
+
+    def _run_blind(self, n_frames, ts0, pd, pf, node_id=_NODE_ID):
+        """n consecutive tagless frames on a fix re-stamped _FIX_AGE_S back."""
+        for k in range(n_frames):
+            ts = ts0 + k * _FRAME_DT_MS
+            _cache_state("aaa111", ts - int(self._FIX_AGE_S * 1000), gs=self._GS_KT, track=self._TRACK_DEG)
+            kc.claim_known_targets(node_id, _frame(ts, [pd], [pf]))
+
+    def test_a_refreshed_hold_records_like_a_path_2_claim(self, _binding):
+        """A node that sends no frame["adsb"] claims by path 2 once and by
+        path H forever after, and every one of those holds is REFRESHED — the
+        consistency rule in _claim_holds compared the same detection against
+        the live cached fix inside path 2's own gate before letting the claim
+        stand.  So the streak advances through them and the point lands at the
+        FRESH FIX's dead-reckoned position, exactly as a path-2 claim's would.
+        """
+        geo = _register()
+        dr_lat, dr_lon, pd, pf = self._moving_fix(geo)
+        ts0 = int(time.time() * 1000)
+        n_frames = 5
+
+        self._run_blind(n_frames, ts0, pd, pf)
+
+        assert state.known_hold_claims == n_frames - 1, "every claim after the first is path H's"
+        assert state.calibration_claims_rejected_hold == 0
+        assert state.calibration_claims_rejected_immature == CAL_CLAIM_MIN_CLAIMS - 1
+        assert _n_points() == n_frames - (CAL_CLAIM_MIN_CLAIMS - 1)
+        assert state.calibration_points_recorded == n_frames - (CAL_CLAIM_MIN_CLAIMS - 1)
+
+        # ...and at the dead-reckoned position, not the reported one: a
+        # refreshed hold carries path 2's dead reckoning, not the hold's.
+        ec = state.node_analytics.empirical_coverages[_NODE_ID]
+        dr_bearing, dr_range = _bearing_and_range(geo.rx_lat, geo.rx_lon, dr_lat, dr_lon)
+        rep_bearing, _rep_range = _bearing_and_range(geo.rx_lat, geo.rx_lon, _LAT, _LON)
+        assert _bin_for_bearing(dr_bearing) != _bin_for_bearing(rep_bearing), (
+            "the test is only meaningful if the two positions land in different bins"
+        )
+        recorded = ec._bins[_bin_for_bearing(dr_bearing)]
+        assert len(recorded) == ec.n_points
+        assert recorded[0] == pytest.approx(dr_range, abs=0.05)
+        assert ec._bins[_bin_for_bearing(rep_bearing)] == []
+
+    def test_a_refreshed_hold_is_judged_on_the_fresh_fixs_residual(self, _binding, monkeypatch):
+        """Rule 3 for a refreshed hold reads the TRANSPONDER's prediction, not
+        the hold's.
+
+        A hold predicts this node's next measurement from this node's last
+        one, so its residual is near zero by construction whatever aircraft is
+        actually out there — judging calibration on it would be circular.  Here
+        the detection sits exactly on the hold's propagated prediction while the
+        live fix's own prediction is CAL_CLAIM_DELAY_US + 2 µs away (still
+        inside the 10 µs claim gate, so the claim stands and the hold is
+        refreshed): nothing may be recorded.
         """
         geo = _register()
         pd, pf = _stationary_pred(geo)
+        # Frame 1 predicts exactly on the detection, so path 2 claims; from
+        # frame 2 the cache's prediction drifts and only the fresh-fix
+        # residual can see it.
+        offset = [0.0]
+        monkeypatch.setattr(
+            kc,
+            "predict_observation",
+            lambda g, lat, lon, alt_km, ve=0.0, vn=0.0, vu=0.0: (pd + offset[0], pf),
+        )
+        ts0 = int(time.time() * 1000)
+        _claim_frames(1, ts0, [pd], [pf])
+        offset[0] = CAL_CLAIM_DELAY_US + 2.0
+        _claim_frames(CAL_CLAIM_MIN_CLAIMS + 1, ts0 + _FRAME_DT_MS, [pd], [pf])
+
+        assert state.known_hold_claims >= CAL_CLAIM_MIN_CLAIMS, "path H must have made the later claims"
+        assert state.known_claims["aaa111"][-1]["fix_refreshed"] is True
+        assert _n_points() == 0
+        assert state.calibration_claims_rejected_residual >= 1
+        assert state.calibration_claims_rejected_hold == 0
+
+    def test_a_refreshed_holds_registry_entry_carries_no_calibration_keys(self, _binding):
+        """The calibration position and its reference prediction ride on the
+        claim's private `extra` and are filtered back out, so every existing
+        reader of state.known_claims sees the record it always saw."""
+        geo = _register()
+        _dr_lat, _dr_lon, pd, pf = self._moving_fix(geo)
         ts0 = int(time.time() * 1000)
 
-        _claim_frames(5, ts0, [pd], [pf])
+        self._run_blind(CAL_CLAIM_MIN_CLAIMS + 1, ts0, pd, pf)
 
-        assert state.known_hold_claims == 4
-        assert _n_points() == 0
-        assert state.calibration_claims_rejected_hold == 4
-        assert state.calibration_claims_rejected_immature == 1
+        rec = state.known_claims["aaa111"][-1]
+        assert rec["hold"] is True and rec["fix_refreshed"] is True
+        assert set(rec) == {
+            "node_id",
+            "delay_us",
+            "doppler_hz",
+            "pred_delay_us",
+            "pred_doppler_hz",
+            "ts_ms",
+            "adsb_fix",
+            "contested",
+            "hold",
+            "hold_gap_s",
+            "fix_refreshed",
+        }
+        assert not [k for k in rec if k in kc._CAL_EXTRA_KEYS]
 
     def test_hold_claims_record_nothing_once_the_transponder_stops(self, _binding):
         """The case rule 1 is actually written for: no fresh fix at all behind
@@ -311,6 +417,32 @@ class TestHoldAndFollow:
         assert state.known_hold_claims >= 1, "path H must have run"
         assert _n_points() == 0
         assert state.calibration_claims_rejected_hold >= rejected_hold_before + 3
+
+    def test_a_hold_whose_fix_aged_past_the_claim_cap_records_nothing(self, _binding):
+        """The other half of "no live transponder": the entry is still in the
+        cache, it has simply stopped being updated.
+
+        Frames every 6 s — inside both KNOWN_HOLD_MAX_GAP_S (8 s) and
+        CAL_CLAIM_STREAK_GAP_S (10 s), so the hold and the streak both survive
+        — while one unrefreshed fix ages out.  Past CAL_MAX_ADSB_AGE_S the
+        refreshed hold is charged to `stale_fix`, and past
+        KNOWN_CLAIM_MAX_FIX_AGE_S _fresh_fix_prediction stops answering at all
+        and the bare hold is charged to `hold`.  Nothing is ever recorded.
+        """
+        geo = _register()
+        pd, pf = _stationary_pred(geo)
+        ts0 = int(time.time() * 1000)
+        _cache_state("aaa111", ts0)
+
+        step_ms = 6000
+        n = int(kc.KNOWN_CLAIM_MAX_FIX_AGE_S * 1000 / step_ms) + 2
+        for k in range(n):
+            kc.claim_known_targets(_NODE_ID, _frame(ts0 + k * step_ms, [pd], [pf]))
+
+        assert state.known_hold_claims == n - 1, "the hold must never have expired"
+        assert _n_points() == 0
+        assert state.calibration_claims_rejected_stale_fix >= 1, "while the fix was merely stale"
+        assert state.calibration_claims_rejected_hold >= 1, "once it aged out of the claim gate entirely"
 
     def test_follow_claims_record_nothing(self, _binding, monkeypatch):
         """A follow candidate IS the lane's own published solve — the one

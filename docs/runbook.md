@@ -740,12 +740,15 @@ ADS-B-tagged detections. Anything else (binding is the default): the CLAIM lane
 only, under five rules — see `docs/pipeline.md` §7. The funnel is
 `known_claims.calibration_recorded` and `known_claims.calibration_rejected.*`
 in `/api/test/solver-stats`; the five reject reasons are charged in order, so
-they sum with `recorded` to the non-hold claim count. `recorded` flat at zero
-with a large `immature` is a fleet whose links are too short-lived; flat with a
-large `contested` is traffic too dense to attribute exclusively; flat with a
-large `hold` on a node that sends no `frame["adsb"]` is the known path-H gap
-documented in pipeline §7 (`KNOWN_HOLD_MAX_GAP_S=0` is the lever that
-isolates it).
+they sum with `recorded` to the claim count. `recorded` flat at zero with a
+large `immature` is a fleet whose links are too short-lived; flat with a large
+`contested` is traffic too dense to attribute exclusively; flat with a large
+`hold` means the claims are holds with no LIVE transponder behind them (a
+refreshed hold — one the consistency rule checked against a live fix — is
+judged as the path-2 claim it is and does record), so look at whether the
+transponders are reaching the cache at all before blaming the lane.
+`KNOWN_HOLD_MAX_GAP_S=0` disables path H entirely and is the lever that
+separates path 2's own yield from the holds'.
 
 To force a fleet-wide relearn (e.g. after a calibration-semantics change):
 bump `CALIBRATION_SCHEMA` in

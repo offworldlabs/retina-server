@@ -293,10 +293,11 @@ order, so exactly one counter moves per claim and the six sum to the claim
 count (`known_claims.calibration_recorded` /
 `known_claims.calibration_rejected.*` in `/api/test/solver-stats`):
 
-1. **not a hold or follow claim** (`calibration_claims_rejected_hold`) —
-   neither has a fresh transponder fix behind it: a hold is the node's own
+1. **not a follow claim, and not a hold with no live transponder behind it**
+   (`calibration_claims_rejected_hold`) — a bare hold is the node's own
    prediction of its own measurement, a follow is the lane's own published
-   solve, and both would feed the polygon what the polygon is used to judge;
+   solve, and both would feed the polygon what the polygon is used to judge.
+   A **refreshed** hold is neither: see below;
 2. **fresh fix at the frame instant** — `CAL_MAX_ADSB_AGE_S` (10 s), the same
    rule the emit path uses (`rejected_stale_fix`). Claiming itself tolerates
    45 s, because dead reckoning is what its age-scaled gate is for;
@@ -318,8 +319,8 @@ count (`known_claims.calibration_recorded` /
    of this hex by this node with no gap over `CAL_CLAIM_STREAK_GAP_S` (10 s,
    frame time). The counterpart of the emit path's `n_detections >= 3`, kept
    in its own store in `known_claiming.py` rather than in the hold store,
-   which `KNOWN_HOLD_MAX_GAP_S <= 0` disables entirely. Every non-hold,
-   non-follow claim advances the streak, including ones that fail rules 3–4:
+   which `KNOWN_HOLD_MAX_GAP_S <= 0` disables entirely. Every claim rule 1
+   lets through advances the streak, including ones that fail rules 3–4:
    those are still evidence of the link, just not clean samples.
 
 The position recorded is the claim's fix **dead-reckoned to the frame
@@ -328,16 +329,41 @@ is why `record_claim_calibration` does not apply
 `CAL_FIX_DETECTION_SKEW_S`: dead reckoning makes that skew zero by
 construction.
 
+**The refreshed hold, and why a blind node calibrates at all.** Path H runs
+*before* path 2 and every claim creates a hold, so from the second frame of a
+link onwards a node that sends no `frame["adsb"]` — every hardware receiver
+without its own ADS-B correlation — is claiming through path H. Refusing all
+of those under rule 1 left such a node at **0.12 points per node-minute**
+(97 % of its claims charged to `rejected_hold`) against the ~50 a tagged node
+gets, because rule 1 fired before the maturity streak was even touched, so the
+link could never mature. But a hold carrying `extra["fix_refreshed"]` has
+already been compared against a **live** cached fix inside path 2's own
+age-scaled gate — that is the consistency rule in `_claim_holds` — and the
+claim carries that fix. It is a path-2 claim in everything but which path
+found the detection, so calibration judges it as one: rule 2 against the fresh
+fix's `fix_ts_ms`, **rule 3 against the fresh fix's own prediction rather than
+the hold's propagated one**, rule 4 against the same candidate population as
+any other claim, and the recorded position is that fresh fix dead-reckoned to
+the frame instant (carried on the claim's private `extra`, filtered back out
+before the registry record is written, exactly like path 2's). Judging rule 3
+on the hold's own prediction would be circular: a hold predicts this node's
+next measurement from this node's last one, so its residual is near zero
+whatever aircraft is really out there. A hold whose fix is gone or has aged
+past `KNOWN_CLAIM_MAX_FIX_AGE_S` carries no `fix_refreshed` and is still
+refused by rule 1.
+
 Measured offline (`backend/scripts/calibration_attribution_bench.py`, 20
 synthetic nodes, 3 seeds × 5 simulated minutes, truth read off the simulator's
 per-detection hex before the tags are stripped): the greedy
-`associate_detections_to_adsb` tags that fed the old path are 8.9–11.0 %
-wrong-hex and 8.1–10.0 % out-of-wedge; every claim recorded ungated is
-0.9–3.5 % / 0–1.3 %; the five rules give **0.0–0.1 % wrong-hex and 0.0 %
-out-of-wedge at 51–82 points per node-minute**. The one exception is a node
-with no ADS-B tags *and* path H enabled, where the yield collapses to ~0.1
-points per node-minute because path H outranks path 2 and rule 1 refuses hold
-claims — see the note at the end of this section.
+`associate_detections_to_adsb` tags that fed the old path are 7.3–10.1 %
+wrong-hex and 5.5–8.6 % out-of-wedge; every claim recorded ungated is
+1.1–3.5 % / 0–1.3 %; the five rules give **0.0–0.3 % wrong-hex and 0.0 %
+out-of-wedge at 51–68 points per node-minute**, in all three populations that
+differ in kind — blind with holds on (the hardware-receiver case, 54–61),
+blind with `KNOWN_HOLD_MAX_GAP_S=0` (path 2 alone, 51–61) and tagged (path 1,
+58–68). Before refreshed holds counted, the first of those three yielded
+0.11–0.39 points per node-minute with ~97 % of claims charged to
+`rejected_hold`.
 
 **Under `KNOWN_LANE_MODE=off` the emit-loop path is unchanged**, and its own
 rules still stand. The polygon is used to judge solves and gate association,
@@ -359,20 +385,9 @@ so it must be built only from evidence independent of both, and only from
   under an active FOV gate it once formed a ghost → positive → wider-gate
   feedback loop.
 
-**Known gap: a tagless node stops calibrating after one frame per link.**
-Path H (the hold) runs *before* path 2 and every claim creates a hold, so from
-the second frame of a link onwards a node that sends no `frame["adsb"]` is
-claiming through path H — which rule 1 refuses, and which does not advance the
-maturity streak either. Such a link therefore never reaches
-`CAL_CLAIM_MIN_CLAIMS`. Nodes that do send tags are unaffected (path 1
-outranks path H), which is the whole synthetic fleet and any receiver with its
-own ADS-B correlation. The bench quantifies it: blind, holds on, 0.11–0.13
-points per node-minute with 97 % of claims charged to `rejected_hold`; the
-same run with `KNOWN_HOLD_MAX_GAP_S=0` gives 51–71. The fix is to let a hold
-claim that was *refreshed against a live transponder fix*
-(`extra["fix_refreshed"]`, the consistency rule in `_claim_holds`) be judged
-on that fix's own prediction rather than the hold's — it is a path-2 claim in
-everything but name. Not done here.
+**A tagless node calibrates through its refreshed holds**, which is what the
+refreshed-hold rule above exists for; `rejected_hold` on such a node now means
+the transponder itself is gone, not that path H took the claim.
 
 **What is published as a REAL node's detection area is evidence only.** Under
 `FOV_MODE=off` — the default, and what production and test run —

@@ -206,10 +206,22 @@ def _reset_for_tests() -> None:
 
 # ── Calibration from claims (see services/calibration.py's fourth rule) ──────
 # Key under which a claim carries the position a calibration point from it
-# would record, from where it is computed (the assignment's dead reckoning, or
-# a node tag's own lat/lon) to where it is read.  Filtered out again before the
-# claim is written to state.known_claims, so the registry record is unchanged.
+# would record, from where it is computed (the assignment's dead reckoning, a
+# node tag's own lat/lon, or a refreshed hold's fresh-fix dead reckoning) to
+# where it is read.  Filtered out again before the claim is written to
+# state.known_claims, so the registry record is unchanged.
 _CAL_DR_KEY = "_cal_dr"
+# ...and the prediction that position was built from, carried only by a
+# refreshed hold (path H).  A hold's own pred_d/pred_f propagate the node's
+# last MEASUREMENT forward, which is not a transponder's opinion about where
+# the aircraft is, so the residual rule cannot be applied to it; the
+# consistency check in _claim_holds has already compared the same detection
+# against the live fix, and this is that comparison's reference.
+_CAL_PRED_KEY = "_cal_pred"
+# Every key on a claim's `extra` that belongs to calibration alone.  The
+# registry record is built by copying `extra` minus these, so a reader of
+# state.known_claims sees exactly the claim it always saw.
+_CAL_EXTRA_KEYS = frozenset({_CAL_DR_KEY, _CAL_PRED_KEY})
 
 # (node_id, hexn) -> [n_consecutive_claims, last_ts_ms].  The maturity bar's
 # state, and deliberately NOT the hold store: KNOWN_HOLD_MAX_GAP_S <= 0 is a
@@ -227,8 +239,9 @@ _CLAIM_STREAK_PRUNE_AGE_S = 120.0
 def _touch_claim_streak(node_id: str, hexn: str, ts_ms: int) -> int:
     """Advance this node's claim streak for this hex and return its length.
 
-    Called for every non-hold, non-follow claim — including the ones that go
-    on to fail the residual or exclusivity rules.  A claim that misses those
+    Called for every claim rule 1 lets through — path 1, path 2 and a
+    refreshed hold — including the ones that go on to fail the residual or
+    exclusivity rules.  A claim that misses those
     is still evidence that this node keeps binding this hex frame after frame,
     which is the only question maturity asks; withholding it would make a
     node's first CLEAN sample its third clean one, and on a noisy link the
@@ -304,10 +317,12 @@ def _calibration_from_claim(
     have explained any other way.  The five rules, in the order they are
     charged to a counter:
 
-      1. a HOLD or FOLLOW claim has no fresh transponder fix behind it — a
-         hold is this node's own prediction of its own measurement, and a
-         follow is the lane's own published solve, so recording either would
-         feed the polygon the very estimates it is used to judge;
+      1. a FOLLOW claim, or a HOLD claim with no live transponder behind it,
+         has no fresh fix to record — a bare hold is this node's own
+         prediction of its own measurement, and a follow is the lane's own
+         published solve, so recording either would feed the polygon the very
+         estimates it is used to judge.  A REFRESHED hold is neither: see
+         below;
       2. the fix must be fresh at the FRAME instant (CAL_MAX_ADSB_AGE_S);
       3. the residual must be tight, unscaled by fix age (CAL_CLAIM_DELAY_US /
          CAL_CLAIM_DOPPLER_HZ) — the claim gate is where it has to be to bind
@@ -318,12 +333,36 @@ def _calibration_from_claim(
       5. the link must be MATURE: CAL_CLAIM_MIN_CLAIMS claims of this hex by
          this node with no gap over CAL_CLAIM_STREAK_GAP_S.
 
+    THE REFRESHED HOLD.  Path H runs ahead of path 2 and every claim creates a
+    hold, so a node that sends no frame["adsb"] — which is every hardware
+    receiver without its own ADS-B correlation — is claiming through path H
+    from the second frame of each link onwards.  Refusing all of those under
+    rule 1 left such a node at 0.12 points per node-minute against the ~50 a
+    tagged node gets: the link never matured, because rule 1 fired before the
+    streak was even touched.
+
+    But a hold carrying ``fix_refreshed`` has already been compared against a
+    LIVE cached fix inside path 2's own age-scaled gate — that is the
+    consistency rule in _claim_holds, and the claim carries that fix.  It is a
+    path-2 claim in everything but which path found the detection, so
+    calibration judges it as one: rule 2 against the fresh fix's own
+    fix_ts_ms (which is what the claim carries), rule 3 against the FRESH
+    FIX's prediction rather than the hold's propagated one, rule 4 against the
+    same candidate population as any other claim, and the recorded position is
+    the fresh fix dead-reckoned to the frame instant.  Judging rule 3 against
+    the hold's own prediction would be circular — a hold predicts this node's
+    measurement from this node's last measurement, so it says nothing about
+    where a transponder puts the aircraft.
+
     ``rejects`` is a per-frame tally, so the counters cost one lock per frame
     rather than one per claim.
     """
-    if extra.get("hold") or extra.get("follow"):
+    ref_pred = extra.get(_CAL_PRED_KEY) if extra.get("fix_refreshed") else None
+    if extra.get("follow") or (extra.get("hold") and ref_pred is None):
         rejects["hold"] += 1
         return False
+    if ref_pred is not None:
+        pred_d, pred_f = ref_pred
     # Before the remaining gates: maturity counts CLAIMS, not clean samples.
     n_claims = _touch_claim_streak(node_id, hexn, ts_ms)
     fix_age_s = frame_ts_s - float(fix.get("fix_ts_ms") or 0) / 1000.0
@@ -680,10 +719,18 @@ def _fix_record(st: dict) -> dict:
 
 def _fresh_fix_prediction(
     hexn: str, geo, frame_ts_s: float, node_world: str
-) -> tuple[float, float, float, dict] | None:
-    """Path 2's own prediction for one hex plus the fix record it would carry,
-    or None when no fresh usable fix exists.  The consistency rule's
-    reference — see _claim_holds."""
+) -> tuple[float, float, float, dict, float, float] | None:
+    """Path 2's own prediction for one hex, the fix record it would carry and
+    the dead-reckoned position that prediction was built from, or None when no
+    fresh usable fix exists.  The consistency rule's reference — see
+    _claim_holds.
+
+    The dead-reckoned position rides out with the prediction for the same
+    reason it rides out of path 2's candidate loop: it is the position a
+    calibration point from a claim judged against this prediction records, and
+    re-deriving it at the recording site would be a second offset_latlon_m
+    that could silently disagree with the one the prediction was built from.
+    """
     st = state._adsb_for_seeding().get(hexn)
     if st is None:
         return None
@@ -707,7 +754,7 @@ def _fresh_fix_prediction(
         st.get("vel_east", 0.0),
         st.get("vel_north", 0.0),
     )
-    return pred_d, pred_f, _gate_scale(age_s), _fix_record(st)
+    return pred_d, pred_f, _gate_scale(age_s), _fix_record(st), dr_lat, dr_lon
 
 
 def _follow_fix_record(hexn: str, lat: float, lon: float, alt_m: float, ve: float, vn: float, ts_ms: int) -> dict:
@@ -905,7 +952,7 @@ def _claim_holds(
         ref = _fresh_fix_prediction(hexn, geo, frame_ts_s, node_world)
         extra = {"hold": True, "hold_gap_s": round(dt, 3)}
         if ref is not None:
-            ref_d, ref_f, scale, fresh_fix = ref
+            ref_d, ref_f, scale, fresh_fix, ref_lat, ref_lon = ref
             if (
                 abs(ref_d - float(delays[i])) > KNOWN_CLAIM_DELAY_GATE_US * scale
                 or abs(ref_f - float(dopplers[i])) > KNOWN_CLAIM_DOPPLER_GATE_HZ * scale
@@ -921,6 +968,13 @@ def _claim_holds(
             # as 45 s silent.
             fix = fresh_fix
             extra["fix_refreshed"] = True
+            # ...and for the same reason, calibration judges this claim as
+            # the path-2 claim it would have been: the fresh fix's own
+            # prediction and the position it was dead-reckoned to, both
+            # private to _calibration_from_claim and filtered back out of the
+            # registry record.  See _CAL_EXTRA_KEYS.
+            extra[_CAL_PRED_KEY] = (ref_d, ref_f)
+            extra[_CAL_DR_KEY] = (ref_lat, ref_lon)
         else:
             fix = e.get("fix")
         if not isinstance(fix, dict):
@@ -1252,10 +1306,11 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
                 "contested": contested,
                 # "hold": True / "hold_gap_s" on a path-H claim; absent
                 # otherwise, so every existing reader is unchanged.  The
-                # calibration position rides on `extra` from where it is
-                # computed to _calibration_from_claim, and is filtered back
-                # out here — see _CAL_DR_KEY.
-                **{k: v for k, v in extra.items() if k != _CAL_DR_KEY},
+                # calibration position and reference prediction ride on
+                # `extra` from where they are computed to
+                # _calibration_from_claim, and are filtered back out here —
+                # see _CAL_EXTRA_KEYS.
+                **{k: v for k, v in extra.items() if k not in _CAL_EXTRA_KEYS},
             }
         )
         # The only calibration source while the lane runs (services/calibration.py's
