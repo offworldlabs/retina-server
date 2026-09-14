@@ -46,7 +46,7 @@ from core.users import (
     user_to_dict,
 )
 from services import publication
-from services.node_refs import id_for_ref, public_identity, public_name
+from services.node_refs import id_for_ref, public_identity, public_name, ref_to_id_map
 
 logger = logging.getLogger(__name__)
 
@@ -350,6 +350,27 @@ async def admin_clear_node_location_privacy(node_id: str, admin=Depends(require_
         "location_private": after["location_private"],
         "location_privacy_source": after["location_privacy_source"],
     }
+
+
+@router.get("/node-refs")
+async def admin_list_node_refs(_admin=Depends(require_admin)):
+    """Return {node_ref: node_id} for the whole fleet.
+
+    The one route that serves the mapping publication exists to withhold (D16),
+    which is why it is gated on require_admin rather than on a logged-in caller
+    the way the leaderboard is. The admin pages are built on the public,
+    ref-keyed feeds, so this is what lets them name a node to an operator, join
+    the node_id-keyed admin routes beside it, and link to the node's own site —
+    which is named after the node_id, not the ref.
+
+    While a deployment sets AUTH_ALLOW_ANONYMOUS_ADMIN with no OAuth configured,
+    require_admin admits every caller and this mapping is public there. Closing
+    that door is ClickUp 86cb1emcx; until it closes, treat any environment with
+    the bypass on as publishing the whole boundary, not just this route.
+    """
+    with state.connected_nodes_lock:
+        connected = list(state.connected_nodes)
+    return ref_to_id_map(connected)
 
 
 @router.get("/node-contacts")
