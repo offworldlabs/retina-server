@@ -8,8 +8,10 @@ and the page talks to the same-origin API.
 ```
 data-explorer/
   index.html   markup + the CommonJS shim that loads the vendored timeline
-  app.css      tokens (light palette verbatim from dashboard/src/App.css) + layout
+  app.css      tokens (light from dashboard/src/App.css, dark from the map) + layout
   app.js       all behaviour, one classic script, plain ES2020
+  theme-boot.js  stamps the saved theme before first paint; a file, not inline,
+                 because the vhost's CSP is `script-src 'self'`
   vendor/      react, react-dom, lodash, classnames, @edsc/timeline — see NOTICE.md
 ```
 
