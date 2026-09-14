@@ -143,6 +143,27 @@ def id_for_identity(identity: str | None) -> str | None:
     return id_for_ref(identity)
 
 
+def ref_to_id_map(node_ids: Iterable[str] = ()) -> dict[str, str]:
+    """Every published handle and the node behind it: {node_ref: node_id}.
+
+    The inverse of the boundary, so only a caller already entitled to both
+    identifiers may be handed it — today that is routes/admin.py's `node-refs`,
+    gated on require_admin. Everything else resolves one node at a time.
+
+    `node_ids` widens the registry with ids the caller holds, resolved through
+    `owner_identity` so a mirrored node and a synthetic one appear under the
+    same handle they publish as. A registry row wins over a mirrored ref, as it
+    does on the way out; a node with no handle at all is absent rather than
+    named under its own id.
+    """
+    _refresh()
+    mapping = dict(_reverse)
+    for node_id in node_ids:
+        if ref := owner_identity(node_id):
+            mapping.setdefault(ref, node_id)
+    return mapping
+
+
 def _names_a_node(value: str, known_ids: Iterable[str]) -> bool:
     """Whether a string is the private id of a node.
 

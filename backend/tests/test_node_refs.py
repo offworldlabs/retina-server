@@ -360,3 +360,50 @@ class TestMirroredRef:
         self._connected(node_ref="ndemirrored001")
         out = node_refs.substitute_identities({"aircraft": [{"hex": "abc123", "node_id": _MIRRORED}]})
         assert out["aircraft"] == [{"hex": "abc123", "node_ref": "ndemirrored001"}]
+
+
+class TestRefToIdMap:
+    """The inverse of the boundary, for the admin routes allowed to cross it."""
+
+    def _connected(self, node_id, **entry):
+        from core import state
+
+        with state.connected_nodes_lock:
+            state.connected_nodes[node_id] = {"is_synthetic": False, "status": "active", **entry}
+
+    def teardown_method(self):
+        from core import state
+
+        with state.connected_nodes_lock:
+            state.connected_nodes.clear()
+
+    def test_it_names_the_node_behind_every_registered_ref(self, seed):
+        seed(ret1a2b3c4d="nde1a2b3c4d00", ret9f8e7d6c="nde9f8e7d6c00")
+        assert node_refs.ref_to_id_map() == {
+            "nde1a2b3c4d00": "ret1a2b3c4d",
+            "nde9f8e7d6c00": "ret9f8e7d6c",
+        }
+
+    def test_a_mirrored_node_resolves_through_the_ids_it_is_given(self, seed):
+        """It has no row here, so only a caller holding the id can place it."""
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        self._connected(_MIRRORED, node_ref="ndemirrored001")
+        assert node_refs.ref_to_id_map([_MIRRORED])["ndemirrored001"] == _MIRRORED
+
+    def test_the_registry_wins_over_a_mirrored_ref(self, seed):
+        seed(**{_MIRRORED: "ndelocalrow001"})
+        self._connected(_MIRRORED, node_ref="ndemirrored001")
+        mapping = node_refs.ref_to_id_map([_MIRRORED])
+        assert mapping["ndelocalrow001"] == _MIRRORED
+        assert "ndemirrored001" not in mapping
+
+    def test_a_synthetic_node_maps_to_itself(self, seed):
+        """It publishes under its own id, so that id is both halves."""
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        self._connected("synth-node-1", is_synthetic=True)
+        assert node_refs.ref_to_id_map(["synth-node-1"])["synth-node-1"] == "synth-node-1"
+
+    def test_a_node_with_no_handle_at_all_is_left_out(self, seed):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        self._connected(_MIRRORED)
+        assert node_refs.ref_to_id_map([_MIRRORED]) == {"nde1a2b3c4d00": "ret1a2b3c4d"}
