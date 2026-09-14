@@ -55,6 +55,7 @@ import {
   ViewportTracker,
   MapClickClear,
   InvalidateSizeOnResize,
+  WorldWrap,
   useAircraftFeed,
   useNodes,
   useAuth,
@@ -2191,6 +2192,7 @@ export default function LiveAircraftMap() {
               />
             )}
             <InvalidateSizeOnResize />
+            <WorldWrap />
             <MapClickClear onClear={handleMapClick} />
             <FitBounds aircraft={radarAircraft} nodes={nodes} selectedHex={selectedHex} focusNonce={focusNonce} />
             <FollowController followSelected={followSelected} selectedHex={selectedHex} smoothRef={smoothRef} onDisengage={() => setFollowSelected(false)} />

@@ -29,7 +29,8 @@ export {
 export { MLAT_HISTORY_REFRESH_MS, newSolveArrived } from "./mlatHistory";
 export { mergeTrailPositions, sampleTrailPositions, buildTrailSegments, smoothTrailPositions } from "./trails";
 export { PLANE_PATH, getAircraftColor, altitudeColor, altitudeLegend, aircraftIconSize, makeAircraftIcon, makeDroneIcon, nodeIcon, nodeSiteIcon, drDriftM, drGsKt, drIconBudgetM, drIconState, hideDrIcon, isDarkMultinodeSolve, isMultinodeSolve } from "./icons";
-export { FitBounds, ViewportTracker, MapClickClear, InvalidateSizeOnResize } from "./MapControls";
+export { FitBounds, ViewportTracker, MapClickClear, InvalidateSizeOnResize, WorldWrap } from "./MapControls";
+export { worldCopyIndex, wrapLonNear } from "./worldWrap";
 export { useAircraftFeed, useNodes, useAuth } from "./hooks";
 export { default as NodeOwnerControl } from "./NodeOwnerControl";
 export { default as AircraftListPanel } from "./AircraftListPanel";

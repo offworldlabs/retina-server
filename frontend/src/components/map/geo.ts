@@ -1,4 +1,5 @@
 import { VIEWPORT_PAD_DEG } from "./constants";
+import { wrapLonNear } from "./worldWrap";
 
 export function getAircraftAnchorPoint(ac) {
   if (ac?.lat != null && ac?.lon != null) {
@@ -35,11 +36,16 @@ export function buildViewportSnapshot(bounds) {
 
 export function isPointInViewport(lat, lon, viewport, pad = VIEWPORT_PAD_DEG) {
   if (!viewport || lat == null || lon == null) return true;
+  // The bounds run outside [-180, 180] as soon as the map is panned into
+  // another copy of the world, so the point is compared in the viewport's
+  // frame rather than the feed's — otherwise everything culls at once and the
+  // wrapped projection has nothing left to draw.
+  const wrapped = wrapLonNear(lon, (viewport.west + viewport.east) / 2);
   return (
     lat >= viewport.south - pad &&
     lat <= viewport.north + pad &&
-    lon >= viewport.west - pad &&
-    lon <= viewport.east + pad
+    wrapped >= viewport.west - pad &&
+    wrapped <= viewport.east + pad
   );
 }
 

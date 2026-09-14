@@ -8,6 +8,7 @@ import {
 } from "./constants";
 import { aircraftIconSize } from "./icons";
 import { trimAroundAnchor } from "./arcTrim";
+import { canonicalLatLng } from "./worldWrap";
 import { usePalette } from "./useMapTheme";
 
 /* ── ClaimedArcs: the short locus section under a single-node-claimed aircraft.
@@ -61,7 +62,7 @@ const ClaimedArcs = memo(function ClaimedArcs({ aircraftRef, onSelect }) {
         const cut = trimAroundAnchor(pts, anchor, lengthPx);
         if (!cut || cut.length < 2) continue;
 
-        const latlngs = cut.map((p) => map.layerPointToLatLng(L.point(p.x, p.y)));
+        const latlngs = cut.map((p) => canonicalLatLng(map, L.point(p.x, p.y)));
         seen.add(ac.hex);
 
         const existing = polyMap.get(ac.hex);
