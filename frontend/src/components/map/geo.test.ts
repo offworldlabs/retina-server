@@ -8,6 +8,7 @@ import {
   yagiSectorPositions,
   uncertaintyDiscRadiusM,
   pointInPolygon,
+  isPointInViewport,
 } from "./geo";
 
 describe("haversineDistanceKm", () => {
@@ -259,5 +260,41 @@ describe("pointInPolygon", () => {
     expect(pointInPolygon(0.9, -0.02, lobe)).toBe(true);  // just west of north
     expect(pointInPolygon(-0.5, 0, lobe)).toBe(false);    // due south, outside
     expect(pointInPolygon(0.2, 0.9, lobe)).toBe(false);   // due east, outside
+  });
+});
+
+describe("isPointInViewport", () => {
+  // The fleet's usual corner of the world, and the viewport around it.
+  const home = { north: 36, south: 33, east: -80, west: -85 };
+  const pad = 0;
+
+  it("keeps what is on screen and drops what is not", () => {
+    expect(isPointInViewport(34.85, -82.39, home, pad)).toBe(true);
+    expect(isPointInViewport(34.85, 12.5, home, pad)).toBe(false);
+    expect(isPointInViewport(60, -82.39, home, pad)).toBe(false);
+  });
+
+  it("passes anything through when there is no viewport yet", () => {
+    expect(isPointInViewport(34.85, -82.39, null, pad)).toBe(true);
+  });
+
+  it("finds the same points once the map is panned a world east", () => {
+    // What map.getBounds() reports in the copy east of the canonical one.
+    const east = { north: 36, south: 33, east: 280, west: 275 };
+    expect(isPointInViewport(34.85, -82.39, east, pad)).toBe(true);
+    expect(isPointInViewport(34.85, 12.5, east, pad)).toBe(false);
+  });
+
+  it("and a world west", () => {
+    const west = { north: 36, south: 33, east: -440, west: -445 };
+    expect(isPointInViewport(34.85, -82.39, west, pad)).toBe(true);
+    expect(isPointInViewport(34.85, 12.5, west, pad)).toBe(false);
+  });
+
+  it("keeps everything when the viewport is wider than the world", () => {
+    const whole = { north: 80, south: -80, east: 200, west: -200 };
+    expect(isPointInViewport(34.85, -82.39, whole, pad)).toBe(true);
+    expect(isPointInViewport(34.85, 179, whole, pad)).toBe(true);
+    expect(isPointInViewport(34.85, -179, whole, pad)).toBe(true);
   });
 });

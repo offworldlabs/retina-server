@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useMap, useMapEvents } from "react-leaflet";
 import { buildViewportSnapshot, getFocusPoints } from "./geo";
+import { clearWorldCopy, installWorldWrap, syncWorldCopy } from "./worldWrap";
 
 /**
  * Moves the map on exactly two occasions and no others:
@@ -66,6 +67,30 @@ export function ViewportTracker({ onChange }) {
     onChange(buildViewportSnapshot(map.getBounds()));
   }, [map, onChange]);
 
+  return null;
+}
+
+/**
+ * Keeps the drawn elements in the copy of the world the viewport is centred
+ * on, so they follow the repeating basemap east and west instead of staying
+ * behind in the original copy (see map/worldWrap).
+ */
+export function WorldWrap() {
+  const map = useMap();
+  useEffect(() => {
+    installWorldWrap();
+    const sync = () => syncWorldCopy(map);
+    sync();
+    // `move` rather than `moveend` so a drag across the seam re-projects under
+    // the cursor; every frame but the crossing itself returns early.
+    map.on("move", sync);
+    return () => {
+      map.off("move", sync);
+      // Redraws in the canonical copy on the way out, so nothing is left
+      // stranded should this ever unmount while the map lives on.
+      clearWorldCopy(map);
+    };
+  }, [map]);
   return null;
 }
 
