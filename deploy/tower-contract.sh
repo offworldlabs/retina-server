@@ -142,10 +142,17 @@ _assert_json_keys() {
 # its own upstream is unavailable. 1: everything else.
 #
 # Elevation is the only one of the three routes that fans out to a third party,
-# and the service turns a refusal from it into a 502. On 2026-08-27 open-meteo's
-# daily quota ran out and these checks rolled production back over it, on a deploy
-# that was fine (ClickUp 86cbaxrhp). A third party's rate limiter must not be able
-# to do that, so a 502 warns and passes.
+# and the service turns a refusal from it into a 503. Its own comment beside that
+# status says why, and names this check: "503 and 404 rather than one 502: a
+# caller, and the post-deploy smoke, must be able to tell 'the dependency is down'
+# from 'this route is broken'". 502 is tolerated alongside it because the edge in
+# front of the service emits its own, and neither is ours.
+#
+# On 2026-08-27 open-meteo's daily quota ran out and these checks rolled production
+# back over it, on a deploy that was fine (ClickUp 86cbaxrhp). A third party's rate
+# limiter must not be able to do that, so both statuses warn and pass. The 2026-08-27
+# fix tolerated 502 alone, which the service had already stopped sending, so the same
+# throttle took production's deploy out again on 2026-09-14 (ClickUp 123zgec2qqa).
 #
 # Tolerating it costs no routing coverage. A tower-finder-service that is genuinely
 # down 502s /api/towers and /api/config as well, and both are asserted strictly on
@@ -155,7 +162,11 @@ _assert_json_keys() {
 #
 # 404 stays fatal, and is the regression this probe exists to catch: with no
 # `location /api/elevation` the request falls through `location /` to the app,
-# whose copy of the route went with the monolith's tower stack.
+# whose copy of the route went with the monolith's tower stack. The service now
+# has a 404 of its own, for a point the provider holds no data on, so that status
+# is ambiguous in principle; it is not in practice, because the coordinate this
+# probes is a city the provider has data for. A coordinate chosen anywhere else
+# would have to tell the two apart by the body.
 assert_elevation_contract() {
     local url="${1}?${TOWER_CONTRACT_ELEVATION_QUERY}" body code resp attempt
     # Two attempts, as the siblings above: a blip must not read as a routing fault.
@@ -171,8 +182,8 @@ assert_elevation_contract() {
         body=$(printf '%s' "$resp" | sed '$d')
         [ "$code" = "200" ] && break
         [ "$attempt" = 1 ] && { sleep 5; continue; }
-        if [ "$code" = "502" ]; then
-            echo "elevation: ${url} reached the service, which answered 502 because its own"
+        if [ "$code" = "503" ] || [ "$code" = "502" ]; then
+            echo "elevation: ${url} reached the service, which answered ${code} because its own"
             echo "upstream elevation provider refused it. Not a fault in this deploy; the"
             echo "routing this checks is proven by /api/towers and /api/config alongside."
             return 2
