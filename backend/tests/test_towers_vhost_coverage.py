@@ -38,11 +38,11 @@ _ROLE_TO_SMOKE_VAR = {
 }
 
 # The paths towers-proxy.conf hands to the service. Every vhost that includes it
-# must forward all three. This used to guard against a split-brain (each route
+# must forward all four. This used to guard against a split-brain (each route
 # answered by whichever implementation the vhost happened to reach); now that the
 # monolith's copy is deleted, a route missing from the snippet is a 404 on that
 # vhost instead — louder, but still only visible in production.
-_PROXIED_PATHS = ("/api/towers", "/api/elevation", "/api/config")
+_PROXIED_PATHS = ("/api/towers", "/api/elevation", "/api/config", "/api/geocode")
 
 
 def _server_blocks(text: str) -> list[str]:
@@ -97,10 +97,10 @@ def test_the_smoke_test_defines_every_url_it_is_expected_to_probe():
 def test_the_shared_snippet_proxies_every_deduplicated_path():
     """One vhost include must carry the whole tower stack, not just the search.
 
-    /api/elevation and /api/config have no implementation left in this repo, so a
-    route dropped from this snippet is not served at all on that vhost: the
-    request falls through `location /` to an app that no longer has the handler
-    and answers 404.
+    /api/elevation and /api/config have no implementation left in this repo, and
+    /api/geocode never had one, so a route dropped from this snippet is not
+    served at all on that vhost: the request falls through `location /` to an
+    app without the handler and answers 404.
     """
     snippet = (_TEMPLATE.parent / "snippets" / "towers-proxy.conf").read_text()
     locations = set(re.findall(r"^location\s+(\S+)\s*\{", snippet, re.M))

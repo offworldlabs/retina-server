@@ -17,7 +17,7 @@ illuminators near their location: given coordinates, it returns nearby FM/VHF/UH
 transmitters ranked by suitability for passive radar use.
 
 This repo owns the SPA (`frontend/`) and the nginx routing. The search API itself
-(`/api/towers`, plus `/api/elevation` and `/api/config`) is served by
+(`/api/towers`, plus `/api/elevation`, `/api/config` and `/api/geocode`) is served by
 **tower-finder-service**, a separate repo and container that every vhost is
 proxied to; the monolith's own copy of that stack was deleted once the proxy went
 live, so there is one implementation and one ranking answer.
@@ -79,7 +79,8 @@ cd backend && .venv/bin/uvicorn main:app --reload
 
 The API runs at `http://localhost:8000`. Interactive docs at `/docs`. The tower
 search is not part of this process: run tower-finder-service (its own repo and
-container) if you need `/api/towers`, `/api/elevation` or `/api/config` locally.
+container) if you need `/api/towers`, `/api/elevation`, `/api/config` or
+`/api/geocode` locally.
 The live map and the dashboard do not need it.
 
 #### Database migrations
@@ -138,10 +139,10 @@ the routes as `x-retry` and `x-terminal`, and the vocabulary is defined in the
 contract's own description. A breaking change raises `NODE_API_VERSION` in
 `backend/routes/nodes.py`.
 
-### `GET /api/towers`, `GET /api/elevation`, `GET|PUT /api/config`
+### `GET /api/towers`, `GET /api/elevation`, `GET|PUT /api/config`, `POST /api/geocode`
 
 Answered by **tower-finder-service**, not by this backend. nginx proxies all
-three to that service on every vhost that answers `/api/` (see
+four to that service on every vhost that answers `/api/` (see
 `deploy/nginx/snippets/towers-proxy.conf` and the `TOWER_FINDER` conditional in
 `deploy/nginx/nginx.conf.template`); this repo keeps the SPA that calls them and
 the routing, and no longer keeps a second implementation of the search, the

@@ -21,7 +21,7 @@ One FastAPI backend serves several React front-ends, distinguished by subdomain:
 | **testmap** | Live aircraft map fed by the simulation fleet (synthetic nodes) — the main dev/demo surface. `testmap.retina.fm` is served by the **staging** droplet, the only environment still running a fleet. |
 | **map** | Production live map showing only real radar nodes. |
 | **dashboard** | Admin app (auth required): node ownership, claim codes, MLAT verification, metrics. |
-| **Tower Finder** | The original illuminator search. The SPA is here; the `/api/towers`, `/api/elevation` and `/api/config` API is **tower-finder-service** (separate repo and container), which nginx proxies to on every vhost. This backend no longer implements it. |
+| **Tower Finder** | The original illuminator search. The SPA is here; the `/api/towers`, `/api/elevation`, `/api/config` and `/api/geocode` API is **tower-finder-service** (separate repo and container), which nginx proxies to on every vhost. This backend no longer implements it. |
 
 Receiver nodes connect over TCP and stream detection frames. The pipeline
 (tracker → geolocator) turns frames into aircraft positions, broadcast to the
