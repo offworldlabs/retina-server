@@ -14,7 +14,8 @@ from config.constants import RATE_BUCKETS_MAX_IPS
 from core import state
 from core.users import require_admin
 from pipeline.passive_radar import PassiveRadarPipeline
-from services import node_registration
+from routes.node_schemas import NodeRef
+from services import node_refs, node_registration
 from services.node_config import canonical_config
 from services.node_pipeline import config_hash
 from services.public_location import public_latlon
@@ -36,6 +37,12 @@ class DetectionRequest(BaseModel):
 
 class BulkNodeEntry(BaseModel):
     node_id: str = Field(default="http-node", max_length=128)
+    # The handle the sending environment publishes this node under. Mirrored
+    # nodes have no row here, so it is the only ref this server can name one
+    # by (services/node_refs._mirrored_ref), which is why it is validated
+    # against the same pattern a minted ref must match: a value shaped like a
+    # node_id would otherwise be published as one.
+    node_ref: NodeRef | None = None
     config: dict | None = None
     frames: list[dict] = Field(default_factory=list)
 
@@ -167,6 +174,24 @@ async def ingest_detections(
     }
 
 
+def _record_mirrored_ref(node_id: str, node_ref: str | None) -> None:
+    """Record the handle the sending environment publishes this node under.
+
+    Refused when the local registry already names another node under it: two
+    nodes sharing a handle would both answer to it on every surface while the
+    reverse map named only one, so the collision is dropped rather than
+    resolved silently. Only the registry is consulted, so two mirrored nodes
+    that both arrive claiming one ref, neither of them registered here, are not
+    caught; the sending environment's registry is what keeps refs unique.
+    """
+    if not node_ref or node_refs.id_for_ref(node_ref) not in (None, node_id):
+        return
+    with state.connected_nodes_lock:
+        known = state.connected_nodes.get(node_id)
+        if known is not None:
+            known["node_ref"] = node_ref
+
+
 @router.post("/api/radar/detections/bulk")
 async def ingest_detections_bulk(
     request: Request,
@@ -215,6 +240,10 @@ async def ingest_detections_bulk(
                     "is_synthetic": is_synthetic_node(node_id),
                     "capabilities": {},
                 }
+            # Sole writer of node_ref on both branches: setting it in the
+            # literal above would seat a colliding ref before the guard runs,
+            # and the guard refuses by returning rather than clearing.
+            _record_mirrored_ref(node_id, entry.node_ref)
             # A cached pipeline was built from the config that was active when
             # it was created, and nothing else refreshes it.
             node_registration.evict_pipeline(node_id)
@@ -224,6 +253,11 @@ async def ingest_detections_bulk(
             with state.connected_nodes_lock:
                 state.connected_nodes[node_id]["status"] = "active"
                 state.connected_nodes[node_id]["last_heartbeat"] = datetime.now(timezone.utc).isoformat()
+            # Also on the unchanged path: a sender that starts sending refs
+            # against entries this server already holds moves neither `known`
+            # nor `changed`, so writing it only at registration would leave
+            # every existing node without one until a restart.
+            _record_mirrored_ref(node_id, entry.node_ref)
 
         for frame in frames:
             if "timestamp" not in frame:

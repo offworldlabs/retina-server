@@ -314,3 +314,49 @@ class TestPublicRecords:
         seed(ret1a2b3c4d="nde1a2b3c4d00")
         (out,) = node_refs.public_records([{"contributing_node_ids": ("ret1a2b3c4d", "ret0badcafe")}])
         assert out == {"contributing_node_refs": ["nde1a2b3c4d00"]}
+
+
+_MIRRORED = "ret0badcafe"
+
+
+class TestMirroredRef:
+    """A node whose detections are mirrored in from another environment.
+
+    It has no registry row here, so the registry cannot answer for it. The
+    mirror sends the ref the owning environment resolved, and the boundary
+    publishes that rather than dropping the node.
+    """
+
+    def _connected(self, **entry):
+        from core import state
+
+        with state.connected_nodes_lock:
+            state.connected_nodes[_MIRRORED] = {"is_synthetic": False, "status": "active", **entry}
+
+    def teardown_method(self):
+        from core import state
+
+        with state.connected_nodes_lock:
+            state.connected_nodes.pop(_MIRRORED, None)
+
+    def test_a_mirrored_ref_is_published_when_the_registry_has_none(self, seed):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        self._connected(node_ref="ndemirrored001")
+        assert node_refs.public_identity(_MIRRORED) == "ndemirrored001"
+
+    def test_without_one_the_node_is_still_dropped(self, seed):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        self._connected()
+        assert node_refs.public_identity(_MIRRORED) is None
+
+    def test_the_registry_wins_over_a_mirrored_ref(self, seed):
+        """A local row is the authority; a mirrored value cannot override it."""
+        seed(**{_MIRRORED: "ndelocalrow001"})
+        self._connected(node_ref="ndemirrored001")
+        assert node_refs.public_identity(_MIRRORED) == "ndelocalrow001"
+
+    def test_a_mirrored_node_reaches_the_published_feed(self, seed):
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        self._connected(node_ref="ndemirrored001")
+        out = node_refs.substitute_identities({"aircraft": [{"hex": "abc123", "node_id": _MIRRORED}]})
+        assert out["aircraft"] == [{"hex": "abc123", "node_ref": "ndemirrored001"}]
