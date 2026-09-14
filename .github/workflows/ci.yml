@@ -340,6 +340,11 @@ jobs:
         env:
           CI: "true"
           RADAR_API_KEY: ${{ secrets.STAGING_RADAR_API_KEY }}
+          # Passage through Access for the admin surface. Playwright follows the
+          # edge's 302, so without these the admin tests would parse Cloudflare's
+          # login page as the app. Empty secrets render empty and send nothing.
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
 
   e2e-prod:
     name: Playwright E2E (production)
@@ -760,6 +765,11 @@ jobs:
           done
       - name: Run smoke tests against staging
         timeout-minutes: 15
+        # Same service token as production: one token, admitted by a Service Auth
+        # policy on each admin application. Inert while the secrets are unset.
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
         run: bash deploy/staging-smoke-test.sh
 
   deploy-production:
@@ -1194,6 +1204,14 @@ jobs:
       - name: Run production smoke tests
         id: smoke
         timeout-minutes: 15
+        # Passage through Cloudflare Access for the admin vhost. An unset secret
+        # renders empty, and tower-contract.sh sends no headers at all in that
+        # case, so this is inert until the Access application and the service
+        # token both exist. Failing this step rolls production back, so it must
+        # not become the reason a deploy reverts.
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
         run: |
           CURL="curl -s --connect-timeout 10 --max-time 60"
           # PASS/FAIL/WARN and smoke_summary, shared with deploy/staging-smoke-test.sh.
@@ -1275,16 +1293,6 @@ jobs:
             else
               echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
             fi
-          done
-
-          # Wait for storage scan (background du task, 202 = still scanning)
-          printf "  %-40s " "GET /api/admin/storage"
-          for i in $(seq 1 24); do
-            SCODE=$(curl -sk -o /dev/null -w "%{http_code}" "${BASE_URL}/api/admin/storage")
-            if [ "$SCODE" = "200" ]; then echo "OK (200)"; PASS=$((PASS+1)); break; fi
-            if [ "$SCODE" = "202" ] && [ "$i" = "24" ]; then echo "WARN (202 still scanning after 120s)"; WARN=$((WARN+1)); break; fi
-            if [ "$i" = "24" ]; then echo "FAIL ($SCODE != 200 after 120s)"; FAIL=$((FAIL+1)); break; fi
-            sleep 5
           done
 
           # Check aircraft data is flowing

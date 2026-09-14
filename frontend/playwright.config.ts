@@ -65,6 +65,31 @@ const HOSTS = {
 export const env = ENV;
 export const hosts = HOSTS[ENV];
 
+/**
+ * Cloudflare Access service-token headers, empty unless CI supplies both.
+ *
+ * The admin vhost sits behind an Access application, which answers a request
+ * carrying no session with a 302 to its login page. Playwright follows that
+ * redirect and lands on Cloudflare's HTML, so without these a test against the
+ * admin surface fails somewhere unhelpful — parsing a login page as the app —
+ * rather than saying it was never let in.
+ *
+ * Empty on an ungated hostname and for anyone running the suite locally, so
+ * this changes nothing until the Access applications and the token both exist.
+ * Both halves or neither: half a credential is refused at the edge exactly like
+ * none, and sending one would only make the failure harder to read.
+ *
+ * Exported because `request.newContext()` does not inherit `use`, so a spec
+ * building its own context against a gated host has to pass these itself.
+ */
+export const accessHeaders: Record<string, string> =
+  process.env.CF_ACCESS_CLIENT_ID && process.env.CF_ACCESS_CLIENT_SECRET
+    ? {
+        "CF-Access-Client-Id": process.env.CF_ACCESS_CLIENT_ID,
+        "CF-Access-Client-Secret": process.env.CF_ACCESS_CLIENT_SECRET,
+      }
+    : {};
+
 export default defineConfig({
   testDir: "./e2e",
   timeout: 30_000,
@@ -74,6 +99,7 @@ export default defineConfig({
   reporter: process.env.CI ? "github" : "list",
   use: {
     baseURL: hosts.frontend,
+    extraHTTPHeaders: accessHeaders,
     trace: "on-first-retry",
     screenshot: "only-on-failure",
     headless: true,
