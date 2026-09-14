@@ -103,11 +103,11 @@ check_contract() {
 NO_DNS_EXPECTED=""
 
 # Vhosts whose record exists and is expected to, but whose absence must not
-# fail the run: staging-smoke-tests is a `needs:` of deploy-production
-# (ci.yml), so a hard failure here would let a Cloudflare wobble block every
-# release. Reported as WARN and tallied separately, because a deleted record
-# must still be visible: skipping it silently would retire the only check on a
-# vhost nothing else monitors.
+# fail the run: this runs inside the `staging` job that deploy-production needs
+# (ci.yml calls staging-deploy-verify.yml), so a hard failure here would let a
+# Cloudflare wobble block every release. Reported as WARN and tallied
+# separately, because a deleted record must still be visible: skipping it
+# silently would retire the only check on a vhost nothing else monitors.
 DNS_NOT_DEPLOY_BLOCKING="staging-admin.retina.fm staging-data.retina.fm"
 
 # Decides what to do about $1 not resolving, prints it, and returns 0 when the
