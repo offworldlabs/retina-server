@@ -176,10 +176,10 @@ def _mirrored_ref(node_id: str) -> str | None:
     pattern a minted one must match. Read only when the local registry has
     nothing, so a real row always wins.
 
-    Unlocked: both reads are single dict lookups, and an entry is replaced
-    wholesale rather than edited field by field, so a concurrent write yields
-    the old entry or the new one. Taking connected_nodes_lock here would put it
-    on the 1 Hz publication path, contending with the ingest that writes it.
+    Unlocked: both reads are single dict lookups, and a concurrent writer
+    either replaces the entry or assigns this one key, so a read yields the old
+    value or the new one. Taking connected_nodes_lock here would put it on the
+    1 Hz publication path, contending with the ingest that writes it.
     """
     known = state.connected_nodes.get(node_id)
     ref = known.get("node_ref") if known else None

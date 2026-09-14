@@ -401,6 +401,15 @@ class TestBulkRecordsTheMirroredRef:
         assert self._post(client, node_ref=self.REF).status_code == 200
         assert self._entry().get("node_ref") == self.REF
 
+    def test_a_ref_the_registry_gives_to_another_node_is_refused(self, client, monkeypatch):
+        """Registration is first contact for a mirrored node, so a guard that
+        only held on the already-known path would never run for one."""
+        from services import node_refs
+
+        monkeypatch.setattr(node_refs, "id_for_ref", lambda ref: "retdeadbeef")
+        assert self._post(client, node_ref=self.REF, config={"rx_lat": 34.0, "rx_lon": -82.0}).status_code == 200
+        assert self._entry().get("node_ref") is None
+
     def test_a_ref_shaped_like_a_node_id_is_refused(self, client):
         """Publishing it would put a raw node id on the public wire through the
         very fallback that exists to keep one off it."""

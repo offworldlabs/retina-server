@@ -177,9 +177,12 @@ async def ingest_detections(
 def _record_mirrored_ref(node_id: str, node_ref: str | None) -> None:
     """Record the handle the sending environment publishes this node under.
 
-    Refused when another node already publishes under it: two nodes sharing a
-    handle would both answer to it on every surface while the reverse map named
-    only one, so the collision is dropped rather than resolved silently.
+    Refused when the local registry already names another node under it: two
+    nodes sharing a handle would both answer to it on every surface while the
+    reverse map named only one, so the collision is dropped rather than
+    resolved silently. Only the registry is consulted, so two mirrored nodes
+    that both arrive claiming one ref, neither of them registered here, are not
+    caught; the sending environment's registry is what keeps refs unique.
     """
     if not node_ref or node_refs.id_for_ref(node_ref) not in (None, node_id):
         return
@@ -236,8 +239,10 @@ async def ingest_detections_bulk(
                     "peer": "http-bulk",
                     "is_synthetic": is_synthetic_node(node_id),
                     "capabilities": {},
-                    "node_ref": entry.node_ref,
                 }
+            # Sole writer of node_ref on both branches: setting it in the
+            # literal above would seat a colliding ref before the guard runs,
+            # and the guard refuses by returning rather than clearing.
             _record_mirrored_ref(node_id, entry.node_ref)
             # A cached pipeline was built from the config that was active when
             # it was created, and nothing else refreshes it.
