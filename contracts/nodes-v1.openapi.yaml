@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RETINA node ingest
-  version: 1.2.0
+  version: 1.2.1
   description: |
     The RETINA server's HTTP API. The paths under `/v1/nodes` are the RETINA node
     ingest contract, generated from the server and versioned as a unit; everything
@@ -906,6 +906,15 @@ components:
         and nullable, and an absent field means the same as a null one: the document is
         replaced wholesale, so a field left out is cleared.
 
+        `country` is an ISO 3166-1 alpha-2 code and says where the phone number is,
+        which a national number cannot say for itself: `07700900123` is dialable only
+        by someone who already knows the answer. Two letters, case-insensitive on the
+        wire and stored upper case.
+
+        Necessary but not sufficient, as the configuration schema is: surrounding
+        whitespace is stripped before a value is judged, so a bound here describes the
+        trimmed form rather than the bytes sent.
+
         None of it is verified, and none of it identifies anyone to the server: it is
         carried so that a fault we can see and the owner cannot has somewhere to go.
       properties:
@@ -928,6 +937,12 @@ components:
           anyOf:
           - type: string
             maxLength: 32
+          - type: 'null'
+        country:
+          anyOf:
+          - type: string
+            maxLength: 2
+            pattern: ^[A-Za-z]{2}$
           - type: 'null'
       required: []
       additionalProperties: false

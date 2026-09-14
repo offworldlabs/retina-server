@@ -142,6 +142,9 @@ class NodeContact(Base):
     last_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # ISO 3166-1 alpha-2, so the phone number above resolves: a national number
+    # says nothing about where it is dialable from.
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

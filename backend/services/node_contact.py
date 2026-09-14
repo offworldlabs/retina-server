@@ -18,9 +18,15 @@ _MAX_LENGTHS: dict[str, int] = {
     "last_name": 64,
     "email": 255,
     "phone": 32,
+    "country": 2,
 }
 
 _FIELDS = frozenset(_MAX_LENGTHS)
+
+# What a length alone cannot say. Published beside the bound so a generated
+# client refuses the same shapes this module does, rather than learning them
+# from a 400.
+_PATTERNS: dict[str, str] = {"country": "^[A-Za-z]{2}$"}
 
 # Deliberately shallow: the check is against a typo, and a stricter grammar
 # refuses addresses that work. Nothing here says an address is real.
@@ -30,6 +36,15 @@ _SCHEMA_DESCRIPTION = """\
 Whom to contact about this node, as its owner gave them. Every field is optional
 and nullable, and an absent field means the same as a null one: the document is
 replaced wholesale, so a field left out is cleared.
+
+`country` is an ISO 3166-1 alpha-2 code and says where the phone number is,
+which a national number cannot say for itself: `07700900123` is dialable only
+by someone who already knows the answer. Two letters, case-insensitive on the
+wire and stored upper case.
+
+Necessary but not sufficient, as the configuration schema is: surrounding
+whitespace is stripped before a value is judged, so a bound here describes the
+trimmed form rather than the bytes sent.
 
 None of it is verified, and none of it identifies anyone to the server: it is
 carried so that a fault we can see and the owner cannot has somewhere to go."""
@@ -54,7 +69,12 @@ def contact_json_schema() -> dict[str, Any]:
         "title": "NodeContact",
         "description": _SCHEMA_DESCRIPTION,
         "properties": {
-            field: {"anyOf": [{"type": "string", "maxLength": maximum}, {"type": "null"}]}
+            field: {
+                "anyOf": [
+                    {"type": "string", "maxLength": maximum} | ({"pattern": p} if (p := _PATTERNS.get(field)) else {}),
+                    {"type": "null"},
+                ]
+            }
             for field, maximum in _MAX_LENGTHS.items()
         },
         # No key is required: a node with nothing to report sends {}.
@@ -90,11 +110,23 @@ def _email(value: str) -> str:
     return value
 
 
+def _country(value: str) -> str:
+    if len(value) != 2 or not value.isascii() or not value.isalpha():
+        raise ContactInvalid("country", "not a country code")
+    # Upper-cased rather than kept as typed, unlike the phone beside it: alpha-2
+    # is defined upper case, so `gb` and `GB` are one value written two ways and
+    # nothing is lost by choosing. The set itself is not checked — the list
+    # changes, and a well-formed code for the wrong country is a mistake no
+    # validator here can see anyway.
+    return value.upper()
+
+
 def _phone(value: str) -> str:
     if not set(value) <= _PHONE_CHARACTERS or not any(character.isdigit() for character in value):
         raise ContactInvalid("phone", "not a number")
     # Returned as typed. A number reformatted wrongly is worse than the one the
-    # owner gave, and no country can be inferred from what we hold.
+    # owner gave, and `country` is what makes a national number resolvable
+    # without touching the digits.
     return value
 
 
@@ -121,4 +153,6 @@ def validate_contact(payload: dict[str, Any]) -> dict[str, Any]:
         out["email"] = _email(out["email"])
     if out["phone"] is not None:
         out["phone"] = _phone(out["phone"])
+    if out["country"] is not None:
+        out["country"] = _country(out["country"])
     return out

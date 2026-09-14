@@ -19,6 +19,7 @@ CONTACT = {
     "last_name": "Lovelace",
     "email": "ada@example.com",
     "phone": "+44 20 7946 0000",
+    "country": "GB",
 }
 
 
@@ -58,7 +59,7 @@ async def test_an_empty_document_is_accepted_and_stores_nulls(registered_node, n
 
     assert response.status_code == 200
     row = await _row(node_session, node_id)
-    assert (row.first_name, row.last_name, row.email, row.phone) == (None, None, None, None)
+    assert (row.first_name, row.last_name, row.email, row.phone, row.country) == (None, None, None, None, None)
 
 
 async def test_a_resend_clears_what_it_omits(registered_node, node_session, node_client):
@@ -95,6 +96,7 @@ async def test_a_bad_bearer_is_401_rather_than_a_body_refusal(registered_node, n
         ({"phone": "call me"}, "phone"),
         ({"first_name": 42}, "first_name"),
         ({"last_name": "a" * 65}, "last_name"),
+        ({"country": "GBR"}, "country"),
     ],
 )
 async def test_a_refused_document_names_the_field(registered_node, node_client, payload, field):

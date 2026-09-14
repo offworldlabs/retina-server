@@ -15,14 +15,19 @@ FULL = {
     "last_name": "Lovelace",
     "email": "ada@example.com",
     "phone": "+44 20 7946 0000",
+    "country": "GB",
 }
+
+
+def _string_branch(schema, field):
+    return next(branch for branch in schema["properties"][field]["anyOf"] if branch["type"] == "string")
 
 
 def test_a_full_document_passes_through_unchanged():
     assert validate_contact(dict(FULL)) == FULL
 
 
-def test_an_empty_document_is_four_nulls():
+def test_an_empty_document_is_a_null_per_field():
     assert validate_contact({}) == dict.fromkeys(FULL, None)
 
 
@@ -32,6 +37,7 @@ def test_an_absent_field_is_null_rather_than_missing():
         "last_name": None,
         "email": "ada@example.com",
         "phone": None,
+        "country": None,
     }
 
 
@@ -107,11 +113,56 @@ def test_the_published_schema_matches_the_bounds():
     assert schema["additionalProperties"] is False
     assert schema.get("required", []) == []
     assert sorted(schema["properties"]) == sorted(FULL)
-    for field, maximum in (("first_name", 64), ("last_name", 64), ("email", 255), ("phone", 32)):
-        branches = schema["properties"][field]["anyOf"]
-        string_branch = next(branch for branch in branches if branch["type"] == "string")
-        assert string_branch["maxLength"] == maximum
-        assert {"type": "null"} in branches
+    for field, maximum in (("first_name", 64), ("last_name", 64), ("email", 255), ("phone", 32), ("country", 2)):
+        assert _string_branch(schema, field)["maxLength"] == maximum
+        assert {"type": "null"} in schema["properties"][field]["anyOf"]
+
+
+@pytest.mark.parametrize("value", ["gb", "Gb", "GB"])
+def test_a_country_code_is_stored_upper_case(value):
+    """alpha-2 is defined upper case, so the same country typed three ways is
+    one value rather than three."""
+    assert validate_contact({"country": value})["country"] == "GB"
+
+
+@pytest.mark.parametrize("value", ["G", "G1", "??", "1"])
+def test_a_country_that_is_not_two_letters_is_refused(value):
+    with pytest.raises(ContactInvalid) as exc:
+        validate_contact({"country": value})
+    assert (exc.value.field, exc.value.reason) == ("country", "not a country code")
+
+
+@pytest.mark.parametrize("value", ["GBR", "united kingdom"])
+def test_a_country_longer_than_the_column_is_refused_as_too_long(value):
+    """The length check runs before the shape check, as it does for every other
+    field, so a three-letter code is refused for the reason it is: alpha-3 does
+    not fit a column that holds alpha-2."""
+    with pytest.raises(ContactInvalid) as exc:
+        validate_contact({"country": value})
+    assert (exc.value.field, exc.value.reason) == ("country", "too long")
+
+
+def test_a_country_survives_surrounding_whitespace():
+    """Stripped before it is judged, like every other field: a trailing space is
+    a typing artefact, not a wrong country."""
+    assert validate_contact({"country": " gb "})["country"] == "GB"
+
+
+def test_a_well_formed_code_is_taken_on_trust():
+    """The set is not checked: the list changes, and a code for the wrong
+    country is a mistake no validator here can see."""
+    assert validate_contact({"country": "ZZ"})["country"] == "ZZ"
+
+
+def test_the_country_pattern_published_is_the_one_enforced():
+    """A bound a client cannot see is one it learns from a 400 instead."""
+    schema = contact_json_schema()
+
+    assert _string_branch(schema, "country")["pattern"] == "^[A-Za-z]{2}$"
+    patterned = [field for field in FULL if "pattern" in _string_branch(schema, field)]
+    # The other four are bounded by length alone, so a pattern appearing on one
+    # of them here means the validator grew a rule this test has not seen.
+    assert patterned == ["country"]
 
 
 def test_the_schema_is_fresh_every_call():

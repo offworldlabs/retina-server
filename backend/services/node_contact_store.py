@@ -16,10 +16,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.nodes import NodeContact
 
-# The four columns a contact document consists of: everything on node_contacts
+# The five columns a contact document consists of: everything on node_contacts
 # bar the node it belongs to and the timestamp. Exactly validate_contact's
 # output keys.
-_CONTACT_FIELDS = ("first_name", "last_name", "email", "phone")
+_CONTACT_FIELDS = ("first_name", "last_name", "email", "phone", "country")
 
 
 def _aware(when: datetime) -> datetime:
