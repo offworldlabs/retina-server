@@ -4,9 +4,14 @@ import { defineConfig, devices } from "@playwright/test";
  * Playwright E2E test configuration.
  *
  * Environments (set via E2E_ENV):
- *   staging  → staging-towers.retina.fm / staging-api.retina.fm / staging-map.retina.fm (default)
- *   prod     → towers.retina.fm / api.retina.fm / (no synthetic map)
- *   local    → localhost:5173 / localhost:8000
+ *   staging  → staging-api / staging-map / staging-dash / staging-admin (default)
+ *   prod     → api / map / dash (no synthetic map, no admin)
+ *   local    → localhost:8000 (api) / localhost:5173 (map) / localhost:5174 (dash)
+ *
+ * No entry names a towers hostname. Those are routed to tower-finder-service's
+ * own edge by a Cloudflare Origin Rule, so nothing this repo builds answers
+ * there: a test against one asserts another service's markup, and on prod a
+ * failed E2E rolls production back.
  *
  * `testmap` is null on prod, and that is load-bearing rather than tidiness.
  * testmap.retina.fm is served by staging — production runs no simulator and has
@@ -20,7 +25,6 @@ const ENV = (process.env.E2E_ENV ?? "staging") as "staging" | "prod" | "local";
 
 const HOSTS = {
   staging: {
-    frontend:  "https://staging-towers.retina.fm",
     api:       "https://staging-api.retina.fm",
     map:       "https://staging-map.retina.fm",
     // The synthetic map surface, which is what the live-map suite needs — and
@@ -38,7 +42,6 @@ const HOSTS = {
     admin:     "https://staging-admin.retina.fm",
   },
   prod: {
-    frontend:  "https://towers.retina.fm",
     api:       "https://api.retina.fm",
     map:       "https://map.retina.fm",
     testmap:   null,
@@ -49,7 +52,6 @@ const HOSTS = {
     admin:     null,
   },
   local: {
-    frontend:  "http://localhost:5173",
     api:       "http://localhost:8000",
     map:       "http://localhost:5173",
     testmap:   "http://localhost:5173",
@@ -98,7 +100,10 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? "github" : "list",
   use: {
-    baseURL: hosts.frontend,
+    // The frontend/dist vhost that exists on every environment and is ours:
+    // testmap is staging-only and the towers name is not ours. Every spec names
+    // its host explicitly, so this only resolves a relative URL.
+    baseURL: hosts.map,
     extraHTTPHeaders: accessHeaders,
     trace: "on-first-retry",
     screenshot: "only-on-failure",
