@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { api } from "../../api/client";
+import { formatBytes } from "../../utils/format";
 
 const PAGE_SIZE = 50;
 
@@ -270,10 +271,4 @@ export default function StoragePage() {
       </div>
     </>
   );
-}
-
-function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
