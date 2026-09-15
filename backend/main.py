@@ -40,6 +40,7 @@ from core import state
 from core.env_parsing import parse_comma_list
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from routes.admin import router as admin_router
+from routes.admin_infrastructure import router as admin_infrastructure_router
 from routes.analytics import router as analytics_router
 from routes.archive import router as archive_router
 from routes.auth import router as auth_router
@@ -112,17 +113,19 @@ _test_mod.init(radar_pipeline)
 async def lifespan(app: FastAPI):
     # The anonymous-admin bypass, said out loud once per boot.
     #
-    # AUTH_ALLOW_ANONYMOUS_ADMIN=1 is set in every environment while OAuth is
-    # unconfigured, so the flag has stopped being noticed — and it is not one
-    # guard among several, it is the whole of the admin boundary
+    # AUTH_ALLOW_ANONYMOUS_ADMIN=1 is a local-development convenience that no
+    # deployed environment sets, so this line on a droplet means the bypass has
+    # been restored to one — and it is not one guard among several, it is the
+    # whole of the admin boundary
     # (core.users._derive_auth_flags, tests/test_auth.py).  The public surfaces
     # go to some length to publish displaced receiver positions and to withhold
     # private nodes entirely; the admin surfaces behind that boundary serve the
     # true ones, and while this is set they serve them to anyone who asks.
     #
-    # A log line, not a refusal: turning it off here would take every
-    # environment's admin access with it, and the default is deliberately not
-    # this module's to change.  WARNING level so it survives the default
+    # A log line, not a refusal: local development has no Access assertion and
+    # no OAuth, so refusing here would leave a laptop with no way into the
+    # console, and the default is deliberately not this module's to change.
+    # WARNING level so it survives the default
     # LOG_LEVEL and lands in the deploy's own logs rather than only in a
     # developer's terminal.
     from core.users import AUTH_BYPASS
@@ -238,12 +241,17 @@ async def lifespan(app: FastAPI):
 
         flush_all_archive_buffers()
         # Close pooled HTTP clients (they had no shutdown path at all)
+        from clients import digitalocean
         from services.tasks.periodic import close_http_clients
 
         try:
             await close_http_clients()
         except Exception:
             logging.exception("HTTP client shutdown failed")
+        try:  # its own guard, so a failure above still leaves this pool closed
+            await digitalocean.aclose()
+        except Exception:
+            logging.exception("DigitalOcean client shutdown failed")
         state.node_analytics.save_coverage_maps()
         # Stop runtime coverage and flush report
         _stop_coverage()
@@ -350,6 +358,7 @@ for router in (
     custody_router,
     auth_router,
     admin_router,
+    admin_infrastructure_router,
     output_router,
     nodes_router,
 ):

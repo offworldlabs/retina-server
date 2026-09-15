@@ -7,6 +7,11 @@
 # Exit code: 0 = all checks passed, 1 = failure
 set -euo pipefail
 
+# Served by tower-finder-service, NOT by this repo. A Cloudflare Origin Rule
+# in the http_request_origin phase routes this hostname to origin port 8443
+# (the tower-finder-edge container); retina-server's nginx listens on 443 and
+# never sees the request. Only the tower contract may be asserted against it.
+# retina-server's own API goes to API_URL.
 BASE_URL="https://staging-towers.retina.fm"
 API_URL="https://staging-api.retina.fm"
 DASH_URL="https://staging-dash.retina.fm"
@@ -84,11 +89,25 @@ check_json_field() {
 # The seam's assertion lives in tower-contract.sh so the gate and this suite
 # cannot drift; this only adapts it to the PASS/FAIL tally.
 check_contract() {
-    local name="$1" endpoint="$2" reason
+    local name="$1" endpoint="$2" reason rc
     printf "  %-40s " "$name"
     if reason=$(assert_tower_contract "$endpoint"); then
+        rc=0
+    else
+        rc=$?
+    fi
+    if [ "$rc" = 0 ]; then
         echo "OK"
         PASS=$((PASS+1))
+    elif [ "$rc" = 2 ]; then
+        # Forwarded, and tower-finder-service did not answer. Warned for the same
+        # reason the production suite warns: a red staging smoke skips the
+        # production deploy, so the service being down would hold this repo's
+        # releases behind an outage it cannot fix. The routing this covers is
+        # proven by the 404 case, which stays fatal.
+        echo "WARN"
+        printf '    %s\n' "$reason"
+        WARN=$((WARN+1))
     else
         echo "FAIL"
         printf '    %s\n' "$reason"
@@ -103,11 +122,11 @@ check_contract() {
 NO_DNS_EXPECTED=""
 
 # Vhosts whose record exists and is expected to, but whose absence must not
-# fail the run: staging-smoke-tests is a `needs:` of deploy-production
-# (ci.yml), so a hard failure here would let a Cloudflare wobble block every
-# release. Reported as WARN and tallied separately, because a deleted record
-# must still be visible: skipping it silently would retire the only check on a
-# vhost nothing else monitors.
+# fail the run: this runs inside the `staging` job that deploy-production needs
+# (ci.yml calls staging-deploy-verify.yml), so a hard failure here would let a
+# Cloudflare wobble block every release. Reported as WARN and tallied
+# separately, because a deleted record must still be visible: skipping it
+# silently would retire the only check on a vhost nothing else monitors.
 DNS_NOT_DEPLOY_BLOCKING="staging-admin.retina.fm staging-data.retina.fm"
 
 # Decides what to do about $1 not resolving, prints it, and returns 0 when the
@@ -164,6 +183,28 @@ check_header() {
     fi
 }
 
+# As check_header, but the header must also carry the given value.
+check_header_value() {
+    local name="$1" url="$2" header="$3" value="$4"
+    printf "  %-40s " "$name"
+    HEADERS=$($CURL -o /dev/null -D - "$url" 2>/dev/null) || { echo "FAIL (connection error)"; FAIL=$((FAIL+1)); return; }
+
+    if echo "$HEADERS" | tr 'A-Z' 'a-z' | grep "^${header}:" | grep -qF "$value"; then
+        echo "OK"
+        PASS=$((PASS+1))
+    else
+        echo "FAIL (${header} does not say ${value})"
+        FAIL=$((FAIL+1))
+    fi
+}
+
+check_header_value_if_dns() {
+    local name="$1" url="$2" header="$3" value="$4" host
+    host="${url#https://}"; host="${host%%/*}"
+    if handle_unresolvable "$host" "$name"; then return; fi
+    check_header_value "$name" "$url" "$header" "$value"
+}
+
 check_rate_limit() {
     local name="$1" url="$2" tries="$3"
     printf "  %-40s " "$name"
@@ -212,32 +253,36 @@ check_rate_limit() {
 
 echo "═══════════════════════════════════════════════════"
 echo "  Staging Smoke Tests"
-echo "  frontend: ${BASE_URL}"
+echo "  towers:   ${BASE_URL} (tower-finder-service)"
 echo "  api:      ${API_URL}"
 echo "  dash:     ${DASH_URL}"
 echo "═══════════════════════════════════════════════════"
 
 echo ""
-echo "── Health & API endpoints (staging.retina.fm) ──"
-check_status "GET /api/health"              "${BASE_URL}/api/health"        "200"
-check_status "GET /api/radar/nodes"         "${BASE_URL}/api/radar/nodes"   "200"
-check_status "GET /api/radar/analytics"     "${BASE_URL}/api/radar/analytics" "200"
-check_status "GET /api/test/dashboard"      "${BASE_URL}/api/test/dashboard" "200"
-check_status "GET /api/test/mlat-verification" "${BASE_URL}/api/test/mlat-verification" "200"
-# BASE_URL is HOST_MAIN, which proxies /api/config to tower-finder-service, so
-# this asserts the SERVICE's ranking config is readable through the edge. There
-# is no second copy to compare it against any more: the monolith's tower stack
-# was deleted with the proxy dedup.
-check_status "GET /api/config (service)"    "${BASE_URL}/api/config"        "200"
+echo "── Health & API endpoints (staging-api.retina.fm) ──"
+# On API_URL rather than the towers hostname. These are retina-server's own
+# routes, and the towers name stopped reaching retina-server on 2026-09-14 when
+# the Origin Rule above was created — nine checks here failed against a service
+# that was never meant to answer them, and a red staging smoke skips
+# deploy-production, so every merge sat undeployed until this moved.
+check_status "GET /api/health"              "${API_URL}/api/health"         "200"
+check_status "GET /api/radar/nodes"         "${API_URL}/api/radar/nodes"    "200"
+check_status "GET /api/radar/analytics"     "${API_URL}/api/radar/analytics" "200"
+check_status "GET /api/test/dashboard"      "${API_URL}/api/test/dashboard" "200"
+check_status "GET /api/test/mlat-verification" "${API_URL}/api/test/mlat-verification" "200"
+# Deliberately no /api/config check on this vhost: the api vhost has no
+# /api/config location, so the request falls through `location /` to the app,
+# which no longer implements the route (the monolith's tower stack went with the
+# proxy dedup). A 404 there is by design; the route is asserted on the tower
+# vhosts, where it is served.
 
-echo ""
-echo "── Dedicated API subdomain (staging-api.retina.fm) ──"
-check_status "staging-api /api/health"      "${API_URL}/api/health"         "200"
-# Deliberately no /api/config check here: the api vhost has no /api/config
-# location, so the request falls through `location /` to the app, which no
-# longer implements the route (the monolith's tower stack went with the proxy
-# dedup). A 404 there is by design; the route is asserted on the tower vhosts,
-# where it is served.
+# Nothing else is asserted against BASE_URL here. Every remaining probe of that
+# hostname would be a hard assertion on a service this repo neither builds nor
+# deploys, and a red staging smoke skips deploy-production — so a tower-finder
+# outage would block an unrelated retina-server release. The seam loop below
+# still probes it once, because test_towers_vhost_coverage.py requires every
+# routed vhost to appear there; that is the whole of the coupling, deliberately.
+# /api/config is asserted on DASH_URL, where the proxy doing it is ours.
 
 echo ""
 echo "── Dashboard subdomain (staging-dash.retina.fm) ──"
@@ -251,9 +296,12 @@ echo "── Data explorer subdomain (staging-data.retina.fm) ──"
 check_status_if_dns "staging-data GET /"    "${DATA_URL}/"                  "200"
 
 echo ""
-echo "── Frontend assets ──"
-check_status "GET / (frontend)"             "${BASE_URL}/"                  "200"
-check        "HTML has app root"            "${BASE_URL}/"                  "id=\"root\""
+echo "── Frontend assets (staging-map.retina.fm) ──"
+# MAP_URL, not BASE_URL: both vhosts are rooted at frontend/dist, but only this
+# one is still rendered by retina-server's nginx, so only this one tests that
+# this repo serves its own bundle.
+check_status "GET / (frontend)"             "${MAP_URL}/"                   "200"
+check        "HTML has app root"            "${MAP_URL}/"                   "id=\"root\""
 
 echo ""
 echo "── Shared nginx config (must match production) ──"
@@ -275,14 +323,39 @@ check_header "CSP on dashboard vhost"       "${DASH_URL}/api/health" "content-se
 # vendoring silently stops being load-bearing, and a CDN script would start
 # working locally and in staging while remaining blocked nowhere — assert it.
 check_header_if_dns "CSP on data explorer vhost" "${DATA_URL}/api/health" "content-security-policy"
-check_header "CSP on frontend vhost"        "${BASE_URL}/api/health" "content-security-policy"
+check_header "CSP on frontend vhost"        "${MAP_URL}/api/health" "content-security-policy"
 check_header "HSTS on api subdomain"        "${API_URL}/api/health"  "strict-transport-security"
+# Edge caching follows what nginx says, and Cloudflare keeps a `public,
+# immutable` response for the whole `expires` window, so that policy is safe
+# only on a name that carries a content hash (Vite's /assets/). A file whose
+# name survives a deploy must say `no-store` instead, or the edge serves last
+# week's copy under the new index.html, which every other check here still
+# reads as a healthy 200. `no-store` specifically: on `no-cache` the edge
+# revalidates but rewrites the browser-facing header to its own 4 h TTL.
+#
+# Probed with a never-seen query string: the header under test is nginx's, and
+# a copy the edge already holds answers with the headers it was stored with.
+# The query string is part of the cache key, so a fresh one is a guaranteed
+# miss, and nginx matches its locations on the path alone.
+BUST="smoke=$(date +%s)$RANDOM"
+check_header_value "dash theme-boot.js is not cached"   "${DASH_URL}/theme-boot.js?${BUST}" "cache-control" "no-store"
+check_header_value_if_dns "data app.css is not cached"  "${DATA_URL}/app.css?${BUST}"       "cache-control" "no-store"
+MAP_ASSET=$($CURL "${MAP_URL}/" 2>/dev/null | grep -o '/assets/index-[^"]*\.js' | head -n1 || true)
+if [ -n "$MAP_ASSET" ]; then
+    check_header_value "hashed /assets/ file is immutable" "${MAP_URL}${MAP_ASSET}?${BUST}" "cache-control" "immutable"
+else
+    printf "  %-40s FAIL (no /assets/index-*.js referenced by the page)\n" "hashed /assets/ file is immutable"
+    FAIL=$((FAIL+1))
+fi
 # Two zones, two checks. The credential surface carries the tight limit that
 # actually resists brute force; the session reads a page load spends on every
 # visit carry a looser one. Testing only /api/auth/me would leave the
 # credential limit — the one that matters — unasserted.
-check_rate_limit "credential endpoints rate limited" "${BASE_URL}/api/auth/login/google" 10
-check_rate_limit "session endpoints rate limited"    "${BASE_URL}/api/auth/me"            30
+# On API_URL: the limit_req zones live in the auth/session/claim-codes
+# snippets, which the api vhost includes and which no longer sit on any
+# hostname the edge routes past us.
+check_rate_limit "credential endpoints rate limited" "${API_URL}/api/auth/login/google" 10
+check_rate_limit "session endpoints rate limited"    "${API_URL}/api/auth/me"            30
 
 echo ""
 echo "── tower-finder-service seam ──"
@@ -301,7 +374,7 @@ done
 # served by the app. /api/radar/nodes has no counterpart on the service, so a
 # 200 here can only have come from the monolith — the proxy must take the four
 # tower routes and nothing else.
-check_status  "sibling /api/ path stays on the app" "${BASE_URL}/api/radar/nodes"            "200"
+check_status  "sibling /api/ path stays on the app" "${MAP_URL}/api/radar/nodes"             "200"
 
 # The other two deduplicated routes, on a vhost that used to answer them from
 # the monolith. Probed for the seam, not the payload: tower-contract.sh owns the
@@ -329,7 +402,23 @@ elif [ "$EL_RC" = 2 ]; then
 else
     echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
 fi
-check_status "dash /api/config answers"     "${DASH_URL}/api/config"                          "200"
+# Through the shared helper, not check_status, for the same reason as the two
+# above: a gateway status here is the service not answering, and failing on it
+# would skip deploy-production and hold a healthy release behind an outage this
+# repo cannot fix.
+printf "  %-40s " "dash /api/config answers"
+if REASON=$(assert_config_contract "${DASH_URL}/api/config"); then
+    CFG_RC=0
+else
+    CFG_RC=$?
+fi
+if [ "$CFG_RC" = 0 ]; then
+    echo "OK"; PASS=$((PASS+1))
+elif [ "$CFG_RC" = 2 ]; then
+    echo "WARN"; printf '    %s\n' "$REASON"; WARN=$((WARN+1))
+else
+    echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
+fi
 # PUT is the half that genuinely changed hands: the monolith gated it on an
 # admin session, the service gates it on a bearer token, and only the service's
 # handler is left. An unauthenticated PUT must still be refused. 401 or 403 both
@@ -359,12 +448,12 @@ echo "── Detection archive (dash /data) ──"
 # hour after a deploy (ARCHIVE_FLUSH_INTERVAL_S), so assert the endpoint answers
 # rather than that it has rows — the volume that makes those rows survive a
 # rebuild is asserted by deploy/check-env-parity.sh instead.
-check_status "GET /api/data/archive"        "${BASE_URL}/api/data/archive?limit=1" "200"
+check_status "GET /api/data/archive"        "${DASH_URL}/api/data/archive?limit=1" "200"
 
 echo ""
 echo "── Synthetic fleet data (wait for fleet to connect) ──"
 # The fleet takes ~30-60s to fully connect; CI waits before calling this script
-check_json_field "Active nodes > 0"         "${BASE_URL}/api/test/dashboard" "['nodes']['active']" "1"
+check_json_field "Active nodes > 0"         "${API_URL}/api/test/dashboard" "['nodes']['active']" "1"
 
 echo ""
 echo "═══════════════════════════════════════════════════"

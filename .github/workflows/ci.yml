@@ -291,56 +291,6 @@ jobs:
           fi
           echo "Resolved and verified ${IMAGE}"
 
-  e2e-staging:
-    name: Playwright E2E (staging)
-    runs-on: ubuntu-latest
-    # Only the pull and npm ci sit outside the test step's own cap now, and an
-    # image pull is minutes at worst. See the production job for why the job
-    # cap is a backstop rather than the primary bound.
-    timeout-minutes: 30
-    needs: [staging-smoke-tests, playwright-image]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    # The browsers and their shared libraries ship in the image, so there is no
-    # install step and neither apt nor Playwright's CDN is in this path. Both
-    # broke repeatedly on 2026-08-18 and 2026-08-19; see the production job.
-    container:
-      image: ${{ needs.playwright-image.outputs.image }}
-    # `npm ci` runs @playwright/test's postinstall, which fetches browsers. The
-    # image sets PLAYWRIGHT_BROWSERS_PATH=/ms-playwright and the tag is derived
-    # to match the lockfile, so it finds the right revision already there and
-    # does nothing. This makes that a guarantee rather than an expectation: if
-    # the browsers were ever NOT found, the postinstall would quietly download
-    # them from the CDN this job exists to avoid, and the only symptom would be
-    # a slow green run. With this set it fails loudly at the browser instead,
-    # pointing at the cause. See microsoft/playwright#4283.
-    env:
-      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
-    defaults:
-      run:
-        working-directory: frontend
-    steps:
-      - uses: actions/checkout@v4
-      # Kept despite the image shipping its own Node: this pins the version the
-      # tests run under to the same 20 as every other job, rather than letting
-      # it drift with whatever the Playwright image happens to carry, and keeps
-      # the npm cache. Only browser provisioning changes here.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci --legacy-peer-deps
-      - name: Run E2E tests (staging)
-        # Has to stay above what nodes.spec.ts's two retried beforeAll hooks can
-        # reach, so a node that never propagates fails an assertion rather than
-        # timing the step out and losing the report. That spec derives its hook
-        # budgets from the server's refresh cadence; raise this if it widens.
-        timeout-minutes: 20
-        run: E2E_ENV=staging npx playwright test
-        env:
-          CI: "true"
-          RADAR_API_KEY: ${{ secrets.STAGING_RADAR_API_KEY }}
-
   e2e-prod:
     name: Playwright E2E (production)
     runs-on: ubuntu-latest
@@ -530,10 +480,10 @@ jobs:
   # Does this push touch anything the droplets serve? A docs-only merge would
   # otherwise redeploy staging AND production and run both Playwright suites for
   # files no vhost serves, with the prod deploy queued behind the whole staging
-  # chain to do it. Gating deploy-staging alone is enough: a skipped
-  # dependency skips its dependents whatever their own `if:` says, so
-  # staging-smoke-tests, e2e-staging, deploy-production and everything past it
-  # fall out with it. The rollback jobs are keyed to `result == 'failure'`, and a
+  # chain to do it. Gating the `staging` job alone is enough: a skipped
+  # dependency skips its dependents whatever their own `if:` says, so the whole
+  # called workflow, deploy-production and everything past it fall out with
+  # it. The rollback jobs are keyed to `result == 'failure'`, and a
   # skipped deploy is not a failed one, so they stay dormant.
   #
   # Only the deploy chain is gated. The test matrix above still runs on a
@@ -552,7 +502,25 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      app_dir: ${{ steps.deploy_dir.outputs.app_dir }}
     steps:
+      # Workflow-level `env` does not reach a called workflow, and `with:` on a
+      # calling job cannot read the `env` context either. Re-exported through an
+      # output so APP_DIR above stays the one definition.
+      - name: Re-export the deploy directory
+        id: deploy_dir
+        run: |
+          set -euo pipefail
+          # Refuse to hand the staging workflow an empty directory. `cd ""`
+          # succeeds into $HOME, and the deploy's own pre-flights all pass there
+          # (right hostname, no .env, disk fine) before `git fetch` fails in a
+          # directory nothing is served from. Caught here, where the cause is
+          # legible, rather than as a confusing abort on the droplet.
+          if [ -z "${APP_DIR:-}" ]; then
+            echo "::error::APP_DIR is empty. It is set at the top of this workflow and the staging deploy cds into it; nothing below can run without it."
+            exit 1
+          fi
+          echo "app_dir=${APP_DIR}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
           # The push's whole range has to be diffable and `before` can be
@@ -611,11 +579,18 @@ jobs:
             echo "code=false" >> "$GITHUB_OUTPUT"
           fi
 
-  deploy-staging:
-    name: Deploy to staging
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    needs: [changes, backend-tests, frontend-build, dashboard-build, docker-build, env-parity, tower-service-contract]
+  # Staging's deploy and its rollback and both of its verification suites, called as one job.
+  # A calling job is not complete until every job in the called workflow has
+  # finished, so the concurrency group below is held across the whole sequence.
+  # Three grouped jobs here would not do it: the group is acquired and released
+  # per job, which let a following run's deploy land between one run's smoke
+  # tests and its E2E. See the called workflow.
+  staging:
+    name: Staging
+    # `playwright-image` joins the deploy's own prerequisites so an unpublished
+    # image fails the run before the droplet is touched, rather than after a
+    # deploy and a smoke suite have already landed on it.
+    needs: [changes, backend-tests, frontend-build, dashboard-build, docker-build, env-parity, tower-service-contract, playwright-image]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.changes.outputs.code == 'true'
     concurrency:
       group: staging-deploy
@@ -623,167 +598,23 @@ jobs:
       # `git reset --hard` but before `docker compose up -d --build`, leaving the
       # box on fresh code with stale running containers (config/image changes
       # silently never take effect). Matches deploy-production.
+      #
+      # At most one run sits pending per group, so a third merge arriving while
+      # one run holds staging and another is queued cancels the queued one. That
+      # is the right outcome — main is linear, so the newer run deploys a
+      # superset of what the cancelled one would have — but it makes a cancelled
+      # `Staging` job an expected state during a burst rather than a fault.
       cancel-in-progress: false
-    steps:
-      - name: Deploy to staging via SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.STAGING_HOST }}
-          username: root
-          key: ${{ secrets.STAGING_SSH_KEY }}
-          command_timeout: 20m
-          envs: APP_DIR
-          script: |
-            set -e
-            cd ${{ env.APP_DIR }}
-
-            # Same two wrong-environment checks production runs, first and in the
-            # same order, for the same reasons. The hostname is the only signal
-            # that holds on a box with no .env at all, which is exactly the state
-            # a droplet awaiting its first deploy is in; see the production block
-            # for why it is an exact match rather than a pattern.
-            if [ "$(hostname)" != "retina-staging" ]; then
-              echo "::error::Refusing to deploy staging onto '$(hostname)' — expected retina-staging. If this droplet was rebuilt, finish provisioning it (hostnamectl set-hostname retina-staging); otherwise this job is pointed at the wrong box."
-              exit 1
-            fi
-
-            # A .env naming another environment means this job is pointed
-            # at a box it does not own. Without this the write further down simply
-            # takes that box over — overwriting its .env and running `down` then
-            # `up` would bring production back on staging's hostnames, fleet size
-            # and container names. A MISSING .env is allowed through; that is the
-            # normal state of a box awaiting its first deploy, and we write it
-            # below.
-            if [ -f .env ] && ! grep -q '^COMPOSE_FILE=.*docker-compose\.staging\.yml' .env; then
-              echo "::error::${{ env.APP_DIR }}/.env exists but does not select the staging overlay — this host is not staging. Inspect it; do not deploy."
-              exit 1
-            fi
-
-            # Pre-flight: Cloudflare's origin-pull CA, checked BEFORE anything
-            # stops or rebuilds the stack. nginx renders `ssl_verify_client on`
-            # (deploy/nginx/snippets/tls.conf) and start.sh refuses to boot
-            # without the CA, so on a droplet where the human half of this work
-            # is not done — enable Authenticated Origin Pulls for the zone, put
-            # the CA on the box — a deploy would run `docker compose down`,
-            # rebuild, fail to start, and leave the environment DOWN. Refusing
-            # here converts that outage into a refused deploy: everything above
-            # this line only reads the box.
-            CF_CA=/etc/ssl/cloudflare/origin-pull-ca.pem
-            if [ ! -f "$CF_CA" ]; then
-              echo "::error::${CF_CA} is missing on $(hostname). nginx requires Cloudflare's origin-pull CA and will not start without it. Enable Authenticated Origin Pulls for the zone, then fetch the CA onto this droplet (curl -fsS --create-dirs -o ${CF_CA} https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem) and re-run. Refusing to deploy; the running stack is untouched."
-              exit 1
-            fi
-            if ! openssl x509 -in "$CF_CA" -noout >/dev/null 2>&1; then
-              echo "::error::${CF_CA} exists on $(hostname) but is not a parseable PEM certificate — a truncated download or an error page saved to the path would look exactly like this. nginx would fail to start. Replace it and re-run. Refusing to deploy; the running stack is untouched."
-              exit 1
-            fi
-            echo "Origin-pull CA present and parseable: ${CF_CA}"
-
-            # Pre-flight: refuse to deploy when the disk is near full. Without
-            # this, git fetch silently writes a partial pack, the source tree
-            # never advances, and `docker compose --build` happily caches every
-            # layer and "succeeds" with yesterday's image (run 25923117075).
-            AVAIL_MB=$(df -m / | awk 'NR==2 {print $4}')
-            if [ "${AVAIL_MB:-0}" -lt 2048 ]; then
-              echo "::error::Staging disk only ${AVAIL_MB}MB free (< 2GB threshold). Aborting deploy."
-              df -h /
-              docker system df 2>/dev/null || true
-              exit 1
-            fi
-
-            # Hard-reset rather than `git pull` — see the production deploy
-            # block for the full incident description; same failure mode would
-            # surface here if the staging server ever picked up a local commit.
-            # `set -e` above guarantees a failed fetch/reset aborts the deploy.
-            git fetch origin main
-            git reset --hard origin/main
-            git submodule update --init --recursive
-            # The host's ./.env sets COMPOSE_FILE (base + staging overlay), so
-            # every command below is character-identical to the production deploy
-            # block. Written from the tree we just checked out rather than assumed
-            # to be present: this job knows perfectly well which environment it is
-            # deploying, so making that depend on someone having copied the right
-            # file by hand only creates a way to get it wrong. A rebuilt droplet,
-            # a restored snapshot or a hand-mangled file now self-heals here.
-            cp deploy/env.staging.example .env
-            # Top up with this host's own CARTO basemap key — see the note in
-            # deploy/env.<env>.example. Guarded rather than chained with &&: a host
-            # with no key must build watermarked tiles, not fail its deploy.
-            if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; fi
-            docker compose down --timeout 30
-            # Cap build cache at ~10GB (LRU eviction) rather than wiping it all:
-            # keeps recent layers so incremental builds stay fast, and bounds
-            # total size so cache growth can't trip the disk pre-flight above.
-            # The stale-layer failure the old blanket wipe guarded against was
-            # rooted in disk-full (partial git pack -> source never advanced ->
-            # cache reused); the disk pre-flight now catches that root cause, so a
-            # full wipe is redundant and only forced slow from-scratch rebuilds.
-            docker builder prune -f --keep-storage 10GB
-            # Deploy the app FIRST, on its own — building only `server`
-            # means a broken Dockerfile.fleet can't abort the staging app deploy
-            # (which would block the whole pipeline). Fleet is a separate step below.
-            # --remove-orphans because this deploy renamed the compose
-            # service. container_name is pinned, so the container kept by the
-            # old service key is an orphan holding the exact name the new one
-            # needs, and compose leaves orphans alone by default: the create
-            # then fails with a name conflict and the stack does not come up.
-            # Verified on retina-test before this landed. It stays afterwards
-            # as the general guard for a removed or renamed service.
-            docker compose up -d --build --remove-orphans server
-            # Wait for server to become healthy (up to 90s)
-            for i in $(seq 1 18); do
-              if docker compose exec -T server \
-                python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
-                echo "Staging server healthy after ~$((i*5))s"
-                break
-              fi
-              echo "Waiting for health check... attempt $i/18"
-              sleep 5
-              if [ "$i" = "18" ]; then
-                echo "Staging health check failed after 90s"
-                docker compose logs --tail=50
-                exit 1
-              fi
-            done
-            # Now the fleet, separately — a fleet build/start failure surfaces
-            # loudly here without taking the already-healthy app down with it.
-            docker compose up -d --build --no-deps fleet
-
-  staging-smoke-tests:
-    name: Staging smoke tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    needs: [deploy-staging]
-    steps:
-      - uses: actions/checkout@v4
-      # The curls in this loop carry no --max-time, so against a hung origin
-      # the 24 iterations run far past the job cap. Bounded here rather than by
-      # rewriting the loop, which deploy/staging-smoke-test.sh mirrors.
-      - name: Wait for fleet to connect
-        timeout-minutes: 10
-        run: |
-          echo "Waiting for fleet nodes to connect..."
-          # Through the edge, not at the droplet's address: the origin now requires
-          # Cloudflare's client certificate (ssl_verify_client in
-          # deploy/nginx/snippets/tls.conf) and the DOCKER-USER boundary drops
-          # anything on 443 that is not from a Cloudflare range, so a direct-to-IP
-          # request can only ever time out or 400. `-k` does not help — that flag
-          # governs verification of the SERVER's certificate, not presentation of
-          # a client one. Same hostname deploy/staging-smoke-test.sh uses for this
-          # endpoint (BASE_URL there), so both agree on what "staging" means.
-          for i in $(seq 1 24); do
-            COUNT=$(curl -s https://staging-towers.retina.fm/api/test/dashboard \
-              | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['active'])" 2>/dev/null) || COUNT=0
-            if [ "${COUNT:-0}" -ge 1 ]; then
-              echo "Fleet ready: ${COUNT} node(s) connected after ~$((i*5))s"
-              break
-            fi
-            echo "Attempt $i/24: ${COUNT} nodes — waiting 5s..."
-            sleep 5
-          done
-      - name: Run smoke tests against staging
-        timeout-minutes: 15
-        run: bash deploy/staging-smoke-test.sh
+    uses: ./.github/workflows/staging-deploy-verify.yml
+    with:
+      app_dir: ${{ needs.changes.outputs.app_dir }}
+      playwright_image: ${{ needs.playwright-image.outputs.image }}
+    secrets:
+      STAGING_HOST: ${{ secrets.STAGING_HOST }}
+      STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
+      STAGING_RADAR_API_KEY: ${{ secrets.STAGING_RADAR_API_KEY }}
+      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
 
   deploy-production:
     name: Deploy to production
@@ -791,12 +622,11 @@ jobs:
     # Above the ssh-action's own command_timeout below, so a stuck deploy
     # surfaces as that step's error rather than as a bare job timeout.
     timeout-minutes: 30
-    # Gate prod on BOTH the staging smoke tests and the full staging Playwright
-    # E2E suite (`e2e-staging`). Previously only staging-smoke-tests gated this,
-    # so the ~127-test E2E ran in parallel with the prod deploy and couldn't
-    # stop a bad build reaching prod. This serialises the pipeline (E2E is now
-    # on the critical path before prod) in exchange for real pre-prod coverage.
-    needs: [staging-smoke-tests, e2e-staging]
+    # Gate prod on the whole staging sequence: its deploy, its smoke tests and
+    # its ~127-test Playwright suite. The E2E used to run in parallel with the
+    # prod deploy and so could not stop a bad build reaching prod. This
+    # serialises the pipeline in exchange for real pre-prod coverage.
+    needs: [staging]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     concurrency:
       group: production-deploy
@@ -1070,7 +900,7 @@ jobs:
       cancel-in-progress: false
     # `always() && ...result == 'failure'` rather than a bare `failure()`.
     # failure() is true when ANY ancestor job failed, and deploy-production has
-    # ancestors: an e2e-staging failure skips the deploy entirely, and this job
+    # ancestors: a staging failure skips the deploy entirely, and this job
     # would then SSH into production to consider rolling back a deploy that
     # never ran. Keyed to the deploy job's own result, it cannot.
     #
@@ -1217,6 +1047,14 @@ jobs:
       - name: Run production smoke tests
         id: smoke
         timeout-minutes: 15
+        # Passage through Cloudflare Access for the admin vhost. An unset secret
+        # renders empty, and tower-contract.sh sends no headers at all in that
+        # case, so this is inert until the Access application and the service
+        # token both exist. Failing this step rolls production back, so it must
+        # not become the reason a deploy reverts.
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
         run: |
           CURL="curl -s --connect-timeout 10 --max-time 60"
           # PASS/FAIL/WARN and smoke_summary, shared with deploy/staging-smoke-test.sh.
@@ -1248,22 +1086,39 @@ jobs:
           # tower-finder-service, so this would now be a 404 by design. The
           # route is checked where it is actually served, on the tower vhosts
           # below.
-          check_status "GET / (frontend)"         "https://towers.retina.fm/"         "200"
+          # On map, not towers: since the 2026-09-14 origin flip Cloudflare sends
+          # towers.retina.fm to tower-finder-service's own edge, so that probe
+          # asserted a different service's frontend while this job rolls THIS
+          # one back on failure. map is the production surface we still serve.
+          check_status "GET / (frontend)"         "https://map.retina.fm/"            "200"
           check_status "GET /api/health (api.retina.fm)" "${BASE_URL}/api/health"     "200"
 
           # The tower-finder seam, on production's OWN vhost names: prod parks
           # testmap as testmap-retired, so its routed set is not staging's and
           # staging passing says nothing about it. Same assertion as the staging
           # suite, from the same file.
+          # towers.retina.fm is deliberately absent, for the reason given above:
+          # every name below is one nginx here actually answers.
           source "$GITHUB_WORKSPACE/deploy/tower-contract.sh"
-          for endpoint in https://towers.retina.fm/api/towers \
-                          https://map.retina.fm/api/towers \
+          for endpoint in https://map.retina.fm/api/towers \
                           https://api.retina.fm/towers \
                           https://dash.retina.fm/api/towers \
                           https://admin.retina.fm/api/towers; do
             printf "  %-40s " "${endpoint#https://}"
+            # 2 is our nginx having forwarded to a service that did not answer.
+            # Warned, not failed: this job rolls production back, and the service
+            # being down is not grounds for reverting a healthy release here. See
+            # _is_upstream_failure in deploy/tower-contract.sh.
             if REASON=$(assert_tower_contract "$endpoint"); then
+              TC_RC=0
+            else
+              TC_RC=$?
+            fi
+            if [ "$TC_RC" = 0 ]; then
               echo "OK"; PASS=$((PASS+1))
+            elif [ "$TC_RC" = 2 ]; then
+              echo "WARN"; printf '    %s\n' "$REASON"; WARN=$((WARN+1))
+              echo "::warning::tower search is unreachable behind ${endpoint#https://}: our nginx forwarded and tower-finder-service did not answer. Not a deploy fault and not rolled back."
             else
               echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
             fi
@@ -1271,14 +1126,16 @@ jobs:
 
           # The sibling routes the same include forwards. dash is the vhost that
           # used to answer both from the monolith, so it is where a missing
-          # proxy would show up first; towers is the one a human looks at.
-          for endpoint in https://dash.retina.fm https://towers.retina.fm; do
+          # proxy would show up first; map is the one a human looks at, and
+          # replaces towers here for the reason given above.
+          for endpoint in https://dash.retina.fm https://map.retina.fm; do
             printf "  %-40s " "${endpoint#https://}/api/elevation"
             # 2 is the service answering that its own upstream is unavailable.
             # Passed, loudly: this job rolls production back on a failure, and a
             # third party's rate limiter is not grounds for that. The routing
-            # this probe covers is asserted strictly by the config check below,
-            # through the same nginx include on the same vhost.
+            # this probe covers rests on the 404 case, which stays fatal here and
+            # on the two checks alongside; none of the three is strict about a
+            # gateway status any more.
             if REASON=$(assert_elevation_contract "${endpoint}/api/elevation"); then
               EL_RC=0
             else
@@ -1293,8 +1150,17 @@ jobs:
               echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
             fi
             printf "  %-40s " "${endpoint#https://}/api/config"
+            # 2 as above: forwarded, upstream silent. Same reasoning, same verdict.
             if REASON=$(assert_config_contract "${endpoint}/api/config"); then
+              CFG_RC=0
+            else
+              CFG_RC=$?
+            fi
+            if [ "$CFG_RC" = 0 ]; then
               echo "OK"; PASS=$((PASS+1))
+            elif [ "$CFG_RC" = 2 ]; then
+              echo "WARN"; printf '    %s\n' "$REASON"; WARN=$((WARN+1))
+              echo "::warning::tower config is unreachable behind ${endpoint#https://}: our nginx forwarded and tower-finder-service did not answer. Not a deploy fault and not rolled back."
             else
               echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
             fi
@@ -1307,16 +1173,6 @@ jobs:
             else
               echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
             fi
-          done
-
-          # Wait for storage scan (background du task, 202 = still scanning)
-          printf "  %-40s " "GET /api/admin/storage"
-          for i in $(seq 1 24); do
-            SCODE=$(curl -sk -o /dev/null -w "%{http_code}" "${BASE_URL}/api/admin/storage")
-            if [ "$SCODE" = "200" ]; then echo "OK (200)"; PASS=$((PASS+1)); break; fi
-            if [ "$SCODE" = "202" ] && [ "$i" = "24" ]; then echo "WARN (202 still scanning after 120s)"; WARN=$((WARN+1)); break; fi
-            if [ "$i" = "24" ]; then echo "FAIL ($SCODE != 200 after 120s)"; FAIL=$((FAIL+1)); break; fi
-            sleep 5
           done
 
           # Check aircraft data is flowing

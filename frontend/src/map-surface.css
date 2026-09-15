@@ -1,9 +1,7 @@
 /**
  * Map surface theme — dash.retina.fm's design system, applied to the live map.
  *
- * Everything is scoped to `.app.map-surface`, a class App only sets on map
- * hostnames (see utils/domains.ts). Tower Finder shares this bundle and keeps
- * its own look untouched.
+ * Everything is scoped to `.app.map-surface`, the class App sets on the root.
  *
  * The names are dash's (dashboard/src/App.css), and the light block's values
  * are too. Duplicated rather than shared because the two apps build separately,

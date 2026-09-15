@@ -1464,6 +1464,11 @@ def _solver_window_stats(minutes: float) -> dict:
         kh_expired = state.known_hold_expired
         kh_disagree = state.known_hold_dropped_disagree
         kf_claims = state.known_follow_claims
+        cal_recorded = state.calibration_points_recorded
+        cal_rejects = {
+            reason: getattr(state, f"calibration_claims_rejected_{reason}")
+            for reason in ("hold", "stale_fix", "residual", "contested", "immature")
+        }
         # Same one-lock snapshot for the follow lane's funnel and the
         # per-reason ineligibility tally beside it: the two are only readable
         # against each other (see the dark_follow block below), so they must
@@ -1658,6 +1663,13 @@ def _solver_window_stats(minutes: float) -> dict:
             # detections that would otherwise have started a dark twin.
             "follow_claims": kf_claims,
             "holds": sum(len(h) for h in list(state.known_track_holds.values())),
+            # Empirical-coverage calibration, which under KNOWN_LANE_MODE != off
+            # comes only from this lane (services/calibration.py's fourth rule).
+            # recorded is points written; rejected is the five rules, charged in
+            # order — exactly one per non-hold claim, so they sum with recorded
+            # to the non-hold claim count.
+            "calibration_recorded": cal_recorded,
+            "calibration_rejected": cal_rejects,
         },
         # Dark published solves against the node pool their round had for the
         # same aircraft (see the pooled/shortfalls block above).  pct is null

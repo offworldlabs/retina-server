@@ -1,72 +1,58 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import { api } from "../../api/client";
+import { usePolling } from "../../hooks/usePolling";
+import { formatRelativeTime, formatUptime } from "../../utils/format";
+import { useChartTheme } from "../../utils/chartTheme";
 import { RetnodeLink } from "../../components/RetnodeLink";
+import { useNodeIds } from "../../components/useNodeIds";
 
 const PAGE_SIZE = 25;
 
 export default function NetworkHealthPage() {
-  const [dashboard, setDashboard] = useState(null);
-  const [aircraft, setAircraft] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const chart = useChartTheme();
   const [history, setHistory] = useState([]);
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
-  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
+  const idsByRef = useNodeIds();
 
-  const fetchAll = () => {
+  const { data, loading } = usePolling(async () => {
     // Fetch fleet dashboard and node data in parallel; if fleetDashboard fails
     // we still render the node list from nodes/analytics.
-    const dashPromise = api.fleetDashboard().catch(() => null);
-    Promise.all([dashPromise, api.aircraft(), api.nodes(), api.analytics()])
-      .then(([d, a, n, an]) => {
-        setDashboard(d);
-        const acList = a.aircraft || [];
-        setAircraft(acList);
-        // api.nodes() returns {nodes: {id: {...}, ...}, total, connected}
-        const nodeMap = n.nodes || {};
-        // analytics.nodes is {node_id: {trust, metrics, detection_area, reputation, ...}}
-        const analyticsMap = an?.nodes || {};
-        const nodeList = Object.entries(nodeMap).map(([id, info]: [string, any]) => {
-          const stats = analyticsMap[id] || {};
-          return {
-            node_id: id,
-            ...info,
-            _analytics: stats,
-          };
-        });
-        setHistory((prev) => {
-          const next = [
-            ...prev,
-            {
-              time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-              aircraft: acList.length,
-              nodes: nodeList.length,
-            },
-          ].slice(-30);
-          return next;
-        });
-        // Attach nodeList onto dashboard (or a stub) for rendering below
-        const dash = d || {};
-        dash._nodeList = nodeList;
-        setDashboard({ ...dash, _nodeList: nodeList });
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchAll();
-    timerRef.current = setInterval(fetchAll, 5000);
-    return () => clearInterval(timerRef.current);
-  }, []);
+    const [d, a, n, an] = await Promise.all([
+      api.fleetDashboard().catch(() => null), api.aircraft(), api.nodes(), api.analytics(),
+    ]);
+    const aircraft = a.aircraft || [];
+    // api.nodes() returns {nodes: {node_ref: {...}, ...}, total, connected},
+    // and analytics.nodes is {node_ref: {trust, metrics, detection_area,
+    // reputation, ...}} — both public feeds, both keyed on the published
+    // identity and carrying no node_id. useNodeIds supplies that.
+    const nodeMap = n.nodes || {};
+    const analyticsMap = an?.nodes || {};
+    const nodes = Object.entries(nodeMap).map(([ref, info]: [string, any]) => ({
+      ...info,
+      node_ref: ref,
+      _analytics: analyticsMap[ref] || {},
+    }));
+    setHistory((prev) => [
+      ...prev,
+      {
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+        aircraft: aircraft.length,
+        nodes: nodes.length,
+      },
+    ].slice(-30));
+    return { dashboard: d, aircraft, nodes };
+  }, 5000);
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
-  const nodes = dashboard?._nodeList || [];
+  const dashboard = data?.dashboard;
+  const aircraft = data?.aircraft ?? [];
+  const nodes = data?.nodes ?? [];
   const dashNodes = dashboard?.nodes || {}; // {total, active, synthetic, real}
   const tracks = dashboard?.pipeline || {};
   const analyticsData = dashboard?.analytics || {};
@@ -112,20 +98,14 @@ export default function NetworkHealthPage() {
             <div className="chart-container">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={history}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="time" stroke="#94a3b8" tick={{ fontSize: 10 }} />
-                  <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
+                  <XAxis dataKey="time" stroke={chart.axis} tick={{ fontSize: 10 }} />
+                  <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
                   <Tooltip
-                    contentStyle={{
-                      background: "#ffffff",
-                      border: "1px solid #e2e8f0",
-                      borderRadius: 6,
-                      fontSize: 12,
-                      color: "#0f172a",
-                    }}
+                    contentStyle={chart.tooltip}
                   />
-                  <Area type="monotone" dataKey="aircraft" stroke="#3b82f6" fill="rgba(59,130,246,0.15)" name="Aircraft" />
-                  <Area type="monotone" dataKey="nodes" stroke="#10b981" fill="rgba(16,185,129,0.15)" name="Nodes" />
+                  <Area type="monotone" dataKey="aircraft" stroke={chart.series[0]} fill={chart.series[0]} fillOpacity={0.15} name="Aircraft" />
+                  <Area type="monotone" dataKey="nodes" stroke={chart.series[1]} fill={chart.series[1]} fillOpacity={0.15} name="Nodes" />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
@@ -156,20 +136,25 @@ export default function NetworkHealthPage() {
                   url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 />
                 {geoNodes.map((node) => {
-                  const id = node.node_id;
+                  const ref = node.node_ref;
                   const online = node.status !== "disconnected" && node.status != null;
                   return (
                     <CircleMarker
-                      key={id}
+                      key={ref}
                       center={[node.location.rx_lat, node.location.rx_lon]}
                       radius={7}
+                      // Literals, not the status tokens: these are painted onto
+                      // the OSM basemap, which stays light in both themes, so the
+                      // dark ramp would read worse here rather than better.
                       fillColor={online ? "#10b981" : "#ef4444"}
                       color={online ? "#059669" : "#dc2626"}
                       weight={2}
                       fillOpacity={0.8}
                     >
                       <Popup>
-                        <strong>{node.name || id}</strong><br />
+                        <strong>{node.name || ref}</strong><br />
+                        Ref: {ref}<br />
+                        Node ID: {idsByRef?.[ref] ?? "—"}<br />
                         Status: {online ? "Online" : "Offline"}<br />
                         {node.frequency ? `Freq: ${(node.frequency / 1e6).toFixed(1)} MHz` : ""}
                       </Popup>
@@ -204,8 +189,13 @@ export default function NetworkHealthPage() {
         </div>
         <div className="table-wrapper">
           {(() => {
+            // Either identifier finds a node: an operator arrives holding
+            // whichever one their last conversation used.
             const filtered = search
-              ? nodes.filter((n) => (n.node_id || n.name || "").toLowerCase().includes(search.toLowerCase()))
+              ? nodes.filter((n) =>
+                  [n.node_ref, idsByRef?.[n.node_ref], n.name]
+                    .some((s) => (s || "").toLowerCase().includes(search.toLowerCase())),
+                )
               : nodes;
             const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
             const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -214,6 +204,7 @@ export default function NetworkHealthPage() {
                 <table>
                   <thead>
                     <tr>
+                      <th>Node ref</th>
                       <th>Node ID</th>
                       <th>Status</th>
                       <th>Last Heartbeat</th>
@@ -226,12 +217,20 @@ export default function NetworkHealthPage() {
                   </thead>
                   <tbody>
                     {paged.map((node) => {
-                      const id = node.node_id || node.id || "";
+                      const ref = node.node_ref;
+                      // The node's own site is named after the private id, so
+                      // the ref is the label and the id is the destination.
+                      const nodeId = idsByRef?.[ref] ?? null;
                       const online = node.status !== "disconnected" && node.status != null;
                       return (
-                        <tr key={id}>
+                        <tr key={ref}>
                           <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
-                            <RetnodeLink nodeId={id} synthetic={node.is_synthetic} />
+                            <RetnodeLink nodeId={nodeId} synthetic={node.is_synthetic}>
+                              {ref}
+                            </RetnodeLink>
+                          </td>
+                          <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text-muted)" }}>
+                            {nodeId ?? "—"}
                           </td>
                           <td>
                             <span className={`badge ${online ? "online" : "offline"}`}>
@@ -250,7 +249,7 @@ export default function NetworkHealthPage() {
                       );
                     })}
                     {paged.length === 0 && (
-                      <tr><td colSpan={8} style={{ textAlign: "center", padding: 32 }}>No nodes found</td></tr>
+                      <tr><td colSpan={9} style={{ textAlign: "center", padding: 32 }}>No nodes found</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -268,21 +267,4 @@ export default function NetworkHealthPage() {
       </div>
     </>
   );
-}
-
-function formatUptime(seconds) {
-  if (!seconds) return "—";
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (h > 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
-  return `${h}h ${m}m`;
-}
-
-function formatRelativeTime(isoStr) {
-  if (!isoStr) return "—";
-  const diffS = Math.round((Date.now() - new Date(isoStr).getTime()) / 1000);
-  if (diffS < 5) return "just now";
-  if (diffS < 60) return `${diffS}s ago`;
-  if (diffS < 3600) return `${Math.floor(diffS / 60)}m ago`;
-  return `${Math.floor(diffS / 3600)}h ago`;
 }

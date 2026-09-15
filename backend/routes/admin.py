@@ -46,7 +46,7 @@ from core.users import (
     user_to_dict,
 )
 from services import publication
-from services.node_refs import id_for_ref, public_identity, public_name
+from services.node_refs import id_for_ref, public_identity, public_name, ref_to_id_map
 
 logger = logging.getLogger(__name__)
 
@@ -352,12 +352,33 @@ async def admin_clear_node_location_privacy(node_id: str, admin=Depends(require_
     }
 
 
+@router.get("/node-refs")
+async def admin_list_node_refs(_admin=Depends(require_admin)):
+    """Return {node_ref: node_id} for the whole fleet.
+
+    The one route that serves the mapping publication exists to withhold (D16),
+    which is why it is gated on require_admin rather than on a logged-in caller
+    the way the leaderboard is. The admin pages are built on the public,
+    ref-keyed feeds, so this is what lets them name a node to an operator, join
+    the node_id-keyed admin routes beside it, and link to the node's own site —
+    which is named after the node_id, not the ref.
+
+    AUTH_ALLOW_ANONYMOUS_ADMIN makes require_admin admit every caller, which
+    publishes this mapping wholesale. No deployed environment sets it; only
+    docker-compose.local.yml does, so treat a laptop's console as publishing the
+    whole boundary rather than just this route.
+    """
+    with state.connected_nodes_lock:
+        connected = list(state.connected_nodes)
+    return ref_to_id_map(connected)
+
+
 @router.get("/node-contacts")
 async def admin_list_node_contacts(
     session: AsyncSession = Depends(get_async_session),
     _admin=Depends(require_admin),
 ):
-    """Return {node_id: {first_name, last_name, email, phone, updated_at}} for every node that reported any.
+    """Return {node_id: {first_name, last_name, email, phone, country, updated_at}} for every node that reported any.
 
     The one route that serves these. They are kept off the node and analytics
     payloads the map and dashboard poll broadly, so personal data has a single

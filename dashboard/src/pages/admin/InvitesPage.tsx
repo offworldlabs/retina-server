@@ -73,8 +73,8 @@ export default function InvitesPage() {
       </div>
 
       {error && (
-        <div className="card" style={{ borderColor: "var(--accent-warning, #c0392b)" }}>
-          <div className="card-body" style={{ color: "var(--accent-warning, #c0392b)" }}>{error}</div>
+        <div className="card" style={{ borderColor: "var(--error)" }}>
+          <div className="card-body" style={{ color: "var(--error)" }}>{error}</div>
         </div>
       )}
 

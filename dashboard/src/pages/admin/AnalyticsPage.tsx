@@ -1,51 +1,40 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line, Legend,
 } from "recharts";
 import { api } from "../../api/client";
+import { usePolling } from "../../hooks/usePolling";
+import { useChartTheme, seriesColour } from "../../utils/chartTheme";
 
-const COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#14b8a6"];
 const TOP_N_CHART = 15;
 const PAGE_SIZE = 25;
 
 export default function AnalyticsPage() {
-  const [analytics, setAnalytics] = useState(null);
-  const [overlaps, setOverlaps] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const chart = useChartTheme();
   const [trend, setTrend] = useState([]);
   const [overlapPage, setOverlapPage] = useState(0);
-  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
-  const fetchData = () => {
-    Promise.all([api.analytics(), api.overlaps()])
-      .then(([a, o]) => {
-        setAnalytics(a);
-        setOverlaps(Array.isArray(o) ? o : o.overlaps || []);
-        const rawNodes = a?.nodes || {};
-        const summaries = Array.isArray(rawNodes) ? rawNodes : Object.values(rawNodes);
-        const totalDet = summaries.reduce((s, n) => s + (n.metrics?.total_detections || n.detection_area?.n_detections || 0), 0);
-        setTrend((prev) => [
-          ...prev,
-          {
-            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-            detections: totalDet,
-            nodes: summaries.length,
-          },
-        ].slice(-30));
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchData();
-    timerRef.current = setInterval(fetchData, 10000);
-    return () => clearInterval(timerRef.current);
-  }, []);
+  const { data, loading } = usePolling(async () => {
+    const [a, o] = await Promise.all([api.analytics(), api.overlaps()]);
+    const rawNodes = a?.nodes || {};
+    const summaries = Array.isArray(rawNodes) ? rawNodes : Object.values(rawNodes);
+    const totalDet = summaries.reduce((s, n) => s + (n.metrics?.total_detections || n.detection_area?.n_detections || 0), 0);
+    setTrend((prev) => [
+      ...prev,
+      {
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+        detections: totalDet,
+        nodes: summaries.length,
+      },
+    ].slice(-30));
+    return { analytics: a, overlaps: Array.isArray(o) ? o : o.overlaps || [] };
+  }, 10000);
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
+  const analytics = data?.analytics;
+  const overlaps = data?.overlaps ?? [];
   const rawNodes = analytics?.nodes || {};
   const summaries = Array.isArray(rawNodes) ? rawNodes : Object.values(rawNodes);
   // Node identity is the map key (node_ref); values no longer carry node_id.
@@ -69,8 +58,8 @@ export default function AnalyticsPage() {
   const topDet = allDetections.slice(0, 10);
   const othersValue = allDetections.slice(10).reduce((s, d) => s + d.value, 0);
   const detectionShare = [
-    ...topDet.map((d, i) => ({ ...d, fill: COLORS[i % COLORS.length] })),
-    ...(othersValue > 0 ? [{ name: `Others (${allDetections.length - 10})`, value: othersValue, fill: "#94a3b8" }] : []),
+    ...topDet.map((d, i) => ({ ...d, fill: seriesColour(chart, i) })),
+    ...(othersValue > 0 ? [{ name: `Others (${allDetections.length - 10})`, value: othersValue, fill: chart.others }] : []),
   ];
 
   const totalDetections = summaries.reduce((s, n) => s + (n.metrics?.total_detections || n.detection_area?.n_detections || 0), 0);
@@ -117,19 +106,13 @@ export default function AnalyticsPage() {
             <div className="chart-container">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={trend}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="time" stroke="#94a3b8" tick={{ fontSize: 10 }} />
-                  <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
+                  <XAxis dataKey="time" stroke={chart.axis} tick={{ fontSize: 10 }} />
+                  <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
                   <Tooltip
-                    contentStyle={{
-                      background: "#ffffff",
-                      border: "1px solid #e2e8f0",
-                      borderRadius: 6,
-                      fontSize: 12,
-                      color: "#0f172a",
-                    }}
+                    contentStyle={chart.tooltip}
                   />
-                  <Line type="monotone" dataKey="detections" stroke="#3b82f6" strokeWidth={2} dot={false} name="Detections" />
+                  <Line type="monotone" dataKey="detections" stroke={chart.series[0]} strokeWidth={2} dot={false} name="Detections" />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -148,21 +131,15 @@ export default function AnalyticsPage() {
             <div className="chart-container">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={trustData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="name" stroke="#94a3b8" tick={{ fontSize: 9 }} interval={0} angle={-35} textAnchor="end" height={50} />
-                  <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} domain={[0, 100]} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
+                  <XAxis dataKey="name" stroke={chart.axis} tick={{ fontSize: 9 }} interval={0} angle={-35} textAnchor="end" height={50} />
+                  <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} domain={[0, 100]} />
                   <Tooltip
-                    contentStyle={{
-                      background: "#ffffff",
-                      border: "1px solid #e2e8f0",
-                      borderRadius: 6,
-                      fontSize: 12,
-                      color: "#0f172a",
-                    }}
+                    contentStyle={chart.tooltip}
                   />
                   <Legend />
-                  <Bar dataKey="trust" fill="#3b82f6" name="Trust %" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="reputation" fill="#10b981" name="Reputation %" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="trust" fill={chart.series[0]} name="Trust %" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="reputation" fill={chart.series[1]} name="Reputation %" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -193,13 +170,7 @@ export default function AnalyticsPage() {
                     ))}
                   </Pie>
                   <Tooltip
-                    contentStyle={{
-                      background: "#ffffff",
-                      border: "1px solid #e2e8f0",
-                      borderRadius: 6,
-                      fontSize: 12,
-                      color: "#0f172a",
-                    }}
+                    contentStyle={chart.tooltip}
                     formatter={(value, name) => [value.toLocaleString(), name]}
                   />
                   <Legend

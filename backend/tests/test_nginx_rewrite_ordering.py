@@ -15,47 +15,17 @@ location through an include, so the ordering only exists after expansion.
 
 from __future__ import annotations
 
-import importlib.util
 import re
-from pathlib import Path
 
 import pytest
 
-_REPO = Path(__file__).resolve().parents[2]
-_RENDERER = _REPO / "deploy" / "render-nginx-config.py"
-_TEMPLATE = _REPO / "deploy" / "nginx" / "nginx.conf.template"
-
-# Any deployed environment renders the same directives; only names differ.
-_VALUES = {
-    "HOST_MAIN": "towers.example.com",
-    "HOST_API": "api.example.com",
-    "HOST_MAP": "map.example.com",
-    "HOST_DASH": "dash.example.com",
-    "HOST_ADMIN": "admin.example.com",
-    "HOST_DATA": "data.example.com",
-    "HOST_TESTMAP": "testmap.example.com",
-    "HOST_LEGACY_REDIRECT": "tower-finder.example.com",
-    "CSP_CONNECT_SRC": "https://api.example.com",
-}
+from tests.nginx_helpers import locations as _locations
+from tests.nginx_helpers import render
 
 
 @pytest.fixture(scope="module")
 def rendered() -> str:
-    spec = importlib.util.spec_from_file_location("render_nginx_config", _RENDERER)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    flags = module.resolve_flags(_VALUES)
-    text = module.expand_includes(_TEMPLATE, _TEMPLATE.parent, flags)
-    return module.substitute(text, _VALUES)
-
-
-def _locations(text: str) -> list[tuple[str, str]]:
-    """(header, body) for every `location ... { ... }`, innermost braces only.
-
-    The template nests no locations, so a non-greedy match to the first closing
-    brace is the whole body.
-    """
-    return [(m.group(1), m.group(2)) for m in re.finditer(r"(location[^\n{]*)\{([^{}]*)\}", text)]
+    return render()
 
 
 def test_the_template_still_has_locations_to_check(rendered):

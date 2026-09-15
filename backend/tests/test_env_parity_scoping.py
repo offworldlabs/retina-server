@@ -55,6 +55,28 @@ class TestEdgeNetworkEntry:
         assert not parity.allowed(path, env)
 
 
+class TestCloudflareAccessEntries:
+    """The two halves of the Access configuration, which want opposite treatment.
+
+    CF_ACCESS_AUD is the audience tag of one environment's Access application, so
+    it differs by nature exactly as HOST_ADMIN does and must be allowed to. Left
+    off the allowlist, every environment after the first would fail the parity
+    check and no deploy would pass.
+
+    AUTH_ALLOW_ANONYMOUS_ADMIN must stay off it, and that does not stop mattering
+    once the flag is removed everywhere: the entry is what makes CI refuse a
+    change that reintroduces the anonymous admin to one environment on its own.
+    """
+
+    @pytest.mark.parametrize("env", ["test", "staging"])
+    def test_the_access_audience_may_differ_per_environment(self, parity, env):
+        assert parity.allowed("services.server.environment.CF_ACCESS_AUD", env)
+
+    @pytest.mark.parametrize("env", ["test", "staging"])
+    def test_the_anonymous_admin_flag_may_never_differ(self, parity, env):
+        assert not parity.allowed("services.server.environment.AUTH_ALLOW_ANONYMOUS_ADMIN", env)
+
+
 class TestScopeValidation:
     def test_unknown_environment_is_rejected(self, parity):
         with pytest.raises(SystemExit):

@@ -362,3 +362,58 @@ class TestCheckRateLimit:
         # Only the fresh timestamp added at the end of _check_rate_limit remains
         assert len(bucket) == 1
         assert bucket[0] > old_ts
+
+
+class TestBulkRecordsTheMirroredRef:
+    """The ingest end of the mirrored-ref path: a ref arriving with detections
+    is recorded on the connected-node entry, whether or not that call also
+    registers the node."""
+
+    NODE = "ret1a2b3c4d"
+    REF = "nde1a2b3c4d0000"
+
+    def _entry(self):
+        from core import state
+
+        with state.connected_nodes_lock:
+            return dict(state.connected_nodes.get(self.NODE) or {})
+
+    def teardown_method(self):
+        from core import state
+
+        with state.connected_nodes_lock:
+            state.connected_nodes.pop(self.NODE, None)
+
+    def _post(self, client, **extra):
+        body = {"nodes": [{"node_id": self.NODE, "frames": [], **extra}]}
+        return client.post("/api/radar/detections/bulk", json=body, headers=HEADERS_OK)
+
+    def test_a_ref_arriving_at_registration_is_recorded(self, client):
+        assert self._post(client, node_ref=self.REF, config={"rx_lat": 34.0, "rx_lon": -82.0}).status_code == 200
+        assert self._entry().get("node_ref") == self.REF
+
+    def test_a_ref_arriving_later_is_still_recorded(self, client):
+        """The regression that mattered: a sender that starts sending refs
+        against entries this server already holds moves neither `known` nor
+        `changed`, so a registration-only write would never pick it up."""
+        assert self._post(client, config={"rx_lat": 34.0, "rx_lon": -82.0}).status_code == 200
+        assert self._entry().get("node_ref") is None
+        assert self._post(client, node_ref=self.REF).status_code == 200
+        assert self._entry().get("node_ref") == self.REF
+
+    def test_a_ref_the_registry_gives_to_another_node_is_refused(self, client, monkeypatch):
+        """Registration is first contact for a mirrored node, so a guard that
+        only held on the already-known path would never run for one."""
+        from services import node_refs
+
+        monkeypatch.setattr(node_refs, "id_for_ref", lambda ref: "retdeadbeef")
+        assert self._post(client, node_ref=self.REF, config={"rx_lat": 34.0, "rx_lon": -82.0}).status_code == 200
+        assert self._entry().get("node_ref") is None
+
+    def test_a_ref_shaped_like_a_node_id_is_refused(self, client):
+        """Publishing it would put a raw node id on the public wire through the
+        very fallback that exists to keep one off it."""
+        assert self._post(client, node_ref="retdeadbeef").status_code == 422
+
+    def test_a_malformed_ref_is_refused(self, client):
+        assert self._post(client, node_ref="nde-not-valid!").status_code == 422

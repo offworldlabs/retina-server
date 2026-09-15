@@ -100,7 +100,7 @@ export default function KnowledgeBasePage() {
               target="_blank"
               rel="noopener noreferrer"
               className="btn btn-primary"
-              style={{ textDecoration: "none", color: "white" }}
+              style={{ textDecoration: "none" }}
             >
               Community Discord
             </a>

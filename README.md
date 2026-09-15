@@ -2,25 +2,25 @@
 
 This repo powers RETINA, a passive-radar system: receiver nodes detect aircraft
 from reflections of broadcast transmitters, and the backend turns those
-detections into live tracks shown on a web map. "Tower Finder" — the original
-illuminator-search feature — is one of several surfaces (along with the live map
-and the admin dashboard), and is the one whose API now lives in its own service.
+detections into live tracks shown on a web map. Its surfaces are the live map
+and the admin dashboard.
 
 > **New here?** Start with [`ONBOARDING.md`](ONBOARDING.md) for the full picture
 > and local setup, and [`docs/architecture.md`](docs/architecture.md) for how the
 > pieces fit together.
 
-## Tower Finder feature
+## Illuminator search
 
-Web application that helps passive radar operators find suitable broadcast tower
-illuminators near their location: given coordinates, it returns nearby FM/VHF/UHF
-transmitters ranked by suitability for passive radar use.
+Finding a suitable broadcast illuminator near a receiver is **tower-finder-service**,
+a separate repo and container. It owns both halves: the API (`/api/towers`,
+`/api/elevation`, `/api/config`, `/api/geocode`) and the UI, which it serves itself
+on `towers.retina.fm` through its own edge.
 
-This repo owns the SPA (`frontend/`) and the nginx routing. The search API itself
-(`/api/towers`, plus `/api/elevation`, `/api/config` and `/api/geocode`) is served by
-**tower-finder-service**, a separate repo and container that every vhost is
-proxied to; the monolith's own copy of that stack was deleted once the proxy went
-live, so there is one implementation and one ranking answer.
+What remains here is the proxy seam. `api.retina.fm/towers` forwards to the
+service for callers that want a clean public API name, and the other vhosts
+still forward `/api/towers`, `/api/elevation`, `/api/config` and `/api/geocode`
+so that a request arriving at one of them reaches the single implementation
+rather than a 404 from this backend.
 
 ## Project Structure
 

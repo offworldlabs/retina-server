@@ -236,6 +236,39 @@ CAL_DETECTION_FRESH_S = 5.0
 # timestamps.
 CAL_FIX_DETECTION_SKEW_S = 2.0
 
+# ── Calibration from the CLAIM lane (KNOWN_LANE_MODE != off) ─────────────────
+# Since KNOWN_LANE_MODE defaulted to "binding" (#240, 2026-08-25) the emit-loop
+# path above records nothing for a synthetic node: claiming strips the bound
+# detections from the frame before the tracker sees them, so
+# track.last_detection_adsb_hex never gets set and every synthetic node's
+# newest calibration point is dated 2026-08-25.  The claim lane is now the one
+# source under that mode (services/known_claiming.py), under a rule much
+# stricter than claiming itself.
+#
+# Residual bound for a claim that may characterize coverage, UNSCALED by fix
+# age (unlike the claim gate itself).  The claim gate is 10 µs / 25 Hz, which
+# is where it has to be to bind an echo at all; the simulator's measurement
+# noise is sigma 0.1–0.2 µs of delay and 2–4 Hz of Doppler
+# (retina_simulation.world.generate_detections_for_node), so 3 µs / 8 Hz is
+# still >5 sigma at the noisy end while shrinking the delay × Doppler area a
+# WRONG aircraft can land in by ~10x.  A claim is a bind; a calibration point
+# is a claim this node would bet its coverage polygon on.
+CAL_CLAIM_DELAY_US = 3.0
+CAL_CLAIM_DOPPLER_HZ = 8.0
+
+# Maturity bar, the counterpart of the emit path's ``n_detections >= 3``: a
+# one-frame coincidence between a wrong hex's dead-reckoned fix and a clutter
+# peak is exactly what a tight residual cannot rule out on its own, and it
+# cannot repeat frame after frame at a consistent (delay, Doppler).  Three
+# claims of the same hex by the same node, with no gap larger than
+# CAL_CLAIM_STREAK_GAP_S between consecutive ones, is a LINK rather than a
+# coincidence.  10 s: a node's frames arrive ~1 s apart and the simulator's
+# SNR-dependent miss rate reaches 40% at the detection threshold, so 2–4 s
+# gaps are routine — the same reasoning that puts KNOWN_HOLD_MAX_GAP_S at 8 s,
+# loosened because breaking a streak only costs a sample, not a track.
+CAL_CLAIM_MIN_CLAIMS = 3
+CAL_CLAIM_STREAK_GAP_S = 10.0
+
 # ── ADS-B seeding (ADSB_SEED_MODE) ────────────────────────────────────────────
 # A track view exports its ADS-B tag only if one of the newest N history
 # detections carries it.  A swapped track's newest detections go untagged
@@ -450,6 +483,8 @@ NODE_OFFLINE_THRESHOLD_S = 120  # Heartbeat timeout → offline (s)
 NODE_HEALTH_CHECK_INTERVAL_S = 30  # How often to check node liveness (s)
 STORAGE_CACHE_TTL_S = 300.0  # Archive storage stats cache TTL (s)
 CONFIG_LIVE_CACHE_TTL_S = 60.0  # Live node/tower config cache TTL (s)
+INFRASTRUCTURE_CACHE_TTL_S = 60.0  # Admin Infrastructure page: DigitalOcean snapshot cache TTL (s)
+INFRASTRUCTURE_BUILD_TIMEOUT_S = 8.0  # Deadline on one snapshot build (s), under the dashboard's 10 s abort
 
 # ── Chain of custody limits ──────────────────────────────────────────────────
 CHAIN_ENTRIES_MAX_PER_NODE = 500  # Max chain entries per node (rolling)

@@ -137,32 +137,26 @@ test.describe("API admin endpoints", () => {
     await ctx.dispose();
   });
 
-  test("GET /api/admin/leaderboard returns per-node list", async () => {
+  // 401 rather than a body: the api vhost has no Access application in front of
+  // it, so an anonymous caller is refused by this codebase. The leaderboard asks
+  // only for a logged-in caller (get_current_user), not an administrator. See the
+  // same assertion in dashboard.spec.ts for why that hostname must stay ungated.
+  test("GET /api/admin/leaderboard refuses an anonymous caller", async () => {
     const res = await ctx.get(`${API}/api/admin/leaderboard`);
-    expect(res.status()).toBe(200);
-
-    const body = await res.json();
-    // Response shape: {leaderboard: [...], total: N}
-    expect(body).toHaveProperty("leaderboard");
-    expect(Array.isArray(body.leaderboard)).toBe(true);
-    // Each entry has required fields
-    if (body.leaderboard.length > 0) {
-      const first = body.leaderboard[0];
-      expect(first).toHaveProperty("node_ref");
-      expect(first).toHaveProperty("name");
-    }
+    expect(res.status()).toBe(401);
   });
 
-  // Deliberately on the frontend host, not API: /api/config is served by
+  // Deliberately on the map host, not API: /api/config is served by
   // tower-finder-service through nginx, and only on the vhosts that include
   // snippets/towers-proxy.conf. The api vhost is not one of them — it has no
   // /api/config location and the app behind it no longer implements the route
   // (the monolith's tower stack was deleted with the proxy dedup), so asking
   // API for it is a 404 by design. deploy/tower-contract.sh owns the assertion
   // about what that config must contain; this one only says it is reachable
-  // through the edge.
+  // through the edge. Not the towers host either: that answers 200 from
+  // tower-finder-service's own edge, which says nothing about our proxy.
   test("GET /api/config is served through the edge with valid shape", async () => {
-    const res = await ctx.get(`${hosts.frontend}/api/config`);
+    const res = await ctx.get(`${hosts.map}/api/config`);
     expect(res.status()).toBe(200);
 
     const body = await res.json();

@@ -95,7 +95,10 @@ pins their position to the arc midpoint, so a long glide walks the reference
 off the measured locus.
 
 Selecting an arc track (from the list panel or by clicking the arc) highlights
-its arcs in amber, draws the detecting node's measured coverage polygon (the
-empirical detection area — nothing at all for a node that has none yet; the
-theoretical beam wedge is never drawn), and centers the map on the arc
-midpoint.
+its arcs in amber, draws the detecting node's published coverage polygon, and
+centers the map on the arc midpoint. That polygon is whatever
+`empirical_coverage.polygon` carries: for a real node its measured detection
+area, and nothing at all for one that has none yet — a real node's declared
+beam wedge is never drawn. A synthetic node is the documented exception, and
+is served its declared cone because that is what the simulator enforces (see
+`docs/pipeline.md` §7, `polygon_source`).

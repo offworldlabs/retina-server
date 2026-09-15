@@ -1,53 +1,44 @@
-import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { usePolling } from "../../hooks/usePolling";
+import { formatRelativeTime, formatUptime } from "../../utils/format";
+import { useChartTheme } from "../../utils/chartTheme";
 import { PositionStatusBadge, POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
 
 export default function OverviewPage() {
-  const [nodes, setNodes] = useState([]);
-  const [myNodes, setMyNodes] = useState([]);
-  const [analytics, setAnalytics] = useState(null);
-  const [aircraftCount, setAircraftCount] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const chart = useChartTheme();
   const navigate = useNavigate();
-  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
-
-  const fetchData = () => {
+  const { data, loading } = usePolling(async () => {
     // myNodes fails soft: it is only needed for the needs-attention list, and
     // an unauthenticated view of this page must still render the rest.
-    Promise.all([api.nodes(), api.analytics(), api.aircraft(), api.myNodes().catch(() => [])])
-      .then(([n, a, ac, mine]) => {
-        // Both are dicts keyed on node_ref, and the values carry no identifier of
-        // their own, so the key is the identity.
-        const nodeMap = n.nodes || {};
-        const analyticsMap = a?.nodes || {};
-        const nodeList = Object.entries(nodeMap).map(([ref, info]: [string, any]) => ({
-          node_ref: ref,
-          ...info,
-          _analytics: analyticsMap[ref] || {},
-        }));
-        setNodes(nodeList);
-        setMyNodes(Array.isArray(mine) ? mine : []);
-        setAnalytics(a);
-        setAircraftCount((ac.aircraft || []).length);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchData();
-    timerRef.current = setInterval(fetchData, 15000);
-    return () => clearInterval(timerRef.current);
-  }, []);
+    const [n, a, ac, mine] = await Promise.all([
+      api.nodes(), api.analytics(), api.aircraft(), api.myNodes().catch(() => []),
+    ]);
+    // Both are dicts keyed on node_ref, and the values carry no identifier of
+    // their own, so the key is the identity.
+    const nodeMap = n.nodes || {};
+    const analyticsMap = a?.nodes || {};
+    const nodes = Object.entries(nodeMap).map(([ref, info]: [string, any]) => ({
+      node_ref: ref,
+      ...info,
+      _analytics: analyticsMap[ref] || {},
+    }));
+    return {
+      nodes,
+      myNodes: Array.isArray(mine) ? mine : [],
+      aircraftCount: (ac.aircraft || []).length,
+    };
+  }, 15000);
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
-  const nodeList = Array.isArray(nodes) ? nodes : [];
+  const nodeList = data?.nodes ?? [];
+  const myNodes = data?.myNodes ?? [];
+  const aircraftCount = data?.aircraftCount ?? 0;
   const onlineCount = nodeList.filter((n) => n.status !== "disconnected" && n.status != null).length;
   // Merged with the owner's own nodes, because /api/radar/nodes drops private
   // ones: a private node with no position would otherwise appear nowhere its
@@ -162,23 +153,18 @@ export default function OverviewPage() {
             <div className="chart-container">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="name" stroke="#94a3b8" tick={{ fontSize: 11 }} />
-                  <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
+                  <XAxis dataKey="name" stroke={chart.axis} tick={{ fontSize: 11 }} />
+                  <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
                   <Tooltip
-                    contentStyle={{
-                      background: "#ffffff",
-                      border: "1px solid #e2e8f0",
-                      borderRadius: 6,
-                      fontSize: 12,
-                      color: "#0f172a",
-                    }}
+                    contentStyle={chart.tooltip}
                   />
                   <Area
                     type="monotone"
                     dataKey="detections"
-                    stroke="#3b82f6"
-                    fill="rgba(59,130,246,0.15)"
+                    stroke={chart.series[0]}
+                    fill={chart.series[0]}
+                    fillOpacity={0.15}
                   />
                 </AreaChart>
               </ResponsiveContainer>
@@ -238,21 +224,4 @@ export default function OverviewPage() {
       </div>
     </>
   );
-}
-
-function formatUptime(seconds) {
-  if (!seconds) return "—";
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (h > 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
-  return `${h}h ${m}m`;
-}
-
-function formatRelativeTime(isoStr) {
-  if (!isoStr) return "—";
-  const diffS = Math.round((Date.now() - new Date(isoStr).getTime()) / 1000);
-  if (diffS < 5) return "just now";
-  if (diffS < 60) return `${diffS}s ago`;
-  if (diffS < 3600) return `${Math.floor(diffS / 60)}m ago`;
-  return `${Math.floor(diffS / 3600)}h ago`;
 }

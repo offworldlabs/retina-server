@@ -371,3 +371,49 @@ class TestGateStoreReclamation:
         prune_stale_stores(now)
         assert state.track_last_emit["gated"] == [1.0, 2.0, now - 59]
         assert "gated" in state.track_gate_hold
+
+
+class TestKnownLaneSilencesThisPath:
+    """Under KNOWN_LANE_MODE != "off" the CLAIM lane is the only calibration
+    source and this path records nothing — services/calibration.py's fourth
+    rule, and services/known_claiming._calibration_from_claim.
+
+    Two different reasons, one per mode.  In *binding* mode claiming strips
+    every detection it binds from the frame before the tracker sees it, so
+    track.last_detection_adsb_hex is only ever set by the tagged detections
+    claiming did NOT take: adverse selection, and for a synthetic node nothing
+    at all (measured on test 2026-09-13, every synthetic node's newest point
+    was dated 2026-08-25, the day binding became the default).  In *shadow*
+    mode nothing is stripped, so this path and the claim lane would record the
+    same detection twice.
+
+    The rest of this file runs under mode "off" (tests/conftest.py sets it), so
+    it is already the unchanged-behaviour case.
+    """
+
+    @pytest.mark.parametrize("mode", ["binding", "shadow"])
+    def test_a_fresh_tagged_detection_records_nothing(self, node, monkeypatch, mode):
+        monkeypatch.setattr(state, "KNOWN_LANE_MODE", mode)
+        now = time.time()
+        _adsb_fix(now)
+        track = _make_track(n_detections=3, last_detection_age_s=1.0, now=now)
+
+        entry = track_gates.track_entry(HEX, track, dict(_NODE_CFG), now, set())
+
+        assert entry is not None, "the track must still emit — only calibration is silenced"
+        assert _points(node) == 0
+        # The detection-range record rides on the recorder's verdict, so it is
+        # silenced with it rather than left half-fed.
+        assert _furthest_count(node) == 0
+        # Accuracy is not calibration and is unaffected in every mode.
+        assert len(state.accuracy_samples) == 1
+
+    def test_mode_off_is_unchanged(self, node, monkeypatch):
+        monkeypatch.setattr(state, "KNOWN_LANE_MODE", "off")
+        now = time.time()
+        _adsb_fix(now)
+        track = _make_track(n_detections=3, last_detection_age_s=1.0, now=now)
+
+        assert track_gates.track_entry(HEX, track, dict(_NODE_CFG), now, set()) is not None
+        assert _points(node) == 1
+        assert _furthest_count(node) == 1

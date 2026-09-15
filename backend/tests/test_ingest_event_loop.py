@@ -48,10 +48,12 @@ def slow_registration(monkeypatch):
     """
     from core import state
 
-    def slow(node_id, config):
+    def slow(node_id, config, **kwargs):
         time.sleep(BLOCK_S)
 
     monkeypatch.setattr(state.node_associator, "register_node", slow)
+    # **kwargs: the analytics registration also carries
+    # declared_geometry_is_truth (see services/node_registration.py).
     monkeypatch.setattr(state.node_analytics, "register_node", slow)
 
 
@@ -150,7 +152,7 @@ class TestRegistrationStillHappens:
 
         seen = []
         monkeypatch.setattr(state.node_associator, "register_node", lambda nid, cfg: seen.append((nid, cfg)))
-        monkeypatch.setattr(state.node_analytics, "register_node", lambda nid, cfg: None)
+        monkeypatch.setattr(state.node_analytics, "register_node", lambda nid, cfg, **kw: None)
 
         await client.post(
             "/api/radar/detections",

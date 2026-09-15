@@ -1,45 +1,25 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { api } from "../../api/client";
+import { useFetch } from "../../hooks/usePolling";
+import { formatBytes } from "../../utils/format";
 
 const PAGE_SIZE = 50;
 
 export default function StoragePage() {
-  const [storage, setStorage] = useState(null);
-  const [archives, setArchives] = useState([]);
-  const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const fetchStorage = () => {
-    api.adminStorage()
-      .then((s) => {
-        setStorage(s);
-        // If the background scan hasn't completed yet, retry in 10 s.
-        if (s?.status === "initializing") {
-          retryTimer.current = setTimeout(fetchStorage, 10000);
-        }
-      })
-      .catch(console.error);
-  };
-
+  const { data: storage, refresh: rescan } = useFetch(() => api.adminStorage());
+  // If the background scan hasn't completed yet, ask again in 10 s.
   useEffect(() => {
-    fetchStorage();
-    return () => {
-      if (retryTimer.current) clearTimeout(retryTimer.current);
-    };
-  }, []);
+    if (storage?.status !== "initializing") return;
+    const timer = setTimeout(rescan, 10000);
+    return () => clearTimeout(timer);
+  }, [storage, rescan]);
+  // Keyed on the page, so turning it fetches again and shows the busy row
+  // until the new page lands.
+  const { data: archive, pending: loading } = useFetch(() => api.archive(PAGE_SIZE, page * PAGE_SIZE), page);
 
-  useEffect(() => {
-    setLoading(true);
-    api.archive(PAGE_SIZE, page * PAGE_SIZE)
-      .then((data) => {
-        setArchives(data.files || []);
-        setTotal(data.total ?? data.count ?? 0);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, [page]);
+  const archives = archive?.files || [];
+  const total = archive?.total ?? archive?.count ?? 0;
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
@@ -89,8 +69,8 @@ export default function StoragePage() {
                     <div style={{
                       height: "100%", borderRadius: 4,
                       width: `${Math.min(storage.disk.used_pct || 0, 100)}%`,
-                      background: (storage.disk.used_pct || 0) > 90 ? "#ef4444"
-                        : (storage.disk.used_pct || 0) > 75 ? "#f59e0b" : "#10b981",
+                      background: (storage.disk.used_pct || 0) > 90 ? "var(--error)"
+                        : (storage.disk.used_pct || 0) > 75 ? "var(--warning)" : "var(--success)",
                     }} />
                   </div>
                 </div>
@@ -133,8 +113,8 @@ export default function StoragePage() {
                     <td style={{ color: "var(--text-muted)" }}>Est. Days Until Full</td>
                     <td style={{
                       fontWeight: 600,
-                      color: (storage.write_rate.days_until_full || 0) < 30 ? "#ef4444"
-                        : (storage.write_rate.days_until_full || 0) < 90 ? "#f59e0b" : "#10b981",
+                      color: (storage.write_rate.days_until_full || 0) < 30 ? "var(--error)"
+                        : (storage.write_rate.days_until_full || 0) < 90 ? "var(--warning)" : "var(--success)",
                     }}>
                       {storage.write_rate.days_until_full > 0
                         ? storage.write_rate.days_until_full > 365
@@ -270,10 +250,4 @@ export default function StoragePage() {
       </div>
     </>
   );
-}
-
-function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

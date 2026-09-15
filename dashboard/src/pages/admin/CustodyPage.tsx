@@ -1,27 +1,25 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { api } from "../../api/client";
+import { useFetch } from "../../hooks/usePolling";
+import { useNodeIds } from "../../components/useNodeIds";
 
 const PAGE_SIZE = 25;
 
 export default function CustodyPage() {
-  const [custody, setCustody] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
-
-  useEffect(() => {
-    api.custody()
-      .then(setCustody)
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
+  const idsByRef = useNodeIds();
+  const { data: custody, loading } = useFetch(() => api.custody());
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
-  const nodeIds = Object.keys(custody?.node_keys || {});
+  // The custody payload is published, so it is keyed on node_ref throughout.
+  const refs = Object.keys(custody?.node_keys || {});
   const filtered = search
-    ? nodeIds.filter((id) => id.toLowerCase().includes(search.toLowerCase()))
-    : nodeIds;
+    ? refs.filter((ref) =>
+        [ref, idsByRef?.[ref]].some((s) => (s || "").toLowerCase().includes(search.toLowerCase())),
+      )
+    : refs;
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
   const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
@@ -35,12 +33,12 @@ export default function CustodyPage() {
       <div className="stats-grid">
         <div className="stat-card accent">
           <div className="stat-label">Registered Nodes</div>
-          <div className="stat-value">{custody?.registered_nodes ?? nodeIds.length}</div>
+          <div className="stat-value">{custody?.registered_nodes ?? refs.length}</div>
         </div>
         <div className="stat-card success">
           <div className="stat-label">With Chain Entries</div>
           <div className="stat-value">
-            {nodeIds.filter((id) => (custody?.chain_entries?.[id]?.count || 0) > 0).length}
+            {refs.filter((ref) => (custody?.chain_entries?.[ref]?.count || 0) > 0).length}
           </div>
         </div>
       </div>
@@ -62,6 +60,7 @@ export default function CustodyPage() {
         <table>
           <thead>
             <tr>
+              <th>Node ref</th>
               <th>Node ID</th>
               <th>Status</th>
               <th>Chain Length</th>
@@ -72,14 +71,17 @@ export default function CustodyPage() {
             </tr>
           </thead>
           <tbody>
-            {paged.map((nodeId) => {
-              const chain = custody?.chain_entries?.[nodeId] || {};
+            {paged.map((ref) => {
+              const chain = custody?.chain_entries?.[ref] || {};
               const count = chain.count || 0;
               const verified = chain.latest_verified === true;
-              const keyInfo = custody?.node_keys?.[nodeId] || {};
+              const keyInfo = custody?.node_keys?.[ref] || {};
               return (
-                <tr key={nodeId}>
-                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>{nodeId}</td>
+                <tr key={ref}>
+                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>{ref}</td>
+                  <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text-muted)" }}>
+                    {idsByRef?.[ref] ?? "—"}
+                  </td>
                   <td>
                     <span className={`badge ${verified ? "online" : count > 0 ? "warning" : "offline"}`}>
                       {verified ? "Verified" : count > 0 ? "Unverified" : "None"}
@@ -87,7 +89,7 @@ export default function CustodyPage() {
                   </td>
                   <td>{count}</td>
                   <td style={{ fontFamily: "monospace", fontSize: 11 }}>{chain.latest_hour || "—"}</td>
-                  <td>{custody?.iq_commitments?.[nodeId] || 0}</td>
+                  <td>{custody?.iq_commitments?.[ref] || 0}</td>
                   <td>{keyInfo.signing_mode || "—"}</td>
                   <td style={{ fontFamily: "monospace", fontSize: 11 }}>{keyInfo.fingerprint || "—"}</td>
                 </tr>

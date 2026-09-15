@@ -5,12 +5,11 @@ import App from "../App";
 describe("App", () => {
   it("renders the header", () => {
     render(<App />);
-    expect(screen.getByText("Tower Finder")).toBeInTheDocument();
+    expect(screen.getByText("RETINA")).toBeInTheDocument();
   });
 
-  it("shows the search form by default", () => {
+  it("opens on the live radar tab", () => {
     render(<App />);
-    // The search tab should be active, showing the search form
-    expect(document.querySelector(".app")).toBeTruthy();
+    expect(document.querySelector(".app-body.live-active")).toBeTruthy();
   });
 });

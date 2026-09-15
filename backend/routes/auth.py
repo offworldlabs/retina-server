@@ -27,7 +27,6 @@ from core.auth import (
 )
 from core.users import (
     ANONYMOUS_USER,
-    AUTH_BYPASS,
     JWT_LIFETIME_SECONDS,
     JWT_SECRET,
     get_current_user,
@@ -231,10 +230,13 @@ async def callback_github(request: Request, code: str = "", state: str = ""):
 
 @router.get("/me")
 async def me(request: Request):
-    if AUTH_BYPASS:
-        return {**ANONYMOUS_USER, "auth_enabled": False}
     user_dict = await get_current_user(request)
-    return {**user_dict, "auth_enabled": True}
+    # Delegated rather than short-circuiting on AUTH_BYPASS, so this agrees with
+    # what require_admin decided: a verified Access assertion outranks the
+    # bypass, and answering "Admin (no auth)" while the admin routes attribute a
+    # real person would make the console wrong about its own session.
+    anonymous = user_dict["id"] == ANONYMOUS_USER["id"]
+    return {**user_dict, "auth_enabled": not anonymous}
 
 
 @router.post("/logout")

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -12,6 +12,7 @@ vi.mock("../api/client", () => ({
     nodes: vi.fn(),
     analytics: vi.fn(),
     adminNodeContacts: vi.fn(),
+    adminNodeRefs: vi.fn(),
     adminNodeLocationPrivacy: vi.fn().mockResolvedValue({ location_private: false, location_privacy_source: "default" }),
     setAdminNodeLocationPrivacy: vi.fn(),
     clearAdminNodeLocationPrivacy: vi.fn(),
@@ -47,12 +48,17 @@ describe("contactLabel", () => {
   });
 });
 
+// The node listing is a public feed: keyed on node_ref, carrying no node_id.
+// The contacts it is joined against are keyed on node_id, so the two only meet
+// through the admin ref map.
 const NODES = {
   nodes: {
-    ret1a2b3c4d: { name: "Ada's Node", status: "online" },
-    ret5e6f7g8h: { name: "No Contact Node", status: "online" },
+    nde1a2b3c4d00: { name: "Ada's Node", status: "online" },
+    nde9f8e7d6c00: { name: "No Contact Node", status: "online" },
   },
 };
+const NODE_IDS = { nde1a2b3c4d00: "ret1a2b3c4d", nde9f8e7d6c00: "ret9f8e7d6c" };
+const ADA_CONTACT = { ret1a2b3c4d: { first_name: "Ada", last_name: "Lovelace", email: "ada@example.com" } };
 
 /** The Contact cell of one card, found through its own label.
  *
@@ -73,12 +79,14 @@ function renderPage() {
 }
 
 describe("NodeManagementPage contact rendering", () => {
-  it("shows the contact label on a node with a contact on file", async () => {
+  beforeEach(() => {
     (api.nodes as any).mockResolvedValue(NODES);
     (api.analytics as any).mockResolvedValue({ nodes: {} });
-    (api.adminNodeContacts as any).mockResolvedValue({
-      ret1a2b3c4d: { first_name: "Ada", last_name: "Lovelace", email: "ada@example.com" },
-    });
+    (api.adminNodeRefs as any).mockResolvedValue(NODE_IDS);
+  });
+
+  it("shows the contact label on a node with a contact on file", async () => {
+    (api.adminNodeContacts as any).mockResolvedValue(ADA_CONTACT);
 
     renderPage();
 
@@ -86,11 +94,7 @@ describe("NodeManagementPage contact rendering", () => {
   });
 
   it("shows a dash for a node with no contact on file", async () => {
-    (api.nodes as any).mockResolvedValue(NODES);
-    (api.analytics as any).mockResolvedValue({ nodes: {} });
-    (api.adminNodeContacts as any).mockResolvedValue({
-      ret1a2b3c4d: { first_name: "Ada", last_name: "Lovelace", email: "ada@example.com" },
-    });
+    (api.adminNodeContacts as any).mockResolvedValue(ADA_CONTACT);
 
     renderPage();
 
@@ -100,8 +104,6 @@ describe("NodeManagementPage contact rendering", () => {
   });
 
   it("still renders the node cards when the contacts fetch fails", async () => {
-    (api.nodes as any).mockResolvedValue(NODES);
-    (api.analytics as any).mockResolvedValue({ nodes: {} });
     (api.adminNodeContacts as any).mockRejectedValue(new Error("501: no such route yet"));
 
     renderPage();

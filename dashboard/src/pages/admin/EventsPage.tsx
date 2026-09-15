@@ -1,22 +1,18 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { api } from "../../api/client";
+import { useFetch } from "../../hooks/usePolling";
 
 const PAGE_SIZE = 25;
 
 export default function EventsPage() {
-  const [events, setEvents] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
-
-  useEffect(() => {
-    api.adminEvents(500)
-      .then((data) => setEvents(Array.isArray(data) ? data : []))
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
+  const { data, loading } = useFetch(() =>
+    api.adminEvents(500).then((d) => (Array.isArray(d) ? d : [])),
+  );
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
+  const events = data ?? [];
   const severityClass = { info: "online", warning: "warning", error: "offline", critical: "offline" };
   const totalPages = Math.ceil(events.length / PAGE_SIZE);
   const paged = events.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);

@@ -1,5 +1,25 @@
 const BASE = "";
 
+/** A 401 from the API: an answer, not a failure to obtain one. Distinct from a
+ *  network or timeout error so callers can tell "not signed in" from "no reply
+ *  yet" and decline to retry the first. */
+export class UnauthorizedError extends Error {
+  constructor() {
+    super("Unauthorized");
+    this.name = "UnauthorizedError";
+  }
+}
+
+/** Must match the route in App.tsx. */
+const LOGIN_PATH = "/login";
+
+/** Trailing slashes trimmed: the router matches `/login/` to the same route, so
+ *  comparing the raw pathname would send a caller who arrived that way through
+ *  one more reload before the guard below started holding. */
+function onLoginPage() {
+  return window.location.pathname.replace(/\/+$/, "") === LOGIN_PATH;
+}
+
 async function request(path: string, opts: any = {}) {
   const controller = new AbortController();
   const timeoutMs = path === "/api/auth/me" ? 30000 : 10000;
@@ -13,8 +33,13 @@ async function request(path: string, opts: any = {}) {
     });
     clearTimeout(timer);
     if (res.status === 401) {
-      window.location.href = "/login";
-      throw new Error("Unauthorized");
+      // Not when already on the login page. Assigning the same URL reloads it,
+      // the reload re-runs this request, and its 401 assigns it again; where
+      // nothing can mint a session that does not terminate.
+      if (!onLoginPage()) {
+        window.location.href = LOGIN_PATH;
+      }
+      throw new UnauthorizedError();
     }
     if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
     return res.json();
@@ -97,6 +122,7 @@ export const api = {
   adminConfigHistory: () => request("/api/admin/config/history"),
   adminStorage: () => request("/api/admin/storage"),
   adminMetrics: () => request("/api/admin/metrics"),
+  adminInfrastructure: () => request("/api/admin/infrastructure"),
 
   // MLAT verification — aggregated solver-vs-truth stats
   mlatVerification: () => request("/api/test/mlat-verification"),
@@ -111,6 +137,10 @@ export const api = {
     }),
   adminRevokeInvite: (token) =>
     request(`/api/admin/invites/${encodeURIComponent(token)}`, { method: "DELETE" }),
+
+  // Admin: node identity. {node_ref: node_id} for the fleet — the one route
+  // that crosses the publication boundary, which is why it is admin-only.
+  adminNodeRefs: () => request("/api/admin/node-refs"),
 
   // Admin: node ownership
   adminNodeOwners: () => request("/api/admin/node-owners"),

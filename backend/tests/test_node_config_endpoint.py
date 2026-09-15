@@ -106,6 +106,19 @@ async def test_a_resend_with_both_antenna_fields_null_is_not_a_change(registered
     assert (rows[1].beam_width_deg, rows[1].beam_azimuth_deg) == (None, None)
 
 
+async def test_a_null_callsign_is_accepted_and_stored(registered_node, node_client, node_session):
+    """An owner who cannot name the illuminator, which retina-gui otherwise fills in
+    with a placeholder the server could not tell apart from a real name."""
+    token, node_id = registered_node
+
+    response = node_client.put("/v1/nodes/config", headers=_auth(token), json=dict(CONFIG, tx_callsign=None))
+
+    assert response.status_code == 200
+    assert response.json() == {"config_version": 2}
+    rows = await _versions(node_session, node_id)
+    assert rows[-1].tx_callsign is None
+
+
 async def test_a_changed_field_mints_the_next_version_and_supersedes_the_last(
     registered_node, node_client, node_session
 ):

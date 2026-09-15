@@ -1,12 +1,8 @@
-import { useState, useEffect, useRef } from "react";
 import { api } from "../../api/client";
+import { usePolling } from "../../hooks/usePolling";
+import { fmt } from "../../utils/format";
 
 const REFRESH_MS = 5000;
-
-function fmt(n: number | undefined | null, decimals = 2): string {
-  if (n === undefined || n === null || Number.isNaN(n)) return "—";
-  return Number(n).toFixed(decimals);
-}
 
 function StatCard({ label, value, unit, hint }: {
   label: string; value: string; unit?: string; hint?: string;
@@ -81,28 +77,15 @@ function NodeBreakdownTable({ byNodeCount }: {
 }
 
 export default function MlatVerificationPage() {
-  const [verification, setVerification] = useState<any>(null);
-  const [accuracy, setAccuracy]         = useState<any>(null);
-  const [error, setError]               = useState<string | null>(null);
-  const [loading, setLoading]           = useState(true);
-  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
-
-  const fetchData = () => {
-    Promise.all([api.mlatVerification(), api.mlatAccuracy()])
-      .then(([v, a]) => { setVerification(v); setAccuracy(a); setError(null); })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchData();
-    timerRef.current = setInterval(fetchData, REFRESH_MS);
-    return () => clearInterval(timerRef.current);
-  }, []);
+  const { data, loading, error } = usePolling(
+    () => Promise.all([api.mlatVerification(), api.mlatAccuracy()]),
+    REFRESH_MS,
+  );
 
   if (loading) return <div className="empty-state">Loading…</div>;
-  if (error)   return <div className="empty-state" style={{ color: "var(--error)" }}>Error: {error}</div>;
+  if (error)   return <div className="empty-state" style={{ color: "var(--error)" }}>Error: {error.message}</div>;
 
+  const [verification, accuracy] = data ?? [null, null];
   const v = verification ?? {};
   const a = accuracy ?? {};
   const matchThresh = v.match_threshold_km;

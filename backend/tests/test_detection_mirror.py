@@ -492,3 +492,41 @@ def test_the_lifespan_arms_the_mirror_and_starts_its_task(monkeypatch):
         pass
 
     assert called == {"configured": 1, "task": 1}
+
+
+class TestBatchCarriesTheRef:
+    """The receiving environment has no row for these nodes, so the ref has to
+    travel with the detections or it cannot name them at all."""
+
+    def _connected(self, node_id):
+        from core import state
+
+        with state.connected_nodes_lock:
+            state.connected_nodes[node_id] = {"config": {"node_id": node_id}, "is_synthetic": False}
+
+    def teardown_method(self):
+        from core import state
+
+        with state.connected_nodes_lock:
+            for nid in ("ret1a2b3c4d", "ret9f8e7d6c"):
+                state.connected_nodes.pop(nid, None)
+
+    def test_a_registered_node_sends_its_ref(self, monkeypatch):
+        from services import detection_mirror, node_refs
+
+        self._connected("ret1a2b3c4d")
+        monkeypatch.setattr(node_refs, "ref_for", lambda nid: "nde1a2b3c4d00")
+        monkeypatch.setattr(detection_mirror, "pipeline_frame", lambda f: f)
+        (entry,) = detection_mirror.build_batch([("ret1a2b3c4d", {})])
+        assert entry["node_ref"] == "nde1a2b3c4d00"
+
+    def test_a_node_with_no_ref_sends_none_rather_than_a_null(self, monkeypatch):
+        """An absent key, not node_ref: null, so the receiver's own validation
+        never sees a value it would have to special-case."""
+        from services import detection_mirror, node_refs
+
+        self._connected("ret9f8e7d6c")
+        monkeypatch.setattr(node_refs, "ref_for", lambda nid: None)
+        monkeypatch.setattr(detection_mirror, "pipeline_frame", lambda f: f)
+        (entry,) = detection_mirror.build_batch([("ret9f8e7d6c", {})])
+        assert "node_ref" not in entry

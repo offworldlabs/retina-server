@@ -78,6 +78,14 @@ services:
       - SIM_FRAC_ANOMALOUS=0.0
       - SIM_FRAC_DRONE=0.0
       - SIM_FRAC_DARK=0.15
+      # The Cloudflare Zero Trust team whose assertions the origin will believe.
+      # One team for the whole org, so it belongs here rather than in an overlay:
+      # a per-environment copy could drift to another team and the audience check
+      # alone would not catch it. The per-application audience does differ, and
+      # is CF_ACCESS_AUD in each overlay: pinning it is what stops a token minted
+      # for one of the fleet's seventeen node applications opening the console.
+      # Not a secret — it appears in the login URL of every Access redirect.
+      - CF_ACCESS_TEAM_DOMAIN=offworldlab.cloudflareaccess.com
     # bash, not sh: start.sh's supervisor uses `wait -n`, a bash builtin that
     # dash rejects ("Illegal option -n"), which crash-loops the server. The
     # script's shebang already says bash; naming it here keeps that true even if

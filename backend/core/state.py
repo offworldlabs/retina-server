@@ -628,6 +628,20 @@ known_hold_dropped_disagree: int = 0
 # what stops a node that newly acquires a silent aircraft from feeding the
 # dark pool and minting a twin key beside the lane's entry.
 known_follow_claims: int = 0
+# Empirical-coverage calibration from the CLAIM lane (see
+# services/known_claiming._calibration_from_claim and services/calibration.py's
+# fourth rule).  recorded counts the points actually written; the five rejects
+# are the five rules, charged in order, so exactly one of the six is bumped per
+# non-hold claim and they sum to the claim count.  Read them as a funnel: a
+# recorded count of zero beside a large `immature` is a fleet whose links are
+# too short-lived, and one beside a large `contested` is traffic too dense for
+# an exclusive attribution — two different problems with the same symptom.
+calibration_points_recorded: int = 0
+calibration_claims_rejected_hold: int = 0
+calibration_claims_rejected_stale_fix: int = 0
+calibration_claims_rejected_residual: int = 0
+calibration_claims_rejected_contested: int = 0
+calibration_claims_rejected_immature: int = 0
 # Dark track following (DARK_FOLLOW_MODE) — see services/dark_follow.py.
 # targets is a GAUGE (the size of the current pseudo-state list, assigned on
 # every rebuild), the other four are since-boot counters.  The funnel reads
@@ -1086,6 +1100,9 @@ def _reset_for_tests() -> None:
     global known_claims_errors, known_claims_visibility_rejects, known_claims_world_rejects
     global known_hold_claims, known_hold_expired, known_hold_dropped_disagree
     global known_follow_claims
+    global calibration_points_recorded, calibration_claims_rejected_hold
+    global calibration_claims_rejected_stale_fix, calibration_claims_rejected_residual
+    global calibration_claims_rejected_contested, calibration_claims_rejected_immature
     global dark_follow_targets, dark_follow_claims, dark_follow_inputs
     global dark_follow_published, dark_follow_dropped, dark_bottomup_shadowed
     global dark_follow_inelig_cooldown, dark_follow_inelig_no_pos
@@ -1193,6 +1210,9 @@ def _reset_for_tests() -> None:
         known_claims_world_rejects = 0
         known_hold_claims = known_hold_expired = known_hold_dropped_disagree = 0
         known_follow_claims = 0
+        calibration_points_recorded = calibration_claims_rejected_hold = 0
+        calibration_claims_rejected_stale_fix = calibration_claims_rejected_residual = 0
+        calibration_claims_rejected_contested = calibration_claims_rejected_immature = 0
         dark_follow_targets = dark_follow_claims = dark_follow_inputs = 0
         dark_follow_published = dark_follow_dropped = 0
         dark_follow_inelig_cooldown = dark_follow_inelig_no_pos = 0

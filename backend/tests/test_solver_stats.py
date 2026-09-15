@@ -532,6 +532,14 @@ class TestKnownLaneAndClaimsPassthrough:
             "hold_dropped_disagree": 0,
             "holds": 0,
             "follow_claims": 0,
+            "calibration_recorded": 0,
+            "calibration_rejected": {
+                "hold": 0,
+                "stale_fix": 0,
+                "residual": 0,
+                "contested": 0,
+                "immature": 0,
+            },
         }
 
     def test_both_blocks_zero_on_a_fresh_process(self):
@@ -550,6 +558,14 @@ class TestKnownLaneAndClaimsPassthrough:
             "hold_dropped_disagree": 0,
             "holds": 0,
             "follow_claims": 0,
+            "calibration_recorded": 0,
+            "calibration_rejected": {
+                "hold": 0,
+                "stale_fix": 0,
+                "residual": 0,
+                "contested": 0,
+                "immature": 0,
+            },
         }
 
     def test_lane_counters_absent_from_state_read_as_zero(self, monkeypatch):
@@ -775,6 +791,8 @@ class TestEndpoint:
             "hold_dropped_disagree",
             "holds",
             "follow_claims",
+            "calibration_recorded",
+            "calibration_rejected",
         }
 
     def test_minutes_clamp_low(self):

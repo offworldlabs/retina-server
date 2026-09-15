@@ -1,37 +1,30 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { usePolling } from "../../hooks/usePolling";
+import { useChartTheme } from "../../utils/chartTheme";
 
 const PAGE_SIZE = 25;
 
 export default function ContributionPage() {
-  const [analytics, setAnalytics] = useState(null);
-  const [overlaps, setOverlaps] = useState([]);
-  const [leaderboard, setLeaderboard] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const chart = useChartTheme();
   const [overlapPage, setOverlapPage] = useState(0);
-  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
-
-  const fetchData = () => {
-    Promise.all([api.analytics(), api.overlaps(), api.leaderboard().catch(() => [])])
-      .then(([a, o, lb]) => {
-        setAnalytics(a);
-        setOverlaps(Array.isArray(o) ? o : o.overlaps || []);
-        setLeaderboard(Array.isArray(lb) ? lb : lb.leaderboard || []);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchData();
-    timerRef.current = setInterval(fetchData, 30000);
-    return () => clearInterval(timerRef.current);
-  }, []);
+  const { data, loading } = usePolling(async () => {
+    const [a, o, lb] = await Promise.all([api.analytics(), api.overlaps(), api.leaderboard().catch(() => [])]);
+    return {
+      analytics: a,
+      overlaps: Array.isArray(o) ? o : o.overlaps || [],
+      leaderboard: Array.isArray(lb) ? lb : lb.leaderboard || [],
+    };
+  }, 30000);
 
   if (loading) return <div className="empty-state">Loading…</div>;
+
+  const analytics = data?.analytics;
+  const overlaps = data?.overlaps ?? [];
+  const leaderboard = data?.leaderboard ?? [];
 
   // analytics.nodes is a dict {node_ref: summary} from the backend; the ref
   // is the map key, values no longer carry node_id.
@@ -91,19 +84,13 @@ export default function ContributionPage() {
             <div className="chart-container">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="name" stroke="#94a3b8" tick={{ fontSize: 11 }} />
-                  <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
+                  <XAxis dataKey="name" stroke={chart.axis} tick={{ fontSize: 11 }} />
+                  <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
                   <Tooltip
-                    contentStyle={{
-                      background: "#ffffff",
-                      border: "1px solid #e2e8f0",
-                      borderRadius: 6,
-                      fontSize: 12,
-                      color: "#0f172a",
-                    }}
+                    contentStyle={chart.tooltip}
                   />
-                  <Bar dataKey="detections" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="detections" fill={chart.series[0]} radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>

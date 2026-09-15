@@ -21,6 +21,7 @@ from sqlalchemy import DateTime, Float, String, event, func
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from core.access_identity import AccessIdentity
 from core.env_parsing import parse_comma_list
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -64,6 +65,19 @@ def _derive_auth_flags(env: Mapping[str, str]) -> tuple[bool, bool]:
 
 
 AUTH_ENABLED, AUTH_BYPASS = _derive_auth_flags(os.environ)
+
+#: The header Cloudflare sets on every request its Access applications admit.
+ACCESS_ASSERTION_HEADER = "Cf-Access-Jwt-Assertion"
+
+#: One instance, so the JWKS cache and its lock are shared across requests.
+#: The audience differs per environment and comes from the compose overlays; the
+#: team domain is the same everywhere and comes from the base compose file.
+#: Either unset means unconfigured, and an unconfigured verifier is never
+#: consulted rather than refusing assertions nobody sent.
+access_identity = AccessIdentity(
+    team_domain=os.getenv("CF_ACCESS_TEAM_DOMAIN", ""),
+    audience=os.getenv("CF_ACCESS_AUD", ""),
+)
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -312,8 +326,42 @@ async def _read_user_from_request(request: Request) -> User | None:
     return user
 
 
+def _access_user_dict(email: str) -> dict:
+    """A user dict for a verified Access identity, with no database row.
+
+    Membership of the Access group is what grants the console, so anyone whose
+    assertion verifies for this environment's audience is an administrator; a
+    second list in AUTH_ADMIN_EMAILS would only be one more thing to drift.
+
+    The id is derived from the email rather than allocated, so the same person
+    is the same id across requests and restarts and the destructive endpoints
+    stay attributable in /api/admin/events.
+    """
+    return {
+        "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"mailto:{email}")),
+        "email": email,
+        "name": email.split("@")[0],
+        "avatar": "",
+        "provider": "cloudflare-access",
+        "role": "admin",
+        "is_superuser": True,
+        "created_at": 0,
+    }
+
+
+async def _access_user_from_request(request: Request) -> dict | None:
+    """The verified Access identity for this request, or None."""
+    if not access_identity.is_configured():
+        return None
+    email = await access_identity.identity(request.headers.get(ACCESS_ASSERTION_HEADER))
+    return _access_user_dict(email) if email else None
+
+
 async def get_current_user(request: Request) -> dict:
     """Return user dict or raise 401. Returns anonymous admin where AUTH_BYPASS is opted into."""
+    access = await _access_user_from_request(request)
+    if access is not None:
+        return access
     if AUTH_BYPASS:
         return dict(ANONYMOUS_USER)
     user = await _read_user_from_request(request)
@@ -324,6 +372,11 @@ async def get_current_user(request: Request) -> dict:
 
 async def require_admin(request: Request) -> dict:
     """Like get_current_user but also enforces superuser/admin role."""
+    # Ahead of the bypass: where both are available the real person is the better
+    # answer, since "Admin (no auth)" is not an attribution.
+    access = await _access_user_from_request(request)
+    if access is not None:
+        return access
     if AUTH_BYPASS:
         return dict(ANONYMOUS_USER)
     user = await _read_user_from_request(request)

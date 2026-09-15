@@ -4,27 +4,6 @@
 
 import type { ArcBufferEntry } from "./components/map/arcBuffer";
 
-/** Single tower returned by /api/towers */
-export interface Tower {
-  callsign: string | null;
-  frequency_mhz: number;
-  frequency_matched: boolean;
-  band: string;
-  distance_km: number;
-  distance_class: string;
-}
-
-/** /api/towers response */
-export interface TowerSearchResponse {
-  towers: Tower[];
-  query: { lat: number; lon: number };
-}
-
-/** /api/elevation response */
-export interface ElevationResponse {
-  elevation_m: number;
-}
-
 /* ---- Aircraft / live feed ---- */
 
 export interface Aircraft {
@@ -183,6 +162,16 @@ export interface RadarNode {
   max_bistatic_range_km: number | null;
   empirical_polygon: [number, number][] | null;
   empirical_n_points: number;
+  /**
+   * Which rule produced `empirical_polygon`, decided by the backend:
+   * `declared` for a synthetic node, whose declared cone is what the
+   * simulator enforces and so IS its detection area; `evidence` for a real
+   * node under FOV_MODE=off, drawn only from what it has been seen to
+   * detect; `learned` for the FOV_MODE shadow/active wedge, itself derived
+   * from evidence.  Only `declared` lets the map call a declared beam
+   * coverage — see components/map/nodeSites.ts::coverageLine.
+   */
+  empirical_polygon_source: "declared" | "evidence" | "learned";
   /**
    * Server-derived, not parsed from the identifier: see utils/nodeKind.ts.
    * Identities publish as node_ref, so no prefix survives to match on.

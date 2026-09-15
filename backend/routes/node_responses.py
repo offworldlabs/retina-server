@@ -136,6 +136,14 @@ UNAUTHORIZED = _response(
     terminal=True,
 )
 
+UNAUTHORIZED_CONTACT = _response(
+    "Token bad, revoked or expired. Surface it locally and leave the details unsent: they are sent "
+    "again whenever they change, so nothing is lost by waiting for a credential. Do not re-register, "
+    "for the reason detection and heartbeat give on their own 401s.",
+    retry=RETRY_NEVER,
+    terminal=True,
+)
+
 RATE_LIMITED = _response(
     "Rate limited, per token and per endpoint. The skipped frames are best dropped rather than "
     "accumulated: a frame delivered late carries an old timestamp and is rejected by the "

@@ -54,7 +54,7 @@ async def test_every_contact_field_is_nullable(node_session):
     node_session.expire_all()
 
     row = (await node_session.execute(select(NodeContact))).scalars().one()
-    assert (row.first_name, row.last_name, row.email, row.phone) == (None, None, None, None)
+    assert (row.first_name, row.last_name, row.email, row.phone, row.country) == (None, None, None, None, None)
 
 
 CONTACT = {
@@ -62,6 +62,7 @@ CONTACT = {
     "last_name": "Lovelace",
     "email": "ada@example.com",
     "phone": "+44 20 7946 0000",
+    "country": "GB",
 }
 
 

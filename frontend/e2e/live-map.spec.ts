@@ -103,8 +103,8 @@ async function rowsOrSkip(page: Page) {
 test.describe("Live Map — page identity", () => {
   test("page title contains RETINA", async ({ page }) => {
     await page.goto(BASE);
-    // The HTML <title> is static "Tower Finder" for all domains;
-    // the domain identity is exposed in the h1 element instead.
+    // Asserted on the h1 rather than the HTML <title>, which is static across
+    // every domain this bundle serves.
     await expect(page.locator("h1")).toContainText(/RETINA/i);
   });
 
@@ -144,7 +144,8 @@ test.describe("Live Map — map rendering", () => {
   test("toolbar shows Coverage / Labels / Trails toggle buttons", async ({ page }) => {
     await page.goto(BASE);
     await expect(page.locator(".live-map-toolbar")).toBeVisible({ timeout: 10_000 });
-    await expect(page.getByRole("button", { name: /Coverage/i })).toBeVisible();
+    // "Coverage gaps" also matches a loose /Coverage/, so this must stay exact.
+    await expect(page.getByRole("button", { name: "Coverage", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: /Labels/i })).toBeVisible();
     await expect(page.getByRole("button", { name: /Trails/i })).toBeVisible();
   });
@@ -258,7 +259,7 @@ test.describe("Live Map — toolbar toggles", () => {
     await page.goto(BASE);
     await expect(page.locator(".live-map-toolbar")).toBeVisible({ timeout: 10_000 });
 
-    const btn = page.getByRole("button", { name: /Coverage/i });
+    const btn = page.getByRole("button", { name: "Coverage", exact: true });
     const initialActive = await btn.evaluate((el) => el.classList.contains("active"));
 
     await btn.click();

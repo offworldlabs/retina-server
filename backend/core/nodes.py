@@ -100,7 +100,9 @@ class NodeConfig(Base):
     tx_lat: Mapped[float | None] = mapped_column(Float, nullable=True)
     tx_lon: Mapped[float | None] = mapped_column(Float, nullable=True)
     tx_alt_ft: Mapped[float | None] = mapped_column(Float, nullable=True)
-    tx_callsign: Mapped[str] = mapped_column(String(32))
+    # Nullable since 1.2.2: an owner who cannot name the illuminator, the same
+    # case the coordinates above carry.
+    tx_callsign: Mapped[str | None] = mapped_column(String(32), nullable=True)
     fc_hz: Mapped[float] = mapped_column(Float)
     fs_hz: Mapped[float] = mapped_column(Float)
     # Both nullable, and neither null may be filled in. A null width means the
@@ -142,6 +144,9 @@ class NodeContact(Base):
     last_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # ISO 3166-1 alpha-2, so the phone number above resolves: a national number
+    # says nothing about where it is dialable from.
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

@@ -3,9 +3,9 @@
 Welcome. This repo powers RETINA, a passive-radar system: a network of receiver
 nodes detect aircraft by listening to reflections of broadcast transmitters
 (bistatic radar), and the backend turns those detections into tracks and live
-positions shown on a web map. It started life as "Tower Finder" (a tool to find
-suitable broadcast illuminators near a receiver), which is still one of the
-surfaces.
+positions shown on a web map. It started life as "Tower Finder", a tool to find
+suitable broadcast illuminators near a receiver; that feature now lives entirely
+in tower-finder-service, both its API and its UI.
 
 Read this top-to-bottom once; it should get you from a fresh clone to running
 the whole thing locally and understanding how the pieces fit. For deeper dives,
@@ -21,7 +21,11 @@ One FastAPI backend serves several React front-ends, distinguished by subdomain:
 | **testmap** | Live aircraft map fed by the simulation fleet (synthetic nodes) — the main dev/demo surface. `testmap.retina.fm` is served by the **staging** droplet, the only environment still running a fleet. |
 | **map** | Production live map showing only real radar nodes. |
 | **dashboard** | Admin app (auth required): node ownership, claim codes, MLAT verification, metrics. |
-| **Tower Finder** | The original illuminator search. The SPA is here; the `/api/towers`, `/api/elevation`, `/api/config` and `/api/geocode` API is **tower-finder-service** (separate repo and container), which nginx proxies to on every vhost. This backend no longer implements it. |
+
+Illuminator search is deliberately absent from that table: **tower-finder-service**
+(separate repo and container) owns the API and the UI both, and serves
+`towers.retina.fm` from its own edge. Our vhosts only proxy `/api/towers`,
+`/api/elevation`, `/api/config` and `/api/geocode` to it.
 
 Receiver nodes connect over TCP and stream detection frames. The pipeline
 (tracker → geolocator) turns frames into aircraft positions, broadcast to the
@@ -233,11 +237,25 @@ CI runs on every PR, on push to `main`, and on demand through
    `dashboard-build`, `docker-build`, `env-parity`, plus an automated review.
 2. Merge to `main` → deploy to **staging** → staging smoke + Playwright E2E → deploy to **production** → prod smoke + Playwright E2E.
    A markdown-only merge skips that chain; the `changes` job has the exceptions.
+   The staging third of it is a called workflow,
+   `.github/workflows/staging-deploy-verify.yml`, invoked from one `Staging`
+   job so that job's concurrency group is held across the deploy and both
+   suites. Adding a staging step means editing that file, not `ci.yml`.
+   Both deploys take a rollback point first and roll themselves back when
+   they fail after it; the runbook's Environments section has the shape.
 
 So merging to `main` deploys to production automatically. Work on a feature
 branch, open a PR, get it green, then merge.
 
 ## Things that will bite you
+
+- **A cancelled `Staging` job on a burst of merges is expected, not a fault.**
+  Only one run may sit pending on the `staging-deploy` group, so when a third
+  merge arrives while one run holds staging and another is queued, the queued
+  one is cancelled. `main` is linear, so the run that replaces it deploys a
+  superset of what was dropped. What it does mean is that the cancelled
+  commit's own run never reaches production: the following run carries it.
+  The last merge in a burst has no successor, so check it landed.
 
 - **The CARTO basemap key lives on the droplet, not in this repo.** Every
   deploy appends `/root/.secrets/carto.env` to `./.env` after copying
@@ -280,5 +298,5 @@ branch, open a PR, get it green, then merge.
 - [`docs/pipeline.md`](docs/pipeline.md) — detection → tracker → geolocator → aircraft JSON.
 - [`docs/arc-display.md`](docs/arc-display.md) — how bistatic uncertainty arcs are drawn.
 - [`docs/runbook.md`](docs/runbook.md) — production operations, server access, incident response.
-- [`docs/alerting.md`](docs/alerting.md) — monitoring, alerts, and the dead-man's-switch.
+- [`docs/alerting.md`](docs/alerting.md) — monitoring, alerts and the outside-in probes.
 - [`docs/simulation.md`](docs/simulation.md) — running the fleet simulator.

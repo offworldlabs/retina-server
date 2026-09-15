@@ -68,12 +68,8 @@ def routed_roles() -> set[str]:
 
 
 def test_the_template_routes_the_roles_we_think_it_does(routed_roles):
-    """A new routed vhost must be added to _ROLE_TO_SMOKE_VAR and the smoke test.
-
-    HOST_LEGACY_REDIRECT is the fleet's own name for the service, proxied whole
-    rather than at /api/towers, and is not part of the SPA seam.
-    """
-    assert routed_roles - {"HOST_LEGACY_REDIRECT"} == set(_ROLE_TO_SMOKE_VAR)
+    """A new routed vhost must be added to _ROLE_TO_SMOKE_VAR and the smoke test."""
+    assert routed_roles == set(_ROLE_TO_SMOKE_VAR)
 
 
 def test_the_smoke_test_probes_every_routed_vhost(routed_roles):

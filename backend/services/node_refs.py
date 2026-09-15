@@ -24,6 +24,7 @@ from typing import NamedTuple
 from sqlalchemy import create_engine, select
 from sqlalchemy.pool import NullPool
 
+from core import state
 from core.nodes import Node
 from core.users import DATABASE_URL
 from services.tcp_handler import is_synthetic_node
@@ -142,6 +143,27 @@ def id_for_identity(identity: str | None) -> str | None:
     return id_for_ref(identity)
 
 
+def ref_to_id_map(node_ids: Iterable[str] = ()) -> dict[str, str]:
+    """Every published handle and the node behind it: {node_ref: node_id}.
+
+    The inverse of the boundary, so only a caller already entitled to both
+    identifiers may be handed it — today that is routes/admin.py's `node-refs`,
+    gated on require_admin. Everything else resolves one node at a time.
+
+    `node_ids` widens the registry with ids the caller holds, resolved through
+    `owner_identity` so a mirrored node and a synthetic one appear under the
+    same handle they publish as. A registry row wins over a mirrored ref, as it
+    does on the way out; a node with no handle at all is absent rather than
+    named under its own id.
+    """
+    _refresh()
+    mapping = dict(_reverse)
+    for node_id in node_ids:
+        if ref := owner_identity(node_id):
+            mapping.setdefault(ref, node_id)
+    return mapping
+
+
 def _names_a_node(value: str, known_ids: Iterable[str]) -> bool:
     """Whether a string is the private id of a node.
 
@@ -166,6 +188,25 @@ def public_name(name, fallback: str, known_ids: Iterable[str] = ()) -> str:
     return name
 
 
+def _mirrored_ref(node_id: str) -> str | None:
+    """The ref another environment resolved for a node it mirrors to us.
+
+    A mirrored node has no row here: its detections arrive over the bulk
+    endpoint (routes/radar.py) from the environment that holds its registry,
+    which sends the ref along with them, validated there against the same
+    pattern a minted one must match. Read only when the local registry has
+    nothing, so a real row always wins.
+
+    Unlocked: both reads are single dict lookups, and a concurrent writer
+    either replaces the entry or assigns this one key, so a read yields the old
+    value or the new one. Taking connected_nodes_lock here would put it on the
+    1 Hz publication path, contending with the ingest that writes it.
+    """
+    known = state.connected_nodes.get(node_id)
+    ref = known.get("node_ref") if known else None
+    return ref if isinstance(ref, str) and ref else None
+
+
 def owner_identity(node_id: str | None) -> str | None:
     """What a node publishes as, for a caller that already knows the node.
 
@@ -177,7 +218,7 @@ def owner_identity(node_id: str | None) -> str | None:
         return None
     if is_synthetic_node(node_id):
         return node_id
-    return ref_for(node_id)
+    return ref_for(node_id) or _mirrored_ref(node_id)
 
 
 def public_identity(node_id: str | None) -> str | None:

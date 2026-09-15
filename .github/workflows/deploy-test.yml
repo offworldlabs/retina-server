@@ -10,6 +10,8 @@ name: Deploy to test droplet
 # rollback-production-on-deploy-failure. ci.yml is the source of truth; this is
 # a copy, and a copy can drift. If you change the marker lifecycle or the
 # rollback decisions there, change them here, or this stops verifying anything.
+# staging-deploy-verify.yml carries the same pair for staging; keep all three
+# in step.
 on:
   workflow_dispatch:
     inputs:
@@ -27,6 +29,9 @@ on:
           # preflight    — fails before anything is touched; rollback must DECLINE.
           # after-marker — rollback point exists, tree not yet moved; rollback must act.
           # after-build  — containers already replaced; the case rollback exists for.
+          #                Needs a ref whose image differs from the one running: an
+          #                identical build replaces nothing, and rollback.sh then
+          #                leaves the containers alone by design.
           - none
           - preflight
           - after-marker

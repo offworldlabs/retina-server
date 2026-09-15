@@ -727,6 +727,20 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
         # services.calibration.record_adsb_calibration holds the
         # fix-vs-detection skew rule that closes this — this call just
         # supplies both timestamps and trusts the one rule to enforce it.
+        #
+        # ...and none of that matters unless the KNOWN LANE IS OFF, which is
+        # the newest rule and the reason this whole block is now gated.  Since
+        # KNOWN_LANE_MODE defaulted to "binding" (#240, 2026-08-25) claiming
+        # strips every detection it binds from the frame before the tracker
+        # sees it, so last_detection_adsb_hex is only ever set by the tagged
+        # detections claiming did NOT take — the worst binds, by construction.
+        # Measured on test 2026-09-13: every synthetic node's newest point was
+        # dated 2026-08-25 (this path dead for 19 days), and the trickle real
+        # nodes still got was 5–41% out of their declared wedge.  In shadow
+        # mode nothing is stripped and both paths would record the same
+        # detection twice.  So the claim lane is the one source whenever it
+        # runs (services/known_claiming._calibration_from_claim), and this
+        # path — rules and all — is what mode "off" still uses.
         _det_tag = getattr(track, "last_detection_adsb_hex", None)
         _det_ts = getattr(track, "last_detection_wall_ts", 0.0)
         # Two stamps, two jobs.  The skew rule pins the fix to the detection
@@ -741,7 +755,7 @@ def track_entry(ac_hex, track, node_cfg, now: float, touched_arc_keys: set):
             and isinstance(_det_tag, str)
             and _det_tag.strip().lower() == (ac_hex or "").strip().lower()
         )
-        if nid and _detection_fresh:
+        if nid and _detection_fresh and state.KNOWN_LANE_MODE == "off":
             _n_recorded = record_adsb_calibration(
                 [nid],
                 adsb_lat,

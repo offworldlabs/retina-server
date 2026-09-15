@@ -82,6 +82,79 @@ $("#topnav").innerHTML =
   '<a href="' + esc(siblingUrl("dash")) + '">Dashboard</a>' +
   '<a href="' + esc(siblingUrl("map")) + '">Live map</a>';
 
+/* ══ Appearance ════════════════════════════════════════════════════════════
+ * Three states. The `retina.theme` key and the `data-theme` attribute are the
+ * names the dashboard console uses for the same job, deliberately: they are
+ * separate origins, so a stored choice cannot travel between them, and matching
+ * names are the only thing making the two one idiom rather than two.
+ *
+ * `system` stamps nothing and lets app.css's own media query answer, which is
+ * why the OS preference keeps working when it changes mid-session. An explicit
+ * choice is stamped here and, for the next load, by theme-boot.js before the
+ * first paint. */
+const THEME_KEY = "retina.theme";
+
+function storedTheme() {
+  try {
+    const t = localStorage.getItem(THEME_KEY);
+    return t === "light" || t === "dark" ? t : "system";
+  } catch (e) {
+    return "system";
+  }
+}
+
+/* Stamp the attribute and mark the switch. Persisting is the caller's job, so
+ * that merely opening the page does not write storage for a visitor who never
+ * touched the control — this one is public and unauthenticated. */
+function showTheme(choice) {
+  if (choice === "system") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", choice);
+  $$("#theme-switch button").forEach((b) => {
+    const on = b.dataset.themeChoice === choice;
+    b.setAttribute("aria-checked", String(on));
+    // A radio group is one tab stop, not three: Tab reaches whichever option is
+    // checked, and the arrows below move from there.
+    b.tabIndex = on ? 0 : -1;
+  });
+}
+
+function chooseTheme(choice) {
+  showTheme(choice);
+  try {
+    localStorage.setItem(THEME_KEY, choice);
+  } catch (e) {
+    /* private browsing — the choice still holds for this page */
+  }
+}
+
+$("#theme-switch").addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-theme-choice]");
+  if (btn) chooseTheme(btn.dataset.themeChoice);
+});
+
+/* The keyboard half of the radio group. `role="radio"` promises the arrows move
+ * between the options and that they select as they go, so a keyboard user never
+ * has to Tab through all three. Without preventDefault the arrows scroll the
+ * page while the selection moves underneath. */
+$("#theme-switch").addEventListener("keydown", (e) => {
+  const btns = $$("#theme-switch button");
+  const last = btns.length - 1;
+  const here = btns.findIndex((b) => b.getAttribute("aria-checked") === "true");
+  let next;
+  if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = here <= 0 ? last : here - 1;
+  else if (e.key === "ArrowRight" || e.key === "ArrowDown") next = here >= last ? 0 : here + 1;
+  else if (e.key === "Home") next = 0;
+  else if (e.key === "End") next = last;
+  else return;
+  e.preventDefault();
+  chooseTheme(btns[next].dataset.themeChoice);
+  btns[next].focus();
+});
+
+// theme-boot.js has already stamped the attribute; this is what stops the
+// switch claiming "System" when storage says otherwise.
+showTheme(storedTheme());
+
 /* ══ State ═════════════════════════════════════════════════════════════════ */
 const TODAY = todayUTC();
 const S = {

@@ -1,57 +1,50 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line,
 } from "recharts";
 import { api } from "../../api/client";
+import { usePolling } from "../../hooks/usePolling";
+import { useChartTheme } from "../../utils/chartTheme";
 
 export default function RFEnvironmentPage() {
-  const [nodes, setNodes] = useState([]);
+  const chart = useChartTheme();
   const [selectedNode, setSelectedNode] = useState("");
-  const [loading, setLoading] = useState(true);
   const [snrHistory, setSnrHistory] = useState([]);
-  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
-  const fetchData = () => {
-    Promise.all([api.nodes(), api.analytics()])
-      .then(([n, a]) => {
-        const nodeMap = n.nodes || {};
-        const analyticsMap = a?.nodes || {};
-        const nodeList = Object.entries(nodeMap).map(([id, info]: [string, any]) => ({
-          node_id: id,
-          ...info,
-          _analytics: analyticsMap[id] || {},
-        }));
-        setNodes(nodeList);
-        if (!selectedNode && nodeList.length > 0) {
-          setSelectedNode(nodeList[0].node_id);
-        }
-        // Append to SNR history for the selected node
-        const sel = selectedNode || (nodeList[0]?.node_id);
-        if (sel) {
-          const nodeData = analyticsMap[sel] || {};
-          const snr = nodeData.metrics?.avg_snr || 0;
-          setSnrHistory((prev) => [
-            ...prev.slice(-30),
-            {
-              time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-              snr: parseFloat(snr.toFixed(1)),
-            },
-          ]);
-        }
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchData();
-    timerRef.current = setInterval(fetchData, 5000);
-    return () => clearInterval(timerRef.current);
-  }, [selectedNode]);
+  // Keyed on the selection, so changing it fetches at once and restarts the
+  // schedule rather than waiting out the current interval.
+  const { data, loading } = usePolling(async () => {
+    const [n, a] = await Promise.all([api.nodes(), api.analytics()]);
+    const nodeMap = n.nodes || {};
+    const analyticsMap = a?.nodes || {};
+    const nodeList = Object.entries(nodeMap).map(([id, info]: [string, any]) => ({
+      node_id: id,
+      ...info,
+      _analytics: analyticsMap[id] || {},
+    }));
+    if (!selectedNode && nodeList.length > 0) {
+      setSelectedNode(nodeList[0].node_id);
+    }
+    // Append to SNR history for the selected node
+    const sel = selectedNode || (nodeList[0]?.node_id);
+    if (sel) {
+      const nodeData = analyticsMap[sel] || {};
+      const snr = nodeData.metrics?.avg_snr || 0;
+      setSnrHistory((prev) => [
+        ...prev.slice(-30),
+        {
+          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+          snr: parseFloat(snr.toFixed(1)),
+        },
+      ]);
+    }
+    return nodeList;
+  }, 5000, selectedNode);
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
+  const nodes = data ?? [];
   const selected = nodes.find((n) => n.node_id === selectedNode) || nodes[0];
   const metrics = selected?._analytics?.metrics || {};
   const freq = selected?.frequency || selected?._analytics?.detection_area?.center_freq;
@@ -123,11 +116,11 @@ export default function RFEnvironmentPage() {
             <div className="chart-container">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={snrHistory}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="time" stroke="#94a3b8" tick={{ fontSize: 10 }} />
-                  <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} />
-                  <Tooltip contentStyle={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 6, fontSize: 12 }} />
-                  <Line type="monotone" dataKey="snr" stroke="#3b82f6" strokeWidth={2} dot={false} name="Avg SNR (dB)" />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
+                  <XAxis dataKey="time" stroke={chart.axis} tick={{ fontSize: 10 }} />
+                  <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
+                  <Tooltip contentStyle={chart.tooltip} />
+                  <Line type="monotone" dataKey="snr" stroke={chart.series[0]} strokeWidth={2} dot={false} name="Avg SNR (dB)" />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -143,11 +136,11 @@ export default function RFEnvironmentPage() {
             <div className="chart-container">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={freqData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="name" stroke="#94a3b8" tick={{ fontSize: 10 }} />
-                  <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} />
-                  <Tooltip contentStyle={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 6, fontSize: 12 }} />
-                  <Bar dataKey="snr" fill="#10b981" name="Avg SNR (dB)" radius={[4, 4, 0, 0]} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
+                  <XAxis dataKey="name" stroke={chart.axis} tick={{ fontSize: 10 }} />
+                  <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
+                  <Tooltip contentStyle={chart.tooltip} />
+                  <Bar dataKey="snr" fill={chart.series[1]} name="Avg SNR (dB)" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
