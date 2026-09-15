@@ -23,6 +23,12 @@ os.environ.setdefault("SOLVER_POOL", "0")
 # known_lane counters.  Tests that exercise the lane set the mode explicitly —
 # monkeypatch on core.state, or maybe_run_pass's mode argument.
 os.environ.setdefault("KNOWN_LANE_MODE", "off")
+# Same for the dark-follow lane: lanes_armed() arms the hook when EITHER lane
+# is on, and maybe_run_pass returns early only when both are off, so with this
+# lane at its "shadow" default every leaked daemon still took the pass lock and
+# stamped the pass clock every two seconds, gating the known-lane tests' first
+# call. Tests that exercise dark following set the mode themselves.
+os.environ.setdefault("DARK_FOLLOW_MODE", "off")
 # Needed so the /api/radar/detections auth guard is active in tests.
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 # A fixed node-fuzz salt, so every published coordinate the suite sees is the
