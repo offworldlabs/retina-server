@@ -1063,22 +1063,39 @@ jobs:
           # tower-finder-service, so this would now be a 404 by design. The
           # route is checked where it is actually served, on the tower vhosts
           # below.
-          check_status "GET / (frontend)"         "https://towers.retina.fm/"         "200"
+          # On map, not towers: since the 2026-09-14 origin flip Cloudflare sends
+          # towers.retina.fm to tower-finder-service's own edge, so that probe
+          # asserted a different service's frontend while this job rolls THIS
+          # one back on failure. map is the production surface we still serve.
+          check_status "GET / (frontend)"         "https://map.retina.fm/"            "200"
           check_status "GET /api/health (api.retina.fm)" "${BASE_URL}/api/health"     "200"
 
           # The tower-finder seam, on production's OWN vhost names: prod parks
           # testmap as testmap-retired, so its routed set is not staging's and
           # staging passing says nothing about it. Same assertion as the staging
           # suite, from the same file.
+          # towers.retina.fm is deliberately absent, for the reason given above:
+          # every name below is one nginx here actually answers.
           source "$GITHUB_WORKSPACE/deploy/tower-contract.sh"
-          for endpoint in https://towers.retina.fm/api/towers \
-                          https://map.retina.fm/api/towers \
+          for endpoint in https://map.retina.fm/api/towers \
                           https://api.retina.fm/towers \
                           https://dash.retina.fm/api/towers \
                           https://admin.retina.fm/api/towers; do
             printf "  %-40s " "${endpoint#https://}"
+            # 2 is our nginx having forwarded to a service that did not answer.
+            # Warned, not failed: this job rolls production back, and the service
+            # being down is not grounds for reverting a healthy release here. See
+            # _is_upstream_failure in deploy/tower-contract.sh.
             if REASON=$(assert_tower_contract "$endpoint"); then
+              TC_RC=0
+            else
+              TC_RC=$?
+            fi
+            if [ "$TC_RC" = 0 ]; then
               echo "OK"; PASS=$((PASS+1))
+            elif [ "$TC_RC" = 2 ]; then
+              echo "WARN"; printf '    %s\n' "$REASON"; WARN=$((WARN+1))
+              echo "::warning::tower search is unreachable behind ${endpoint#https://}: our nginx forwarded and tower-finder-service did not answer. Not a deploy fault and not rolled back."
             else
               echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
             fi
@@ -1086,14 +1103,16 @@ jobs:
 
           # The sibling routes the same include forwards. dash is the vhost that
           # used to answer both from the monolith, so it is where a missing
-          # proxy would show up first; towers is the one a human looks at.
-          for endpoint in https://dash.retina.fm https://towers.retina.fm; do
+          # proxy would show up first; map is the one a human looks at, and
+          # replaces towers here for the reason given above.
+          for endpoint in https://dash.retina.fm https://map.retina.fm; do
             printf "  %-40s " "${endpoint#https://}/api/elevation"
             # 2 is the service answering that its own upstream is unavailable.
             # Passed, loudly: this job rolls production back on a failure, and a
             # third party's rate limiter is not grounds for that. The routing
-            # this probe covers is asserted strictly by the config check below,
-            # through the same nginx include on the same vhost.
+            # this probe covers rests on the 404 case, which stays fatal here and
+            # on the two checks alongside; none of the three is strict about a
+            # gateway status any more.
             if REASON=$(assert_elevation_contract "${endpoint}/api/elevation"); then
               EL_RC=0
             else
@@ -1108,8 +1127,17 @@ jobs:
               echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
             fi
             printf "  %-40s " "${endpoint#https://}/api/config"
+            # 2 as above: forwarded, upstream silent. Same reasoning, same verdict.
             if REASON=$(assert_config_contract "${endpoint}/api/config"); then
+              CFG_RC=0
+            else
+              CFG_RC=$?
+            fi
+            if [ "$CFG_RC" = 0 ]; then
               echo "OK"; PASS=$((PASS+1))
+            elif [ "$CFG_RC" = 2 ]; then
+              echo "WARN"; printf '    %s\n' "$REASON"; WARN=$((WARN+1))
+              echo "::warning::tower config is unreachable behind ${endpoint#https://}: our nginx forwarded and tower-finder-service did not answer. Not a deploy fault and not rolled back."
             else
               echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
             fi
