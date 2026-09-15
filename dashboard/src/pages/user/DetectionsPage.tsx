@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { api } from "../../api/client";
+import { DataTable } from "../../components/DataTable";
+import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { useFetch, usePolling } from "../../hooks/usePolling";
 
@@ -69,57 +71,33 @@ export default function DetectionsPage() {
         </div>
         {(() => {
           const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
-          const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+          const current = clampPage(page, totalPages);
+          const paged = filtered.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE);
           return (
             <>
-              <div className="table-wrapper">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Hex</th>
-                      <th>Flight</th>
-                      <th>Lat</th>
-                      <th>Lon</th>
-                      <th>Alt (ft)</th>
-                      <th>Speed (kt)</th>
-                      <th>Track</th>
-                      <th>Seen (s)</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {paged.map((ac, i) => (
-                      <tr key={ac.hex || page * PAGE_SIZE + i}>
-                        <td style={{ fontFamily: "monospace", color: "var(--accent)" }}>
-                          {ac.hex || "—"}
-                        </td>
-                        <td style={{ fontWeight: 500, color: "var(--text-primary)" }}>
-                          {ac.flight?.trim() || "—"}
-                        </td>
-                        <td>{ac.lat?.toFixed(4) ?? "—"}</td>
-                        <td>{ac.lon?.toFixed(4) ?? "—"}</td>
-                        <td>{ac.alt_baro ?? ac.altitude ?? "—"}</td>
-                        <td>{ac.gs?.toFixed(0) ?? ac.speed ?? "—"}</td>
-                        <td>{ac.track?.toFixed(0) ?? "—"}°</td>
-                        <td>{ac.seen?.toFixed(0) ?? "—"}</td>
-                      </tr>
-                    ))}
-                    {filtered.length === 0 && (
-                      <tr>
-                        <td colSpan={8} style={{ textAlign: "center", padding: 32 }}>
-                          No detections at this time
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-              {totalPages > 1 && (
-                <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "12px 0" }}>
-                  <button className="btn btn-secondary btn-sm" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>← Prev</button>
-                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Page {page + 1} of {totalPages} ({filtered.length} aircraft)</span>
-                  <button className="btn btn-secondary btn-sm" disabled={page >= totalPages - 1} onClick={() => setPage((p) => p + 1)}>Next →</button>
-                </div>
-              )}
+              <DataTable
+                headers={["Hex", "Flight", "Lat", "Lon", "Alt (ft)", "Speed (kt)", "Track", "Seen (s)"]}
+                count={paged.length}
+                empty="No detections at this time"
+              >
+                {paged.map((ac, i) => (
+                  <tr key={ac.hex || current * PAGE_SIZE + i}>
+                    <td style={{ fontFamily: "monospace", color: "var(--accent)" }}>
+                      {ac.hex || "—"}
+                    </td>
+                    <td style={{ fontWeight: 500, color: "var(--text-primary)" }}>
+                      {ac.flight?.trim() || "—"}
+                    </td>
+                    <td>{ac.lat?.toFixed(4) ?? "—"}</td>
+                    <td>{ac.lon?.toFixed(4) ?? "—"}</td>
+                    <td>{ac.alt_baro ?? ac.altitude ?? "—"}</td>
+                    <td>{ac.gs?.toFixed(0) ?? ac.speed ?? "—"}</td>
+                    <td>{ac.track?.toFixed(0) ?? "—"}°</td>
+                    <td>{ac.seen?.toFixed(0) ?? "—"}</td>
+                  </tr>
+                ))}
+              </DataTable>
+              <Pager page={current} totalPages={totalPages} onPage={setPage} note={`${filtered.length} aircraft`} />
             </>
           );
         })()}

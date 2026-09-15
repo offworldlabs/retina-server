@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
 import { api } from "../../api/client";
+import { DataTable } from "../../components/DataTable";
+import { Pager } from "../../components/Pager";
 
 const PAGE_SIZE = 25;
 
@@ -166,75 +168,38 @@ export default function ConfigPage() {
 
               {activeTab === "nodes" ? (
                 <>
-                  <div className="table-wrapper">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Node ID</th>
-                          <th>Status</th>
-                          <th>RX Lat</th>
-                          <th>RX Lon</th>
-                          <th>TX Lat</th>
-                          <th>TX Lon</th>
-                          <th>Frequency</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {pagedNodes.map(([id, n]: [string, any]) => (
-                          <tr key={id}>
-                            <td style={{ fontFamily: "monospace", fontSize: 12 }}>{id}</td>
-                            <td><span className={`badge ${n.status === "active" ? "online" : "offline"}`}>{n.status || "—"}</span></td>
-                            <td>{n.rx_lat != null ? n.rx_lat.toFixed(4) : "—"}</td>
-                            <td>{n.rx_lon != null ? n.rx_lon.toFixed(4) : "—"}</td>
-                            <td>{n.tx_lat != null ? n.tx_lat.toFixed(4) : "—"}</td>
-                            <td>{n.tx_lon != null ? n.tx_lon.toFixed(4) : "—"}</td>
-                            <td>{n.frequency || "—"}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  {nodeTotalPages > 1 && (
-                    <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 12, marginTop: 12 }}>
-                      <button className="btn btn-sm" disabled={page === 0} onClick={() => setPage(page - 1)}>← Prev</button>
-                      <span style={{ fontSize: 12 }}>Page {page + 1} of {nodeTotalPages}</span>
-                      <button className="btn btn-sm" disabled={page >= nodeTotalPages - 1} onClick={() => setPage(page + 1)}>Next →</button>
-                    </div>
-                  )}
+                  <DataTable
+                    headers={["Node ID", "Status", "RX Lat", "RX Lon", "TX Lat", "TX Lon", "Frequency"]}
+                    count={pagedNodes.length}
+                  >
+                    {pagedNodes.map(([id, n]: [string, any]) => (
+                      <tr key={id}>
+                        <td style={{ fontFamily: "monospace", fontSize: 12 }}>{id}</td>
+                        <td><span className={`badge ${n.status === "active" ? "online" : "offline"}`}>{n.status || "—"}</span></td>
+                        <td>{n.rx_lat != null ? n.rx_lat.toFixed(4) : "—"}</td>
+                        <td>{n.rx_lon != null ? n.rx_lon.toFixed(4) : "—"}</td>
+                        <td>{n.tx_lat != null ? n.tx_lat.toFixed(4) : "—"}</td>
+                        <td>{n.tx_lon != null ? n.tx_lon.toFixed(4) : "—"}</td>
+                        <td>{n.frequency || "—"}</td>
+                      </tr>
+                    ))}
+                  </DataTable>
+                  <Pager page={page} totalPages={nodeTotalPages} onPage={setPage} />
                 </>
               ) : (
                 <>
-                  <div className="table-wrapper">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Location</th>
-                          <th>Lat</th>
-                          <th>Lon</th>
-                          <th>Frequency</th>
-                          <th>Nodes Using</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {pagedTowers.map(([key, t]: [string, any]) => (
-                          <tr key={key}>
-                            <td style={{ fontFamily: "monospace", fontSize: 12 }}>{key}</td>
-                            <td>{t.lat?.toFixed(4)}</td>
-                            <td>{t.lon?.toFixed(4)}</td>
-                            <td>{t.frequency || "—"}</td>
-                            <td style={{ fontSize: 11 }}>{(t.nodes_using || []).length}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  {towerTotalPages > 1 && (
-                    <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 12, marginTop: 12 }}>
-                      <button className="btn btn-sm" disabled={page === 0} onClick={() => setPage(page - 1)}>← Prev</button>
-                      <span style={{ fontSize: 12 }}>Page {page + 1} of {towerTotalPages}</span>
-                      <button className="btn btn-sm" disabled={page >= towerTotalPages - 1} onClick={() => setPage(page + 1)}>Next →</button>
-                    </div>
-                  )}
+                  <DataTable headers={["Location", "Lat", "Lon", "Frequency", "Nodes Using"]} count={pagedTowers.length}>
+                    {pagedTowers.map(([key, t]: [string, any]) => (
+                      <tr key={key}>
+                        <td style={{ fontFamily: "monospace", fontSize: 12 }}>{key}</td>
+                        <td>{t.lat?.toFixed(4)}</td>
+                        <td>{t.lon?.toFixed(4)}</td>
+                        <td>{t.frequency || "—"}</td>
+                        <td style={{ fontSize: 11 }}>{(t.nodes_using || []).length}</td>
+                      </tr>
+                    ))}
+                  </DataTable>
+                  <Pager page={page} totalPages={towerTotalPages} onPage={setPage} />
                 </>
               )}
             </>
@@ -261,26 +226,15 @@ export default function ConfigPage() {
             </div>
           </div>
         ) : (
-          <div className="table-wrapper">
-            <table>
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Type</th>
-                  <th>File</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history.slice(0, 20).map((v, i) => (
-                  <tr key={i}>
-                    <td style={{ fontSize: 12 }}>{v.timestamp ? new Date(v.timestamp).toLocaleString() : v.file || "—"}</td>
-                    <td>{v.type || "config"}</td>
-                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{v.file || v.name || "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataTable headers={["Date", "Type", "File"]} count={Math.min(history.length, 20)}>
+            {history.slice(0, 20).map((v, i) => (
+              <tr key={i}>
+                <td style={{ fontSize: 12 }}>{v.timestamp ? new Date(v.timestamp).toLocaleString() : v.file || "—"}</td>
+                <td>{v.type || "config"}</td>
+                <td style={{ fontFamily: "monospace", fontSize: 12 }}>{v.file || v.name || "—"}</td>
+              </tr>
+            ))}
+          </DataTable>
         )}
       </div>
     </>

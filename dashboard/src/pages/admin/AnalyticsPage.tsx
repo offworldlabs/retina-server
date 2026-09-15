@@ -4,6 +4,8 @@ import {
   PieChart, Pie, Cell, LineChart, Line, Legend,
 } from "recharts";
 import { api } from "../../api/client";
+import { DataTable } from "../../components/DataTable";
+import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme, seriesColour } from "../../utils/chartTheme";
@@ -67,7 +69,8 @@ export default function AnalyticsPage() {
   const totalFrames = summaries.reduce((s, n) => s + (n.metrics?.total_frames || 0), 0);
 
   const overlapPages = Math.ceil(overlaps.length / PAGE_SIZE);
-  const pagedOverlaps = overlaps.slice(overlapPage * PAGE_SIZE, (overlapPage + 1) * PAGE_SIZE);
+  const currentOverlapPage = clampPage(overlapPage, overlapPages);
+  const pagedOverlaps = overlaps.slice(currentOverlapPage * PAGE_SIZE, (currentOverlapPage + 1) * PAGE_SIZE);
 
   return (
     <>
@@ -185,44 +188,28 @@ export default function AnalyticsPage() {
               {overlaps.length} pairs
             </span>
           </div>
-          <div className="table-wrapper">
-            <table>
-              <thead>
-                <tr>
-                  <th>Node A</th>
-                  <th>Node B</th>
-                  <th>Jaccard Index</th>
-                  <th>Shared Bins</th>
-                  <th>Status</th>
+          <DataTable
+            headers={["Node A", "Node B", "Jaccard Index", "Shared Bins", "Status"]}
+            count={pagedOverlaps.length}
+          >
+            {pagedOverlaps.map((o, i) => {
+              const j = o.jaccard || o.overlap || 0;
+              return (
+                <tr key={currentOverlapPage * PAGE_SIZE + i}>
+                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(o.node_a || "").slice(-8)}</td>
+                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(o.node_b || "").slice(-8)}</td>
+                  <td>{j.toFixed(3)}</td>
+                  <td>{o.shared_bins || o.shared || "—"}</td>
+                  <td>
+                    <span className={`badge ${j > 0.3 ? "online" : j > 0.1 ? "warning" : "offline"}`}>
+                      {j > 0.3 ? "Strong" : j > 0.1 ? "Partial" : "Weak"}
+                    </span>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {pagedOverlaps.map((o, i) => {
-                  const j = o.jaccard || o.overlap || 0;
-                  return (
-                    <tr key={overlapPage * PAGE_SIZE + i}>
-                      <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(o.node_a || "").slice(-8)}</td>
-                      <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(o.node_b || "").slice(-8)}</td>
-                      <td>{j.toFixed(3)}</td>
-                      <td>{o.shared_bins || o.shared || "—"}</td>
-                      <td>
-                        <span className={`badge ${j > 0.3 ? "online" : j > 0.1 ? "warning" : "offline"}`}>
-                          {j > 0.3 ? "Strong" : j > 0.1 ? "Partial" : "Weak"}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          {overlapPages > 1 && (
-            <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "12px 0" }}>
-              <button className="btn btn-secondary btn-sm" disabled={overlapPage === 0} onClick={() => setOverlapPage((p) => p - 1)}>← Prev</button>
-              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Page {overlapPage + 1} of {overlapPages}</span>
-              <button className="btn btn-secondary btn-sm" disabled={overlapPage >= overlapPages - 1} onClick={() => setOverlapPage((p) => p + 1)}>Next →</button>
-            </div>
-          )}
+              );
+            })}
+          </DataTable>
+          <Pager page={currentOverlapPage} totalPages={overlapPages} onPage={setOverlapPage} />
         </div>
       )}
     </>

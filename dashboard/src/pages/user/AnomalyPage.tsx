@@ -2,6 +2,7 @@ import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
 import { api } from "../../api/client";
+import { DataTable } from "../../components/DataTable";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme } from "../../utils/chartTheme";
@@ -214,37 +215,28 @@ export default function AnomalyPage() {
             <h3>Geographic Hotspots</h3>
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Grouped by 0.1° grid</span>
           </div>
-          <div className="table-wrapper">
-            <table>
-              <thead>
-                <tr>
-                  <th>Rank</th>
-                  <th>Location</th>
-                  <th>Events</th>
-                  <th>Dominant Type</th>
-                </tr>
-              </thead>
-              <tbody>
-                {geographic_clusters.slice(0, 20).map((c: any, i: number) => (
-                  <tr key={i}>
-                    <td>#{i + 1}</td>
-                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>
-                      {c.lat.toFixed(1)}, {c.lon.toFixed(1)}
-                    </td>
-                    <td><strong>{c.count}</strong></td>
-                    <td>
-                      <span
-                        className="badge"
-                        style={{ background: typeColour(theme, c.dominant_type), color: BADGE_INK[theme] }}
-                      >
-                        {c.dominant_type.replace(/_/g, " ")}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            headers={["Rank", "Location", "Events", "Dominant Type"]}
+            count={Math.min(geographic_clusters.length, 20)}
+          >
+            {geographic_clusters.slice(0, 20).map((c: any, i: number) => (
+              <tr key={i}>
+                <td>#{i + 1}</td>
+                <td style={{ fontFamily: "monospace", fontSize: 12 }}>
+                  {c.lat.toFixed(1)}, {c.lon.toFixed(1)}
+                </td>
+                <td><strong>{c.count}</strong></td>
+                <td>
+                  <span
+                    className="badge"
+                    style={{ background: typeColour(theme, c.dominant_type), color: BADGE_INK[theme] }}
+                  >
+                    {c.dominant_type.replace(/_/g, " ")}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </DataTable>
         </div>
       )}
 
@@ -257,48 +249,31 @@ export default function AnomalyPage() {
             {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : "Auto-refreshes every 10s"}
           </span>
         </div>
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>Flagged At</th>
-                <th>Hex</th>
-                <th>Type</th>
-                <th>Lat</th>
-                <th>Lon</th>
-                <th>Object</th>
-              </tr>
-            </thead>
-            <tbody>
-              {[...(recent_events || [])].reverse().map((ev: AnomalyEvent, i: number) => (
-                <tr key={`${ev.hex}-${ev.flagged_at ?? i}`}>
-                  <td style={{ fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>
-                    {ev.flagged_at ? formatDateTime(ev.flagged_at) : "—"}
-                  </td>
-                  <td style={{ fontFamily: "monospace", fontWeight: 600 }}>{ev.hex}</td>
-                  <td>
-                    <span
-                      className="badge"
-                      style={{ background: typeColour(theme, ev.reason), color: BADGE_INK[theme] }}
-                    >
-                      {(ev.reason || "unknown").replace(/_/g, " ")}
-                    </span>
-                  </td>
-                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>{ev.lat?.toFixed(4)}</td>
-                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>{ev.lon?.toFixed(4)}</td>
-                  <td>{ev.object_type || "—"}</td>
-                </tr>
-              ))}
-              {(!recent_events || recent_events.length === 0) && (
-                <tr>
-                  <td colSpan={6} style={{ textAlign: "center", padding: 32, color: "var(--text-muted)" }}>
-                    No anomaly events recorded yet
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          headers={["Flagged At", "Hex", "Type", "Lat", "Lon", "Object"]}
+          count={recent_events?.length ?? 0}
+          empty="No anomaly events recorded yet"
+        >
+          {[...(recent_events || [])].reverse().map((ev: AnomalyEvent, i: number) => (
+            <tr key={`${ev.hex}-${ev.flagged_at ?? i}`}>
+              <td style={{ fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>
+                {ev.flagged_at ? formatDateTime(ev.flagged_at) : "—"}
+              </td>
+              <td style={{ fontFamily: "monospace", fontWeight: 600 }}>{ev.hex}</td>
+              <td>
+                <span
+                  className="badge"
+                  style={{ background: typeColour(theme, ev.reason), color: BADGE_INK[theme] }}
+                >
+                  {(ev.reason || "unknown").replace(/_/g, " ")}
+                </span>
+              </td>
+              <td style={{ fontFamily: "monospace", fontSize: 12 }}>{ev.lat?.toFixed(4)}</td>
+              <td style={{ fontFamily: "monospace", fontSize: 12 }}>{ev.lon?.toFixed(4)}</td>
+              <td>{ev.object_type || "—"}</td>
+            </tr>
+          ))}
+        </DataTable>
       </div>
     </>
   );

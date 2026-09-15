@@ -3,6 +3,8 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { DataTable } from "../../components/DataTable";
+import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme } from "../../utils/chartTheme";
@@ -95,38 +97,21 @@ export default function ContributionPage() {
           </div>
           {(() => {
             const totalPages = Math.ceil(overlaps.length / PAGE_SIZE);
-            const paged = overlaps.slice(overlapPage * PAGE_SIZE, (overlapPage + 1) * PAGE_SIZE);
+            const current = clampPage(overlapPage, totalPages);
+            const paged = overlaps.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE);
             return (
               <>
-                <div className="table-wrapper">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Node A</th>
-                        <th>Node B</th>
-                        <th>Jaccard Index</th>
-                        <th>Shared Bins</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {paged.map((o, i) => (
-                        <tr key={overlapPage * PAGE_SIZE + i}>
-                          <td style={{ fontFamily: "monospace" }}>{(o.node_a || "").slice(-8)}</td>
-                          <td style={{ fontFamily: "monospace" }}>{(o.node_b || "").slice(-8)}</td>
-                          <td>{(o.jaccard || o.overlap || 0).toFixed(3)}</td>
-                          <td>{o.shared_bins || o.shared || "—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                {totalPages > 1 && (
-                  <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "12px 0" }}>
-                    <button className="btn btn-secondary btn-sm" disabled={overlapPage === 0} onClick={() => setOverlapPage((p) => p - 1)}>← Prev</button>
-                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Page {overlapPage + 1} of {totalPages}</span>
-                    <button className="btn btn-secondary btn-sm" disabled={overlapPage >= totalPages - 1} onClick={() => setOverlapPage((p) => p + 1)}>Next →</button>
-                  </div>
-                )}
+                <DataTable headers={["Node A", "Node B", "Jaccard Index", "Shared Bins"]} count={paged.length}>
+                  {paged.map((o, i) => (
+                    <tr key={current * PAGE_SIZE + i}>
+                      <td style={{ fontFamily: "monospace" }}>{(o.node_a || "").slice(-8)}</td>
+                      <td style={{ fontFamily: "monospace" }}>{(o.node_b || "").slice(-8)}</td>
+                      <td>{(o.jaccard || o.overlap || 0).toFixed(3)}</td>
+                      <td>{o.shared_bins || o.shared || "—"}</td>
+                    </tr>
+                  ))}
+                </DataTable>
+                <Pager page={current} totalPages={totalPages} onPage={setOverlapPage} />
               </>
             );
           })()}
@@ -138,28 +123,16 @@ export default function ContributionPage() {
           <div className="card-header">
             <h3>Network Rankings</h3>
           </div>
-          <div className="table-wrapper">
-            <table>
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>Node</th>
-                  <th>Detections</th>
-                  <th>Trust</th>
-                </tr>
-              </thead>
-              <tbody>
-                {leaderboard.slice(0, 10).map((entry, i) => (
-                  <tr key={entry.node_ref || i}>
-                    <td style={{ fontWeight: 600, color: i < 3 ? "var(--accent)" : "var(--text-muted)" }}>{i + 1}</td>
-                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(entry.node_ref || "").slice(-12)}</td>
-                    <td>{(entry.detections || 0).toLocaleString()}</td>
-                    <td>{((entry.trust || 0) * 100).toFixed(0)}%</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataTable headers={["#", "Node", "Detections", "Trust"]} count={Math.min(leaderboard.length, 10)}>
+            {leaderboard.slice(0, 10).map((entry, i) => (
+              <tr key={entry.node_ref || i}>
+                <td style={{ fontWeight: 600, color: i < 3 ? "var(--accent)" : "var(--text-muted)" }}>{i + 1}</td>
+                <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(entry.node_ref || "").slice(-12)}</td>
+                <td>{(entry.detections || 0).toLocaleString()}</td>
+                <td>{((entry.trust || 0) * 100).toFixed(0)}%</td>
+              </tr>
+            ))}
+          </DataTable>
         </div>
       )}
     </>

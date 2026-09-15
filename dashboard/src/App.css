@@ -547,6 +547,26 @@ tr:hover td {
   background: var(--bg-card-hover);
 }
 
+/* The one row a listing shows when it has none: busy, or empty. */
+td.table-note {
+  text-align: center;
+  padding: 32px;
+  color: var(--text-muted);
+}
+
+.pager {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+}
+
+.pager-note {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 /* ── Status Badge ────────────────────────────────────────────────────────── */
 .badge {
   display: inline-flex;

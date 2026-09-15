@@ -4,6 +4,8 @@ import {
 } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import { api } from "../../api/client";
+import { DataTable } from "../../components/DataTable";
+import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { formatRelativeTime, formatUptime } from "../../utils/format";
@@ -180,83 +182,62 @@ export default function NetworkHealthPage() {
             }}
           />
         </div>
-        <div className="table-wrapper">
-          {(() => {
-            // Either identifier finds a node: an operator arrives holding
-            // whichever one their last conversation used.
-            const filtered = search
-              ? nodes.filter((n) =>
-                  [n.node_ref, idsByRef?.[n.node_ref], n.name]
-                    .some((s) => (s || "").toLowerCase().includes(search.toLowerCase())),
-                )
-              : nodes;
-            const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
-            const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-            return (
-              <>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Node ref</th>
-                      <th>Node ID</th>
-                      <th>Status</th>
-                      <th>Last Heartbeat</th>
-                      <th>Detections</th>
-                      <th>Avg SNR</th>
-                      <th>Trust</th>
-                      <th>Reputation</th>
-                      <th>Uptime</th>
+        {(() => {
+          // Either identifier finds a node: an operator arrives holding
+          // whichever one their last conversation used.
+          const filtered = search
+            ? nodes.filter((n) =>
+                [n.node_ref, idsByRef?.[n.node_ref], n.name]
+                  .some((s) => (s || "").toLowerCase().includes(search.toLowerCase())),
+              )
+            : nodes;
+          const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
+          const current = clampPage(page, totalPages);
+          const paged = filtered.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE);
+          return (
+            <>
+              <DataTable
+                headers={["Node ref", "Node ID", "Status", "Last Heartbeat", "Detections", "Avg SNR", "Trust", "Reputation", "Uptime"]}
+                count={paged.length}
+                empty="No nodes found"
+              >
+                {paged.map((node) => {
+                  const ref = node.node_ref;
+                  // The node's own site is named after the private id, so
+                  // the ref is the label and the id is the destination.
+                  const nodeId = idsByRef?.[ref] ?? null;
+                  const online = node.status !== "disconnected" && node.status != null;
+                  return (
+                    <tr key={ref}>
+                      <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
+                        <RetnodeLink nodeId={nodeId} synthetic={node.is_synthetic}>
+                          {ref}
+                        </RetnodeLink>
+                      </td>
+                      <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text-muted)" }}>
+                        {nodeId ?? "—"}
+                      </td>
+                      <td>
+                        <span className={`badge ${online ? "online" : "offline"}`}>
+                          {online ? "Online" : "Offline"}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                        {formatRelativeTime(node.last_heartbeat)}
+                      </td>
+                      <td>{(node._analytics?.metrics?.total_detections || node._analytics?.detection_area?.n_detections || 0).toLocaleString()}</td>
+                      <td>{(node._analytics?.metrics?.avg_snr || 0).toFixed(1)} dB</td>
+                      <td>{((node._analytics?.trust?.trust_score || 0) * 100).toFixed(0)}%</td>
+                      <td>{((node._analytics?.reputation?.reputation || 0) * 100).toFixed(0)}%</td>
+                      <td>{formatUptime(node._analytics?.metrics?.uptime_s || 0)}</td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {paged.map((node) => {
-                      const ref = node.node_ref;
-                      // The node's own site is named after the private id, so
-                      // the ref is the label and the id is the destination.
-                      const nodeId = idsByRef?.[ref] ?? null;
-                      const online = node.status !== "disconnected" && node.status != null;
-                      return (
-                        <tr key={ref}>
-                          <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
-                            <RetnodeLink nodeId={nodeId} synthetic={node.is_synthetic}>
-                              {ref}
-                            </RetnodeLink>
-                          </td>
-                          <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text-muted)" }}>
-                            {nodeId ?? "—"}
-                          </td>
-                          <td>
-                            <span className={`badge ${online ? "online" : "offline"}`}>
-                              {online ? "Online" : "Offline"}
-                            </span>
-                          </td>
-                          <td style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                            {formatRelativeTime(node.last_heartbeat)}
-                          </td>
-                          <td>{(node._analytics?.metrics?.total_detections || node._analytics?.detection_area?.n_detections || 0).toLocaleString()}</td>
-                          <td>{(node._analytics?.metrics?.avg_snr || 0).toFixed(1)} dB</td>
-                          <td>{((node._analytics?.trust?.trust_score || 0) * 100).toFixed(0)}%</td>
-                          <td>{((node._analytics?.reputation?.reputation || 0) * 100).toFixed(0)}%</td>
-                          <td>{formatUptime(node._analytics?.metrics?.uptime_s || 0)}</td>
-                        </tr>
-                      );
-                    })}
-                    {paged.length === 0 && (
-                      <tr><td colSpan={9} style={{ textAlign: "center", padding: 32 }}>No nodes found</td></tr>
-                    )}
-                  </tbody>
-                </table>
-                {totalPages > 1 && (
-                  <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "12px 0" }}>
-                    <button className="btn btn-secondary btn-sm" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>← Prev</button>
-                    <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Page {page + 1} of {totalPages} ({filtered.length} nodes)</span>
-                    <button className="btn btn-secondary btn-sm" disabled={page >= totalPages - 1} onClick={() => setPage((p) => p + 1)}>Next →</button>
-                  </div>
-                )}
-              </>
-            );
-          })()}
-        </div>
+                  );
+                })}
+              </DataTable>
+              <Pager page={current} totalPages={totalPages} onPage={setPage} note={`${filtered.length} nodes`} />
+            </>
+          );
+        })()}
       </div>
     </>
   );

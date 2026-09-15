@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
+import { DataTable } from "../../components/DataTable";
 import { StatCard } from "../../components/StatCard";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
 import type { LocationPrivacySource } from "../../types";
@@ -122,61 +123,47 @@ export default function OnboardingPage() {
           {codes.length === 0 ? (
             <div className="empty-state">No claim codes yet. Click &ldquo;Generate new code&rdquo; to start.</div>
           ) : (
-            <div className="table-wrapper">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Code</th>
-                    <th>Status</th>
-                    <th>Created</th>
-                    <th>Expires</th>
-                    <th>Bound to</th>
-                    <th></th>
+            <DataTable headers={["Code", "Status", "Created", "Expires", "Bound to", ""]} count={codes.length}>
+              {codes.map((c) => {
+                const expired = !c.used_at && c.expires_at * 1000 < Date.now();
+                const status = c.used_at ? "used" : expired ? "expired" : "active";
+                return (
+                  <tr key={c.code}>
+                    <td>
+                      <code style={{ fontSize: 14, letterSpacing: 1 }}>{c.code}</code>{" "}
+                      {!c.used_at && !expired && (
+                        <button
+                          className="btn btn-outline btn-sm"
+                          style={{ marginLeft: 6 }}
+                          onClick={() => copy(c.code)}
+                        >
+                          Copy
+                        </button>
+                      )}
+                    </td>
+                    <td>
+                      <span
+                        className={`badge ${
+                          status === "active" ? "online" : status === "used" ? "" : "warning"
+                        }`}
+                      >
+                        {status}
+                      </span>
+                    </td>
+                    <td>{new Date(c.created_at * 1000).toLocaleString()}</td>
+                    <td>{new Date(c.expires_at * 1000).toLocaleDateString()}</td>
+                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{c.used_by_node_id || "—"}</td>
+                    <td>
+                      {!c.used_at && !expired && (
+                        <button className="btn btn-outline btn-sm" onClick={() => revoke(c.code)}>
+                          Revoke
+                        </button>
+                      )}
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {codes.map((c) => {
-                    const expired = !c.used_at && c.expires_at * 1000 < Date.now();
-                    const status = c.used_at ? "used" : expired ? "expired" : "active";
-                    return (
-                      <tr key={c.code}>
-                        <td>
-                          <code style={{ fontSize: 14, letterSpacing: 1 }}>{c.code}</code>{" "}
-                          {!c.used_at && !expired && (
-                            <button
-                              className="btn btn-outline btn-sm"
-                              style={{ marginLeft: 6 }}
-                              onClick={() => copy(c.code)}
-                            >
-                              Copy
-                            </button>
-                          )}
-                        </td>
-                        <td>
-                          <span
-                            className={`badge ${
-                              status === "active" ? "online" : status === "used" ? "" : "warning"
-                            }`}
-                          >
-                            {status}
-                          </span>
-                        </td>
-                        <td>{new Date(c.created_at * 1000).toLocaleString()}</td>
-                        <td>{new Date(c.expires_at * 1000).toLocaleDateString()}</td>
-                        <td style={{ fontFamily: "monospace", fontSize: 12 }}>{c.used_by_node_id || "—"}</td>
-                        <td>
-                          {!c.used_at && !expired && (
-                            <button className="btn btn-outline btn-sm" onClick={() => revoke(c.code)}>
-                              Revoke
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                );
+              })}
+            </DataTable>
           )}
         </div>
       </div>
@@ -192,46 +179,35 @@ export default function OnboardingPage() {
               connects to the server it will appear here.
             </div>
           ) : (
-            <div className="table-wrapper">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Node ID</th>
-                    <th>Name</th>
-                    <th>Status</th>
-                    <th>Frequency</th>
-                    <th>Location</th>
-                    <th>Last heartbeat</th>
+            <DataTable
+              headers={["Node ID", "Name", "Status", "Frequency", "Location", "Last heartbeat"]}
+              count={nodes.length}
+            >
+              {nodes.map((n) => {
+                const online = n.status && n.status !== "disconnected" && n.status !== "never_connected";
+                return (
+                  <tr key={n.node_id}>
+                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{n.node_id}</td>
+                    <td>
+                      {n.name}{" "}
+                      <LocationPrivacyBadge isPrivate={n.location_private} />
+                    </td>
+                    <td>
+                      <span className={`badge ${online ? "online" : "offline"}`}>
+                        {online ? "Online" : n.status === "never_connected" ? "Never connected" : "Offline"}
+                      </span>
+                    </td>
+                    <td>{n.frequency ? `${(n.frequency / 1e6).toFixed(2)} MHz` : "—"}</td>
+                    <td>
+                      {n.rx_lat != null && n.rx_lon != null
+                        ? `${n.rx_lat.toFixed(3)}, ${n.rx_lon.toFixed(3)}`
+                        : "—"}
+                    </td>
+                    <td>{n.last_heartbeat ? new Date(n.last_heartbeat).toLocaleString() : "—"}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {nodes.map((n) => {
-                    const online = n.status && n.status !== "disconnected" && n.status !== "never_connected";
-                    return (
-                      <tr key={n.node_id}>
-                        <td style={{ fontFamily: "monospace", fontSize: 12 }}>{n.node_id}</td>
-                        <td>
-                          {n.name}{" "}
-                          <LocationPrivacyBadge isPrivate={n.location_private} />
-                        </td>
-                        <td>
-                          <span className={`badge ${online ? "online" : "offline"}`}>
-                            {online ? "Online" : n.status === "never_connected" ? "Never connected" : "Offline"}
-                          </span>
-                        </td>
-                        <td>{n.frequency ? `${(n.frequency / 1e6).toFixed(2)} MHz` : "—"}</td>
-                        <td>
-                          {n.rx_lat != null && n.rx_lon != null
-                            ? `${n.rx_lat.toFixed(3)}, ${n.rx_lon.toFixed(3)}`
-                            : "—"}
-                        </td>
-                        <td>{n.last_heartbeat ? new Date(n.last_heartbeat).toLocaleString() : "—"}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                );
+              })}
+            </DataTable>
           )}
         </div>
       </div>

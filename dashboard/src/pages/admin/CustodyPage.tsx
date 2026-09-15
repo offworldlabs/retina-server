@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { api } from "../../api/client";
+import { DataTable } from "../../components/DataTable";
+import { Pager } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
 import { useNodeIds } from "../../components/useNodeIds";
@@ -53,64 +55,38 @@ export default function CustodyPage() {
         </span>
       </div>
 
-      <div className="table-wrapper">
-        <table>
-          <thead>
-            <tr>
-              <th>Node ref</th>
-              <th>Node ID</th>
-              <th>Status</th>
-              <th>Chain Length</th>
-              <th>Latest Hour (UTC)</th>
-              <th>IQ Commits</th>
-              <th>Signing Mode</th>
-              <th>Key Fingerprint</th>
+      <DataTable
+        headers={["Node ref", "Node ID", "Status", "Chain Length", "Latest Hour (UTC)", "IQ Commits", "Signing Mode", "Key Fingerprint"]}
+        count={paged.length}
+        empty={search ? "No matching nodes" : "No chain of custody data available"}
+      >
+        {paged.map((ref) => {
+          const chain = custody?.chain_entries?.[ref] || {};
+          const count = chain.count || 0;
+          const verified = chain.latest_verified === true;
+          const keyInfo = custody?.node_keys?.[ref] || {};
+          return (
+            <tr key={ref}>
+              <td style={{ fontFamily: "monospace", fontSize: 12 }}>{ref}</td>
+              <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text-muted)" }}>
+                {idsByRef?.[ref] ?? "—"}
+              </td>
+              <td>
+                <span className={`badge ${verified ? "online" : count > 0 ? "warning" : "offline"}`}>
+                  {verified ? "Verified" : count > 0 ? "Unverified" : "None"}
+                </span>
+              </td>
+              <td>{count}</td>
+              <td style={{ fontFamily: "monospace", fontSize: 11 }}>{chain.latest_hour || "—"}</td>
+              <td>{custody?.iq_commitments?.[ref] || 0}</td>
+              <td>{keyInfo.signing_mode || "—"}</td>
+              <td style={{ fontFamily: "monospace", fontSize: 11 }}>{keyInfo.fingerprint || "—"}</td>
             </tr>
-          </thead>
-          <tbody>
-            {paged.map((ref) => {
-              const chain = custody?.chain_entries?.[ref] || {};
-              const count = chain.count || 0;
-              const verified = chain.latest_verified === true;
-              const keyInfo = custody?.node_keys?.[ref] || {};
-              return (
-                <tr key={ref}>
-                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>{ref}</td>
-                  <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text-muted)" }}>
-                    {idsByRef?.[ref] ?? "—"}
-                  </td>
-                  <td>
-                    <span className={`badge ${verified ? "online" : count > 0 ? "warning" : "offline"}`}>
-                      {verified ? "Verified" : count > 0 ? "Unverified" : "None"}
-                    </span>
-                  </td>
-                  <td>{count}</td>
-                  <td style={{ fontFamily: "monospace", fontSize: 11 }}>{chain.latest_hour || "—"}</td>
-                  <td>{custody?.iq_commitments?.[ref] || 0}</td>
-                  <td>{keyInfo.signing_mode || "—"}</td>
-                  <td style={{ fontFamily: "monospace", fontSize: 11 }}>{keyInfo.fingerprint || "—"}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+          );
+        })}
+      </DataTable>
 
-      {totalPages > 1 && (
-        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 12, marginTop: 12 }}>
-          <button className="btn btn-sm" disabled={page === 0} onClick={() => setPage(page - 1)}>← Prev</button>
-          <span style={{ fontSize: 12 }}>Page {page + 1} of {totalPages}</span>
-          <button className="btn btn-sm" disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)}>Next →</button>
-        </div>
-      )}
-
-      {filtered.length === 0 && (
-        <div className="card">
-          <div className="card-body">
-            <div className="empty-state">{search ? "No matching nodes" : "No chain of custody data available"}</div>
-          </div>
-        </div>
-      )}
+      <Pager page={page} totalPages={totalPages} onPage={setPage} />
     </>
   );
 }

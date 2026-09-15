@@ -1,4 +1,5 @@
 import { api } from "../../api/client";
+import { DataTable } from "../../components/DataTable";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { fmt } from "../../utils/format";
@@ -35,30 +36,18 @@ function NodeBreakdownTable({ byNodeCount }: {
   const rows = Object.entries(byNodeCount).sort(([a], [b]) => Number(a) - Number(b));
   if (!rows.length) return <div className="empty-state">No samples yet.</div>;
   return (
-    <table style={{ width: "100%", borderCollapse: "collapse" }}>
-      <thead>
-        <tr style={{ textAlign: "left", color: "var(--text-muted)", fontSize: 13 }}>
-          <th style={{ padding: "8px 4px", borderBottom: "1px solid var(--border)" }}>Nodes</th>
-          <th style={{ padding: "8px 4px", borderBottom: "1px solid var(--border)" }}>Samples</th>
-          <th style={{ padding: "8px 4px", borderBottom: "1px solid var(--border)" }}>Mean (km)</th>
-          <th style={{ padding: "8px 4px", borderBottom: "1px solid var(--border)" }}>Median (km)</th>
-          <th style={{ padding: "8px 4px", borderBottom: "1px solid var(--border)" }}>p95 (km)</th>
-          <th style={{ padding: "8px 4px", borderBottom: "1px solid var(--border)" }}>Max (km)</th>
+    <DataTable headers={["Nodes", "Samples", "Mean (km)", "Median (km)", "p95 (km)", "Max (km)"]} count={rows.length}>
+      {rows.map(([nc, s]) => (
+        <tr key={nc}>
+          <td>{nc}</td>
+          <td>{s.n_samples.toLocaleString()}</td>
+          <td>{fmt(s.mean_km)}</td>
+          <td>{fmt(s.median_km)}</td>
+          <td>{fmt(s.p95_km)}</td>
+          <td>{fmt(s.max_km)}</td>
         </tr>
-      </thead>
-      <tbody>
-        {rows.map(([nc, s]) => (
-          <tr key={nc}>
-            <td style={{ padding: "8px 4px", borderBottom: "1px solid var(--border)" }}>{nc}</td>
-            <td style={{ padding: "8px 4px", borderBottom: "1px solid var(--border)" }}>{s.n_samples.toLocaleString()}</td>
-            <td style={{ padding: "8px 4px", borderBottom: "1px solid var(--border)" }}>{fmt(s.mean_km)}</td>
-            <td style={{ padding: "8px 4px", borderBottom: "1px solid var(--border)" }}>{fmt(s.median_km)}</td>
-            <td style={{ padding: "8px 4px", borderBottom: "1px solid var(--border)" }}>{fmt(s.p95_km)}</td>
-            <td style={{ padding: "8px 4px", borderBottom: "1px solid var(--border)" }}>{fmt(s.max_km)}</td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+      ))}
+    </DataTable>
   );
 }
 
