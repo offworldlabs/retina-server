@@ -108,13 +108,14 @@ assert_tower_contract() {
     return 0
 }
 
-# ── The other two deduplicated routes ────────────────────────────────────────
+# ── The other deduplicated routes ────────────────────────────────────────────
 # /api/towers was never the whole tower stack. Every vhost that includes
-# snippets/towers-proxy.conf forwards /api/elevation and /api/config as well, so
-# all three are part of what the service must honour before a vhost points at
-# it. They get a shape assertion rather than a parameter echo: neither takes a
-# ranking parameter, and what a caller can be broken by is the response losing a
-# key it reads.
+# snippets/towers-proxy.conf forwards /api/elevation, /api/config and
+# /api/geocode as well, so all four are part of what the service must honour
+# before a vhost points at it. Elevation and config get a shape assertion
+# rather than a parameter echo: neither takes a ranking parameter, and what a
+# caller can be broken by is the response losing a key it reads. Geocode has
+# its own probe further down.
 #
 # The keys below were the ones BOTH implementations returned while retina still
 # had its own. That copy is deleted, so they now pin the shape retina's callers
@@ -254,6 +255,38 @@ assert_config_contract() {
     _assert_json_keys "config" "$1" $TOWER_CONTRACT_CONFIG_KEYS
 }
 
+# assert_geocode_contract <endpoint-url>     e.g. https://host/api/geocode
+# The address lookup, forwarded by the same include. Probed with an EMPTY query
+# on purpose: the service's request model refuses it with 422 before either of
+# its geocoder upstreams (US Census, Nominatim) is asked, so this neither spends
+# a third party's quota nor depends on one being up — the two things that made
+# elevation's probe tolerant. It is also unambiguous: the app's `location /`
+# fallback answers a route it never had with 404, never 422.
+TOWER_CONTRACT_GEOCODE_BODY='{"query":""}'
+assert_geocode_contract() {
+    local url="$1" code attempt
+    # Two attempts, as the siblings: a blip must not read as a routing fault.
+    for attempt in 1 2; do
+        code=$(curl -s --connect-timeout 10 --max-time "$TOWER_CONTRACT_MAX_TIME" \
+            -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+            -d "$TOWER_CONTRACT_GEOCODE_BODY" "$url" 2>/dev/null) || {
+            [ "$attempt" = 1 ] && { sleep 5; continue; }
+            echo "geocode: unreachable after 2 attempts: ${url}"
+            return 1
+        }
+        [ "$code" = "422" ] && return 0
+        [ "$attempt" = 1 ] && { sleep 5; continue; }
+        if [ "$code" = "404" ]; then
+            echo "geocode: got HTTP 404 from ${url}. No \`location /api/geocode\` on that vhost:"
+            echo "the request fell through to the app, which has no such route. See"
+            echo "deploy/nginx/snippets/towers-proxy.conf."
+        else
+            echo "geocode: got HTTP ${code} from ${url}, expected 422 for an empty query"
+        fi
+        return 1
+    done
+}
+
 # Run directly (not sourced) to gate a deploy on the contract. Takes the
 # /api/towers endpoint; the sibling routes are derived from it, so a caller
 # cannot check the search and forget the other two.
@@ -290,11 +323,11 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     # unchanged means it was not a /api/towers URL (the api vhost publishes the
     # search as /towers), and the siblings cannot be derived from it.
     if [ "$BASE" = "$TARGET" ]; then
-        echo "Skipping the /api/elevation and /api/config checks: ${TARGET} is not a /api/towers URL, so the sibling routes cannot be derived. Point this at the service's own /api/towers to cover them."
+        echo "Skipping the /api/elevation, /api/config and /api/geocode checks: ${TARGET} is not a /api/towers URL, so the sibling routes cannot be derived. Point this at the service's own /api/towers to cover them."
         exit "$RC"
     fi
 
-    for check in elevation config; do
+    for check in elevation config geocode; do
         printf 'Asserting %s/api/%s honours the shape our callers read... ' "$BASE" "$check"
         # 2 is tolerated for elevation only. For elevation it is a third party's
         # rate limiter, which has no bearing on whether a vhost may be pointed

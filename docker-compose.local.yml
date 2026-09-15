@@ -57,7 +57,7 @@ services:
       # This flag controls the nginx proxy and nothing else. There is no local
       # fallback behind it any more: the monolith's own tower stack was deleted
       # once every deployed vhost was proxied to the service, so with the flag
-      # off, /api/towers, /api/elevation and /api/config are 404s and the tower
+      # off, /api/towers, /api/elevation, /api/config and /api/geocode are 404s and the tower
       # search SPA on towers.localhost cannot function. To work on the tower
       # search locally, run tower-finder-service (its own repo and container)
       # and point this stack at it — do not expect this one to answer.

@@ -25,7 +25,7 @@ One FastAPI backend serves several React front-ends, distinguished by subdomain:
 Illuminator search is deliberately absent from that table: **tower-finder-service**
 (separate repo and container) owns the API and the UI both, and serves
 `towers.retina.fm` from its own edge. Our vhosts only proxy `/api/towers`,
-`/api/elevation` and `/api/config` to it.
+`/api/elevation`, `/api/config` and `/api/geocode` to it.
 
 Receiver nodes connect over TCP and stream detection frames. The pipeline
 (tracker → geolocator) turns frames into aircraft positions, broadcast to the

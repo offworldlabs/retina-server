@@ -372,7 +372,7 @@ for endpoint in "${BASE_URL}/api/towers" "${MAP_URL}/api/towers" \
 done
 # The other half of the seam: a sibling /api/ path on the same vhost is still
 # served by the app. /api/radar/nodes has no counterpart on the service, so a
-# 200 here can only have come from the monolith — the proxy must take the three
+# 200 here can only have come from the monolith — the proxy must take the four
 # tower routes and nothing else.
 check_status  "sibling /api/ path stays on the app" "${MAP_URL}/api/radar/nodes"             "200"
 
@@ -430,6 +430,16 @@ if [ "$PUT_CODE" = "401" ] || [ "$PUT_CODE" = "403" ]; then
     echo "OK ($PUT_CODE)"; PASS=$((PASS+1))
 else
     echo "FAIL ($PUT_CODE — expected 401 or 403; an open config write is a takeover)"; FAIL=$((FAIL+1))
+fi
+# The fourth route the include forwards. Same vhost as the two above, for the
+# same reason; the probe itself is in tower-contract.sh and never reaches a
+# geocoder upstream, so unlike elevation there is no degraded state to tolerate.
+printf "  %-40s " "dash /api/geocode answers"
+if REASON=$(assert_geocode_contract "${DASH_URL}/api/geocode"); then
+    echo "OK"; PASS=$((PASS+1))
+else
+    echo "FAIL"; printf '    %s
+' "$REASON"; FAIL=$((FAIL+1))
 fi
 
 echo ""

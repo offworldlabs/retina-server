@@ -405,6 +405,10 @@ jobs:
             # is not; elevation is left to the public-DNS step above, which has
             # the retries for it.
             echo "CFGKEYS_B64=$(printf '%s' "$TOWER_CONTRACT_CONFIG_KEYS" | base64 | tr -d '\n')"
+            # The geocode route, also forwarded by the include. Its probe is an
+            # empty query the service refuses at validation, so it is as
+            # deterministic here as the config read.
+            echo "GEOBODY_B64=$(printf '%s' "$TOWER_CONTRACT_GEOCODE_BODY" | base64 | tr -d '\n')"
           } >> "$GITHUB_ENV"
       - name: Assert staging's instance
         if: github.event_name == 'push'
@@ -413,17 +417,19 @@ jobs:
           QUERY_B64: ${{ env.QUERY_B64 }}
           ECHO_B64: ${{ env.ECHO_B64 }}
           CFGKEYS_B64: ${{ env.CFGKEYS_B64 }}
+          GEOBODY_B64: ${{ env.GEOBODY_B64 }}
         with:
           host: ${{ secrets.STAGING_HOST }}
           username: root
           key: ${{ secrets.STAGING_SSH_KEY }}
           command_timeout: 5m
-          envs: QUERY_B64,ECHO_B64,CFGKEYS_B64
+          envs: QUERY_B64,ECHO_B64,CFGKEYS_B64,GEOBODY_B64
           script: |
             set -e
             QUERY=$(printf '%s' "$QUERY_B64" | base64 -d)
             WANT=$(printf '%s' "$ECHO_B64" | base64 -d)
             CFGKEYS=$(printf '%s' "$CFGKEYS_B64" | base64 -d)
+            GEOBODY=$(printf '%s' "$GEOBODY_B64" | base64 -d)
             if ! docker network inspect retina-edge >/dev/null 2>&1; then
               echo "::error::retina-edge does not exist on $(hostname), so nginx cannot reach tower-finder-service and every proxied /api/towers would 502. Bring that stack up before routing a vhost to it."
               exit 1
@@ -452,6 +458,23 @@ jobs:
                 exit 1
               fi
             done
+
+            # /api/geocode, forwarded by the same include. An empty query is
+            # refused by the service's own request model with 422, before
+            # either geocoder upstream is asked; anything else means the
+            # instance behind this deploy does not carry the route yet, and
+            # every vhost would 404 the address lookup once it is pointed here.
+            GEO=$(docker run --rm --network retina-edge curlimages/curl:latest \
+              -s -m 45 -o /dev/null -w '%{http_code}' -X POST \
+              -H 'Content-Type: application/json' -d "$GEOBODY" \
+              "http://tower-finder-service:8000/api/geocode") || {
+              echo "::error::tower-finder-service did not answer /api/geocode on retina-edge from $(hostname)."
+              exit 1
+            }
+            if [ "$GEO" != "422" ]; then
+              echo "::error::staging's tower-finder-service answered /api/geocode with HTTP ${GEO}, not the 422 an empty query gets from the route. Either that instance predates the address lookup, or the request model changed. snippets/towers-proxy.conf forwards the route on every vhost, so pointing one at this instance would 404 the search form's address field."
+              exit 1
+            fi
             echo "staging's tower-finder-service honours the contract."
 
   # Does this push touch anything the droplets serve? A docs-only merge would
@@ -1138,6 +1161,15 @@ jobs:
             elif [ "$CFG_RC" = 2 ]; then
               echo "WARN"; printf '    %s\n' "$REASON"; WARN=$((WARN+1))
               echo "::warning::tower config is unreachable behind ${endpoint#https://}: our nginx forwarded and tower-finder-service did not answer. Not a deploy fault and not rolled back."
+            else
+              echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
+            fi
+            # Strict, like config: the probe stops at the service's own input
+            # validation and never reaches a geocoder, so there is no third
+            # party here whose outage could roll production back.
+            printf "  %-40s " "${endpoint#https://}/api/geocode"
+            if REASON=$(assert_geocode_contract "${endpoint}/api/geocode"); then
+              echo "OK"; PASS=$((PASS+1))
             else
               echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
             fi

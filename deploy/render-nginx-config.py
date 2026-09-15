@@ -73,9 +73,9 @@ _MAX_INCLUDE_DEPTH = 10
 # routes the tower stack to the service, and there is no longer a second
 # implementation to fall back to — the monolith's copy was deleted once the
 # proxy went live — so a missing variable must not quietly leave a vhost
-# answering 404 on /api/towers, /api/elevation and /api/config. The laptop turns
-# it off because it runs no service and no retina-edge network, and would
-# otherwise 502; with it off those three routes simply do not exist there.
+# answering 404 on /api/towers, /api/elevation, /api/config and /api/geocode.
+# The laptop turns it off because it runs no service and no retina-edge network,
+# and would otherwise 502; with it off those four routes simply do not exist there.
 FLAGS = {"TLS": ("TLS_ENABLED", True), "TOWER_FINDER": ("TOWER_FINDER_ENABLED", True)}
 
 
