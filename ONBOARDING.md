@@ -296,5 +296,5 @@ branch, open a PR, get it green, then merge.
 - [`docs/pipeline.md`](docs/pipeline.md) — detection → tracker → geolocator → aircraft JSON.
 - [`docs/arc-display.md`](docs/arc-display.md) — how bistatic uncertainty arcs are drawn.
 - [`docs/runbook.md`](docs/runbook.md) — production operations, server access, incident response.
-- [`docs/alerting.md`](docs/alerting.md) — monitoring, alerts, and the dead-man's-switch.
+- [`docs/alerting.md`](docs/alerting.md) — monitoring, alerts and the outside-in probes.
 - [`docs/simulation.md`](docs/simulation.md) — running the fleet simulator.
