@@ -1057,6 +1057,75 @@ def fly(key, cadence_s, *, omega_dps, straight_s=60.0, turn_deg=180.0, tail_s=0.
     return out
 
 
+class TestManoeuvreLevelAccessor:
+    """manoeuvre_level() and learned_velocity_manoeuvre(): the read-only pair
+    services/dark_follow.py gates on.
+
+    The point of exposing the level at all is that it separates two readings
+    of the same large velocity sigma — "the filter has deliberately loosened
+    its grip on a turning aircraft" from "the filter has lost the track" —
+    which the sigma alone cannot distinguish, and which decide whether the
+    follow lane keeps the key or drops it mid-turn.
+    """
+
+    def setup_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def teardown_method(self):
+        track_filter.reset()
+        state.adsb_aircraft.clear()
+
+    def test_unknown_key_returns_none(self):
+        assert track_filter.manoeuvre_level("never-seen-key") is None
+        assert track_filter.learned_velocity_manoeuvre("never-seen-key") is None
+
+    def test_straight_flight_reads_zero(self, monkeypatch):
+        """The detector is inert on a clean track, so the accessor must read
+        exactly 0.0 there — not "small" — or every consumer's threshold would
+        be measuring noise."""
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        fly("level-straight", 4.6, omega_dps=0.0, straight_s=120.0, turn_deg=0.0)
+
+        assert track_filter.manoeuvre_level("level-straight") == 0.0
+
+    def test_a_turn_engages_the_level(self, monkeypatch):
+        """...and a standard-rate turn does not: this is the case the follow
+        lane's velocity-sigma ceiling used to drop."""
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        solves = fly("level-turn", 4.6, omega_dps=3.0, turn_deg=90.0)
+
+        level = track_filter.manoeuvre_level("level-turn")
+        assert level is not None and level > 0.3
+        # ...and it is the same inflation the sigma ceiling sees, which is the
+        # whole reason the two have to be read together.
+        assert max(s["vel_sigma_ms"] for s in solves) > 115.0
+
+    def test_the_combined_accessor_agrees_with_both_halves(self, monkeypatch):
+        """One lock round-trip, same numbers: dark_follow._build_targets reads
+        this instead of taking the leaf lock twice per key per rebuild, so a
+        drift between the two would be a drift between the sigma a key is
+        judged on and the level that excuses it."""
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        fly("level-combined", 4.6, omega_dps=3.0, turn_deg=90.0)
+
+        combined = track_filter.learned_velocity_manoeuvre("level-combined")
+        assert combined is not None
+        assert combined[:4] == track_filter.learned_velocity("level-combined")
+        assert combined[4] == track_filter.manoeuvre_level("level-combined")
+
+    def test_the_level_goes_with_the_entry(self, monkeypatch):
+        """Same staleness contract as learned_velocity: a dropped key has no
+        level, not a stale one."""
+        monkeypatch.setenv("TRACK_SMOOTHER", "kf")
+        fly("level-dropped", 4.6, omega_dps=3.0, turn_deg=90.0)
+        assert track_filter.manoeuvre_level("level-dropped") is not None
+
+        track_filter.drop_key("level-dropped")
+        assert track_filter.manoeuvre_level("level-dropped") is None
+        assert track_filter.learned_velocity_manoeuvre("level-dropped") is None
+
+
 class TestManoeuvreAdaptiveQ:
     """The CV model against a coordinated turn — see the module docstring's
     manoeuvre paragraph and the _KF_SIGMA_A_MANOEUVRE_MS2 comment.

@@ -1230,6 +1230,18 @@ class TestDarkFollowBlock:
             "vel_sigma": 7,
         }
 
+    def test_the_manoeuvre_reprieve_is_reported_beside_the_bucket_it_empties(self):
+        """kept_manoeuvre is in KEY-SECONDS like ineligible beside it (the
+        over-ceiling time a turn explained); gate_sigma_clamped is in events,
+        and is the half of the trade that says those kept keys are still
+        claiming at the old gate width."""
+        state.bump_counter("dark_follow_kept_manoeuvre", 42)
+        state.bump_counter("dark_follow_gate_sigma_clamped", 9)
+        out = _solver_window_stats(10.0)["dark_follow"]
+        assert out["kept_manoeuvre"] == 42
+        assert out["gate_sigma_clamped"] == 9
+        assert out["ineligible"]["vel_sigma"] == 0
+
     def test_the_two_n2_sparings_are_reported_beside_the_funnel(self):
         """Being withheld for lack of a third node is not evidence against the
         prediction, so neither sparing shows up as a drop — they are only

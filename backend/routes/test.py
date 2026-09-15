@@ -1479,6 +1479,8 @@ def _solver_window_stats(minutes: float) -> dict:
         df_dropped = state.dark_follow_dropped
         df_n2_withheld = state.dark_follow_n2_withheld
         df_n2_skipped = state.dark_follow_n2_skipped
+        df_kept_manoeuvre = state.dark_follow_kept_manoeuvre
+        df_gate_clamped = state.dark_follow_gate_sigma_clamped
         df_inelig = {
             reason: getattr(state, f"dark_follow_inelig_{reason}")
             for reason in (
@@ -1639,6 +1641,16 @@ def _solver_window_stats(minutes: float) -> dict:
             # dominant source of — so read them beside those two.
             "n2_withheld": df_n2_withheld,
             "n2_skipped": df_n2_skipped,
+            # The manoeuvre reprieve (DARK_FOLLOW_MANOEUVRE_KEEP).
+            # kept_manoeuvre is IN KEY-SECONDS like "ineligible" beside it —
+            # the over-ceiling time a turn explained, so it is the subtraction
+            # from ineligible["vel_sigma"] and, downstream of it, from
+            # "dropped".  gate_sigma_clamped is in EVENTS (one per gate pair
+            # computed at DARK_FOLLOW_GATE_VEL_SIGMA_CAP_MS instead of the
+            # filter's inflated sigma), and is the half of the trade that says
+            # the kept keys are still claiming at the old gate width.
+            "kept_manoeuvre": df_kept_manoeuvre,
+            "gate_sigma_clamped": df_gate_clamped,
             "ineligible": df_inelig,
         },
         "known_claims": {

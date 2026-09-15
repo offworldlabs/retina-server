@@ -55,7 +55,7 @@ code read a breach as an identity break by definition.  Downstream that
 mints a second mn-dark-* key for one aircraft (learned_velocity is what
 solver.py's _entry_dr_velocity dead-reckons the key decision with) and drops
 the dark_follow target for its 30 s cooldown (the re-anchored velocity sigma
-of 150 m/s is above DARK_FOLLOW_MAX_VEL_SIGMA_MS = 60).
+of 150 m/s is above DARK_FOLLOW_MAX_VEL_SIGMA_MS, 115 since PR #324).
 
 So sigma_a is MANOEUVRE-ADAPTIVE rather than constant, in two coupled parts
 (see _entry_sigma_a, _update_manoeuvre and the gate block in _smooth_kf):
@@ -163,8 +163,10 @@ _KF_SIGMA_A_MS2 = float(os.getenv("TRACK_KF_SIGMA_A", "1.5"))
 # That premise is false for the manoeuvre band, and the re-anchor is
 # expensive: it resets the velocity state to the solver's own (untrusted on
 # ~54% of records) with sigma _KF_VEL_SIGMA_SOLVE_MS = 150 m/s, which is above
-# dark_follow's DARK_FOLLOW_MAX_VEL_SIGMA_MS = 60, so the follow lane drops
-# the target for its 30 s cooldown; and learned_velocity — what solver.py's
+# dark_follow's DARK_FOLLOW_MAX_VEL_SIGMA_MS (115 since PR #324, 60 when this
+# was written), so the follow lane drops the target for its 30 s cooldown —
+# unless the manoeuvre reprieve below covers it, which is exactly what
+# manoeuvre_level() is exposed for; and learned_velocity — what solver.py's
 # _entry_dr_velocity dead-reckons the key decision with, and what
 # aircraft_feed draws with — is wrong by up to the aircraft's own speed on the
 # way there, which is what mints a second mn-dark-* key for one aircraft.
@@ -490,8 +492,59 @@ def learned_velocity(track_key: str) -> tuple[float, float, float, float] | None
         entry = _KF_TRACKS.get(track_key)
         if entry is None:
             return None
-        vel_sigma = math.sqrt(max(0.0, 0.5 * (entry.P[1, 1] + entry.P[3, 3])))
-        return float(entry.x[1]), float(entry.x[3]), float(vel_sigma), float(entry.last_ts_s)
+        return _velocity_tuple(entry)
+
+
+def _velocity_tuple(entry: "_TrackKF") -> tuple[float, float, float, float]:
+    """learned_velocity's answer for one entry.  Caller holds _KF_LOCK.
+
+    Split out so the combined accessor below reports exactly the same numbers
+    from the same lock acquisition — a second reader that re-derived the sigma
+    itself would be free to drift from this one.
+    """
+    vel_sigma = math.sqrt(max(0.0, 0.5 * (entry.P[1, 1] + entry.P[3, 3])))
+    return float(entry.x[1]), float(entry.x[3]), float(vel_sigma), float(entry.last_ts_s)
+
+
+def manoeuvre_level(track_key: str) -> float | None:
+    """This key's manoeuvre engagement (0..1), or None when it has no filter
+    state (never smoothed, TTL-swept, or TRACK_SMOOTHER != kf).
+
+    The level _update_manoeuvre holds and decays: 0.0 in straight flight,
+    rising to 1.0 on an innovation at twice _KF_MANOEUVRE_D2 and decaying back
+    on the _KF_MANOEUVRE_TAU_S clock.  Read-only, _KF_LOCK like
+    learned_velocity beside it.
+
+    WHY IT IS EXPOSED.  The inflated process noise a manoeuvre engages is also
+    what makes learned_velocity's sigma large, so every consumer that gates on
+    that sigma is gating hardest on the aircraft that are turning — the case
+    dark_follow most needs to keep following (services/dark_follow.py,
+    DARK_FOLLOW_MANOEUVRE_KEEP).  This level is how a caller can tell "the
+    filter is deliberately loose because the aircraft is manoeuvring" from
+    "the filter has lost the track", which the sigma alone cannot say.
+    """
+    with _KF_LOCK:
+        entry = _KF_TRACKS.get(track_key)
+        return float(entry.manoeuvre) if entry is not None else None
+
+
+def learned_velocity_manoeuvre(track_key: str) -> tuple[float, float, float, float, float] | None:
+    """learned_velocity's tuple with the manoeuvre level appended, from ONE
+    lock acquisition — (v_east_ms, v_north_ms, vel_sigma_ms, last_ts_s, level).
+
+    learned_velocity's tuple is deliberately left at four fields: it has
+    callers on the hot display and keying paths that unpack it positionally
+    (services/aircraft_feed.py, services/tasks/solver.py), and widening a tuple
+    under them is a change to code this does not otherwise touch.  A caller
+    that wants both halves — dark_follow._build_targets, which re-tests every
+    dark key once a second — gets them here instead of taking a leaf lock
+    twice per key and risking two readings a filter update apart.
+    """
+    with _KF_LOCK:
+        entry = _KF_TRACKS.get(track_key)
+        if entry is None:
+            return None
+        return (*_velocity_tuple(entry), float(entry.manoeuvre))
 
 
 def _kf_reanchor() -> None:

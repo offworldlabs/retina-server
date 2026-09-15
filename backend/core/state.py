@@ -677,6 +677,25 @@ dark_follow_inelig_min_solves: int = 0
 dark_follow_inelig_min_nodes: int = 0
 dark_follow_inelig_no_filter: int = 0
 dark_follow_inelig_vel_sigma: int = 0
+# The over-ceiling key-seconds the manoeuvre reprieve COVERED instead of
+# dropping (dark_follow._manoeuvre_reprieve): same units as the block above and
+# read beside dark_follow_inelig_vel_sigma, which is now only the over-ceiling
+# time no manoeuvre explained.  A turning aircraft's velocity sigma is inflated
+# by track_filter's manoeuvre detector on purpose, so dropping on it silenced
+# the follow lane exactly in turns — 82% of followed keys went quiet for over
+# 8 s in a hard turn against 32% in straight flight, and 52% of shown turns
+# re-keyed.  Rising here with vel_sigma falling is the fix working; rising with
+# the dark ghost share is the reprieve being too generous.
+dark_follow_kept_manoeuvre: int = 0
+# Claim-gate widenings refused: one per follow_gates call whose target carried
+# a velocity sigma past DARK_FOLLOW_GATE_VEL_SIGMA_CAP_MS, i.e. per gate pair
+# computed at the cap rather than at the filter's own (manoeuvre-inflated)
+# sigma.  An EVENT counter on the claiming path, not key-seconds: it runs once
+# per target per frame, so read it against dark_follow_claims rather than
+# against the ineligibility block.  It exists because the reprieve above is
+# only safe while the gates stay narrow — a clamp count that is zero while
+# kept_manoeuvre climbs means the clamp is not covering the kept keys.
+dark_follow_gate_sigma_clamped: int = 0
 # The two ways an n=2 follow input is now spared instead of held against the
 # key it was predicted from.  Both exist because being withheld for lack of a
 # third node is not evidence that the prediction was wrong, and the follow
@@ -1109,6 +1128,7 @@ def _reset_for_tests() -> None:
     global dark_follow_inelig_age, dark_follow_inelig_min_solves
     global dark_follow_inelig_min_nodes, dark_follow_inelig_no_filter
     global dark_follow_inelig_vel_sigma
+    global dark_follow_kept_manoeuvre, dark_follow_gate_sigma_clamped
     global dark_follow_n2_withheld, dark_follow_n2_skipped
     global n2_unconfirmed, n2_anchored_admitted, coverage_rebuilds, coverage_rebuild_nodes
     global n2_fit_position_published
@@ -1219,6 +1239,7 @@ def _reset_for_tests() -> None:
         dark_follow_inelig_age = dark_follow_inelig_min_solves = 0
         dark_follow_inelig_min_nodes = dark_follow_inelig_no_filter = 0
         dark_follow_inelig_vel_sigma = 0
+        dark_follow_kept_manoeuvre = dark_follow_gate_sigma_clamped = 0
         dark_follow_n2_withheld = dark_follow_n2_skipped = 0
         dark_bottomup_shadowed = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0

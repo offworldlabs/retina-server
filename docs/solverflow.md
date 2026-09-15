@@ -468,6 +468,36 @@ Every follow-solve outcome reaches the guard through one hook in
 `solver._record_solve_history` (published, every `rejected_*`, unconverged, and
 the shadow pass's own record).
 
+**...except in a turn, where the ceiling used to fire on the wrong thing.** The
+display filter inflates its process noise *deliberately* when an aircraft
+manoeuvres (`track_filter._entry_sigma_a`, sigma_a 1.5 → 800), so the velocity
+sigma the ceiling reads is the filter loosening its grip, not losing the track —
+and the drop landed hardest on the aircraft the lane most needs to follow.
+Measured in the 2026-09-13 soak: **82%** of followed keys went silent for more
+than 8 s inside a hard turn against 32% in straight flight, `dropped` ran 13-24
+and `ineligible.vel_sigma` 12-18 per 20 min, ownership (`DARK_FOLLOW_OWN_S`)
+lapsed, and the bottom-up lane minted a second key for **52%** of shown turns —
+9 of 13 of those re-keys leaving a ghost behind.
+
+So a key whose `track_filter.manoeuvre_level` is at least
+`DARK_FOLLOW_MANOEUVRE_KEEP` is **kept** rather than dropped (counter
+`dark_follow_kept_manoeuvre`), bounded three ways: a hard sigma ceiling
+`DARK_FOLLOW_MANOEUVRE_MAX_VEL_SIGMA_MS`, a per-episode budget of
+`DARK_FOLLOW_MANOEUVRE_KEEP_MAX_S` (one cooldown; the clock starts on the first
+reprieved rebuild and only a return to normal flight refunds it, so a key
+cannot renew it by being dropped and re-admitted), and the two-consecutive-
+rejects drop, which stays fully armed.
+
+**The gates do not widen with it.** Eligibility and gate width are two
+different questions about the same sigma: `follow_gates` clamps the velocity
+sigma it derives both terms from to `DARK_FOLLOW_GATE_VEL_SIGMA_CAP_MS` (115 —
+the eligibility ceiling), counting `dark_follow_gate_sigma_clamped`. Without
+that clamp a 300-800 m/s sigma slams the delay and Doppler gates to their
+`_MAX_*` caps and the key binds whatever detection is nearby, which is the
+wrong-hex binding the 115 ceiling was protecting against in the first place. A
+reprieved key therefore keeps its identity through the turn while claiming at
+exactly the width it claimed at before.
+
 **Anchor dead-reckoning.** The anchor branch's flat 6 km check compares the
 solve against where the entry was last *stored*. For a follow input that is
 wrong by construction — its guess IS a prediction of where the anchor drifted
@@ -530,9 +560,13 @@ the keying rule is byte-identical to before there.
 | `DARK_FOLLOW_SHADOW_KM` | 2.0 km (env) | `services/dark_follow.py` |
 | `DARK_FOLLOW_MAX_AGE_S` | 20 s (env) | `services/dark_follow.py` |
 | `DARK_FOLLOW_MIN_SOLVES` / `DARK_FOLLOW_MIN_NODES` | 3 / 3 | `services/dark_follow.py` |
-| `DARK_FOLLOW_MAX_VEL_SIGMA_MS` | 60 m/s (env) | `services/dark_follow.py` |
+| `DARK_FOLLOW_MAX_VEL_SIGMA_MS` | 115 m/s (env) | `services/dark_follow.py` |
 | `DARK_FOLLOW_INTERVAL_S` | 2.0 s (env) | `services/dark_follow.py` |
 | `DARK_FOLLOW_COOLDOWN_S` | 30 s (env) | `services/dark_follow.py` |
+| `DARK_FOLLOW_MANOEUVRE_KEEP` | 0.3 (env) | `services/dark_follow.py` |
+| `DARK_FOLLOW_MANOEUVRE_MAX_VEL_SIGMA_MS` | 600 m/s (env) | `services/dark_follow.py` |
+| `DARK_FOLLOW_MANOEUVRE_KEEP_MAX_S` | 30 s (env) | `services/dark_follow.py` |
+| `DARK_FOLLOW_GATE_VEL_SIGMA_CAP_MS` | 115 m/s (env) | `services/dark_follow.py` |
 | `_MAX_CONSECUTIVE_REJECTS` | 2 | `services/dark_follow.py` |
 | `_TARGETS_TTL_S` (pseudo-state cache) | 1.0 s | `services/dark_follow.py` |
 | Gate caps `_MAX_DELAY_GATE_US` / `_MAX_DOPPLER_GATE_HZ` | 40 µs / 100 Hz | `services/dark_follow.py` |
@@ -540,7 +574,14 @@ the keying rule is byte-identical to before there.
 Observability: `/api/test/solver-stats` `counters` carries the funnel
 `dark_follow_targets` (a live gauge) → `dark_follow_claims` →
 `dark_follow_inputs` → `dark_follow_published`, plus `dark_follow_dropped` and
-`dark_bottomup_shadowed` (the ownership refusals above). Records are classified
+`dark_bottomup_shadowed` (the ownership refusals above). The `dark_follow`
+block beside it adds `kept_manoeuvre` — the over-ceiling key-seconds the
+manoeuvre reprieve covered, i.e. the subtraction from `ineligible.vel_sigma`
+and from `dropped` — and `gate_sigma_clamped`, in events, one per gate pair
+computed at `DARK_FOLLOW_GATE_VEL_SIGMA_CAP_MS` instead of the filter's
+inflated sigma. Read them together: `kept_manoeuvre` rising while
+`gate_sigma_clamped` stays at zero would mean the kept keys are claiming at
+gates nothing narrowed. Records are classified
 `lane: "dark_follow"` in `lane_split` and kept out of the bottom-up dark funnel,
 and each carries `guess_source: "prediction"` and `follow_key`. A shadowed
 record stays in the **bottom-up** funnel — it is a bottom-up solve — and shows
