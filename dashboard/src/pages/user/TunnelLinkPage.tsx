@@ -1,25 +1,18 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { api } from "../../api/client";
+import { useFetch } from "../../hooks/usePolling";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
 
 const PAGE_SIZE = 25;
 
 export default function TunnelLinkPage() {
-  const [nodes, setNodes] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
-
-  useEffect(() => {
-    api.myNodes()
-      .then((n) => {
-        setNodes(Array.isArray(n) ? n : []);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
+  const { data, loading } = useFetch(() => api.myNodes().then((n) => (Array.isArray(n) ? n : [])));
 
   if (loading) return <div className="empty-state">Loading…</div>;
+
+  const nodes = data ?? [];
 
   return (
     <>

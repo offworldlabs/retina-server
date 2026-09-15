@@ -1,22 +1,15 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { api } from "../../api/client";
+import { useFetch } from "../../hooks/usePolling";
 import { useNodeIds } from "../../components/useNodeIds";
 
 const PAGE_SIZE = 25;
 
 export default function CustodyPage() {
-  const [custody, setCustody] = useState(null);
-  const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
   const idsByRef = useNodeIds();
-
-  useEffect(() => {
-    api.custody()
-      .then(setCustody)
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
+  const { data: custody, loading } = useFetch(() => api.custody());
 
   if (loading) return <div className="empty-state">Loading…</div>;
 

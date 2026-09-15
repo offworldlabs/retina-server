@@ -1,26 +1,18 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { api, downloadUrl } from "../../api/client";
+import { useFetch } from "../../hooks/usePolling";
 import { formatBytes } from "../../utils/format";
 
 const PAGE_SIZE = 50;
 
 export default function DataExplorerPage() {
-  const [archives, setArchives] = useState([]);
-  const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
-  const [loading, setLoading] = useState(true);
+  // Keyed on the page, so turning it fetches again and shows the busy row
+  // until the new page lands.
+  const { data, pending: loading } = useFetch(() => api.archive(PAGE_SIZE, page * PAGE_SIZE), page);
 
-  useEffect(() => {
-    setLoading(true);
-    api.archive(PAGE_SIZE, page * PAGE_SIZE)
-      .then((data) => {
-        setArchives(data.files || []);
-        setTotal(data.total ?? data.count ?? 0);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, [page]);
-
+  const archives = data?.files || [];
+  const total = data?.total ?? data?.count ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
