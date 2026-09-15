@@ -92,10 +92,10 @@ ALLOWED_DIVERGENCE = (
     # entry, long after the fact. See backend/config/constants.py.
     r"^services\.server\.environment\.NODE_FORCE_RETIRE_PREFIXES$",
     # AUTH_ALLOW_ANONYMOUS_ADMIN and SYNTHETIC_FLEET_ENABLED are deliberately
-    # absent from this list: each is set to the same value in every environment,
-    # so a difference is drift rather than a decision, and CI should fail if one
-    # environment closes the bypass, or drops the simulation subsystem, without
-    # the others.
+    # absent from this list, so a difference between environments is drift
+    # rather than a decision. SYNTHETIC_FLEET_ENABLED is set in all three;
+    # AUTH_ALLOW_ANONYMOUS_ADMIN in none, and keeping it off this list is what
+    # fails CI if it is ever restored to one environment alone.
     # Published ports. Production exposes 3012 for real receiver nodes; staging
     # has none and closes it, so the two legitimately differ here. Recorded rather
     # than silently allowed: if staging ever needs node ingest, it should be

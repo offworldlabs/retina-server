@@ -137,20 +137,13 @@ test.describe("API admin endpoints", () => {
     await ctx.dispose();
   });
 
-  test("GET /api/admin/leaderboard returns per-node list", async () => {
+  // 401 rather than a body: the api vhost has no Access application in front of
+  // it, so an anonymous caller is refused by this codebase. The leaderboard asks
+  // only for a logged-in caller (get_current_user), not an administrator. See the
+  // same assertion in dashboard.spec.ts for why that hostname must stay ungated.
+  test("GET /api/admin/leaderboard refuses an anonymous caller", async () => {
     const res = await ctx.get(`${API}/api/admin/leaderboard`);
-    expect(res.status()).toBe(200);
-
-    const body = await res.json();
-    // Response shape: {leaderboard: [...], total: N}
-    expect(body).toHaveProperty("leaderboard");
-    expect(Array.isArray(body.leaderboard)).toBe(true);
-    // Each entry has required fields
-    if (body.leaderboard.length > 0) {
-      const first = body.leaderboard[0];
-      expect(first).toHaveProperty("node_ref");
-      expect(first).toHaveProperty("name");
-    }
+    expect(res.status()).toBe(401);
   });
 
   // Deliberately on the map host, not API: /api/config is served by

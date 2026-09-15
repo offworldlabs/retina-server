@@ -4,11 +4,14 @@
  * The dashboard has two legitimate auth modes, and the server says which one
  * it is in on every unauthenticated GET /api/auth/me:
  *
- *   oauth   — OAuth client keys are configured. /api/auth/me answers 401,
- *             `/` redirects to /login, and /login renders the login card.
- *   bypass  — AUTH_ALLOW_ANONYMOUS_ADMIN=1 with no OAuth client (deployed in
- *             every environment while OAuth is unconfigured; see
- *             backend/.env.example). /api/auth/me answers 200 with the anonymous
+ *   oauth   — auth is enforced. /api/auth/me answers 401, `/` redirects to
+ *             /login, and /login renders the login card. Every deployed
+ *             environment is in this mode; the name predates Cloudflare Access,
+ *             and on a droplet it is a verified Access assertion rather than an
+ *             OAuth client that satisfies it.
+ *   bypass  — AUTH_ALLOW_ANONYMOUS_ADMIN=1 with no OAuth client, which only
+ *             docker-compose.local.yml sets now (see backend/.env.example).
+ *             /api/auth/me answers 200 with the anonymous
  *             admin and `auth_enabled: false`. `/` renders the dashboard
  *             directly, and /login is a transient page: LoginPage navigates to
  *             `/` the moment the auth call resolves, so it shows the login card
@@ -59,6 +62,32 @@ async function serverAuthMode(): Promise<AuthMode> {
  */
 async function holdAuthUnresolved(page: Page) {
   await page.route("**/api/auth/me", (route) => route.abort("connectionrefused"));
+}
+
+/**
+ * The strongest claim the server's auth mode allows about the surface on screen.
+ *
+ * Past the login card the sidebar names the surface. Short of it both hostnames
+ * render the same card, and reaching that card is itself the assertion: the host
+ * resolved, Cloudflare Access admitted this run, and nginx served the dashboard
+ * bundle rather than an edge error or a redirect loop.
+ *
+ * The origin is checked, not just the path. Cloudflare's own login page is
+ * `<team>.cloudflareaccess.com/cdn-cgi/access/login/<host>`, so a bare /login
+ * match is satisfied by the very page a run without a service token gets stuck
+ * on, and the failure would read as a missing login card rather than as never
+ * having been let in.
+ */
+async function expectSurface(page: Page, base: string, mode: AuthMode, name: string) {
+  if (mode === "oauth") {
+    const { origin } = new URL(base);
+    await page.waitForURL((url) => url.origin === origin && url.pathname.startsWith("/login"), {
+      timeout: 10_000,
+    });
+    await expect(page.locator(".login-card")).toBeVisible({ timeout: 5_000 });
+    return;
+  }
+  await expect(page.locator(".brand-sub")).toHaveText(name, { timeout: 10_000 });
 }
 
 test.describe("Dashboard — unauthenticated access (real auth mode)", () => {
@@ -154,20 +183,24 @@ test.describe("Admin surface selection", () => {
     adminResolves ??= await resolves(ADMIN!);
     test.skip(!adminResolves, `${ADMIN} does not resolve`);
     authMode ??= await serverAuthMode();
-    test.skip(authMode === "oauth", "surface is only visible past the login card");
   });
 
   // Separate tests, not two assertions in one: the dash half is the control
   // that tells "admin selection broke" apart from "the sidebar markup changed
   // and both are wrong", and a shared body would stop at the first failure.
-  test("the admin vhost renders the admin console", async ({ page }) => {
+  //
+  // Which surface a hostname selects is resolveSurface's answer, and is covered
+  // exhaustively in dashboard/src/test/surface.test.ts. What only an end-to-end
+  // run can show is that the vhost is reachable and serving this bundle, which
+  // is why these stay here once enforced auth puts a login card in the way.
+  test("the admin vhost serves the admin console", async ({ page }) => {
     await page.goto(ADMIN!);
-    await expect(page.locator(".brand-sub")).toHaveText("Admin Console", { timeout: 10_000 });
+    await expectSurface(page, ADMIN!, authMode!, "Admin Console");
   });
 
-  test("the dash vhost renders the user dashboard", async ({ page }) => {
+  test("the dash vhost serves the user dashboard", async ({ page }) => {
     await page.goto(DASH);
-    await expect(page.locator(".brand-sub")).toHaveText("Node Dashboard", { timeout: 10_000 });
+    await expectSurface(page, DASH, authMode!, "Node Dashboard");
   });
 });
 
@@ -202,44 +235,26 @@ test.describe("Dashboard — login card (auth call held open)", () => {
   });
 });
 
-test.describe("Dashboard — admin API backing (no auth required)", () => {
-  test("GET /api/admin/leaderboard returns nodes array", async () => {
-    const ctx = await playwrightRequest.newContext();
-    const res = await ctx.get(`${API}/api/admin/leaderboard`);
-    expect(res.status()).toBe(200);
-    const body = await res.json();
-    // Response shape: {leaderboard: [...], total: N}
-    expect(body).toHaveProperty("leaderboard");
-    expect(Array.isArray(body.leaderboard)).toBe(true);
-    await ctx.dispose();
-  });
-
-  test("GET /api/admin/events returns event list", async () => {
-    const ctx = await playwrightRequest.newContext();
-    const res = await ctx.get(`${API}/api/admin/events`);
-    expect(res.status()).toBe(200);
-    const body = await res.json();
-    // Events response is an array or an object containing an events key
-    const isValid = Array.isArray(body) || (typeof body === "object" && body !== null);
-    expect(isValid).toBe(true);
-    await ctx.dispose();
-  });
-
-  test("GET /api/admin/storage returns file_count and total_size_mb", async () => {
-    const ctx = await playwrightRequest.newContext();
-    const res = await ctx.get(`${API}/api/admin/storage`);
-    // 202 = storage scan still in progress (valid startup state)
-    expect([200, 202]).toContain(res.status());
-    if (res.status() === 200) {
-      const body = await res.json();
-      expect(body).toHaveProperty("archive_files");
-      expect(body).toHaveProperty("archive_bytes");
-      expect(body).toHaveProperty("archive_mb");
-      expect(typeof body.archive_files).toBe("number");
-      expect(typeof body.archive_mb).toBe("number");
-    }
-    await ctx.dispose();
-  });
+// On API deliberately. api.retina.fm carries no Access application and never
+// can: it is the fleet's ingest hostname, and a node cannot complete an
+// interactive login. So the refusal here comes from require_admin in this
+// codebase rather than from the edge, which is the point of enforcing
+// backend-side — the Host header stops mattering.
+//
+// Response shape is no longer assertable from here, because nothing in CI can
+// authenticate against this hostname. The backend suite covers it.
+test.describe("Dashboard — admin API refuses anonymous callers", () => {
+  // leaderboard is get_current_user rather than require_admin, so it refuses a
+  // step earlier; anonymous sees the same 401 either way. Split them if one
+  // ever becomes reachable without a session.
+  for (const path of ["/api/admin/leaderboard", "/api/admin/events", "/api/admin/storage"]) {
+    test(`GET ${path} refuses an anonymous caller`, async () => {
+      const ctx = await playwrightRequest.newContext();
+      const res = await ctx.get(`${API}${path}`);
+      expect(res.status()).toBe(401);
+      await ctx.dispose();
+    });
+  }
 
   // On DASH, not API: the dashboard vhost proxies /api/config to
   // tower-finder-service (snippets/towers-proxy.conf), while the api vhost has

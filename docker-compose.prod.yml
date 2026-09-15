@@ -29,11 +29,8 @@ services:
       # bypass onto its own flag, so production can name itself honestly and
       # keep all four.
       - RETINA_ENV=production
-      # The bypass itself, now explicit: no OAuth is configured yet, so every
-      # caller is treated as an anonymous admin. This is the open door, and the
-      # only thing here that should worry a reader. Closing it (OAuth keys in
-      # backend/.env, then drop this line) is tracked in ClickUp 86cb1emcx.
-      - AUTH_ALLOW_ANONYMOUS_ADMIN=1
+      # This environment's Access application, on admin.retina.fm.
+      - CF_ACCESS_AUD=44f723ed886782d1e85a5a2cd39a4bd96fded1791b2c2fbfebbced5e217aa5f0
       # The simulation subsystem, likewise asked for by name: for now the ingest
       # write path, in time the fleet container as well, which is why the flag is
       # named for the subsystem rather than for that one route. Every environment
