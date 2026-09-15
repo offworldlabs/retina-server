@@ -1,43 +1,17 @@
 // @ts-nocheck — gradual TS migration
-import { useState } from "react";
-import { API_BASE } from "./constants";
 
 /* ── NodeOwnerControl: top-right map overlay for the node-owner view.
-      - Logged out: a "Sign in" button that reveals Google/GitHub OAuth links
-        (redirecting back to the current map URL).
-      - Logged in: the user's name plus a "My nodes only" toggle that filters
-        the map to a server-authenticated feed of just their own nodes. ── */
+      Shown only to a signed-in owner: their name plus a "My nodes only" toggle
+      that filters the map to a server-authenticated feed of just their own
+      nodes. ── */
 
 export default function NodeOwnerControl({ user, ownedCount, ownerOnly, onToggle, loading }) {
-  const [menuOpen, setMenuOpen] = useState(false);
-
   if (loading) return null;
-
-  const redirect = encodeURIComponent(window.location.href);
-
-  if (!user) {
-    return (
-      <div className="owner-panel">
-        <button
-          className="owner-signin"
-          onClick={() => setMenuOpen((v) => !v)}
-          aria-expanded={menuOpen}
-        >
-          Sign in to see your node
-        </button>
-        {menuOpen && (
-          <>
-            <a className="owner-provider" href={`${API_BASE}/auth/login/google?redirect=${redirect}`}>
-              Continue with Google
-            </a>
-            <a className="owner-provider" href={`${API_BASE}/auth/login/github?redirect=${redirect}`}>
-              Continue with GitHub
-            </a>
-          </>
-        )}
-      </div>
-    );
-  }
+  // Nothing is offered to a signed-out visitor. The map hostnames carry no Access
+  // application and magic links are unbuilt, so every provider this could name
+  // fails at the provider. Restore a sign-in here alongside a login method that
+  // works, from the signal ClickUp 123zgec2ryj adds.
+  if (!user) return null;
 
   return (
     <div className="owner-panel">
