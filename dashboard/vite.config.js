@@ -6,6 +6,9 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
+    // So `App.css?raw` reaches the theme tests as its text. Vitest stubs every
+    // CSS import with an empty string by default, the raw query included.
+    css: true,
     setupFiles: ["./src/test/setup.ts"],
   },
   build: {

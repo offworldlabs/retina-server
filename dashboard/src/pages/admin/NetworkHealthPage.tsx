@@ -4,12 +4,14 @@ import {
 } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import { api } from "../../api/client";
+import { useChartTheme } from "../../utils/chartTheme";
 import { RetnodeLink } from "../../components/RetnodeLink";
 import { useNodeIds } from "../../components/useNodeIds";
 
 const PAGE_SIZE = 25;
 
 export default function NetworkHealthPage() {
+  const chart = useChartTheme();
   const [dashboard, setDashboard] = useState(null);
   const [aircraft, setAircraft] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -113,20 +115,14 @@ export default function NetworkHealthPage() {
             <div className="chart-container">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={history}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="time" stroke="#94a3b8" tick={{ fontSize: 10 }} />
-                  <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
+                  <XAxis dataKey="time" stroke={chart.axis} tick={{ fontSize: 10 }} />
+                  <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
                   <Tooltip
-                    contentStyle={{
-                      background: "#ffffff",
-                      border: "1px solid #e2e8f0",
-                      borderRadius: 6,
-                      fontSize: 12,
-                      color: "#0f172a",
-                    }}
+                    contentStyle={chart.tooltip}
                   />
-                  <Area type="monotone" dataKey="aircraft" stroke="#3b82f6" fill="rgba(59,130,246,0.15)" name="Aircraft" />
-                  <Area type="monotone" dataKey="nodes" stroke="#10b981" fill="rgba(16,185,129,0.15)" name="Nodes" />
+                  <Area type="monotone" dataKey="aircraft" stroke={chart.series[0]} fill={chart.series[0]} fillOpacity={0.15} name="Aircraft" />
+                  <Area type="monotone" dataKey="nodes" stroke={chart.series[1]} fill={chart.series[1]} fillOpacity={0.15} name="Nodes" />
                 </AreaChart>
               </ResponsiveContainer>
             </div>
@@ -164,6 +160,9 @@ export default function NetworkHealthPage() {
                       key={ref}
                       center={[node.location.rx_lat, node.location.rx_lon]}
                       radius={7}
+                      // Literals, not the status tokens: these are painted onto
+                      // the OSM basemap, which stays light in both themes, so the
+                      // dark ramp would read worse here rather than better.
                       fillColor={online ? "#10b981" : "#ef4444"}
                       color={online ? "#059669" : "#dc2626"}
                       weight={2}
