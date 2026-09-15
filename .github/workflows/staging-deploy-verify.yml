@@ -83,23 +83,22 @@ jobs:
 
             # A .env naming another environment means this job is pointed
             # at a box it does not own. Without this the write further down simply
-            # takes that box over — overwriting its .env and running `down` then
-            # `up` would bring production back on staging's hostnames, fleet size
-            # and container names. A MISSING .env is allowed through; that is the
-            # normal state of a box awaiting its first deploy, and we write it
-            # below.
+            # takes that box over: overwriting its .env and rebuilding would bring
+            # production back on staging's hostnames, fleet size and container
+            # names. A MISSING .env is allowed through; that is the normal state
+            # of a box awaiting its first deploy, and we write it below.
             if [ -f .env ] && ! grep -q '^COMPOSE_FILE=.*docker-compose\.staging\.yml' .env; then
               echo "::error::${{ env.APP_DIR }}/.env exists but does not select the staging overlay — this host is not staging. Inspect it; do not deploy."
               exit 1
             fi
 
             # Pre-flight: Cloudflare's origin-pull CA, checked BEFORE anything
-            # stops or rebuilds the stack. nginx renders `ssl_verify_client on`
+            # rebuilds the stack. nginx renders `ssl_verify_client on`
             # (deploy/nginx/snippets/tls.conf) and start.sh refuses to boot
             # without the CA, so on a droplet where the human half of this work
-            # is not done — enable Authenticated Origin Pulls for the zone, put
-            # the CA on the box — a deploy would run `docker compose down`,
-            # rebuild, fail to start, and leave the environment DOWN. Refusing
+            # is not done (enable Authenticated Origin Pulls for the zone, put
+            # the CA on the box) the rebuild below would swap in a container
+            # that refuses to start and leave the environment DOWN. Refusing
             # here converts that outage into a refused deploy: everything above
             # this line only reads the box.
             CF_CA=/etc/ssl/cloudflare/origin-pull-ca.pem
@@ -132,19 +131,16 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
             git submodule update --init --recursive
-            # The host's ./.env sets COMPOSE_FILE (base + staging overlay), so
-            # every command below is character-identical to the production deploy
-            # block. Written from the tree we just checked out rather than assumed
-            # to be present: this job knows perfectly well which environment it is
-            # deploying, so making that depend on someone having copied the right
-            # file by hand only creates a way to get it wrong. A rebuilt droplet,
-            # a restored snapshot or a hand-mangled file now self-heals here.
+            # The host's ./.env sets COMPOSE_FILE (base + staging overlay), so the
+            # compose commands below match the production deploy block; only the
+            # fleet step is staging's own. Written from the tree on every deploy
+            # so a rebuilt droplet or a hand-edited .env cannot select the wrong
+            # overlay.
             cp deploy/env.staging.example .env
             # Top up with this host's own CARTO basemap key — see the note in
             # deploy/env.<env>.example. Guarded rather than chained with &&: a host
             # with no key must build watermarked tiles, not fail its deploy.
             if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; fi
-            docker compose down --timeout 30
             # Cap build cache at ~10GB (LRU eviction) rather than wiping it all:
             # keeps recent layers so incremental builds stay fast, and bounds
             # total size so cache growth can't trip the disk pre-flight above.
@@ -156,6 +152,9 @@ jobs:
             # Deploy the app FIRST, on its own — building only `server`
             # means a broken Dockerfile.fleet can't abort the staging app deploy
             # (which would block the whole pipeline). Fleet is a separate step below.
+            # No `docker compose down` before this: `up --build` swaps the container
+            # only once the image exists, so a failed build leaves the old one
+            # serving, and an unchanged image is not swapped at all.
             # --remove-orphans because this deploy renamed the compose
             # service. container_name is pinned, so the container kept by the
             # old service key is an orphan holding the exact name the new one
@@ -181,6 +180,8 @@ jobs:
             done
             # Now the fleet, separately — a fleet build/start failure surfaces
             # loudly here without taking the already-healthy app down with it.
+            # Recreated only when its image or config changed; otherwise the old
+            # fleet reconnects to the new server by itself and the demo stays up.
             docker compose up -d --build --no-deps fleet
   smoke-tests:
     name: Staging smoke tests
