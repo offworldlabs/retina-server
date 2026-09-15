@@ -19,7 +19,7 @@
 # Redirect all HTTP → HTTPS
 server {
     listen 80;
-    server_name ${HOST_MAIN} ${HOST_API} ${HOST_MAP} ${HOST_DASH} ${HOST_ADMIN} ${HOST_DATA} ${HOST_TESTMAP} ${HOST_LEGACY_REDIRECT} _;
+    server_name ${HOST_MAIN} ${HOST_API} ${HOST_MAP} ${HOST_DASH} ${HOST_ADMIN} ${HOST_DATA} ${HOST_TESTMAP} _;
     return 301 https://$host$request_uri;
 }
 # RETINA_ENDIF
@@ -315,25 +315,4 @@ server {
     # RETINA_ENDIF
 
     # RETINA_INCLUDE snippets/spa.conf
-}
-
-# ${HOST_LEGACY_REDIRECT} — standalone tower-finder-service, the name the fleet
-# calls. `retina-spectrum` reads it from retina-node's compose and nothing
-# overrides it, so this name cannot move without an OTA rollout.
-server {
-    # RETINA_IF TLS
-    listen 443 ssl;
-    # RETINA_ELSE
-    listen 80;
-    # RETINA_ENDIF
-    server_name ${HOST_LEGACY_REDIRECT};
-
-    # RETINA_IF TLS
-    # RETINA_INCLUDE snippets/tls.conf
-    # RETINA_ENDIF
-    # RETINA_INCLUDE snippets/security-headers-api.conf
-
-    location / {
-        # RETINA_INCLUDE snippets/tower-finder.conf
-    }
 }

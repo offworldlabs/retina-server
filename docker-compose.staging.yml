@@ -79,7 +79,6 @@ services:
       # staging-map.retina.fm serves identical data if a staging-prefixed name is
       # ever wanted back.
       - HOST_TESTMAP=testmap.retina.fm
-      - HOST_LEGACY_REDIRECT=staging-tower-finder.retina.fm
       # The only host-naming part of the CSP. wss://*.retina.fm already covers
       # both environments, so only the two explicit origins vary.
       - CSP_CONNECT_SRC=https://staging-api.retina.fm https://staging-admin.retina.fm wss://*.retina.fm
