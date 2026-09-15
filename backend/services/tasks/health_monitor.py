@@ -7,8 +7,9 @@ firing so it can:
   - emit a "resolved" alert when a previously-firing condition clears.
 
 This decouples alerting from the request path: the server alerts on its own
-schedule, and a wedged endpoint no longer means silent degradation (the
-heartbeat/dead-man's-switch covers a fully-down process — see heartbeat.py).
+schedule, and a wedged endpoint no longer means silent degradation (a
+fully-down process is caught from outside by the DigitalOcean uptime checks;
+see claude-shared/docs/runbooks/uptime-monitoring.md).
 """
 
 import asyncio
