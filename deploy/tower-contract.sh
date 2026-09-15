@@ -41,9 +41,38 @@ fi
 # bash 4.4, and staging-smoke-test.sh sources this with `set -euo pipefail`.
 # The `+` guard expands to nothing at all when the array is empty.
 
+# A gateway status means nginx HERE matched the location and forwarded, and the
+# thing on the other side did not answer. That is not this repo's deploy to fail
+# on: the production smoke rolls production back, and tower-finder-service being
+# down is not grounds for reverting a healthy retina-server release. Its own CI
+# smoke-tests these routes on every deploy, and `tower-service-contract` probes
+# the service directly on every PR here.
+#
+# A broken forward does NOT look like this. With no `location /api/towers` the
+# request falls through `location /` to the app, whose copy of the tower stack
+# went with the monolith, so it answers 404 — which stays fatal, and is the
+# regression these probes exist to catch.
+#
+# The one gateway status that can still be ours is a 502 where nginx matched but
+# could not reach the service at all: the retina-edge network or the container
+# alias gone. The message below names it so a human looks, and it shows up on
+# every vhost at once rather than one, which is the tell.
+_is_upstream_failure() {
+    case "$1" in 502 | 503 | 504) return 0 ;; *) return 1 ;; esac
+}
+
+_explain_upstream_failure() {
+    local label="$1" url="$2" code="$3"
+    echo "${label}: ${url} was forwarded by our nginx and answered ${code}. The route is"
+    echo "reachable, so this is tower-finder-service or the hop to it, not this deploy."
+    echo "If every vhost shows this, check the retina-edge network and the service's"
+    echo "container alias before blaming the service."
+}
+
 # assert_tower_contract <endpoint-url>
 # Endpoint, not host: the api vhost publishes this as /towers, everyone else as
-# /api/towers. Prints why it failed on stdout; returns non-zero.
+# /api/towers. 0: contract honoured. 2: forwarded, upstream did not answer.
+# 1: everything else. Prints why on stdout.
 assert_tower_contract() {
     local endpoint="$1" body code resp attempt
     # Two attempts: the endpoint depends on third-party APIs, and a blip there
@@ -60,6 +89,10 @@ assert_tower_contract() {
         body=$(printf '%s' "$resp" | sed '$d')
         [ "$code" = "200" ] && break
         [ "$attempt" = 1 ] && { sleep 5; continue; }
+        if _is_upstream_failure "$code"; then
+            _explain_upstream_failure "towers" "$endpoint" "$code"
+            return 2
+        fi
         echo "got HTTP ${code} from ${endpoint}"
         return 1
     done
@@ -103,7 +136,8 @@ TOWER_CONTRACT_ELEVATION_KEY='"elevation_m"'
 TOWER_CONTRACT_CONFIG_KEYS='"ranking" "receiver" "broadcast_bands" "search"'
 
 # _assert_json_keys <label> <url> <key>...
-# Shared body for the two shape checks. Prints why it failed; returns non-zero.
+# Shared body for the two shape checks. 0: shape honoured. 2: forwarded, upstream
+# did not answer. 1: everything else. Prints why on stdout.
 _assert_json_keys() {
     local label="$1" url="$2" body code resp attempt key
     shift 2
@@ -121,6 +155,10 @@ _assert_json_keys() {
         body=$(printf '%s' "$resp" | sed '$d')
         [ "$code" = "200" ] && break
         [ "$attempt" = 1 ] && { sleep 5; continue; }
+        if _is_upstream_failure "$code"; then
+            _explain_upstream_failure "$label" "$url" "$code"
+            return 2
+        fi
         echo "${label}: got HTTP ${code} from ${url}"
         return 1
     done
@@ -145,8 +183,10 @@ _assert_json_keys() {
 # and the service turns a refusal from it into a 503. Its own comment beside that
 # status says why, and names this check: "503 and 404 rather than one 502: a
 # caller, and the post-deploy smoke, must be able to tell 'the dependency is down'
-# from 'this route is broken'". 502 is tolerated alongside it because the edge in
-# front of the service emits its own, and neither is ours.
+# from 'this route is broken'". The other gateway statuses are tolerated alongside
+# it through _is_upstream_failure: the edge in front of the service emits its own
+# 502, and a fan-out to a third party is the likeliest thing here to time out into
+# a 504. None of the three is ours.
 #
 # On 2026-08-27 open-meteo's daily quota ran out and these checks rolled production
 # back over it, on a deploy that was fine (ClickUp 86cbaxrhp). A third party's rate
@@ -154,11 +194,12 @@ _assert_json_keys() {
 # fix tolerated 502 alone, which the service had already stopped sending, so the same
 # throttle took production's deploy out again on 2026-09-14 (ClickUp 123zgec2qqa).
 #
-# Tolerating it costs no routing coverage. A tower-finder-service that is genuinely
-# down 502s /api/towers and /api/config as well, and both are asserted strictly on
-# these same vhosts through the same nginx include. Cloudflare replaces the body on
-# 5xx anyway, so the service's own {"detail": ...} never arrives here and the status
-# is all there is to judge by.
+# Tolerating it costs no routing coverage, though no longer for the reason it once
+# did: /api/towers and /api/config now warn on a gateway status too, for the reason
+# given beside _is_upstream_failure. What holds the coverage up is that a broken
+# forward is a 404 and not a 5xx, on all three routes alike, and 404 stays fatal
+# everywhere. Cloudflare replaces the body on 5xx anyway, so the service's own
+# {"detail": ...} never arrives here and the status is all there is to judge by.
 #
 # 404 stays fatal, and is the regression this probe exists to catch: with no
 # `location /api/elevation` the request falls through `location /` to the app,
@@ -182,10 +223,10 @@ assert_elevation_contract() {
         body=$(printf '%s' "$resp" | sed '$d')
         [ "$code" = "200" ] && break
         [ "$attempt" = 1 ] && { sleep 5; continue; }
-        if [ "$code" = "503" ] || [ "$code" = "502" ]; then
+        if _is_upstream_failure "$code"; then
             echo "elevation: ${url} reached the service, which answered ${code} because its own"
             echo "upstream elevation provider refused it. Not a fault in this deploy; the"
-            echo "routing this checks is proven by /api/towers and /api/config alongside."
+            echo "routing this checks is proven by the 404 case, which stays fatal."
             return 2
         fi
         echo "elevation: got HTTP ${code} from ${url}"
@@ -222,9 +263,25 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     BASE="${TARGET%/api/towers}"
     RC=0
     printf 'Asserting %s honours what our vhosts will forward... ' "$TARGET"
-    if assert_tower_contract "$TARGET"; then
-        echo "OK"
+    # Both outcomes refuse the traffic, but for different reasons, and the
+    # message has to say which: an instance that is not answering has not
+    # "silently dropped the parameter", and sending someone to look for that is
+    # a wasted hour.
+    if REASON=$(assert_tower_contract "$TARGET"); then
+        TARGET_RC=0
     else
+        TARGET_RC=$?
+    fi
+    if [ "$TARGET_RC" = 0 ]; then
+        echo "OK"
+    elif [ "$TARGET_RC" = 2 ]; then
+        echo "FAILED"
+        printf '%s\n' "$REASON"
+        echo "::error::tower-finder-service is not answering, so a vhost cannot be pointed at it yet. This is the instance being unreachable, not the contract being wrong."
+        RC=1
+    else
+        echo "FAILED"
+        printf '%s\n' "$REASON"
         echo "::error::tower-finder-service is not ready to receive this traffic. Routing a vhost to it now would silently drop the parameter for every caller, including the public demo on testmap.retina.fm."
         RC=1
     fi
@@ -239,9 +296,12 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
 
     for check in elevation config; do
         printf 'Asserting %s/api/%s honours the shape our callers read... ' "$BASE" "$check"
-        # 2 is elevation's own upstream being unavailable, never config's. This
-        # gate decides whether a vhost may be pointed at this instance, which a
-        # third party's rate limiter has no bearing on.
+        # 2 is tolerated for elevation only. For elevation it is a third party's
+        # rate limiter, which has no bearing on whether a vhost may be pointed
+        # here. For config it is the service itself not answering, which is
+        # exactly what this gate exists to refuse: the production smoke warns on
+        # that because a rollback is the wrong response, but this gate is asked
+        # whether the instance is ready to receive traffic, and it is not.
         if REASON=$("assert_${check}_contract" "${BASE}/api/${check}"); then
             CHECK_RC=0
         else
@@ -249,7 +309,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
         fi
         if [ "$CHECK_RC" = 0 ]; then
             echo "OK"
-        elif [ "$CHECK_RC" = 2 ]; then
+        elif [ "$CHECK_RC" = 2 ] && [ "$check" = elevation ]; then
             echo "DEGRADED"
             printf '%s\n' "$REASON"
         else

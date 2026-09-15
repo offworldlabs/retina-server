@@ -89,11 +89,25 @@ check_json_field() {
 # The seam's assertion lives in tower-contract.sh so the gate and this suite
 # cannot drift; this only adapts it to the PASS/FAIL tally.
 check_contract() {
-    local name="$1" endpoint="$2" reason
+    local name="$1" endpoint="$2" reason rc
     printf "  %-40s " "$name"
     if reason=$(assert_tower_contract "$endpoint"); then
+        rc=0
+    else
+        rc=$?
+    fi
+    if [ "$rc" = 0 ]; then
         echo "OK"
         PASS=$((PASS+1))
+    elif [ "$rc" = 2 ]; then
+        # Forwarded, and tower-finder-service did not answer. Warned for the same
+        # reason the production suite warns: a red staging smoke skips the
+        # production deploy, so the service being down would hold this repo's
+        # releases behind an outage it cannot fix. The routing this covers is
+        # proven by the 404 case, which stays fatal.
+        echo "WARN"
+        printf '    %s\n' "$reason"
+        WARN=$((WARN+1))
     else
         echo "FAIL"
         printf '    %s\n' "$reason"
@@ -388,7 +402,23 @@ elif [ "$EL_RC" = 2 ]; then
 else
     echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
 fi
-check_status "dash /api/config answers"     "${DASH_URL}/api/config"                          "200"
+# Through the shared helper, not check_status, for the same reason as the two
+# above: a gateway status here is the service not answering, and failing on it
+# would skip deploy-production and hold a healthy release behind an outage this
+# repo cannot fix.
+printf "  %-40s " "dash /api/config answers"
+if REASON=$(assert_config_contract "${DASH_URL}/api/config"); then
+    CFG_RC=0
+else
+    CFG_RC=$?
+fi
+if [ "$CFG_RC" = 0 ]; then
+    echo "OK"; PASS=$((PASS+1))
+elif [ "$CFG_RC" = 2 ]; then
+    echo "WARN"; printf '    %s\n' "$REASON"; WARN=$((WARN+1))
+else
+    echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
+fi
 # PUT is the half that genuinely changed hands: the monolith gated it on an
 # admin session, the service gates it on a bearer token, and only the service's
 # handler is left. An unauthenticated PUT must still be refused. 401 or 403 both
