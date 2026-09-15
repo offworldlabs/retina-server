@@ -122,6 +122,7 @@ export const api = {
   adminConfigHistory: () => request("/api/admin/config/history"),
   adminStorage: () => request("/api/admin/storage"),
   adminMetrics: () => request("/api/admin/metrics"),
+  adminInfrastructure: () => request("/api/admin/infrastructure"),
 
   // MLAT verification — aggregated solver-vs-truth stats
   mlatVerification: () => request("/api/test/mlat-verification"),

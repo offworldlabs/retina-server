@@ -179,6 +179,7 @@ def _reset_module_state():
         dark_follow,
         feed_helpers,
         frame_processor,
+        infrastructure,
         known_claiming,
         node_bias,
         node_refs,
@@ -204,6 +205,7 @@ def _reset_module_state():
         node_bias,
         node_refs,
         publication,
+        infrastructure,
         periodic,
     ):
         mod._reset_for_tests()
