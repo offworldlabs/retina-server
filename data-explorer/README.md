@@ -16,7 +16,11 @@ data-explorer/
 ```
 
 Edit the files and redeploy; there is nothing to compile. `Dockerfile` copies the
-directory verbatim, so a change here ships with any image build.
+directory verbatim, so a change here ships with any image build. Because none of
+these names carries a content hash, nginx serves them `Cache-Control: no-cache`
+(`deploy/nginx/snippets/spa.conf`): browsers revalidate and get a 304 when
+nothing changed, and the edge never keeps a copy past a deploy. Only Vite's
+hashed `/assets/` trees get the week-long immutable policy.
 
 ## Why the libraries are vendored
 
