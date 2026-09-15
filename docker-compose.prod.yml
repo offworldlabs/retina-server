@@ -71,7 +71,6 @@ services:
       # hostnames are tokenised. So the block still renders, under a name with
       # no DNS record, and never receives a request.
       - HOST_TESTMAP=testmap-retired.retina.fm
-      - HOST_LEGACY_REDIRECT=tower-finder.retina.fm
       # The only host-naming part of the CSP. wss://*.retina.fm already covers
       # both environments, so only the two explicit origins vary.
       - CSP_CONNECT_SRC=https://api.retina.fm https://admin.retina.fm wss://*.retina.fm

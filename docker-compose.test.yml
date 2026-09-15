@@ -99,7 +99,6 @@ services:
       - HOST_ADMIN=test-admin.retina.fm
       - HOST_DATA=test-data.retina.fm
       - HOST_TESTMAP=test-testmap.retina.fm
-      - HOST_LEGACY_REDIRECT=test-tower-finder.retina.fm
       - CSP_CONNECT_SRC=https://test-api.retina.fm https://test-admin.retina.fm wss://*.retina.fm
     # This droplet was resized 2026-08-14 to 4 cores / 8 GB (from staging's
     # 2-core size) because the solver could not keep up with this fleet: at
