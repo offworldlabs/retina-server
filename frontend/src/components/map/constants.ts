@@ -194,3 +194,12 @@ export const TRAIL_SOLVE_SIGMA_FALLBACK_M = 300;
 // 7–33 s median life of a dark solver key, which is the real limit on how
 // much history a dark trail can ever have.
 export const SOLVE_TRAIL_MAX_POINTS = 40;
+
+// How much of a RETIRED dark key's solve buffer a replacement key may borrow
+// (stitchPredecessorTrail, driven by the feed's predecessor_hex).  Bounded
+// well under SOLVE_TRAIL_MAX_POINTS on purpose: the seed is history, and a
+// buffer filled with it would leave the new key no depth for the solves it is
+// about to make — 24 borrowed points still restore ~24-70 s of pre-turn track
+// while keeping 16 for the new one, which at the 1-3 s dark cadence is the
+// next 16-48 s.
+export const SOLVE_TRAIL_STITCH_MAX_POINTS = 24;

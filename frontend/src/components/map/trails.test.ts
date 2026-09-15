@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { smoothTrailPositions, type SolveTrailPoint } from "./trails";
+import { smoothTrailPositions, stitchPredecessorTrail, type SolveTrailPoint } from "./trails";
 import { distanceKm } from "./distance";
 
 const M_PER_DEG_LAT = 111_320;
@@ -157,5 +157,68 @@ describe("smoothTrailPositions", () => {
     const two = smoothTrailPositions(leg(2), { k: 3 });
     expect(two.smoothed.length).toBe(1);
     expect(two.head.length).toBe(1);
+  });
+});
+
+describe("stitchPredecessorTrail", () => {
+  /** n points one second apart ending at tsEnd, at a fixed place. */
+  const pts = (n: number, tsEnd: number, lat = 35): SolveTrailPoint[] =>
+    Array.from({ length: n }, (_, i) => [lat, -82, tsEnd - (n - 1 - i)] as SolveTrailPoint);
+
+  it("seeds an empty buffer with the predecessor's tail, newest points kept", () => {
+    const pred = pts(30, 1000);
+    const out = stitchPredecessorTrail([], pred, 24, 40);
+    expect(out).toHaveLength(24);
+    // The 24 MOST RECENT of the 30 — a trail loses its old end, not its new one.
+    expect(out[0][2]).toBe(pred[6][2]);
+    expect(out[23][2]).toBe(1000);
+  });
+
+  it("never lets the seed exceed the buffer depth", () => {
+    // Even asked for more seed than the buffer holds, the join is capped and
+    // the newest points are the ones that survive.
+    const out = stitchPredecessorTrail(pts(10, 2000), pts(60, 1000), 50, 40);
+    expect(out).toHaveLength(40);
+    expect(out[39][2]).toBe(2000);
+  });
+
+  it("is a no-op without a predecessor buffer", () => {
+    const prev = pts(3, 500);
+    expect(stitchPredecessorTrail(prev, undefined, 24, 40)).toEqual(prev);
+    expect(stitchPredecessorTrail(prev, [], 24, 40)).toEqual(prev);
+    expect(stitchPredecessorTrail(null, null, 24, 40)).toEqual([]);
+  });
+
+  it("drops predecessor points that are not older than the existing ones", () => {
+    // The two keys overlap for a solve or two around the turn.  A trail that
+    // is not monotonic in time would make smoothTrailPositions average across
+    // a fold, so the overlap is dropped rather than interleaved.
+    const prev = pts(2, 1005);          // ts 1004, 1005
+    const pred = pts(6, 1006);          // ts 1001..1006
+    const out = stitchPredecessorTrail(prev, pred, 24, 40);
+    expect(out.map((p) => p[2])).toEqual([1001, 1002, 1003, 1004, 1005]);
+  });
+
+  it("borrows nothing when the seed allowance is zero", () => {
+    expect(stitchPredecessorTrail([], pts(5, 900), 0, 40)).toEqual([]);
+  });
+
+  it("hands smoothTrailPositions a usable trail across the seam", () => {
+    // The stitched buffer is just a trail: #366's smoother runs on it
+    // unchanged, and the jump gate splitting the run at the seam (a real gap
+    // in the measurements) is expected, not a defect.
+    const pred: SolveTrailPoint[] = Array.from(
+      { length: 8 },
+      (_, i) => [34.85, -82.4 + i * 0.001, 1000 + i] as SolveTrailPoint,
+    );
+    const prev: SolveTrailPoint[] = Array.from(
+      { length: 8 },
+      (_, i) => [34.86, -82.39 + i * 0.001, 1030 + i] as SolveTrailPoint,
+    );
+    const out = stitchPredecessorTrail(prev, pred, 24, 40);
+    expect(out).toHaveLength(16);
+    const { smoothed } = smoothTrailPositions(out, { k: 3 });
+    expect(smoothed).toHaveLength(16);
+    expect(smoothed.every(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon))).toBe(true);
   });
 });

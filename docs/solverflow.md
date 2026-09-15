@@ -837,8 +837,12 @@ flowchart TD
     latch --> supersede{"Supersession: other key sharing<br/>a source track id —<br/>_supersession_match?"}
     supersede -->|"DR into gate_km,<br/>or its ids subset this solve's"| popped["entry popped,<br/>EWMA/KF state dropped,<br/>solve_count carried forward<br/>(mn_superseded)"]
     supersede -->|"neither"| blocked["kept — shared id is<br/>cross-aircraft contamination<br/>(mn_superseded_blocked)"]:::inert
-    popped --> store["state.multinode_tracks[key] = result"]
-    blocked --> store
+    popped --> coast
+    blocked --> coast
+    coast{"minted key AND MN_STALE_COAST_ENABLED:<br/>_stale_coast_candidate —<br/>the hard-turn re-key supersession<br/>cannot see (no shared id, and its<br/>DR is what the turn broke)"}
+    coast -->|"an mn-dark-* key 4-60s old whose RAW<br/>last solve is within min(10km, 350*dt+2km)<br/>and 1000m of this RAW solve, AND turn<br/>evidence: dark_follow dropped it, or<br/>KF manoeuvre level > 0.3"| retire["nearest candidate retired:<br/>track_histories transplanted onto<br/>the new hex, solve_count /<br/>max_n_nodes / recent_track_ids /<br/>anomaly latch carried, KF NOT,<br/>result.predecessor_key set<br/>(mn_stale_coast_retired)"]
+    coast -->|"no candidate"| store["state.multinode_tracks[key] = result"]
+    retire --> store
     store --> archive["track-archive buffer append"]
     archive --> claimslot["_record_resolve_slot:<br/>claim the POST-TRIM survivors<br/>for _SOLVER_RESOLVE_INTERVAL_S"]
     claimslot --> histpub["_record_solve_history: published"]
@@ -868,6 +872,15 @@ flowchart TD
 | `adsb_single_node` | `aircraft_feed._claimed_single_node_entries` | exactly one node claiming the hex within `CLAIMED_DISPLAY_FRESH_S`; position is the claim's ADS-B fix, the entry carries the node's full ambiguity arc. Two or more claiming nodes emit nothing here — that is the known-lane solver's `mn-adsb-<hex>` |
 | `known_lane_truth_match` / `known_lane_ghost` | `known_lane._record_accuracy` | accuracy-sample-only, not a feed entry |
 
+One optional field rides alongside them. A dark `multinode_solve` entry whose
+key was minted to retire a coasting predecessor (the `coast` branch above)
+carries **`predecessor_hex`**, the retired key's hex. The backend has already
+moved that hex's `track_histories` onto the new one, so `recent_positions` is
+continuous without it; the field exists for a client keeping its own per-hex
+history — `LiveAircraftMap`'s `solveTrailsRef` — which otherwise cannot know
+the two hexes are one aircraft. It is absent on every other entry, and it does
+not reach the Parquet archive, which writes a fixed schema.
+
 | Constant | Value | Defined in |
 |---|---|---|
 | `_MN_ASSOC_MAX_DIST_KM` / `_MN_ASSOC_MAX_AGE_S` (identity step 2/3) | 6.0 km / 60.0 s | `services/tasks/solver.py` |
@@ -879,6 +892,10 @@ flowchart TD
 | `MN_ONESHOT_TTL_S` | 15.0 s | `config/constants.py` |
 | `MN_DR_CAP_S` (dead-reckoning horizon past the last solve; the entry then holds its last DR'd point) | 15.0 s | `config/constants.py` |
 | `MN_DARK_EXPIRY_S` (entry expiry, `mn-dark-*` only — `mn-adsb-*` keeps 60 s) | 30.0 s | `config/constants.py` |
+| `MN_STALE_COAST_ENABLED` (mint-time retirement of a coasting key; `0` disables) | on | `config/constants.py` |
+| `MN_STALE_COAST_MIN_S` / `MN_STALE_COAST_MAX_S` (candidate solve-age band — below the floor the key is being tracked, not coasted) | 4.0 / 60.0 s | `config/constants.py` |
+| `MN_STALE_COAST_MAX_KM` / `MN_STALE_COAST_VMAX_MS` / `_MN_STALE_COAST_BASE_KM` (raw-to-raw gate, `min(max_km, vmax·dt + base)`) | 10.0 km / 350 m/s / 2.0 km | `config/constants.py`, `services/tasks/solver.py` |
+| `MN_STALE_COAST_MANOEUVRE` (KF manoeuvre level above which the filter counts as turn evidence) | 0.3 | `config/constants.py` |
 | `_DEDUP_SOURCE_RANK` order | multinode_solve 0 < adsb_single_node 1 < solver_adsb_seed 2 < solver_single_node 3 < single_node_ellipse_arc 4 | `services/feed_helpers.py` |
 | `CLAIMED_DISPLAY_FRESH_S` | 5.0 s | `config/constants.py` |
 | Dedup proximity / altitude gate | 3.0 km / 2000 ft | `services/feed_helpers.py` (`_DEDUP_PROXIMITY_KM`, `_DEDUP_ALT_GATE_FT`) |

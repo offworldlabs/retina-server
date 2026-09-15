@@ -494,6 +494,27 @@ def learned_velocity(track_key: str) -> tuple[float, float, float, float] | None
         return float(entry.x[1]), float(entry.x[3]), float(vel_sigma), float(entry.last_ts_s)
 
 
+def manoeuvre_level(track_key: str) -> float | None:
+    """This key's manoeuvre engagement (0-1), or None when it has no filter.
+
+    The companion read-only accessor to learned_velocity, and the same
+    contract: _KF_LOCK is a leaf lock, callers must not hold it, and nothing
+    here mutates the filter.
+
+    ``manoeuvre`` is re-armed towards 1.0 whenever a solve breaches the
+    innovation gate by enough that only a manoeuvre explains it, and decays
+    with _KF_MANOEUVRE_TAU_S afterwards (see _update_manoeuvre), so a non-zero
+    level is "this track was recently doing something a constant-velocity
+    model cannot follow".  solver.py reads it as the evidence half of
+    mint-time coast retirement: a key whose filter is still hot from a turn is
+    a key the follow lane has probably just lost, which is exactly when the
+    fix lane mints a duplicate for the same aircraft.
+    """
+    with _KF_LOCK:
+        entry = _KF_TRACKS.get(track_key)
+        return None if entry is None else float(entry.manoeuvre)
+
+
 def _kf_reanchor() -> None:
     """Count a gate breach that the manoeuvre retry could not explain.
     Caller holds _KF_LOCK."""

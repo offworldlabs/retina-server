@@ -217,6 +217,42 @@ def dedup_aircraft(aircraft: list[dict]) -> list[dict]:
     return out
 
 
+def adopt_track_history(old_hex: str, new_hex: str) -> int:
+    """Move ``old_hex``'s rendered trail onto ``new_hex``.  Returns points moved.
+
+    Both stores move together, for the reason append_track_history writes them
+    in lockstep: index i has to stay the same emit in the true and the public
+    frame, and transplanting one without the other would leave a served trail
+    that no internal consumer agrees with.
+
+    Used by the solver when a minted dark key retires the coasting key it
+    replaced (see MN_STALE_COAST_ENABLED).  The new key is a new hex, so
+    without this its trail starts at the turn — measured at a median 40 s of
+    history on a re-keyed turn against 113 s when the key survives it, and the
+    old hex's points sit unreachable in memory for TRAIL_STALE_S afterwards.
+
+    The old points go FIRST and the new hex's own points (there are usually
+    none — this runs at mint) are appended after them, so the trail stays in
+    emission order.  The deque's maxlen does the trimming, which means a
+    transplant onto a saturated buffer drops the oldest history rather than
+    the newest: the same rule an ordinary append already lives by.  The old
+    hex is left empty rather than deleted, so feed_gc's staleness sweep
+    collects it on its own schedule instead of this having to know the
+    lifetime rules of a store it does not own.
+    """
+    moved = 0
+    for store in (state.track_histories, state.track_histories_public):
+        old = store.get(old_hex)
+        if not old:
+            continue
+        merged = deque(old, maxlen=state.TRACK_HISTORY_MAX)
+        merged.extend(store.get(new_hex) or ())
+        store[new_hex] = merged
+        moved = max(moved, len(old))
+        old.clear()
+    return moved
+
+
 def append_track_history(
     hex_code: str,
     lat: float,

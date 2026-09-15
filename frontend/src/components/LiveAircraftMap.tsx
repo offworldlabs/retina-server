@@ -24,6 +24,7 @@ import {
   TRAIL_SMOOTH_K,
   TRAIL_SOLVE_SIGMA_FALLBACK_M,
   SOLVE_TRAIL_MAX_POINTS,
+  SOLVE_TRAIL_STITCH_MAX_POINTS,
   MLAT_HISTORY_REFRESH_MS,
   newSolveArrived,
   groundTruthKey,
@@ -38,6 +39,7 @@ import {
   sampleTrailPositions,
   buildTrailSegments,
   smoothTrailPositions,
+  stitchPredecessorTrail,
   makeAircraftIcon,
   makeDroneIcon,
   drIconState,
@@ -1450,7 +1452,25 @@ export default function LiveAircraftMap() {
       if (ac.position_source === "multinode_solve" && !ac.adsb_assisted
           && validLatLon(ac.solve_lat, ac.solve_lon)) {
         let solves = solveTrailsRef.current[ac.hex];
-        if (!solves) { solves = []; solveTrailsRef.current[ac.hex] = solves; }
+        if (!solves) {
+          // A hard turn makes the solver mint a new dark key for an aircraft
+          // it already had one for, and retire the old one (solver.py's
+          // _stale_coast_candidate).  The feed names the retired hex, and the
+          // backend has already moved its own trail store across — but THIS
+          // buffer is built client-side and keyed by hex, so without the
+          // stitch the drawn dark trail would restart at the turn.  Seeding
+          // it at first creation is the only moment the predecessor buffer is
+          // guaranteed to still be here: the stale sweep drops it once the
+          // retired hex stops appearing in the feed.
+          const predHex = ac.predecessor_hex;
+          const pred = predHex ? solveTrailsRef.current[predHex] : undefined;
+          solves = stitchPredecessorTrail([], pred, SOLVE_TRAIL_STITCH_MAX_POINTS, SOLVE_TRAIL_MAX_POINTS);
+          solveTrailsRef.current[ac.hex] = solves;
+          // The predecessor's own buffer goes now rather than waiting out the
+          // sweep: its key is retired server-side, so nothing will refresh it,
+          // and the points it holds are now drawn under the new hex.
+          if (pred && predHex) delete solveTrailsRef.current[predHex];
+        }
         const lastSolve = solves[solves.length - 1];
         // solve_lat/solve_lon only change when a NEW solve lands; the feed
         // re-broadcasts the same pair at 1 Hz in between, and appending those

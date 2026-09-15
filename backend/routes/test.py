@@ -1729,6 +1729,18 @@ def _solver_window_stats(minutes: float) -> dict:
             "mn_superseded": state.mn_superseded,
             "mn_superseded_blocked": state.mn_superseded_blocked,
             "mn_superseded_blocked_alt": state.mn_superseded_blocked_alt,
+            # Mint-time retirement of coasting keys (MN_STALE_COAST_ENABLED).
+            # The hard-turn re-key the shared-id prefilter above cannot see.
+            # retired + the three blocked/none counters sum to the dark mints
+            # (solver_key_minted_dark) taken while the feature was enabled, so
+            # "retired" is readable as a fraction: on the captures this was
+            # built from, roughly half of dark re-keys around a turn left a
+            # ghost worth retiring.  blocked_evidence is the one to watch —
+            # it is every retirement proximity alone would have made.
+            "mn_stale_coast_retired": state.mn_stale_coast_retired,
+            "mn_stale_coast_blocked_alt": state.mn_stale_coast_blocked_alt,
+            "mn_stale_coast_blocked_evidence": state.mn_stale_coast_blocked_evidence,
+            "mn_stale_coast_none": state.mn_stale_coast_none,
         },
         # Display smoother (services/track_filter.py), since boot except
         # manoeuvre_active, which is a live gauge.  reanchors are chi-squared
