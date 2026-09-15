@@ -203,9 +203,15 @@ jobs:
           # request can only ever time out or 400. `-k` does not help — that flag
           # governs verification of the SERVER's certificate, not presentation of
           # a client one. Same hostname deploy/staging-smoke-test.sh uses for this
-          # endpoint (BASE_URL there), so both agree on what "staging" means.
+          # endpoint (API_URL there), so both agree on what "staging" means.
+          #
+          # NOT the towers hostname: a Cloudflare Origin Rule routes that to the
+          # tower-finder-edge container on port 8443, which has no such route.
+          # The 404 body fails the parse below, `|| COUNT=0` swallows it, and the
+          # loop then reports "0 nodes" for all 24 attempts whatever the fleet is
+          # doing — a wrong URL that reads exactly like a fleet that never came up.
           for i in $(seq 1 24); do
-            COUNT=$(curl -s https://staging-towers.retina.fm/api/test/dashboard \
+            COUNT=$(curl -s https://staging-api.retina.fm/api/test/dashboard \
               | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['active'])" 2>/dev/null) || COUNT=0
             if [ "${COUNT:-0}" -ge 1 ]; then
               echo "Fleet ready: ${COUNT} node(s) connected after ~$((i*5))s"
