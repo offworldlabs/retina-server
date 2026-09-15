@@ -18,7 +18,14 @@ import yaml
 
 from routes.nodes import NODE_API_SERVERS, NODE_API_VERSION
 from scripts.generate_openapi import CONTRACT_PATH, contract, render
-from services.node_config import _NULLABLE, _NULLABLE_BEAM, _NUMERIC_BOUNDS, _REQUIRED, numeric_branch
+from services.node_config import (
+    _NULLABLE,
+    _NULLABLE_BEAM,
+    _NULLABLE_CALLSIGN,
+    _NUMERIC_BOUNDS,
+    _REQUIRED,
+    numeric_branch,
+)
 
 FRAME = {
     "t": 1753900000.123,
@@ -254,13 +261,14 @@ def test_every_bound_the_validator_enforces_reaches_the_schema(document):
 
 def test_the_nullable_fields_publish_a_null_branch(document):
     """The six coordinates, so a node whose owner cannot supply the geometry
-    still registers, and the two beam fields, which no node has characterised.
+    still registers, the two beam fields, which no node has characterised, and
+    the callsign, which an owner who cannot name the illuminator leaves null.
     A client generated from a document that omitted these cannot express the
     config the fleet actually sends."""
     properties = _published_config(document)["properties"]
     nullable = {field for field, published in properties.items() if {"type": "null"} in published.get("anyOf", [])}
 
-    assert nullable == _NULLABLE | _NULLABLE_BEAM
+    assert nullable == _NULLABLE | _NULLABLE_BEAM | _NULLABLE_CALLSIGN
 
 
 def test_the_contact_operation_reaches_its_own_component(document):

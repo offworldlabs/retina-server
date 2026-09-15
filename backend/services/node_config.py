@@ -80,6 +80,13 @@ _REQUIRED = set(_NUMERIC_BOUNDS) | set(_UNTABLED_PROPERTIES)
 # antenna characterised, so null is what the whole fleet sends for both.
 _NULLABLE_BEAM = {"beam_width_deg", "beam_azimuth_deg"}
 
+# Nullable since 1.2.2, on the coordinates' reasoning above: an owner who cannot
+# name the illuminator has nothing to put here, and a substituted name is wrong
+# data the server could not later tell apart from a real one. The empty string
+# stays refused, so null is the single spelling of "unknown" and no stored row
+# can hold the other.
+_NULLABLE_CALLSIGN = {"tx_callsign"}
+
 _SCHEMA_DESCRIPTION = """\
 The receiver and illuminator geometry, the radio parameters and the association
 tolerances. Every field is required.
@@ -88,6 +95,10 @@ The six coordinate fields are nullable, for a node whose owner cannot supply the
 geometry. Such a node registers and streams, and its detections are counted, but
 it places nothing on the map until a position arrives. A latitude and its
 longitude are given together or both null.
+
+`tx_callsign` is nullable for the same reason, and the empty string is not: a
+node that cannot name its illuminator sends null, which is the only way to say
+so.
 
 Necessary but not sufficient. A receiver and illuminator at the same point are
 refused, as is a value that is not a finite number, and neither is expressible
@@ -121,7 +132,7 @@ def config_json_schema() -> dict[str, Any]:
     """
     properties = {field: _numeric_property(*bounds) for field, bounds in _NUMERIC_BOUNDS.items()}
     properties |= deepcopy(_UNTABLED_PROPERTIES)
-    nullable = _NULLABLE | _NULLABLE_BEAM
+    nullable = _NULLABLE | _NULLABLE_BEAM | _NULLABLE_CALLSIGN
     return {
         "type": "object",
         "title": "NodeConfig",
@@ -139,6 +150,13 @@ def config_json_schema() -> dict[str, Any]:
     }
 
 
+def _typed_branch(published: dict[str, Any], json_type: str) -> dict[str, Any]:
+    for alternative in published.get("anyOf", [published]):
+        if alternative.get("type") == json_type:
+            return alternative
+    return published
+
+
 def numeric_branch(published: dict[str, Any]) -> dict[str, Any]:
     """The number half of a published property, whether or not it is nullable.
 
@@ -147,10 +165,12 @@ def numeric_branch(published: dict[str, Any]) -> dict[str, Any]:
     the type rather than on position in the `anyOf`, so reordering the branches
     cannot leave a caller reading the null one and finding no bounds at all.
     """
-    for alternative in published.get("anyOf", [published]):
-        if alternative.get("type") == "number":
-            return alternative
-    return published
+    return _typed_branch(published, "number")
+
+
+def string_branch(published: dict[str, Any]) -> dict[str, Any]:
+    """numeric_branch for the one field whose bounds are lengths, not magnitudes."""
+    return _typed_branch(published, "string")
 
 
 def _as_finite_float(value: Any) -> tuple[float | None, str]:
@@ -211,10 +231,15 @@ def validate_config(payload: dict[str, Any]) -> dict[str, Any]:
             raise ConfigInvalid(field)
         out[field] = value
 
+    # Null is the illuminator being unnamed, and "" is not a shorter way to say
+    # it: see _NULLABLE_CALLSIGN.
     callsign = payload["tx_callsign"]
-    if not isinstance(callsign, str) or not 1 <= len(callsign) <= 32:
+    if callsign is None:
+        out["tx_callsign"] = None
+    elif isinstance(callsign, str) and 1 <= len(callsign) <= 32:
+        out["tx_callsign"] = callsign
+    else:
         raise ConfigInvalid("tx_callsign")
-    out["tx_callsign"] = callsign
 
     # Required and nullable since 1.1.1: no node has its antenna characterised,
     # because retina-gui does not collect the geometry from owners, so null is what
