@@ -556,7 +556,7 @@ jobs:
             echo "code=false" >> "$GITHUB_OUTPUT"
           fi
 
-  # Staging's deploy and both of its verification suites, called as one job.
+  # Staging's deploy and its rollback and both of its verification suites, called as one job.
   # A calling job is not complete until every job in the called workflow has
   # finished, so the concurrency group below is held across the whole sequence.
   # Three grouped jobs here would not do it: the group is acquired and released

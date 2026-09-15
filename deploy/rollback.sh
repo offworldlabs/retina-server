@@ -1,5 +1,5 @@
 #!/bin/bash
-# ── Production Rollback ──────────────────────────────────────────────────────
+# ── Rollback ─────────────────────────────────────────────────────────────────
 # Quick rollback to the previous Docker image or a specific git tag.
 #
 # Usage:

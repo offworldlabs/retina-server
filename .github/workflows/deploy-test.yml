@@ -10,6 +10,8 @@ name: Deploy to test droplet
 # rollback-production-on-deploy-failure. ci.yml is the source of truth; this is
 # a copy, and a copy can drift. If you change the marker lifecycle or the
 # rollback decisions there, change them here, or this stops verifying anything.
+# staging-deploy-verify.yml carries the same pair for staging; keep all three
+# in step.
 on:
   workflow_dispatch:
     inputs:

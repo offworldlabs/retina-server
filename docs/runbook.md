@@ -19,6 +19,17 @@ after a `just deploy-test` rsync, which excludes `.env`, whatever is on the box
 stays, so place it by hand once on a fresh droplet:
 `cp deploy/env.test.example .env`.
 
+On prod and staging, the deploy takes a rollback point before it moves anything
+(`deploy/pre-deploy.sh`: the running images retagged `:rollback`, the commit tagged
+`deploy-<timestamp>`) and marks the box mid-deploy with `.deploy-in-progress` until the
+new container answers `/api/health`. A deploy that fails in a pre-flight touches nothing
+and rolls nothing back; one that fails after the marker is written is rolled back by the
+workflow itself (`rollback-production-on-deploy-failure` in `ci.yml`, `rollback` in
+`staging-deploy-verify.yml`) through `deploy/rollback.sh`. A marker left behind blocks
+the next deploy until someone recovers the box and deletes it. Production also rolls back
+when its smoke tests or E2E fail. Staging does not: a build that boots healthy and then
+fails its suites stays there, blocking production, until the next merge.
+
 | | prod | staging | test |
 |---|---|---|---|
 | **Overlay** | `docker-compose.prod.yml` | `docker-compose.staging.yml` | `docker-compose.test.yml` |
@@ -670,6 +681,16 @@ Anything listed needs a `nodes` row with a ref minted for it before the deploy.
 ```bash
 cd /opt/retina-server && docker compose restart
 ```
+
+### Recover a dark box
+A box that answers nothing after a failed deploy usually still holds a working image.
+`docker compose up -d` in `/opt/retina-server` starts the stack on whatever
+`retina-server:latest` names, and `bash deploy/rollback.sh` goes back to the saved
+`:rollback` image if that build is the broken one. A build that fails with
+`failed to prepare extraction snapshot ... parent snapshot ... does not exist` is
+containerd build-cache corruption, not disk: `docker builder prune -af` clears it and
+touches nothing but the build cache. Delete `.deploy-in-progress` once the box is
+healthy, or the next deploy refuses.
 
 ### Tail live logs
 ```bash
