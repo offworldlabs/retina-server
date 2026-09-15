@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
+import { Pager } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
 import { formatUptime } from "../../utils/format";
@@ -170,13 +171,7 @@ export default function NodeManagementPage() {
         })}
       </div>
 
-      {totalPages > 1 && (
-        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 12, marginTop: 12 }}>
-          <button className="btn btn-sm" disabled={page === 0} onClick={() => setPage(page - 1)}>← Prev</button>
-          <span style={{ fontSize: 12 }}>Page {page + 1} of {totalPages}</span>
-          <button className="btn btn-sm" disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)}>Next →</button>
-        </div>
-      )}
+      <Pager page={page} totalPages={totalPages} onPage={setPage} />
     </>
   );
 }

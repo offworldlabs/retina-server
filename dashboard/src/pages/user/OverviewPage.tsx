@@ -3,6 +3,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { DataTable } from "../../components/DataTable";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { formatRelativeTime, formatUptime } from "../../utils/format";
@@ -99,37 +100,27 @@ export default function OverviewPage() {
               {POSITION_STATUS_EXPLANATION}
             </span>
           </div>
-          <div className="table-wrapper">
-            <table>
-              <thead>
-                <tr>
-                  <th>Node</th>
-                  <th>Position</th>
+          <DataTable headers={["Node", "Position"]} count={needsAttention.length}>
+            {needsAttention.map((node) => {
+              // The detail page addresses the node on public routes, which
+              // take the ref.  A node with no ref is on no public surface,
+              // so its row is still listed (this is the only place its
+              // owner is told) but it is not a link to a 404.
+              const ref = node.node_ref;
+              return (
+                <tr
+                  key={ref || node.node_id || node.id}
+                  style={ref ? { cursor: "pointer" } : undefined}
+                  onClick={ref ? () => navigate(`/nodes/${ref}`) : undefined}
+                >
+                  <td style={{ color: ref ? "var(--accent)" : undefined }}>
+                    {node.name || ref || node.node_id || node.id}
+                  </td>
+                  <td><PositionStatusBadge status={node.position_status} /></td>
                 </tr>
-              </thead>
-              <tbody>
-                {needsAttention.map((node) => {
-                  // The detail page addresses the node on public routes, which
-                  // take the ref.  A node with no ref is on no public surface,
-                  // so its row is still listed (this is the only place its
-                  // owner is told) but it is not a link to a 404.
-                  const ref = node.node_ref;
-                  return (
-                    <tr
-                      key={ref || node.node_id || node.id}
-                      style={ref ? { cursor: "pointer" } : undefined}
-                      onClick={ref ? () => navigate(`/nodes/${ref}`) : undefined}
-                    >
-                      <td style={{ color: ref ? "var(--accent)" : undefined }}>
-                        {node.name || ref || node.node_id || node.id}
-                      </td>
-                      <td><PositionStatusBadge status={node.position_status} /></td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+              );
+            })}
+          </DataTable>
         </div>
       )}
 

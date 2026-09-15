@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
+import { DataTable } from "../../components/DataTable";
 import { StatCard } from "../../components/StatCard";
 
 type Invite = {
@@ -127,48 +128,34 @@ export default function InvitesPage() {
           {invites.length === 0 ? (
             <div className="empty-state">No invites yet.</div>
           ) : (
-            <div className="table-wrapper">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Email</th>
-                    <th>Role</th>
-                    <th>Status</th>
-                    <th>Created</th>
-                    <th>Expires</th>
-                    <th></th>
+            <DataTable headers={["Email", "Role", "Status", "Created", "Expires", ""]} count={invites.length}>
+              {invites.map((i) => {
+                const expired = !i.used_at && i.expires_at * 1000 < Date.now();
+                const status = i.used_at ? "consumed" : expired ? "expired" : "pending";
+                return (
+                  <tr key={i.token}>
+                    <td>{i.email}</td>
+                    <td style={{ textTransform: "capitalize" }}>
+                      <span className={`badge ${i.role === "admin" ? "warning" : "online"}`}>{i.role}</span>
+                    </td>
+                    <td>
+                      <span className={`badge ${status === "pending" ? "online" : status === "consumed" ? "" : "warning"}`}>
+                        {status}
+                      </span>
+                    </td>
+                    <td>{new Date(i.created_at * 1000).toLocaleString()}</td>
+                    <td>{new Date(i.expires_at * 1000).toLocaleDateString()}</td>
+                    <td>
+                      {!i.used_at && !expired && (
+                        <button className="btn btn-outline btn-sm" onClick={() => revoke(i.token, i.email)}>
+                          Revoke
+                        </button>
+                      )}
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {invites.map((i) => {
-                    const expired = !i.used_at && i.expires_at * 1000 < Date.now();
-                    const status = i.used_at ? "consumed" : expired ? "expired" : "pending";
-                    return (
-                      <tr key={i.token}>
-                        <td>{i.email}</td>
-                        <td style={{ textTransform: "capitalize" }}>
-                          <span className={`badge ${i.role === "admin" ? "warning" : "online"}`}>{i.role}</span>
-                        </td>
-                        <td>
-                          <span className={`badge ${status === "pending" ? "online" : status === "consumed" ? "" : "warning"}`}>
-                            {status}
-                          </span>
-                        </td>
-                        <td>{new Date(i.created_at * 1000).toLocaleString()}</td>
-                        <td>{new Date(i.expires_at * 1000).toLocaleDateString()}</td>
-                        <td>
-                          {!i.used_at && !expired && (
-                            <button className="btn btn-outline btn-sm" onClick={() => revoke(i.token, i.email)}>
-                              Revoke
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                );
+              })}
+            </DataTable>
           )}
         </div>
       </div>

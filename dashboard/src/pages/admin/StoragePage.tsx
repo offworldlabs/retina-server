@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { api } from "../../api/client";
+import { DataTable } from "../../components/DataTable";
 import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
 import { formatBytes } from "../../utils/format";
@@ -23,6 +24,7 @@ export default function StoragePage() {
   const total = archive?.total ?? archive?.count ?? 0;
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const perNode: [string, any][] = Object.entries(storage?.per_node ?? {});
 
   return (
     <>
@@ -163,34 +165,25 @@ export default function StoragePage() {
 
       </div>
 
-      {storage?.per_node && Object.keys(storage.per_node).length > 0 && (
+      {perNode.length > 0 && (
         <div className="card" style={{ marginTop: 16 }}>
           <div className="card-header"><h3>Storage by Node</h3></div>
-          <div className="table-wrapper">
-            <table>
-              <thead>
-                <tr>
-                  <th>Node</th>
-                  <th>Files</th>
-                  <th>Size</th>
-                  <th>Write Rate</th>
+          <DataTable
+            headers={["Node", "Files", "Size", "Write Rate"]}
+            count={perNode.length}
+          >
+            {perNode.map(([nodeId, info]) => {
+              const rate = storage.write_rate?.per_node_bytes_per_day?.[nodeId] || 0;
+              return (
+                <tr key={nodeId}>
+                  <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>{nodeId}</td>
+                  <td>{(info.files || 0).toLocaleString()}</td>
+                  <td>{formatBytes(info.bytes || 0)}</td>
+                  <td>{rate > 0 ? formatBytes(rate) + "/day" : "—"}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {Object.entries(storage.per_node).map(([nodeId, info]: [string, any]) => {
-                  const rate = storage.write_rate?.per_node_bytes_per_day?.[nodeId] || 0;
-                  return (
-                    <tr key={nodeId}>
-                      <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>{nodeId}</td>
-                      <td>{(info.files || 0).toLocaleString()}</td>
-                      <td>{formatBytes(info.bytes || 0)}</td>
-                      <td>{rate > 0 ? formatBytes(rate) + "/day" : "—"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+              );
+            })}
+          </DataTable>
         </div>
       )}
 
@@ -217,40 +210,29 @@ export default function StoragePage() {
             </button>
           </div>
         </div>
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>Filename</th>
-                <th>Node</th>
-                <th>Size</th>
-                <th>Date</th>
+        <DataTable
+          headers={["Filename", "Node", "Size", "Date"]}
+          count={archives.length}
+          empty="No archives"
+          loading={loading}
+        >
+          {archives.map((file, i) => {
+            const key = typeof file === "string" ? file : (file.key || "");
+            const parts = key.split("/");
+            const name = parts[parts.length - 1] || key;
+            const node = parts.length >= 4 ? parts[3] : "—";
+            const size = file.size_bytes != null ? formatBytes(file.size_bytes) : "—";
+            const date = file.modified ? new Date(file.modified).toLocaleString() : "—";
+            return (
+              <tr key={i}>
+                <td style={{ fontFamily: "monospace", fontSize: 12 }}>{name}</td>
+                <td style={{ fontFamily: "monospace", fontSize: 12 }}>{node}</td>
+                <td>{size}</td>
+                <td style={{ fontSize: 12 }}>{date}</td>
               </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan={4} style={{ textAlign: "center", padding: 32 }}>Loading…</td></tr>
-              ) : archives.length === 0 ? (
-                <tr><td colSpan={4} style={{ textAlign: "center", padding: 32 }}>No archives</td></tr>
-              ) : archives.map((file, i) => {
-                const key = typeof file === "string" ? file : (file.key || "");
-                const parts = key.split("/");
-                const name = parts[parts.length - 1] || key;
-                const node = parts.length >= 4 ? parts[3] : "—";
-                const size = file.size_bytes != null ? formatBytes(file.size_bytes) : "—";
-                const date = file.modified ? new Date(file.modified).toLocaleString() : "—";
-                return (
-                  <tr key={i}>
-                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{name}</td>
-                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{node}</td>
-                    <td>{size}</td>
-                    <td style={{ fontSize: 12 }}>{date}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+            );
+          })}
+        </DataTable>
       </div>
     </>
   );

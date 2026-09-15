@@ -1,4 +1,5 @@
 import { api } from "../../api/client";
+import { DataTable } from "../../components/DataTable";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { fmt } from "../../utils/format";
@@ -153,45 +154,34 @@ export default function SystemMetricsPage() {
             </span>
           )}
         </div>
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>Task</th>
-                <th>Status</th>
-                <th>Last Success</th>
-                <th>Errors</th>
+        <DataTable
+          headers={["Task", "Status", "Last Success", "Errors"]}
+          count={taskNames.length}
+          empty="No tasks recorded yet"
+        >
+          {taskNames.map((name) => {
+            const isStale = staleSet.has(name);
+            const errors = m.task_error_counts?.[name] ?? 0;
+            return (
+              <tr key={name}>
+                <td style={{ fontFamily: "monospace", fontSize: 13 }}>{name}</td>
+                <td>
+                  <span className={`status-badge ${isStale ? "offline" : "online"}`}>
+                    {isStale ? "stale" : "ok"}
+                  </span>
+                </td>
+                <td style={{ color: "var(--text-muted)", fontSize: 13 }}>
+                  {ago(m.task_last_success?.[name])}
+                </td>
+                <td>
+                  <span style={{ color: errors > 0 ? "var(--error)" : "var(--text-muted)", fontWeight: errors > 0 ? 600 : 400 }}>
+                    {errors}
+                  </span>
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {taskNames.length === 0 && (
-                <tr><td colSpan={4} style={{ textAlign: "center", color: "var(--text-muted)" }}>No tasks recorded yet</td></tr>
-              )}
-              {taskNames.map((name) => {
-                const isStale = staleSet.has(name);
-                const errors = m.task_error_counts?.[name] ?? 0;
-                return (
-                  <tr key={name}>
-                    <td style={{ fontFamily: "monospace", fontSize: 13 }}>{name}</td>
-                    <td>
-                      <span className={`status-badge ${isStale ? "offline" : "online"}`}>
-                        {isStale ? "stale" : "ok"}
-                      </span>
-                    </td>
-                    <td style={{ color: "var(--text-muted)", fontSize: 13 }}>
-                      {ago(m.task_last_success?.[name])}
-                    </td>
-                    <td>
-                      <span style={{ color: errors > 0 ? "var(--error)" : "var(--text-muted)", fontWeight: errors > 0 ? 600 : 400 }}>
-                        {errors}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+            );
+          })}
+        </DataTable>
       </div>
     </>
   );

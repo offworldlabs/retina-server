@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api, downloadUrl } from "../../api/client";
+import { DataTable } from "../../components/DataTable";
 import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
 import { formatBytes } from "../../utils/format";
@@ -51,56 +52,40 @@ export default function DataExplorerPage() {
             </button>
           </div>
         </div>
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>Filename</th>
-                <th>Node</th>
-                <th>Size</th>
-                <th>Date</th>
-                <th>Download</th>
+        <DataTable
+          headers={["Filename", "Node", "Size", "Date", "Download"]}
+          count={archives.length}
+          empty="No archived data available"
+          loading={loading}
+        >
+          {archives.map((file, i) => {
+            const key = typeof file === "string" ? file : (file.key || "");
+            const parts = key.split("/");
+            const name = parts[parts.length - 1] || key;
+            // key structure: YYYY/MM/DD/node_id/filename.json
+            const node = parts.length >= 4 ? parts[3] : (parts[2] || "—");
+            const size = file.size_bytes != null ? formatBytes(file.size_bytes) : "—";
+            const date = file.modified ? new Date(file.modified).toLocaleString() : "—";
+            return (
+              <tr key={i}>
+                <td style={{ fontFamily: "monospace", fontSize: 12 }}>{name}</td>
+                <td style={{ fontFamily: "monospace", fontSize: 12 }}>{node}</td>
+                <td>{size}</td>
+                <td style={{ fontSize: 12 }}>{date}</td>
+                <td>
+                  <a
+                    href={downloadUrl(`/api/data/archive/${encodeURIComponent(key)}`)}
+                    className="btn btn-outline btn-sm"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Download
+                  </a>
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr>
-                  <td colSpan={5} style={{ textAlign: "center", padding: 32 }}>Loading…</td>
-                </tr>
-              ) : archives.length === 0 ? (
-                <tr>
-                  <td colSpan={5} style={{ textAlign: "center", padding: 32 }}>No archived data available</td>
-                </tr>
-              ) : archives.map((file, i) => {
-                const key = typeof file === "string" ? file : (file.key || "");
-                const parts = key.split("/");
-                const name = parts[parts.length - 1] || key;
-                // key structure: YYYY/MM/DD/node_id/filename.json
-                const node = parts.length >= 4 ? parts[3] : (parts[2] || "—");
-                const size = file.size_bytes != null ? formatBytes(file.size_bytes) : "—";
-                const date = file.modified ? new Date(file.modified).toLocaleString() : "—";
-                return (
-                  <tr key={i}>
-                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{name}</td>
-                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{node}</td>
-                    <td>{size}</td>
-                    <td style={{ fontSize: 12 }}>{date}</td>
-                    <td>
-                      <a
-                        href={downloadUrl(`/api/data/archive/${encodeURIComponent(key)}`)}
-                        className="btn btn-outline btn-sm"
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Download
-                      </a>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+            );
+          })}
+        </DataTable>
       </div>
     </>
   );

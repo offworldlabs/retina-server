@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { api } from "../../api/client";
+import { DataTable } from "../../components/DataTable";
+import { Pager } from "../../components/Pager";
 import { useFetch } from "../../hooks/usePolling";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
 
@@ -63,63 +65,41 @@ export default function TunnelLinkPage() {
           const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
           return (
             <>
-              <div className="table-wrapper">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Node</th>
-                      <th>Status</th>
-                      <th>Local Display</th>
-                      <th>Tunnel Status</th>
-                      <th>Actions</th>
+              <DataTable
+                headers={["Node", "Status", "Local Display", "Tunnel Status", "Actions"]}
+                count={paged.length}
+                empty={search ? "No matching nodes" : "No nodes connected yet"}
+              >
+                {paged.map((node) => {
+                  const id = node.node_id;
+                  const online = node.status !== "disconnected" && node.status != null;
+                  return (
+                    <tr key={id}>
+                      <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
+                        {node.name || id}{" "}
+                        <LocationPrivacyBadge isPrivate={node.location_private} />
+                      </td>
+                      <td>
+                        <span className={`badge ${online ? "online" : "offline"}`}>
+                          {online ? "Online" : "Offline"}
+                        </span>
+                      </td>
+                      <td style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                        {online ? "http://[node-ip]:8080" : "—"}
+                      </td>
+                      <td>
+                        <span className="badge warning">Not Yet Available</span>
+                      </td>
+                      <td>
+                        <button className="btn btn-outline btn-sm" disabled title="Coming soon">
+                          Enable Tunnel
+                        </button>
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {paged.map((node) => {
-                      const id = node.node_id;
-                      const online = node.status !== "disconnected" && node.status != null;
-                      return (
-                        <tr key={id}>
-                          <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
-                            {node.name || id}{" "}
-                            <LocationPrivacyBadge isPrivate={node.location_private} />
-                          </td>
-                          <td>
-                            <span className={`badge ${online ? "online" : "offline"}`}>
-                              {online ? "Online" : "Offline"}
-                            </span>
-                          </td>
-                          <td style={{ fontSize: 12, color: "var(--text-muted)" }}>
-                            {online ? "http://[node-ip]:8080" : "—"}
-                          </td>
-                          <td>
-                            <span className="badge warning">Not Yet Available</span>
-                          </td>
-                          <td>
-                            <button className="btn btn-outline btn-sm" disabled title="Coming soon">
-                              Enable Tunnel
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                    {filtered.length === 0 && (
-                      <tr>
-                        <td colSpan={5} style={{ textAlign: "center", padding: 32 }}>
-                          {search ? "No matching nodes" : "No nodes connected yet"}
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-              {totalPages > 1 && (
-                <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "12px 0" }}>
-                  <button className="btn btn-secondary btn-sm" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>← Prev</button>
-                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Page {page + 1} of {totalPages} ({filtered.length} nodes)</span>
-                  <button className="btn btn-secondary btn-sm" disabled={page >= totalPages - 1} onClick={() => setPage((p) => p + 1)}>Next →</button>
-                </div>
-              )}
+                  );
+                })}
+              </DataTable>
+              <Pager page={page} totalPages={totalPages} onPage={setPage} note={`${filtered.length} nodes`} />
             </>
           );
         })()}

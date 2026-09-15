@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { api } from "../../api/client";
+import { DataTable } from "../../components/DataTable";
+import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { formatUptime } from "../../utils/format";
@@ -113,72 +115,47 @@ export default function LeaderboardPage() {
             ? sorted.filter((e) => ((e.name || e.node_ref || "")).toLowerCase().includes(search.toLowerCase()))
             : sorted;
           const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
-          const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-          const offset = page * PAGE_SIZE;
+          const current = clampPage(page, totalPages);
+          const paged = filtered.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE);
+          const offset = current * PAGE_SIZE;
           return (
             <>
-              <div className="table-wrapper">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>#</th>
-                      <th>Node</th>
-                      <th>Status</th>
-                      <th>Detections</th>
-                      <th>Tracks</th>
-                      <th>In Range</th>
-                      <th>Missed</th>
-                      <th>Miss Rate</th>
-                      <th>Uptime</th>
-                      <th>Avg SNR</th>
-                      <th>Trust</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {paged.map((entry, i) => (
-                      <tr key={entry.node_ref}>
-                        <td style={{ fontWeight: 600, color: "var(--text-primary)" }}>{offset + i + 1}</td>
-                        <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
-                          {(entry.name || entry.node_ref).slice(-12)}
-                        </td>
-                        <td>
-                          <span className={`badge ${entry.online ? "online" : "offline"}`}>
-                            {entry.online ? "Online" : "Offline"}
-                          </span>
-                        </td>
-                        <td>{entry.detections.toLocaleString()}</td>
-                        <td>{entry.tracks}</td>
-                        <td>{entry.in_range || 0}</td>
-                        <td style={{ color: (entry.missed || 0) > 0 ? "var(--warning)" : undefined }}>
-                          {entry.missed || 0}
-                        </td>
-                        <td style={{
-                          fontWeight: 600,
-                          color: (entry.miss_rate || 0) > 0.5 ? "var(--error)"
-                            : (entry.miss_rate || 0) > 0.2 ? "var(--warning)" : "var(--success)",
-                        }}>
-                          {(entry.in_range || 0) > 0 ? ((entry.miss_rate || 0) * 100).toFixed(1) + "%" : "—"}
-                        </td>
-                        <td>{formatUptime(entry.uptime_s)}</td>
-                        <td>{entry.avg_snr.toFixed(1)} dB</td>
-                        <td>{(entry.trust_score * 100).toFixed(0)}%</td>
-                      </tr>
-                    ))}
-                    {paged.length === 0 && (
-                      <tr>
-                        <td colSpan={11} style={{ textAlign: "center", padding: 32 }}>No nodes found</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-              {totalPages > 1 && (
-                <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 8, padding: "12px 0" }}>
-                  <button className="btn btn-secondary btn-sm" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>← Prev</button>
-                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Page {page + 1} of {totalPages} ({filtered.length} nodes)</span>
-                  <button className="btn btn-secondary btn-sm" disabled={page >= totalPages - 1} onClick={() => setPage((p) => p + 1)}>Next →</button>
-                </div>
-              )}
+              <DataTable
+                headers={["#", "Node", "Status", "Detections", "Tracks", "In Range", "Missed", "Miss Rate", "Uptime", "Avg SNR", "Trust"]}
+                count={paged.length}
+                empty="No nodes found"
+              >
+                {paged.map((entry, i) => (
+                  <tr key={entry.node_ref}>
+                    <td style={{ fontWeight: 600, color: "var(--text-primary)" }}>{offset + i + 1}</td>
+                    <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
+                      {(entry.name || entry.node_ref).slice(-12)}
+                    </td>
+                    <td>
+                      <span className={`badge ${entry.online ? "online" : "offline"}`}>
+                        {entry.online ? "Online" : "Offline"}
+                      </span>
+                    </td>
+                    <td>{entry.detections.toLocaleString()}</td>
+                    <td>{entry.tracks}</td>
+                    <td>{entry.in_range || 0}</td>
+                    <td style={{ color: (entry.missed || 0) > 0 ? "var(--warning)" : undefined }}>
+                      {entry.missed || 0}
+                    </td>
+                    <td style={{
+                      fontWeight: 600,
+                      color: (entry.miss_rate || 0) > 0.5 ? "var(--error)"
+                        : (entry.miss_rate || 0) > 0.2 ? "var(--warning)" : "var(--success)",
+                    }}>
+                      {(entry.in_range || 0) > 0 ? ((entry.miss_rate || 0) * 100).toFixed(1) + "%" : "—"}
+                    </td>
+                    <td>{formatUptime(entry.uptime_s)}</td>
+                    <td>{entry.avg_snr.toFixed(1)} dB</td>
+                    <td>{(entry.trust_score * 100).toFixed(0)}%</td>
+                  </tr>
+                ))}
+              </DataTable>
+              <Pager page={current} totalPages={totalPages} onPage={setPage} note={`${filtered.length} nodes`} />
             </>
           );
         })()}

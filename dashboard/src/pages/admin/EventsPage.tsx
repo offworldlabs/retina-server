@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { api } from "../../api/client";
+import { DataTable } from "../../components/DataTable";
+import { Pager } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
 
@@ -46,49 +48,27 @@ export default function EventsPage() {
             Showing {paged.length} of {events.length} events
           </span>
         </div>
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>Time</th>
-                <th>Severity</th>
-                <th>Category</th>
-                <th>Message</th>
-              </tr>
-            </thead>
-            <tbody>
-              {paged.map((ev, i) => (
-                <tr key={page * PAGE_SIZE + i}>
-                  <td style={{ fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>
-                    {ev.ts ? new Date(ev.ts * 1000).toLocaleString() : "—"}
-                  </td>
-                  <td>
-                    <span className={`badge ${severityClass[ev.severity] || "online"}`}>
-                      {ev.severity}
-                    </span>
-                  </td>
-                  <td>{ev.category}</td>
-                  <td style={{ color: "var(--text-primary)" }}>{ev.message}</td>
-                </tr>
-              ))}
-              {events.length === 0 && (
-                <tr>
-                  <td colSpan={4} style={{ textAlign: "center", padding: 32 }}>
-                    No events recorded yet
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        {totalPages > 1 && (
-          <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: 12, padding: "12px 0" }}>
-            <button className="btn btn-sm" disabled={page === 0} onClick={() => setPage(page - 1)}>← Prev</button>
-            <span style={{ fontSize: 12 }}>Page {page + 1} of {totalPages}</span>
-            <button className="btn btn-sm" disabled={page >= totalPages - 1} onClick={() => setPage(page + 1)}>Next →</button>
-          </div>
-        )}
+        <DataTable
+          headers={["Time", "Severity", "Category", "Message"]}
+          count={paged.length}
+          empty="No events recorded yet"
+        >
+          {paged.map((ev, i) => (
+            <tr key={page * PAGE_SIZE + i}>
+              <td style={{ fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>
+                {ev.ts ? new Date(ev.ts * 1000).toLocaleString() : "—"}
+              </td>
+              <td>
+                <span className={`badge ${severityClass[ev.severity] || "online"}`}>
+                  {ev.severity}
+                </span>
+              </td>
+              <td>{ev.category}</td>
+              <td style={{ color: "var(--text-primary)" }}>{ev.message}</td>
+            </tr>
+          ))}
+        </DataTable>
+        <Pager page={page} totalPages={totalPages} onPage={setPage} />
       </div>
     </>
   );
