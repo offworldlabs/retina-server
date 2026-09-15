@@ -269,3 +269,18 @@ async def test_a_null_position_round_trips(node_session):
     await node_session.refresh(row)
     assert row.rx_lat is None
     assert row.tx_lat == 34.90
+
+
+async def test_a_null_callsign_round_trips(node_session):
+    """The column carries what contract 1.2.2 accepts: a node whose owner cannot
+    name the illuminator. Minting and comparison need nothing of their own for it,
+    since both are already null-aware for the antenna fields above."""
+    node_session.add(Node(node_id="test-null-sign", node_ref=mint_node_ref(), board_model="raspberrypi5-4gb"))
+    await node_session.flush()
+
+    version = await upsert_config(node_session, "test-null-sign", _config(tx_callsign=None))
+    named = await upsert_config(node_session, "test-null-sign", _config(tx_callsign="Wrotham"))
+
+    assert (version, named) == (1, 2)
+    rows = await _rows(node_session, "test-null-sign")
+    assert [row.tx_callsign for row in rows] == [None, "Wrotham"]

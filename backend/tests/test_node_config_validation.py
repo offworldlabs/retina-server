@@ -8,6 +8,7 @@ from services.node_config import (
     config_json_schema,
     numeric_branch,
     position_status,
+    string_branch,
     validate_config,
 )
 
@@ -117,6 +118,8 @@ def test_zero_beam_azimuth_is_not_null():
         ("delay_tolerance_us", -1),
         ("doppler_tolerance_hz", 0),
         ("doppler_tolerance_hz", -1),
+        # Still refused now that null is accepted: null is the one spelling of
+        # "unknown", and services/node_config.py says why.
         ("tx_callsign", ""),
         ("tx_callsign", "x" * 33),
     ],
@@ -197,11 +200,18 @@ def test_a_non_numeric_type_is_rejected(value):
     assert excinfo.value.field == "rx_lat"
 
 
-@pytest.mark.parametrize("value", [123, None, ["CRYSTAL_PALACE"]])
+@pytest.mark.parametrize("value", [123, ["CRYSTAL_PALACE"]])
 def test_a_non_string_callsign_is_rejected(value):
     with pytest.raises(ConfigInvalid) as excinfo:
         validate_config(dict(VALID, tx_callsign=value))
     assert excinfo.value.field == "tx_callsign"
+
+
+def test_a_null_callsign_is_preserved_not_defaulted():
+    """Nullable since contract 1.2.2, for the reason the coordinates are: an owner
+    who cannot name the illuminator says so, rather than a placeholder the server
+    could not later tell apart from a real name."""
+    assert validate_config(dict(VALID, tx_callsign=None))["tx_callsign"] is None
 
 
 @pytest.mark.parametrize(
@@ -700,7 +710,7 @@ def test_every_published_bound_is_where_the_validator_refuses(field):
 
 
 def test_the_published_callsign_length_is_where_the_validator_refuses():
-    schema = config_json_schema()["properties"]["tx_callsign"]
+    schema = string_branch(config_json_schema()["properties"]["tx_callsign"])
 
     for length in (schema["minLength"], schema["maxLength"]):
         validate_config(dict(VALID, tx_callsign="x" * length))

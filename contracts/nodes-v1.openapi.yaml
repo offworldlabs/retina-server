@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RETINA node ingest
-  version: 1.2.1
+  version: 1.2.2
   description: |
     The RETINA server's HTTP API. The paths under `/v1/nodes` are the RETINA node
     ingest contract, generated from the server and versioned as a unit; everything
@@ -803,6 +803,10 @@ components:
         it places nothing on the map until a position arrives. A latitude and its
         longitude are given together or both null.
 
+        `tx_callsign` is nullable for the same reason, and the empty string is not: a
+        node that cannot name its illuminator sends null, which is the only way to say
+        so.
+
         Necessary but not sufficient. A receiver and illuminator at the same point are
         refused, as is a value that is not a finite number, and neither is expressible
         here: both answer `400 invalid_config` naming the field.
@@ -866,9 +870,11 @@ components:
           type: number
           exclusiveMinimum: 0.0
         tx_callsign:
-          type: string
-          minLength: 1
-          maxLength: 32
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 32
+          - type: 'null'
         beam_width_deg:
           anyOf:
           - type: number

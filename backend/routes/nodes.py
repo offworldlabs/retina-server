@@ -98,7 +98,16 @@ NODE_PATH_PREFIX = "/v1/nodes"
 # would be 1.3.0. Recorded so the block stays honest with itself, and because
 # nothing about the choice is load-bearing — the field is optional either way,
 # and no node behaves differently for the number in front of it.
-NODE_API_VERSION = "1.2.1"
+#
+# 1.2.2 makes `tx_callsign` nullable, so a node whose owner cannot name the
+# illuminator can register without one being invented for it. A patch on the
+# test 1.1.3 applied to the same change on the coordinates: the document gains
+# no field a client can read, and what a client generating from it sees is a
+# type widening on a field it already had.
+#
+# The empty string stays refused. Null is the one way to say the illuminator is
+# unnamed, which is what keeps a stored name distinguishable from its absence.
+NODE_API_VERSION = "1.2.2"
 
 # No tag here: each sub-router carries the contract's own grouping, since those
 # are what a generated client is built around.
