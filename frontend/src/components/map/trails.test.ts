@@ -217,8 +217,10 @@ describe("stitchPredecessorTrail", () => {
     );
     const out = stitchPredecessorTrail(prev, pred, 24, 40);
     expect(out).toHaveLength(16);
-    const { smoothed } = smoothTrailPositions(out, { k: 3 });
-    expect(smoothed).toHaveLength(16);
-    expect(smoothed.every(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon))).toBe(true);
+    // smoothed + head is every point back: with k=3 the un-centreable tail is
+    // one point, and the seam split does not lose any.
+    const { smoothed, head } = smoothTrailPositions(out, { k: 3 });
+    expect(smoothed.length + head.length).toBe(16);
+    expect([...smoothed, ...head].every(([lat, lon]) => Number.isFinite(lat) && Number.isFinite(lon))).toBe(true);
   });
 });
