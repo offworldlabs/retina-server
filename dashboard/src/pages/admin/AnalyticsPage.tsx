@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line, Legend,
 } from "recharts";
 import { api } from "../../api/client";
+import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme, seriesColour } from "../../utils/chartTheme";
 
 const TOP_N_CHART = 15;
@@ -11,42 +12,29 @@ const PAGE_SIZE = 25;
 
 export default function AnalyticsPage() {
   const chart = useChartTheme();
-  const [analytics, setAnalytics] = useState(null);
-  const [overlaps, setOverlaps] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [trend, setTrend] = useState([]);
   const [overlapPage, setOverlapPage] = useState(0);
-  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
-  const fetchData = () => {
-    Promise.all([api.analytics(), api.overlaps()])
-      .then(([a, o]) => {
-        setAnalytics(a);
-        setOverlaps(Array.isArray(o) ? o : o.overlaps || []);
-        const rawNodes = a?.nodes || {};
-        const summaries = Array.isArray(rawNodes) ? rawNodes : Object.values(rawNodes);
-        const totalDet = summaries.reduce((s, n) => s + (n.metrics?.total_detections || n.detection_area?.n_detections || 0), 0);
-        setTrend((prev) => [
-          ...prev,
-          {
-            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-            detections: totalDet,
-            nodes: summaries.length,
-          },
-        ].slice(-30));
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchData();
-    timerRef.current = setInterval(fetchData, 10000);
-    return () => clearInterval(timerRef.current);
-  }, []);
+  const { data, loading } = usePolling(async () => {
+    const [a, o] = await Promise.all([api.analytics(), api.overlaps()]);
+    const rawNodes = a?.nodes || {};
+    const summaries = Array.isArray(rawNodes) ? rawNodes : Object.values(rawNodes);
+    const totalDet = summaries.reduce((s, n) => s + (n.metrics?.total_detections || n.detection_area?.n_detections || 0), 0);
+    setTrend((prev) => [
+      ...prev,
+      {
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+        detections: totalDet,
+        nodes: summaries.length,
+      },
+    ].slice(-30));
+    return { analytics: a, overlaps: Array.isArray(o) ? o : o.overlaps || [] };
+  }, 10000);
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
+  const analytics = data?.analytics;
+  const overlaps = data?.overlaps ?? [];
   const rawNodes = analytics?.nodes || {};
   const summaries = Array.isArray(rawNodes) ? rawNodes : Object.values(rawNodes);
   // Node identity is the map key (node_ref); values no longer carry node_id.

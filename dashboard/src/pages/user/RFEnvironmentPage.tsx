@@ -1,59 +1,50 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line,
 } from "recharts";
 import { api } from "../../api/client";
+import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme } from "../../utils/chartTheme";
 
 export default function RFEnvironmentPage() {
   const chart = useChartTheme();
-  const [nodes, setNodes] = useState([]);
   const [selectedNode, setSelectedNode] = useState("");
-  const [loading, setLoading] = useState(true);
   const [snrHistory, setSnrHistory] = useState([]);
-  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
-  const fetchData = () => {
-    Promise.all([api.nodes(), api.analytics()])
-      .then(([n, a]) => {
-        const nodeMap = n.nodes || {};
-        const analyticsMap = a?.nodes || {};
-        const nodeList = Object.entries(nodeMap).map(([id, info]: [string, any]) => ({
-          node_id: id,
-          ...info,
-          _analytics: analyticsMap[id] || {},
-        }));
-        setNodes(nodeList);
-        if (!selectedNode && nodeList.length > 0) {
-          setSelectedNode(nodeList[0].node_id);
-        }
-        // Append to SNR history for the selected node
-        const sel = selectedNode || (nodeList[0]?.node_id);
-        if (sel) {
-          const nodeData = analyticsMap[sel] || {};
-          const snr = nodeData.metrics?.avg_snr || 0;
-          setSnrHistory((prev) => [
-            ...prev.slice(-30),
-            {
-              time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-              snr: parseFloat(snr.toFixed(1)),
-            },
-          ]);
-        }
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchData();
-    timerRef.current = setInterval(fetchData, 5000);
-    return () => clearInterval(timerRef.current);
-  }, [selectedNode]);
+  // Keyed on the selection, so changing it fetches at once and restarts the
+  // schedule rather than waiting out the current interval.
+  const { data, loading } = usePolling(async () => {
+    const [n, a] = await Promise.all([api.nodes(), api.analytics()]);
+    const nodeMap = n.nodes || {};
+    const analyticsMap = a?.nodes || {};
+    const nodeList = Object.entries(nodeMap).map(([id, info]: [string, any]) => ({
+      node_id: id,
+      ...info,
+      _analytics: analyticsMap[id] || {},
+    }));
+    if (!selectedNode && nodeList.length > 0) {
+      setSelectedNode(nodeList[0].node_id);
+    }
+    // Append to SNR history for the selected node
+    const sel = selectedNode || (nodeList[0]?.node_id);
+    if (sel) {
+      const nodeData = analyticsMap[sel] || {};
+      const snr = nodeData.metrics?.avg_snr || 0;
+      setSnrHistory((prev) => [
+        ...prev.slice(-30),
+        {
+          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+          snr: parseFloat(snr.toFixed(1)),
+        },
+      ]);
+    }
+    return nodeList;
+  }, 5000, selectedNode);
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
+  const nodes = data ?? [];
   const selected = nodes.find((n) => n.node_id === selectedNode) || nodes[0];
   const metrics = selected?._analytics?.metrics || {};
   const freq = selected?.frequency || selected?._analytics?.detection_area?.center_freq;

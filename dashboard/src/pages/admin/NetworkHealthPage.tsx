@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import { api } from "../../api/client";
+import { usePolling } from "../../hooks/usePolling";
 import { formatRelativeTime, formatUptime } from "../../utils/format";
 import { useChartTheme } from "../../utils/chartTheme";
 import { RetnodeLink } from "../../components/RetnodeLink";
@@ -13,64 +14,45 @@ const PAGE_SIZE = 25;
 
 export default function NetworkHealthPage() {
   const chart = useChartTheme();
-  const [dashboard, setDashboard] = useState(null);
-  const [aircraft, setAircraft] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [history, setHistory] = useState([]);
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
   const idsByRef = useNodeIds();
-  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
-  const fetchAll = () => {
+  const { data, loading } = usePolling(async () => {
     // Fetch fleet dashboard and node data in parallel; if fleetDashboard fails
     // we still render the node list from nodes/analytics.
-    const dashPromise = api.fleetDashboard().catch(() => null);
-    Promise.all([dashPromise, api.aircraft(), api.nodes(), api.analytics()])
-      .then(([d, a, n, an]) => {
-        setDashboard(d);
-        const acList = a.aircraft || [];
-        setAircraft(acList);
-        // api.nodes() returns {nodes: {node_ref: {...}, ...}, total, connected},
-        // and analytics.nodes is {node_ref: {trust, metrics, detection_area,
-        // reputation, ...}} — both public feeds, both keyed on the published
-        // identity and carrying no node_id. useNodeIds supplies that.
-        const nodeMap = n.nodes || {};
-        const analyticsMap = an?.nodes || {};
-        const nodeList = Object.entries(nodeMap).map(([ref, info]: [string, any]) => ({
-          ...info,
-          node_ref: ref,
-          _analytics: analyticsMap[ref] || {},
-        }));
-        setHistory((prev) => {
-          const next = [
-            ...prev,
-            {
-              time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-              aircraft: acList.length,
-              nodes: nodeList.length,
-            },
-          ].slice(-30);
-          return next;
-        });
-        // Attach nodeList onto dashboard (or a stub) for rendering below
-        const dash = d || {};
-        dash._nodeList = nodeList;
-        setDashboard({ ...dash, _nodeList: nodeList });
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchAll();
-    timerRef.current = setInterval(fetchAll, 5000);
-    return () => clearInterval(timerRef.current);
-  }, []);
+    const [d, a, n, an] = await Promise.all([
+      api.fleetDashboard().catch(() => null), api.aircraft(), api.nodes(), api.analytics(),
+    ]);
+    const aircraft = a.aircraft || [];
+    // api.nodes() returns {nodes: {node_ref: {...}, ...}, total, connected},
+    // and analytics.nodes is {node_ref: {trust, metrics, detection_area,
+    // reputation, ...}} — both public feeds, both keyed on the published
+    // identity and carrying no node_id. useNodeIds supplies that.
+    const nodeMap = n.nodes || {};
+    const analyticsMap = an?.nodes || {};
+    const nodes = Object.entries(nodeMap).map(([ref, info]: [string, any]) => ({
+      ...info,
+      node_ref: ref,
+      _analytics: analyticsMap[ref] || {},
+    }));
+    setHistory((prev) => [
+      ...prev,
+      {
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+        aircraft: aircraft.length,
+        nodes: nodes.length,
+      },
+    ].slice(-30));
+    return { dashboard: d, aircraft, nodes };
+  }, 5000);
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
-  const nodes = dashboard?._nodeList || [];
+  const dashboard = data?.dashboard;
+  const aircraft = data?.aircraft ?? [];
+  const nodes = data?.nodes ?? [];
   const dashNodes = dashboard?.nodes || {}; // {total, active, synthetic, real}
   const tracks = dashboard?.pipeline || {};
   const analyticsData = dashboard?.analytics || {};

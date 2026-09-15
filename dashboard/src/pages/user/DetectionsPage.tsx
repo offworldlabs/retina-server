@@ -1,39 +1,22 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import { api } from "../../api/client";
+import { useFetch, usePolling } from "../../hooks/usePolling";
 
 const PAGE_SIZE = 25;
 
 export default function DetectionsPage() {
-  const [aircraft, setAircraft] = useState([]);
-  const [nodes, setNodes] = useState([]);
   const [filterNode, setFilterNode] = useState("");
-  const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
-  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
-
-  useEffect(() => {
-    api.nodes()
-      .then((n) => {
-        const nodeMap = n.nodes || {};
-        setNodes(Object.keys(nodeMap));
-      })
-      .catch(console.error);
-  }, []);
-
-  const fetchData = () => {
-    api.aircraft()
-      .then((data) => setAircraft(data.aircraft || []))
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchData();
-    timerRef.current = setInterval(fetchData, 3000);
-    return () => clearInterval(timerRef.current);
-  }, []);
+  const { data: nodeRefs } = useFetch(() => api.nodes().then((n) => Object.keys(n.nodes || {})));
+  const { data: feed, loading } = usePolling(
+    () => api.aircraft().then((d) => d.aircraft || []),
+    3000,
+  );
 
   if (loading) return <div className="empty-state">Loading…</div>;
+
+  const nodes = nodeRefs ?? [];
+  const aircraft = feed ?? [];
 
   // The public aircraft feed renamed node_id to node_ref at publication.
   const filtered = filterNode

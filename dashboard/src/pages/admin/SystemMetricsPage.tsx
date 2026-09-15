@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from "react";
 import { api } from "../../api/client";
+import { usePolling } from "../../hooks/usePolling";
 import { fmt } from "../../utils/format";
 
 const REFRESH_MS = 5000;
@@ -31,26 +31,10 @@ function QueueBar({ depth, max, label }: { depth: number; max: number; label: st
 }
 
 export default function SystemMetricsPage() {
-  const [m, setM] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
-
-  const fetch = () => {
-    api.adminMetrics()
-      .then((data) => { setM(data); setError(null); })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetch();
-    timerRef.current = setInterval(fetch, REFRESH_MS);
-    return () => clearInterval(timerRef.current);
-  }, []);
+  const { data: m, loading, error } = usePolling(() => api.adminMetrics(), REFRESH_MS);
 
   if (loading) return <div className="empty-state">Loading…</div>;
-  if (error) return <div className="empty-state" style={{ color: "var(--error)" }}>Error: {error}</div>;
+  if (error) return <div className="empty-state" style={{ color: "var(--error)" }}>Error: {error.message}</div>;
   if (!m) return null;
 
   const taskNames = Object.keys({ ...m.task_last_success, ...m.task_error_counts });
