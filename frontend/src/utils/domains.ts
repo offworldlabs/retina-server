@@ -5,7 +5,7 @@
  * only by subdomain. Each predicate here captures one concrete decision:
  *
  *   isMapDomain:            any "map" surface, on any environment. Used to
- *                           default to the Live Radar tab and hide tower search.
+ *                           derive the public-demo predicates below.
  *   usesRealOnlyFeed:       hits /ws/aircraft/live so the synthetic fleet never
  *                           appears, even if a node leaks through a bad filter.
  *   defaultsGroundTruthOff: ADS-B ground truth starts hidden.

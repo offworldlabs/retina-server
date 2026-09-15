@@ -12,9 +12,9 @@ only by subdomain, resolved client-side in `frontend/src/utils/domains.ts`:
   staging and local stacks run a fleet, so `testmap.retina.fm` is served by the
   staging droplet rather than production.
 - **map** (`map.retina.fm`) — production live map, real radar nodes only.
-- **Tower Finder** — `/api/towers` illuminator search (the original feature).
-  The SPA is this repo's; the API is proxied to tower-finder-service, which owns
-  the only implementation since the monolith's copy was deleted.
+- **Illuminator search** — not a surface of this repo. tower-finder-service owns
+  both the API and the UI, and serves `towers.retina.fm` from its own edge. The
+  vhosts here proxy `/api/towers`, `/api/elevation` and `/api/config` to it.
 - **dashboard** (`dashboard/`, separate SPA) — admin: node ownership, claim
   codes, MLAT verification, metrics. Auth required.
 
