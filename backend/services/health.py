@@ -131,7 +131,7 @@ def compute_health_issues() -> list[dict]:
     except Exception:
         logging.debug("health probe failed", exc_info=True)
 
-    # Process memory (>3 GB on a 4 GB droplet)
+    # Process memory, against production's 4G container cap; staging's 1600M cap is hit first.
     try:
         rusage = resource.getrusage(resource.RUSAGE_SELF)
         rss_mb = rusage.ru_maxrss / 1024 if sys.platform == "linux" else rusage.ru_maxrss / (1024 * 1024)

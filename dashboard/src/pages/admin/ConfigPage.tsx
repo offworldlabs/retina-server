@@ -144,7 +144,7 @@ export default function ConfigPage() {
                 minHeight: 400,
                 fontFamily: "monospace",
                 fontSize: 12,
-                background: "var(--bg-input, #f8fafc)",
+                background: "var(--bg-input)",
                 color: "var(--text-primary)",
                 border: "1px solid var(--border)",
                 borderRadius: 6,

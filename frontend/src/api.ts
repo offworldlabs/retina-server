@@ -8,36 +8,6 @@ let mlatVerificationCache: unknown = null;
 let mlatVerificationCacheTs = 0;
 let mlatVerificationInflight: Promise<unknown | null> | null = null;
 
-export async function fetchTowers(lat, lon, altitude = 0, limit = 20, source = "auto", frequencies = []) {
-  const params = new URLSearchParams({
-    lat: String(lat),
-    lon: String(lon),
-    altitude: String(altitude),
-    limit: String(limit),
-    source,
-  });
-  if (frequencies.length > 0) {
-    params.set("frequencies", frequencies.join(","));
-  }
-  const res = await fetch(`${API_BASE}/towers?${params}`);
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.detail || `Request failed (${res.status})`);
-  }
-  return res.json();
-}
-
-export async function fetchElevation(lat, lon, signal?: AbortSignal) {
-  const params = new URLSearchParams({
-    lat: String(lat),
-    lon: String(lon),
-  });
-  const res = await fetch(`${API_BASE}/elevation?${params}`, { signal });
-  if (!res.ok) return null;
-  const data = await res.json();
-  return data.elevation_m;
-}
-
 export async function fetchNodeDetectionRange(nodeRef: string, signal?: AbortSignal) {
   if (!nodeRef) return null;
   // The route is keyed on the public ref; a node_id 404s.

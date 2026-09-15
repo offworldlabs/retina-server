@@ -4,27 +4,6 @@
 
 import type { ArcBufferEntry } from "./components/map/arcBuffer";
 
-/** Single tower returned by /api/towers */
-export interface Tower {
-  callsign: string | null;
-  frequency_mhz: number;
-  frequency_matched: boolean;
-  band: string;
-  distance_km: number;
-  distance_class: string;
-}
-
-/** /api/towers response */
-export interface TowerSearchResponse {
-  towers: Tower[];
-  query: { lat: number; lon: number };
-}
-
-/** /api/elevation response */
-export interface ElevationResponse {
-  elevation_m: number;
-}
-
 /* ---- Aircraft / live feed ---- */
 
 export interface Aircraft {

@@ -8,13 +8,19 @@ and the page talks to the same-origin API.
 ```
 data-explorer/
   index.html   markup + the CommonJS shim that loads the vendored timeline
-  app.css      tokens (light palette verbatim from dashboard/src/App.css) + layout
+  app.css      tokens (light from dashboard/src/App.css, dark from the map) + layout
   app.js       all behaviour, one classic script, plain ES2020
+  theme-boot.js  stamps the saved theme before first paint; a file, not inline,
+                 because the vhost's CSP is `script-src 'self'`
   vendor/      react, react-dom, lodash, classnames, @edsc/timeline — see NOTICE.md
 ```
 
 Edit the files and redeploy; there is nothing to compile. `Dockerfile` copies the
-directory verbatim, so a change here ships with any image build.
+directory verbatim, so a change here ships with any image build. Because none of
+these names carries a content hash, nginx serves them `Cache-Control: no-store,
+no-cache` (`deploy/nginx/snippets/spa.conf`), the same as `index.html`: neither
+the edge nor the browser keeps a copy, so a deploy shows through at once. Only
+Vite's hashed `/assets/` trees get the week-long immutable policy.
 
 ## Why the libraries are vendored
 

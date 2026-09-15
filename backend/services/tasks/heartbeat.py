@@ -1,11 +1,8 @@
-"""Dead-man's-switch heartbeat.
+"""Optional heartbeat ping.
 
-If HEARTBEAT_URL is set, pings it on a fixed interval. Point it at a free
-external check (e.g. Healthchecks.io): the external service alerts when pings
-*stop*, which is the one failure mode in-process alerting can't catch — a
-crashed process, a dead host, or the disk-full deploy death-spiral. No
-infrastructure to run on our side; the SaaS owns the timeout + notification.
-
+If HEARTBEAT_URL is set, pings it on a fixed interval. No environment sets
+it: outside-in probing is done by DigitalOcean Uptime (see
+claude-shared/docs/runbooks/uptime-monitoring.md), so this stays dormant.
 Disabled (no-op) when HEARTBEAT_URL is unset.
 """
 

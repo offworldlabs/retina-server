@@ -3,6 +3,8 @@ import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
 import { api } from "../../api/client";
+import { useChartTheme } from "../../utils/chartTheme";
+import { useResolvedTheme, type Theme } from "../../context/ThemeContext";
 
 interface AnomalyEvent {
   hex: string;
@@ -27,16 +29,51 @@ interface AnomalyData {
   recent_events: AnomalyEvent[];
 }
 
-const TYPE_COLORS: Record<string, string> = {
-  supersonic: "#ef4444",
-  instant_acceleration: "#f97316",
-  instant_direction_change: "#eab308",
-  sustained_orbit: "#8b5cf6",
-  position_mismatch: "#3b82f6",
-  identity_swap: "#ec4899",
-  altitude_jump: "#14b8a6",
-  anomalous_behavior: "#6b7280",
-};
+/**
+ * A domain palette, not the status ramp: these hues say which kind of anomaly,
+ * not how bad it is. Dark keeps every hue and takes it one step lighter, the
+ * same move the chart series makes, so a type is recognisably itself in either
+ * theme.
+ */
+const TYPE_COLOURS = {
+  light: {
+    supersonic: "#ef4444",
+    instant_acceleration: "#f97316",
+    instant_direction_change: "#eab308",
+    sustained_orbit: "#8b5cf6",
+    position_mismatch: "#3b82f6",
+    identity_swap: "#ec4899",
+    altitude_jump: "#14b8a6",
+    anomalous_behavior: "#6b7280",
+  },
+  dark: {
+    supersonic: "#f87171",
+    instant_acceleration: "#fb923c",
+    instant_direction_change: "#facc15",
+    sustained_orbit: "#a78bfa",
+    position_mismatch: "#60a5fa",
+    identity_swap: "#f472b6",
+    altitude_jump: "#2dd4bf",
+    anomalous_behavior: "#9ca3af",
+  },
+} as const satisfies Record<Theme, Record<string, string>>;
+
+/** For a reason the backend added before this map did. */
+const TYPE_FALLBACK: Record<Theme, string> = { light: "#6b7280", dark: "#9ca3af" };
+
+/** Ink for a badge whose fill is one of the colours above. White is unreadable
+ *  on the lighter dark variants. */
+const BADGE_INK: Record<Theme, string> = { light: "#ffffff", dark: "#0b1220" };
+
+function typeColour(theme: Theme, type: string | undefined): string {
+  const palette: Record<string, string> = TYPE_COLOURS[theme];
+  // hasOwnProperty, not a plain lookup: these keys come from the backend, and
+  // `constructor` or `toString` would otherwise resolve up the prototype chain
+  // and hand Recharts a function as a colour.
+  return type && Object.prototype.hasOwnProperty.call(palette, type)
+    ? palette[type]
+    : TYPE_FALLBACK[theme];
+}
 
 function formatTime(ts: number) {
   return new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -49,6 +86,8 @@ function formatDateTime(iso: string) {
 }
 
 export default function AnomalyPage() {
+  const chart = useChartTheme();
+  const theme = useResolvedTheme();
   const [data, setData] = useState<AnomalyData | null>(null);
   const [loading, setLoading] = useState(true);
   const [stale, setStale] = useState(false);
@@ -125,23 +164,24 @@ export default function AnomalyPage() {
             {timeline && timeline.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={timeline}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
                   <XAxis
                     dataKey="ts"
                     tickFormatter={formatTime}
-                    stroke="var(--text-muted)"
+                    stroke={chart.axis}
                     tick={{ fontSize: 11 }}
                   />
-                  <YAxis stroke="var(--text-muted)" tick={{ fontSize: 11 }} allowDecimals={false} />
+                  <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} allowDecimals={false} />
                   <Tooltip
                     labelFormatter={(v) => new Date((v as number) * 1000).toLocaleString()}
-                    contentStyle={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}
+                    contentStyle={chart.tooltip}
                   />
                   <Area
                     type="monotone"
                     dataKey="count"
-                    stroke="#ef4444"
-                    fill="#ef444433"
+                    stroke={typeColour(theme, "supersonic")}
+                    fill={typeColour(theme, "supersonic")}
+                    fillOpacity={0.2}
                     strokeWidth={2}
                   />
                 </AreaChart>
@@ -159,20 +199,20 @@ export default function AnomalyPage() {
             {typeData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={typeData} layout="vertical" margin={{ left: 20 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                  <XAxis type="number" stroke="var(--text-muted)" tick={{ fontSize: 11 }} allowDecimals={false} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
+                  <XAxis type="number" stroke={chart.axis} tick={{ fontSize: 11 }} allowDecimals={false} />
                   <YAxis
                     type="category"
                     dataKey="name"
-                    stroke="var(--text-muted)"
+                    stroke={chart.axis}
                     tick={{ fontSize: 11 }}
                     width={140}
                     tickFormatter={(v) => v.replace(/_/g, " ")}
                   />
-                  <Tooltip contentStyle={{ background: "var(--bg-card)", border: "1px solid var(--border)" }} />
+                  <Tooltip contentStyle={chart.tooltip} />
                   <Bar dataKey="count" radius={[0, 4, 4, 0]}>
                     {typeData.map((entry, i) => (
-                      <Cell key={i} fill={TYPE_COLORS[entry.name] || "#6b7280"} />
+                      <Cell key={i} fill={typeColour(theme, entry.name)} />
                     ))}
                   </Bar>
                 </BarChart>
@@ -212,7 +252,7 @@ export default function AnomalyPage() {
                     <td>
                       <span
                         className="badge"
-                        style={{ background: TYPE_COLORS[c.dominant_type] || "#6b7280", color: "#fff" }}
+                        style={{ background: typeColour(theme, c.dominant_type), color: BADGE_INK[theme] }}
                       >
                         {c.dominant_type.replace(/_/g, " ")}
                       </span>
@@ -230,7 +270,7 @@ export default function AnomalyPage() {
         <div className="card-header">
           <h3>Recent Anomaly Events</h3>
           <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-            {stale && <span style={{ color: "#f97316", marginRight: 8 }}>⚠ Stale data</span>}
+            {stale && <span style={{ color: "var(--warning)", marginRight: 8 }}>⚠ Stale data</span>}
             {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : "Auto-refreshes every 10s"}
           </span>
         </div>
@@ -256,7 +296,7 @@ export default function AnomalyPage() {
                   <td>
                     <span
                       className="badge"
-                      style={{ background: TYPE_COLORS[ev.reason] || "#6b7280", color: "#fff" }}
+                      style={{ background: typeColour(theme, ev.reason), color: BADGE_INK[theme] }}
                     >
                       {(ev.reason || "unknown").replace(/_/g, " ")}
                     </span>

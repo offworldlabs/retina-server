@@ -1,11 +1,12 @@
 /* ── One forget path for the per-object animation stores.
  *
- * LiveAircraftMap keeps eight stores keyed by one string (fixes, smooth,
- * DOM-element cache + its negative cache, Leaflet LatLng cache, two trail
- * buffers, and the marker registry).  Before this module there were THREE
+ * LiveAircraftMap keeps nine stores keyed by one string (fixes, smooth,
+ * DOM-element cache + its negative cache, Leaflet LatLng cache, three trail
+ * buffers — 2 Hz icon samples, their sample clock, and the per-solve buffer —
+ * and the marker registry).  Before this module there were THREE
  * hand-maintained prune paths that each knew about a different subset (5, 2
  * and 3 stores respectively) — the exact bug class behind the blue-dot
- * jumping and the never-pruned LatLng cache.  Adding a ninth store now means
+ * jumping and the never-pruned LatLng cache.  Adding a tenth store now means
  * adding one line to forgetTrack, not remembering three unrelated places. ── */
 
 /** Remove every per-object record for one store key. */
@@ -17,6 +18,7 @@ export function forgetTrack(key: string, s) {
   delete s.latLng[key];
   delete s.trails[key];
   delete s.lastTrailSample[key];
+  delete s.solveTrails[key];
   s.markerRegistry?.delete(key);
 }
 
@@ -42,6 +44,12 @@ export function snapTrack(key: string, s, lat: number, lon: number, track: numbe
   }
   delete s.trails[key];
   delete s.lastTrailSample[key];
+  // The per-solve buffer goes too: it is the substrate of the smoothed dark
+  // trail, and a teleport is precisely the discontinuity the smoother must not
+  // average across.  Its own jump gate would split the run anyway; dropping
+  // the buffer keeps the stale pre-teleport leg from being drawn at all, which
+  // is what this guard already does for the 2 Hz buffer.
+  delete s.solveTrails[key];
 }
 
 /**

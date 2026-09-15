@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect } from "react";
-import { api } from "../api/client";
+import { api, UnauthorizedError } from "../api/client";
 
 const AuthContext = createContext(null);
 
@@ -17,8 +17,10 @@ export function AuthProvider({ children }) {
           if (!cancelled) { setUser(u); setLoading(false); }
           return;
         } catch (e) {
-          // client.js already redirects to /login on 401 — here we only
-          // land when there's a network/timeout error (server busy).
+          // A 401 is settled, so stop: the retries exist for a busy server, and
+          // repeating an unauthenticated call only holds the login card behind
+          // a loading state for the length of the backoff.
+          if (e instanceof UnauthorizedError) break;
           if (attempt < 3) {
             await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
           }

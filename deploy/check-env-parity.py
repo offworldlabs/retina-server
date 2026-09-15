@@ -52,7 +52,7 @@ _LABEL_WIDTH = max(len(env) for env in OVERLAYS)
 
 # Every vhost the template defines must be TLS in a deployed environment. Update
 # this alongside the template if a vhost is added or removed.
-EXPECTED_TLS_VHOSTS = 8
+EXPECTED_TLS_VHOSTS = 7
 
 # Key paths permitted to differ between the environments, as regexes matched
 # against the dotted path into the merged compose tree.
@@ -80,6 +80,11 @@ ALLOWED_DIVERGENCE = (
     r"^services\.server\.environment\.CORS_ORIGINS$",
     r"^services\.server\.environment\.CSP_CONNECT_SRC$",
     r"^services\.server\.environment\.HOST_[A-Z_]+$",
+    # The audience tag of this environment's Cloudflare Access application. One
+    # tag per application, so it differs per environment exactly as HOST_ADMIN
+    # does; an environment with none set leaves the verifier unconfigured, which
+    # means it is never consulted. See backend/core/access_identity.py.
+    r"^services\.server\.environment\.CF_ACCESS_AUD$",
     # Staging alone runs an E2E suite that force-retires the nodes it
     # registers, so staging alone confines what force can reach. Production
     # leaves the variable unset and so unrestricted: a decommissioned real
@@ -87,10 +92,10 @@ ALLOWED_DIVERGENCE = (
     # entry, long after the fact. See backend/config/constants.py.
     r"^services\.server\.environment\.NODE_FORCE_RETIRE_PREFIXES$",
     # AUTH_ALLOW_ANONYMOUS_ADMIN and SYNTHETIC_FLEET_ENABLED are deliberately
-    # absent from this list: each is set to the same value in every environment,
-    # so a difference is drift rather than a decision, and CI should fail if one
-    # environment closes the bypass, or drops the simulation subsystem, without
-    # the others.
+    # absent from this list, so a difference between environments is drift
+    # rather than a decision. SYNTHETIC_FLEET_ENABLED is set in all three;
+    # AUTH_ALLOW_ANONYMOUS_ADMIN in none, and keeping it off this list is what
+    # fails CI if it is ever restored to one environment alone.
     # Published ports. Production exposes 3012 for real receiver nodes; staging
     # has none and closes it, so the two legitimately differ here. Recorded rather
     # than silently allowed: if staging ever needs node ingest, it should be
@@ -170,7 +175,6 @@ HOST_VARS = (
     "HOST_ADMIN",
     "HOST_DATA",
     "HOST_TESTMAP",
-    "HOST_LEGACY_REDIRECT",
     "CSP_CONNECT_SRC",
 )
 

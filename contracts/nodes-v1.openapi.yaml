@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RETINA node ingest
-  version: 1.2.0
+  version: 1.2.2
   description: |
     The RETINA server's HTTP API. The paths under `/v1/nodes` are the RETINA node
     ingest contract, generated from the server and versioned as a unit; everything
@@ -266,8 +266,8 @@ paths:
         Whom to contact about this node. Sent when the details change locally, and not otherwise:
         nothing on the server asks for them, and no response marks them stale.
 
-        The document is replaced wholesale, so a field omitted or sent as null is cleared. Every
-        field is optional; a node with nothing to report need never call this.
+        A node with nothing to report need never call this. The `NodeContact` schema says what
+        each field means and what omitting one does.
 
         What is stored is unverified and is used to reach the owner about their own node. It is
         not an account, and it grants nothing.
@@ -277,38 +277,7 @@ paths:
         content:
           application/json:
             schema:
-              properties:
-                first_name:
-                  anyOf:
-                  - type: string
-                    maxLength: 64
-                  - type: 'null'
-                last_name:
-                  anyOf:
-                  - type: string
-                    maxLength: 64
-                  - type: 'null'
-                email:
-                  anyOf:
-                  - type: string
-                    maxLength: 255
-                  - type: 'null'
-                phone:
-                  anyOf:
-                  - type: string
-                    maxLength: 32
-                  - type: 'null'
-              additionalProperties: false
-              type: object
-              required: []
-              title: NodeContact
-              description: |-
-                Whom to contact about this node, as its owner gave them. Every field is optional
-                and nullable, and an absent field means the same as a null one: the document is
-                replaced wholesale, so a field left out is cleared.
-
-                None of it is verified, and none of it identifies anyone to the server: it is
-                carried so that a fault we can see and the owner cannot has somewhere to go.
+              $ref: '#/components/schemas/NodeContact'
         required: true
       responses:
         '200':
@@ -329,9 +298,9 @@ paths:
           x-retry: never
           x-terminal: false
         '401':
-          description: 'Token bad, revoked or expired. Stop streaming, surface it locally, and keep heartbeating.
-            Do not re-register: recovering a token needs an operator to reactivate the node, and treating
-            a 401 as the trigger turns a deliberate revocation into a registration storm.'
+          description: 'Token bad, revoked or expired. Surface it locally and leave the details unsent:
+            they are sent again whenever they change, so nothing is lost by waiting for a credential.
+            Do not re-register, for the reason detection and heartbeat give on their own 401s.'
           content:
             application/json:
               schema:
@@ -834,6 +803,10 @@ components:
         it places nothing on the map until a position arrives. A latitude and its
         longitude are given together or both null.
 
+        `tx_callsign` is nullable for the same reason, and the empty string is not: a
+        node that cannot name its illuminator sends null, which is the only way to say
+        so.
+
         Necessary but not sufficient. A receiver and illuminator at the same point are
         refused, as is a value that is not a finite number, and neither is expressible
         here: both answer `400 invalid_config` naming the field.
@@ -897,9 +870,11 @@ components:
           type: number
           exclusiveMinimum: 0.0
         tx_callsign:
-          type: string
-          minLength: 1
-          maxLength: 32
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 32
+          - type: 'null'
         beam_width_deg:
           anyOf:
           - type: number
@@ -928,6 +903,54 @@ components:
       - tx_callsign
       - tx_lat
       - tx_lon
+      additionalProperties: false
+    NodeContact:
+      type: object
+      title: NodeContact
+      description: |-
+        Whom to contact about this node, as its owner gave them. Every field is optional
+        and nullable, and an absent field means the same as a null one: the document is
+        replaced wholesale, so a field left out is cleared.
+
+        `country` is an ISO 3166-1 alpha-2 code and says where the phone number is,
+        which a national number cannot say for itself: `07700900123` is dialable only
+        by someone who already knows the answer. Two letters, case-insensitive on the
+        wire and stored upper case.
+
+        Necessary but not sufficient, as the configuration schema is: surrounding
+        whitespace is stripped before a value is judged, so a bound here describes the
+        trimmed form rather than the bytes sent.
+
+        None of it is verified, and none of it identifies anyone to the server: it is
+        carried so that a fault we can see and the owner cannot has somewhere to go.
+      properties:
+        first_name:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+        last_name:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+        email:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+        phone:
+          anyOf:
+          - type: string
+            maxLength: 32
+          - type: 'null'
+        country:
+          anyOf:
+          - type: string
+            maxLength: 2
+            pattern: ^[A-Za-z]{2}$
+          - type: 'null'
+      required: []
       additionalProperties: false
     NodeHealth:
       properties:

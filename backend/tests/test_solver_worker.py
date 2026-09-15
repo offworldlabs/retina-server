@@ -248,6 +248,65 @@ class TestRmsDelayFilter:
         assert state.solver_successes == 0
         assert state.solver_failures == 1
 
+    def test_n3_rms_doppler_has_its_own_tighter_ceiling(self, monkeypatch):
+        """At n=3 the free fit is exactly determined, so a genuine solve leaves
+        ~0 Hz of Doppler residual; 65 Hz is two aircraft's echoes clustered
+        together and must be rejected under _SOLVER_N3_RMS_DOPPLER_MAX_HZ
+        even though the physical 200 Hz gate would pass it."""
+        _reset_state()
+        state.mlat_solve_history.clear()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+        assert solver_mod._SOLVER_N3_RMS_DOPPLER_MAX_HZ < 65.0 < solver_mod._SOLVER_RMS_DOPPLER_MAX_HZ
+
+        def solve_fn(s_in, cfgs):
+            return {
+                "success": True,
+                "lat": 32.97,
+                "lon": -96.83,
+                "alt_m": 3000.0,
+                "rms_delay": 0.01,
+                "rms_doppler": 65.0,
+                "timestamp_ms": 7000,
+                "contributing_node_ids": ["n1", "n2", "n3"],
+                "n_nodes": 3,
+            }
+
+        solver_mod._process_solver_item(({"n_nodes": 3}, {}, time.time()), solve_fn)
+
+        assert not state.multinode_tracks
+        assert state.solver_failures == 1
+        rec = state.mlat_solve_history[-1]
+        assert rec["outcome"] == "rejected_rms_doppler"
+        assert rec["rms_doppler_max_hz"] == solver_mod._SOLVER_N3_RMS_DOPPLER_MAX_HZ
+
+    def test_n4_keeps_the_physical_rms_doppler_ceiling(self, monkeypatch):
+        """Above n=3 the extra equations expose a bad cluster through rms_delay
+        and the trim instead, and real solves do reach 100+ Hz in turns — so
+        the same 65 Hz that rejects an n=3 solve passes at n=4."""
+        _reset_state()
+        state.mlat_solve_history.clear()
+        stub = _StubAnalytics()
+        monkeypatch.setattr(state, "node_analytics", stub)
+
+        def solve_fn(s_in, cfgs):
+            return {
+                "success": True,
+                "lat": 32.97,
+                "lon": -96.83,
+                "alt_m": 3000.0,
+                "rms_delay": 0.5,
+                "rms_doppler": 65.0,
+                "timestamp_ms": 7000,
+                "contributing_node_ids": ["n1", "n2", "n3", "n4"],
+                "n_nodes": 4,
+            }
+
+        solver_mod._process_solver_item(({"n_nodes": 4}, {}, time.time()), solve_fn)
+
+        assert state.solver_failures == 0
+        assert state.mlat_solve_history[-1]["outcome"] == "published"
+
     def test_low_rms_doppler_accepted(self, monkeypatch):
         """Results with rms_doppler below threshold are stored normally."""
         _reset_state()

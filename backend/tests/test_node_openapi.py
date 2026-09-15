@@ -18,7 +18,14 @@ import yaml
 
 from routes.nodes import NODE_API_SERVERS, NODE_API_VERSION
 from scripts.generate_openapi import CONTRACT_PATH, contract, render
-from services.node_config import _NULLABLE, _NULLABLE_BEAM, _NUMERIC_BOUNDS, _REQUIRED, numeric_branch
+from services.node_config import (
+    _NULLABLE,
+    _NULLABLE_BEAM,
+    _NULLABLE_CALLSIGN,
+    _NUMERIC_BOUNDS,
+    _REQUIRED,
+    numeric_branch,
+)
 
 FRAME = {
     "t": 1753900000.123,
@@ -254,24 +261,39 @@ def test_every_bound_the_validator_enforces_reaches_the_schema(document):
 
 def test_the_nullable_fields_publish_a_null_branch(document):
     """The six coordinates, so a node whose owner cannot supply the geometry
-    still registers, and the two beam fields, which no node has characterised.
+    still registers, the two beam fields, which no node has characterised, and
+    the callsign, which an owner who cannot name the illuminator leaves null.
     A client generated from a document that omitted these cannot express the
     config the fleet actually sends."""
     properties = _published_config(document)["properties"]
     nullable = {field for field, published in properties.items() if {"type": "null"} in published.get("anyOf", [])}
 
-    assert nullable == _NULLABLE | _NULLABLE_BEAM
+    assert nullable == _NULLABLE | _NULLABLE_BEAM | _NULLABLE_CALLSIGN
 
 
-def test_the_contact_schema_published_is_the_validators_own(document):
-    """One operation carries it, so it stays inline rather than being hoisted
-    into a component the way the configuration is. What matters is the same
-    either way: the bounds published are the ones the validator applies."""
+def test_the_contact_operation_reaches_its_own_component(document):
+    """Hoisted like the configuration, though only one operation carries it: a
+    body published inline leaves the generated type named by whichever generator
+    a client uses, where a component names it here."""
     from services.node_contact import contact_json_schema
 
     operation = document["paths"]["/v1/nodes/contact"]["put"]
+    body = operation["requestBody"]["content"]["application/json"]["schema"]
 
-    assert operation["requestBody"]["content"]["application/json"]["schema"] == contact_json_schema()
+    assert body == {"$ref": "#/components/schemas/NodeContact"}
+    published = document["components"]["schemas"]["NodeContact"]
+    assert published == contact_json_schema()
+    assert published["title"] == "NodeContact"
+
+
+def test_every_node_operation_publishes_its_body_as_a_component(document):
+    """A generated client gets one named type per wire object, whichever
+    operation carries it. An inline body is how that stops being true without
+    anything failing."""
+    for path, methods in document["paths"].items():
+        for method, operation in methods.items():
+            body = operation.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema", {})
+            assert "$ref" in body, f"{method.upper()} {path} publishes its body inline"
 
 
 # ── the credential ───────────────────────────────────────────────────────────

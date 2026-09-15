@@ -165,3 +165,32 @@ export function dopplerColor(doppler_hz, maxDop = 200) {
   const [r, g, b] = stops[lo].map((c, i) => Math.round(c + f * (stops[hi][i] - c)));
   return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
 }
+
+// Window length for the centred moving average drawn over the per-solve dark
+// trail (map/trails.ts smoothTrailPositions, LiveAircraftMap solveTrailsRef).
+// From an 8-min 1 Hz capture of 155 non-ADS-B tracks on the test droplet,
+// pooled interior fixes of multinode_solve tracks: deviation from the local
+// path p90 33 m raw → 10 m at k=3 (p99 102 → 53 m) and heading churn p90
+// 20.6° → 5.8°, for floor(k/2) = 1 solve of lag ≈ 1.2 s, which the live icon
+// covers because the icon is still drawn at the dead-reckoned position.
+// k=5 buys p90 6 m for 2.5 s of lag; that lag starts to be visible as the
+// dashed head trailing a turn, so 3 is the default.  Ground-truth error is
+// bias-dominated and no window improves it (236 → 250 m at k=3): this is
+// presentational only.
+export const TRAIL_SMOOTH_K = 3;
+
+// Sigma assumed for a dark solve whose entry states no pos_sigma_m (absent on
+// ~3/4 of tracks in the capture: 37 of 155).  It feeds ONLY the smoother's
+// teleport gate, max(500 m, 3σ) + v_max·dt — it is never written into the
+// buffer, so it cannot leak into the inverse-variance weights (which apply
+// only when every point in a window states a real sigma).  It matters that
+// it is not zero: dark solve error is ~1 km median, so a bare 500 m floor
+// would read ordinary scatter as a teleport and split the averaging window.
+export const TRAIL_SOLVE_SIGMA_FALLBACK_M = 300;
+
+// Depth of the per-solve dark trail buffer (LiveAircraftMap solveTrailsRef).
+// Dark solves land every 1–3 s, so 40 points is 40–120 s of track — longer
+// than the 30 s the 2 Hz icon buffer holds, and comfortably longer than the
+// 7–33 s median life of a dark solver key, which is the real limit on how
+// much history a dark trail can ever have.
+export const SOLVE_TRAIL_MAX_POINTS = 40;

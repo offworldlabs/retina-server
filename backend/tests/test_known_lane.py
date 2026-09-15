@@ -90,25 +90,33 @@ def _known_lane_state():
     delattr so these tests keep passing unchanged once slice A declares the
     real attributes in core/state.py.
 
-    Deliberately does NOT arm state.KNOWN_LANE_MODE: TestClient lifespans
-    leak solver worker daemons into this process (see test_solver_worker's
-    private-queue rationale), and every one of them polls maybe_run_pass
-    against the live flag — arming it here would let a daemon race these
-    tests for the per-hex dedup window.  Tests pass the mode explicitly
-    instead; only the live-flag-semantics tests set the attribute, and only
-    to values the lane reads as off.
+    Deliberately does NOT arm state.KNOWN_LANE_MODE, and turns
+    DARK_FOLLOW_MODE off: TestClient lifespans leak solver worker daemons
+    into this process (see test_solver_worker's private-queue rationale),
+    and one armed while another file had either lane on polls
+    maybe_run_pass against the live flags for the rest of the run. With
+    both off it returns before the pass lock, so it can neither race these
+    tests for the per-hex dedup window nor stamp the pass clock between
+    the reset below and a test's first call.  Tests pass the mode
+    explicitly instead; only the live-flag-semantics tests set the
+    attribute, and only to values the lane reads as off.
     """
     prev_claims = getattr(state, "known_claims", _SENTINEL)
     prev_mode = getattr(state, "KNOWN_LANE_MODE", _SENTINEL)
+    prev_dark = getattr(state, "DARK_FOLLOW_MODE", _SENTINEL)
     state.known_claims = {}
-    # The module keeps its pass-interval clock (_last_pass_ts) at module
-    # level; under xdist worksteal a test from another class can leave it
-    # inside the interval, so the first maybe_run_pass of the next test is
-    # gated and its attempt count reads 0 (seen once in CI, 2026-09-06).
+    state.DARK_FOLLOW_MODE = "off"
+    # The pass clock, dedup maps and counters live at module level; each test
+    # starts them from boot values. The reset takes the pass lock, so a daemon
+    # pass already in flight finishes before the test begins.
     known_lane._reset_for_tests()
     state._reset_for_tests()
     yield
-    for name, prev in (("known_claims", prev_claims), ("KNOWN_LANE_MODE", prev_mode)):
+    for name, prev in (
+        ("known_claims", prev_claims),
+        ("KNOWN_LANE_MODE", prev_mode),
+        ("DARK_FOLLOW_MODE", prev_dark),
+    ):
         if prev is _SENTINEL:
             # A test may have deleted or never set it.
             if hasattr(state, name):

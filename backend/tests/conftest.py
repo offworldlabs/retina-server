@@ -23,8 +23,26 @@ os.environ.setdefault("SOLVER_POOL", "0")
 # known_lane counters.  Tests that exercise the lane set the mode explicitly —
 # monkeypatch on core.state, or maybe_run_pass's mode argument.
 os.environ.setdefault("KNOWN_LANE_MODE", "off")
+# Same for the dark-follow lane: lanes_armed() arms the hook when EITHER lane
+# is on, and maybe_run_pass returns early only when both are off, so with this
+# lane at its "shadow" default every leaked daemon still took the pass lock and
+# stamped the pass clock every two seconds, gating the known-lane tests' first
+# call. Tests that exercise dark following set the mode themselves.
+os.environ.setdefault("DARK_FOLLOW_MODE", "off")
 # Needed so the /api/radar/detections auth guard is active in tests.
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
+# A fixed node-fuzz salt, so every published coordinate the suite sees is the
+# same on every machine and every CI run.  Without one, services/public_location
+# falls back to a salt it generates and persists under backend/data/runtime/ —
+# which a fresh CI checkout never has, so each run drew a new random offset for
+# every node.  An offset that happens to point almost due east or west moves the
+# latitude by less than the 4-decimal rounding of the published coordinate, and
+# the receiver is then published at its true latitude (~0.5% of salts for a
+# 0.5–1 km donut); the same holds for longitude and a near north/south offset.
+# Any assertion that a published coordinate merely differs from the true one
+# was therefore a lottery ticket.  Tests that need a specific salt still set
+# their own (test_public_location.py); tests of the no-salt fallback delenv it.
+os.environ.setdefault("NODE_FUZZ_SALT", "retina-test-suite-salt")
 # services.node_retirement reads this per call, so an ambient value would reach
 # the tests. Assigned rather than setdefault: a developer who has exported
 # staging's own value (e2e-,synth-e2e-) would otherwise fail every test that
@@ -161,6 +179,7 @@ def _reset_module_state():
         dark_follow,
         feed_helpers,
         frame_processor,
+        infrastructure,
         known_claiming,
         node_bias,
         node_refs,
@@ -186,6 +205,7 @@ def _reset_module_state():
         node_bias,
         node_refs,
         publication,
+        infrastructure,
         periodic,
     ):
         mod._reset_for_tests()

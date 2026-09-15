@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { api } from "../../api/client";
+import { formatBytes } from "../../utils/format";
 
 const PAGE_SIZE = 50;
 
@@ -89,8 +90,8 @@ export default function StoragePage() {
                     <div style={{
                       height: "100%", borderRadius: 4,
                       width: `${Math.min(storage.disk.used_pct || 0, 100)}%`,
-                      background: (storage.disk.used_pct || 0) > 90 ? "#ef4444"
-                        : (storage.disk.used_pct || 0) > 75 ? "#f59e0b" : "#10b981",
+                      background: (storage.disk.used_pct || 0) > 90 ? "var(--error)"
+                        : (storage.disk.used_pct || 0) > 75 ? "var(--warning)" : "var(--success)",
                     }} />
                   </div>
                 </div>
@@ -133,8 +134,8 @@ export default function StoragePage() {
                     <td style={{ color: "var(--text-muted)" }}>Est. Days Until Full</td>
                     <td style={{
                       fontWeight: 600,
-                      color: (storage.write_rate.days_until_full || 0) < 30 ? "#ef4444"
-                        : (storage.write_rate.days_until_full || 0) < 90 ? "#f59e0b" : "#10b981",
+                      color: (storage.write_rate.days_until_full || 0) < 30 ? "var(--error)"
+                        : (storage.write_rate.days_until_full || 0) < 90 ? "var(--warning)" : "var(--success)",
                     }}>
                       {storage.write_rate.days_until_full > 0
                         ? storage.write_rate.days_until_full > 365
@@ -270,10 +271,4 @@ export default function StoragePage() {
       </div>
     </>
   );
-}
-
-function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

@@ -256,6 +256,28 @@ _TRIM_MIN_NODES = 3
 # unrealisable Doppler residuals (observed: 248 Hz for confirmed false associations).
 # Threshold at 200 Hz = max bistatic Doppler + 2% margin; only rejects impossible cases.
 _SOLVER_RMS_DOPPLER_MAX_HZ = 200.0
+# ...except at n=3, where 200 Hz is no gate at all.  Three nodes give six
+# measurements for six unknowns (position + velocity), so the free fit is
+# exactly determined and a genuine 3-node solve leaves ~0 Hz of Doppler
+# residual whatever the noise.  A residual appears only when the fit hits a
+# bound (vz saturation, a pinned altitude) — and a bounded fit that STILL
+# misses by tens of Hz is not one aircraft: it is two aircraft's echoes
+# clustered together (the dark lane's cluster-contamination defect, see
+# _stamp_foreign_nodes), which is exactly the case a 3-node solve has no
+# spare equation to expose any other way.  Test droplet, 35 min, 313 n=3
+# dark publishes: no solve within 1 km of truth exceeded 58 Hz (p99 54 Hz),
+# while 6 of the 8 above 60 Hz were > 3 km off and the worst (173 Hz, 5.2 km)
+# was a verified two-aircraft mix that the 200 Hz gate passed.  Above n=3
+# the extra equations make a bad cluster show up in rms_delay and the trim
+# (_trim_and_resolve) instead, and real n>=4 solves do reach 100+ Hz in
+# turns, so the physical ceiling stays the gate there.
+_SOLVER_N3_RMS_DOPPLER_MAX_HZ = float(os.getenv("SOLVER_N3_RMS_DOPPLER_MAX_HZ", "60.0"))
+
+
+def _rms_doppler_max_hz(n_nodes) -> float:
+    """The rms_doppler ceiling a solve with this many nodes must pass."""
+    return _SOLVER_N3_RMS_DOPPLER_MAX_HZ if n_nodes == 3 else _SOLVER_RMS_DOPPLER_MAX_HZ
+
 
 # Reject n=2 solver results whose position moved more than this many km from
 # the initial_guess supplied by the association layer.
@@ -3355,12 +3377,15 @@ def _process_solver_item(
             )
             return result
         rms_doppler = result.get("rms_doppler", 0) or 0
-        if rms_doppler > _SOLVER_RMS_DOPPLER_MAX_HZ:
+        # Post-trim node count: an n=4 candidate trimmed to three nodes is a
+        # three-node fit and gets the three-node ceiling.
+        rms_doppler_max = _rms_doppler_max_hz(int(result.get("n_nodes") or 0))
+        if rms_doppler > rms_doppler_max:
             logging.debug(
                 "Solver result rejected: rms_doppler=%.1f Hz > %.1f Hz threshold "
                 "(n_nodes=%d, lat=%.3f, lon=%.3f) — physically unrealisable Doppler",
                 rms_doppler,
-                _SOLVER_RMS_DOPPLER_MAX_HZ,
+                rms_doppler_max,
                 result.get("n_nodes", 0),
                 result.get("lat", 0),
                 result.get("lon", 0),
@@ -3371,7 +3396,9 @@ def _process_solver_item(
                 "rejected_rms_doppler",
                 s_in,
                 result,
-                extra=_extra,
+                # Which ceiling fired: the history reader cannot tell a 65 Hz
+                # n=3 reject from the 200 Hz physical gate without it.
+                extra={**(_extra or {}), "rms_doppler_max_hz": rms_doppler_max},
             )
             return result
         # Beam gate: range and bearing are two different physical claims, and

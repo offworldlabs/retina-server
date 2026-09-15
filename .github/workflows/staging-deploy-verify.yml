@@ -1,0 +1,284 @@
+name: Staging deploy and verify
+
+# Deploy staging, then prove it, as one unit. ci.yml calls this from a single
+# job that carries the `staging-deploy` concurrency group, and a calling job is
+# not complete until every job below has finished, so the group is held from
+# the first byte of the deploy to the last E2E assertion.
+#
+# That holding is the whole point of the file, and it is why the three jobs
+# cannot simply live in ci.yml with a group each. Concurrency is acquired and
+# released per job, so a following run's deploy was free to land between one
+# run's smoke tests and its E2E — which is how three merges on 2026-09-10 all
+# failed, none of them for a fault in the change: the box was restarting
+# underneath a suite that was testing it.
+#
+# Splitting these back into three jobs in the caller reopens that race,
+# whatever concurrency group each of them carries.
+
+on:
+  workflow_call:
+    inputs:
+      app_dir:
+        description: >-
+          Deploy directory on the droplet. Threaded in from ci.yml's
+          `env.APP_DIR` rather than restated here: workflow-level `env` does not
+          cross a `workflow_call` boundary, and a second definition is a second
+          thing to forget when the directory moves.
+        required: true
+        type: string
+      playwright_image:
+        description: >-
+          Playwright container image for the E2E job, derived from the lockfile
+          by ci.yml's `playwright-image` job so the browsers cannot disagree
+          with the client that drives them.
+        required: true
+        type: string
+    secrets:
+      STAGING_HOST:
+        required: true
+      STAGING_SSH_KEY:
+        required: true
+      STAGING_RADAR_API_KEY:
+        required: true
+      # Inert while unset: the smoke script and Playwright both render them
+      # empty and send no Access headers, which is the state of an environment
+      # with no Service Auth policy in front of its admin surface.
+      CF_ACCESS_CLIENT_ID:
+        required: false
+      CF_ACCESS_CLIENT_SECRET:
+        required: false
+
+jobs:
+  deploy:
+    name: Deploy to staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Carries the deploy directory as an environment variable rather than only
+    # interpolating it: `envs: APP_DIR` below forwards it to the droplet, where
+    # deploy/pre-deploy.sh and deploy/rollback.sh read it.
+    env:
+      APP_DIR: ${{ inputs.app_dir }}
+    steps:
+      - name: Deploy to staging via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: root
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          command_timeout: 20m
+          envs: APP_DIR
+          script: |
+            set -e
+            cd ${{ env.APP_DIR }}
+
+            # Same two wrong-environment checks production runs, first and in the
+            # same order, for the same reasons. The hostname is the only signal
+            # that holds on a box with no .env at all, which is exactly the state
+            # a droplet awaiting its first deploy is in; see the production block
+            # for why it is an exact match rather than a pattern.
+            if [ "$(hostname)" != "retina-staging" ]; then
+              echo "::error::Refusing to deploy staging onto '$(hostname)' — expected retina-staging. If this droplet was rebuilt, finish provisioning it (hostnamectl set-hostname retina-staging); otherwise this job is pointed at the wrong box."
+              exit 1
+            fi
+
+            # A .env naming another environment means this job is pointed
+            # at a box it does not own. Without this the write further down simply
+            # takes that box over: overwriting its .env and rebuilding would bring
+            # production back on staging's hostnames, fleet size and container
+            # names. A MISSING .env is allowed through; that is the normal state
+            # of a box awaiting its first deploy, and we write it below.
+            if [ -f .env ] && ! grep -q '^COMPOSE_FILE=.*docker-compose\.staging\.yml' .env; then
+              echo "::error::${{ env.APP_DIR }}/.env exists but does not select the staging overlay — this host is not staging. Inspect it; do not deploy."
+              exit 1
+            fi
+
+            # Pre-flight: Cloudflare's origin-pull CA, checked BEFORE anything
+            # rebuilds the stack. nginx renders `ssl_verify_client on`
+            # (deploy/nginx/snippets/tls.conf) and start.sh refuses to boot
+            # without the CA, so on a droplet where the human half of this work
+            # is not done (enable Authenticated Origin Pulls for the zone, put
+            # the CA on the box) the rebuild below would swap in a container
+            # that refuses to start and leave the environment DOWN. Refusing
+            # here converts that outage into a refused deploy: everything above
+            # this line only reads the box.
+            CF_CA=/etc/ssl/cloudflare/origin-pull-ca.pem
+            if [ ! -f "$CF_CA" ]; then
+              echo "::error::${CF_CA} is missing on $(hostname). nginx requires Cloudflare's origin-pull CA and will not start without it. Enable Authenticated Origin Pulls for the zone, then fetch the CA onto this droplet (curl -fsS --create-dirs -o ${CF_CA} https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem) and re-run. Refusing to deploy; the running stack is untouched."
+              exit 1
+            fi
+            if ! openssl x509 -in "$CF_CA" -noout >/dev/null 2>&1; then
+              echo "::error::${CF_CA} exists on $(hostname) but is not a parseable PEM certificate — a truncated download or an error page saved to the path would look exactly like this. nginx would fail to start. Replace it and re-run. Refusing to deploy; the running stack is untouched."
+              exit 1
+            fi
+            echo "Origin-pull CA present and parseable: ${CF_CA}"
+
+            # Pre-flight: refuse to deploy when the disk is near full. Without
+            # this, git fetch silently writes a partial pack, the source tree
+            # never advances, and `docker compose --build` happily caches every
+            # layer and "succeeds" with yesterday's image (run 25923117075).
+            AVAIL_MB=$(df -m / | awk 'NR==2 {print $4}')
+            if [ "${AVAIL_MB:-0}" -lt 2048 ]; then
+              echo "::error::Staging disk only ${AVAIL_MB}MB free (< 2GB threshold). Aborting deploy."
+              df -h /
+              docker system df 2>/dev/null || true
+              exit 1
+            fi
+
+            # Hard-reset rather than `git pull` — see the production deploy
+            # block for the full incident description; same failure mode would
+            # surface here if the staging server ever picked up a local commit.
+            # `set -e` above guarantees a failed fetch/reset aborts the deploy.
+            git fetch origin main
+            git reset --hard origin/main
+            git submodule update --init --recursive
+            # The host's ./.env sets COMPOSE_FILE (base + staging overlay), so the
+            # compose commands below match the production deploy block; only the
+            # fleet step is staging's own. Written from the tree on every deploy
+            # so a rebuilt droplet or a hand-edited .env cannot select the wrong
+            # overlay.
+            cp deploy/env.staging.example .env
+            # Top up with this host's own CARTO basemap key — see the note in
+            # deploy/env.<env>.example. Guarded rather than chained with &&: a host
+            # with no key must build watermarked tiles, not fail its deploy.
+            if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; fi
+            # Cap build cache at ~10GB (LRU eviction) rather than wiping it all:
+            # keeps recent layers so incremental builds stay fast, and bounds
+            # total size so cache growth can't trip the disk pre-flight above.
+            # The stale-layer failure the old blanket wipe guarded against was
+            # rooted in disk-full (partial git pack -> source never advanced ->
+            # cache reused); the disk pre-flight now catches that root cause, so a
+            # full wipe is redundant and only forced slow from-scratch rebuilds.
+            docker builder prune -f --keep-storage 10GB
+            # Deploy the app FIRST, on its own — building only `server`
+            # means a broken Dockerfile.fleet can't abort the staging app deploy
+            # (which would block the whole pipeline). Fleet is a separate step below.
+            # No `docker compose down` before this: `up --build` swaps the container
+            # only once the image exists, so a failed build leaves the old one
+            # serving, and an unchanged image is not swapped at all.
+            # --remove-orphans because this deploy renamed the compose
+            # service. container_name is pinned, so the container kept by the
+            # old service key is an orphan holding the exact name the new one
+            # needs, and compose leaves orphans alone by default: the create
+            # then fails with a name conflict and the stack does not come up.
+            # Verified on retina-test before this landed. It stays afterwards
+            # as the general guard for a removed or renamed service.
+            docker compose up -d --build --remove-orphans server
+            # Wait for server to become healthy (up to 90s)
+            for i in $(seq 1 18); do
+              if docker compose exec -T server \
+                python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
+                echo "Staging server healthy after ~$((i*5))s"
+                break
+              fi
+              echo "Waiting for health check... attempt $i/18"
+              sleep 5
+              if [ "$i" = "18" ]; then
+                echo "Staging health check failed after 90s"
+                docker compose logs --tail=50
+                exit 1
+              fi
+            done
+            # Now the fleet, separately — a fleet build/start failure surfaces
+            # loudly here without taking the already-healthy app down with it.
+            # Recreated only when its image or config changed; otherwise the old
+            # fleet reconnects to the new server by itself and the demo stays up.
+            docker compose up -d --build --no-deps fleet
+  smoke-tests:
+    name: Staging smoke tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    needs: [deploy]
+    steps:
+      - uses: actions/checkout@v4
+      # The curls in this loop carry no --max-time, so against a hung origin
+      # the 24 iterations run far past the job cap. Bounded here rather than by
+      # rewriting the loop, which deploy/staging-smoke-test.sh mirrors.
+      - name: Wait for fleet to connect
+        timeout-minutes: 10
+        run: |
+          echo "Waiting for fleet nodes to connect..."
+          # Through the edge, not at the droplet's address: the origin now requires
+          # Cloudflare's client certificate (ssl_verify_client in
+          # deploy/nginx/snippets/tls.conf) and the DOCKER-USER boundary drops
+          # anything on 443 that is not from a Cloudflare range, so a direct-to-IP
+          # request can only ever time out or 400. `-k` does not help — that flag
+          # governs verification of the SERVER's certificate, not presentation of
+          # a client one. Same hostname deploy/staging-smoke-test.sh uses for this
+          # endpoint (API_URL there), so both agree on what "staging" means.
+          #
+          # NOT the towers hostname: a Cloudflare Origin Rule routes that to the
+          # tower-finder-edge container on port 8443, which has no such route.
+          # The 404 body fails the parse below, `|| COUNT=0` swallows it, and the
+          # loop then reports "0 nodes" for all 24 attempts whatever the fleet is
+          # doing — a wrong URL that reads exactly like a fleet that never came up.
+          for i in $(seq 1 24); do
+            COUNT=$(curl -s https://staging-api.retina.fm/api/test/dashboard \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['active'])" 2>/dev/null) || COUNT=0
+            if [ "${COUNT:-0}" -ge 1 ]; then
+              echo "Fleet ready: ${COUNT} node(s) connected after ~$((i*5))s"
+              break
+            fi
+            echo "Attempt $i/24: ${COUNT} nodes — waiting 5s..."
+            sleep 5
+          done
+      - name: Run smoke tests against staging
+        timeout-minutes: 15
+        # Same service token as production: one token, admitted by a Service Auth
+        # policy on each admin application. Inert while the secrets are unset.
+        env:
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: bash deploy/staging-smoke-test.sh
+  e2e:
+    name: Playwright E2E (staging)
+    runs-on: ubuntu-latest
+    # Only the pull and npm ci sit outside the test step's own cap now, and an
+    # image pull is minutes at worst. See the production job for why the job
+    # cap is a backstop rather than the primary bound.
+    timeout-minutes: 30
+    needs: [smoke-tests]
+    # The browsers and their shared libraries ship in the image, so there is no
+    # install step and neither apt nor Playwright's CDN is in this path. Both
+    # broke repeatedly on 2026-08-18 and 2026-08-19; see the production job.
+    container:
+      image: ${{ inputs.playwright_image }}
+    # `npm ci` runs @playwright/test's postinstall, which fetches browsers. The
+    # image sets PLAYWRIGHT_BROWSERS_PATH=/ms-playwright and the tag is derived
+    # to match the lockfile, so it finds the right revision already there and
+    # does nothing. This makes that a guarantee rather than an expectation: if
+    # the browsers were ever NOT found, the postinstall would quietly download
+    # them from the CDN this job exists to avoid, and the only symptom would be
+    # a slow green run. With this set it fails loudly at the browser instead,
+    # pointing at the cause. See microsoft/playwright#4283.
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      # Kept despite the image shipping its own Node: this pins the version the
+      # tests run under to the same 20 as every other job, rather than letting
+      # it drift with whatever the Playwright image happens to carry, and keeps
+      # the npm cache. Only browser provisioning changes here.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --legacy-peer-deps
+      - name: Run E2E tests (staging)
+        # Has to stay above what nodes.spec.ts's two retried beforeAll hooks can
+        # reach, so a node that never propagates fails an assertion rather than
+        # timing the step out and losing the report. That spec derives its hook
+        # budgets from the server's refresh cadence; raise this if it widens.
+        timeout-minutes: 20
+        run: E2E_ENV=staging npx playwright test
+        env:
+          CI: "true"
+          RADAR_API_KEY: ${{ secrets.STAGING_RADAR_API_KEY }}
+          # Passage through Access for the admin surface. Playwright follows the
+          # edge's 302, so without these the admin tests would parse Cloudflare's
+          # login page as the app. Empty secrets render empty and send nothing.
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}

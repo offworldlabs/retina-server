@@ -31,6 +31,7 @@ const UserManagementPage = lazy(() => import("./pages/admin/UserManagementPage")
 const InvitesPage = lazy(() => import("./pages/admin/InvitesPage"));
 const ConfigPage = lazy(() => import("./pages/admin/ConfigPage"));
 const SystemMetricsPage = lazy(() => import("./pages/admin/SystemMetricsPage"));
+const InfrastructurePage = lazy(() => import("./pages/admin/InfrastructurePage"));
 const MlatVerificationPage = lazy(() => import("./pages/admin/MlatVerificationPage"));
 
 const { isAdmin: isAdminSite, modeParamIgnored } = resolveSurface(
@@ -83,6 +84,7 @@ export default function App() {
                       <Route path="invites" element={<InvitesPage />} />
                       <Route path="config" element={<ConfigPage />} />
                       <Route path="system" element={<SystemMetricsPage />} />
+                      <Route path="infrastructure" element={<InfrastructurePage />} />
                     </>
                   ) : (
                     <>

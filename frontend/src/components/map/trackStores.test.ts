@@ -4,7 +4,7 @@ import { forgetTrack, reconcileAdsbPairs, snapTrack, sweepStaleRadar } from "./t
 function stores() {
   return {
     fixes: {}, smooth: {}, svgElems: {}, svgMiss: {}, latLng: {},
-    trails: {}, lastTrailSample: {},
+    trails: {}, lastTrailSample: {}, solveTrails: {},
     markerRegistry: new Map(),
   };
 }
@@ -12,13 +12,13 @@ function stores() {
 describe("forgetTrack", () => {
   it("removes the key from every store, including the marker registry", () => {
     const s: any = stores();
-    for (const k of ["fixes", "smooth", "svgElems", "svgMiss", "latLng", "trails", "lastTrailSample"]) {
+    for (const k of ["fixes", "smooth", "svgElems", "svgMiss", "latLng", "trails", "lastTrailSample", "solveTrails"]) {
       s[k]["abc"] = { any: 1 };
       s[k]["keep"] = { any: 2 };
     }
     s.markerRegistry.set("abc", {});
     forgetTrack("abc", s);
-    for (const k of ["fixes", "smooth", "svgElems", "svgMiss", "latLng", "trails", "lastTrailSample"]) {
+    for (const k of ["fixes", "smooth", "svgElems", "svgMiss", "latLng", "trails", "lastTrailSample", "solveTrails"]) {
       expect(s[k]["abc"]).toBeUndefined();
       expect(s[k]["keep"]).toBeDefined();
     }
@@ -35,6 +35,7 @@ describe("snapTrack", () => {
     s.latLng.abc = ll;
     s.trails.abc = [[1, 2, 3]];
     s.lastTrailSample.abc = 123;
+    s.solveTrails.abc = [[1, 2, 3, 300]];
     snapTrack("abc", s, 34.8, -82.4, 180);
     expect(s.smooth.abc).toBe(sm);        // same object — the loop holds it
     expect(sm.lat).toBe(34.8);
@@ -42,6 +43,7 @@ describe("snapTrack", () => {
     expect(ll.lng).toBe(-82.4);
     expect(s.trails.abc).toBeUndefined();
     expect(s.lastTrailSample.abc).toBeUndefined();
+    expect(s.solveTrails.abc).toBeUndefined();
   });
 
   it("creates the smooth entry when absent", () => {

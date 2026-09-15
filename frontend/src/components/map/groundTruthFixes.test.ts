@@ -88,7 +88,7 @@ function makeStores(fixes = {}, extra = {}) {
   return {
     fixes,
     smooth: {}, svgElems: {}, svgMiss: {}, latLng: {},
-    trails: {}, lastTrailSample: {},
+    trails: {}, lastTrailSample: {}, solveTrails: {},
     markerRegistry: new Map(),
     ...extra,
   };

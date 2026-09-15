@@ -5,7 +5,10 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
+from config.constants import node_fuzz_max_km, node_fuzz_min_km
 from services import parquet_writer as pw
+from services import public_location as pl
+from services.geo import haversine_km
 
 
 def _frame(timestamp_ms: int, n_dets: int = 3, with_adsb: bool = False) -> dict:
@@ -260,10 +263,19 @@ def test_schema_includes_geometry_and_rf_columns(tmp_path: Path):
     } <= cols
 
     rows = table.to_pylist()
-    # One published coordinate for the whole file, and it is not the true one.
-    assert len({r["rx_lat"] for r in rows}) == 1
-    assert all(r["rx_lat"] != 33.9 for r in rows)
-    assert all(r["rx_lon"] != -84.62 for r in rows)
+    # One published coordinate for the whole file: exactly what public_latlon
+    # publishes for this node, displaced from the true receiver by a distance
+    # inside the fuzz donut.  Not merely "!= the true value": an offset that
+    # points almost due east or west leaves the 4-decimal latitude unchanged
+    # (and likewise longitude for near north/south), so an inequality on one
+    # axis holds only for most salts, not all of them.
+    published = {(r["rx_lat"], r["rx_lon"]) for r in rows}
+    assert published == {pl.public_latlon(cfg["rx_lat"], cfg["rx_lon"], "node-A")}
+    ((rx_lat, rx_lon),) = published
+    displaced_km = haversine_km(cfg["rx_lat"], cfg["rx_lon"], rx_lat, rx_lon)
+    # 4-decimal rounding moves the published point by up to ~8 m.
+    assert node_fuzz_min_km() - 0.02 <= displaced_km <= node_fuzz_max_km() + 0.02
+    assert all(r["tx_lat"] == 33.9 for r in rows)
     assert all(r["tx_lon"] == -84.331 for r in rows)
     assert all(r["fc_hz"] == 195_000_000 for r in rows)
     assert all(r["fs_hz"] == 2_000_000 for r in rows)

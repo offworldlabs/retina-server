@@ -24,7 +24,7 @@ stays, so place it by hand once on a fresh droplet:
 | **Overlay** | `docker-compose.prod.yml` | `docker-compose.staging.yml` | `docker-compose.test.yml` |
 | **Deployed by** | CI, on push to `main` | CI, on push to `main` | `just deploy-test` (rsync, pre-review) or `deploy-test.yml` (CI, dispatch-only, git) |
 | **Hostnames** | `*.retina.fm`, except `testmap` | `staging-*.retina.fm`, plus `testmap.retina.fm` | `test-*.retina.fm` |
-| **RAM / swap** | 7941 MB / 4 GB | 3915 MB / none | 3915 MB / 2 GB |
+| **RAM / swap** | 7941 MB / 4 GB | 7941 MB / none | 7941 MB / 2 GB |
 | **Fleet** | none (see below) | 50 @ 1.0s (50 fps) | 50 @ 1.0s (50 fps) |
 | **TCP 3012** | published (real nodes) | closed | closed |
 
@@ -59,8 +59,8 @@ workflow_dispatch from that repo rather than on its merges, and
 `deploy-test.yml` warns at pre-flight if nothing is on the network to answer.
 Anything else is drift, and fails the check.
 
-staging and test run the fleet 4x faster than production, on **half the cores** —
-production has 4, they have 2 — so per core it is 8x. The frame path copes (41 of
+staging and test run the fleet 4x faster than production on the same four cores,
+so per core it is 4x. The frame path copes (41 of
 50 fps sustained, nothing dropped, frame queue at zero); the solver does not.
 Expect per-solve times of 45-52s against production's 17s, a solver queue
 oscillating to ~28% where production sits at 0%, and a much lower solve success
@@ -104,9 +104,6 @@ arriving on production means it is working; confirm it positively by checking
 that the real nodes appear in the test droplet's `/api/radar/analytics`, which
 names them by `node_ref` rather than by node id.
 
-Real receiver and transmitter geometry now lands on a droplet running
-`AUTH_ALLOW_ANONYMOUS_ADMIN=1`.
-
 ---
 
 ## Server basics
@@ -124,8 +121,24 @@ advertised. Get them from the DigitalOcean console or your own `~/.ssh/config`.
 | **Restart (no rebuild)** | `docker compose restart` |
 | **Rebuild and restart** | `docker compose up -d --build` (wait ~5 s before testing) |
 | **Health endpoint** | `curl -sk https://localhost/api/health` |
-| **Metrics endpoint** | `curl -sk https://localhost/api/admin/metrics` |
+| **Metrics endpoint** | `adm /api/admin/metrics` (defined below) |
 | **Dashboard** | `curl -sk https://localhost/api/test/dashboard` |
+
+`/api/admin/*` requires an administrator, and a request to localhost arrives
+below Cloudflare with no assertion for the origin to verify, so a bare `curl`
+answers 401. Define `adm` once per shell from a browser session on the console:
+
+```bash
+# Sign in at the admin console, then copy the CF_Authorization cookie
+# (devtools, Application, Cookies). It holds the same signed assertion that
+# Cloudflare injects on a proxied request, so the origin verifies it identically.
+export CF_ASSERTION='<the cookie value>'
+adm() { curl -sk -H "Cf-Access-Jwt-Assertion: ${CF_ASSERTION}" "https://localhost$1"; }
+```
+
+It expires with the Access session and carries the email of whoever signed in, so
+anything you reach with it is attributed to that person in `/api/admin/events`.
+Every `adm` below assumes it.
 
 All state is **in-memory**. A container restart loses all connected nodes, active tracks, and in-flight frame data. State is snapshotted to disk every 60 s and restored on next startup (trust scores, reputations, accuracy samples, node identities).
 
@@ -237,12 +250,13 @@ the server's own schedule, independent of who polls `/api/health` — see
 [`alerting.md`](alerting.md).
 
 `/api/health` itself stays **200** (liveness, used by the Docker healthcheck);
-`/api/health?strict=1` returns **503** when degraded (readiness, for an external
-uptime monitor). Details are never exposed on the endpoint — read them from logs:
+`/api/health?strict=1` returns **503** when degraded (readiness; the outside-in
+probes use the plain form, see `claude-shared/docs/runbooks/uptime-monitoring.md`).
+Details are never exposed on the endpoint — read them from logs:
 
 ```bash
 docker compose logs --tail=200 | grep "Health check degraded"
-curl -sk https://localhost/api/admin/metrics | python3 -m json.tool
+adm /api/admin/metrics | python3 -m json.tool
 ```
 
 ---
@@ -361,7 +375,7 @@ What does catch it is the delay residual: compare the node's published `adsb[].e
 
 **Check:**
 ```bash
-curl -sk https://localhost/api/admin/metrics | python3 -c \
+adm /api/admin/metrics | python3 -c \
   "import sys,json; m=json.load(sys.stdin); print('queue_pct:', m['solver_queue_pct'], 'drops:', m['solver_queue_drops'], 'avg_latency:', m['solver_avg_latency_s'])"
 ```
 
@@ -428,7 +442,7 @@ curl -sk https://localhost/api/radar/nodes | python3 -c \
 3. Port 3012 unreachable — check firewall: `ufw status` on server, or DigitalOcean firewall rules
 4. Node-side crash — contact node operator
 
-**After a docker rebuild:** The fleet always loses all connections. Stop the old simulator unit and start a new one (see fleet simulator section of server-ops.instructions.md).
+**After a docker rebuild:** the fleet loses its connections and reconnects by itself within a minute (retina-simulation's reconnect loop). If it does not, bounce it as in the fleet simulator section below.
 
 ---
 
@@ -506,8 +520,8 @@ working, so this alert means a reading well outside even that.
 
 **Check per-node miss rates:**
 ```bash
-curl -sk https://localhost/api/admin/leaderboard | python3 -c \
-  "import sys,json; rows=json.load(sys.stdin); [print(r['node_id'], r.get('miss_rate','?')) for r in rows]"
+adm /api/admin/leaderboard | python3 -c \
+  "import sys,json; rows=json.load(sys.stdin)['leaderboard']; [print(r['node_ref'], r.get('miss_rate','?')) for r in rows]"
 ```
 
 **Common causes:**
@@ -534,7 +548,7 @@ its own history.
 ```bash
 # On server — check if backup exists on R2:
 # (if R2 is configured)
-curl -sk https://localhost/api/admin/storage
+adm /api/admin/storage
 ```
 
 Server will start with empty state if snapshot is corrupt. Trust scores and reputation data need to rebuild from scratch — this takes hours under normal node load. Not a functional outage.
@@ -585,7 +599,7 @@ find /opt/retina-server/backend/coverage_data -name "*.json.gz" | sort | head -2
 
 ### `memory_high`
 
-**Trigger:** Process RSS > 3 GB on the 4 GB droplet.  
+**Trigger:** Process RSS > 3 GB, against production's 4G container cap (`docker-compose.prod.yml`). Staging's server is capped at 1600M, so it is OOM-killed before this fires.  
 **What it means:** Memory pressure. The OS will start swapping and the OOM killer may fire, which would crash the container without warning.
 
 **Check current memory:**
@@ -696,10 +710,12 @@ Params (nodes/interval/mode/aircraft) live in the `fleet` service block in
 `docker-compose.yml` — edit them there, not on the command line.
 
 **Staging's fleet is public.** `testmap.retina.fm` is served by the staging
-droplet and fed by this fleet, so bouncing it, or a staging deploy, blanks the
-demo people are shown for a minute or so. `staging-map.retina.fm` is the same
-surface under a staging-prefixed name. Note the tuning is deliberate: staging
-runs 50 nodes @ 1.0s on 2 cores, which saturates the solver (45–52 s per solve),
+droplet and fed by this fleet, so bouncing it blanks the demo people are shown
+for a minute or so; a staging deploy blanks it only for the server's restart and
+the fleet's reconnect, unless the fleet image or config changed and it is recreated
+too. `staging-map.retina.fm` is the same surface under a staging-prefixed name. Note
+the tuning is deliberate: staging runs 50 nodes @ 1.0s, which saturates the
+solver (45–52 s per solve),
 so the public map is denser but laggier than production's used to be.
 
 ⚠️ Do NOT start the fleet as a host process (`systemd-run`, a systemd unit, or a

@@ -1,11 +1,26 @@
 /* Retina Data Explorer — no build step, no framework.
-   Tokens: the light palette is verbatim from dashboard/src/App.css so the two
-   sites read as one product; dark is its counterpart, applied from the OS
-   preference only (there is no theme switch here). */
+
+   Tokens: the light palette is verbatim from dashboard/src/App.css and the dark
+   one is the map's (frontend/src/map-surface.css), so a surface of the estate is
+   recognisable in either theme. Light stays on the bare selector because it is
+   the default; dark arrives either from the OS preference or from the switch in
+   the topbar, and the two dark blocks are identical by hand — CSS cannot share a
+   declaration block across a media query boundary, and there is no build step
+   here to do it for us.
+
+   Metrics come from dash as well — 24px page rhythm, 20px card padding, 8/16
+   buttons, 13px rows under 11px headers — so a new rule takes those numbers
+   rather than a fresh one. */
 :root{
   --bg-primary:#f1f5f9;--bg-secondary:#ffffff;--bg-card:#ffffff;--bg-card-hover:#f8fafc;--bg-input:#f8fafc;
+  /* A light canvas is already darker than a card, so a recessed region is made
+     by letting it show through; dark inverts the ramp and needs its own. */
+  --bg-sunk:#f1f5f9;
   --text-primary:#0f172a;--text-secondary:#475569;--text-muted:#94a3b8;--border:#e2e8f0;--border-light:#cbd5e1;
   --accent:#3b82f6;--accent-hover:#2563eb;--accent-light:rgba(59,130,246,.10);
+  /* Ink for what sits ON the accent. A token and not a literal white because
+     the dark accent is a bright sky blue, where white is about 1.8:1. */
+  --accent-ink:#ffffff;
   --success:#10b981;--success-light:rgba(16,185,129,.10);--warning:#f59e0b;--warning-light:rgba(245,158,11,.10);
   --error:#ef4444;--error-light:rgba(239,68,68,.10);
   --shadow:rgba(15,23,42,.14);--scrim:rgba(15,23,42,.35);
@@ -13,11 +28,26 @@
   --mono:"SF Mono","Fira Code",ui-monospace,Menlo,Consolas,monospace;
   color-scheme:light;
 }
-@media (prefers-color-scheme:dark){:root{
-  --bg-primary:#0f172a;--bg-secondary:#131c2e;--bg-card:#131c2e;--bg-card-hover:#1b2740;--bg-input:#0b1220;
-  --text-primary:#e2e8f0;--text-secondary:#94a3b8;--text-muted:#64748b;--border:#1e293b;--border-light:#334155;
-  --accent-light:rgba(59,130,246,.14);--success-light:rgba(16,185,129,.12);--warning-light:rgba(245,158,11,.12);--error-light:rgba(239,68,68,.12);
+/* `:not([data-theme="light"])` is what lets an explicit light choice win over a
+   dark OS. */
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg-primary:#0d1b2a;--bg-secondary:#132240;--bg-card:#132240;--bg-card-hover:#1a2b4d;--bg-input:rgba(15,30,55,.9);
+  --bg-sunk:#0f2035;
+  --text-primary:#e2e8f0;--text-secondary:#94a3b8;--text-muted:#64748b;
+  --border:rgba(100,180,255,.14);--border-light:rgba(100,180,255,.28);
+  --accent:#38bdf8;--accent-hover:#7dd3fc;--accent-light:rgba(56,189,248,.16);--accent-ink:#082f49;
+  --success:#4ade80;--success-light:rgba(74,222,128,.15);--warning:#fbbf24;--warning-light:rgba(251,191,36,.15);
+  --error:#f43f5e;--error-light:rgba(244,63,94,.15);
   --shadow:rgba(0,0,0,.5);--scrim:rgba(2,6,23,.55);color-scheme:dark;}}
+:root[data-theme="dark"]{
+  --bg-primary:#0d1b2a;--bg-secondary:#132240;--bg-card:#132240;--bg-card-hover:#1a2b4d;--bg-input:rgba(15,30,55,.9);
+  --bg-sunk:#0f2035;
+  --text-primary:#e2e8f0;--text-secondary:#94a3b8;--text-muted:#64748b;
+  --border:rgba(100,180,255,.14);--border-light:rgba(100,180,255,.28);
+  --accent:#38bdf8;--accent-hover:#7dd3fc;--accent-light:rgba(56,189,248,.16);--accent-ink:#082f49;
+  --success:#4ade80;--success-light:rgba(74,222,128,.15);--warning:#fbbf24;--warning-light:rgba(251,191,36,.15);
+  --error:#f43f5e;--error-light:rgba(244,63,94,.15);
+  --shadow:rgba(0,0,0,.5);--scrim:rgba(2,6,23,.55);color-scheme:dark;}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 /* Must outrank the display values set on .notice, .swatches and .btn below —
    the UA's own `[hidden]{display:none}` does not, so `hidden` on any of them
@@ -26,47 +56,58 @@
 [hidden]{display:none!important}
 html,body{min-height:100%}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;
-  background:var(--bg-primary);color:var(--text-primary);-webkit-font-smoothing:antialiased;line-height:1.5;font-size:14px}
+  background:var(--bg-primary);color:var(--text-primary);-webkit-font-smoothing:antialiased;line-height:1.5}
 a{color:var(--accent);text-decoration:none}
-a:hover{text-decoration:underline}
+a:hover{color:var(--accent-hover)}
 
 /* ── Top bar ── */
 .topbar{height:var(--header-height);border-bottom:1px solid var(--border);background:var(--bg-secondary);
   display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 24px;position:sticky;top:0;z-index:40}
 .brand{display:flex;align-items:center;gap:10px;font-size:15px;font-weight:600}
-.brand-mark{width:28px;height:28px;border-radius:7px;background:var(--accent);color:#fff;
+.brand-mark{width:28px;height:28px;border-radius:7px;background:var(--accent);color:var(--accent-ink);
   display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px}
 .brand .sep{color:var(--text-muted);font-weight:400}
 .topnav{display:flex;gap:6px;align-items:center;font-size:13px}
 .topnav a{padding:6px 10px;border-radius:var(--radius-sm);color:var(--text-secondary)}
-.topnav a:hover{background:var(--bg-card-hover);color:var(--text-primary);text-decoration:none}
+.topnav a:hover{background:var(--bg-card-hover);color:var(--text-primary)}
+.topbar-end{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:flex-end}
+
+/* ── Appearance switch ── */
+.theme-switch{display:flex;gap:2px;padding:2px;background:var(--bg-sunk);
+  border:1px solid var(--border);border-radius:var(--radius-sm)}
+.theme-switch button{display:flex;align-items:center;justify-content:center;padding:5px 8px;
+  background:none;border:none;border-radius:3px;color:var(--text-secondary);cursor:pointer}
+.theme-switch button svg{width:15px;height:15px;display:block}
+.theme-switch button:hover{background:var(--bg-card-hover);color:var(--text-primary)}
+.theme-switch button[aria-checked="true"]{background:var(--accent-light);color:var(--accent)}
 
 .content{max-width:1400px;margin:0 auto;padding:24px 24px 140px}
-.page-header{margin-bottom:20px}
+.page-header{margin-bottom:24px}
 .page-header h1{font-size:24px;font-weight:700;margin-bottom:4px}
 .page-header p{color:var(--text-secondary);font-size:14px;max-width:80ch}
 
 /* ── Cards / stats ── */
-.stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;margin-bottom:20px}
-.stat-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 20px}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-bottom:24px}
+.stat-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:20px}
 .stat-card .stat-label{font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px}
-.stat-card .stat-value{font-size:26px;font-weight:700;line-height:1}
+.stat-card .stat-value{font-size:28px;font-weight:700;line-height:1}
 .stat-card .stat-sub{font-size:12px;color:var(--text-secondary);margin-top:4px}
 .stat-card.accent .stat-value{color:var(--accent)}
 .stat-card.success .stat-value{color:var(--success)}
 .stat-card.warning .stat-value{color:var(--warning)}
-.card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);overflow:visible;margin-bottom:20px}
-.card-header{padding:14px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+/* Not dash's `overflow:hidden`: the node dropdown has to escape the card. */
+.card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);overflow:visible;margin-bottom:24px}
+.card-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .card-header h3{font-size:14px;font-weight:600}
-.card-body{padding:16px 20px}
+.card-body{padding:20px}
 .tl-range{font-size:12px}
 
 /* ── Controls ── */
-.btn{padding:7px 14px;border-radius:var(--radius-sm);font-size:13px;font-weight:500;cursor:pointer;border:none;font-family:inherit;
+.btn{padding:8px 16px;border-radius:var(--radius-sm);font-size:13px;font-weight:500;cursor:pointer;border:none;font-family:inherit;transition:all .15s;
   display:inline-flex;align-items:center;gap:6px;text-decoration:none;white-space:nowrap}
-.btn-primary{background:var(--accent);color:#fff}.btn-primary:hover{background:var(--accent-hover);text-decoration:none;color:#fff}
+.btn-primary{background:var(--accent);color:var(--accent-ink)}.btn-primary:hover{background:var(--accent-hover);color:var(--accent-ink)}
 .btn-outline,.btn-secondary{background:transparent;border:1px solid var(--border-light);color:var(--text-secondary)}
-.btn-outline:hover,.btn-secondary:hover{border-color:var(--accent);color:var(--text-primary);text-decoration:none}
+.btn-outline:hover,.btn-secondary:hover{border-color:var(--accent);color:var(--text-primary)}
 .btn:disabled,.btn[aria-disabled="true"]{opacity:.4;cursor:not-allowed;pointer-events:none}
 .btn-sm{padding:4px 10px;font-size:12px}
 .mono{font-family:var(--mono);font-size:12px}
@@ -81,7 +122,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;padding:0
 
 /* ── Notices ── */
 .notice{display:flex;gap:10px;align-items:flex-start;background:var(--warning-light);border:1px solid rgba(245,158,11,.3);
-  border-radius:var(--radius);padding:11px 14px;font-size:13px;color:var(--text-secondary);margin-bottom:20px}
+  border-radius:var(--radius);padding:11px 14px;font-size:13px;color:var(--text-secondary);margin-bottom:24px}
 .notice b{color:var(--warning)}
 .notice.error{background:var(--error-light);border-color:rgba(239,68,68,.3)}
 .notice.error b{color:var(--error)}
@@ -91,7 +132,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;padding:0
 .filter-bar{display:flex;flex-wrap:wrap;gap:14px;align-items:flex-end}
 .fgroup{display:flex;flex-direction:column;gap:5px}
 .fgroup>label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted)}
-.frow{display:flex;gap:6px;align-items:center}
+.frow{display:flex;gap:6px;align-items:center;font-size:13px}
 .chipset{display:flex;gap:4px}
 .chip{padding:5px 10px;border-radius:999px;border:1px solid var(--border-light);background:transparent;color:var(--text-secondary);
   font-size:12px;cursor:pointer;font-family:inherit}
@@ -152,7 +193,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;padding:0
 .sw.range{background:var(--warning-light);border:1px solid var(--warning)}
 
 /* ── Location filter ── */
-.near{display:flex;gap:6px;align-items:center}
+.near{display:flex;gap:6px;align-items:center;font-size:13px}
 .near input[type=number]{width:96px}
 .near input.km{width:70px}
 .geo{padding:0 20px 16px}
@@ -183,14 +224,14 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;padding:0
 .caret{display:inline-block;width:10px;color:var(--text-muted);transition:transform .12s}
 .collapsed>.caret,.collapsed .caret{transform:rotate(-90deg)}
 .frow-file{display:grid;grid-template-columns:22px 1fr 150px 132px 190px;gap:10px;align-items:center;
-  padding:7px 20px 7px 52px;font-size:12px;border-top:1px solid var(--border);cursor:pointer}
+  padding:7px 20px 7px 52px;font-size:13px;border-top:1px solid var(--border);cursor:pointer}
 .frow-file:hover{background:var(--bg-card-hover)}
 .frow-file.active{background:var(--accent-light)}
 .frow-file .kname{font-family:var(--mono);color:var(--text-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .frow-file .ksub{font-family:var(--mono);font-size:10.5px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .frow-file .span{font-family:var(--mono);color:var(--text-secondary)}
 .frow-file .acts{display:flex;gap:6px}
-.colhead{display:grid;grid-template-columns:22px 1fr 150px 132px 190px;gap:10px;padding:9px 20px 9px 52px;font-size:10px;
+.colhead{display:grid;grid-template-columns:22px 1fr 150px 132px 190px;gap:10px;padding:9px 20px 9px 52px;font-size:11px;
   font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);border-bottom:1px solid var(--border)}
 .colhead span[data-sort]{cursor:pointer}
 .colhead span[data-sort]:hover{color:var(--text-primary)}
@@ -209,7 +250,7 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;padding:0
 .drawer-head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
 .drawer-head h3{font-size:14px;font-weight:600}
 .dkey{margin-top:3px;word-break:break-all}
-.drawer-body{flex:1;overflow-y:auto;padding:16px 18px}
+.drawer-body{flex:1;overflow-y:auto;padding:16px 18px;font-size:13px}
 .kv{display:grid;grid-template-columns:130px 1fr;gap:5px 12px;font-size:12px;margin-bottom:16px}
 .kv dt{color:var(--text-muted)}
 .kv dd{color:var(--text-primary);font-family:var(--mono);font-size:11.5px;word-break:break-all}
@@ -237,5 +278,5 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;padding:0
 .hint{font-size:11.5px;color:var(--text-muted);margin-top:6px}
 .hint b{color:var(--text-secondary);font-weight:600}
 @media(max-width:1100px){.basket-body.open{grid-template-columns:1fr}
-  .frow-file,.colhead{grid-template-columns:22px 1fr 130px 110px}
+  .frow-file,.colhead{grid-template-columns:22px 1fr 145px 110px}
   .frow-file .acts,.colhead span:last-child{grid-column:2/-1}}

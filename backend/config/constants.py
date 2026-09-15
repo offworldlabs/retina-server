@@ -483,6 +483,8 @@ NODE_OFFLINE_THRESHOLD_S = 120  # Heartbeat timeout → offline (s)
 NODE_HEALTH_CHECK_INTERVAL_S = 30  # How often to check node liveness (s)
 STORAGE_CACHE_TTL_S = 300.0  # Archive storage stats cache TTL (s)
 CONFIG_LIVE_CACHE_TTL_S = 60.0  # Live node/tower config cache TTL (s)
+INFRASTRUCTURE_CACHE_TTL_S = 60.0  # Admin Infrastructure page: DigitalOcean snapshot cache TTL (s)
+INFRASTRUCTURE_BUILD_TIMEOUT_S = 8.0  # Deadline on one snapshot build (s), under the dashboard's 10 s abort
 
 # ── Chain of custody limits ──────────────────────────────────────────────────
 CHAIN_ENTRIES_MAX_PER_NODE = 500  # Max chain entries per node (rolling)

@@ -12,9 +12,9 @@ only by subdomain, resolved client-side in `frontend/src/utils/domains.ts`:
   staging and local stacks run a fleet, so `testmap.retina.fm` is served by the
   staging droplet rather than production.
 - **map** (`map.retina.fm`) — production live map, real radar nodes only.
-- **Tower Finder** — `/api/towers` illuminator search (the original feature).
-  The SPA is this repo's; the API is proxied to tower-finder-service, which owns
-  the only implementation since the monolith's copy was deleted.
+- **Illuminator search** — not a surface of this repo. tower-finder-service owns
+  both the API and the UI, and serves `towers.retina.fm` from its own edge. The
+  vhosts here proxy `/api/towers`, `/api/elevation` and `/api/config` to it.
 - **dashboard** (`dashboard/`, separate SPA) — admin: node ownership, claim
   codes, MLAT verification, metrics. Auth required.
 
@@ -64,11 +64,14 @@ are in [`arc-display.md`](arc-display.md).
   geometry (`beam_azimuth_deg`, `beam_width_deg`, `max_range_km`,
   `max_bistatic_range_km`) flows from node registration into the per-node
   pipelines, the arc builder, and inter-node association — one contract.
-- **`services/node_ref.py`** — the public handle for a node. Every payload a
+- **`services/node_refs.py`** — the public handle for a node. Every payload a
   stranger can fetch names a node by `node_ref`, never by `node_id`: the
   registry's ref when the node registered through `/v1/nodes`, an
   HMAC-derived ref of the same shape (fuzz salt, `node_ref|` domain) when it
-  did not. See [`pipeline.md`](pipeline.md) §7.
+  did not. See [`pipeline.md`](pipeline.md) §7. The inverse, `ref_to_id_map`,
+  is served from one admin-only route (`GET /api/admin/node-refs`) and exists
+  so the dashboard can name a node to an operator and link to its own site,
+  which is `<node_id>.retnode.com`.
 - **`services/tasks/`** — background async tasks: `aircraft_flush` (broadcast),
   `feed_gc` (stale-store GC on its own 5 s timer, deliberately not tied to the
   feed build), `solver` workers, `analytics_refresh`, archive lifecycle,
@@ -132,15 +135,24 @@ per-node trust residuals, and the feed's `adsb_single_node` display section).
 ## Auth model
 
 Cookie-based JWT issued via OAuth (Google/GitHub), shared across surfaces on the
-same origin. `AUTH_ALLOW_ANONYMOUS_ADMIN=1` with no OAuth configured grants the
-anonymous-admin bypass, independent of `RETINA_ENV`; every environment currently
-sets it while OAuth is unconfigured. Node ownership maps
+same origin. Administrators arrive instead through Cloudflare Access: the origin
+verifies the `Cf-Access-Jwt-Assertion` itself against the team's published keys,
+with `aud` pinned per environment to `CF_ACCESS_AUD`, and the verified email is
+the identity (`backend/core/access_identity.py`). Enforcement is backend-side
+because every vhost proxies `/api/` to the same app, so gating one hostname at
+the edge would protect that hostname's HTML and nothing else; it is also why
+`api.retina.fm`, the fleet's ingest hostname, carries no Access application.
+`AUTH_ALLOW_ANONYMOUS_ADMIN=1` still grants the anonymous-admin bypass,
+independent of `RETINA_ENV`, but only `docker-compose.local.yml` sets it. Node
+ownership maps
 `node_id → user_id`; the `/ws/aircraft/owner` feed and dashboard use it to scope
 data to a user's own nodes.
 
 ## Deploy
 
 `.github/workflows/ci.yml`: push to `main` → build/test → deploy staging →
-staging smoke + E2E → deploy production → prod smoke + E2E. Deploy is an SSH
-`git reset --hard origin/main` + `docker compose up -d --build`, gated by a
+staging smoke + E2E → deploy production → prod smoke + E2E. The three staging
+steps live in `staging-deploy-verify.yml` and are called as a single job, so one
+run holds the environment until its own verification has finished. Deploy is an
+SSH `git reset --hard origin/main` + `docker compose up -d --build`, gated by a
 free-disk pre-flight. Operational detail is in [`runbook.md`](runbook.md).

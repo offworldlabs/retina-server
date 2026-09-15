@@ -1,12 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { api } from "../../api/client";
+import { fmt } from "../../utils/format";
 
 const REFRESH_MS = 5000;
-
-function fmt(n: number | undefined | null, decimals = 2): string {
-  if (n === undefined || n === null || Number.isNaN(n)) return "—";
-  return Number(n).toFixed(decimals);
-}
 
 function StatCard({ label, value, unit, hint }: {
   label: string; value: string; unit?: string; hint?: string;

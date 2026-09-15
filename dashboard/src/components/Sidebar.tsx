@@ -64,6 +64,7 @@ const adminNav: NavSection[] = [
       { to: "/events", label: "Events", icon: "bell" },
       { to: "/storage", label: "Storage", icon: "harddrive" },
       { to: "/system", label: "System Metrics", icon: "cpu" },
+      { to: "/infrastructure", label: "Infrastructure", icon: "server" },
       { to: "/custody", label: "Chain of Custody", icon: "shield" },
       { to: "/config", label: "Configuration", icon: "sliders" },
     ],

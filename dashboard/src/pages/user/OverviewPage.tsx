@@ -4,10 +4,13 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { formatRelativeTime, formatUptime } from "../../utils/format";
+import { useChartTheme } from "../../utils/chartTheme";
 import { PositionStatusBadge, POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
 
 export default function OverviewPage() {
+  const chart = useChartTheme();
   const [nodes, setNodes] = useState([]);
   const [myNodes, setMyNodes] = useState([]);
   const [analytics, setAnalytics] = useState(null);
@@ -162,23 +165,18 @@ export default function OverviewPage() {
             <div className="chart-container">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis dataKey="name" stroke="#94a3b8" tick={{ fontSize: 11 }} />
-                  <YAxis stroke="#94a3b8" tick={{ fontSize: 11 }} />
+                  <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
+                  <XAxis dataKey="name" stroke={chart.axis} tick={{ fontSize: 11 }} />
+                  <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
                   <Tooltip
-                    contentStyle={{
-                      background: "#ffffff",
-                      border: "1px solid #e2e8f0",
-                      borderRadius: 6,
-                      fontSize: 12,
-                      color: "#0f172a",
-                    }}
+                    contentStyle={chart.tooltip}
                   />
                   <Area
                     type="monotone"
                     dataKey="detections"
-                    stroke="#3b82f6"
-                    fill="rgba(59,130,246,0.15)"
+                    stroke={chart.series[0]}
+                    fill={chart.series[0]}
+                    fillOpacity={0.15}
                   />
                 </AreaChart>
               </ResponsiveContainer>
@@ -238,21 +236,4 @@ export default function OverviewPage() {
       </div>
     </>
   );
-}
-
-function formatUptime(seconds) {
-  if (!seconds) return "—";
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (h > 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
-  return `${h}h ${m}m`;
-}
-
-function formatRelativeTime(isoStr) {
-  if (!isoStr) return "—";
-  const diffS = Math.round((Date.now() - new Date(isoStr).getTime()) / 1000);
-  if (diffS < 5) return "just now";
-  if (diffS < 60) return `${diffS}s ago`;
-  if (diffS < 3600) return `${Math.floor(diffS / 60)}m ago`;
-  return `${Math.floor(diffS / 3600)}h ago`;
 }

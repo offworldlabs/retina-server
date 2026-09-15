@@ -7,7 +7,7 @@ const RETNODE_DOMAIN = "retnode.com";
 // link rather than a URL that cannot resolve.
 const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
 
-export function retnodeUrl(nodeId: string): string | null {
+export function retnodeUrl(nodeId: string | null | undefined): string | null {
   if (!nodeId || !DNS_LABEL.test(nodeId)) return null;
   return `https://${nodeId.toLowerCase()}.${RETNODE_DOMAIN}`;
 }
@@ -21,7 +21,10 @@ const externalLinkIcon = (
 );
 
 type Props = {
-  nodeId: string;
+  /** The node's private id, which its site is named after — never the node_ref
+   *  standing in for it, which names nothing. Null where the caller reads a
+   *  ref-keyed feed and could not resolve one; the label then stands alone. */
+  nodeId: string | null;
   /** From the node payload's `is_synthetic`. Simulated and test nodes have no
    *  box behind them, so they get no link; an absent value links, since only a
    *  positive verdict is evidence there is nothing to open. */
@@ -34,7 +37,7 @@ type Props = {
  *  there is nothing to open, so a caller can use it wherever an id appears.
  *  Swallows the click: the Nodes page wraps it in a card that navigates. */
 export function RetnodeLink({ nodeId, synthetic, children }: Props) {
-  const label = children ?? nodeId;
+  const label = children ?? nodeId ?? "";
   const url = synthetic ? null : retnodeUrl(nodeId);
   if (!url) return <>{label}</>;
   return (

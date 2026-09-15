@@ -37,6 +37,27 @@ class TestMeEndpoint:
         assert body["role"] == "admin"
         assert body["auth_enabled"] is False
 
+    def test_me_reports_the_access_identity_rather_than_the_anonymous_admin(self, client):
+        """The dashboard asks /me who it is talking to, so this must agree with
+        what require_admin would decide. Answering "Admin (no auth)" while the
+        admin routes are attributing a real person is the inconsistency that
+        makes the console show the wrong thing about its own session."""
+        from unittest.mock import patch
+
+        class Stub:
+            def is_configured(self):
+                return True
+
+            async def identity(self, token):
+                return "someone@offworldlab.com" if token else None
+
+        with patch("core.users.access_identity", Stub()):
+            r = client.get("/api/auth/me", headers={"Cf-Access-Jwt-Assertion": "a-token"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["email"] == "someone@offworldlab.com"
+        assert body["auth_enabled"] is True
+
     def test_logout_returns_ok(self, client):
         r = client.post("/api/auth/logout")
         assert r.status_code == 200

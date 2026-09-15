@@ -25,6 +25,7 @@ from config.constants import (
     DETECTION_MIRROR_TIMEOUT_S,
 )
 from core import state
+from services import node_refs
 from services.node_pipeline import pipeline_frame
 
 if TYPE_CHECKING:
@@ -140,7 +141,13 @@ def build_batch(items) -> list:
             config = dict(known["config"]) if known and known.get("config") else None
         if config is None:
             continue
-        entries.append({"node_id": node_id, "config": config, "frames": frames})
+        # The receiving environment has no registry row for this node, so the
+        # ref goes with the detections or it cannot name the node at all.
+        entry = {"node_id": node_id, "config": config, "frames": frames}
+        ref = node_refs.ref_for(node_id)
+        if ref:
+            entry["node_ref"] = ref
+        entries.append(entry)
     return entries
 
 

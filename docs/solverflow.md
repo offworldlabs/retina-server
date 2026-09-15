@@ -673,7 +673,7 @@ flowchart TD
     trim --> g65
     g64 -->|"no"| g65{"6.5 rms_delay gate<br/>> SOLVER_RMS_DELAY_MAX_US 3.0us?"}
     g65 -->|"yes"| f65["solver_fail_rms_delay<br/>history: rejected_rms_delay"]:::inert
-    g65 -->|"no"| g66{"6.6 rms_doppler gate<br/>> 200.0 Hz?"}
+    g65 -->|"no"| g66{"6.6 rms_doppler gate<br/>> 200.0 Hz (60.0 Hz at n=3)?"}
     g66 -->|"yes"| f66["solver_fail_rms_doppler<br/>history: rejected_rms_doppler"]:::inert
     g66 -->|"no"| g67{"6.7 Beam/range/FOV gate<br/>EVERY contributing node"}
     g67 -->|"any node fails"| f67["solver_fail_beam<br/>history: rejected_beam<br/>(per-node diagnostics)"]:::inert
@@ -797,7 +797,8 @@ mode per environment and read the two lanes' `rms_delay` and `gt_error_km` off
 | `SOLVER_RESOLVE_INTERVAL_S` (6.2) | 12 s (0 disables) | `services/tasks/solver.py` (`_SOLVER_RESOLVE_INTERVAL_S`, `_resolve_slot_covered`, `_record_resolve_slot`) |
 | `_TRIM_MAX_ROUNDS` / `_TRIM_RESID_FACTOR` / `_TRIM_MIN_NODES` (6.4) | 4 / 1.5 / 3 | `services/tasks/solver.py` |
 | `SOLVER_RMS_DELAY_MAX_US` (6.5) | 3.0 us | `services/tasks/solver.py` (`_SOLVER_RMS_DELAY_MAX_US`) |
-| `_SOLVER_RMS_DOPPLER_MAX_HZ` (6.6) | 200.0 Hz (hardcoded) | `services/tasks/solver.py` |
+| `_SOLVER_RMS_DOPPLER_MAX_HZ` (6.6) | 200.0 Hz (hardcoded), n≠3 | `services/tasks/solver.py` |
+| `SOLVER_N3_RMS_DOPPLER_MAX_HZ` (6.6) | 60.0 Hz, n=3 only (post-trim count; the exactly-determined 3-node fit leaves ~0 Hz unless it is a two-aircraft cluster) | `services/tasks/solver.py` (`_SOLVER_N3_RMS_DOPPLER_MAX_HZ`, `_rms_doppler_max_hz`) |
 | `_MAX_DISPLACEMENT_KM` (6.8) | 2.0 km | `services/tasks/solver.py` |
 | `N2_CONFIRM_CHI2_MAX` (6.9) | 2.0 | `config/constants.py` |
 | `_TRACK_CLAIM_TTL_S` (6.10) | 60.0 s | `services/tasks/solver.py` |

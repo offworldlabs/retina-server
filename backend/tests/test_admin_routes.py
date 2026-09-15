@@ -610,7 +610,13 @@ class TestNodeContacts:
 
         session.add(Node(node_id=node_id, node_ref=f"nde{node_id[3:]:0>12}", status="active"))
         await session.flush()
-        contact = {"first_name": "Ada", "last_name": "Lovelace", "email": "ada@example.com", "phone": None}
+        contact = {
+            "first_name": "Ada",
+            "last_name": "Lovelace",
+            "email": "ada@example.com",
+            "phone": None,
+            "country": "GB",
+        }
         await upsert_contact(session, node_id, contact | fields)
         await session.commit()
 
@@ -658,3 +664,56 @@ class TestNodeContacts:
 
         assert "/api/admin/node-contacts" in gated
         assert "/api/admin/nodes/{node_id}/contact" in gated
+
+
+class TestNodeRefs:
+    """The one route that hands back the mapping publication withholds."""
+
+    @staticmethod
+    def _register(node_id, node_ref):
+        import asyncio
+
+        from core.nodes import Node
+        from core.users import async_session_maker
+
+        async def _go():
+            async with async_session_maker() as session:
+                session.add(Node(node_id=node_id, node_ref=node_ref))
+                await session.commit()
+
+        asyncio.run(_go())
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+    def teardown_method(self):
+        with state.connected_nodes_lock:
+            state.connected_nodes.clear()
+
+    def test_it_names_the_node_behind_a_ref(self, client):
+        self._register("ret1a2b3c4d", "nde1a2b3c4d00")
+
+        body = client.get("/api/admin/node-refs").json()
+
+        assert body["nde1a2b3c4d00"] == "ret1a2b3c4d"
+
+    def test_it_covers_a_connected_node_the_registry_cannot_answer_for(self, client):
+        """A mirrored node carries its ref in the fleet snapshot, not a row."""
+        with state.connected_nodes_lock:
+            state.connected_nodes["ret0badcafe"] = {"status": "active", "node_ref": "ndemirrored001"}
+
+        body = client.get("/api/admin/node-refs").json()
+
+        assert body["ndemirrored001"] == "ret0badcafe"
+
+    def test_it_is_gated_on_require_admin(self):
+        """The suite runs with AUTH_ALLOW_ANONYMOUS_ADMIN=1, so the gate is
+        asserted where it is declared rather than by a refused request."""
+        from core.users import require_admin
+
+        gated = {
+            route.path
+            for route in app.routes
+            if getattr(route, "dependant", None)
+            and any(dep.call is require_admin for dep in route.dependant.dependencies)
+        }
+
+        assert "/api/admin/node-refs" in gated

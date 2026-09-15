@@ -15,7 +15,13 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.users import get_async_session
-from routes.node_responses import INVALID_CONTACT, NODE_BODY_LIMITS, SERVER_ERROR, TOO_LARGE, UNAUTHORIZED
+from routes.node_responses import (
+    INVALID_CONTACT,
+    NODE_BODY_LIMITS,
+    SERVER_ERROR,
+    TOO_LARGE,
+    UNAUTHORIZED_CONTACT,
+)
 from routes.node_schemas import ContactResponse, ErrorBody
 from services.node_auth import bearer_node, node_bearer_scheme
 from services.node_contact import ContactInvalid, contact_json_schema, validate_contact
@@ -44,8 +50,8 @@ _DESCRIPTION = """\
 Whom to contact about this node. Sent when the details change locally, and not otherwise:
 nothing on the server asks for them, and no response marks them stale.
 
-The document is replaced wholesale, so a field omitted or sent as null is cleared. Every
-field is optional; a node with nothing to report need never call this.
+A node with nothing to report need never call this. The `NodeContact` schema says what
+each field means and what omitting one does.
 
 What is stored is unverified and is used to reach the owner about their own node. It is
 not an account, and it grants nothing.
@@ -55,7 +61,7 @@ not an account, and it grants nothing.
 @router.put(
     "/contact",
     response_model=ContactResponse,
-    responses={400: INVALID_CONTACT, 401: UNAUTHORIZED, 413: TOO_LARGE, "5XX": SERVER_ERROR},
+    responses={400: INVALID_CONTACT, 401: UNAUTHORIZED_CONTACT, 413: TOO_LARGE, "5XX": SERVER_ERROR},
     summary="Report the owner's contact details.",
     description=_DESCRIPTION,
     response_description="When the stored details last changed.",
