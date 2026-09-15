@@ -3,9 +3,9 @@
 Welcome. This repo powers RETINA, a passive-radar system: a network of receiver
 nodes detect aircraft by listening to reflections of broadcast transmitters
 (bistatic radar), and the backend turns those detections into tracks and live
-positions shown on a web map. It started life as "Tower Finder" (a tool to find
-suitable broadcast illuminators near a receiver), which is still one of the
-surfaces.
+positions shown on a web map. It started life as "Tower Finder", a tool to find
+suitable broadcast illuminators near a receiver; that feature now lives entirely
+in tower-finder-service, both its API and its UI.
 
 Read this top-to-bottom once; it should get you from a fresh clone to running
 the whole thing locally and understanding how the pieces fit. For deeper dives,
@@ -21,7 +21,11 @@ One FastAPI backend serves several React front-ends, distinguished by subdomain:
 | **testmap** | Live aircraft map fed by the simulation fleet (synthetic nodes) — the main dev/demo surface. `testmap.retina.fm` is served by the **staging** droplet, the only environment still running a fleet. |
 | **map** | Production live map showing only real radar nodes. |
 | **dashboard** | Admin app (auth required): node ownership, claim codes, MLAT verification, metrics. |
-| **Tower Finder** | The original illuminator search. The SPA is here; the `/api/towers`, `/api/elevation` and `/api/config` API is **tower-finder-service** (separate repo and container), which nginx proxies to on every vhost. This backend no longer implements it. |
+
+Illuminator search is deliberately absent from that table: **tower-finder-service**
+(separate repo and container) owns the API and the UI both, and serves
+`towers.retina.fm` from its own edge. Our vhosts only proxy `/api/towers`,
+`/api/elevation` and `/api/config` to it.
 
 Receiver nodes connect over TCP and stream detection frames. The pipeline
 (tracker → geolocator) turns frames into aircraft positions, broadcast to the

@@ -103,8 +103,8 @@ async function rowsOrSkip(page: Page) {
 test.describe("Live Map — page identity", () => {
   test("page title contains RETINA", async ({ page }) => {
     await page.goto(BASE);
-    // The HTML <title> is static "Tower Finder" for all domains;
-    // the domain identity is exposed in the h1 element instead.
+    // Asserted on the h1 rather than the HTML <title>, which is static across
+    // every domain this bundle serves.
     await expect(page.locator("h1")).toContainText(/RETINA/i);
   });
 
