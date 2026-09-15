@@ -314,17 +314,18 @@ check_header "HSTS on api subdomain"        "${API_URL}/api/health"  "strict-tra
 # Edge caching follows what nginx says, and Cloudflare keeps a `public,
 # immutable` response for the whole `expires` window, so that policy is safe
 # only on a name that carries a content hash (Vite's /assets/). A file whose
-# name survives a deploy must be revalidated instead, or the edge serves last
+# name survives a deploy must say `no-store` instead, or the edge serves last
 # week's copy under the new index.html, which every other check here still
-# reads as a healthy 200.
+# reads as a healthy 200. `no-store` specifically: on `no-cache` the edge
+# revalidates but rewrites the browser-facing header to its own 4 h TTL.
 #
 # Probed with a never-seen query string: the header under test is nginx's, and
 # a copy the edge already holds answers with the headers it was stored with.
 # The query string is part of the cache key, so a fresh one is a guaranteed
 # miss, and nginx matches its locations on the path alone.
 BUST="smoke=$(date +%s)$RANDOM"
-check_header_value "dash theme-boot.js revalidates"     "${DASH_URL}/theme-boot.js?${BUST}" "cache-control" "no-cache"
-check_header_value_if_dns "data app.css revalidates"    "${DATA_URL}/app.css?${BUST}"       "cache-control" "no-cache"
+check_header_value "dash theme-boot.js is not cached"   "${DASH_URL}/theme-boot.js?${BUST}" "cache-control" "no-store"
+check_header_value_if_dns "data app.css is not cached"  "${DATA_URL}/app.css?${BUST}"       "cache-control" "no-store"
 MAP_ASSET=$($CURL "${MAP_URL}/" 2>/dev/null | grep -o '/assets/index-[^"]*\.js' | head -n1 || true)
 if [ -n "$MAP_ASSET" ]; then
     check_header_value "hashed /assets/ file is immutable" "${MAP_URL}${MAP_ASSET}?${BUST}" "cache-control" "immutable"
