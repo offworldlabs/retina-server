@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 
 type Invite = {
   token: string;
@@ -79,14 +80,8 @@ export default function InvitesPage() {
       )}
 
       <div className="stats-grid">
-        <div className="stat-card accent">
-          <div className="stat-label">Pending</div>
-          <div className="stat-value">{pending.length}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Consumed</div>
-          <div className="stat-value">{consumed.length}</div>
-        </div>
+        <StatCard label="Pending" value={pending.length} tone="accent" />
+        <StatCard label="Consumed" value={consumed.length} />
       </div>
 
       <div className="card">

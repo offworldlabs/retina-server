@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
 import { useNodeIds } from "../../components/useNodeIds";
 
@@ -31,16 +32,12 @@ export default function CustodyPage() {
       </div>
 
       <div className="stats-grid">
-        <div className="stat-card accent">
-          <div className="stat-label">Registered Nodes</div>
-          <div className="stat-value">{custody?.registered_nodes ?? refs.length}</div>
-        </div>
-        <div className="stat-card success">
-          <div className="stat-label">With Chain Entries</div>
-          <div className="stat-value">
-            {refs.filter((ref) => (custody?.chain_entries?.[ref]?.count || 0) > 0).length}
-          </div>
-        </div>
+        <StatCard label="Registered Nodes" value={custody?.registered_nodes ?? refs.length} tone="accent" />
+        <StatCard
+          label="With Chain Entries"
+          value={refs.filter((ref) => (custody?.chain_entries?.[ref]?.count || 0) > 0).length}
+          tone="success"
+        />
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>

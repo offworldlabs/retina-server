@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { formatUptime } from "../../utils/format";
 
@@ -35,18 +36,13 @@ export default function LeaderboardPage() {
       </div>
 
       <div className="stats-grid">
-        <div className="stat-card accent">
-          <div className="stat-label">Total Nodes</div>
-          <div className="stat-value">{entries.length}</div>
-        </div>
-        <div className="stat-card success">
-          <div className="stat-label">Online Now</div>
-          <div className="stat-value">{entries.filter((e) => e.online).length}</div>
-        </div>
-        <div className="stat-card warning">
-          <div className="stat-label">Total Detections</div>
-          <div className="stat-value">{entries.reduce((s, e) => s + e.detections, 0).toLocaleString()}</div>
-        </div>
+        <StatCard label="Total Nodes" value={entries.length} tone="accent" />
+        <StatCard label="Online Now" value={entries.filter((e) => e.online).length} tone="success" />
+        <StatCard
+          label="Total Detections"
+          value={entries.reduce((s, e) => s + e.detections, 0).toLocaleString()}
+          tone="warning"
+        />
       </div>
 
       {/* Podium for top 3 */}

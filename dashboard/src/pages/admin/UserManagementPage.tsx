@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 
 export default function UserManagementPage() {
   const [users, setUsers] = useState([]);
@@ -41,14 +42,8 @@ export default function UserManagementPage() {
       </div>
 
       <div className="stats-grid">
-        <div className="stat-card accent">
-          <div className="stat-label">Total Users</div>
-          <div className="stat-value">{users.length}</div>
-        </div>
-        <div className="stat-card warning">
-          <div className="stat-label">Admins</div>
-          <div className="stat-value">{users.filter((u) => u.role === "admin").length}</div>
-        </div>
+        <StatCard label="Total Users" value={users.length} tone="accent" />
+        <StatCard label="Admins" value={users.filter((u) => u.role === "admin").length} tone="warning" />
       </div>
 
       <div className="card">

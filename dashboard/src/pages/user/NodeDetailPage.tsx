@@ -4,6 +4,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
 import { formatUptime } from "../../utils/format";
 import { useChartTheme } from "../../utils/chartTheme";
@@ -104,22 +105,14 @@ export default function NodeDetailPage() {
       </div>
 
       <div className="stats-grid">
-        <div className="stat-card accent">
-          <div className="stat-label">Total Frames</div>
-          <div className="stat-value">{(metrics.total_frames || 0).toLocaleString()}</div>
-        </div>
-        <div className="stat-card success">
-          <div className="stat-label">Total Detections</div>
-          <div className="stat-value">{(metrics.total_detections || 0).toLocaleString()}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Total Tracks</div>
-          <div className="stat-value">{metrics.total_tracks || 0}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Avg SNR</div>
-          <div className="stat-value">{(metrics.avg_snr || 0).toFixed(1)} dB</div>
-        </div>
+        <StatCard label="Total Frames" value={(metrics.total_frames || 0).toLocaleString()} tone="accent" />
+        <StatCard
+          label="Total Detections"
+          value={(metrics.total_detections || 0).toLocaleString()}
+          tone="success"
+        />
+        <StatCard label="Total Tracks" value={metrics.total_tracks || 0} />
+        <StatCard label="Avg SNR" value={<>{(metrics.avg_snr || 0).toFixed(1)} dB</>} />
       </div>
 
       <div className="grid-2">

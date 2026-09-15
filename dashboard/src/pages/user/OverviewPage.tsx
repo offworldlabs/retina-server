@@ -3,6 +3,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { formatRelativeTime, formatUptime } from "../../utils/format";
 import { useChartTheme } from "../../utils/chartTheme";
@@ -84,22 +85,10 @@ export default function OverviewPage() {
       </div>
 
       <div className="stats-grid">
-        <div className="stat-card accent">
-          <div className="stat-label">Nodes Online</div>
-          <div className="stat-value">{onlineCount} / {nodeList.length}</div>
-        </div>
-        <div className="stat-card success">
-          <div className="stat-label">Live Aircraft</div>
-          <div className="stat-value">{aircraftCount.toLocaleString()}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Frame Detections</div>
-          <div className="stat-value">{totalFrameDetections.toLocaleString()}</div>
-        </div>
-        <div className="stat-card warning">
-          <div className="stat-label">Network Nodes</div>
-          <div className="stat-value">{nodeList.length}</div>
-        </div>
+        <StatCard label="Nodes Online" value={<>{onlineCount} / {nodeList.length}</>} tone="accent" />
+        <StatCard label="Live Aircraft" value={aircraftCount.toLocaleString()} tone="success" />
+        <StatCard label="Frame Detections" value={totalFrameDetections.toLocaleString()} />
+        <StatCard label="Network Nodes" value={nodeList.length} tone="warning" />
       </div>
 
       {needsAttention.length > 0 && (

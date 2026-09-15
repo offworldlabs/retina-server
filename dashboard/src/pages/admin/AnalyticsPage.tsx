@@ -4,6 +4,7 @@ import {
   PieChart, Pie, Cell, LineChart, Line, Legend,
 } from "recharts";
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme, seriesColour } from "../../utils/chartTheme";
 
@@ -76,22 +77,10 @@ export default function AnalyticsPage() {
       </div>
 
       <div className="stats-grid">
-        <div className="stat-card accent">
-          <div className="stat-label">Total Detections</div>
-          <div className="stat-value">{totalDetections.toLocaleString()}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Total Frames</div>
-          <div className="stat-value">{totalFrames.toLocaleString()}</div>
-        </div>
-        <div className="stat-card success">
-          <div className="stat-label">Node Count</div>
-          <div className="stat-value">{summaries.length}</div>
-        </div>
-        <div className="stat-card warning">
-          <div className="stat-label">Coverage Pairs</div>
-          <div className="stat-value">{overlaps.length}</div>
-        </div>
+        <StatCard label="Total Detections" value={totalDetections.toLocaleString()} tone="accent" />
+        <StatCard label="Total Frames" value={totalFrames.toLocaleString()} />
+        <StatCard label="Node Count" value={summaries.length} tone="success" />
+        <StatCard label="Coverage Pairs" value={overlaps.length} tone="warning" />
       </div>
 
       {trend.length > 1 && (

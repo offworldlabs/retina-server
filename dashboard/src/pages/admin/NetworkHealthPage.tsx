@@ -4,6 +4,7 @@ import {
 } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { formatRelativeTime, formatUptime } from "../../utils/format";
 import { useChartTheme } from "../../utils/chartTheme";
@@ -67,22 +68,14 @@ export default function NetworkHealthPage() {
       </div>
 
       <div className="stats-grid">
-        <div className="stat-card accent">
-          <div className="stat-label">Nodes Online</div>
-          <div className="stat-value">{dashNodes.active ?? onlineNodes.length} / {dashNodes.total ?? nodes.length}</div>
-        </div>
-        <div className="stat-card success">
-          <div className="stat-label">Aircraft Tracked</div>
-          <div className="stat-value">{aircraft.length}</div>
-        </div>
-        <div className="stat-card warning">
-          <div className="stat-label">Active Tracks</div>
-          <div className="stat-value">{tracks.active_tracks || 0}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">CoC Chains</div>
-          <div className="stat-value">{coc.nodes_with_chains || 0}</div>
-        </div>
+        <StatCard
+          label="Nodes Online"
+          value={<>{dashNodes.active ?? onlineNodes.length} / {dashNodes.total ?? nodes.length}</>}
+          tone="accent"
+        />
+        <StatCard label="Aircraft Tracked" value={aircraft.length} tone="success" />
+        <StatCard label="Active Tracks" value={tracks.active_tracks || 0} tone="warning" />
+        <StatCard label="CoC Chains" value={coc.nodes_with_chains || 0} />
       </div>
 
       {/* Live trend chart */}

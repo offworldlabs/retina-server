@@ -1,4 +1,5 @@
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { fmt } from "../../utils/format";
 
@@ -49,30 +50,19 @@ export default function SystemMetricsPage() {
 
       {/* Top stats */}
       <div className="stats-grid">
-        <div className="stat-card">
-          <div className="stat-label">Frames Processed</div>
-          <div className="stat-value">{m.frames_processed?.toLocaleString()}</div>
-        </div>
-        <div className={`stat-card ${m.frames_dropped > 0 ? "error" : ""}`}>
-          <div className="stat-label">Frames Dropped</div>
-          <div className="stat-value">{m.frames_dropped?.toLocaleString()}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Active Nodes</div>
-          <div className="stat-value">{m.connected_nodes} <span style={{ fontSize: 13, color: "var(--text-muted)" }}>/ peak {m.peak_connected_nodes}</span></div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Aircraft on Map</div>
-          <div className="stat-value">{m.active_geo_aircraft}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Process RAM</div>
-          <div className="stat-value">{fmt(m.process_rss_mb, 0)} MB</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Load Avg</div>
-          <div className="stat-value">{m.load_avg?.map((v: number) => fmt(v, 2)).join(" / ")}</div>
-        </div>
+        <StatCard label="Frames Processed" value={m.frames_processed?.toLocaleString()} />
+        <StatCard
+          label="Frames Dropped"
+          value={m.frames_dropped?.toLocaleString()}
+          tone={m.frames_dropped > 0 ? "error" : undefined}
+        />
+        <StatCard
+          label="Active Nodes"
+          value={<>{m.connected_nodes} <span style={{ fontSize: 13, color: "var(--text-muted)" }}>/ peak {m.peak_connected_nodes}</span></>}
+        />
+        <StatCard label="Aircraft on Map" value={m.active_geo_aircraft} />
+        <StatCard label="Process RAM" value={<>{fmt(m.process_rss_mb, 0)} MB</>} />
+        <StatCard label="Load Avg" value={m.load_avg?.map((v: number) => fmt(v, 2)).join(" / ")} />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>

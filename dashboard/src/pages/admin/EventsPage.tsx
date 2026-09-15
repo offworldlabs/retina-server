@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
 
 const PAGE_SIZE = 25;
@@ -25,22 +26,17 @@ export default function EventsPage() {
       </div>
 
       <div className="stats-grid">
-        <div className="stat-card">
-          <div className="stat-label">Total Events</div>
-          <div className="stat-value">{events.length}</div>
-        </div>
-        <div className="stat-card warning">
-          <div className="stat-label">Warnings</div>
-          <div className="stat-value">
-            {events.filter((e) => e.severity === "warning").length}
-          </div>
-        </div>
-        <div className="stat-card error">
-          <div className="stat-label">Errors</div>
-          <div className="stat-value">
-            {events.filter((e) => e.severity === "error" || e.severity === "critical").length}
-          </div>
-        </div>
+        <StatCard label="Total Events" value={events.length} />
+        <StatCard
+          label="Warnings"
+          value={events.filter((e) => e.severity === "warning").length}
+          tone="warning"
+        />
+        <StatCard
+          label="Errors"
+          value={events.filter((e) => e.severity === "error" || e.severity === "critical").length}
+          tone="error"
+        />
       </div>
 
       <div className="card">
