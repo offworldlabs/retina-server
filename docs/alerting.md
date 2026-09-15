@@ -1,8 +1,9 @@
 # Alerting & monitoring
 
 How RETINA detects problems and notifies operators. The goal is pre-launch
-coverage with **no infrastructure we have to run ourselves** — alerting is
-in-process plus a free external dead-man's-switch.
+coverage with **no infrastructure we have to run ourselves**: alerting is
+in-process, plus outside-in probes and notifications from the platforms
+already in use (layer 3).
 
 ## How it works
 
@@ -90,11 +91,19 @@ Three layers, in order of what they catch:
    of them keep the `Alert webhook returned <code>` wording, which is what
    the droplet logs are grepped for when counting delivery failures.
 
-3. **Dead-man's-switch (external).** `services/tasks/heartbeat.py` pings
-   `HEARTBEAT_URL` every `HEARTBEAT_INTERVAL_S` (default 60s). Point it at a
-   free [Healthchecks.io](https://healthchecks.io) check. The external service
-   alerts when pings **stop** — the one failure mode in-process alerting can't
-   catch: a crashed process, a dead host, or the disk-full deploy death-spiral.
+3. **Outside-in probes (external).** DigitalOcean Uptime polls `/api/health` on `api`
+   (this backend) and on `towers` (tower-finder-service's own edge) for prod and
+   staging, every minute from four regions, and emails when every region has seen the
+   origin down for two minutes. Together with the DigitalOcean resource alerts and
+   Cloudflare's origin and certificate notifications, this is the layer that catches a
+   crashed process, a dead host or a broken edge path, which in-process alerting cannot.
+   What is configured, where to look and how to rebuild it:
+   `claude-shared/docs/runbooks/uptime-monitoring.md`.
+
+   `services/tasks/heartbeat.py` remains and is dormant: it pings `HEARTBEAT_URL` when
+   that is set, and nothing sets it. An outside probe covers what a heartbeat would,
+   except a dead alert loop behind a live HTTP server, which `health_monitor_task`'s
+   per-cycle exception handling makes unlikely.
 
 ## Severity
 
@@ -135,9 +144,9 @@ own history is tracked in ClickUp 86cb81gkn.
 - Default: always **200**. Body `{"status": "ok"}` or `{"status":
   "degraded"}`. Used as the Docker container **liveness** check — it must not
   flip to non-200 on transient degradation or the container would restart-loop.
-- `?strict=1`: **readiness** probe — returns **503** when degraded. Point an
-  external uptime monitor (UptimeRobot/BetterStack free tier) at this for an
-  independent outside-in alert.
+- `?strict=1`: **readiness** probe — returns **503** when degraded. Not what the outside
+  probes use: they assert liveness, because the strict form also trips on warnings that
+  are still being calibrated (ClickUp 86cb5c8dq).
 
 Details are intentionally **not** exposed on this unauthenticated endpoint —
 they're in the logs and the webhook payloads.
@@ -151,10 +160,9 @@ they're in the logs and the webhook payloads.
      to it, set `ALERT_WEBHOOK_FORMAT=clickup_chat`, and set
      `ALERT_WEBHOOK_URL` to
      `https://api.clickup.com/api/v3/workspaces/{workspace_id}/chat/channels/{channel_id}/messages`.
-2. Create a free Healthchecks.io check (period 1m, grace ~2m) → set
-   `HEARTBEAT_URL` to its ping URL. Configure its notification channel.
-3. (Optional) Add an UptimeRobot/BetterStack monitor on
-   `https://<host>/api/health?strict=1`.
+2. Outside-in probes, resource alerts and Cloudflare notifications are account-level
+   configuration, not environment variables: see
+   `claude-shared/docs/runbooks/uptime-monitoring.md`.
 
 | Env var | Default | Purpose |
 | --- | --- | --- |
@@ -163,7 +171,7 @@ they're in the logs and the webhook payloads.
 | `ALERT_WEBHOOK_AUTH` | _(unset)_ | Sent verbatim as the `Authorization` header when set |
 | `ALERT_WEBHOOK_FORMAT` | `raw` | Payload shape: `raw` or `clickup_chat` |
 | `ALERT_ENVIRONMENT` | _(unset → `unknown`)_ | Labels each alert's `environment` field |
-| `HEARTBEAT_URL` | _(unset → disabled)_ | External dead-man's-switch ping target |
+| `HEARTBEAT_URL` | _(unset → disabled)_ | Dormant: set by no environment (see layer 3) |
 | `HEARTBEAT_INTERVAL_S` | `60` | Heartbeat ping period |
 | `HEALTH_MONITOR_INTERVAL_S` | `30` | Health evaluation period |
 | `NODE_DROPOUT_THRESHOLD` | `0.8` | Active/peak node ratio below which dropout fires |
@@ -171,7 +179,8 @@ they're in the logs and the webhook payloads.
 
 ## Deferred (needs real infrastructure)
 
-Metrics history and dashboards (Prometheus + Grafana, Loki for logs, Sentry for
-exceptions) are **not** required for launch — the webhook + heartbeat cover
-"something is wrong, tell a human." Add them later if you want trend graphs or
-exception aggregation; they require standing up and maintaining services.
+Metrics history and dashboards (VictoriaMetrics + Grafana, Loki for logs, Sentry for
+exceptions) are the third monitoring sub-project in
+`claude-shared/docs/decisions/2026-09-15-uptime-monitoring.md` and are not yet ticketed.
+The admin dashboard's Infrastructure page shows DigitalOcean's uptime and droplet metrics
+meanwhile.

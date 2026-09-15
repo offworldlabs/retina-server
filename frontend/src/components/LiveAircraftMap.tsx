@@ -50,7 +50,7 @@ import {
   uncertaintyDiscRadiusM,
   nodeLabel,
   groupNodesBySite,
-  polygonMaxReachKm,
+  coverageLine,
   FitBounds,
   ViewportTracker,
   MapClickClear,
@@ -981,14 +981,15 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
           <React.Fragment key={`site-node-${n.node_ref}`}>
             {i > 0 && <br />}
             <strong>{nodeLabel(n)}</strong><br />
-            {/* Only measured coverage is quoted.  The declared beam azimuth,
-                width and range used to be printed here; they are
-                configuration, most nodes' aim was never surveyed, and beside
-                a calibration-point count they read as measurements. */}
-            {n.empirical_polygon && n.empirical_polygon.length >= 3
-              ? <>Coverage: measured from {n.empirical_n_points} calibration pts,
-                  reach &le; {polygonMaxReachKm(n.rx_lat, n.rx_lon, n.empirical_polygon)} km</>
-              : <>Coverage: not yet measured ({n.empirical_n_points || 0} calibration pts)</>}
+            {/* A declared beam is quoted ONLY for a synthetic node, whose
+                declared cone is what the simulator enforces before it emits a
+                detection and so is its detection area by definition.  For a
+                real node only measured coverage is quoted: its declared
+                azimuth, width and range are configuration, most nodes' aim
+                was never surveyed, and beside a calibration-point count they
+                read as measurements.  The backend decides which is which and
+                says so in empirical_polygon_source; see nodeSites.ts. */}
+            {coverageLine(n)}
             {multi && (
               <>
                 <br />

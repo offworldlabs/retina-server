@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { api } from "../../api/client";
+import { formatUptime } from "../../utils/format";
 
 const PAGE_SIZE = 25;
 
@@ -232,12 +233,4 @@ export default function LeaderboardPage() {
       </div>
     </>
   );
-}
-
-function formatUptime(seconds) {
-  if (!seconds) return "—";
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (h > 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
-  return `${h}h ${m}m`;
 }

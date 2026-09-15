@@ -1,12 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { api } from "../../api/client";
+import { fmt } from "../../utils/format";
 
 const REFRESH_MS = 5000;
-
-function fmt(n: number | undefined, decimals = 0) {
-  if (n === undefined || n === null) return "—";
-  return Number(n).toFixed(decimals);
-}
 
 function ago(epoch: number | undefined): string {
   if (!epoch) return "never";

@@ -40,6 +40,7 @@ from core import state
 from core.env_parsing import parse_comma_list
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from routes.admin import router as admin_router
+from routes.admin_infrastructure import router as admin_infrastructure_router
 from routes.analytics import router as analytics_router
 from routes.archive import router as archive_router
 from routes.auth import router as auth_router
@@ -240,12 +241,17 @@ async def lifespan(app: FastAPI):
 
         flush_all_archive_buffers()
         # Close pooled HTTP clients (they had no shutdown path at all)
+        from clients import digitalocean
         from services.tasks.periodic import close_http_clients
 
         try:
             await close_http_clients()
         except Exception:
             logging.exception("HTTP client shutdown failed")
+        try:  # its own guard, so a failure above still leaves this pool closed
+            await digitalocean.aclose()
+        except Exception:
+            logging.exception("DigitalOcean client shutdown failed")
         state.node_analytics.save_coverage_maps()
         # Stop runtime coverage and flush report
         _stop_coverage()
@@ -352,6 +358,7 @@ for router in (
     custody_router,
     auth_router,
     admin_router,
+    admin_infrastructure_router,
     output_router,
     nodes_router,
 ):

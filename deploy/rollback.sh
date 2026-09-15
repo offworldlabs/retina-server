@@ -12,6 +12,8 @@
 #   `retina-server:rollback` and creates a git tag `deploy-<timestamp>`.
 #
 #   This script restores service from that saved image or a given git ref.
+#   A container that predates the rollback point and still answers is left
+#   running; only the tree and the image tags move.
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -37,6 +39,7 @@ trap on_exit EXIT
 
 APP_DIR="${APP_DIR:-/opt/retina-server}"
 IMAGE_NAME="retina-server"
+COMPOSE_SERVICE="server"
 FLEET_IMAGE_NAME="retina-server-fleet"
 # No `-f` flags below: the host's ./.env sets COMPOSE_FILE to the shared base
 # plus that host's overlay (deploy/env.*.example), so `docker compose` here
@@ -45,6 +48,29 @@ FLEET_IMAGE_NAME="retina-server-fleet"
 # refuses to boot.
 
 cd "$APP_DIR"
+
+# ── Did the deploy get as far as replacing the container? ────────────────────
+# A deploy that failed before the swap (the build, most often) left the good
+# container serving, and a restart would only cost it a boot. It is left alone
+# when it was created before the deploy-* tag pre-deploy.sh took, which every
+# recreate (new image or new config) postdates, and it answers /api/health
+# now; anything else takes the full restart. Both timestamps are this box's
+# clock: the tag name is UTC to the second, Created is RFC 3339 UTC. A bare
+# `up -d` in place of the down would recreate only what differs, but a swap
+# that died mid-way leaves a stopped container under compose's temporary
+# name that only the down removes, and a recreate cuts the stop grace to 10 s.
+container_predates_and_answers() {
+    local tag="$1" cid created created_ts tag_ts
+    cid=$(docker compose ps -q --status running "$COMPOSE_SERVICE" 2>/dev/null) || return 1
+    cid=${cid%%$'\n'*}
+    [ -n "$cid" ] || return 1
+    created=$(docker inspect --format '{{.Created}}' "$cid" 2>/dev/null) || return 1
+    created_ts=${created//[-:T]/}; created_ts=${created_ts:0:14}
+    tag_ts=${tag#deploy-}; tag_ts=${tag_ts//-/}
+    [[ "$created_ts" < "$tag_ts" ]] || return 1
+    docker compose exec -T "$COMPOSE_SERVICE" \
+        python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" >/dev/null 2>&1
+}
 
 # ── Keep ./.env consistent with the tree we roll back to ─────────────────────
 # ./.env is gitignored, so moving the source tree does NOT move it. Every compose
@@ -189,7 +215,9 @@ else
   built from. Check the two against each other before trusting this rollback."
             DB_NEEDS_DOWNGRADE=1
         fi
-        docker compose down --timeout 30
+        # Tags first, whatever happens to the containers: `up --build` moves
+        # :latest to the new build before it swaps, so a deploy that died in
+        # between leaves the good container running under a bad :latest.
         docker tag "${IMAGE_NAME}:rollback" "${IMAGE_NAME}:latest"
         # Symmetric fleet rollback: retag the saved fleet image too, so on the
         # environments that run a simulator the single `up -d` below brings the
@@ -206,7 +234,18 @@ else
         else
             echo "No ${FLEET_IMAGE_NAME}:rollback image found; rolling back app only, fleet image left as-is."
         fi
-        docker compose up -d
+        if [ -n "$LAST_GOOD" ] && container_predates_and_answers "$LAST_GOOD"; then
+            echo "The running ${COMPOSE_SERVICE} predates ${LAST_GOOD} and answers /api/health: the deploy never replaced it. Containers left running; tree and tags restored."
+            # Nothing booted from the tree being rolled back, so no revision
+            # of it reached the database; the gap graded above never opened.
+            DB_REPORT="── Database ──────────────────────────────────────────────────────────────
+  No container booted from the tree being rolled back, so the database did
+  not move and matches the restored tree."
+            DB_NEEDS_DOWNGRADE=0
+        else
+            docker compose down --timeout 30
+            docker compose up -d
+        fi
     else
         echo "No rollback image found. Falling back to previous git commit."
         # Note: this creates a detached HEAD. After recovery, re-attach with:
@@ -224,9 +263,12 @@ fi
 ROLLBACK_RESTORED=1
 
 # ── Wait for health ──────────────────────────────────────────────────────────
+# 18 x 5 s, the window the deploys give a boot and the healthcheck's
+# start_period; a shorter one here reports a boot the deploy would have
+# accepted as a failed rollback, with the marker left in place.
 echo "Waiting for server to become healthy..."
-for i in $(seq 1 12); do
-    if docker compose exec -T server \
+for i in $(seq 1 18); do
+    if docker compose exec -T "$COMPOSE_SERVICE" \
         python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
         if [ "$DB_NEEDS_DOWNGRADE" = 1 ]; then
             echo "Service back after ~$((i*5))s, but a database downgrade is outstanding."
@@ -244,11 +286,11 @@ for i in $(seq 1 12); do
         fi
         exit 0
     fi
-    echo "  Waiting... attempt $i/12"
+    echo "  Waiting... attempt $i/18"
     sleep 5
 done
 
-echo "WARNING: Health check failed after 60s. Check logs:"
+echo "WARNING: Health check failed after 90s. Check logs:"
 echo "  docker compose logs --tail=50"
 report_db_gap
 exit 1

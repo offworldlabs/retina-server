@@ -4,6 +4,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { formatUptime } from "../../utils/format";
 import { useChartTheme } from "../../utils/chartTheme";
 import { RetnodeLink } from "../../components/RetnodeLink";
 import { POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
@@ -261,12 +262,4 @@ export default function NodeDetailPage() {
       )}
     </>
   );
-}
-
-function formatUptime(seconds) {
-  if (!seconds) return "—";
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (h > 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
-  return `${h}h ${m}m`;
 }

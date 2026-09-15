@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
+import { formatUptime } from "../../utils/format";
 import { PositionStatusBadge } from "../../components/PositionStatusBadge";
 import {
   LocationPrivacyBadge,
@@ -240,12 +241,4 @@ function NodeLocationPrivacy({ nodeId, unresolved }: { nodeId: string | null; un
       )}
     </div>
   );
-}
-
-function formatUptime(seconds) {
-  if (!seconds) return "—";
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (h > 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
-  return `${h}h ${m}m`;
 }

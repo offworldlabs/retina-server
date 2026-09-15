@@ -114,3 +114,34 @@ export function polygonMaxReachKm(
   }
   return Math.round(max);
 }
+
+/**
+ * The one line the site popup prints about a node's coverage.
+ *
+ * Which shape the backend published is its decision, not the map's, and it
+ * says so in `empirical_polygon_source`:
+ *
+ * - `declared` — a SYNTHETIC node.  The simulator emits a detection only for
+ *   an aircraft inside the node's declared cone, so for those nodes the cone
+ *   is the detection area by definition and is served as-is.  This is the one
+ *   case where the map may call a declared beam coverage.
+ * - `evidence` / `learned` — a real receiver, whose declared aim was never
+ *   surveyed.  Only what it has been seen to detect is quoted, with the
+ *   calibration-point count that backs it.
+ *
+ * Reach comes from the served polygon either way (polygonMaxReachKm), never
+ * from the node's declared `max_range_km`.
+ */
+export function coverageLine(node: RadarNode): string {
+  const reach = polygonMaxReachKm(node.rx_lat, node.rx_lon, node.empirical_polygon);
+  const drawable = Array.isArray(node.empirical_polygon) && node.empirical_polygon.length >= 3;
+  if (node.empirical_polygon_source === "declared") {
+    return drawable
+      ? `Coverage: declared beam (synthetic node), reach ≤ ${reach} km`
+      : "Coverage: declared beam (synthetic node)";
+  }
+  if (drawable) {
+    return `Coverage: measured from ${node.empirical_n_points} calibration pts, reach ≤ ${reach} km`;
+  }
+  return `Coverage: not yet measured (${node.empirical_n_points || 0} calibration pts)`;
+}

@@ -261,8 +261,9 @@ the server's own schedule, independent of who polls `/api/health` — see
 [`alerting.md`](alerting.md).
 
 `/api/health` itself stays **200** (liveness, used by the Docker healthcheck);
-`/api/health?strict=1` returns **503** when degraded (readiness, for an external
-uptime monitor). Details are never exposed on the endpoint — read them from logs:
+`/api/health?strict=1` returns **503** when degraded (readiness; the outside-in
+probes use the plain form, see `claude-shared/docs/runbooks/uptime-monitoring.md`).
+Details are never exposed on the endpoint — read them from logs:
 
 ```bash
 docker compose logs --tail=200 | grep "Health check degraded"
