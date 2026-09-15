@@ -2,9 +2,11 @@
 
 Cloudflare keeps a `public, immutable` response for the whole `expires`
 window, so the policy is only safe on a name that carries a content hash.
-Every other static file is served `no-cache` and revalidated, or a deploy that
-changes it stays invisible at the edge until the window ends, under an
-index.html that is never cached and already expects the new file.
+Every other static file is served `no-store`, like index.html, or a deploy
+that changes it stays invisible until the window ends, under an index.html
+that already expects the new file. `no-cache` alone is not enough: Cloudflare
+revalidates at the edge but rewrites the browser-facing header to the zone's
+4 h Browser Cache TTL.
 
 Asserted on the RENDERED config: the locations arrive through spa.conf, and
 nginx takes the first regex location that matches, so the order the include
@@ -41,4 +43,4 @@ def test_every_other_static_file_is_revalidated(rendered):
     assert len(statics) % 2 == 0, [h.strip() for h, _ in statics]
     for assets, rest in zip(statics[0::2], statics[1::2], strict=True):
         assert "^/assets/" in assets[0] and "immutable" in assets[1], assets[0].strip()
-        assert "^/assets/" not in rest[0] and "no-cache" in rest[1], rest[0].strip()
+        assert "^/assets/" not in rest[0] and "no-store" in rest[1], rest[0].strip()

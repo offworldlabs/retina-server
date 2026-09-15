@@ -17,10 +17,10 @@ data-explorer/
 
 Edit the files and redeploy; there is nothing to compile. `Dockerfile` copies the
 directory verbatim, so a change here ships with any image build. Because none of
-these names carries a content hash, nginx serves them `Cache-Control: no-cache`
-(`deploy/nginx/snippets/spa.conf`): browsers revalidate and get a 304 when
-nothing changed, and the edge never keeps a copy past a deploy. Only Vite's
-hashed `/assets/` trees get the week-long immutable policy.
+these names carries a content hash, nginx serves them `Cache-Control: no-store,
+no-cache` (`deploy/nginx/snippets/spa.conf`), the same as `index.html`: neither
+the edge nor the browser keeps a copy, so a deploy shows through at once. Only
+Vite's hashed `/assets/` trees get the week-long immutable policy.
 
 ## Why the libraries are vendored
 
