@@ -13,6 +13,7 @@ the listing larger than a pipe buffer, rather than hoping to lose the race.
 deploy/pre-deploy.sh carries the same warning at its own image lookup.
 """
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -45,17 +46,28 @@ def _repo(tmp_path: Path) -> Path:
     return repo
 
 
-def _lookup_line() -> str:
-    """The LAST_GOOD assignment exactly as it stands in rollback.sh."""
-    lines = [ln.strip() for ln in ROLLBACK_SH.read_text().splitlines() if re.match(r"\s*LAST_GOOD=", ln)]
-    assert len(lines) == 1, f"expected one LAST_GOOD assignment, found {len(lines)}"
+def _assignment(name: str) -> str:
+    """The `name=` assignment exactly as it stands in rollback.sh."""
+    lines = [ln.strip() for ln in ROLLBACK_SH.read_text().splitlines() if re.match(rf"\s*{name}=", ln)]
+    assert len(lines) == 1, f"expected one {name} assignment, found {len(lines)}"
     return lines[0]
 
 
+def _preamble() -> str:
+    """rollback.sh's own shell flags; a fragment run without them proves nothing."""
+    lines = [ln.strip() for ln in ROLLBACK_SH.read_text().splitlines() if ln.startswith("set -")]
+    assert len(lines) == 1, f"expected one set line, found {len(lines)}"
+    return lines[0]
+
+
+def _lookup_line() -> str:
+    return _assignment("LAST_GOOD")
+
+
 def _run_lookup(repo: Path) -> subprocess.CompletedProcess:
-    # `set -euo pipefail` is rollback.sh's own preamble. Without pipefail a
-    # SIGPIPE is invisible and these pass against the broken line.
-    script = f'set -euo pipefail\n{_lookup_line()}\nprintf "%s" "$LAST_GOOD"\n'
+    # Without pipefail a SIGPIPE is invisible and these pass against the
+    # broken line.
+    script = f'{_preamble()}\n{_lookup_line()}\nprintf "%s" "$LAST_GOOD"\n'
     return subprocess.run(  # noqa: S602, S607
         ["bash", "-c", script], cwd=repo, capture_output=True, text=True, check=False
     )
@@ -140,3 +152,70 @@ def test_an_abort_partway_says_the_rollback_did_not_complete(tmp_path):
     assert "ROLLBACK DID NOT COMPLETE" in combined, (
         f"an aborted rollback said nothing about not having completed:\n{combined}"
     )
+
+
+# ── A container the deploy never replaced is left running ────────────────────
+
+
+def _function_text(name: str) -> str:
+    """A function's definition exactly as it stands in rollback.sh."""
+    match = re.search(rf"^{name}\(\) \{{\n.*?^\}}\n", ROLLBACK_SH.read_text(), re.M | re.S)
+    assert match, f"{name} not found in rollback.sh"
+    return match.group(0)
+
+
+# Shadows the docker binary for the three calls the predicate makes; values
+# arrive through the environment. `exit` inside `$(...)` only ends that
+# substitution, which is how the real CLI's failures reach the script too.
+STUB_DOCKER = """
+docker() {
+  case "$*" in
+    "compose ps -q --status running server") printf '%s\\n' "$CID" ;;
+    "inspect --format {{.Created}} "*) printf '%s\\n' "$CREATED" ;;
+    "compose exec -T server python3 -c "*) [ "$HEALTHY" = 1 ] ;;
+    *) echo "unexpected docker call: $*" >&2; exit 2 ;;
+  esac
+}
+"""
+
+
+def _predates_and_answers(tag: str, *, cid: str, created: str, healthy: bool) -> bool:
+    script = (
+        f"{_preamble()}\n{_assignment('COMPOSE_SERVICE')}\n{STUB_DOCKER}"
+        f"{_function_text('container_predates_and_answers')}"
+        f"if container_predates_and_answers {tag!r}; then echo yes; else echo no; fi\n"
+    )
+    env = {**os.environ, "CID": cid, "CREATED": created, "HEALTHY": "1" if healthy else "0"}
+    result = subprocess.run(  # noqa: S603, S607
+        ["bash", "-c", script], capture_output=True, text=True, check=True, env=env
+    )
+    return result.stdout.strip() == "yes"
+
+
+TAG = "deploy-20260915-173523"
+BEFORE = "2026-09-15T17:33:40.123456789Z"
+AFTER = "2026-09-15T17:36:02.000000000Z"
+
+
+def test_a_container_older_than_the_tag_that_answers_is_left_alone():
+    assert _predates_and_answers(TAG, cid="c91d23bb4158", created=BEFORE, healthy=True)
+
+
+def test_a_container_created_after_the_tag_is_restarted():
+    # Every recreate postdates the tag, a config-only change on the same image
+    # included, so this is what tells "never replaced" from "replaced".
+    assert not _predates_and_answers(TAG, cid="c91d23bb4158", created=AFTER, healthy=True)
+
+
+def test_the_same_second_as_the_tag_counts_as_after():
+    assert not _predates_and_answers(TAG, cid="c91d23bb4158", created="2026-09-15T17:35:23.900000000Z", healthy=True)
+
+
+def test_a_container_that_does_not_answer_is_restarted():
+    # Running is not serving; a wedged process on the right image still needs
+    # the restart.
+    assert not _predates_and_answers(TAG, cid="c91d23bb4158", created=BEFORE, healthy=False)
+
+
+def test_no_running_container_means_the_full_restart():
+    assert not _predates_and_answers(TAG, cid="", created=BEFORE, healthy=True)
