@@ -263,9 +263,12 @@ fi
 ROLLBACK_RESTORED=1
 
 # ── Wait for health ──────────────────────────────────────────────────────────
+# 18 x 5 s, the window the deploys give a boot and the healthcheck's
+# start_period; a shorter one here reports a boot the deploy would have
+# accepted as a failed rollback, with the marker left in place.
 echo "Waiting for server to become healthy..."
-for i in $(seq 1 12); do
-    if docker compose exec -T server \
+for i in $(seq 1 18); do
+    if docker compose exec -T "$COMPOSE_SERVICE" \
         python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
         if [ "$DB_NEEDS_DOWNGRADE" = 1 ]; then
             echo "Service back after ~$((i*5))s, but a database downgrade is outstanding."
@@ -283,11 +286,11 @@ for i in $(seq 1 12); do
         fi
         exit 0
     fi
-    echo "  Waiting... attempt $i/12"
+    echo "  Waiting... attempt $i/18"
     sleep 5
 done
 
-echo "WARNING: Health check failed after 60s. Check logs:"
+echo "WARNING: Health check failed after 90s. Check logs:"
 echo "  docker compose logs --tail=50"
 report_db_gap
 exit 1

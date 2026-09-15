@@ -219,3 +219,26 @@ def test_a_container_that_does_not_answer_is_restarted():
 
 def test_no_running_container_means_the_full_restart():
     assert not _predates_and_answers(TAG, cid="", created=BEFORE, healthy=True)
+
+
+# ── The health window is the deploys' ────────────────────────────────────────
+
+WORKFLOWS = BACKEND.parent / ".github" / "workflows"
+COMPOSE = BACKEND.parent / "docker-compose.yml"
+
+
+def _health_probes(text: str) -> list[int]:
+    """The N of every `seq 1 N` loop whose next line probes /api/health."""
+    return [int(n) for n in re.findall(r"for i in \$\(seq 1 (\d+)\); do\n\s*if docker compose exec -T", text)]
+
+
+def test_health_wait_matches_the_deploys():
+    # A shorter wait here reports a boot the deploy would have accepted as a
+    # failed rollback, with the marker left in place and the next deploy
+    # refused on it.
+    (rollback,) = _health_probes(ROLLBACK_SH.read_text())
+    for workflow in ("ci.yml", "staging-deploy-verify.yml", "deploy-test.yml"):
+        probes = _health_probes((WORKFLOWS / workflow).read_text())
+        assert probes and all(n == rollback for n in probes), (workflow, probes, rollback)
+    start_period = re.search(r"start_period: (\d+)s", COMPOSE.read_text())
+    assert start_period and rollback * 5 >= int(start_period.group(1))
