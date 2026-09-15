@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef } from "react";
 import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
 import { api } from "../../api/client";
+import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme } from "../../utils/chartTheme";
 import { useResolvedTheme, type Theme } from "../../context/ThemeContext";
 
@@ -88,31 +88,11 @@ function formatDateTime(iso: string) {
 export default function AnomalyPage() {
   const chart = useChartTheme();
   const theme = useResolvedTheme();
-  const [data, setData] = useState<AnomalyData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [stale, setStale] = useState(false);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
-
-  const fetchData = () => {
-    api.anomalies()
-      .then((d: AnomalyData) => {
-        setData(d);
-        setLastUpdated(new Date());
-        setStale(false);
-      })
-      .catch((err) => {
-        console.error(err);
-        setStale(true);
-      })
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchData();
-    timerRef.current = setInterval(fetchData, 10000);
-    return () => clearInterval(timerRef.current);
-  }, []);
+  const { data, loading, error, updatedAt: lastUpdated } = usePolling<AnomalyData>(
+    () => api.anomalies(),
+    10000,
+  );
+  const stale = error !== null;
 
   if (loading) return <div className="empty-state">Loading…</div>;
   if (!data) return <div className="empty-state">Failed to load anomaly data</div>;

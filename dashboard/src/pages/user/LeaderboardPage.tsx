@@ -1,29 +1,15 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import { api } from "../../api/client";
+import { usePolling } from "../../hooks/usePolling";
 import { formatUptime } from "../../utils/format";
 
 const PAGE_SIZE = 25;
 
 export default function LeaderboardPage() {
-  const [data, setData] = useState(null);
   const [sortBy, setSortBy] = useState("detections");
-  const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
-  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
-
-  const fetchData = () => {
-    api.leaderboard()
-      .then(setData)
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchData();
-    timerRef.current = setInterval(fetchData, 30000);
-    return () => clearInterval(timerRef.current);
-  }, []);
+  const { data, loading } = usePolling(() => api.leaderboard(), 30000);
 
   if (loading) return <div className="empty-state">Loading…</div>;
 

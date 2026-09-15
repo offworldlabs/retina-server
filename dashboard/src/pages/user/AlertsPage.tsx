@@ -1,26 +1,15 @@
-import { useState, useEffect, useRef } from "react";
 import { api } from "../../api/client";
+import { usePolling } from "../../hooks/usePolling";
 
 export default function AlertsPage() {
-  const [alerts, setAlerts] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
-
-  const fetchAlerts = () => {
-    api.alerts()
-      .then((data) => setAlerts(Array.isArray(data) ? data : []))
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchAlerts();
-    timerRef.current = setInterval(fetchAlerts, 15000);
-    return () => clearInterval(timerRef.current);
-  }, []);
+  const { data, loading } = usePolling(
+    () => api.alerts().then((d) => (Array.isArray(d) ? d : [])),
+    15000,
+  );
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
+  const alerts = data ?? [];
   const severityClass = { info: "online", warning: "warning", error: "offline", critical: "offline" };
   const warnings = alerts.filter((e) => e.severity === "warning");
   const errors = alerts.filter((e) => e.severity === "error" || e.severity === "critical");

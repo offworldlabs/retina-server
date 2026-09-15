@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { usePolling } from "../../hooks/usePolling";
 import { formatRelativeTime, formatUptime } from "../../utils/format";
 import { useChartTheme } from "../../utils/chartTheme";
 import { PositionStatusBadge, POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
@@ -11,46 +11,34 @@ import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
 
 export default function OverviewPage() {
   const chart = useChartTheme();
-  const [nodes, setNodes] = useState([]);
-  const [myNodes, setMyNodes] = useState([]);
-  const [analytics, setAnalytics] = useState(null);
-  const [aircraftCount, setAircraftCount] = useState(0);
-  const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
-  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
-
-  const fetchData = () => {
+  const { data, loading } = usePolling(async () => {
     // myNodes fails soft: it is only needed for the needs-attention list, and
     // an unauthenticated view of this page must still render the rest.
-    Promise.all([api.nodes(), api.analytics(), api.aircraft(), api.myNodes().catch(() => [])])
-      .then(([n, a, ac, mine]) => {
-        // Both are dicts keyed on node_ref, and the values carry no identifier of
-        // their own, so the key is the identity.
-        const nodeMap = n.nodes || {};
-        const analyticsMap = a?.nodes || {};
-        const nodeList = Object.entries(nodeMap).map(([ref, info]: [string, any]) => ({
-          node_ref: ref,
-          ...info,
-          _analytics: analyticsMap[ref] || {},
-        }));
-        setNodes(nodeList);
-        setMyNodes(Array.isArray(mine) ? mine : []);
-        setAnalytics(a);
-        setAircraftCount((ac.aircraft || []).length);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchData();
-    timerRef.current = setInterval(fetchData, 15000);
-    return () => clearInterval(timerRef.current);
-  }, []);
+    const [n, a, ac, mine] = await Promise.all([
+      api.nodes(), api.analytics(), api.aircraft(), api.myNodes().catch(() => []),
+    ]);
+    // Both are dicts keyed on node_ref, and the values carry no identifier of
+    // their own, so the key is the identity.
+    const nodeMap = n.nodes || {};
+    const analyticsMap = a?.nodes || {};
+    const nodes = Object.entries(nodeMap).map(([ref, info]: [string, any]) => ({
+      node_ref: ref,
+      ...info,
+      _analytics: analyticsMap[ref] || {},
+    }));
+    return {
+      nodes,
+      myNodes: Array.isArray(mine) ? mine : [],
+      aircraftCount: (ac.aircraft || []).length,
+    };
+  }, 15000);
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
-  const nodeList = Array.isArray(nodes) ? nodes : [];
+  const nodeList = data?.nodes ?? [];
+  const myNodes = data?.myNodes ?? [];
+  const aircraftCount = data?.aircraftCount ?? 0;
   const onlineCount = nodeList.filter((n) => n.status !== "disconnected" && n.status != null).length;
   // Merged with the owner's own nodes, because /api/radar/nodes drops private
   // ones: a private node with no position would otherwise appear nowhere its

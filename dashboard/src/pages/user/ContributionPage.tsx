@@ -1,39 +1,30 @@
-import { useState, useEffect, useRef } from "react";
+import { useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme } from "../../utils/chartTheme";
 
 const PAGE_SIZE = 25;
 
 export default function ContributionPage() {
   const chart = useChartTheme();
-  const [analytics, setAnalytics] = useState(null);
-  const [overlaps, setOverlaps] = useState([]);
-  const [leaderboard, setLeaderboard] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [overlapPage, setOverlapPage] = useState(0);
-  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
-
-  const fetchData = () => {
-    Promise.all([api.analytics(), api.overlaps(), api.leaderboard().catch(() => [])])
-      .then(([a, o, lb]) => {
-        setAnalytics(a);
-        setOverlaps(Array.isArray(o) ? o : o.overlaps || []);
-        setLeaderboard(Array.isArray(lb) ? lb : lb.leaderboard || []);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  };
-
-  useEffect(() => {
-    fetchData();
-    timerRef.current = setInterval(fetchData, 30000);
-    return () => clearInterval(timerRef.current);
-  }, []);
+  const { data, loading } = usePolling(async () => {
+    const [a, o, lb] = await Promise.all([api.analytics(), api.overlaps(), api.leaderboard().catch(() => [])]);
+    return {
+      analytics: a,
+      overlaps: Array.isArray(o) ? o : o.overlaps || [],
+      leaderboard: Array.isArray(lb) ? lb : lb.leaderboard || [],
+    };
+  }, 30000);
 
   if (loading) return <div className="empty-state">Loading…</div>;
+
+  const analytics = data?.analytics;
+  const overlaps = data?.overlaps ?? [];
+  const leaderboard = data?.leaderboard ?? [];
 
   // analytics.nodes is a dict {node_ref: summary} from the backend; the ref
   // is the map key, values no longer carry node_id.
