@@ -241,6 +241,8 @@ CI runs on every PR, on push to `main`, and on demand through
    `.github/workflows/staging-deploy-verify.yml`, invoked from one `Staging`
    job so that job's concurrency group is held across the deploy and both
    suites. Adding a staging step means editing that file, not `ci.yml`.
+   Both deploys take a rollback point first and roll themselves back when
+   they fail after it; the runbook's Environments section has the shape.
 
 So merging to `main` deploys to production automatically. Work on a feature
 branch, open a PR, get it green, then merge.

@@ -5,14 +5,14 @@ name: Staging deploy and verify
 # not complete until every job below has finished, so the group is held from
 # the first byte of the deploy to the last E2E assertion.
 #
-# That holding is the whole point of the file, and it is why the three jobs
+# That holding is the whole point of the file, and it is why the jobs below
 # cannot simply live in ci.yml with a group each. Concurrency is acquired and
 # released per job, so a following run's deploy was free to land between one
 # run's smoke tests and its E2E — which is how three merges on 2026-09-10 all
 # failed, none of them for a fault in the change: the box was restarting
 # underneath a suite that was testing it.
 #
-# Splitting these back into three jobs in the caller reopens that race,
+# Splitting these back into separate jobs in the caller reopens that race,
 # whatever concurrency group each of them carries.
 
 on:
@@ -81,6 +81,14 @@ jobs:
               exit 1
             fi
 
+            # Same check as ci.yml's production deploy, which has the reasoning:
+            # a marker is a box left mid-deploy, and snapshotting over it would
+            # lose the rollback point.
+            if [ -f .deploy-in-progress ]; then
+              echo "::error::${{ env.APP_DIR }}/.deploy-in-progress is still present on $(hostname) ($(cat .deploy-in-progress)). An earlier deploy was left mid-flight and never confirmed healthy. Inspect the box and recover it (bash deploy/rollback.sh, or fix forward), then delete the marker and re-run. Refusing to deploy; the running stack is untouched."
+              exit 1
+            fi
+
             # A .env naming another environment means this job is pointed
             # at a box it does not own. Without this the write further down simply
             # takes that box over: overwriting its .env and rebuilding would bring
@@ -123,6 +131,13 @@ jobs:
               docker system df 2>/dev/null || true
               exit 1
             fi
+
+            # Pre-flights go above this line. From here the box is mid-deploy
+            # and a failure below is the rollback job's to undo, keyed on the
+            # marker's run id. NOT `|| true`: no rollback point, no deploy.
+            bash deploy/pre-deploy.sh
+            echo "run ${{ github.run_id }} started $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              > ${{ env.APP_DIR }}/.deploy-in-progress
 
             # Hard-reset rather than `git pull` — see the production deploy
             # block for the full incident description; same failure mode would
@@ -178,11 +193,105 @@ jobs:
                 exit 1
               fi
             done
+
+            # Reached only by the loop's `break`: the app answered /api/health,
+            # so the box is no longer mid-deploy. The fleet step below can still
+            # fail, but with the app up on the new build, which is not a
+            # rollback case.
+            rm -f ${{ env.APP_DIR }}/.deploy-in-progress
+
             # Now the fleet, separately — a fleet build/start failure surfaces
             # loudly here without taking the already-healthy app down with it.
             # Recreated only when its image or config changed; otherwise the old
             # fleet reconnects to the new server by itself and the demo stays up.
             docker compose up -d --build --no-deps fleet
+  rollback:
+    name: Roll back staging if the deploy failed after it began
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [deploy]
+    # Keyed the same way as ci.yml's rollback-production-on-deploy-failure;
+    # see there for why. No concurrency group of its own: the calling job
+    # holds `staging-deploy` until every job here has finished (see the
+    # header), so a following run's deploy cannot enter the directory while
+    # this runs. The marker checks below make any run whose deploy never
+    # started, cancelled while queued included, a no-op or a refusal rather
+    # than an action.
+    if: >-
+      always() && (
+        needs.deploy.result == 'failure' ||
+        needs.deploy.result == 'cancelled'
+      )
+    env:
+      APP_DIR: ${{ inputs.app_dir }}
+    steps:
+      - name: Roll back, but only if the deploy actually mutated the box
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.STAGING_HOST }}
+          username: root
+          key: ${{ secrets.STAGING_SSH_KEY }}
+          command_timeout: 15m
+          envs: APP_DIR
+          script: |
+            set -e
+            # rollback.sh resets the tree and retags images over :latest, so a
+            # STAGING_HOST pointed at the wrong droplet does more damage here
+            # than a deploy would.
+            [ "$(hostname)" = "retina-staging" ] || { echo "::error::Refusing to roll back on '$(hostname)': expected retina-staging."; exit 1; }
+            cd ${{ env.APP_DIR }}
+
+            # No marker: the deploy refused in a pre-flight with the stack
+            # untouched, or it had already cleared the marker with the app
+            # healthy on the new build and only the fleet step failed. Neither
+            # is a rollback case; ci.yml's production pair has the reasoning.
+            if [ ! -f .deploy-in-progress ]; then
+              echo "No .deploy-in-progress marker: the deploy either refused before touching the box or failed after the app was already healthy on the new build (the fleet step). Nothing to roll back."
+              exit 0
+            fi
+
+            MARKER=$(cat .deploy-in-progress)
+
+            # Another run's marker: this run touched nothing and cannot tell
+            # a deploy still in progress or an unrecovered outage from a box
+            # already fixed by hand, so stop rather than guess (see ci.yml).
+            case "$MARKER" in
+              "run ${{ github.run_id }} "*) ;;
+              *)
+                echo "::error::${{ env.APP_DIR }}/.deploy-in-progress was left behind by a different run (${MARKER}). Either that run is still deploying this box, in which case leave the marker to it, or an earlier deploy was left mid-flight and never confirmed healthy. Check the Staging runs before touching anything; this run touched nothing."
+                exit 1
+                ;;
+            esac
+
+            echo "Deploy failed after it began mutating the box (${MARKER}). Rolling back..."
+
+            # rollback.sh distinguishes three outcomes and `set -e` would
+            # collapse the last two, so take its status explicitly.
+            set +e
+            bash deploy/rollback.sh
+            rc=$?
+            set -e
+
+            case "$rc" in
+              0)
+                rm -f .deploy-in-progress
+                echo "Rollback complete: staging is back on the previous build."
+                ;;
+              2)
+                # Service restored with the database left ahead of the code.
+                # The box is no longer mid-deploy, so the marker goes; the run
+                # stays red so the report above gets read.
+                rm -f .deploy-in-progress
+                echo "::error::Staging is back up, but a database downgrade is outstanding: see the report above before trusting this rollback."
+                exit 2
+                ;;
+              *)
+                # Marker left in place: the box is still mid-deploy, which is
+                # exactly what the next run must know.
+                echo "::error::Rollback FAILED (exit ${rc}). Staging may still be down: SSH to retina-staging and recover by hand, then delete ${{ env.APP_DIR }}/.deploy-in-progress so the next deploy is not blocked by it."
+                exit "$rc"
+                ;;
+            esac
   smoke-tests:
     name: Staging smoke tests
     runs-on: ubuntu-latest
