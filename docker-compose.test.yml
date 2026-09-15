@@ -93,11 +93,10 @@ services:
       - HOST_DATA=test-data.retina.fm
       - HOST_TESTMAP=test-testmap.retina.fm
       - CSP_CONNECT_SRC=https://test-api.retina.fm https://test-admin.retina.fm wss://*.retina.fm
-    # This droplet was resized 2026-08-14 to 4 cores / 8 GB (from staging's
-    # 2-core size) because the solver could not keep up with this fleet: at
-    # ~0.7 candidates/s and ~2.5 s of CPU per solve, solving alone needs
-    # ~2 cores, which a 1.5-CPU cap on a 2-core box cannot give.  Measurements
-    # here no longer transfer to staging until staging is resized to match.
+    # 4 cores / 8 GB, the same shape as staging and production, because the
+    # solver could not keep up with this fleet on 2: at ~0.7 candidates/s and
+    # ~2.5 s of CPU per solve, solving alone needs ~2 cores, which a 1.5-CPU
+    # cap on a 2-core box cannot give.
     #
     # cpus 3.0 = the main process plus SOLVER_WORKERS=2 solver pool children
     # (services/tasks/solver.py), leaving a core for the fleet and the host.
@@ -129,8 +128,8 @@ services:
       # what staging will do before main does, which only works while the two run
       # the same fleet.
       #
-      # 4x production's frame rate, but 8x its per-core load: production has 4
-      # cores and these droplets have 2, so this is 25 fps/core against prod's 3.1.
+      # 4x production's frame rate and, on the same 4 cores, 4x its per-core
+      # load: 12.5 fps/core against prod's 3.1.
       #
       # Measured here at this size: the frame path copes (41 of 50 fps, nothing
       # dropped, frame queue at zero) while the solver does not. Per-solve cost is

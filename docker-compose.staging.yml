@@ -82,19 +82,17 @@ services:
       # The only host-naming part of the CSP. wss://*.retina.fm already covers
       # both environments, so only the two explicit origins vary.
       - CSP_CONNECT_SRC=https://staging-api.retina.fm https://staging-admin.retina.fm wss://*.retina.fm
-    # Sized to the droplet, which is the point of an overlay. staging has 3915 MB
-    # and NO swap, of which ~1.7 GB is already spoken for (dockerd ~460 MB, the
-    # DigitalOcean agent ~760 MB, journald), leaving ~2.2 GB actually available.
-    # Limits are ceilings rather than reservations so it does not fail at boot; it
-    # means the OOM killer picks the victim under load, and with no swap there is
-    # no slack at all to absorb a spike. The dangerous moment is a deploy:
-    # `docker compose up --build` runs the Vite and dashboard builds on-box while
-    # the previous containers are still up.
-    #
-    # 1600 + the fleet's 400 commits 2000M against ~2.2 GB free. Measured on
-    # retina-test under a much heavier fleet than this one, the app sat at 152 MiB
-    # and the fleet at 25 MiB, so this is an order of magnitude of headroom rather
-    # than a tight fit: memory is not what constrains these boxes, CPU is.
+    # Sized to the droplet, which is the point of an overlay: 4 cores and 7941 MB
+    # with NO swap, under 2 GB of it in use at rest, containers included. Limits are
+    # ceilings rather than reservations so nothing fails at boot, which means the
+    # OOM killer picks the victim under load and no swap absorbs a spike; 1600 +
+    # the fleet's 400 commits 2000M against ~6 GB free, and on retina-test under
+    # a much heavier fleet the app sat at 152 MiB and the fleet at 25 MiB, so
+    # memory is not what constrains this box. A deploy builds the image on-box
+    # beside the running containers, and the build is uncapped, so its cost is
+    # solver CPU share, not memory. The caps below predate the resize from 2
+    # cores and have not been re-measured; docker-compose.test.yml runs the same
+    # shape at cpus 3.0.
     deploy:
       resources:
         limits:
@@ -117,10 +115,9 @@ services:
       # what staging differs FOR — prod's 25 nodes at 2.0s is a demo stream, and a
       # rehearsal that never pushes the pipeline was not catching pipeline problems.
       #
-      # 4x production's frame rate — but read that against the core count before
-      # reading it as "4x the load". Production has 4 cores; this droplet and
-      # retina-test have 2. So per core this is 25 fps against production's 3.1,
-      # which is 8x, and the solver feels the per-core number.
+      # 4x production's frame rate, and production, this droplet and retina-test
+      # all have 4 cores, so per core it is 12.5 fps against production's 3.1,
+      # which is 4x, and the solver feels the per-core number.
       #
       # Measured on retina-test at this size: the box holds the frame rate (41 of
       # 50 fps, no frames dropped) but the solver does not keep up. Per-solve cost
@@ -134,7 +131,7 @@ services:
       #
       # If you want staging to reproduce production's solver behaviour rather than
       # merely survive, the fleet has to come down to production's own 25/2.0 —
-      # which on half the cores is still 2x production's per-core load. Measure on
+      # which on the same core count matches production's per-core load. Measure on
       # retina-test before changing this in either direction.
       #
       # Note the trade either way: staging no longer reproduces production's frame
