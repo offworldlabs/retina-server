@@ -7,6 +7,11 @@
 # Exit code: 0 = all checks passed, 1 = failure
 set -euo pipefail
 
+# Served by tower-finder-service, NOT by this repo. A Cloudflare Origin Rule
+# in the http_request_origin phase routes this hostname to origin port 8443
+# (the tower-finder-edge container); retina-server's nginx listens on 443 and
+# never sees the request. Only the tower contract may be asserted against it.
+# retina-server's own API goes to API_URL.
 BASE_URL="https://staging-towers.retina.fm"
 API_URL="https://staging-api.retina.fm"
 DASH_URL="https://staging-dash.retina.fm"
@@ -212,32 +217,36 @@ check_rate_limit() {
 
 echo "═══════════════════════════════════════════════════"
 echo "  Staging Smoke Tests"
-echo "  frontend: ${BASE_URL}"
+echo "  towers:   ${BASE_URL} (tower-finder-service)"
 echo "  api:      ${API_URL}"
 echo "  dash:     ${DASH_URL}"
 echo "═══════════════════════════════════════════════════"
 
 echo ""
-echo "── Health & API endpoints (staging.retina.fm) ──"
-check_status "GET /api/health"              "${BASE_URL}/api/health"        "200"
-check_status "GET /api/radar/nodes"         "${BASE_URL}/api/radar/nodes"   "200"
-check_status "GET /api/radar/analytics"     "${BASE_URL}/api/radar/analytics" "200"
-check_status "GET /api/test/dashboard"      "${BASE_URL}/api/test/dashboard" "200"
-check_status "GET /api/test/mlat-verification" "${BASE_URL}/api/test/mlat-verification" "200"
-# BASE_URL is HOST_MAIN, which proxies /api/config to tower-finder-service, so
-# this asserts the SERVICE's ranking config is readable through the edge. There
-# is no second copy to compare it against any more: the monolith's tower stack
-# was deleted with the proxy dedup.
-check_status "GET /api/config (service)"    "${BASE_URL}/api/config"        "200"
+echo "── Health & API endpoints (staging-api.retina.fm) ──"
+# On API_URL rather than the towers hostname. These are retina-server's own
+# routes, and the towers name stopped reaching retina-server on 2026-09-14 when
+# the Origin Rule above was created — nine checks here failed against a service
+# that was never meant to answer them, and a red staging smoke skips
+# deploy-production, so every merge sat undeployed until this moved.
+check_status "GET /api/health"              "${API_URL}/api/health"         "200"
+check_status "GET /api/radar/nodes"         "${API_URL}/api/radar/nodes"    "200"
+check_status "GET /api/radar/analytics"     "${API_URL}/api/radar/analytics" "200"
+check_status "GET /api/test/dashboard"      "${API_URL}/api/test/dashboard" "200"
+check_status "GET /api/test/mlat-verification" "${API_URL}/api/test/mlat-verification" "200"
+# Deliberately no /api/config check on this vhost: the api vhost has no
+# /api/config location, so the request falls through `location /` to the app,
+# which no longer implements the route (the monolith's tower stack went with the
+# proxy dedup). A 404 there is by design; the route is asserted on the tower
+# vhosts, where it is served.
 
-echo ""
-echo "── Dedicated API subdomain (staging-api.retina.fm) ──"
-check_status "staging-api /api/health"      "${API_URL}/api/health"         "200"
-# Deliberately no /api/config check here: the api vhost has no /api/config
-# location, so the request falls through `location /` to the app, which no
-# longer implements the route (the monolith's tower stack went with the proxy
-# dedup). A 404 there is by design; the route is asserted on the tower vhosts,
-# where it is served.
+# Nothing else is asserted against BASE_URL here. Every remaining probe of that
+# hostname would be a hard assertion on a service this repo neither builds nor
+# deploys, and a red staging smoke skips deploy-production — so a tower-finder
+# outage would block an unrelated retina-server release. The seam loop below
+# still probes it once, because test_towers_vhost_coverage.py requires every
+# routed vhost to appear there; that is the whole of the coupling, deliberately.
+# /api/config is asserted on DASH_URL, where the proxy doing it is ours.
 
 echo ""
 echo "── Dashboard subdomain (staging-dash.retina.fm) ──"
@@ -251,9 +260,12 @@ echo "── Data explorer subdomain (staging-data.retina.fm) ──"
 check_status_if_dns "staging-data GET /"    "${DATA_URL}/"                  "200"
 
 echo ""
-echo "── Frontend assets ──"
-check_status "GET / (frontend)"             "${BASE_URL}/"                  "200"
-check        "HTML has app root"            "${BASE_URL}/"                  "id=\"root\""
+echo "── Frontend assets (staging-map.retina.fm) ──"
+# MAP_URL, not BASE_URL: both vhosts are rooted at frontend/dist, but only this
+# one is still rendered by retina-server's nginx, so only this one tests that
+# this repo serves its own bundle.
+check_status "GET / (frontend)"             "${MAP_URL}/"                   "200"
+check        "HTML has app root"            "${MAP_URL}/"                   "id=\"root\""
 
 echo ""
 echo "── Shared nginx config (must match production) ──"
@@ -275,14 +287,17 @@ check_header "CSP on dashboard vhost"       "${DASH_URL}/api/health" "content-se
 # vendoring silently stops being load-bearing, and a CDN script would start
 # working locally and in staging while remaining blocked nowhere — assert it.
 check_header_if_dns "CSP on data explorer vhost" "${DATA_URL}/api/health" "content-security-policy"
-check_header "CSP on frontend vhost"        "${BASE_URL}/api/health" "content-security-policy"
+check_header "CSP on frontend vhost"        "${MAP_URL}/api/health" "content-security-policy"
 check_header "HSTS on api subdomain"        "${API_URL}/api/health"  "strict-transport-security"
 # Two zones, two checks. The credential surface carries the tight limit that
 # actually resists brute force; the session reads a page load spends on every
 # visit carry a looser one. Testing only /api/auth/me would leave the
 # credential limit — the one that matters — unasserted.
-check_rate_limit "credential endpoints rate limited" "${BASE_URL}/api/auth/login/google" 10
-check_rate_limit "session endpoints rate limited"    "${BASE_URL}/api/auth/me"            30
+# On API_URL: the limit_req zones live in the auth/session/claim-codes
+# snippets, which the api vhost includes and which no longer sit on any
+# hostname the edge routes past us.
+check_rate_limit "credential endpoints rate limited" "${API_URL}/api/auth/login/google" 10
+check_rate_limit "session endpoints rate limited"    "${API_URL}/api/auth/me"            30
 
 echo ""
 echo "── tower-finder-service seam ──"
@@ -301,7 +316,7 @@ done
 # served by the app. /api/radar/nodes has no counterpart on the service, so a
 # 200 here can only have come from the monolith — the proxy must take the three
 # tower routes and nothing else.
-check_status  "sibling /api/ path stays on the app" "${BASE_URL}/api/radar/nodes"            "200"
+check_status  "sibling /api/ path stays on the app" "${MAP_URL}/api/radar/nodes"             "200"
 
 # The other two deduplicated routes, on a vhost that used to answer them from
 # the monolith. Probed for the seam, not the payload: tower-contract.sh owns the
@@ -349,12 +364,12 @@ echo "── Detection archive (dash /data) ──"
 # hour after a deploy (ARCHIVE_FLUSH_INTERVAL_S), so assert the endpoint answers
 # rather than that it has rows — the volume that makes those rows survive a
 # rebuild is asserted by deploy/check-env-parity.sh instead.
-check_status "GET /api/data/archive"        "${BASE_URL}/api/data/archive?limit=1" "200"
+check_status "GET /api/data/archive"        "${DASH_URL}/api/data/archive?limit=1" "200"
 
 echo ""
 echo "── Synthetic fleet data (wait for fleet to connect) ──"
 # The fleet takes ~30-60s to fully connect; CI waits before calling this script
-check_json_field "Active nodes > 0"         "${BASE_URL}/api/test/dashboard" "['nodes']['active']" "1"
+check_json_field "Active nodes > 0"         "${API_URL}/api/test/dashboard" "['nodes']['active']" "1"
 
 echo ""
 echo "═══════════════════════════════════════════════════"
