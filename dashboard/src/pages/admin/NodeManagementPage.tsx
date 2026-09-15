@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
+import { useFetch } from "../../hooks/usePolling";
 import { formatUptime } from "../../utils/format";
 import { PositionStatusBadge } from "../../components/PositionStatusBadge";
 import {
@@ -27,16 +28,12 @@ export function contactLabel(contact) {
 }
 
 export default function NodeManagementPage() {
-  const [nodes, setNodes] = useState([]);
-  const [analytics, setAnalytics] = useState(null);
-  const [contacts, setContacts] = useState({});
-  const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
   const idsByRef = useNodeIds();
   const navigate = useNavigate();
 
-  useEffect(() => {
+  const { data, loading } = useFetch(async () => {
     // Contacts are caught on their own so a failure there costs the contact
     // cells rather than the node list. Logged before the fallback: an empty
     // object is also what "nobody has reported one" looks like, and the two
@@ -45,24 +42,22 @@ export default function NodeManagementPage() {
       console.error("contacts unavailable", e);
       return {};
     });
-    Promise.all([api.nodes(), api.analytics(), contactsOrNone])
-      .then(([n, a, c]) => {
-        const nodeMap = n.nodes || {};
-        // Keyed on node_ref: the listing is a public feed and carries no
-        // node_id. What needs one joins through useNodeIds below.
-        const nodeList = Object.entries(nodeMap).map(([ref, info]: [string, any]) => ({
-          ...info,
-          node_ref: ref,
-        }));
-        setNodes(nodeList);
-        setAnalytics(a);
-        setContacts(c);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
+    const [n, a, c] = await Promise.all([api.nodes(), api.analytics(), contactsOrNone]);
+    const nodeMap = n.nodes || {};
+    // Keyed on node_ref: the listing is a public feed and carries no
+    // node_id. What needs one joins through useNodeIds below.
+    const nodes = Object.entries(nodeMap).map(([ref, info]: [string, any]) => ({
+      ...info,
+      node_ref: ref,
+    }));
+    return { nodes, analytics: a, contacts: c };
+  });
 
   if (loading) return <div className="empty-state">Loading…</div>;
+
+  const nodes = data?.nodes ?? [];
+  const analytics = data?.analytics;
+  const contacts = data?.contacts ?? {};
 
   const rawSummaries = analytics?.nodes || {};
   // Keyed on node_ref, the same key space `nodes` (built above) uses; summary

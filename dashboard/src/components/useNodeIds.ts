@@ -1,6 +1,5 @@
-import { useEffect, useState } from "react";
-
 import { api } from "../api/client";
+import { useFetch } from "../hooks/usePolling";
 
 /** `{node_ref: node_id}` for the fleet, or `null` until the answer is in.
  *
@@ -19,21 +18,15 @@ import { api } from "../api/client";
  *  no id": the same absence, wanting different words.
  */
 export function useNodeIds(): Record<string, string> | null {
-  const [idsByRef, setIdsByRef] = useState<Record<string, string> | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
+  return useFetch(() =>
     api
       .adminNodeRefs()
-      .then((m) => { if (!cancelled) setIdsByRef(m || {}); })
+      .then((m) => m || {})
       .catch((e) => {
         // Logged before the fallback: an empty map is also what a fleet with no
         // registered node looks like, and the two should not read the same.
         console.error("node ids unavailable", e);
-        if (!cancelled) setIdsByRef({});
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  return idsByRef;
+        return {};
+      }),
+  ).data;
 }

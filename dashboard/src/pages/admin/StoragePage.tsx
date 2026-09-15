@@ -1,46 +1,25 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { api } from "../../api/client";
+import { useFetch } from "../../hooks/usePolling";
 import { formatBytes } from "../../utils/format";
 
 const PAGE_SIZE = 50;
 
 export default function StoragePage() {
-  const [storage, setStorage] = useState(null);
-  const [archives, setArchives] = useState([]);
-  const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const retryTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const fetchStorage = () => {
-    api.adminStorage()
-      .then((s) => {
-        setStorage(s);
-        // If the background scan hasn't completed yet, retry in 10 s.
-        if (s?.status === "initializing") {
-          retryTimer.current = setTimeout(fetchStorage, 10000);
-        }
-      })
-      .catch(console.error);
-  };
-
+  const { data: storage, refresh: rescan } = useFetch(() => api.adminStorage());
+  // If the background scan hasn't completed yet, ask again in 10 s.
   useEffect(() => {
-    fetchStorage();
-    return () => {
-      if (retryTimer.current) clearTimeout(retryTimer.current);
-    };
-  }, []);
+    if (storage?.status !== "initializing") return;
+    const timer = setTimeout(rescan, 10000);
+    return () => clearTimeout(timer);
+  }, [storage, rescan]);
+  // Keyed on the page, so turning it fetches again and shows the busy row
+  // until the new page lands.
+  const { data: archive, pending: loading } = useFetch(() => api.archive(PAGE_SIZE, page * PAGE_SIZE), page);
 
-  useEffect(() => {
-    setLoading(true);
-    api.archive(PAGE_SIZE, page * PAGE_SIZE)
-      .then((data) => {
-        setArchives(data.files || []);
-        setTotal(data.total ?? data.count ?? 0);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, [page]);
+  const archives = archive?.files || [];
+  const total = archive?.total ?? archive?.count ?? 0;
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 

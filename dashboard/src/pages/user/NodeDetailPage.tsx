@@ -1,9 +1,10 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { useFetch } from "../../hooks/usePolling";
 import { formatUptime } from "../../utils/format";
 import { useChartTheme } from "../../utils/chartTheme";
 import { RetnodeLink } from "../../components/RetnodeLink";
@@ -24,48 +25,51 @@ export default function NodeDetailPage() {
   const chart = useChartTheme();
   const { nodeId } = useParams();
   const navigate = useNavigate();
-  const [data, setData] = useState(null);
-  const [nodeInfo, setNodeInfo] = useState(null);
-  const [privacy, setPrivacy] = useState<LocationPrivacyState | null>(null);
-  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    Promise.all([
+  // Keyed on the route parameter, so moving between nodes fetches again.
+  const { data: page, loading, error } = useFetch(async () => {
+    const [analytics, nodeData, mine] = await Promise.all([
       api.nodeAnalytics(nodeId),
       // Both of these fail soft: a private node is absent from /api/radar/nodes
       // and myNodes 401s for a signed-out viewer, but the per-node analytics
       // route answers its owner, so the page must render on that alone.
       api.nodes().catch(() => ({ nodes: {} })),
       api.myNodes().catch(() => []),
-    ])
-      .then(([analytics, nodeData, mine]) => {
-        setData(analytics);
-        setNodeInfo((nodeData?.nodes || {})[nodeId] || null);
-        // The route parameter is a public identity — a node_ref, or a synthetic
-        // node's own id, which is what it publishes as. The owner's list is the
-        // one place both identifiers appear together, so it is matched on the
-        // ref first; node_id covers the synthetic case, where the two are equal.
-        const owned = (Array.isArray(mine) ? mine : []).find(
-          (n) => (n.node_ref && n.node_ref === nodeId) || n.node_id === nodeId,
-        );
-        // Ownership, not presence in the node list, is what earns the privacy
-        // card — the node the card matters most for is the one missing there.
-        setPrivacy(
-          owned
-            ? {
-                node_id: owned.node_id,
-                location_private: !!owned.location_private,
-                location_privacy_source: owned.location_privacy_source || "default",
-              }
-            : null,
-        );
-      })
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-  }, [nodeId]);
+    ]);
+    // The route parameter is a public identity — a node_ref, or a synthetic
+    // node's own id, which is what it publishes as. The owner's list is the
+    // one place both identifiers appear together, so it is matched on the
+    // ref first; node_id covers the synthetic case, where the two are equal.
+    const owned = (Array.isArray(mine) ? mine : []).find(
+      (n) => (n.node_ref && n.node_ref === nodeId) || n.node_id === nodeId,
+    );
+    return {
+      analytics,
+      nodeInfo: (nodeData?.nodes || {})[nodeId] || null,
+      // Ownership, not presence in the node list, is what earns the privacy
+      // card — the node the card matters most for is the one missing there.
+      privacy: owned
+        ? {
+            node_id: owned.node_id,
+            location_private: !!owned.location_private,
+            location_privacy_source: owned.location_privacy_source || "default",
+          }
+        : null,
+    };
+  }, nodeId ?? "");
+  // What the privacy control last saved. It outranks the fetched answer for
+  // the node it was saved on, and lapses when the route moves to another.
+  const [applied, setApplied] = useState<{ nodeId: string; privacy: LocationPrivacyState } | null>(null);
 
   if (loading) return <div className="empty-state">Loading…</div>;
+  // A failed fetch is this node not being found, not the previous node's
+  // details standing in for it.
+  const data = error ? null : page?.analytics;
   if (!data) return <div className="empty-state">Node not found</div>;
+
+  const nodeInfo = page?.nodeInfo ?? null;
+  const privacy: LocationPrivacyState | null =
+    applied?.nodeId === nodeId ? applied.privacy : (page?.privacy ?? null);
 
   // What this node publishes as, and what the URL addresses it by: the public
   // analytics payload is keyed on the ref and carries no node_id of its own.
@@ -181,7 +185,7 @@ export default function NodeDetailPage() {
               uncertaintyKm={data.detection_area?.rx?.location_uncertainty_km}
               onSave={(next) => api.myNodeLocationPrivacy(privacy.node_id, next)}
               onReset={() => api.clearMyNodeLocationPrivacy(privacy.node_id)}
-              onApplied={setPrivacy}
+              onApplied={(next) => setApplied({ nodeId, privacy: next })}
             />
           </div>
         </div>

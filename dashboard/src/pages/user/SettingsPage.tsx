@@ -1,17 +1,12 @@
-import { useState, useEffect } from "react";
 import { useAuth } from "../../context/AuthContext";
 import { api } from "../../api/client";
+import { useFetch } from "../../hooks/usePolling";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
 
 export default function SettingsPage() {
   const { user } = useAuth();
-  const [nodes, setNodes] = useState([]);
-
-  useEffect(() => {
-    api.myNodes()
-      .then((n) => setNodes(Array.isArray(n) ? n : []))
-      .catch(console.error);
-  }, []);
+  const { data } = useFetch(() => api.myNodes().then((n) => (Array.isArray(n) ? n : [])));
+  const nodes = data ?? [];
 
   return (
     <>
