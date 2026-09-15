@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 import { useFetch, usePolling } from "../../hooks/usePolling";
 
 const PAGE_SIZE = 25;
@@ -31,20 +32,13 @@ export default function DetectionsPage() {
       </div>
 
       <div className="stats-grid">
-        <div className="stat-card accent">
-          <div className="stat-label">Aircraft Tracked</div>
-          <div className="stat-value">{filtered.length}</div>
-        </div>
-        <div className="stat-card success">
-          <div className="stat-label">With ADS-B Match</div>
-          <div className="stat-value">
-            {filtered.filter((a) => a.flight || a.hex).length}
-          </div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Total Network</div>
-          <div className="stat-value">{aircraft.length}</div>
-        </div>
+        <StatCard label="Aircraft Tracked" value={filtered.length} tone="accent" />
+        <StatCard
+          label="With ADS-B Match"
+          value={filtered.filter((a) => a.flight || a.hex).length}
+          tone="success"
+        />
+        <StatCard label="Total Network" value={aircraft.length} />
       </div>
 
       <div className="card">

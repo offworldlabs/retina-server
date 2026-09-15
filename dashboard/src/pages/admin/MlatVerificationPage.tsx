@@ -1,23 +1,9 @@
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { fmt } from "../../utils/format";
 
 const REFRESH_MS = 5000;
-
-function StatCard({ label, value, unit, hint }: {
-  label: string; value: string; unit?: string; hint?: string;
-}) {
-  return (
-    <div className="stat-card">
-      <div className="stat-label">{label}</div>
-      <div className="stat-value">
-        {value}
-        {unit && <span style={{ fontSize: "0.6em", color: "var(--text-muted)", marginLeft: 4 }}>{unit}</span>}
-      </div>
-      {hint && <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>{hint}</div>}
-    </div>
-  );
-}
 
 function ErrorRow({ label, stats, unit, decimals = 2 }: {
   label: string;
@@ -102,7 +88,7 @@ export default function MlatVerificationPage() {
       <div className="stats-grid" style={{ marginBottom: 16 }}>
         <StatCard label="Solves"          value={(v.n_solves ?? 0).toLocaleString()} />
         <StatCard label="Matched to truth" value={(v.n_matched ?? 0).toLocaleString()}
-                  hint={matchThresh ? `≤ ${matchThresh} km from ground truth` : undefined} />
+                  sub={matchThresh ? `≤ ${matchThresh} km from ground truth` : undefined} />
         <StatCard label="Match rate"      value={fmt(v.match_rate_pct, 1)} unit="%" />
       </div>
 

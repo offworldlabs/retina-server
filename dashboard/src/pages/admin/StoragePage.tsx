@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
 import { formatBytes } from "../../utils/format";
 
@@ -31,22 +32,25 @@ export default function StoragePage() {
       </div>
 
       <div className="stats-grid">
-        <div className="stat-card accent">
-          <div className="stat-label">Archive Files</div>
-          <div className="stat-value">{storage?.archive_files?.toLocaleString() ?? "—"}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Archive Size</div>
-          <div className="stat-value">{storage?.archive_mb != null ? storage.archive_mb.toFixed(1) + " MB" : "—"}</div>
-        </div>
-        <div className="stat-card success">
-          <div className="stat-label">Disk Free</div>
-          <div className="stat-value">{storage?.disk?.free_gb != null ? storage.disk.free_gb.toFixed(1) + " GB" : "—"}</div>
-        </div>
-        <div className="stat-card warning">
-          <div className="stat-label">Disk Used</div>
-          <div className="stat-value">{storage?.disk?.used_pct != null ? storage.disk.used_pct.toFixed(1) + "%" : "—"}</div>
-        </div>
+        <StatCard
+          label="Archive Files"
+          value={storage?.archive_files?.toLocaleString() ?? "—"}
+          tone="accent"
+        />
+        <StatCard
+          label="Archive Size"
+          value={storage?.archive_mb != null ? storage.archive_mb.toFixed(1) + " MB" : "—"}
+        />
+        <StatCard
+          label="Disk Free"
+          value={storage?.disk?.free_gb != null ? storage.disk.free_gb.toFixed(1) + " GB" : "—"}
+          tone="success"
+        />
+        <StatCard
+          label="Disk Used"
+          value={storage?.disk?.used_pct != null ? storage.disk.used_pct.toFixed(1) + "%" : "—"}
+          tone="warning"
+        />
       </div>
 
       <div className="grid-2">

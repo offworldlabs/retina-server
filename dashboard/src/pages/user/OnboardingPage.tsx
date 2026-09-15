@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
 import type { LocationPrivacySource } from "../../types";
 
@@ -98,20 +99,12 @@ export default function OnboardingPage() {
       )}
 
       <div className="stats-grid">
-        <div className="stat-card accent">
-          <div className="stat-label">Owned Nodes</div>
-          <div className="stat-value">{nodes.length}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Online Now</div>
-          <div className="stat-value">
-            {nodes.filter((n) => n.status && n.status !== "disconnected" && n.status !== "never_connected").length}
-          </div>
-        </div>
-        <div className="stat-card warning">
-          <div className="stat-label">Active Claim Codes</div>
-          <div className="stat-value">{activeCodes.length}</div>
-        </div>
+        <StatCard label="Owned Nodes" value={nodes.length} tone="accent" />
+        <StatCard
+          label="Online Now"
+          value={nodes.filter((n) => n.status && n.status !== "disconnected" && n.status !== "never_connected").length}
+        />
+        <StatCard label="Active Claim Codes" value={activeCodes.length} tone="warning" />
       </div>
 
       <div className="card">

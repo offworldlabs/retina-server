@@ -2,6 +2,7 @@ import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme } from "../../utils/chartTheme";
 import { useResolvedTheme, type Theme } from "../../context/ThemeContext";
@@ -112,27 +113,29 @@ export default function AnomalyPage() {
 
       {/* ── Stats Grid ──────────────────────────────────────── */}
       <div className="stats-grid">
-        <div className="stat-card error">
-          <div className="stat-label">Active Anomalies</div>
-          <div className="stat-value">{summary?.active_count ?? 0}</div>
-          <div className="stat-sub">currently flagged</div>
-        </div>
-        <div className="stat-card accent">
-          <div className="stat-label">Total Events</div>
-          <div className="stat-value">{summary?.total_events ?? 0}</div>
-          <div className="stat-sub">in anomaly log</div>
-        </div>
-        <div className="stat-card warning">
-          <div className="stat-label">Unique Aircraft</div>
-          <div className="stat-value">{summary?.unique_hexes ?? 0}</div>
-          <div className="stat-sub">distinct hex codes</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Most Common Type</div>
-          <div className="stat-value" style={{ fontSize: 18 }}>
-            {summary?.most_common_type?.replace(/_/g, " ") ?? "—"}
-          </div>
-        </div>
+        <StatCard
+          label="Active Anomalies"
+          value={summary?.active_count ?? 0}
+          tone="error"
+          sub="currently flagged"
+        />
+        <StatCard
+          label="Total Events"
+          value={summary?.total_events ?? 0}
+          tone="accent"
+          sub="in anomaly log"
+        />
+        <StatCard
+          label="Unique Aircraft"
+          value={summary?.unique_hexes ?? 0}
+          tone="warning"
+          sub="distinct hex codes"
+        />
+        <StatCard
+          label="Most Common Type"
+          value={summary?.most_common_type?.replace(/_/g, " ") ?? "—"}
+          size="small"
+        />
       </div>
 
       {/* ── Charts Row ──────────────────────────────────────── */}

@@ -3,6 +3,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme } from "../../utils/chartTheme";
 
@@ -56,22 +57,10 @@ export default function ContributionPage() {
       </div>
 
       <div className="stats-grid">
-        <div className="stat-card accent">
-          <div className="stat-label">Network Detections</div>
-          <div className="stat-value">{totalDetections.toLocaleString()}</div>
-        </div>
-        <div className="stat-card success">
-          <div className="stat-label">Avg Trust Score</div>
-          <div className="stat-value">{(avgTrust * 100).toFixed(1)}%</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Active Nodes</div>
-          <div className="stat-value">{summaries.length}</div>
-        </div>
-        <div className="stat-card warning">
-          <div className="stat-label">Correlation Pairs</div>
-          <div className="stat-value">{overlaps.length}</div>
-        </div>
+        <StatCard label="Network Detections" value={totalDetections.toLocaleString()} tone="accent" />
+        <StatCard label="Avg Trust Score" value={<>{(avgTrust * 100).toFixed(1)}%</>} tone="success" />
+        <StatCard label="Active Nodes" value={summaries.length} />
+        <StatCard label="Correlation Pairs" value={overlaps.length} tone="warning" />
       </div>
 
       {chartData.length > 0 && (

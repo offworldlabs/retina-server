@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
 import { formatUptime } from "../../utils/format";
 import { PositionStatusBadge } from "../../components/PositionStatusBadge";
@@ -86,22 +87,17 @@ export default function NodeManagementPage() {
       </div>
 
       <div className="stats-grid">
-        <div className="stat-card accent">
-          <div className="stat-label">Total Nodes</div>
-          <div className="stat-value">{nodes.length}</div>
-        </div>
-        <div className="stat-card success">
-          <div className="stat-label">Online</div>
-          <div className="stat-value">
-            {nodes.filter((n) => n.status !== "disconnected" && n.status != null).length}
-          </div>
-        </div>
-        <div className="stat-card error">
-          <div className="stat-label">Offline</div>
-          <div className="stat-value">
-            {nodes.filter((n) => n.status === "disconnected" || n.status == null).length}
-          </div>
-        </div>
+        <StatCard label="Total Nodes" value={nodes.length} tone="accent" />
+        <StatCard
+          label="Online"
+          value={nodes.filter((n) => n.status !== "disconnected" && n.status != null).length}
+          tone="success"
+        />
+        <StatCard
+          label="Offline"
+          value={nodes.filter((n) => n.status === "disconnected" || n.status == null).length}
+          tone="error"
+        />
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>

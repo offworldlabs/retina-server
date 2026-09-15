@@ -4,6 +4,7 @@ import {
   LineChart, Line,
 } from "recharts";
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme } from "../../utils/chartTheme";
 
@@ -88,22 +89,14 @@ export default function RFEnvironmentPage() {
       </div>
 
       <div className="stats-grid">
-        <div className="stat-card accent">
-          <div className="stat-label">Average SNR</div>
-          <div className="stat-value">{(metrics.avg_snr || 0).toFixed(1)} dB</div>
-        </div>
-        <div className="stat-card success">
-          <div className="stat-label">Frequency</div>
-          <div className="stat-value">{freq ? `${(freq / 1e6).toFixed(1)} MHz` : "—"}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Total Frames</div>
-          <div className="stat-value">{(metrics.total_frames || 0).toLocaleString()}</div>
-        </div>
-        <div className="stat-card warning">
-          <div className="stat-label">Detections</div>
-          <div className="stat-value">{(metrics.total_detections || 0).toLocaleString()}</div>
-        </div>
+        <StatCard label="Average SNR" value={<>{(metrics.avg_snr || 0).toFixed(1)} dB</>} tone="accent" />
+        <StatCard label="Frequency" value={freq ? `${(freq / 1e6).toFixed(1)} MHz` : "—"} tone="success" />
+        <StatCard label="Total Frames" value={(metrics.total_frames || 0).toLocaleString()} />
+        <StatCard
+          label="Detections"
+          value={(metrics.total_detections || 0).toLocaleString()}
+          tone="warning"
+        />
       </div>
 
       <div className="grid-2">

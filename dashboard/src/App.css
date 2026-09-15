@@ -466,6 +466,17 @@ a:hover {
   margin-top: 4px;
 }
 
+/* A reading that is words rather than a number. */
+.stat-card .stat-value.small {
+  font-size: 18px;
+}
+
+.stat-card .stat-unit {
+  font-size: 0.6em;
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+
 .stat-card.accent .stat-value {
   color: var(--accent);
 }

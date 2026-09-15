@@ -1,4 +1,5 @@
 import { api } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 
 export default function AlertsPage() {
@@ -22,18 +23,9 @@ export default function AlertsPage() {
       </div>
 
       <div className="stats-grid">
-        <div className="stat-card accent">
-          <div className="stat-label">Total Alerts</div>
-          <div className="stat-value">{alerts.length}</div>
-        </div>
-        <div className="stat-card warning">
-          <div className="stat-label">Warnings</div>
-          <div className="stat-value">{warnings.length}</div>
-        </div>
-        <div className="stat-card error">
-          <div className="stat-label">Errors</div>
-          <div className="stat-value">{errors.length}</div>
-        </div>
+        <StatCard label="Total Alerts" value={alerts.length} tone="accent" />
+        <StatCard label="Warnings" value={warnings.length} tone="warning" />
+        <StatCard label="Errors" value={errors.length} tone="error" />
       </div>
 
       <div className="card">

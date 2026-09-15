@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api, downloadUrl } from "../../api/client";
+import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
 import { formatBytes } from "../../utils/format";
 
@@ -23,14 +24,8 @@ export default function DataExplorerPage() {
       </div>
 
       <div className="stats-grid">
-        <div className="stat-card accent">
-          <div className="stat-label">Total Archive Files</div>
-          <div className="stat-value">{total.toLocaleString()}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Showing Page</div>
-          <div className="stat-value">{page + 1} / {totalPages}</div>
-        </div>
+        <StatCard label="Total Archive Files" value={total.toLocaleString()} tone="accent" />
+        <StatCard label="Showing Page" value={<>{page + 1} / {totalPages}</>} />
       </div>
 
       <div className="card">
