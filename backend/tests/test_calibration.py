@@ -24,7 +24,7 @@ os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
 
 from config.constants import CAL_FIX_DETECTION_SKEW_S, CAL_MAX_ADSB_AGE_S  # noqa: E402
 from core import state  # noqa: E402
-from services.calibration import record_adsb_calibration  # noqa: E402
+from services.calibration import record_adsb_calibration, record_claim_calibration  # noqa: E402
 
 _CFG = dict(rx_lat=34.85, rx_lon=-82.40, tx_lat=34.90, tx_lon=-82.30, max_range_km=50, max_bistatic_range_km=60)
 
@@ -136,6 +136,52 @@ class TestFixDetectionSkewGate:
         record_adsb_calibration(["cal-a"], 34.9, -82.35, age_s=1.0, fix_ts=fix_ts, detection_ts=detection_ts)
         assert len(captured) == 1
         assert captured[0][3] == detection_ts
+
+
+class TestClaimLaneRecorder:
+    """record_claim_calibration — the claim lane's entry point (see the module
+    docstring's fourth rule).  It shares the age rule and deliberately does NOT
+    share the skew rule."""
+
+    def test_a_fresh_claim_records_one_point(self, nodes):
+        assert record_claim_calibration("cal-a", 34.9, -82.35, fix_age_s=1.0, detection_ts=_T0) is True
+        assert _points("cal-a") == 1
+        assert _points("cal-b") == 0
+
+    def test_the_age_rule_still_applies(self, nodes):
+        assert record_claim_calibration("cal-a", 34.9, -82.35, fix_age_s=CAL_MAX_ADSB_AGE_S, detection_ts=_T0) is True
+        assert (
+            record_claim_calibration("cal-a", 34.9, -82.35, fix_age_s=CAL_MAX_ADSB_AGE_S + 0.1, detection_ts=_T0)
+            is False
+        )
+        assert _points("cal-a") == 1
+
+    def test_there_is_no_skew_rule(self, nodes):
+        """The caller dead-reckons the fix to the frame instant, so the fix
+        and the detection it describes are the same instant by construction —
+        there is no skew left for CAL_FIX_DETECTION_SKEW_S to bound.  A
+        detection_ts arbitrarily far from any fix timestamp must still record,
+        or the claim lane would silently inherit a rule that no longer means
+        anything."""
+        far = _T0 + 10 * CAL_FIX_DETECTION_SKEW_S + 1000.0
+        assert record_claim_calibration("cal-a", 34.9, -82.35, fix_age_s=1.0, detection_ts=far) is True
+        assert _points("cal-a") == 1
+
+    def test_an_unusable_position_or_node_records_nothing(self, nodes):
+        assert record_claim_calibration("cal-a", None, -82.35, fix_age_s=1.0, detection_ts=_T0) is False
+        assert record_claim_calibration("cal-a", 0, 0, fix_age_s=1.0, detection_ts=_T0) is False
+        assert record_claim_calibration("", 34.9, -82.35, fix_age_s=1.0, detection_ts=_T0) is False
+        assert _points("cal-a") == 0
+
+    def test_the_point_is_stamped_with_detection_ts(self, nodes, monkeypatch):
+        captured = []
+        monkeypatch.setattr(
+            state.node_analytics,
+            "record_calibration_point",
+            lambda node_id, lat, lon, ts=None: captured.append(ts),
+        )
+        record_claim_calibration("cal-a", 34.9, -82.35, fix_age_s=1.0, detection_ts=_T0)
+        assert captured == [_T0]
 
 
 class TestBothCallSitesUseIt:

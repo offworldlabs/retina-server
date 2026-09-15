@@ -35,6 +35,23 @@ because of exactly this.  ``CAL_FIX_DETECTION_SKEW_S`` closes it by binding
 the fix directly to the detection, not to the wall clock: a calibration point
 is only ever recorded from a fix taken within that window of the detection it
 is attributed to.
+
+A FOURTH rule decides which call site may record at all.  Under
+``KNOWN_LANE_MODE != "off"`` the CLAIM lane
+(``services/known_claiming.py``) is the only calibration source, and the
+emit-loop path above is silenced.  Two reasons, one per mode.  In *binding*
+mode claiming removes every detection it binds from the frame before the
+tracker sees it, so ``track.last_detection_adsb_hex`` is only ever set by the
+tagged detections claiming did NOT take — adverse selection, the worst binds,
+and for a synthetic node (whose detections are all claimed) nothing at all:
+measured on test 2026-09-13, every synthetic node's newest calibration point
+was dated 2026-08-25, the day KNOWN_LANE_MODE defaulted to binding, and the
+points real nodes still trickled in were 5–41% out of their declared wedge.
+In *shadow* mode nothing is stripped, so both paths would see the same
+detection and record the same fix twice — one event, two positives, and the
+bin-count gates that decide when a bearing opens would be reading a doubled
+denominator.  Under mode ``off`` the claim lane does not run and the emit-loop
+path is unchanged.
 """
 
 import logging
@@ -85,3 +102,48 @@ def record_adsb_calibration(
         state.node_analytics.record_calibration_point(nid, lat, lon, ts=detection_ts)
         recorded += 1
     return recorded
+
+
+def record_claim_calibration(
+    node_id: str,
+    lat: float | None,
+    lon: float | None,
+    *,
+    fix_age_s: float,
+    detection_ts: float,
+) -> bool:
+    """Record one CLAIM-lane position as a calibration point for one node.
+
+    The claim lane's counterpart of record_adsb_calibration, and the only
+    calibration source while the lane runs — see the module docstring's fourth
+    rule.  The caller (services/known_claiming.py) applies the five rules that
+    decide whether a claim is clean enough to characterize coverage; this
+    function holds the one rule both call sites must agree on.
+
+    ``lat``/``lon`` are the claim's transponder fix DEAD-RECKONED to the frame
+    instant, not the reported position: for a path-2 claim the assignment
+    already computed that offset to predict the observation it gated on, so
+    recording the reported fix instead would record a position the claim
+    itself did not use.
+
+    The age rule applies, for the same reason it applies to the emit path: at
+    250 m/s a 10 s fix is 2.5 km stale against a 5-degree, 72-bin polar grid.
+    The fix-vs-detection SKEW rule does not, and its absence is not an
+    omission: dead-reckoning the fix to the frame instant makes the skew zero
+    by construction — the position recorded is where the fix says the aircraft
+    was at the very instant of the detection being attributed to it, which is
+    exactly what CAL_FIX_DETECTION_SKEW_S exists to approximate.
+
+    ``detection_ts`` is stamped on the point (server wall clock at claim time,
+    the same convention as track.last_detection_wall_ts), so the bin's
+    positive-timestamp history describes when the node saw the target.
+
+    Returns whether a point was recorded, so a caller can count rather than
+    assume.
+    """
+    if not node_id or not valid_latlon(lat, lon):
+        return False
+    if fix_age_s > CAL_MAX_ADSB_AGE_S:
+        return False
+    state.node_analytics.record_calibration_point(node_id, lat, lon, ts=detection_ts)
+    return True
