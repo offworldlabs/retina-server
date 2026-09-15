@@ -169,6 +169,28 @@ check_header() {
     fi
 }
 
+# As check_header, but the header must also carry the given value.
+check_header_value() {
+    local name="$1" url="$2" header="$3" value="$4"
+    printf "  %-40s " "$name"
+    HEADERS=$($CURL -o /dev/null -D - "$url" 2>/dev/null) || { echo "FAIL (connection error)"; FAIL=$((FAIL+1)); return; }
+
+    if echo "$HEADERS" | tr 'A-Z' 'a-z' | grep "^${header}:" | grep -qF "$value"; then
+        echo "OK"
+        PASS=$((PASS+1))
+    else
+        echo "FAIL (${header} does not say ${value})"
+        FAIL=$((FAIL+1))
+    fi
+}
+
+check_header_value_if_dns() {
+    local name="$1" url="$2" header="$3" value="$4" host
+    host="${url#https://}"; host="${host%%/*}"
+    if handle_unresolvable "$host" "$name"; then return; fi
+    check_header_value "$name" "$url" "$header" "$value"
+}
+
 check_rate_limit() {
     local name="$1" url="$2" tries="$3"
     printf "  %-40s " "$name"
@@ -289,6 +311,27 @@ check_header "CSP on dashboard vhost"       "${DASH_URL}/api/health" "content-se
 check_header_if_dns "CSP on data explorer vhost" "${DATA_URL}/api/health" "content-security-policy"
 check_header "CSP on frontend vhost"        "${MAP_URL}/api/health" "content-security-policy"
 check_header "HSTS on api subdomain"        "${API_URL}/api/health"  "strict-transport-security"
+# Edge caching follows what nginx says, and Cloudflare keeps a `public,
+# immutable` response for the whole `expires` window, so that policy is safe
+# only on a name that carries a content hash (Vite's /assets/). A file whose
+# name survives a deploy must be revalidated instead, or the edge serves last
+# week's copy under the new index.html, which every other check here still
+# reads as a healthy 200.
+#
+# Probed with a never-seen query string: the header under test is nginx's, and
+# a copy the edge already holds answers with the headers it was stored with.
+# The query string is part of the cache key, so a fresh one is a guaranteed
+# miss, and nginx matches its locations on the path alone.
+BUST="smoke=$(date +%s)$RANDOM"
+check_header_value "dash theme-boot.js revalidates"     "${DASH_URL}/theme-boot.js?${BUST}" "cache-control" "no-cache"
+check_header_value_if_dns "data app.css revalidates"    "${DATA_URL}/app.css?${BUST}"       "cache-control" "no-cache"
+MAP_ASSET=$($CURL "${MAP_URL}/" 2>/dev/null | grep -o '/assets/index-[^"]*\.js' | head -n1 || true)
+if [ -n "$MAP_ASSET" ]; then
+    check_header_value "hashed /assets/ file is immutable" "${MAP_URL}${MAP_ASSET}?${BUST}" "cache-control" "immutable"
+else
+    printf "  %-40s FAIL (no /assets/index-*.js referenced by the page)\n" "hashed /assets/ file is immutable"
+    FAIL=$((FAIL+1))
+fi
 # Two zones, two checks. The credential surface carries the tight limit that
 # actually resists brute force; the session reads a page load spends on every
 # visit carry a looser one. Testing only /api/auth/me would leave the
