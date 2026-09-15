@@ -290,7 +290,7 @@ evidence independent of both, and only from *detections*:
   active FOV gate it once formed a ghost → positive → wider-gate feedback
   loop.
 
-**What is published as the detection area is evidence only.** Under
+**What is published as a REAL node's detection area is evidence only.** Under
 `FOV_MODE=off` — the default, and what production and test run —
 `empirical_coverage.polygon` in `/api/radar/analytics` is built by
 `EmpiricalCoverageState.to_polygon(evidence_only=True)`: a bin is drawn only
@@ -305,6 +305,32 @@ published as a 120° pie slice). The theoretical beam is never published as a
 detection area, and the map draws nothing for a node with no polygon rather
 than a sector nobody measured. Under `FOV_MODE=shadow|active` the published
 polygon is the learned wedge instead, which is itself evidence-derived.
+
+**A SYNTHETIC node publishes its declared wedge instead.** The simulator emits
+a detection only for an aircraft inside the node's declared cone
+(`retina_simulation/world.py::_aircraft_in_detection_cone`: bearing within
+`beam_azimuth_deg ± beam_width_deg/2`, range within `max_bistatic_range_km` on
+the differential when declared, else within `max_range_km` on the RX
+distance), so for a simulated node the cone *is* the detection area by
+definition — and the evidence is the unreliable half, because the calibration
+points come from ADS-B hexes bound to tracks and roughly a third of those
+binds are to the wrong aircraft. Measured on test 2026-09-13,
+`synth-GVL-SCAT-0032` (42° beam) held 3,037 calibration points of which 47 %
+lay outside its wedge (34 % ignoring the two edge bins), 55 out-of-wedge bins
+had opened, and the published polygon covered 71 of 72 bearings: a 42° beam
+drawn as a disc. So `services/node_registration.py::register_node_blocking`
+passes `declared_geometry_is_truth=is_synthetic_node(node_id)` to
+`NodeAnalyticsManager.register_node`, and those nodes publish
+`EmpiricalCoverageState.declared_wedge_polygon()` — the prior azimuth and
+width at `_reach_at` on each bearing, with no clamp, no bins and no
+minimum-points gate, so it is served from the moment the node registers.
+Real nodes never take this path: their declared aim is unsurveyed
+configuration, which is exactly what the paragraph above exists to keep off
+the map. Every summary names its rule in `empirical_coverage.polygon_source`
+(`declared` / `evidence` / `learned`), and the map quotes a declared beam only
+when it reads `declared` (`frontend/src/components/map/nodeSites.ts::coverageLine`).
+The fuzz rewrite is unchanged: `public_location.translate_polygon` shifts a
+declared wedge rigidly like any other polygon.
 
 **Every public node payload carries a `node_ref`.** `/api/radar/analytics`
 (both variants), `/api/radar/analytics/{node_id}` and `/api/radar/nodes` each

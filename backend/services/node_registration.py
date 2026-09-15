@@ -32,9 +32,23 @@ def register_node_blocking(node_id: str, config: dict) -> None:
     unsurveyed receiver at sea level while the pipeline and the solver put the
     same node at 900 ft. Neither registry publishes an altitude, so resolving
     here cannot leak a working figure into a payload.
+
+    Also where a node's declared geometry is judged trustworthy. A synthetic
+    node's declared cone is exactly what the simulator enforces before it emits
+    a detection, so the analytics library publishes that cone as the node's
+    detection area rather than the accumulated evidence (see
+    NodeAnalyticsManager.get_node_summary). A real receiver's declared aim was
+    never surveyed, so it keeps the evidence-only polygon.
     """
+    # Function-local: tcp_handler imports this module at import time.
+    from services.tcp_handler import is_synthetic_node
+
     config = resolve_altitudes(canonical_config(config))
-    state.node_analytics.register_node(node_id, config)
+    state.node_analytics.register_node(
+        node_id,
+        config,
+        declared_geometry_is_truth=is_synthetic_node(node_id),
+    )
     state.node_associator.register_node(node_id, config)
 
 

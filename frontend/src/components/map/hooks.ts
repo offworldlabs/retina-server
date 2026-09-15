@@ -398,6 +398,10 @@ export function useNodes() {
               max_bistatic_range_km: da.max_bistatic_range_km ?? null,
               empirical_polygon: ec?.polygon ?? null,
               empirical_n_points: ec?.n_points ?? 0,
+              // Absent on a payload from a server older than the declared
+              // wedge: evidence-only is what every node published then, and
+              // is the conservative reading either way.
+              empirical_polygon_source: ec?.polygon_source ?? "evidence",
               is_synthetic: isSyntheticNode(info as { is_synthetic?: boolean }, ref),
             });
           }
