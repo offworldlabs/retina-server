@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import { api } from "../../api/client";
 import { useFetch } from "../../hooks/usePolling";
@@ -59,7 +60,7 @@ export default function SettingsPage() {
           <div className="card-body">
             {nodes.length === 0 ? (
               <div className="empty-state">
-                <p>You don&rsquo;t own any nodes yet. Visit <a href="/onboarding">My Nodes</a> to generate a claim code.</p>
+                <p>You don&rsquo;t own any nodes yet. Visit <Link to="/onboarding">My Nodes</Link> to generate a claim code.</p>
               </div>
             ) : (
               <table>

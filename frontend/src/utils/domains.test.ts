@@ -13,7 +13,10 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("feed selection by surface", () => {
   it("the real-radar surfaces show real nodes only", async () => {
-    for (const host of ["map.retina.fm", "test-map.retina.fm"]) {
+    for (const host of [
+      "map.retina.fm", "test-map.retina.fm",
+      "app.retina.fm", "test-app.retina.fm",
+    ]) {
       const m = await loadFor(host);
       expect(m.usesRealOnlyFeed, host).toBe(true);
       expect(m.defaultsGroundTruthOff, host).toBe(true);
@@ -26,7 +29,9 @@ describe("feed selection by surface", () => {
   // block, and the catch-all now 421s it. isMapDomain still matches the name,
   // which costs nothing and keeps the pattern readable.
   it("the public demo shows synthetic nodes only", async () => {
-    for (const host of ["testmap.retina.fm", "staging-map.retina.fm"]) {
+    for (const host of [
+      "testmap.retina.fm", "staging-map.retina.fm", "staging-app.retina.fm",
+    ]) {
       const m = await loadFor(host);
       expect(m.usesRealOnlyFeed, host).toBe(false);
       expect(m.hidesRealNodes, host).toBe(true);
@@ -41,7 +46,7 @@ describe("feed selection by surface", () => {
   });
 
   it("the laptop shows everything", async () => {
-    for (const host of ["map.localhost", "testmap.localhost"]) {
+    for (const host of ["map.localhost", "testmap.localhost", "app.localhost"]) {
       const m = await loadFor(host);
       expect(m.usesRealOnlyFeed, host).toBe(false);
       expect(m.hidesRealNodes, host).toBe(false);
@@ -52,6 +57,7 @@ describe("feed selection by surface", () => {
     for (const host of [
       "map.retina.fm", "testmap.retina.fm", "staging-map.retina.fm",
       "test-map.retina.fm", "test-testmap.retina.fm",
+      "app.retina.fm", "staging-app.retina.fm", "test-app.retina.fm",
       "map.localhost",
     ]) {
       const m = await loadFor(host);

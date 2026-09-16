@@ -40,6 +40,10 @@ const HOSTS = {
     dash:      "https://staging-dash.retina.fm",
     // Same bundle as dash; the hostname is what selects the admin route table.
     admin:     "https://staging-admin.retina.fm",
+    // The consolidated surface: the map at /, the dashboard under /dash/, the
+    // data explorer under /data/. Staging is the synthetic environment, so its
+    // map here shows the same fleet as staging-map above.
+    app:       "https://staging-app.retina.fm",
   },
   prod: {
     api:       "https://api.retina.fm",
@@ -50,6 +54,11 @@ const HOSTS = {
     // E2E rolls production back, and the surface selection this would assert is
     // client-side, so staging exercises the identical bundle at no such cost.
     admin:     null,
+    // Null for that same reason. What a browser would add over the production
+    // smoke tests is that the mounted bundles execute, and those already assert
+    // it directly: check_page_asset follows each page's own script URL and
+    // requires JavaScript back (deploy/page-asset.sh).
+    app:       null,
   },
   local: {
     api:       "http://localhost:8000",
@@ -61,6 +70,9 @@ const HOSTS = {
     // is a bare origin that call sites append paths to, and `?mode=admin` is a
     // query rather than an origin, so it cannot live in this table.
     admin:     null,
+    // Null because the mounts are nginx's, not Vite's: each dev server serves
+    // one bundle at its own root, so there is no /dash/ to visit locally.
+    app:       null,
   },
 } as const;
 

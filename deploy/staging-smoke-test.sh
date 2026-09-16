@@ -52,6 +52,11 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fleet-scale.sh"
 # shellcheck source=deploy/origin-marker.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/origin-marker.sh"
 
+# assert_page_asset: proves a mounted bundle resolves the assets it names, which
+# no status check can. Shared with CI's production smoke tests.
+# shellcheck source=deploy/page-asset.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/page-asset.sh"
+
 check() {
     local name="$1" url="$2" expected="$3"
     printf "  %-40s " "$name"
@@ -154,9 +159,10 @@ check_contract() {
 # record on this environment. Their absence is the expected state, so a probe is
 # skipped and asserts in full the moment a record appears.
 #
-# staging-app is here for exactly that window. Drop it from this list once the
-# record is created, or the probes below stay silent for good.
-NO_DNS_EXPECTED="staging-app.retina.fm"
+# Empty today, and a name belongs here only while its record is genuinely
+# unplanned: an entry turns a deleted record into a silent skip rather than a
+# failure, which is the opposite of what every probe below is for.
+NO_DNS_EXPECTED=""
 
 # Vhosts whose record exists and is expected to, but whose absence must not
 # fail the run: this runs inside the `staging` job that deploy-production needs
@@ -244,6 +250,21 @@ check_header_value_if_dns() {
     host="${url#https://}"; host="${host%%/*}"
     if handle_unresolvable "$host" "$name"; then return; fi
     check_header_value "$name" "$url" "$header" "$value"
+}
+
+# assert_page_asset in this suite's reporting. Shared with CI's production
+# smoke tests so the two cannot drift, as with assert_origin_marker below.
+check_page_asset() {
+    local name="$1" page="$2" out
+    printf "  %-40s " "$name"
+    if out=$(assert_page_asset "$page"); then
+        echo "OK"
+        PASS=$((PASS+1))
+    else
+        echo "FAIL"
+        printf '    %s\n' "$out"
+        FAIL=$((FAIL+1))
+    fi
 }
 
 # assert_origin_marker in this suite's reporting. The diagnosis it prints names
@@ -377,10 +398,7 @@ check_status_if_dns "unclaimed host refuses /api" "${CATCHALL_URL}/api/towers" "
 
 echo ""
 echo "── Consolidated app surface (staging-app.retina.fm) ──"
-# All three bundles on one hostname. Status only, deliberately: until the
-# front-ends carry their base paths, /dash/ and /data/ serve the right
-# index.html while its asset URLs still point at the root bundle. That the
-# vhost roots and SPA fallbacks are wired at all is what this asserts.
+# All three bundles on one hostname, each built for the mount it is served at.
 check_status_if_dns "app GET / (map)"       "${APP_URL}/"                   "200"
 check_status_if_dns "app GET /dash/"        "${APP_URL}/dash/"              "200"
 check_status_if_dns "app GET /data/"        "${APP_URL}/data/"              "200"
@@ -392,6 +410,15 @@ check_status_if_dns "app /data redirects"   "${APP_URL}/data"               "301
 # reaches the bundle's index.html rather than 404ing inside the alias.
 check_status_if_dns "app /dash/ deep link"  "${APP_URL}/dash/nodes"         "200"
 check_header_if_dns "CSP on app vhost"      "${APP_URL}/api/health" "content-security-policy"
+# The mounted bundles resolve their own assets. Both pages passed every status
+# check above while rendering nothing, which is what these two are here for.
+check_page_asset    "app /dash/ loads its bundle" "${APP_URL}/dash/"
+check_page_asset    "app /data/ loads its bundle" "${APP_URL}/data/"
+# Two segments deep, which is where a relative base path fails and a rooted one
+# does not: the browser would resolve `./assets/...` against /dash/nodes/ and
+# get the SPA fallback back as JavaScript. /dash/ alone cannot tell the two
+# apart, because at one segment both spellings land in the same directory.
+check_page_asset    "app /dash/ deep link loads it too" "${APP_URL}/dash/nodes/ret-smoke"
 
 echo ""
 echo "── Shared nginx config (must match production) ──"
@@ -435,6 +462,11 @@ check_origin        "api vhost is this origin"   "${API_URL}/api/health"
 check_origin        "dash vhost is this origin"  "${DASH_URL}/api/health"
 check_origin        "testmap vhost is this origin" "${TESTMAP_URL}/api/health"
 check_origin_if_dns "data vhost is this origin"  "${DATA_URL}/api/health"
+# /api/health, not a page path: nginx drops every inherited add_header in a
+# location that declares one of its own, and the app vhost's /dash/ and /data/
+# mounts each declare a Cache-Control. The marker reaches this vhost's API
+# responses only.
+check_origin_if_dns "app vhost is this origin"   "${APP_URL}/api/health"
 # The catch-all sets the marker too, so a 421 is provably ours rather than an
 # edge error page that happens to share the status.
 check_origin_if_dns "catch-all is this origin"   "${CATCHALL_URL}/"

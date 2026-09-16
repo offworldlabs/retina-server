@@ -1,5 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { withBase } from "../utils/basePath";
 
 export default function LoginPage() {
   const { user } = useAuth();
@@ -11,7 +12,10 @@ export default function LoginPage() {
     return null;
   }
 
-  const redirect = window.location.origin + "/";
+  // A path, not a URL: the server runs this through _safe_redirect, which
+  // accepts local paths only and rewrites anything else to "/" — the app
+  // vhost's root, which is the map rather than this bundle.
+  const redirect = withBase("/");
 
   return (
     <div className="login-page">

@@ -5,6 +5,7 @@ import App from "./App";
 import { AuthProvider } from "./context/AuthContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import ErrorBoundary from "./components/ErrorBoundary";
+import { ROUTER_BASENAME } from "./utils/basePath";
 import "./App.css";
 
 // Outermost, so the theme outlives a crash in the tree below: the boundary's
@@ -13,7 +14,7 @@ import "./App.css";
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <ThemeProvider>
-      <BrowserRouter>
+      <BrowserRouter basename={ROUTER_BASENAME}>
         <ErrorBoundary>
           <AuthProvider>
             <App />
