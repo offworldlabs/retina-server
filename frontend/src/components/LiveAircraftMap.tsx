@@ -187,9 +187,10 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
 
   // Full cleanup on unmount
   useEffect(() => {
+    const markerMap = markerMapRef.current;
     return () => {
-      for (const m of markerMapRef.current.values()) m.remove();
-      markerMapRef.current.clear();
+      for (const m of markerMap.values()) m.remove();
+      markerMap.clear();
     };
   }, [map]);
 
@@ -351,7 +352,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
       }
       markers.clear();
     };
-  }, [map, radarAircraftRef, groundTruthRef, smoothRef, NODE, TRUTH]);
+  }, [map, radarAircraftRef, groundTruthRef, smoothRef, nodesByRefRef, NODE, TRUTH]);
 
   return null;
 });
@@ -1773,13 +1774,16 @@ function AircraftMapScope({ ownerOnly, restoreSelection, auth, onOwnerChange }) 
     [nodes, viewport],
   );
 
-    /* ── Derived: trail for selected aircraft ───────────────────── */
+  /* ── Derived: trail for selected aircraft ───────────────────── */
+  // The feed replaces trail arrays on update. Depend on the selected array
+  // itself, rather than scanning every trail or depending on its stable ref.
+  const selectedFeedTrail = selectedHex ? trailsRef.current[selectedHex] : null;
   const visibleTrailEntries = useMemo(() => {
-    if (!selectedHex) return [];
-    return Object.entries(trailsRef.current).filter(
-      ([hex, positions]) => hex === selectedHex && positions.some((p) => isPointInViewport(p[0], p[1], viewport)),
-    );
-  }, [selectedHex, trailTick, viewport]);
+    if (!Array.isArray(selectedFeedTrail)) return [];
+    return selectedFeedTrail.some((p) => isPointInViewport(p[0], p[1], viewport))
+      ? [[selectedHex, selectedFeedTrail]]
+      : [];
+  }, [selectedHex, selectedFeedTrail, viewport]);
 
   // { body, head }: `body` is the solid gradient trail, `head` the dashed
   // continuation to the live icon.  `head` is only ever non-empty for a dark
@@ -1928,13 +1932,13 @@ function AircraftMapScope({ ownerOnly, restoreSelection, auth, onOwnerChange }) 
     });
   }, []);
 
-  function handleTogglePause() {
+  const handleTogglePause = useCallback(() => {
     const next = !paused;
     setPaused(next);
     setFeedPaused(next);
     pausedLoopRef.current = next;
     setSeekIndex(next ? historyRef.current.length - 1 : null);
-  }
+  }, [paused, setFeedPaused, historyRef]);
 
   function handleHistorySeek(index) {
     if (index >= 0 && index < historyRef.current.length) {
@@ -2022,7 +2026,7 @@ function AircraftMapScope({ ownerOnly, restoreSelection, auth, onOwnerChange }) 
     const csv = trailToCsv(ac.hex, ac.flight, rows);
     downloadCsv(`trail-${ac.hex}-${Date.now()}.csv`, csv);
     toast(`Exported ${rows.length} points`, { tone: "success" });
-  }, [selectedHex, radarAircraft, trailsRef]);
+  }, [selectedHex, radarAircraft, trailsRef, groundTruthRef]);
 
   const exportAllTrails = useCallback(() => {
     const csv = trailsToBulkCsv(radarAircraft || [], trailsRef.current || {});
@@ -2087,7 +2091,7 @@ function AircraftMapScope({ ownerOnly, restoreSelection, auth, onOwnerChange }) 
     p: () => { if (selectedHex) { togglePinned(selectedHex); toast(pinnedSet.has(selectedHex) ? "Unpinned" : "Pinned"); } },
     m: () => locateMe(),
     n: () => { setSoundOn((v) => { toast(v ? "Sound off" : "Sound on"); return !v; }); },
-  }), [showShortcutHelp, searchQuery, exportSelectedTrail, exportAllTrails, locateMe, selectedHex, togglePinned, pinnedSet, setSoundOn, setShowLabels, setShowTrails, setShowCoverage, setShowIlluminators, setShowGroundTruth, setColorByAlt, setShowStats, setShowRangeRings, setShowArcs]);
+  }), [showShortcutHelp, searchQuery, handleTogglePause, exportSelectedTrail, exportAllTrails, locateMe, selectedHex, togglePinned, pinnedSet, setSoundOn, setShowLabels, setShowTrails, setShowCoverage, setShowIlluminators, setShowGroundTruth, setColorByAlt, setShowStats, setShowRangeRings, setShowArcs]);
   useKeyboardShortcuts(shortcutMap);
 
   function computeError(hex, ac) {
