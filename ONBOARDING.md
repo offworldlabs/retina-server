@@ -37,6 +37,7 @@ map over WebSocket. See [`docs/pipeline.md`](docs/pipeline.md).
 backend/      FastAPI API, TCP frame ingest, detection pipeline, background tasks
 frontend/     React SPA — testmap / map (Vite + Leaflet)
 dashboard/    React admin app (Vite)
+packages/shared/  Code both web apps share, imported as @retina/shared
 libs/         Git submodules (the algorithm libraries — see below)
 docs/         Architecture, pipeline, runbook, alerting, simulation, arc-display
 ```
@@ -103,6 +104,11 @@ in the root `package.json`. Install at the root, then address an app with `-w`:
 npm ci                    # once, at the repo root
 npm run dev -w frontend   # or: -w dashboard
 ```
+
+Code both apps use lives in `packages/shared`, imported as `@retina/shared`; it is
+a third workspace with its own lint, typecheck and tests. Reach for its
+`request()` rather than a raw `fetch`: it carries the timeout, the JSON
+conventions and the typed errors every surface wants.
 
 The lockfile is written by npm 10, the version CI and the image run (Node 20).
 A local npm 11 writes one that npm 10 rejects as incomplete, so after changing a
@@ -171,7 +177,7 @@ uv pip install ../libs/retina-geolocator ../libs/retina-tracker \
 # backend
 cd backend && RETINA_ENV=test COVERAGE_CORE=sysmon pytest
 
-# frontend and dashboard together; -w frontend (or -w dashboard) for one app
+# every workspace; -w frontend (or -w dashboard, -w packages/shared) for one
 npm run test --workspaces && npm run typecheck --workspaces && npm run lint --workspaces
 ```
 
@@ -250,7 +256,7 @@ Two traps in that command:
 CI runs on every PR, on push to `main`, and on demand through
 `workflow_dispatch` (`.github/workflows/ci.yml`):
 
-1. Any PR, whatever its base: `backend-tests`, `web-build` (once per app),
+1. Any PR, whatever its base: `backend-tests`, `web-build` (once per workspace),
    `docker-build`, `env-parity`, plus an automated review.
 2. Merge to `main` → deploy to **staging** → staging smoke + Playwright E2E → deploy to **production** → prod smoke + Playwright E2E.
    A markdown-only merge skips that chain; the `changes` job has the exceptions.

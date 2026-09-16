@@ -17,6 +17,7 @@ import {
   consensusModeLabel,
   claimModeLabel,
 } from "./physics/solverReport";
+import { request } from "@retina/shared";
 
 const API = "/api";
 
@@ -198,9 +199,7 @@ export default function PhysicsSettings() {
 
   const fetchConfig = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/simulation/config`, { signal: abortRef.current?.signal });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await request(`${API}/simulation/config`, { signal: abortRef.current?.signal });
       if (abortRef.current?.signal.aborted) return;
       setConfig(data);
 
@@ -260,9 +259,7 @@ export default function PhysicsSettings() {
 
   const fetchGt = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/simulation/ground-truth`, { signal: abortRef.current?.signal });
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await request(`${API}/simulation/ground-truth`, { signal: abortRef.current?.signal });
       if (abortRef.current?.signal.aborted) return;
       // Store fixes for dead-reckoning
       const newFixes = {};
@@ -288,9 +285,7 @@ export default function PhysicsSettings() {
   const [solverStats, setSolverStats] = useState(null);
   const fetchSolverStats = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/test/solver-stats?minutes=10`, { signal: abortRef.current?.signal });
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await request(`${API}/test/solver-stats?minutes=10`, { signal: abortRef.current?.signal });
       if (abortRef.current?.signal.aborted) return;
       setSolverStats(data);
     } catch {
@@ -339,9 +334,8 @@ export default function PhysicsSettings() {
     setSaving(true);
     setSaveMsg(null);
     try {
-      const res = await fetch(`${API}/simulation/config`, {
+      const body = await request(`${API}/simulation/config`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
         // max_range_km lives in sceneDraft now — a fleet-restart setting,
         // not an in-process spawn fraction. min/max_aircraft default above
         // guarantees these are always numeric, never NaN over the wire.
@@ -357,10 +351,6 @@ export default function PhysicsSettings() {
           live_adsb_enabled: Boolean(draft.live_adsb_enabled),
         }),
       });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(body.detail || `HTTP ${res.status}`);
-      }
       // Adopt the stamp our own PUT produced, so the poll below doesn't read
       // this write back as somebody else's change. A response without one
       // leaves it null, which just re-baselines on the next payload.
@@ -387,9 +377,7 @@ export default function PhysicsSettings() {
   // rather than trusting the config the fleet booted with.
   const fetchRunningScene = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/radar/nodes`, { signal: abortRef.current?.signal });
-      if (!res.ok) return;
-      const data = await res.json();
+      const data = await request(`${API}/radar/nodes`, { signal: abortRef.current?.signal });
       if (abortRef.current?.signal.aborted) return;
       const entries = Object.entries(data.nodes || {});
       const connectedSynthetic = entries.filter(
@@ -425,9 +413,8 @@ export default function PhysicsSettings() {
     setSceneApplying(true);
     setSceneMsg(null);
     try {
-      const res = await fetch(`${API}/simulation/config`, {
+      const body = await request(`${API}/simulation/config`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
         // Only these — never merged with `draft`'s PUT body. max_range_km
         // rides along here (not the main Apply) because applying it, like
         // n_nodes/dual_fraction, requires regenerating node configs —
@@ -438,10 +425,6 @@ export default function PhysicsSettings() {
           max_range_km: sceneDraft.max_range_km,
         }),
       });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(body.detail || `HTTP ${res.status}`);
-      }
       const stamp = body?.config?._updated_at;
       lastStampRef.current = typeof stamp === "number" ? stamp : null;
       sceneDirtyRef.current = false;
