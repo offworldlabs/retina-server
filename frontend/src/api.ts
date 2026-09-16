@@ -8,15 +8,6 @@ let mlatVerificationCache: unknown = null;
 let mlatVerificationCacheTs = 0;
 let mlatVerificationInflight: Promise<unknown | null> | null = null;
 
-export async function fetchNodeDetectionRange(nodeRef: string, signal?: AbortSignal) {
-  if (!nodeRef) return null;
-  // The route is keyed on the public ref; a node_id 404s.
-  const res = await fetch(
-    `${API_BASE}/test/node/${encodeURIComponent(nodeRef)}/detection-range`, { signal });
-  if (!res.ok) return null;
-  return res.json();
-}
-
 export async function fetchMlatVerification() {
   const now = Date.now();
   if (mlatVerificationCache && (now - mlatVerificationCacheTs) < MLAT_VERIFICATION_TTL_MS) {
