@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line,
@@ -28,21 +28,15 @@ export default function RFEnvironmentPage() {
     const snr = analyticsMap[sel]?.metrics?.avg_snr || 0;
     return {
       nodes: nodeList,
-      selectionKey: selectedNode,
       sample: sel ? {
         time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
         snr: parseFloat(snr.toFixed(1)),
       } : null,
     };
-  }, 5000, selectedNode);
-
-  useEffect(() => {
-    // usePolling retains the previous key's data while the new selection
-    // loads. Neither its sample nor its default selection belongs to this key.
-    if (!data || data.selectionKey !== selectedNode) return;
-    if (!selectedNode && data.nodes.length > 0) setSelectedNode(data.nodes[0].node_id);
-    if (data.sample) setSnrHistory((prev) => [...prev.slice(-30), data.sample]);
-  }, [data, selectedNode]);
+  }, 5000, selectedNode, (snapshot) => {
+    if (!selectedNode && snapshot.nodes.length > 0) setSelectedNode(snapshot.nodes[0].node_id);
+    if (snapshot.sample) setSnrHistory((prev) => [...prev.slice(-30), snapshot.sample]);
+  });
 
   if (loading) return <div className="empty-state">Loading…</div>;
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line, Legend,
@@ -21,11 +21,8 @@ export default function AnalyticsPage() {
   const { data, loading } = usePolling(async () => {
     const [a, o] = await Promise.all([api.analytics(), api.overlaps()]);
     return { analytics: a, overlaps: Array.isArray(o) ? o : o.overlaps || [] };
-  }, 10000);
-
-  useEffect(() => {
-    if (!data) return;
-    const rawNodes = data.analytics?.nodes || {};
+  }, 10000, "", (snapshot) => {
+    const rawNodes = snapshot.analytics?.nodes || {};
     const summaries = Array.isArray(rawNodes) ? rawNodes : Object.values(rawNodes);
     const totalDet = summaries.reduce((s, n) => s + (n.metrics?.total_detections || n.detection_area?.n_detections || 0), 0);
     setTrend((prev) => [
@@ -36,7 +33,7 @@ export default function AnalyticsPage() {
         nodes: summaries.length,
       },
     ].slice(-30));
-  }, [data]);
+  });
 
   if (loading) return <div className="empty-state">Loading…</div>;
 

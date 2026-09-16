@@ -48,12 +48,14 @@ function asError(reason: unknown): Error {
  * or not, calls the latest one.
  *
  * Fetchers should return data without changing UI state: late results may be
- * discarded. Update histories or selection from the returned `data` instead.
+ * discarded. `onAccepted` runs only for an accepted successful response, so
+ * histories and selection can update in the same batch as the fetched data.
  */
 export function usePolling<T>(
   fetcher: () => Promise<T>,
   every: number,
   key: string | number = "",
+  onAccepted?: (data: T) => void,
 ): Polled<T> {
   const [nonce, setNonce] = useState(0);
   // The nonce is part of the key so refresh() is just another key change.
@@ -68,8 +70,10 @@ export function usePolling<T>(
   // Read at call time rather than captured by the effect, so a page can pass
   // an inline closure without restarting the schedule on every render.
   const fetcherRef = useRef(fetcher);
+  const onAcceptedRef = useRef(onAccepted);
   useEffect(() => {
     fetcherRef.current = fetcher;
+    onAcceptedRef.current = onAccepted;
   });
 
   useEffect(() => {
@@ -85,6 +89,7 @@ export function usePolling<T>(
           if (cancelled || request < latestSettled) return;
           latestSettled = request;
           setSettled({ key: runKey, data, error: null, updatedAt: new Date() });
+          onAcceptedRef.current?.(data);
         },
         (reason) => {
           if (cancelled || request < latestSettled) return;
