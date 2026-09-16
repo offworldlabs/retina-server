@@ -16,6 +16,7 @@ import logging
 from datetime import UTC, datetime
 
 import pytest
+from pydantic import TypeAdapter, ValidationError
 from retina_analytics.constants import YAGI_BEAM_WIDTH_DEG, resolve_beam_azimuth_deg
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
@@ -25,6 +26,7 @@ import core.users
 from core import state
 from core.nodes import Node, NodeConfig
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
+from routes.node_schemas import NodeId
 from services.frame_processor import get_or_create_node_pipeline
 from services.node_config import position_status
 from services.node_pipeline import (
@@ -34,6 +36,7 @@ from services.node_pipeline import (
     register_with_pipeline,
     submit_frame,
 )
+from services.tcp_handler import SYNTHETIC_NODE_PREFIXES
 
 NODE_ID = "ret1a2b3c4d"
 
@@ -95,6 +98,24 @@ async def test_a_registered_node_appears_in_connected_nodes(node_session, node):
     assert entry["status"] == "active"
     assert entry["is_synthetic"] is False
     assert entry["config"]["rx_lat"] == 51.42
+
+
+# register_with_pipeline calls every v1 node real, which is sound only while a
+# v1 node's id cannot look synthetic.  The two rules live in different layers.
+
+
+@pytest.mark.parametrize("prefix", SYNTHETIC_NODE_PREFIXES)
+def test_a_reserved_prefix_is_not_a_valid_v1_node_id(prefix):
+    with pytest.raises(ValidationError):
+        TypeAdapter(NodeId).validate_python(f"{prefix}0a1b2c3d")
+
+
+@pytest.mark.parametrize("prefix", SYNTHETIC_NODE_PREFIXES)
+def test_no_reserved_prefix_can_begin_a_v1_node_id(prefix):
+    # NodeId is anchored on the literal "ret", so a reserved prefix reaches a
+    # valid id only by starting with it or by being a fragment of it.
+    assert not prefix.startswith("ret")
+    assert not "ret".startswith(prefix)
 
 
 async def test_registration_reaches_analytics_and_the_associator(node_session, node):

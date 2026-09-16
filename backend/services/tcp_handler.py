@@ -98,6 +98,11 @@ def _validate_node_config(config: dict) -> str | None:
     return None
 
 
+# Must stay disjoint from routes/node_schemas.NodeId: services/node_pipeline.py
+# registers every v1 node as real on the strength of that.
+SYNTHETIC_NODE_PREFIXES = ("synth-", "e2e-", "realnode-", "test-")
+
+
 def is_synthetic_node(node_id: str) -> bool:
     """Detect synthetic/test nodes by their ID prefix.
 
@@ -107,7 +112,7 @@ def is_synthetic_node(node_id: str) -> bool:
     - realnode-* — legacy E2E test nodes from prior CI runs
     - test-* — backend test suite nodes
     """
-    return any(node_id.startswith(p) for p in ("synth-", "e2e-", "realnode-", "test-"))
+    return any(node_id.startswith(p) for p in SYNTHETIC_NODE_PREFIXES)
 
 
 async def _send_msg(writer: asyncio.StreamWriter, msg: dict):
