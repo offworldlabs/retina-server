@@ -145,3 +145,24 @@ def test_rollback_job_reads_back_what_the_deploy_wrote(workflow, deploy, rollbac
     assert f"needs.{deploy}.result == 'failure'" in condition
     assert f"needs.{deploy}.result == 'cancelled'" in condition
     assert "always()" in condition
+
+
+@pytest.mark.parametrize("ref", ["refs/heads/main", "refs/heads/topic", "refs/pull/417/merge"])
+@pytest.mark.parametrize("event", ["push", "pull_request", "workflow_dispatch"])
+@pytest.mark.parametrize("result", ["failure", "cancelled", "success", "skipped"])
+def test_production_rollback_requires_a_failed_or_cancelled_main_push(ref, event, result):
+    # A cancelled PR run can report a skipped deploy as cancelled. Evaluate
+    # the real job condition: the remote marker check is too late to prevent
+    # an unauthorized workflow event from opening a production SSH session.
+    condition = " ".join(_job("ci.yml", "rollback-production-on-deploy-failure")["if"].split())
+    for field, value in (
+        ("github.ref", ref),
+        ("github.event_name", event),
+        ("needs.deploy-production.result", result),
+    ):
+        condition = condition.replace(field, repr(value))
+    # This expression uses only equality and boolean operators, whose
+    # semantics are the same for these concrete strings in Actions/Python.
+    condition = condition.replace("always()", "True").replace("&&", "and").replace("||", "or")
+    allowed = eval(condition, {"__builtins__": {}})
+    assert allowed is (ref == "refs/heads/main" and event == "push" and result in {"failure", "cancelled"})
