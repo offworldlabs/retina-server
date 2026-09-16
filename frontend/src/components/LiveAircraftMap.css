@@ -32,8 +32,17 @@
 }
 
 /* How far the basemap is pushed back: Voyager tinted down until the tracks sit
-   clearly in front of it. */
-.live-map-area .leaflet-tile-pane {
+   clearly in front of it.
+
+   On each tile, not on the tile pane. A filter forces the browser to rasterise
+   the filtered element as one layer, and the pane is far larger than the
+   viewport — keepBuffer 4 keeps four rings of tiles beyond every edge. WebKit
+   caps how large such a layer may be and, past the cap, paints part of it
+   filtered, part blank and part raw: Safari showed the map cut off with a
+   blank band and an unfiltered strip at the right edge. Chrome tiles filtered
+   layers internally and never showed it. A tile is 256px square, so filtering
+   each one keeps every layer far below the cap. dash's App.css does the same. */
+.live-map-area .leaflet-tile {
   filter: var(--tile-filter);
 }
 
