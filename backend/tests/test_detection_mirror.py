@@ -2,6 +2,11 @@
 
 No app and no database here. What matters is that `offer` cannot raise into
 the ingest path and cannot block it, which is testable directly.
+
+The sending half is exercised against httpx mocks. `stats()` carries the queue
+counters at the top level and each target's own accounting under `targets`,
+keyed by the target's host, which is why the single-target assertions below
+read through `SINK`.
 """
 
 import asyncio
@@ -13,6 +18,19 @@ import pytest
 from services import detection_mirror
 
 ARMED = {"DETECTION_MIRROR_URL": "https://sink.invalid/", "DETECTION_MIRROR_KEY": "k"}
+SINK = "sink.invalid"  # ARMED's one target, as stats() labels it
+TWO_TARGETS = {
+    "DETECTION_MIRROR_URL": "https://sink.invalid, https://staging.invalid/",
+    "DETECTION_MIRROR_KEY": "k1, k2",
+}
+
+
+def _target_stats(label: str = SINK) -> dict:
+    return detection_mirror.stats()["targets"][label]
+
+
+def _healthy(label: str = SINK) -> bool:
+    return _target_stats(label)["healthy"]
 
 
 def _frame():
@@ -78,11 +96,9 @@ def test_a_full_queue_drops_rather_than_raising(monkeypatch):
     assert detection_mirror.stats() == {
         "accepted": 2,
         "dropped": 3,
-        "sent": 0,
-        "rejected": 0,
-        "failed": 0,
         "unregistered": 0,
         "queue_depth": 2,
+        "targets": {SINK: {"sent": 0, "rejected": 0, "failed": 0, "healthy": True}},
     }
     assert len(detection_mirror.drain()) == 2
     assert detection_mirror.stats()["queue_depth"] == 0
@@ -201,7 +217,7 @@ async def test_send_posts_the_bulk_shape_with_the_key(_connected):
     assert seen["url"] == "https://sink.invalid/api/radar/detections/bulk"
     assert seen["key"] == "k"
     assert seen["body"]["nodes"][0]["node_id"] == "mirror-node-a"
-    assert detection_mirror.stats()["sent"] == 1
+    assert _target_stats()["sent"] == 1
 
 
 async def test_a_refusing_receiver_is_counted_not_raised(_connected):
@@ -219,11 +235,9 @@ async def test_a_refusing_receiver_is_counted_not_raised(_connected):
     assert detection_mirror.stats() == {
         "accepted": 1,
         "dropped": 0,
-        "sent": 0,
-        "rejected": 0,
-        "failed": 1,
         "unregistered": 0,
         "queue_depth": 0,
+        "targets": {SINK: {"sent": 0, "rejected": 0, "failed": 1, "healthy": False}},
     }
 
 
@@ -243,9 +257,9 @@ async def test_a_receiver_that_queues_nothing_is_a_failure_not_a_success(_connec
         ok = await detection_mirror.send_batch(client, detection_mirror.build_batch(detection_mirror.drain()))
 
     assert ok is False
-    assert detection_mirror.stats()["sent"] == 0
-    assert detection_mirror.stats()["rejected"] == 2
-    assert detection_mirror._healthy is False
+    assert _target_stats()["sent"] == 0
+    assert _target_stats()["rejected"] == 2
+    assert _healthy() is False
 
 
 async def test_a_partial_landing_credits_only_what_arrived(_connected):
@@ -261,8 +275,8 @@ async def test_a_partial_landing_credits_only_what_arrived(_connected):
         ok = await detection_mirror.send_batch(client, detection_mirror.build_batch(detection_mirror.drain()))
 
     assert ok is False
-    assert detection_mirror.stats()["sent"] == 1
-    assert detection_mirror.stats()["rejected"] == 2
+    assert _target_stats()["sent"] == 1
+    assert _target_stats()["rejected"] == 2
 
 
 @pytest.mark.parametrize(
@@ -284,8 +298,8 @@ async def test_an_unusable_response_is_a_failure_not_a_silent_success(_connected
         ok = await detection_mirror.send_batch(client, detection_mirror.build_batch(detection_mirror.drain()))
 
     assert ok is False
-    assert detection_mirror.stats()["failed"] == 1
-    assert detection_mirror.stats()["sent"] == 0
+    assert _target_stats()["failed"] == 1
+    assert _target_stats()["sent"] == 0
 
 
 async def test_an_unreachable_receiver_is_counted_not_raised(_connected):
@@ -300,7 +314,7 @@ async def test_an_unreachable_receiver_is_counted_not_raised(_connected):
             await detection_mirror.send_batch(client, detection_mirror.build_batch(detection_mirror.drain())) is False
         )
 
-    assert detection_mirror.stats()["failed"] == 1
+    assert _target_stats()["failed"] == 1
 
 
 async def test_the_task_returns_at_once_when_unarmed():
@@ -311,7 +325,8 @@ async def test_the_task_returns_at_once_when_unarmed():
 async def test_a_failing_drain_or_build_does_not_kill_the_task(_connected, monkeypatch):
     """build_batch (or drain) raising must not exit the loop: offer() would then
     fill the queue and drop every frame forever, indistinguishable from nothing
-    to send."""
+    to send. The fault precedes any send, so every target lost the frames and
+    every target is charged for them."""
     tried = asyncio.Event()
 
     def _boom(_items):
@@ -320,14 +335,15 @@ async def test_a_failing_drain_or_build_does_not_kill_the_task(_connected, monke
 
     monkeypatch.setattr(detection_mirror, "DETECTION_MIRROR_FLUSH_INTERVAL_S", 0.01)
     monkeypatch.setattr(detection_mirror, "build_batch", _boom)
-    detection_mirror.configure_from_env(ARMED)
+    detection_mirror.configure_from_env(TWO_TARGETS)
     detection_mirror.offer("mirror-node-a", _frame())
 
     task = asyncio.create_task(detection_mirror.mirror_task())
     try:
         await asyncio.wait_for(tried.wait(), timeout=5)  # bounds a hang, not the loop
         assert not task.done()  # the guard, stated directly
-        assert detection_mirror.stats()["failed"] == 1
+        assert _target_stats(SINK)["failed"] == 1
+        assert _target_stats("staging.invalid")["failed"] == 1
     finally:
         task.cancel()
 
@@ -373,11 +389,9 @@ async def test_a_batch_that_builds_empty_is_not_posted_and_is_counted(monkeypatc
         assert detection_mirror.stats() == {
             "accepted": 1,
             "dropped": 0,
-            "sent": 0,
-            "rejected": 0,
-            "failed": 0,
             "unregistered": 1,
             "queue_depth": 0,
+            "targets": {SINK: {"sent": 0, "rejected": 0, "failed": 0, "healthy": True}},
         }
     finally:
         task.cancel()
@@ -402,7 +416,7 @@ async def test_a_mixed_drain_counts_the_departed_node_while_sending_the_survivor
 
     async def _fake_send(_client, entries):
         sent_entries.append(entries)
-        detection_mirror._counters["sent"] += sum(len(e["frames"]) for e in entries)
+        detection_mirror._targets[0].sent += sum(len(e["frames"]) for e in entries)
         processed.set()
         return True
 
@@ -419,11 +433,9 @@ async def test_a_mixed_drain_counts_the_departed_node_while_sending_the_survivor
         assert detection_mirror.stats() == {
             "accepted": 2,
             "dropped": 0,
-            "sent": 1,
-            "rejected": 0,
-            "failed": 0,
             "unregistered": 1,
             "queue_depth": 0,
+            "targets": {SINK: {"sent": 1, "rejected": 0, "failed": 0, "healthy": True}},
         }
     finally:
         task.cancel()
@@ -443,18 +455,264 @@ async def test_a_failed_batch_counts_frames_not_batches(_connected):
             await detection_mirror.send_batch(client, detection_mirror.build_batch(detection_mirror.drain())) is False
         )
 
-    assert detection_mirror.stats()["failed"] == 3
+    assert _target_stats()["failed"] == 3
+
+
+# ── more than one target ─────────────────────────────────────────────────────
+
+
+def test_comma_separated_targets_are_trimmed():
+    armed = detection_mirror.configure_from_env(
+        {
+            "DETECTION_MIRROR_URL": " https://sink.invalid/ , https://staging.invalid ",
+            "DETECTION_MIRROR_KEY": " k1 , k2 ",
+        }
+    )
+
+    assert armed is True
+    assert [(t.label, t.url, t.key) for t in detection_mirror._targets] == [
+        (SINK, "https://sink.invalid", "k1"),
+        ("staging.invalid", "https://staging.invalid", "k2"),
+    ]
+    assert set(detection_mirror.stats()["targets"]) == {SINK, "staging.invalid"}
+
+
+def test_a_single_target_still_arms_as_before():
+    """The one-value form is the one-entry case of the list rule, and a lone
+    URL with no key at all keeps arming: the receiver decides what an empty
+    key is worth."""
+    assert detection_mirror.configure_from_env(ARMED) is True
+    ((label, target),) = ((t.label, t) for t in detection_mirror._targets)
+    assert (label, target.url, target.key) == (SINK, "https://sink.invalid", "k")
+
+    assert detection_mirror.configure_from_env({"DETECTION_MIRROR_URL": "https://sink.invalid"}) is True
+    assert detection_mirror._targets[0].key == ""
+
+
+def test_an_empty_key_entry_sends_that_receiver_no_key():
+    """The lists are positional, so `k1,` is a stated choice: the second
+    receiver gets an empty X-API-Key and decides for itself. A receiver whose
+    RADAR_API_KEY is unset accepts it; one with a key set returns 401, which
+    the mirror counts as rejected."""
+    armed = detection_mirror.configure_from_env(
+        {"DETECTION_MIRROR_URL": "https://sink.invalid,https://staging.invalid", "DETECTION_MIRROR_KEY": "k1,"}
+    )
+
+    assert armed is True
+    assert [(t.label, t.key) for t in detection_mirror._targets] == [(SINK, "k1"), ("staging.invalid", "")]
+
+
+def test_an_empty_url_entry_refuses_to_arm(caplog):
+    """`a,,b` with keys `k1,k2,k3` would otherwise hand k3 to b, or with
+    `k1,k2` arm b keyless by accident: neither is what a trailing or doubled
+    comma meant, so the mirror stays off and says so."""
+    for urls in ("https://sink.invalid,,https://staging.invalid", "https://sink.invalid,"):
+        with caplog.at_level(logging.ERROR, logger="services.detection_mirror"):
+            armed = detection_mirror.configure_from_env({"DETECTION_MIRROR_URL": urls, "DETECTION_MIRROR_KEY": "k1,k2"})
+        assert armed is False
+        assert detection_mirror._targets == []
+    assert any("https://" in r.message for r in caplog.records)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"DETECTION_MIRROR_URL": "https://sink.invalid,https://staging.invalid", "DETECTION_MIRROR_KEY": "k1"},
+        {"DETECTION_MIRROR_URL": "https://sink.invalid", "DETECTION_MIRROR_KEY": "k1,k2"},
+        {"DETECTION_MIRROR_URL": "https://sink.invalid,https://staging.invalid", "DETECTION_MIRROR_KEY": ""},
+    ],
+    ids=["more-urls-than-keys", "more-keys-than-urls", "two-urls-no-key"],
+)
+def test_mismatched_url_and_key_counts_refuse_to_arm(env, caplog):
+    """No half-arming: a target whose key is unknown is not a target, and
+    arming the rest would hide the misconfiguration behind a working mirror."""
+    with caplog.at_level(logging.ERROR, logger="services.detection_mirror"):
+        armed = detection_mirror.configure_from_env(env)
+
+    assert armed is False
+    assert detection_mirror.stats()["targets"] == {}
+    detection_mirror.offer("mirror-node", _frame())
+    assert detection_mirror.stats()["accepted"] == 0
+    assert any("DETECTION_MIRROR_KEY" in r.message for r in caplog.records)
+
+
+def test_one_http_url_refuses_the_whole_configuration():
+    """Not only the offending entry: the https target that was fine stays
+    unarmed too, so the error line cannot be mistaken for a partial success."""
+    armed = detection_mirror.configure_from_env(
+        {"DETECTION_MIRROR_URL": "https://sink.invalid,http://staging.invalid", "DETECTION_MIRROR_KEY": "k1,k2"}
+    )
+    assert armed is False
+    assert detection_mirror.stats()["targets"] == {}
+
+
+def test_a_duplicate_host_refuses_to_arm():
+    """Labels key the per-target accounting, so two targets with one host
+    would fold into one row and post every batch twice to the same place."""
+    armed = detection_mirror.configure_from_env(
+        {"DETECTION_MIRROR_URL": "https://sink.invalid,https://sink.invalid/", "DETECTION_MIRROR_KEY": "k1,k2"}
+    )
+    assert armed is False
+    assert detection_mirror.stats()["targets"] == {}
+
+
+def _host_handler(responses: dict, seen: dict | None = None):
+    """A MockTransport handler answering per host, recording each request."""
+    import json
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        if seen is not None:
+            seen[host] = {"key": request.headers.get("X-API-Key"), "body": json.loads(request.content)}
+        answer = responses[host]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    return handler
+
+
+async def test_each_target_receives_the_same_batch_with_its_own_key(_connected):
+    detection_mirror.configure_from_env(TWO_TARGETS)
+    detection_mirror.offer("mirror-node-a", _frame())
+    seen = {}
+    ok = httpx.Response(200, json={"status": "ok", "nodes_registered": 1, "frames_queued": 1})
+    handler = _host_handler({SINK: ok, "staging.invalid": ok}, seen)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await detection_mirror.send_batch(client, detection_mirror.build_batch(detection_mirror.drain()))
+
+    assert seen[SINK]["key"] == "k1"
+    assert seen["staging.invalid"]["key"] == "k2"
+    assert seen[SINK]["body"] == seen["staging.invalid"]["body"]
+    assert _target_stats(SINK)["sent"] == 1
+    assert _target_stats("staging.invalid")["sent"] == 1
+
+
+async def test_one_failing_target_leaves_the_other_healthy_and_credited(_connected):
+    """The same batch, two outcomes: the frames are `sent` on one target and
+    `failed` on the other, and only the failing one flips to unhealthy."""
+    detection_mirror.configure_from_env(TWO_TARGETS)
+    detection_mirror.offer("mirror-node-a", _frame())
+    detection_mirror.offer("mirror-node-a", _frame())
+    handler = _host_handler(
+        {
+            SINK: httpx.Response(200, json={"status": "ok", "nodes_registered": 1, "frames_queued": 2}),
+            "staging.invalid": httpx.Response(500, json={"detail": "nope"}),
+        }
+    )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        ok = await detection_mirror.send_batch(client, detection_mirror.build_batch(detection_mirror.drain()))
+
+    assert ok is False
+    assert detection_mirror.stats() == {
+        "accepted": 2,
+        "dropped": 0,
+        "unregistered": 0,
+        "queue_depth": 0,
+        "targets": {
+            SINK: {"sent": 2, "rejected": 0, "failed": 0, "healthy": True},
+            "staging.invalid": {"sent": 0, "rejected": 0, "failed": 2, "healthy": False},
+        },
+    }
+
+
+async def test_a_failing_target_is_named_in_the_log_line_and_the_event(_connected, caplog, monkeypatch):
+    """A failing staging receiver has to be distinguishable from a healthy
+    test one, so the target's label is in the line and the event message."""
+    events = []
+    monkeypatch.setattr(detection_mirror, "_log_event", lambda *args: events.append(args))
+    detection_mirror.configure_from_env(TWO_TARGETS)
+    detection_mirror.offer("mirror-node-a", _frame())
+    handler = _host_handler(
+        {
+            SINK: httpx.Response(200, json={"status": "ok", "nodes_registered": 1, "frames_queued": 1}),
+            "staging.invalid": httpx.Response(500, json={"detail": "nope"}),
+        }
+    )
+
+    with caplog.at_level(logging.WARNING, logger="services.detection_mirror"):
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await detection_mirror.send_batch(client, detection_mirror.build_batch(detection_mirror.drain()))
+
+    (record,) = caplog.records
+    assert "staging.invalid" in record.message
+    assert record.message.startswith("detection mirror to staging.invalid failing")
+    ((category, message, severity, meta),) = events
+    assert (category, severity) == ("detection_mirror", "warning")
+    assert message.startswith("Detection mirror to staging.invalid failing")
+    assert meta["targets"][SINK]["healthy"] is True
+
+
+async def test_a_hung_target_does_not_hold_the_others_back(_connected):
+    """Concurrent, not in turn: the first target's request only completes once
+    the second target has been asked, which a sequential send never reaches.
+    Bounded by wait_for rather than by the client timeout so a regression
+    fails in seconds with this test's name on it."""
+    detection_mirror.configure_from_env(TWO_TARGETS)
+    detection_mirror.offer("mirror-node-a", _frame())
+    staging_asked = asyncio.Event()
+    ok = {"status": "ok", "nodes_registered": 1, "frames_queued": 1}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == SINK:
+            await staging_asked.wait()
+        else:
+            staging_asked.set()
+        return httpx.Response(200, json=ok)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        batch = detection_mirror.build_batch(detection_mirror.drain())
+        assert await asyncio.wait_for(detection_mirror.send_batch(client, batch), timeout=5)
+
+    assert _target_stats(SINK)["sent"] == 1
+    assert _target_stats("staging.invalid")["sent"] == 1
+
+
+async def test_the_task_fans_one_drain_out_to_every_target(_connected, monkeypatch):
+    """End to end through mirror_task: one drain, one build, a POST per
+    target. The client is the real one with its transport swapped, so the
+    per-target pool sizing is exercised rather than stubbed around."""
+    seen = {}
+    both_seen = asyncio.Event()
+    ok = httpx.Response(200, json={"status": "ok", "nodes_registered": 1, "frames_queued": 1})
+    record = _host_handler({SINK: ok, "staging.invalid": ok}, seen)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = record(request)
+        if len(seen) == 2:
+            both_seen.set()
+        return response
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs)
+    )
+    monkeypatch.setattr(detection_mirror, "DETECTION_MIRROR_FLUSH_INTERVAL_S", 0.01)
+    detection_mirror.configure_from_env(TWO_TARGETS)
+    detection_mirror.offer("mirror-node-a", _frame())
+
+    task = asyncio.create_task(detection_mirror.mirror_task())
+    try:
+        await asyncio.wait_for(both_seen.wait(), timeout=5)  # bounds a hang, not the loop
+        assert seen[SINK]["key"] == "k1"
+        assert seen["staging.invalid"]["key"] == "k2"
+        assert _target_stats(SINK)["sent"] == 1
+        assert _target_stats("staging.invalid")["sent"] == 1
+    finally:
+        task.cancel()
 
 
 def test_configure_from_env_resets_health_state():
     detection_mirror.configure_from_env(ARMED)
-    detection_mirror._note(False, RuntimeError("boom"))
-    assert detection_mirror._healthy is False
+    detection_mirror._note(detection_mirror._targets[0], False, RuntimeError("boom"))
+    assert _healthy() is False
 
     detection_mirror.configure_from_env(ARMED)
 
-    assert detection_mirror._healthy is True
-    assert detection_mirror._logged_at == 0.0
+    assert _healthy() is True
+    assert detection_mirror._targets[0].logged_at == 0.0
 
 
 def test_the_lifespan_arms_the_mirror_and_starts_its_task(monkeypatch):
