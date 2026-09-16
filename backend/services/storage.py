@@ -40,7 +40,7 @@ def archive_detections(node_id: str, detections: list[dict], *, tag: str = "dete
     """Archive a batch of detection FRAMES to local filesystem as Parquet.
 
     Returns a Hive-style relative key, e.g.
-        "year=2025/month=06/day=21/node_id=node01/part-143022.parquet"
+        "year=2025/month=06/day=21/node_id=node01/part-143022-<batch-id>.parquet"
     or None when ``detections`` is empty.
 
     `tag` is accepted for callsite compatibility but does not affect the

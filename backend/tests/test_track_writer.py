@@ -115,6 +115,7 @@ def test_flush_track_archive_buffer_drains_state(tmp_path: Path, monkeypatch):
     from services.tasks import track_archive as ta
 
     monkeypatch.setattr(ta, "_TRACKS_DIR", str(tmp_path))
+    monkeypatch.setattr(ta, "_pending_records", [])
     state.track_archive_buffer.clear()
     state.track_archive_buffer.append(_record(ts_ms=1700000000000))
     state.track_archive_buffer.append(_record(ts_ms=1700000001000))
@@ -133,6 +134,7 @@ def test_flush_track_archive_buffer_no_op_when_empty(tmp_path: Path, monkeypatch
     from services.tasks import track_archive as ta
 
     monkeypatch.setattr(ta, "_TRACKS_DIR", str(tmp_path))
+    monkeypatch.setattr(ta, "_pending_records", [])
     state.track_archive_buffer.clear()
     assert ta.flush_track_archive_buffer() is None
     assert not list(tmp_path.rglob("*.parquet"))
