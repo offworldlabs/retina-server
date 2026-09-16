@@ -64,7 +64,7 @@ services:
       # which is the only environment still running a simulator, so production
       # has no synthetic map surface to expose. The vhost cannot simply be
       # dropped: the nginx half of deploy/check-env-parity.py requires every
-      # environment to render the same seven vhosts, byte-identical once
+      # environment to render the same seven named vhosts, byte-identical once
       # hostnames are tokenised. So the block still renders, under a name with
       # no DNS record, and never receives a request.
       - HOST_TESTMAP=testmap-retired.retina.fm

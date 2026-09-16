@@ -27,6 +27,10 @@ DATA_URL="https://staging-data.retina.fm"
 # testmap is the public demo (prod parks the name as testmap-retired).
 MAP_URL="https://staging-map.retina.fm"
 TESTMAP_URL="https://testmap.retina.fm"
+# Resolves to this droplet but is no environment's HOST_*, so it is the only
+# name that reaches the catch-all vhost. Production has no equivalent: every
+# name it renders is claimed, and testmap-retired has no DNS.
+CATCHALL_URL="https://staging-testmap.retina.fm"
 # TOWER_CONTRACT_QUERY / TOWER_CONTRACT_ECHO: what a backend must echo back.
 # shellcheck source=deploy/tower-contract.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tower-contract.sh"
@@ -127,7 +131,11 @@ NO_DNS_EXPECTED=""
 # Cloudflare wobble block every release. Reported as WARN and tallied
 # separately, because a deleted record must still be visible: skipping it
 # silently would retire the only check on a vhost nothing else monitors.
-DNS_NOT_DEPLOY_BLOCKING="staging-admin.retina.fm staging-data.retina.fm"
+# staging-testmap is here for the opposite reason to the other two: it is the
+# one name no vhost claims, so its record is what makes the catch-all testable.
+# Retiring the surface makes deleting that record a natural next step, and that
+# must cost the catch-all its probe rather than fail a release.
+DNS_NOT_DEPLOY_BLOCKING="staging-admin.retina.fm staging-data.retina.fm staging-testmap.retina.fm"
 
 # Decides what to do about $1 not resolving, prints it, and returns 0 when the
 # caller should skip its probe. Membership is tested before the lookup, which is
@@ -302,6 +310,15 @@ echo "── Frontend assets (staging-map.retina.fm) ──"
 # this repo serves its own bundle.
 check_status "GET / (frontend)"             "${MAP_URL}/"                   "200"
 check        "HTML has app root"            "${MAP_URL}/"                   "id=\"root\""
+
+echo ""
+echo "── Unclaimed hostname (staging-testmap.retina.fm) ──"
+# nginx answers an unmatched host from the FIRST block on the port, so this name
+# used to get the tower SPA with a 200 and a node calling /api/towers parsed HTML
+# as JSON. The catch-all must refuse both, and this is the only live probe of it
+# on either environment.
+check_status_if_dns "unclaimed host refuses /"    "${CATCHALL_URL}/"           "421"
+check_status_if_dns "unclaimed host refuses /api" "${CATCHALL_URL}/api/towers" "421"
 
 echo ""
 echo "── Shared nginx config (must match production) ──"

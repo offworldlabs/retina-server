@@ -51,8 +51,9 @@ REFERENCE = "production"
 _LABEL_WIDTH = max(len(env) for env in OVERLAYS)
 
 # Every vhost the template defines must be TLS in a deployed environment. Update
-# this alongside the template if a vhost is added or removed.
-EXPECTED_TLS_VHOSTS = 7
+# this alongside the template if a vhost is added or removed. Counts the
+# catch-all `default_server` as well as the seven named vhosts.
+EXPECTED_TLS_VHOSTS = 8
 
 # Key paths permitted to differ between the environments, as regexes matched
 # against the dotted path into the merged compose tree.
@@ -294,7 +295,11 @@ def check_nginx(tmp: Path) -> list[str]:
     # the first time — so pin the shape of the deployed environments directly.
     problems: list[str] = []
     for env, text in rendered.items():
-        listeners = text.count("listen 443 ssl;")
+        # Matched, not counted as a literal: the catch-all's listen line carries
+        # `default_server`, and a substring count for "listen 443 ssl;" skips it
+        # while ssl_verify_client below still counts it, so no single expected
+        # value satisfies both and the new block escapes this assertion.
+        listeners = len(re.findall(r"listen 443 ssl[^;]*;", text))
         if listeners != EXPECTED_TLS_VHOSTS:
             problems.append(
                 f"  {env}: {listeners} `listen 443 ssl` blocks, expected "
