@@ -23,8 +23,14 @@ const POSITION_FIX_HINT: Record<Exclude<PositionStatus, "positioned">, string> =
 };
 
 export default function NodeDetailPage() {
-  const chart = useChartTheme();
   const { nodeId } = useParams();
+  // A route change is a new identity, including pending reads, optimistic
+  // privacy controls and saves still completing for the previous node.
+  return <NodeDetail key={nodeId} nodeId={nodeId} />;
+}
+
+function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
+  const chart = useChartTheme();
   const navigate = useNavigate();
 
   // Keyed on the route parameter, so moving between nodes fetches again.

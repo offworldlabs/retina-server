@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api } from "../../api/client";
+import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme, type ChartTheme } from "../../utils/chartTheme";
 
 // DigitalOcean's checks run every minute and the backend caches for one, so
@@ -173,25 +173,11 @@ function DropletCard({ droplet, colour, theme }: { droplet: Droplet; colour: str
 }
 
 export default function InfrastructurePage() {
-  const [snap, setSnap] = useState<Snapshot | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
+  const { data: snap, error } = usePolling<Snapshot>(api.adminInfrastructure, REFRESH_MS);
   const theme = useChartTheme();
 
-  const load = () => {
-    api.adminInfrastructure()
-      .then((data: Snapshot) => { setSnap(data); setError(null); })
-      .catch((e: Error) => setError(e.message));
-  };
-
-  useEffect(() => {
-    load();
-    timerRef.current = setInterval(load, REFRESH_MS);
-    return () => clearInterval(timerRef.current);
-  }, []);
-
   if (!snap) {
-    if (error) return <div className="empty-state" style={{ color: "var(--error)" }}>Error: {error}</div>;
+    if (error) return <div className="empty-state" style={{ color: "var(--error)" }}>Error: {error.message}</div>;
     return <div className="empty-state">Loading…</div>;
   }
 
@@ -199,7 +185,7 @@ export default function InfrastructurePage() {
     <>
       {/* A refresh that failed costs the reading its freshness, not the page. */}
       {error && (
-        <div className="empty-state" style={{ color: "var(--error)" }}>Error: {error}. Showing the last reading.</div>
+          <div className="empty-state" style={{ color: "var(--error)" }}>Error: {error.message}. Showing the last reading.</div>
       )}
       <div className="page-header">
         <h1>Infrastructure</h1>
