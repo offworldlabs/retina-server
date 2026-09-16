@@ -8,38 +8,47 @@
 
 ARG UV_VERSION=0.12.5
 
-# ── Stage 1: Build frontend ──────────────────────────────────────────────────
-FROM node:20-alpine AS frontend-build
-WORKDIR /app/frontend
-COPY frontend/package.json frontend/package-lock.json ./
-# `npm ci` with the same flags CI's frontend-build job uses, so the bundle that
-# ships is built from the tree CI tested. `npm install` would be free to
+# ── Stage 1: Web dependencies ───────────────────────────────────────────────
+# One `npm ci` for both Vite apps, from the lockfile CI installs, so the bundles
+# that ship are built from the tree CI tested. `npm install` would be free to
 # re-resolve and rewrite the lockfile.
-RUN npm ci --legacy-peer-deps --no-audit --no-fund
-COPY frontend/ ./
+FROM node:20-alpine AS web-deps
+WORKDIR /app
+# Manifests first, so a source-only change leaves the install layer cached.
+# The lockfile describes every workspace, so each one's package.json is part
+# of what `npm ci` checks.
+COPY package.json package-lock.json .npmrc ./
+COPY frontend/package.json frontend/
+COPY dashboard/package.json dashboard/
+RUN npm ci
+# Vite's TypeScript transform follows each app's tsconfig `extends` chain, so
+# the build needs this even though nothing here runs tsc.
+COPY tsconfig.base.json ./
+
+# ── Stages 1a and 1b: the two builds, from one install ──────────────────────
+# Separate stages so each app's build is cached and scheduled on its own: a
+# source change in one app does not rebuild the other (a dependency change
+# rebuilds both, through the shared install), and BuildKit runs the two in
+# parallel.
+FROM web-deps AS frontend-build
+COPY frontend/ frontend/
 # The CARTO basemap key, baked into the bundle by Vite. Declared here rather
-# than at the top of the stage so that changing it re-runs this build step
-# alone and leaves the `npm ci` layer cached. The empty default matters: a host
-# that has no key (or a plain `docker build`) produces unkeyed URLs, and so
-# CARTO's watermarked tiles — which is exactly what shipped before this arg
-# existed.
+# than in the dependency stage so that changing it re-runs this build alone.
+# The empty default matters: a host that has no key (or a plain `docker build`)
+# produces unkeyed URLs, and so CARTO's watermarked tiles.
 ARG VITE_CARTO_API_KEY=""
 ENV VITE_CARTO_API_KEY=${VITE_CARTO_API_KEY}
-RUN npm run build
+RUN npm run build -w frontend
 
-# ── Stage 1b: Build dashboard ───────────────────────────────────────────────
-FROM node:20-alpine AS dashboard-build
-WORKDIR /app/dashboard
-COPY dashboard/package.json dashboard/package-lock.json ./
-RUN npm ci --legacy-peer-deps --no-audit --no-fund
-COPY dashboard/ ./
+FROM web-deps AS dashboard-build
+COPY dashboard/ dashboard/
 # Twice, because one bundle is served at two different mount points and Vite
 # bakes the asset prefix in at build time. `dist` is rooted at `/` for the admin
 # vhost; `dist-dash` is rooted at `/dash/` for the app vhost's mount. A single
 # relative-base build would resolve its assets against the CURRENT path, which
 # breaks the moment a route is more than one segment deep: `/dash/nodes/:nodeId`
 # would look for its JS under `/dash/nodes/assets/`.
-RUN npm run build && npm run build:dash
+RUN npm run build -w dashboard && npm run build:dash -w dashboard
 
 # ── uv, for the Python installs in the production stage ─────────────────────
 # A stage of its own so the version is written once. It is only ever a mount
@@ -86,10 +95,8 @@ RUN --mount=from=uv,source=/uv,target=/bin/uv \
 # Backend code
 COPY backend/ ./backend/
 
-# Built frontend
+# Built web apps
 COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
-
-# Built dashboard
 COPY --from=dashboard-build /app/dashboard/dist /app/dashboard/dist
 COPY --from=dashboard-build /app/dashboard/dist-dash /app/dashboard/dist-dash
 
