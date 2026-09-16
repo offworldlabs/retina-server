@@ -229,7 +229,52 @@ a revision that reaches a droplet undeclared is graded destructive.
 
 ## Alert reference
 
-Alerts fire via webhook (`ALERT_WEBHOOK_URL` env var) with a 5-minute cooldown per alert type. All alert types are listed here with their trigger condition and response steps.
+Alerts fire via webhook (`ALERT_WEBHOOK_URL`) with a per-alert-type cooldown of
+`ALERT_COOLDOWN_S`, which every deployed environment currently holds at an hour.
+`docs/alerting.md` has the full settings table and says which of them come from
+the compose overlay and which from the host. All alert types are listed here with
+their trigger condition and response steps.
+
+### Restoring the alert destination
+
+`ALERT_WEBHOOK_URL` and `ALERT_WEBHOOK_AUTH` are the only alerting settings not
+in the compose overlays: one names a chat channel, the other is a credential, and
+this repo is public. They live in the host's `backend/.env`, which is gitignored,
+so a fresh box or a restored one starts without them. A `RETINA_ENV=production`
+stack refuses to boot in that state (`deploy/start.sh`); staging and test come up
+with a warning in the logs and alert nobody.
+
+To restore, on the host:
+
+```bash
+# ALERT_WEBHOOK_URL takes the ClickUp chat message endpoint:
+#   https://api.clickup.com/api/v3/workspaces/<workspace_id>/chat/channels/<channel_id>/messages
+# Read both ids out of the channel's own URL in the ClickUp UI, which reads
+#   https://app.clickup.com/<workspace_id>/chat/r/<channel_id>
+# One channel per environment, by name: `Alerts` for production,
+# `Server Alerts (Staging)` for staging, `Server Alerts (Test)` for test.
+#
+# ALERT_WEBHOOK_AUTH is a ClickUp personal token (`pk_…`), sent verbatim with no
+# "Bearer " prefix; adding one produces a 401.
+vi /opt/retina-server/backend/.env
+docker compose up -d server
+```
+
+Confirm it took. On production the boot is itself the proof, since the guard
+refuses to start without both. Anywhere, ask the container what it holds without
+printing either value:
+
+```bash
+docker exec retina-<prod|staging|test>-server sh -c 'echo "url=${ALERT_WEBHOOK_URL:+set} auth=${ALERT_WEBHOOK_AUTH:+set}"'
+```
+
+Two warnings are the other signal. `deploy/start.sh` logs `ALERT_WEBHOOK_URL is
+not set` on a staging or test box with no destination, and `services/alerting.py`
+warns when the format is `clickup_chat` and the token is absent, which is the
+case where the URL took and every alert 401s regardless.
+
+Do not look for `log_destination()`'s `Alerting enabled` line: it is logged at
+INFO, and the deployed stack emits no INFO at all (ClickUp 123zgec374r).
 
 ---
 

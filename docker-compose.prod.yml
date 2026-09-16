@@ -50,6 +50,18 @@ services:
       # sourced from it would change meaning the day a guard decision does. See
       # services/alerting.py.
       - ALERT_ENVIRONMENT=production
+      # Body shape for the sink, and how often a given alert type may repeat.
+      # Held here rather than as hand edits in the droplet's backend/.env, which
+      # no rebuild preserved and no reader of this repo could see. The
+      # destination itself, ALERT_WEBHOOK_URL and ALERT_WEBHOOK_AUTH, stays out
+      # of a public repo; docs/runbook.md says how to restore it on a fresh box.
+      - ALERT_WEBHOOK_FORMAT=clickup_chat
+      # The cooldown is per alert type, so this is a ceiling of one post per
+      # type per hour. Above the 300s default while several checks still fire on
+      # conditions nobody would act on, because alerts post with a personal
+      # ClickUp token whose rate limit is shared with interactive use of ClickUp.
+      # Returns to 300 once those checks are calibrated (ClickUp 86cb5c8dq).
+      - ALERT_COOLDOWN_S=3600
       - CORS_ORIGINS=https://towers.retina.fm,https://api.retina.fm,https://map.retina.fm,https://dash.retina.fm,https://admin.retina.fm,https://data.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
       # at boot to render deploy/nginx/nginx.conf.template. One template serves

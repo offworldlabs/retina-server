@@ -87,9 +87,10 @@ _reopen_at: dict[str, float] = {}
 
 # Alert types with a delivery thread currently running. A retry sequence can
 # outlast its own cooldown (three 10s timeouts plus two Retry-After waits is
-# 150s against a 300s default, and ALERT_COOLDOWN_S is set per droplet), so
-# the reservation in _last_sent cannot by itself be relied on to stop the
-# next health cycle opening a second, concurrent delivery of the same alert.
+# 150s against a 300s default the compose overlays override, and it could be
+# set lower still), so the reservation in _last_sent cannot by itself be
+# relied on to stop the next health cycle opening a second, concurrent
+# delivery of the same alert.
 _in_flight: set[str] = set()
 
 _lock = threading.Lock()

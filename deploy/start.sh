@@ -41,6 +41,47 @@ fi
 : "${RETINA_ENV:?not set — the compose overlay is missing. On the host: cp deploy/env.<prod|staging>.example .env}"
 : "${HOST_MAIN:?not set — the compose overlay is missing (see deploy/env.*.example)}"
 
+# ── Alerting guard ──────────────────────────────────────────────────────────
+# ALERT_WEBHOOK_URL and ALERT_WEBHOOK_AUTH carry a channel id and a credential,
+# so unlike the settings beside ALERT_ENVIRONMENT in the compose overlays they
+# live only in the host's backend/.env. That makes them the one part of alerting
+# a rebuild can silently drop, and a production box that boots unalerting reads
+# as healthy while nothing is watching it. Refuse the boot instead: the fix is
+# one file on the host, and docs/runbook.md holds the values.
+#
+# Production only. On staging and test the same absence costs visibility into a
+# box no user depends on, which is not worth trading for an outage.
+#
+# Tested on a trimmed copy rather than with the `${VAR:?}` form used above,
+# because services/alerting.py strips before deciding a value is present: a
+# key left holding only a stray space passes a bare emptiness test while
+# leaving the box unalerting, which is the failure this guard exists to catch.
+alert_url=$(printf '%s' "${ALERT_WEBHOOK_URL:-}" | tr -d '[:space:]')
+alert_auth=$(printf '%s' "${ALERT_WEBHOOK_AUTH:-}" | tr -d '[:space:]')
+
+if [ "$RETINA_ENV" = "production" ]; then
+  if [ -z "$alert_url" ]; then
+    echo "ALERT_WEBHOOK_URL is not set — production must not boot unalerting. Restore backend/.env on the host; see docs/runbook.md" >&2
+    exit 1
+  fi
+  if [ -z "$alert_auth" ]; then
+    echo "ALERT_WEBHOOK_AUTH is not set — ClickUp answers 401 to every alert without it. Restore backend/.env on the host; see docs/runbook.md" >&2
+    exit 1
+  fi
+elif [ -z "$alert_url" ]; then
+  echo "WARNING: ALERT_WEBHOOK_URL is not set — this box will alert nobody (docs/runbook.md)" >&2
+elif [ -z "$alert_auth" ]; then
+  # Only worth saying once the destination exists: without a URL nothing is
+  # posted at all, and the line above is the one to act on.
+  echo "WARNING: ALERT_WEBHOOK_AUTH is not set — ClickUp will answer 401 to every alert (docs/runbook.md)" >&2
+fi
+
+# Read-only, and it powers the admin console's Infrastructure page and nothing
+# else, so its absence degrades one page rather than the monitoring.
+if [ -z "${DIGITALOCEAN_READ_TOKEN:-}" ]; then
+  echo "WARNING: DIGITALOCEAN_READ_TOKEN is not set — the admin Infrastructure page will be empty" >&2
+fi
+
 # ── Render the nginx config for this environment ────────────────────────────
 # One template + one set of snippets serve every deployed environment; only the
 # hostnames and the CSP's connect-src differ. Previously this was a `cp` that
