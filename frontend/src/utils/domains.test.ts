@@ -21,8 +21,12 @@ describe("feed selection by surface", () => {
     }
   });
 
+  // staging-testmap.retina.fm is absent deliberately. It was never a vhost; it
+  // reached the SPA only because nginx served unmatched hosts from the first 443
+  // block, and the catch-all now 421s it. isMapDomain still matches the name,
+  // which costs nothing and keeps the pattern readable.
   it("the public demo shows synthetic nodes only", async () => {
-    for (const host of ["testmap.retina.fm", "staging-testmap.retina.fm", "staging-map.retina.fm"]) {
+    for (const host of ["testmap.retina.fm", "staging-map.retina.fm"]) {
       const m = await loadFor(host);
       expect(m.usesRealOnlyFeed, host).toBe(false);
       expect(m.hidesRealNodes, host).toBe(true);
@@ -47,7 +51,7 @@ describe("feed selection by surface", () => {
   it("every map surface still defaults to the Live Radar tab", async () => {
     for (const host of [
       "map.retina.fm", "testmap.retina.fm", "staging-map.retina.fm",
-      "staging-testmap.retina.fm", "test-map.retina.fm", "test-testmap.retina.fm",
+      "test-map.retina.fm", "test-testmap.retina.fm",
       "map.localhost",
     ]) {
       const m = await loadFor(host);

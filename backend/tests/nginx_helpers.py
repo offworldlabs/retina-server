@@ -29,13 +29,15 @@ VALUES = {
 }
 
 
-def render() -> str:
+def render(values: dict[str, str] | None = None) -> str:
+    """Render with VALUES, or with `values` to exercise a flag (TLS_ENABLED=false)."""
+    values = VALUES if values is None else values
     spec = importlib.util.spec_from_file_location("render_nginx_config", _RENDERER)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    flags = module.resolve_flags(VALUES)
+    flags = module.resolve_flags(values)
     text = module.expand_includes(_TEMPLATE, _TEMPLATE.parent, flags)
-    return module.substitute(text, VALUES)
+    return module.substitute(text, values)
 
 
 def locations(text: str) -> list[tuple[str, str]]:
