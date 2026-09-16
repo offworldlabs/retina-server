@@ -71,19 +71,21 @@ export function usePolling<T>(
 
   useEffect(() => {
     let cancelled = false;
-    let latestRequest = 0;
+    let nextRequest = 0;
+    let latestSettled = 0;
     const run = () => {
-      // A slow timed request can finish after its successor. Only the latest
-      // request may publish either data or an error for this key.
-      const request = ++latestRequest;
+      // Ignore completions older than the newest settled request. Requests
+      // still in flight must not suppress progress on a slow connection.
+      const request = ++nextRequest;
       fetcherRef.current().then(
         (data) => {
-          if (!cancelled && request === latestRequest) {
-            setSettled({ key: runKey, data, error: null, updatedAt: new Date() });
-          }
+          if (cancelled || request < latestSettled) return;
+          latestSettled = request;
+          setSettled({ key: runKey, data, error: null, updatedAt: new Date() });
         },
         (reason) => {
-          if (cancelled || request !== latestRequest) return;
+          if (cancelled || request < latestSettled) return;
+          latestSettled = request;
           console.error(reason);
           setSettled((s) => ({ ...s, key: runKey, error: asError(reason) }));
         },

@@ -217,6 +217,18 @@ describe("usePolling", () => {
     await act(async () => older.resolve("a"));
     expect(result.current.data).toBe("b");
   });
+
+  it("publishes a slow result while a newer request is still pending", async () => {
+    const older = deferred<string>();
+    const newer = deferred<string>();
+    const fetcher = vi.fn().mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+    const { result } = renderHook(() => usePolling(fetcher, 5000));
+    await tick(5000);
+    await act(async () => older.resolve("older"));
+    expect(result.current.data).toBe("older");
+    await act(async () => newer.resolve("newer"));
+    expect(result.current.data).toBe("newer");
+  });
 });
 
 describe("useFetch", () => {
