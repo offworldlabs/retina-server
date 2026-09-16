@@ -68,11 +68,8 @@ _LAT, _LON, _ALT_M = 34.88, -82.35, 7000.0
 def _lane_off_unless_armed(monkeypatch):
     """Leave the live flag off between tests.
 
-    state.DARK_FOLLOW_MODE defaults to "shadow", and every solver worker daemon
-    a TestClient lifespan has leaked into this process polls it — arming it
-    globally would let one race these tests for the per-key rate limit, the
-    same hazard test_known_lane.py documents for KNOWN_LANE_MODE.  Tests that
-    need the lane arm it themselves (``_install``) or pass ``mode`` explicitly.
+    Tests that need the lane arm it themselves (``_install``) or pass ``mode``
+    explicitly, so unrelated background work cannot consume their rate limit.
     """
     monkeypatch.setattr(state, "DARK_FOLLOW_MODE", "off")
 
@@ -620,8 +617,7 @@ class TestFollowPass:
 
     @pytest.fixture(autouse=True)
     def _private_queue(self, monkeypatch):
-        """A queue of this test's own: a leaked solver worker daemon drains
-        state.solver_queue, and would take the item under assertion."""
+        """Keep queue assertions independent of any active application workers."""
         import queue
 
         monkeypatch.setattr(state, "solver_queue", queue.Queue(maxsize=200))

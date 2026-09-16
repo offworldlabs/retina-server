@@ -640,11 +640,8 @@ def run_known_lane_pass(solve_fn, node_cfgs: dict | None = None, mode: str | Non
     slice A and may be absent, empty, or mid-write.
 
     ``mode`` overrides state.KNOWN_LANE_MODE for this pass (None reads the
-    live flag).  Tests need the override, not convenience: the live flag is
-    shared with every solver worker daemon leaked into the process by a
-    TestClient lifespan, and arming it globally would let a daemon's own
-    maybe_run_pass race the test's pass for the per-hex dedup window — the
-    same reason _solver_worker_iteration takes a private queue.
+    live flag).  The override lets a caller exercise one pass without arming
+    concurrent workers, which share the per-hex dedup window.
     """
     if mode is None:
         mode = _mode()
@@ -830,9 +827,8 @@ def run_dark_follow_pass(solve_fn, node_cfgs: dict | None = None, mode: str | No
     anything reaching the queue would publish.
 
     ``mode`` overrides state.DARK_FOLLOW_MODE for this pass, for the same
-    reason run_known_lane_pass takes the override: a solver worker daemon
-    leaked into the test process would otherwise race the test for the per-key
-    rate limit.
+    reason run_known_lane_pass takes the override: concurrent workers share
+    the per-key rate limit.
     """
     if mode is None:
         mode = dark_follow.mode()

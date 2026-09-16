@@ -37,10 +37,10 @@ it; ``_query`` composes it over the fleet and the routes ask it per node.
 answer "everything is private" on a dropped connection and the map goes blank
 for a database hiccup; answer "nothing is private" and a hiccup publishes what
 an owner declined.  So a failed query changes nothing — the last known set is
-served and the failure is logged.  Before the first successful query there is
-no last known set and the answer is the empty one, which is the only honest
-thing an uninitialised cache can say and matches a fleet that has registered
-nobody.
+served and the failure is logged. Before the first successful query there is
+no last known policy: public feeds are withheld and policy-dependent requests
+return 503 until a query succeeds. A confirmed empty private set still means
+the fleet is public; an unavailable database cannot establish that fact.
 """
 
 from __future__ import annotations
@@ -74,11 +74,21 @@ _cached: frozenset[str] = frozenset()
 _expires_at: float = 0.0
 # Distinct from ``_cached`` being empty: an empty set from a healthy database
 # means "no node is private", and the boot state means "nobody has asked yet".
-# Only the log line depends on the difference, but conflating them is how a
-# fail-open reads as a legitimate answer.
+# A cold failure must withhold publication, while a confirmed empty set may
+# publish every node. Warm failures continue using the last known policy.
 _have_data: bool = False
 
 _engine = None
+
+
+class PublicationUnavailable(RuntimeError):
+    """No privacy policy has been read successfully in this process yet."""
+
+
+def _cached_policy() -> frozenset[str]:
+    if not _have_data:
+        raise PublicationUnavailable("Publication policy is temporarily unavailable")
+    return _cached
 
 
 def _reset_for_tests() -> None:
@@ -215,12 +225,12 @@ def private_node_ids() -> frozenset[str]:
     global _cached, _expires_at, _have_data
     now = time.monotonic()
     if now < _expires_at:
-        return _cached
+        return _cached_policy()
     with _lock:
         # Re-check under the lock: several feed threads can arrive together on
         # the same expiry and only one of them needs to do the read.
         if time.monotonic() < _expires_at:
-            return _cached
+            return _cached_policy()
         try:
             _cached = _query()
             _have_data = True
@@ -235,16 +245,19 @@ def private_node_ids() -> frozenset[str]:
             else:
                 logger.exception(
                     "publication: could not read the private-node set and have never read one; "
-                    "treating every node as public until a query succeeds"
+                    "withholding public data until a query succeeds"
                 )
-        return _cached
+        return _cached_policy()
 
 
 def is_private(node_id: str | None) -> bool:
     """Whether one node id is in the private set.  None/"" is public."""
     if not node_id:
         return False
-    return node_id in private_node_ids()
+    try:
+        return node_id in private_node_ids()
+    except PublicationUnavailable:
+        return True
 
 
 def public_aircraft_payload(data: dict) -> dict:
@@ -278,7 +291,21 @@ def public_aircraft_payload(data: dict) -> dict:
     Returns the input object itself when no node is private, so the caller can
     reuse the bytes it already serialised.
     """
-    private = private_node_ids()
+    try:
+        private = private_node_ids()
+    except PublicationUnavailable:
+        # Retain the wire shape, but withhold all identities and measurements
+        # until the policy is known. Owner feeds use the unredacted sibling.
+        out = {**data, "aircraft": []}
+        for field in ("detection_arcs", "anomaly_hexes"):
+            if field in data:
+                out[field] = []
+        for field in ("detecting_nodes", "ground_truth", "ground_truth_meta"):
+            if field in data:
+                out[field] = {}
+        if "messages" in data:
+            out["messages"] = 0
+        return out
     if not private:
         return data
 
@@ -324,7 +351,10 @@ def public_summaries(summaries: dict) -> dict:
     no partial version of it worth keeping, so a private node simply is not in
     the map.
     """
-    private = private_node_ids()
+    try:
+        private = private_node_ids()
+    except PublicationUnavailable:
+        return {}
     if not private:
         return summaries
     return {nid: s for nid, s in summaries.items() if nid not in private}

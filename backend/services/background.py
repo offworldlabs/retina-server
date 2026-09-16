@@ -21,6 +21,7 @@ from services.tasks import (  # noqa: F401
     prune_synthetic_nodes,
     reputation_evaluator,
     start_solver_workers,
+    stop_solver_workers,
     storage_refresh_task,
     track_flush_task,
     users_backup_task,

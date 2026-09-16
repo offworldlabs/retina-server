@@ -181,14 +181,19 @@ class TestPrivateNodeIds:
         monkeypatch.setattr(publication, "_expires_at", 0.0)
         assert private_node_ids() == frozenset({_PRIV})
 
-    def test_a_failure_before_any_answer_is_the_empty_set(self, monkeypatch):
-        """Boot with an unreachable database: an answer, not an exception."""
+    def test_a_failure_before_any_answer_withholds_publication(self, monkeypatch):
+        """Unknown policy must not be confused with a confirmed public fleet."""
 
         def _boom():
             raise RuntimeError("database is gone")
 
         monkeypatch.setattr(publication, "_query", _boom)
-        assert private_node_ids() == frozenset()
+        with pytest.raises(publication.PublicationUnavailable):
+            private_node_ids()
+        assert is_private(_PRIV)
+        assert is_private(_PUB)
+        assert public_aircraft_payload(_payload())["aircraft"] == []
+        assert public_summaries({_PRIV: {"node_id": _PRIV}}) == {}
 
     def test_a_failure_backs_off_rather_than_querying_every_call(self, monkeypatch):
         calls = []
@@ -198,9 +203,23 @@ class TestPrivateNodeIds:
             raise RuntimeError("database is gone")
 
         monkeypatch.setattr(publication, "_query", _boom)
-        private_node_ids()
-        private_node_ids()
+        for _ in range(2):
+            with pytest.raises(publication.PublicationUnavailable):
+                private_node_ids()
         assert len(calls) == 1
+
+    def test_cold_failure_recovers_after_backoff(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("database is gone")
+
+        monkeypatch.setattr(publication, "_query", _boom)
+        with pytest.raises(publication.PublicationUnavailable):
+            private_node_ids()
+        monkeypatch.setattr(publication, "_query", lambda: frozenset({_PRIV}))
+        assert is_private(_PUB)  # still unavailable during backoff
+        monkeypatch.setattr(publication, "_expires_at", 0.0)
+        assert private_node_ids() == frozenset({_PRIV})
+        assert not is_private(_PUB)
 
 
 # ── The override and the precedence rule ─────────────────────────────────────
@@ -491,6 +510,53 @@ class TestPublicSummaries:
         monkeypatch.setattr(publication, "private_node_ids", lambda: frozenset())
         summaries = {_PUB: {"node_id": _PUB}}
         assert public_summaries(summaries) is summaries
+
+
+class TestUnavailablePublicationPolicy:
+    @pytest.fixture(autouse=True)
+    def unavailable(self, monkeypatch):
+        publication._reset_for_tests()
+
+        def fail():
+            raise RuntimeError("database unavailable")
+
+        monkeypatch.setattr(publication, "_query", fail)
+
+    @pytest.mark.parametrize("path", ["/api/radar/analytics", "/api/data/archive", "/api/data/archive/a/b/c"])
+    def test_policy_dependent_requests_return_retryable_503(self, path, monkeypatch):
+        import routes.archive as archive
+
+        monkeypatch.setattr(archive, "list_archived_files", lambda **kwargs: {"files": [], "count": 0, "total": 0})
+        # Without lifespan: this specifically tests a cold policy failure, not
+        # successful startup priming or unrelated background activity.
+        client = TestClient(app, raise_server_exceptions=False)
+        try:
+            response = client.get(path)
+        finally:
+            client.close()
+        assert response.status_code == 503
+        assert response.headers["Retry-After"] == "5"
+        assert response.json() == {"detail": "Publication policy is temporarily unavailable"}
+
+    def test_broadcast_withholds_public_data_but_keeps_owner_source(self):
+        from services.tasks.aircraft_flush import _flush_once
+
+        data = _payload()
+        public, _ = _flush_once(data)
+        assert public["aircraft"] == []
+        assert public["detection_arcs"] == []
+        assert public["detecting_nodes"] == {}
+        assert public["messages"] == 0
+        assert state.latest_aircraft_json is data
+        assert state.latest_aircraft_json_public == public
+        assert orjson.loads(state.latest_real_aircraft_json_bytes)["aircraft"] == []
+
+    def test_receiver_withholds_coordinates(self):
+        from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
+
+        receiver = PassiveRadarPipeline(dict(DEFAULT_NODE_CONFIG)).generate_receiver_json()
+        assert receiver["lat"] is None
+        assert receiver["lon"] is None
 
 
 class TestPerNodeAnalyticsRoute:

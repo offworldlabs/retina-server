@@ -6,6 +6,7 @@ import time
 
 from core import state
 from services.frame_processor import process_one_frame
+from services.tasks.executor import task_executor
 
 
 async def frame_processor_loop(default_pipeline, shard: int = 0):
@@ -21,24 +22,23 @@ async def frame_processor_loop(default_pipeline, shard: int = 0):
     state.frame_queue is re-read each iteration so a test that swaps the queue
     mid-flight still works.
     """
-    loop = asyncio.get_event_loop()
-    while True:
-        queue = state.frame_queue.shard(shard)
-        node_id, frame = await queue.get()
-        try:
-            await loop.run_in_executor(
-                None,
-                process_one_frame,
-                node_id,
-                frame,
-                default_pipeline,
-            )
-            state.aircraft_dirty = True
-            state.bump_counter("frames_processed")
-            state.task_last_success["frame_processor"] = time.time()
-        except Exception:
-            state.bump_task_error("frame_processor")
-            logging.exception("Frame processing failed")
-        finally:
-            queue.task_done()
-        await asyncio.sleep(0)
+    async with task_executor(f"frame-shard-{shard}") as run:
+        while True:
+            queue = state.frame_queue.shard(shard)
+            node_id, frame = await queue.get()
+            try:
+                await run(
+                    process_one_frame,
+                    node_id,
+                    frame,
+                    default_pipeline,
+                )
+                state.aircraft_dirty = True
+                state.bump_counter("frames_processed")
+                state.task_last_success["frame_processor"] = time.time()
+            except Exception:
+                state.bump_task_error("frame_processor")
+                logging.exception("Frame processing failed")
+            finally:
+                queue.task_done()
+            await asyncio.sleep(0)

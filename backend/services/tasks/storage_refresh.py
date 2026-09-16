@@ -7,7 +7,6 @@ the /api/admin/storage endpoint returns instantly with no blocking work.
 """
 
 import asyncio
-import concurrent.futures
 import logging
 import shutil
 import subprocess
@@ -18,18 +17,11 @@ import orjson
 
 from config.constants import STORAGE_CACHE_TTL_S
 from core import state
+from services.tasks.executor import task_executor
 
 logger = logging.getLogger(__name__)
 
 _BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
-
-
-# Reuse the admin executor (2 threads) — same class of blocking I/O.
-# Import lazily to avoid circular imports with routes.admin.
-def _get_admin_executor() -> concurrent.futures.ThreadPoolExecutor:
-    from routes.admin import _admin_executor
-
-    return _admin_executor
 
 
 def _scan_archive_dir(archive_dir: Path) -> tuple[int, int, dict]:
@@ -181,15 +173,14 @@ def _build_storage_result(archive_dir: Path) -> bytes:
 async def storage_refresh_task():
     """Pre-compute storage stats every STORAGE_CACHE_TTL_S and store in state."""
     archive_dir = _BACKEND_DIR / "coverage_data" / "archive"
-    loop = asyncio.get_running_loop()
     # Run immediately at startup so the endpoint has data from the first request.
-    while True:
-        try:
-            executor = _get_admin_executor()
-            result_bytes = await loop.run_in_executor(executor, _build_storage_result, archive_dir)
-            state.latest_storage_bytes = result_bytes
-            state.task_last_success["storage_refresh"] = time.time()
-        except Exception:
-            state.bump_task_error("storage_refresh")
-            logger.exception("Storage stats refresh failed")
-        await asyncio.sleep(STORAGE_CACHE_TTL_S)
+    async with task_executor("storage-refresh") as run:
+        while True:
+            try:
+                result_bytes = await run(_build_storage_result, archive_dir)
+                state.latest_storage_bytes = result_bytes
+                state.task_last_success["storage_refresh"] = time.time()
+            except Exception:
+                state.bump_task_error("storage_refresh")
+                logger.exception("Storage stats refresh failed")
+            await asyncio.sleep(STORAGE_CACHE_TTL_S)
