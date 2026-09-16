@@ -88,13 +88,18 @@ services:
     # a much heavier fleet the app sat at 152 MiB and the fleet at 25 MiB, so
     # memory is not what constrains this box. A deploy builds the image on-box
     # beside the running containers, and the build is uncapped, so its cost is
-    # solver CPU share, not memory. The caps below predate the resize from 2
-    # cores and have not been re-measured; docker-compose.test.yml runs the same
-    # shape at cpus 3.0.
+    # solver CPU share, not memory.
+    #
+    # cpus 3.0 = the main process plus SOLVER_WORKERS=2 solver pool children
+    # (services/tasks/solver.py), leaving a core for the fleet and the host, the
+    # shape docker-compose.test.yml already runs. The solver's work arrives in
+    # bursts that want more than two cores for seconds at a time, so a lower
+    # ceiling shows up as throttling rather than as load, and this box averages
+    # under 15% of its four cores.
     deploy:
       resources:
         limits:
-          cpus: "1.5"
+          cpus: "3.0"
           memory: 1600M
     # nginx proxies /api/towers to tower-finder-service over this network, so
     # the server has to be on it or that location 502s. Staging never joined it
