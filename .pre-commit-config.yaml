@@ -18,6 +18,24 @@ repos:
       - id: ruff-check
       - id: ruff-format
 
+  # The only thing that validates a workflow edit. The deploy, staging and smoke
+  # jobs run on push to main, so a green PR on a workflow change proves close to
+  # nothing, and main deploys straight to production. Picked up by CI for free:
+  # the Lint (pre-commit) step already runs this file against everything.
+  #
+  # actionlint also shellchecks each inline `run:` block when shellcheck is on
+  # PATH, which is what covers the three copies of the deploy script.
+  #
+  # Where this lies to you: that shellcheck is whichever one is installed, so a
+  # green run here does not promise a green run in CI. SC2119 on
+  # staging-deploy-verify.yml fires on the runner's shellcheck and not on 0.11,
+  # which is why the disable there looks unnecessary locally. Read CI's finding
+  # and add a targeted disable rather than assuming the runner is wrong.
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
   - repo: https://github.com/offworldlabs/ops
     rev: hooks-v1.0
     hooks:

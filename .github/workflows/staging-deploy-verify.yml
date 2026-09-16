@@ -328,6 +328,10 @@ jobs:
           # connected, the gate took that as ready, and all six had dropped
           # eighteen seconds later. One node answering is not a fleet serving.
           source deploy/fleet-scale.sh
+          # Takes an optional compose path as "${1:-}" and is called bare here,
+          # which is what it is written for. shellcheck before 0.11 reads that as
+          # the script's own $1 leaking in; inert on versions that do not.
+          # shellcheck disable=SC2119
           MIN=$(fleet_min_active) || {
             echo "docker-compose.staging.yml no longer declares FLEET_NODES, so"
             echo "there is nothing to hold the fleet to. Refusing to guess."
