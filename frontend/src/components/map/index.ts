@@ -48,3 +48,4 @@ export { default as PlaybackBar } from "./PlaybackBar";
 export { default as DetectionArcs } from "./DetectionArcs";
 export { default as ClaimedArcs } from "./ClaimedArcs";
 export { default as InBeamDiagnostic } from "./InBeamDiagnostic";
+export { default as ScaledCircleMarker } from "./ScaledCircleMarker";

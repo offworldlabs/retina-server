@@ -1087,6 +1087,30 @@
   border: none !important;
 }
 
+/* Zoom-aware size, read from the custom property IconScaleSync (iconScale.ts)
+   keeps on the Leaflet container.  The scale goes on the INNER div, never the
+   outer .leaflet-marker-icon: Leaflet owns the outer element's transform (the
+   translate3d that positions it) and rewrites it on every pan and zoom, so a
+   scale there would be clobbered.  Not on the svg either — the 60 fps loop in
+   LiveAircraftMap.tsx writes the heading rotation to `.ac-hex-<hex> svg`'s
+   inline transform, and a scale on the same element would be overwritten each
+   frame.  The transform-origin is set inline by the icon factory, per icon
+   size, so the glyph shrinks and grows about the point it claims to be at
+   (the divIcon's iconAnchor) rather than about the 90 px box's corner.
+   will-change keeps the zoom-animation frames on the compositor. */
+.aircraft-marker > div {
+  transform: scale(var(--map-icon-scale, 1));
+  will-change: transform;
+}
+
+/* Below ICON_SCALE_LABEL_MIN the container is tagged "far" and the callsign
+   labels go: a 9.5 px chip at 0.6× is an illegible smear that only adds to
+   the pile.  The Labels toggle still owns whether they come back on zoom-in;
+   this rule merely hides what it turned on. */
+.leaflet-container[data-icon-tier="far"] .aircraft-label {
+  display: none;
+}
+
 /* A white chip with dark text: on pale tiles the old dark chip read as a
    blob before it read as a callsign. */
 .aircraft-label {
@@ -1115,6 +1139,16 @@
 .node-marker {
   background: none !important;
   border: none !important;
+}
+
+/* Same zoom scale for the node glyphs.  Their html is the svg itself (no
+   wrapper div) and the anchor is the glyph's centre, so the origin is simply
+   50%/50%.  Nothing else writes a transform on this svg — its inline style is
+   display + filter only (nodeGlyphSvg / nodeSiteGlyphSvg in icons.ts). */
+.node-marker > svg {
+  transform: scale(var(--map-icon-scale, 1));
+  transform-origin: 50% 50%;
+  will-change: transform;
 }
 
 /* Per-node "Show"/"Hide" control in a shared site's popup.  A site with two

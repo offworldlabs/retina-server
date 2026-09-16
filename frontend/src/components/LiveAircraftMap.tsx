@@ -5,7 +5,6 @@ import {
   TileLayer,
   Marker,
   Popup,
-  CircleMarker,
   Circle,
   Polygon,
   Polyline,
@@ -71,6 +70,8 @@ import {
   ClaimedArcs,
   InBeamDiagnostic,
 } from "./map";
+import { IconScaleSync, iconZoomScale, useIconZoomScale } from "./map/iconScale";
+import ScaledCircleMarker from "./map/ScaledCircleMarker";
 
 import { fetchMlatVerification, fetchMlatHistory } from "../api";
 import { defaultsGroundTruthOff } from "../utils/domains";
@@ -118,6 +119,11 @@ const _gtCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane:
 const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, onSelect, selectedHex }) {
   const palette = usePalette();
   const map = useMap();
+  // Zoom-aware dot size (map/iconScale).  A canvas dot has no CSS to read,
+  // so the multiplier is applied to radius and stroke right here; holding
+  // it as state (not reading getZoom in the effect) is what makes a zoom
+  // re-style the dots at once instead of on the next aircraft update.
+  const scale = useIconZoomScale();
   const markerMapRef = useRef(new Map()); // hex → L.circleMarker — incremental diff
   const onSelectRef  = useRef(onSelect);
   useEffect(() => { onSelectRef.current = onSelect; }, [onSelect]);
@@ -141,8 +147,10 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
       const color   = truthFill(cls, palette);
       const border  = truthBorder(cls, isSel, palette);
       const baseR   = isDrone ? 6 : isAnom ? 8 : 9;
-      const radius  = isSel ? baseR + 4 : baseR;
-      const weight  = isSel ? 4 : 3;
+      const radius  = (isSel ? baseR + 4 : baseR) * scale;
+      // The stroke is heavy by design (it carries selection), so it thins
+      // with the dot — floored at 1 px so it never disappears.
+      const weight  = Math.max(1, (isSel ? 4 : 3) * scale);
 
       let m = markerMap.get(ac.hex);
       if (!m) {
@@ -175,7 +183,7 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
         markerMap.delete(hex);
       }
     }
-  }, [aircraft, map, selectedHex, palette]);
+  }, [aircraft, map, selectedHex, palette, scale]);
 
   // Full cleanup on unmount
   useEffect(() => {
@@ -211,6 +219,12 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
     const tick = () => {
       const gt = groundTruthRef.current;
       const seen = new Set();
+      // Zoom-aware dot size (map/iconScale), read once per tick — this
+      // layer has no React render to hand it a prop.  Applied only when
+      // the zoom moved it, so a steady map costs nothing extra per dot.
+      const scale = iconZoomScale(map.getZoom());
+      const dotRadius = 5 * scale;
+      const dotWeight = Math.max(1, 2 * scale);
 
       for (const ac of radarAircraftRef.current || []) {
         const gtHex = ac.ground_truth_hex;
@@ -282,9 +296,9 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
           const dot = L.circleMarker([gtLat, gtLon], {
             renderer: _mgCanvas,
             interactive: false,
-            radius: 5,
+            radius: dotRadius,
             color: TRUTH,
-            weight: 2,
+            weight: dotWeight,
             fillColor: TRUTH,
             fillOpacity: 0.8,
           });
@@ -295,6 +309,10 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
           markers.set(gtHex, entry);
         } else {
           entry.dot.setLatLng([gtLat, gtLon]);
+          if (entry.dot.options.radius !== dotRadius) {
+            entry.dot.setRadius(dotRadius);
+            entry.dot.setStyle({ weight: dotWeight });
+          }
           if (!hasAnchor) {
             // Anchor lost since last tick — drop the line rather than leave
             // it pointing at ground.
@@ -415,6 +433,10 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
     const tick = () => {
       const seen = new Set();
       const tracks = tracksRef.current;
+      // Zoom-aware dot size, same arrangement as MatchedGroundTruthLayer.
+      const scale = iconZoomScale(map.getZoom());
+      const dotRadius = 4 * scale;
+      const dotWeight = Math.max(1, 2 * scale);
 
       for (const t of tracks) {
         if (!validLatLon(t.truth_lat, t.truth_lon) || !validLatLon(t.solver_lat, t.solver_lon)) continue;
@@ -457,9 +479,9 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
           const dot = L.circleMarker([drTruthLat, drTruthLon], {
             renderer: _mlatCanvas,
             interactive: false,
-            radius: 4,
+            radius: dotRadius,
             color: MLAT,
-            weight: 2,
+            weight: dotWeight,
             fillColor: MLAT,
             fillOpacity: 0.85,
           });
@@ -477,6 +499,10 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
           markers.set(id, entry);
         } else {
           entry.dot.setLatLng([drTruthLat, drTruthLon]);
+          if (entry.dot.options.radius !== dotRadius) {
+            entry.dot.setRadius(dotRadius);
+            entry.dot.setStyle({ weight: dotWeight });
+          }
           entry.line.setLatLngs([[drTruthLat, drTruthLon], [drSolverLat, drSolverLon]]);
           entry.line.setTooltipContent(`${t.position_error_km.toFixed(1)} km`);
           entry.line.getTooltip()?.setLatLng([
@@ -514,7 +540,8 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
       marker (from /api/test/mlat-history), so "solve trail vs GT trail vs
       displayed marker" is visually decomposable.  Dots only, no interaction —
       the detail panel's solve-history table is the lookup surface.  Bounded
-      (≤60 dots for one selected track), so React CircleMarkers are fine. ── */
+      (≤60 dots for one selected track), so React CircleMarkers are fine —
+      ScaledCircleMarkers, so the trail shrinks with the marker it sits under. ── */
 const MlatSolveHistoryLayer = memo(function MlatSolveHistoryLayer({ solves }) {
   const { ANOMALY, GOOD, INK_SUBTLE, WARN } = usePalette();
   const errColor = (e) =>
@@ -523,7 +550,7 @@ const MlatSolveHistoryLayer = memo(function MlatSolveHistoryLayer({ solves }) {
     <>
       {solves.slice(0, 60).map((s, i) =>
         validLatLon(s.raw_lat, s.raw_lon) ? (
-          <CircleMarker
+          <ScaledCircleMarker
             key={`${s.ts_ms}-${i}`}
             center={[s.raw_lat, s.raw_lon]}
             radius={3}
@@ -1018,7 +1045,7 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
       return (
         <React.Fragment key={`site-${site.key}`}>
           {disc}
-          <CircleMarker
+          <ScaledCircleMarker
             center={[site.rx_lat, site.rx_lon]}
             radius={5}
             // Purely a handle for the E2E suite, and top-level for the reason
@@ -1031,7 +1058,7 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
             eventHandlers={clickHandlers}
           >
             {popup}
-          </CircleMarker>
+          </ScaledCircleMarker>
         </React.Fragment>
       );
     }
@@ -1109,7 +1136,7 @@ const IlluminatorsLayer = memo(function IlluminatorsLayer({ visibleNodes, showIl
     byTx.get(key).nodes.push(nodeLabel(n));
   }
   return [...byTx.entries()].map(([key, tx]) => (
-    <CircleMarker
+    <ScaledCircleMarker
       key={`illum-${key}`}
       center={[tx.lat, tx.lon]}
       radius={6}
@@ -1121,7 +1148,7 @@ const IlluminatorsLayer = memo(function IlluminatorsLayer({ visibleNodes, showIl
         {tx.lat.toFixed(4)}, {tx.lon.toFixed(4)}<br />
         Used by {tx.nodes.length} node{tx.nodes.length === 1 ? "" : "s"}: {tx.nodes.join(", ")}
       </Popup>
-    </CircleMarker>
+    </ScaledCircleMarker>
   ));
 });
 
@@ -2198,6 +2225,7 @@ export default function LiveAircraftMap() {
             />
 
             <ViewportTracker onChange={handleViewportChange} />
+            <IconScaleSync />
             <HashSync
               onMove={handleMapMove}
               showRangeRings={showRangeRings}
@@ -2205,7 +2233,7 @@ export default function LiveAircraftMap() {
               smoothRef={smoothRef}
             />
             {userLoc && (
-              <CircleMarker
+              <ScaledCircleMarker
                 center={[userLoc.lat, userLoc.lon]}
                 radius={7}
                 pathOptions={{ color: LANE_MN_ADSB, fillColor: LANE_MN_ADSB, fillOpacity: 0.7, weight: 2 }}
@@ -2271,14 +2299,15 @@ export default function LiveAircraftMap() {
                       transmitter and its detections, and no area at all. */}
                   {/* TX tower marker */}
                   {sn.tx_lat && sn.tx_lon && (
-                    <CircleMarker
+                    <ScaledCircleMarker
                       center={[sn.tx_lat, sn.tx_lon]}
                       radius={8}
+                      scaleWeight
                       pathOptions={{ color: WARN, weight: 2.5, fillColor: SELECTED, fillOpacity: 0.7 }}
                       bubblingMouseEvents={false}
                     >
                       <Popup><strong>TX Tower</strong><br />{sn.tx_lat.toFixed(4)}, {sn.tx_lon.toFixed(4)}</Popup>
-                    </CircleMarker>
+                    </ScaledCircleMarker>
                   )}
                   {/* RX→TX baseline — connects the PUBLISHED rx anchor to the
                       licensed transmitter, so it discloses nothing the feed
@@ -2306,7 +2335,7 @@ export default function LiveAircraftMap() {
                     }
                     if (ac.lat && ac.lon) {
                       return (
-                        <CircleMarker
+                        <ScaledCircleMarker
                           key={`node-det-${ac.hex}`}
                           center={[ac.lat, ac.lon]}
                           radius={12}
@@ -2349,10 +2378,13 @@ export default function LiveAircraftMap() {
                         interactive={false}
                       />
                     )}
-                    {/* Prominent node marker ring */}
-                    <CircleMarker
+                    {/* Prominent node marker ring.  Scaled like the node glyph
+                        it encloses (the glyph follows the CSS variable, the ring
+                        its radius prop) so the two stay concentric at every zoom. */}
+                    <ScaledCircleMarker
                       center={[cn.rx_lat, cn.rx_lon]}
                       radius={14}
+                      scaleWeight
                       pathOptions={{ color: LANE_MN_DARK, weight: 3, fillColor: LANE_MN_DARK, fillOpacity: 0.25 }}
                       interactive={false}
                     />
@@ -2379,9 +2411,10 @@ export default function LiveAircraftMap() {
                 if (!dn) return null;
                 return (
                   <React.Fragment key={`gt-det-${nodeRef}`}>
-                    <CircleMarker
+                    <ScaledCircleMarker
                       center={[dn.rx_lat, dn.rx_lon]}
                       radius={14}
+                      scaleWeight
                       pathOptions={{ color: SELECTED, weight: 3, fillColor: SELECTED, fillOpacity: 0.25 }}
                       interactive={false}
                     />
@@ -2403,9 +2436,10 @@ export default function LiveAircraftMap() {
               if (!sn) return null;
               return (
                 <>
-                  <CircleMarker
+                  <ScaledCircleMarker
                     center={[sn.rx_lat, sn.rx_lon]}
                     radius={14}
+                    scaleWeight
                     pathOptions={{ color: SELECTED, weight: 3, fillColor: SELECTED, fillOpacity: 0.25 }}
                     interactive={false}
                   />
@@ -2548,10 +2582,11 @@ export default function LiveAircraftMap() {
                 drIconState(ac, markerNow, ac.hex === selectedHex) !== "hidden"
               )
               .map((ac) => (
-                <CircleMarker
+                <ScaledCircleMarker
                   key={`anomaly-${ac.hex}`}
                   center={[ac.lat, ac.lon]}
                   radius={16}
+                  scaleWeight
                   // className stays top-level — see the CoverageLayer note
                   className="anomaly-ring"
                   pathOptions={{
