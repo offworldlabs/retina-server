@@ -879,6 +879,31 @@ mn_superseded_blocked: int = 0
 # mn_superseded_blocked to see how much of the guard's work altitude is doing.
 mn_superseded_blocked_alt: int = 0
 
+# Mint-time retirement of coasting dark keys (solver.py's
+# _stale_coast_candidate, gated by MN_STALE_COAST_ENABLED).  Where
+# mn_superseded above counts entries popped on a SHARED source track id, these
+# count the hard-turn re-key that prefilter cannot see: a dark key the follow
+# lane dropped mid-turn, left coasting on its frozen pre-turn velocity while
+# the fix lane minted a second key for the same aircraft.
+#
+# mn_stale_coast_retired is the retirements; the other three are mints that
+# retired nothing, split by how far the search got, and they are mutually
+# exclusive with it and with each other (one bump per minted dark key).
+mn_stale_coast_retired: int = 0
+# ...a candidate at the right place and age, refused because its altitude and
+# the new solve's differ by more than _MN_SUPERSEDE_MAX_ALT_DIFF_M.  Same
+# neighbour-pop signature mn_superseded_blocked_alt carries.
+mn_stale_coast_blocked_alt: int = 0
+# ...a candidate at the right place, age and altitude with NO turn behind it:
+# neither a dark_follow drop inside its cooldown nor a live KF manoeuvre
+# level.  This is the counter to read before ever loosening the gate — it is
+# every retirement proximity alone would have made and this rule refuses.
+mn_stale_coast_blocked_evidence: int = 0
+# ...and mints with no candidate at all, which is the ordinary case: a genuinely
+# new target.  Carried so the other three are read as fractions of the mints
+# rather than of nothing.
+mn_stale_coast_none: int = 0
+
 # Solves published after node-trimming recovered them from the rms_delay
 # gate at n>=4 (see solver.py's _trim_and_resolve).  Counted once per
 # publish, not per trim round — this is "how many map markers exist because
@@ -1139,6 +1164,8 @@ def _reset_for_tests() -> None:
     global solver_resolve_skips_dark, solver_resolve_refresh
     global solver_adopt_eligible, solver_adopt_widened, solver_adopt_nodes_added, solver_adopt_rejected
     global mn_superseded, mn_superseded_blocked, mn_superseded_blocked_alt, solver_trimmed
+    global mn_stale_coast_retired, mn_stale_coast_blocked_alt
+    global mn_stale_coast_blocked_evidence, mn_stale_coast_none
     global solver_consensus_selected, solver_consensus_filtered
     global solver_consensus_fallback, solver_consensus_shadow
     global solver_anchor_hits, solver_anchor_fallbacks, solver_anchored_published
@@ -1251,6 +1278,8 @@ def _reset_for_tests() -> None:
         solver_resolve_skips = solver_resolve_skips_dark = solver_resolve_refresh = 0
         solver_adopt_eligible = solver_adopt_widened = solver_adopt_nodes_added = solver_adopt_rejected = 0
         mn_superseded = mn_superseded_blocked = mn_superseded_blocked_alt = 0
+        mn_stale_coast_retired = mn_stale_coast_blocked_alt = 0
+        mn_stale_coast_blocked_evidence = mn_stale_coast_none = 0
         solver_trimmed = 0
         solver_consensus_selected = solver_consensus_filtered = 0
         solver_consensus_fallback = solver_consensus_shadow = 0

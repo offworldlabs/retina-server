@@ -629,6 +629,10 @@ class TestFragmentation:
             "mn_superseded": 0,
             "mn_superseded_blocked": 0,
             "mn_superseded_blocked_alt": 0,
+            "mn_stale_coast_retired": 0,
+            "mn_stale_coast_blocked_alt": 0,
+            "mn_stale_coast_blocked_evidence": 0,
+            "mn_stale_coast_none": 0,
         }
 
     def test_dark_key_decision_counters_are_surfaced(self):
@@ -665,6 +669,24 @@ class TestFragmentation:
         assert out["fragmentation"]["mn_superseded"] == 3
         assert out["fragmentation"]["mn_superseded_blocked"] == 29
         assert out["fragmentation"]["mn_superseded_blocked_alt"] == 12
+
+    def test_stale_coast_counters_are_reported(self):
+        """Mint-time retirement of coasting dark keys (solver.py's
+        _stale_coast_candidate), beside the supersession counters for the same
+        reason they sit beside the key decisions: it is the hard-turn re-key
+        the shared-id prefilter above cannot see, and every mint it does not
+        retire reappears in dark_keys_minted as a second key for one aircraft.
+        The four are mutually exclusive — one bump per minted dark key — so
+        they sum to the mints taken while the feature was enabled."""
+        state.mn_stale_coast_retired = 7
+        state.mn_stale_coast_blocked_alt = 2
+        state.mn_stale_coast_blocked_evidence = 5
+        state.mn_stale_coast_none = 40
+        out = _solver_window_stats(10.0)
+        assert out["fragmentation"]["mn_stale_coast_retired"] == 7
+        assert out["fragmentation"]["mn_stale_coast_blocked_alt"] == 2
+        assert out["fragmentation"]["mn_stale_coast_blocked_evidence"] == 5
+        assert out["fragmentation"]["mn_stale_coast_none"] == 40
 
     def test_dark_key_decision_counters_reset_with_state(self):
         state.solver_key_minted_dark = 4
@@ -731,6 +753,10 @@ class TestEndpoint:
             "mn_superseded",
             "mn_superseded_blocked",
             "mn_superseded_blocked_alt",
+            "mn_stale_coast_retired",
+            "mn_stale_coast_blocked_alt",
+            "mn_stale_coast_blocked_evidence",
+            "mn_stale_coast_none",
         }
         assert data["fov"].keys() == {
             "mode",

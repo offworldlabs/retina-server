@@ -101,6 +101,45 @@ export function buildTrailSegments(positions, numSegments = 8) {
 export type SolveTrailPoint = [number, number, number, number?];
 type LatLng = [number, number];
 
+/**
+ * Seed a dark key's solve-trail buffer with the tail of the key it replaced.
+ *
+ * The backend retires a coasting dark key when a hard turn makes the solver
+ * mint a new one for the same aircraft, and tells the client which hex the new
+ * key inherits from (`predecessor_hex`; see solver.py's
+ * _stale_coast_candidate).  `recent_positions` is continuous across that
+ * handover because the server moved its own history too — but
+ * LiveAircraftMap's per-solve buffer is built client-side and keyed by hex, so
+ * without this the drawn dark trail restarts at the turn: measured a median
+ * 40 s of history on a re-keyed turn against 113 s when the key survives one.
+ *
+ * Pure, and bounded twice.  `maxSeed` caps how much of the predecessor is
+ * borrowed, so a long-lived old key cannot fill the new buffer with history
+ * and leave no room for the solves the new key is about to make; `maxTotal`
+ * is the buffer's own depth, applied to the join.  Both drop from the FRONT,
+ * which is what the buffer's own `shift()` does.
+ *
+ * Predecessor points at or after the new buffer's first point are dropped
+ * rather than interleaved: the two keys overlap in time for a solve or two
+ * around the turn, and a trail that is not monotonic in time would make
+ * smoothTrailPositions average across a fold.  #366's jump gate splitting the
+ * run at the seam is expected and left alone — the seam is a real gap in the
+ * measurements, and drawing it as one is the honest rendering.
+ */
+export function stitchPredecessorTrail(
+  prev: SolveTrailPoint[] | null | undefined,
+  pred: SolveTrailPoint[] | null | undefined,
+  maxSeed: number,
+  maxTotal: number = Number.POSITIVE_INFINITY,
+): SolveTrailPoint[] {
+  const tail = Array.isArray(prev) ? prev : [];
+  const source = Array.isArray(pred) ? pred : [];
+  if (!source.length || maxSeed <= 0) return tail.slice(-maxTotal);
+  const cutoff = tail.length ? (tail[0][2] ?? 0) : Number.POSITIVE_INFINITY;
+  const seed = source.filter((p) => (p[2] ?? 0) < cutoff).slice(-maxSeed);
+  return [...seed, ...tail].slice(-maxTotal);
+}
+
 export function smoothTrailPositions(
   points: SolveTrailPoint[] | null | undefined,
   {

@@ -307,6 +307,7 @@ _DOCS_HTML = """<!DOCTYPE html>
       <tr><td>rms_delay</td><td>float</td><td>RMS delay residual from LM solver (µs) — lower is better</td></tr>
       <tr><td>rms_doppler</td><td>float</td><td>RMS Doppler residual from LM solver (Hz)</td></tr>
       <tr><td>recent_positions</td><td>array</td><td>Last 60 [lat, lon, alt_ft, ts] positions</td></tr>
+      <tr><td>predecessor_hex</td><td>string</td><td>Present only on a dark <code>multinode_solve</code> entry whose key was minted to replace a key the solver retired for the same aircraft (a hard turn re-keys it). The retired hex's trail has already been moved into <code>recent_positions</code> above; this names it so a client holding its own per-hex history can stitch that too. Absent otherwise.</td></tr>
     </table>
 
     <h3>position_source Values</h3>

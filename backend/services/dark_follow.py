@@ -356,6 +356,33 @@ def drop_target(key: str, reason: str) -> None:
     _logger.debug("dark-follow: dropped %s (%s)", key, reason)
 
 
+def was_dropped(key: str, now_mono: float | None = None, within_s: float = DARK_FOLLOW_COOLDOWN_S) -> bool:
+    """Did this key's follow ownership lapse within the last ``within_s``?
+
+    Read-only: it reports the guard state drop_target writes and changes
+    nothing, so a caller outside this lane can ask the question without
+    becoming a second writer of the cooldown.
+
+    "Dropped" is derived from the cooldown rather than stored separately —
+    drop_target stamps ``_cooldown_until[key] = now + DARK_FOLLOW_COOLDOWN_S``
+    and nothing else moves that stamp, so the drop epoch is the stamp minus
+    the cooldown.  A key whose cooldown has already expired reports False even
+    for a large ``within_s``: _sweep_cooldowns deletes the entry, so the drop
+    is genuinely no longer known here, and inventing a longer memory in an
+    accessor would be a lie about state this module keeps.  That bounds the
+    useful ``within_s`` at DARK_FOLLOW_COOLDOWN_S, which is also its default.
+
+    ``now_mono`` is injectable for the same reason the rest of this module's
+    predicates are clock-free: a test should not have to sleep to age a drop.
+    """
+    now = time.monotonic() if now_mono is None else now_mono
+    with _GUARD_LOCK:
+        until = _cooldown_until.get(key, 0.0)
+    if until <= now:
+        return False
+    return (now - (until - DARK_FOLLOW_COOLDOWN_S)) <= within_s
+
+
 def record_outcome(key: str, ok: bool) -> None:
     """Feed one follow-solve verdict to the ghost guard.
 

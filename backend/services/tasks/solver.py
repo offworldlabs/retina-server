@@ -18,6 +18,12 @@ from config.constants import (
     ARC_ONLY_ANOMALY_ALLOWLIST,
     ASSOC_GRID_STEP_KM,
     CV_VEL_ADOPT_CHI2_MAX,
+    MN_STALE_COAST_ENABLED,
+    MN_STALE_COAST_MANOEUVRE,
+    MN_STALE_COAST_MAX_KM,
+    MN_STALE_COAST_MAX_S,
+    MN_STALE_COAST_MIN_S,
+    MN_STALE_COAST_VMAX_MS,
     N2_CONFIRM_CHI2_MAX,
     N2_CONFIRM_MIN_EPOCHS,
     N2_TRACK_ASSOCIATION,
@@ -29,6 +35,7 @@ from services import dark_follow, track_filter
 # n=2) bearing fall outside a contributing node's detection area.  This
 # module carried its own haversine, bearing and in-beam rule until those
 # were consolidated into services.geo.
+from services.feed_helpers import adopt_track_history
 from services.geo import bearing_deg, bistatic_differential_km, node_beam_params, offset_latlon_m
 from services.geo import haversine_km as _haversine_km
 from services.id_utils import is_transponder_hex, multinode_hex_from_key, normalize_hex_key
@@ -1986,6 +1993,129 @@ def _supersession_match(
     ):
         return True, dr_dist_km
     return False, dr_dist_km
+
+
+# Solve-error allowance in the mint-time coast gate, kilometres, added to the
+# ballistic travel term (MN_STALE_COAST_VMAX_MS * dt).  Two dark solves of the
+# same aircraft sit ~1 km from truth each (the 2026-09-05 dark-lane fit), so a
+# 2 km allowance covers the pair without opening the gate to a neighbour that
+# the travel term has not already reached.
+_MN_STALE_COAST_BASE_KM = 2.0
+
+# Which counter a mint with no retirement lands on, by why it found none.
+_MN_STALE_COAST_COUNTERS = {
+    "alt": "mn_stale_coast_blocked_alt",
+    "evidence": "mn_stale_coast_blocked_evidence",
+    "none": "mn_stale_coast_none",
+}
+
+
+def _stale_coast_candidate(
+    tracks: dict,
+    new_key: str,
+    raw_lat: float,
+    raw_lon: float,
+    ts_ms: float,
+    alt_m: float | None = None,
+    dropped_fn=None,
+    manoeuvre_fn=None,
+) -> tuple[str | None, str]:
+    """Which existing dark key is this freshly MINTED solve's predecessor?
+
+    The hard-turn re-key, closed at the one moment it is visible.  When a dark
+    aircraft turns, the KF's manoeuvre boost inflates its velocity sigma past
+    DARK_FOLLOW_MAX_VEL_SIGMA_MS, dark_follow drops the key, and the next
+    bottom-up solve of the same aircraft mints a second one.  Supersession
+    cannot see it: the shared-source-track-id prefilter is empty (node tracks
+    renumber through a turn) and _supersession_match's spatial branch measures
+    against the old entry's DEAD-RECKONED position, which is exactly what the
+    turn has invalidated — the old key is coasting off on the frozen pre-turn
+    velocity.  Measured over four 20-minute ground-truth captures (101 hard
+    dark turns, 25 with the aircraft already on the map): 13 re-keyed, and 9
+    of those 13 left the old key drawn for a median 52 s of icon-visible
+    ghost, 11.3 km median from the aircraft whose identity it carried.
+
+    So this asks the same "is it the same aircraft" question on evidence the
+    turn does not destroy:
+
+    * **Raw against raw.**  Distance is between this solve's raw position and
+      the candidate's own last SOLVED position — never the dead-reckoned one.
+      Both are measurements; the dead reckoning between them is the error.
+    * **A coasting age band.**  MN_STALE_COAST_MIN_S to MN_STALE_COAST_MAX_S.
+      The floor is most of the selectivity: dark solves land every 1-3 s, so a
+      key last solved 1 s ago is being tracked, not coasted, and a key 4 km
+      from it is a neighbour.  The ceiling is past the dark entry expiry,
+      where there is no longer a rendered ghost to retire.
+    * **Altitude**, on _MN_SUPERSEDE_MAX_ALT_DIFF_M, failing open when either
+      side is unknown — the same rule and the same reasoning as
+      _supersession_match's.
+    * **Turn evidence, required.**  Proximity alone is what popped 63 of 129
+      neighbours in the 2026-09-05 capture, and this gate is looser in space
+      than that one was, so it does not get to decide anything by itself.
+      Either dark_follow says it dropped this key inside its cooldown window,
+      or the KF says the key's manoeuvre engagement is still above
+      MN_STALE_COAST_MANOEUVRE.  Both are statements about the candidate, made
+      before this solve existed, and both are precisely the turn signature.
+
+    Returns ``(old_key, reason)``.  ``old_key`` is the CLOSEST fully-qualified
+    candidate — one retirement per mint, because a mint replaces one key, and
+    the nearest is the one the aircraft actually flew out of.  ``reason`` says
+    why there is none, for the counter: "evidence" if some candidate reached
+    the evidence test and failed it, else "alt" if one was refused on altitude
+    alone, else "none".  "evidence" outranks "alt" deliberately — a candidate
+    at the right place and height with no turn behind it is the interesting
+    refusal, and the one to watch if this ever needs loosening.
+
+    Clock-free and accessor-injected for the same reason _supersession_match
+    and multinode_key_decision are: testable without a live KF, a live follow
+    lane, or the publish path.
+    """
+    # Resolved here rather than as def-time defaults (the way
+    # _supersession_match binds its learned_vel_fn) because the only caller
+    # never passes them: a def-time default would freeze the accessor at
+    # import and a test could only swap it through __defaults__.
+    dropped_fn = dark_follow.was_dropped if dropped_fn is None else dropped_fn
+    manoeuvre_fn = track_filter.manoeuvre_level if manoeuvre_fn is None else manoeuvre_fn
+    best_key: str | None = None
+    best_dist = float("inf")
+    saw_alt_refusal = False
+    saw_evidence_refusal = False
+    for old_key, old_r in tracks.items():
+        if old_key == new_key or not old_key.startswith("mn-dark-"):
+            continue
+        dt = ts_ms / 1000.0 - float(old_r.get("timestamp_ms") or 0) / 1000.0
+        if not (MN_STALE_COAST_MIN_S <= dt <= MN_STALE_COAST_MAX_S):
+            continue
+        old_lat, old_lon = old_r.get("lat"), old_r.get("lon")
+        if old_lat is None or old_lon is None:
+            continue
+        dist_km = _haversine_km(raw_lat, raw_lon, old_lat, old_lon)
+        if dist_km > min(
+            MN_STALE_COAST_MAX_KM,
+            MN_STALE_COAST_VMAX_MS * dt / 1000.0 + _MN_STALE_COAST_BASE_KM,
+        ):
+            continue
+        old_alt = old_r.get("alt_m")
+        if (
+            old_alt is not None
+            and alt_m is not None
+            and math.isfinite(old_alt)
+            and math.isfinite(alt_m)
+            and abs(alt_m - old_alt) > _MN_SUPERSEDE_MAX_ALT_DIFF_M
+        ):
+            saw_alt_refusal = True
+            continue
+        manoeuvre = manoeuvre_fn(old_key)
+        if not (dropped_fn(old_key) or (manoeuvre is not None and manoeuvre > MN_STALE_COAST_MANOEUVRE)):
+            saw_evidence_refusal = True
+            continue
+        if dist_km < best_dist:
+            best_key, best_dist = old_key, dist_km
+    if best_key is not None:
+        return best_key, ""
+    if saw_evidence_refusal:
+        return None, "evidence"
+    return None, "alt" if saw_alt_refusal else "none"
 
 
 # Maximum age (seconds) of a solver queue item before it is discarded without
@@ -3977,6 +4107,70 @@ def _process_solver_item(
                         _superseded_keys.append(old_key)
                         state.bump_counter("mn_superseded")
 
+                # Mint-time retirement of the key this mint replaced.  The
+                # supersession block above cannot reach the hard-turn re-key —
+                # its shared-id prefilter is empty through a turn and its
+                # spatial branch measures the dead reckoning the turn broke —
+                # so a MINTED dark key asks _stale_coast_candidate the same
+                # question on raw positions plus turn evidence.  See that
+                # predicate for the gates and the measurement behind them.
+                #
+                # Placed here, after supersession, so the two cannot fight over
+                # one entry: anything supersession popped is already out of
+                # state.multinode_tracks by now, and a key that qualified for
+                # supersession was never a mint's problem in the first place.
+                _coast_recent_ids = None
+                if MN_STALE_COAST_ENABLED and _key_how == "minted" and key.startswith("mn-dark-"):
+                    _coast_key, _coast_reason = _stale_coast_candidate(
+                        state.multinode_tracks,
+                        key,
+                        _raw_lat,
+                        _raw_lon,
+                        result.get("timestamp_ms") or 0,
+                        result.get("alt_m"),
+                    )
+                    if _coast_key is None:
+                        state.bump_counter(_MN_STALE_COAST_COUNTERS[_coast_reason])
+                    else:
+                        _coast_r = state.multinode_tracks.get(_coast_key) or {}
+                        # The trail is the whole point of retiring rather than
+                        # just expiring: a new key is a new hex, so without
+                        # this the drawn track restarts at the turn (measured
+                        # median 40 s of history on a re-keyed turn against
+                        # 113 s when the key survives one) while the old hex's
+                        # 60 points sit unreachable until feed_gc collects
+                        # them.  The KF state is deliberately NOT carried:
+                        # the old filter's velocity is the pre-turn one, which
+                        # is the error this exists to end, and _forget_mn_key
+                        # drops it below.
+                        adopt_track_history(multinode_hex_from_key(_coast_key), multinode_hex_from_key(key))
+                        # Everything the existing supersession path carries
+                        # forward, for the same reasons it does: the anomaly
+                        # latch (a flag raised under the old key holds), the
+                        # solve_count and the n_nodes high-water mark (so the
+                        # re-keyed aircraft is not hidden again by the n=2 gate
+                        # or dropped by DARK_FOLLOW_MIN_NODES), and the node
+                        # track memory the next keying decision reads.
+                        result["is_anomalous"] = bool(result.get("is_anomalous")) or bool(_coast_r.get("is_anomalous"))
+                        result["anomaly_types"] = sorted(
+                            set(result.get("anomaly_types", [])) | set(_coast_r.get("anomaly_types", []))
+                        )
+                        max_superseded_count = max(max_superseded_count, _coast_r.get("solve_count", 0))
+                        max_superseded_n_nodes = max(
+                            max_superseded_n_nodes,
+                            int(_coast_r.get("max_n_nodes") or 0),
+                            int(_coast_r.get("n_nodes") or 0),
+                        )
+                        _coast_recent_ids = _coast_r.get("recent_track_ids")
+                        # Named on the entry so the feed can hand the frontend
+                        # the hex whose trail buffer this key inherits
+                        # (aircraft_feed's predecessor_hex), and appended to
+                        # the superseded list so mlat-history shows the
+                        # retirement beside the ordinary ones.
+                        result["predecessor_key"] = _coast_key
+                        _superseded_keys.append(_coast_key)
+                        _forget_mn_key(_coast_key)
+                        state.bump_counter("mn_stale_coast_retired")
                 result["solve_count"] = max(prev.get("solve_count", 0) if prev else 0, max_superseded_count) + 1
                 # High-water mark of geometry, carried forward with the key.
                 # dark_follow._build_targets asks whether a track was ever
@@ -4010,7 +4204,7 @@ def _process_solver_item(
                 # multinode_to_aircraft) and the Parquet archive writes a fixed
                 # schema, so this field reaches neither the map nor the archive.
                 result["recent_track_ids"] = merge_recent_track_ids(
-                    (prev or {}).get("recent_track_ids"),
+                    (prev or {}).get("recent_track_ids") or _coast_recent_ids,
                     s_in.get("track_ids") if isinstance(s_in, dict) else None,
                     result.get("timestamp_ms", 0) / 1000.0,
                 )

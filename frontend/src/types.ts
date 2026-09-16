@@ -63,6 +63,16 @@ export interface Aircraft {
    */
   adsb_fix_age_s?: number;
   recent_positions?: [number, number, number, number][];
+  /**
+   * Hex of a dark `multinode_solve` key this entry's key was minted to
+   * replace, when a hard turn re-keyed the aircraft and the solver retired the
+   * coasting key (backend `predecessor_key`). `recent_positions` above is
+   * already continuous across the handover — the server moved that history
+   * itself — so this exists for the client's own per-hex solve buffer, which
+   * cannot otherwise know the two hexes are one aircraft. Absent on every
+   * other entry, and on backends that predate the field.
+   */
+  predecessor_hex?: string;
   rssi?: number;
   snr?: number;
   speed_ms?: number;

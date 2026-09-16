@@ -190,6 +190,50 @@ MN_DR_CAP_S = float(os.getenv("MN_DR_CAP_S", "15.0"))
 # is a lost track, and withdrawing it is more honest than holding it.
 MN_DARK_EXPIRY_S = float(os.getenv("MN_DARK_EXPIRY_S", "30.0"))
 
+# ── Mint-time retirement of coasting dark keys ───────────────────────────────
+# When a dark aircraft turns hard the KF's manoeuvre boost inflates its
+# velocity sigma past DARK_FOLLOW_MAX_VEL_SIGMA_MS, the follow lane drops the
+# key, and the bottom-up fix lane re-solves the aircraft and MINTS a second
+# one.  Nothing retires the first: supersession needs a shared source track id
+# (node tracks renumber through a turn, so there is none) and judges distance
+# against the DEAD-RECKONED old position, which in a turn is being driven away
+# from the aircraft on the frozen pre-turn velocity.  Measured over four
+# 20-minute ground-truth captures on the test droplet (2026-09-11 to -09-15,
+# 101 hard dark turns, 25 with the aircraft already displayed): 13 of the 25
+# re-keyed, and 9 of those 13 (69%) left the old key drawn — median 52 s
+# icon-visible, worst 321 s, median 11.3 km from the aircraft it was labelled
+# as, and 7 of the 9 were RENEWED by later bottom-up solves rather than simply
+# ageing out.
+#
+# So a minted dark key looks for the key it is replacing at mint time, on the
+# evidence the turn itself leaves behind, and retires it.  The gates below are
+# deliberately narrow: a wrong retirement deletes a live aircraft's key and
+# its trail, which is the same damage the 2026-09-05 supersession work was
+# done to stop.
+#
+# "0" disables the whole block; anything else leaves it on.
+MN_STALE_COAST_ENABLED = (os.getenv("MN_STALE_COAST_ENABLED", "1") or "1").strip() != "0"
+# Age band of the candidate's last solve, seconds.  The floor is what keeps
+# this off healthy tracks: a key still being solved every 1-3 s is not being
+# coasted, and an aircraft 4 km from a 1 s old entry is a neighbour, not a
+# turn.  The ceiling is the dark entry expiry doubled — beyond it the old key
+# has already been withdrawn from the feed and there is nothing to retire.
+MN_STALE_COAST_MIN_S = float(os.getenv("MN_STALE_COAST_MIN_S", "4.0"))
+MN_STALE_COAST_MAX_S = float(os.getenv("MN_STALE_COAST_MAX_S", "60.0"))
+# Distance gate between the new solve's RAW position and the candidate's RAW
+# last-solve position — the position the solver actually measured, never the
+# dead-reckoned one, because the dead reckoning is the thing that has gone
+# wrong.  Budgeted as v_max*dt + 2 km of solve error and capped: at the 60 s
+# ceiling the travel term alone would be 21 km, which is most of a sector.
+MN_STALE_COAST_MAX_KM = float(os.getenv("MN_STALE_COAST_MAX_KM", "10.0"))
+MN_STALE_COAST_VMAX_MS = float(os.getenv("MN_STALE_COAST_VMAX_MS", "350.0"))
+# Manoeuvre engagement (track_filter.manoeuvre_level, 0-1) above which the
+# filter is treated as saying "this key was turning".  The KF re-arms to 1.0
+# on a gate breach and decays with TRACK_KF_MANOEUVRE_TAU_S, so 0.3 is
+# roughly one tau of decay after the last breach — recent enough to be this
+# turn, loose enough not to need the breach and the mint in the same solve.
+MN_STALE_COAST_MANOEUVRE = float(os.getenv("MN_STALE_COAST_MANOEUVRE", "0.3"))
+
 # Quality gate for adopting the constant-velocity fit's velocity into a
 # published solve, in place of the single-epoch Doppler solution (see
 # solver.py's _resolve_cv_fit / velocity adoption in _process_solver_item).
