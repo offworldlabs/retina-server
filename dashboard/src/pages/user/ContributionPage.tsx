@@ -36,7 +36,6 @@ export default function ContributionPage() {
   const nodeEntries: [string, any][] = Array.isArray(rawNodes)
     ? rawNodes.map((n) => [n.node_ref || "", n])
     : Object.entries(rawNodes);
-  const crossNode = analytics?.cross_node || analytics?.cross_node_analysis || {};
 
   // Build contribution chart — top 20 by detections
   const chartDataAll = nodeEntries.map(([ref, n]) => ({

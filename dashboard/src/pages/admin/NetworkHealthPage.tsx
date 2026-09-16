@@ -40,16 +40,18 @@ export default function NetworkHealthPage() {
       node_ref: ref,
       _analytics: analyticsMap[ref] || {},
     }));
+    return { dashboard: d, aircraft, nodes };
+  }, 5000, "", (snapshot) => {
+    // Only accepted polling snapshots may append history.
     setHistory((prev) => [
       ...prev,
       {
         time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-        aircraft: aircraft.length,
-        nodes: nodes.length,
+        aircraft: snapshot.aircraft.length,
+        nodes: snapshot.nodes.length,
       },
     ].slice(-30));
-    return { dashboard: d, aircraft, nodes };
-  }, 5000);
+  });
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
@@ -58,7 +60,6 @@ export default function NetworkHealthPage() {
   const nodes = data?.nodes ?? [];
   const dashNodes = dashboard?.nodes || {}; // {total, active, synthetic, real}
   const tracks = dashboard?.pipeline || {};
-  const analyticsData = dashboard?.analytics || {};
   const coc = dashboard?.chain_of_custody || {};
   const onlineNodes = nodes.filter((n) => n.status !== "disconnected" && n.status !== undefined);
 

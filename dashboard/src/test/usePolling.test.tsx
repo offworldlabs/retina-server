@@ -186,6 +186,67 @@ describe("usePolling", () => {
     await tick(20000);
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["success", "failure"])("ignores an older request's late %s", async (outcome) => {
+    const older = deferred<string>();
+    const newer = deferred<string>();
+    const fetcher = vi.fn().mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+    const { result } = renderHook(() => usePolling(fetcher, 5000));
+    await tick(5000);
+    await act(async () => newer.resolve("newer"));
+    const updatedAt = result.current.updatedAt;
+
+    await act(async () => {
+      if (outcome === "success") older.resolve("older");
+      else older.reject(new Error("old failure"));
+    });
+
+    expect(result.current.data).toBe("newer");
+    expect(result.current.error).toBeNull();
+    expect(result.current.updatedAt).toBe(updatedAt);
+  });
+
+  it("ignores an outstanding response after changing keys", async () => {
+    const older = deferred<string>();
+    const fetcher = vi.fn().mockReturnValueOnce(older.promise).mockResolvedValueOnce("b");
+    const { result, rerender } = renderHook(({ key }) => usePolling(fetcher, 5000, key), {
+      initialProps: { key: "a" },
+    });
+    rerender({ key: "b" });
+    await flush();
+    await act(async () => older.resolve("a"));
+    expect(result.current.data).toBe("b");
+  });
+
+  it("publishes a slow result while a newer request is still pending", async () => {
+    const older = deferred<string>();
+    const newer = deferred<string>();
+    const fetcher = vi.fn().mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+    const { result } = renderHook(() => usePolling(fetcher, 5000));
+    await tick(5000);
+    await act(async () => older.resolve("older"));
+    expect(result.current.data).toBe("older");
+    await act(async () => newer.resolve("newer"));
+    expect(result.current.data).toBe("newer");
+  });
+
+  it("notifies only for accepted results, using the latest callback", async () => {
+    const older = deferred<string>();
+    const newer = deferred<string>();
+    const fetcher = vi.fn().mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+    const initialCallback = vi.fn();
+    const latestCallback = vi.fn();
+    const { rerender } = renderHook(({ onAccepted }) => usePolling(fetcher, 5000, "", onAccepted), {
+      initialProps: { onAccepted: initialCallback },
+    });
+    rerender({ onAccepted: latestCallback });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    await tick(5000);
+    await act(async () => newer.resolve("newer"));
+    await act(async () => older.resolve("older"));
+    expect(initialCallback).not.toHaveBeenCalled();
+    expect(latestCallback).toHaveBeenCalledExactlyOnceWith("newer");
+  });
 });
 
 describe("useFetch", () => {

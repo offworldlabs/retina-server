@@ -24,28 +24,23 @@ export default function RFEnvironmentPage() {
       ...info,
       _analytics: analyticsMap[id] || {},
     }));
-    if (!selectedNode && nodeList.length > 0) {
-      setSelectedNode(nodeList[0].node_id);
-    }
-    // Append to SNR history for the selected node
     const sel = selectedNode || (nodeList[0]?.node_id);
-    if (sel) {
-      const nodeData = analyticsMap[sel] || {};
-      const snr = nodeData.metrics?.avg_snr || 0;
-      setSnrHistory((prev) => [
-        ...prev.slice(-30),
-        {
-          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-          snr: parseFloat(snr.toFixed(1)),
-        },
-      ]);
-    }
-    return nodeList;
-  }, 5000, selectedNode);
+    const snr = analyticsMap[sel]?.metrics?.avg_snr || 0;
+    return {
+      nodes: nodeList,
+      sample: sel ? {
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+        snr: parseFloat(snr.toFixed(1)),
+      } : null,
+    };
+  }, 5000, selectedNode, (snapshot) => {
+    if (!selectedNode && snapshot.nodes.length > 0) setSelectedNode(snapshot.nodes[0].node_id);
+    if (snapshot.sample) setSnrHistory((prev) => [...prev.slice(-30), snapshot.sample]);
+  });
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
-  const nodes = data ?? [];
+  const nodes = data?.nodes ?? [];
   const selected = nodes.find((n) => n.node_id === selectedNode) || nodes[0];
   const metrics = selected?._analytics?.metrics || {};
   const freq = selected?.frequency || selected?._analytics?.detection_area?.center_freq;

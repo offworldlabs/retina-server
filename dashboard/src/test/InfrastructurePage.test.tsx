@@ -115,6 +115,19 @@ describe("InfrastructurePage", () => {
     expect(screen.getByText(/502 Bad Gateway/)).toBeInTheDocument();
   });
 
+  it("keeps the newer snapshot when an older request finishes last", async () => {
+    vi.useFakeTimers();
+    let resolveOlder!: (value: typeof unconfigured) => void;
+    vi.mocked(api.adminInfrastructure)
+      .mockReturnValueOnce(new Promise((resolve) => { resolveOlder = resolve; }))
+      .mockResolvedValueOnce(configured);
+    render(<InfrastructurePage />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(screen.getByText("retina-server prod")).toBeInTheDocument();
+    await act(async () => { resolveOlder(unconfigured); });
+    expect(screen.getByText("retina-server prod")).toBeInTheDocument();
+  });
+
   it("distinguishes an off droplet, a disabled check and a metric with no series", async () => {
     vi.mocked(api.adminInfrastructure).mockResolvedValue(configured);
     render(<InfrastructurePage />);
