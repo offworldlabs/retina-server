@@ -1,16 +1,10 @@
+import { UnauthorizedError, request as sharedRequest, type RequestOptions } from "@retina/shared";
+
 import { withBase } from "../utils/basePath";
 
-const BASE = "";
-
-/** A 401 from the API: an answer, not a failure to obtain one. Distinct from a
- *  network or timeout error so callers can tell "not signed in" from "no reply
- *  yet" and decline to retry the first. */
-export class UnauthorizedError extends Error {
-  constructor() {
-    super("Unauthorized");
-    this.name = "UnauthorizedError";
-  }
-}
+// Re-exported so the auth context can tell a settled 401 from a failure to
+// get an answer without reaching past this module.
+export { UnauthorizedError };
 
 /** Must match the route in App.tsx. Mounted, because this drives a full-page
  *  navigation rather than a router one: under `/dash/` a bare `/login` lands on
@@ -24,42 +18,23 @@ function onLoginPage() {
   return window.location.pathname.replace(/\/+$/, "") === LOGIN_PATH;
 }
 
-async function request(path: string, opts: any = {}) {
-  const controller = new AbortController();
-  const timeoutMs = path === "/api/auth/me" ? 30000 : 10000;
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${BASE}${path}`, {
-      credentials: "same-origin",
-      ...opts,
-      signal: controller.signal,
-      headers: { "Content-Type": "application/json", ...opts.headers },
-    });
-    clearTimeout(timer);
-    if (res.status === 401) {
-      // Not when already on the login page. Assigning the same URL reloads it,
-      // the reload re-runs this request, and its 401 assigns it again; where
-      // nothing can mint a session that does not terminate.
-      if (!onLoginPage()) {
-        window.location.href = LOGIN_PATH;
-      }
-      throw new UnauthorizedError();
+// The shared client answers a 401 with UnauthorizedError; sending the caller to
+// the login page is this app's decision, made here beside the route it names.
+// Not when already on the login page: assigning the same URL reloads it, the
+// reload re-runs this request, and its 401 assigns it again; where nothing can
+// mint a session that does not terminate.
+function request(path: string, opts?: RequestOptions) {
+  return sharedRequest(path, opts).catch((e) => {
+    if (e instanceof UnauthorizedError && !onLoginPage()) {
+      window.location.href = LOGIN_PATH;
     }
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-    return res.json();
-  } catch (e) {
-    clearTimeout(timer);
     throw e;
-  }
-}
-
-export function downloadUrl(path) {
-  return `${BASE}${path}`;
+  });
 }
 
 export const api = {
-  // Auth
-  me: () => request("/api/auth/me"),
+  // Auth. The first answer after a boot can be slow, so this one waits longer.
+  me: () => request("/api/auth/me", { timeoutMs: 30000 }),
   logout: () => request("/api/auth/logout", { method: "POST" }),
 
   // Self-service node ownership

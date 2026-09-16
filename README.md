@@ -28,6 +28,7 @@ rather than a 404 from this backend.
 backend/          Python API (FastAPI)
 frontend/         React SPA (Vite)
 dashboard/        Admin dashboard (React/Vite)
+packages/shared/  Code both web apps share, imported as @retina/shared
 docs/             Architecture, pipeline, runbook, simulation, arc-display
 libs/             Git submodules
   retina-geolocator/   Bistatic passive radar geolocation solver
@@ -60,7 +61,7 @@ with `uv`, installs all five `libs/` packages editable, seeds `backend/.env` fro
 the example, applies the database migrations (`backend/data/users.db` does not
 exist yet on a fresh clone, and `create_all` no longer builds it outside the test
 suite), and installs the web dependencies, one `npm ci` at the root for the
-frontend and the dashboard together. Install all five even if you only
+frontend, the dashboard and the shared package together. Install all five even if you only
 care about tower search: `retina-simulation` imports the other four, so a partial
 install fails at import time rather than at use.
 

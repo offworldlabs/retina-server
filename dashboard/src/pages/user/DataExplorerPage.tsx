@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { api, downloadUrl } from "../../api/client";
+import { api } from "../../api/client";
 import { DataTable } from "../../components/DataTable";
 import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
@@ -74,7 +74,7 @@ export default function DataExplorerPage() {
                 <td style={{ fontSize: 12 }}>{date}</td>
                 <td>
                   <a
-                    href={downloadUrl(`/api/data/archive/${encodeURIComponent(key)}`)}
+                    href={`/api/data/archive/${encodeURIComponent(key)}`}
                     className="btn btn-outline btn-sm"
                     target="_blank"
                     rel="noreferrer"

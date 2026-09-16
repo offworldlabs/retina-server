@@ -1,4 +1,8 @@
 **/node_modules
+# Test files are not part of a build, so an edit to one leaves the build
+# layers cached.
+**/*.test.ts
+**/*.test.tsx
 __pycache__
 *.pyc
 .env

@@ -15,15 +15,18 @@ ARG UV_VERSION=0.12.5
 FROM node:20-alpine AS web-deps
 WORKDIR /app
 # Manifests first, so a source-only change leaves the install layer cached.
-# The lockfile describes every workspace, so each one's package.json is part
-# of what `npm ci` checks.
 COPY package.json package-lock.json .npmrc ./
+# One line per workspace, beside the list in package.json: the lockfile names
+# each one, so `npm ci` refuses a manifest that is missing here.
 COPY frontend/package.json frontend/
 COPY dashboard/package.json dashboard/
+COPY packages/shared/package.json packages/shared/
 RUN npm ci
 # Vite's TypeScript transform follows each app's tsconfig `extends` chain, so
 # the build needs this even though nothing here runs tsc.
 COPY tsconfig.base.json ./
+# Both apps import from it, so it belongs to the shared layer beneath them.
+COPY packages/ packages/
 
 # ── Stages 1a and 1b: the two builds, from one install ──────────────────────
 # Separate stages so each app's build is cached and scheduled on its own: a

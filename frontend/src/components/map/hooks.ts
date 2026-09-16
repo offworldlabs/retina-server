@@ -12,6 +12,7 @@ import {
   scrubToSyntheticNodes,
   syntheticDetectingNodes,
 } from "./syntheticOnly";
+import { request } from "@retina/shared";
 import { fetchMe, fetchMyNodes } from "../../api";
 
 /**
@@ -296,19 +297,14 @@ export function useAircraftFeed(ownerOnly = false) {
     let nextRequest = 0;
     let latestSettled = 0;
     const doFetch = async () => {
-      const request = ++nextRequest;
+      const seq = ++nextRequest;
       try {
-        const res = await fetch(pollPath, { signal: controller.signal });
-        if (res.ok) {
-          const data = await res.json();
-          if (controller.signal.aborted || request < latestSettled) return;
-          latestSettled = request;
-          ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes, data.detecting_nodes, data.detection_arcs);
-        }
-      } catch (err) {
-        if (err.name !== "AbortError") {
-          /* ignore transient network errors */
-        }
+        const data = await request(pollPath, { signal: controller.signal });
+        if (controller.signal.aborted || seq < latestSettled) return;
+        latestSettled = seq;
+        ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes, data.detecting_nodes, data.detection_arcs);
+      } catch {
+        /* a non-2xx answer, a network error or the timeout: the next tick asks again; the abort is the unmount */
       }
     };
     // Fire immediately so data appears before the first interval tick.
@@ -362,9 +358,7 @@ export function useNodes() {
         const url = usesRealOnlyFeed
           ? `${API_BASE}/radar/analytics?real_only=true`
           : `${API_BASE}/radar/analytics`;
-        const res = await fetch(url, { signal: controller.signal });
-        if (!res.ok) return;
-        const data = await res.json();
+        const data = await request(url, { signal: controller.signal });
         if (controller.signal.aborted) return;
         const nodeList: RadarNode[] = [];
         // The analytics nodes map is keyed on node_ref; the values carry no

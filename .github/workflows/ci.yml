@@ -165,18 +165,19 @@ jobs:
       - run: pytest tests/ -v --tb=short -m "not external" -n 2 --dist worksteal
 
   web-build:
-    name: Web build (${{ matrix.app }})
+    name: Web (${{ matrix.workspace }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # `edited` covers title and body edits as well as the base change we want,
     # and `changes.base` is populated only for the latter.
     if: github.event.action != 'edited' || github.event.changes.base
     strategy:
-      # The two apps are independent; a failure in one should still report the
-      # other rather than cancel it.
+      # The workspaces are independent; a failure in one should still report
+      # the others rather than cancel them. One entry per workspace, beside the
+      # list in package.json.
       fail-fast: false
       matrix:
-        app: [frontend, dashboard]
+        workspace: [frontend, dashboard, packages/shared]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -187,13 +188,14 @@ jobs:
       # One workspace, one lockfile, one install; the matrix chooses whose
       # scripts run against it.
       - run: npm ci
-      - run: npm run lint -w ${{ matrix.app }}
+      - run: npm run lint -w ${{ matrix.workspace }}
       # For the frontend this runs both tsc projects, src and e2e (see
       # frontend/package.json), as one step and the same command ONBOARDING
       # gives, so the two cannot drift.
-      - run: npm run typecheck -w ${{ matrix.app }}
-      - run: npm test -w ${{ matrix.app }}
-      - run: npm run build -w ${{ matrix.app }}
+      - run: npm run typecheck -w ${{ matrix.workspace }}
+      - run: npm test -w ${{ matrix.workspace }}
+      # The shared package has nothing to build; the two apps do.
+      - run: npm run build -w ${{ matrix.workspace }} --if-present
 
   docker-build:
     runs-on: ubuntu-latest
