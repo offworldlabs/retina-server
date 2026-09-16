@@ -19,7 +19,7 @@ One FastAPI backend serves several React front-ends, distinguished by subdomain:
 | Surface | What it is |
 | --- | --- |
 | **testmap** | Live aircraft map fed by the simulation fleet (synthetic nodes) — the main dev/demo surface. `testmap.retina.fm` is served by the **staging** droplet, the only environment still running a fleet. |
-| **map** | Production live map showing only real radar nodes. |
+| **map** | Production live map showing only real radar nodes. `test-map.retina.fm` is the equivalent real-only surface on the test droplet; `test-testmap.retina.fm` shows that droplet's synthetic fleet. |
 | **dashboard** | Admin app (auth required): node ownership, claim codes, MLAT verification, metrics. |
 
 Illuminator search is deliberately absent from that table: **tower-finder-service**
@@ -35,7 +35,7 @@ map over WebSocket. See [`docs/pipeline.md`](docs/pipeline.md).
 
 ```
 backend/      FastAPI API, TCP frame ingest, detection pipeline, background tasks
-frontend/     React SPA — testmap / map / tower search (Vite + Leaflet)
+frontend/     React SPA — testmap / map (Vite + Leaflet)
 dashboard/    React admin app (Vite)
 libs/         Git submodules (the algorithm libraries — see below)
 docs/         Architecture, pipeline, runbook, alerting, simulation, arc-display
@@ -101,10 +101,11 @@ npm install
 npm run dev
 ```
 
-Frontend is at `http://localhost:5173`; `/api` and `/ws` are proxied to the
-backend on `:8000`. To reach the live-map surface locally, open
-`http://testmap.localhost:5173/` (the hostname selects the surface — see
-`frontend/src/utils/domains.ts`).
+Frontend is at `http://localhost:5173` and opens the live map; `/api` and `/ws`
+are proxied to the backend on `:8000`. `http://testmap.localhost:5173/` also
+opens the map. Hostname flags select feed and display behavior, not a separate
+tower-search app (see `frontend/src/utils/domains.ts`). Local map hostnames
+show both real and synthetic nodes.
 
 There's a backend-free map sandbox at `/test-radar` (one node, one aircraft,
 one ellipse) for working on map rendering without the pipeline.
@@ -273,11 +274,12 @@ branch, open a PR, get it green, then merge.
   assume persistence.
 - **Submodules.** After pulling, run `git submodule update --init --recursive`
   if `libs/` looks stale or imports fail.
-- **Surfaces are hostname-driven.** `localhost` shows tower search; you need a
-  `*map.localhost` hostname to get the live map and its default tab. The tower
-  search SPA there has no API unless you also run tower-finder-service: the
-  laptop overlay sets `TOWER_FINDER_ENABLED=false`, and nothing in this repo
-  answers `/api/towers` any more.
+- **The map opens on localhost too.** Hostnames choose its feed and display
+  defaults: deployed `map` and `test-map` use real-only data, while `testmap`,
+  `staging-map` and `test-testmap` are synthetic demo surfaces. Local map
+  hostnames retain both kinds of nodes. Tower search has its own SPA in
+  tower-finder-service; the laptop overlay sets `TOWER_FINDER_ENABLED=false`,
+  and this backend no longer implements `/api/towers`.
 - **Config vs runtime config.** `backend/config/` is image-only (baked into the
   Docker image); runtime-editable overrides live under `data/runtime/`. See the
   runbook for the volume-shadowing gotcha.

@@ -12,6 +12,8 @@ only by subdomain, resolved client-side in `frontend/src/utils/domains.ts`:
   staging and local stacks run a fleet, so `testmap.retina.fm` is served by the
   staging droplet rather than production.
 - **map** (`map.retina.fm`) — production live map, real radar nodes only.
+  `test-map.retina.fm` uses the same real-only feed on the test droplet;
+  `test-testmap.retina.fm` is that droplet's separate synthetic surface.
 - **Illuminator search** — not a surface of this repo. tower-finder-service owns
   both the API and the UI, and serves `towers.retina.fm` from its own edge. The
   vhosts here proxy `/api/towers`, `/api/elevation` and `/api/config` to it.
@@ -64,14 +66,20 @@ are in [`arc-display.md`](arc-display.md).
   geometry (`beam_azimuth_deg`, `beam_width_deg`, `max_range_km`,
   `max_bistatic_range_km`) flows from node registration into the per-node
   pipelines, the arc builder, and inter-node association — one contract.
-- **`services/node_refs.py`** — the public handle for a node. Every payload a
-  stranger can fetch names a node by `node_ref`, never by `node_id`: the
-  registry's ref when the node registered through `/v1/nodes`, an
-  HMAC-derived ref of the same shape (fuzz salt, `node_ref|` domain) when it
-  did not. See [`pipeline.md`](pipeline.md) §7. The inverse, `ref_to_id_map`,
+- **`services/node_refs.py`** — publication identities and payload rewriting.
+  Registered nodes use their stored refs, mirrored nodes preserve upstream
+  refs, synthetic nodes may retain synthetic identities, and unresolved real
+  nodes are withheld. Internal `node_id` fields become public `node_ref`
+  fields after privacy and feed filtering. The inverse, `ref_to_id_map`,
   is served from one admin-only route (`GET /api/admin/node-refs`) and exists
   so the dashboard can name a node to an operator and link to its own site,
   which is `<node_id>.retnode.com`.
+- **`services/node_ref.py`** — registered-or-derived handle lookup, used by
+  callers that require a handle even for an unregistered node. It differs from
+  `node_refs.public_identity`, which can withhold an unresolved real node,
+  preserve a mirrored ref, or pass through a synthetic identity. These are
+  separate publication policies; replacing one with the other changes which
+  nodes appear and how consumers address them.
 - **`services/tasks/`** — background async tasks: `aircraft_flush` (broadcast),
   `feed_gc` (stale-store GC on its own 5 s timer, deliberately not tied to the
   feed build), `solver` workers, `analytics_refresh`, archive lifecycle,
