@@ -12,10 +12,13 @@ async function loadFor(hostname: string) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("feed selection by surface", () => {
-  it("production shows real nodes only", async () => {
-    const m = await loadFor("map.retina.fm");
-    expect(m.usesRealOnlyFeed).toBe(true);
-    expect(m.hidesRealNodes).toBe(false);
+  it("the real-radar surfaces show real nodes only", async () => {
+    for (const host of ["map.retina.fm", "test-map.retina.fm"]) {
+      const m = await loadFor(host);
+      expect(m.usesRealOnlyFeed, host).toBe(true);
+      expect(m.defaultsGroundTruthOff, host).toBe(true);
+      expect(m.hidesRealNodes, host).toBe(false);
+    }
   });
 
   it("the public demo shows synthetic nodes only", async () => {
@@ -26,12 +29,11 @@ describe("feed selection by surface", () => {
     }
   });
 
-  it("the test droplet counts as a public demo, since its surfaces resolve publicly", async () => {
-    for (const host of ["test-map.retina.fm", "test-testmap.retina.fm"]) {
-      const m = await loadFor(host);
-      expect(m.usesRealOnlyFeed, host).toBe(false);
-      expect(m.hidesRealNodes, host).toBe(true);
-    }
+  it("the test droplet's synthetic surface is a public demo, since it resolves publicly", async () => {
+    const m = await loadFor("test-testmap.retina.fm");
+    expect(m.usesRealOnlyFeed).toBe(false);
+    expect(m.defaultsGroundTruthOff).toBe(false);
+    expect(m.hidesRealNodes).toBe(true);
   });
 
   it("the laptop shows everything", async () => {
@@ -45,7 +47,8 @@ describe("feed selection by surface", () => {
   it("every map surface still defaults to the Live Radar tab", async () => {
     for (const host of [
       "map.retina.fm", "testmap.retina.fm", "staging-map.retina.fm",
-      "staging-testmap.retina.fm", "test-map.retina.fm", "map.localhost",
+      "staging-testmap.retina.fm", "test-map.retina.fm", "test-testmap.retina.fm",
+      "map.localhost",
     ]) {
       const m = await loadFor(host);
       expect(m.isMapDomain, host).toBe(true);
