@@ -1,3 +1,5 @@
+import { withBase } from "../utils/basePath";
+
 const BASE = "";
 
 /** A 401 from the API: an answer, not a failure to obtain one. Distinct from a
@@ -10,8 +12,10 @@ export class UnauthorizedError extends Error {
   }
 }
 
-/** Must match the route in App.tsx. */
-const LOGIN_PATH = "/login";
+/** Must match the route in App.tsx. Mounted, because this drives a full-page
+ *  navigation rather than a router one: under `/dash/` a bare `/login` lands on
+ *  the app vhost's root, which is the MAP bundle. */
+const LOGIN_PATH = withBase("/login");
 
 /** Trailing slashes trimmed: the router matches `/login/` to the same route, so
  *  comparing the raw pathname would send a caller who arrived that way through

@@ -18,7 +18,7 @@ import pytest
 from tests.nginx_helpers import render
 
 # Prefix -> the root the mount aliases to.
-_MOUNTS = {"/dash/": "/app/dashboard/dist/", "/data/": "/app/data-explorer/"}
+_MOUNTS = {"/dash/": "/app/dashboard/dist-dash/", "/data/": "/app/data-explorer/"}
 
 
 @pytest.fixture(scope="module")

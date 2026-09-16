@@ -25,6 +25,12 @@ describe("surface selection by hostname", () => {
       "test-dash.retina.fm",
       "map.retina.fm",
       "towers.retina.fm",
+      // The consolidated app vhost, where this bundle is mounted at /dash/.
+      // It renders the user dashboard and never the admin console: Access
+      // gates a hostname, and the admin hostname is deliberately not this one.
+      "app.retina.fm",
+      "staging-app.retina.fm",
+      "test-app.retina.fm",
       "api.retina.fm",
       "dash.localhost",
       // A dev host with no query stays on the user dashboard too: that branch

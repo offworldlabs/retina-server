@@ -252,14 +252,14 @@ server {
     # theirs: no HTML response anywhere carries a CSP today (ClickUp
     # 123zgec37tp). Fixing that has to cover this mount too.
     location ^~ /dash/ {
-        alias /app/dashboard/dist/;
+        alias /app/dashboard/dist-dash/;
         try_files $uri $uri/ /dash/index.html;
         add_header Cache-Control "no-store, no-cache";
 
         # Vite's hashed output, and nothing else, may be kept for a week —
         # same rule and same reasoning as spa.conf's /assets/ location.
         location ^~ /dash/assets/ {
-            alias /app/dashboard/dist/assets/;
+            alias /app/dashboard/dist-dash/assets/;
             expires 7d;
             add_header Cache-Control "public, immutable";
         }

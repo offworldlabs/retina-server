@@ -33,7 +33,13 @@ WORKDIR /app/dashboard
 COPY dashboard/package.json dashboard/package-lock.json ./
 RUN npm ci --legacy-peer-deps --no-audit --no-fund
 COPY dashboard/ ./
-RUN npm run build
+# Twice, because one bundle is served at two different mount points and Vite
+# bakes the asset prefix in at build time. `dist` is rooted at `/` for the admin
+# vhost; `dist-dash` is rooted at `/dash/` for the app vhost's mount. A single
+# relative-base build would resolve its assets against the CURRENT path, which
+# breaks the moment a route is more than one segment deep: `/dash/nodes/:nodeId`
+# would look for its JS under `/dash/nodes/assets/`.
+RUN npm run build && npm run build:dash
 
 # ── uv, for the Python installs in the production stage ─────────────────────
 # A stage of its own so the version is written once. It is only ever a mount
@@ -85,6 +91,7 @@ COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
 
 # Built dashboard
 COPY --from=dashboard-build /app/dashboard/dist /app/dashboard/dist
+COPY --from=dashboard-build /app/dashboard/dist-dash /app/dashboard/dist-dash
 
 # Data explorer — static, no build step and no npm, so it is copied straight
 # from the source tree rather than out of a builder stage.

@@ -40,7 +40,9 @@ export function AuthProvider({ children }) {
     const target = result?.redirect;
     // Only a top-level navigation reaches the edge, and only the edge can end
     // an Access session. Same-origin paths only, as _safe_redirect enforces
-    // server-side.
+    // server-side. Left bare deliberately: the server sends /cdn-cgi/access/
+    // logout, an edge path that lives at the origin root, so prefixing it with
+    // this bundle's mount would send it to a route that does not exist.
     if (typeof target === "string" && target.startsWith("/") && !target.startsWith("//")) {
       // No setUser: RequireAuth bounces to /login the moment it goes falsy, and
       // the page is leaving anyway.
