@@ -103,6 +103,9 @@ jobs:
           # which would stop the guard running on the bulk changes it most wants to
           # see. First line is hasNextPage, the rest are paths, so position tells
           # the two apart and no path can be mistaken for the flag.
+          # $owner, $name and $number are GraphQL variables, bound by the -f flags
+          # below. Single quotes are what keeps the shell out of them.
+          # shellcheck disable=SC2016
           files_query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){files(first:100){nodes{path} pageInfo{hasNextPage}}}}}'
           changed=$(gh api graphql \
             -f "query=${files_query}" \
