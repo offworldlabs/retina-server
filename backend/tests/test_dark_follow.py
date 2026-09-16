@@ -111,11 +111,21 @@ def _track(ts_ms, **overrides) -> dict:
     return rec
 
 
-def _kf(monkeypatch, vel_east=0.0, vel_north=0.0, vel_sigma=5.0, keys=(_KEY,)):
+def _kf(monkeypatch, vel_east=0.0, vel_north=0.0, vel_sigma=5.0, keys=(_KEY,), manoeuvre=0.0):
     """Fake filter state for ``keys`` — the real KF is fed by the publish path,
-    which none of these tests go through."""
+    which none of these tests go through.
+
+    Both accessors are patched.  _build_targets reads the combined
+    learned_velocity_manoeuvre (one leaf-lock round-trip per key per rebuild,
+    and the manoeuvre level has to come from the same reading as the sigma it
+    excuses), while the rest of the claiming path still reads
+    learned_velocity; a fake that installed only one of them would leave half
+    the code looking at a filter state the other half cannot see.
+    """
     lookup = {k: (vel_east, vel_north, vel_sigma, 0.0) for k in keys}
     monkeypatch.setattr(track_filter, "learned_velocity", lookup.get)
+    with_level = {k: (*v, manoeuvre) for k, v in lookup.items()}
+    monkeypatch.setattr(track_filter, "learned_velocity_manoeuvre", with_level.get)
 
 
 def _install(monkeypatch, ts_ms, mode="shadow", key=_KEY, kf=True, **overrides):
@@ -127,6 +137,7 @@ def _install(monkeypatch, ts_ms, mode="shadow", key=_KEY, kf=True, **overrides):
         _kf(monkeypatch, keys=(key,))
     else:
         monkeypatch.setattr(track_filter, "learned_velocity", lambda _k: None)
+        monkeypatch.setattr(track_filter, "learned_velocity_manoeuvre", lambda _k: None)
     # The target list is TTL-cached; a test that rewrites multinode_tracks has
     # to invalidate it or it reads the previous assertion's world.
     dark_follow._reset_for_tests()
@@ -352,6 +363,164 @@ class TestIneligibilityCounters:
         assert len(dark_follow.follow_targets()) == 1
         assert state.dark_follow_inelig_cooldown == 0
         assert state.dark_follow_inelig_vel_sigma == 0
+
+
+class TestManoeuvreReprieve:
+    """The one exception to the velocity-sigma ceiling.
+
+    track_filter inflates its process noise on purpose when an aircraft turns,
+    so the sigma the ceiling reads is the filter loosening its grip rather
+    than losing the track — and dropping on it silenced the lane exactly in
+    turns (2026-09-13 soak: 82% of followed keys went quiet for over 8 s in a
+    hard turn against 32% straight, 52% of shown turns re-keyed).  A key the
+    filter says is manoeuvring is therefore KEPT, but only inside three
+    bounds: the manoeuvre level, a hard sigma ceiling, and a per-episode time
+    budget.
+    """
+
+    def _over_ceiling(self, monkeypatch, level, sigma=None, ts_ms=None):
+        ts = ts_ms if ts_ms is not None else int(time.time() * 1000) - 2000
+        _install(monkeypatch, ts)
+        _kf(
+            monkeypatch,
+            vel_sigma=dark_follow.DARK_FOLLOW_MAX_VEL_SIGMA_MS + 100.0 if sigma is None else sigma,
+            manoeuvre=level,
+        )
+        dark_follow._reset_for_tests()
+
+    def test_a_manoeuvring_key_is_kept_over_the_ceiling(self, monkeypatch):
+        self._over_ceiling(monkeypatch, level=dark_follow.DARK_FOLLOW_MANOEUVRE_KEEP)
+
+        targets = dark_follow.follow_targets()
+        assert [t["key"] for t in targets] == [_KEY]
+        assert state.dark_follow_kept_manoeuvre == 1
+        # Kept means NOT dropped and NOT charged to the ineligibility bucket:
+        # the two counters have to move apart or the soak cannot tell a
+        # reprieve from a drop.
+        assert state.dark_follow_dropped == 0
+        assert state.dark_follow_inelig_vel_sigma == 0
+
+    def test_the_target_carries_the_real_sigma_not_the_clamped_one(self, monkeypatch):
+        """Eligibility and gate width are separate decisions (follow_gates does
+        the clamping), so the pseudo-state must keep reporting what the filter
+        actually said."""
+        self._over_ceiling(monkeypatch, level=1.0, sigma=400.0)
+
+        assert dark_follow.follow_targets()[0]["vel_sigma_ms"] == 400.0
+
+    def test_a_key_that_is_not_manoeuvring_is_still_dropped(self, monkeypatch):
+        """The ceiling is the ghost guard; only a turn excuses it."""
+        self._over_ceiling(monkeypatch, level=dark_follow.DARK_FOLLOW_MANOEUVRE_KEEP - 0.01)
+
+        assert dark_follow.follow_targets() == []
+        assert state.dark_follow_dropped == 1
+        assert state.dark_follow_inelig_vel_sigma == 1
+        assert state.dark_follow_kept_manoeuvre == 0
+
+    def test_a_sigma_past_the_hard_ceiling_is_dropped_mid_manoeuvre(self, monkeypatch):
+        """Past DARK_FOLLOW_MANOEUVRE_MAX_VEL_SIGMA_MS the filter is not
+        tracking a turn, it has lost the aircraft — following it would be the
+        ghost lock the guard exists to prevent."""
+        self._over_ceiling(
+            monkeypatch,
+            level=1.0,
+            sigma=dark_follow.DARK_FOLLOW_MANOEUVRE_MAX_VEL_SIGMA_MS + 1.0,
+        )
+
+        assert dark_follow.follow_targets() == []
+        assert state.dark_follow_dropped == 1
+        assert state.dark_follow_kept_manoeuvre == 0
+
+    def test_the_reprieve_expires_after_keep_max_s(self, monkeypatch):
+        """One cooldown's worth of turn, then the normal drop: if 30 s of
+        following has not brought the sigma back, the turn is not what is
+        holding it up."""
+        self._over_ceiling(monkeypatch, level=1.0)
+        # An episode that started longer ago than the budget.  Seeded rather
+        # than slept for: the clock is monotonic and the budget is 30 s.
+        dark_follow._manoeuvre_keep_since[_KEY] = time.monotonic() - (
+            dark_follow.DARK_FOLLOW_MANOEUVRE_KEEP_MAX_S + 1.0
+        )
+
+        assert dark_follow.follow_targets() == []
+        assert state.dark_follow_dropped == 1
+        assert state.dark_follow_inelig_vel_sigma == 1
+        # The exhausted episode SURVIVES the drop, which is what stops a key
+        # renewing its budget by going through the cooldown.
+        assert _KEY in dark_follow._manoeuvre_keep_since
+
+    def test_a_fresh_episode_is_budgeted_from_its_first_rebuild(self, monkeypatch):
+        """...and the budget is per episode: a key that comes back under the
+        ceiling clears it, so the next turn gets a full one."""
+        self._over_ceiling(monkeypatch, level=1.0)
+        assert len(dark_follow.follow_targets()) == 1
+        assert _KEY in dark_follow._manoeuvre_keep_since
+
+        # Sigma back under the ceiling on its own — the episode is over.
+        _kf(monkeypatch, vel_sigma=10.0, manoeuvre=1.0)
+        dark_follow._expire_targets_for_tests()
+        assert len(dark_follow.follow_targets()) == 1
+        assert _KEY not in dark_follow._manoeuvre_keep_since
+
+    def test_the_two_reject_drop_still_applies_to_a_kept_key(self, monkeypatch):
+        """The reprieve buys continuity, not immunity: the guard that makes
+        binding safe is the reject streak, and it stays armed."""
+        self._over_ceiling(monkeypatch, level=1.0)
+        assert len(dark_follow.follow_targets()) == 1
+
+        dark_follow.record_outcome(_KEY, ok=False)
+        dark_follow.record_outcome(_KEY, ok=False)
+        dark_follow._expire_targets_for_tests()
+
+        assert dark_follow.follow_targets() == []
+        assert state.dark_follow_dropped == 1
+
+
+class TestGateSigmaClamp:
+    """follow_gates derives both gates from the velocity sigma, and a kept key
+    carries a manoeuvre-inflated one.  Left unclamped that widens the delay and
+    Doppler gates to their caps and the key claims whatever detection is
+    nearby — the wrong-hex binding the ceiling was protecting against.  So the
+    gates are computed at DARK_FOLLOW_GATE_VEL_SIGMA_CAP_MS however large the
+    filter's sigma is, and the eligibility decision keeps the real one.
+    """
+
+    def _target(self, vel_sigma_ms):
+        return {"vel_sigma_ms": vel_sigma_ms, "pos_sigma_m": 1200.0}
+
+    # Deliberately not the live 183 MHz: at that carrier the Doppler term
+    # saturates _MAX_DOPPLER_GATE_HZ for BOTH sigmas, which would make the
+    # equality below true for the wrong reason.
+    _GATE_ARGS = (2.0, 10.0, 25.0, 50e6)
+
+    def test_a_manoeuvre_sigma_gates_exactly_like_the_ceiling(self):
+        at_cap = dark_follow.follow_gates(self._target(dark_follow.DARK_FOLLOW_GATE_VEL_SIGMA_CAP_MS), *self._GATE_ARGS)
+        inflated = dark_follow.follow_gates(self._target(500.0), *self._GATE_ARGS)
+
+        assert inflated == at_cap
+        assert state.dark_follow_gate_sigma_clamped == 1
+
+    def test_the_clamp_is_what_narrows_it(self):
+        """The control: with the cap lifted, the same target gets a visibly
+        wider pair — so the equality above is the clamp, not a saturated gate.
+        """
+        clamped = dark_follow.follow_gates(self._target(500.0), *self._GATE_ARGS)
+        real_cap = dark_follow.DARK_FOLLOW_GATE_VEL_SIGMA_CAP_MS
+        try:
+            dark_follow.DARK_FOLLOW_GATE_VEL_SIGMA_CAP_MS = 1e9
+            unclamped = dark_follow.follow_gates(self._target(500.0), *self._GATE_ARGS)
+        finally:
+            dark_follow.DARK_FOLLOW_GATE_VEL_SIGMA_CAP_MS = real_cap
+
+        assert unclamped[0] > clamped[0]
+        assert unclamped[1] > clamped[1]
+
+    def test_a_normal_target_is_untouched(self):
+        """No-op on every key the lane followed before the reprieve existed."""
+        gates = dark_follow.follow_gates(self._target(40.0), *self._GATE_ARGS)
+
+        assert gates[0] > 0 and gates[1] > 0
+        assert state.dark_follow_gate_sigma_clamped == 0
 
 
 class TestClaiming:

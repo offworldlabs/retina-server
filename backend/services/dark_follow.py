@@ -38,6 +38,20 @@ stops earning its place: two rejected follow-solves in a row, or a filter
 velocity sigma past DARK_FOLLOW_MAX_VEL_SIGMA_MS.  The guard is the reason this
 lane is safe to bind; it is not optional tidiness.
 
+THE ONE EXCEPTION, AND WHY IT IS SAFE.  A sigma over that ceiling means one of
+two different things, and the filter knows which: track_filter's manoeuvre
+detector inflates the process noise ON PURPOSE when an aircraft turns, so the
+sigma it reports then is the filter loosening its grip, not losing the track.
+A key whose manoeuvre level is at least DARK_FOLLOW_MANOEUVRE_KEEP is
+therefore kept for up to DARK_FOLLOW_MANOEUVRE_KEEP_MAX_S rather than dropped
+(counter dark_follow_kept_manoeuvre), bounded by a hard
+DARK_FOLLOW_MANOEUVRE_MAX_VEL_SIGMA_MS ceiling.  The claim gates do NOT widen
+with it: follow_gates clamps the sigma it derives its gates from to
+DARK_FOLLOW_GATE_VEL_SIGMA_CAP_MS, so a reprieved key keeps claiming at the
+old ceiling's gate width and the two-reject drop stays fully armed.  That
+separation is the whole safety argument — the reprieve buys continuity of
+IDENTITY through a turn without buying a wider claim.
+
 Modes (state.DARK_FOLLOW_MODE), same three-way shape as KNOWN_LANE_MODE:
   off      — nothing; no targets are built, so no claim can form.
   shadow   — claim, solve and record, but the claimed detections stay in the
@@ -103,6 +117,55 @@ DARK_FOLLOW_MIN_NODES = 3
 # 0.34/0.80/1.10/2.69 km -> 0.20/0.40/0.85/1.76 km, dark ghost share 5.5% ->
 # 4.1-5.3%, velocity-sigma ineligibility 14-33 key-seconds per 20 min.
 DARK_FOLLOW_MAX_VEL_SIGMA_MS = float(os.getenv("DARK_FOLLOW_MAX_VEL_SIGMA_MS", "115"))
+# ...except in a manoeuvre, where that ceiling fires on the one case following
+# is for.  track_filter's manoeuvre detector RAISES the process noise on
+# purpose when an entry is surprised (sigma_a 1.5 -> 800 m^2/s^3), the inflated
+# Q grows P[1,1]/P[3,3], and the velocity sigma the ceiling reads is therefore
+# a statement that the filter has deliberately loosened its grip on a turning
+# aircraft — not that it has lost the track.  Measured on the test droplet
+# (2026-09-13 soak): 82% of followed keys went silent for more than 8 s inside
+# a hard turn against 32% in straight flight, with dark_follow `dropped` 13-24
+# and `ineligible.vel_sigma` 12-18 per 20 min; ownership (DARK_FOLLOW_OWN_S)
+# then lapsed, the bottom-up lane minted a second key for 52% of shown turns,
+# and 9 of 13 of those re-keys left a ghost behind.
+#
+# So a key whose filter says it is manoeuvring at least this much is KEPT past
+# the ceiling instead of dropped.  0.3 is the level a single surprising update
+# leaves after ~18 s of decay (_KF_MANOEUVRE_TAU_S = 15 s) — comfortably
+# inside one turn, and unreachable in straight flight, where the detector
+# never fires at all.  Set to 0 to keep every over-ceiling key (not
+# recommended: the ceiling is the ghost guard), or above 1.0 to disable the
+# reprieve entirely and restore the pre-PR drop.
+DARK_FOLLOW_MANOEUVRE_KEEP = float(os.getenv("DARK_FOLLOW_MANOEUVRE_KEEP", "0.3"))
+# The hard ceiling the reprieve itself stops at.  A manoeuvring filter runs a
+# few hundred m/s of velocity sigma; one past this is not a turn the detector
+# is tracking but a filter that has lost the aircraft, and following it would
+# be the ghost lock the guard exists to prevent.  600 m/s is above the peak
+# in-turn sigma the adaptive filter reaches on the 3 deg/s synthetic turn
+# track_filter is tuned against, and below the filter's own 8 km/_KF cap
+# regime where the prediction stops constraining anything.
+DARK_FOLLOW_MANOEUVRE_MAX_VEL_SIGMA_MS = float(os.getenv("DARK_FOLLOW_MANOEUVRE_MAX_VEL_SIGMA_MS", "600"))
+# ...and how long one manoeuvre episode may be reprieved for, in seconds.  One
+# cooldown: if 30 s of following has not brought the sigma back under the
+# ceiling, the turn is not what is keeping it up there, and the key goes
+# through the normal drop so the bottom-up lane can re-find the aircraft on its
+# own evidence.  The clock runs per EPISODE, not per rebuild — it starts at the
+# first reprieved rebuild and is only cleared when the key comes back under the
+# ceiling or the manoeuvre level decays below DARK_FOLLOW_MANOEUVRE_KEEP — so a
+# key cannot renew its reprieve by being dropped and re-admitted.
+DARK_FOLLOW_MANOEUVRE_KEEP_MAX_S = float(os.getenv("DARK_FOLLOW_MANOEUVRE_KEEP_MAX_S", "30"))
+# The velocity sigma the CLAIM GATES may be widened by, whatever the
+# eligibility decision above did with the real one.  The two uses of the sigma
+# are different questions: eligibility asks "does the filter still know this
+# aircraft?" (and a manoeuvre is an honest reason for it not to, above), while
+# follow_gates asks "how far from the prediction may a detection be and still
+# be this aircraft?" — and there a 300-800 m/s sigma slams both gates to
+# _MAX_DELAY_GATE_US / _MAX_DOPPLER_GATE_HZ, at which width the key claims
+# whatever detection is nearby.  Wrong-hex binding is exactly what the 115
+# ceiling was protecting against, so the reprieve keeps following at the OLD
+# ceiling's gate width: 115 m/s, the widest gate the lane has ever been
+# measured at (see DARK_FOLLOW_MAX_VEL_SIGMA_MS's own note).
+DARK_FOLLOW_GATE_VEL_SIGMA_CAP_MS = float(os.getenv("DARK_FOLLOW_GATE_VEL_SIGMA_CAP_MS", "115"))
 # How long a dropped key stays un-followable.  Long enough that the bottom-up
 # lane gets several association rounds (ASSOC_MIN_INTERVAL_S is 30 s at its
 # widest, ~2 s at its narrowest) to re-find the aircraft on its own evidence
@@ -212,6 +275,20 @@ _targets_built_mono = 0.0
 _GUARD_LOCK = threading.Lock()
 _reject_streak: dict[str, int] = {}
 _cooldown_until: dict[str, float] = {}
+# ...and, beside them, when each key's CURRENT manoeuvre reprieve began
+# (monotonic).  An entry exists only while the key is being kept over the
+# velocity-sigma ceiling by DARK_FOLLOW_MANOEUVRE_KEEP; it is cleared as soon
+# as the episode ends (sigma back under the ceiling, or the manoeuvre level
+# decayed below the threshold), which is what makes the reprieve budget
+# per-episode rather than per-key-lifetime.
+_manoeuvre_keep_since: dict[str, float] = {}
+# Backstop TTL for that map.  Every normal path clears its own entry, but a
+# key that vanishes from state.multinode_tracks mid-reprieve (expired, or
+# superseded) is never re-tested and would leave one behind, and mn-dark-*
+# keys churn for the process lifetime.  Deliberately far longer than
+# DARK_FOLLOW_MANOEUVRE_KEEP_MAX_S + DARK_FOLLOW_COOLDOWN_S so the sweep can
+# never shorten or renew a live episode's budget.
+_MANOEUVRE_KEEP_TTL_S = 300.0
 
 # Ownership state: key → the measurement epoch of the newest follow-solve that
 # published on it (see note_follow_publish for why the measurement clock and
@@ -233,6 +310,7 @@ def _reset_for_tests() -> None:
     with _GUARD_LOCK:
         _reject_streak.clear()
         _cooldown_until.clear()
+        _manoeuvre_keep_since.clear()
     with _FOLLOWED_LOCK:
         _last_follow_publish.clear()
     state.dark_follow_targets = 0
@@ -342,12 +420,63 @@ def _in_cooldown(key: str, now_mono: float) -> bool:
 
 
 def _sweep_guard(now_mono: float) -> None:
-    """Drop expired cooldowns.  Both maps are keyed by mn-dark-* ids, which
-    churn for the process lifetime, so neither may grow unbounded."""
+    """Drop expired cooldowns, and any manoeuvre reprieve whose key stopped
+    being re-tested.  All three maps are keyed by mn-dark-* ids, which churn
+    for the process lifetime, so none may grow unbounded."""
     with _GUARD_LOCK:
         for k in [k for k, until in _cooldown_until.items() if until <= now_mono]:
             del _cooldown_until[k]
             _reject_streak.pop(k, None)
+        cutoff = now_mono - _MANOEUVRE_KEEP_TTL_S
+        for k in [k for k, since in _manoeuvre_keep_since.items() if since <= cutoff]:
+            del _manoeuvre_keep_since[k]
+
+
+def _manoeuvre_reprieve(key: str, level: float, vel_sigma_ms: float, now_mono: float) -> bool:
+    """May ``key`` keep being followed despite a velocity sigma over
+    DARK_FOLLOW_MAX_VEL_SIGMA_MS?
+
+    Three conditions, and all of them have to hold: the filter says the
+    aircraft is manoeuvring (``level`` >= DARK_FOLLOW_MANOEUVRE_KEEP — see
+    track_filter.manoeuvre_level for why that is a different statement from
+    the sigma itself), the sigma is still inside the hard
+    DARK_FOLLOW_MANOEUVRE_MAX_VEL_SIGMA_MS ceiling, and this episode has not
+    already spent DARK_FOLLOW_MANOEUVRE_KEEP_MAX_S.
+
+    The episode clock starts on the first reprieved rebuild and is cleared
+    only by the two things that end an episode (the caller clears it when the
+    sigma comes back under the ceiling; this function clears it when the
+    manoeuvre level decays).  A key that exhausts its budget is therefore NOT
+    re-armed by the drop it then takes: it comes out of its cooldown with the
+    same exhausted episode, and only a genuine return to normal flight gives
+    it a fresh one.
+    """
+    if level < DARK_FOLLOW_MANOEUVRE_KEEP:
+        # Not manoeuvring (any more): whatever is keeping the sigma up is not
+        # a turn, so the episode is over and the normal drop applies.
+        _clear_manoeuvre_keep(key)
+        return False
+    if vel_sigma_ms > DARK_FOLLOW_MANOEUVRE_MAX_VEL_SIGMA_MS:
+        # Past the hard ceiling the reprieve leaves the episode standing: the
+        # key is dropped now, and if it comes back still manoeuvring it has
+        # whatever budget it had left, not a new one.
+        return False
+    with _GUARD_LOCK:
+        since = _manoeuvre_keep_since.get(key)
+        if since is None:
+            _manoeuvre_keep_since[key] = now_mono
+            return True
+        return now_mono - since <= DARK_FOLLOW_MANOEUVRE_KEEP_MAX_S
+
+
+def _clear_manoeuvre_keep(key: str) -> None:
+    """End ``key``'s manoeuvre episode, refunding its reprieve budget.
+
+    Called on every rebuild where the key is eligible on its own sigma, which
+    is what "the episode is over" means from this module's side.
+    """
+    with _GUARD_LOCK:
+        _manoeuvre_keep_since.pop(key, None)
 
 
 def _pos_sigma_m(rec: dict) -> float:
@@ -414,21 +543,35 @@ def _build_targets(now_s: float, now_mono: float) -> list[dict]:
         # prediction: without them there is nothing to dead-reckon with and no
         # way to widen a gate honestly, and the raw solved velocity is exactly
         # the under-determined quantity (n<=3 Doppler) the KF exists to fix.
-        lv = track_filter.learned_velocity(key)
+        lv = track_filter.learned_velocity_manoeuvre(key)
         if lv is None:
             state.bump_counter("dark_follow_inelig_no_filter")
             continue
-        vel_east, vel_north, vel_sigma_ms, _last_ts_s = lv
+        vel_east, vel_north, vel_sigma_ms, _last_ts_s, manoeuvre = lv
         if vel_sigma_ms > DARK_FOLLOW_MAX_VEL_SIGMA_MS:
-            # Counted here as well as in dark_follow_dropped, and the two do
-            # not agree on purpose: drop_target is idempotent inside its
-            # cooldown window ("keys dropped"), while this is the per-rebuild
-            # test ("key-seconds spent too noisy to follow").  The gap between
-            # them is how long the sigma stays over the ceiling, which is the
-            # number the 3-node starvation is measured in.
-            state.bump_counter("dark_follow_inelig_vel_sigma")
-            drop_target(key, f"velocity sigma {vel_sigma_ms:.0f} m/s")
-            continue
+            if _manoeuvre_reprieve(key, manoeuvre, vel_sigma_ms, now_mono):
+                # Kept, not dropped: the filter says this sigma is a turn (see
+                # DARK_FOLLOW_MANOEUVRE_KEEP).  Key-seconds like the
+                # ineligibility block, and read against
+                # dark_follow_inelig_vel_sigma, which is now only the
+                # over-ceiling time the reprieve did NOT cover.
+                state.bump_counter("dark_follow_kept_manoeuvre")
+            else:
+                # Counted here as well as in dark_follow_dropped, and the two
+                # do not agree on purpose: drop_target is idempotent inside its
+                # cooldown window ("keys dropped"), while this is the
+                # per-rebuild test ("key-seconds spent too noisy to follow").
+                # The gap between them is how long the sigma stays over the
+                # ceiling, which is the number the 3-node starvation is
+                # measured in.
+                state.bump_counter("dark_follow_inelig_vel_sigma")
+                drop_target(key, f"velocity sigma {vel_sigma_ms:.0f} m/s, manoeuvre {manoeuvre:.2f}")
+                continue
+        else:
+            # Back inside the ceiling on its own: whatever episode the key was
+            # reprieved for is over, and the next one starts with a full
+            # DARK_FOLLOW_MANOEUVRE_KEEP_MAX_S budget.
+            _clear_manoeuvre_keep(key)
         # World tag.  The overlap-zone world gate means every node that
         # contributed to one multinode entry is from a single world, so the
         # first contributor answers for all of them; an entry with no
@@ -503,6 +646,14 @@ def follow_gates(
       have admitted.
 
     Capped at _MAX_DELAY_GATE_US / _MAX_DOPPLER_GATE_HZ — see those constants.
+
+    The velocity sigma is ALSO clamped, before either term uses it, to
+    DARK_FOLLOW_GATE_VEL_SIGMA_CAP_MS.  Eligibility and gate width are two
+    different questions about the same number (see that constant): a key kept
+    through a manoeuvre may legitimately carry a 300 m/s sigma, and letting
+    that widen the gates would hand it every detection in the neighbourhood.
+    A target under the cap is unaffected, so this is a no-op on every key the
+    lane followed before the reprieve existed.
     """
     # Imported here rather than at module scope: known_claiming imports this
     # module for the claiming path, and a top-level import back would be a
@@ -511,7 +662,11 @@ def follow_gates(
     from services.known_claiming import _gate_scale
 
     scale = _gate_scale(dt_s)
-    pos_err_m = target["pos_sigma_m"] + target["vel_sigma_ms"] * max(dt_s, 0.0)
+    vel_sigma_ms = float(target["vel_sigma_ms"])
+    if vel_sigma_ms > DARK_FOLLOW_GATE_VEL_SIGMA_CAP_MS:
+        vel_sigma_ms = DARK_FOLLOW_GATE_VEL_SIGMA_CAP_MS
+        state.bump_counter("dark_follow_gate_sigma_clamped")
+    pos_err_m = target["pos_sigma_m"] + vel_sigma_ms * max(dt_s, 0.0)
     d_gate = base_delay_us * scale + 2.0 * pos_err_m / _C_M_PER_US
-    f_gate = base_doppler_hz * scale + 2.0 * target["vel_sigma_ms"] * fc_hz / _C_M_PER_S
+    f_gate = base_doppler_hz * scale + 2.0 * vel_sigma_ms * fc_hz / _C_M_PER_S
     return min(d_gate, _MAX_DELAY_GATE_US), min(f_gate, _MAX_DOPPLER_GATE_HZ)
