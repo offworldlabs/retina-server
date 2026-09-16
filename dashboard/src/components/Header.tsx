@@ -63,8 +63,8 @@ export default function Header({ title }) {
   }, []);
 
   const handleLogout = async () => {
-    await logout();
-    navigate("/login");
+    const { redirected } = await logout();
+    if (!redirected) navigate("/login");
   };
 
   /**

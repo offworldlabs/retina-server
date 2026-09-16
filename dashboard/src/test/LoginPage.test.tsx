@@ -5,7 +5,7 @@ import LoginPage from "../pages/LoginPage";
 
 // Mock the auth context to return no user (unauthenticated)
 vi.mock("../context/AuthContext", () => ({
-  useAuth: () => ({ user: null, loading: false, logout: vi.fn() }),
+  useAuth: () => ({ user: null, loading: false, logout: vi.fn(async () => ({ redirected: false })) }),
 }));
 
 describe("LoginPage", () => {

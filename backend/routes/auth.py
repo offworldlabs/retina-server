@@ -17,7 +17,7 @@ from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 from core import state
@@ -29,11 +29,13 @@ from core.auth import (
     revoke_claim_code,
 )
 from core.users import (
+    ACCESS_LOGOUT_PATH,
     ANONYMOUS_USER,
     JWT_LIFETIME_SECONDS,
     get_current_user,
     get_jwt_strategy,
     get_or_create_oauth_user,
+    has_access_session,
 )
 from services import publication
 from services.node_config import position_status
@@ -351,8 +353,23 @@ async def me(request: Request):
 
 
 @router.post("/logout")
-async def logout():
-    response = Response(content='{"ok":true}', media_type="application/json")
+async def logout(request: Request):
+    """End the session, and say so when the app cannot end it alone.
+
+    Deleting auth_token is the whole job for a cookie session. On the admin
+    hostnames it is not: identity comes from an Access assertion Cloudflare
+    re-injects from a cookie on its own domain, which this app can neither read
+    nor delete, so the next request would be verified and admitted again. The
+    caller is handed the edge's logout path to visit instead, because only a
+    top-level navigation there clears it.
+
+    Both credentials are cleared rather than whichever one authenticated this
+    request: a person may hold an Access session and an auth_token at once.
+    """
+    body = {"ok": True}
+    if await has_access_session(request):
+        body["redirect"] = ACCESS_LOGOUT_PATH
+    response = JSONResponse(body)
     response.delete_cookie("auth_token", path="/")
     return response
 
