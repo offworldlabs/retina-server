@@ -22,10 +22,16 @@ const APP = hosts.app;
 
 test.skip(APP === null, "no consolidated app surface in this environment");
 
-// Safe past the skip above, which aborts every test in the file when null.
+// Only ever read inside a test body. test.skip aborts the tests, not this
+// module: every top-level statement here still runs while the file is being
+// collected, so touching this at module scope throws on the environments where
+// it is null and takes the whole run down with it.
 const BASE = APP as string;
-// The origin goes into a RegExp below, and a hostname is full of dots.
-const BASE_RE = BASE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// A hostname is mostly dots, and an unescaped one matches any character.
+function originPattern(): string {
+  return BASE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 test.describe("the consolidated app surface", () => {
   test("serves the map at the root", async ({ page }) => {
@@ -44,7 +50,7 @@ test.describe("the consolidated app surface", () => {
     // And the router kept the mount. Without the basename this would be
     // `/login`, which on this vhost is the map bundle — a 200, and the wrong
     // application.
-    await expect(page).toHaveURL(new RegExp(`^${BASE_RE}/dash/login/?$`));
+    await expect(page).toHaveURL(new RegExp(`^${originPattern()}/dash/login/?$`));
   });
 
   test("redirects the slashless /dash, keeping the query string", async ({ page }) => {

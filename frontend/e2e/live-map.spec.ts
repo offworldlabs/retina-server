@@ -26,7 +26,9 @@ test.skip(
   "no synthetic map surface in this environment (production runs no fleet)",
 );
 
-// Safe past the skip above, which aborts every test in the file when null.
+// Interpolated inside test bodies only. test.skip aborts the tests, not this
+// module — every top-level statement still runs during collection — so a
+// method call on this at module scope would throw where it is null.
 const BASE = TESTMAP as string;
 
 // Helper: wait for the connection badge to show "LIVE"
