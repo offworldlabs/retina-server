@@ -1066,11 +1066,24 @@ jobs:
           # assert_origin_marker: proves THIS repo's nginx answered, not merely
           # that the hostname did. Absolute for the same reason as above.
           source "$GITHUB_WORKSPACE/deploy/origin-marker.sh"
+          # assert_page_asset: proves a mounted bundle resolves the assets it
+          # names. Shared with the staging suite so the two cannot drift.
+          source "$GITHUB_WORKSPACE/deploy/page-asset.sh"
 
           check_origin() {
             local name="$1" url="$2" out
             printf "  %-40s " "$name"
             if out=$(assert_origin_marker "$url"); then
+              echo "OK"; PASS=$((PASS+1))
+            else
+              echo "FAIL"; printf '    %s\n' "$out"; FAIL=$((FAIL+1))
+            fi
+          }
+
+          check_page_asset() {
+            local name="$1" page="$2" out
+            printf "  %-40s " "$name"
+            if out=$(assert_page_asset "$page"); then
               echo "OK"; PASS=$((PASS+1))
             else
               echo "FAIL"; printf '    %s\n' "$out"; FAIL=$((FAIL+1))
@@ -1127,6 +1140,20 @@ jobs:
           check_origin "api vhost is this origin"  "${BASE_URL}/api/health"
           check_origin "dash vhost is this origin" "https://dash.retina.fm/api/health"
           check_origin "data vhost is this origin" "https://data.retina.fm/api/health"
+          # /api/health, not a page path: nginx drops every inherited add_header
+          # in a location that declares one of its own, and this vhost's /dash/
+          # and /data/ mounts each declare a Cache-Control, so the marker reaches
+          # its API responses only.
+          check_origin "app vhost is this origin"  "https://app.retina.fm/api/health"
+
+          echo ""
+          echo "── Do the mounted bundles render ──"
+          # The app vhost serves three bundles from one hostname, and the two
+          # under a path prefix are built for that prefix. Get that wrong and the
+          # page still answers 200 with its index.html while every asset in it
+          # misses — a blank screen no status check here can see.
+          check_page_asset "app /dash/ loads its bundle" "https://app.retina.fm/dash/"
+          check_page_asset "app /data/ loads its bundle" "https://app.retina.fm/data/"
 
           # The tower-finder seam, on production's OWN vhost names: prod parks
           # testmap as testmap-retired, so its routed set is not staging's and
