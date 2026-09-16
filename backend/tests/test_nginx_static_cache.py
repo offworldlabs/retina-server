@@ -15,9 +15,11 @@ lays them out in is the behaviour.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
-from tests.nginx_helpers import locations, render
+from tests.nginx_helpers import block, locations, render
 
 # The extension list both static-file locations share.
 _STATIC = r"\.(js|css|"
@@ -29,9 +31,15 @@ def rendered() -> str:
 
 
 def test_immutable_is_confined_to_hashed_assets(rendered):
+    """Only a Vite `assets/` tree may be kept, wherever it is mounted.
+
+    The app vhost serves the dashboard under /dash/, so its hashed tree is
+    /dash/assets/ rather than /assets/ — still a content-hashed name, which is
+    the property that makes the week safe.
+    """
     for header, body in locations(rendered):
         if "immutable" in body:
-            assert "^/assets/" in header, f"{header.strip()} is immutable but its names carry no hash"
+            assert "/assets/" in header, f"{header.strip()} is immutable but its names carry no hash"
 
 
 def test_every_other_static_file_is_revalidated(rendered):
@@ -44,3 +52,25 @@ def test_every_other_static_file_is_revalidated(rendered):
     for assets, rest in zip(statics[0::2], statics[1::2], strict=True):
         assert "^/assets/" in assets[0] and "immutable" in assets[1], assets[0].strip()
         assert "^/assets/" not in rest[0] and "no-store" in rest[1], rest[0].strip()
+
+
+# The app vhost's bundle mounts. `^~` keeps spa.conf's regex pair off them,
+# which is what makes /dash/assets/ reachable at all — and also what leaves
+# them outside the pairing asserted above, so they are checked directly.
+_PREFIXED_BUNDLES = ("location ^~ /dash/ {", "location ^~ /data/ {")
+
+
+def test_prefixed_bundles_revalidate_their_unhashed_files(rendered):
+    """A name that survives a deploy must not be cached under a new index.html.
+
+    The dashboard's theme-boot.js and everything the data explorer ships are
+    exactly that: no content hash, so the edge would serve the old copy for a
+    week if the mount inherited nothing and said nothing.
+    """
+    for opener in _PREFIXED_BUNDLES:
+        body = block(rendered, opener)
+        # Anchored at a line start: the word `location` also appears in the
+        # comment above the nested block, and splitting on the bare substring
+        # cuts there instead — passing for the wrong reason.
+        before_nested = re.split(r"^\s*location\b", body[len(opener) :], maxsplit=1, flags=re.M)[0]
+        assert "no-store" in before_nested, f"{opener} does not revalidate its unhashed files"

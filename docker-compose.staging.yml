@@ -60,7 +60,7 @@ services:
       # docker-compose.prod.yml for what they do and why the cooldown sits here.
       - ALERT_WEBHOOK_FORMAT=clickup_chat
       - ALERT_COOLDOWN_S=3600
-      - CORS_ORIGINS=https://staging-towers.retina.fm,https://staging-api.retina.fm,https://staging-map.retina.fm,https://staging-dash.retina.fm,https://staging-admin.retina.fm,https://staging-data.retina.fm
+      - CORS_ORIGINS=https://staging-towers.retina.fm,https://staging-api.retina.fm,https://staging-map.retina.fm,https://staging-dash.retina.fm,https://staging-admin.retina.fm,https://staging-data.retina.fm,https://staging-app.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
       # at boot to render deploy/nginx/nginx.conf.template. One template serves
       # both environments; only these values change.
@@ -71,6 +71,10 @@ services:
       # the parity check assert the rendered configs are identical.
       - HOST_MAIN=staging-towers.retina.fm
       - HOST_API=staging-api.retina.fm
+      # The consolidated public surface. Additive for now: it serves the same
+      # bundles as the map, dash and data vhosts below, which keep their names
+      # until the redirects land.
+      - HOST_APP=staging-app.retina.fm
       - HOST_MAP=staging-map.retina.fm
       - HOST_DASH=staging-dash.retina.fm
       - HOST_ADMIN=staging-admin.retina.fm

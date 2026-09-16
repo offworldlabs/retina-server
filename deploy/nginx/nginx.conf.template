@@ -19,7 +19,8 @@
 # Redirect all HTTP → HTTPS
 server {
     listen 80;
-    server_name ${HOST_MAIN} ${HOST_API} ${HOST_MAP} ${HOST_DASH} ${HOST_ADMIN} ${HOST_DATA} ${HOST_TESTMAP} _;
+    server_name ${HOST_MAIN} ${HOST_API} ${HOST_APP} ${HOST_MAP} ${HOST_DASH}
+                ${HOST_ADMIN} ${HOST_DATA} ${HOST_TESTMAP} _;
     return 301 https://$host$request_uri;
 }
 
@@ -161,6 +162,115 @@ server {
     location / {
         # RETINA_INCLUDE snippets/api.conf
     }
+}
+
+# ${HOST_APP} — the consolidated public surface: the live map at /, the
+# dashboard's public and owner pages under /dash/, the data explorer under
+# /data/. One hostname because the session cookie is host-only
+# (backend/core/users.py sets no cookie_domain), so a login on the map is only
+# a login on the dashboard while the two share an origin.
+server {
+    # RETINA_IF TLS
+    listen 443 ssl;
+    # RETINA_ELSE
+    listen 80;
+    # RETINA_ENDIF
+    server_name ${HOST_APP};
+
+    # RETINA_IF TLS
+    # RETINA_INCLUDE snippets/tls.conf
+    # RETINA_ENDIF
+    # RETINA_INCLUDE snippets/security-headers-page.conf
+
+    root /app/frontend/dist;
+    index index.html;
+
+    # WebSocket → FastAPI backend
+    location /ws/ {
+        # RETINA_INCLUDE snippets/ws.conf
+    }
+
+    # API requests → FastAPI backend
+    location /api/ {
+        # RETINA_INCLUDE snippets/api.conf
+    }
+
+    # This vhost serves the sign-in pages, so the credential-grade rate limit
+    # belongs here as it does on ${HOST_MAIN}. ${HOST_DASH}, which serves the
+    # same pages today, has only the blanket /api/ limit; that gap closes when
+    # the dashboard moves here.
+    location /api/auth/ {
+        # RETINA_INCLUDE snippets/auth.conf
+    }
+
+    # Longer prefixes than /api/auth/, so nginx matches these first: session
+    # reads get the `session` zone instead of the credential-grade `auth` one.
+    location /api/auth/me {
+        # RETINA_INCLUDE snippets/session.conf
+    }
+
+    location /api/auth/logout {
+        # RETINA_INCLUDE snippets/session.conf
+    }
+
+    # Longer still than /api/auth/me, so it wins over the session zone above:
+    # minting and revoking device-claim credentials is not a session read.
+    location /api/auth/me/claim-codes {
+        # RETINA_INCLUDE snippets/claim-codes.conf
+    }
+
+    # RETINA_IF TOWER_FINDER
+    # RETINA_INCLUDE snippets/towers-proxy.conf
+    # RETINA_ENDIF
+
+    # `/dash` does not contain `/dash/`, so it misses the mount below, falls
+    # through to spa.conf's `location /` and answers 200 with the MAP bundle.
+    # An exact match outranks every prefix, so these win without disturbing it.
+    location = /dash {
+        # $is_args$args: a `return` drops the query string, a rewrite keeps it.
+        return 301 /dash/$is_args$args;
+    }
+
+    location = /data {
+        return 301 /data/$is_args$args;
+    }
+
+    # The dashboard bundle, the same one ${HOST_ADMIN} serves at its root.
+    #
+    # `^~` is load-bearing, not decoration: spa.conf below ends in regex
+    # locations, a regex beats a prefix whatever their lengths, and those
+    # regexes resolve against this vhost's root — so without it
+    # /dash/assets/index-<hash>.js is served from /app/frontend/dist and 404s.
+    # `^~` tells nginx to stop at the prefix and never consult them.
+    #
+    # Declaring add_header here costs this location the server-level security
+    # headers, as spa.conf's locations already cost every other page vhost
+    # theirs: no HTML response anywhere carries a CSP today (ClickUp
+    # 123zgec37tp). Fixing that has to cover this mount too.
+    location ^~ /dash/ {
+        alias /app/dashboard/dist/;
+        try_files $uri $uri/ /dash/index.html;
+        add_header Cache-Control "no-store, no-cache";
+
+        # Vite's hashed output, and nothing else, may be kept for a week —
+        # same rule and same reasoning as spa.conf's /assets/ location.
+        location ^~ /dash/assets/ {
+            alias /app/dashboard/dist/assets/;
+            expires 7d;
+            add_header Cache-Control "public, immutable";
+        }
+    }
+
+    # The data explorer (data-explorer/, static, no build step). Nothing it
+    # ships carries a content hash, so it has no immutable tree: every file is
+    # revalidated, which is what spa.conf already does for these names.
+    location ^~ /data/ {
+        alias /app/data-explorer/;
+        try_files $uri $uri/ /data/index.html;
+        add_header Cache-Control "no-store, no-cache";
+    }
+
+    # RETINA_INCLUDE snippets/spa.conf
 }
 
 # ${HOST_MAP} — live radar map (React frontend)
