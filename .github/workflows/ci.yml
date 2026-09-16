@@ -1063,6 +1063,19 @@ jobs:
           # Absolute: a working-directory default on this job would otherwise
           # break the source, and this step failing rolls production back.
           source "$GITHUB_WORKSPACE/deploy/smoke-tally.sh"
+          # assert_origin_marker: proves THIS repo's nginx answered, not merely
+          # that the hostname did. Absolute for the same reason as above.
+          source "$GITHUB_WORKSPACE/deploy/origin-marker.sh"
+
+          check_origin() {
+            local name="$1" url="$2" out
+            printf "  %-40s " "$name"
+            if out=$(assert_origin_marker "$url"); then
+              echo "OK"; PASS=$((PASS+1))
+            else
+              echo "FAIL"; printf '    %s\n' "$out"; FAIL=$((FAIL+1))
+            fi
+          }
 
           check_status() {
             local name="$1" url="$2" expected="$3"
@@ -1094,6 +1107,26 @@ jobs:
           # one back on failure. map is the production surface we still serve.
           check_status "GET / (frontend)"         "https://map.retina.fm/"            "200"
           check_status "GET /api/health (api.retina.fm)" "${BASE_URL}/api/health"     "200"
+
+          echo ""
+          echo "── Which origin answered ──"
+          # A status code proves a hostname responded, not that WE responded.
+          # tower-finder-service answers /api/health with the same 200 and the
+          # same security headers, so every check above passes identically
+          # against either origin — which is exactly how the 2026-09-14 flip of
+          # towers.retina.fm went unnoticed while this job rolled production
+          # back on failure. These assert the marker only this repo's nginx
+          # sets. This job has no check_header of its own; assert_origin_marker
+          # is shared with the staging suite so the two cannot drift.
+          # data.retina.fm is probed here and nowhere else in this job: it is a
+          # live production vhost that no other production check touches, so
+          # without this an Origin Rule could take it and nothing would notice.
+          # admin is absent because Cloudflare Access answers a browserless
+          # request with a 302 from the edge, carrying no origin headers.
+          check_origin "map vhost is this origin"  "https://map.retina.fm/api/health"
+          check_origin "api vhost is this origin"  "${BASE_URL}/api/health"
+          check_origin "dash vhost is this origin" "https://dash.retina.fm/api/health"
+          check_origin "data vhost is this origin" "https://data.retina.fm/api/health"
 
           # The tower-finder seam, on production's OWN vhost names: prod parks
           # testmap as testmap-retired, so its routed set is not staging's and

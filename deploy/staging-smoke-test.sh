@@ -42,6 +42,10 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/smoke-tally.sh"
 # overlay the CI gate reads so the two cannot come to disagree.
 # shellcheck source=deploy/fleet-scale.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fleet-scale.sh"
+# assert_origin_marker: proves THIS repo's nginx answered, not merely that the
+# hostname did. Shared with the production suite for the same reason as above.
+# shellcheck source=deploy/origin-marker.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/origin-marker.sh"
 
 check() {
     local name="$1" url="$2" expected="$3"
@@ -235,6 +239,28 @@ check_header_value_if_dns() {
     check_header_value "$name" "$url" "$header" "$value"
 }
 
+# assert_origin_marker in this suite's reporting. The diagnosis it prints names
+# the likely cause, so it is echoed rather than reduced to FAIL.
+check_origin() {
+    local name="$1" url="$2" out
+    printf "  %-40s " "$name"
+    if out=$(assert_origin_marker "$url"); then
+        echo "OK"
+        PASS=$((PASS+1))
+    else
+        echo "FAIL"
+        printf '    %s\n' "$out"
+        FAIL=$((FAIL+1))
+    fi
+}
+
+check_origin_if_dns() {
+    local name="$1" url="$2" host
+    host="${url#https://}"; host="${host%%/*}"
+    if handle_unresolvable "$host" "$name"; then return; fi
+    check_origin "$name" "$url"
+}
+
 check_rate_limit() {
     local name="$1" url="$2" tries="$3"
     printf "  %-40s " "$name"
@@ -364,6 +390,29 @@ check_header "CSP on dashboard vhost"       "${DASH_URL}/api/health" "content-se
 check_header_if_dns "CSP on data explorer vhost" "${DATA_URL}/api/health" "content-security-policy"
 check_header "CSP on frontend vhost"        "${MAP_URL}/api/health" "content-security-policy"
 check_header "HSTS on api subdomain"        "${API_URL}/api/health"  "strict-transport-security"
+
+echo ""
+echo "── Which origin answered ──"
+# The headers above prove a policy is served; they do not prove WE served it.
+# tower-finder-service returns the same CSP, HSTS and X-Frame-Options on
+# /api/health, so every check in the block above passes identically against
+# either origin. These assert the marker only this repo's nginx sets, so a
+# hostname quietly repointed by a Cloudflare Origin Rule fails here instead of
+# passing for weeks.
+#
+# Two vhosts are deliberately absent. BASE_URL is the other service, so it must
+# never carry this marker. ADMIN_URL sits behind Cloudflare Access, which
+# answers a browserless request with a 302 from the edge carrying no origin
+# headers at all — adding it would report a missing include that is present.
+# tower-contract.sh reaches that vhost with service-token headers; this does not.
+check_origin        "map vhost is this origin"   "${MAP_URL}/api/health"
+check_origin        "api vhost is this origin"   "${API_URL}/api/health"
+check_origin        "dash vhost is this origin"  "${DASH_URL}/api/health"
+check_origin        "testmap vhost is this origin" "${TESTMAP_URL}/api/health"
+check_origin_if_dns "data vhost is this origin"  "${DATA_URL}/api/health"
+# The catch-all sets the marker too, so a 421 is provably ours rather than an
+# edge error page that happens to share the status.
+check_origin_if_dns "catch-all is this origin"   "${CATCHALL_URL}/"
 # Edge caching follows what nginx says, and Cloudflare keeps a `public,
 # immutable` response for the whole `expires` window, so that policy is safe
 # only on a name that carries a content hash (Vite's /assets/). A file whose
