@@ -11,10 +11,8 @@ import time
 from unittest.mock import patch
 
 import pytest
-from fastapi.testclient import TestClient
 
 from core import state
-from main import app
 from services import node_bias
 from services.state_snapshot import restore_snapshot, save_snapshot
 
@@ -24,12 +22,6 @@ from services.state_snapshot import restore_snapshot, save_snapshot
 @pytest.fixture()
 def now_ms():
     return int(time.time() * 1000)
-
-
-@pytest.fixture()
-def client():
-    with TestClient(app, raise_server_exceptions=False) as c:
-        yield c
 
 
 def _feed(node_id, hex_, d_res, f_res, n, start_ms, step_ms=1000):

@@ -4,21 +4,6 @@ import os
 import time
 
 import pytest
-from fastapi.testclient import TestClient
-
-# Ensure test env so JWT fallback is allowed
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from main import app  # noqa: E402
-
-
-@pytest.fixture()
-def client():
-    """Synchronous test client — does not run lifespan (no TCP, no tasks)."""
-    with TestClient(app, raise_server_exceptions=False) as c:
-        yield c
-
 
 # ── Health ────────────────────────────────────────────────────────────────────
 

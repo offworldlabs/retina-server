@@ -12,13 +12,10 @@ import time
 
 import pytest
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from core import state  # noqa: E402
-from services import dark_follow  # noqa: E402
-from services.geo import in_node_beam  # noqa: E402
-from services.tasks import solver as solver_mod  # noqa: E402
+from core import state
+from services import dark_follow
+from services.geo import in_node_beam
+from services.tasks import solver as solver_mod
 
 # An n=2 solver input whose track pairing has already passed the
 # constant-velocity fit.  At n=2 a solve is published only once the pairing has

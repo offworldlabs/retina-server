@@ -25,15 +25,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from main import app
-
-
-@pytest.fixture()
-def client():
-    with TestClient(app, raise_server_exceptions=False) as c:
-        yield c
-
-
 # ── /api/auth/me + /api/auth/logout ──────────────────────────────────────────
 
 

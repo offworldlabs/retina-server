@@ -1,13 +1,8 @@
 """Tests for the shared health evaluation + the health-monitor alert cycle."""
 
-import os
-
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from services import health  # noqa: E402
-from services.health import compute_health_issues  # noqa: E402
-from services.tasks import health_monitor  # noqa: E402
+from services import health
+from services.health import compute_health_issues
+from services.tasks import health_monitor
 
 
 class TestComputeHealthIssues:

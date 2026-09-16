@@ -26,22 +26,17 @@ the displacement gate would have said.  Pinned here:
 Style follows test_solver_worker.py / test_solver_anchor.py.
 """
 
-import os
 import time
 from collections import deque
 
 import pytest
+from retina_geolocator.bistatic_models import bistatic_delay, bistatic_doppler
+from retina_geolocator.multinode_solver import _lla_to_enu_km, solve_multinode
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from retina_geolocator.bistatic_models import bistatic_delay, bistatic_doppler  # noqa: E402
-from retina_geolocator.multinode_solver import _lla_to_enu_km, solve_multinode  # noqa: E402
-
-from core import state  # noqa: E402
-from services import track_filter  # noqa: E402
-from services.tasks import known_lane  # noqa: E402
-from services.tasks import solver as solver_mod  # noqa: E402
+from core import state
+from services import track_filter
+from services.tasks import known_lane
+from services.tasks import solver as solver_mod
 
 HEX = "abc123"
 

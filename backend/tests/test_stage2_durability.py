@@ -15,12 +15,9 @@ import os
 import threading
 import time
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from core import state  # noqa: E402
-from services import frame_processor as fp  # noqa: E402
-from services import state_snapshot as snap  # noqa: E402
+from core import state
+from services import frame_processor as fp
+from services import state_snapshot as snap
 
 
 class TestArchiveFlushExclusivity:

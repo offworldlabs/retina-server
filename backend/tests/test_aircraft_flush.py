@@ -1,19 +1,14 @@
 """Tests for aircraft flush: _real_only_dict and broadcast_aircraft."""
 
-import os
-
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
 import asyncio
 import time
 
 import orjson
 import pytest
 
-from core import state  # noqa: E402
-from services.tasks import aircraft_flush  # noqa: E402
-from services.tasks.aircraft_flush import (  # noqa: E402
+from core import state
+from services.tasks import aircraft_flush
+from services.tasks.aircraft_flush import (
     _real_only_dict,
     broadcast_aircraft,
 )

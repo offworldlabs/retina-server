@@ -1,16 +1,13 @@
 import asyncio
 import logging
-import os
 import sys
 import threading
 
-os.environ.setdefault("RETINA_ENV", "test")
+import pytest
 
-import pytest  # noqa: E402
-
-from core.nodes import Node  # noqa: E402
-from core.users import async_session_maker  # noqa: E402
-from services import node_refs  # noqa: E402
+from core.nodes import Node
+from core.users import async_session_maker
+from services import node_refs
 
 
 @pytest.fixture()

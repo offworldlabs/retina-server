@@ -9,17 +9,13 @@ See config/constants.py's CAL_DETECTION_FRESH_S and the rationale duplicated
 in track_gates.track_entry.
 """
 
-import os
 import time
 
 import pytest
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from config.constants import CAL_DETECTION_FRESH_S, CAL_FIX_DETECTION_SKEW_S  # noqa: E402
-from core import state  # noqa: E402
-from services import track_gates  # noqa: E402
+from config.constants import CAL_DETECTION_FRESH_S, CAL_FIX_DETECTION_SKEW_S
+from core import state
+from services import track_gates
 
 _NODE_CFG = {
     "node_id": "cal_node",

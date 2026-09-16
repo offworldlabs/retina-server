@@ -7,23 +7,18 @@ payloads a stranger can fetch: no true receiver coordinate anywhere in them.
 """
 
 import math
-import os
 
 import orjson
 import pytest
-from fastapi.testclient import TestClient
 
-os.environ.setdefault("RETINA_ENV", "test")
-
-from config.constants import (  # noqa: E402
+from config.constants import (
     NODE_FUZZ_MAX_KM_DEFAULT,
     NODE_FUZZ_MIN_KM_DEFAULT,
 )
-from core import state  # noqa: E402
-from main import app  # noqa: E402
-from services import public_location as pl  # noqa: E402
-from services.geo import haversine_km  # noqa: E402
-from services.tasks.analytics_refresh import _public_location_block  # noqa: E402
+from core import state
+from services import public_location as pl
+from services.geo import haversine_km
+from services.tasks.analytics_refresh import _public_location_block
 
 # A salt fixed here rather than left to the runtime file, so a failure is
 # reproducible and never depends on what a previous run wrote to disk.
@@ -448,12 +443,6 @@ def registered_node():
         area.record_verified_detection(_TRUE_RX_LAT + 0.1 + i * 0.01, _TRUE_RX_LON + 0.1, f"abc{i:03d}")
     yield _NODE_ID
     state.node_analytics.retire_node(_NODE_ID)
-
-
-@pytest.fixture()
-def client():
-    with TestClient(app, raise_server_exceptions=False) as c:
-        yield c
 
 
 class TestNodesPayload:

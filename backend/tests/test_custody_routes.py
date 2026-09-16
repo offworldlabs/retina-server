@@ -1,24 +1,12 @@
 """Tests for chain-of-custody API routes."""
 
-import os
 from unittest.mock import patch
 
 import pytest
-from fastapi.testclient import TestClient
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from core import state  # noqa: E402
-from main import app  # noqa: E402
+from core import state
 
 _HEADERS = {"X-API-Key": "test-key-abc123"}
-
-
-@pytest.fixture()
-def client():
-    with TestClient(app, raise_server_exceptions=False) as c:
-        yield c
 
 
 @pytest.fixture(autouse=True)

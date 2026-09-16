@@ -6,19 +6,15 @@ every GT-matched altitude error was ~3.28x off.  It also hardcoded
 ``gs: 0``, comparing the solver speed against a phantom stationary truth.
 """
 
-import os
 import time
 from collections import deque
 from types import SimpleNamespace
 
 import orjson
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from core import state  # noqa: E402
-from services.geo import bistatic_delay_us  # noqa: E402
-from services.tasks.analytics_refresh import _refresh_node_verification  # noqa: E402
+from core import state
+from services.geo import bistatic_delay_us
+from services.tasks.analytics_refresh import _refresh_node_verification
 
 _NODE_ID = "example-node-a"
 

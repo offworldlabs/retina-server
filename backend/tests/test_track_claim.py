@@ -19,15 +19,11 @@ publishes another track.  These tests pin the hysteresis deliberately.  See
 _claim_track_pair's docstring for the pooled numbers.
 """
 
-import os
 import time
 
 import pytest
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from services.tasks import solver  # noqa: E402
+from services.tasks import solver
 
 
 @pytest.fixture(autouse=True)

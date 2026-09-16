@@ -15,16 +15,12 @@ testing importlib.
 """
 
 import math
-import os
 
 import pytest
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from services import solve_uncertainty as su  # noqa: E402
-from services import track_filter  # noqa: E402
-from services.geo import offset_latlon_m  # noqa: E402
+from services import solve_uncertainty as su
+from services import track_filter
+from services.geo import offset_latlon_m
 
 LAT, LON = 35.0, -82.0
 

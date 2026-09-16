@@ -346,6 +346,21 @@ def _serve_mender_devices(monkeypatch, devices: list) -> None:
     monkeypatch.setattr(mender, "_transport", httpx.MockTransport(_handler))
 
 
+@pytest.fixture()
+def client():
+    """A TestClient against the main app, with the lifespan run.
+
+    The context-manager form starts the background tasks, so a test asserting on
+    what a handler left in state.frame_queue wants `node_client` below instead.
+    """
+    from fastapi.testclient import TestClient
+
+    from main import app
+
+    with TestClient(app, raise_server_exceptions=False) as c:
+        yield c
+
+
 @pytest.fixture
 def node_client(node_session):
     """A TestClient whose requests read and write the per-test node database.

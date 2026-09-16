@@ -12,27 +12,23 @@ neither the map nor the archive agrees on, and there is no undo — so
 idempotence is asserted as directly as the displacement itself.
 """
 
-import os
-
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-os.environ.setdefault("RETINA_ENV", "test")
-
-from config.constants import (  # noqa: E402
+from config.constants import (
     NODE_FUZZ_MAX_KM_DEFAULT,
     NODE_FUZZ_MIN_KM_DEFAULT,
 )
-from scripts.backfill_archive_fuzz import (  # noqa: E402
+from scripts.backfill_archive_fuzz import (
     fuzz_rx_columns,
     needs_fuzzing,
     run,
     transform_parquet_bytes,
 )
-from services import public_location as pl  # noqa: E402
-from services.geo import haversine_km  # noqa: E402
-from services.parquet_writer import PUBLISHED_SCHEMA, SCHEMA, is_rx_published  # noqa: E402
+from services import public_location as pl
+from services.geo import haversine_km
+from services.parquet_writer import PUBLISHED_SCHEMA, SCHEMA, is_rx_published
 
 _SALT = "test-salt-for-archive-backfill"
 _TRUE_LAT, _TRUE_LON = 34.851234, -82.401234

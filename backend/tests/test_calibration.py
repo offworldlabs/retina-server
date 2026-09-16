@@ -15,16 +15,11 @@ for a few seconds after the node actually lost the target.  See the module
 docstring in services/calibration.py.
 """
 
-import os
-
 import pytest
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from config.constants import CAL_FIX_DETECTION_SKEW_S, CAL_MAX_ADSB_AGE_S  # noqa: E402
-from core import state  # noqa: E402
-from services.calibration import record_adsb_calibration, record_claim_calibration  # noqa: E402
+from config.constants import CAL_FIX_DETECTION_SKEW_S, CAL_MAX_ADSB_AGE_S
+from core import state
+from services.calibration import record_adsb_calibration, record_claim_calibration
 
 _CFG = dict(rx_lat=34.85, rx_lon=-82.40, tx_lat=34.90, tx_lon=-82.30, max_range_km=50, max_bistatic_range_km=60)
 
