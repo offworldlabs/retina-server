@@ -912,8 +912,10 @@ jobs:
     # cancel-in-progress: false, so this can only be a human pressing cancel —
     # never the pipeline cancelling itself. The marker check below still makes
     # a cancel during the pre-flights a no-op.
+    # A cancelled PR can also mark its skipped deploy as cancelled. Repeat the
+    # deploy's main-push gate so PRs and manual CI runs never open production SSH.
     if: >-
-      always() && (
+      always() && github.ref == 'refs/heads/main' && github.event_name == 'push' && (
         needs.deploy-production.result == 'failure' ||
         needs.deploy-production.result == 'cancelled'
       )
