@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pyarrow.parquet as pq
+import pytest
 
 from services import track_writer as tw
 
@@ -32,7 +33,8 @@ def _record(ts_ms: int = 1700000000000, **overrides) -> dict:
 def test_writes_hive_partitioned_path(tmp_path: Path):
     ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
     key = tw.write_tracks_parquet(records=[_record()], base_dir=tmp_path, write_ts=ts)
-    assert key == "year=2025/month=01/day=15/part-143022.parquet"
+    assert key.startswith("year=2025/month=01/day=15/part-143022-")
+    assert key.endswith(".parquet")
     assert (tmp_path / key).exists()
 
 
@@ -87,12 +89,33 @@ def test_empty_records_returns_none(tmp_path: Path):
     assert not list(tmp_path.rglob("*.parquet"))
 
 
+def test_batches_written_in_same_second_are_both_retained(tmp_path: Path):
+    ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
+    first = tw.write_tracks_parquet(records=[_record(ts_ms=1000)], base_dir=tmp_path, write_ts=ts)
+    second = tw.write_tracks_parquet(records=[_record(ts_ms=2000)], base_dir=tmp_path, write_ts=ts)
+    assert first != second
+    assert pq.read_table(tmp_path / first).column("frame_ts_ms").to_pylist() == [1000]
+    assert pq.read_table(tmp_path / second).column("frame_ts_ms").to_pylist() == [2000]
+
+
+def test_failed_write_never_publishes_partial_parquet(tmp_path: Path, monkeypatch):
+    def fail_after_partial_write(table, where, **kwargs):
+        Path(where).write_bytes(b"partial parquet")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pq, "write_table", fail_after_partial_write)
+    with pytest.raises(OSError, match="disk full"):
+        tw.write_tracks_parquet(records=[_record()], base_dir=tmp_path)
+    assert not [path for path in tmp_path.rglob("*") if path.is_file()]
+
+
 def test_flush_track_archive_buffer_drains_state(tmp_path: Path, monkeypatch):
     """flush_track_archive_buffer drains state.track_archive_buffer into a Parquet file."""
     from core import state
     from services.tasks import track_archive as ta
 
     monkeypatch.setattr(ta, "_TRACKS_DIR", str(tmp_path))
+    monkeypatch.setattr(ta, "_pending_records", [])
     state.track_archive_buffer.clear()
     state.track_archive_buffer.append(_record(ts_ms=1700000000000))
     state.track_archive_buffer.append(_record(ts_ms=1700000001000))
@@ -111,6 +134,7 @@ def test_flush_track_archive_buffer_no_op_when_empty(tmp_path: Path, monkeypatch
     from services.tasks import track_archive as ta
 
     monkeypatch.setattr(ta, "_TRACKS_DIR", str(tmp_path))
+    monkeypatch.setattr(ta, "_pending_records", [])
     state.track_archive_buffer.clear()
     assert ta.flush_track_archive_buffer() is None
     assert not list(tmp_path.rglob("*.parquet"))

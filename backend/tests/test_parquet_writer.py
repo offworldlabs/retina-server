@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pyarrow.parquet as pq
+import pytest
 
 from config.constants import node_fuzz_max_km, node_fuzz_min_km
 from services import parquet_writer as pw
@@ -39,9 +40,39 @@ def test_writes_hive_partitioned_path(tmp_path: Path):
         write_ts=ts,
     )
 
-    expected = "year=2025/month=01/day=15/node_id=node-A/part-143022.parquet"
-    assert key == expected
+    assert key.startswith("year=2025/month=01/day=15/node_id=node-A/part-143022-")
+    assert key.endswith(".parquet")
     assert (tmp_path / key).exists()
+
+
+def test_same_second_batches_do_not_replace_previous_detections(tmp_path):
+    ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
+    first = pw.write_detections_parquet(
+        node_id="node-A", frames=[_frame(1000, n_dets=1)], base_dir=tmp_path, write_ts=ts
+    )
+    second = pw.write_detections_parquet(
+        node_id="node-A", frames=[_frame(2000, n_dets=1)], base_dir=tmp_path, write_ts=ts
+    )
+    assert first != second
+    assert pq.read_table(tmp_path / first, partitioning=None).column("frame_ts_ms").to_pylist() == [1000]
+    assert pq.read_table(tmp_path / second, partitioning=None).column("frame_ts_ms").to_pylist() == [2000]
+
+
+@pytest.mark.parametrize("has_previous", [False, True])
+def test_failed_write_leaves_no_partial_file_or_damaged_previous_batch(tmp_path, monkeypatch, has_previous):
+    ts = datetime(2025, 1, 15, 14, 30, 22, tzinfo=timezone.utc)
+    if has_previous:
+        pw.write_detections_parquet(node_id="node-A", frames=[_frame(1000, n_dets=1)], base_dir=tmp_path, write_ts=ts)
+    previous = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    def partial_write(table, where, **kwargs):
+        Path(where).write_bytes(b"incomplete parquet")
+        raise OSError("disk full")
+
+    monkeypatch.setattr(pq, "write_table", partial_write)
+    with pytest.raises(OSError, match="disk full"):
+        pw.write_detections_parquet(node_id="node-A", frames=[_frame(2000, n_dets=1)], base_dir=tmp_path, write_ts=ts)
+    assert {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == previous
 
 
 def test_schema_is_per_detection_with_required_columns(tmp_path: Path):
