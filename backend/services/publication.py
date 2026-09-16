@@ -255,7 +255,8 @@ def is_private(node_id: str | None) -> bool:
 def public_aircraft_payload(data: dict) -> dict:
     """An aircraft feed payload with private nodes' contributions removed.
 
-    Four edits, and no others:
+    Until the first successful policy read, withhold all measurements and
+    identities, including ground truth. With known policy, make four edits:
 
     * An entry whose ``node_id`` is private is dropped.  Every single-node
       position — an arc crossing, a solver estimate, a claimed ADS-B fix — is
