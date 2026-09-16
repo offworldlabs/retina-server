@@ -73,6 +73,10 @@ services:
       # named for what it is; the two answer different questions, and staging
       # sets them to different values. See services/alerting.py.
       - ALERT_ENVIRONMENT=test
+      # The same two settings at the same values as production; see
+      # docker-compose.prod.yml for what they do and why the cooldown sits here.
+      - ALERT_WEBHOOK_FORMAT=clickup_chat
+      - ALERT_COOLDOWN_S=3600
       - CORS_ORIGINS=https://test-towers.retina.fm,https://test-api.retina.fm,https://test-map.retina.fm,https://test-dash.retina.fm,https://test-admin.retina.fm,https://test-data.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
       # at boot to render deploy/nginx/nginx.conf.template.

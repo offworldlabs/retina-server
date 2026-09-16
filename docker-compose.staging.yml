@@ -56,6 +56,10 @@ services:
       # RETINA_ENV above: this box names itself `staging` in an alert while still
       # running the `test` guards. See services/alerting.py.
       - ALERT_ENVIRONMENT=staging
+      # The same two settings at the same values as production; see
+      # docker-compose.prod.yml for what they do and why the cooldown sits here.
+      - ALERT_WEBHOOK_FORMAT=clickup_chat
+      - ALERT_COOLDOWN_S=3600
       - CORS_ORIGINS=https://staging-towers.retina.fm,https://staging-api.retina.fm,https://staging-map.retina.fm,https://staging-dash.retina.fm,https://staging-admin.retina.fm,https://staging-data.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
       # at boot to render deploy/nginx/nginx.conf.template. One template serves

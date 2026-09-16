@@ -42,9 +42,12 @@ Three layers, in order of what they catch:
    verbatim as that header (no `Bearer` prefix: ClickUp personal tokens
    carry none). ClickUp documents the chat endpoint as experimental, so the
    server logs its alert destination (scheme and host only) at startup, as a
-   trail back to the dependency if the endpoint ever breaks. Alerts are
-   deduplicated per `alert_type` with a `ALERT_COOLDOWN_S` cooldown (default
-   300s), so an ongoing problem re-notifies at most every 5 minutes. A
+   trail back to the dependency if the endpoint ever breaks. That line is
+   logged at INFO, which no deployed stack currently emits (ClickUp
+   123zgec374r), so on a droplet it is not there to read. Alerts are
+   deduplicated per `alert_type` with a `ALERT_COOLDOWN_S` cooldown, so an
+   ongoing problem re-notifies at most once per window. The default is 300s;
+   see below for what each deployed environment actually runs. A
    `resolved:<type>` alert is sent once when a condition clears.
 
    Delivery is retried up to three times, with jittered exponential backoff
@@ -164,18 +167,36 @@ they're in the logs and the webhook payloads.
    configuration, not environment variables: see
    `claude-shared/docs/runbooks/uptime-monitoring.md`.
 
-| Env var | Default | Purpose |
-| --- | --- | --- |
-| `ALERT_WEBHOOK_URL` | _(unset → disabled)_ | Where alerts are POSTed |
-| `ALERT_COOLDOWN_S` | `300` | Per-alert-type re-notify cooldown |
-| `ALERT_WEBHOOK_AUTH` | _(unset)_ | Sent verbatim as the `Authorization` header when set |
-| `ALERT_WEBHOOK_FORMAT` | `raw` | Payload shape: `raw` or `clickup_chat` |
-| `ALERT_ENVIRONMENT` | _(unset → `unknown`)_ | Labels each alert's `environment` field |
-| `HEARTBEAT_URL` | _(unset → disabled)_ | Dormant: set by no environment (see layer 3) |
-| `HEARTBEAT_INTERVAL_S` | `60` | Heartbeat ping period |
-| `HEALTH_MONITOR_INTERVAL_S` | `30` | Health evaluation period |
-| `NODE_DROPOUT_THRESHOLD` | `0.8` | Active/peak node ratio below which dropout fires |
-| `HIGH_MISS_RATE_THRESHOLD` | `0.98` | Fleet-average miss rate above which `high_miss_rate` fires |
+3. On a deployed stack the settings split two ways, and "Set by" below says
+   which way each one goes. Everything that is safe to read in a public repo
+   lives in `docker-compose.{prod,staging,test}.yml`, so the configuration in
+   force can be read from the repository and survives a rebuild. The
+   destination and its credential live only in the host's `backend/.env`, which
+   compose loads via `env_file`; where both name a variable, the overlay's
+   `environment` wins.
+
+| Env var | Default | Set by | Purpose |
+| --- | --- | --- | --- |
+| `ALERT_WEBHOOK_URL` | _(unset → disabled)_ | host `backend/.env` | Where alerts are POSTed |
+| `ALERT_COOLDOWN_S` | `300` | compose overlay | Per-alert-type re-notify cooldown |
+| `ALERT_WEBHOOK_AUTH` | _(unset)_ | host `backend/.env` | Sent verbatim as the `Authorization` header when set |
+| `ALERT_WEBHOOK_FORMAT` | `raw` | compose overlay | Payload shape: `raw` or `clickup_chat` |
+| `ALERT_ENVIRONMENT` | _(unset → `unknown`)_ | compose overlay | Labels each alert's `environment` field |
+| `HEARTBEAT_URL` | _(unset → disabled)_ | — | Dormant: set by no environment (see layer 3) |
+| `HEARTBEAT_INTERVAL_S` | `60` | — | Heartbeat ping period |
+| `HEALTH_MONITOR_INTERVAL_S` | `30` | — | Health evaluation period |
+| `NODE_DROPOUT_THRESHOLD` | `0.8` | — | Active/peak node ratio below which dropout fires |
+| `HIGH_MISS_RATE_THRESHOLD` | `0.98` | — | Fleet-average miss rate above which `high_miss_rate` fires |
+
+Every deployed environment currently holds `ALERT_COOLDOWN_S` at `3600` rather
+than the `300` default. Alerts post with a personal ClickUp token whose rate
+limit is shared with interactive use of ClickUp, and several checks still fire
+on conditions nobody would act on, so the cooldown is doing duty as a volume
+control until those are calibrated (ClickUp 86cb5c8dq).
+
+`deploy/start.sh` refuses to boot a `RETINA_ENV=production` stack that is
+missing either `ALERT_WEBHOOK_URL` or `ALERT_WEBHOOK_AUTH`; staging and test
+log a warning instead. See `docs/runbook.md` for restoring them on a fresh box.
 
 ## Deferred (needs real infrastructure)
 

@@ -1733,11 +1733,11 @@ class TestRedirectsAreNotDelivered:
 
 class TestConcurrentDeliveryIsRefused:
     """A retry sequence can outlast its own cooldown: three 10s timeouts plus
-    two Retry-After waits is 150s, against a 300s default that is set per
-    droplet and could be lower. The reservation in _last_sent therefore
-    cannot by itself stop the next health cycle opening a second, concurrent
-    delivery of the same alert, which is the load the retry exists to spare
-    a struggling sink.
+    two Retry-After waits is 150s, against a 300s default the compose overlays
+    override and that could be set lower. The reservation in _last_sent
+    therefore cannot by itself stop the next health cycle opening a second,
+    concurrent delivery of the same alert, which is the load the retry exists
+    to spare a struggling sink.
     """
 
     def test_a_send_is_refused_while_the_same_type_is_still_in_flight(self, monkeypatch):
