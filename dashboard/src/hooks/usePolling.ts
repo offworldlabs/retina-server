@@ -46,6 +46,9 @@ function asError(reason: unknown): Error {
  * restarts the schedule, the way a page keyed on a route parameter or a page
  * number needs. The fetcher itself may change freely; the next request, timed
  * or not, calls the latest one.
+ *
+ * Fetchers should return data without changing UI state: late results may be
+ * discarded. Update histories or selection from the returned `data` instead.
  */
 export function usePolling<T>(
   fetcher: () => Promise<T>,

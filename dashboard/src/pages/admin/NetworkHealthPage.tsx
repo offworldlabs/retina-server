@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
@@ -40,16 +40,22 @@ export default function NetworkHealthPage() {
       node_ref: ref,
       _analytics: analyticsMap[ref] || {},
     }));
+    return { dashboard: d, aircraft, nodes };
+  }, 5000);
+
+  // Only accepted polling snapshots may append history; fetchers can finish
+  // after their request has been superseded.
+  useEffect(() => {
+    if (!data) return;
     setHistory((prev) => [
       ...prev,
       {
         time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-        aircraft: aircraft.length,
-        nodes: nodes.length,
+        aircraft: data.aircraft.length,
+        nodes: data.nodes.length,
       },
     ].slice(-30));
-    return { dashboard: d, aircraft, nodes };
-  }, 5000);
+  }, [data]);
 
   if (loading) return <div className="empty-state">Loading…</div>;
 

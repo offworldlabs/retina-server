@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line,
@@ -24,28 +24,29 @@ export default function RFEnvironmentPage() {
       ...info,
       _analytics: analyticsMap[id] || {},
     }));
-    if (!selectedNode && nodeList.length > 0) {
-      setSelectedNode(nodeList[0].node_id);
-    }
-    // Append to SNR history for the selected node
     const sel = selectedNode || (nodeList[0]?.node_id);
-    if (sel) {
-      const nodeData = analyticsMap[sel] || {};
-      const snr = nodeData.metrics?.avg_snr || 0;
-      setSnrHistory((prev) => [
-        ...prev.slice(-30),
-        {
-          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-          snr: parseFloat(snr.toFixed(1)),
-        },
-      ]);
-    }
-    return nodeList;
+    const snr = analyticsMap[sel]?.metrics?.avg_snr || 0;
+    return {
+      nodes: nodeList,
+      selectionKey: selectedNode,
+      sample: sel ? {
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+        snr: parseFloat(snr.toFixed(1)),
+      } : null,
+    };
   }, 5000, selectedNode);
+
+  useEffect(() => {
+    // usePolling retains the previous key's data while the new selection
+    // loads. Neither its sample nor its default selection belongs to this key.
+    if (!data || data.selectionKey !== selectedNode) return;
+    if (!selectedNode && data.nodes.length > 0) setSelectedNode(data.nodes[0].node_id);
+    if (data.sample) setSnrHistory((prev) => [...prev.slice(-30), data.sample]);
+  }, [data, selectedNode]);
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
-  const nodes = data ?? [];
+  const nodes = data?.nodes ?? [];
   const selected = nodes.find((n) => n.node_id === selectedNode) || nodes[0];
   const metrics = selected?._analytics?.metrics || {};
   const freq = selected?.frequency || selected?._analytics?.detection_area?.center_freq;
