@@ -39,6 +39,10 @@ server {
     # something that is not Cloudflare.
     # RETINA_INCLUDE snippets/tls.conf
 
+    # No security-headers snippet here (nothing is served), but the refusal is
+    # still ours and a probe must be able to tell.
+    # RETINA_INCLUDE snippets/origin-marker.conf
+
     # The authority is wrong, not the path.
     return 421;
 }
