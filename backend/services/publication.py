@@ -191,19 +191,11 @@ def _query() -> frozenset[str]:
 
 
 def invalidate() -> None:
-    """Drop the cached answer so the next call re-reads both tables.
+    """Expire policy after a committed registration or override change.
 
-    Called by every route that writes an override.  Without it a change made
-    from the dashboard would be honoured somewhere between immediately and
-    _TTL_S later, which reads as a bug on a switch whose whole promise is that a
-    node stops being published: an owner watching the map would see their node
-    for another half minute and reasonably conclude nothing happened.
-
-    Only the expiry is dropped, not ``_cached`` or ``_have_data``.  Clearing the
-    set would make the window between this call and the next refresh publish
-    every node, and clearing ``_have_data`` would turn a database failure during
-    that window into a silent fail-open instead of the logged "serving the last
-    known set" the failure semantics promise.
+    The next read queries both tables so visibility changes take effect without
+    waiting for the TTL. Retain the last known set and ``_have_data``: a failed
+    refresh uses that warm policy, while a cold failure withholds public output.
     """
     global _expires_at
     with _lock:
