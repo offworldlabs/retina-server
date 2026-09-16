@@ -15,6 +15,7 @@ import asyncio
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from http.cookies import SimpleCookie
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlsplit
@@ -435,16 +436,37 @@ class TestOAuthBrowserBinding:
         oauth_context.provider.post.assert_not_awaited()
         assert _finish_oauth(browser, current, provider).headers["location"] == "/dashboard"
 
+    def test_accepted_slow_callback_does_not_clear_a_newer_login_cookie(self, oauth_context, provider):
+        browser = oauth_context.browser
+        previous = _start_oauth(browser, provider)
+        exchange_started = Event()
+        finish_exchange = Event()
+
+        async def slow_exchange(*args, **kwargs):
+            exchange_started.set()
+            assert await asyncio.to_thread(finish_exchange.wait, 5)
+            return httpx.Response(200, json={"access_token": "provider-token"})
+
+        oauth_context.provider.post.side_effect = slow_exchange
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            previous_callback = executor.submit(_finish_oauth, browser, previous, provider)
+            try:
+                assert exchange_started.wait(5)
+                current = _start_oauth(browser, provider)
+            finally:
+                finish_exchange.set()
+            assert previous_callback.result(timeout=5).headers["location"] == "/dashboard"
+
+        assert _finish_oauth(browser, current, provider).headers["location"] == "/dashboard"
+
     def test_state_and_cookie_cannot_be_replayed(self, oauth_context, provider):
         browser = oauth_context.browser
         state = _start_oauth(browser, provider)
-        original_cookies = dict(browser.cookies)
         response = _finish_oauth(browser, state, provider)
         assert response.headers["location"] == "/dashboard"
         assert "auth_token" in response.cookies
-        assert f"__Host-retina-oauth-{provider}" not in browser.cookies
+        assert f"__Host-retina-oauth-{provider}" in browser.cookies
 
-        browser.cookies.update(original_cookies)
         repeated = _finish_oauth(browser, state, provider)
         assert repeated.headers["location"] == "/login?error=invalid_state"
         assert oauth_context.provider.post.await_count == 1
@@ -467,12 +489,10 @@ class TestOAuthBrowserBinding:
     def test_provider_error_also_consumes_state(self, oauth_context, provider):
         browser = oauth_context.browser
         state = _start_oauth(browser, provider)
-        original_cookies = dict(browser.cookies)
         oauth_context.provider.post.return_value = httpx.Response(400, json={"error": "invalid_code"})
         response = _finish_oauth(browser, state, provider)
         assert response.headers["location"] == f"/login?error={provider}_token_failed"
-        assert f"__Host-retina-oauth-{provider}" not in browser.cookies
-        browser.cookies.update(original_cookies)
+        assert f"__Host-retina-oauth-{provider}" in browser.cookies
         assert _finish_oauth(browser, state, provider).headers["location"] == "/login?error=invalid_state"
         assert oauth_context.provider.post.await_count == 1
 

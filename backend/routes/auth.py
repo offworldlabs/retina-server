@@ -127,6 +127,9 @@ def _oauth_login_response(url: str, provider: str, browser_token: str) -> Redire
     # __Host- forbids Domain cookies, including injection from sibling hosts.
     # Each provider has its own cookie; starting that provider again replaces
     # its pending browser login. Like auth_token, OAuth cookies require HTTPS.
+    # Callback responses leave this cookie to expire: a slow accepted callback
+    # could otherwise delete a newer login's cookie. Consumed server challenges,
+    # not cookie deletion, enforce single use.
     response.set_cookie(
         f"__Host-retina-oauth-{provider}",
         browser_token,
@@ -136,12 +139,6 @@ def _oauth_login_response(url: str, provider: str, browser_token: str) -> Redire
         samesite="lax",
         path="/",
     )
-    return response
-
-
-def _oauth_callback_response(url: str, provider: str) -> RedirectResponse:
-    response = RedirectResponse(url)
-    response.delete_cookie(f"__Host-retina-oauth-{provider}", path="/", httponly=True, secure=True, samesite="lax")
     return response
 
 
@@ -200,7 +197,7 @@ async def callback_google(request: Request, code: str = "", state: str = ""):
         )
         if tok.status_code != 200:
             logger.error("Google token exchange failed: %s", tok.text)
-            return _oauth_callback_response("/login?error=google_token_failed", "google")
+            return RedirectResponse("/login?error=google_token_failed")
         tokens = tok.json()
 
         info = await client.get(
@@ -211,7 +208,7 @@ async def callback_google(request: Request, code: str = "", state: str = ""):
 
     email = userinfo.get("email")
     if not email:
-        return _oauth_callback_response("/login?error=no_email", "google")
+        return RedirectResponse("/login?error=no_email")
 
     user = await get_or_create_oauth_user(
         email=email,
@@ -220,7 +217,7 @@ async def callback_google(request: Request, code: str = "", state: str = ""):
         provider="google",
         consume_invite_fn=consume_invite_for_email,
     )
-    response = _oauth_callback_response(redirect_url, "google")
+    response = RedirectResponse(redirect_url)
     await _set_auth_cookie(response, user)
     return response
 
@@ -260,7 +257,7 @@ async def callback_github(request: Request, code: str = "", state: str = ""):
         )
         if tok.status_code != 200:
             logger.error("GitHub token exchange failed: %s", tok.text)
-            return _oauth_callback_response("/login?error=github_token_failed", "github")
+            return RedirectResponse("/login?error=github_token_failed")
         tokens = tok.json()
         access_token = tokens.get("access_token", "")
 
@@ -283,7 +280,7 @@ async def callback_github(request: Request, code: str = "", state: str = ""):
                         break
 
     if not email:
-        return _oauth_callback_response("/login?error=no_email", "github")
+        return RedirectResponse("/login?error=no_email")
 
     user = await get_or_create_oauth_user(
         email=email,
@@ -292,7 +289,7 @@ async def callback_github(request: Request, code: str = "", state: str = ""):
         provider="github",
         consume_invite_fn=consume_invite_for_email,
     )
-    response = _oauth_callback_response(redirect_url, "github")
+    response = RedirectResponse(redirect_url)
     await _set_auth_cookie(response, user)
     return response
 
