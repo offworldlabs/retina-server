@@ -25,6 +25,7 @@ from core import state
 from services.adsb_regions import Box, Region, is_position_absent, is_usable, regions_for_nodes
 from services.frame_processor import flush_all_archive_buffers
 from services.geo import haversine_km
+from services.tasks.executor import task_executor
 
 _OPENSKY_URL = "https://opensky-network.org/api/states/all"
 
@@ -63,45 +64,42 @@ async def close_http_clients() -> None:
 
 async def archive_flush_task():
     """Periodically flush batched detection archives to disk/B2."""
-    while True:
-        await asyncio.sleep(ARCHIVE_FLUSH_INTERVAL_S)
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, flush_all_archive_buffers)
-            state.task_last_success["archive_flush"] = time.time()
-        except Exception:
-            state.bump_task_error("archive_flush")
-            logging.exception("Archive batch flush failed")
+    async with task_executor("archive-flush") as run:
+        while True:
+            await asyncio.sleep(ARCHIVE_FLUSH_INTERVAL_S)
+            try:
+                await run(flush_all_archive_buffers)
+                state.task_last_success["archive_flush"] = time.time()
+            except Exception:
+                state.bump_task_error("archive_flush")
+                logging.exception("Archive batch flush failed")
 
 
 async def archive_lifecycle_task():
     """Periodically offload old archives to R2 and delete expired local files."""
     from services.tasks.archive_lifecycle import run_archive_lifecycle
 
-    while True:
-        await asyncio.sleep(ARCHIVE_LIFECYCLE_INTERVAL_S)
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, run_archive_lifecycle)
-            state.task_last_success["archive_lifecycle"] = time.time()
-        except Exception:
-            state.bump_task_error("archive_lifecycle")
-            logging.exception("Archive lifecycle failed")
+    async with task_executor("archive-lifecycle") as run:
+        while True:
+            await asyncio.sleep(ARCHIVE_LIFECYCLE_INTERVAL_S)
+            try:
+                await run(run_archive_lifecycle)
+                state.task_last_success["archive_lifecycle"] = time.time()
+            except Exception:
+                state.bump_task_error("archive_lifecycle")
+                logging.exception("Archive lifecycle failed")
 
 
 async def reputation_evaluator():
-    loop = asyncio.get_event_loop()
-    while True:
-        await asyncio.sleep(REPUTATION_INTERVAL_S)
-        try:
-            await loop.run_in_executor(
-                None,
-                state.node_analytics.evaluate_reputations,
-            )
-            state.task_last_success["reputation_evaluator"] = time.time()
-        except Exception:
-            state.bump_task_error("reputation_evaluator")
-            logging.exception("Reputation evaluation failed")
+    async with task_executor("reputation") as run:
+        while True:
+            await asyncio.sleep(REPUTATION_INTERVAL_S)
+            try:
+                await run(state.node_analytics.evaluate_reputations)
+                state.task_last_success["reputation_evaluator"] = time.time()
+            except Exception:
+                state.bump_task_error("reputation_evaluator")
+                logging.exception("Reputation evaluation failed")
 
 
 async def prune_synthetic_nodes():
@@ -578,45 +576,45 @@ async def _fetch_adsb_lol(regions: list[Region]) -> tuple[dict, set[str]]:
     from clients.adsb_lol import AdsbLolClient
 
     global _adsb_lol_client
-    loop = asyncio.get_running_loop()
-    areas = [r.as_area() for r in regions]
-    if _adsb_lol_client is None:
-        _adsb_lol_client = AdsbLolClient(areas)
-    else:
-        _adsb_lol_client.areas = areas
-    poll_ts = time.time()
-    aircraft = await loop.run_in_executor(None, _adsb_lol_client.fetch_all)
+    async with task_executor("adsb-lol") as run:
+        areas = [r.as_area() for r in regions]
+        if _adsb_lol_client is None:
+            _adsb_lol_client = AdsbLolClient(areas)
+        else:
+            _adsb_lol_client.areas = areas
+        poll_ts = time.time()
+        aircraft = await run(_adsb_lol_client.fetch_all)
 
-    status = _adsb_lol_client.last_status
-    covered = {r.name for r in regions if status.get(r.name, False)}
-    failed = [r.name for r in regions if r.name not in covered]
-    if failed:
-        logging.warning("adsb.lol: %d of %d regions failed: %s", len(failed), len(regions), ", ".join(failed))
+        status = _adsb_lol_client.last_status
+        covered = {r.name for r in regions if status.get(r.name, False)}
+        failed = [r.name for r in regions if r.name not in covered]
+        if failed:
+            logging.warning("adsb.lol: %d of %d regions failed: %s", len(failed), len(regions), ", ".join(failed))
 
-    result = {}
-    for ac in aircraft:
-        h = (ac.get("hex") or "").lower()
-        if not h:
-            continue
-        # The client resolves seen_pos against its own fetch, so this is an
-        # absolute capture time and stays correct when a last-good row is
-        # served again on a later failed fetch.
-        captured = ac.get("captured_at")
-        if not is_num(captured):
-            captured = poll_ts
-        # tar1090's gs is knots; this cache's velocity is m/s, which is what
-        # OpenSky writes and what both consumers read.
-        gs = ac.get("gs")
-        result[h] = {
-            "lat": ac.get("lat", 0.0),
-            "lon": ac.get("lon", 0.0),
-            "alt_m": as_num(ac.get("alt_baro")) * FT_TO_M,
-            "velocity": gs * KNOTS_TO_MS if is_num(gs) else None,
-            "heading": ac.get("track"),
-            "last_seen_ms": _capture_ms(captured, poll_ts),
-            "source": "adsb_lol",
-        }
-    return result, covered
+        result = {}
+        for ac in aircraft:
+            h = (ac.get("hex") or "").lower()
+            if not h:
+                continue
+            # The client resolves seen_pos against its own fetch, so this is an
+            # absolute capture time and stays correct when a last-good row is
+            # served again on a later failed fetch.
+            captured = ac.get("captured_at")
+            if not is_num(captured):
+                captured = poll_ts
+            # tar1090's gs is knots; this cache's velocity is m/s, which is what
+            # OpenSky writes and what both consumers read.
+            gs = ac.get("gs")
+            result[h] = {
+                "lat": ac.get("lat", 0.0),
+                "lon": ac.get("lon", 0.0),
+                "alt_m": as_num(ac.get("alt_baro")) * FT_TO_M,
+                "velocity": gs * KNOTS_TO_MS if is_num(gs) else None,
+                "heading": ac.get("track"),
+                "last_seen_ms": _capture_ms(captured, poll_ts),
+                "source": "adsb_lol",
+            }
+        return result, covered
 
 
 def _cross_validate_adsb_reports():

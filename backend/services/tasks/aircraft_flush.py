@@ -1,7 +1,6 @@
 """Aircraft JSON flush + WebSocket broadcast — runs at ~1 Hz."""
 
 import asyncio
-import concurrent.futures
 import logging
 import os
 import time
@@ -13,15 +12,11 @@ from core import state
 from services import node_refs
 from services.frame_processor import build_combined_aircraft_json
 from services.publication import public_aircraft_payload
+from services.tasks.executor import task_executor
 
 _TAR1090_DATA_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
     "tar1090_data",
-)
-
-_aircraft_flush_executor = concurrent.futures.ThreadPoolExecutor(
-    max_workers=1,
-    thread_name_prefix="aircraft-flush",
 )
 
 
@@ -201,38 +196,35 @@ async def broadcast_aircraft(aircraft_data: dict):
 
 async def aircraft_flush_task(default_pipeline):
     """Write aircraft.json to disk and broadcast via WS at ~1 Hz."""
-    loop = asyncio.get_event_loop()
-    while True:
-        await asyncio.sleep(AIRCRAFT_FLUSH_INTERVAL_S)
-        if not state.aircraft_dirty:
-            continue
-        state.aircraft_dirty = False
-        try:
+    async with task_executor("aircraft-flush") as run:
+        while True:
+            await asyncio.sleep(AIRCRAFT_FLUSH_INTERVAL_S)
+            if not state.aircraft_dirty:
+                continue
+            state.aircraft_dirty = False
+            try:
 
-            def _build_and_serialize():
-                data = build_combined_aircraft_json(default_pipeline)
-                # The on-disk copy is the tar1090 file layout, i.e. a document
-                # meant to be handed to a viewer — so it gets the redacted
-                # payload under published identities, not the one the owner feed
-                # reads.  Nothing routes to it today; that is a reason to write
-                # the safe version now rather than to leave a true one for
-                # whoever points a webserver at this directory later.
-                disk_bytes = published_bytes(public_aircraft_payload(data))
-                aircraft_path = os.path.join(_TAR1090_DATA_DIR, "aircraft.json")
-                # tmp + os.replace: an in-place truncating write let any
-                # HTTP/tar1090 reader observe a half-written file.
-                tmp_path = aircraft_path + ".tmp"
-                with open(tmp_path, "wb") as f:
-                    f.write(disk_bytes)
-                os.replace(tmp_path, aircraft_path)
-                return data
+                def _build_and_serialize():
+                    data = build_combined_aircraft_json(default_pipeline)
+                    # The on-disk copy is the tar1090 file layout, i.e. a document
+                    # meant to be handed to a viewer — so it gets the redacted
+                    # payload under published identities, not the one the owner feed
+                    # reads.  Nothing routes to it today; that is a reason to write
+                    # the safe version now rather than to leave a true one for
+                    # whoever points a webserver at this directory later.
+                    disk_bytes = published_bytes(public_aircraft_payload(data))
+                    aircraft_path = os.path.join(_TAR1090_DATA_DIR, "aircraft.json")
+                    # tmp + os.replace: an in-place truncating write let any
+                    # HTTP/tar1090 reader observe a half-written file.
+                    tmp_path = aircraft_path + ".tmp"
+                    with open(tmp_path, "wb") as f:
+                        f.write(disk_bytes)
+                    os.replace(tmp_path, aircraft_path)
+                    return data
 
-            aircraft_data = await loop.run_in_executor(
-                _aircraft_flush_executor,
-                _build_and_serialize,
-            )
-            await broadcast_aircraft(aircraft_data)
-            state.task_last_success["aircraft_flush"] = time.time()
-        except Exception:
-            state.bump_task_error("aircraft_flush")
-            logging.exception("Aircraft flush failed")
+                aircraft_data = await run(_build_and_serialize)
+                await broadcast_aircraft(aircraft_data)
+                state.task_last_success["aircraft_flush"] = time.time()
+            except Exception:
+                state.bump_task_error("aircraft_flush")
+                logging.exception("Aircraft flush failed")

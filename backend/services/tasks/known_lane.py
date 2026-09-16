@@ -640,11 +640,8 @@ def run_known_lane_pass(solve_fn, node_cfgs: dict | None = None, mode: str | Non
     slice A and may be absent, empty, or mid-write.
 
     ``mode`` overrides state.KNOWN_LANE_MODE for this pass (None reads the
-    live flag).  Tests need the override, not convenience: the live flag is
-    shared with every solver worker daemon leaked into the process by a
-    TestClient lifespan, and arming it globally would let a daemon's own
-    maybe_run_pass race the test's pass for the per-hex dedup window — the
-    same reason _solver_worker_iteration takes a private queue.
+    live flag).  The override lets a caller exercise one pass without arming
+    concurrent workers, which share the per-hex dedup window.
     """
     if mode is None:
         mode = _mode()
@@ -766,6 +763,7 @@ def _build_follow_solver_input(key: str, claims: dict[str, dict]) -> dict | None
                 "delay_us": float(c["delay_us"]),
                 "doppler_hz": float(c["doppler_hz"]),
                 "snr": _num(c.get("snr")),
+                "t_s": int(c["ts_ms"]) / 1000.0,
             }
             for nid, c in sorted(claims.items())
         ],
@@ -789,6 +787,11 @@ def _follow_shadow_attempt(key: str, s_in: dict, node_cfgs: dict, solve_fn) -> N
     and a binding reject mean the same thing; the verdict also feeds the ghost
     guard, which would otherwise be inert for the whole soak.
     """
+    # Binding inputs receive this correction in the queue worker. Shadow
+    # calls the solver directly, so apply the same flag and correction here.
+    epoch_meta: dict = {"epoch_aligned": False}
+    if state.SOLVER_EPOCH_ALIGN:
+        s_in, epoch_meta = solver_mod.align_measurement_epochs(s_in, node_cfgs)
     try:
         result = solve_fn(s_in, node_cfgs)
     except Exception:
@@ -806,7 +809,7 @@ def _follow_shadow_attempt(key: str, s_in: dict, node_cfgs: dict, solve_fn) -> N
         s_in,
         result if isinstance(result, dict) else None,
         displacement_km=disp_km,
-        extra={"shadow": True, "published": False, "follow_ok": ok},
+        extra={"shadow": True, "published": False, "follow_ok": ok, **epoch_meta},
     )
 
 
@@ -824,9 +827,8 @@ def run_dark_follow_pass(solve_fn, node_cfgs: dict | None = None, mode: str | No
     anything reaching the queue would publish.
 
     ``mode`` overrides state.DARK_FOLLOW_MODE for this pass, for the same
-    reason run_known_lane_pass takes the override: a solver worker daemon
-    leaked into the test process would otherwise race the test for the per-key
-    rate limit.
+    reason run_known_lane_pass takes the override: concurrent workers share
+    the per-key rate limit.
     """
     if mode is None:
         mode = dark_follow.mode()

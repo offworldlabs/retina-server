@@ -68,11 +68,8 @@ _LAT, _LON, _ALT_M = 34.88, -82.35, 7000.0
 def _lane_off_unless_armed(monkeypatch):
     """Leave the live flag off between tests.
 
-    state.DARK_FOLLOW_MODE defaults to "shadow", and every solver worker daemon
-    a TestClient lifespan has leaked into this process polls it — arming it
-    globally would let one race these tests for the per-key rate limit, the
-    same hazard test_known_lane.py documents for KNOWN_LANE_MODE.  Tests that
-    need the lane arm it themselves (``_install``) or pass ``mode`` explicitly.
+    Tests that need the lane arm it themselves (``_install``) or pass ``mode``
+    explicitly, so unrelated background work cannot consume their rate limit.
     """
     monkeypatch.setattr(state, "DARK_FOLLOW_MODE", "off")
 
@@ -620,8 +617,7 @@ class TestFollowPass:
 
     @pytest.fixture(autouse=True)
     def _private_queue(self, monkeypatch):
-        """A queue of this test's own: a leaked solver worker daemon drains
-        state.solver_queue, and would take the item under assertion."""
+        """Keep queue assertions independent of any active application workers."""
         import queue
 
         monkeypatch.setattr(state, "solver_queue", queue.Queue(maxsize=200))
@@ -662,6 +658,37 @@ class TestFollowPass:
 
         assert known_lane.run_dark_follow_pass(None, self._CFGS, mode="binding") == 0
         assert _drain_queue() == []
+
+    @pytest.mark.parametrize("mode", ["binding", "shadow"])
+    @pytest.mark.parametrize("align", [True, False])
+    def test_skewed_claims_keep_their_capture_epochs(self, monkeypatch, mode, align):
+        monkeypatch.setattr(state, "SOLVER_EPOCH_ALIGN", align)
+        ts = int(time.time() * 1000)
+        claims = _install_follow_claims(["n1", "n2", "n3"], ts)
+        claims[0]["ts_ms"] -= 4000
+        seen = []
+
+        def solve(s_in, cfgs):
+            seen.append(s_in)
+            return None
+
+        assert known_lane.run_dark_follow_pass(solve, self._CFGS, mode=mode) == 1
+        if mode == "binding":
+            (item,) = _drain_queue()
+            s_in, cfgs, _ = item
+            assert [m["t_s"] for m in s_in["measurements"]] == [(ts - 4000) / 1000, ts / 1000, ts / 1000]
+            if align:
+                s_in, _ = solver_mod.align_measurement_epochs(s_in, cfgs)
+        else:
+            (s_in,) = seen
+            (rec,) = [r for r in state.mlat_solve_history if r.get("follow_key")]
+            assert rec["epoch_aligned"] is align
+            if align:
+                assert rec["epoch_skew_s"] == 4.0
+        expected = 100.0 - 10.0 * 1e6 / _NODE_CFG["fc_hz"] * 4 if align else 100.0
+        assert s_in["measurements"][0]["delay_us"] == pytest.approx(expected)
+        assert claims[0]["delay_us"] == 100.0
+        assert s_in["timestamp_ms"] == ts
 
     def test_the_rate_limit_holds_between_passes(self):
         ts = int(time.time() * 1000)

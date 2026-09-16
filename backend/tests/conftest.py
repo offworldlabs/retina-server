@@ -16,18 +16,12 @@ os.environ.setdefault("RETINA_ENV", "test")
 # and an unpicklable closure cannot be shipped to a pool child.  See the
 # _POOL_ENABLED comment in services/tasks/solver.py.
 os.environ.setdefault("SOLVER_POOL", "0")
-# No known-lane arming under pytest, for the same leaked-daemon reason: every
-# TestClient lifespan leaks solver worker threads that arm the known-lane hook
-# at thread start (_run_solver_worker), and with the shadow default those
-# daemons run passes concurrently with whatever test is asserting on
-# known_lane counters.  Tests that exercise the lane set the mode explicitly —
-# monkeypatch on core.state, or maybe_run_pass's mode argument.
+# Keep background claiming off unless a test explicitly exercises it. Live
+# TestClient workers otherwise compete with direct calls for dedup windows
+# and counters. Tests opt in through core.state or a pass's mode argument.
 os.environ.setdefault("KNOWN_LANE_MODE", "off")
-# Same for the dark-follow lane: lanes_armed() arms the hook when EITHER lane
-# is on, and maybe_run_pass returns early only when both are off, so with this
-# lane at its "shadow" default every leaked daemon still took the pass lock and
-# stamped the pass clock every two seconds, gating the known-lane tests' first
-# call. Tests that exercise dark following set the mode themselves.
+# Both lanes must be off: lanes_armed() enables the worker hook when either
+# lane is enabled. Dark-follow tests set their own mode.
 os.environ.setdefault("DARK_FOLLOW_MODE", "off")
 # Needed so the /api/radar/detections auth guard is active in tests.
 os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")

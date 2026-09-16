@@ -65,6 +65,9 @@ _N_SOLVER_WORKERS = int(os.getenv("SOLVER_WORKERS", "2"))
 # inline and the first thread to notice rebuilds the pool for the rest.
 _solver_pool: concurrent.futures.ProcessPoolExecutor | None = None
 _solver_pool_lock = threading.Lock()
+_solver_workers_lock = threading.Lock()
+_solver_workers: list[threading.Thread] = []
+_solver_stop = threading.Event()
 
 # Never under pytest: route tests boot the whole app via TestClient, so the
 # lifespan's start_solver_workers would hang a real pool off the test process
@@ -4280,8 +4283,8 @@ def _pool_solve_multinode(s_in, node_cfgs):
 def _solver_worker_iteration(timeout: float = 1.0, q=None) -> bool:
     """One queue-drain step; True if an item was taken (processed or failed).
 
-    ``q`` defaults to state.solver_queue; tests pass their own Queue so a
-    worker daemon leaked by an earlier test cannot race their items away.
+    ``q`` defaults to state.solver_queue; a worker generation captures its
+    queue at startup, and tests can supply an isolated queue.
     """
     if q is None:
         q = state.solver_queue
@@ -4301,25 +4304,18 @@ def _solver_worker_iteration(timeout: float = 1.0, q=None) -> bool:
     return True
 
 
-def _run_solver_worker():
+def _run_solver_worker(stop: threading.Event, work_queue):
     """Drain state.solver_queue and run solve_multinode. Runs as a daemon thread."""
     # Deferred import: known_lane reuses this module's gates, record store and
     # publication lock, so a top-of-file import here would be circular.
     from services.tasks import known_lane
 
-    # Armed once, at thread start: mode flags are boot-static in this codebase
-    # (FOV_MODE / ADSB_SEED_MODE / SOLVER_CONSENSUS_MODE are all read from env
-    # exactly once), and an off lane must cost the idle loop NOTHING — not
-    # even a cheap per-iteration call.  Under pytest every TestClient lifespan
-    # leaks another pair of these daemons into one coverage-traced process,
-    # and a traced call per daemon-second from 130+ of them convoyed on the
-    # coverage collector lock hard enough to stall test_mlat_history's
-    # trail-race stress test (~50 daemons caught inside the mode check in a
-    # single py-spy snapshot).
+    # Mode flags are boot-static. Capture both them and the queue for this
+    # worker generation, so a later lifespan cannot redirect an old worker.
     known_lane_armed = known_lane.lanes_armed()
-    while True:
-        _solver_worker_iteration()
-        if known_lane_armed:
+    while not stop.is_set():
+        _solver_worker_iteration(timeout=0.1, q=work_queue)
+        if known_lane_armed and not stop.is_set():
             # Known-lane pass (identity-first claims → per-hex solves), plus
             # the dark-follow pass behind the same lock and interval.
             # Ridden on the worker loop rather than its own thread so the
@@ -4331,8 +4327,26 @@ def _run_solver_worker():
             known_lane.maybe_run_pass(_pool_solve_multinode)
 
 
+def solver_workers_stopping() -> bool:
+    """Whether an unfinished old generation makes application restart unsafe."""
+    with _solver_workers_lock:
+        return _solver_stop.is_set() and any(worker.is_alive() for worker in _solver_workers)
+
+
 def start_solver_workers():
     """Start the solve process pool and N daemon threads draining the queue."""
+    with _solver_workers_lock:
+        _solver_workers[:] = [t for t in _solver_workers if t.is_alive()]
+        if _solver_workers:
+            if _solver_stop.is_set():
+                raise RuntimeError("Previous solver workers are still stopping")
+            return
+        _solver_stop.clear()
+        _start_solver_workers()
+
+
+def _start_solver_workers():
+    """Called with the worker lifecycle lock held."""
     global _solver_pool
     from retina_geolocator.multinode_solver import solve_multinode
 
@@ -4353,12 +4367,40 @@ def start_solver_workers():
     for i in range(_N_SOLVER_WORKERS):
         t = threading.Thread(
             target=_run_solver_worker,
+            args=(_solver_stop, state.solver_queue),
             daemon=True,
             name=f"solver-{i}",
         )
         t.start()
+        _solver_workers.append(t)
     logging.info(
         "Started %d multinode solver worker(s) (process pool: %s)",
         _N_SOLVER_WORKERS,
         "on" if _solver_pool is not None else "off",
     )
+
+
+def stop_solver_workers(timeout: float = 5.0) -> bool:
+    """Stop accepting work and wait up to one shared deadline for workers.
+
+    Python cannot interrupt an inline native solve. Keep unfinished thread
+    handles and refuse a new generation until they exit, rather than silently
+    creating competing workers. Process-pool shutdown cancels queued calls;
+    already running calls are still subject to their existing solve timeout.
+    """
+    global _solver_pool
+    with _solver_workers_lock:
+        _solver_stop.set()
+        deadline = time.monotonic() + max(timeout, 0.0)
+        for worker in _solver_workers:
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
+        _solver_workers[:] = [t for t in _solver_workers if t.is_alive()]
+        # Detach under the same lock used by timeout recovery. A late failure
+        # of this pool then cannot replace it after shutdown.
+        with _solver_pool_lock:
+            pool, _solver_pool = _solver_pool, None
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
+        if _solver_workers:
+            logging.warning("%d solver worker(s) still running after shutdown deadline", len(_solver_workers))
+        return not _solver_workers

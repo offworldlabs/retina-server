@@ -17,7 +17,7 @@ from services.tasks.periodic import (
     prune_synthetic_nodes,
     reputation_evaluator,
 )
-from services.tasks.solver import start_solver_workers
+from services.tasks.solver import start_solver_workers, stop_solver_workers
 from services.tasks.storage_refresh import storage_refresh_task
 from services.tasks.track_archive import track_flush_task
 from services.tasks.users_backup import users_backup_task
@@ -26,6 +26,7 @@ __all__ = [
     "analytics_refresh_task",
     "coverage_constraints_task",
     "start_solver_workers",
+    "stop_solver_workers",
     "frame_processor_loop",
     "health_monitor_task",
     "heartbeat_task",

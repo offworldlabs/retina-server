@@ -8,10 +8,9 @@ recoverable from the runtime alone, so the only safe answer is an off-host
 copy.
 
 Implementation choices worth flagging:
-  - `VACUUM INTO` is the safest snapshot mechanism. It's an online op (no
-    locks held), produces a self-consistent file (no -wal/-shm needed), and
-    is atomic from the reader's perspective. Plain `cp` of users.db can
-    capture a half-committed write if a transaction is in flight.
+  - SQLite's online backup API produces a self-consistent snapshot without
+    copying live WAL/SHM files. Plain `cp` of users.db can miss committed WAL
+    data or capture an inconsistent file while writes are in flight.
   - We upload to R2 under `backups/users-db/YYYY-MM-DD.db`. One key per day
     means re-running the task on the same day is idempotent (overwrites,
     same key) and the prefix lists chronologically.
@@ -151,13 +150,14 @@ async def users_backup_task():
     import asyncio
 
     from core import state
+    from services.tasks.executor import task_executor
 
-    while True:
-        await asyncio.sleep(USERS_DB_BACKUP_INTERVAL_S)
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, run_users_db_backup)
-            state.task_last_success["users_db_backup"] = time.time()
-        except Exception:
-            state.bump_task_error("users_db_backup")
-            logger.exception("users_db backup failed")
+    async with task_executor("users-backup") as run:
+        while True:
+            await asyncio.sleep(USERS_DB_BACKUP_INTERVAL_S)
+            try:
+                await run(run_users_db_backup)
+                state.task_last_success["users_db_backup"] = time.time()
+            except Exception:
+                state.bump_task_error("users_db_backup")
+                logger.exception("users_db backup failed")

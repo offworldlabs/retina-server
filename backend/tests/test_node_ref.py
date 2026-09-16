@@ -129,6 +129,16 @@ class TestRegisteredRef:
         assert public_node_ref(_ID) == "nde0123456789ab"
 
 
+def test_refresh_does_not_mutate_a_snapshot_held_by_another_reader(monkeypatch):
+    """A reader may finish its lookup while a different thread refreshes refs."""
+    monkeypatch.setattr(node_ref, "_refs_from_db", lambda: {_ID: "ndeold000000000"})
+    held = node_ref._snapshot()
+    monkeypatch.setattr(node_ref, "_expires_at", 0.0)
+    monkeypatch.setattr(node_ref, "_refs_from_db", lambda: {_ID: "ndenew000000000"})
+    assert node_ref.public_node_ref(_ID) == "ndenew000000000"
+    assert held[_ID] == "ndeold000000000"
+
+
 class TestPerNodeAnalyticsRoute:
     """GET /api/radar/analytics/{node_ref} is built fresh, not from the cache.
 

@@ -56,7 +56,7 @@ from routes.sim_ingest import synthetic_fleet_enabled
 from routes.stats import router as stats_router
 from routes.streaming import router as streaming_router
 from routes.test import router as test_router
-from services import detection_mirror
+from services import detection_mirror, publication
 from services.alerting import log_destination
 from services.background import (
     adsb_truth_fetcher,
@@ -72,6 +72,7 @@ from services.background import (
     prune_synthetic_nodes,
     reputation_evaluator,
     start_solver_workers,
+    stop_solver_workers,
     storage_refresh_task,
     track_flush_task,
     users_backup_task,
@@ -79,6 +80,8 @@ from services.background import (
 from services.runtime_coverage import start as _start_coverage
 from services.runtime_coverage import stop as _stop_coverage
 from services.state_snapshot import SAVE_INTERVAL_S, restore_snapshot, save_snapshot
+from services.tasks.executor import task_executor, unfinished_task_executors
+from services.tasks.solver import solver_workers_stopping
 from services.tcp_handler import handle_tcp_client
 
 load_dotenv()
@@ -111,6 +114,10 @@ _test_mod.init(radar_pipeline)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if solver_workers_stopping():
+        raise RuntimeError("Previous solver workers are still stopping")
+    if unfinished := unfinished_task_executors():
+        raise RuntimeError(f"Previous background work is still running: {unfinished}")
     # The anonymous-admin bypass, said out loud once per boot.
     #
     # AUTH_ALLOW_ANONYMOUS_ADMIN=1 is a local-development convenience that no
@@ -158,6 +165,14 @@ async def lifespan(app: FastAPI):
 
     await migrate_json_to_db()
 
+    # Prime visibility after the schema and legacy data are ready. A cold
+    # failure withholds public data while leaving the owner aircraft feed available.
+    publication.invalidate()
+    try:
+        publication.private_node_ids()
+    except publication.PublicationUnavailable:
+        logging.exception("Publication policy unavailable at startup; public data withheld")
+
     # Load the v1 fleet into the in-process registries. All three start empty in
     # a fresh process and only registration writes to them, so without this a
     # deploy drops every node out of the pipeline and nothing puts it back: the
@@ -175,87 +190,137 @@ async def lifespan(app: FastAPI):
 
     send_alert("server_start", "RETINA server started", {"restored": restored})
 
-    server = await asyncio.start_server(handle_tcp_client, "0.0.0.0", TCP_PORT)
+    connections: dict[asyncio.Task, asyncio.StreamWriter] = {}
+    accepting = True
+
+    def accept_client(reader, writer):
+        if not accepting:
+            writer.close()
+            return
+        task = asyncio.create_task(handle_tcp_client(reader, writer))
+        connections[task] = writer
+
+        def finished(completed):
+            connections.pop(completed, None)
+            writer.close()
+            if not completed.cancelled() and (error := completed.exception()) is not None:
+                logging.error("Radar TCP handler failed", exc_info=(type(error), error, error.__traceback__))
+
+        task.add_done_callback(finished)
+
+    server = await asyncio.start_server(accept_client, "0.0.0.0", TCP_PORT)
     addrs = ", ".join(str(s.getsockname()) for s in server.sockets)
     logging.info("Radar TCP server listening on %s", addrs)
     async with server:
-        # Start background daemon threads for multinode LM solving.
-        # These drain solver_queue independently of frame workers.
-        start_solver_workers()
+        tasks: list[asyncio.Task] = []
+        try:
+            # Start background daemon threads for multinode LM solving.
+            # These drain solver_queue independently of frame workers.
+            start_solver_workers()
 
-        async def _snapshot_loop():
-            """Save state snapshot periodically."""
-            while True:
-                await asyncio.sleep(SAVE_INTERVAL_S)
+            async def _snapshot_loop():
+                """Save state snapshot periodically."""
+                async with task_executor("state-snapshot") as run:
+                    while True:
+                        await asyncio.sleep(SAVE_INTERVAL_S)
+                        try:
+                            await run(save_snapshot)
+                        except Exception:
+                            logging.exception("State snapshot save failed")
+
+            # Unset DETECTION_MIRROR_URL leaves this unarmed, and mirror_task then
+            # returns at once, so the task list is the same shape in every
+            # environment.
+            detection_mirror.configure_from_env()
+
+            for task_fn in (
+                server.serve_forever,
+                reputation_evaluator,
+                prune_synthetic_nodes,
+                adsb_truth_fetcher,
+                feed_gc_task,
+                archive_flush_task,
+                track_flush_task,
+                archive_lifecycle_task,
+                users_backup_task,
+                analytics_refresh_task,
+                coverage_constraints_task,
+                storage_refresh_task,
+                detection_mirror.mirror_task,
+                health_monitor_task,
+                heartbeat_task,
+                _snapshot_loop,
+            ):
+                tasks.append(asyncio.create_task(task_fn()))
+            tasks.append(asyncio.create_task(aircraft_flush_task(radar_pipeline)))
+            # One owned executor per shard preserves each node's frame ordering
+            # while letting different shards process concurrently.
+            for shard in range(state.frame_queue.shard_count):
+                tasks.append(asyncio.create_task(frame_processor_loop(radar_pipeline, shard)))
+            yield
+        finally:
+            # Stop ingress before cancelling consumers. Awaiting cancellation
+            # also lets task-owned executors finish their in-flight work.
+            accepting = False
+            server.close()
+            clients = list(connections.items())
+            for task, writer in clients:
+                writer.close()
+                task.cancel()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, *(task for task, _ in clients), return_exceptions=True)
+            await server.wait_closed()
+            workers_stopped = await asyncio.to_thread(stop_solver_workers)
+            unfinished = unfinished_task_executors()
+            quiescent = workers_stopped and not unfinished
+            if not quiescent:
+                logging.error(
+                    "Skipping final state/archive writes: solver stopped=%s, unfinished executors=%s",
+                    workers_stopped,
+                    unfinished,
+                )
+
+            if quiescent:
+                # Persistence follows worker shutdown, including both a pending
+                # failed track batch and records accumulated since that failure.
                 try:
-                    await asyncio.get_event_loop().run_in_executor(None, save_snapshot)
+                    save_snapshot()
                 except Exception:
-                    logging.exception("State snapshot save failed")
+                    logging.exception("Final state snapshot failed")
+                from services.frame_processor import flush_all_archive_buffers
+                from services.tasks.track_archive import flush_track_archive_buffer
 
-        # Unset DETECTION_MIRROR_URL leaves this unarmed, and mirror_task then
-        # returns at once, so the task list is the same shape in every
-        # environment.
-        detection_mirror.configure_from_env()
+                try:
+                    flush_all_archive_buffers()
+                except Exception:
+                    logging.exception("Final detection archive flush failed")
+                try:
+                    while flush_track_archive_buffer() is not None:
+                        pass
+                except Exception:
+                    logging.exception("Final track archive flush failed; batch remains pending")
 
-        tasks = [
-            asyncio.create_task(server.serve_forever()),
-            asyncio.create_task(reputation_evaluator()),
-            asyncio.create_task(prune_synthetic_nodes()),
-            asyncio.create_task(adsb_truth_fetcher()),
-            asyncio.create_task(aircraft_flush_task(radar_pipeline)),
-            # Feed-store GC on its own timer: it used to run only inside the
-            # feed build, so a slow websocket client stalling the flush task
-            # stalled server-wide GC with it.
-            asyncio.create_task(feed_gc_task()),
-            asyncio.create_task(archive_flush_task()),
-            asyncio.create_task(track_flush_task()),
-            asyncio.create_task(archive_lifecycle_task()),
-            asyncio.create_task(users_backup_task()),
-            asyncio.create_task(analytics_refresh_task()),
-            asyncio.create_task(coverage_constraints_task()),
-            asyncio.create_task(storage_refresh_task()),
-            asyncio.create_task(detection_mirror.mirror_task()),
-            asyncio.create_task(health_monitor_task()),
-            asyncio.create_task(heartbeat_task()),
-            asyncio.create_task(_snapshot_loop()),
-            # One frame worker per queue shard, so the thread pool processes
-            # frames concurrently (scipy/numpy release the GIL) while a single
-            # node's frames stay on one worker: serial, in arrival order. The
-            # worker count must equal the shard count or a shard goes unserved,
-            # so both come from state.frame_queue (sized by FRAME_WORKERS).
-            *[
-                asyncio.create_task(frame_processor_loop(radar_pipeline, shard))
-                for shard in range(state.frame_queue.shard_count)
-            ],
-        ]
-        yield
-        for t in tasks:
-            t.cancel()
-        # Save state snapshot before exit
-        try:
-            save_snapshot()
-        except Exception:
-            logging.exception("Final state snapshot failed")
-        # Flush remaining buffered archives before exit
-        from services.frame_processor import flush_all_archive_buffers
+            from clients import digitalocean
+            from services.tasks.periodic import close_http_clients
 
-        flush_all_archive_buffers()
-        # Close pooled HTTP clients (they had no shutdown path at all)
-        from clients import digitalocean
-        from services.tasks.periodic import close_http_clients
-
-        try:
-            await close_http_clients()
-        except Exception:
-            logging.exception("HTTP client shutdown failed")
-        try:  # its own guard, so a failure above still leaves this pool closed
-            await digitalocean.aclose()
-        except Exception:
-            logging.exception("DigitalOcean client shutdown failed")
-        state.node_analytics.save_coverage_maps()
-        # Stop runtime coverage and flush report
-        _stop_coverage()
-        logging.info("Coverage maps saved to %s", state.COVERAGE_STORAGE_DIR)
+            try:
+                if "adsb-lol" not in unfinished:
+                    await close_http_clients()
+            except Exception:
+                logging.exception("HTTP client shutdown failed")
+            try:
+                await digitalocean.aclose()
+            except Exception:
+                logging.exception("DigitalOcean client shutdown failed")
+            try:
+                if quiescent:
+                    state.node_analytics.save_coverage_maps()
+                    logging.info("Coverage maps saved to %s", state.COVERAGE_STORAGE_DIR)
+            except Exception:
+                logging.exception("Final coverage map save failed")
+            finally:
+                _stop_coverage()
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
@@ -316,6 +381,16 @@ app = FastAPI(
     openapi_tags=NODE_API_TAGS,
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(publication.PublicationUnavailable)
+async def publication_unavailable_handler(request: Request, exc: publication.PublicationUnavailable):
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Publication policy is temporarily unavailable"},
+        headers={"Retry-After": "5"},
+    )
+
 
 app.add_middleware(LimitUploadSize, limits=NODE_BODY_LIMITS)
 
