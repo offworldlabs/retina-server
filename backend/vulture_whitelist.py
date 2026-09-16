@@ -218,16 +218,6 @@ dark_follow_inelig_min_solves
 dark_follow_inelig_min_nodes
 
 
-# ── services/track_filter.py ─────────────────────────────────────────────────
-# learned_velocity_manoeuvre's only caller is dark_follow._build_targets in
-# PR #407 (follow through a manoeuvre).  PR #408 (mint-time coast retirement)
-# carries #407's track_filter.py byte-for-byte so the two merge in either
-# order without a duplicate manoeuvre_level; on #408 alone the combined
-# accessor is therefore defined but not yet called.  Delete this entry once
-# both are on main.
-learned_velocity_manoeuvre
-
-
 # ── Framework attributes (previously CI --ignore-names) ───────────────────────
 # Moved out of the vulture invocation so the reason lives with the name.
 # `model_config` is the pydantic v2 class-level config attribute, read by
