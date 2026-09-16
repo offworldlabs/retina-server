@@ -395,6 +395,112 @@ def _finish_oauth(browser, state, provider="google"):
     return browser.get(f"/api/auth/callback/{provider}", params={"code": "provider-code", "state": state})
 
 
+def _oauth_client_from(browser, source, *, trusted_proxy=False):
+    """Set the transport peer independently of attacker-controlled headers."""
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    application = browser.app
+    if trusted_proxy:
+        application = ProxyHeadersMiddleware(application, trusted_hosts="127.0.0.1")
+
+    async def connected(scope, receive, send):
+        await application({**scope, "client": (source, 12345)}, receive, send)
+
+    return TestClient(connected, base_url=str(browser.base_url), follow_redirects=False)
+
+
+class TestOAuthSourceQuota:
+    def test_one_source_cannot_fill_store_by_switching_providers_or_spoofing_headers(self, oauth_context, monkeypatch):
+        from routes import auth
+
+        monkeypatch.setattr(auth, "_MAX_OAUTH_STATES_PER_SOURCE", 2, raising=False)
+        monkeypatch.setattr(auth, "_MAX_OAUTH_STATES", 4)
+        with _oauth_client_from(oauth_context.browser, "192.0.2.1", trusted_proxy=True) as source:
+            _start_oauth(source, "google")
+            _start_oauth(source, "github")
+            for suffix in range(4):
+                # This direct peer is not a trusted proxy; arbitrary forwarded
+                # addresses and fresh cookies must not buy it another quota.
+                source.cookies.clear()
+                denied = source.get(
+                    "/api/auth/login/google",
+                    headers={
+                        "X-Forwarded-For": f"198.51.100.{suffix}",
+                        "X-Real-IP": f"198.51.100.{suffix}",
+                        "CF-Connecting-IP": f"198.51.100.{suffix}",
+                        "Host": f"surface-{suffix}.example.test",
+                    },
+                )
+                assert denied.status_code == 429
+                assert denied.headers["Retry-After"] == "600"
+            assert len(auth._oauth_states) == 2
+        with _oauth_client_from(oauth_context.browser, "192.0.2.2") as other:
+            _start_oauth(other)
+        assert len(auth._oauth_states) == 3
+
+    def test_consumption_releases_source_quota_even_if_callback_ip_changed(self, oauth_context, monkeypatch):
+        from routes import auth
+
+        monkeypatch.setattr(auth, "_MAX_OAUTH_STATES_PER_SOURCE", 1, raising=False)
+        with _oauth_client_from(oauth_context.browser, "192.0.2.1") as source:
+            state = _start_oauth(source)
+            assert source.get("/api/auth/login/github").status_code == 429
+            with _oauth_client_from(oauth_context.browser, "192.0.2.2") as roaming:
+                roaming.cookies.update(dict(source.cookies))
+                assert _finish_oauth(roaming, state).headers["location"] == "/dashboard"
+            _start_oauth(source)
+            assert len(auth._oauth_states) == 1
+
+    def test_expiration_releases_source_quota(self, oauth_context, monkeypatch):
+        from routes import auth
+
+        monkeypatch.setattr(auth, "_MAX_OAUTH_STATES_PER_SOURCE", 1, raising=False)
+        _start_oauth(oauth_context.browser)
+        oauth_context.clock.now += 300
+        denied = oauth_context.browser.get("/api/auth/login/google")
+        assert denied.status_code == 429
+        assert denied.headers["Retry-After"] == "300"
+        oauth_context.clock.now += 300
+        _start_oauth(oauth_context.browser)
+        assert len(auth._oauth_states) == 1
+
+    def test_trusted_proxy_uses_last_untrusted_hop(self, oauth_context, monkeypatch):
+        from routes import auth
+
+        monkeypatch.setattr(auth, "_MAX_OAUTH_STATES_PER_SOURCE", 1, raising=False)
+        with _oauth_client_from(oauth_context.browser, "127.0.0.1", trusted_proxy=True) as proxy:
+            assert (
+                proxy.get("/api/auth/login/google", headers={"X-Forwarded-For": "198.51.100.1, 192.0.2.1"}).status_code
+                == 307
+            )
+            assert (
+                proxy.get("/api/auth/login/google", headers={"X-Forwarded-For": "198.51.100.2, 192.0.2.1"}).status_code
+                == 429
+            )
+            assert (
+                proxy.get("/api/auth/login/google", headers={"X-Forwarded-For": "198.51.100.1, 192.0.2.2"}).status_code
+                == 307
+            )
+
+    @pytest.mark.parametrize(
+        ("first", "same_source", "other"),
+        [
+            ("2001:db8:1:2::1", "2001:db8:1:2::2", "2001:db8:1:3::1"),
+            ("192.0.2.1", "::ffff:192.0.2.1", "192.0.2.2"),
+        ],
+    )
+    def test_address_variants_share_quota(self, oauth_context, monkeypatch, first, same_source, other):
+        from routes import auth
+
+        monkeypatch.setattr(auth, "_MAX_OAUTH_STATES_PER_SOURCE", 1, raising=False)
+        with _oauth_client_from(oauth_context.browser, first) as browser:
+            _start_oauth(browser)
+        with _oauth_client_from(oauth_context.browser, same_source) as browser:
+            assert browser.get("/api/auth/login/google").status_code == 429
+        with _oauth_client_from(oauth_context.browser, other) as browser:
+            _start_oauth(browser)
+
+
 @pytest.mark.parametrize("provider", ["google", "github"])
 class TestOAuthBrowserBinding:
     def test_login_cookie_is_host_only_and_short_lived(self, oauth_context, provider):

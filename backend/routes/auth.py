@@ -6,10 +6,12 @@ fully delegated to fastapi-users' JWTStrategy + CookieTransport.
 """
 
 import logging
+import math
 import os
 import secrets
 import threading
 from dataclasses import dataclass
+from ipaddress import IPv6Address, ip_address, ip_network
 from time import monotonic
 from urllib.parse import urlencode
 
@@ -51,6 +53,10 @@ GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "")
 # live here. A process restart invalidates pending logins; the user starts again.
 _OAUTH_STATE_TTL_S = 600
 _MAX_OAUTH_STATES = 4096
+# Main/API nginx vhosts already limit credentials to 5 requests/minute per IP.
+# Other vhosts and direct backend access need this pending-work quota too; 64
+# exceeds that credential allowance and leaves room in the shared global cap.
+_MAX_OAUTH_STATES_PER_SOURCE = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +66,7 @@ class _OAuthState:
     callback: str
     browser_token: str
     expires_at: float
+    source: str
 
 
 _oauth_states: dict[str, _OAuthState] = {}
@@ -84,19 +91,54 @@ def _safe_redirect(state_param: str) -> str:
     return "/"
 
 
-def _make_oauth_state(redirect: str, provider: str, callback: str) -> tuple[str, str]:
+def _oauth_source(request: Request) -> str:
+    """Use the transport peer after the ASGI server's trusted-proxy handling.
+
+    Never read forwarding headers here: deployed nginx appends its validated
+    client address and uvicorn trusts only the configured proxy peer. IPv6
+    addresses in one /64 share a quota, including privacy-address rotation.
+    This is an admission limit, not callback binding; mobile clients may roam.
+    """
+    host = request.client.host if request.client else None
+    if not host:
+        return "unknown"
+    try:
+        address = ip_address(host)
+    except ValueError:
+        return host
+    if isinstance(address, IPv6Address):
+        if address.ipv4_mapped is not None:
+            return str(address.ipv4_mapped)
+        return str(ip_network(f"{address}/64", strict=False))
+    return str(address)
+
+
+def _make_oauth_state(request: Request, redirect: str, provider: str, callback: str) -> tuple[str, str]:
     """Issue a challenge and a cookie secret that is never sent to the provider."""
+    source = _oauth_source(request)
     with _oauth_state_lock:
         now = monotonic()
         expired = [token for token, pending in _oauth_states.items() if pending.expires_at <= now]
         for token in expired:
             del _oauth_states[token]
+        source_expiries = [pending.expires_at for pending in _oauth_states.values() if pending.source == source]
+        if len(source_expiries) >= _MAX_OAUTH_STATES_PER_SOURCE:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many pending logins from this network. Please try again later.",
+                headers={"Retry-After": str(max(1, math.ceil(min(source_expiries) - now)))},
+            )
         if len(_oauth_states) >= _MAX_OAUTH_STATES:
             raise HTTPException(status_code=503, detail="Too many pending logins. Please try again later.")
         state = secrets.token_urlsafe(32)
         browser_token = secrets.token_urlsafe(32)
         _oauth_states[state] = _OAuthState(
-            _safe_redirect(redirect), provider, callback, browser_token, now + _OAUTH_STATE_TTL_S
+            redirect=_safe_redirect(redirect),
+            provider=provider,
+            callback=callback,
+            browser_token=browser_token,
+            expires_at=now + _OAUTH_STATE_TTL_S,
+            source=source,
         )
     return state, browser_token
 
@@ -163,7 +205,7 @@ async def _set_auth_cookie(response: Response, user) -> None:
 @router.get("/login/google")
 async def login_google(request: Request, redirect: str = "/"):
     callback = _fix_scheme(str(request.url_for("callback_google")))
-    state, browser_token = _make_oauth_state(redirect, "google", callback)
+    state, browser_token = _make_oauth_state(request, redirect, "google", callback)
     params = {
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": callback,
@@ -228,7 +270,7 @@ async def callback_google(request: Request, code: str = "", state: str = ""):
 @router.get("/login/github")
 async def login_github(request: Request, redirect: str = "/"):
     callback = _fix_scheme(str(request.url_for("callback_github")))
-    state, browser_token = _make_oauth_state(redirect, "github", callback)
+    state, browser_token = _make_oauth_state(request, redirect, "github", callback)
     params = {
         "client_id": GITHUB_CLIENT_ID,
         "redirect_uri": callback,
