@@ -283,7 +283,7 @@ _DOCS_HTML = """<!DOCTYPE html>
     <h3>Query Parameters</h3>
     <div class="param">
       <span class="param-name">real_only</span><span class="param-type">bool, default false</span>
-      <span class="param-desc">— When true, returns only aircraft detected by real hardware nodes (excludes the simulated fleet). Use this to query map.retina.fm live data.</span>
+      <span class="param-desc">— When true, returns only aircraft detected by real hardware nodes (excludes the simulated fleet). Use this to query app.retina.fm live data.</span>
     </div>
 
     <h3>Response Fields (per aircraft)</h3>

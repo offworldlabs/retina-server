@@ -14,13 +14,16 @@ the end.
 
 ## The big picture
 
-One FastAPI backend serves several React front-ends, distinguished by subdomain:
+One FastAPI backend serves several React front-ends. `app.retina.fm`
+(`staging-app`, `test-app`) carries the public ones on one hostname, because the
+session cookie is host-only and a login has to cover all of them:
 
 | Surface | What it is |
 | --- | --- |
-| **testmap** | Live aircraft map fed by the simulation fleet (synthetic nodes) — the main dev/demo surface. `testmap.retina.fm` is served by the **staging** droplet, the only environment still running a fleet. |
-| **map** | Production live map showing only real radar nodes. `test-map.retina.fm` is the equivalent real-only surface on the test droplet; `test-testmap.retina.fm` shows that droplet's synthetic fleet. |
-| **dashboard** | Admin app (auth required): node ownership, claim codes, MLAT verification, metrics. |
+| **map** (`/`) | Live aircraft map. Production and the test droplet show real radar nodes only; staging shows its synthetic fleet, and is the dev/demo surface, being the only environment still running one. The feed is chosen by hostname in `frontend/src/utils/domains.ts`. |
+| **dashboard** (`/dash/`) | Node ownership, claim codes, MLAT verification, metrics. Auth required. |
+| **data explorer** (`/data/`) | The public detection archive browser. |
+| **admin** (`admin.retina.fm`) | The same dashboard bundle with the admin route table, on a hostname of its own so a Cloudflare Access application can gate it. |
 
 Illuminator search is deliberately absent from that table: **tower-finder-service**
 (separate repo and container) owns the API and the UI both, and serves
@@ -35,7 +38,7 @@ map over WebSocket. See [`docs/pipeline.md`](docs/pipeline.md).
 
 ```
 backend/      FastAPI API, TCP frame ingest, detection pipeline, background tasks
-frontend/     React SPA — testmap / map (Vite + Leaflet)
+frontend/     React SPA — the live map (Vite + Leaflet)
 dashboard/    React admin app (Vite)
 packages/shared/  Code both web apps share, imported as @retina/shared
 libs/         Git submodules (the algorithm libraries — see below)
@@ -122,10 +125,10 @@ npm ci
 ```
 
 Frontend is at `http://localhost:5173` and opens the live map; `/api` and `/ws`
-are proxied to the backend on `:8000`. `http://testmap.localhost:5173/` also
-opens the map. Hostname flags select feed and display behavior, not a separate
-tower-search app (see `frontend/src/utils/domains.ts`). Local map hostnames
-show both real and synthetic nodes.
+are proxied to the backend on `:8000`. `http://app.localhost:5173/` also opens
+the map. Hostname flags select feed and display behavior (see
+`frontend/src/utils/domains.ts`); a local map hostname shows both real and
+synthetic nodes.
 
 There's a backend-free map sandbox at `/test-radar` (one node, one aircraft,
 one ellipse) for working on map rendering without the pipeline.
@@ -139,18 +142,18 @@ shared template, plain HTTP), overlay the laptop compose file on the base:
 docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
 ```
 
-Serves `http://testmap.localhost:8080` (live map + synthetic fleet),
-`http://api.localhost:8080`, and towers/dash/admin on the same port — the
-endpoint list and the reasoning live in `docker-compose.local.yml`'s header.
+Serves `http://app.localhost:8080` (live map + synthetic fleet, with the
+dashboard at `/dash/` and the data explorer at `/data/`),
+`http://api.localhost:8080`, and towers/admin on the same port — the endpoint
+list and the reasoning live in `docker-compose.local.yml`'s header.
 Always pass `--build`: the frontend bundle and backend are baked into the
 image, so a plain `up` silently reuses the previous build.
 
 ### See real data without running the pipeline
 
-The simulation fleet (`retina-simulation`) feeds testmap. Production runs no
-fleet, so `testmap.retina.fm` is served by the staging droplet;
-`staging-map.retina.fm` shows the same data under a staging-prefixed name. To
-drive a local backend with synthetic frames, see
+The simulation fleet (`retina-simulation`) feeds the demo map. Production runs
+no fleet, so `staging-app.retina.fm` is the surface that shows one. To drive a
+local backend with synthetic frames, see
 [`docs/simulation.md`](docs/simulation.md).
 
 ### Working in a git worktree

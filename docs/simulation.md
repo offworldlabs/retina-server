@@ -2,7 +2,7 @@
 
 The fleet simulator (`libs/retina-simulation`) runs synthetic radar nodes and
 injects real or simulated aircraft traffic to exercise the full server
-pipeline. It powers the staging/testmap surfaces and CI.
+pipeline. It powers staging's public map surface and CI.
 
 ---
 

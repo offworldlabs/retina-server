@@ -315,7 +315,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     else
         echo "FAILED"
         printf '%s\n' "$REASON"
-        echo "::error::tower-finder-service is not ready to receive this traffic. Routing a vhost to it now would silently drop the parameter for every caller, including the public demo on testmap.retina.fm."
+        echo "::error::tower-finder-service is not ready to receive this traffic. Routing a vhost to it now would silently drop the parameter for every caller, including the public demo staging serves."
         RC=1
     fi
 

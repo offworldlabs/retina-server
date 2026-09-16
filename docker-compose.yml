@@ -114,7 +114,7 @@ services:
       start_period: 90s
 
   # ── Fleet simulator: synthetic radar nodes + ground-truth aircraft ─────────
-  # This is what makes testmap.retina.fm differ from map.retina.fm. It was
+  # This is what makes staging's public demo differ from production. It was
   # previously started out-of-band by deploy/restart-fleet-prod.sh via a
   # transient `systemd-run` unit that did NOT survive reboots — that is how the
   # fleet silently vanished after the RAM-expansion reboot. As a Compose service

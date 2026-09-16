@@ -5,20 +5,26 @@ for the detection internals see [`pipeline.md`](pipeline.md).
 
 ## One backend, several surfaces
 
-A single FastAPI app (`backend/`) serves every user-facing surface. They differ
-only by subdomain, resolved client-side in `frontend/src/utils/domains.ts`:
+A single FastAPI app (`backend/`) serves every user-facing surface. The public
+ones share one hostname, `app.retina.fm` (`staging-app`, `test-app`), because
+the session cookie is host-only and a login has to cover all of them:
 
-- **testmap** — live map fed by the synthetic simulation fleet (dev/demo). Only
-  staging and local stacks run a fleet, so `testmap.retina.fm` is served by the
-  staging droplet rather than production.
-- **map** (`map.retina.fm`) — production live map, real radar nodes only.
-  `test-map.retina.fm` uses the same real-only feed on the test droplet;
-  `test-testmap.retina.fm` is that droplet's separate synthetic surface.
+- **map** (`/`) — the live map. Which feed it shows is a property of the
+  environment, resolved client-side in `frontend/src/utils/domains.ts`:
+  production and the test droplet are real nodes only, staging shows the
+  synthetic simulation fleet and is the demo surface, being the only environment
+  that still runs one.
+- **dashboard** (`/dash/`, `dashboard/`, separate SPA) — node ownership, claim
+  codes, MLAT verification, metrics. Auth required.
+- **data explorer** (`/data/`, `data-explorer/`, static) — the public detection
+  archive browser.
+- **admin** (`admin.retina.fm`) — the dashboard bundle again, built at a root and
+  serving the admin route table, which `dashboard/src/utils/surface.ts` selects
+  from the hostname. It keeps a name of its own because a Cloudflare Access
+  application can only be scoped to one.
 - **Illuminator search** — not a surface of this repo. tower-finder-service owns
   both the API and the UI, and serves `towers.retina.fm` from its own edge. The
   vhosts here proxy `/api/towers`, `/api/elevation` and `/api/config` to it.
-- **dashboard** (`dashboard/`, separate SPA) — admin: node ownership, claim
-  codes, MLAT verification, metrics. Auth required.
 
 ## Data flow
 

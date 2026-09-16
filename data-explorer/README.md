@@ -1,9 +1,9 @@
 # Retina Data Explorer
 
-The public archive browser served at `data.retina.fm`
-(`test-data.retina.fm` / `staging-data.retina.fm` per environment). Static files,
-no build step, no npm: nginx serves this directory as-is from `/app/data-explorer`
-and the page talks to the same-origin API.
+The public archive browser, mounted at `/data/` on the app hostname
+(`app.retina.fm`, `staging-app`, `test-app`). Static files, no build step, no
+npm: nginx serves this directory as-is from `/app/data-explorer` and the page
+talks to the same-origin API.
 
 ```
 data-explorer/
@@ -92,7 +92,7 @@ position.
 
 This site is the **standalone, public** view: anyone can reach it and it shows
 exactly what the public archive API serves, which excludes nodes registered as
-private. The dashboard's own Data Explorer page (`dash.retina.fm/data`) is the
+private. The dashboard's own Data Explorer page (`/dash/data`) is the
 **signed-in** view: it should serve the same public archive *and* make it easy
 to see only your own nodes, including ones that are not public. That needs an
 authenticated listing that adds the caller's private nodes, which the public

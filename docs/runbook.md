@@ -34,7 +34,7 @@ fails its suites stays there, blocking production, until the next merge.
 |---|---|---|---|
 | **Overlay** | `docker-compose.prod.yml` | `docker-compose.staging.yml` | `docker-compose.test.yml` |
 | **Deployed by** | CI, on push to `main` | CI, on push to `main` | `just deploy-test` (rsync, pre-review) or `deploy-test.yml` (CI, dispatch-only, git) |
-| **Hostnames** | `*.retina.fm`, except `testmap` | `staging-*.retina.fm`, plus `testmap.retina.fm` | `test-*.retina.fm` |
+| **Hostnames** | `*.retina.fm` | `staging-*.retina.fm` | `test-*.retina.fm` |
 | **RAM / swap** | 7941 MB / 4 GB | 7941 MB / none | 7941 MB / 2 GB |
 | **Fleet** | none (see below) | 50 @ 1.0s (50 fps) | 50 @ 1.0s (50 fps) |
 | **TCP 3012** | published (real nodes) | closed | closed |
@@ -791,11 +791,10 @@ so the bare `docker compose` above resolves to base + the production overlay.
 Params (nodes/interval/mode/aircraft) live in the `fleet` service block in
 `docker-compose.yml` — edit them there, not on the command line.
 
-**Staging's fleet is public.** `testmap.retina.fm` is served by the staging
-droplet and fed by this fleet, so bouncing it blanks the demo people are shown
-for a minute or so; a staging deploy blanks it only for the server's restart and
-the fleet's reconnect, unless the fleet image or config changed and it is recreated
-too. `staging-map.retina.fm` is the same surface under a staging-prefixed name. Note
+**Staging's fleet is public.** `staging-app.retina.fm` is fed by this fleet and
+is the demo people are shown, so bouncing it blanks the map for a minute or so;
+a staging deploy blanks it only for the server's restart and the fleet's
+reconnect, unless the fleet image or config changed and it is recreated too. Note
 the tuning is deliberate: staging runs 50 nodes @ 1.0s, which saturates the
 solver (45–52 s per solve),
 so the public map is denser but laggier than production's used to be.
