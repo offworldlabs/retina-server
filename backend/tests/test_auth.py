@@ -501,6 +501,59 @@ class TestClaimCodesAndOwnership:
         assert await consume_claim_code(rec["code"], "node-42") == "user-A"
         assert await consume_claim_code(rec["code"], "node-43") is None
 
+    async def test_concurrent_claims_only_assign_one_node(self, monkeypatch):
+        from sqlalchemy.ext.asyncio import AsyncSession
+
+        from core.auth import consume_claim_code, create_claim_code, get_user_nodes, list_claim_codes
+        from core.users import ClaimCode
+
+        rec = await create_claim_code("user-A")
+        original_get = AsyncSession.get
+        readers = asyncio.Barrier(2)
+
+        async def overlap_claim_reads(session, model, key, **kwargs):
+            result = await original_get(session, model, key, **kwargs)
+            if model is ClaimCode:
+                # Force both read/check/write callers to see the unused code.
+                # A conditional database UPDATE does not need a preliminary read.
+                await asyncio.wait_for(readers.wait(), timeout=5)
+            return result
+
+        monkeypatch.setattr(AsyncSession, "get", overlap_claim_reads)
+        results = await asyncio.gather(
+            consume_claim_code(rec["code"], "node-42"),
+            consume_claim_code(rec["code"], "node-43"),
+        )
+
+        assert results.count("user-A") == 1
+        assert results.count(None) == 1
+        winner = ("node-42", "node-43")[results.index("user-A")]
+        assert await get_user_nodes("user-A") == [winner]
+        assert (await list_claim_codes("user-A"))[0]["used_by_node_id"] == winner
+
+    async def test_failed_ownership_write_leaves_claim_code_unused(self, monkeypatch):
+        from sqlalchemy.ext.asyncio import AsyncSession
+
+        from core.auth import consume_claim_code, create_claim_code, get_node_owner, list_claim_codes
+        from core.users import NodeOwner
+
+        rec = await create_claim_code("user-A")
+        original_get = AsyncSession.get
+
+        async def fail_owner_lookup(session, model, key, **kwargs):
+            if model is NodeOwner:
+                raise RuntimeError("ownership lookup failed")
+            return await original_get(session, model, key, **kwargs)
+
+        with monkeypatch.context() as context:
+            context.setattr(AsyncSession, "get", fail_owner_lookup)
+            with pytest.raises(RuntimeError, match="ownership lookup failed"):
+                await consume_claim_code(rec["code"], "node-42")
+
+        assert (await list_claim_codes("user-A"))[0]["used_at"] is None
+        assert await get_node_owner("node-42") is None
+        assert await consume_claim_code(rec["code"], "node-42") == "user-A"
+
     async def test_consume_unknown_code_returns_none(self):
         from core.auth import consume_claim_code
 
@@ -573,6 +626,92 @@ class TestMigration:
     @pytest.fixture(autouse=True)
     def _clean_tables(self, clean_auth_tables):
         pass
+
+    @pytest.fixture()
+    def legacy_files(self, tmp_path, monkeypatch):
+        from core import auth
+
+        files = {
+            "INVITES_FILE": {"legacy-invite": {"email": "legacy@example.com"}},
+            "NODE_OWNERS_FILE": {"legacy-node": "legacy-user"},
+            "CLAIM_CODES_FILE": {"LEGACYCODE01": {"user_id": "legacy-user"}},
+        }
+        for name, data in files.items():
+            path = tmp_path / getattr(auth, name).name
+            path.write_text(json.dumps(data))
+            monkeypatch.setattr(auth, name, path)
+        return [getattr(auth, name) for name in files]
+
+    async def test_later_migration_failure_preserves_every_source(self, legacy_files):
+        from core.auth import list_claim_codes, list_invites, list_node_owners, migrate_json_to_db
+
+        claims = legacy_files[2]
+        valid_claims = claims.read_text()
+        claims.write_text(json.dumps({"LEGACYCODE01": {"created_at": "invalid"}}))
+
+        with pytest.raises(ValueError):
+            await migrate_json_to_db()
+
+        assert all(path.exists() for path in legacy_files)
+        assert not any(path.with_suffix(".json.migrated").exists() for path in legacy_files)
+        assert await list_invites() == []
+        assert await list_node_owners() == {}
+        assert await list_claim_codes() == []
+
+        claims.write_text(valid_claims)
+        await migrate_json_to_db()
+        assert len(await list_invites()) == 1
+        assert await list_node_owners() == {"legacy-node": "legacy-user"}
+        assert len(await list_claim_codes()) == 1
+
+    async def test_commit_failure_preserves_every_source(self, legacy_files):
+        from sqlalchemy import event
+
+        from core.auth import list_claim_codes, list_invites, list_node_owners, migrate_json_to_db
+        from core.users import engine
+
+        def fail_commit(connection):
+            raise RuntimeError("database commit failed")
+
+        event.listen(engine.sync_engine, "commit", fail_commit)
+        try:
+            with pytest.raises(RuntimeError, match="database commit failed"):
+                await migrate_json_to_db()
+        finally:
+            event.remove(engine.sync_engine, "commit", fail_commit)
+
+        assert all(path.exists() for path in legacy_files)
+        assert not any(path.with_suffix(".json.migrated").exists() for path in legacy_files)
+        assert await list_invites() == []
+        assert await list_node_owners() == {}
+        assert await list_claim_codes() == []
+
+    async def test_rename_failure_after_commit_can_be_retried(self, legacy_files, monkeypatch):
+        from pathlib import Path
+
+        from core.auth import list_claim_codes, list_invites, list_node_owners, migrate_json_to_db
+
+        rename = Path.rename
+
+        def fail_owner_rename(path, target):
+            if path == legacy_files[1]:
+                raise OSError("rename failed")
+            return rename(path, target)
+
+        with monkeypatch.context() as context:
+            context.setattr(Path, "rename", fail_owner_rename)
+            with pytest.raises(OSError, match="rename failed"):
+                await migrate_json_to_db()
+
+        assert len(await list_invites()) == 1
+        assert await list_node_owners() == {"legacy-node": "legacy-user"}
+        assert len(await list_claim_codes()) == 1
+        assert legacy_files[1].exists()
+        await migrate_json_to_db()
+        assert len(await list_invites()) == 1
+        assert await list_node_owners() == {"legacy-node": "legacy-user"}
+        assert len(await list_claim_codes()) == 1
+        assert all(path.with_suffix(".json.migrated").exists() for path in legacy_files)
 
     async def test_migrate_invites_from_json(self, tmp_path):
         from core.auth import list_invites, migrate_json_to_db

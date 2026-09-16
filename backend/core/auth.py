@@ -15,7 +15,7 @@ import secrets
 import time
 from pathlib import Path
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 
 from core.users import ClaimCode, Invite, NodeOwner, async_session_maker
 
@@ -37,14 +37,21 @@ _MAX_ACTIVE_CLAIM_CODES_PER_USER = 10
 
 async def migrate_json_to_db() -> None:
     """Import existing JSON stores into SQLite on first startup (idempotent)."""
+    imported = []
     async with async_session_maker() as session:
         async with session.begin():
-            await _migrate_invites(session)
-            await _migrate_node_owners(session)
-            await _migrate_claim_codes(session)
+            for migrate in (_migrate_invites, _migrate_node_owners, _migrate_claim_codes):
+                source = await migrate(session)
+                if source is not None:
+                    imported.append(source)
+    # Keep every source available until all records are committed. A crash or
+    # rename failure afterwards is safe to retry: each importer skips known keys.
+    for source in imported:
+        source.rename(source.with_suffix(".json.migrated"))
+        logger.info("Migrated auth records from %s", source)
 
 
-async def _migrate_invites(session) -> None:
+async def _migrate_invites(session) -> Path | None:
     if not INVITES_FILE.exists():
         return
     try:
@@ -66,11 +73,10 @@ async def _migrate_invites(session) -> None:
                 used_at=inv.get("used_at"),
             )
         )
-    logger.info("Migrated invites from %s", INVITES_FILE)
-    INVITES_FILE.rename(INVITES_FILE.with_suffix(".json.migrated"))
+    return INVITES_FILE
 
 
-async def _migrate_node_owners(session) -> None:
+async def _migrate_node_owners(session) -> Path | None:
     if not NODE_OWNERS_FILE.exists():
         return
     try:
@@ -82,11 +88,10 @@ async def _migrate_node_owners(session) -> None:
         if await session.get(NodeOwner, node_id):
             continue
         session.add(NodeOwner(node_id=node_id, user_id=user_id))
-    logger.info("Migrated node owners from %s", NODE_OWNERS_FILE)
-    NODE_OWNERS_FILE.rename(NODE_OWNERS_FILE.with_suffix(".json.migrated"))
+    return NODE_OWNERS_FILE
 
 
-async def _migrate_claim_codes(session) -> None:
+async def _migrate_claim_codes(session) -> Path | None:
     if not CLAIM_CODES_FILE.exists():
         return
     try:
@@ -107,8 +112,7 @@ async def _migrate_claim_codes(session) -> None:
                 used_by_node_id=rec.get("used_by_node_id"),
             )
         )
-    logger.info("Migrated claim codes from %s", CLAIM_CODES_FILE)
-    CLAIM_CODES_FILE.rename(CLAIM_CODES_FILE.with_suffix(".json.migrated"))
+    return CLAIM_CODES_FILE
 
 
 # ── Invites ───────────────────────────────────────────────────────────────────
@@ -286,7 +290,8 @@ async def revoke_claim_code(code: str, user_id: str | None = None) -> bool:
 async def consume_claim_code(code: str, node_id: str) -> str | None:
     """Mark a claim code used and assign node ownership atomically.
 
-    Returns the user_id that now owns the node, or None on any failure.
+    Returns the user_id that now owns the node, or None for an invalid/used code.
+    Database failures propagate, with both changes rolled back.
     """
     if not code or not node_id:
         return None
@@ -294,12 +299,21 @@ async def consume_claim_code(code: str, node_id: str) -> str | None:
     now = time.time()
     async with async_session_maker() as session:
         async with session.begin():
-            rec = await session.get(ClaimCode, code)
-            if not rec or rec.used_at is not None or rec.expires_at < now:
+            # Claim the code in the database before reading ownership. A
+            # read/check/write sequence lets concurrent requests both consume it.
+            result = await session.execute(
+                update(ClaimCode)
+                .where(
+                    ClaimCode.code == code,
+                    ClaimCode.used_at.is_(None),
+                    ClaimCode.expires_at >= now,
+                )
+                .values(used_at=now, used_by_node_id=node_id)
+                .returning(ClaimCode.user_id)
+            )
+            user_id = result.scalar_one_or_none()
+            if user_id is None:
                 return None
-            user_id = rec.user_id
-            rec.used_at = now
-            rec.used_by_node_id = node_id
             owner = await session.get(NodeOwner, node_id)
             if owner:
                 owner.user_id = user_id
