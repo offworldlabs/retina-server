@@ -88,9 +88,9 @@ _db_unavailable_logged = False
 
 def _reset_for_tests() -> None:
     """Drop the snapshot and the derived refs.  Tests only."""
-    global _expires_at, _db_unavailable_logged
+    global _db_refs, _expires_at, _db_unavailable_logged
     with _lock:
-        _db_refs.clear()
+        _db_refs = {}
         _derived.clear()
         _expires_at = 0.0
         _db_unavailable_logged = False
@@ -116,7 +116,7 @@ def _refs_from_db() -> dict[str, str]:
 
 
 def _snapshot() -> dict[str, str]:
-    global _expires_at, _db_unavailable_logged
+    global _db_refs, _expires_at, _db_unavailable_logged
     now = time.monotonic()
     if now < _expires_at:
         return _db_refs
@@ -129,9 +129,9 @@ def _snapshot() -> dict[str, str]:
             # database blip cannot flip a registered node to a derived name
             # and back (services/node_sites.py keeps its snapshot the same
             # way).  The stale answer is the last good answer, not a wrong one.
-            fresh = _refs_from_db()
-            _db_refs.clear()
-            _db_refs.update(fresh)
+            # Readers finish lookups outside the lock. Replace the dictionary
+            # atomically so their snapshot can never be cleared under them.
+            _db_refs = _refs_from_db()
             _expires_at = time.monotonic() + _TTL_S
         except Exception:
             # No database, no table, or a transient failure.  With no snapshot
