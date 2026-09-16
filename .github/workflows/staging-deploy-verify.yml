@@ -299,13 +299,10 @@ jobs:
     needs: [deploy]
     steps:
       - uses: actions/checkout@v4
-      # The curls in this loop carry no --max-time, so against a hung origin
-      # the 24 iterations run far past the job cap. Bounded here rather than by
-      # rewriting the loop, which deploy/staging-smoke-test.sh mirrors.
       - name: Wait for fleet to connect
         timeout-minutes: 10
         run: |
-          echo "Waiting for fleet nodes to connect..."
+          echo "Waiting for synthetic fleet nodes to connect..."
           # Through the edge, not at the droplet's address: the origin now requires
           # Cloudflare's client certificate (ssl_verify_client in
           # deploy/nginx/snippets/tls.conf) and the DOCKER-USER boundary drops
@@ -318,19 +315,52 @@ jobs:
           # NOT the towers hostname: a Cloudflare Origin Rule routes that to the
           # tower-finder-edge container on port 8443, which has no such route.
           # The 404 body fails the parse below, `|| COUNT=0` swallows it, and the
-          # loop then reports "0 nodes" for all 24 attempts whatever the fleet is
+          # loop then reports "0 nodes" for the whole window whatever the fleet is
           # doing — a wrong URL that reads exactly like a fleet that never came up.
-          for i in $(seq 1 24); do
-            COUNT=$(curl -s https://staging-api.retina.fm/api/test/dashboard \
-              | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['active'])" 2>/dev/null) || COUNT=0
-            if [ "${COUNT:-0}" -ge 1 ]; then
-              echo "Fleet ready: ${COUNT} node(s) connected after ~$((i*5))s"
-              break
+          #
+          # nodes.synthetic_active, and neither of the two counts beside it.
+          # `active` includes the pseudo-nodes the HTTP ingest path registers
+          # for its callers; `synthetic` keeps entries a disconnect only marked,
+          # so it stays high after the fleet has gone. Must stay the field
+          # deploy/staging-smoke-test.sh asserts on.
+          #
+          # Against a floor, not against 1: on run 35085480844 six nodes
+          # connected, the gate took that as ready, and all six had dropped
+          # eighteen seconds later. One node answering is not a fleet serving.
+          source deploy/fleet-scale.sh
+          MIN=$(fleet_min_active) || {
+            echo "docker-compose.staging.yml no longer declares FLEET_NODES, so"
+            echo "there is nothing to hold the fleet to. Refusing to guess."
+            exit 1
+          }
+          echo "Waiting for $MIN of the configured $(fleet_configured_nodes) fleet nodes..."
+          #
+          # Bounded by wall clock rather than by an iteration count, because
+          # each probe may take up to --max-time; the deadline sits inside the
+          # step's cap so the message below is what the log shows.
+          DEADLINE=$(( $(date +%s) + 540 ))
+          COUNT=0
+          i=0
+          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+            i=$((i + 1))
+            COUNT=$(curl -s --connect-timeout 10 --max-time 30 https://staging-api.retina.fm/api/test/dashboard \
+              | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['synthetic_active'])" 2>/dev/null) || COUNT=0
+            if [ "${COUNT:-0}" -ge "$MIN" ]; then
+              echo "Fleet ready: ${COUNT} synthetic node(s) answering on attempt $i"
+              exit 0
             fi
-            echo "Attempt $i/24: ${COUNT} nodes — waiting 5s..."
-            sleep 5
+            echo "Attempt $i: ${COUNT:-0}/${MIN} synthetic nodes — waiting 10s..."
+            sleep 10
           done
+          echo "Only ${COUNT:-0} of $MIN synthetic nodes were answering after 9 min."
+          echo "The smoke suite still runs below: if its other checks pass, staging"
+          echo "is up and only the recreated fleet is late (ClickUp 123zgec26kw)."
+          exit 1
       - name: Run smoke tests against staging
+        # Runs even when the gate above failed. The checks in this suite are how
+        # a fleet that is merely slow is told apart from staging being down, and
+        # skipping them leaves the run saying only that the fleet never came up.
+        if: ${{ !cancelled() }}
         timeout-minutes: 15
         # Same service token as production: one token, admitted by a Service Auth
         # policy on each admin application. Inert while the secrets are unset.
