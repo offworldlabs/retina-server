@@ -15,17 +15,19 @@ is the predicate every authenticated endpoint resolves through anyway.
 import sqlite3
 from contextlib import closing
 from datetime import UTC, datetime
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.pool import NullPool
 from starlette.requests import Request
 
 from core import state
 from core.nodes import Node, NodeConfig, NodeToken
 from routes import node_register
-from services import alerting, node_auth
+from services import alerting, node_auth, publication
 from services.node_rate_limits import REGISTRATION_LIMITS, registration_limiter
 
 NODE_ID = "ret1a2b3c4d"
@@ -544,3 +546,90 @@ async def test_re_registration_records_a_withdrawn_publication_choice(node_clien
 
     node = await node_session.get(Node, NODE_ID)
     assert node.publication == "private"
+
+
+class TestRegistrationPublicationCache:
+    @pytest.fixture(autouse=True)
+    def _policy_uses_registration_database(self, node_session, monkeypatch):
+        engine = create_engine(f"sqlite:///{node_session.get_bind().url.database}", poolclass=NullPool)
+        publication._reset_for_tests()
+        monkeypatch.setattr(publication, "_sync_engine", lambda: engine)
+        yield
+        publication._reset_for_tests()
+        engine.dispose()
+
+    @staticmethod
+    def _agreements(choice):
+        return AGREEMENTS | {"publication": AGREEMENTS["publication"] | {"choice": choice}}
+
+    def test_new_private_registration_refreshes_policy_before_pipeline_publication(
+        self, node_client, accepted_in_mender, monkeypatch
+    ):
+        accepted_in_mender(NODE_ID)
+        assert publication.private_node_ids() == frozenset()
+        observed = []
+        register = node_register.register_with_pipeline
+
+        async def inspect_policy(session, node):
+            observed.append(publication.is_private(node.node_id))
+            await register(session, node)
+
+        monkeypatch.setattr(node_register, "register_with_pipeline", inspect_policy)
+        response = _register(node_client, agreements=self._agreements("private"))
+        assert response.status_code == 200
+        assert observed == [True]
+        assert publication.is_private(NODE_ID)
+
+    @pytest.mark.parametrize("old,new", [("public", "private"), ("private", "public")])
+    @pytest.mark.parametrize("status", ["active", "blocked"])
+    async def test_reregistration_refreshes_changed_choice(
+        self, node_client, accepted_in_mender, node_session, monkeypatch, old, new, status
+    ):
+        accepted_in_mender(NODE_ID)
+        assert _register(node_client, agreements=self._agreements(old)).status_code == 200
+        assert publication.is_private(NODE_ID) is (old == "private")
+        node = await node_session.get(Node, NODE_ID)
+        node.status = status
+        await node_session.commit()
+        register = AsyncMock()
+        monkeypatch.setattr(node_register, "register_with_pipeline", register)
+
+        assert _register(node_client, agreements=self._agreements(new)).status_code == 200
+        assert publication.is_private(NODE_ID) is (new == "private")
+        assert register.await_count == (1 if status == "active" else 0)
+        assert (await node_session.get(Node, NODE_ID)).status == status
+
+    @pytest.mark.parametrize("integrity", [False, True])
+    def test_failed_commit_does_not_invalidate_or_publish(
+        self, node_client, accepted_in_mender, node_session, monkeypatch, integrity
+    ):
+        accepted_in_mender(NODE_ID)
+        assert publication.private_node_ids() == frozenset()
+        invalidate = Mock(wraps=publication.invalidate)
+        register = AsyncMock()
+        error = (
+            IntegrityError("COMMIT", {}, RuntimeError("commit failed")) if integrity else RuntimeError("commit failed")
+        )
+        monkeypatch.setattr(publication, "invalidate", invalidate)
+        monkeypatch.setattr(node_session, "commit", AsyncMock(side_effect=error))
+        monkeypatch.setattr(node_register, "register_with_pipeline", register)
+
+        response = _register(node_client, agreements=self._agreements("private"))
+        assert response.status_code == (403 if integrity else 500)
+        invalidate.assert_not_called()
+        register.assert_not_awaited()
+        assert _committed(node_session, "SELECT count(*) FROM nodes") == [(0,)]
+
+    def test_pipeline_failure_keeps_committed_privacy_effective(
+        self, node_client, accepted_in_mender, node_session, monkeypatch
+    ):
+        accepted_in_mender(NODE_ID)
+        assert publication.private_node_ids() == frozenset()
+        monkeypatch.setattr(
+            node_register, "register_with_pipeline", AsyncMock(side_effect=RuntimeError("pipeline failed"))
+        )
+
+        response = _register(node_client, agreements=self._agreements("private"))
+        assert response.status_code == 500
+        assert _committed(node_session, "SELECT publication FROM nodes") == [("private",)]
+        assert publication.is_private(NODE_ID)

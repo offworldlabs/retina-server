@@ -39,6 +39,7 @@ from routes.node_responses import (
     TOO_LARGE,
 )
 from routes.node_schemas import Agreements, ErrorBody, RegisterRequest, RegisterResponse
+from services import publication
 from services.mender import MenderUnreachable, lookup_device
 from services.node_auth import mint_node_ref, mint_token, revoke_tokens
 from services.node_config import ConfigInvalid, validate_config
@@ -311,4 +312,8 @@ async def _write_registration(
     node.active_config_version = version
     token = await mint_token(session, request.node_id)
     await session.commit()
+    # Registration rewrites the publication choice, including for blocked
+    # nodes. Expire the old policy before the handler can publish this node
+    # through the pipeline; a failed transaction must leave the cache alone.
+    publication.invalidate()
     return node, reissue, version, token
