@@ -8,7 +8,7 @@ what the system actually output at a given solver version, not just what we
 
 Layout:
 
-    tracks/year=YYYY/month=MM/day=DD/part-HHMMSS.parquet
+    tracks/year=YYYY/month=MM/day=DD/part-HHMMSS-<batch>.parquet
 
 Schema is one row per track update, similar in spirit to the detections schema.
 """
@@ -16,6 +16,9 @@ Schema is one row per track update, similar in spirit to the detections schema.
 from __future__ import annotations
 
 import logging
+import os
+import tempfile
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -109,9 +112,19 @@ def write_tracks_parquet(
 
     table = pa.table(cols, schema=SCHEMA)
 
-    key = f"year={write_ts:%Y}/month={write_ts:%m}/day={write_ts:%d}/part-{write_ts:%H%M%S}.parquet"
+    # Flushes can share a second during retries or shutdown. A batch suffix
+    # prevents one successful flush from replacing another batch's records.
+    key = f"year={write_ts:%Y}/month={write_ts:%m}/day={write_ts:%d}/part-{write_ts:%H%M%S}-{uuid.uuid4().hex}.parquet"
     out_path = Path(base_dir) / key
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    pq.write_table(table, out_path, compression="zstd", compression_level=3)
+    # Readers and archive offload only see complete .parquet files. Keep the
+    # temporary file on the same filesystem so publication is an atomic rename.
+    with tempfile.NamedTemporaryFile(dir=out_path.parent, prefix=".track-", suffix=".tmp", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        pq.write_table(table, tmp_path, compression="zstd", compression_level=3)
+        os.replace(tmp_path, out_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
     return key

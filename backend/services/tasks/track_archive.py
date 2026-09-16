@@ -15,8 +15,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import threading
 import time
-from pathlib import Path
 
 try:
     from config.constants import TRACK_ARCHIVE_FLUSH_INTERVAL_S
@@ -33,24 +33,34 @@ _TRACKS_DIR = os.path.join(
     "tracks",
 )
 
+# At most one failed batch is held outside the producer's bounded deque. New
+# records keep the deque's existing newest-records policy during a disk outage;
+# retries cannot grow this batch or silently discard the batch that failed.
+_pending_records: list[dict] = []
+_flush_lock = threading.Lock()
+
 
 def flush_track_archive_buffer() -> str | None:
-    """Drain the buffer and write a Parquet file. Returns the key, or None."""
-    records: list[dict] = []
-    while state.track_archive_buffer:
-        try:
-            records.append(state.track_archive_buffer.popleft())
-        except IndexError:
-            break
-    if not records:
-        return None
+    """Write one batch, retrying a failed batch before accepting new records.
 
-    Path(_TRACKS_DIR).mkdir(parents=True, exist_ok=True)
-    try:
-        return write_tracks_parquet(records=records, base_dir=_TRACKS_DIR)
-    except Exception:
-        logger.exception("Track archive flush failed (lost %d records)", len(records))
-        return None
+    Raises on failure so task health does not report a successful flush. The
+    batch stays pending until a write succeeds. Memory is bounded by one deque
+    plus one batch of at most the deque's capacity (currently 10,000 each).
+    """
+    with _flush_lock:
+        if not _pending_records:
+            # Take only the records present at the start; producers can append
+            # during the drain without extending this flush indefinitely.
+            for _ in range(len(state.track_archive_buffer)):
+                try:
+                    _pending_records.append(state.track_archive_buffer.popleft())
+                except IndexError:
+                    break
+        if not _pending_records:
+            return None
+        key = write_tracks_parquet(records=_pending_records, base_dir=_TRACKS_DIR)
+        _pending_records.clear()
+        return key
 
 
 async def track_flush_task():
