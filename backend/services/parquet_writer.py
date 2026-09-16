@@ -2,7 +2,7 @@
 
 Writes one Parquet file per flush in Hive-partitioned form:
 
-    archive/year=YYYY/month=MM/day=DD/node_id=XXX/part-HHMMSS.parquet
+    archive/year=YYYY/month=MM/day=DD/node_id=XXX/part-HHMMSS-<batch>.parquet
 
 Schema is per-detection: each row corresponds to one detection inside a frame.
 Frame-level metadata (timestamp, signing mode, signature validity) is repeated
@@ -13,17 +13,13 @@ match is present those columns are null.
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 
+from services.parquet_io import write_parquet_batch
 from services.public_location import public_latlon
-
-logger = logging.getLogger(__name__)
-
 
 # Stable schema — adding new columns is fine (Parquet is schema-on-read for
 # missing cols), but never rename or reorder.
@@ -251,9 +247,6 @@ def write_detections_parquet(
     # particular — know that without having to guess.
     table = pa.table(cols, schema=PUBLISHED_SCHEMA)
 
-    key = f"year={write_ts:%Y}/month={write_ts:%m}/day={write_ts:%d}/node_id={node_id}/part-{write_ts:%H%M%S}.parquet"
-    out_path = Path(base_dir) / key
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    pq.write_table(table, out_path, compression="zstd", compression_level=3)
-    return key
+    partition = f"year={write_ts:%Y}/month={write_ts:%m}/day={write_ts:%d}/node_id={node_id}"
+    filename = write_parquet_batch(table, Path(base_dir) / partition, write_ts)
+    return f"{partition}/{filename}"

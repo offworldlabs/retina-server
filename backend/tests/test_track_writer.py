@@ -103,7 +103,7 @@ def test_failed_write_never_publishes_partial_parquet(tmp_path: Path, monkeypatc
         Path(where).write_bytes(b"partial parquet")
         raise OSError("disk full")
 
-    monkeypatch.setattr(tw.pq, "write_table", fail_after_partial_write)
+    monkeypatch.setattr(pq, "write_table", fail_after_partial_write)
     with pytest.raises(OSError, match="disk full"):
         tw.write_tracks_parquet(records=[_record()], base_dir=tmp_path)
     assert not [path for path in tmp_path.rglob("*") if path.is_file()]

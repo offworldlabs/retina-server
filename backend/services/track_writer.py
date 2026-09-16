@@ -15,18 +15,12 @@ Schema is one row per track update, similar in spirit to the detections schema.
 
 from __future__ import annotations
 
-import logging
-import os
-import tempfile
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 
-logger = logging.getLogger(__name__)
-
+from services.parquet_io import write_parquet_batch
 
 SCHEMA = pa.schema(
     [
@@ -112,19 +106,6 @@ def write_tracks_parquet(
 
     table = pa.table(cols, schema=SCHEMA)
 
-    # Flushes can share a second during retries or shutdown. A batch suffix
-    # prevents one successful flush from replacing another batch's records.
-    key = f"year={write_ts:%Y}/month={write_ts:%m}/day={write_ts:%d}/part-{write_ts:%H%M%S}-{uuid.uuid4().hex}.parquet"
-    out_path = Path(base_dir) / key
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Readers and archive offload only see complete .parquet files. Keep the
-    # temporary file on the same filesystem so publication is an atomic rename.
-    with tempfile.NamedTemporaryFile(dir=out_path.parent, prefix=".track-", suffix=".tmp", delete=False) as tmp:
-        tmp_path = Path(tmp.name)
-    try:
-        pq.write_table(table, tmp_path, compression="zstd", compression_level=3)
-        os.replace(tmp_path, out_path)
-    finally:
-        tmp_path.unlink(missing_ok=True)
-    return key
+    partition = f"year={write_ts:%Y}/month={write_ts:%m}/day={write_ts:%d}"
+    filename = write_parquet_batch(table, Path(base_dir) / partition, write_ts)
+    return f"{partition}/{filename}"
