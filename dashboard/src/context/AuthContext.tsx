@@ -33,9 +33,22 @@ export function AuthProvider({ children }) {
     return () => { cancelled = true; };
   }, []);
 
+  // Resolves { redirected } so a caller knows not to route over a navigation
+  // that is still in flight.
   const logout = async () => {
-    await api.logout();
+    const result = await api.logout();
+    const target = result?.redirect;
+    // Only a top-level navigation reaches the edge, and only the edge can end
+    // an Access session. Same-origin paths only, as _safe_redirect enforces
+    // server-side.
+    if (typeof target === "string" && target.startsWith("/") && !target.startsWith("//")) {
+      // No setUser: RequireAuth bounces to /login the moment it goes falsy, and
+      // the page is leaving anyway.
+      window.location.assign(target);
+      return { redirected: true };
+    }
     setUser(null);
+    return { redirected: false };
   };
 
   return (

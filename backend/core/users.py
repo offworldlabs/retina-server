@@ -69,6 +69,14 @@ AUTH_ENABLED, AUTH_BYPASS = _derive_auth_flags(os.environ)
 #: The header Cloudflare sets on every request its Access applications admit.
 ACCESS_ASSERTION_HEADER = "Cf-Access-Jwt-Assertion"
 
+#: Cloudflare's logout endpoint, relative to whatever origin serves the page.
+#: The team-domain form ends the same session, but this one also deletes the
+#: per-application cookie, so the next request is challenged immediately rather
+#: than once revocation propagates ~30s later, and it keeps
+#: CF_ACCESS_TEAM_DOMAIN out of the front-end bundle. Either form signs the
+#: person out of every Access application: there is no per-application logout.
+ACCESS_LOGOUT_PATH = "/cdn-cgi/access/logout"
+
 #: One instance, so the JWKS cache and its lock are shared across requests.
 #: The audience differs per environment and comes from the compose overlays; the
 #: team domain is the same everywhere and comes from the base compose file.
@@ -355,6 +363,16 @@ async def _access_user_from_request(request: Request) -> dict | None:
         return None
     email = await access_identity.identity(request.headers.get(ACCESS_ASSERTION_HEADER))
     return _access_user_dict(email) if email else None
+
+
+async def has_access_session(request: Request) -> bool:
+    """Whether this request was admitted by Access rather than by our own cookie.
+
+    A service token is admitted but carries no email, so it has no identity here
+    and answers False, which keeps non-interactive callers away from an
+    interactive logout page.
+    """
+    return await _access_user_from_request(request) is not None
 
 
 async def get_current_user(request: Request) -> dict:

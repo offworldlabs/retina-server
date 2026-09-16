@@ -68,6 +68,62 @@ class TestMeEndpoint:
         assert "auth_token" in r.headers.get("set-cookie", "")
 
 
+class TestLogoutEndsTheAccessSession:
+    """Deleting auth_token does not end a session Access established.
+
+    On the admin hostnames identity comes from the Cf-Access-Jwt-Assertion
+    header, which Cloudflare re-injects from a cookie on its own domain that
+    this app can neither read nor delete. Clearing only auth_token leaves the
+    next request verified and admitted, so the caller has to be told to visit
+    the edge's logout endpoint as well.
+    """
+
+    def _stub(self, email):
+        class Stub:
+            def is_configured(self):
+                return True
+
+            async def identity(self, token):
+                return email if token else None
+
+        return Stub()
+
+    def test_an_access_session_is_told_to_visit_the_edge_logout(self, client):
+        from unittest.mock import patch
+
+        with patch("core.users.access_identity", self._stub("someone@offworldlab.com")):
+            r = client.post("/api/auth/logout", headers={"Cf-Access-Jwt-Assertion": "a-token"})
+        assert r.status_code == 200
+        assert r.json()["redirect"] == "/cdn-cgi/access/logout"
+
+    def test_an_access_session_still_has_its_auth_cookie_cleared(self, client):
+        """Both credentials may be present, so ending one must not skip the other."""
+        from unittest.mock import patch
+
+        with patch("core.users.access_identity", self._stub("someone@offworldlab.com")):
+            r = client.post("/api/auth/logout", headers={"Cf-Access-Jwt-Assertion": "a-token"})
+        assert "auth_token" in r.headers.get("set-cookie", "")
+
+    def test_a_request_without_an_assertion_is_not_redirected(self, client):
+        """The dash case, and every environment where Access is not configured.
+
+        One bundle serves admin and dash, and dash will authenticate by magic
+        link, where the edge holds no session to end.
+        """
+        r = client.post("/api/auth/logout")
+        assert "redirect" not in r.json()
+
+    def test_a_service_token_is_not_redirected(self, client):
+        """CI authenticates with a Cloudflare service token, which carries no
+        email claim and so yields no identity. Redirecting it would send a
+        non-interactive client to an interactive page."""
+        from unittest.mock import patch
+
+        with patch("core.users.access_identity", self._stub(None)):
+            r = client.post("/api/auth/logout", headers={"Cf-Access-Jwt-Assertion": "a-token"})
+        assert "redirect" not in r.json()
+
+
 # ── /api/auth/me/claim-codes ─────────────────────────────────────────────────
 
 

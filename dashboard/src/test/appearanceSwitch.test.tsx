@@ -5,7 +5,7 @@ import Header from "../components/Header";
 import { ThemeProvider } from "../context/ThemeContext";
 
 vi.mock("../context/AuthContext", () => ({
-  useAuth: () => ({ user: { name: "Ada", email: "ada@example.com" }, loading: false, logout: vi.fn() }),
+  useAuth: () => ({ user: { name: "Ada", email: "ada@example.com" }, loading: false, logout: vi.fn(async () => ({ redirected: false })) }),
 }));
 
 /** As in theme.test.tsx: stubbed rather than borrowed, because jsdom has no
