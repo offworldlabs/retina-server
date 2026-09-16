@@ -48,6 +48,7 @@ from pathlib import Path
 SUBSTITUTIONS = (
     "HOST_MAIN",
     "HOST_API",
+    "HOST_APP",
     "HOST_MAP",
     "HOST_DASH",
     "HOST_ADMIN",

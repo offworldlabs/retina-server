@@ -26,6 +26,11 @@ DATA_URL="https://staging-data.retina.fm"
 # Both vhosts are rooted at frontend/dist and so serve the tower finder too.
 # testmap is the public demo (prod parks the name as testmap-retired).
 MAP_URL="https://staging-map.retina.fm"
+# The consolidated surface: the map at /, the dashboard under /dash/ and the
+# data explorer under /data/. It renders before it resolves; the record is
+# created after the vhost deploys, since until then the catch-all above owns
+# the name and answers 421.
+APP_URL="https://staging-app.retina.fm"
 TESTMAP_URL="https://testmap.retina.fm"
 # Resolves to this droplet but is no environment's HOST_*, so it is the only
 # name that reaches the catch-all vhost. Production has no equivalent: every
@@ -143,9 +148,11 @@ check_contract() {
 
 # Vhosts that render, and so are covered by the parity check, but have no DNS
 # record on this environment. Their absence is the expected state, so a probe is
-# skipped and asserts in full the moment a record appears. Empty today: every
-# rendered vhost resolves.
-NO_DNS_EXPECTED=""
+# skipped and asserts in full the moment a record appears.
+#
+# staging-app is here for exactly that window. Drop it from this list once the
+# record is created, or the probes below stay silent for good.
+NO_DNS_EXPECTED="staging-app.retina.fm"
 
 # Vhosts whose record exists and is expected to, but whose absence must not
 # fail the run: this runs inside the `staging` job that deploy-production needs
@@ -343,6 +350,24 @@ check_status_if_dns "unclaimed host refuses /"    "${CATCHALL_URL}/"           "
 check_status_if_dns "unclaimed host refuses /api" "${CATCHALL_URL}/api/towers" "421"
 
 echo ""
+echo "── Consolidated app surface (staging-app.retina.fm) ──"
+# All three bundles on one hostname. Status only, deliberately: until the
+# front-ends carry their base paths, /dash/ and /data/ serve the right
+# index.html while its asset URLs still point at the root bundle. That the
+# vhost roots and SPA fallbacks are wired at all is what this asserts.
+check_status_if_dns "app GET / (map)"       "${APP_URL}/"                   "200"
+check_status_if_dns "app GET /dash/"        "${APP_URL}/dash/"              "200"
+check_status_if_dns "app GET /data/"        "${APP_URL}/data/"              "200"
+# Slashless: without its own exact-match redirect this is a 200 carrying the
+# WRONG bundle, which no status check would ever notice.
+check_status_if_dns "app /dash redirects"   "${APP_URL}/dash"               "301"
+check_status_if_dns "app /data redirects"   "${APP_URL}/data"               "301"
+# A deep link the SPA owns and nginx does not: proves the try_files fallback
+# reaches the bundle's index.html rather than 404ing inside the alias.
+check_status_if_dns "app /dash/ deep link"  "${APP_URL}/dash/nodes"         "200"
+check_header_if_dns "CSP on app vhost"      "${APP_URL}/api/health" "content-security-policy"
+
+echo ""
 echo "── Shared nginx config (must match production) ──"
 # These used to exist only in production's hand-maintained nginx.conf, so a
 # change that broke either of them reached prod untested. Both environments now
@@ -404,7 +429,7 @@ echo "── tower-finder-service seam ──"
 for endpoint in "${BASE_URL}/api/towers" "${MAP_URL}/api/towers" \
                 "${TESTMAP_URL}/api/towers" "${API_URL}/towers" \
                 "${DASH_URL}/api/towers" "${ADMIN_URL}/api/towers" \
-                "${DATA_URL}/api/towers"; do
+                "${DATA_URL}/api/towers" "${APP_URL}/api/towers"; do
     host="${endpoint#https://}"; host="${host%%/*}"
     if handle_unresolvable "$host" "$host"; then continue; fi
     check_contract "${endpoint#https://}" "$endpoint"

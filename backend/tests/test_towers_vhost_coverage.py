@@ -29,6 +29,7 @@ _SMOKE = _REPO / "deploy" / "staging-smoke-test.sh"
 # no tower search UI, so they are here for the routes rather than for a screen.
 _ROLE_TO_SMOKE_VAR = {
     "HOST_MAIN": "BASE_URL",
+    "HOST_APP": "APP_URL",
     "HOST_MAP": "MAP_URL",
     "HOST_TESTMAP": "TESTMAP_URL",
     "HOST_API": "API_URL",

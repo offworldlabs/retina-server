@@ -20,6 +20,7 @@ _TEMPLATE = REPO / "deploy" / "nginx" / "nginx.conf.template"
 VALUES = {
     "HOST_MAIN": "towers.example.com",
     "HOST_API": "api.example.com",
+    "HOST_APP": "app.example.com",
     "HOST_MAP": "map.example.com",
     "HOST_DASH": "dash.example.com",
     "HOST_ADMIN": "admin.example.com",
@@ -43,7 +44,22 @@ def render(values: dict[str, str] | None = None) -> str:
 def locations(text: str) -> list[tuple[str, str]]:
     """(header, body) for every `location ... { ... }`, innermost braces only.
 
-    The template nests no locations, so a non-greedy match to the first closing
-    brace is the whole body.
+    A block containing another one is invisible here — the pattern stops at the
+    first closing brace — so the app vhost's `^~ /dash/`, which nests its
+    /assets/ location, is reached with block() below instead.
     """
     return [(m.group(1), m.group(2)) for m in re.finditer(r"(location[^\n{]*)\{([^{}]*)\}", text)]
+
+
+def block(text: str, opener: str) -> str:
+    """The whole `{ ... }` block opened by the line `opener`, nesting included."""
+    start = text.index(opener)
+    depth = 0
+    for i in range(start, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    raise AssertionError(f"unbalanced braces after {opener!r}")
