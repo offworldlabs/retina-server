@@ -12,8 +12,16 @@ Covers:
 """
 
 import asyncio
+import uuid
+from concurrent.futures import ThreadPoolExecutor
+from http.cookies import SimpleCookie
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from urllib.parse import parse_qs, urlsplit
 
+import httpx
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from main import app
@@ -235,6 +243,7 @@ class TestMyNodeLocationPrivacy:
     def _register(node_id, choice):
         from core.nodes import Node
         from core.users import async_session_maker
+        from services import publication
 
         async def _go():
             async with async_session_maker() as session:
@@ -242,6 +251,9 @@ class TestMyNodeLocationPrivacy:
                 await session.commit()
 
         asyncio.run(_go())
+        # Startup has already primed the cache; mirror the registration route's
+        # invalidation after this fixture writes directly to the database.
+        publication.invalidate()
         asyncio.set_event_loop(asyncio.new_event_loop())
 
     def test_setting_privacy_on_a_node_you_do_not_own_is_404(self, client):
@@ -352,26 +364,178 @@ class TestMyNodesCarriesLocationPrivacy:
 # ── OAuth state token (CSRF + open-redirect) ──────────────────────────────────
 
 
+@pytest.fixture()
+def oauth_context(monkeypatch):
+    """Exercise only the auth router, with no app workers or provider traffic."""
+    from routes import auth
+
+    application = FastAPI()
+    application.include_router(auth.router)
+    provider = AsyncMock()
+    provider.post.return_value = httpx.Response(200, json={"access_token": "provider-token"})
+    provider.get.return_value = httpx.Response(200, json={"email": "user@example.com", "name": "User"})
+    provider.__aenter__.return_value = provider
+    monkeypatch.setattr(auth.httpx, "AsyncClient", lambda **kwargs: provider)
+    monkeypatch.setattr(auth, "get_or_create_oauth_user", AsyncMock(return_value=SimpleNamespace(id=uuid.uuid4())))
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr(auth, "monotonic", lambda: clock.now, raising=False)
+    monkeypatch.setattr(auth, "_oauth_states", {}, raising=False)
+    with TestClient(application, base_url="https://dashboard.example.test", follow_redirects=False) as browser:
+        yield SimpleNamespace(browser=browser, provider=provider, clock=clock)
+
+
+def _start_oauth(browser, provider="google", redirect="/dashboard"):
+    response = browser.get(f"/api/auth/login/{provider}", params={"redirect": redirect})
+    assert response.status_code == 307
+    return parse_qs(urlsplit(response.headers["location"]).query)["state"][0]
+
+
+def _finish_oauth(browser, state, provider="google"):
+    return browser.get(f"/api/auth/callback/{provider}", params={"code": "provider-code", "state": state})
+
+
+@pytest.mark.parametrize("provider", ["google", "github"])
+class TestOAuthBrowserBinding:
+    def test_login_cookie_is_host_only_and_short_lived(self, oauth_context, provider):
+        browser = oauth_context.browser
+        response = browser.get(f"/api/auth/login/{provider}")
+        cookies = SimpleCookie()
+        cookies.load(response.headers.get("set-cookie", ""))
+        cookie = cookies[f"__Host-retina-oauth-{provider}"]
+        assert cookie["secure"]
+        assert cookie["httponly"]
+        assert cookie["samesite"] == "lax"
+        assert cookie["path"] == "/"
+        assert cookie["domain"] == ""
+        assert cookie["max-age"] == "600"
+
+    def test_state_requires_the_initiating_browser(self, oauth_context, provider):
+        browser = oauth_context.browser
+        state = _start_oauth(browser, provider)
+        with TestClient(browser.app, base_url=str(browser.base_url), follow_redirects=False) as stranger:
+            response = _finish_oauth(stranger, state, provider)
+        assert response.headers["location"] == "/login?error=invalid_state"
+        oauth_context.provider.post.assert_not_awaited()
+        assert "auth_token" not in response.cookies
+        assert _finish_oauth(browser, state, provider).headers["location"] == "/dashboard"
+
+    def test_state_expires_even_if_browser_keeps_cookie(self, oauth_context, provider):
+        state = _start_oauth(oauth_context.browser, provider)
+        oauth_context.clock.now += 601
+        response = _finish_oauth(oauth_context.browser, state, provider)
+        assert response.headers["location"] == "/login?error=invalid_state"
+        oauth_context.provider.post.assert_not_awaited()
+
+    def test_old_callback_does_not_clear_a_newer_login_cookie(self, oauth_context, provider):
+        browser = oauth_context.browser
+        previous = _start_oauth(browser, provider)
+        current = _start_oauth(browser, provider)
+        rejected = _finish_oauth(browser, previous, provider)
+        assert rejected.headers["location"] == "/login?error=invalid_state"
+        oauth_context.provider.post.assert_not_awaited()
+        assert _finish_oauth(browser, current, provider).headers["location"] == "/dashboard"
+
+    def test_state_and_cookie_cannot_be_replayed(self, oauth_context, provider):
+        browser = oauth_context.browser
+        state = _start_oauth(browser, provider)
+        original_cookies = dict(browser.cookies)
+        response = _finish_oauth(browser, state, provider)
+        assert response.headers["location"] == "/dashboard"
+        assert "auth_token" in response.cookies
+        assert f"__Host-retina-oauth-{provider}" not in browser.cookies
+
+        browser.cookies.update(original_cookies)
+        repeated = _finish_oauth(browser, state, provider)
+        assert repeated.headers["location"] == "/login?error=invalid_state"
+        assert oauth_context.provider.post.await_count == 1
+
+    def test_concurrent_callbacks_consume_state_once(self, oauth_context, provider):
+        browser = oauth_context.browser
+        state = _start_oauth(browser, provider)
+        cookies = dict(browser.cookies)
+
+        def callback():
+            with TestClient(browser.app, base_url=str(browser.base_url), follow_redirects=False) as copy:
+                copy.cookies.update(cookies)
+                return _finish_oauth(copy, state, provider).headers["location"]
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: callback(), range(2)))
+        assert sorted(results) == ["/dashboard", "/login?error=invalid_state"]
+        assert oauth_context.provider.post.await_count == 1
+
+    def test_provider_error_also_consumes_state(self, oauth_context, provider):
+        browser = oauth_context.browser
+        state = _start_oauth(browser, provider)
+        original_cookies = dict(browser.cookies)
+        oauth_context.provider.post.return_value = httpx.Response(400, json={"error": "invalid_code"})
+        response = _finish_oauth(browser, state, provider)
+        assert response.headers["location"] == f"/login?error={provider}_token_failed"
+        assert f"__Host-retina-oauth-{provider}" not in browser.cookies
+        browser.cookies.update(original_cookies)
+        assert _finish_oauth(browser, state, provider).headers["location"] == "/login?error=invalid_state"
+        assert oauth_context.provider.post.await_count == 1
+
+    def test_state_cannot_move_to_another_host(self, oauth_context, provider):
+        browser = oauth_context.browser
+        state = _start_oauth(browser, provider)
+        with TestClient(browser.app, base_url="https://other.example.test", follow_redirects=False) as other:
+            # Even deliberately copying the cookie cannot move the callback URI.
+            other.cookies.update(dict(browser.cookies))
+            response = _finish_oauth(other, state, provider)
+        assert response.headers["location"] == "/login?error=invalid_state"
+        oauth_context.provider.post.assert_not_awaited()
+
+
+class TestOAuthChallengeStore:
+    def test_state_is_bound_to_its_provider(self, oauth_context):
+        browser = oauth_context.browser
+        state = _start_oauth(browser, "google")
+        _start_oauth(browser, "github")
+        response = _finish_oauth(browser, state, "github")
+        assert response.headers["location"] == "/login?error=invalid_state"
+        oauth_context.provider.post.assert_not_awaited()
+        assert _finish_oauth(browser, state, "google").headers["location"] == "/dashboard"
+
+    def test_pending_challenges_are_bounded_and_expired_entries_are_pruned(self, oauth_context, monkeypatch):
+        from routes import auth
+
+        monkeypatch.setattr(auth, "_MAX_OAUTH_STATES", 2, raising=False)
+        browser = oauth_context.browser
+        _start_oauth(browser)
+        _start_oauth(browser)
+        assert browser.get("/api/auth/login/google").status_code == 503
+        oauth_context.clock.now += 601
+        state = _start_oauth(browser)
+        assert len(auth._oauth_states) == 1
+        assert _finish_oauth(browser, state).headers["location"] == "/dashboard"
+
+    def test_restart_invalidates_pending_challenges(self, oauth_context, monkeypatch):
+        from routes import auth
+
+        state = _start_oauth(oauth_context.browser)
+        monkeypatch.setattr(auth, "_oauth_states", {})
+        response = _finish_oauth(oauth_context.browser, state)
+        assert response.headers["location"] == "/login?error=invalid_state"
+        oauth_context.provider.post.assert_not_awaited()
+
+
 class TestOAuthStateToken:
-    def test_valid_state_roundtrip(self):
-        from routes.auth import _make_oauth_state, _verify_oauth_state
+    def test_valid_state_roundtrip(self, oauth_context):
+        state = _start_oauth(oauth_context.browser)
+        assert _finish_oauth(oauth_context.browser, state).headers["location"] == "/dashboard"
 
-        state = _make_oauth_state("/dashboard")
-        assert _verify_oauth_state(state) == "/dashboard"
+    def test_tampered_state_rejected(self, oauth_context):
+        state = _start_oauth(oauth_context.browser)
+        response = _finish_oauth(oauth_context.browser, "tampered-" + state)
+        assert response.headers["location"] == "/login?error=invalid_state"
+        oauth_context.provider.post.assert_not_awaited()
 
-    def test_tampered_state_rejected(self):
-        from routes.auth import _make_oauth_state, _verify_oauth_state
-
-        state = _make_oauth_state("/dashboard")
-        tampered = state[:-4] + "XXXX"
-        assert _verify_oauth_state(tampered) is None
-
-    def test_invalid_format_state_rejected(self):
-        from routes.auth import _verify_oauth_state
-
-        assert _verify_oauth_state("notvalid") is None
-        assert _verify_oauth_state("") is None
-        assert _verify_oauth_state("a:b") is None
+    @pytest.mark.parametrize("state", ["notvalid", "", "a:b"])
+    def test_invalid_format_state_rejected(self, oauth_context, state):
+        response = _finish_oauth(oauth_context.browser, state)
+        assert response.headers["location"] == "/login?error=invalid_state"
+        oauth_context.provider.post.assert_not_awaited()
 
     def test_open_redirect_blocked_by_safe_redirect(self):
         from routes.auth import _safe_redirect
@@ -380,14 +544,21 @@ class TestOAuthStateToken:
         assert _safe_redirect("https://evil.com/steal") == "/"
         assert _safe_redirect("/dashboard") == "/dashboard"
 
-    def test_open_redirect_embedded_in_state_is_sanitized(self):
-        """A state token carrying an open-redirect URL is accepted (HMAC valid)
-        but the extracted redirect is sanitized to '/'."""
-        from routes.auth import _make_oauth_state, _verify_oauth_state
+    def test_open_redirect_in_login_is_sanitized(self, oauth_context):
+        state = _start_oauth(oauth_context.browser, redirect="//evil.com/steal")
+        assert _finish_oauth(oauth_context.browser, state).headers["location"] == "/"
 
-        state = _make_oauth_state("//evil.com/steal")
-        result = _verify_oauth_state(state)
-        assert result == "/"
+    @pytest.mark.parametrize(
+        "redirect", ["/\\evil.example", "/\t/evil.example", "/\r/evil.example", "/\n/evil.example", "/\x00", "/\x7f"]
+    )
+    def test_ambiguous_redirect_paths_are_rejected(self, oauth_context, redirect):
+        state = _start_oauth(oauth_context.browser, redirect=redirect)
+        assert _finish_oauth(oauth_context.browser, state).headers["location"] == "/"
+
+    def test_local_redirect_preserves_query_parameters(self, oauth_context):
+        redirect = "/dashboard?tab=nodes&next=%2Fmap#ownership"
+        state = _start_oauth(oauth_context.browser, redirect=redirect)
+        assert _finish_oauth(oauth_context.browser, state).headers["location"] == redirect
 
 
 # ── /api/admin/invites ────────────────────────────────────────────────────────
