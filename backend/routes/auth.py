@@ -5,11 +5,14 @@ so the frontend needs no changes). JWT issuance and cookie management are
 fully delegated to fastapi-users' JWTStrategy + CookieTransport.
 """
 
-import hashlib
-import hmac as _hmac
 import logging
+import math
 import os
 import secrets
+import threading
+from dataclasses import dataclass
+from ipaddress import IPv6Address, ip_address, ip_network
+from time import monotonic
 from urllib.parse import urlencode
 
 import httpx
@@ -28,7 +31,6 @@ from core.auth import (
 from core.users import (
     ANONYMOUS_USER,
     JWT_LIFETIME_SECONDS,
-    JWT_SECRET,
     get_current_user,
     get_jwt_strategy,
     get_or_create_oauth_user,
@@ -45,6 +47,31 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
 GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "")
 GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "")
 
+# State must be bound to the browser AND consumed once: signing a redirect
+# alone lets another browser complete a login it never started. The deployment
+# already requires one worker (deploy/start.sh), so short-lived challenges can
+# live here. A process restart invalidates pending logins; the user starts again.
+_OAUTH_STATE_TTL_S = 600
+_MAX_OAUTH_STATES = 4096
+# Main/API nginx vhosts already limit credentials to 5 requests/minute per IP.
+# Other vhosts and direct backend access need this pending-work quota too; 64
+# exceeds that credential allowance and leaves room in the shared global cap.
+_MAX_OAUTH_STATES_PER_SOURCE = 64
+
+
+@dataclass(frozen=True, slots=True)
+class _OAuthState:
+    redirect: str
+    provider: str
+    callback: str
+    browser_token: str
+    expires_at: float
+    source: str
+
+
+_oauth_states: dict[str, _OAuthState] = {}
+_oauth_state_lock = threading.Lock()
+
 
 def _fix_scheme(url: str) -> str:
     if os.getenv("FORCE_HTTPS", "true").lower() == "true":
@@ -53,31 +80,108 @@ def _fix_scheme(url: str) -> str:
 
 
 def _safe_redirect(state_param: str) -> str:
-    """Validate the redirect target to prevent open-redirect attacks."""
-    if state_param and state_param.startswith("/") and not state_param.startswith("//"):
+    """Accept local paths without relying on response URL quoting for safety."""
+    if (
+        state_param.startswith("/")
+        and not state_param.startswith("//")
+        and "\\" not in state_param
+        and not any(ord(char) < 32 or ord(char) == 127 for char in state_param)
+    ):
         return state_param
     return "/"
 
 
-def _make_oauth_state(redirect: str) -> str:
-    """Return an HMAC-signed state token: {nonce}:{sig}:{redirect}."""
-    nonce = secrets.token_urlsafe(16)
-    msg = f"{nonce}:{redirect}".encode()
-    sig = _hmac.new(JWT_SECRET.encode(), msg, hashlib.sha256).hexdigest()
-    return f"{nonce}:{sig}:{redirect}"
+def _oauth_source(request: Request) -> str:
+    """Use the transport peer after the ASGI server's trusted-proxy handling.
+
+    Never read forwarding headers here: deployed nginx appends its validated
+    client address and uvicorn trusts only the configured proxy peer. IPv6
+    addresses in one /64 share a quota, including privacy-address rotation.
+    This is an admission limit, not callback binding; mobile clients may roam.
+    """
+    host = request.client.host if request.client else None
+    if not host:
+        return "unknown"
+    try:
+        address = ip_address(host)
+    except ValueError:
+        return host
+    if isinstance(address, IPv6Address):
+        if address.ipv4_mapped is not None:
+            return str(address.ipv4_mapped)
+        return str(ip_network(f"{address}/64", strict=False))
+    return str(address)
 
 
-def _verify_oauth_state(state: str) -> str | None:
-    """Verify HMAC-signed OAuth state. Returns safe redirect URL or None on failure."""
-    parts = state.split(":", 2)
-    if len(parts) != 3:
-        return None
-    nonce, sig, redirect = parts
-    msg = f"{nonce}:{redirect}".encode()
-    expected = _hmac.new(JWT_SECRET.encode(), msg, hashlib.sha256).hexdigest()
-    if not _hmac.compare_digest(expected, sig):
-        return None
-    return _safe_redirect(redirect)
+def _make_oauth_state(request: Request, redirect: str, provider: str, callback: str) -> tuple[str, str]:
+    """Issue a challenge and a cookie secret that is never sent to the provider."""
+    source = _oauth_source(request)
+    with _oauth_state_lock:
+        now = monotonic()
+        expired = [token for token, pending in _oauth_states.items() if pending.expires_at <= now]
+        for token in expired:
+            del _oauth_states[token]
+        source_expiries = [pending.expires_at for pending in _oauth_states.values() if pending.source == source]
+        if len(source_expiries) >= _MAX_OAUTH_STATES_PER_SOURCE:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many pending logins from this network. Please try again later.",
+                headers={"Retry-After": str(max(1, math.ceil(min(source_expiries) - now)))},
+            )
+        if len(_oauth_states) >= _MAX_OAUTH_STATES:
+            raise HTTPException(status_code=503, detail="Too many pending logins. Please try again later.")
+        state = secrets.token_urlsafe(32)
+        browser_token = secrets.token_urlsafe(32)
+        _oauth_states[state] = _OAuthState(
+            redirect=_safe_redirect(redirect),
+            provider=provider,
+            callback=callback,
+            browser_token=browser_token,
+            expires_at=now + _OAUTH_STATE_TTL_S,
+            source=source,
+        )
+    return state, browser_token
+
+
+def _verify_oauth_state(request: Request, state: str, provider: str) -> str | None:
+    """Consume a matching, unexpired challenge before contacting the provider."""
+    callback = _fix_scheme(str(request.url_for(f"callback_{provider}")))
+    browser_token = request.cookies.get(f"__Host-retina-oauth-{provider}", "")
+    with _oauth_state_lock:
+        pending = _oauth_states.get(state)
+        if pending is None:
+            return None
+        if pending.expires_at <= monotonic():
+            del _oauth_states[state]
+            return None
+        if (
+            pending.provider != provider
+            or pending.callback != callback
+            or not secrets.compare_digest(pending.browser_token.encode(), browser_token.encode())
+        ):
+            return None
+        del _oauth_states[state]
+        return pending.redirect
+
+
+def _oauth_login_response(url: str, provider: str, browser_token: str) -> RedirectResponse:
+    response = RedirectResponse(url)
+    # __Host- forbids Domain cookies, including injection from sibling hosts.
+    # Each provider has its own cookie; starting that provider again replaces
+    # its pending browser login. Like auth_token, OAuth cookies require HTTPS.
+    # Callback responses leave this cookie to expire: a slow accepted callback
+    # could otherwise delete a newer login's cookie. Consumed server challenges,
+    # not cookie deletion, enforce single use.
+    response.set_cookie(
+        f"__Host-retina-oauth-{provider}",
+        browser_token,
+        max_age=_OAUTH_STATE_TTL_S,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return response
 
 
 async def _set_auth_cookie(response: Response, user) -> None:
@@ -101,21 +205,25 @@ async def _set_auth_cookie(response: Response, user) -> None:
 @router.get("/login/google")
 async def login_google(request: Request, redirect: str = "/"):
     callback = _fix_scheme(str(request.url_for("callback_google")))
+    state, browser_token = _make_oauth_state(request, redirect, "google", callback)
     params = {
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": callback,
         "response_type": "code",
         "scope": "openid email profile",
-        "state": _make_oauth_state(redirect),
+        "state": state,
         "prompt": "select_account",
     }
-    return RedirectResponse(f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}")
+    return _oauth_login_response(
+        f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}", "google", browser_token
+    )
 
 
 @router.get("/callback/google", name="callback_google")
 async def callback_google(request: Request, code: str = "", state: str = ""):
-    redirect_url = _verify_oauth_state(state)
+    redirect_url = _verify_oauth_state(request, state, "google")
     if redirect_url is None:
+        # A stale callback must not erase the cookie for a newer login.
         return RedirectResponse("/login?error=invalid_state")
     callback = _fix_scheme(str(request.url_for("callback_google")))
     async with httpx.AsyncClient(timeout=15) as client:
@@ -162,18 +270,21 @@ async def callback_google(request: Request, code: str = "", state: str = ""):
 @router.get("/login/github")
 async def login_github(request: Request, redirect: str = "/"):
     callback = _fix_scheme(str(request.url_for("callback_github")))
+    state, browser_token = _make_oauth_state(request, redirect, "github", callback)
     params = {
         "client_id": GITHUB_CLIENT_ID,
         "redirect_uri": callback,
         "scope": "read:user user:email",
-        "state": _make_oauth_state(redirect),
+        "state": state,
     }
-    return RedirectResponse(f"https://github.com/login/oauth/authorize?{urlencode(params)}")
+    return _oauth_login_response(
+        f"https://github.com/login/oauth/authorize?{urlencode(params)}", "github", browser_token
+    )
 
 
 @router.get("/callback/github", name="callback_github")
 async def callback_github(request: Request, code: str = "", state: str = ""):
-    redirect_url = _verify_oauth_state(state)
+    redirect_url = _verify_oauth_state(request, state, "github")
     if redirect_url is None:
         return RedirectResponse("/login?error=invalid_state")
     async with httpx.AsyncClient(timeout=15) as client:
