@@ -12,16 +12,13 @@ real board.
 """
 
 import math
-import os
 
 import pytest
 
-os.environ.setdefault("RETINA_ENV", "test")
-
-from core import state  # noqa: E402
-from services import public_location as pl  # noqa: E402
-from services.geo import haversine_km  # noqa: E402
-from services.node_registration import register_node_blocking  # noqa: E402
+from core import state
+from services import public_location as pl
+from services.geo import haversine_km
+from services.node_registration import register_node_blocking
 
 _SYNTH_ID = "synth-GVL-0001"
 _REAL_ID = "ret1a2b3c4d"

@@ -1,7 +1,6 @@
 """The admin Infrastructure snapshot: the maths, the degradation rules, the cache, the route."""
 
 import asyncio
-import os
 import time
 
 import httpx
@@ -9,12 +8,9 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from clients import digitalocean as do  # noqa: E402
-from routes import admin_infrastructure as route  # noqa: E402
-from services import infrastructure as infra  # noqa: E402
+from clients import digitalocean as do
+from routes import admin_infrastructure as route
+from services import infrastructure as infra
 
 
 def _series(mode, values):

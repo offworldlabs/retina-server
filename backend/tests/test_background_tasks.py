@@ -1,14 +1,10 @@
 """Tests for background tasks — aircraft flush, periodic tasks."""
 
-import os
 import time
 
 import pytest
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from core import state  # noqa: E402
+from core import state
 
 # ── _real_only_dict ─────────────────────────────────────────────────
 

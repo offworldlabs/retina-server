@@ -8,15 +8,11 @@ backend/tests because it is the one place both libraries are installed
 together; the libs' own CI runs them in isolation.
 """
 
-import os
 import random
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from retina_geolocator.Geometry import Geometry as GeoG  # noqa: E402
-from retina_tracker.geometry import ecef2lla as trk_ecef2lla  # noqa: E402
-from retina_tracker.geometry import lla2ecef as trk_lla2ecef  # noqa: E402
+from retina_geolocator.Geometry import Geometry as GeoG
+from retina_tracker.geometry import ecef2lla as trk_ecef2lla
+from retina_tracker.geometry import lla2ecef as trk_lla2ecef
 
 
 class TestEcefLlaAgreement:

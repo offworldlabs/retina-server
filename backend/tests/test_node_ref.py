@@ -7,17 +7,14 @@ the string says which nodes are on the registry.
 """
 
 import asyncio
-import os
 import re
 
 import pytest
 
-os.environ.setdefault("RETINA_ENV", "test")
-
-from core.nodes import Node  # noqa: E402
-from core.users import async_session_maker  # noqa: E402
-from services import node_ref, public_location  # noqa: E402
-from services.node_ref import public_node_ref  # noqa: E402
+from core.nodes import Node
+from core.users import async_session_maker
+from services import node_ref, public_location
+from services.node_ref import public_node_ref
 
 _SALT = "test-salt-for-node-ref"
 _ID = "alpha-site-node"

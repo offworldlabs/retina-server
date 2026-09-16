@@ -1,26 +1,14 @@
 """Tests for public output API routes — solver aircraft, ground truth."""
 
 import asyncio
-import os
 import re
 
 import pytest
-from fastapi.testclient import TestClient
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from core import state  # noqa: E402
-from core.nodes import Node  # noqa: E402
-from core.users import async_session_maker  # noqa: E402
-from main import app  # noqa: E402
-from services import node_refs  # noqa: E402
-
-
-@pytest.fixture()
-def client():
-    with TestClient(app, raise_server_exceptions=False) as c:
-        yield c
+from core import state
+from core.nodes import Node
+from core.users import async_session_maker
+from services import node_refs
 
 
 @pytest.fixture(autouse=True)

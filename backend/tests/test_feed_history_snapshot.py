@@ -10,20 +10,16 @@ list tolerated — and killed one whole 1 s feed tick each time it fired
 call, hence an atomic snapshot under the GIL, so the scan runs off a copy.
 """
 
-import os
 import threading
 import time
 import types
 from collections import deque
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
+from retina_tracker.track import TrackState
 
-from retina_tracker.track import TrackState  # noqa: E402
-
-from core import state  # noqa: E402
-from services import aircraft_feed  # noqa: E402
-from services.frame_processor import build_combined_aircraft_json  # noqa: E402
+from core import state
+from services import aircraft_feed
+from services.frame_processor import build_combined_aircraft_json
 
 NODE_ID = "snapshot-node"
 

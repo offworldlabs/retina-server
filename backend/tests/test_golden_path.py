@@ -175,12 +175,6 @@ def _clean():
     _purge()
 
 
-@pytest.fixture()
-def client():
-    with TestClient(app, raise_server_exceptions=False) as c:
-        yield c
-
-
 # ── Shared helper: run TCP handshake + enqueue N frames ───────────────────────
 
 

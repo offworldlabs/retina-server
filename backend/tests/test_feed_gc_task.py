@@ -7,21 +7,16 @@ while frame workers and solver threads kept writing.  These tests assert the
 pruning happens with no feed build in sight.
 """
 
-import os
+import asyncio
+import time
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
+import pytest
 
-import asyncio  # noqa: E402
-import time  # noqa: E402
-
-import pytest  # noqa: E402
-
-from config.constants import MN_DARK_EXPIRY_S, TRAIL_STALE_S  # noqa: E402
-from core import state  # noqa: E402
-from services.feed_gc import prune_multinode_tracks  # noqa: E402
-from services.id_utils import multinode_hex_from_key  # noqa: E402
-from services.tasks import feed_gc as feed_gc_task_mod  # noqa: E402
+from config.constants import MN_DARK_EXPIRY_S, TRAIL_STALE_S
+from core import state
+from services.feed_gc import prune_multinode_tracks
+from services.id_utils import multinode_hex_from_key
+from services.tasks import feed_gc as feed_gc_task_mod
 
 
 @pytest.fixture(autouse=True)

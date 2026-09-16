@@ -12,7 +12,6 @@ not reach them — and seeding is what actually proves the wiring.
 
 import asyncio
 import hashlib
-import os
 import time
 from types import SimpleNamespace
 
@@ -22,16 +21,14 @@ from fastapi.testclient import TestClient
 from retina_custody.models import NodeIdentity
 from retina_custody.packet_signer import canonicalize
 
-os.environ.setdefault("RETINA_ENV", "test")
-
-from core import state  # noqa: E402
-from core.nodes import Node, NodeLocationPrivacy  # noqa: E402
-from core.users import async_session_maker  # noqa: E402
-from main import app  # noqa: E402
-from services import node_auth, node_ref, node_refs, publication  # noqa: E402
-from services.public_geometry import without_receiver_geometry  # noqa: E402
-from services.public_location import public_node_summary  # noqa: E402
-from services.publication import (  # noqa: E402
+from core import state
+from core.nodes import Node, NodeLocationPrivacy
+from core.users import async_session_maker
+from main import app
+from services import node_auth, node_ref, node_refs, publication
+from services.public_geometry import without_receiver_geometry
+from services.public_location import public_node_summary
+from services.publication import (
     effective_privacy,
     is_private,
     private_node_ids,
@@ -105,12 +102,6 @@ def seed_override():
         publication._reset_for_tests()
 
     return _seed
-
-
-@pytest.fixture()
-def client():
-    with TestClient(app, raise_server_exceptions=False) as c:
-        yield c
 
 
 def _keys_named(value, name: str):

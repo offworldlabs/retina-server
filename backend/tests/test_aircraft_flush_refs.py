@@ -6,19 +6,15 @@ pin the ordering that keeps them working: a payload substituted before them
 would match nothing and each feed would come back empty.
 """
 
-import os
+import asyncio
 
-os.environ.setdefault("RETINA_ENV", "test")
+import orjson
+import pytest
 
-import asyncio  # noqa: E402
-
-import orjson  # noqa: E402
-import pytest  # noqa: E402
-
-from core import state  # noqa: E402
-from core.nodes import Node  # noqa: E402
-from core.users import async_session_maker  # noqa: E402
-from services import node_refs  # noqa: E402
+from core import state
+from core.nodes import Node
+from core.users import async_session_maker
+from services import node_refs
 
 _ID = "ret1a2b3c4d"
 _REF = "nde1a2b3c4d00"

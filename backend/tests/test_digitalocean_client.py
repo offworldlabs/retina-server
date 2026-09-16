@@ -1,13 +1,9 @@
 """The DigitalOcean read client: env handling and the thin wrappers over _get_json."""
 
-import os
-
 import httpx
 import pytest
 
-os.environ.setdefault("RETINA_ENV", "test")
-
-from clients import digitalocean as do  # noqa: E402
+from clients import digitalocean as do
 
 
 def test_token_is_read_per_call(monkeypatch):

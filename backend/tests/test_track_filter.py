@@ -17,18 +17,14 @@ Covers:
 
 import datetime
 import math
-import os
 import time
 
 import numpy as np
 import pytest
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from core import state  # noqa: E402
-from services import track_filter  # noqa: E402
-from services.geo import offset_latlon_m  # noqa: E402
+from core import state
+from services import track_filter
+from services.geo import offset_latlon_m
 
 
 def make_result(lat, lon, ts_ms, vel_east=None, vel_north=None, cov_en_km2=None):

@@ -9,16 +9,12 @@ would otherwise let through unnoticed.
 """
 
 import math
-import os
 import random
 
 import pytest
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from services import geo  # noqa: E402
-from services import geo as _helpers  # noqa: E402  (shim collapsed; same surface)
+from services import geo
+from services import geo as _helpers  # shim collapsed; same surface
 
 
 def _rng_positions(rng, n, around=(34.85, -82.40), spread=1.2):

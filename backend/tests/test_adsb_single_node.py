@@ -21,16 +21,13 @@ from collections import deque
 
 import pytest
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from config.constants import ARC_MIN_DIFFERENTIAL_KM, CLAIMED_DISPLAY_FRESH_S  # noqa: E402
-from core import state  # noqa: E402
-from services.aircraft_feed import _claimed_single_node_entries  # noqa: E402
-from services.feed_helpers import dedup_aircraft  # noqa: E402
-from services.geo import C_KM_US  # noqa: E402
-from services.tasks.aircraft_flush import filter_payload_to_nodes  # noqa: E402
-from tests.probe_helpers import run_probe  # noqa: E402
+from config.constants import ARC_MIN_DIFFERENTIAL_KM, CLAIMED_DISPLAY_FRESH_S
+from core import state
+from services.aircraft_feed import _claimed_single_node_entries
+from services.feed_helpers import dedup_aircraft
+from services.geo import C_KM_US
+from services.tasks.aircraft_flush import filter_payload_to_nodes
+from tests.probe_helpers import run_probe
 
 # An invented bistatic geometry, translated as one piece from test_arc_builder's:
 # the arc assertions below are worthless against a node the builder would decline

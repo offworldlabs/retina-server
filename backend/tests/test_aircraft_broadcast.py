@@ -3,15 +3,10 @@
 Focuses on the WebSocket broadcast path and the real-only filtering logic.
 """
 
-import os
-
 import orjson
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from core import state  # noqa: E402
-from services.tasks.aircraft_flush import (  # noqa: E402
+from core import state
+from services.tasks.aircraft_flush import (
     _real_only_dict,
     broadcast_aircraft,
     filter_payload_to_nodes,

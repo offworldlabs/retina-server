@@ -8,26 +8,13 @@ removes stale test-prefixed nodes from the fleet registry only after 7 days
 disconnected; retirement is the only path that clears every store.
 """
 
-import os
-
 import pytest
-from fastapi.testclient import TestClient
 
-os.environ.setdefault("RETINA_ENV", "test")
-os.environ.setdefault("RADAR_API_KEY", "test-key-abc123")
-
-from core import state  # noqa: E402
-from core.env_parsing import parse_comma_list  # noqa: E402
-from main import app  # noqa: E402
-from services import node_retirement  # noqa: E402
+from core import state
+from core.env_parsing import parse_comma_list
+from services import node_retirement
 
 _CFG = dict(rx_lat=34.85, rx_lon=-82.40, tx_lat=34.90, tx_lon=-82.30, max_range_km=50, max_bistatic_range_km=50)
-
-
-@pytest.fixture()
-def client():
-    with TestClient(app, raise_server_exceptions=False) as c:
-        yield c
 
 
 @pytest.fixture()
