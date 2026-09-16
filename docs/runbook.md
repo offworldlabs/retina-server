@@ -153,6 +153,26 @@ Every `adm` below assumes it.
 
 All state is **in-memory**. A container restart loses all connected nodes, active tracks, and in-flight frame data. State is snapshotted to disk every 60 s and restored on next startup (trust scores, reputations, accuracy samples, node identities).
 
+### Graceful shutdown and privacy readiness
+
+The application closes radar TCP connections, cancels and awaits its background
+tasks, and stops solver workers before final snapshot and archive writes. A
+synchronous job gets a bounded shutdown wait; if it is still running, the log
+names the unfinished executor or solver workers. Final mutable-state writes are
+skipped in that case, and another lifespan in the same process refuses to start
+until the old work finishes. Python cannot force a running native computation
+to stop, so process termination can still require the container supervisor's
+stop timeout. Final snapshot and archive writes are synchronous I/O and are not
+covered by the background-work wait budget. Pending frame and solver queues are
+not drained during shutdown. The last periodic snapshot remains the recovery point.
+
+Publication policy is loaded after the database is ready. If the first privacy
+query fails, public aircraft feeds are empty and policy-dependent analytics or
+archive requests return `503` with `Retry-After: 5`. The authenticated owner
+aircraft feed still uses its owner-filtered data. A later refresh failure uses
+the last successfully loaded policy. This is separate from a healthy database
+reporting that no nodes are private, which permits normal publication.
+
 ### Database migrations
 
 Applied automatically by `deploy/start.sh` on every container start, before
@@ -346,7 +366,7 @@ The health check only monitors these three tasks (defined in `_CRITICAL_TASKS` i
 docker compose logs --tail=500 | grep -i "error\|exception\|traceback" | tail -20
 ```
 
-`frame_processor` stale is the most serious — it means detection frames are piling up unprocessed or the loop crashed. If the loop crashed, the container needs a restart (tasks are daemon threads and will not restart themselves).
+`frame_processor` stale is the most serious — it means detection frames are piling up unprocessed or the loop crashed. If the loop crashed, the container needs a restart; an exited background task does not restart itself.
 
 `analytics_refresh` reports its cycle's cost on success only, so a steady stream of these means the work is running rather than merely being attempted:
 
