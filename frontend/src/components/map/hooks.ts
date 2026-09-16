@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { API_BASE, ARC_TOTAL_LIFE_MS, MAX_HISTORY } from "./constants";
 import { upsertArcEntries } from "./arcBuffer";
 import { updateDetections } from "./detections";
-import { mergeTrailPositions } from "./trails";
+import { MAX_TRAIL_POINTS, mergeTrailPositions } from "./trails";
 import { validLatLon } from "./geo";
 import type { RadarNode } from "../../types";
 import { hidesRealNodes, usesRealOnlyFeed } from "../../utils/domains";
@@ -91,7 +91,7 @@ export function useAircraftFeed(ownerOnly = false) {
           Math.abs(last[0] - ac.lat) > 0.00005 ||
           Math.abs(last[1] - ac.lon) > 0.00005
         ) {
-          trails[hex] = [...existing, [ac.lat, ac.lon, ac.alt_baro || 0, now]];
+          trails[hex] = [...existing, [ac.lat, ac.lon, ac.alt_baro || 0, now]].slice(-MAX_TRAIL_POINTS);
         }
       }
     }
@@ -191,14 +191,19 @@ export function useAircraftFeed(ownerOnly = false) {
       ? "/ws/aircraft/owner"
       : usesRealOnlyFeed ? "/ws/aircraft/live" : "/ws/aircraft";
     const ws = new WebSocket(`${proto}//${window.location.host}${wsPath}`);
+    // A closed socket may still have queued callbacks. A scope switch resets
+    // wsClosedRef for the new connection, so also check the socket identity.
+    const isCurrent = () => !wsClosedRef.current && wsRef.current === ws;
 
     ws.onopen = () => {
+      if (!isCurrent()) return;
       setConnected(true);
       reconnectAttempts.current = 0;  // reset backoff on successful connect
       lastMsgRef.current = Date.now(); // reset watchdog so we don't misfire on slow first message
     };
 
     ws.onmessage = (evt) => {
+      if (!isCurrent()) return;
       lastMsgRef.current = Date.now(); // keep watchdog alive
       try {
         const data = JSON.parse(evt.data);
@@ -212,7 +217,7 @@ export function useAircraftFeed(ownerOnly = false) {
       // Unmounted: onclose fires *after* the effect cleanup ran, so without
       // this guard it re-scheduled connectWs and opened a fresh socket that
       // outlived the component (and called setConnected on an unmounted one).
-      if (wsClosedRef.current) return;
+      if (!isCurrent()) return;
       setConnected(false);
       wsRef.current = null;
       // Exponential backoff: 3s, 6s, 12s … capped at 30s
@@ -221,18 +226,37 @@ export function useAircraftFeed(ownerOnly = false) {
       reconnectTimer.current = setTimeout(connectWs, delay);
     };
 
-    ws.onerror = () => ws.close();
+    ws.onerror = () => { if (isCurrent()) ws.close(); };
     wsRef.current = ws;
   }, [ingestAircraft, ownerOnly]);
 
   useEffect(() => {
+    // Feed scope owns all accumulated state, including optional channels the
+    // next feed may never send. Reconnects within the same scope keep history.
+    setAircraft([]);
+    setConnected(false);
+    trailsRef.current = {};
+    groundTruthRef.current = {};
+    groundTruthMetaRef.current = {};
+    anomalyHexesRef.current = new Set();
+    arcsBufferRef.current = {};
+    detectionsRef.current = {};
+    historyRef.current = [];
+    pausedRef.current = false;
+    trailPruneRef.current = 0;
+    reconnectAttempts.current = 0;
+    setTrailTick((t) => t + 1);
+    setGroundTruthTick((t) => t + 1);
     wsClosedRef.current = false;
     connectWs();
     return () => {
       wsClosedRef.current = true;
       clearTimeout(reconnectTimer.current);
       if (wsRef.current) {
+        wsRef.current.onopen = null;
+        wsRef.current.onmessage = null;
         wsRef.current.onclose = null;
+        wsRef.current.onerror = null;
         wsRef.current.close();
         wsRef.current = null;
       }
@@ -269,11 +293,16 @@ export function useAircraftFeed(ownerOnly = false) {
       ? `${API_BASE}/radar/data/aircraft-live.json`
       : `${API_BASE}/radar/data/aircraft.json`;
     const controller = new AbortController();
+    let nextRequest = 0;
+    let latestSettled = 0;
     const doFetch = async () => {
+      const request = ++nextRequest;
       try {
         const res = await fetch(pollPath, { signal: controller.signal });
         if (res.ok) {
           const data = await res.json();
+          if (controller.signal.aborted || request < latestSettled) return;
+          latestSettled = request;
           ingestAircraft(data.aircraft || [], data.ground_truth, data.ground_truth_meta, data.anomaly_hexes, data.detecting_nodes, data.detection_arcs);
         }
       } catch (err) {

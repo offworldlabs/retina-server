@@ -1,6 +1,6 @@
 import { distanceKm } from "./distance";
 
-const MAX_TRAIL_POINTS = 400;
+export const MAX_TRAIL_POINTS = 400;
 
 export function mergeTrailPositions(existing = [], incoming = []) {
   if (!incoming.length) return existing;

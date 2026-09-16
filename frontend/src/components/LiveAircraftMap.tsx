@@ -187,9 +187,10 @@ const GroundTruthCanvasLayer = memo(function GroundTruthCanvasLayer({ aircraft, 
 
   // Full cleanup on unmount
   useEffect(() => {
+    const markerMap = markerMapRef.current;
     return () => {
-      for (const m of markerMapRef.current.values()) m.remove();
-      markerMapRef.current.clear();
+      for (const m of markerMap.values()) m.remove();
+      markerMap.clear();
     };
   }, [map]);
 
@@ -351,7 +352,7 @@ const MatchedGroundTruthLayer = memo(function MatchedGroundTruthLayer({ radarAir
       }
       markers.clear();
     };
-  }, [map, radarAircraftRef, groundTruthRef, smoothRef, NODE, TRUTH]);
+  }, [map, radarAircraftRef, groundTruthRef, smoothRef, nodesByRefRef, NODE, TRUTH]);
 
   return null;
 });
@@ -1225,13 +1226,29 @@ const HashSync = memo(function HashSync({ onMove, showRangeRings, selectedHex, s
 /* ── Main component ───────────────────────────────────────────── */
 
 export default function LiveAircraftMap() {
+  const auth = useAuth();
+  const [scope, setScope] = useState({ ownerOnly: false, initial: true });
+  // The feed, animation stores, Leaflet layers and playback all belong to one
+  // scope. Remount them together so a newly filtered feed cannot inherit old
+  // positions or optional channels. Persisted display preferences survive.
+  return (
+    <AircraftMapScope
+      key={String(scope.ownerOnly)}
+      ownerOnly={scope.ownerOnly}
+      restoreSelection={scope.initial}
+      auth={auth}
+      onOwnerChange={(ownerOnly) => setScope({ ownerOnly, initial: false })}
+    />
+  );
+}
+
+function AircraftMapScope({ ownerOnly, restoreSelection, auth, onOwnerChange }) {
   const { ANOMALY, COVERAGE, LANE_MN_ADSB, LANE_MN_DARK, SELECTED, WARN } = usePalette();
   const { theme, setTheme } = useMapTheme();
   /* ── Node-owner view ─────────────────────────────────────────── */
   // Resolved before the feed so `ownerOnly` can pick the server-filtered
   // /ws/aircraft/owner endpoint. Only takes effect once the user is logged in.
-  const { user, ownedNodeRefs, loading: authLoading } = useAuth();
-  const [ownerOnly, setOwnerOnly] = useState(false);
+  const { user, ownedNodeRefs, loading: authLoading } = auth;
   const ownedSet = useMemo(() => new Set(ownedNodeRefs), [ownedNodeRefs]);
 
   /* ── Data feeds ─────────────────────────────────────────────── */
@@ -1300,7 +1317,7 @@ export default function LiveAircraftMap() {
   // production's map.*, the one real-receiver surface. See utils/domains.ts.
   const [showGroundTruth, setShowGroundTruth] = usePersistedState("tf.layer.groundTruth", initialLayers?.groundTruth ?? !defaultsGroundTruthOff);
   const [showLabels, setShowLabels] = usePersistedState("tf.layer.labels", initialLayers?.labels ?? true);
-  const [selectedHex, setSelectedHex] = useState(initialHash.hex ?? null);
+  const [selectedHex, setSelectedHex] = useState(restoreSelection ? initialHash.hex ?? null : null);
   const [selectedNodeRef, setSelectedNodeRef] = useState(null);
   const [focusNonce, setFocusNonce] = useState(0);
   const [searchQuery, setSearchQuery] = useState("");
@@ -1757,13 +1774,16 @@ export default function LiveAircraftMap() {
     [nodes, viewport],
   );
 
-    /* ── Derived: trail for selected aircraft ───────────────────── */
+  /* ── Derived: trail for selected aircraft ───────────────────── */
+  // The feed replaces trail arrays on update. Depend on the selected array
+  // itself, rather than scanning every trail or depending on its stable ref.
+  const selectedFeedTrail = selectedHex ? trailsRef.current[selectedHex] : null;
   const visibleTrailEntries = useMemo(() => {
-    if (!selectedHex) return [];
-    return Object.entries(trailsRef.current).filter(
-      ([hex, positions]) => hex === selectedHex && positions.some((p) => isPointInViewport(p[0], p[1], viewport)),
-    );
-  }, [selectedHex, trailTick, viewport]);
+    if (!Array.isArray(selectedFeedTrail)) return [];
+    return selectedFeedTrail.some((p) => isPointInViewport(p[0], p[1], viewport))
+      ? [[selectedHex, selectedFeedTrail]]
+      : [];
+  }, [selectedHex, selectedFeedTrail, viewport]);
 
   // { body, head }: `body` is the solid gradient trail, `head` the dashed
   // continuation to the live icon.  `head` is only ever non-empty for a dark
@@ -1912,13 +1932,13 @@ export default function LiveAircraftMap() {
     });
   }, []);
 
-  function handleTogglePause() {
+  const handleTogglePause = useCallback(() => {
     const next = !paused;
     setPaused(next);
     setFeedPaused(next);
     pausedLoopRef.current = next;
     setSeekIndex(next ? historyRef.current.length - 1 : null);
-  }
+  }, [paused, setFeedPaused, historyRef]);
 
   function handleHistorySeek(index) {
     if (index >= 0 && index < historyRef.current.length) {
@@ -2006,7 +2026,7 @@ export default function LiveAircraftMap() {
     const csv = trailToCsv(ac.hex, ac.flight, rows);
     downloadCsv(`trail-${ac.hex}-${Date.now()}.csv`, csv);
     toast(`Exported ${rows.length} points`, { tone: "success" });
-  }, [selectedHex, radarAircraft, trailsRef]);
+  }, [selectedHex, radarAircraft, trailsRef, groundTruthRef]);
 
   const exportAllTrails = useCallback(() => {
     const csv = trailsToBulkCsv(radarAircraft || [], trailsRef.current || {});
@@ -2071,7 +2091,7 @@ export default function LiveAircraftMap() {
     p: () => { if (selectedHex) { togglePinned(selectedHex); toast(pinnedSet.has(selectedHex) ? "Unpinned" : "Pinned"); } },
     m: () => locateMe(),
     n: () => { setSoundOn((v) => { toast(v ? "Sound off" : "Sound on"); return !v; }); },
-  }), [showShortcutHelp, searchQuery, exportSelectedTrail, exportAllTrails, locateMe, selectedHex, togglePinned, pinnedSet, setSoundOn, setShowLabels, setShowTrails, setShowCoverage, setShowIlluminators, setShowGroundTruth, setColorByAlt, setShowStats, setShowRangeRings, setShowArcs]);
+  }), [showShortcutHelp, searchQuery, handleTogglePause, exportSelectedTrail, exportAllTrails, locateMe, selectedHex, togglePinned, pinnedSet, setSoundOn, setShowLabels, setShowTrails, setShowCoverage, setShowIlluminators, setShowGroundTruth, setColorByAlt, setShowStats, setShowRangeRings, setShowArcs]);
   useKeyboardShortcuts(shortcutMap);
 
   function computeError(hex, ac) {
@@ -2188,11 +2208,7 @@ export default function LiveAircraftMap() {
               ownedCount={ownedNodeRefs.length}
               ownerOnly={ownerOnly}
               loading={authLoading}
-              onToggle={(on) => {
-                setOwnerOnly(on);
-                // Refit to the user's nodes when entering owner mode.
-                if (on) setFocusNonce((n) => n + 1);
-              }}
+              onToggle={onOwnerChange}
             />
             <StatsOverlay
               aircraft={radarAircraft}

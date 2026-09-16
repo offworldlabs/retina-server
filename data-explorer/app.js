@@ -57,10 +57,16 @@ const haversineKm = (a, b, c, d) => {
   const h = Math.sin(x / 2) ** 2 + Math.cos(a * r) * Math.cos(c * r) * Math.sin(y / 2) ** 2;
   return 12742 * Math.asin(Math.sqrt(h));
 };
-function copy(text, btn, label) {
-  const done = () => { const old = btn.textContent; btn.textContent = "Copied"; setTimeout(() => { btn.textContent = label || old; }, 1200); };
-  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, done);
-  else done();
+async function copy(text, btn, label) {
+  const old = btn.textContent;
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error("Clipboard unavailable");
+    await navigator.clipboard.writeText(text);
+    btn.textContent = "Copied";
+  } catch {
+    btn.textContent = "Copy failed";
+  }
+  setTimeout(() => { btn.textContent = label || old; }, 1200);
 }
 
 /* ══ Sibling hosts ═════════════════════════════════════════════════════════
