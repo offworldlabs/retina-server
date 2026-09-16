@@ -86,6 +86,13 @@ def _build_dashboard_data() -> bytes:
     total_nodes = len(_cn_snapshot)
     active_nodes = sum(1 for n in _cn_snapshot if n.get("status") not in ("disconnected",))
     synthetic_nodes = sum(1 for n in _cn_snapshot if n.get("is_synthetic"))
+    # A disconnect sets the status and leaves the entry (services/tcp_handler.py),
+    # so `synthetic` counts nodes that have gone away. Deploy verification needs
+    # the ones answering now, which neither `synthetic` nor `active` gives: the
+    # first keeps the dead, the second counts every non-fleet registration.
+    synthetic_active = sum(
+        1 for n in _cn_snapshot if n.get("is_synthetic") and n.get("status") not in ("disconnected",)
+    )
 
     total_tracks = sum(len(p.tracker.tracks) for p in _pipelines_snapshot) if _pipelines_snapshot else 0
     total_tracks += (
@@ -123,6 +130,7 @@ def _build_dashboard_data() -> bytes:
                 "total": total_nodes,
                 "active": active_nodes,
                 "synthetic": synthetic_nodes,
+                "synthetic_active": synthetic_active,
                 "real": total_nodes - synthetic_nodes,
             },
             "pipeline": {

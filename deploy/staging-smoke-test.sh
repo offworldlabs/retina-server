@@ -38,6 +38,10 @@ CURL="curl -s --connect-timeout 10 --max-time 30"
 # PASS/FAIL/WARN and smoke_summary, shared with the production suite in ci.yml.
 # shellcheck source=deploy/smoke-tally.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/smoke-tally.sh"
+# fleet_min_active: the floor the fleet assertion holds to, read from the same
+# overlay the CI gate reads so the two cannot come to disagree.
+# shellcheck source=deploy/fleet-scale.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fleet-scale.sh"
 
 check() {
     local name="$1" url="$2" expected="$3"
@@ -70,24 +74,42 @@ check_status() {
     fi
 }
 
+# $5 is how many times to look, 10 s apart, and defaults to one look: only a
+# value that becomes true on its own schedule rather than at deploy time needs
+# more. A value already true still costs a single request.
 check_json_field() {
-    local name="$1" url="$2" field="$3" min_value="$4"
+    local name="$1" url="$2" field="$3" min_value="$4" attempts="${5:-1}"
+    local i reason
     printf "  %-40s " "$name"
-    BODY=$($CURL "$url" 2>/dev/null) || { echo "FAIL (connection error)"; FAIL=$((FAIL+1)); return; }
 
-    VALUE=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)$field)" 2>/dev/null) || {
-        echo "FAIL (can't parse field $field)"
-        FAIL=$((FAIL+1))
-        return
-    }
+    for i in $(seq 1 "$attempts"); do
+        reason=""
+        BODY=$($CURL "$url" 2>/dev/null) || reason="connection error"
+        if [ -z "$reason" ]; then
+            VALUE=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)$field)" 2>/dev/null) \
+                || reason="can't parse field $field"
+        fi
+        if [ -z "$reason" ]; then
+            if [ "$VALUE" -ge "$min_value" ] 2>/dev/null; then
+                echo "OK ($VALUE >= $min_value)"
+                PASS=$((PASS+1))
+                return
+            fi
+            reason="$VALUE < $min_value"
+        fi
+        if [ "$i" -lt "$attempts" ]; then
+            sleep 10
+        fi
+    done
 
-    if [ "$VALUE" -ge "$min_value" ] 2>/dev/null; then
-        echo "OK ($VALUE >= $min_value)"
-        PASS=$((PASS+1))
+    if [ "$attempts" -gt 1 ]; then
+        # The last attempt's reason, not every attempt's: the earlier ones may
+        # have failed differently, so this says which look it is reporting.
+        echo "FAIL (last of $attempts attempts over $(((attempts - 1) * 10))s: $reason)"
     else
-        echo "FAIL ($VALUE < $min_value)"
-        FAIL=$((FAIL+1))
+        echo "FAIL ($reason)"
     fi
+    FAIL=$((FAIL+1))
 }
 
 # The seam's assertion lives in tower-contract.sh so the gate and this suite
@@ -468,9 +490,19 @@ echo "── Detection archive (dash /data) ──"
 check_status "GET /api/data/archive"        "${DASH_URL}/api/data/archive?limit=1" "200"
 
 echo ""
-echo "── Synthetic fleet data (wait for fleet to connect) ──"
-# The fleet takes ~30-60s to fully connect; CI waits before calling this script
-check_json_field "Active nodes > 0"         "${API_URL}/api/test/dashboard" "['nodes']['active']" "1"
+echo "── Synthetic fleet data ──"
+# Every deploy recreates the fleet container, so these nodes reconnect on their
+# own schedule. The workflow's wait step holds to the same floor first; the
+# retry here covers the gap between that gate and this line, during which the
+# fleet has been seen to connect and then drop again.
+if MIN_FLEET=$(fleet_min_active); then
+    check_json_field "Synthetic fleet >= ${MIN_FLEET} answering" \
+        "${API_URL}/api/test/dashboard" "['nodes']['synthetic_active']" "$MIN_FLEET" 12
+else
+    printf "  %-40s " "Synthetic fleet size is declared"
+    echo "FAIL (docker-compose.staging.yml declares no FLEET_NODES)"
+    FAIL=$((FAIL+1))
+fi
 
 echo ""
 echo "═══════════════════════════════════════════════════"
