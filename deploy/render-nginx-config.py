@@ -49,11 +49,7 @@ SUBSTITUTIONS = (
     "HOST_MAIN",
     "HOST_API",
     "HOST_APP",
-    "HOST_MAP",
-    "HOST_DASH",
     "HOST_ADMIN",
-    "HOST_DATA",
-    "HOST_TESTMAP",
     "CSP_CONNECT_SRC",
 )
 

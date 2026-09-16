@@ -62,28 +62,17 @@ services:
       # ClickUp token whose rate limit is shared with interactive use of ClickUp.
       # Returns to 300 once those checks are calibrated (ClickUp 86cb5c8dq).
       - ALERT_COOLDOWN_S=3600
-      - CORS_ORIGINS=https://towers.retina.fm,https://api.retina.fm,https://map.retina.fm,https://dash.retina.fm,https://admin.retina.fm,https://data.retina.fm,https://app.retina.fm
+      - CORS_ORIGINS=https://towers.retina.fm,https://api.retina.fm,https://admin.retina.fm,https://app.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
       # at boot to render deploy/nginx/nginx.conf.template. One template serves
       # both environments; only these values change.
       - HOST_MAIN=towers.retina.fm
       - HOST_API=api.retina.fm
-      # The consolidated public surface. Additive for now: it serves the same
-      # bundles as the map, dash and data vhosts below, which keep their names
-      # until the redirects land.
+      # The public surface: the live map at /, the dashboard under /dash/, the
+      # data explorer under /data/. `map`, `dash` and `data` are Cloudflare
+      # redirect rules into these paths and reach no origin.
       - HOST_APP=app.retina.fm
-      - HOST_MAP=map.retina.fm
-      - HOST_DASH=dash.retina.fm
       - HOST_ADMIN=admin.retina.fm
-      - HOST_DATA=data.retina.fm
-      # Parked, deliberately. `testmap.retina.fm` is now served by staging,
-      # which is the only environment still running a simulator, so production
-      # has no synthetic map surface to expose. The vhost cannot simply be
-      # dropped: the nginx half of deploy/check-env-parity.py requires every
-      # environment to render the same eight named vhosts, byte-identical once
-      # hostnames are tokenised. So the block still renders, under a name with
-      # no DNS record, and never receives a request.
-      - HOST_TESTMAP=testmap-retired.retina.fm
       # The only host-naming part of the CSP. wss://*.retina.fm already covers
       # both environments, so only the two explicit origins vary.
       - CSP_CONNECT_SRC=https://api.retina.fm https://admin.retina.fm wss://*.retina.fm
@@ -105,11 +94,9 @@ services:
     # even cut over. A profile no environment enables is what keeps a bare
     # `docker compose up -d` on the droplet from quietly bringing it back.
     #
-    # This emptied testmap.retina.fm, which this droplet used to serve off this
-    # fleet. That hostname has since moved to staging, the only environment still
-    # running a simulator, so production's testmap vhost is parked (see
-    # HOST_TESTMAP above) and starting this fleet would populate nothing anyone
-    # looks at.
+    # The public demo this fleet used to feed is staging's now — the only
+    # environment still running a simulator — so starting this one would
+    # populate nothing anyone looks at.
     #
     # The sizing below is kept, not deleted, so the fleet can be brought back for
     # an afternoon without a PR:

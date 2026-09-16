@@ -97,7 +97,7 @@ migrate:
         exit 1
     fi
 
-# Bring up backend + synthetic fleet + frontend (background). Open http://testmap.localhost:5173/
+# Bring up backend + synthetic fleet + frontend (background). Open http://app.localhost:5173/
 # Fleet profile: `just up` (local, dense) · `just up test` (50 fps) · `just up prod` (12.5 fps).
 # test/prod read their fleet params LIVE from the real deploy configs so they can't drift.
 up profile="local":
@@ -110,8 +110,8 @@ up profile="local":
     #  test  — the retina-test droplet's fleet: 50 nodes at a 1.0s per-node
     #          detection rate, so 50 frames/s reach the server. staging runs the
     #          same shape; there is no separate profile for it.
-    #  prod  — docker-compose.prod.yml's `fleet` service, the one that actually
-    #          serves live testmap.retina.fm + map.retina.fm: 25 nodes at 2.0s,
+    #  prod  — docker-compose.prod.yml's `fleet` service, parked behind the
+    #          `sim` profile since production went real-only: 25 nodes at 2.0s,
     #          12.5 fps.
     #
     # Both read the overlay PLUS docker-compose.yml, because the connection
@@ -188,8 +188,8 @@ up profile="local":
     ( cd "{{root}}" && npm run dev -w frontend ) > "{{run}}/frontend.log" 2>&1 &
 
     echo
-    echo "✓ up [{{profile}}].  Open →  http://testmap.localhost:5173/"
-    echo "  (plain localhost shows the tower-search SPA — its API needs tower-finder-service; the testmap.* host selects the live map)"
+    echo "✓ up [{{profile}}].  Open →  http://app.localhost:5173/"
+    echo "  (plain localhost shows the tower-search SPA — its API needs tower-finder-service; the app.* host selects the live map)"
     echo "  fleet [{{profile}}]: ${FLEET_NODES} nodes @ ${FLEET_INTERVAL}s/node.  Profiles: local | test (50 fps) | prod (12.5 fps)"
     echo "  logs: just logs    status: just status    stop: just down"
 

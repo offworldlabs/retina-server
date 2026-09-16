@@ -77,27 +77,21 @@ services:
       # docker-compose.prod.yml for what they do and why the cooldown sits here.
       - ALERT_WEBHOOK_FORMAT=clickup_chat
       - ALERT_COOLDOWN_S=3600
-      - CORS_ORIGINS=https://test-towers.retina.fm,https://test-api.retina.fm,https://test-map.retina.fm,https://test-dash.retina.fm,https://test-admin.retina.fm,https://test-data.retina.fm,https://test-app.retina.fm
+      - CORS_ORIGINS=https://test-towers.retina.fm,https://test-api.retina.fm,https://test-admin.retina.fm,https://test-app.retina.fm
       # Hostnames consumed by deploy/render-nginx-config.py, which start.sh runs
       # at boot to render deploy/nginx/nginx.conf.template.
       #
-      # Every name here resolves and answers, verified 2026-09-16: test-towers,
-      # test-map, test-dash, test-testmap and test-data all return 200 and
-      # test-admin 302s to Access. An earlier note here said this droplet's
-      # origin certificate covered only four SANs and the rest were unreachable;
-      # that is no longer true, and it is worth not reinstating without probing
-      # first, because it reads as a reason not to bother checking them.
+      # Every name here resolves and answers, verified 2026-09-16. An earlier
+      # note said this droplet's origin certificate covered only four SANs and
+      # the rest were unreachable; that is no longer true, and it is worth not
+      # reinstating without probing first, because it reads as a reason not to
+      # bother checking them.
       - HOST_MAIN=test-towers.retina.fm
       - HOST_API=test-api.retina.fm
-      # The consolidated public surface. Additive for now: it serves the same
-      # bundles as the map, dash and data vhosts below, which keep their names
-      # until the redirects land.
+      # The public surface. `test-map`, `test-testmap`, `test-dash` and
+      # `test-data` are Cloudflare redirects into it and reach no origin.
       - HOST_APP=test-app.retina.fm
-      - HOST_MAP=test-map.retina.fm
-      - HOST_DASH=test-dash.retina.fm
       - HOST_ADMIN=test-admin.retina.fm
-      - HOST_DATA=test-data.retina.fm
-      - HOST_TESTMAP=test-testmap.retina.fm
       - CSP_CONNECT_SRC=https://test-api.retina.fm https://test-admin.retina.fm wss://*.retina.fm
     # 4 cores / 8 GB, the same shape as staging and production, because the
     # solver could not keep up with this fleet on 2: at ~0.7 candidates/s and

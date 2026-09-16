@@ -1,5 +1,5 @@
 /**
- * Dashboard (dash.retina.fm / staging-dash.retina.fm) E2E tests.
+ * Dashboard E2E tests, against the `/dash/` mount on the app hostname.
  *
  * The dashboard has two legitimate auth modes, and the server says which one
  * it is in on every unauthenticated GET /api/auth/me:
@@ -28,9 +28,14 @@
  * Authenticated flows are covered via API-level assumptions (see api.spec.ts).
  */
 import { test, expect, request as playwrightRequest, type Page } from "@playwright/test";
-import { hosts } from "../playwright.config";
+import { hosts, dashBase } from "../playwright.config";
 
+// The origin the dashboard is served from, and the base its pages sit at on it.
+// A page route takes the mount; a same-origin API call does not, because the
+// API is the vhost's rather than the bundle's.
 const DASH = hosts.dash;
+const DASH_PAGE = `${DASH}${dashBase}`;
+const LOGIN_PATH = `${dashBase}/login`;
 const ADMIN = hosts.admin;
 const API = hosts.api;
 
@@ -80,8 +85,12 @@ async function holdAuthUnresolved(page: Page) {
  */
 async function expectSurface(page: Page, base: string, mode: AuthMode, name: string) {
   if (mode === "oauth") {
-    const { origin } = new URL(base);
-    await page.waitForURL((url) => url.origin === origin && url.pathname.startsWith("/login"), {
+    // `base` carries the mount as well as the origin, so the login path is
+    // derived from it rather than assumed to be at the root: on the app
+    // hostname the dashboard's own /login is /dash/login.
+    const { origin, pathname } = new URL(base);
+    const login = `${pathname.replace(/\/$/, "")}/login`;
+    await page.waitForURL((url) => url.origin === origin && url.pathname.startsWith(login), {
       timeout: 10_000,
     });
     await expect(page.locator(".login-card")).toBeVisible({ timeout: 5_000 });
@@ -93,7 +102,7 @@ async function expectSurface(page: Page, base: string, mode: AuthMode, name: str
 test.describe("Dashboard — unauthenticated access (real auth mode)", () => {
   test("/ renders what the server's auth mode says it should", async ({ page }) => {
     const mode = await serverAuthMode();
-    await page.goto(DASH);
+    await page.goto(DASH_PAGE);
     if (mode === "oauth") {
       await page.waitForURL(/\/login/, { timeout: 10_000 });
       await expect(page.locator(".login-card")).toBeVisible({ timeout: 5_000 });
@@ -108,14 +117,14 @@ test.describe("Dashboard — unauthenticated access (real auth mode)", () => {
 
   test("/login resolves to the state the server's auth mode implies", async ({ page }) => {
     const mode = await serverAuthMode();
-    await page.goto(`${DASH}/login`);
+    await page.goto(`${DASH_PAGE}/login`);
     if (mode === "oauth") {
       await expect(page.locator(".login-card")).toBeVisible({ timeout: 10_000 });
       await expect(page.locator("h1")).toContainText(/Retina/i);
     } else {
       // The anonymous admin is already "logged in": /login must hand over to
       // the dashboard, not strand the user on a login card that goes nowhere.
-      await page.waitForURL((url) => !url.pathname.startsWith("/login"), { timeout: 10_000 });
+      await page.waitForURL((url) => !url.pathname.startsWith(LOGIN_PATH), { timeout: 10_000 });
       await expect(page.locator("h1")).toBeVisible({ timeout: 10_000 });
       await expect(page.locator(".login-card")).toBeHidden();
     }
@@ -124,7 +133,7 @@ test.describe("Dashboard — unauthenticated access (real auth mode)", () => {
   test("no JavaScript errors on login page load", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (err) => errors.push(err.message));
-    await page.goto(`${DASH}/login`);
+    await page.goto(`${DASH_PAGE}/login`);
     await page.waitForLoadState("networkidle");
     expect(errors).toHaveLength(0);
   });
@@ -167,9 +176,10 @@ async function resolves(url: string): Promise<boolean> {
 }
 
 test.describe("Admin surface selection", () => {
-  // The whole point of the admin vhost: same bundle as dash, different route
-  // table, chosen client-side from the hostname. Null on prod (see
-  // playwright.config.ts) so a wobble here cannot roll production back.
+  // The whole point of the admin vhost: the same bundle the app hostname
+  // mounts at /dash/, with a different route table, chosen client-side from the
+  // hostname. Null on prod (see playwright.config.ts) so a wobble here cannot
+  // roll production back.
   test.skip(!ADMIN, "no admin surface on this environment");
 
   // The mode is a property of the deployment, not of either test. beforeEach
@@ -185,7 +195,7 @@ test.describe("Admin surface selection", () => {
     authMode ??= await serverAuthMode();
   });
 
-  // Separate tests, not two assertions in one: the dash half is the control
+  // Separate tests, not two assertions in one: the /dash/ half is the control
   // that tells "admin selection broke" apart from "the sidebar markup changed
   // and both are wrong", and a shared body would stop at the first failure.
   //
@@ -198,9 +208,9 @@ test.describe("Admin surface selection", () => {
     await expectSurface(page, ADMIN!, authMode!, "Admin Console");
   });
 
-  test("the dash vhost serves the user dashboard", async ({ page }) => {
-    await page.goto(DASH);
-    await expectSurface(page, DASH, authMode!, "Node Dashboard");
+  test("the /dash/ mount serves the user dashboard", async ({ page }) => {
+    await page.goto(DASH_PAGE);
+    await expectSurface(page, DASH_PAGE, authMode!, "Node Dashboard");
   });
 });
 
@@ -210,26 +220,26 @@ test.describe("Dashboard — login card (auth call held open)", () => {
   });
 
   test("login page renders logo and title", async ({ page }) => {
-    await page.goto(`${DASH}/login`);
+    await page.goto(`${DASH_PAGE}/login`);
     await expect(page.locator(".login-card")).toBeVisible({ timeout: 10_000 });
     await expect(page.locator("h1")).toContainText(/Retina/i);
   });
 
   test("login page shows Google login button", async ({ page }) => {
-    await page.goto(`${DASH}/login`);
+    await page.goto(`${DASH_PAGE}/login`);
     const googleLink = page.getByRole("link", { name: /Google/i });
     await expect(googleLink).toBeVisible({ timeout: 10_000 });
   });
 
   test("login page link points to /api/auth/login/google", async ({ page }) => {
-    await page.goto(`${DASH}/login`);
+    await page.goto(`${DASH_PAGE}/login`);
     const googleLink = page.getByRole("link", { name: /Google/i });
     const href = await googleLink.getAttribute("href");
     expect(href).toMatch(/\/api\/auth\/login\/google/);
   });
 
   test("login page shows error message on ?error= query param", async ({ page }) => {
-    await page.goto(`${DASH}/login?error=access_denied`);
+    await page.goto(`${DASH_PAGE}/login?error=access_denied`);
     await expect(page.locator(".login-error")).toBeVisible({ timeout: 10_000 });
     await expect(page.locator(".login-error")).toContainText(/access denied/i);
   });
@@ -256,8 +266,8 @@ test.describe("Dashboard — admin API refuses anonymous callers", () => {
     });
   }
 
-  // On DASH, not API: the dashboard vhost proxies /api/config to
-  // tower-finder-service (snippets/towers-proxy.conf), while the api vhost has
+  // On the dashboard's own origin, not API: the app vhost proxies /api/config
+  // to tower-finder-service (snippets/towers-proxy.conf), while the api vhost has
   // no such location and the app behind it no longer implements the route — the
   // monolith's tower stack went with the proxy dedup, so API would 404 here.
   test("GET /api/config returns a non-empty config object", async () => {
@@ -274,10 +284,10 @@ test.describe("Dashboard — admin API refuses anonymous callers", () => {
 test.describe("Dashboard — static asset delivery", () => {
   test("index.html is served with no-store Cache-Control", async () => {
     const ctx = await playwrightRequest.newContext();
-    const res = await ctx.get(DASH);
+    const res = await ctx.get(DASH_PAGE);
     expect([200, 301, 302]).toContain(res.status());
     // Follow to login page
-    const loginRes = await ctx.get(`${DASH}/login`);
+    const loginRes = await ctx.get(`${DASH_PAGE}/login`);
     expect(loginRes.status()).toBe(200);
     const cacheHeader = loginRes.headers()["cache-control"] ?? "";
     // index.html should prevent browser caching to avoid stale bundle issues
