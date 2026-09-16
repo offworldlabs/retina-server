@@ -38,8 +38,8 @@ async function waitForLive(page: Page, timeoutMs = 15_000) {
 
 /**
  * The unfiltered feed, which is what these surfaces render: usesRealOnlyFeed is
- * anchored to `^map\.`, which testmap is never. Unreadable counts as non-empty so
- * the caller's original failure stands.
+ * anchored to the bare `map.` name (utils/domains.ts), which testmap is never.
+ * Unreadable counts as non-empty so the caller's original failure stands.
  */
 async function feedIsEmpty(page: Page): Promise<boolean> {
   try {
