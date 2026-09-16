@@ -8,6 +8,7 @@ import {
   hideDrIcon,
   isDarkMultinodeSolve,
   makeAircraftIcon,
+  makeDroneIcon,
   nodeIcon,
   nodeSiteGlyphSvg,
   nodeSiteIcon,
@@ -320,6 +321,84 @@ describe("makeAircraftIcon follows the active palette", () => {
     expect(dark).toContain(PALETTES.dark.ICON_SHADOW);
     expect(light).toContain(`stroke-opacity="${PALETTES.light.ICON_HALO_OPACITY}"`);
     expect(dark).toContain(`stroke-opacity="${PALETTES.dark.ICON_HALO_OPACITY}"`);
+  });
+});
+
+describe("zoom scale hooks", () => {
+  // The scale itself is a stylesheet rule on `.aircraft-marker > div` /
+  // `.node-marker > svg` reading --map-icon-scale (LiveAircraftMap.css), so
+  // what the factories owe it is (a) the class and element shape those
+  // selectors match, (b) a transform-origin at the iconAnchor so the glyph
+  // scales about the point it claims to be at, and (c) no competing inline
+  // transform on the element the rule targets.  The stylesheet side is not
+  // read here: vitest blanks every .css id (even ?raw) unless the config opts
+  // in, so the selectors are pinned by name in the assertions below instead.
+  const originOf = (html: string) => html.match(/transform-origin:(\d+)px (\d+)px/);
+  const outerDiv = (html: string) => html.match(/^<div [^>]*>/)?.[0] ?? "";
+
+  afterEach(() => setActivePalette(PALETTES.dark, "dark"));
+
+  it("puts the aircraft icon's transform-origin at its anchor for every altitude band", () => {
+    for (const alt_baro of [0, 6000, 25000, 40000]) {
+      const ac = { hex: "mnz1", position_source: "multinode_solve", track: 45, alt_baro };
+      const icon = makeAircraftIcon(ac, true, false, false);
+      const html = icon.options.html as string;
+      const [ax, ay] = icon.options.iconAnchor as [number, number];
+      const m = originOf(outerDiv(html));
+      expect(m, `no transform-origin on the inner div for alt ${alt_baro}`).not.toBeNull();
+      expect([Number(m![1]), Number(m![2])]).toEqual([ax, ay]);
+      // The origin is on the inner div, which is the direct child the CSS
+      // rule selects — and that div carries no inline transform of its own.
+      expect(html.startsWith("<div ")).toBe(true);
+      expect(outerDiv(html)).not.toMatch(/[^-]transform:/);
+      expect(icon.options.className).toMatch(/^aircraft-marker /);
+    }
+  });
+
+  it("keeps the heading rotation on the svg, untouched by the scale", () => {
+    const ac = { hex: "mnz2", position_source: "multinode_solve", track: 137, alt_baro: 30000 };
+    const html = makeAircraftIcon(ac, false, false, false).options.html as string;
+    const svgTag = html.match(/<svg [^>]*>/)?.[0] ?? "";
+    // The 60 fps loop overwrites svg.style.transform with rotate(...); a scale
+    // there would be clobbered on the first frame, so it must not be there.
+    expect(svgTag).toContain("transform:rotate(137deg)");
+    expect(svgTag).not.toContain("scale(");
+    expect(svgTag).not.toContain("transform-origin");
+  });
+
+  it("gives the stale rendering the same origin as the live one", () => {
+    const ac = { hex: "mnz3", position_source: "multinode_solve", track: 0, alt_baro: 30000 };
+    const live = makeAircraftIcon(ac, false, false, false, false);
+    const stale = makeAircraftIcon(ac, false, false, false, true);
+    expect(originOf(outerDiv(stale.options.html as string))?.[0])
+      .toBe(originOf(outerDiv(live.options.html as string))?.[0]);
+    expect(stale.options.iconAnchor).toEqual(live.options.iconAnchor);
+  });
+
+  it("puts the drone icon's transform-origin at its anchor", () => {
+    const icon = makeDroneIcon({ hex: "drn1", flight: "DRONE1", track: 0 }, true, false);
+    const html = icon.options.html as string;
+    const [ax, ay] = icon.options.iconAnchor as [number, number];
+    expect(icon.options.iconAnchor).toEqual([45, 11]);
+    const m = originOf(outerDiv(html));
+    expect(m).not.toBeNull();
+    expect([Number(m![1]), Number(m![2])]).toEqual([ax, ay]);
+    expect(html.startsWith("<div ")).toBe(true);
+    expect(icon.options.className).toMatch(/^aircraft-marker /);
+  });
+
+  it("leaves the node glyph svg free of any inline transform for the CSS rule", () => {
+    // Both glyphs are the svg itself (no wrapper), so `.node-marker > svg`
+    // selects them; their inline style must not carry a transform, or the
+    // stylesheet's scale would lose to it.
+    for (const icon of [nodeIcon(), nodeSiteIcon(3)]) {
+      const html = (icon.options.html as string).trim();
+      expect(html.startsWith("<svg ")).toBe(true);
+      const svgTag = html.match(/<svg [^>]*>/)?.[0] ?? "";
+      expect(svgTag).not.toContain("transform");
+      expect(icon.options.className).toBe("node-marker");
+      expect(icon.options.iconAnchor).toEqual([11, 11]);
+    }
   });
 });
 

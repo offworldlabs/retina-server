@@ -212,13 +212,23 @@ export function makeAircraftIcon(ac, showLabel, isSelected, colorByAlt = false, 
       ? `<div class="aircraft-label" style="pointer-events:auto;">${label}${alt ? `<span class="aircraft-alt"> ${alt}</span>` : ""}</div>`
       : "";
 
+  // The zoom scale (`.aircraft-marker > div` in LiveAircraftMap.css reads the
+  // --map-icon-scale custom property) is applied to this inner div, and it has
+  // to scale about the iconAnchor — the point on the map the marker claims to
+  // be at — or a zoom-out would walk the glyph away from its position.  Only
+  // the origin is inline, because it depends on the altitude-band size; the
+  // transform itself lives in the stylesheet so a zoom re-scales every marker
+  // in one style recalc without rebuilding a single icon.  The svg keeps its
+  // own inline rotate: the 60 fps loop overwrites that transform per frame.
+  const anchor: [number, number] = [45, Math.round(size / 2)];
+
   // The stale class is also the hook the RAF rotation loop and any future CSS
   // need; ac-hex-<hex> must stay on the element (see makeDroneIcon's note).
   return L.divIcon({
     className: `aircraft-marker ac-hex-${ac.hex}${isStale ? " aircraft-marker-stale" : ""}`,
-    html: `<div title="${isStale ? "Stale solve — dead-reckoned past the drift budget" : ""}" style="display:flex;flex-direction:column;align-items:center;pointer-events:none;${isStale ? "opacity:0.55;" : ""}">${svgHtml}${labelHtml}</div>`,
+    html: `<div title="${isStale ? "Stale solve — dead-reckoned past the drift budget" : ""}" style="display:flex;flex-direction:column;align-items:center;pointer-events:none;transform-origin:${anchor[0]}px ${anchor[1]}px;${isStale ? "opacity:0.55;" : ""}">${svgHtml}${labelHtml}</div>`,
     iconSize: [90, 44],
-    iconAnchor: [45, Math.round(size / 2)],
+    iconAnchor: anchor,
   });
 }
 
@@ -236,11 +246,14 @@ export function makeDroneIcon(ac, showLabel, isSelected) {
       ? `<div class="aircraft-label" style="color:${DRONE};">${label}</div>`
       : "";
 
+  // Same zoom-scale contract as makeAircraftIcon: origin at the anchor, inline.
+  const anchor: [number, number] = [45, 11];
+
   return L.divIcon({
     className: `aircraft-marker ac-hex-${ac.hex}`,
-    html: `<div style="display:flex;flex-direction:column;align-items:center;">${droneHtml}${labelHtml}</div>`,
+    html: `<div style="display:flex;flex-direction:column;align-items:center;transform-origin:${anchor[0]}px ${anchor[1]}px;">${droneHtml}${labelHtml}</div>`,
     iconSize: [90, 40],
-    iconAnchor: [45, 11],
+    iconAnchor: anchor,
   });
 }
 
@@ -252,6 +265,10 @@ export function makeDroneIcon(ac, showLabel, isSelected) {
 // not: a light halo on light tiles is invisible, so the outer rings are drawn
 // at higher opacity and the glow is an ink drop instead.  A function rather
 // than a constant, for the same reason droneSvg is one.
+//
+// The zoom scale is applied by `.node-marker > svg` in LiveAircraftMap.css,
+// about the svg's centre (which is the anchor).  That rule relies on the svg's
+// inline style carrying no transform of its own, here and in nodeSiteGlyphSvg.
 const _nodeIcons = new WeakMap<object, L.DivIcon>();
 
 function nodeGlyphSvg({ NODE, ICON_SHADOW }: { NODE: string; ICON_SHADOW: string }) {

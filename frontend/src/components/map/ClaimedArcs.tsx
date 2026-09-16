@@ -7,6 +7,7 @@ import {
   POSITION_SOURCE_ADSB_SINGLE,
 } from "./constants";
 import { aircraftIconSize } from "./icons";
+import { iconZoomScale } from "./iconScale";
 import { trimAroundAnchor } from "./arcTrim";
 import { canonicalLatLng } from "./worldWrap";
 import { usePalette } from "./useMapTheme";
@@ -21,10 +22,14 @@ import { usePalette } from "./useMapTheme";
       when the claim goes.  One polyline per hex, reused across ticks.
 
       Geometry is a true section of the node's full bistatic locus (shipped on
-      the entry as ambiguity_arc), cut to a fixed SCREEN length centred where
-      the locus passes the ADS-B fix.  That means it must be re-cut whenever
-      the projection or the fix moves — hence the tick and the zoomend hook,
-      not a one-shot at creation. ── */
+      the entry as ambiguity_arc), cut to a SCREEN length centred where the
+      locus passes the ADS-B fix.  The length is a multiple of the plane icon
+      the arc sits under, and the icon itself is scaled by zoom (iconScale.ts),
+      so the same zoom factor goes into the cut: the arc and its icon shrink
+      together instead of the arc staying 60 px long under a 12 px plane.
+      Either way it must be re-cut whenever the projection, the fix or the
+      zoom moves — hence the tick and the zoomend hook, not a one-shot at
+      creation. ── */
 const ClaimedArcs = memo(function ClaimedArcs({ aircraftRef, onSelect }) {
   const { LANE_ADSB_SINGLE } = usePalette();
   const map = useMap();
@@ -38,6 +43,8 @@ const ClaimedArcs = memo(function ClaimedArcs({ aircraftRef, onSelect }) {
     const tick = () => {
       const list = aircraftRef.current || [];
       const seen = new Set();
+      // One read per tick, not per aircraft: the zoom is the same for all.
+      const zoomScale = iconZoomScale(map.getZoom());
 
       for (const ac of list) {
         if (ac.position_source !== POSITION_SOURCE_ADSB_SINGLE) continue;
@@ -58,7 +65,7 @@ const ClaimedArcs = memo(function ClaimedArcs({ aircraftRef, onSelect }) {
         // the raw fix, so the arc stays centred under the gliding icon rather
         // than snapping back twice a second.
         const anchor = map.latLngToLayerPoint(L.latLng(ac.lat, ac.lon));
-        const lengthPx = ADSB_SINGLE_ARC_ICON_MULTIPLE * aircraftIconSize(ac);
+        const lengthPx = ADSB_SINGLE_ARC_ICON_MULTIPLE * aircraftIconSize(ac) * zoomScale;
         const cut = trimAroundAnchor(pts, anchor, lengthPx);
         if (!cut || cut.length < 2) continue;
 
@@ -97,8 +104,9 @@ const ClaimedArcs = memo(function ClaimedArcs({ aircraftRef, onSelect }) {
 
     // 500 ms matches the 2 fps display-array rebuild upstream; anything faster
     // would re-cut identical geometry.  zoomend re-cuts immediately because a
-    // zoom step halves or doubles the arc's pixel length, and waiting out the
-    // tick would show it visibly wrong for up to half a second.
+    // zoom step halves or doubles the arc's pixel length (and changes the icon
+    // scale it is now tied to), and waiting out the tick would show it visibly
+    // wrong for up to half a second.
     tick();
     const intervalId = setInterval(tick, 500);
     map.on("zoomend", tick);
