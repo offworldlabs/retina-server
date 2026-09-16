@@ -9,7 +9,7 @@ export default defineConfig({
     // So `App.css?raw` reaches the theme tests as its text. Vitest stubs every
     // CSS import with an empty string by default, the raw query included.
     css: true,
-    setupFiles: ["./src/test/setup.ts"],
+    setupFiles: ["@testing-library/jest-dom/vitest"],
   },
   build: {
     rollupOptions: {

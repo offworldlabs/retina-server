@@ -7,7 +7,6 @@ set shell := ["bash", "-cu"]
 
 root := justfile_directory()
 be   := root / "backend"
-fe   := root / "frontend"
 venv := be / ".venv"
 py   := venv / "bin/python"
 run  := root / ".testmap-run"
@@ -16,7 +15,7 @@ run  := root / ".testmap-run"
 default:
     @just --list
 
-# One-time setup: submodules, backend venv + editable libs (uv), .env, frontend deps
+# One-time setup: submodules, backend venv + editable libs (uv), .env, web deps
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -34,8 +33,8 @@ setup:
         -e ../libs/retina-simulation
     [ -f .env ] || cp .env.example .env   # Maprad key not needed for the testmap
     just --justfile "{{justfile()}}" migrate
-    echo "→ frontend deps"
-    cd "{{fe}}" && npm install
+    echo "→ web deps"
+    cd "{{root}}" && npm ci
     echo "✓ setup complete — now: just up"
 
 # Bring the dev database to head. Idempotent, and run by both setup and up.
@@ -105,7 +104,7 @@ up profile="local":
     #!/usr/bin/env bash
     set -euo pipefail
     [ -x "{{py}}" ] || { echo "no backend venv — run: just setup"; exit 1; }
-    [ -d "{{fe}}/node_modules" ] || { echo "no frontend deps — run: just setup"; exit 1; }
+    [ -d "{{root}}/node_modules" ] || { echo "no web deps — run: just setup"; exit 1; }
     # ── Resolve fleet params by profile ────────────────────────────────────────
     #  local — dev-only dense stream (~1 ellipse/s); no deployed equivalent.
     #  test  — the retina-test droplet's fleet: 50 nodes at a 1.0s per-node
@@ -186,7 +185,7 @@ up profile="local":
         > "{{run}}/fleet.log" 2>&1 &
 
     echo "→ frontend (vite :5173)"
-    ( cd "{{fe}}" && npm run dev ) > "{{run}}/frontend.log" 2>&1 &
+    ( cd "{{root}}" && npm run dev -w frontend ) > "{{run}}/frontend.log" 2>&1 &
 
     echo
     echo "✓ up [{{profile}}].  Open →  http://testmap.localhost:5173/"

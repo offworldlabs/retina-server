@@ -4,11 +4,14 @@ import reactHooks from "eslint-plugin-react-hooks";
 import tseslint from "typescript-eslint";
 import globals from "globals";
 
+// One config for every workspace: ESLint finds it from any app directory by
+// walking up, and the globs below resolve against this file's directory.
 export default [
+  { ignores: ["**/dist/"] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ["src/**/*.{js,jsx,ts,tsx}"],
+    files: ["**/src/**/*.{js,jsx,ts,tsx}"],
     plugins: {
       react: reactPlugin,
       "react-hooks": reactHooks,

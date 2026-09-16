@@ -59,7 +59,8 @@ That is the supported path: it initialises the submodules, builds the backend ve
 with `uv`, installs all five `libs/` packages editable, seeds `backend/.env` from
 the example, applies the database migrations (`backend/data/users.db` does not
 exist yet on a fresh clone, and `create_all` no longer builds it outside the test
-suite), and installs the frontend dependencies. Install all five even if you only
+suite), and installs the web dependencies, one `npm ci` at the root for the
+frontend and the dashboard together. Install all five even if you only
 care about tower search: `retina-simulation` imports the other four, so a partial
 install fails at import time rather than at use.
 
@@ -109,7 +110,7 @@ migration without touching `backend/data/users.db`.
 the backend. To run it on its own:
 
 ```bash
-cd frontend && npm run dev
+npm run dev -w frontend
 ```
 
 Opens at `http://localhost:5173`. API calls are proxied to the backend during

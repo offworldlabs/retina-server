@@ -164,54 +164,36 @@ jobs:
       # debugging than the speed is.
       - run: pytest tests/ -v --tb=short -m "not external" -n 2 --dist worksteal
 
-  frontend-build:
+  web-build:
+    name: Web build (${{ matrix.app }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # `edited` covers title and body edits as well as the base change we want,
     # and `changes.base` is populated only for the latter.
     if: github.event.action != 'edited' || github.event.changes.base
-    defaults:
-      run:
-        working-directory: frontend
+    strategy:
+      # The two apps are independent; a failure in one should still report the
+      # other rather than cancel it.
+      fail-fast: false
+      matrix:
+        app: [frontend, dashboard]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci --legacy-peer-deps
-      - run: npm run lint
-      # Runs both tsc projects, src and e2e; see frontend/package.json. One
-      # step, the same shape as dashboard-build and the same command ONBOARDING
-      # tells you to run, so the three cannot drift. A src failure hides the e2e
-      # result until the next push, which costs a cycle and is worth less than
-      # the conditional machinery needed to avoid it.
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
-
-  dashboard-build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    # `edited` covers title and body edits as well as the base change we want,
-    # and `changes.base` is populated only for the latter.
-    if: github.event.action != 'edited' || github.event.changes.base
-    defaults:
-      run:
-        working-directory: dashboard
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: dashboard/package-lock.json
-      - run: npm ci --legacy-peer-deps
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run build
+          cache-dependency-path: package-lock.json
+      # One workspace, one lockfile, one install; the matrix chooses whose
+      # scripts run against it.
+      - run: npm ci
+      - run: npm run lint -w ${{ matrix.app }}
+      # For the frontend this runs both tsc projects, src and e2e (see
+      # frontend/package.json), as one step and the same command ONBOARDING
+      # gives, so the two cannot drift.
+      - run: npm run typecheck -w ${{ matrix.app }}
+      - run: npm test -w ${{ matrix.app }}
+      - run: npm run build -w ${{ matrix.app }}
 
   docker-build:
     runs-on: ubuntu-latest
@@ -276,7 +258,7 @@ jobs:
         id: resolve
         run: |
           set -euo pipefail
-          VERSION=$(node -p "require('./frontend/package-lock.json').packages['node_modules/@playwright/test'].version")
+          VERSION=$(node -p "require('./package-lock.json').packages['node_modules/@playwright/test'].version")
           IMAGE="mcr.microsoft.com/playwright:v${VERSION}-noble"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           # A derived tag cannot be stale, but it can name an image that was
@@ -286,7 +268,7 @@ jobs:
           # version surfaces as a container-pull failure after the merge, with
           # nothing pointing at the lockfile bump that caused it.
           if ! docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
-            echo "::error::${IMAGE} does not exist in the registry. frontend/package-lock.json resolves @playwright/test to ${VERSION}, and no Playwright container image was published for it. Pin the lockfile to a release that has one."
+            echo "::error::${IMAGE} does not exist in the registry. package-lock.json resolves @playwright/test to ${VERSION}, and no Playwright container image was published for it. Pin the lockfile to a release that has one."
             exit 1
           fi
           echo "Resolved and verified ${IMAGE}"
@@ -316,9 +298,6 @@ jobs:
     # See the staging job: makes the postinstall's no-op a guarantee.
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
-    defaults:
-      run:
-        working-directory: frontend
     steps:
       - uses: actions/checkout@v4
       # See the staging job for why setup-node is kept inside the container.
@@ -326,8 +305,8 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - run: npm ci --legacy-peer-deps
+          cache-dependency-path: package-lock.json
+      - run: npm ci
       # Bounded at the step rather than relying on the job cap: a step timeout
       # marks the step failed, which still trips the rollback below, whereas a
       # job timeout is a cancellation and would skip it. A production wedged
@@ -337,7 +316,7 @@ jobs:
         # See the staging job: the step cap has to clear nodes.spec.ts's retried
         # hooks. It matters more here, where a timed-out step rolls production back.
         timeout-minutes: 20
-        run: E2E_ENV=prod npx playwright test
+        run: npm run test:e2e:prod -w frontend
         env:
           CI: "true"
           RADAR_API_KEY: ${{ secrets.RADAR_API_KEY }}
@@ -590,7 +569,7 @@ jobs:
     # `playwright-image` joins the deploy's own prerequisites so an unpublished
     # image fails the run before the droplet is touched, rather than after a
     # deploy and a smoke suite have already landed on it.
-    needs: [changes, backend-tests, frontend-build, dashboard-build, docker-build, env-parity, tower-service-contract, playwright-image]
+    needs: [changes, backend-tests, web-build, docker-build, env-parity, tower-service-contract, playwright-image]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.changes.outputs.code == 'true'
     concurrency:
       group: staging-deploy

@@ -95,10 +95,24 @@ the dotenv file after the modules that read them. `just up` passes them for you.
 
 ### Frontend / dashboard
 
+The two apps are workspaces of one npm package at the repo root: one lockfile,
+one `npm ci`, and the toolchain (Vite, Vitest, TypeScript, ESLint) declared once
+in the root `package.json`. Install at the root, then address an app with `-w`:
+
 ```bash
-cd frontend   # or: cd dashboard
-npm install
-npm run dev
+npm ci                    # once, at the repo root
+npm run dev -w frontend   # or: -w dashboard
+```
+
+The lockfile is written by npm 10, the version CI and the image run (Node 20).
+A local npm 11 writes one that npm 10 rejects as incomplete, so after changing a
+dependency regenerate it with the same npm (as your own user, so the file it
+writes stays yours on a Linux host):
+
+```bash
+docker run --rm -v "$PWD":/w -w /w --user "$(id -u):$(id -g)" -e npm_config_cache=/tmp/.npm \
+  node:20-alpine npm install --package-lock-only
+npm ci
 ```
 
 Frontend is at `http://localhost:5173` and opens the live map; `/api` and `/ws`
@@ -135,14 +149,16 @@ drive a local backend with synthetic frames, see
 
 ### Working in a git worktree
 
-A fresh worktree has empty `libs/` directories and no venv of its own. Build one
-the way CI does, or pytest fails at conftest import on a missing `sqlalchemy`.
+A fresh worktree has empty `libs/` directories, no `node_modules` and no venv of
+its own. Build them the way CI does, or pytest fails at conftest import on a
+missing `sqlalchemy`.
 
 `uv venv` first is not optional: `uv pip install` does not create an environment,
 it refuses with `No virtual environment found` and installs nothing.
 
 ```bash
 git submodule update --init
+npm ci
 cd backend && uv venv --python 3.12 .venv
 uv pip install -r requirements-dev.txt
 uv pip install ../libs/retina-geolocator ../libs/retina-tracker \
@@ -155,8 +171,8 @@ uv pip install ../libs/retina-geolocator ../libs/retina-tracker \
 # backend
 cd backend && RETINA_ENV=test COVERAGE_CORE=sysmon pytest
 
-# frontend / dashboard
-cd frontend && npm run test && npm run typecheck && npm run lint
+# frontend and dashboard together; -w frontend (or -w dashboard) for one app
+npm run test --workspaces && npm run typecheck --workspaces && npm run lint --workspaces
 ```
 
 Backend coverage gate is 55%. Async tests need `pytest-asyncio` (in
@@ -234,8 +250,8 @@ Two traps in that command:
 CI runs on every PR, on push to `main`, and on demand through
 `workflow_dispatch` (`.github/workflows/ci.yml`):
 
-1. Any PR, whatever its base: `backend-tests`, `frontend-build`,
-   `dashboard-build`, `docker-build`, `env-parity`, plus an automated review.
+1. Any PR, whatever its base: `backend-tests`, `web-build` (once per app),
+   `docker-build`, `env-parity`, plus an automated review.
 2. Merge to `main` → deploy to **staging** → staging smoke + Playwright E2E → deploy to **production** → prod smoke + Playwright E2E.
    A markdown-only merge skips that chain; the `changes` job has the exceptions.
    The staging third of it is a called workflow,
