@@ -71,6 +71,7 @@ import {
   ClaimedArcs,
   InBeamDiagnostic,
 } from "./map";
+import { IconScaleSync } from "./map/iconScale";
 
 import { fetchMlatVerification, fetchMlatHistory } from "../api";
 import { defaultsGroundTruthOff } from "../utils/domains";
@@ -2198,6 +2199,7 @@ export default function LiveAircraftMap() {
             />
 
             <ViewportTracker onChange={handleViewportChange} />
+            <IconScaleSync />
             <HashSync
               onMove={handleMapMove}
               showRangeRings={showRangeRings}
