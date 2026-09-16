@@ -82,7 +82,6 @@ export default function OnboardingPage() {
   };
 
   const activeCodes = codes.filter((c) => !c.used_at);
-  const usedCodes = codes.filter((c) => c.used_at);
 
   if (loading) return <div className="empty-state">Loading…</div>;
 

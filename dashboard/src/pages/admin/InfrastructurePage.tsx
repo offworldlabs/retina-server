@@ -185,7 +185,7 @@ export default function InfrastructurePage() {
     <>
       {/* A refresh that failed costs the reading its freshness, not the page. */}
       {error && (
-          <div className="empty-state" style={{ color: "var(--error)" }}>Error: {error.message}. Showing the last reading.</div>
+        <div className="empty-state" style={{ color: "var(--error)" }}>Error: {error.message}. Showing the last reading.</div>
       )}
       <div className="page-header">
         <h1>Infrastructure</h1>

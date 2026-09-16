@@ -58,7 +58,6 @@ export default function NetworkHealthPage() {
   const nodes = data?.nodes ?? [];
   const dashNodes = dashboard?.nodes || {}; // {total, active, synthetic, real}
   const tracks = dashboard?.pipeline || {};
-  const analyticsData = dashboard?.analytics || {};
   const coc = dashboard?.chain_of_custody || {};
   const onlineNodes = nodes.filter((n) => n.status !== "disconnected" && n.status !== undefined);
 
