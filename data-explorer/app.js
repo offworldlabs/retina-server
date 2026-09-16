@@ -69,24 +69,17 @@ async function copy(text, btn, label) {
   setTimeout(() => { btn.textContent = label || old; }, 1200);
 }
 
-/* ══ Sibling hosts ═════════════════════════════════════════════════════════
- * This site is the `data` member of a per-environment family
- * (test-data / staging-data / data). Derive the siblings by rewriting the
- * `data` label rather than hard-coding three environments' worth of names:
- * test-data.retina.fm -> test-dash.retina.fm. Anything that is not a
- * recognisable `…data` host (a laptop, an IP, a preview) falls back to
- * production, which is the only family whose names are certain from here. */
-function siblingUrl(role) {
-  const host = location.hostname;
-  const first = host.split(".")[0];
-  if (/(^|-)data$/.test(first) && host.indexOf(".") !== -1) {
-    return location.protocol + "//" + host.replace(first, first.replace(/(^|-)data$/, "$1" + role));
-  }
-  return "https://" + role + ".retina.fm";
-}
+/* ══ Sibling surfaces ══════════════════════════════════════════════════════
+ * This site is mounted at /data/ on the app hostname, alongside the map at /
+ * and the dashboard at /dash/, so its siblings are paths rather than names.
+ * Same-origin is load-bearing and not merely shorter: the session cookie is
+ * host-only, so a link that left the origin would sign the reader out of what
+ * it led to, and an absolute name would also have to know which environment it
+ * was serving — which is how these links used to point at production from
+ * staging. */
 $("#topnav").innerHTML =
-  '<a href="' + esc(siblingUrl("dash")) + '">Dashboard</a>' +
-  '<a href="' + esc(siblingUrl("map")) + '">Live map</a>';
+  '<a href="/dash/">Dashboard</a>' +
+  '<a href="/">Live map</a>';
 
 /* ══ Appearance ════════════════════════════════════════════════════════════
  * Three states. The `retina.theme` key and the `data-theme` attribute are the

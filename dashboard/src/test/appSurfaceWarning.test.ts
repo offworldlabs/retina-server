@@ -23,10 +23,15 @@ describe("App wires the surface warning up", () => {
     }
     Object.defineProperty(window, "location", {
       configurable: true,
+      // `host` as well as `hostname`: the sidebar derives its sibling-surface
+      // links from the port too, and a double missing a field the real object
+      // always has fails as a TypeError rather than as what it is.
       value: {
-        hostname: "dash.retina.fm",
+        hostname: "app.retina.fm",
+        host: "app.retina.fm",
+        protocol: "https:",
         search: "?mode=admin",
-        href: "https://dash.retina.fm/?mode=admin",
+        href: "https://app.retina.fm/?mode=admin",
       },
     });
     warn = vi.spyOn(console, "warn").mockImplementation(() => {});

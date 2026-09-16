@@ -1,4 +1,6 @@
 import { NavLink } from "react-router-dom";
+import { BASE_PATH } from "../utils/basePath";
+import { mapUrl, towerFinderUrl } from "../utils/siblings";
 
 type NavItem = {
   label: string;
@@ -10,7 +12,10 @@ type NavItem = {
 
 type NavSection = { title: string; items: NavItem[] };
 
-const userNav: NavSection[] = [
+// Built per render rather than at module scope. The links below read
+// window.location, and an import-time read that threw would take down every
+// module that transitively imports this one, not just the sidebar.
+const userNav = (): NavSection[] => [
   {
     title: "Dashboard",
     items: [
@@ -20,8 +25,8 @@ const userNav: NavSection[] = [
       { to: "/contribution", label: "Network", icon: "globe" },
       { to: "/alerts", label: "Alerts", icon: "bell" },
       { to: "/anomalies", label: "Anomalies", icon: "alertTriangle" },
-      { href: "https://map.retina.fm/", label: "Map", icon: "map", external: true },
-      { href: "https://towers.retina.fm/", label: "Tower Finder", icon: "radio", external: true },
+      { href: mapUrl(location.host, location.protocol, BASE_PATH), label: "Map", icon: "map", external: true },
+      { href: towerFinderUrl(location.host, location.protocol), label: "Tower Finder", icon: "radio", external: true },
     ],
   },
   {
@@ -241,7 +246,7 @@ const icons = {
 };
 
 export default function Sidebar({ isAdmin }) {
-  const nav = isAdmin ? adminNav : userNav;
+  const nav = isAdmin ? adminNav : userNav();
 
   return (
     <aside className="sidebar">
