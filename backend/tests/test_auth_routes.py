@@ -235,6 +235,7 @@ class TestMyNodeLocationPrivacy:
     def _register(node_id, choice):
         from core.nodes import Node
         from core.users import async_session_maker
+        from services import publication
 
         async def _go():
             async with async_session_maker() as session:
@@ -242,6 +243,9 @@ class TestMyNodeLocationPrivacy:
                 await session.commit()
 
         asyncio.run(_go())
+        # Startup has already primed the cache; mirror the registration route's
+        # invalidation after this fixture writes directly to the database.
+        publication.invalidate()
         asyncio.set_event_loop(asyncio.new_event_loop())
 
     def test_setting_privacy_on_a_node_you_do_not_own_is_404(self, client):
