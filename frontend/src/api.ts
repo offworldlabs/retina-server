@@ -61,15 +61,6 @@ export async function fetchMlatHistory(hex: string, signal?: AbortSignal) {
   }
 }
 
-// Returns the current user dict, or null when not authenticated (401) or unreachable.
-export async function fetchMe() {
-  try {
-    return await request(`${API_BASE}/auth/me`, { timeoutMs: 30_000 });
-  } catch {
-    return null;
-  }
-}
-
 // Returns the list of nodes owned by the current user ([] when unauthenticated/unreachable).
 export async function fetchMyNodes() {
   try {

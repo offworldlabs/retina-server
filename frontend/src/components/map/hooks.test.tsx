@@ -1,6 +1,6 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useAircraftFeed } from "./hooks";
+import { useAircraftFeed, useAuth } from "./hooks";
 
 vi.mock("../../utils/domains", () => ({ hidesRealNodes: false, usesRealOnlyFeed: false }));
 
@@ -131,5 +131,70 @@ describe("HTTP fallback ordering", () => {
     expect(result.current.aircraft[0].hex).toBe("newer");
     await act(async () => older.resolve(response("older")));
     expect(result.current.aircraft[0].hex).toBe("newer");
+  });
+});
+
+describe("the map's view of who is signed in", () => {
+  const ME = { id: "u1", email: "owner@example.invalid", name: "Owner" };
+  const ok = (body: unknown) => ({ ok: true, json: async () => body });
+  const unauthorized = { ok: false, status: 401, json: async () => ({ detail: "Not authenticated" }) };
+
+  /** Answers the identity route with `me` and the ownership route with `nodes`. */
+  function stubAuth(me: unknown, nodes: unknown = []) {
+    const fetchMock = vi.fn(async (url: string) =>
+      url.endsWith("/auth/me") ? me : url.endsWith("/auth/me/nodes") ? ok(nodes) : ok({})
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  async function settle() {
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+  }
+
+  it("resolves the user and the refs of the nodes they own", async () => {
+    // A null ref is an owned node with no registry row, and the map has
+    // nothing to match it against.
+    stubAuth(ok(ME), [{ node_ref: "mine" }, { node_ref: null }]);
+    const { result } = renderHook(() => useAuth());
+    await settle();
+    expect(result.current).toEqual({ user: ME, ownedNodeRefs: ["mine"], loading: false });
+  });
+
+  it("asks nothing about ownership when nobody is signed in", async () => {
+    const fetchMock = stubAuth(unauthorized);
+    const { result } = renderHook(() => useAuth());
+    await settle();
+    expect(result.current).toEqual({ user: null, ownedNodeRefs: [], loading: false });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/auth/me"]);
+  });
+
+  it("stays loading until the owned nodes arrive", async () => {
+    // NodeOwnerControl renders nothing while loading. Releasing it early shows
+    // the owner their panel with an ownership count that is still zero.
+    const nodes = deferred<unknown>();
+    vi.stubGlobal("fetch", vi.fn(async (url: string) =>
+      url.endsWith("/auth/me") ? ok(ME) : nodes.promise
+    ));
+    const { result } = renderHook(() => useAuth());
+    await settle();
+    expect(result.current.loading).toBe(true);
+    await act(async () => { nodes.resolve(ok([{ node_ref: "mine" }])); });
+    expect(result.current).toMatchObject({ loading: false, ownedNodeRefs: ["mine"] });
+  });
+
+  it("retries an identity the server did not answer", async () => {
+    // The map is often the first page open when a droplet comes back up, and
+    // one unanswered call used to settle it as a signed-out visitor for the
+    // rest of the session.
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockImplementation(async (url: string) =>
+        url.endsWith("/auth/me") ? ok(ME) : ok([{ node_ref: "mine" }])
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const { result } = renderHook(() => useAuth());
+    await settle();
+    expect(result.current.user).toEqual(ME);
   });
 });

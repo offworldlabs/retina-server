@@ -46,19 +46,28 @@ function Probe() {
 }
 
 async function mountProbe() {
-  vi.spyOn(api, "me").mockResolvedValue({ email: "someone@offworldlab.com" });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      new Response(JSON.stringify({ id: "u1", email: "someone@offworldlab.com", name: "Someone" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })
+    )
+  );
   render(
     <AuthProvider>
       <Probe />
     </AuthProvider>
   );
-  await waitFor(() => expect(api.me).toHaveBeenCalled());
+  await waitFor(() => expect(screen.getByTestId("identity")).toHaveTextContent("held"));
   return screen.getByRole("button");
 }
 
 describe("signing out of an Access session", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     Object.defineProperty(window, "location", {
       value: realLocation,
       writable: true,
@@ -107,6 +116,7 @@ describe("signing out of an Access session", () => {
 describe("signing out of a session this app owns", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     Object.defineProperty(window, "location", {
       value: realLocation,
       writable: true,
