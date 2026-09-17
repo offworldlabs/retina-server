@@ -26,17 +26,9 @@ FastAPI backend and React front-ends for the RETINA passive-radar network.
   accounts in anything committed here.
 - **Configuration lives in `backend/.env`**, which is gitignored. Add new keys to
   `backend/.env.example` so the list stays current.
-- **Verify on the live map after deploying.** Green tests do not cover the
-  compose/env/frontend seams. After any change ships to an environment, open
-  that environment's `app` hostname in a real browser — `test-app.retina.fm`
-  for the test droplet, `staging-app.retina.fm` for staging (Claude: use the
-  Chrome browser tools) — and confirm the map renders, aircraft and solves
-  appear, and the change behaves as intended before calling the deploy done.
-- **An automated browser can show `0 aircraft` on a map that real users see
-  working.** The count in the toolbar and the live-stats panel comes from the
-  map's own update loop, which a scripted session does not always drive. Judge
-  it by `aircraft_on_map` in `/api/test/dashboard` instead, and confirm the
-  data path with `/api/radar/data/aircraft.json` from the page's own origin: a
-  200 carrying aircraft means the server and the seam are fine and only the
-  rendering was not exercised. Nodes, basemap and controls do render, so a
-  blank map is still worth chasing — it is the aircraft count alone that lies.
+- **Verify a deploy from the environment's API.** Green tests do not cover the
+  compose/env/frontend seams, so confirm the change against the environment
+  itself before calling a deploy done: `aircraft_on_map` in
+  `/api/test/dashboard`, the node set in `/api/radar/analytics`, and
+  `/api/radar/data/aircraft.json` for the data path. Scripted requests need a
+  browser User-Agent or Cloudflare answers `403 1010`.
