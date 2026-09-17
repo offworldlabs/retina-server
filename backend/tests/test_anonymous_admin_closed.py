@@ -95,7 +95,7 @@ def test_no_deployed_overlay_leaves_the_verifier_unconfigured(overlay: str) -> N
 def test_local_may_keep_the_bypass() -> None:
     """Pinned deliberately, so nobody 'tidies' it away.
 
-    A laptop has no Access assertion and no OAuth, the surfaces bind to
+    A laptop has no Access assertion, the surfaces bind to
     localhost, and a developer needs the console. docker-compose.local.yml is
     outside check-env-parity.py's OVERLAYS for the related reason that it renders
     the template's plain-HTTP branch.

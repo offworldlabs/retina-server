@@ -50,8 +50,8 @@ os.environ["NODE_FORCE_RETIRE_PREFIXES"] = ""
 # session and have a stray background task post real frames to the real
 # target with the real key.
 os.environ["DETECTION_MIRROR_URL"] = ""
-# The suite has no OAuth provider to log in against, so the route tests reach the
-# admin endpoints through core.users' anonymous-admin bypass. That bypass is an
+# The suite has no identity provider to authenticate against, so the route tests
+# reach the admin endpoints through core.users' anonymous-admin bypass. That is an
 # explicit opt-in and no longer follows from RETINA_ENV=test, so ask for it here.
 # Set before core.users is imported: AUTH_BYPASS is derived once, at import.
 os.environ.setdefault("AUTH_ALLOW_ANONYMOUS_ADMIN", "1")

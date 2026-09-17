@@ -29,7 +29,10 @@ omit = [
     "scripts/*",
     "simulation/*",
     "*/conftest.py",
-    # OAuth routes — require browser / external OAuth provider; not unit-testable:
+    # Auth routes. The flows this was written for needed a browser and an
+    # external provider; the magic-link endpoints that replaced them are covered
+    # by tests/test_magic_link_routes.py, so this omission now only holds the
+    # reported figure down:
     "routes/auth.py",
     # Simulation/test-only endpoints — not production code paths:
     "routes/test.py",

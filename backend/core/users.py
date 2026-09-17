@@ -23,7 +23,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from core.access_identity import AccessIdentity
-from core.env_parsing import parse_comma_list
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -37,8 +36,6 @@ if not _jwt_from_env and _RETINA_ENV not in ("dev", "test"):
 
 JWT_SECRET = _jwt_from_env or "retina-dev-secret-change-me-in-prod-32b!"
 JWT_LIFETIME_SECONDS = 86400 * 7  # 7 days
-
-ADMIN_EMAILS: set[str] = {e.lower() for e in parse_comma_list(os.getenv("AUTH_ADMIN_EMAILS", ""))}
 
 
 def _derive_auth_flags(env: Mapping[str, str]) -> tuple[bool, bool]:
@@ -54,10 +51,9 @@ def _derive_auth_flags(env: Mapping[str, str]) -> tuple[bool, bool]:
 
     A configured identity provider still wins: a deployment with one must never
     serve an anonymous admin, whatever the flag says. That provider is Cloudflare
-    Access, which is what admits an administrator; it used to be read off the
-    OAuth client ids, which were never set anywhere and are on their way out. All
-    three droplets set CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD, so the bypass is
-    inert on every one of them, and a laptop with neither can still opt in.
+    Access, which is what admits an administrator. All three droplets set
+    CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD, so the bypass is inert on every one
+    of them, and a laptop with neither can still opt in.
 
     AUTH_ENABLED is unconditional. There is no provider left to configure: a
     sign-in link opens the same cookie session on any deployment that can send
@@ -365,7 +361,7 @@ def _access_user_dict(email: str) -> dict:
 
     Membership of the Access group is what grants the console, so anyone whose
     assertion verifies for this environment's audience is an administrator; a
-    second list in AUTH_ADMIN_EMAILS would only be one more thing to drift.
+    second list of addresses would only be one more thing to drift.
 
     The id is derived from the email rather than allocated, so the same person
     is the same id across requests and restarts and the destructive endpoints
@@ -445,12 +441,11 @@ class MagicLinkRefused(Exception):
 async def get_or_create_magic_link_user(email: str) -> User:
     """Find or create the account a redeemed sign-in link belongs to.
 
-    Deliberately narrower than the OAuth helper beside it: no invite is
-    consumed and ADMIN_EMAILS is not consulted, so an account reached this way
-    is never a superuser. Administrator identity is Cloudflare Access and only
-    Cloudflare Access; an address that can receive mail is not a claim to the
-    console. The account grants nothing by itself either way — node ownership
-    comes from a claim code.
+    No invite is consumed and no address list is consulted, so an account
+    reached this way is never a superuser. Administrator identity is Cloudflare
+    Access and only Cloudflare Access; an address that can receive mail is not a
+    claim to the console. The account grants nothing by itself either way — node
+    ownership comes from a claim code.
 
     Raises MagicLinkRefused for an account that is already a superuser. The
     invariant has to hold for a row that exists, not only for one created here,
@@ -493,59 +488,3 @@ async def get_or_create_magic_link_user(email: str) -> User:
                 # and create. Through the same guard, since what that other
                 # request created is not this one's to assume.
                 return _guard(await user_manager.get_by_email(email))
-
-
-# ── OAuth user creation helper ────────────────────────────────────────────────
-
-
-async def get_or_create_oauth_user(
-    *,
-    email: str,
-    name: str,
-    avatar: str,
-    provider: str,
-    consume_invite_fn,
-) -> User:
-    """Find an existing user by email or create a new one via OAuth.
-
-    Consumes a pending invite for the email to determine the initial role.
-    Updates name/avatar on every login so the profile stays current.
-    """
-
-    email = email.lower().strip()
-
-    async with async_session_maker() as session:
-        user_db = SQLAlchemyUserDatabase(session, User)
-        user_manager = UserManager(user_db)
-
-        try:
-            user = await user_manager.get_by_email(email)
-            # Update mutable profile fields on every OAuth login
-            user.name = name
-            user.avatar = avatar
-            user.provider = provider
-            # Allow a pending "admin" invite to upgrade an existing user's role
-            invited_role = await consume_invite_fn(email)
-            if invited_role == "admin" and not user.is_superuser:
-                user.is_superuser = True
-            await session.commit()
-            await session.refresh(user)
-            return user
-
-        except UserNotExists:
-            invited_role = await consume_invite_fn(email)
-            is_superuser = email in ADMIN_EMAILS or invited_role == "admin"
-            user_create = UserCreate(
-                email=email,
-                password=secrets.token_urlsafe(32),  # unused — OAuth-only account
-                name=name,
-                avatar=avatar,
-                provider=provider,
-                is_verified=True,
-                is_superuser=is_superuser,
-            )
-            try:
-                return await user_manager.create(user_create)
-            except UserAlreadyExists:
-                # Race: another request created this user between our get and create.
-                return await user_manager.get_by_email(email)

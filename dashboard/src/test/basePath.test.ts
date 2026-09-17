@@ -27,7 +27,7 @@ describe("the mount this bundle was built for", () => {
     const m = await loadFor("/dash/");
     expect(m.BASE_PATH).toBe("/dash");
     expect(m.withBase("/login")).toBe("/dash/login");
-    // The dashboard's own root, which is what the OAuth return address needs.
+    // The dashboard's own root, which is where a redeemed link lands.
     expect(m.withBase("/")).toBe("/dash/");
   });
 

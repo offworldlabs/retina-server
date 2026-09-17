@@ -135,8 +135,9 @@ async def test_an_unsigned_token_is_refused(verifier):
 async def test_the_email_is_normalised(verifier, keys):
     """Cloudflare returns the claim as the identity provider supplied it, and
     the id derived from it must be the same person's every time. Everything else
-    that handles an address here lowercases it first (ADMIN_EMAILS,
-    get_or_create_oauth_user), so this has to as well or the two never match."""
+    that handles an address here lowercases it first
+    (get_or_create_magic_link_user), so this has to as well or the two never
+    match."""
     assert await verifier.identity(token(keys, email="  Someone@OffworldLab.COM ")) == EMAIL
 
 

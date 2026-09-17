@@ -71,7 +71,7 @@ export default function InvitesPage() {
     <>
       <div className="page-header">
         <h1>Invites</h1>
-        <p>Pre-approve users by email. When they sign in via Google or GitHub their role is applied automatically.</p>
+        <p>Pre-approve users by email.</p>
       </div>
 
       {error && (
