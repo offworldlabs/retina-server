@@ -30,7 +30,6 @@ from services.solver_report import (
     _solver_window_stats,
     _window_effective_minutes,
 )
-from services.tasks import solver as solver_mod
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -186,119 +185,6 @@ def _build_dashboard_data() -> bytes:
                 "websocket_broadcast": "ok",
                 "aircraft_feed": "ok",
                 "chain_of_custody": "ok" if len(state.node_identities) > 0 or total_nodes == 0 else "waiting",
-            },
-            "solver": {
-                "successes": state.solver_successes,
-                "failures": state.solver_failures,
-                # n=2 solves that succeeded but were withheld from the map
-                # because their track pairing did not clear the chi2 gate (or
-                # was outbid for a shared single-node track).  Distinct from
-                # failures: the solve worked, it just did not earn publication.
-                # Only observable here — the per-solve reason is logged at DEBUG,
-                # which staging does not emit.
-                "n2_unconfirmed": state.n2_unconfirmed,
-                # Per-reason breakdown of solver_failures (same aggregate as
-                # above): which gate is eating the solves.
-                "failures_by_reason": {
-                    "exception": state.solver_fail_exception,
-                    "unconverged": state.solver_fail_unconverged,
-                    "rms_delay": state.solver_fail_rms_delay,
-                    "rms_doppler": state.solver_fail_rms_doppler,
-                    "beam": state.solver_fail_beam,
-                    "displacement": state.solver_fail_displacement,
-                    # Dark-lane subset of "displacement" above, not a
-                    # sibling of it: a dark reject increments both, so the
-                    # aggregate stays comparable across the lane-aware cap
-                    # change while this line shows how much of it is dark.
-                    "displacement_dark": state.solver_fail_displacement_dark,
-                },
-                # Overlap grids rebuilt because a node's observed coverage
-                # tightened, and how many nodes triggered it.  Zero against
-                # populated polygons means the prior is not reaching the grids.
-                "coverage_rebuilds": state.coverage_rebuilds,
-                "coverage_rebuild_nodes": state.coverage_rebuild_nodes,
-                # Nodes whose digest has moved but whose grids are still queued
-                # behind the per-cycle rebuild budget.  A depth that never
-                # returns to zero means the budget is below the fleet's trigger
-                # rate and constraints are converging slower than they move.
-                "coverage_rebuild_backlog": state.coverage_rebuild_backlog,
-                # How long the front of that queue has waited, as of the last
-                # cycle.  This is what /api/health judges the budget by: a
-                # steady depth whose front turns over is the budget working,
-                # a front that waits longer every cycle is a budget too small.
-                "coverage_rebuild_oldest_wait_s": round(state.coverage_rebuild_oldest_wait_s, 1),
-                "queue_drops": state.solver_queue_drops,
-                # Items discarded unsolved after aging out in the queue.  The
-                # queue-full and too-slow failure modes are distinct: drops
-                # here with queue_drops at 0 means the drain rate collapsed,
-                # not the queue size.
-                "stale_drops": state.solver_stale_drops,
-                # Duplicate candidates for an aircraft already solved this
-                # window (see solver.py's _resolve_slot_covered).  Read it
-                # against stale_drops: skips are work correctly not done,
-                # stale drops are work lost.
-                "resolve_skips": state.solver_resolve_skips,
-                # Confirmed tracks withheld from association because their
-                # newest real detection had aged past TRACK_MAX_STALE_S, and
-                # solver inputs the epoch alignment could not correct because a
-                # measurement carried no sample time (see frame_processor's
-                # confirmed_track_views and solver's align_measurement_epochs).
-                "tracks_stale_skipped": state.tracks_stale_skipped,
-                "epoch_align_skipped": state.solver_epoch_align_skipped,
-                # Multinode entries replaced because a later solve consumed
-                # the same source tracks under a new key (fragmented re-solve).
-                "mn_superseded": state.mn_superseded,
-                # Solves published after node-trimming recovered them from
-                # the rms_delay gate at n>=4.  See solver.py's
-                # _trim_and_resolve.
-                "solver_trimmed": state.solver_trimmed,
-                # Consensus hypothesis stage (solver.py's _consensus_select).
-                # mode is off/shadow/active (SOLVER_CONSENSUS_MODE); the
-                # counters are cumulative since boot regardless of mode —
-                # shadow/selected/filtered only move once mode isn't "off".
-                "consensus": {
-                    "mode": solver_mod._CONSENSUS_MODE,
-                    "selected": state.solver_consensus_selected,
-                    "filtered": state.solver_consensus_filtered,
-                    "fallback": state.solver_consensus_fallback,
-                    "shadow": state.solver_consensus_shadow,
-                },
-                # Top-down claiming (ASSOC_CLAIM_MODE), since boot.  See
-                # /api/test/solver-stats' "claiming"/"fragmentation" blocks
-                # for the fuller windowed picture.
-                "claiming": {
-                    "mode": state.node_associator.claim_mode,
-                    "matched": state.node_associator.claims_matched,
-                    "conflicts": state.node_associator.claim_conflicts,
-                    "anchor_hits": state.solver_anchor_hits,
-                    "anchor_fallbacks": state.solver_anchor_fallbacks,
-                },
-                # ADS-B seeding (ADSB_SEED_MODE) — see
-                # /api/radar/association/status' fuller "adsb_seed" block.
-                "adsb_seed": {
-                    "mode": state.node_associator.adsb_seed_mode,
-                    "tagged": state.node_associator.adsb_tracklets_tagged,
-                    "excluded": state.node_associator.adsb_tracklets_excluded,
-                    "inputs": state.node_associator.adsb_inputs_emitted,
-                },
-                # Empirical FOV beam gate (FOV_MODE).  Since-boot counters,
-                # passthrough only — mode is off/shadow/active; shadow_*
-                # only move once mode isn't "off" (see solver.py's beam
-                # gate); neg_events is the disappearance detector's accepted
-                # record_negative_event count (analytics_refresh.py), shadow
-                # AND active.
-                "fov": {
-                    "mode": state.FOV_MODE,
-                    "shadow_agree": state.fov_shadow_agree,
-                    "would_pass": state.fov_shadow_would_pass,
-                    "would_reject": state.fov_shadow_would_reject,
-                    "neg_events": state.fov_neg_events,
-                },
-                # Teleporting emits (mis-association noise).  Debug counter
-                # only — jumps no longer mark tracks anomalous.
-                "position_jump_events": state.position_jump_events,
-                "last_latency_s": round(state.solver_last_latency_s, 3),
-                "avg_latency_s": round(state.solver_total_latency_s / max(state.solver_total_solved, 1), 3),
             },
             "mlat_verification": _mlat_verification_summary(),
             "task_health": {

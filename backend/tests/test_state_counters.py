@@ -52,8 +52,7 @@ def test_reset_zeroes_every_counter_and_keeps_its_type():
     for name, zero in state._COUNTER_ZEROS.items():
         value = getattr(state, name)
         assert value == 0, name
-        # The four float counters must not come back as int 0: routes/test.py
-        # and routes/admin.py serialise them through round(), which preserves
-        # the type, so an int zero would publish 0 where the payload has
-        # always carried 0.0.
+        # The four float counters must not come back as int 0: routes/admin.py
+        # serialises them through round(), which preserves the type, so an int
+        # zero would publish 0 where the payload has always carried 0.0.
         assert type(value) is type(zero), name

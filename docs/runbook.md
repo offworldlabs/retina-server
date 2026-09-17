@@ -454,7 +454,7 @@ grids encode are drifting away from the coverage they follow.
 
 The depth on its own is **not** the signal. With moving aircraft every node
 re-trips regularly, so a 60-node fleet holds a steady `coverage_rebuild_backlog`
-of ~15 in `/api/test/dashboard` with `coverage_rebuild_oldest_wait_s` of a few
+of ~15 in `/api/admin/metrics` with `coverage_rebuild_oldest_wait_s` of a few
 cycles — that is the budget working. Judge it by the wait.
 
 **Expected after a deploy:** a fresh process has no digests, so its first scan
@@ -466,8 +466,8 @@ ceiling covers a fleet of ~120 before the warm-up alone would trip it; raise
 
 **Check:**
 ```bash
-curl -sk https://localhost/api/test/dashboard | python3 -c \
-  "import sys,json; s=json.load(sys.stdin)['solver']; print('backlog:', s['coverage_rebuild_backlog'], 'oldest_wait_s:', s['coverage_rebuild_oldest_wait_s'], 'rebuild_nodes:', s['coverage_rebuild_nodes'])"
+adm /api/admin/metrics | python3 -c \
+  "import sys,json; s=json.load(sys.stdin); print('backlog:', s['coverage_rebuild_backlog'], 'oldest_wait_s:', s['coverage_rebuild_oldest_wait_s'], 'rebuild_nodes:', s['coverage_rebuild_nodes'])"
 ```
 
 A wait that keeps climbing cycle over cycle with `rebuild_nodes` still moving is
@@ -485,7 +485,7 @@ climbing with `rebuild_nodes` frozen is the task itself stuck — check
 
 **What it means:** Solver threads are slower than frame workers produce multinode candidates. Drops mean some legitimate aircraft positions will never be computed for those frames.
 
-The check is about *now*: it clears on its own once the window has passed without another drop, so a short stall costs one fire-and-resolve pair rather than a "degraded" that lasts until the next deploy. `solver_queue_drops` in `/api/admin/metrics` and `queue_drops` in `/api/test/dashboard` stay cumulative for the process lifetime; a lifetime count with the check clear is history, not a live problem. Sustained pressure shows up as `solver_queue_high` and `solver_latency_high` below.
+The check is about *now*: it clears on its own once the window has passed without another drop, so a short stall costs one fire-and-resolve pair rather than a "degraded" that lasts until the next deploy. `solver_queue_drops` in `/api/admin/metrics` stays cumulative for the process lifetime; a lifetime count with the check clear is history, not a live problem. Sustained pressure shows up as `solver_queue_high` and `solver_latency_high` below.
 
 **Check:**
 ```bash
@@ -508,14 +508,14 @@ adm /api/admin/metrics | python3 -c \
 **What it means:** The solver pipeline is severely backed up. The 30 s threshold means the queue is likely saturated and candidates are waiting minutes before being solved.
 
 Same diagnosis as `solver_queue_drops` above, plus one check of its own. Read
-`resolve_skips` next to `stale_drops` in `/api/test/dashboard`'s solver block (also
-`solver_resolve_skips` in `/api/admin/metrics`). Association is rate-limited per
-*node*, so every node that can see an aircraft emits its own candidate for it and
-most arrivals are copies of a solve already done; `resolve_skips` counts the copies
-recognised as such and dropped without solving.
+`solver_resolve_skips` next to `solver_stale_drops` in `/api/admin/metrics`.
+Association is rate-limited per *node*, so every node that can see an aircraft
+emits its own candidate for it and most arrivals are copies of a solve already
+done; `solver_resolve_skips` counts the copies recognised as such and dropped
+without solving.
 
-- Skips high, `stale_drops` near zero — the suppression is doing its job and the
-  latency is transient.
+- Skips high, `solver_stale_drops` near zero — the suppression is doing its job
+  and the latency is transient.
 - Both high — the *distinct* candidates still outrun the workers. That is a real
   capacity shortfall, not duplication; go back to the causes above.
 - Skips at zero with a deep queue — the candidates carry no track provenance

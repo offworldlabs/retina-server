@@ -765,6 +765,20 @@ async def system_metrics(_user=Depends(require_admin)):
         "frames_processed": state.frames_processed,
         "solver_successes": state.solver_successes,
         "solver_failures": state.solver_failures,
+        # Which gate is eating the solves — a per-reason split of the
+        # aggregate above, not a sibling of it.
+        "solver_failures_by_reason": {
+            "exception": state.solver_fail_exception,
+            "unconverged": state.solver_fail_unconverged,
+            "rms_delay": state.solver_fail_rms_delay,
+            "rms_doppler": state.solver_fail_rms_doppler,
+            "beam": state.solver_fail_beam,
+            "displacement": state.solver_fail_displacement,
+            # Dark-lane subset of "displacement" above, not a sibling: a dark
+            # reject increments both, so the aggregate stays comparable while
+            # this line shows how much of it is dark.
+            "displacement_dark": state.solver_fail_displacement_dark,
+        },
         "solver_pool_timeouts": state.solver_pool_timeouts,
         "solver_queue_depth": state.solver_queue.qsize(),
         "solver_queue_drops": state.solver_queue_drops,
@@ -774,6 +788,24 @@ async def system_metrics(_user=Depends(require_admin)):
         "solver_epoch_align_skipped": state.solver_epoch_align_skipped,
         "mn_superseded": state.mn_superseded,
         "solver_trimmed": state.solver_trimmed,
+        # Overlap grids rebuilt because a node's observed coverage tightened,
+        # and how many nodes triggered it.  Zero against populated polygons
+        # means the prior is not reaching the grids.
+        "coverage_rebuilds": state.coverage_rebuilds,
+        "coverage_rebuild_nodes": state.coverage_rebuild_nodes,
+        # Nodes whose digest has moved but whose grids are still queued behind
+        # the per-cycle rebuild budget.  A depth that never returns to zero
+        # means the budget is below the fleet's trigger rate.
+        "coverage_rebuild_backlog": state.coverage_rebuild_backlog,
+        # How long the front of that queue has waited, as of the last cycle.
+        # Read it with the backlog, not instead of it: a steady depth whose
+        # front turns over is the budget working, a front that waits longer
+        # every cycle is a budget too small.  Same judgement /api/health makes
+        # (services/health.py), exposed so a soak can watch it directly.
+        "coverage_rebuild_oldest_wait_s": round(state.coverage_rebuild_oldest_wait_s, 1),
+        # Teleporting emits (mis-association noise).  Debug counter only —
+        # jumps no longer mark tracks anomalous.
+        "position_jump_events": state.position_jump_events,
         "solver_last_latency_s": round(state.solver_last_latency_s, 3),
         "solver_avg_latency_s": round(state.solver_total_latency_s / max(state.solver_total_solved, 1), 2),
         "solver_queue_pct": round(state.solver_queue.qsize() / max(state.solver_queue.maxsize, 1) * 100, 1),

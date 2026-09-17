@@ -809,8 +809,8 @@ solver_epoch_align_skipped: int = 0
 solver_queue_drops: int = 0
 # When the solver queue last refused a candidate (time.time(), 0.0 = never),
 # and the epochs of the last few hundred refusals.  solver_queue_drops above is
-# cumulative for the process lifetime, which is what /api/admin/metrics and the
-# test dashboard want; health.py wants to know whether the solver is failing
+# cumulative for the process lifetime, which is what /api/admin/metrics
+# wants; health.py wants to know whether the solver is failing
 # to keep up NOW and reads these instead — one candidate dropped in a
 # two-minute stall used to hold /api/health at "degraded" until the next
 # deploy.  Both are written by record_solver_queue_drop(), never directly.
@@ -1050,7 +1050,8 @@ solver_worker_errors: int = 0
 # Per-reason solver rejection counters.  solver_failures is the aggregate; the
 # per-solve reason was only ever logged at DEBUG, which staging does not emit —
 # 301 failures in one 66-minute window were unattributable.  One counter per
-# reject gate makes the breakdown observable at /api/test/dashboard.
+# reject gate makes the breakdown observable as solver_failures_by_reason in
+# /api/admin/metrics.
 solver_fail_exception: int = 0
 solver_fail_unconverged: int = 0
 solver_fail_rms_delay: int = 0
