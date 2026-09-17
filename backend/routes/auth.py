@@ -6,7 +6,6 @@ fully delegated to fastapi-users' JWTStrategy + CookieTransport.
 """
 
 import logging
-import os
 import threading
 from ipaddress import IPv6Address, ip_address, ip_network
 from time import monotonic
@@ -17,16 +16,11 @@ from pydantic import BaseModel, EmailStr
 
 from core import state
 from core.auth import (
-    ClaimOutcome,
-    complete_claim,
     consume_magic_link,
     create_claim_code,
     create_magic_link,
-    decline_claim,
     get_user_nodes,
     list_claim_codes,
-    preview_claim,
-    release_node,
     revoke_claim_code,
 )
 from core.users import (
@@ -42,17 +36,18 @@ from core.users import (
 )
 from services import mail, publication
 from services.node_claim_store import claim_addresses
+from services.node_claiming import (
+    ClaimOutcome,
+    complete_claim,
+    decline_claim,
+    preview_claim,
+    release_node,
+)
 from services.node_config import position_status
 from services.node_refs import owner_identity
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-
-
-def _fix_scheme(url: str) -> str:
-    if os.getenv("FORCE_HTTPS", "true").lower() == "true":
-        return url.replace("http://", "https://", 1)
-    return url
 
 
 def _client_source(request: Request) -> str:
@@ -150,29 +145,6 @@ class MagicLinkConsume(BaseModel):
     token: str
 
 
-def _sign_in_host() -> str:
-    """The host the mailed link points at, or "" when it cannot be known."""
-    return os.getenv("HOST_APP", "").strip()
-
-
-def _sign_in_link(request: Request, token: str) -> str:
-    """Build the mailed URL from configuration, never from the request.
-
-    `request.base_url` derives from the Host header. An attacker who could set
-    it would ask for a link to somebody else's address and have the mail carry
-    a URL pointing at their own server: the victim clicks, and the token is
-    handed over. The deployed vhosts only match known hostnames, so nginx
-    closes that today, but a credential must not rest on that staying true.
-
-    HOST_APP is the consolidated public surface and is already set per
-    environment in every compose overlay, so this needs no new setting. Unset,
-    the caller refuses the request rather than falling back on the request's own
-    host: a fallback there would quietly restore the very thing this exists to
-    prevent, the first time some start path forgot the variable.
-    """
-    return _fix_scheme(f"http://{_sign_in_host()}") + _SIGN_IN_PATH + token
-
-
 def _sign_in_body(link: str) -> str:
     return (
         "Someone asked to sign in to RETINA with this address.\n\n"
@@ -194,14 +166,14 @@ async def request_magic_link(body: MagicLinkRequest, request: Request):
     # say. Checked before a token is minted, so a refusal leaves no row behind.
     if not mail.is_configured():
         raise HTTPException(status_code=503, detail="Sign-in by email is unavailable")
-    if not _sign_in_host():
+    if mail.link_to(_SIGN_IN_PATH) is None:
         logger.error("HOST_APP is not set; refusing to mail a link built from the request host")
         raise HTTPException(status_code=503, detail="Sign-in by email is unavailable")
 
     if _magic_link_quota_available(_client_source(request)):
         token = await create_magic_link(body.email)
         if token:
-            link = _sign_in_link(request, token)
+            link = mail.link_to(_SIGN_IN_PATH + token)
             mail.send_in_background(body.email, "Sign in to RETINA", _sign_in_body(link))
 
     return {"status": "accepted"}

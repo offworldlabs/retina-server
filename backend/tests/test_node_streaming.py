@@ -702,9 +702,16 @@ async def test_a_heartbeat_carries_a_pending_claim(registered_node, node_session
     from services.node_claim_store import put_challenge, set_claim_address
 
     token, node_id = registered_node
-    challenge = claim_links.issue(intent=claim_links.INTENT_CLAIM, node_id=node_id, now=time.time())
+    # A challenge row is all the heartbeat reads. Minting a real link would put
+    # it in the application database, which this per-test session is not.
     await set_claim_address(node_session, node_id, "ada@example.com")
-    await put_challenge(node_session, node_id, "ada@example.com", challenge.handle, challenge.expires_at)
+    await put_challenge(
+        node_session,
+        node_id,
+        "ada@example.com",
+        claim_links.handle_for("a-token-nobody-holds"),
+        time.time() + claim_links.CHALLENGE_EXPIRY_S,
+    )
     await node_session.commit()
 
     body = node_client.post(HEARTBEAT, json=_beat(), headers=_auth(token)).json()

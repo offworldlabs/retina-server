@@ -508,19 +508,19 @@ class TestClaimRoutes:
         from services import claim_links
         from services.node_claim_store import put_challenge, set_claim_address
 
-        challenge = claim_links.issue(intent=claim_links.INTENT_CLAIM, node_id=node_id, now=time.time())
-
         async def _seed():
+            challenge = await claim_links.issue(email=email, node_id=node_id, now=time.time())
             async with async_session_maker() as session:
                 async with session.begin():
                     if await session.get(Node, node_id) is None:
                         session.add(Node(node_id=node_id, node_ref=node_ref, board_model="raspberrypi5-4gb"))
                     await set_claim_address(session, node_id, email)
                     await put_challenge(session, node_id, email, challenge.handle, challenge.expires_at)
+            return challenge.token
 
-        asyncio.run(_seed())
+        token = asyncio.run(_seed())
         asyncio.set_event_loop(asyncio.new_event_loop())
-        return challenge.token
+        return token
 
     def test_the_preview_names_the_node_without_spending_the_link(self, client):
         token = self._mailed()
