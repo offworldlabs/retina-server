@@ -17,11 +17,16 @@ from pydantic import BaseModel, EmailStr
 
 from core import state
 from core.auth import (
+    ClaimOutcome,
+    complete_claim,
     consume_magic_link,
     create_claim_code,
     create_magic_link,
+    decline_claim,
     get_user_nodes,
     list_claim_codes,
+    preview_claim,
+    release_node,
     revoke_claim_code,
 )
 from core.users import (
@@ -225,6 +230,78 @@ async def consume_magic_link_route(body: MagicLinkConsume, request: Request):
     response = JSONResponse({"user": user_to_dict(user)})
     await _set_auth_cookie(response, user)
     return response
+
+
+# ── Claiming a node ───────────────────────────────────────────────────────────
+
+
+class ClaimToken(BaseModel):
+    token: str
+
+
+@router.get("/claim/{token}")
+async def preview_claim_link(token: str):
+    """Which node a claim link is for, without spending it.
+
+    The landing page names the node before either button is pressed, so that
+    somebody mailed this by mistake declines something they can see. Reading it
+    needs the same secret the click needs, so it tells the holder nothing they
+    do not already have.
+    """
+    node_ref = await preview_claim(token)
+    if node_ref is None:
+        raise HTTPException(status_code=404, detail="That link is no longer valid")
+    return {"node_ref": node_ref}
+
+
+@router.post("/claim/consume")
+async def consume_claim_link(body: ClaimToken):
+    """Redeem a claim link: bind the node, and sign the clicker in.
+
+    A POST rather than the GET the mail links to. Mail providers and security
+    scanners prefetch links, and a consuming GET would burn the token before the
+    recipient ever clicked it. The mailed URL serves a page; the page calls this.
+    """
+    outcome, user, node_ref = await complete_claim(body.token)
+    if outcome is ClaimOutcome.TAKEN:
+        raise HTTPException(status_code=409, detail="That node already belongs to someone else")
+    if outcome is not ClaimOutcome.BOUND:
+        # Unknown, expired and already redeemed are one answer, so that trying
+        # links cannot be used to learn which ones were ever real.
+        raise HTTPException(status_code=400, detail="That link is no longer valid")
+
+    response = JSONResponse({"user": user_to_dict(user), "node_ref": node_ref})
+    await _set_auth_cookie(response, user)
+    return response
+
+
+@router.post("/claim/decline")
+async def decline_claim_link(body: ClaimToken):
+    """Refuse a claim, returning the node to unowned.
+
+    This is what someone does when a stranger typed their address into a node.
+    It needs no account and creates none: the whole point is that they want
+    nothing to do with it.
+    """
+    if not await decline_claim(body.token):
+        raise HTTPException(status_code=400, detail="That link is no longer valid")
+    return {"ok": True}
+
+
+@router.delete("/me/nodes/{node_id}/claim")
+async def release_my_node(node_id: str, request: Request):
+    """Hand a node back, so its next owner can claim it.
+
+    Guarded the same way every owner-scoped route here is, so a node somebody
+    else owns answers exactly as one that does not exist.
+    """
+    user = await _owned_node(request, node_id)
+    if not await release_node(node_id, user["id"]):
+        # Owned a moment ago and not now: a release that raced another release,
+        # or an administrator reassigning it. Either way it is gone, which is
+        # what was asked for.
+        raise HTTPException(status_code=404, detail="Node not found")
+    return {"ok": True}
 
 
 # ── Session endpoints ─────────────────────────────────────────────────────────

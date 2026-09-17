@@ -12,6 +12,7 @@ Covers:
 
 import asyncio
 import uuid
+from http.cookies import SimpleCookie
 
 import pytest
 
@@ -484,3 +485,156 @@ class TestAdminNodeOwnerRoutes:
             json={"user_id": str(uuid.uuid4())},
         )
         assert r.status_code == 404
+
+
+# ── /api/auth/claim/* and the owner's release ────────────────────────────────
+
+
+class TestClaimRoutes:
+    """The four routes the click and the dashboard reach.
+
+    The behaviour behind them is pinned in test_claim_routes.py. What is here is
+    what only the routes decide: the status codes, and the session cookie a
+    successful click opens.
+    """
+
+    @staticmethod
+    def _mailed(node_id="ret1a2b3c4d", node_ref="nde1a2b3c4d00", email="ada@example.com"):
+        """A live claim link for a registered node, and the token that was mailed."""
+        import time
+
+        from core.nodes import Node
+        from core.users import async_session_maker
+        from services import claim_links
+        from services.node_claim_store import put_challenge, set_claim_address
+
+        challenge = claim_links.issue(intent=claim_links.INTENT_CLAIM, node_id=node_id, now=time.time())
+
+        async def _seed():
+            async with async_session_maker() as session:
+                async with session.begin():
+                    if await session.get(Node, node_id) is None:
+                        session.add(Node(node_id=node_id, node_ref=node_ref, board_model="raspberrypi5-4gb"))
+                    await set_claim_address(session, node_id, email)
+                    await put_challenge(session, node_id, email, challenge.handle, challenge.expires_at)
+
+        asyncio.run(_seed())
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        return challenge.token
+
+    def test_the_preview_names_the_node_without_spending_the_link(self, client):
+        token = self._mailed()
+
+        first = client.get(f"/api/auth/claim/{token}")
+        second = client.get(f"/api/auth/claim/{token}")
+
+        assert first.status_code == 200
+        assert first.json() == {"node_ref": "nde1a2b3c4d00"}
+        assert second.status_code == 200
+
+    def test_the_preview_of_an_unknown_link_is_404(self, client):
+        assert client.get("/api/auth/claim/not-a-token").status_code == 404
+
+    def test_a_click_binds_and_opens_a_session(self, client):
+        token = self._mailed()
+
+        r = client.post("/api/auth/claim/consume", json={"token": token})
+
+        assert r.status_code == 200
+        assert r.json()["node_ref"] == "nde1a2b3c4d00"
+        assert r.json()["user"]["email"] == "ada@example.com"
+        assert "auth_token" in SimpleCookie(r.headers.get("set-cookie", ""))
+
+    def test_a_spent_link_is_400_rather_than_saying_which_of_three_it_was(self, client):
+        token = self._mailed()
+        client.post("/api/auth/claim/consume", json={"token": token})
+
+        r = client.post("/api/auth/claim/consume", json={"token": token})
+
+        assert r.status_code == 400
+
+    def test_an_unknown_link_answers_exactly_as_a_spent_one(self, client):
+        assert client.post("/api/auth/claim/consume", json={"token": "not-a-token"}).status_code == 400
+
+    def test_a_link_for_a_node_claimed_meanwhile_is_409(self, client):
+        from core.auth import set_node_owner
+
+        token = self._mailed()
+        asyncio.run(set_node_owner("ret1a2b3c4d", "11111111-1111-1111-1111-111111111111"))
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+        r = client.post("/api/auth/claim/consume", json={"token": token})
+
+        assert r.status_code == 409
+
+    def test_a_decline_answers_ok_and_then_stops_working(self, client):
+        token = self._mailed()
+
+        assert client.post("/api/auth/claim/decline", json={"token": token}).status_code == 200
+        assert client.post("/api/auth/claim/decline", json={"token": token}).status_code == 400
+
+    def test_an_admin_clearing_an_owner_also_clears_the_claim(self, client):
+        """Clearing an owner is a release performed on their behalf, so it
+        clears what a release clears: the next owner must not see the last
+        one's address, and a link already in a mailbox must not rebind a node
+        an administrator has just freed."""
+        from core.users import async_session_maker
+        from services.node_claim_store import read_challenge, read_claim
+
+        token = self._mailed()
+        client.post("/api/auth/claim/consume", json={"token": token})
+
+        r = client.put("/api/admin/nodes/ret1a2b3c4d/owner", json={"user_id": None})
+
+        assert r.status_code == 200
+
+        async def _read():
+            async with async_session_maker() as session:
+                return await read_claim(session, "ret1a2b3c4d"), await read_challenge(session, "ret1a2b3c4d")
+
+        claim, challenge = asyncio.run(_read())
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        assert claim is None
+        assert challenge is None
+
+    @staticmethod
+    def _claim_on_file(node_id="ret1a2b3c4d"):
+        from core.users import async_session_maker
+        from services.node_claim_store import read_claim
+
+        async def _read():
+            async with async_session_maker() as session:
+                return await read_claim(session, node_id)
+
+        claim = asyncio.run(_read())
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        return claim
+
+    def test_an_admin_reassigning_a_node_clears_the_claim_that_bound_it(self, client):
+        """A reassignment is a release and a new owner at once, so the new owner
+        must not be shown the address that claimed the node for somebody else."""
+        from core.users import get_or_create_magic_link_user
+
+        token = self._mailed()
+        client.post("/api/auth/claim/consume", json={"token": token})
+        bob = asyncio.run(get_or_create_magic_link_user("bob@example.com"))
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+        r = client.put("/api/admin/nodes/ret1a2b3c4d/owner", json={"user_id": str(bob.id)})
+
+        assert r.status_code == 200
+        assert self._claim_on_file() is None
+
+    def test_an_admin_reassigning_a_node_to_its_own_owner_keeps_the_claim(self, client):
+        token = self._mailed()
+        ada_id = client.post("/api/auth/claim/consume", json={"token": token}).json()["user"]["id"]
+
+        r = client.put("/api/admin/nodes/ret1a2b3c4d/owner", json={"user_id": ada_id})
+
+        assert r.status_code == 200
+        assert self._claim_on_file().email == "ada@example.com"
+
+    def test_releasing_a_node_the_caller_does_not_own_is_404(self, client):
+        """The same answer a node that does not exist gets: an id that resolves
+        is already a hint about where a receiver is."""
+        assert client.delete("/api/auth/me/nodes/ret1a2b3c4d/claim").status_code == 404
