@@ -1,0 +1,155 @@
+/* Layout for the explorer's own controls and its results tree. Colours come
+   from the dashboard's tokens; nothing here declares one. */
+
+/* This card's own children, such as the filter chips, must not be clipped. */
+.de-card {
+  overflow: visible;
+}
+
+/* The cold-storage banner. A panel rather than a line of prose, because it
+   qualifies everything in the listing below it. */
+.de-notice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  background: var(--warning-light);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius);
+  padding: 11px 14px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 24px;
+}
+
+.de-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 24px;
+  align-items: flex-end;
+}
+
+.de-fgroup {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.de-fgroup label {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.de-chipset {
+  gap: 4px;
+}
+
+.de-chip {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.de-chip.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* One definition for the results grid, used by the header and every row: they
+   must stay aligned, and three copies did not. */
+.de-tree {
+  --de-cols: 1fr 150px 132px 120px;
+}
+
+.de-colhead,
+.de-file {
+  display: grid;
+  grid-template-columns: var(--de-cols);
+  gap: 12px;
+  align-items: center;
+}
+
+.de-colhead {
+  padding: 8px 12px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.de-colhead button {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.de-group {
+  border-bottom: 1px solid var(--border);
+}
+
+.de-day-head,
+.de-node-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 10px 12px;
+  background: none;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.de-node-head {
+  padding-left: 32px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.de-file {
+  padding: 6px 12px 6px 52px;
+  font-size: 13px;
+}
+
+.de-caret {
+  display: inline-block;
+  width: 12px;
+  transition: transform 0.12s;
+}
+
+.de-group.collapsed .de-caret {
+  transform: rotate(-90deg);
+}
+
+.de-spacer {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.de-est {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-left: 4px;
+}
+
+.de-day-state.err {
+  color: var(--error);
+}
+
+@media (max-width: 1100px) {
+  .de-tree {
+    --de-cols: 1fr 120px 96px 96px;
+  }
+}
