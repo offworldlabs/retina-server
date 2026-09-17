@@ -12,6 +12,11 @@ export const TOD_END = "23:59";
  *  land outside its own circle. */
 export const MIN_RADIUS_KM = 2;
 
+/** Carries "no nodes at all". Its own parameter rather than a reserved value
+ *  of `node`, so it can never be confused with a node whose id says none. */
+const NO_NODES = "nodes";
+const NO_NODES_VALUE = "none";
+
 const DEFAULT_RANGE_DAYS = 3;
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 const TOD_RANGE = /^(\d{2}:\d{2})-(\d{2}:\d{2})$/;
@@ -54,6 +59,7 @@ export function readFilters(search: string, today: string): ExplorerFilters {
 
   const nodes = q.getAll("node").filter(Boolean);
   if (nodes.length) f.nodeSel = new Set(nodes);
+  else if (q.get(NO_NODES) === NO_NODES_VALUE) f.nodeSel = new Set();
 
   const from = q.get("from");
   const to = q.get("to");
@@ -80,10 +86,11 @@ export function readFilters(search: string, today: string): ExplorerFilters {
 
 export function writeFilters(f: ExplorerFilters): URLSearchParams {
   const qs = new URLSearchParams();
-  // Sorted, so one selection has one link. Omitted when the selection is
-  // everything, which is also how an empty one comes out, so an empty
-  // selection is not round-trippable.
-  if (f.nodeSel) Array.from(f.nodeSel).sort().forEach((n) => qs.append("node", n));
+  // Sorted, so one selection has one link. An empty selection needs a
+  // parameter of its own: absent `node` params already mean every node, so
+  // without this "none" would come back from the URL as "all".
+  if (f.nodeSel && f.nodeSel.size === 0) qs.set(NO_NODES, NO_NODES_VALUE);
+  else if (f.nodeSel) Array.from(f.nodeSel).sort().forEach((n) => qs.append("node", n));
   qs.set("from", f.from);
   qs.set("to", f.to);
   if (f.todFrom !== TOD_START || f.todTo !== TOD_END) qs.set("tod", `${f.todFrom}-${f.todTo}`);
