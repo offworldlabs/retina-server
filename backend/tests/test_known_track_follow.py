@@ -183,7 +183,7 @@ class TestReanchor:
         # are one another's neighbours.
         far_lat = _LAT + 0.15
         before_ghost = state.known_lane_ghost
-        before_reanchor = getattr(state, "known_lane_reanchored", 0)
+        before_reanchor = state.known_lane_reanchored
 
         known_lane._attempt(_HEX, _solver_input("kf", t0), {}, _ghost_solve(far_lat, _LON, t0), "binding")
         assert state.known_lane_ghost == before_ghost + 1
@@ -211,7 +211,7 @@ class TestReanchor:
         prior a repeated disagreement is a wrong solve, not a moved prior."""
         t0 = int(time.time() * 1000)
         far_lat = _LAT + 0.15
-        before_reanchor = getattr(state, "known_lane_reanchored", 0)
+        before_reanchor = state.known_lane_reanchored
 
         for i in range(3):
             known_lane._attempt(
@@ -228,7 +228,7 @@ class TestReanchor:
         """Two ghosts that disagree with each other as well as with the prior
         are what a wrong solve looks like."""
         t0 = int(time.time() * 1000)
-        before_reanchor = getattr(state, "known_lane_reanchored", 0)
+        before_reanchor = state.known_lane_reanchored
         known_lane._attempt(_HEX, _solver_input("kf", t0), {}, _ghost_solve(_LAT + 0.15, _LON, t0), "binding")
         known_lane._attempt(
             _HEX,
