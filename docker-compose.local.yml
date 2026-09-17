@@ -47,6 +47,11 @@ services:
       # real nodes, so the fleet POSTing through the ingest write path is all
       # there is to look at, and main.py mounts that path only under this flag.
       - SYNTHETIC_FLEET_ENABLED=1
+      # A laptop has no Cloudflare API token, so sign-in links go to the
+      # container log and are read from `docker compose logs` instead of a
+      # mailbox. Refused in production by services/mail.py, which is why this
+      # override is safe to leave here.
+      - MAIL_TRANSPORT=log
       # The one thing a laptop cannot do. Renders the template's plain-HTTP
       # branch: no 443 listeners, no cert paths, no HSTS, no HTTP→HTTPS redirect.
       # Never set this on a deployed host; check-env-parity.py asserts prod and

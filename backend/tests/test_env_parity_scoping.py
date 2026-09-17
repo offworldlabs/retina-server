@@ -86,3 +86,27 @@ class TestScopeValidation:
         """check_compose skips the reference, so such an entry could never fire."""
         with pytest.raises(SystemExit):
             parity._compile_allowed(((parity.REFERENCE, r"^x$"),))
+
+
+class TestMailTransport:
+    """Which environments may send sign-in links somewhere other than a mailbox.
+
+    The test droplet writes them to its own log: it is deployed to from any
+    branch, so real mail from it means mailing whoever a half-finished change
+    happens to name. Staging must not have the same licence — it is the
+    rehearsal for production, and a transport only production exercises is one
+    nobody has tested. services/mail.py refuses the log transport in production
+    outright, so this entry is the guard for the environment in between.
+    """
+
+    def test_the_test_droplet_may_diverge(self, parity):
+        assert parity.allowed("services.server.environment.MAIL_TRANSPORT", "test")
+
+    def test_staging_may_not(self, parity):
+        assert not parity.allowed("services.server.environment.MAIL_TRANSPORT", "staging")
+
+    def test_the_sender_identity_may_never_differ(self, parity):
+        """One From address everywhere, so what a recipient sees is the same
+        thing staging rehearsed."""
+        for env in ("test", "staging"):
+            assert not parity.allowed("services.server.environment.MAIL_FROM", env)
