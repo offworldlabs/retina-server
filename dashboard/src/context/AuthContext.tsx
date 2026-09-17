@@ -1,37 +1,11 @@
-import { createContext, useContext, useState, useEffect } from "react";
-import { api, UnauthorizedError } from "../api/client";
+import { createContext, useContext } from "react";
+import { useCurrentUser } from "@retina/shared";
+import { api } from "../api/client";
 
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function fetchUser() {
-      for (let attempt = 0; attempt < 4; attempt++) {
-        try {
-          const u = await api.me();
-          if (!cancelled) { setUser(u); setLoading(false); }
-          return;
-        } catch (e) {
-          // A 401 is settled, so stop: the retries exist for a busy server, and
-          // repeating an unauthenticated call only holds the login card behind
-          // a loading state for the length of the backoff.
-          if (e instanceof UnauthorizedError) break;
-          if (attempt < 3) {
-            await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
-          }
-        }
-      }
-      if (!cancelled) { setUser(null); setLoading(false); }
-    }
-
-    fetchUser();
-    return () => { cancelled = true; };
-  }, []);
+  const { user, loading, setUser } = useCurrentUser();
 
   // Resolves { redirected } so a caller knows not to route over a navigation
   // that is still in flight.

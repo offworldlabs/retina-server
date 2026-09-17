@@ -108,7 +108,8 @@ npm run dev -w frontend   # or: -w dashboard
 Code both apps use lives in `packages/shared`, imported as `@retina/shared`; it is
 a third workspace with its own lint, typecheck and tests. Reach for its
 `request()` rather than a raw `fetch`: it carries the timeout, the JSON
-conventions and the typed errors every surface wants.
+conventions and the typed errors every surface wants. `useCurrentUser()` sits on
+top of it and resolves who the caller is, retries included.
 
 The lockfile is written by npm 10, the version CI and the image run (Node 20).
 A local npm 11 writes one that npm 10 rejects as incomplete, so after changing a

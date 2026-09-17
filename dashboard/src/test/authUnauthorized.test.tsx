@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import { api, UnauthorizedError } from "../api/client";
+import { UnauthorizedError } from "@retina/shared";
+import { api } from "../api/client";
 import { AuthProvider, useAuth } from "../context/AuthContext";
 
 /**
@@ -36,7 +37,7 @@ describe("the API client on a 401", () => {
 
   it("sends a caller elsewhere in the app to the login page", async () => {
     const loc = stubLocation("/nodes");
-    await expect(api.me()).rejects.toBeInstanceOf(UnauthorizedError);
+    await expect(api.myNodes()).rejects.toBeInstanceOf(UnauthorizedError);
     expect(loc.href).toBe("/login");
   });
 
@@ -47,7 +48,7 @@ describe("the API client on a 401", () => {
       // the raw string comparison would tell them apart.
       const loc = stubLocation(pathname);
       const untouched = loc.href;
-      await expect(api.me()).rejects.toBeInstanceOf(UnauthorizedError);
+      await expect(api.myNodes()).rejects.toBeInstanceOf(UnauthorizedError);
       expect(loc.href).toBe(untouched);
     }
   );
@@ -56,6 +57,9 @@ describe("the API client on a 401", () => {
 describe("the API client on a 401, mounted under /dash/", () => {
   // The login path is derived from Vite's `base`, fixed at build time, so the
   // mounted build can only be exercised by re-importing under a stubbed one.
+  // Checked by status rather than by class: the re-import hands back its own
+  // copy of the shared module, whose UnauthorizedError is a different class
+  // from the one this file imported.
   async function loadMounted() {
     vi.resetModules();
     vi.stubEnv("BASE_URL", "/dash/");
@@ -82,7 +86,7 @@ describe("the API client on a 401, mounted under /dash/", () => {
     // a 200, a working page, and the wrong application.
     const mounted = await loadMounted();
     const loc = stubLocation("/dash/nodes");
-    await expect(mounted.api.me()).rejects.toBeInstanceOf(mounted.UnauthorizedError);
+    await expect(mounted.api.myNodes()).rejects.toHaveProperty("status", 401);
     expect(loc.href).toBe("/dash/login");
   });
 
@@ -94,7 +98,7 @@ describe("the API client on a 401, mounted under /dash/", () => {
       const mounted = await loadMounted();
       const loc = stubLocation(pathname);
       const untouched = loc.href;
-      await expect(mounted.api.me()).rejects.toBeInstanceOf(mounted.UnauthorizedError);
+      await expect(mounted.api.myNodes()).rejects.toHaveProperty("status", 401);
       expect(loc.href).toBe(untouched);
     }
   );
@@ -107,20 +111,41 @@ function Probe() {
 }
 
 describe("AuthProvider on a 401", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 401 })));
   });
 
-  it("settles as signed out rather than retrying", async () => {
-    // The retries exist for a busy server. Spending them on a 401 leaves the
-    // login card behind a loading state for ~9s, which reads as a hung page.
-    vi.spyOn(api, "me").mockRejectedValue(new UnauthorizedError());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    Object.defineProperty(window, "location", {
+      value: realLocation,
+      writable: true,
+      configurable: true,
+    });
+  });
+
+  it("settles as signed out", async () => {
+    stubLocation("/nodes");
     render(
       <AuthProvider>
         <Probe />
       </AuthProvider>
     );
     await waitFor(() => expect(screen.getByText("signed out")).toBeInTheDocument());
-    expect(api.me).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the page where it is, so the guard can route", async () => {
+    // The identity call goes straight to the shared client, around the wrapper
+    // above. Its redirect would reload the document to reach a route the
+    // router is about to render anyway, throwing away the bundle mid-boot.
+    const loc = stubLocation("/nodes");
+    const untouched = loc.href;
+    render(
+      <AuthProvider>
+        <Probe />
+      </AuthProvider>
+    );
+    await waitFor(() => expect(screen.getByText("signed out")).toBeInTheDocument());
+    expect(loc.href).toBe(untouched);
   });
 });

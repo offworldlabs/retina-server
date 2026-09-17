@@ -12,8 +12,8 @@ import {
   scrubToSyntheticNodes,
   syntheticDetectingNodes,
 } from "./syntheticOnly";
-import { request } from "@retina/shared";
-import { fetchMe, fetchMyNodes } from "../../api";
+import { request, useCurrentUser } from "@retina/shared";
+import { fetchMyNodes } from "../../api";
 
 /**
  * Manages the WebSocket connection to /ws/aircraft with auto-reconnect,
@@ -445,34 +445,43 @@ export function useNodes() {
   return nodes;
 }
 
+/** Shared across renders so a caller memoising on this list is not woken by a
+ *  fresh empty array each time. */
+const NO_NODES = [];
+
 /**
  * Resolves the current user (via the shared auth_token cookie) and the set of
  * node refs they own. `user` is null when not authenticated. Used to gate the
  * node-owner view on the testmap.
+ *
+ * A hook rather than a provider: one component on this surface has a use for
+ * an identity, so the call sits where it is read.
  */
 export function useAuth() {
-  const [user, setUser] = useState(null);
-  const [ownedNodeRefs, setOwnedNodeRefs] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const { user, loading } = useCurrentUser();
+  // null while ownership is unsettled, which the map must not read as owning
+  // nothing: the owner panel would render mid-flight with a count of zero.
+  const [ownedNodeRefs, setOwnedNodeRefs] = useState(null);
 
   useEffect(() => {
+    if (loading || !user) return;
     let cancelled = false;
     (async () => {
-      const me = await fetchMe();
-      if (cancelled) return;
-      if (me && me.email) {
-        setUser(me);
-        const myNodes = await fetchMyNodes();
-        // /api/auth/me/nodes carries both identifiers; take the ref, which is
-        // the key space the analytics node map and the aircraft feed use. It
-        // is null for an owned node with no registry row, and a null in this
-        // list counts as a node the owner has on the map.
-        if (!cancelled) setOwnedNodeRefs((myNodes || []).map((n) => n.node_ref).filter(Boolean));
-      }
-      if (!cancelled) setLoading(false);
+      const myNodes = await fetchMyNodes();
+      // /api/auth/me/nodes carries both identifiers; take the ref, which is
+      // the key space the analytics node map and the aircraft feed use. It
+      // is null for an owned node with no registry row, and a null in this
+      // list counts as a node the owner has on the map.
+      if (!cancelled) setOwnedNodeRefs((myNodes || []).map((n) => n.node_ref).filter(Boolean));
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [loading, user]);
 
-  return { user, ownedNodeRefs, loading };
+  // Derived from `user` rather than held: nobody signed in owns nothing and
+  // waits for nothing, whatever a previous session fetched.
+  return {
+    user,
+    ownedNodeRefs: user ? ownedNodeRefs ?? NO_NODES : NO_NODES,
+    loading: loading || (!!user && ownedNodeRefs === null),
+  };
 }

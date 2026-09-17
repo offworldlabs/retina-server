@@ -2,10 +2,6 @@ import { UnauthorizedError, request as sharedRequest, type RequestOptions } from
 
 import { withBase } from "../utils/basePath";
 
-// Re-exported so the auth context can tell a settled 401 from a failure to
-// get an answer without reaching past this module.
-export { UnauthorizedError };
-
 /** Must match the route in App.tsx. Mounted, because this drives a full-page
  *  navigation rather than a router one: under `/dash/` a bare `/login` lands on
  *  the app vhost's root, which is the MAP bundle. */
@@ -33,8 +29,9 @@ function request(path: string, opts?: RequestOptions) {
 }
 
 export const api = {
-  // Auth. The first answer after a boot can be slow, so this one waits longer.
-  me: () => request("/api/auth/me", { timeoutMs: 30000 }),
+  // Auth. Who the caller is comes from the shared useCurrentUser, which goes
+  // straight to the shared client: a 401 there is the answer it wants, and
+  // RequireAuth routes on it without the full page load this wrapper costs.
   logout: () => request("/api/auth/logout", { method: "POST" }),
 
   // Self-service node ownership
