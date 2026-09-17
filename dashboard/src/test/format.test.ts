@@ -86,6 +86,15 @@ describe("formatBytes", () => {
     expect(formatBytes(1024)).toBe("1.0 KB");
     expect(formatBytes(1536)).toBe("1.5 KB");
     expect(formatBytes(5 * 1024 * 1024)).toBe("5.0 MB");
-    expect(formatBytes(2.25 * 1024 * 1024 * 1024)).toBe("2304.0 MB");
+  });
+
+  it("gives gigabytes two decimals", () => {
+    expect(formatBytes(1024 ** 3)).toBe("1.00 GB");
+    expect(formatBytes(2.25 * 1024 ** 3)).toBe("2.25 GB");
+  });
+
+  it("shows a dash for a value that is not a number", () => {
+    expect(formatBytes(NaN)).toBe("—");
+    expect(formatBytes(undefined)).toBe("—");
   });
 });
