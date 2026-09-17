@@ -278,12 +278,25 @@ def append_track_history(
     "has this aircraft moved" is a question about the aircraft, and the
     published delta changes between frames for reasons that have nothing to do
     with the target.
+
+    Each store is looked up ONCE and the deque held locally.  This runs on the
+    flush worker thread while feed_gc.prune_stale_stores pops stale hexes from
+    both dicts on the event loop, with no lock between them.  The old
+    check-then-index pair (``if hex not in d: d[hex] = ...`` followed by
+    ``d[hex].append``) raised KeyError live (2026-09-16, hex pr294e) when the
+    pop landed in between, and one KeyError lost the whole aircraft.json
+    cycle.  ``setdefault`` creates-or-fetches in a single dict operation, so a
+    pop that lands after it at worst orphans one point on a trail GC has
+    already ruled stale — which is what the pop was for.  The ``get`` first
+    keeps the hot path (every emit of every aircraft, ~2 Hz) from allocating
+    a throwaway deque per call.
     """
-    if hex_code not in state.track_histories:
-        state.track_histories[hex_code] = deque(maxlen=state.TRACK_HISTORY_MAX)
-    if hex_code not in state.track_histories_public:
-        state.track_histories_public[hex_code] = deque(maxlen=state.TRACK_HISTORY_MAX)
-    hist = state.track_histories[hex_code]
+    hist = state.track_histories.get(hex_code)
+    if hist is None:
+        hist = state.track_histories.setdefault(hex_code, deque(maxlen=state.TRACK_HISTORY_MAX))
+    hist_public = state.track_histories_public.get(hex_code)
+    if hist_public is None:
+        hist_public = state.track_histories_public.setdefault(hex_code, deque(maxlen=state.TRACK_HISTORY_MAX))
     if hist:
         dlat = abs(hist[-1][0] - lat)
         dlon = abs(hist[-1][1] - lon)
@@ -292,7 +305,7 @@ def append_track_history(
     alt_r = round(alt_ft, 0)
     ts_r = round(ts, 1)
     hist.append([round(lat, 6), round(lon, 6), alt_r, ts_r])
-    state.track_histories_public[hex_code].append(
+    hist_public.append(
         [
             round(lat if public_lat is None else public_lat, 6),
             round(lon if public_lon is None else public_lon, 6),
