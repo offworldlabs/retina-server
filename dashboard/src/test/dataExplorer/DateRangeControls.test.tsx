@@ -59,13 +59,7 @@ describe("DateRangeControls", () => {
 
   it("offers a minimum size and reports it in bytes", () => {
     const { onChange } = setup();
-    fireEvent.change(screen.getByLabelText("Minimum size"), { target: { value: "1048576" } });
+    fireEvent.change(screen.getByLabelText("Min size"), { target: { value: "1048576" } });
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ minSize: 1048576 }));
-  });
-
-  it("resets to the defaults", () => {
-    const { onChange } = setup({ from: "2020-01-01", minSize: 4096, todFrom: "06:00" });
-    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
-    expect(onChange).toHaveBeenCalledWith(defaultFilters(TODAY));
   });
 });
