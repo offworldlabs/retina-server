@@ -57,11 +57,6 @@ def _verify_sim_key(x_api_key: str = Header(default="", alias="X-API-Key")):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
 
-# Was a byte-identical copy of routes/admin.py's; the rule now lives beside the
-# interval table it reads.
-_get_stale_tasks = get_stale_tasks
-
-
 # Module-level reference set from main.py at startup
 _default_pipeline = None
 
@@ -300,7 +295,7 @@ def _build_dashboard_data() -> bytes:
             "task_health": {
                 "last_success": dict(state.task_last_success),
                 "error_counts": state.task_error_snapshot(),
-                "stale_tasks": _get_stale_tasks(),
+                "stale_tasks": get_stale_tasks(),
             },
         }
     )
@@ -469,21 +464,6 @@ async def get_ground_truth_trail(hex_code: str):
         "ground_truth_points": len(gt_trail),
         "solved_points": len(solved_trail),
     }
-
-
-@router.get("/api/test/anomalies")
-async def get_anomaly_log():
-    """Return the anomaly event log and currently flagged hex codes."""
-    return Response(
-        content=orjson.dumps(
-            {
-                "flagged_count": len(state.anomaly_hexes),
-                "flagged_hexes": sorted(state.anomaly_hexes),
-                "events": state.anomaly_log[-100:],
-            }
-        ),
-        media_type="application/json",
-    )
 
 
 # ── Known-track hold (path H) ─────────────────────────────────────────────────

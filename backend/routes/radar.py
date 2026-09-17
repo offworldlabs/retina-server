@@ -6,13 +6,12 @@ import os
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from config.constants import RATE_BUCKETS_MAX_IPS
 from core import state
-from core.users import require_admin
 from pipeline.passive_radar import PassiveRadarPipeline
 from routes.node_schemas import NodeRef
 from services import node_refs, node_registration
@@ -51,10 +50,6 @@ class BulkDetectionRequest(BaseModel):
     nodes: list[BulkNodeEntry] = Field(..., max_length=500)
 
 
-class LoadFileRequest(BaseModel):
-    path: str = Field(..., min_length=1)
-
-
 RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
 _RETINA_ENV = os.getenv("RETINA_ENV", "").lower()
 if not RADAR_API_KEY:
@@ -65,9 +60,6 @@ if not RADAR_API_KEY:
         logging.warning(_msg)
 _RATE_LIMIT = int(os.getenv("RADAR_RATE_LIMIT", "60"))
 _RATE_WINDOW = int(os.getenv("RADAR_RATE_WINDOW", "60"))
-_ALLOWED_DETECTION_DIR = os.path.realpath(
-    os.path.join(os.path.dirname(os.path.dirname(__file__)), "coverage_data", "archive")
-)
 
 # Module-level reference to default pipeline; set from main.py at startup
 _default_pipeline: PassiveRadarPipeline | None = None
@@ -270,26 +262,6 @@ async def ingest_detections_bulk(
                 break
 
     return {"status": "ok", "nodes_registered": registered, "frames_queued": queued}
-
-
-@router.post("/api/radar/load-file")
-async def load_detection_file(body: LoadFileRequest, _admin=Depends(require_admin)):
-    filepath = os.path.realpath(body.path)
-    if not filepath.startswith(_ALLOWED_DETECTION_DIR + os.sep):
-        raise HTTPException(status_code=400, detail="Path must be inside the coverage archive directory")
-    if not os.path.isfile(filepath):
-        raise HTTPException(status_code=400, detail="File not found")
-    if not filepath.endswith(".detection"):
-        raise HTTPException(status_code=400, detail="Only .detection files accepted")
-
-    tracks = _default_pipeline.process_file(filepath)
-    aircraft_data = _default_pipeline.generate_aircraft_json()
-    # Do NOT write aircraft.json here.  The flush task is the file's single
-    # writer (a different schema was being raced in from this request
-    # thread); marking dirty makes the next 1 Hz flush pick the load up.
-    state.aircraft_dirty = True
-
-    return {"status": "ok", "tracks": len(tracks), "aircraft": aircraft_data["aircraft"]}
 
 
 @router.get("/api/radar/status")

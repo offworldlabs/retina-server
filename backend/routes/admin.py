@@ -51,11 +51,6 @@ from services.node_refs import id_for_ref, public_identity, public_name, ref_to_
 logger = logging.getLogger(__name__)
 
 
-# Was a byte-identical copy of routes/test.py's; the rule now lives beside the
-# interval table it reads.
-_get_stale_tasks = get_stale_tasks
-
-
 def _mn_pos_history_size() -> int:
     """Size of the solver's per-hex smoothing buffer (soak observability)."""
     from services.tasks import solver as _solver
@@ -769,7 +764,7 @@ async def system_metrics(_user=Depends(require_admin)):
         "ws_clients": len(state.ws_clients),
         "ws_send_timeouts": state.ws_send_timeouts,
         "ws_live_clients": len(state.ws_live_clients),
-        "stale_tasks": _get_stale_tasks(),
+        "stale_tasks": get_stale_tasks(),
         "process_rss_mb": round(rss_mb, 1),
         "load_avg": list(os.getloadavg()),
         "disk_total_gb": round(disk.total / (1024**3), 1),

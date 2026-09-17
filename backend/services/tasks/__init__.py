@@ -1,7 +1,11 @@
-"""Background task sub-modules split from services/background.py.
+"""Background async tasks, one sub-module per task.
 
-All public names previously exported by background.py are re-exported here
-so ``from services.tasks import frame_processor_loop`` works.
+The task entry points are re-exported here so schedulers can name them
+without knowing which sub-module each lives in::
+
+    from services.tasks import frame_processor_loop, start_solver_workers
+
+Anything else a sub-module exposes is imported from that sub-module directly.
 """
 
 from services.tasks.aircraft_flush import aircraft_flush_task

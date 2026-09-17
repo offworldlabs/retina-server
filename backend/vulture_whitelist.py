@@ -20,26 +20,6 @@ whitelisted.
 # file's own preamble.  ANALYTICS_REFRESH_INTERVAL_S is now wired;
 # ASSOC_MIN_INTERVAL_S is passed by core/state.)
 
-# ── core/types.py ─────────────────────────────────────────────────────────────
-
-# TypedDict definitions — used as type annotations; fields are accessed via
-# dict keys at runtime, not attribute access, so vulture misses the usage.
-NodeState
-_.capabilities
-AircraftPosition
-_.hex
-_.baro_rate
-_.squawk
-_.rssi
-GeoAircraft
-_.flight
-_.alt_geom
-_.multi_node
-_.anomaly
-TaskHealth
-_.last_success
-_.error_counts
-
 # ── pipeline/passive_radar.py ─────────────────────────────────────────────────
 
 # EventWriter public API — tested in tests/test_pipeline.py

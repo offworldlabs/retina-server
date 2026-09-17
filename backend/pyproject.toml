@@ -33,8 +33,6 @@ omit = [
     "routes/auth.py",
     # Simulation/test-only endpoints — not production code paths:
     "routes/test.py",
-    # Pure TypedDict definitions — no runtime code to cover:
-    "core/types.py",
 ]
 
 [tool.coverage.report]

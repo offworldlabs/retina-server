@@ -463,17 +463,17 @@ class TestNodeHealth:
 
 class TestStaleTasks:
     def test_no_stale_when_recent(self):
-        from routes.admin import _get_stale_tasks
+        from core.task_registry import get_stale_tasks
 
         state.task_last_success["frame_processor"] = time.time()
-        result = _get_stale_tasks()
+        result = get_stale_tasks()
         assert "frame_processor" not in result
 
     def test_stale_when_old(self):
-        from routes.admin import _get_stale_tasks
+        from core.task_registry import get_stale_tasks
 
         state.task_last_success["frame_processor"] = time.time() - 9999
-        result = _get_stale_tasks()
+        result = get_stale_tasks()
         assert "frame_processor" in result
 
 

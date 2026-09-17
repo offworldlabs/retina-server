@@ -37,7 +37,13 @@ COVERAGE_STORAGE_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), 
 
 # ── Connected node state tracking ─────────────────────────────────────────────
 connected_nodes: dict[str, dict] = {}
-# node_id → {config_hash, config, status, last_heartbeat, peer, is_synthetic, capabilities}
+# node_id → {config_hash: str, config: dict, status: str,
+#            last_heartbeat: ISO-8601 str, peer: str, is_synthetic: bool,
+#            capabilities: dict, node_ref: str}
+# node_ref is present on mirrored nodes only; see services/node_refs._mirrored_ref.
+# status is set locally to "active" on ingest and "disconnected" when the TCP
+# peer drops, but a heartbeat overwrites it with whatever the node reported, so
+# it is not a closed set — do not branch on it as if it were.
 
 # Empirical FOV (see retina_analytics.empirical_coverage / manager /
 # association).  off/shadow/active, ASSOC_CLAIM_MODE precedent — an
@@ -396,6 +402,10 @@ mlat_solve_history_known: deque = deque(maxlen=MLAT_HISTORY_MAX)
 
 # ── ADS-B positions reported inside detection frames ──────────────────────────
 adsb_aircraft: dict[str, dict] = {}
+# normalize_hex_key'd hex → one record, built in services/tcp_handler and
+# extended by adsb_derived_fields; see services/feed_helpers.adsb_store for the
+# staleness rule that orders writes. last_seen_ms is the node's clock and
+# recv_ms is ours, so the two are not interchangeable.
 
 # ── Known-target claims registry (KNOWN_LANE_MODE) ────────────────────────────
 # Written by services/known_claiming.py once per frame; the interface between
