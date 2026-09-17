@@ -225,17 +225,10 @@ test.describe("Dashboard — login card (auth call held open)", () => {
     await expect(page.locator("h1")).toContainText(/Retina/i);
   });
 
-  test("login page shows Google login button", async ({ page }) => {
+  test("login page offers sign-in by email", async ({ page }) => {
     await page.goto(`${DASH_PAGE}/login`);
-    const googleLink = page.getByRole("link", { name: /Google/i });
-    await expect(googleLink).toBeVisible({ timeout: 10_000 });
-  });
-
-  test("login page link points to /api/auth/login/google", async ({ page }) => {
-    await page.goto(`${DASH_PAGE}/login`);
-    const googleLink = page.getByRole("link", { name: /Google/i });
-    const href = await googleLink.getAttribute("href");
-    expect(href).toMatch(/\/api\/auth\/login\/google/);
+    await expect(page.locator("#login-email")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("button", { name: /sign-in link/i })).toBeVisible();
   });
 
   test("login page shows error message on ?error= query param", async ({ page }) => {
