@@ -263,7 +263,10 @@ CI runs on every PR, on push to `main`, and on demand through
 1. Any PR, whatever its base: `backend-tests`, `web-build` (once per workspace),
    `docker-build`, `env-parity`, plus an automated review.
 2. Merge to `main` → deploy to **staging** → staging smoke + Playwright E2E → deploy to **production** → prod smoke + Playwright E2E.
-   A markdown-only merge skips that chain; the `changes` job has the exceptions.
+   A merge that changes nothing the droplets serve skips that chain, which means
+   markdown, and Python whose syntax tree has not moved: a reworded comment or a
+   `ruff format` pass ships nothing. `deploy/deploy-scope.py` holds the rules and
+   the exceptions, and its tests hold the verdicts.
    The staging third of it is a called workflow,
    `.github/workflows/staging-deploy-verify.yml`, invoked from one `Staging`
    job so that job's concurrency group is held across the deploy and both
