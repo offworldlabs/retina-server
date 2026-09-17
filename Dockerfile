@@ -104,8 +104,12 @@ COPY --from=dashboard-build /app/dashboard/dist /app/dashboard/dist
 COPY --from=dashboard-build /app/dashboard/dist-dash /app/dashboard/dist-dash
 
 # Data explorer — static, no build step and no npm, so it is copied straight
-# from the source tree rather than out of a builder stage.
+# from the source tree rather than out of a builder stage. The shared
+# stylesheets follow it in: index.html links them by URL because it has no
+# bundler to resolve @retina/shared, and /data/shared/ is the only place under
+# its nginx alias they can be served from.
 COPY data-explorer/ /app/data-explorer/
+COPY packages/shared/css/ /app/data-explorer/shared/
 
 # Rate-limit zones — http{} context, identical in every environment.
 COPY deploy/nginx-security.conf /etc/nginx/conf.d/security.conf

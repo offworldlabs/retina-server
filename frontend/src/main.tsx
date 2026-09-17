@@ -2,6 +2,8 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import ErrorBoundary from "./components/ErrorBoundary";
+import "@retina/shared/css/tokens.css";
+import "@retina/shared/css/ui.css";
 import "./App.css";
 import "./map-surface.css";
 

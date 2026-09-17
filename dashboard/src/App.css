@@ -1,129 +1,15 @@
-/* ── CSS Variables ────────────────────────────────────────────────────────── */
+/* ── Tokens ──────────────────────────────────────────────────────────────
+   The palette, the radii and the header height come from
+   @retina/shared/css/tokens.css, which main.tsx imports ahead of this file.
+   The component vocabulary this console shares with the map and the data
+   explorer — button, badge, card, stat card, page header, empty state — comes
+   from @retina/shared/css/ui.css. What remains below is this console's own:
+   its layout, its navigation, its tables, and the controls only it has. */
 
-/* Light is the base, and stays on the bare selector: the guide makes light the
-   norm for anything that explains or configures, and the theme attribute is
-   stamped from JavaScript, so whichever theme depends on it is the one that can
-   flash the other on first paint. The map inverts this for the same reason —
-   dark is its default, so dark is what its base selector carries. */
 :root {
-  --bg-primary: #f1f5f9;
-  --bg-secondary: #ffffff;
-  --bg-card: #ffffff;
-  --bg-card-hover: #f8fafc;
-  --bg-input: #f8fafc;
-  /* The guide's third surface tier. A light canvas is already darker than a
-     card, so a recessed region is made by letting it show through and this is
-     the canvas value; dark inverts the ramp and needs a colour of its own. */
-  --bg-sunk: #f1f5f9;
-  --text-primary: #0f172a;
-  --text-secondary: #475569;
-  --text-muted: #94a3b8;
-  --border: #e2e8f0;
-  --border-light: #cbd5e1;
-  --accent: #3b82f6;
-  --accent-hover: #2563eb;
-  --accent-light: rgba(59, 130, 246, 0.10);
-  --success: #10b981;
-  --success-light: rgba(16, 185, 129, 0.10);
-  --warning: #f59e0b;
-  --warning-light: rgba(245, 158, 11, 0.10);
-  --error: #ef4444;
-  --error-light: rgba(239, 68, 68, 0.10);
-  /* The wash for a badge that carries no status — a private node is a normal
-     node with its location withheld. Named to sit in the same family as the
-     semantic washes above, because it is spent in the same place. */
-  --neutral-light: rgba(15, 23, 42, 0.06);
-  /* Ink for the things that sit ON the accent rather than beside it. It is a
-     token and not a literal white because the dark accent is a bright sky blue:
-     white on it is about 1.8:1, which is why the sidebar mark and the primary
-     button take a near-black there instead. */
-  --accent-ink: #ffffff;
-  --shadow: rgba(15, 23, 42, 0.14);
-  /* How far the basemap is pushed back. OSM tiles do not theme, so on dark they
-     are filtered rather than swapped — the same treatment the map surface gives
-     its own tiles. */
-  --tile-filter: none;
-  /* Leaflet draws its own attribution and zoom chrome, and hardcodes both
-     light. Same token name and values as the map surface. */
-  --attribution-bg: rgba(255, 255, 255, 0.85);
+  /* The one measurement no other surface has, because no other surface has a
+     sidebar. */
   --sidebar-width: 250px;
-  --header-height: 56px;
-  --radius: 8px;
-  --radius-sm: 4px;
-  color-scheme: light;
-}
-
-/* ── Dark ─────────────────────────────────────────────────────────────────
-   The map's dark palette (frontend/src/map-surface.css), which the guide
-   already records as this ramp's counterpart rather than a sixth palette.
-
-   Two selectors carry it because the control has three states. The media query
-   answers `system`, which stamps no attribute at all, so the OS preference is
-   honoured with no JavaScript and keeps working when the OS changes its mind
-   mid-session; `:not([data-theme="light"])` is what lets an explicit light
-   choice override a dark OS. The attribute rule answers an explicit dark.
-
-   The two blocks must stay identical, which themeTokens.test.ts asserts: CSS has no
-   way to share a declaration block across a media query boundary, so the guard
-   against them drifting is a test rather than the stylesheet. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --bg-primary: #0d1b2a;
-    --bg-secondary: #132240;
-    --bg-card: #132240;
-    --bg-card-hover: #1a2b4d;
-    --bg-input: rgba(15, 30, 55, 0.9);
-    --bg-sunk: #0f2035;
-    --text-primary: #e2e8f0;
-    --text-secondary: #94a3b8;
-    --text-muted: #64748b;
-    --border: rgba(100, 180, 255, 0.14);
-    --border-light: rgba(100, 180, 255, 0.28);
-    --accent: #38bdf8;
-    --accent-hover: #7dd3fc;
-    --accent-light: rgba(56, 189, 248, 0.16);
-    --success: #4ade80;
-    --success-light: rgba(74, 222, 128, 0.15);
-    --warning: #fbbf24;
-    --warning-light: rgba(251, 191, 36, 0.15);
-    --error: #f43f5e;
-    --error-light: rgba(244, 63, 94, 0.15);
-    --neutral-light: rgba(226, 232, 240, 0.10);
-    --accent-ink: #082f49;
-    --shadow: rgba(0, 0, 0, 0.5);
-    --tile-filter: saturate(0.85) brightness(0.72);
-    --attribution-bg: rgba(13, 27, 42, 0.85);
-    color-scheme: dark;
-  }
-}
-
-:root[data-theme="dark"] {
-  --bg-primary: #0d1b2a;
-  --bg-secondary: #132240;
-  --bg-card: #132240;
-  --bg-card-hover: #1a2b4d;
-  --bg-input: rgba(15, 30, 55, 0.9);
-  --bg-sunk: #0f2035;
-  --text-primary: #e2e8f0;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  --border: rgba(100, 180, 255, 0.14);
-  --border-light: rgba(100, 180, 255, 0.28);
-  --accent: #38bdf8;
-  --accent-hover: #7dd3fc;
-  --accent-light: rgba(56, 189, 248, 0.16);
-  --success: #4ade80;
-  --success-light: rgba(74, 222, 128, 0.15);
-  --warning: #fbbf24;
-  --warning-light: rgba(251, 191, 36, 0.15);
-  --error: #f43f5e;
-  --error-light: rgba(244, 63, 94, 0.15);
-  --neutral-light: rgba(226, 232, 240, 0.10);
-  --accent-ink: #082f49;
-  --shadow: rgba(0, 0, 0, 0.5);
-  --tile-filter: saturate(0.85) brightness(0.72);
-  --attribution-bg: rgba(13, 27, 42, 0.85);
-  color-scheme: dark;
 }
 
 /* ── Reset ───────────────────────────────────────────────────────────────── */
@@ -414,107 +300,6 @@ a:hover {
   padding: 24px;
 }
 
-/* ── Page Header ─────────────────────────────────────────────────────────── */
-.page-header {
-  margin-bottom: 24px;
-}
-
-.page-header h1 {
-  font-size: 24px;
-  font-weight: 700;
-  margin-bottom: 4px;
-}
-
-.page-header p {
-  color: var(--text-secondary);
-  font-size: 14px;
-}
-
-/* ── Stat Cards ──────────────────────────────────────────────────────────── */
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 16px;
-  margin-bottom: 24px;
-}
-
-.stat-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 20px;
-}
-
-.stat-card .stat-label {
-  font-size: 12px;
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-muted);
-  margin-bottom: 8px;
-}
-
-.stat-card .stat-value {
-  font-size: 28px;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.stat-card .stat-sub {
-  font-size: 12px;
-  color: var(--text-secondary);
-  margin-top: 4px;
-}
-
-/* A reading that is words rather than a number. */
-.stat-card .stat-value.small {
-  font-size: 18px;
-}
-
-.stat-card .stat-unit {
-  font-size: 0.6em;
-  color: var(--text-muted);
-  margin-left: 4px;
-}
-
-.stat-card.accent .stat-value {
-  color: var(--accent);
-}
-.stat-card.success .stat-value {
-  color: var(--success);
-}
-.stat-card.warning .stat-value {
-  color: var(--warning);
-}
-.stat-card.error .stat-value {
-  color: var(--error);
-}
-
-/* ── Cards ───────────────────────────────────────────────────────────────── */
-.card {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-}
-
-.card-header {
-  padding: 16px 20px;
-  border-bottom: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.card-header h3 {
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.card-body {
-  padding: 20px;
-}
-
 /* ── Tables ──────────────────────────────────────────────────────────────── */
 .table-wrapper {
   overflow-x: auto;
@@ -565,58 +350,6 @@ td.table-note {
 .pager-note {
   font-size: 12px;
   color: var(--text-muted);
-}
-
-/* ── Status Badge ────────────────────────────────────────────────────────── */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 10px;
-  border-radius: 12px;
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.badge::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-}
-
-.badge.online {
-  background: var(--success-light);
-  color: var(--success);
-}
-.badge.online::before {
-  background: var(--success);
-}
-
-.badge.offline {
-  background: var(--error-light);
-  color: var(--error);
-}
-.badge.offline::before {
-  background: var(--error);
-}
-
-.badge.warning {
-  background: var(--warning-light);
-  color: var(--warning);
-}
-.badge.warning::before {
-  background: var(--warning);
-}
-
-/* Neutral on purpose: a private node is a normal node with its location
-   withheld, not a warning state. */
-.badge.private {
-  background: var(--neutral-light);
-  color: var(--text-secondary);
-}
-.badge.private::before {
-  background: var(--text-muted);
 }
 
 /* ── Location privacy control ────────────────────────────────────────────── */
@@ -721,46 +454,6 @@ td.table-note {
   padding: 16px 0;
 }
 
-/* ── Buttons ─────────────────────────────────────────────────────────────── */
-.btn {
-  padding: 8px 16px;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  border: none;
-  transition: all 0.15s;
-}
-
-.btn-primary {
-  background: var(--accent);
-  color: var(--accent-ink);
-}
-.btn-primary:hover {
-  background: var(--accent-hover);
-}
-
-.btn-outline,
-.btn-secondary {
-  background: transparent;
-  border: 1px solid var(--border-light);
-  color: var(--text-secondary);
-}
-.btn-outline:hover,
-.btn-secondary:hover {
-  border-color: var(--accent);
-  color: var(--text-primary);
-}
-.btn-secondary:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.btn-sm {
-  padding: 4px 10px;
-  font-size: 12px;
-}
-
 /* ── retnode.com links ───────────────────────────────────────────────────── */
 /* A node id, linked to the node's own site. Inherits the colour of wherever
    the id already sits — the accent in a table cell, the heading on a node's
@@ -788,20 +481,6 @@ td.table-note {
 
 .retnode-link:hover svg {
   color: var(--accent);
-}
-
-/* ── Empty State ─────────────────────────────────────────────────────────── */
-.empty-state {
-  text-align: center;
-  padding: 48px 20px;
-  color: var(--text-muted);
-}
-
-.empty-state svg {
-  width: 48px;
-  height: 48px;
-  margin-bottom: 12px;
-  opacity: 0.3;
 }
 
 /* ── Node card grid ──────────────────────────────────────────────────────── */

@@ -218,6 +218,22 @@ check_header_value() {
     fi
 }
 
+# The body must contain the given text. A status check cannot stand in for this
+# under /data/, where `try_files` answers a missing file with index.html at 200.
+check_body_contains() {
+    local name="$1" url="$2" needle="$3"
+    printf "  %-40s " "$name"
+    BODY=$($CURL "$url" 2>/dev/null) || { echo "FAIL (connection error)"; FAIL=$((FAIL+1)); return; }
+
+    if echo "$BODY" | grep -qF "$needle"; then
+        echo "OK"
+        PASS=$((PASS+1))
+    else
+        echo "FAIL (body does not contain ${needle})"
+        FAIL=$((FAIL+1))
+    fi
+}
+
 # assert_page_asset in this suite's reporting. Shared with CI's production
 # smoke tests so the two cannot drift, as with assert_origin_marker below.
 check_page_asset() {
@@ -369,6 +385,12 @@ check_status "app /dash/ deep link"         "${APP_URL}/dash/nodes"         "200
 # check above while rendering nothing, which is what these two are here for.
 check_page_asset    "app /dash/ loads its bundle" "${APP_URL}/dash/"
 check_page_asset    "app /data/ loads its bundle" "${APP_URL}/data/"
+# The explorer links these rather than importing them, and the Dockerfile is
+# the only thing that puts them under its nginx alias. Miss that COPY and the
+# page still returns 200 — unstyled, with `try_files` answering both links with
+# index.html — so the body is what has to be asserted.
+check_body_contains "data explorer has the palette" "${APP_URL}/data/shared/tokens.css" "--bg-primary"
+check_body_contains "data explorer has the ui rules" "${APP_URL}/data/shared/ui.css"     ".btn-primary"
 # Two segments deep, which is where a relative base path fails and a rooted one
 # does not: the browser would resolve `./assets/...` against /dash/nodes/ and
 # get the SPA fallback back as JavaScript. /dash/ alone cannot tell the two
