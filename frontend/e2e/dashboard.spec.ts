@@ -241,10 +241,10 @@ test.describe("Dashboard — login card (auth call held open)", () => {
 // Response shape is no longer assertable from here, because nothing in CI can
 // authenticate against this hostname. The backend suite covers it.
 test.describe("Dashboard — admin API refuses anonymous callers", () => {
-  // leaderboard is get_current_user rather than require_admin, so it refuses a
-  // step earlier; anonymous sees the same 401 either way. Split them if one
-  // ever becomes reachable without a session.
-  for (const path of ["/api/admin/leaderboard", "/api/admin/events", "/api/admin/storage"]) {
+  // /api/admin/leaderboard is deliberately absent: it is the one route under
+  // this prefix that answers anyone, and api.spec.ts asserts what it publishes.
+  // What matters here is that opening it opened one route and not the prefix.
+  for (const path of ["/api/admin/events", "/api/admin/storage", "/api/admin/node-refs"]) {
     test(`GET ${path} refuses an anonymous caller`, async () => {
       const ctx = await playwrightRequest.newContext();
       const res = await ctx.get(`${API}${path}`);

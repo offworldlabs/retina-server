@@ -137,13 +137,32 @@ test.describe("API admin endpoints", () => {
     await ctx.dispose();
   });
 
-  // 401 rather than a body: the api vhost has no Access application in front of
-  // it, so an anonymous caller is refused by this codebase. The leaderboard asks
-  // only for a logged-in caller (get_current_user), not an administrator. See the
-  // same assertion in dashboard.spec.ts for why that hostname must stay ungated.
-  test("GET /api/admin/leaderboard refuses an anonymous caller", async () => {
+  // The one route under /api/admin that answers anyone, so the assertion here is
+  // about what it says rather than whether it speaks. Its rows carry node_ref
+  // and the metrics /api/radar/analytics already publishes; the miss-detection
+  // counts are withheld, because nothing else serves those per node without a
+  // session. Asserted at the edge and not only in the backend suite: this is the
+  // hostname a stranger would actually reach.
+  test("GET /api/admin/leaderboard answers an anonymous caller", async () => {
     const res = await ctx.get(`${API}/api/admin/leaderboard`);
-    expect(res.status()).toBe(401);
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(Array.isArray(body.leaderboard)).toBe(true);
+  });
+
+  test("GET /api/admin/leaderboard withholds the miss counts from one", async () => {
+    const res = await ctx.get(`${API}/api/admin/leaderboard`);
+    const rows = (await res.json()).leaderboard as Record<string, unknown>[];
+    // Skipped rather than passed vacuously on an environment with no nodes: an
+    // empty list cannot tell a withheld field from an absent row.
+    test.skip(rows.length === 0, "no nodes are reporting to this environment");
+    for (const row of rows) {
+      expect(row).toHaveProperty("node_ref");
+      for (const withheld of ["in_range", "detected_in_range", "missed", "miss_rate"]) {
+        expect(row).not.toHaveProperty(withheld);
+      }
+      expect(row).not.toHaveProperty("node_id");
+    }
   });
 
   // Deliberately on the map host, not API: /api/config is served by
