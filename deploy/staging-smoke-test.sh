@@ -56,8 +56,11 @@ check() {
     BODY=$($CURL "$url" 2>/dev/null) || { echo "FAIL (connection error)"; FAIL=$((FAIL+1)); return; }
 
     # -F: every caller passes a literal, and an unescaped `.` in one would
-    # otherwise match a character it was never meant to.
-    if echo "$BODY" | grep -qF "$expected"; then
+    # otherwise match a character it was never meant to. -e: a needle starting
+    # with a dash is read as an option otherwise, and grep then exits non-zero
+    # having matched nothing, which is indistinguishable here from a body that
+    # genuinely lacks it.
+    if echo "$BODY" | grep -qF -e "$expected"; then
         echo "OK"
         PASS=$((PASS+1))
     else
@@ -209,7 +212,7 @@ check_header_value() {
     printf "  %-40s " "$name"
     HEADERS=$($CURL -o /dev/null -D - "$url" 2>/dev/null) || { echo "FAIL (connection error)"; FAIL=$((FAIL+1)); return; }
 
-    if echo "$HEADERS" | tr 'A-Z' 'a-z' | grep "^${header}:" | grep -qF "$value"; then
+    if echo "$HEADERS" | tr 'A-Z' 'a-z' | grep "^${header}:" | grep -qF -e "$value"; then
         echo "OK"
         PASS=$((PASS+1))
     else
@@ -225,7 +228,7 @@ check_body_contains() {
     printf "  %-40s " "$name"
     BODY=$($CURL "$url" 2>/dev/null) || { echo "FAIL (connection error)"; FAIL=$((FAIL+1)); return; }
 
-    if echo "$BODY" | grep -qF "$needle"; then
+    if echo "$BODY" | grep -qF -e "$needle"; then
         echo "OK"
         PASS=$((PASS+1))
     else
