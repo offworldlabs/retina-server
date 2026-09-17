@@ -18,12 +18,14 @@ from urllib.parse import urlencode
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 
 from core import state
 from core.auth import (
     consume_invite_for_email,
+    consume_magic_link,
     create_claim_code,
+    create_magic_link,
     get_user_nodes,
     list_claim_codes,
     revoke_claim_code,
@@ -32,12 +34,15 @@ from core.users import (
     ACCESS_LOGOUT_PATH,
     ANONYMOUS_USER,
     JWT_LIFETIME_SECONDS,
+    MagicLinkRefused,
     get_current_user,
     get_jwt_strategy,
+    get_or_create_magic_link_user,
     get_or_create_oauth_user,
     has_access_session,
+    user_to_dict,
 )
-from services import publication
+from services import mail, publication
 from services.node_config import position_status
 from services.node_refs import owner_identity
 
@@ -334,6 +339,147 @@ async def callback_github(request: Request, code: str = "", state: str = ""):
         consume_invite_fn=consume_invite_for_email,
     )
     response = RedirectResponse(redirect_url)
+    await _set_auth_cookie(response, user)
+    return response
+
+
+# ── Magic links ───────────────────────────────────────────────────────────────
+
+# Sign-in requests admitted per source per window. nginx already limits the
+# credential endpoints to 5r/m, but only on the three vhosts carrying a
+# `location /api/auth/`; the other six have a blanket `location /api/` at 30r/s
+# and a direct caller has neither. Unbounded, that is a way to mail arbitrary
+# strangers thirty times a second from our own domain, so the limit that
+# matters lives here rather than only at the edge.
+_MAGIC_LINK_WINDOW_S = 60.0
+_MAX_MAGIC_LINK_REQUESTS_PER_SOURCE = 5
+# Distinct sources tracked at once, matching _MAX_OAUTH_STATES' reason for
+# existing: without it a flood from many addresses is a way to grow this dict
+# until the process dies. Full, no further source is admitted, so sign-in stops
+# for the length of one window — which is the better of the two failures.
+_MAX_MAGIC_LINK_SOURCES = 4096
+
+_magic_link_requests: dict[str, list[float]] = {}
+_magic_link_lock = threading.Lock()
+
+
+def _magic_link_quota_available(source: str) -> bool:
+    """Whether this source may ask for another link, recording it if so."""
+    with _magic_link_lock:
+        now = monotonic()
+        for key, times in list(_magic_link_requests.items()):
+            fresh = [t for t in times if t > now - _MAGIC_LINK_WINDOW_S]
+            if fresh:
+                _magic_link_requests[key] = fresh
+            else:
+                del _magic_link_requests[key]
+        recent = _magic_link_requests.get(source)
+        if recent is None:
+            if len(_magic_link_requests) >= _MAX_MAGIC_LINK_SOURCES:
+                logger.warning("Magic-link source table is full; refusing new sources")
+                return False
+            recent = _magic_link_requests.setdefault(source, [])
+        if len(recent) >= _MAX_MAGIC_LINK_REQUESTS_PER_SOURCE:
+            return False
+        recent.append(now)
+        return True
+
+
+#: Where the mailed link lands. HOST_APP serves the map bundle at `/` and mounts
+#: the dashboard under `/dash/` (deploy/nginx/nginx.conf.template), and the
+#: dashboard's router carries a matching basename, so a link to `/auth/link/...`
+#: would render the map and never redeem the token. This prefix and
+#: dashboard/src/utils/basePath.ts have to agree.
+_SIGN_IN_PATH = "/dash/auth/link/"
+
+
+class MagicLinkRequest(BaseModel):
+    email: EmailStr
+
+
+class MagicLinkConsume(BaseModel):
+    token: str
+
+
+def _sign_in_host() -> str:
+    """The host the mailed link points at, or "" when it cannot be known."""
+    return os.getenv("HOST_APP", "").strip()
+
+
+def _sign_in_link(request: Request, token: str) -> str:
+    """Build the mailed URL from configuration, never from the request.
+
+    `request.base_url` derives from the Host header. An attacker who could set
+    it would ask for a link to somebody else's address and have the mail carry
+    a URL pointing at their own server: the victim clicks, and the token is
+    handed over. The deployed vhosts only match known hostnames, so nginx
+    closes that today, but a credential must not rest on that staying true.
+
+    HOST_APP is the consolidated public surface and is already set per
+    environment in every compose overlay, so this needs no new setting. Unset,
+    the caller refuses the request rather than falling back on the request's own
+    host: a fallback there would quietly restore the very thing this exists to
+    prevent, the first time some start path forgot the variable.
+    """
+    return _fix_scheme(f"http://{_sign_in_host()}") + _SIGN_IN_PATH + token
+
+
+def _sign_in_body(link: str) -> str:
+    return (
+        "Someone asked to sign in to RETINA with this address.\n\n"
+        f"{link}\n\n"
+        "The link works once and expires in 15 minutes.\n\n"
+        "If this wasn't you, nothing has happened and you can ignore this message."
+    )
+
+
+@router.post("/magic-link", status_code=202)
+async def request_magic_link(body: MagicLinkRequest, request: Request):
+    """Mail a sign-in link, if the address is one we should mail.
+
+    Answers 202 identically whether or not anything was sent, and hands the
+    send to a background thread so the response time does not vary either. The
+    alternative is an oracle for which addresses own receivers.
+    """
+    # Both about this deployment, not about the address, so they are safe to
+    # say. Checked before a token is minted, so a refusal leaves no row behind.
+    if not mail.is_configured():
+        raise HTTPException(status_code=503, detail="Sign-in by email is unavailable")
+    if not _sign_in_host():
+        logger.error("HOST_APP is not set; refusing to mail a link built from the request host")
+        raise HTTPException(status_code=503, detail="Sign-in by email is unavailable")
+
+    if _magic_link_quota_available(_oauth_source(request)):
+        token = await create_magic_link(body.email)
+        if token:
+            link = _sign_in_link(request, token)
+            mail.send_in_background(body.email, "Sign in to RETINA", _sign_in_body(link))
+
+    return {"status": "accepted"}
+
+
+@router.post("/magic-link/consume")
+async def consume_magic_link_route(body: MagicLinkConsume, request: Request):
+    """Redeem a link and open a session.
+
+    A POST rather than the GET the mail links to: mail providers prefetch
+    links, and a consuming GET would burn the token before the recipient ever
+    clicked it. The mailed URL serves the page; the page calls this.
+    """
+    email = await consume_magic_link(body.token)
+    if email is None:
+        # One answer for unknown, expired and already-redeemed. Telling them
+        # apart says which guesses were once real.
+        raise HTTPException(status_code=400, detail="That sign-in link is no longer valid")
+
+    try:
+        user = await get_or_create_magic_link_user(email)
+    except MagicLinkRefused:
+        # Same answer as a token that never existed. A distinct one would say
+        # which addresses are privileged, and the link is spent either way.
+        raise HTTPException(status_code=400, detail="That sign-in link is no longer valid") from None
+
+    response = JSONResponse({"user": user_to_dict(user)})
     await _set_auth_cookie(response, user)
     return response
 

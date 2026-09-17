@@ -111,11 +111,25 @@ def _clean_db():
     from sqlalchemy import delete
 
     from core.nodes import Node, NodeConfig, NodeLocationPrivacy, NodeToken
-    from core.users import ClaimCode, Invite, NodeOwner, async_session_maker, create_db_and_tables
+    from core.users import (
+        ClaimCode,
+        Invite,
+        MagicLink,
+        NodeOwner,
+        User,
+        async_session_maker,
+        create_db_and_tables,
+    )
 
     async def _setup():
         await create_db_and_tables()
         async with async_session_maker() as session:
+            await session.execute(delete(MagicLink))
+            # Accounts too. Nothing carries a foreign key to them, but a row
+            # left behind outlives the test that made it: a magic-link sign-in
+            # is refused for a superuser, so one test promoting an account
+            # silently changes what every later test in the session sees.
+            await session.execute(delete(User))
             await session.execute(delete(ClaimCode))
             await session.execute(delete(NodeOwner))
             await session.execute(delete(Invite))

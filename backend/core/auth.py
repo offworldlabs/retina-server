@@ -9,6 +9,7 @@ JWT, user storage, and session management are handled by fastapi-users
 has no equivalent in a general-purpose auth library.
 """
 
+import hashlib
 import json
 import logging
 import secrets
@@ -17,7 +18,7 @@ from pathlib import Path
 
 from sqlalchemy import delete, select, update
 
-from core.users import ClaimCode, Invite, NodeOwner, async_session_maker
+from core.users import ClaimCode, Invite, MagicLink, NodeOwner, async_session_maker
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,15 @@ INVITE_EXPIRY_S = 86400 * 14  # 14 days
 CLAIM_CODE_EXPIRY_S = 86400 * 30  # 30 days
 
 _MAX_ACTIVE_CLAIM_CODES_PER_USER = 10
+
+# Short, because the link is a bearer credential sitting in a mailbox and the
+# person asking for it is, by definition, in front of the page.
+MAGIC_LINK_EXPIRY_S = 900  # 15 minutes
+
+# Outstanding links one address may hold. Somebody clicking "send it again"
+# while the first mail is slow is the normal case, so the cap is well above
+# what that produces; it exists to stop a single address filling the table.
+_MAX_OUTSTANDING_MAGIC_LINKS = 5
 
 
 # ── One-time JSON → SQLite migration ─────────────────────────────────────────
@@ -320,6 +330,90 @@ async def consume_claim_code(code: str, node_id: str) -> str | None:
             else:
                 session.add(NodeOwner(node_id=node_id, user_id=user_id))
         return user_id
+
+
+# ── Magic links ───────────────────────────────────────────────────────────────
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def normalise_email(email: str) -> str:
+    return email.strip().lower()
+
+
+async def create_magic_link(email: str) -> str | None:
+    """Issue a sign-in link for an address, returning the token to mail.
+
+    Returns None when the address already holds the maximum number of
+    outstanding links. Callers must answer their own request identically either
+    way: whether a link went out is exactly what an attacker wants told.
+    """
+    email = normalise_email(email)
+    now = time.time()
+    token = secrets.token_urlsafe(32)
+
+    async with async_session_maker() as session:
+        async with session.begin():
+            # Expired rows for this address go now rather than on a timer.
+            # Nothing else sweeps this table, and the alternative is a row per
+            # unredeemed request kept for ever.
+            await session.execute(delete(MagicLink).where(MagicLink.email == email, MagicLink.expires_at < now))
+            outstanding = await session.execute(
+                select(MagicLink).where(
+                    MagicLink.email == email,
+                    MagicLink.used_at.is_(None),
+                    MagicLink.expires_at >= now,
+                )
+            )
+            if len(outstanding.scalars().all()) >= _MAX_OUTSTANDING_MAGIC_LINKS:
+                logger.warning("Magic-link cap reached for an address; not issuing another")
+                return None
+            session.add(
+                MagicLink(
+                    token_hash=_hash_token(token),
+                    email=email,
+                    created_at=now,
+                    expires_at=now + MAGIC_LINK_EXPIRY_S,
+                    used_at=None,
+                )
+            )
+    return token
+
+
+async def consume_magic_link(token: str | None) -> str | None:
+    """Redeem a link once, returning the address it was issued to.
+
+    Returns None for a token that is unknown, expired or already redeemed. The
+    caller must not distinguish those: telling them apart says which guesses
+    were once real.
+    """
+    if not token or not token.strip():
+        return None
+    now = time.time()
+    async with async_session_maker() as session:
+        async with session.begin():
+            # Claim it in the database before reading anything off it, the way
+            # consume_claim_code does: a read/check/write sequence lets two
+            # concurrent redemptions both succeed.
+            result = await session.execute(
+                update(MagicLink)
+                .where(
+                    MagicLink.token_hash == _hash_token(token),
+                    MagicLink.used_at.is_(None),
+                    MagicLink.expires_at >= now,
+                )
+                .values(used_at=now)
+                .returning(MagicLink.email)
+            )
+            email = result.scalar_one_or_none()
+            if email is None:
+                return None
+            # Whoever else can read that mailbox must not be able to sign in on
+            # a link its owner asked for and abandoned.
+            await session.execute(delete(MagicLink).where(MagicLink.email == email, MagicLink.used_at.is_(None)))
+        return email
 
 
 def _claim_code_to_dict(rec: ClaimCode) -> dict:
