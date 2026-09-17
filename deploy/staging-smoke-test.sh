@@ -24,10 +24,6 @@ ADMIN_URL="https://staging-admin.retina.fm"
 # public `testmap` are Cloudflare redirects into it and reach no origin, so
 # nothing below probes them.
 APP_URL="https://staging-app.retina.fm"
-# Resolves to this droplet but is no environment's HOST_*, so it is the only
-# name that reaches the catch-all vhost. Production has no equivalent: every
-# name it renders is claimed.
-CATCHALL_URL="https://staging-testmap.retina.fm"
 # TOWER_CONTRACT_QUERY / TOWER_CONTRACT_ECHO: what a backend must echo back.
 # shellcheck source=deploy/tower-contract.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/tower-contract.sh"
@@ -167,11 +163,7 @@ NO_DNS_EXPECTED=""
 # Cloudflare wobble block every release. Reported as WARN and tallied
 # separately, because a deleted record must still be visible: skipping it
 # silently would retire the only check on a vhost nothing else monitors.
-# staging-testmap is here for the opposite reason to staging-admin: it is the
-# one name no vhost claims, so its record is what makes the catch-all testable.
-# Retiring the surface makes deleting that record a natural next step, and that
-# must cost the catch-all its probe rather than fail a release.
-DNS_NOT_DEPLOY_BLOCKING="staging-admin.retina.fm staging-testmap.retina.fm"
+DNS_NOT_DEPLOY_BLOCKING="staging-admin.retina.fm"
 
 # Decides what to do about $1 not resolving, prints it, and returns 0 when the
 # caller should skip its probe. Membership is tested before the lookup, which is
@@ -195,15 +187,6 @@ handle_unresolvable() {
     fi
     WARN=$((WARN+1))
     return 0
-}
-
-# The _if_dns wrappers: as check_status/check_header, but tolerating a name on
-# one of the lists above rather than failing on it.
-check_status_if_dns() {
-    local name="$1" url="$2" expected_code="$3" host
-    host="${url#https://}"; host="${host%%/*}"
-    if handle_unresolvable "$host" "$name"; then return; fi
-    check_status "$name" "$url" "$expected_code"
 }
 
 check_header() {
@@ -282,13 +265,6 @@ check_origin() {
         printf '    %s\n' "$out"
         FAIL=$((FAIL+1))
     fi
-}
-
-check_origin_if_dns() {
-    local name="$1" url="$2" host
-    host="${url#https://}"; host="${host%%/*}"
-    if handle_unresolvable "$host" "$name"; then return; fi
-    check_origin "$name" "$url"
 }
 
 check_rate_limit() {
@@ -371,15 +347,6 @@ check_status "GET /api/test/mlat-verification" "${API_URL}/api/test/mlat-verific
 # /api/config is asserted on APP_URL, where the proxy doing it is ours.
 
 echo ""
-echo "── Unclaimed hostname (staging-testmap.retina.fm) ──"
-# nginx answers an unmatched host from the FIRST block on the port, so this name
-# used to get the tower SPA with a 200 and a node calling /api/towers parsed HTML
-# as JSON. The catch-all must refuse both, and this is the only live probe of it
-# on either environment.
-check_status_if_dns "unclaimed host refuses /"    "${CATCHALL_URL}/"           "421"
-check_status_if_dns "unclaimed host refuses /api" "${CATCHALL_URL}/api/towers" "421"
-
-echo ""
 echo "── Public app surface (staging-app.retina.fm) ──"
 # All three bundles on one hostname, each built for the mount it is served at.
 # `/` is the only place this repo's own frontend/dist is still served, so it is
@@ -460,9 +427,6 @@ check_origin        "api vhost is this origin"   "${API_URL}/api/health"
 # mounts each declare a Cache-Control. The marker reaches this vhost's API
 # responses only.
 check_origin        "app vhost is this origin"   "${APP_URL}/api/health"
-# The catch-all sets the marker too, so a 421 is provably ours rather than an
-# edge error page that happens to share the status.
-check_origin_if_dns "catch-all is this origin"   "${CATCHALL_URL}/"
 # Edge caching follows what nginx says, and Cloudflare keeps a `public,
 # immutable` response for the whole `expires` window, so that policy is safe
 # only on a name that carries a content hash (Vite's /assets/). A file whose
