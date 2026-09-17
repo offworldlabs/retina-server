@@ -80,12 +80,6 @@ are in [`arc-display.md`](arc-display.md).
   is served from one admin-only route (`GET /api/admin/node-refs`) and exists
   so the dashboard can name a node to an operator and link to its own site,
   which is `<node_id>.retnode.com`.
-- **`services/node_ref.py`** — registered-or-derived handle lookup, used by
-  callers that require a handle even for an unregistered node. It differs from
-  `node_refs.public_identity`, which can withhold an unresolved real node,
-  preserve a mirrored ref, or pass through a synthetic identity. These are
-  separate publication policies; replacing one with the other changes which
-  nodes appear and how consumers address them.
 - **`services/tasks/`** — background async tasks: `aircraft_flush` (broadcast),
   `feed_gc` (stale-store GC on its own 5 s timer, deliberately not tied to the
   feed build), `solver` workers, `analytics_refresh`, archive lifecycle,

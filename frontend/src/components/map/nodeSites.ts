@@ -5,10 +5,10 @@
  *
  * **A node is named by its `node_ref`, never by its `node_id`.**  The id comes
  * off the board and is the name its owner gave the machine; the ref is the
- * public handle the backend now serves for every node, registered or not (see
- * backend/services/node_ref.py).  The id is no longer published at all, so the
- * ref is also the join key everywhere in the client — `nodesByRef`,
- * `ac.node_ref`, `contributing_node_refs` and selection state.
+ * key the backend publishes that node's entry under, in every payload that
+ * carries one (see backend/services/node_refs.py).  The id is no longer
+ * published at all, so the ref is also the join key everywhere in the client
+ * — `nodesByRef`, `ac.node_ref`, `contributing_node_refs` and selection state.
  *
  * **One marker per SITE, not per node.**  Co-located receivers are published
  * at exactly equal coordinates on purpose: they share one fuzz offset so the

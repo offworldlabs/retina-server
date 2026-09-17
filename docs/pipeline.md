@@ -432,14 +432,13 @@ The fuzz rewrite is unchanged: `public_location.translate_polygon` shifts a
 declared wedge rigidly like any other polygon.
 
 **Every public node payload carries a `node_ref`.** `/api/radar/analytics`
-(both variants), `/api/radar/analytics/{node_id}` and `/api/radar/nodes` each
-carry one per node: the registry's `Node.node_ref` for a node registered
-through `/v1/nodes`, and otherwise an HMAC-derived ref of the same
-`nde` + 12 base36 shape, keyed on the node fuzz salt under a `node_ref|`
-domain (`backend/services/node_ref.py`). Nodes on the blah2 bridge or the
-plain TCP protocol have no registry row, so without the derivation half the
-fleet would have no public name at all. The map shows only `node_ref`; the
-`node_id` remains the join key on the wire and in the client.
+(both variants), `/api/radar/analytics/{node_ref}` and `/api/radar/nodes` each
+carry one per node, and it is always the key the entry is published under, as
+`backend/services/node_refs.py` resolves it. A node that the resolver withholds is
+dropped from the payload rather than carried under some other name, so the
+field and the key cannot name a node differently. The map shows
+only `node_ref`; the `node_id` remains the join key on the wire and in the
+client.
 
 `CALIBRATION_SCHEMA` (currently 6) versions what a stored positive *means*;
 persisted state with an older schema is discarded and relearned at node

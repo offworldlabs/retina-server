@@ -122,11 +122,11 @@ export interface AircraftFeedReturn {
 export interface RadarNode {
   /**
    * The public handle for this node, and the only identifier the client ever
-   * sees: the registry's ref when it has one, an HMAC-derived ref of the same
-   * shape when it does not (see backend/services/node_ref.py).  It is also
-   * the join key — it matches `Aircraft.node_ref`, `contributing_node_refs`,
-   * the detecting-node lists and the map's own selection state — because the
-   * private `node_id` is no longer published on any unauthenticated surface.
+   * sees: the key its own entry is published under (see
+   * backend/services/node_refs.py).  It is also the join key — it matches
+   * `Aircraft.node_ref`, `contributing_node_refs`, the detecting-node lists
+   * and the map's own selection state — because the private `node_id` is no
+   * longer published on any unauthenticated surface.
    * Render it through `nodeLabel()` (map/nodeSites.ts), which names a node
    * with no ref "unlisted node".
    */

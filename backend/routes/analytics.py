@@ -13,7 +13,6 @@ from core import state
 from core.auth import get_user_nodes
 from core.users import ANONYMOUS_USER, AUTH_BYPASS, read_user_from_token
 from services import node_bias
-from services.node_ref import public_node_ref
 from services.node_refs import id_for_identity, owner_identity, public_analytics, public_identity
 from services.public_location import public_node_summary
 from services.publication import is_private, private_node_ids
@@ -95,7 +94,7 @@ async def radar_analytics(request: Request, real_only: bool = False):
         ref = owner_identity(nid)
         if ref is None:
             continue
-        nodes[ref] = {**public_node_summary(nid, summary), "node_ref": public_node_ref(nid)}
+        nodes[ref] = {**public_node_summary(nid, summary), "node_ref": ref}
     return Response(
         content=orjson.dumps(payload, option=orjson.OPT_SERIALIZE_NUMPY),
         media_type="application/json",
