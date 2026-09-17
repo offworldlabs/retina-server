@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import rawCss from "../App.css?raw";
+/* Read by path rather than through the package's exports map, which a `?raw`
+   query does not survive. */
+import rawCss from "../../../packages/shared/css/tokens.css?raw";
 import { CHART_THEMES, seriesColour } from "../utils/chartTheme";
 
 const css = rawCss.replace(/\/\*[\s\S]*?\*\//g, "");
@@ -13,8 +15,11 @@ function token(selector: string, name: string): string {
   return match![1].trim();
 }
 
+/* Each palette block carries several selectors, one per surface, so these
+   anchor on the selector this console is drawn by rather than on the whole
+   list. */
 const TOKENS = {
-  light: (name: string) => token(":root {", name),
+  light: (name: string) => token(":root,", name),
   dark: (name: string) => token(':root[data-theme="dark"]', name),
 } as const;
 

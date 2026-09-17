@@ -1,53 +1,22 @@
 /* Retina Data Explorer — no build step, no framework.
 
-   Tokens: the light palette is verbatim from dashboard/src/App.css and the dark
-   one is the map's (frontend/src/map-surface.css), so a surface of the estate is
-   recognisable in either theme. Light stays on the bare selector because it is
-   the default; dark arrives either from the OS preference or from the switch in
-   the topbar, and the two dark blocks are identical by hand — CSS cannot share a
-   declaration block across a media query boundary, and there is no build step
-   here to do it for us.
+   The palette and the shared button, badge, card, stat card, page header and
+   empty state come from shared/tokens.css and shared/ui.css, which index.html
+   links ahead of this file. That directory is not in the source tree: the
+   Dockerfile copies packages/shared/css/ into it, because this surface has no
+   bundler to resolve @retina/shared the way the two React apps do.
 
-   Metrics come from dash as well — 24px page rhythm, 20px card padding, 8/16
-   buttons, 13px rows under 11px headers — so a new rule takes those numbers
-   rather than a fresh one. */
+   Metrics come from the dashboard as well — 24px page rhythm, 20px card
+   padding, 8/16 buttons, 13px rows under 11px headers — so a new rule takes
+   those numbers rather than a fresh one. */
 :root{
-  --bg-primary:#f1f5f9;--bg-secondary:#ffffff;--bg-card:#ffffff;--bg-card-hover:#f8fafc;--bg-input:#f8fafc;
-  /* A light canvas is already darker than a card, so a recessed region is made
-     by letting it show through; dark inverts the ramp and needs its own. */
-  --bg-sunk:#f1f5f9;
-  --text-primary:#0f172a;--text-secondary:#475569;--text-muted:#94a3b8;--border:#e2e8f0;--border-light:#cbd5e1;
-  --accent:#3b82f6;--accent-hover:#2563eb;--accent-light:rgba(59,130,246,.10);
-  /* Ink for what sits ON the accent. A token and not a literal white because
-     the dark accent is a bright sky blue, where white is about 1.8:1. */
-  --accent-ink:#ffffff;
-  --success:#10b981;--success-light:rgba(16,185,129,.10);--warning:#f59e0b;--warning-light:rgba(245,158,11,.10);
-  --error:#ef4444;--error-light:rgba(239,68,68,.10);
-  --shadow:rgba(15,23,42,.14);--scrim:rgba(15,23,42,.35);
-  --header-height:56px;--radius:8px;--radius-sm:4px;
   --mono:"SF Mono","Fira Code",ui-monospace,Menlo,Consolas,monospace;
-  color-scheme:light;
+  /* The wash behind the drawer. No other surface has one, so it is not in the
+     shared palette, but it still has to answer both themes. */
+  --scrim:rgba(15,23,42,.35);
 }
-/* `:not([data-theme="light"])` is what lets an explicit light choice win over a
-   dark OS. */
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
-  --bg-primary:#0d1b2a;--bg-secondary:#132240;--bg-card:#132240;--bg-card-hover:#1a2b4d;--bg-input:rgba(15,30,55,.9);
-  --bg-sunk:#0f2035;
-  --text-primary:#e2e8f0;--text-secondary:#94a3b8;--text-muted:#64748b;
-  --border:rgba(100,180,255,.14);--border-light:rgba(100,180,255,.28);
-  --accent:#38bdf8;--accent-hover:#7dd3fc;--accent-light:rgba(56,189,248,.16);--accent-ink:#082f49;
-  --success:#4ade80;--success-light:rgba(74,222,128,.15);--warning:#fbbf24;--warning-light:rgba(251,191,36,.15);
-  --error:#f43f5e;--error-light:rgba(244,63,94,.15);
-  --shadow:rgba(0,0,0,.5);--scrim:rgba(2,6,23,.55);color-scheme:dark;}}
-:root[data-theme="dark"]{
-  --bg-primary:#0d1b2a;--bg-secondary:#132240;--bg-card:#132240;--bg-card-hover:#1a2b4d;--bg-input:rgba(15,30,55,.9);
-  --bg-sunk:#0f2035;
-  --text-primary:#e2e8f0;--text-secondary:#94a3b8;--text-muted:#64748b;
-  --border:rgba(100,180,255,.14);--border-light:rgba(100,180,255,.28);
-  --accent:#38bdf8;--accent-hover:#7dd3fc;--accent-light:rgba(56,189,248,.16);--accent-ink:#082f49;
-  --success:#4ade80;--success-light:rgba(74,222,128,.15);--warning:#fbbf24;--warning-light:rgba(251,191,36,.15);
-  --error:#f43f5e;--error-light:rgba(244,63,94,.15);
-  --shadow:rgba(0,0,0,.5);--scrim:rgba(2,6,23,.55);color-scheme:dark;}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--scrim:rgba(2,6,23,.55)}}
+:root[data-theme="dark"]{--scrim:rgba(2,6,23,.55)}
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 /* Must outrank the display values set on .notice, .swatches and .btn below —
    the UA's own `[hidden]{display:none}` does not, so `hidden` on any of them
@@ -82,34 +51,15 @@ a:hover{color:var(--accent-hover)}
 .theme-switch button[aria-checked="true"]{background:var(--accent-light);color:var(--accent)}
 
 .content{max-width:1400px;margin:0 auto;padding:24px 24px 140px}
-.page-header{margin-bottom:24px}
-.page-header h1{font-size:24px;font-weight:700;margin-bottom:4px}
-.page-header p{color:var(--text-secondary);font-size:14px;max-width:80ch}
 
-/* ── Cards / stats ── */
-.stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;margin-bottom:24px}
-.stat-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:20px}
-.stat-card .stat-label{font-size:12px;font-weight:500;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:8px}
-.stat-card .stat-value{font-size:28px;font-weight:700;line-height:1}
-.stat-card .stat-sub{font-size:12px;color:var(--text-secondary);margin-top:4px}
-.stat-card.accent .stat-value{color:var(--accent)}
-.stat-card.success .stat-value{color:var(--success)}
-.stat-card.warning .stat-value{color:var(--warning)}
-/* Not dash's `overflow:hidden`: the node dropdown has to escape the card. */
-.card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);overflow:visible;margin-bottom:24px}
-.card-header{padding:16px 20px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
-.card-header h3{font-size:14px;font-weight:600}
-.card-body{padding:20px}
+/* ── Cards ── */
+/* Not the shared card's `overflow:hidden`: the node dropdown has to escape the
+   card. The page rhythm is this surface's own — every card is a stacked band
+   rather than a cell in a grid. */
+.card{overflow:visible;margin-bottom:24px}
 .tl-range{font-size:12px}
 
 /* ── Controls ── */
-.btn{padding:8px 16px;border-radius:var(--radius-sm);font-size:13px;font-weight:500;cursor:pointer;border:none;font-family:inherit;transition:all .15s;
-  display:inline-flex;align-items:center;gap:6px;text-decoration:none;white-space:nowrap}
-.btn-primary{background:var(--accent);color:var(--accent-ink)}.btn-primary:hover{background:var(--accent-hover);color:var(--accent-ink)}
-.btn-outline,.btn-secondary{background:transparent;border:1px solid var(--border-light);color:var(--text-secondary)}
-.btn-outline:hover,.btn-secondary:hover{border-color:var(--accent);color:var(--text-primary)}
-.btn:disabled,.btn[aria-disabled="true"]{opacity:.4;cursor:not-allowed;pointer-events:none}
-.btn-sm{padding:4px 10px;font-size:12px}
 .mono{font-family:var(--mono);font-size:12px}
 .muted{color:var(--text-muted)}
 input,select,textarea{font-family:inherit;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--border-light);
@@ -238,7 +188,6 @@ input[type=checkbox]{accent-color:var(--accent);width:14px;height:14px;padding:0
 .day-state{padding:10px 20px 10px 52px;font-size:12px;color:var(--text-muted);border-top:1px solid var(--border)}
 .day-state.err{color:var(--error)}
 .day-state .btn{margin-left:10px}
-.empty-state{text-align:center;padding:48px 20px;color:var(--text-muted)}
 .est{font-size:10px;color:var(--text-muted)}
 
 /* ── Drawer ── */

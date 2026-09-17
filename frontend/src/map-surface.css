@@ -1,123 +1,61 @@
 /**
- * Map surface theme — the dashboard's design system, applied to the live map.
+ * Map surface chrome.
  *
- * Everything is scoped to `.app.map-surface`, the class App sets on the root.
+ * The palette comes from @retina/shared/css/tokens.css and the button, badge
+ * and card vocabulary from @retina/shared/css/ui.css, both imported by main.tsx
+ * ahead of this file. What is left here is what only a map needs: the slim
+ * header, the panel elevation, the tokens for chips drawn onto tiles, and the
+ * density this surface reads at.
  *
- * The names are dash's (dashboard/src/App.css), and the light block's values
- * are too. Duplicated rather than shared because the two apps build separately,
- * but kept deliberately parallel: one vocabulary across both consoles, so a
- * card, a badge or a micro-label reads the same in either. Change a shared name
- * here only by changing it in dash first.
- *
- * `--bg-sunk` and `--accent-tint` are the two names dash has no equivalent for.
- * The guide gives every surface a sunk tier (§3); dash never paints one because
- * its canvas is already darker than its cards.
+ * Everything is scoped to `.app.map-surface`, the class App sets on the root,
+ * which is also the hook the shared palette uses to give this surface dark by
+ * default while the consoles default to light.
  */
 
 .app.map-surface {
-  --bg-primary: #0d1b2a;
-  --bg-secondary: #132240;
-  --bg-card: #132240;
-  --bg-card-hover: #1a2b4d;
-  --bg-input: rgba(15, 30, 55, 0.9);
-  /* The guide's third surface tier (§3). Dark inverts the ramp — the card is
-     lighter than the canvas — so a recessed pane needs a colour of its own
-     rather than being made by letting the canvas show through. */
-  --bg-sunk: #0f2035;
-  --text-primary: #e2e8f0;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
-  --border: rgba(100, 180, 255, 0.14);
-  --border-light: rgba(100, 180, 255, 0.28);
-  --accent: #38bdf8;
-  --accent-hover: #7dd3fc;
-  --accent-light: rgba(56, 189, 248, 0.16);
-  /* The wash at hover strength. Below --accent-light on purpose, so a hovered
-     row and a selected one stay apart. */
-  --accent-tint: rgba(56, 189, 248, 0.07);
-  --success: #4ade80;
-  --success-light: rgba(74, 222, 128, 0.15);
-  --warning: #fbbf24;
-  --warning-light: rgba(251, 191, 36, 0.15);
-  --error: #f43f5e;
-  --error-light: rgba(244, 63, 94, 0.15);
-
-  /* Geometry, not colour, so it belongs to the base and not to either theme:
-     the light block below only restates what differs, and a token declared
-     there alone resolves to nothing in the default. */
+  /* Geometry, not colour, so it belongs to the base and not to either theme.
+     Slimmer than the consoles' 56px: the toolbar sits directly beneath and the
+     two read as one header block. */
   --header-height: 44px;
-  --radius: 8px;
-  --radius-sm: 4px;
-
-  /* Panels float over the map, and on a dark surface a soft shadow does
-     nothing — the elevation has to come from the panel being lighter than the
-     canvas, plus a hard edge. */
-  --panel-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
-
-  /* Voyager pushed back hard, which is the treatment the original console
-     used: a light basemap tinted down until the tracks sit clearly in front. */
-  --tile-filter: saturate(0.85) brightness(0.78) opacity(0.82);
-  --attribution-bg: rgba(13, 27, 42, 0.85);
-  --map-chip-bg: rgba(8, 18, 38, 0.78);
-  --map-chip-ink: #ffffff;
-  --error-ink: #fca5a5;
-  --warning-ink: #fcd34d;
-  --violet: #a78bfa;
-  --violet-hover: #c4b5fd;
   background: var(--bg-primary);
   color: var(--text-primary);
 }
 
-/* ── Light ────────────────────────────────────────────────────────────────
-   The opt-in, carried by an attribute rather than by the base selector.  That
-   way round on purpose: the attribute is stamped from JavaScript, so whichever
-   theme depends on it is the one that can flash the other on first paint, and
-   the default must never be the one that flashes.  Only token values change —
-   every rule in this file and in LiveAircraftMap.css reads the custom
-   properties, so the whole chrome inverts from this block alone.
+/* ── Chrome tokens ────────────────────────────────────────────────────────
+   The names the consoles have no equivalent for, because they have no map:
+   how far the basemap is pushed back, the chips drawn onto it, and the one
+   violet the Physics tab uses for a control that is not an object class.
+   Dark first, because dark is this surface's default. */
 
-   Carto Positron tiles under dash's #f1f5f9 chrome. */
+.app.map-surface:not([data-theme="light"]) {
+  /* Panels float over the map, and on a dark surface a soft shadow does
+     nothing — the elevation has to come from the panel being lighter than the
+     canvas, plus a hard edge. */
+  --panel-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
+  /* Voyager pushed back hard, which is the treatment the original console
+     used: a light basemap tinted down until the tracks sit clearly in front.
+     Further back than the consoles push their own tiles, which carry no
+     tracks over them. */
+  --tile-filter: saturate(0.85) brightness(0.78) opacity(0.82);
+  --map-chip-bg: rgba(8, 18, 38, 0.78);
+  --map-chip-ink: #ffffff;
+  --violet: #a78bfa;
+  --violet-hover: #c4b5fd;
+}
 
+/* Carto Positron tiles under the consoles' #f1f5f9 chrome. */
 .app.map-surface[data-theme="light"] {
-  --bg-primary: #f1f5f9;
-  --bg-secondary: #ffffff;
-  --bg-card: #ffffff;
-  --bg-card-hover: #f8fafc;
-  --bg-input: #f8fafc;
+  /* A recessed pane here sits against panels that already float, so it needs
+     to be lighter than the canvas the consoles recess into. */
   --bg-sunk: #f8fafc;
-  --text-primary: #0f172a;
-  --text-secondary: #475569;
-  --text-muted: #94a3b8;
-  --border: #e2e8f0;
-  --border-light: #cbd5e1;
-  --accent: #3b82f6;
-  --accent-hover: #2563eb;
-  --accent-light: rgba(59, 130, 246, 0.1);
-  --accent-tint: rgba(59, 130, 246, 0.05);
-  --success: #10b981;
-  --success-light: rgba(16, 185, 129, 0.1);
-  --warning: #f59e0b;
-  --warning-light: rgba(245, 158, 11, 0.1);
-  --error: #ef4444;
-  --error-light: rgba(239, 68, 68, 0.1);
-
   /* Panels float over map tiles rather than sitting on a page, so they need a
-     shadow dash never has to reach for. */
+     shadow the consoles never have to reach for. */
   --panel-shadow: 0 2px 12px rgba(15, 23, 42, 0.12);
-
-  /* Map-specific tokens, i.e. the things dash has no equivalent for because it
-     has no map: how far the basemap is pushed back, the chips drawn onto it,
-     ink that has to sit on a semantic wash, and the one violet the Physics
-     tab uses for a control that is not an object class. */
   --tile-filter: saturate(0.9);
-  --attribution-bg: rgba(255, 255, 255, 0.85);
   --map-chip-bg: rgba(255, 255, 255, 0.88);
   --map-chip-ink: #0f172a;
-  --error-ink: #b91c1c;
-  --warning-ink: #b45309;
   --violet: #7c3aed;
   --violet-hover: #6d28d9;
-
 }
 
 /* ── Header ───────────────────────────────────────────────────────────────
@@ -142,7 +80,7 @@
   height: 24px;
   border-radius: 6px;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   font-size: 0.95rem;
 }
 
@@ -160,7 +98,7 @@
   letter-spacing: 0;
 }
 
-/* Tabs are dash's underline tabs, sat on the header's own bottom rule. */
+/* Tabs are the consoles' underline tabs, sat on the header's own bottom rule. */
 .app.map-surface .header-tabs {
   margin-left: auto;
   gap: 0;
@@ -189,33 +127,6 @@
   border-bottom-color: var(--accent);
 }
 
-/* ── dash component idioms ────────────────────────────────────────────────
-   The map's panels are built from these rather than from one-off inline
-   styles, so a stats panel and a filter popover are the same object. */
-
-.app.map-surface .card {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--panel-shadow);
-  overflow: hidden;
-}
-
-.app.map-surface .card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--border);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.app.map-surface .card-body {
-  padding: 10px 12px;
-}
-
 /* The micro-label. Panel headers, stat labels, group titles, table headers —
    the single most reused idiom on the surface. */
 .app.map-surface .label {
@@ -224,92 +135,6 @@
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-muted);
-}
-
-.app.map-surface .badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 10px;
-  border-radius: 12px;
-  font-size: 12px;
-  font-weight: 500;
-}
-
-.app.map-surface .badge::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-}
-
-.app.map-surface .badge.online {
-  background: var(--success-light);
-  color: var(--success);
-}
-.app.map-surface .badge.online::before {
-  background: var(--success);
-}
-
-.app.map-surface .badge.warning {
-  background: var(--warning-light);
-  color: var(--warning);
-}
-.app.map-surface .badge.warning::before {
-  background: var(--warning);
-}
-
-.app.map-surface .badge.offline {
-  background: var(--error-light);
-  color: var(--error);
-}
-.app.map-surface .badge.offline::before {
-  background: var(--error);
-}
-
-/* A badge with no leading dot, for counts and tags. */
-.app.map-surface .badge.plain::before {
-  display: none;
-}
-
-.app.map-surface .badge.plain {
-  background: var(--accent-light);
-  color: var(--accent-hover);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.app.map-surface .btn {
-  padding: 8px 16px;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  border: none;
-  transition: all 0.15s;
-}
-
-.app.map-surface .btn-primary {
-  background: var(--accent);
-  color: #fff;
-}
-.app.map-surface .btn-primary:hover {
-  background: var(--accent-hover);
-}
-
-.app.map-surface .btn-secondary {
-  background: transparent;
-  border: 1px solid var(--border-light);
-  color: var(--text-secondary);
-}
-.app.map-surface .btn-secondary:hover {
-  border-color: var(--accent);
-  color: var(--text-primary);
-}
-
-.app.map-surface .btn-sm {
-  padding: 4px 10px;
-  font-size: 12px;
 }
 
 /* Form controls, so a filter input matches a console input. */
@@ -354,7 +179,7 @@
 }
 
 /* ── Focus ───────────────────────────────────────────────────────────────
-   None of the four surfaces defines one; keyboard focus rides the browser
+   None of the other surfaces defines one; keyboard focus rides the browser
    default. This surface does. */
 
 .app.map-surface :focus-visible {

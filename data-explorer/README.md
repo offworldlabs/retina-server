@@ -8,12 +8,22 @@ talks to the same-origin API.
 ```
 data-explorer/
   index.html   markup + the CommonJS shim that loads the vendored timeline
-  app.css      tokens (light from dashboard/src/App.css, dark from the map) + layout
+  app.css      this surface's own layout and controls
   app.js       all behaviour, one classic script, plain ES2020
   theme-boot.js  stamps the saved theme before first paint; a file, not inline,
                  because the vhost's CSP is `script-src 'self'`
   vendor/      react, react-dom, lodash, classnames, @edsc/timeline — see NOTICE.md
+  shared/      NOT in the source tree — see below
 ```
+
+`index.html` links `shared/tokens.css` and `shared/ui.css`, which hold the
+palette and the button, badge and card rules the two React apps import as
+`@retina/shared/css/*`. Having no bundler, this page reaches them by URL
+instead, and the `Dockerfile` copies `packages/shared/css/` to
+`/app/data-explorer/shared/` so they land under the `/data/` alias. Edit them in
+`packages/shared/css/`; a change there reaches all three surfaces at once. The
+staging smoke test asserts both URLs serve real CSS, because `try_files` answers
+a missing one with `index.html` at 200 and the page merely renders unstyled.
 
 Edit the files and redeploy; there is nothing to compile. `Dockerfile` copies the
 directory verbatim, so a change here ships with any image build. Because none of

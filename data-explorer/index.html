@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Retina · Data Explorer</title>
 <meta name="description" content="Browse, preview and bulk-fetch archived detection files from the Retina passive radar network.">
+<!-- shared/ is packages/shared/css/, put here by the Dockerfile: this page has
+     no bundler to resolve @retina/shared, so the two React apps import those
+     files and this one links them. Order matters — app.css overrides them. -->
+<link rel="stylesheet" href="shared/tokens.css">
+<link rel="stylesheet" href="shared/ui.css">
 <link rel="stylesheet" href="app.css">
 <!-- Without defer: it has to stamp the theme before the first paint. Not
      inline, because this vhost's CSP is `script-src 'self'` — see the file. -->

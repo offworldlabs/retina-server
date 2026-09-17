@@ -1,0 +1,256 @@
+/**
+ * The component vocabulary the surfaces share: a button, a badge, a card, and
+ * the page furniture that sits around them. Every rule reads the tokens, so
+ * this file names no colour of its own.
+ *
+ * Selectors are deliberately bare rather than scoped to a surface. A surface
+ * that wants a different reading writes a more specific rule of its own —
+ * `.app.map-surface .card` outranks `.card` — which keeps the delta visible in
+ * the file that owns it instead of forking the whole object.
+ *
+ * Tables are not here. The three surfaces do not share a table idiom: the
+ * dashboard's row metrics are its own, the explorer scopes a denser set under
+ * `.prev`, and the map's live tables are inline-styled inside a detail panel.
+ */
+
+/* ── Buttons ─────────────────────────────────────────────────────────────── */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+.btn-primary:hover {
+  background: var(--accent-hover);
+  color: var(--accent-ink);
+}
+
+.btn-outline,
+.btn-secondary {
+  background: transparent;
+  border: 1px solid var(--border-light);
+  color: var(--text-secondary);
+}
+.btn-outline:hover,
+.btn-secondary:hover {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.btn:disabled,
+.btn[aria-disabled="true"] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* An anchor ignores `disabled`, so the attribute form has to refuse the click
+   itself. Deliberately not extended to `:disabled`: a disabled button already
+   refuses it, and taking its pointer events away would also take the `title`
+   tooltip that explains why it is disabled. */
+.btn[aria-disabled="true"] {
+  pointer-events: none;
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+/* ── Badges ──────────────────────────────────────────────────────────────── */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.badge.online {
+  background: var(--success-light);
+  color: var(--success);
+}
+.badge.online::before {
+  background: var(--success);
+}
+
+.badge.offline {
+  background: var(--error-light);
+  color: var(--error);
+}
+.badge.offline::before {
+  background: var(--error);
+}
+
+.badge.warning {
+  background: var(--warning-light);
+  color: var(--warning);
+}
+.badge.warning::before {
+  background: var(--warning);
+}
+
+/* Neutral on purpose: a private node is a normal node with its location
+   withheld, not a warning state. */
+.badge.private {
+  background: var(--neutral-light);
+  color: var(--text-secondary);
+}
+.badge.private::before {
+  background: var(--text-muted);
+}
+
+/* A badge with no leading dot, for counts and tags. */
+.badge.plain {
+  background: var(--accent-light);
+  color: var(--accent-hover);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.badge.plain::before {
+  display: none;
+}
+
+/* ── Cards ───────────────────────────────────────────────────────────────── */
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.card-header h3 {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.card-body {
+  padding: 20px;
+}
+
+/* ── Stat cards ──────────────────────────────────────────────────────────── */
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+}
+
+.stat-card .stat-label {
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.stat-card .stat-value {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.stat-card .stat-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+/* A reading that is words rather than a number. */
+.stat-card .stat-value.small {
+  font-size: 18px;
+}
+
+.stat-card .stat-unit {
+  font-size: 0.6em;
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+
+.stat-card.accent .stat-value {
+  color: var(--accent);
+}
+.stat-card.success .stat-value {
+  color: var(--success);
+}
+.stat-card.warning .stat-value {
+  color: var(--warning);
+}
+.stat-card.error .stat-value {
+  color: var(--error);
+}
+
+/* ── Page furniture ──────────────────────────────────────────────────────── */
+
+.page-header {
+  margin-bottom: 24px;
+}
+
+.page-header h1 {
+  font-size: 24px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.page-header p {
+  color: var(--text-secondary);
+  font-size: 14px;
+  max-width: 80ch;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 48px 20px;
+  color: var(--text-muted);
+}
+
+.empty-state svg {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 12px;
+  opacity: 0.3;
+}

@@ -6,6 +6,8 @@ import { AuthProvider } from "./context/AuthContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ROUTER_BASENAME } from "./utils/basePath";
+import "@retina/shared/css/tokens.css";
+import "@retina/shared/css/ui.css";
 import "./App.css";
 
 // Outermost, so the theme outlives a crash in the tree below: the boundary's
