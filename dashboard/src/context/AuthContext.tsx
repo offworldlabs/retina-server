@@ -27,8 +27,13 @@ export function AuthProvider({ children }) {
     return { redirected: false };
   };
 
+  // signIn adopts an identity the caller already holds. The magic-link
+  // redemption answers with the user it just signed in, so there is nothing to
+  // fetch; without it the guard would bounce a fresh session to the login card
+  // until /api/auth/me was asked again. Passed bare so it stays referentially
+  // stable, which callers may depend on in an effect.
   return (
-    <AuthContext.Provider value={{ user, loading, logout }}>
+    <AuthContext.Provider value={{ user, loading, logout, signIn: setUser }}>
       {children}
     </AuthContext.Provider>
   );

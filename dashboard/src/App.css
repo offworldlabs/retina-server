@@ -127,6 +127,54 @@ a:hover {
   height: 20px;
 }
 
+.login-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  text-align: left;
+}
+
+.login-form label {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.login-form .login-btn {
+  margin-bottom: 0;
+  margin-top: 4px;
+}
+
+.login-form .login-error {
+  margin-bottom: 0;
+}
+
+.login-input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.login-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.login-note {
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+
 .login-error {
   color: var(--error);
   font-size: 14px;
