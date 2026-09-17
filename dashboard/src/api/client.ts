@@ -34,6 +34,27 @@ export const api = {
   // RequireAuth routes on it without the full page load this wrapper costs.
   logout: () => request("/api/auth/logout", { method: "POST" }),
 
+  // Magic-link sign-in. Both answer before there is a session to lose, so the
+  // 401 redirect above never fires for them; they go through the wrapper for
+  // one client shape rather than for it.
+  //
+  // requestMagicLink resolves 202 whatever the address is, so a caller cannot
+  // learn from it whether an account exists. It rejects with an HttpError for
+  // a malformed address (422) and for a deployment with no mail configured
+  // (503) — the only two failures a page may repeat back.
+  requestMagicLink: (email) =>
+    request("/api/auth/magic-link", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+  // Resolves {user} and leaves the session cookie behind it; rejects 400 with
+  // one detail for unknown, expired and already-redeemed alike.
+  consumeMagicLink: (token) =>
+    request("/api/auth/magic-link/consume", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    }),
+
   // Self-service node ownership
   myNodes: () => request("/api/auth/me/nodes"),
   myClaimCodes: () => request("/api/auth/me/claim-codes"),

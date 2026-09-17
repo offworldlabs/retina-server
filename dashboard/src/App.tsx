@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { Routes, Route, Navigate } from "react-router-dom";
 import { useAuth } from "./context/AuthContext";
 import LoginPage from "./pages/LoginPage";
+import AuthLinkPage from "./pages/AuthLinkPage";
 import DashboardLayout from "./components/DashboardLayout";
 import { resolveSurface, warnIfModeIgnored } from "./utils/surface";
 
@@ -62,6 +63,9 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      {/* Outside RequireAuth: whoever opens a sign-in link has no session yet,
+          and the guard would send them to the login card instead. */}
+      <Route path="/auth/link/:token" element={<AuthLinkPage />} />
       <Route
         path="/*"
         element={
