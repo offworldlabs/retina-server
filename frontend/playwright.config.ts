@@ -4,9 +4,15 @@ import { defineConfig, devices } from "@playwright/test";
  * Playwright E2E test configuration.
  *
  * Environments (set via E2E_ENV):
- *   staging  → staging-api / staging-map / staging-dash / staging-admin (default)
- *   prod     → api / map / dash (no synthetic map, no admin)
+ *   staging  → staging-api / staging-app / staging-admin (default)
+ *   prod     → api / app (no synthetic map, no admin)
  *   local    → localhost:8000 (api) / localhost:5173 (map) / localhost:5174 (dash)
+ *
+ * The entries below are roles, not hostnames, which is why several of them hold
+ * the same origin on a deployed environment: one hostname now serves the map at
+ * `/`, the dashboard under `/dash/` and the data explorer under `/data/`. They
+ * stay separate because they differ where it matters — on production and on the
+ * dev server, where each answers its own question about what exists.
  *
  * No entry names a towers hostname. Those are routed to tower-finder-service's
  * own edge by a Cloudflare Origin Rule, so nothing this repo builds answers
@@ -14,11 +20,12 @@ import { defineConfig, devices } from "@playwright/test";
  * failed E2E rolls production back.
  *
  * `testmap` is null on prod, and that is load-bearing rather than tidiness.
- * testmap.retina.fm is served by staging — production runs no simulator and has
- * no synthetic map surface. Pointing the production suite at it would mean the
- * production E2E exercising staging, and because a failed production E2E
- * auto-rolls-back production (ci.yml), a staging wobble would revert a good
- * production build. The one suite that needs the surface skips itself instead.
+ * Production runs no simulator and has no synthetic map surface; staging is the
+ * only environment that still has one. Pointing the production suite at
+ * staging's would mean the production E2E exercising staging, and because a
+ * failed production E2E auto-rolls-back production (ci.yml), a staging wobble
+ * would revert a good production build. The one suite that needs the surface
+ * skips itself instead.
  */
 
 const ENV = (process.env.E2E_ENV ?? "staging") as "staging" | "prod" | "local";
@@ -26,30 +33,29 @@ const ENV = (process.env.E2E_ENV ?? "staging") as "staging" | "prod" | "local";
 const HOSTS = {
   staging: {
     api:       "https://staging-api.retina.fm",
-    map:       "https://staging-map.retina.fm",
-    // The synthetic map surface, which is what the live-map suite needs — and
-    // deliberately NOT testmap.retina.fm, even though staging now serves that
-    // too. That name's record is Cloudflare-side and points at whichever box
-    // currently hosts the demo, so keying CI to it would fail the suite for the
-    // duration of any DNS move, including the one that first brings it here.
-    // staging-map serves byte-identical data: both are public demo surfaces, so
-    // both stay on the unfiltered feed (usesRealOnlyFeed is anchored to `^map\.`
-    // exactly) and both drop the real fleet client-side via hidesRealNodes. What
-    // the suite sees on either is the synthetic fleet and only that.
-    testmap:   "https://staging-map.retina.fm",
-    dash:      "https://staging-dash.retina.fm",
-    // Same bundle as dash; the hostname is what selects the admin route table.
+    // The live map, at the root of the consolidated surface.
+    map:       "https://staging-app.retina.fm",
+    // The synthetic map surface, which is what the live-map suite needs. Staging
+    // is the environment running the fleet, so on staging it is the same origin
+    // as `map` above: the two differ on production, where one exists and the
+    // other does not.
+    testmap:   "https://staging-app.retina.fm",
+    // The dashboard's origin. Its pages sit under dashBase below; its
+    // same-origin API calls do not.
+    dash:      "https://staging-app.retina.fm",
+    // Same bundle as dash, built at a root instead; the hostname is what selects
+    // the admin route table. It keeps a name of its own because a Cloudflare
+    // Access application can only be scoped to one.
     admin:     "https://staging-admin.retina.fm",
-    // The consolidated surface: the map at /, the dashboard under /dash/, the
-    // data explorer under /data/. Staging is the synthetic environment, so its
-    // map here shows the same fleet as staging-map above.
+    // The consolidated surface as a whole, for the suite that asserts the mounts
+    // themselves execute rather than any one bundle's behaviour.
     app:       "https://staging-app.retina.fm",
   },
   prod: {
     api:       "https://api.retina.fm",
-    map:       "https://map.retina.fm",
+    map:       "https://app.retina.fm",
     testmap:   null,
-    dash:      "https://dash.retina.fm",
+    dash:      "https://app.retina.fm",
     // Null on prod, like testmap and for the same reason: a failed production
     // E2E rolls production back, and the surface selection this would assert is
     // client-side, so staging exercises the identical bundle at no such cost.
@@ -78,6 +84,16 @@ const HOSTS = {
 
 export const env = ENV;
 export const hosts = HOSTS[ENV];
+
+/**
+ * The path the dashboard bundle is mounted at on `hosts.dash`.
+ *
+ * Empty on the dev server, which gives the bundle an origin to itself, and
+ * `/dash` on a deployed environment, where it shares one with the map. A page
+ * route takes this prefix and a same-origin API call does not — the API is the
+ * vhost's, not the bundle's.
+ */
+export const dashBase = ENV === "local" ? "" : "/dash";
 
 /**
  * Cloudflare Access service-token headers, empty unless CI supplies both.
@@ -112,7 +128,7 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? "github" : "list",
   use: {
-    // The frontend/dist vhost that exists on every environment and is ours:
+    // The frontend/dist surface that exists on every environment and is ours:
     // testmap is staging-only and the towers name is not ours. Every spec names
     // its host explicitly, so this only resolves a relative URL.
     baseURL: hosts.map,

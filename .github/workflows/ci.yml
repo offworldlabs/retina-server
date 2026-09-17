@@ -367,10 +367,10 @@ jobs:
 
       # Staging's is a DIFFERENT container, and staging is what deploys first.
       # Checking production's instead would pass while staging's still drops the
-      # parameter, on testmap.retina.fm, which is the public demo. It has no
-      # public DNS (staging-tower-finder.retina.fm does not resolve), so the only
-      # way to reach it before our own deploy puts a vhost in front is from
-      # inside the droplet, over the same retina-edge network nginx will use.
+      # parameter on the public demo, which staging serves. It has no public DNS
+      # (staging-tower-finder.retina.fm does not resolve), so the only way to
+      # reach it before our own deploy puts a vhost in front is from inside the
+      # droplet, over the same retina-edge network nginx will use.
       #
       # base64 so the JSON fragment survives the trip without quoting games.
       - name: Staging's instance, over retina-edge
@@ -1050,6 +1050,9 @@ jobs:
           # assert_page_asset: proves a mounted bundle resolves the assets it
           # names. Shared with the staging suite so the two cannot drift.
           source "$GITHUB_WORKSPACE/deploy/page-asset.sh"
+          # assert_legacy_redirect: proves a retired hostname still reaches the
+          # surface it was retired into. Shared for the same reason.
+          source "$GITHUB_WORKSPACE/deploy/legacy-redirects.sh"
 
           check_origin() {
             local name="$1" url="$2" out
@@ -1095,11 +1098,11 @@ jobs:
           # tower-finder-service, so this would now be a 404 by design. The
           # route is checked where it is actually served, on the tower vhosts
           # below.
-          # On map, not towers: since the 2026-09-14 origin flip Cloudflare sends
+          # On app, not towers: since the 2026-09-14 origin flip Cloudflare sends
           # towers.retina.fm to tower-finder-service's own edge, so that probe
           # asserted a different service's frontend while this job rolls THIS
-          # one back on failure. map is the production surface we still serve.
-          check_status "GET / (frontend)"         "https://map.retina.fm/"            "200"
+          # one back on failure. app is the production surface we still serve.
+          check_status "GET / (frontend)"         "https://app.retina.fm/"            "200"
           check_status "GET /api/health (api.retina.fm)" "${BASE_URL}/api/health"     "200"
 
           echo ""
@@ -1112,15 +1115,9 @@ jobs:
           # back on failure. These assert the marker only this repo's nginx
           # sets. This job has no check_header of its own; assert_origin_marker
           # is shared with the staging suite so the two cannot drift.
-          # data.retina.fm is probed here and nowhere else in this job: it is a
-          # live production vhost that no other production check touches, so
-          # without this an Origin Rule could take it and nothing would notice.
           # admin is absent because Cloudflare Access answers a browserless
           # request with a 302 from the edge, carrying no origin headers.
-          check_origin "map vhost is this origin"  "https://map.retina.fm/api/health"
           check_origin "api vhost is this origin"  "${BASE_URL}/api/health"
-          check_origin "dash vhost is this origin" "https://dash.retina.fm/api/health"
-          check_origin "data vhost is this origin" "https://data.retina.fm/api/health"
           # /api/health, not a page path: nginx drops every inherited add_header
           # in a location that declares one of its own, and this vhost's /dash/
           # and /data/ mounts each declare a Cache-Control, so the marker reaches
@@ -1136,16 +1133,32 @@ jobs:
           check_page_asset "app /dash/ loads its bundle" "https://app.retina.fm/dash/"
           check_page_asset "app /data/ loads its bundle" "https://app.retina.fm/data/"
 
-          # The tower-finder seam, on production's OWN vhost names: prod parks
-          # testmap as testmap-retired, so its routed set is not staging's and
-          # staging passing says nothing about it. Same assertion as the staging
-          # suite, from the same file.
+          echo ""
+          echo "── Do the retired hostnames still reach it ──"
+          # No vhost claims these; Cloudflare redirects them into the mounts
+          # above, and this origin would refuse them with a 421. Warned rather
+          # than failed: the rules are the edge's, so no deploy here can have
+          # broken one and rolling this release back cannot fix one.
+          for pair in "map.retina.fm|https://app.retina.fm" \
+                      "dash.retina.fm|https://app.retina.fm/dash" \
+                      "data.retina.fm|https://app.retina.fm/data"; do
+            LEGACY_HOST="${pair%%|*}"
+            printf "  %-40s " "$LEGACY_HOST"
+            if REASON=$(assert_legacy_redirect "$LEGACY_HOST" "${pair#*|}"); then
+              echo "OK"; PASS=$((PASS+1))
+            else
+              echo "WARN"; printf '    %s\n' "$REASON"; WARN=$((WARN+1))
+              echo "::warning::${LEGACY_HOST} no longer redirects to the app surface. It is a retired hostname with no vhost, so it is now refused at the origin. Restore the Cloudflare redirect rule."
+            fi
+          done
+
+          # The tower-finder seam, on production's OWN vhost names. Same
+          # assertion as the staging suite, from the same file.
           # towers.retina.fm is deliberately absent, for the reason given above:
           # every name below is one nginx here actually answers.
           source "$GITHUB_WORKSPACE/deploy/tower-contract.sh"
-          for endpoint in https://map.retina.fm/api/towers \
+          for endpoint in https://app.retina.fm/api/towers \
                           https://api.retina.fm/towers \
-                          https://dash.retina.fm/api/towers \
                           https://admin.retina.fm/api/towers; do
             printf "  %-40s " "${endpoint#https://}"
             # 2 is our nginx having forwarded to a service that did not answer.
@@ -1167,11 +1180,9 @@ jobs:
             fi
           done
 
-          # The sibling routes the same include forwards. dash is the vhost that
-          # used to answer both from the monolith, so it is where a missing
-          # proxy would show up first; map is the one a human looks at, and
-          # replaces towers here for the reason given above.
-          for endpoint in https://dash.retina.fm https://map.retina.fm; do
+          # The sibling routes the same include forwards, on the vhost a human
+          # looks at. app replaces towers here for the reason given above.
+          for endpoint in https://app.retina.fm; do
             printf "  %-40s " "${endpoint#https://}/api/elevation"
             # 2 is the service answering that its own upstream is unavailable.
             # Passed, loudly: this job rolls production back on a failure, and a

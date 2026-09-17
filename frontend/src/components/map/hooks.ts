@@ -187,7 +187,7 @@ export function useAircraftFeed(ownerOnly = false) {
     if (wsRef.current || wsClosedRef.current) return;
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     // Owner mode overrides the public feeds with a server-filtered, cookie-authed feed.
-    // Otherwise map.retina.fm streams only the real radar node; testmap streams all.
+    // Otherwise a real-radar surface streams only the real nodes; the demo streams all.
     const wsPath = ownerOnly
       ? "/ws/aircraft/owner"
       : usesRealOnlyFeed ? "/ws/aircraft/live" : "/ws/aircraft";
@@ -288,7 +288,7 @@ export function useAircraftFeed(ownerOnly = false) {
     // No HTTP fallback in owner mode: the public aircraft.json is unfiltered,
     // so polling it would leak other nodes' data. Wait for the WS to reconnect.
     if (ownerOnly) return;
-    // On map.retina.fm use the real-node-only endpoint so unfiltered synthetic
+    // On a real-radar surface use the real-node-only endpoint so unfiltered synthetic
     // aircraft never appear even when the WS is temporarily disconnected.
     const pollPath = usesRealOnlyFeed
       ? `${API_BASE}/radar/data/aircraft-live.json`
@@ -353,7 +353,7 @@ export function useNodes() {
     const controller = new AbortController();
     async function loadNodes() {
       try {
-        // On map.retina.fm request only real nodes from the backend — avoids
+        // On a real-radar surface request only real nodes from the backend — avoids
         // relying on client-side hostname detection to filter 900+ synthetic markers.
         const url = usesRealOnlyFeed
           ? `${API_BASE}/radar/analytics?real_only=true`

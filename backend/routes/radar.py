@@ -112,7 +112,7 @@ async def tar1090_aircraft():
 
 @router.get("/api/radar/data/aircraft-live.json")
 async def tar1090_aircraft_live():
-    """Real-node-only aircraft data for map.retina.fm HTTP polling fallback."""
+    """Real-node-only aircraft data for app.retina.fm HTTP polling fallback."""
     return Response(content=state.latest_real_aircraft_json_bytes, media_type="application/json")
 
 

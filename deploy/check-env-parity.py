@@ -52,8 +52,11 @@ _LABEL_WIDTH = max(len(env) for env in OVERLAYS)
 
 # Every vhost the template defines must be TLS in a deployed environment. Update
 # this alongside the template if a vhost is added or removed. Counts the
-# catch-all `default_server` as well as the eight named vhosts.
-EXPECTED_TLS_VHOSTS = 9
+# catch-all `default_server` as well as the four named vhosts.
+#
+# Two branches that each move this number for their own reason merge textually
+# and land on neither: check it still matches the template after any merge.
+EXPECTED_TLS_VHOSTS = 5
 
 # Key paths permitted to differ between the environments, as regexes matched
 # against the dotted path into the merged compose tree.
@@ -167,16 +170,12 @@ _ALLOWED = _compile_allowed(ALLOWED_DIVERGENCE)
 
 # Hostname roles, mapped back to a common token before comparing the two
 # rendered nginx configs. Ordered longest-value-first at substitution time so
-# `staging.retina.fm` cannot shadow `staging-map.retina.fm`.
+# `app.retina.fm` cannot shadow `staging-app.retina.fm`.
 HOST_VARS = (
     "HOST_MAIN",
     "HOST_API",
     "HOST_APP",
-    "HOST_MAP",
-    "HOST_DASH",
     "HOST_ADMIN",
-    "HOST_DATA",
-    "HOST_TESTMAP",
     "CSP_CONNECT_SRC",
 )
 
@@ -282,8 +281,8 @@ def check_nginx(tmp: Path) -> list[str]:
         text = render(values, tmp / f"{env}.conf")
         # Replace each environment's hostnames with a role token so only
         # structural differences survive. Longest first: a short hostname can be
-        # a substring of a longer one (`map.retina.fm` inside
-        # `staging-map.retina.fm`), and replacing the short one first would
+        # a substring of a longer one (`app.retina.fm` inside
+        # `staging-app.retina.fm`), and replacing the short one first would
         # corrupt the comparison.
         for var, value in sorted(values.items(), key=lambda kv: len(kv[1]), reverse=True):
             text = text.replace(value, f"<{var}>")

@@ -378,7 +378,7 @@ def _refresh_analytics_and_nodes():
     analytics_data = public_analytics(_summaries, _cross_node, _fleet)
     state.latest_analytics_bytes = orjson.dumps(analytics_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
-    # Real-only variant: strip synthetic nodes so map.retina.fm never receives them.
+    # Real-only variant: strip synthetic nodes so app.retina.fm never receives them.
     # Intersect first, publish second.  real_node_ids comes from
     # state.connected_nodes, which is keyed on node_id, so an intersection
     # against the ref-keyed map would match nothing and empty the variant.

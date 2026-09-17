@@ -523,7 +523,7 @@ external_adsb_cache: dict[str, dict] = {}
 from fastapi import WebSocket  # noqa: E402  (deferred to avoid import loops)
 
 ws_clients: set[WebSocket] = set()  # all aircraft (simulated fleet)
-ws_live_clients: set[WebSocket] = set()  # real-node-only aircraft (map.retina.fm)
+ws_live_clients: set[WebSocket] = set()  # real-node-only aircraft (app.retina.fm)
 # Per-owner feeds: each authenticated owner connection maps to the set of node
 # ids it owns, so broadcast can send a payload filtered to just that owner's
 # nodes (true data isolation, not a client-side view filter).

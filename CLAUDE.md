@@ -28,10 +28,10 @@ FastAPI backend and React front-ends for the RETINA passive-radar network.
   `backend/.env.example` so the list stays current.
 - **Verify on the live map after deploying.** Green tests do not cover the
   compose/env/frontend seams. After any change ships to an environment, open
-  that environment's map surface in a real browser — `test-map.retina.fm` for
-  the test droplet, `testmap.retina.fm` for staging (Claude: use the Chrome
-  browser tools) — and confirm the map renders, aircraft and solves appear,
-  and the change behaves as intended before calling the deploy done.
+  that environment's `app` hostname in a real browser — `test-app.retina.fm`
+  for the test droplet, `staging-app.retina.fm` for staging (Claude: use the
+  Chrome browser tools) — and confirm the map renders, aircraft and solves
+  appear, and the change behaves as intended before calling the deploy done.
 - **An automated browser can show `0 aircraft` on a map that real users see
   working.** The count in the toolbar and the live-stats panel comes from the
   map's own update loop, which a scripted session does not always drive. Judge

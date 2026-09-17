@@ -1,20 +1,18 @@
 /**
- * Live Aircraft Map (testmap domain) E2E tests.
+ * Live Aircraft Map E2E tests, on the synthetic map surface.
  *
  * This suite visits whichever host `hosts.testmap` names — in CI that is
- * staging-map.retina.fm, not the public testmap.retina.fm, so the suite does not
- * depend on where the demo is currently served from. Both are the same surface:
- * the synthetic fleet, unfiltered. It verifies the map page loads, WebSocket
- * connects, aircraft appear, and key interactive elements work correctly.
+ * staging's app hostname, which serves the synthetic fleet unfiltered. It
+ * verifies the map page loads, WebSocket connects, aircraft appear, and key
+ * interactive elements work correctly.
  *
  * NOTE: These tests require the synthetic fleet to be running on the target
  * environment. They use generous timeouts to account for warm-up time.
  *
- * Production has no synthetic map surface — it runs no simulator, and
- * testmap.retina.fm is served by staging — so the whole file skips there rather
- * than reaching across environments. See the note in playwright.config.ts: a
- * failed production E2E auto-rolls-back production, so a suite that silently
- * tested staging could revert a good production build.
+ * Production has no synthetic map surface — it runs no simulator — so the whole
+ * file skips there rather than reaching across environments. See the note in
+ * playwright.config.ts: a failed production E2E auto-rolls-back production, so a
+ * suite that silently tested staging could revert a good production build.
  */
 import { test, expect, Page } from "@playwright/test";
 import { hosts } from "../playwright.config";
@@ -39,8 +37,8 @@ async function waitForLive(page: Page, timeoutMs = 15_000) {
 }
 
 /**
- * The unfiltered feed, which is what these surfaces render: usesRealOnlyFeed is
- * anchored to the bare `map.` name (utils/domains.ts), which testmap is never.
+ * The unfiltered feed, which is what this surface renders: usesRealOnlyFeed is
+ * anchored to the bare `app.` name (utils/domains.ts), which staging is never.
  * Unreadable counts as non-empty so the caller's original failure stands.
  */
 async function feedIsEmpty(page: Page): Promise<boolean> {

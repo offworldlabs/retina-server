@@ -405,13 +405,11 @@ app.add_middleware(
             os.getenv(
                 "CORS_ORIGINS",
                 "http://localhost:5173,http://localhost:3000,http://localhost:5174,"
-                # testmap.retina.fm is deliberately absent: it is served by staging, so a
-                # production process falling back to this default should not treat it as
-                # a same-trust origin. Every deployed environment sets CORS_ORIGINS
-                # explicitly, so this list is the local-development default only.
-                "https://retina.fm,https://api.retina.fm,https://dash.retina.fm,"
-                "https://admin.retina.fm,"
-                "https://towers.retina.fm,https://map.retina.fm",
+                # Production's names only. Every deployed environment sets
+                # CORS_ORIGINS explicitly, so a staging or test name here would
+                # only widen what a process falling back to this default trusts.
+                "https://retina.fm,https://api.retina.fm,https://app.retina.fm,"
+                "https://admin.retina.fm,https://towers.retina.fm",
             )
         )
     ),
