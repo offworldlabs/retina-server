@@ -58,7 +58,10 @@ from routes.streaming import router as streaming_router
 from routes.test import router as test_router
 from services import detection_mirror, publication
 from services.alerting import log_destination
-from services.background import (
+from services.runtime_coverage import start as _start_coverage
+from services.runtime_coverage import stop as _stop_coverage
+from services.state_snapshot import SAVE_INTERVAL_S, restore_snapshot, save_snapshot
+from services.tasks import (
     adsb_truth_fetcher,
     aircraft_flush_task,
     analytics_refresh_task,
@@ -77,9 +80,6 @@ from services.background import (
     track_flush_task,
     users_backup_task,
 )
-from services.runtime_coverage import start as _start_coverage
-from services.runtime_coverage import stop as _stop_coverage
-from services.state_snapshot import SAVE_INTERVAL_S, restore_snapshot, save_snapshot
 from services.tasks.executor import task_executor, unfinished_task_executors
 from services.tasks.solver import solver_workers_stopping
 from services.tcp_handler import handle_tcp_client

@@ -6,8 +6,6 @@ to process detection data and output tar1090-compatible aircraft.json.
 Pipeline: detection data → retina-tracker → retina-geolocator → tar1090 JSON
 """
 
-import glob
-import json
 import logging
 import math
 import os
@@ -819,28 +817,6 @@ class PassiveRadarPipeline:
             self._last_prune_time = _now_mono
             self._prune_stale_tracks()
 
-    def process_file(self, filepath: str) -> list:
-        """Process an entire .detection file. Returns geolocated tracks."""
-        with open(filepath) as f:
-            content = f.read().strip()
-            if not content.startswith("["):
-                content = "[" + content + "]"
-            frames = json.loads(content)
-
-        # Feed all frames to tracker only (skip per-frame geolocation for batch)
-        for frame in frames:
-            ts = frame["timestamp"]
-            delays = frame.get("delay", [])
-            dopplers = frame.get("doppler", [])
-            snrs = frame.get("snr", [])
-            detections = [{"delay": d, "doppler": f, "snr": s} for d, f, s in zip(delays, dopplers, snrs)]
-            self.tracker.process_frame(detections, ts)
-
-        # Run geolocation once after all frames are processed
-        self._run_geolocation()
-
-        return list(self.geolocated_tracks.values())
-
     def generate_aircraft_json(self) -> dict:
         """Generate tar1090-compatible aircraft.json from geolocated tracks."""
         now = time.time()
@@ -903,38 +879,3 @@ class PassiveRadarPipeline:
             "lat": lat,
             "lon": lon,
         }
-
-
-def process_detection_folder(folder: str, output_dir: str, node_config: dict = None):
-    """Process all .detection files in a folder and write tar1090 JSON to output_dir."""
-    pipeline = PassiveRadarPipeline(node_config)
-
-    detection_files = sorted(glob.glob(os.path.join(folder, "*.detection")))
-    if not detection_files:
-        logger.info("No .detection files found in %s", folder)
-        return
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    receiver = pipeline.generate_receiver_json()
-    with open(os.path.join(output_dir, "receiver.json"), "w") as f:
-        json.dump(receiver, f)
-
-    for filepath in detection_files:
-        logger.info("Processing: %s", os.path.basename(filepath))
-        pipeline.process_file(filepath)
-
-    aircraft_data = pipeline.generate_aircraft_json()
-    with open(os.path.join(output_dir, "aircraft.json"), "w") as f:
-        json.dump(aircraft_data, f)
-
-    logger.info("Output: %d geolocated targets", len(aircraft_data["aircraft"]))
-    return aircraft_data
-
-
-if __name__ == "__main__":
-    import sys
-
-    folder = sys.argv[1] if len(sys.argv) > 1 else "."
-    output = sys.argv[2] if len(sys.argv) > 2 else "./tar1090_data"
-    process_detection_folder(folder, output)
