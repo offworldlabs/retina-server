@@ -395,7 +395,7 @@ mlat_solve_history: deque = deque(maxlen=MLAT_HISTORY_MAX)
 # window and the solver age-prunes at 35 min.  A dark record was therefore
 # evicted by known-lane volume long before it aged out, and a caller asking
 # for 35 min got a silently truncated answer.  Split, each lane gets the full
-# age window at its own rate; readers merge the two (routes/test.py's
+# age window at its own rate; readers merge the two (solver_report.py's
 # _merged_solve_history) so nothing that used to be visible disappeared, and
 # report window_effective_minutes so any remaining truncation is legible.
 mlat_solve_history_known: deque = deque(maxlen=MLAT_HISTORY_MAX)
@@ -645,7 +645,7 @@ known_follow_claims: int = 0
 # name finds only the read sites.  published counts actual publishes (binding
 # only, so it stays zero in shadow), publish_errors the ones that threw, and
 # publish_rms_rejected the solves binding would have published but for the
-# residual gate.  routes/test.py's known_lane block reads them as a funnel.
+# residual gate.  solver_report.py's known_lane block reads them as a funnel.
 known_lane_attempts: int = 0
 known_lane_truth_match: int = 0
 known_lane_ghost: int = 0
@@ -855,7 +855,7 @@ solver_resolve_skips: int = 0
 # costs nothing (the transponder keeps the track alive anyway), while a
 # skipped dark candidate may be the only chance that aircraft had of reaching
 # the map this window.  Lane is decided by solver._is_dark_solver_input, the
-# same predicate routes.test._record_lane falls back to for a record that
+# same predicate solver_report._record_lane falls back to for a record that
 # never got a key — and a skip never gets one.
 solver_resolve_skips_dark: int = 0
 

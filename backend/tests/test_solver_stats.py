@@ -3,7 +3,7 @@
 Funnel/reject/error stats come from the two solve-history deques merged and
 windowed; ghost detection and consensus/counters read current live state
 directly.  The top-level funnel is the DARK lane only — see
-routes.test._solver_window_stats for why, and for the ghost definition.
+solver_report._solver_window_stats for why, and for the ghost definition.
 
 _rec's defaults (no solve_key, no adsb_hex, no known_lane) make a DARK record,
 so every pre-lane-split funnel test below still describes the lane those keys
@@ -17,7 +17,12 @@ from collections import deque
 from fastapi.testclient import TestClient
 
 from core import state
-from routes.test import _ERR_GT_GATE_KM, _GHOST_GATE_KM, _record_lane, _solver_window_stats
+from services.solver_report import (
+    _ERR_GT_GATE_KM,
+    _GHOST_GATE_KM,
+    _record_lane,
+    _solver_window_stats,
+)
 from services.tasks import solver as solver_mod
 
 

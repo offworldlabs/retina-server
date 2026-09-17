@@ -2356,7 +2356,7 @@ def _record_resolve_skip(s_in, now_s: float, blocking: list[dict]) -> None:
         {
             "ts_ms": int(now_s * 1000),
             # No key is minted for a candidate that never solves, so lane is
-            # the same fallback routes.test._record_lane uses for a reject.
+            # the same fallback solver_report._record_lane uses for a reject.
             "lane": "dark" if dark else "adsb",
             "track_ids": track_ids,
             "n_nodes": int(s.get("n_nodes") or 0),
