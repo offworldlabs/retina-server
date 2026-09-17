@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { Routes, Route } from "react-router-dom";
 import LoginPage from "./pages/LoginPage";
 import AuthLinkPage from "./pages/AuthLinkPage";
+import ClaimPage from "./pages/ClaimPage";
 import DashboardLayout from "./components/DashboardLayout";
 import RequireAuth from "./components/RequireAuth";
 import { resolveSurface, warnIfModeIgnored } from "./utils/surface";
@@ -49,9 +50,11 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-      {/* Outside RequireAuth: whoever opens a sign-in link has no session yet,
-          and the guard would send them to the login card instead. */}
+      {/* Both outside RequireAuth: whoever opens either link has no session
+          yet, and the guard would send them to the login card instead. The
+          claim link goes further and creates the account on the click. */}
       <Route path="/auth/link/:token" element={<AuthLinkPage />} />
+      <Route path="/auth/claim/:token" element={<ClaimPage />} />
       <Route
         path="/*"
         element={

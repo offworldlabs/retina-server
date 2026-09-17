@@ -634,6 +634,43 @@ class TestClaimRoutes:
         assert r.status_code == 200
         assert self._claim_on_file().email == "ada@example.com"
 
+    @staticmethod
+    def _owned_by_the_caller(verified: bool, node_id="ret1a2b3c4d"):
+        """The node owned by the test client's account, with the address that
+        was offered for it either confirmed or not."""
+        from core.auth import set_node_owner
+        from core.users import ANONYMOUS_USER, async_session_maker
+        from services.node_claim_store import mark_verified
+
+        async def _own():
+            if verified:
+                async with async_session_maker() as session:
+                    async with session.begin():
+                        await mark_verified(session, node_id, "ada@example.com")
+            await set_node_owner(node_id, ANONYMOUS_USER["id"])
+
+        asyncio.run(_own())
+        asyncio.set_event_loop(asyncio.new_event_loop())
+
+    def test_the_owner_list_names_the_address_a_node_was_claimed_with(self, client):
+        self._mailed()
+        self._owned_by_the_caller(verified=True)
+
+        [node] = [n for n in client.get("/api/auth/me/nodes").json() if n["node_id"] == "ret1a2b3c4d"]
+
+        assert node["claimed_with"] == "ada@example.com"
+
+    def test_an_address_nobody_confirmed_is_not_what_a_node_was_claimed_with(self, client):
+        """An owner reached some other way, such as a claim code, beside an
+        address that was offered and never confirmed: that address is a
+        stranger's as far as this owner is concerned."""
+        self._mailed()
+        self._owned_by_the_caller(verified=False)
+
+        [node] = [n for n in client.get("/api/auth/me/nodes").json() if n["node_id"] == "ret1a2b3c4d"]
+
+        assert node["claimed_with"] is None
+
     def test_releasing_a_node_the_caller_does_not_own_is_404(self, client):
         """The same answer a node that does not exist gets: an id that resolves
         is already a hint about where a receiver is."""

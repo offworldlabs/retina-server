@@ -81,6 +81,18 @@ export const api = {
   revokeClaimCode: (code) =>
     request(`/api/auth/me/claim-codes/${encodeURIComponent(code)}`, { method: "DELETE" }),
 
+  // Claiming a node. The first three take no session: whoever clicked the link
+  // in their mail may have no account yet, which is the point. They go through
+  // the wrapper anyway so that a claim page opened by somebody already signed
+  // in behaves like every other page.
+  claimPreview: (token) => request(`/api/auth/claim/${encodeURIComponent(token)}`),
+  consumeClaim: (token) =>
+    request("/api/auth/claim/consume", { method: "POST", body: JSON.stringify({ token }) }),
+  declineClaim: (token) =>
+    request("/api/auth/claim/decline", { method: "POST", body: JSON.stringify({ token }) }),
+  releaseNode: (nodeId) =>
+    request(`/api/auth/me/nodes/${encodeURIComponent(nodeId)}/claim`, { method: "DELETE" }),
+
   // Location privacy (owner). A node the caller does not own is a 404 here,
   // not a 403 — the id space is guessable and the two answers would differ
   // only in confirming the id exists.

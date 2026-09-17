@@ -250,3 +250,35 @@ async def claim_status(session: AsyncSession, node_id: str, now: float) -> Claim
     if challenge is not None and challenge.expires_at > now:
         return ClaimStatus("pending", challenge.email, False)
     return ClaimStatus("unclaimed", claim.email, False)
+
+
+async def claim_addresses(node_ids: list[str]) -> dict[str, str | None]:
+    """The address each of these nodes was claimed with, keyed by node.
+
+    One query for the whole list, because the caller is rendering a table and a
+    lookup per row is how a page that was fast at three nodes stops being fast
+    at thirty. Nodes with no address are absent rather than null, so a caller
+    reads the two the same way through `.get`.
+
+    Only a verified address counts. An owner reached any other way, such as a
+    claim code, can sit beside an address somebody offered and nobody confirmed,
+    including one its recipient declined, and that is not what the node was
+    claimed with.
+
+    Opens its own session, unlike everything else here: the one caller is an
+    owner-facing route in the `core/auth.py` style, which reaches the database
+    through the shared maker rather than an injected session.
+    """
+    if not node_ids:
+        return {}
+    from core.users import async_session_maker
+
+    async with async_session_maker() as session:
+        rows = (
+            await session.execute(
+                select(NodeClaim.node_id, NodeClaim.email).where(
+                    NodeClaim.node_id.in_(node_ids), NodeClaim.verified.is_(True)
+                )
+            )
+        ).all()
+    return {node_id: email for node_id, email in rows if email is not None}

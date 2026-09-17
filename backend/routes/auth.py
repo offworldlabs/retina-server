@@ -41,6 +41,7 @@ from core.users import (
     user_to_dict,
 )
 from services import mail, publication
+from services.node_claim_store import claim_addresses
 from services.node_config import position_status
 from services.node_refs import owner_identity
 
@@ -382,6 +383,10 @@ async def my_nodes(request: Request):
     # page an owner has just changed the setting on, and showing them a stale
     # answer for up to half a minute is how a working switch reads as broken.
     privacy = await publication.location_privacy_map(node_ids)
+    # One query for the list rather than a lookup per node, matching the privacy
+    # map above. The address is what the owner was mailed to claim the node
+    # with, so it is theirs to see; it is not published anywhere else.
+    claimed_with = await claim_addresses(node_ids)
     for nid in node_ids:
         info = snapshot.get(nid) or {}
         cfg = info.get("config", {}) or {}
@@ -400,6 +405,7 @@ async def my_nodes(request: Request):
                 "frequency": cfg.get("FC", cfg.get("frequency")),
                 "location_private": private,
                 "location_privacy_source": source,
+                "claimed_with": claimed_with.get(nid),
             }
         )
     return out

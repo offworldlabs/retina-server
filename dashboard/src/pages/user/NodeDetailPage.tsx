@@ -62,11 +62,26 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
             location_privacy_source: owned.location_privacy_source || "default",
           }
         : null,
+      // Same gate as the privacy card, and for the same reason: this is the
+      // owner's own view of their own node. Null for a node nobody claimed by
+      // email, which is every node an administrator assigned.
+      ownership: owned ? { node_id: owned.node_id, claimed_with: owned.claimed_with || null } : null,
     };
   }, nodeId ?? "");
   // What the privacy control last saved. It outranks the fetched answer for
   // the node it was saved on, and lapses when the route moves to another.
   const [applied, setApplied] = useState<{ nodeId: string; privacy: LocationPrivacyState } | null>(null);
+  // Every hook stays above the early returns below: a render that takes the
+  // loading or not-found path must call exactly as many as one that does not.
+  //
+  // `released` is the node handed back in this session. It outranks the fetched
+  // answer for that node, because the ownership and privacy cards both gate on
+  // ownership and leaving them up would offer controls the server now answers
+  // 404 for.
+  const [released, setReleased] = useState<string | null>(null);
+  const [confirmingRelease, setConfirmingRelease] = useState(false);
+  const [releasing, setReleasing] = useState(false);
+  const [releaseError, setReleaseError] = useState<string | null>(null);
 
   if (loading) return <div className="empty-state">Loading…</div>;
   // A failed fetch is this node not being found, not the previous node's
@@ -76,8 +91,23 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
 
   const nodeInfo = page?.nodeInfo ?? null;
   const privacy: LocationPrivacyState | null =
-    applied?.nodeId === nodeId ? applied.privacy : (page?.privacy ?? null);
+    released === nodeId ? null : applied?.nodeId === nodeId ? applied.privacy : (page?.privacy ?? null);
+  const ownership = released === nodeId ? null : (page?.ownership ?? null);
 
+  async function release() {
+    if (!ownership) return;
+    setReleasing(true);
+    setReleaseError(null);
+    try {
+      await api.releaseNode(ownership.node_id);
+      setReleased(nodeId);
+      setConfirmingRelease(false);
+    } catch (e) {
+      setReleaseError((e as Error).message || "Could not release this node.");
+    } finally {
+      setReleasing(false);
+    }
+  }
   // What this node publishes as, and what the URL addresses it by: the public
   // analytics payload is keyed on the ref and carries no node_id of its own.
   const nodeRef = data.node_ref || nodeId;
@@ -186,6 +216,41 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
               onReset={() => api.clearMyNodeLocationPrivacy(privacy.node_id)}
               onApplied={(next) => setApplied({ nodeId, privacy: next })}
             />
+          </div>
+        </div>
+      )}
+
+      {/* Ownership — owners only. Releasing is here rather than on a list page
+          because it wants the node named in front of it. */}
+      {ownership && (
+        <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card-header"><h3>Ownership</h3></div>
+          <div className="card-body">
+            <p>
+              {ownership.claimed_with
+                ? <>Claimed with <strong>{ownership.claimed_with}</strong>.</>
+                : <>This node was assigned to you rather than claimed with an email address.</>}
+            </p>
+            <p className="muted">
+              Releasing hands it back so its next owner can claim it. You stop seeing its unpublished
+              data straight away, and the node learns within a minute.
+            </p>
+            {releaseError && <p className="login-error">{releaseError}</p>}
+            {confirmingRelease ? (
+              <>
+                <p><strong>Release this node?</strong> Whoever claims it next becomes its owner.</p>
+                <button className="btn danger" onClick={release} disabled={releasing}>
+                  {releasing ? "Releasing…" : "Yes, release it"}
+                </button>
+                <button className="btn" onClick={() => setConfirmingRelease(false)} disabled={releasing}>
+                  Keep it
+                </button>
+              </>
+            ) : (
+              <button className="btn" onClick={() => setConfirmingRelease(true)}>
+                Release this node
+              </button>
+            )}
           </div>
         </div>
       )}
