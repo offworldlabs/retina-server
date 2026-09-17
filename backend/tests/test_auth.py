@@ -202,8 +202,7 @@ class TestAuthFlagDerivation:
     def test_configured_access_beats_the_flag(self):
         """A real identity provider must never be shadowed by an anonymous
         admin. Access is what admits an administrator, so it is what the bypass
-        defers to; the OAuth client ids this used to read were never set in any
-        environment, which is how the bypass came to be live everywhere."""
+        defers to."""
         from core.users import _derive_auth_flags
 
         auth_enabled, bypass = _derive_auth_flags(
@@ -225,9 +224,9 @@ class TestAuthFlagDerivation:
         assert _derive_auth_flags({configured_key: "x", "AUTH_ALLOW_ANONYMOUS_ADMIN": "1"})[1] is True
 
     def test_auth_is_enabled_without_any_provider_configured(self):
-        """AUTH_ENABLED must not key off a provider's keys. It did key off the
-        OAuth client ids, so deleting those would have turned authentication
-        off and reopened the path the bypass used to take."""
+        """AUTH_ENABLED must not key off a provider's keys, or removing a
+        provider turns authentication off and reopens the path the bypass used
+        to take. Sign-in by mailed link needs no boot-time configuration here."""
         from core.users import _derive_auth_flags
 
         assert _derive_auth_flags({})[0] is True
@@ -275,10 +274,10 @@ def _probe_admin_route(*, with_flag: bool, db_path) -> dict:
     """Boot the app in a subprocess and report what an anonymous caller gets."""
     env = os.environ | {"RETINA_ENV": "test", "RETINA_DB_PATH": str(db_path)}
     # The flag must be the only difference between the two runs, and absent has
-    # to mean absent rather than empty. Configured OAuth keys would suppress the
-    # bypass on their own (see _derive_auth_flags), which would make a 401 prove
-    # nothing about the flag, so they are cleared from both.
-    for key in ("GOOGLE_CLIENT_ID", "GITHUB_CLIENT_ID", "AUTH_ALLOW_ANONYMOUS_ADMIN"):
+    # to mean absent rather than empty. A configured Cloudflare Access would
+    # suppress the bypass on its own (see _derive_auth_flags), which would make a
+    # 401 prove nothing about the flag, so it is cleared from both.
+    for key in ("CF_ACCESS_TEAM_DOMAIN", "CF_ACCESS_AUD", "AUTH_ALLOW_ANONYMOUS_ADMIN"):
         env.pop(key, None)
     if with_flag:
         env["AUTH_ALLOW_ANONYMOUS_ADMIN"] = "1"

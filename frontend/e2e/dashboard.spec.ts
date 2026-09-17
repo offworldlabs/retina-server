@@ -230,12 +230,6 @@ test.describe("Dashboard — login card (auth call held open)", () => {
     await expect(page.locator("#login-email")).toBeVisible({ timeout: 10_000 });
     await expect(page.getByRole("button", { name: /sign-in link/i })).toBeVisible();
   });
-
-  test("login page shows error message on ?error= query param", async ({ page }) => {
-    await page.goto(`${DASH_PAGE}/login?error=access_denied`);
-    await expect(page.locator(".login-error")).toBeVisible({ timeout: 10_000 });
-    await expect(page.locator(".login-error")).toContainText(/access denied/i);
-  });
 });
 
 // On API deliberately. api.retina.fm carries no Access application and never

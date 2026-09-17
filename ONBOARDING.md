@@ -87,9 +87,9 @@ RETINA_ENV=dev AUTH_ALLOW_ANONYMOUS_ADMIN=1 SYNTHETIC_FLEET_ENABLED=1 uvicorn ma
 
 API at `http://localhost:8000`, interactive docs at `/docs`.
 
-`AUTH_ALLOW_ANONYMOUS_ADMIN=1` grants the anonymous-admin bypass, so you don't
-need OAuth keys locally: with no OAuth client configured, you're treated as an
-admin. `SYNTHETIC_FLEET_ENABLED=1` mounts the simulation ingest routes the
+`AUTH_ALLOW_ANONYMOUS_ADMIN=1` grants the anonymous-admin bypass, so you need
+no identity provider locally: with Cloudflare Access unconfigured, you're
+treated as an admin. `SYNTHETIC_FLEET_ENABLED=1` mounts the simulation ingest routes the
 fleet pushes through, without which `/api/sim/adsb/push` answers 404.
 `RETINA_ENV=dev` (or `test`) separately relaxes the boot-time secret checks, so a
 local run needs no real `JWT_SECRET`; a deployed environment requires one.

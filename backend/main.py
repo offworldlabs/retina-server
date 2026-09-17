@@ -129,9 +129,9 @@ async def lifespan(app: FastAPI):
     # private nodes entirely; the admin surfaces behind that boundary serve the
     # true ones, and while this is set they serve them to anyone who asks.
     #
-    # A log line, not a refusal: local development has no Access assertion and
-    # no OAuth, so refusing here would leave a laptop with no way into the
-    # console, and the default is deliberately not this module's to change.
+    # A log line, not a refusal: local development has no Access assertion, so
+    # refusing here would leave a laptop with no way into the console, and the
+    # default is deliberately not this module's to change.
     # WARNING level so it survives the default
     # LOG_LEVEL and lands in the deploy's own logs rather than only in a
     # developer's terminal.

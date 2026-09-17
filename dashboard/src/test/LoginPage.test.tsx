@@ -54,8 +54,8 @@ describe("LoginPage", () => {
   });
 
   it("offers no third-party sign-in", () => {
-    // The OAuth providers are gone from the backend's usable paths; an anchor
-    // left here would take a caller to a route that cannot sign them in.
+    // A mailed link is the only way in. An anchor here would take a caller to a
+    // route that cannot sign them in.
     renderLogin();
     expect(screen.queryAllByRole("link")).toHaveLength(0);
     expect(screen.queryByText(/Continue with/i)).not.toBeInTheDocument();
@@ -106,7 +106,8 @@ describe("LoginPage", () => {
     expect(screen.queryByText(CONFIRMATION)).not.toBeInTheDocument();
   });
 
-  it("shows a message it is handed instead of the OAuth one", () => {
+  it("shows a message it is handed", () => {
+    // AuthLinkPage renders this page with the reason a link failed to redeem.
     renderLogin({ message: "That sign-in link is no longer valid" });
     expect(screen.getByText("That sign-in link is no longer valid")).toBeInTheDocument();
   });

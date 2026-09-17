@@ -67,8 +67,6 @@ describe("the tooltip border", () => {
  */
 describe("the chart pages", () => {
   const ALLOWED = [
-    // Google's brand mark on the sign-in button, which does not theme.
-    "src/pages/LoginPage.tsx",
     // Painted onto OSM tiles, which stay light in both themes.
     "src/pages/admin/NetworkHealthPage.tsx",
     // Its own documented domain palette, with a value per theme.

@@ -39,7 +39,7 @@ services:
       # JWT secret for a throwaway stack.
       - RETINA_ENV=test
       # Anonymous admin, asked for explicitly since ClickUp 86cb49d29 took it
-      # off RETINA_ENV. A laptop has no OAuth credentials, so without this the
+      # off RETINA_ENV. A laptop has no Access assertion, so without this the
       # admin surfaces answer 401.
       - AUTH_ALLOW_ANONYMOUS_ADMIN=1
       # The simulation subsystem, likewise asked for by name rather than

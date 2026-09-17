@@ -287,8 +287,13 @@ check_origin() {
 }
 
 check_rate_limit() {
-    local name="$1" url="$2" tries="$3"
+    local name="$1" url="$2" tries="$3" method="${4:-GET}"
     printf "  %-40s " "$name"
+    # The method has to be one the endpoint answers, or the burst measures
+    # nothing: limit_req does fire ahead of the proxy, but a run of 405s would
+    # keep passing after the route itself had gone. A POST goes out with no
+    # body, so the ones that get through are refused by request validation
+    # before the handler can act on them.
     # A burst of requests must start getting 429s. Anything else means the
     # location is missing (the state staging was in before the nginx template
     # was shared with production) or that limit_req is keyed on something that
@@ -316,7 +321,7 @@ check_rate_limit() {
     # on the codes that did come back, as the old serial loop's `|| continue`
     # did.
     local codes summary
-    codes=$(seq 1 "$tries" | xargs -P "$tries" -I{} $CURL -o /dev/null -w '%{http_code}\n' "$url" 2>/dev/null || true)
+    codes=$(seq 1 "$tries" | xargs -P "$tries" -I{} $CURL -X "$method" -o /dev/null -w '%{http_code}\n' "$url" 2>/dev/null || true)
 
     if printf '%s\n' "$codes" | grep -q '^429$'; then
         echo "OK (429 after burst)"
@@ -481,7 +486,7 @@ fi
 # On API_URL: the limit_req zones live in the auth/session/claim-codes
 # snippets, which the api vhost includes and which no longer sit on any
 # hostname the edge routes past us.
-check_rate_limit "credential endpoints rate limited" "${API_URL}/api/auth/login/google" 10
+check_rate_limit "credential endpoints rate limited" "${API_URL}/api/auth/magic-link" 10 POST
 check_rate_limit "session endpoints rate limited"    "${API_URL}/api/auth/me"            30
 
 echo ""

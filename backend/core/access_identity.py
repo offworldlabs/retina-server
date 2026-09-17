@@ -356,8 +356,8 @@ class AccessIdentity:
         #
         # Lowercased here, at the one place an identity is produced, because the
         # claim arrives as the identity provider spelled it and callers derive a
-        # stable id from it. ADMIN_EMAILS and get_or_create_oauth_user normalise
-        # the same way, so an Access identity and an OAuth one for one address
+        # stable id from it. get_or_create_magic_link_user normalises the same
+        # way, so an Access identity and a mailed-link one for one address
         # compare equal.
         email = (claims.get("email") or "").strip().lower()
         if not email:

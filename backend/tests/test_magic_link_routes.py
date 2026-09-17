@@ -6,9 +6,10 @@ so it cannot be used to find out which addresses do. tests/test_magic_links.py
 covers the token store underneath.
 """
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import routes.auth as _auth
@@ -182,6 +183,88 @@ class TestSourceQuota:
         before = len(sent)
         client.post("/api/auth/magic-link", json={"email": "one-more@example.com"})
         assert len(sent) == before
+
+
+def _peer(application, source, *, trusted_proxy=False):
+    """A caller whose transport peer is `source`, whatever headers it sends."""
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    target = ProxyHeadersMiddleware(application, trusted_hosts="127.0.0.1") if trusted_proxy else application
+
+    async def connected(scope, receive, send):
+        await target({**scope, "client": (source, 12345)}, receive, send)
+
+    return TestClient(connected, base_url="https://dash.example.test")
+
+
+class TestSourceDerivation:
+    """What counts as one source. The quota above bounds nothing unless a caller
+    is unable to widen it, so the address comes from the transport peer after the
+    ASGI server's trusted-proxy handling and never from a forwarding header.
+    """
+
+    @pytest.fixture()
+    def router_app(self, monkeypatch):
+        """Only the auth router, with no token store behind it."""
+        monkeypatch.setattr(_auth, "create_magic_link", AsyncMock(return_value="a-token"))
+        application = FastAPI()
+        application.include_router(_auth.router)
+        return application
+
+    @staticmethod
+    def _mailed(caller, sent, **kwargs):
+        """Whether asking for a link got one, without reading the response: the
+        answer is 202 either way, which is the point of the endpoint."""
+        before = len(sent)
+        response = caller.post("/api/auth/magic-link", json={"email": "owner@example.com"}, **kwargs)
+        assert response.status_code == 202
+        return len(sent) > before
+
+    def test_a_forwarding_header_from_an_untrusted_peer_buys_no_quota(self, router_app, sent, monkeypatch):
+        monkeypatch.setattr(_auth, "_MAX_MAGIC_LINK_REQUESTS_PER_SOURCE", 1)
+        with _peer(router_app, "192.0.2.1") as caller:
+            assert self._mailed(caller, sent)
+            for suffix in range(4):
+                spoofed = f"198.51.100.{suffix}"
+                assert not self._mailed(
+                    caller,
+                    sent,
+                    headers={
+                        "X-Forwarded-For": spoofed,
+                        "X-Real-IP": spoofed,
+                        "CF-Connecting-IP": spoofed,
+                        "Host": f"surface-{suffix}.example.test",
+                    },
+                )
+        with _peer(router_app, "192.0.2.2") as other:
+            assert self._mailed(other, sent)
+
+    def test_trusted_proxy_uses_last_untrusted_hop(self, router_app, sent, monkeypatch):
+        """Deployed, nginx is the peer and appends the address it validated, so
+        the rightmost hop it did not add is the client."""
+        monkeypatch.setattr(_auth, "_MAX_MAGIC_LINK_REQUESTS_PER_SOURCE", 1)
+        with _peer(router_app, "127.0.0.1", trusted_proxy=True) as proxy:
+            assert self._mailed(proxy, sent, headers={"X-Forwarded-For": "198.51.100.1, 192.0.2.1"})
+            assert not self._mailed(proxy, sent, headers={"X-Forwarded-For": "198.51.100.2, 192.0.2.1"})
+            assert self._mailed(proxy, sent, headers={"X-Forwarded-For": "198.51.100.1, 192.0.2.2"})
+
+    @pytest.mark.parametrize(
+        ("first", "same_source", "other"),
+        [
+            ("2001:db8:1:2::1", "2001:db8:1:2::2", "2001:db8:1:3::1"),
+            ("192.0.2.1", "::ffff:192.0.2.1", "192.0.2.2"),
+        ],
+    )
+    def test_address_variants_share_quota(self, router_app, sent, monkeypatch, first, same_source, other):
+        """One /64 is one source, and privacy-address rotation inside it moves
+        nobody to a fresh quota. A v4-mapped address is the v4 address."""
+        monkeypatch.setattr(_auth, "_MAX_MAGIC_LINK_REQUESTS_PER_SOURCE", 1)
+        with _peer(router_app, first) as caller:
+            assert self._mailed(caller, sent)
+        with _peer(router_app, same_source) as caller:
+            assert not self._mailed(caller, sent)
+        with _peer(router_app, other) as caller:
+            assert self._mailed(caller, sent)
 
 
 # ── Redeeming a link ──────────────────────────────────────────────────────────

@@ -14,7 +14,7 @@ def parse_comma_list(raw: str) -> tuple[str, ...]:
     matches every node id via ``str.startswith("")``.
 
     Used for every list-valued environment variable, so the empty-segment rule
-    holds in one place: CORS_ORIGINS, AUTH_ADMIN_EMAILS and
-    NODE_FORCE_RETIRE_PREFIXES all parse through it.
+    holds in one place: CORS_ORIGINS and NODE_FORCE_RETIRE_PREFIXES both parse
+    through it.
     """
     return tuple(p.strip() for p in raw.split(",") if p.strip())

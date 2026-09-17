@@ -86,8 +86,8 @@ are in [`arc-display.md`](arc-display.md).
   snapshots, `health_monitor` + `heartbeat` (see [`alerting.md`](alerting.md)).
 - **`core/state.py`** — the in-memory world: connected nodes, tracks, aircraft,
   arc buffers, WebSocket client sets, latest JSON payloads.
-- **`core/users.py` + `core/auth.py`** — fastapi-users (cookie JWT, Google/GitHub
-  OAuth) plus domain auth: invites, node ownership, claim codes (SQLite).
+- **`core/users.py` + `core/auth.py`** — fastapi-users (cookie JWT, sign-in by
+  emailed link) plus domain auth: invites, node ownership, claim codes (SQLite).
 
 ## The algorithm libraries (submodules)
 
@@ -142,8 +142,8 @@ per-node trust residuals, and the feed's `adsb_single_node` display section).
 
 ## Auth model
 
-Cookie-based JWT issued via OAuth (Google/GitHub), shared across surfaces on the
-same origin. Administrators arrive instead through Cloudflare Access: the origin
+Cookie-based JWT issued against a sign-in link mailed to the address, shared
+across surfaces on the same origin. Administrators arrive instead through Cloudflare Access: the origin
 verifies the `Cf-Access-Jwt-Assertion` itself against the team's published keys,
 with `aud` pinned per environment to `CF_ACCESS_AUD`, and the verified email is
 the identity (`backend/core/access_identity.py`). Enforcement is backend-side

@@ -15,9 +15,6 @@ export default function LoginPage({ message = null }) {
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState(null);
-  // Still reachable: the OAuth callbacks redirect here with a reason when they
-  // fail, though nothing on this page starts one any more.
-  const callbackError = new URLSearchParams(window.location.search).get("error");
 
   if (user) {
     navigate("/", { replace: true });
@@ -53,9 +50,6 @@ export default function LoginPage({ message = null }) {
         <h1>Retina</h1>
         <p className="subtitle">Passive Radar Network Dashboard</p>
         {message && <p className="login-error">{message}</p>}
-        {!message && callbackError && (
-          <p className="login-error">Login failed: {callbackError.replace(/_/g, " ")}</p>
-        )}
         {sent ? (
           <>
             <p className="login-note">
