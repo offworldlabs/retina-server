@@ -70,6 +70,15 @@ _COVERAGE_NEXT_CHECK: dict[str, float] = {}
 # refreshes its digest without moving it to the back — so a node whose coverage
 # moves every cycle cannot starve one whose coverage moved once.
 _COVERAGE_PENDING: dict[str, tuple] = {}
+# node_id -> time.monotonic() at which it joined _COVERAGE_PENDING.  Same keys,
+# same lifetime.  A re-trip of an already-queued node keeps this as it keeps
+# its place: it has been waiting since it first tripped, whatever its digest
+# has done since, and resetting it would let a node whose coverage moves every
+# cycle hide an undersized budget by never looking old.  A node dequeued
+# because it moved back (see _scan_coverage_constraints) forgets it; a later
+# real change starts a fresh wait.  Feeds state.coverage_rebuild_oldest_wait_s,
+# which is what health.py judges the budget by.
+_COVERAGE_PENDING_SINCE: dict[str, float] = {}
 
 # Nodes rebuilt per coverage cycle.  Each is a full neighbour-set rebuild — 51
 # pair grids on the 52-node test deployment — so this, not the trigger rate, is
@@ -119,6 +128,8 @@ def _reset_for_tests() -> None:
     """Restore this module's private state to boot values.  Tests only."""
     _COVERAGE_DIGESTS.clear()
     _COVERAGE_NEXT_CHECK.clear()
+    _COVERAGE_PENDING.clear()
+    _COVERAGE_PENDING_SINCE.clear()
     _DETECTED_RECENTLY.clear()
 
 
@@ -233,11 +244,15 @@ def _scan_coverage_constraints() -> int:
         _COVERAGE_NEXT_CHECK[node_id] = now + _COVERAGE_RECHECK_MIN_S
         digest = _quantize_digest(digest)
         if _COVERAGE_DIGESTS.get(node_id) == digest:
-            _COVERAGE_PENDING.pop(node_id, None)  # moved back before its turn came
+            # Moved back before its turn came.
+            _COVERAGE_PENDING.pop(node_id, None)
+            _COVERAGE_PENDING_SINCE.pop(node_id, None)
             continue
         # Assignment, not re-insertion: an already-queued node keeps its place
-        # so the drain stays fair (see _COVERAGE_PENDING).
+        # so the drain stays fair (see _COVERAGE_PENDING) — and keeps the wait
+        # it has accrued (see _COVERAGE_PENDING_SINCE).
         _COVERAGE_PENDING[node_id] = digest
+        _COVERAGE_PENDING_SINCE.setdefault(node_id, now)
     return len(_COVERAGE_PENDING)
 
 
@@ -256,6 +271,7 @@ def _drain_coverage_rebuilds(max_nodes: int = _COVERAGE_MAX_NODES_PER_CYCLE) -> 
             break
         node_id, digest = next(iter(_COVERAGE_PENDING.items()))
         del _COVERAGE_PENDING[node_id]
+        _COVERAGE_PENDING_SINCE.pop(node_id, None)
         # Record before rebuilding: a failure mid-rebuild should not spin.
         _COVERAGE_DIGESTS[node_id] = digest
         pairs = state.node_associator.rebuild_zones_for(node_id)
@@ -270,9 +286,12 @@ def _refresh_coverage_constraints(max_nodes: int = _COVERAGE_MAX_NODES_PER_CYCLE
     """One coverage cycle: scan every node's digest, then drain the budget."""
     _scan_coverage_constraints()
     rebuilt = _drain_coverage_rebuilds(max_nodes)
-    # Published after the drain so the gauge reads what is still owed, not what
+    # Published after the drain so the gauges read what is still owed, not what
     # was owed before this cycle worked on it.
     state.coverage_rebuild_backlog = len(_COVERAGE_PENDING)
+    state.coverage_rebuild_oldest_wait_s = (
+        time.monotonic() - min(_COVERAGE_PENDING_SINCE.values()) if _COVERAGE_PENDING_SINCE else 0.0
+    )
     return rebuilt
 
 

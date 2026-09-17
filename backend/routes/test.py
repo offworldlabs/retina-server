@@ -218,6 +218,11 @@ def _build_dashboard_data() -> bytes:
                 # returns to zero means the budget is below the fleet's trigger
                 # rate and constraints are converging slower than they move.
                 "coverage_rebuild_backlog": state.coverage_rebuild_backlog,
+                # How long the front of that queue has waited, as of the last
+                # cycle.  This is what /api/health judges the budget by: a
+                # steady depth whose front turns over is the budget working,
+                # a front that waits longer every cycle is a budget too small.
+                "coverage_rebuild_oldest_wait_s": round(state.coverage_rebuild_oldest_wait_s, 1),
                 "queue_drops": state.solver_queue_drops,
                 # Items discarded unsolved after aging out in the queue.  The
                 # queue-full and too-slow failure modes are distinct: drops

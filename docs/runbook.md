@@ -439,11 +439,53 @@ What does catch it is the delay residual: compare the node's published `adsb[].e
 
 ---
 
+### `coverage_rebuild_backlog` (sub-check of `health_degraded`)
+
+**Trigger:** An overlap-grid rebuild has waited in the `coverage_constraints`
+queue longer than `COVERAGE_BACKLOG_MAX_WAIT_S` (default 1200 s). The message
+carries both the queue depth and the oldest wait.
+
+**What it means:** The rebuild is budgeted at 3 nodes per 30 s cycle
+(`_COVERAGE_MAX_NODES_PER_CYCLE` / `COVERAGE_REFRESH_INTERVAL_S` in
+`services/tasks/analytics_refresh.py`) and drained FIFO, so this is the budget
+being too small for the rate at which the fleet's coverage moves: the front of
+the queue is waiting longer and longer, and the association constraints the
+grids encode are drifting away from the coverage they follow.
+
+The depth on its own is **not** the signal. With moving aircraft every node
+re-trips regularly, so a 60-node fleet holds a steady `coverage_rebuild_backlog`
+of ~15 in `/api/test/dashboard` with `coverage_rebuild_oldest_wait_s` of a few
+cycles — that is the budget working. Judge it by the wait.
+
+**Expected after a deploy:** a fresh process has no digests, so its first scan
+queues every node with a polygon and works them off at the budget rate:
+`ceil(nodes / 3)` cycles of 30 s, ~10 min for 60 nodes, during which the depth
+reads as the whole fleet and the oldest wait climbs to about that. The default
+ceiling covers a fleet of ~120 before the warm-up alone would trip it; raise
+`COVERAGE_BACKLOG_MAX_WAIT_S` for a larger one.
+
+**Check:**
+```bash
+curl -sk https://localhost/api/test/dashboard | python3 -c \
+  "import sys,json; s=json.load(sys.stdin)['solver']; print('backlog:', s['coverage_rebuild_backlog'], 'oldest_wait_s:', s['coverage_rebuild_oldest_wait_s'], 'rebuild_nodes:', s['coverage_rebuild_nodes'])"
+```
+
+A wait that keeps climbing cycle over cycle with `rebuild_nodes` still moving is
+the budget shortfall this is for: raise `_COVERAGE_MAX_NODES_PER_CYCLE` (each
+node is a full neighbour-set rebuild, ~0.6 s on the 52-node test fleet). A wait
+climbing with `rebuild_nodes` frozen is the task itself stuck — check
+`task_health.error_counts.coverage_constraints` and the logs for
+"Coverage constraint refresh failed".
+
+---
+
 ### `solver_queue_drops`
 
-**Trigger:** The stdlib Queue between frame workers and solver threads is full (max 200) and candidates are being dropped.
+**Trigger:** The stdlib Queue between frame workers and solver threads is full (max 200) and a candidate was dropped within the last `SOLVER_QUEUE_DROP_WINDOW_S` (default 300 s). The message names the drops inside the window and the lifetime total, e.g. `Solver dropped 1 job(s) in the last 5 min (lifetime 1)`.
 
 **What it means:** Solver threads are slower than frame workers produce multinode candidates. Drops mean some legitimate aircraft positions will never be computed for those frames.
+
+The check is about *now*: it clears on its own once the window has passed without another drop, so a short stall costs one fire-and-resolve pair rather than a "degraded" that lasts until the next deploy. `solver_queue_drops` in `/api/admin/metrics` and `queue_drops` in `/api/test/dashboard` stay cumulative for the process lifetime; a lifetime count with the check clear is history, not a live problem. Sustained pressure shows up as `solver_queue_high` and `solver_latency_high` below.
 
 **Check:**
 ```bash

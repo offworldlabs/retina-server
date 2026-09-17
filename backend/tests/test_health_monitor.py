@@ -19,7 +19,10 @@ class TestComputeHealthIssues:
         assert compute_health_issues() == []
 
     def test_solver_drops_flagged_as_warning(self, monkeypatch):
+        import time
+
         monkeypatch.setattr(health.state, "solver_queue_drops", 5)
+        monkeypatch.setattr(health.state, "solver_queue_last_drop_ts", time.time())
         issues = {i["type"]: i for i in compute_health_issues()}
         assert "solver_queue_drops" in issues
         assert issues["solver_queue_drops"]["severity"] == health.WARNING

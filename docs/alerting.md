@@ -116,19 +116,23 @@ Each issue carries a severity in the alert payload's `meta`:
   `frame_queue_saturated`, `disk_low`, `memory_high`, `node_dropout`,
   `no_active_tracks`.
 - **warning** — degraded but serving: `solver_queue_drops`,
-  `solver_queue_high`, `solver_latency_high`, `anomaly_flood`,
-  `solver_accuracy_degraded`, `high_miss_rate`.
+  `solver_queue_high`, `solver_latency_high`, `coverage_rebuild_backlog`,
+  `anomaly_flood`, `solver_accuracy_degraded`, `high_miss_rate`.
 
 Route critical → a paging channel and warning → a quieter channel in your
 webhook receiver (e.g. Slack workflow rules).
 
 ## Thresholds
 
-Most are constants in `services/health.py`. Two are settings, because the
-right value depends on the box: `NODE_DROPOUT_THRESHOLD` (default 0.8) and
-`HIGH_MISS_RATE_THRESHOLD` (default 0.98). Both are read per call and fall
-back to their default on a value that does not parse, so a stray entry
-degrades one check rather than stopping the server booting.
+Most are constants in `services/health.py`. Four are settings, because the
+right value depends on the box: `NODE_DROPOUT_THRESHOLD` (default 0.8),
+`HIGH_MISS_RATE_THRESHOLD` (default 0.98), `SOLVER_QUEUE_DROP_WINDOW_S`
+(default 300, how recent a solver-queue drop must be to count) and
+`COVERAGE_BACKLOG_MAX_WAIT_S` (default 1200, the longest a grid rebuild may
+wait behind the per-cycle budget; must clear the post-deploy warm-up, see the
+runbook). All are read per call and fall back to their default on a value that
+does not parse, so a stray entry degrades one check rather than stopping the
+server booting.
 
 `high_miss_rate` needs care when reading it. The rate counts ADS-B aircraft
 inside a node's theoretical beam wedge that the node's tracker did not

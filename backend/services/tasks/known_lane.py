@@ -904,7 +904,7 @@ def run_dark_follow_pass(solve_fn, node_cfgs: dict | None = None, mode: str | No
             try:
                 state.solver_queue.put_nowait((s_in, cfgs, time.time()))
             except Exception:
-                state.bump_counter("solver_queue_drops")
+                state.record_solver_queue_drop()
         else:
             _follow_shadow_attempt(key, s_in, cfgs, solve_fn)
 
