@@ -342,6 +342,24 @@ a:hover {
   color: var(--text-secondary);
 }
 
+/* Takes the slot the avatar holds for a caller who has a session. */
+.header-signin {
+  padding: 6px 14px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+/* The ink must be restated: the global a:hover sets colour, and it outranks
+   this class, so the label would otherwise hover to accent-on-accent. */
+.header-signin:hover {
+  background: var(--accent-hover);
+  color: var(--accent-ink);
+}
+
 .content {
   flex: 1;
   overflow-y: auto;

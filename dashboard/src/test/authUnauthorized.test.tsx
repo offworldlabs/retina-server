@@ -15,8 +15,10 @@ import { AuthProvider, useAuth } from "../context/AuthContext";
 
 const realLocation = window.location;
 
-function stubLocation(pathname: string) {
-  const loc = { pathname, href: `https://dash.retina.fm${pathname}` };
+function stubLocation(pathname: string, hostname = "app.retina.fm") {
+  // hostname and search because the surface is resolved from them: the same
+  // path is open on the user dashboard and gated on the admin console.
+  const loc = { pathname, hostname, search: "", href: `https://${hostname}${pathname}` };
   Object.defineProperty(window, "location", { value: loc, writable: true, configurable: true });
   return loc;
 }
@@ -52,6 +54,37 @@ describe("the API client on a 401", () => {
       expect(loc.href).toBe(untouched);
     }
   );
+});
+
+describe("the API client on a 401, on a page that needs no session", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 401 })));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    Object.defineProperty(window, "location", {
+      value: realLocation,
+      writable: true,
+      configurable: true,
+    });
+  });
+
+  // Whatever 401s, the visitor is entitled to the rest of the page. Throwing
+  // them at a login they may have no way through is the one outcome a public
+  // route exists to prevent.
+  it("leaves the caller on the page", async () => {
+    const loc = stubLocation("/leaderboard");
+    const untouched = loc.href;
+    await expect(api.myNodes()).rejects.toBeInstanceOf(UnauthorizedError);
+    expect(loc.href).toBe(untouched);
+  });
+
+  it("still navigates from the same path on the admin console", async () => {
+    const loc = stubLocation("/leaderboard", "admin.retina.fm");
+    await expect(api.myNodes()).rejects.toBeInstanceOf(UnauthorizedError);
+    expect(loc.href).toBe("/login");
+  });
 });
 
 describe("the API client on a 401, mounted under /dash/", () => {
@@ -102,6 +135,16 @@ describe("the API client on a 401, mounted under /dash/", () => {
       expect(loc.href).toBe(untouched);
     }
   );
+
+  it("leaves a caller on a page that needs no session", async () => {
+    // window.location.pathname carries the mount and the route list does not,
+    // so the two have to be read into the same space before they are compared.
+    const mounted = await loadMounted();
+    const loc = stubLocation("/dash/leaderboard");
+    const untouched = loc.href;
+    await expect(mounted.api.myNodes()).rejects.toHaveProperty("status", 401);
+    expect(loc.href).toBe(untouched);
+  });
 });
 
 function Probe() {

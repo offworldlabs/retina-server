@@ -1,6 +1,8 @@
 import { NavLink } from "react-router-dom";
 import { BASE_PATH } from "../utils/basePath";
 import { mapUrl, towerFinderUrl } from "../utils/siblings";
+import { useAuth } from "../context/AuthContext";
+import { PUBLIC_ROUTES } from "../utils/publicRoutes";
 
 type NavItem = {
   label: string;
@@ -49,6 +51,24 @@ const userNav = (): NavSection[] => [
       { to: "/onboarding", label: "My Nodes", icon: "server" },
       { to: "/settings", label: "Settings", icon: "settings" },
     ],
+  },
+];
+
+// Where a route the guard admits becomes somewhere to click. Only the map has
+// a bundle of its own today, so it is the only path with a URL to build.
+const externalUrl = (path: string): string =>
+  path === "/map" ? mapUrl(location.host, location.protocol, BASE_PATH) : path;
+
+// What a caller with no session is offered: the open routes and nothing else,
+// read off the same list the guard reads, so neither can be changed alone.
+// One section rather than scattered through the four the signed-in nav has,
+// since sections exist to group and one entry apiece groups nothing.
+const publicNav = (): NavSection[] => [
+  {
+    title: "Explore",
+    items: PUBLIC_ROUTES.map(({ path, label, icon, external }) =>
+      external ? { href: externalUrl(path), label, icon, external } : { to: path, label, icon }
+    ),
   },
 ];
 
@@ -246,7 +266,10 @@ const icons = {
 };
 
 export default function Sidebar({ isAdmin }) {
-  const nav = isAdmin ? adminNav : userNav();
+  const { user } = useAuth();
+  // The console is never reached without a session, so its nav does not have a
+  // signed-out form to choose between.
+  const nav = isAdmin ? adminNav : user ? userNav() : publicNav();
 
   return (
     <aside className="sidebar">

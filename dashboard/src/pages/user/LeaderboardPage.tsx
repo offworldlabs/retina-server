@@ -4,6 +4,7 @@ import { DataTable } from "../../components/DataTable";
 import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
+import { useAuth } from "../../context/AuthContext";
 import { formatUptime } from "../../utils/format";
 
 const PAGE_SIZE = 25;
@@ -13,6 +14,11 @@ export default function LeaderboardPage() {
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
   const { data, loading } = usePolling(() => api.leaderboard(), 30000);
+  // The server sends the miss-detection fields only to a caller with a
+  // session, so the columns over them exist only for one. Rendering them
+  // regardless would report every node as having missed nothing.
+  const { user } = useAuth();
+  const showsMisses = Boolean(user);
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
@@ -81,7 +87,7 @@ export default function LeaderboardPage() {
       {/* Sort control */}
       <div style={{ marginBottom: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <span style={{ fontSize: 13, color: "var(--text-muted)" }}>Sort by:</span>
-        {["detections", "uptime", "trust", "snr", "miss_rate"].map((key) => (
+        {["detections", "uptime", "trust", "snr", ...(showsMisses ? ["miss_rate"] : [])].map((key) => (
           <button
             key={key}
             className={`btn ${sortBy === key ? "btn-primary" : "btn-secondary"} btn-sm`}
@@ -121,7 +127,17 @@ export default function LeaderboardPage() {
           return (
             <>
               <DataTable
-                headers={["#", "Node", "Status", "Detections", "Tracks", "In Range", "Missed", "Miss Rate", "Uptime", "Avg SNR", "Trust"]}
+                headers={[
+                  "#",
+                  "Node",
+                  "Status",
+                  "Detections",
+                  "Tracks",
+                  ...(showsMisses ? ["In Range", "Missed", "Miss Rate"] : []),
+                  "Uptime",
+                  "Avg SNR",
+                  "Trust",
+                ]}
                 count={paged.length}
                 empty="No nodes found"
               >
@@ -138,17 +154,21 @@ export default function LeaderboardPage() {
                     </td>
                     <td>{entry.detections.toLocaleString()}</td>
                     <td>{entry.tracks}</td>
-                    <td>{entry.in_range || 0}</td>
-                    <td style={{ color: (entry.missed || 0) > 0 ? "var(--warning)" : undefined }}>
-                      {entry.missed || 0}
-                    </td>
-                    <td style={{
-                      fontWeight: 600,
-                      color: (entry.miss_rate || 0) > 0.5 ? "var(--error)"
-                        : (entry.miss_rate || 0) > 0.2 ? "var(--warning)" : "var(--success)",
-                    }}>
-                      {(entry.in_range || 0) > 0 ? ((entry.miss_rate || 0) * 100).toFixed(1) + "%" : "—"}
-                    </td>
+                    {showsMisses && (
+                      <>
+                        <td>{entry.in_range || 0}</td>
+                        <td style={{ color: (entry.missed || 0) > 0 ? "var(--warning)" : undefined }}>
+                          {entry.missed || 0}
+                        </td>
+                        <td style={{
+                          fontWeight: 600,
+                          color: (entry.miss_rate || 0) > 0.5 ? "var(--error)"
+                            : (entry.miss_rate || 0) > 0.2 ? "var(--warning)" : "var(--success)",
+                        }}>
+                          {(entry.in_range || 0) > 0 ? ((entry.miss_rate || 0) * 100).toFixed(1) + "%" : "—"}
+                        </td>
+                      </>
+                    )}
                     <td>{formatUptime(entry.uptime_s)}</td>
                     <td>{entry.avg_snr.toFixed(1)} dB</td>
                     <td>{(entry.trust_score * 100).toFixed(0)}%</td>

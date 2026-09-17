@@ -37,3 +37,27 @@ describe("the mount this bundle was built for", () => {
     expect((await loadFor("/dash/")).ROUTER_BASENAME).toBe("/dash");
   });
 });
+
+describe("reading a mounted path back into router space", () => {
+  it("leaves a path alone at a vhost root", async () => {
+    const m = await loadFor("/");
+    expect(m.stripBase("/leaderboard")).toBe("/leaderboard");
+  });
+
+  it("takes the prefix off under the app vhost's mount", async () => {
+    const m = await loadFor("/dash/");
+    expect(m.stripBase("/dash/leaderboard")).toBe("/leaderboard");
+  });
+
+  // The mount's own root arrives both ways, and react-router calls both "/".
+  it.each(["/dash", "/dash/"])("reads the mount root (%s) as the index", async (path) => {
+    const m = await loadFor("/dash/");
+    expect(m.stripBase(path)).toBe("/");
+  });
+
+  // "/dashboard" is not inside "/dash", and a prefix test would say it was.
+  it("leaves a sibling that merely starts with the prefix alone", async () => {
+    const m = await loadFor("/dash/");
+    expect(m.stripBase("/dashboard")).toBe("/dashboard");
+  });
+});

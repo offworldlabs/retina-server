@@ -224,6 +224,136 @@ class TestStorage:
 
 
 class TestLeaderboard:
+    def test_leaderboard_answers_a_caller_with_no_session(self, client):
+        """The one route under /api/admin that publishes.
+
+        It reports node_ref and the metrics /api/radar/analytics already
+        publishes per ref, so it is the same side of the D16 boundary as a feed
+        anyone can read; the dashboard's /leaderboard is open on that basis. The
+        bypass is patched off because the suite runs with it on, which would
+        answer this question with 200 whatever the dependency says.
+        """
+        from unittest.mock import patch
+
+        with patch("core.users.AUTH_BYPASS", False):
+            r = client.get("/api/admin/leaderboard")
+        assert r.status_code == 200
+        assert "leaderboard" in r.json()
+
+    #: The fields sourced from state.latest_missed_detections rather than from
+    #: the published analytics snapshot.
+    MISS_FIELDS = ("in_range", "detected_in_range", "missed", "miss_rate")
+
+    @staticmethod
+    def _seed_miss_row(nid: str):
+        """A node with both a published summary and a miss-detection row."""
+        import orjson
+
+        state.connected_nodes[nid] = {"status": "active", "config": {"name": "Miss-Test"}, "is_synthetic": True}
+        analytics = {"nodes": {nid: {"metrics": {"total_detections": 7}, "trust": {}, "reputation": {}}}}
+        prior = (state.latest_analytics_bytes, dict(state.latest_missed_detections))
+        state.latest_analytics_bytes = orjson.dumps(analytics)
+        state.latest_missed_detections[nid] = {
+            "in_range": 20,
+            "detected": 12,
+            "missed": 8,
+            "miss_rate": 0.4,
+        }
+        return prior
+
+    @staticmethod
+    def _restore(prior, nid: str):
+        state.latest_analytics_bytes, restored = prior
+        state.latest_missed_detections.clear()
+        state.latest_missed_detections.update(restored)
+        state.connected_nodes.pop(nid, None)
+
+    def test_a_caller_with_no_session_is_not_told_what_each_node_missed(self, client):
+        """The per-node miss counts are not on the published side of the boundary.
+
+        They come from state.latest_missed_detections, which no other route
+        serves without a session: /health reduces the same global to one
+        fleet-wide aggregate and says in as many words that the detail stays
+        off an unauthenticated endpoint. Opening this route must not be the
+        thing that publishes them.
+        """
+        from unittest.mock import patch
+
+        nid = "test-lb-miss"
+        prior = self._seed_miss_row(nid)
+        try:
+            with patch("core.users.AUTH_BYPASS", False):
+                r = client.get("/api/admin/leaderboard")
+            assert r.status_code == 200
+            row = next(e for e in r.json()["leaderboard"] if e["node_ref"] == nid)
+            assert row["detections"] == 7
+            assert [f for f in self.MISS_FIELDS if f in row] == []
+        finally:
+            self._restore(prior, nid)
+
+    def test_a_caller_with_a_session_still_gets_them(self, client):
+        """The suite runs with the anonymous-admin bypass on, so an unpatched
+        request is the signed-in case."""
+        nid = "test-lb-miss-in"
+        prior = self._seed_miss_row(nid)
+        try:
+            row = next(e for e in client.get("/api/admin/leaderboard").json()["leaderboard"] if e["node_ref"] == nid)
+            assert row["in_range"] == 20
+            assert row["detected_in_range"] == 12
+            assert row["missed"] == 8
+            assert row["miss_rate"] == 0.4
+        finally:
+            self._restore(prior, nid)
+
+    @staticmethod
+    def _cold_start(nid: str):
+        """The route's state before the first analytics refresh has run.
+
+        state.latest_analytics_bytes starts as an empty-nodes document rather
+        than absent, so the handler parses it, finds nothing and recomputes
+        live. That window is every process start until the ~30 s refresh.
+        """
+        state.connected_nodes[nid] = {"status": "active", "config": {"name": "Hidden"}, "is_synthetic": True}
+        prior = state.latest_analytics_bytes
+        state.latest_analytics_bytes = b'{"nodes":{}}'
+        return prior
+
+    @pytest.mark.parametrize(("private", "expected"), [(True, 0), (False, 1)])
+    def test_the_cold_start_fallback_withholds_a_private_node(self, client, private, expected):
+        """Publication is not the auth boundary: a private node is withheld
+        from everyone, session or none.
+
+        The snapshot this route normally reads has been through
+        public_summaries, which drops them. The live recomputation below is the
+        one path under this route that had not, and public_identity does not
+        cover it — it asks whether a node has a registry ref, not whether it
+        consented to being published.
+        """
+        from unittest.mock import patch
+
+        nid = "test-lb-private"
+        prior = self._cold_start(nid)
+        summaries = {nid: {"metrics": {"total_detections": 5}, "trust": {}, "reputation": {}}}
+        try:
+            with (
+                patch.object(state.node_analytics, "get_all_summaries", return_value=summaries),
+                patch("services.publication.private_node_ids", return_value={nid} if private else set()),
+            ):
+                r = client.get("/api/admin/leaderboard")
+            assert r.status_code == 200
+            assert len([e for e in r.json()["leaderboard"] if e["node_ref"] == nid]) == expected
+        finally:
+            state.latest_analytics_bytes = prior
+            state.connected_nodes.pop(nid, None)
+
+    def test_its_neighbours_under_the_same_prefix_still_want_a_session(self, client):
+        """Opening the route above opens the route above, not the prefix."""
+        from unittest.mock import patch
+
+        with patch("core.users.AUTH_BYPASS", False):
+            assert client.get("/api/admin/users").status_code == 401
+            assert client.get("/api/admin/node-refs").status_code == 401
+
     def test_leaderboard_empty(self, client):
         r = client.get("/api/admin/leaderboard")
         assert r.status_code == 200

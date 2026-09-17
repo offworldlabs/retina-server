@@ -15,7 +15,11 @@ the session cookie is host-only and a login has to cover all of them:
   synthetic simulation fleet and is the demo surface, being the only environment
   that still runs one.
 - **dashboard** (`/dash/`, `dashboard/`, separate SPA) — node ownership, claim
-  codes, MLAT verification, metrics. Auth required.
+  codes, MLAT verification, metrics. A session is required for all of it bar the
+  routes listed in `dashboard/src/utils/publicRoutes.ts`, which render to anyone
+  and are backed only by endpoints that already publish. A caller with no
+  session gets a nav holding those routes alone, so nothing on screen leads to
+  the login card.
 - **data explorer** (`/data/`, `data-explorer/`, static) — the public detection
   archive browser.
 - **admin** (`admin.retina.fm`) — the dashboard bundle again, built at a root and
