@@ -177,7 +177,7 @@ class TestAuthFlagDerivation:
         from core.users import _derive_auth_flags
 
         auth_enabled, bypass = _derive_auth_flags({"RETINA_ENV": "test"})
-        assert auth_enabled is False
+        assert auth_enabled is True
         assert bypass is False
 
     @pytest.mark.parametrize("env_name", ["dev", "test", "staging", "production"])
@@ -191,7 +191,7 @@ class TestAuthFlagDerivation:
         from core.users import _derive_auth_flags
 
         auth_enabled, bypass = _derive_auth_flags({"RETINA_ENV": "production", "AUTH_ALLOW_ANONYMOUS_ADMIN": "1"})
-        assert auth_enabled is False
+        assert auth_enabled is True
         assert bypass is True
 
     def test_flag_alone_enables_bypass_with_no_environment_set(self):
@@ -199,14 +199,38 @@ class TestAuthFlagDerivation:
 
         assert _derive_auth_flags({"AUTH_ALLOW_ANONYMOUS_ADMIN": "1"})[1] is True
 
-    @pytest.mark.parametrize("provider_key", ["GOOGLE_CLIENT_ID", "GITHUB_CLIENT_ID"])
-    def test_configured_oauth_beats_the_flag(self, provider_key):
-        """Real providers must never be shadowed by an anonymous admin."""
+    def test_configured_access_beats_the_flag(self):
+        """A real identity provider must never be shadowed by an anonymous
+        admin. Access is what admits an administrator, so it is what the bypass
+        defers to; the OAuth client ids this used to read were never set in any
+        environment, which is how the bypass came to be live everywhere."""
         from core.users import _derive_auth_flags
 
-        auth_enabled, bypass = _derive_auth_flags({provider_key: "client-id-123", "AUTH_ALLOW_ANONYMOUS_ADMIN": "1"})
+        auth_enabled, bypass = _derive_auth_flags(
+            {
+                "CF_ACCESS_TEAM_DOMAIN": "offworldlab.cloudflareaccess.com",
+                "CF_ACCESS_AUD": "a" * 64,
+                "AUTH_ALLOW_ANONYMOUS_ADMIN": "1",
+            }
+        )
         assert auth_enabled is True
         assert bypass is False
+
+    @pytest.mark.parametrize("configured_key", ["CF_ACCESS_TEAM_DOMAIN", "CF_ACCESS_AUD"])
+    def test_half_configured_access_does_not_beat_the_flag(self, configured_key):
+        """core.users only consults the verifier when both are set, so half a
+        configuration admits nobody and must not shadow the bypass either."""
+        from core.users import _derive_auth_flags
+
+        assert _derive_auth_flags({configured_key: "x", "AUTH_ALLOW_ANONYMOUS_ADMIN": "1"})[1] is True
+
+    def test_auth_is_enabled_without_any_provider_configured(self):
+        """AUTH_ENABLED must not key off a provider's keys. It did key off the
+        OAuth client ids, so deleting those would have turned authentication
+        off and reopened the path the bypass used to take."""
+        from core.users import _derive_auth_flags
+
+        assert _derive_auth_flags({})[0] is True
 
     @pytest.mark.parametrize("value", ["", "0", "true", "True", "yes", "on", " 1", "1 "])
     def test_only_the_literal_one_enables_bypass(self, value):

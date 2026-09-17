@@ -5,6 +5,7 @@ All JWT issuance/verification is delegated to fastapi-users' JWTStrategy.
 """
 
 import hashlib
+import logging
 import os
 import secrets
 import uuid
@@ -51,17 +52,25 @@ def _derive_auth_flags(env: Mapping[str, str]) -> tuple[bool, bool]:
     the flag's own name grants a named permission rather than announcing a mode, so
     what is being handed out is legible at the point it is switched on.
 
-    Configured OAuth keys still win: a deployment with real providers must never
-    serve an anonymous admin, whatever the flag says. Missing keys with the flag
-    unset yield 401 rather than open access, which is the default worth having.
+    A configured identity provider still wins: a deployment with one must never
+    serve an anonymous admin, whatever the flag says. That provider is Cloudflare
+    Access, which is what admits an administrator; it used to be read off the
+    OAuth client ids, which were never set anywhere and are on their way out. All
+    three droplets set CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD, so the bypass is
+    inert on every one of them, and a laptop with neither can still opt in.
+
+    AUTH_ENABLED is unconditional. There is no provider left to configure: a
+    sign-in link opens the same cookie session on any deployment that can send
+    mail, and whether mail is configured is services/mail.py's answer to give,
+    per request, rather than a boot-time constant here.
 
     Parameterised on `env` rather than reading os.environ so the derivation is
     testable on its own. The two module-level flags below are computed once at
     import and read as values elsewhere (routes/auth.py, routes/streaming.py), so
     reloading this module to vary the environment would leave those copies stale.
     """
-    auth_enabled = bool(env.get("GOOGLE_CLIENT_ID") or env.get("GITHUB_CLIENT_ID"))
-    return auth_enabled, not auth_enabled and env.get("AUTH_ALLOW_ANONYMOUS_ADMIN", "") == "1"
+    access_configured = bool(env.get("CF_ACCESS_TEAM_DOMAIN") and env.get("CF_ACCESS_AUD"))
+    return True, not access_configured and env.get("AUTH_ALLOW_ANONYMOUS_ADMIN", "") == "1"
 
 
 AUTH_ENABLED, AUTH_BYPASS = _derive_auth_flags(os.environ)
@@ -147,6 +156,23 @@ class ClaimCode(Base):
     expires_at: Mapped[float] = mapped_column(Float)
     used_at: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
     used_by_node_id: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
+
+
+class MagicLink(Base):
+    """One outstanding sign-in link.
+
+    The primary key is a SHA-256 of the token, never the token itself: the link
+    in the mailbox is the whole credential, so a database read must not be
+    enough to mint a session.
+    """
+
+    __tablename__ = "magic_links"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    created_at: Mapped[float] = mapped_column(Float)
+    expires_at: Mapped[float] = mapped_column(Float)
+    used_at: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
 
 
 engine = create_async_engine(
@@ -403,6 +429,70 @@ async def require_admin(request: Request) -> dict:
     if not user.is_superuser:
         raise HTTPException(status_code=403, detail="Admin access required")
     return user_to_dict(user)
+
+
+# ── Magic-link user creation helper ───────────────────────────────────────────
+
+
+class MagicLinkRefused(Exception):
+    """This address may not hold a session opened by a sign-in link.
+
+    Carries no detail on purpose: the route answers it exactly as it answers a
+    token that never existed.
+    """
+
+
+async def get_or_create_magic_link_user(email: str) -> User:
+    """Find or create the account a redeemed sign-in link belongs to.
+
+    Deliberately narrower than the OAuth helper beside it: no invite is
+    consumed and ADMIN_EMAILS is not consulted, so an account reached this way
+    is never a superuser. Administrator identity is Cloudflare Access and only
+    Cloudflare Access; an address that can receive mail is not a claim to the
+    console. The account grants nothing by itself either way — node ownership
+    comes from a claim code.
+
+    Raises MagicLinkRefused for an account that is already a superuser. The
+    invariant has to hold for a row that exists, not only for one created here,
+    or whoever can read an administrator's mailbox holds an admin session
+    without ever meeting Access. Nothing creates such a row today, which is
+    exactly why the guard is worth having: it is the thing that keeps being
+    true if something later does.
+    """
+    email = email.lower().strip()
+
+    def _guard(user: User) -> User:
+        if user.is_superuser:
+            logging.warning("Refusing a magic-link session for a superuser account")
+            raise MagicLinkRefused
+        return user
+
+    async with async_session_maker() as session:
+        user_db = SQLAlchemyUserDatabase(session, User)
+        user_manager = UserManager(user_db)
+
+        try:
+            return _guard(await user_manager.get_by_email(email))
+        except UserNotExists:
+            user_create = UserCreate(
+                email=email,
+                # Never used: there is no password login. fastapi-users requires
+                # the field, and a random value is safer than a known one.
+                password=secrets.token_urlsafe(32),
+                name=email.split("@")[0],
+                avatar="",
+                provider="magic-link",
+                # Redeeming the link is the proof of the address.
+                is_verified=True,
+                is_superuser=False,
+            )
+            try:
+                return await user_manager.create(user_create)
+            except UserAlreadyExists:
+                # Race: another redemption created this user between our get
+                # and create. Through the same guard, since what that other
+                # request created is not this one's to assume.
+                return _guard(await user_manager.get_by_email(email))
 
 
 # ── OAuth user creation helper ────────────────────────────────────────────────
