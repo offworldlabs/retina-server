@@ -475,8 +475,7 @@ class TestKnownLaneAndClaimsPassthrough:
         state._reset_for_tests()
 
     def test_known_lane_reflects_the_lane_counters(self):
-        # Bumped the way the lane itself bumps them, under counters_lock; the
-        # known_lane_* names are registered onto state by the lane's import.
+        # Bumped by name under counters_lock, the way the lane itself bumps them.
         for name, n in (
             ("known_lane_attempts", 9),
             ("known_lane_truth_match", 5),
@@ -567,14 +566,6 @@ class TestKnownLaneAndClaimsPassthrough:
                 "immature": 0,
             },
         }
-
-    def test_lane_counters_absent_from_state_read_as_zero(self, monkeypatch):
-        # The lane registers its counters at import and solver.py imports it
-        # lazily, so a process that never ran a worker has them missing —
-        # the payload must still build.
-        monkeypatch.delattr(state, "known_lane_attempts")
-        out = _solver_window_stats(10.0)
-        assert out["known_lane"]["attempts"] == 0
 
 
 class TestFragmentation:

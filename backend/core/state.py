@@ -638,6 +638,22 @@ known_hold_dropped_disagree: int = 0
 # what stops a node that newly acquires a silent aircraft from feeding the
 # dark pool and minting a twin key beside the lane's entry.
 known_follow_claims: int = 0
+# Known-lane SOLVER (KNOWN_LANE_MODE, services/tasks/known_lane.py).  attempts
+# is every claimed hex the lane tried; truth_match / ghost / reanchored /
+# no_converge partition those attempts by outcome, and the first three are
+# bumped through an f-string on the classifier label, so grepping for them by
+# name finds only the read sites.  published counts actual publishes (binding
+# only, so it stays zero in shadow), publish_errors the ones that threw, and
+# publish_rms_rejected the solves binding would have published but for the
+# residual gate.  routes/test.py's known_lane block reads them as a funnel.
+known_lane_attempts: int = 0
+known_lane_truth_match: int = 0
+known_lane_ghost: int = 0
+known_lane_reanchored: int = 0
+known_lane_no_converge: int = 0
+known_lane_published: int = 0
+known_lane_publish_errors: int = 0
+known_lane_publish_rms_rejected: int = 0
 # Empirical-coverage calibration from the CLAIM lane (see
 # services/known_claiming._calibration_from_claim and services/calibration.py's
 # fourth rule).  recorded counts the points actually written; the five rejects
@@ -1076,6 +1092,17 @@ solver_latency_lock = threading.Lock()
 # LOAD/ADD/STORE — solver workers and frame workers were losing updates.
 counters_lock = threading.Lock()
 
+# The counter roster, derived from the declarations above rather than restated,
+# so that declaring a counter is what enrols it in _reset_for_tests and none can
+# be added in one place and forgotten in the other.  A counter is any
+# module-level name annotated int or float and declared zero; the annotation
+# supplies the zero to restore, which is what keeps the four float counters off
+# the int 0 their consumers would then serialise.  The value test is what lets a
+# plain int constant live at module level here without the reset clearing it.
+_COUNTER_ZEROS: dict[str, int | float] = {
+    _n: _t() for _n, _t in __annotations__.items() if _t in (int, float) and globals()[_n] == 0
+}
+
 
 def bump_counter(name: str, n: int = 1) -> None:
     """Thread-safe increment for a module-level int counter."""
@@ -1181,52 +1208,6 @@ def _reset_for_tests() -> None:
     global latest_accuracy_bytes
     global latest_mlat_accuracy_bytes, latest_mlat_verification_bytes
     global latest_storage_bytes, simulation_config
-    global frames_dropped, frames_processed, solver_successes, solver_failures
-    global node_frames_rate_limited
-    global adsb_seed_frames_autotagged, adsb_capture_ts_fallback
-    global known_claims_made, known_claim_contentions, known_claims_bound
-    global known_claims_errors, known_claims_visibility_rejects, known_claims_world_rejects
-    global known_hold_claims, known_hold_expired, known_hold_dropped_disagree
-    global known_follow_claims
-    global calibration_points_recorded, calibration_claims_rejected_hold
-    global calibration_claims_rejected_stale_fix, calibration_claims_rejected_residual
-    global calibration_claims_rejected_contested, calibration_claims_rejected_immature
-    global dark_follow_targets, dark_follow_claims, dark_follow_inputs
-    global dark_follow_published, dark_follow_dropped, dark_bottomup_shadowed
-    global dark_follow_inelig_cooldown, dark_follow_inelig_no_pos
-    global dark_follow_inelig_age, dark_follow_inelig_min_solves
-    global dark_follow_inelig_min_nodes, dark_follow_inelig_no_filter
-    global dark_follow_inelig_vel_sigma
-    global dark_follow_kept_manoeuvre, dark_follow_gate_sigma_clamped
-    global dark_follow_n2_withheld, dark_follow_n2_skipped
-    global n2_unconfirmed, n2_anchored_admitted, coverage_rebuilds, coverage_rebuild_nodes
-    global n2_fit_position_published
-    global coverage_rebuild_backlog, coverage_rebuild_oldest_wait_s
-    global tracks_stale_skipped, solver_epoch_align_skipped
-    global solver_queue_drops, solver_queue_last_drop_ts, solver_stale_drops, solver_resolve_skips
-    global ws_send_timeouts
-    global solver_pool_timeouts
-    global solver_resolve_skips_dark, solver_resolve_refresh
-    global solver_adopt_eligible, solver_adopt_widened, solver_adopt_nodes_added, solver_adopt_rejected
-    global mn_superseded, mn_superseded_blocked, mn_superseded_blocked_alt, solver_trimmed
-    global mn_stale_coast_retired, mn_stale_coast_blocked_alt
-    global mn_stale_coast_blocked_evidence, mn_stale_coast_none
-    global solver_consensus_selected, solver_consensus_filtered
-    global solver_consensus_fallback, solver_consensus_shadow
-    global solver_anchor_hits, solver_anchor_fallbacks, solver_anchored_published
-    global solver_key_minted_dark, solver_key_proximity_dark, solver_key_proximity_negdt
-    global solver_key_tracks
-    global solver_vel_untrusted_published, solver_n2_alt_inherited
-    global fov_shadow_agree, fov_shadow_would_pass, fov_shadow_would_reject
-    global fov_neg_events
-    global solver_worker_errors
-    global solver_fail_exception, solver_fail_unconverged, solver_fail_rms_delay
-    global solver_fail_rms_doppler, solver_fail_beam, solver_fail_displacement
-    global solver_fail_displacement_dark
-    global position_jump_events
-    global sim_adsb_push_rejected_hex
-    global solver_last_latency_s, solver_total_latency_s, solver_total_solved
-    global peak_connected_nodes
 
     for store in (
         connected_nodes,
@@ -1294,59 +1275,7 @@ def _reset_for_tests() -> None:
     simulation_config = dict(_SIMULATION_CONFIG_DEFAULTS)
 
     with counters_lock:
-        frames_dropped = frames_processed = node_frames_rate_limited = 0
-        solver_successes = solver_failures = n2_unconfirmed = 0
-        n2_anchored_admitted = n2_fit_position_published = 0
-        adsb_seed_frames_autotagged = adsb_capture_ts_fallback = 0
-        known_claims_made = known_claim_contentions = known_claims_bound = 0
-        known_claims_errors = known_claims_visibility_rejects = 0
-        known_claims_world_rejects = 0
-        known_hold_claims = known_hold_expired = known_hold_dropped_disagree = 0
-        known_follow_claims = 0
-        calibration_points_recorded = calibration_claims_rejected_hold = 0
-        calibration_claims_rejected_stale_fix = calibration_claims_rejected_residual = 0
-        calibration_claims_rejected_contested = calibration_claims_rejected_immature = 0
-        dark_follow_targets = dark_follow_claims = dark_follow_inputs = 0
-        dark_follow_published = dark_follow_dropped = 0
-        dark_follow_inelig_cooldown = dark_follow_inelig_no_pos = 0
-        dark_follow_inelig_age = dark_follow_inelig_min_solves = 0
-        dark_follow_inelig_min_nodes = dark_follow_inelig_no_filter = 0
-        dark_follow_inelig_vel_sigma = 0
-        dark_follow_kept_manoeuvre = dark_follow_gate_sigma_clamped = 0
-        dark_follow_n2_withheld = dark_follow_n2_skipped = 0
-        dark_bottomup_shadowed = 0
-        coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
-        solver_queue_last_drop_ts = 0.0
-        ws_send_timeouts = 0
-        solver_pool_timeouts = 0
-        coverage_rebuild_backlog = 0
-        coverage_rebuild_oldest_wait_s = 0.0
-        tracks_stale_skipped = solver_epoch_align_skipped = 0
-        solver_stale_drops = 0
-        solver_resolve_skips = solver_resolve_skips_dark = solver_resolve_refresh = 0
-        solver_adopt_eligible = solver_adopt_widened = solver_adopt_nodes_added = solver_adopt_rejected = 0
-        mn_superseded = mn_superseded_blocked = mn_superseded_blocked_alt = 0
-        mn_stale_coast_retired = mn_stale_coast_blocked_alt = 0
-        mn_stale_coast_blocked_evidence = mn_stale_coast_none = 0
-        solver_trimmed = 0
-        solver_consensus_selected = solver_consensus_filtered = 0
-        solver_consensus_fallback = solver_consensus_shadow = 0
-        solver_anchor_hits = solver_anchor_fallbacks = solver_anchored_published = 0
-        solver_key_minted_dark = solver_key_proximity_dark = solver_key_proximity_negdt = 0
-        solver_key_tracks = 0
-        solver_n2_alt_inherited = 0
-        solver_vel_untrusted_published = 0
-        fov_shadow_agree = fov_shadow_would_pass = fov_shadow_would_reject = 0
-        fov_neg_events = 0
-        solver_worker_errors = 0
-        solver_fail_exception = solver_fail_unconverged = solver_fail_rms_delay = 0
-        solver_fail_rms_doppler = solver_fail_beam = solver_fail_displacement = 0
-        solver_fail_displacement_dark = 0
-        position_jump_events = 0
-        sim_adsb_push_rejected_hex = 0
-        solver_total_solved = 0
-        solver_last_latency_s = solver_total_latency_s = 0.0
-        peak_connected_nodes = 0
+        globals().update(_COUNTER_ZEROS)
 
 
 # ── Simulation physics config (read by fleet orchestrator, written by UI) ─────

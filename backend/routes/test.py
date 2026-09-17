@@ -1433,20 +1433,16 @@ def _solver_window_stats(minutes: float) -> dict:
     # ── known lane / claiming counters ──────────────────────────────────────
     # One counters_lock acquisition for both blocks below, so the two are a
     # single consistent snapshot rather than ten reads interleaved with the
-    # frame and solver workers bumping them.  The known_lane_* names are
-    # registered onto the state module by services/tasks/known_lane.py at
-    # import (see the counters block there), and solver.py imports that module
-    # lazily — so they are read through getattr with a zero default, which is
-    # what a process that has never run a solver worker reports.
+    # frame and solver workers bumping them.
     with state.counters_lock:
-        kl_attempts = getattr(state, "known_lane_attempts", 0)
-        kl_truth_match = getattr(state, "known_lane_truth_match", 0)
-        kl_ghost = getattr(state, "known_lane_ghost", 0)
-        kl_no_converge = getattr(state, "known_lane_no_converge", 0)
-        kl_published = getattr(state, "known_lane_published", 0)
-        kl_publish_errors = getattr(state, "known_lane_publish_errors", 0)
-        kl_reanchored = getattr(state, "known_lane_reanchored", 0)
-        kl_publish_rms_rejected = getattr(state, "known_lane_publish_rms_rejected", 0)
+        kl_attempts = state.known_lane_attempts
+        kl_truth_match = state.known_lane_truth_match
+        kl_ghost = state.known_lane_ghost
+        kl_no_converge = state.known_lane_no_converge
+        kl_published = state.known_lane_published
+        kl_publish_errors = state.known_lane_publish_errors
+        kl_reanchored = state.known_lane_reanchored
+        kl_publish_rms_rejected = state.known_lane_publish_rms_rejected
         kc_made = state.known_claims_made
         kc_contentions = state.known_claim_contentions
         kc_bound = state.known_claims_bound

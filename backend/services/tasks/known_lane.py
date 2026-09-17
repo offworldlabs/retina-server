@@ -27,7 +27,7 @@ would contaminate that measurement into a tautology.  The displacement gate
 here CLASSIFIES (truth_match / ghost); unlike the regular pipeline's, it
 never destroys the record or the accuracy sample.
 
-Modes (state.KNOWN_LANE_MODE, owned by slice A; absent means "off"):
+Modes (state.KNOWN_LANE_MODE; an absent or unrecognised value means "off"):
   off     — this module does nothing at all.  Same precedent as
             SOLVER_CONSENSUS_MODE / FOV_MODE: off is byte-identical to the
             behaviour that predates the feature.
@@ -56,12 +56,6 @@ goes onto the normal solver queue so the dark gate stack judges it, whereas a
 known-lane solve is deliberately free of that stack (see the free-solve
 invariant above).  ``run_dark_follow_pass`` and ``_build_follow_solver_input``
 carry the detail.
-
-Neither ``state.known_claims`` nor ``state.KNOWN_LANE_MODE`` exists on this
-branch — slice A owns core/state.py — so every access goes through getattr
-with an inert default, and the counters below are registered onto the state
-module at import.  This file must keep working unchanged whether slice A has
-merged or not.
 """
 
 import logging
@@ -83,27 +77,6 @@ from services.known_claiming import KNOWN_CLAIM_MAX_FIX_AGE_S
 # module lazily, inside _run_solver_worker (see the wiring there), so the
 # import below cannot form a cycle.
 from services.tasks import solver as solver_mod
-
-# ── Counters ──────────────────────────────────────────────────────────────────
-# Registered onto core.state at import rather than declared there: slice A
-# owns core/state.py on this integration train, and a second declarer would
-# be a guaranteed merge conflict.  hasattr-guarded so the day the counters DO
-# move into state.py (integration step), this block becomes a no-op instead
-# of re-zeroing them.  state.bump_counter works on them either way — it
-# resolves names through the state module's globals(), which setattr feeds.
-_COUNTERS = (
-    "known_lane_attempts",
-    "known_lane_truth_match",
-    "known_lane_ghost",
-    "known_lane_no_converge",
-    "known_lane_published",
-    "known_lane_publish_errors",
-    "known_lane_reanchored",
-    "known_lane_publish_rms_rejected",
-)
-for _name in _COUNTERS:
-    if not hasattr(state, _name):
-        setattr(state, _name, 0)
 
 # ── Claim selection windows ───────────────────────────────────────────────────
 # Freshness: a claim older than this can no longer produce a visible result —
@@ -194,9 +167,6 @@ def _reset_for_tests() -> None:
         _last_follow_mono.clear()
         _last_follow_ts_ms.clear()
         _reanchor_mem.clear()
-    with state.counters_lock:
-        for name in _COUNTERS:
-            setattr(state, name, 0)
 
 
 def _mode() -> str:
