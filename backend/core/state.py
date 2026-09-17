@@ -758,6 +758,13 @@ coverage_rebuild_nodes: int = 0
 # fleet's trigger rate — constraints are then converging slower than the
 # coverage they follow, which no rebuild counter can show.
 coverage_rebuild_backlog: int = 0
+# How long (s) the node at the front of that queue has been waiting, as of the
+# last coverage cycle.  This, not the depth, is what says the budget is too
+# small: the drain is FIFO, so a backlog that is growing — or a budget that
+# cannot clear the fleet's trigger rate — shows as the front waiting longer
+# and longer, while a steady depth whose front turns over every few cycles is
+# the budget doing exactly what it was sized for.  Read by health.py.
+coverage_rebuild_oldest_wait_s: float = 0.0
 
 # Confirmed tracks withheld from association because their newest REAL
 # detection was older than TRACK_MAX_STALE_S at the frame being processed —
@@ -774,6 +781,16 @@ tracks_stale_skipped: int = 0
 solver_epoch_align_skipped: int = 0
 
 solver_queue_drops: int = 0
+# When the solver queue last refused a candidate (time.time(), 0.0 = never),
+# and the epochs of the last few hundred refusals.  solver_queue_drops above is
+# cumulative for the process lifetime, which is what /api/admin/metrics and the
+# test dashboard want; health.py wants to know whether the solver is failing
+# to keep up NOW and reads these instead — one candidate dropped in a
+# two-minute stall used to hold /api/health at "degraded" until the next
+# deploy.  Both are written by record_solver_queue_drop(), never directly.
+solver_queue_last_drop_ts: float = 0.0
+SOLVER_QUEUE_DROPS_RECENT_MAX = 1000
+solver_queue_drops_recent: deque = deque(maxlen=SOLVER_QUEUE_DROPS_RECENT_MAX)
 
 # WebSocket clients whose aircraft-feed send hit the broadcast timeout.  The
 # broadcast fans its sends out with asyncio.gather, so a wedged client costs
@@ -1056,6 +1073,23 @@ def bump_counter(name: str, n: int = 1) -> None:
         globals()[name] += n
 
 
+def record_solver_queue_drop() -> None:
+    """Count one refused solver candidate and stamp when it happened.
+
+    The one path for both enqueue sites (frame_processor's association round
+    and known_lane's follow lane), so the lifetime counter and the recency
+    record health.py reads cannot disagree.  The deque append is under the
+    same lock as the counter so health.py can snapshot it without racing an
+    append from a frame worker.
+    """
+    global solver_queue_last_drop_ts
+    now = time.time()
+    with counters_lock:
+        globals()["solver_queue_drops"] += 1
+        solver_queue_last_drop_ts = now
+        solver_queue_drops_recent.append(now)
+
+
 # ── Task health tracking ─────────────────────────────────────────────────────
 task_last_success: dict[str, float] = {}  # task_name → last success epoch
 task_error_counts: dict[str, int] = defaultdict(int)  # task_name → cumulative errors
@@ -1157,8 +1191,9 @@ def _reset_for_tests() -> None:
     global dark_follow_n2_withheld, dark_follow_n2_skipped
     global n2_unconfirmed, n2_anchored_admitted, coverage_rebuilds, coverage_rebuild_nodes
     global n2_fit_position_published
-    global coverage_rebuild_backlog, tracks_stale_skipped, solver_epoch_align_skipped
-    global solver_queue_drops, solver_stale_drops, solver_resolve_skips
+    global coverage_rebuild_backlog, coverage_rebuild_oldest_wait_s
+    global tracks_stale_skipped, solver_epoch_align_skipped
+    global solver_queue_drops, solver_queue_last_drop_ts, solver_stale_drops, solver_resolve_skips
     global ws_send_timeouts
     global solver_pool_timeouts
     global solver_resolve_skips_dark, solver_resolve_refresh
@@ -1217,6 +1252,7 @@ def _reset_for_tests() -> None:
     mlat_solve_history.clear()
     mlat_solve_history_known.clear()
     solver_resolve_skips_recent.clear()
+    solver_queue_drops_recent.clear()
     accuracy_samples.clear()
     mlat_samples.clear()
     for q in (frame_queue, solver_queue):
@@ -1270,9 +1306,11 @@ def _reset_for_tests() -> None:
         dark_follow_n2_withheld = dark_follow_n2_skipped = 0
         dark_bottomup_shadowed = 0
         coverage_rebuilds = coverage_rebuild_nodes = solver_queue_drops = 0
+        solver_queue_last_drop_ts = 0.0
         ws_send_timeouts = 0
         solver_pool_timeouts = 0
         coverage_rebuild_backlog = 0
+        coverage_rebuild_oldest_wait_s = 0.0
         tracks_stale_skipped = solver_epoch_align_skipped = 0
         solver_stale_drops = 0
         solver_resolve_skips = solver_resolve_skips_dark = solver_resolve_refresh = 0

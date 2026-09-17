@@ -548,7 +548,9 @@ class TestCoverageRebuildBudget:
         analytics_refresh._COVERAGE_DIGESTS.clear()
         analytics_refresh._COVERAGE_NEXT_CHECK.clear()
         analytics_refresh._COVERAGE_PENDING.clear()
+        analytics_refresh._COVERAGE_PENDING_SINCE.clear()
         state.coverage_rebuild_backlog = 0
+        state.coverage_rebuild_oldest_wait_s = 0.0
 
     def _stub(self, monkeypatch, digests, calls):
         monkeypatch.setattr(analytics_refresh, "_COVERAGE_RECHECK_MIN_S", 0.0)
@@ -628,6 +630,73 @@ class TestCoverageRebuildBudget:
         assert state.coverage_rebuild_backlog == 3
         analytics_refresh._refresh_coverage_constraints(max_nodes=3)
         assert state.coverage_rebuild_backlog == 0
+
+    def _clock(self, monkeypatch, start=1000.0):
+        clock = [start]
+        monkeypatch.setattr(analytics_refresh.time, "monotonic", lambda: clock[0])
+        return clock
+
+    def test_the_oldest_wait_gauge_reads_the_front_of_the_queue(self, monkeypatch):
+        """The health check judges the budget by how long the front of the FIFO
+        has waited, not by the depth: a 60-node fleet holds a steady depth of
+        ~15 with every node rebuilt within a few cycles, and that is the
+        design working."""
+        calls = []
+        clock = self._clock(monkeypatch)
+        self._stub(monkeypatch, {f"n{i}": (float(i) * 10, None) for i in range(5)}, calls)
+        analytics_refresh._refresh_coverage_constraints(max_nodes=2)
+        # n2..n4 were queued this instant.
+        assert state.coverage_rebuild_oldest_wait_s == 0.0
+        clock[0] += 90.0
+        analytics_refresh._refresh_coverage_constraints(max_nodes=1)  # drains n2
+        assert calls == ["n0", "n1", "n2"]
+        assert state.coverage_rebuild_oldest_wait_s == 90.0  # n3, queued at t0
+        clock[0] += 60.0
+        analytics_refresh._refresh_coverage_constraints(max_nodes=5)
+        assert analytics_refresh._COVERAGE_PENDING == {}
+        assert state.coverage_rebuild_oldest_wait_s == 0.0
+
+    def test_a_retrip_keeps_the_original_enqueue_time(self, monkeypatch):
+        """Matches the queue position rule: a node whose coverage moves every
+        cycle keeps its place, so it also keeps the wait it has accrued.
+        Resetting the clock on a re-trip would let such a node hide an
+        undersized budget by never looking old."""
+        calls = []
+        clock = self._clock(monkeypatch)
+        digests = self._stub(monkeypatch, {f"n{i}": (float(i) * 10, None) for i in range(3)}, calls)
+        analytics_refresh._refresh_coverage_constraints(max_nodes=0)  # scan only
+        clock[0] += 100.0
+        digests["n0"] = (500.0, None)  # n0 trips again before its turn comes
+        analytics_refresh._refresh_coverage_constraints(max_nodes=0)
+        assert analytics_refresh._COVERAGE_PENDING_SINCE["n0"] == 1000.0
+        assert state.coverage_rebuild_oldest_wait_s == 100.0
+
+    def test_a_node_that_moves_back_forgets_its_enqueue_time(self, monkeypatch):
+        calls = []
+        clock = self._clock(monkeypatch)
+        digests = self._stub(monkeypatch, {"n0": (10.0, None), "n1": (20.0, None)}, calls)
+        analytics_refresh._refresh_coverage_constraints(max_nodes=2)
+        digests["n0"] = (90.0, None)
+        analytics_refresh._refresh_coverage_constraints(max_nodes=0)  # scan only
+        assert "n0" in analytics_refresh._COVERAGE_PENDING_SINCE
+        clock[0] += 500.0
+        digests["n0"] = (10.0, None)  # back to the digest its grids were built under
+        analytics_refresh._refresh_coverage_constraints(max_nodes=0)
+        assert "n0" not in analytics_refresh._COVERAGE_PENDING_SINCE
+        assert state.coverage_rebuild_oldest_wait_s == 0.0
+        # A later real change starts its wait from that later scan.
+        digests["n0"] = (70.0, None)
+        analytics_refresh._refresh_coverage_constraints(max_nodes=0)
+        assert analytics_refresh._COVERAGE_PENDING_SINCE["n0"] == 1500.0
+
+    def test_the_bookkeeping_never_outlives_the_queue(self, monkeypatch):
+        calls = []
+        self._clock(monkeypatch)
+        self._stub(monkeypatch, {f"n{i}": (float(i) * 10, None) for i in range(4)}, calls)
+        analytics_refresh._refresh_coverage_constraints(max_nodes=2)
+        assert set(analytics_refresh._COVERAGE_PENDING_SINCE) == set(analytics_refresh._COVERAGE_PENDING)
+        analytics_refresh._refresh_coverage_constraints(max_nodes=2)
+        assert analytics_refresh._COVERAGE_PENDING_SINCE == {}
 
 
 class TestCoverageRebuildIsOffTheAnalyticsJob:

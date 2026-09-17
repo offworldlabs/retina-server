@@ -13,6 +13,8 @@ Covers the branches that are not exercised by tests/test_health_routes.py:
 
 import logging
 import queue
+import time
+from collections import deque
 
 import orjson
 
@@ -28,34 +30,28 @@ def _assert_degraded(r):
 
 
 class TestHealthDegradedBranches:
-    def test_coverage_rebuild_backlog(self, client):
+    def test_coverage_rebuild_backlog(self, client, monkeypatch):
         """A budgeted rebuild falling behind is a warning, not a stale task.
 
         coverage_constraints is deliberately not in _CRITICAL_TASKS — it is
-        allowed to defer — so the backlog gauge is the only thing that can say
-        the budget is too small for the fleet.
+        allowed to defer — so the oldest-wait gauge is the only thing that can
+        say the budget is too small for the fleet.
         """
-        state.coverage_rebuild_backlog = 999
-        try:
-            _assert_degraded(client.get("/api/health"))
-        finally:
-            state.coverage_rebuild_backlog = 0
+        monkeypatch.setattr(state, "coverage_rebuild_backlog", 999)
+        monkeypatch.setattr(state, "coverage_rebuild_oldest_wait_s", 3600.0)
+        _assert_degraded(client.get("/api/health"))
 
-    def test_coverage_rebuild_backlog_within_budget_is_healthy(self):
+    def test_coverage_rebuild_backlog_within_budget_is_healthy(self, monkeypatch):
         """/api/health never exposes issue types, so assert on the source."""
-        state.coverage_rebuild_backlog = 1
-        try:
-            types = {i["type"] for i in compute_health_issues()}
-            assert "coverage_rebuild_backlog" not in types
-        finally:
-            state.coverage_rebuild_backlog = 0
+        monkeypatch.setattr(state, "coverage_rebuild_backlog", 1)
+        monkeypatch.setattr(state, "coverage_rebuild_oldest_wait_s", 30.0)
+        types = {i["type"] for i in compute_health_issues()}
+        assert "coverage_rebuild_backlog" not in types
 
-    def test_solver_queue_drops(self, client):
-        state.solver_queue_drops = 5
-        try:
-            _assert_degraded(client.get("/api/health"))
-        finally:
-            state.solver_queue_drops = 0
+    def test_solver_queue_drops(self, client, monkeypatch):
+        monkeypatch.setattr(state, "solver_queue_drops", 5)
+        monkeypatch.setattr(state, "solver_queue_last_drop_ts", time.time())
+        _assert_degraded(client.get("/api/health"))
 
     def test_solver_queue_backpressure(self, client, monkeypatch):
         # Solver worker threads drain the real queue, so we stub qsize/maxsize
@@ -288,3 +284,118 @@ class TestThresholdSettings:
         helper existed."""
         monkeypatch.setenv("NODE_DROPOUT_THRESHOLD", "not-a-number")
         assert health._threshold("NODE_DROPOUT_THRESHOLD", 0.8) == 0.8
+
+
+def _issue(type_: str) -> dict | None:
+    return next((i for i in compute_health_issues() if i["type"] == type_), None)
+
+
+class TestSolverQueueDropsRecency:
+    """A dropped solver job degrades health while it is recent, not for the
+    process lifetime.
+
+    `solver_queue_drops` is cumulative and is only ever reset by
+    state._reset_for_tests: one candidate dropped during a two-minute solver
+    stall on the test droplet held /api/health at "degraded" for four hours
+    with an empty queue and normal latency. The check is meant to say whether
+    the solver is failing to keep up NOW, so it reads the drop timestamps
+    instead and leaves the lifetime count to the admin/test routes.
+    """
+
+    def test_a_lifetime_count_alone_is_not_degraded(self, monkeypatch):
+        monkeypatch.setattr(state, "solver_queue_drops", 1)
+        monkeypatch.setattr(state, "solver_queue_last_drop_ts", time.time() - 4 * 3600)
+        monkeypatch.setattr(state, "solver_queue_drops_recent", deque([time.time() - 4 * 3600]))
+        assert _issue("solver_queue_drops") is None
+
+    def test_a_process_that_never_dropped_is_not_degraded(self, monkeypatch):
+        monkeypatch.setattr(state, "solver_queue_drops", 0)
+        monkeypatch.setattr(state, "solver_queue_last_drop_ts", 0.0)
+        monkeypatch.setattr(state, "solver_queue_drops_recent", deque())
+        assert _issue("solver_queue_drops") is None
+
+    def test_a_recent_drop_is_degraded_and_names_both_counts(self, monkeypatch):
+        now = time.time()
+        monkeypatch.setattr(state, "solver_queue_drops", 7)
+        monkeypatch.setattr(state, "solver_queue_last_drop_ts", now - 30)
+        # Five lifetime drops fell outside the window, two inside it.
+        monkeypatch.setattr(
+            state,
+            "solver_queue_drops_recent",
+            deque([now - 3600] * 5 + [now - 60, now - 30]),
+        )
+        issue = _issue("solver_queue_drops")
+        assert issue is not None and issue["severity"] == health.WARNING
+        assert "2 job(s) in the last 5 min" in issue["message"]
+        assert "lifetime 7" in issue["message"]
+
+    def test_the_window_is_configurable(self, monkeypatch):
+        now = time.time()
+        monkeypatch.setattr(state, "solver_queue_drops", 1)
+        monkeypatch.setattr(state, "solver_queue_last_drop_ts", now - 60)
+        monkeypatch.setattr(state, "solver_queue_drops_recent", deque([now - 60]))
+        monkeypatch.setenv("SOLVER_QUEUE_DROP_WINDOW_S", "10")
+        assert _issue("solver_queue_drops") is None
+        monkeypatch.setenv("SOLVER_QUEUE_DROP_WINDOW_S", "7200")
+        assert _issue("solver_queue_drops") is not None
+
+    def test_record_solver_queue_drop_bumps_and_stamps(self, monkeypatch):
+        """Both enqueue sites (frame_processor, known_lane) go through this so
+        the counter and the timestamps cannot drift apart."""
+        monkeypatch.setattr(state, "solver_queue_drops", 0)
+        monkeypatch.setattr(state, "solver_queue_last_drop_ts", 0.0)
+        monkeypatch.setattr(state, "solver_queue_drops_recent", deque(maxlen=10))
+        before = time.time()
+        state.record_solver_queue_drop()
+        state.record_solver_queue_drop()
+        assert state.solver_queue_drops == 2
+        assert state.solver_queue_last_drop_ts >= before
+        assert len(state.solver_queue_drops_recent) == 2
+        assert _issue("solver_queue_drops") is not None
+
+
+class TestCoverageRebuildBacklogStaleness:
+    """The backlog warning is about rebuilds waiting too long, not about the
+    queue having a particular depth.
+
+    The drain is budgeted (3 nodes per 30 s cycle) and the fleet's coverage
+    moves continuously, so a 60-node fleet sits at a steady backlog of ~15
+    with a fresh coverage_constraints last_success — the design working, not
+    a budget too small. The old fixed ceiling of 12 nodes read that as
+    degraded for 10+ hours on the test droplet. A budget that really is too
+    small shows as the front of the FIFO queue waiting longer and longer.
+    """
+
+    def test_a_steady_queue_that_drains_is_healthy(self, monkeypatch):
+        monkeypatch.setattr(state, "coverage_rebuild_backlog", 15)
+        monkeypatch.setattr(state, "coverage_rebuild_oldest_wait_s", 150.0)
+        assert _issue("coverage_rebuild_backlog") is None
+
+    def test_a_rebuild_waiting_too_long_is_degraded(self, monkeypatch):
+        monkeypatch.setattr(state, "coverage_rebuild_backlog", 3)
+        monkeypatch.setattr(state, "coverage_rebuild_oldest_wait_s", 1300.0)
+        issue = _issue("coverage_rebuild_backlog")
+        assert issue is not None and issue["severity"] == health.WARNING
+        assert "3 nodes queued" in issue["message"]
+        assert "1300s" in issue["message"]
+
+    def test_the_cold_start_warm_up_does_not_fire(self, monkeypatch):
+        """A fresh process queues every node with a polygon on its first scan;
+        a 60-node fleet takes ~10 min to work that off at 3 per 30 s cycle."""
+        monkeypatch.setattr(state, "coverage_rebuild_backlog", 60)
+        monkeypatch.setattr(state, "coverage_rebuild_oldest_wait_s", 600.0)
+        assert _issue("coverage_rebuild_backlog") is None
+
+    def test_the_ceiling_is_configurable(self, monkeypatch):
+        monkeypatch.setattr(state, "coverage_rebuild_backlog", 2)
+        monkeypatch.setattr(state, "coverage_rebuild_oldest_wait_s", 150.0)
+        monkeypatch.setenv("COVERAGE_BACKLOG_MAX_WAIT_S", "100")
+        assert _issue("coverage_rebuild_backlog") is not None
+        monkeypatch.setenv("COVERAGE_BACKLOG_MAX_WAIT_S", "5000")
+        assert _issue("coverage_rebuild_backlog") is None
+
+    def test_an_empty_queue_is_healthy_whatever_the_gauge_says(self, monkeypatch):
+        """The gauge is written once per cycle; an empty queue is the answer."""
+        monkeypatch.setattr(state, "coverage_rebuild_backlog", 0)
+        monkeypatch.setattr(state, "coverage_rebuild_oldest_wait_s", 0.0)
+        assert _issue("coverage_rebuild_backlog") is None

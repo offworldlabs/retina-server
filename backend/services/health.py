@@ -81,14 +81,38 @@ def _threshold(name: str, default: float) -> float:
 # coverage_constraints is deliberately absent: it is budgeted, so falling behind
 # is its designed response to a fleet whose coverage moves faster than it can
 # rebuild, not a failure. What must not happen is falling behind *forever*, and
-# that is a backlog question, not a last-success one — see below.
+# that is a how-long-has-the-oldest-rebuild-waited question, not a
+# last-success one — see below.
 _CRITICAL_TASKS = {"frame_processor": 20, "analytics_refresh": 120, "aircraft_flush": 15}
 
-# Queued overlap-grid rebuilds tolerated before the budget is judged too small
-# for the fleet. One cycle's budget is a few nodes; a backlog past this has
-# taken more than a handful of cycles to work off, so the constraints the grids
-# follow are drifting faster than the grids track them.
-_COVERAGE_BACKLOG_WARN = int(os.getenv("COVERAGE_BACKLOG_WARN", "12"))
+# Longest (s) an overlap-grid rebuild may sit queued behind the per-cycle
+# budget before the budget is judged too small for the fleet.
+#
+# A wait, not a depth. The drain is FIFO at 3 nodes per 30 s cycle
+# (analytics_refresh._COVERAGE_MAX_NODES_PER_CYCLE / COVERAGE_REFRESH_INTERVAL_S)
+# and a fleet with moving aircraft re-trips nodes continuously, so a 60-node
+# fleet holds a steady depth of ~15 with every node rebuilt within a few
+# cycles: the budget doing what it was sized for. The fixed depth ceiling of
+# 12 this replaces read that as degraded for 10+ hours on the test droplet. A
+# budget that really cannot keep up shows as the front of the queue waiting
+# longer and longer, which is what this catches.
+#
+# The default must clear the cold start: a fresh process has no digests, so
+# its first scan queues every node with a polygon and works them off at the
+# budget rate — ceil(N / 3) cycles of 30 s, so ~10 min for 60 nodes and the
+# last node waits about that long. 20 min covers a fleet of ~120 before the
+# warm-up alone would trip it; set COVERAGE_BACKLOG_MAX_WAIT_S higher for a
+# larger one.
+_DEFAULT_COVERAGE_BACKLOG_MAX_WAIT_S = 1200.0
+
+# How recently (s) the solver queue must have refused a candidate for that to
+# count against health. solver_queue_drops is a lifetime counter, reset only
+# by the test/ops stats reset; on its own it turned one candidate dropped in a
+# two-minute stall into four hours of "degraded" with an empty queue and
+# normal latency. The check is meant to say whether the solver is failing to
+# keep up NOW — the sustained-pressure signals are solver_queue_high and
+# solver_latency_high below — so it asks for a drop inside this window.
+_DEFAULT_SOLVER_QUEUE_DROP_WINDOW_S = 300.0
 
 
 def compute_health_issues() -> list[dict]:
@@ -110,17 +134,31 @@ def compute_health_issues() -> list[dict]:
         if last is not None and (now - last) > max_age_s:
             add(f"stale_task:{task}", CRITICAL, f"Task {task} stale ({now - last:.0f}s since last success)")
 
-    # Overlap-grid rebuilds queued behind the per-cycle budget
-    if state.coverage_rebuild_backlog > _COVERAGE_BACKLOG_WARN:
+    # Overlap-grid rebuilds waiting too long behind the per-cycle budget
+    backlog_max_wait_s = _threshold("COVERAGE_BACKLOG_MAX_WAIT_S", _DEFAULT_COVERAGE_BACKLOG_MAX_WAIT_S)
+    if state.coverage_rebuild_backlog > 0 and state.coverage_rebuild_oldest_wait_s > backlog_max_wait_s:
         add(
             "coverage_rebuild_backlog",
             WARNING,
-            f"Coverage grid rebuilds backlogged ({state.coverage_rebuild_backlog} nodes queued)",
+            f"Coverage grid rebuilds backlogged ({state.coverage_rebuild_backlog} nodes queued, "
+            f"oldest waiting {state.coverage_rebuild_oldest_wait_s:.0f}s)",
         )
 
-    # Solver queue drops (solver can't keep up)
-    if state.solver_queue_drops > 0:
-        add("solver_queue_drops", WARNING, f"Solver dropped {state.solver_queue_drops} jobs")
+    # Solver queue drops within the window (solver can't keep up right now)
+    drop_window_s = _threshold("SOLVER_QUEUE_DROP_WINDOW_S", _DEFAULT_SOLVER_QUEUE_DROP_WINDOW_S)
+    if state.solver_queue_last_drop_ts > 0 and (now - state.solver_queue_last_drop_ts) <= drop_window_s:
+        with state.counters_lock:
+            recent_drops = list(state.solver_queue_drops_recent)
+        n_recent = sum(1 for ts in recent_drops if (now - ts) <= drop_window_s)
+        # The deque is bounded, so a burst larger than it reads as a floor.
+        saturated = n_recent == len(recent_drops) == state.SOLVER_QUEUE_DROPS_RECENT_MAX
+        recent = f"{n_recent}+" if saturated else str(n_recent)
+        window = f"{drop_window_s / 60:.0f} min" if drop_window_s >= 60 else f"{drop_window_s:.0f} s"
+        add(
+            "solver_queue_drops",
+            WARNING,
+            f"Solver dropped {recent} job(s) in the last {window} (lifetime {state.solver_queue_drops})",
+        )
 
     # Disk space (<500 MB free)
     try:

@@ -597,7 +597,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
                 try:
                     state.solver_queue.put_nowait((s_in, configs_for_solver_input(node_cfgs, s_in), time.time()))
                 except Exception:
-                    state.bump_counter("solver_queue_drops")
+                    state.record_solver_queue_drop()
                     if state.solver_queue_drops % 100 == 1:
                         logging.warning(
                             "Solver queue full — dropped %d candidates total",
