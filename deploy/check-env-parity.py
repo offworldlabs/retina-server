@@ -140,6 +140,16 @@ ALLOWED_DIVERGENCE = (
         r"|TRACK_MAX_STALE_S|DARK_FOLLOW_MODE|DARK_FOLLOW_MIN_SOLVES"
         r"|TRACKER_PROCESS_NOISE_DOPPLER)$",
     ),
+    # The test droplet writes sign-in links to its own log rather than mailing
+    # them. It is the box that gets deployed to on a whim, from any branch, so
+    # sending real mail from it means mailing whoever a half-finished change
+    # happens to name — and it carries no Cloudflare token anyway, which would
+    # otherwise make the endpoint answer 503 and the flow untestable there.
+    # Refused in production by services/mail.py regardless of this entry, so
+    # widening it to another environment cannot silently disable delivery on
+    # the one that matters. Staging keeps `smtp` deliberately: a transport only
+    # production exercises is one nobody has tested.
+    ("test", r"^services\.server\.environment\.MAIL_TRANSPORT$"),
     # Compose records the file list it was assembled from.
     r"^name$",
     r"^services\.[^.]+\.(build|image)\.?.*labels.*$",

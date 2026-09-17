@@ -86,6 +86,17 @@ services:
       # for one of the fleet's seventeen node applications opening the console.
       # Not a secret — it appears in the login URL of every Access redirect.
       - CF_ACCESS_TEAM_DOMAIN=offworldlab.cloudflareaccess.com
+      # Outbound mail, over Cloudflare Email Service. Staging sends real mail
+      # from the same identity production does, because a transport only
+      # production exercises is one nobody has tested. The test droplet is the
+      # exception and overrides this to `log`, for the reason recorded there.
+      # The credential is CLOUDFLARE_EMAIL_TOKEN in each box's backend/.env,
+      # never here. `log` writes sign-in links to the application log instead of
+      # sending them, and services/mail.py refuses it outright when
+      # RETINA_ENV=production, so it cannot travel from the two overlays that
+      # choose it.
+      - MAIL_TRANSPORT=smtp
+      - MAIL_FROM=RETINA <no-reply@retina.fm>
     # bash, not sh: start.sh's supervisor uses `wait -n`, a bash builtin that
     # dash rejects ("Illegal option -n"), which crash-loops the server. The
     # script's shebang already says bash; naming it here keeps that true even if
