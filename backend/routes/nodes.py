@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.requests import Request
 
+from routes.node_claim import router as node_claim_router
 from routes.node_config import router as node_config_router
 from routes.node_contact import router as node_contact_router
 from routes.node_register import router as node_register_router
@@ -107,7 +108,19 @@ NODE_PATH_PREFIX = "/v1/nodes"
 #
 # The empty string stays refused. Null is the one way to say the illuminator is
 # unnamed, which is what keeps a stored name distinguishable from its absence.
-NODE_API_VERSION = "1.2.2"
+#
+# 1.3.0 adds /v1/nodes/claim, on which a node offers the address that owns it and
+# reads where that claim stands. A minor rather than a patch because it is new
+# surface on every count the 1.2.0 note applies: three operations, a request
+# schema, a response schema and a refusal slug a client can now read. Nothing
+# existing moves, so a 1.2.2 node stays conformant and simply never calls it.
+#
+# It also adds the one response under this prefix that does not wear `Error`.
+# The 409 on the PUT carries `ClaimResponse`, because a client whose node has
+# acquired an owner cannot correct its request, only reconcile, and what it
+# needs is the address that won rather than the name of a field. The taxonomy in
+# routes/node_responses.py states the exception where it is defined.
+NODE_API_VERSION = "1.3.0"
 
 # No tag here: each sub-router carries the contract's own grouping, since those
 # are what a generated client is built around.
@@ -119,6 +132,7 @@ NODE_API_TAGS = [
     {"name": "streaming", "description": "The hot path, plus the liveness signal that runs alongside it."},
     {"name": "configuration", "description": "Receiver and transmitter geometry, versioned by the server."},
     {"name": "contact", "description": "Whom to contact about the node, reported by the node itself."},
+    {"name": "claim", "description": "The address that owns the node, and where its claim stands."},
 ]
 
 # Where the contract is served, for the client generated from it. Declared here
@@ -137,6 +151,7 @@ NODE_API_SERVERS = [
 router.include_router(node_register_router)
 router.include_router(node_config_router)
 router.include_router(node_contact_router)
+router.include_router(node_claim_router)
 router.include_router(node_stream_router)
 
 # NODE_BODY_LIMITS itself is first-class in routes/node_responses.py, where the

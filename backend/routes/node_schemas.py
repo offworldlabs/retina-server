@@ -283,6 +283,32 @@ class ContactResponse(BaseModel):
     updated_at: ServerTime
 
 
+# Three states, and a bounce is not a fourth. A node whose address could not be
+# delivered to is unclaimed: its address field is live and a different address
+# is accepted normally, which is exactly what unclaimed means. What differs is
+# only what its setup UI should say, so that travels as `undeliverable`.
+ClaimState = Literal["unclaimed", "pending", "owned"]
+
+
+class ClaimResponse(BaseModel):
+    """What the node is told about its own claim.
+
+    Carried by `GET` and `PUT /v1/nodes/claim` alike, and by the 409 a node
+    gets for nominating an address for a node that already has an owner: the
+    node has to reconcile from that answer rather than retry it, so it is told
+    which address won in the same response.
+    """
+
+    state: ClaimState
+    # The address in play: the one awaiting verification while `pending`, the
+    # one the node was claimed with while `owned`, and the last one offered, or
+    # null, while `unclaimed`.
+    email: str | None = None
+    # `email` bounced hard and will not be mailed again. Nominating a different
+    # address clears it.
+    undeliverable: bool = False
+
+
 class ErrorBody(BaseModel):
     """The shape every node-API refusal wears. `error` is a stable slug;
     `detail`, present only when it applies, names the offending field or value

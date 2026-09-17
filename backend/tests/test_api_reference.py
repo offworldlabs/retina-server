@@ -41,9 +41,12 @@ PUBLIC_OPERATIONS = {
     ("get", "/api/v1/ground-truth/aircraft"),
     ("get", "/api/v1/ground-truth/real"),
     ("get", "/api/v1/solver/aircraft"),
+    ("get", "/v1/nodes/claim"),
+    ("post", "/v1/nodes/claim/resend"),
     ("post", "/v1/nodes/detection"),
     ("post", "/v1/nodes/heartbeat"),
     ("post", "/v1/nodes/register"),
+    ("put", "/v1/nodes/claim"),
     ("put", "/v1/nodes/config"),
     ("put", "/v1/nodes/contact"),
 }

@@ -24,6 +24,10 @@ NODE_METHODS = {
     "/v1/nodes/heartbeat": "POST",
     "/v1/nodes/detection": "POST",
     "/v1/nodes/contact": "PUT",
+    "/v1/nodes/claim": "PUT",
+    # The one path here whose operation takes no body. It is capped all the
+    # same, so the cap tests exercise it like any other.
+    "/v1/nodes/claim/resend": "POST",
 }
 
 KIB = 1024
