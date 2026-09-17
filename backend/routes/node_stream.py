@@ -46,6 +46,7 @@ from routes.node_schemas import (
 )
 from services import detection_mirror
 from services.node_auth import bearer_node, node_bearer_scheme
+from services.node_claim_store import claim_status
 from services.node_pipeline import pipeline_frame, register_with_pipeline, submit_frame
 from services.node_rate_limits import Refusal, token_rate_limiter
 
@@ -359,6 +360,13 @@ async def post_heartbeat(
         if entry is not None:
             entry["last_heartbeat"] = now.isoformat()
 
+    # Read before the commit, so the claim this answers with is the one that
+    # held while the beat was being served rather than one read afterwards. It
+    # is not a guarantee that every field here agrees: `node` was loaded further
+    # up and is not re-read, so an administrator blocking a node and releasing
+    # it between the two could still be half-reflected in one beat. The node
+    # reconciles on the next one, which is what the whole channel is for.
+    claim = await claim_status(session, node_id, now.timestamp())
     await session.commit()
     return HeartbeatResponse(
         server_time=now,
@@ -367,4 +375,5 @@ async def post_heartbeat(
         config_stale=beat.config_version != node.active_config_version,
         streaming_allowed=node.status == "active",
         node_ref=node.node_ref,
+        **claim.as_downlink(),
     )

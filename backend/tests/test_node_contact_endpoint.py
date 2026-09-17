@@ -48,7 +48,7 @@ async def test_the_response_carries_the_time_the_row_was_written(registered_node
 
     body = node_client.put("/v1/nodes/contact", json=dict(CONTACT), headers=_auth(token)).json()
 
-    assert set(body) == {"updated_at"}
+    assert set(body) == {"updated_at", "claim_state", "claim_email", "claim_undeliverable"}
     assert body["updated_at"].endswith("Z")
 
 
@@ -128,3 +128,42 @@ async def test_a_body_that_is_not_an_object_is_refused(registered_node, node_cli
 
     assert response.status_code == 400
     assert response.json() == {"error": "invalid_contact", "detail": "contact"}
+
+
+async def test_a_contact_put_carries_the_claim_state(registered_node, node_client):
+    """A node correcting a phone number learns where its claim stands from the
+    answer rather than waiting for a beat."""
+    token, _node_id = registered_node
+
+    body = node_client.put("/v1/nodes/contact", json=dict(CONTACT), headers=_auth(token)).json()
+
+    assert (body["claim_state"], body["claim_email"], body["claim_undeliverable"]) == ("unclaimed", None, False)
+
+
+async def test_a_contact_put_carries_a_bounced_address(registered_node, node_session, node_client):
+    from services.node_claim_store import mark_undeliverable, set_claim_address
+
+    token, node_id = registered_node
+    await set_claim_address(node_session, node_id, "ada@example.com")
+    await mark_undeliverable(node_session, node_id, "ada@example.com")
+    await node_session.commit()
+
+    body = node_client.put("/v1/nodes/contact", json=dict(CONTACT), headers=_auth(token)).json()
+
+    assert (body["claim_state"], body["claim_undeliverable"]) == ("unclaimed", True)
+
+
+async def test_a_contact_put_does_not_touch_the_claim(registered_node, node_session, node_client):
+    """The site contact and the owner's address are different facts. Writing one
+    must not write the other, which is the whole reason they are separate rows."""
+    from services.node_claim_store import read_claim, set_claim_address
+
+    token, node_id = registered_node
+    await set_claim_address(node_session, node_id, "ada@example.com")
+    await node_session.commit()
+
+    body = node_client.put("/v1/nodes/contact", json={"email": "someone.else@example.com"}, headers=_auth(token)).json()
+
+    node_session.expire_all()
+    assert (await read_claim(node_session, node_id)).email == "ada@example.com"
+    assert body["claim_email"] == "ada@example.com"

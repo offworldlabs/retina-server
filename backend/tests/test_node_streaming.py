@@ -414,7 +414,15 @@ async def test_a_heartbeat_returns_the_whole_downlink(registered_node, node_clie
 
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"server_time", "config_stale", "streaming_allowed", "node_ref"}
+    assert set(body) == {
+        "server_time",
+        "config_stale",
+        "streaming_allowed",
+        "node_ref",
+        "claim_state",
+        "claim_email",
+        "claim_undeliverable",
+    }
     assert body["config_stale"] is False
     assert body["streaming_allowed"] is True
     assert body["node_ref"] == await node_session.scalar(select(Node.node_ref).where(Node.node_id == node_id))
@@ -658,3 +666,91 @@ async def test_the_ack_is_unchanged_with_the_mirror_unarmed(registered_node, nod
 
     assert response.status_code == 202
     assert response.json() == {"accepted": 2, "config_stale": False, "streaming_allowed": True}
+
+
+# ── Claim state on the beat ──────────────────────────────────────────────────
+
+
+async def test_a_heartbeat_carries_the_claim_state(registered_node, node_client):
+    token, _node_id = registered_node
+
+    body = node_client.post(HEARTBEAT, json=_beat(), headers=_auth(token)).json()
+
+    assert (body["claim_state"], body["claim_email"], body["claim_undeliverable"]) == ("unclaimed", None, False)
+
+
+async def test_a_heartbeat_on_an_owned_node_names_the_bound_address(registered_node, node_session, node_client):
+    from core.users import NodeOwner
+    from services.node_claim_store import set_claim_address
+
+    token, node_id = registered_node
+    await set_claim_address(node_session, node_id, "ada@example.com")
+    node_session.add(NodeOwner(node_id=node_id, user_id="11111111-1111-1111-1111-111111111111"))
+    await node_session.commit()
+
+    body = node_client.post(HEARTBEAT, json=_beat(), headers=_auth(token)).json()
+
+    assert (body["claim_state"], body["claim_email"]) == ("owned", "ada@example.com")
+
+
+async def test_a_heartbeat_carries_a_pending_claim(registered_node, node_session, node_client):
+    """The field mapping is the only thing this route does with a claim, so
+    every state has to travel through it and not just the empty one."""
+    import time
+
+    from services import claim_links
+    from services.node_claim_store import put_challenge, set_claim_address
+
+    token, node_id = registered_node
+    challenge = claim_links.issue(intent=claim_links.INTENT_CLAIM, node_id=node_id, now=time.time())
+    await set_claim_address(node_session, node_id, "ada@example.com")
+    await put_challenge(node_session, node_id, "ada@example.com", challenge.handle, challenge.expires_at)
+    await node_session.commit()
+
+    body = node_client.post(HEARTBEAT, json=_beat(), headers=_auth(token)).json()
+
+    assert (body["claim_state"], body["claim_email"], body["claim_undeliverable"]) == (
+        "pending",
+        "ada@example.com",
+        False,
+    )
+
+
+async def test_a_heartbeat_carries_a_bounced_address(registered_node, node_session, node_client):
+    from services.node_claim_store import mark_undeliverable, set_claim_address
+
+    token, node_id = registered_node
+    await set_claim_address(node_session, node_id, "ada@example.com")
+    await mark_undeliverable(node_session, node_id, "ada@example.com")
+    await node_session.commit()
+
+    body = node_client.post(HEARTBEAT, json=_beat(), headers=_auth(token)).json()
+
+    assert (body["claim_state"], body["claim_email"], body["claim_undeliverable"]) == (
+        "unclaimed",
+        "ada@example.com",
+        True,
+    )
+
+
+async def test_a_release_reaches_the_node_on_the_next_beat(registered_node, node_session, node_client):
+    """The whole reason this rides the heartbeat: a node that stopped polling
+    months ago still learns its owner let it go, within a beat."""
+    from sqlalchemy import delete
+
+    from core.users import NodeOwner
+    from services.node_claim_store import clear_claim, set_claim_address
+
+    token, node_id = registered_node
+    await set_claim_address(node_session, node_id, "ada@example.com")
+    node_session.add(NodeOwner(node_id=node_id, user_id="11111111-1111-1111-1111-111111111111"))
+    await node_session.commit()
+    assert node_client.post(HEARTBEAT, json=_beat(), headers=_auth(token)).json()["claim_state"] == "owned"
+
+    await node_session.execute(delete(NodeOwner).where(NodeOwner.node_id == node_id))
+    await clear_claim(node_session, node_id)
+    await node_session.commit()
+
+    body = node_client.post(HEARTBEAT, json=_beat(), headers=_auth(token)).json()
+
+    assert (body["claim_state"], body["claim_email"]) == ("unclaimed", None)

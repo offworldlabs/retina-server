@@ -44,6 +44,19 @@ class ClaimStatus:
     email: str | None
     undeliverable: bool
 
+    def as_downlink(self) -> dict[str, object]:
+        """The three fields a node's own responses carry, as one mapping.
+
+        The models declaring them have no defaults, so a call site that dropped
+        one would fail at construction. This is what stops a call site being
+        able to drop one at all.
+        """
+        return {
+            "claim_state": self.state,
+            "claim_email": self.email,
+            "claim_undeliverable": self.undeliverable,
+        }
+
 
 async def read_claim(session: AsyncSession, node_id: str) -> NodeClaim | None:
     """The node's claim row, or None if it has never been given an address."""
@@ -226,7 +239,14 @@ async def claim_status(session: AsyncSession, node_id: str, now: float) -> Claim
     if claim is not None and claim.undeliverable:
         return ClaimStatus("unclaimed", claim.email, True)
 
+    if claim is None:
+        # No address has ever been offered, so there is no challenge to find: a
+        # challenge is only ever written alongside one, in the same transaction.
+        # Worth the branch because this is the common case and this runs on
+        # every heartbeat from every node.
+        return ClaimStatus("unclaimed", None, False)
+
     challenge = await read_challenge(session, node_id)
     if challenge is not None and challenge.expires_at > now:
         return ClaimStatus("pending", challenge.email, False)
-    return ClaimStatus("unclaimed", claim.email if claim is not None else None, False)
+    return ClaimStatus("unclaimed", claim.email, False)
