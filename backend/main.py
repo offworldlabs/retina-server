@@ -144,6 +144,12 @@ async def lifespan(app: FastAPI):
             "deployment as publishing operator addresses to anyone who finds an admin route."
         )
 
+    # Where sign-in mail is going, said out loud once per boot. Loud when it is
+    # going to this log rather than to a mailbox.
+    from services import mail
+
+    mail.log_destination()
+
     # Start runtime coverage if COVERAGE_ENABLED=1
     _start_coverage()
 
