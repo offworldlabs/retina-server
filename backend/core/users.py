@@ -397,8 +397,14 @@ async def has_access_session(request: Request) -> bool:
     return await _access_user_from_request(request) is not None
 
 
-async def get_current_user(request: Request) -> dict:
-    """Return user dict or raise 401. Returns anonymous admin where AUTH_BYPASS is opted into."""
+async def get_optional_user(request: Request) -> dict | None:
+    """Return user dict or None, for a route that answers everyone.
+
+    The same resolution get_current_user does, stopping short of the 401, so a
+    route open to all can still tell a signed-in caller apart and answer them
+    more fully. Withholding by omitting a field rather than by refusing the
+    request is what lets one route serve both.
+    """
     access = await _access_user_from_request(request)
     if access is not None:
         return access
@@ -406,25 +412,34 @@ async def get_current_user(request: Request) -> dict:
         return dict(ANONYMOUS_USER)
     user = await _read_user_from_request(request)
     if user is None or not user.is_active:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+        return None
     return user_to_dict(user)
+
+
+async def get_current_user(request: Request) -> dict:
+    """Return user dict or raise 401. Returns anonymous admin where AUTH_BYPASS is opted into."""
+    user = await get_optional_user(request)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return user
 
 
 async def require_admin(request: Request) -> dict:
-    """Like get_current_user but also enforces superuser/admin role."""
-    # Ahead of the bypass: where both are available the real person is the better
-    # answer, since "Admin (no auth)" is not an attribution.
-    access = await _access_user_from_request(request)
-    if access is not None:
-        return access
-    if AUTH_BYPASS:
-        return dict(ANONYMOUS_USER)
-    user = await _read_user_from_request(request)
-    if user is None or not user.is_active:
+    """Like get_current_user but also enforces superuser/admin role.
+
+    Over the same resolution, rather than its own copy of it: a fourth source
+    of identity added to get_optional_user must not have to be remembered here
+    as well. An Access assertion and the bypass both yield is_superuser, which
+    is why they pass the check below rather than skipping it — membership of
+    the Access group is what grants the console, and the bypass hands out an
+    administrator by definition.
+    """
+    user = await get_optional_user(request)
+    if user is None:
         raise HTTPException(status_code=401, detail="Not authenticated")
-    if not user.is_superuser:
+    if not user.get("is_superuser"):
         raise HTTPException(status_code=403, detail="Admin access required")
-    return user_to_dict(user)
+    return user
 
 
 # ── Magic-link user creation helper ───────────────────────────────────────────

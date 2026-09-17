@@ -153,3 +153,59 @@ def test_a_verified_assertion_beats_the_bypass():
     with patch("core.users.AUTH_BYPASS", True), patch("core.users.access_identity", verifier):
         user = asyncio.run(require_admin(_request("a-token")))
     assert user["email"] == EMAIL
+
+
+# ── the cookie session, which is the only path the role check applies to ──────
+
+
+def _session_user(is_superuser: bool, is_active: bool = True):
+    """A stand-in for the ORM row _read_user_from_request resolves a cookie to."""
+    row = MagicMock()
+    row.id = uuid.uuid4()
+    row.email = "member@offworldlab.com"
+    row.name = "Member"
+    row.avatar = ""
+    row.provider = "google"
+    row.is_active = is_active
+    row.is_superuser = is_superuser
+    row.created_at = None
+    return row
+
+
+def test_a_signed_in_member_is_not_an_administrator():
+    """403 rather than 401: they are who they say they are, and it is not enough.
+
+    The one path where the role is consulted at all — an Access assertion and
+    the bypass each grant the console outright.
+    """
+    with (
+        patch("core.users.AUTH_BYPASS", False),
+        patch("core.users._read_user_from_request", return_value=_session_user(is_superuser=False)),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(require_admin(_request()))
+    assert exc.value.status_code == 403
+
+
+def test_a_signed_in_administrator_is_admitted():
+    with (
+        patch("core.users.AUTH_BYPASS", False),
+        patch("core.users._read_user_from_request", return_value=_session_user(is_superuser=True)),
+    ):
+        user = asyncio.run(require_admin(_request()))
+    assert user["role"] == "admin"
+    assert user["email"] == "member@offworldlab.com"
+
+
+def test_a_deactivated_administrator_is_refused():
+    """is_active is checked before the role, so a disabled account is a 401."""
+    with (
+        patch("core.users.AUTH_BYPASS", False),
+        patch(
+            "core.users._read_user_from_request",
+            return_value=_session_user(is_superuser=True, is_active=False),
+        ),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(require_admin(_request()))
+    assert exc.value.status_code == 401

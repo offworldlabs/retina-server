@@ -42,6 +42,7 @@ from core.users import (
     User,
     get_async_session,
     get_current_user,
+    get_optional_user,
     require_admin,
     user_to_dict,
 )
@@ -352,8 +353,9 @@ async def admin_list_node_refs(_admin=Depends(require_admin)):
     """Return {node_ref: node_id} for the whole fleet.
 
     The one route that serves the mapping publication exists to withhold (D16),
-    which is why it is gated on require_admin rather than on a logged-in caller
-    the way the leaderboard is. The admin pages are built on the public,
+    which is why it is gated on require_admin rather than on a session, and why
+    it is the far side of the boundary from the leaderboard below, which any
+    caller may read. The admin pages are built on the public,
     ref-keyed feeds, so this is what lets them name a node to an operator, join
     the node_id-keyed admin routes beside it, and link to the node's own site —
     which is named after the node_id, not the ref.
@@ -629,8 +631,20 @@ async def storage_stats(_admin=Depends(require_admin)):
 
 
 @router.get("/leaderboard")
-async def leaderboard(_user=Depends(get_current_user)):
-    """Public leaderboard — rankings by detections, uptime, trust."""
+async def leaderboard(caller=Depends(get_optional_user)):
+    """Rankings by detections, uptime and trust, open to anyone.
+
+    The odd one out under this prefix, which is otherwise the admin API. The
+    row a caller with no session gets carries node_ref and the same per-ref
+    metrics /api/radar/analytics already publishes, so it stands on the
+    publication side of D16 and gives them nothing they could not already
+    read — which is what lets the dashboard's /leaderboard render to a
+    visitor. A signed-in caller gets the miss-detection fields on top.
+
+    Anything added to the anonymous row is published by that act; node_id in
+    particular would let this feed and /api/radar/analytics be joined and
+    recover the mapping the boundary exists to withhold.
+    """
     import orjson
 
     # Use the pre-computed analytics snapshot (refreshed every 30 s by the
@@ -650,12 +664,17 @@ async def leaderboard(_user=Depends(get_current_user)):
         # fallback.
         rows = [(ref, id_for_ref(ref) or ref, s) for ref, s in summaries.items()]
     else:
-        # Fall back to live computation only if the snapshot is empty.  Keyed
-        # on node_id, so it passes the boundary the snapshot has already been
-        # through, and a node with no handle is left out rather than named.
+        # Fall back to live computation only if the snapshot is empty, which is
+        # every process start until the first refresh.  Keyed on node_id, so it
+        # has to pass both halves of the boundary the snapshot has already been
+        # through: public_summaries drops a node that withheld its location,
+        # and public_identity leaves out one with no handle rather than naming
+        # it.  The second does not imply the first — it asks whether a node has
+        # a registry ref, not whether it consented to being published.
         loop = asyncio.get_running_loop()
         live = await loop.run_in_executor(_admin_executor, state.node_analytics.get_all_summaries)
-        rows = [(ref, nid, s) for nid, s in live.items() if (ref := public_identity(nid))]
+        published = publication.public_summaries(live)
+        rows = [(ref, nid, s) for nid, s in published.items() if (ref := public_identity(nid))]
 
     entries = []
     with state.connected_nodes_lock:
@@ -667,7 +686,6 @@ async def leaderboard(_user=Depends(get_current_user)):
         m = s.get("metrics", {})
         t = s.get("trust", {})
         r = s.get("reputation", {})
-        miss = state.latest_missed_detections.get(node_id, {})
         entries.append(
             {
                 "node_ref": node_ref,
@@ -682,12 +700,23 @@ async def leaderboard(_user=Depends(get_current_user)):
                 "trust_score": t.get("trust_score", 0),
                 "reputation": r.get("reputation", 0),
                 "online": connected.get(node_id, {}).get("status") not in ("disconnected", None),
-                "in_range": miss.get("in_range", 0),
-                "detected_in_range": miss.get("detected", 0),
-                "missed": miss.get("missed", 0),
-                "miss_rate": miss.get("miss_rate", 0.0),
             }
         )
+        # Withheld from a caller with no session. These come from
+        # state.latest_missed_detections rather than from the published
+        # analytics snapshot, and nothing else serves them per node without
+        # one: /health reduces the same global to a fleet-wide average
+        # precisely so the breakdown stays off an unauthenticated endpoint.
+        if caller is not None:
+            miss = state.latest_missed_detections.get(node_id, {})
+            entries[-1].update(
+                {
+                    "in_range": miss.get("in_range", 0),
+                    "detected_in_range": miss.get("detected", 0),
+                    "missed": miss.get("missed", 0),
+                    "miss_rate": miss.get("miss_rate", 0.0),
+                }
+            )
     # Sort by detections descending
     entries.sort(key=lambda e: e["detections"], reverse=True)
     # Add rank

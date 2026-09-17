@@ -26,3 +26,12 @@ export const ROUTER_BASENAME = BASE_PATH || "/";
 export function withBase(path: string): string {
   return `${BASE_PATH}${path}`;
 }
+
+/** Read a `window.location.pathname` back into the router's space. */
+export function stripBase(path: string): string {
+  if (!BASE_PATH) return path;
+  // Only at a segment boundary: "/dashboard" is a sibling of the mount, not a
+  // page inside it, and a bare startsWith would hand back "board".
+  if (path.startsWith(`${BASE_PATH}/`)) return path.slice(BASE_PATH.length);
+  return path === BASE_PATH ? "/" : path;
+}

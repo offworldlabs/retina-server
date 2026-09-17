@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
 import { useTheme, type ThemePreference } from "../context/ThemeContext";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 /* Feather's sun, monitor and moon, inlined in the same house style as the
    sidebar's set: 24-unit box, no fill, 2-unit round-capped stroke in
@@ -106,6 +106,13 @@ export default function Header({ title }) {
     <header className="header">
       <div className="header-title">{title}</div>
       <div className="header-actions">
+        {/* A caller with no session is on one of the open routes, and the
+            way on from there is in, not out. */}
+        {!user ? (
+          <Link className="header-signin" to="/login">
+            Sign in
+          </Link>
+        ) : (
         <div className="header-user" ref={ref} onClick={() => setOpen(!open)}>
           {user?.avatar ? (
             <img src={user.avatar} alt="" referrerPolicy="no-referrer" />
@@ -182,6 +189,7 @@ export default function Header({ title }) {
             </div>
           )}
         </div>
+        )}
       </div>
     </header>
   );

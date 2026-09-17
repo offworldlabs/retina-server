@@ -1,6 +1,8 @@
 import { UnauthorizedError, request as sharedRequest, type RequestOptions } from "@retina/shared";
 
-import { withBase } from "../utils/basePath";
+import { stripBase, withBase } from "../utils/basePath";
+import { isPublicRoute } from "../utils/publicRoutes";
+import { resolveSurface } from "../utils/surface";
 
 /** Must match the route in App.tsx. Mounted, because this drives a full-page
  *  navigation rather than a router one: under `/dash/` a bare `/login` lands on
@@ -14,14 +16,31 @@ function onLoginPage() {
   return window.location.pathname.replace(/\/+$/, "") === LOGIN_PATH;
 }
 
+/** On a route open to a caller with no session. Read afresh each time: the
+ *  surface and the path are both read off window.location, and a single-page
+ *  app changes the second without reloading.
+ *
+ *  App.tsx freezes its own surface at module load instead, and the two can
+ *  disagree only on a development host, where `?mode=admin` names the surface
+ *  and a router navigation can drop it. Everywhere else resolveSurface reads
+ *  the hostname alone, which no navigation changes. The cost of the
+ *  disagreement is whether a 401 redirects on a laptop. */
+function onPublicPage() {
+  const { hostname, pathname, search } = window.location;
+  return isPublicRoute(stripBase(pathname), resolveSurface(hostname, search).isAdmin);
+}
+
 // The shared client answers a 401 with UnauthorizedError; sending the caller to
 // the login page is this app's decision, made here beside the route it names.
+//
 // Not when already on the login page: assigning the same URL reloads it, the
 // reload re-runs this request, and its 401 assigns it again; where nothing can
-// mint a session that does not terminate.
+// mint a session that does not terminate. Nor from a page that needs no
+// session: whatever the 401 was, the rest of that page is the caller's to read,
+// and a visitor with no way through the login card would simply be stuck.
 function request(path: string, opts?: RequestOptions) {
   return sharedRequest(path, opts).catch((e) => {
-    if (e instanceof UnauthorizedError && !onLoginPage()) {
+    if (e instanceof UnauthorizedError && !onLoginPage() && !onPublicPage()) {
       window.location.href = LOGIN_PATH;
     }
     throw e;

@@ -1,9 +1,9 @@
 import { lazy, Suspense } from "react";
-import { Routes, Route, Navigate } from "react-router-dom";
-import { useAuth } from "./context/AuthContext";
+import { Routes, Route } from "react-router-dom";
 import LoginPage from "./pages/LoginPage";
 import AuthLinkPage from "./pages/AuthLinkPage";
 import DashboardLayout from "./components/DashboardLayout";
+import RequireAuth from "./components/RequireAuth";
 import { resolveSurface, warnIfModeIgnored } from "./utils/surface";
 
 // User pages — lazy-loaded so each chunk is only downloaded when first visited
@@ -44,21 +44,6 @@ const { isAdmin: isAdminSite, modeParamIgnored } = resolveSurface(
 // quietly rendering the wrong surface to someone following an old link.
 warnIfModeIgnored(modeParamIgnored);
 
-function RequireAuth({ children }) {
-  const { user, loading } = useAuth();
-  if (loading) return <div className="loading-screen">Loading…</div>;
-  if (!user) return <Navigate to="/login" replace />;
-  if (isAdminSite && user.role !== "admin") {
-    return (
-      <div className="access-denied">
-        <h2>Access Denied</h2>
-        <p>Admin privileges required.</p>
-      </div>
-    );
-  }
-  return children;
-}
-
 export default function App() {
   return (
     <Routes>
@@ -69,7 +54,7 @@ export default function App() {
       <Route
         path="/*"
         element={
-          <RequireAuth>
+          <RequireAuth isAdmin={isAdminSite}>
             <DashboardLayout isAdmin={isAdminSite}>
               <Suspense fallback={<div className="loading-screen">Loading…</div>}>
                 <Routes>
