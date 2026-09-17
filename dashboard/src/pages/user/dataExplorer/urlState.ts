@@ -11,6 +11,9 @@ export const TOD_END = "23:59";
 /** Below this a radius selects nothing useful, and a click on the map would
  *  land outside its own circle. */
 export const MIN_RADIUS_KM = 2;
+/** What a centre placed on the map starts with. Wide enough that the first
+ *  click selects a neighbourhood rather than a rounding error. */
+export const DEFAULT_RADIUS_KM = 50;
 
 /** Carries "no nodes at all". Its own parameter rather than a reserved value
  *  of `node`, so it can never be confused with a node whose id says none. */
