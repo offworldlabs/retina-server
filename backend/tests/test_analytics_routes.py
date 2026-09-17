@@ -1,5 +1,7 @@
 """Tests for analytics API routes — analytics, overlaps, accuracy, anomalies, adsb-report."""
 
+import pytest
+
 from core import state
 
 # ── Analytics ─────────────────────────────────────────────────────────────────
@@ -233,3 +235,52 @@ class TestAnomalies:
             with state.anomaly_lock:
                 state.anomaly_hexes.discard("ANOM01")
                 state.anomaly_log.clear()
+
+
+# ── Per-node analytics ────────────────────────────────────────────────────────
+
+
+class TestPerNodeAnalyticsRoute:
+    """GET /api/radar/analytics/{node_ref} is built fresh, not from the cache.
+
+    The cached listing's coverage is in test_analytics_refresh.py; this is the
+    other surface, which has to be wired separately or the two disagree.
+
+    Addressed by the ref as well as answered in it: the route resolves its path
+    parameter through services/node_refs.py, so the private id is not a way in.
+    """
+
+    _ID = "alpha-site-node"
+    _REF = "nde0123456789ab"
+
+    @pytest.fixture()
+    def _a_registered_node(self):
+        """A registry row for a node whose id has no synthetic prefix."""
+        import asyncio
+
+        from core.nodes import Node
+        from core.users import async_session_maker
+        from services import node_refs
+
+        async def _go():
+            async with async_session_maker() as session:
+                session.add(Node(node_id=self._ID, node_ref=self._REF))
+                await session.commit()
+
+        asyncio.run(_go())
+        # asyncio.run() clears the loop on exit (3.12); conftest's _clean_db
+        # restores one for the same reason.
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        node_refs._reset_for_tests()
+        state.node_analytics.register_node(self._ID, {"rx_lat": 34.85, "rx_lon": -82.40, "max_range_km": 50})
+        yield
+        state.node_analytics.retire_node(self._ID)
+        node_refs._reset_for_tests()
+
+    def test_the_route_carries_the_ref(self, client, _a_registered_node):
+        body = client.get(f"/api/radar/analytics/{self._REF}").json()
+        assert body["node_ref"] == self._REF
+        assert body["node_ref"] != self._ID
+
+    def test_the_id_the_ref_stands_in_for_is_not_an_address_for_it(self, client, _a_registered_node):
+        assert client.get(f"/api/radar/analytics/{self._ID}").status_code == 404

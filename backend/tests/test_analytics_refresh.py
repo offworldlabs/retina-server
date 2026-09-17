@@ -422,8 +422,13 @@ class TestNodeRefInPublicPayloads:
     """Every payload that names a node carries its public handle.
 
     The map has to print something for a node, and the node id is the name its
-    owner gave the machine — see services/node_ref.py.  Added before the
-    real-only split, so both analytics variants and /api/radar/nodes agree.
+    owner gave the machine.  The handle is the one the entry is keyed on, not a
+    second resolution of the same node: a payload whose field and key disagree
+    cannot be searched by the handle it publishes.  Added before the real-only
+    split, so both analytics variants and /api/radar/nodes agree.
+
+    This node is synthetic by prefix, so its handle is its own id — the case
+    where a resolver that answered differently would show up.
     """
 
     NODE = "test-noderef-1"
@@ -449,19 +454,27 @@ class TestNodeRefInPublicPayloads:
 
     def test_both_analytics_variants_carry_it(self):
         from core import state
-        from services.node_ref import public_node_ref
+        from services.node_refs import public_identity
 
         self._refresh()
-        expected = public_node_ref(self.NODE)
+        expected = public_identity(self.NODE)
         for raw in (state.latest_analytics_bytes, state.latest_analytics_real_bytes):
-            node = orjson.loads(raw)["nodes"][self.NODE]
-            assert node["node_ref"] == expected
-            assert node["node_ref"] != self.NODE
+            nodes = orjson.loads(raw)["nodes"]
+            assert nodes[self.NODE]["node_ref"] == expected
 
     def test_the_nodes_payload_carries_it(self):
         from core import state
-        from services.node_ref import public_node_ref
+        from services.node_refs import public_identity
 
         self._refresh()
         node = orjson.loads(state.latest_nodes_bytes)["nodes"][self.NODE]
-        assert node["node_ref"] == public_node_ref(self.NODE)
+        assert node["node_ref"] == public_identity(self.NODE)
+
+    def test_the_handle_is_the_key_it_is_published_under(self):
+        from core import state
+
+        self._refresh()
+        for raw in (state.latest_analytics_bytes, state.latest_analytics_real_bytes, state.latest_nodes_bytes):
+            nodes = orjson.loads(raw)["nodes"]
+            assert nodes
+            assert all(entry["node_ref"] == ref for ref, entry in nodes.items())

@@ -25,7 +25,7 @@ from core import state
 from core.nodes import Node, NodeLocationPrivacy
 from core.users import async_session_maker
 from main import app
-from services import node_auth, node_ref, node_refs, publication
+from services import node_auth, node_refs, publication
 from services.public_geometry import without_receiver_geometry
 from services.public_location import public_node_summary
 from services.publication import (
@@ -70,11 +70,8 @@ def seed_nodes():
         asyncio.set_event_loop(asyncio.new_event_loop())
         publication._reset_for_tests()
         # Both caches sit in front of the same rows and both have a TTL, so a
-        # previous test's map would otherwise answer for these ones — and so
-        # would node_ref's own snapshot, which derives a handle for anything it
-        # believes unregistered.
+        # previous test's map would otherwise answer for these ones.
         node_refs._reset_for_tests()
-        node_ref._reset_for_tests()
 
     return _seed
 
@@ -1115,7 +1112,6 @@ class TestOwnerSeesTheirOwnPrivateNodeInAnalytics:
         public handle the cached listing already carries, or the owner's own
         node is the one node on their map without a name."""
         from core.users import ANONYMOUS_USER
-        from services.node_ref import public_node_ref
 
         seed_nodes(**{_PRIV: "private"})
         self._own(_PRIV, ANONYMOUS_USER["id"])
@@ -1123,7 +1119,7 @@ class TestOwnerSeesTheirOwnPrivateNodeInAnalytics:
             body = client.get("/api/radar/analytics").json()
         finally:
             self._own(_PRIV, None)
-        assert body["nodes"][_seed_ref(_PRIV)]["node_ref"] == public_node_ref(_PRIV)
+        assert body["nodes"][_seed_ref(_PRIV)]["node_ref"] == _seed_ref(_PRIV)
         assert body["nodes"][_seed_ref(_PRIV)]["node_ref"] != _PRIV
 
     def test_the_owners_copy_is_the_same_fuzzed_frame_the_public_would_get(self, client, seed_nodes, analytics_node):

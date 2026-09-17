@@ -24,7 +24,6 @@ from services.geo import bearing_deg, bistatic_delay_us, haversine_km, node_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
 from services.node_config import position_status
-from services.node_ref import public_node_ref
 from services.node_refs import public_analytics, public_identity, public_name
 from services.node_sites import log_colocation_audit
 from services.public_geometry import without_receiver_geometry
@@ -295,6 +294,19 @@ def _refresh_coverage_constraints(max_nodes: int = _COVERAGE_MAX_NODES_PER_CYCLE
     return rebuilt
 
 
+def _handles_published(published: dict) -> dict:
+    """The analytics payload with each entry naming the key it is published under.
+
+    After the re-keying, never beside it: `public_analytics` resolves the key
+    itself, so a `node_ref` written before that point is a second, independent
+    resolution of the same node, and a registry cache rebind landing between
+    the two republishes the field/key divergence this field exists to avoid.
+    Taking the key back out of the finished map makes them the same string.
+    """
+    nodes = published.get("nodes", {})
+    return {**published, "nodes": {ref: {**entry, "node_ref": ref} for ref, entry in nodes.items()}}
+
+
 def _public_location_block(node_id: str, cfg: dict) -> dict:
     """The ``location`` block of /api/radar/nodes, safe for a public client.
 
@@ -351,17 +363,17 @@ def _refresh_analytics_and_nodes():
     _fleet = state.node_analytics.get_all_summaries()
     _summaries = public_node_summaries(public_summaries(_fleet))
 
-    # is_synthetic and node_ref go on here, a copy per entry, while _summaries is
-    # still keyed on the true node_id: public_analytics re-keys the map on the
+    # is_synthetic goes on here, a copy per entry, while _summaries is still
+    # keyed on the true node_id: public_analytics re-keys the map on the
     # published ref below, and is_synthetic_node is prefix-based, so deriving
     # this after that point would test the ref's prefix instead of the node's
     # and every real node would come back False. The same snapshot answers
     # the real-only split just below it, so the two cannot disagree.
     #
-    # node_ref is the handle the map is allowed to print, added once here so
-    # both variants carry it (services/node_ref.py).  New dicts, not an in-place
-    # key: with the fuzz off, public_node_summaries hands back the manager's own
-    # cached summaries, and those are not ours to grow.
+    # node_ref is the opposite case and goes on after the re-keying, in
+    # _handles_published.  New dicts, not an in-place key: with the fuzz off,
+    # public_node_summaries hands back the manager's own cached summaries, and
+    # those are not ours to grow.
     with state.connected_nodes_lock:
         _connected_snapshot = dict(state.connected_nodes)
     real_node_ids = {nid for nid, info in _connected_snapshot.items() if not info.get("is_synthetic", True)}
@@ -369,23 +381,24 @@ def _refresh_analytics_and_nodes():
         nid: {
             **summary,
             "is_synthetic": _connected_snapshot.get(nid, {}).get("is_synthetic", is_synthetic_node(nid)),
-            "node_ref": public_node_ref(nid),
         }
         for nid, summary in _summaries.items()
     }
 
     _cross_node = public_cross_node(state.node_analytics.get_cross_node_analysis())
-    analytics_data = public_analytics(_summaries, _cross_node, _fleet)
+    analytics_data = _handles_published(public_analytics(_summaries, _cross_node, _fleet))
     state.latest_analytics_bytes = orjson.dumps(analytics_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
     # Real-only variant: strip synthetic nodes so app.retina.fm never receives them.
     # Intersect first, publish second.  real_node_ids comes from
     # state.connected_nodes, which is keyed on node_id, so an intersection
     # against the ref-keyed map would match nothing and empty the variant.
-    analytics_real_data = public_analytics(
-        {k: v for k, v in _summaries.items() if k in real_node_ids},
-        _cross_node,
-        _fleet,
+    analytics_real_data = _handles_published(
+        public_analytics(
+            {k: v for k, v in _summaries.items() if k in real_node_ids},
+            _cross_node,
+            _fleet,
+        )
     )
     state.latest_analytics_real_bytes = orjson.dumps(analytics_real_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
@@ -425,7 +438,7 @@ def _refresh_analytics_and_nodes():
         "nodes": {
             ref: {
                 "status": info.get("status"),
-                "node_ref": public_node_ref(nid),
+                "node_ref": ref,
                 "name": public_name(info.get("config", {}).get("name"), ref, _fleet_ids),
                 "config_hash": info.get("config_hash"),
                 "last_heartbeat": info.get("last_heartbeat"),
