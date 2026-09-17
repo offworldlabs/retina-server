@@ -71,7 +71,10 @@ ALLOWED_DIVERGENCE = (
     # container_name above, and what makes socket.gethostname() inside the
     # container say which droplet it is, for services/alerting.py's `host` field.
     r"^services\.[^.]+\.hostname$",
-    # Different droplet sizes.
+    # Not droplet size: all three boxes are 4 cores and 8 GB. The caps follow
+    # each environment's workload instead. Production carries real nodes and
+    # runs no simulator; staging and test drive synthetic fleets, whose solver
+    # bursts want more cores than production ever asks for.
     r"^services\.[^.]+\.deploy\.resources\.limits\.(cpus|memory)$",
     # Which environment this is, and the hostnames that follow from it.
     r"^services\.server\.environment\.RETINA_ENV$",
