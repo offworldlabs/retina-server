@@ -131,6 +131,38 @@ class TestAppendTrackHistory:
             append_track_history("testac4", 33.0 + i * 0.1, -84.0, 35000, ts + i)
         assert len(state.track_histories["testac4"]) <= state.TRACK_HISTORY_MAX
 
+    def test_survives_gc_popping_the_public_twin_mid_append(self, monkeypatch):
+        """Regression: feed_gc.prune_stale_stores pops both history dicts on the
+        event loop while the flush build appends to them on a worker thread.
+        Live on 2026-09-16 the pop landed between the "create if missing" check
+        and the re-index for the append, raising KeyError('pr294e') and losing
+        the whole aircraft.json cycle.  Model the pop as a store whose keys
+        vanish the moment they are created: the append must not raise, and the
+        true store must still get its point."""
+
+        class _PoppedUnderfoot(dict):
+            def __setitem__(self, key, value):
+                super().__setitem__(key, value)
+                super().pop(key, None)
+
+            def setdefault(self, key, default=None):
+                value = super().setdefault(key, default)
+                super().pop(key, None)
+                return value
+
+        monkeypatch.setattr(state, "track_histories_public", _PoppedUnderfoot())
+        state.track_histories.pop("testac5", None)
+        ts = time.time()
+
+        append_track_history("testac5", 33.9, -84.6, 35000, ts, public_lat=33.91, public_lon=-84.61)
+        # Key already in the true store, twin still missing: the second append
+        # is the shape the live failure had (pr294e had a trail).
+        append_track_history("testac5", 34.0, -84.5, 35000, ts + 1, public_lat=34.01, public_lon=-84.51)
+
+        assert len(state.track_histories["testac5"]) == 2
+        # The orphaned public point belongs to a hex GC has already dropped.
+        assert "testac5" not in state.track_histories_public
+
 
 class TestResolveGroundTruthHex:
     def test_exact_match(self):
