@@ -166,6 +166,19 @@ class MagicLink(Base):
 
     token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     email: Mapped[str] = mapped_column(String(255), index=True)
+    # What the link is for. A link is a bearer credential in a mailbox and
+    # mailboxes get forwarded, so what a token may do has to travel with it:
+    # a claim link must not open a session for whoever forwarded it, and a
+    # sign-in link must not claim a node. Both redeemers check this rather than
+    # trusting that a token only reaches the endpoint it was minted for.
+    #
+    # It also scopes the per-address cap and the sweep below. Without that, an
+    # ordinary sign-in would wipe the claim challenge for a node its owner is
+    # halfway through setting up.
+    intent: Mapped[str] = mapped_column(String(16), default="signin", server_default="signin", index=True)
+    # The node a claim link is about. Null for a sign-in link, which is about
+    # nobody's node.
+    node_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[float] = mapped_column(Float)
     expires_at: Mapped[float] = mapped_column(Float)
     used_at: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
