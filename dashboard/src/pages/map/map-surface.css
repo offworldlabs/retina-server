@@ -3,9 +3,9 @@
  *
  * The palette comes from @retina/shared/css/tokens.css and the button, badge
  * and card vocabulary from @retina/shared/css/ui.css, both imported by main.tsx
- * ahead of this file. What is left here is what only a map needs: the slim
- * header, the panel elevation, the tokens for chips drawn onto tiles, and the
- * density this surface reads at.
+ * ahead of this file. What is left here is what only a map needs: the panel
+ * elevation, the tokens for chips drawn onto tiles, and the density this
+ * surface reads at.
  *
  * Everything is scoped to `.app.map-surface`, the class App sets on the root,
  * which is also the hook the shared palette uses to give this surface dark by
@@ -13,10 +13,6 @@
  */
 
 .app.map-surface {
-  /* Geometry, not colour, so it belongs to the base and not to either theme.
-     Slimmer than the consoles' 56px: the toolbar sits directly beneath and the
-     two read as one header block. */
-  --header-height: 44px;
   background: var(--bg-primary);
   color: var(--text-primary);
 }
@@ -58,73 +54,15 @@
   --violet-hover: #6d28d9;
 }
 
-/* ── Header ───────────────────────────────────────────────────────────────
-   One slim identity bar. The status, search and layer controls live in the
-   toolbar directly beneath it, and the two read as a single header block. */
-
-.app.map-surface .app-header {
-  height: var(--header-height);
-  padding: 0 16px;
-  gap: 10px;
-  background: var(--bg-secondary);
-  color: var(--text-primary);
-  border-bottom: 1px solid var(--border);
-  box-shadow: none;
-}
-
-.app.map-surface .header-icon {
+/* A flex item of `.content.flush` (a row), so it stretches to the pane's
+   height. A column itself, so `.live-map-container` beneath it (`height: 100%`)
+   resolves against a definite flex-item height. */
+.app.map-surface.map-embedded {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  background: var(--accent);
-  color: var(--accent-ink);
-  font-size: 0.95rem;
-}
-
-.app.map-surface .app-header h1 {
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-}
-
-.app.map-surface .app-header .subtitle {
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--text-muted);
-  opacity: 1;
-  letter-spacing: 0;
-}
-
-/* Tabs are the consoles' underline tabs, sat on the header's own bottom rule. */
-.app.map-surface .header-tabs {
-  margin-left: auto;
-  gap: 0;
-  align-self: stretch;
-}
-
-.app.map-surface .tab-btn {
-  padding: 0 16px;
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  color: var(--text-muted);
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.app.map-surface .tab-btn:hover {
-  background: none;
-  color: var(--text-primary);
-}
-
-.app.map-surface .tab-btn.active {
-  background: none;
-  color: var(--accent);
-  border-bottom-color: var(--accent);
+  flex-direction: column;
 }
 
 /* The micro-label. Panel headers, stat labels, group titles, table headers —
