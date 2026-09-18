@@ -1,4 +1,4 @@
-"""Node-track continuity in the dark keying rule — solver.multinode_key_decision.
+"""Node-track continuity in the dark keying rule (multinode_key_decision).
 
 Every solver input carries the node-level tracker track ids it was built from,
 and each multinode entry now remembers the ones its recent solves used
@@ -23,7 +23,7 @@ import pytest
 from core import state
 from services import dark_follow
 from services.geo import offset_latlon_m
-from services.tasks import solver as solver_mod
+from services.tasks import multinode_identity as identity_mod
 
 _KEY = "mn-dark-followed"
 _OTHER_KEY = "mn-dark-stranger"
@@ -55,7 +55,7 @@ def _result(north_km):
 
 
 def _decide(tracks, north_km, track_ids=None, anchor_key=None):
-    return solver_mod.multinode_key_decision(
+    return identity_mod.multinode_key_decision(
         tracks,
         _result(north_km),
         None,
@@ -117,7 +117,7 @@ class TestFollowOwnedKeys:
     def test_stale_shared_ids_do_not_count(self, monkeypatch):
         """Node track ids live a median 7 s in solve records; past
         TRACK_LINK_AGE_S a match is id reuse, not continuity."""
-        stale = _TS_S - (solver_mod.TRACK_LINK_AGE_S + 10.0)
+        stale = _TS_S - (identity_mod.TRACK_LINK_AGE_S + 10.0)
         tracks = self._followed(monkeypatch, {"260907-0004A9": stale, "260907-0004B1": stale})
         _key, how, _dist, _dt = _decide(tracks, 4.0, track_ids=["260907-0004A9", "260907-0004B1"])
         assert how == "minted"
@@ -151,22 +151,22 @@ class TestRecentTrackIdMemory:
     """merge_recent_track_ids is what the scan above reads."""
 
     def test_ids_merge_across_writes_and_prune_by_age(self):
-        first = solver_mod.merge_recent_track_ids(None, ["a", "b"], 100.0)
+        first = identity_mod.merge_recent_track_ids(None, ["a", "b"], 100.0)
         assert first == {"a": 100.0, "b": 100.0}
-        second = solver_mod.merge_recent_track_ids(first, ["b", "c"], 120.0)
+        second = identity_mod.merge_recent_track_ids(first, ["b", "c"], 120.0)
         assert second == {"a": 100.0, "b": 120.0, "c": 120.0}
         # 'a' is now older than TRACK_LINK_AGE_S and drops out; 'b' was
         # refreshed by the second write and survives.
-        third = solver_mod.merge_recent_track_ids(second, ["d"], 100.0 + solver_mod.TRACK_LINK_AGE_S + 1.0)
+        third = identity_mod.merge_recent_track_ids(second, ["d"], 100.0 + identity_mod.TRACK_LINK_AGE_S + 1.0)
         assert set(third) == {"b", "c", "d"}
 
     def test_the_memory_is_capped(self):
-        prev = {f"t{i}": 100.0 + i for i in range(solver_mod.TRACK_LINK_MAX_IDS + 10)}
-        merged = solver_mod.merge_recent_track_ids(prev, ["new"], 110.0)
-        assert len(merged) <= solver_mod.TRACK_LINK_MAX_IDS
+        prev = {f"t{i}": 100.0 + i for i in range(identity_mod.TRACK_LINK_MAX_IDS + 10)}
+        merged = identity_mod.merge_recent_track_ids(prev, ["new"], 110.0)
+        assert len(merged) <= identity_mod.TRACK_LINK_MAX_IDS
         assert "new" in merged
 
     def test_a_missing_or_malformed_memory_is_not_a_crash(self):
         entry = {"recent_track_ids": {"a": None}}
-        assert solver_mod._shared_recent_tracks(entry, {"a"}, 100.0) == 0
-        assert solver_mod._shared_recent_tracks({}, {"a"}, 100.0) == 0
+        assert identity_mod._shared_recent_tracks(entry, {"a"}, 100.0) == 0
+        assert identity_mod._shared_recent_tracks({}, {"a"}, 100.0) == 0

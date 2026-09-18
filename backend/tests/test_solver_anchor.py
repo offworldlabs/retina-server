@@ -24,6 +24,7 @@ import pytest
 
 from core import state
 from services.geo import offset_latlon_m
+from services.tasks import multinode_identity as identity_mod
 from services.tasks import solver as solver_mod
 
 LAT, LON = 35.0, -82.0
@@ -100,7 +101,7 @@ class TestMultinodeKeyDecision:
 
     def test_adsb_takes_precedence_over_an_anchor(self):
         tracks = {"mn-dark-1": _anchor_track()}
-        key, how, _dist, _dt = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = identity_mod.multinode_key_decision(
             tracks,
             {"lat": LAT, "lon": LON, "timestamp_ms": 1000},
             "abc123",
@@ -111,7 +112,7 @@ class TestMultinodeKeyDecision:
     def test_anchor_hit_when_close_and_still_live(self):
         tracks = {"mn-dark-anchor": _anchor_track()}
         # ~1.1 km away — comfortably inside the 6 km default.
-        key, how, _dist, _dt = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = identity_mod.multinode_key_decision(
             tracks,
             {"lat": LAT + 0.01, "lon": LON, "timestamp_ms": 1000},
             None,
@@ -122,7 +123,7 @@ class TestMultinodeKeyDecision:
     def test_missing_anchor_key_falls_back_to_mint(self):
         """anchor_key points at nothing live, and there is nothing else to
         fall back to by proximity either — mints, same as no anchor at all."""
-        key, how, _dist, _dt = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = identity_mod.multinode_key_decision(
             {},
             {"lat": LAT, "lon": LON, "timestamp_ms": 1000},
             None,
@@ -135,7 +136,7 @@ class TestMultinodeKeyDecision:
         tracks = {"mn-dark-anchor": _anchor_track()}
         # ~11 km away — past the 6 km default max_dist_km.  The consensus-
         # anchored-displacement edge case this distance check exists for.
-        key, how, _dist, _dt = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = identity_mod.multinode_key_decision(
             tracks,
             {"lat": LAT + 0.1, "lon": LON, "timestamp_ms": 1000},
             None,
@@ -149,7 +150,7 @@ class TestMultinodeKeyDecision:
         (should never happen — only dark tracks are claim_eligible — but the
         rule itself must refuse it, not trust the caller)."""
         tracks = {"mn-adsb-abc": _anchor_track()}
-        key, how, _dist, _dt = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = identity_mod.multinode_key_decision(
             tracks,
             {"lat": LAT, "lon": LON, "timestamp_ms": 1000},
             None,
@@ -158,7 +159,7 @@ class TestMultinodeKeyDecision:
         assert how != "anchor"
 
     def test_mints_a_new_key_with_no_anchor_and_no_claimant(self):
-        key, how, _dist, _dt = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = identity_mod.multinode_key_decision(
             {},
             {"lat": LAT, "lon": LON, "timestamp_ms": 1000},
             None,
@@ -173,7 +174,7 @@ class TestMultinodeKeyDecision:
         put dark targets in the ADS-B lane and starved mn-dark-* entirely
         (observed live 2026-08-26)."""
         tracks = {"mn-dark-1": _anchor_track()}
-        key, how, _dist, _dt = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = identity_mod.multinode_key_decision(
             tracks,
             {"lat": LAT, "lon": LON, "timestamp_ms": int(time.time() * 1000)},
             "obj-01373",
@@ -183,7 +184,7 @@ class TestMultinodeKeyDecision:
         assert key == "mn-dark-1"
 
     def test_tisb_tilde_adsb_hex_still_takes_the_adsb_branch(self):
-        key, how, _dist, _dt = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = identity_mod.multinode_key_decision(
             {},
             {"lat": LAT, "lon": LON, "timestamp_ms": 1000},
             "~abc123",
@@ -215,7 +216,7 @@ class TestAgeScaledProximityGate:
 
     def _decide(self, tracks, solve_ts_ms, km_north, **kwargs):
         lat, lon = _north_of(km_north)
-        return solver_mod.multinode_key_decision(
+        return identity_mod.multinode_key_decision(
             tracks,
             {"lat": lat, "lon": lon, "timestamp_ms": solve_ts_ms},
             None,
@@ -226,20 +227,20 @@ class TestAgeScaledProximityGate:
     # ── the formula itself ──────────────────────────────────────────────────
 
     def test_gate_starts_at_the_flat_radius(self):
-        assert solver_mod._mn_assoc_gate_km(0.0) == solver_mod._MN_ASSOC_MAX_DIST_KM
+        assert identity_mod._mn_assoc_gate_km(0.0) == identity_mod._MN_ASSOC_MAX_DIST_KM
 
     def test_gate_grows_by_the_measured_drift_rate(self):
-        assert solver_mod._mn_assoc_gate_km(30.0) == pytest.approx(9.9)
+        assert identity_mod._mn_assoc_gate_km(30.0) == pytest.approx(9.9)
 
     def test_gate_is_capped_and_stays_capped_to_the_age_limit(self):
-        assert solver_mod._mn_assoc_gate_km(50.0) == solver_mod._MN_ASSOC_MAX_DIST_CAP_KM
-        assert solver_mod._mn_assoc_gate_km(solver_mod._MN_ASSOC_MAX_AGE_S) == pytest.approx(12.0)
+        assert identity_mod._mn_assoc_gate_km(50.0) == identity_mod._MN_ASSOC_MAX_DIST_CAP_KM
+        assert identity_mod._mn_assoc_gate_km(identity_mod._MN_ASSOC_MAX_AGE_S) == pytest.approx(12.0)
 
     def test_a_widened_base_is_never_narrowed_by_the_cap(self):
         """The cap is a ceiling on the DRIFT allowance, not a veto on the
         caller's own base — a bench sweeping max_dist_km past 12 km must get
         at least what it asked for."""
-        assert solver_mod._mn_assoc_gate_km(60.0, base_km=20.0) == pytest.approx(20.0)
+        assert identity_mod._mn_assoc_gate_km(60.0, base_km=20.0) == pytest.approx(20.0)
 
     # ── what that buys, at the rule ─────────────────────────────────────────
 
@@ -373,7 +374,7 @@ class TestOutOfOrderMeasurementEpochs:
         _reset()
 
     def _decide(self, tracks, solve_ts_ms, lat, lon):
-        return solver_mod.multinode_key_decision(
+        return identity_mod.multinode_key_decision(
             tracks,
             {"lat": lat, "lon": lon, "timestamp_ms": solve_ts_ms},
             None,

@@ -6,6 +6,7 @@ import pytest
 
 from core import state
 from main import app
+from services.tasks import multinode_identity
 
 # ── Events ────────────────────────────────────────────────────────────────────
 
@@ -686,6 +687,10 @@ class TestMetrics:
         assert "frames_processed" in body
         assert "connected_nodes" in body
         assert "stale_tasks" in body
+
+    def test_mn_pos_history_counts_the_smoothers_keys(self, client):
+        multinode_identity._ewma_smooth_track({"lat": 35.0, "lon": -82.0, "timestamp_ms": 1_000}, "mn-dark-0001", None)
+        assert client.get("/api/admin/metrics").json()["mn_pos_history"] == 1
 
 
 # ── Node health ──────────────────────────────────────────────────────────────

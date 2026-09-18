@@ -195,8 +195,8 @@ def _global_tracks_for_claiming():
     Only mn-dark-* keys are claimable: an ADS-B-tagged track already has an
     external identity (a transponder hex) and must never be re-derived by
     top-down projection — mirrors "only dark tracks are claimable" at
-    solver.py's multinode_key_decision.  Eligibility filtering, the DR-age
-    cap and the CLAIM_MAX_GLOBAL_TRACKS truncation are applied by the
+    multinode_identity.py's multinode_key_decision.  Eligibility filtering, the
+    DR-age cap and the CLAIM_MAX_GLOBAL_TRACKS truncation are applied by the
     CONSUMER, not here — this stays a dumb snapshot so the offline bench
     measures the shipped filtering.  For the associator's own claiming round
     that consumer is the lib (association._claim_round); the known lane calls
@@ -744,10 +744,11 @@ dark_follow_gate_sigma_clamped: int = 0
 dark_follow_n2_withheld: int = 0
 dark_follow_n2_skipped: int = 0
 # Bottom-up dark solves refused at keying because the follow lane owns the key
-# they landed on (solver.multinode_key_decision's "shadowed" verdict, binding
-# mode only).  They passed every gate, so they are counted in solver_successes
-# too — this is the difference between a success and a publication on the dark
-# lane, and the matching rejects.by_reason entry is "shadowed_by_follow".
+# they landed on (multinode_identity.multinode_key_decision's "shadowed"
+# verdict, binding mode only).  They passed every gate, so they are counted in
+# solver_successes too — this is the difference between a success and a
+# publication on the dark lane, and the matching rejects.by_reason entry is
+# "shadowed_by_follow".
 dark_bottomup_shadowed: int = 0
 # n=2 solves withheld from the map because their track pairing has not (yet)
 # passed the constant-velocity fit.  Counted separately from solver_failures:
@@ -895,11 +896,11 @@ SOLVER_RESOLVE_SKIPS_RECENT_MAX = 500
 solver_resolve_skips_recent: deque = deque(maxlen=SOLVER_RESOLVE_SKIPS_RECENT_MAX)
 
 # Multinode entries removed because a later solve shared a source single-node
-# track with them AND the spatial/identical-inputs guard in solver.py's
-# _supersession_match agreed they are the same aircraft — the age-scaled
-# proximity match in multinode_key_decision having missed.  The earlier entry
-# is replaced immediately rather than coexisting with the new one until its
-# own 60 s expiry.
+# track with them AND the spatial/identical-inputs guard in
+# multinode_identity._supersession_match agreed they are the same aircraft —
+# the age-scaled proximity match in multinode_key_decision having missed.  The
+# earlier entry is replaced immediately rather than coexisting with the new one
+# until its own 60 s expiry.
 mn_superseded: int = 0
 
 # Entries that shared a source single-node track with a new solve but were
@@ -923,12 +924,12 @@ mn_superseded_blocked: int = 0
 # mn_superseded_blocked to see how much of the guard's work altitude is doing.
 mn_superseded_blocked_alt: int = 0
 
-# Mint-time retirement of coasting dark keys (solver.py's
-# _stale_coast_candidate, gated by MN_STALE_COAST_ENABLED).  Where
-# mn_superseded above counts entries popped on a SHARED source track id, these
-# count the hard-turn re-key that prefilter cannot see: a dark key the follow
-# lane dropped mid-turn, left coasting on its frozen pre-turn velocity while
-# the fix lane minted a second key for the same aircraft.
+# Mint-time retirement of coasting dark keys
+# (multinode_identity._stale_coast_candidate, gated by MN_STALE_COAST_ENABLED).
+# Where mn_superseded above counts entries popped on a SHARED source track id,
+# these count the hard-turn re-key that prefilter cannot see: a dark key the
+# follow lane dropped mid-turn, left coasting on its frozen pre-turn velocity
+# while the fix lane minted a second key for the same aircraft.
 #
 # mn_stale_coast_retired is the retirements; the other three are mints that
 # retired nothing, split by how far the search got, and they are mutually
@@ -984,16 +985,17 @@ solver_anchor_hits: int = 0
 solver_anchor_fallbacks: int = 0
 solver_anchored_published: int = 0
 
-# Dark-lane KEY DECISIONS, bumped in the publish path (solver.py's
-# multinode_key_decision).  Fragmentation is decided here and nowhere else —
-# solver_successes counts solves and the windowed distinct_keys counts the
-# survivors, so neither can say whether a dark solve joined an existing track
-# or started a new one.  minted is a key birth, proximity is a re-key onto a
-# live entry within its age-scaled gate; minted rising against a flat
-# proximity is fragmentation, and the two together are every dark decision the
-# proximity gate made.  Anchor hits are in neither (solver_anchor_hits already
-# counts those) and the ADS-B lane is excluded entirely — it keys off the
-# transponder hex unconditionally and has no decision to observe.
+# Dark-lane KEY DECISIONS: multinode_identity.multinode_key_decision's
+# verdicts, counted in the solver's publish path.  Fragmentation is decided in
+# that function and nowhere else — solver_successes counts solves and the
+# windowed distinct_keys counts the survivors, so neither can say whether a
+# dark solve joined an existing track or started a new one.  minted is a key
+# birth, proximity is a re-key onto a live entry within its age-scaled gate;
+# minted rising against a flat proximity is fragmentation, and the two together
+# are every dark decision the proximity gate made.  Anchor hits are in neither
+# (solver_anchor_hits already counts those) and the ADS-B lane is excluded
+# entirely — it keys off the transponder hex unconditionally and has no
+# decision to observe.
 solver_key_minted_dark: int = 0
 solver_key_proximity_dark: int = 0
 # ...and the subset of those proximity re-keys whose matched entry carried a
@@ -1005,12 +1007,13 @@ solver_key_proximity_dark: int = 0
 # measured live, 16 of 67 dark mints in 22 min were of exactly this shape.
 solver_key_proximity_negdt: int = 0
 # Dark re-keys decided by NODE-TRACK CONTINUITY rather than by distance alone
-# (solver.py's TRACK_LINK_AGE_S): a candidate that shared tracker track ids with
-# this solve and so outranked a nearer stranger inside the gate, or a key the
-# follow lane owns that was joined on >= TRACK_LINK_MIN_SHARED_JOIN shared ids.
-# Kept apart from solver_key_proximity_dark so the two rules can be read against
-# each other — under the distance-only rule every one of these was either a
-# fresh key for an aircraft that already had one or a solve thrown away.
+# (multinode_identity.py's TRACK_LINK_AGE_S): a candidate that shared tracker
+# track ids with this solve and so outranked a nearer stranger inside the gate,
+# or a key the follow lane owns that was joined on
+# >= TRACK_LINK_MIN_SHARED_JOIN shared ids.  Kept apart from
+# solver_key_proximity_dark so the two rules can be read against each other —
+# under the distance-only rule every one of these was either a fresh key for an
+# aircraft that already had one or a solve thrown away.
 solver_key_tracks: int = 0
 
 # n=2 solver inputs that took their initial-guess altitude from an established
@@ -1093,8 +1096,9 @@ anomaly_lock = threading.Lock()
 # each miss the other's entry and mint two tracks.  The feed build, its GC and
 # the Solver Report snapshot under it as well, because iterating while a solver
 # inserts raised "dictionary changed size during iteration".  It is held while
-# taking solver._MN_POS_HISTORY_LOCK, track_filter._KF_LOCK, anomaly_lock and
-# counters_lock, so none of those may be held while acquiring it.
+# taking multinode_identity._MN_POS_HISTORY_LOCK, track_filter._KF_LOCK,
+# anomaly_lock and counters_lock, so none of those may be held while
+# acquiring it.
 multinode_tracks_lock = threading.Lock()
 # Guards solver_last_latency_s / solver_total_latency_s / solver_total_solved
 solver_latency_lock = threading.Lock()

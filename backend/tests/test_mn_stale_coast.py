@@ -1,4 +1,4 @@
-"""Mint-time retirement of coasting dark keys (solver._stale_coast_candidate).
+"""Mint-time retirement of coasting dark keys (_stale_coast_candidate).
 
 The hard-turn re-key, which the supersession block in _process_solver_item
 cannot reach.  When a dark aircraft turns hard the KF's manoeuvre boost pushes
@@ -36,6 +36,7 @@ from core import state
 from services import dark_follow, track_filter
 from services.geo import offset_latlon_m
 from services.id_utils import multinode_hex_from_key
+from services.tasks import multinode_identity as identity_mod
 from services.tasks import solver as solver_mod
 
 LAT, LON = 35.0, -82.0
@@ -322,7 +323,7 @@ class TestStaleCoastCandidate:
         return {OLD_KEY: entry}
 
     def _call(self, tracks, dropped=True, manoeuvre=None, alt_m=7000.0):
-        return solver_mod._stale_coast_candidate(
+        return identity_mod._stale_coast_candidate(
             tracks,
             "mn-dark-new",
             LAT,

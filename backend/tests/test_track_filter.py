@@ -983,10 +983,10 @@ class TestIndefiniteCovariance:
         """The last line of defence, on a hand-poisoned entry.
 
         learned_velocity has two callers that each lose real work when it
-        raises — solver.py's multinode_key_decision drops the solve,
-        aircraft_feed's multinode_to_aircraft drops the whole broadcast — so
-        even a state no code path should now be able to reach must return a
-        number rather than throw.
+        raises — multinode_identity.py's multinode_key_decision drops the
+        solve, aircraft_feed's multinode_to_aircraft drops the whole broadcast
+        — so even a state no code path should now be able to reach must return
+        a number rather than throw.
         """
         monkeypatch.setenv("TRACK_SMOOTHER", "kf")
         key = "neg-vel-var"

@@ -15,6 +15,7 @@ import pytest
 from core import state
 from services import dark_follow
 from services.geo import in_node_beam
+from services.tasks import multinode_identity as identity_mod
 from services.tasks import solver as solver_mod
 from services.tasks import solver_pool as pool_mod
 
@@ -1727,7 +1728,7 @@ class TestCollectTrackAnomalies:
         try:
             result = {"contributing_node_ids": ["na"]}
             s_in = {"track_ids": ["t1", "t2"]}
-            solver_mod._collect_track_anomalies(s_in, result)
+            identity_mod._collect_track_anomalies(s_in, result)
             # No adsb_hex → dark: only the physically loud types survive.
             assert result["anomaly_types"] == ["supersonic"]
             assert result["is_anomalous"] is True
@@ -1743,7 +1744,7 @@ class TestCollectTrackAnomalies:
         )
         try:
             result = {"contributing_node_ids": ["na"]}
-            solver_mod._collect_track_anomalies({"track_ids": ["t1"]}, result)
+            identity_mod._collect_track_anomalies({"track_ids": ["t1"]}, result)
             assert result["anomaly_types"] == []
             assert result["is_anomalous"] is False
         finally:
@@ -1758,7 +1759,7 @@ class TestCollectTrackAnomalies:
         )
         try:
             result = {"contributing_node_ids": ["na"], "adsb_hex": "abc123"}
-            solver_mod._collect_track_anomalies({"track_ids": ["t1"]}, result)
+            identity_mod._collect_track_anomalies({"track_ids": ["t1"]}, result)
             assert result["anomaly_types"] == ["identity_swap"]
             assert result["is_anomalous"] is True
         finally:
@@ -1773,7 +1774,7 @@ class TestCollectTrackAnomalies:
         )
         try:
             result = {"contributing_node_ids": ["na"]}
-            solver_mod._collect_track_anomalies({"track_ids": ["t1"]}, result)
+            identity_mod._collect_track_anomalies({"track_ids": ["t1"]}, result)
             assert result["is_anomalous"] is False
         finally:
             state.node_pipelines.pop("na", None)

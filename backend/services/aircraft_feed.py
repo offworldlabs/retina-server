@@ -228,15 +228,15 @@ def _multinode_entry(key: str, r: dict, now: float) -> dict:
     """
     ac = multinode_to_aircraft(key, r)
     # The hex this key inherited its trail from, when a mint retired a coasting
-    # key for the same aircraft (solver.py's _stale_coast_candidate).  The
-    # backend already moved state.track_histories across, so recent_positions
-    # is continuous without it; this is for the CLIENT's own per-solve buffer,
-    # which is keyed by hex and cannot know that two hexes are one aircraft.
-    # Optional on the wire and built here rather than in
-    # multinode_to_aircraft's literal, for the same reason recent_track_ids
-    # never reaches the feed at all: the Parquet archive writes a fixed schema
-    # off the solver entry, and a field that only sometimes exists has no
-    # column there.
+    # key for the same aircraft (multinode_identity.py's
+    # _stale_coast_candidate).  The backend already moved state.track_histories
+    # across, so recent_positions is continuous without it; this is for the
+    # CLIENT's own per-solve buffer, which is keyed by hex and cannot know that
+    # two hexes are one aircraft.  Optional on the wire and built here rather
+    # than in multinode_to_aircraft's literal, for the same reason
+    # recent_track_ids never reaches the feed at all: the Parquet archive
+    # writes a fixed schema off the solver entry, and a field that only
+    # sometimes exists has no column there.
     _pred = r.get("predecessor_key")
     if _pred:
         ac["predecessor_hex"] = multinode_hex_from_key(_pred)

@@ -97,16 +97,18 @@ from services.geo import (
 )
 from services.geo import haversine_km as _haversine_km  # noqa: E402
 from services.node_config import position_status  # noqa: E402
-from services.tasks.solver import (  # noqa: E402
+from services.tasks.multinode_identity import (  # noqa: E402
     _ewma_smooth_track,
-    claim_decision,
-    fov_gate_verdict,
     merge_recent_track_ids,
     multinode_key_decision,
-    resolve_n2_chi2,
 )
 from services.tasks.solver import (
     _reset_for_tests as _solver_reset_for_tests,
+)
+from services.tasks.solver import (  # noqa: E402
+    claim_decision,
+    fov_gate_verdict,
+    resolve_n2_chi2,
 )
 
 # ── Overlap-zone memoization (bench-only monkeypatch) ────────────────────
@@ -714,9 +716,9 @@ class Result:
     # The keying verdict itself, histogrammed (multinode_key_decision's `how`
     # for dark solves): minted is a key birth, proximity a distance-only
     # re-key, tracks a re-key the shared node-track evidence decided
-    # (solver.TRACK_LINK_AGE_S), shadowed a bottom-up solve refused in favour
-    # of a followed key.  minted is the fragmentation number the continuity
-    # work moves; the other three are where the mints went.
+    # (multinode_identity.TRACK_LINK_AGE_S), shadowed a bottom-up solve refused
+    # in favour of a followed key.  minted is the fragmentation number the
+    # continuity work moves; the other three are where the mints went.
     key_minted: int = 0
     key_proximity: int = 0
     key_tracks: int = 0
@@ -1464,10 +1466,10 @@ def run(
                     # sharing one receiver confine the fix better than two
                     # receivers far apart do.  An aggregate over all n hides it.
                     res.err_by_n[nn].append(d)
-                    # Track identity, mirroring solver.multinode_key_decision:
-                    # a solve with a known transponder collapses onto that
-                    # aircraft, so a real target is one track however many
-                    # times it is solved.
+                    # Track identity, mirroring
+                    # multinode_identity.multinode_key_decision: a solve with a
+                    # known transponder collapses onto that aircraft, so a real
+                    # target is one track however many times it is solved.
                     res.matched_tracks.add(best_id)
                     res.track_n[best_id][nn] += 1
                     # Velocity error is the quantity the Doppler rework
