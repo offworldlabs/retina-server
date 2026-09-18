@@ -98,14 +98,14 @@ describe("request", () => {
   });
 
   it("makes the backend's detail the message where it wrote one", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => reply(400, { detail: "invalid email" }, "Bad Request")));
-    const error = await request("/api/admin/invites", { method: "POST" }).catch((e) => e);
-    expect(error.message).toBe("invalid email");
+    vi.stubGlobal("fetch", vi.fn(async () => reply(400, { detail: "That sign-in link is no longer valid" }, "Bad Request")));
+    const error = await request("/api/auth/magic-link/consume", { method: "POST" }).catch((e) => e);
+    expect(error.message).toBe("That sign-in link is no longer valid");
   });
 
   it("falls back to the status line when detail is not a string, and to HTTP <status> without a reason phrase", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => reply(422, { detail: [{ loc: ["body"], msg: "required" }] }, "Unprocessable Entity")));
-    const validation = await request("/api/admin/invites", { method: "POST" }).catch((e) => e);
+    const validation = await request("/api/auth/magic-link/consume", { method: "POST" }).catch((e) => e);
     expect(validation.message).toBe("422 Unprocessable Entity");
 
     // HTTP/2, which every deployed origin speaks, carries no reason phrase.

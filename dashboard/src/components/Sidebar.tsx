@@ -94,7 +94,6 @@ const adminNav: NavSection[] = [
     title: "Management",
     items: [
       { to: "/users", label: "Users", icon: "users" },
-      { to: "/invites", label: "Invites", icon: "bell" },
     ],
   },
 ];

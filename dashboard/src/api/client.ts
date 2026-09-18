@@ -184,16 +184,6 @@ export const api = {
   mlatHistory: (hex: string) =>
     request(`/api/test/mlat-history?hex=${encodeURIComponent(hex)}`),
 
-  // Admin: invites
-  adminInvites: () => request("/api/admin/invites"),
-  adminCreateInvite: (email, role) =>
-    request("/api/admin/invites", {
-      method: "POST",
-      body: JSON.stringify({ email, role }),
-    }),
-  adminRevokeInvite: (token) =>
-    request(`/api/admin/invites/${encodeURIComponent(token)}`, { method: "DELETE" }),
-
   // Admin: node identity. {node_ref: node_id} for the fleet — the one route
   // that crosses the publication boundary, which is why it is admin-only.
   adminNodeRefs: () => request("/api/admin/node-refs"),
