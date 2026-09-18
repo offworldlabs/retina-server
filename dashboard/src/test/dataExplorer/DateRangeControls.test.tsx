@@ -62,4 +62,14 @@ describe("DateRangeControls", () => {
     fireEvent.change(screen.getByLabelText("Min size"), { target: { value: "1048576" } });
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ minSize: 1048576 }));
   });
+
+  // The standalone explorer's steps were 100, 300 and 500 KB, so its links
+  // carry sizes these steps lack.
+  it("shows a size from a link that matches none of its steps", () => {
+    setup({ minSize: 102400 });
+    expect(screen.getByLabelText("Min size")).toHaveValue("102400");
+    expect(screen.getByRole("option", { selected: true })).toHaveTextContent("≥ 100.0 KB");
+    const sizes = screen.getAllByRole("option").map((o) => Number((o as HTMLOptionElement).value));
+    expect(sizes).toEqual([...sizes].sort((a, b) => a - b));
+  });
 });
