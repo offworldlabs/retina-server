@@ -98,11 +98,13 @@ ALLOWED_DIVERGENCE = (
     # receiver needs force too, and the prune only clears the fleet registry
     # entry, long after the fact. See backend/config/constants.py.
     r"^services\.server\.environment\.NODE_FORCE_RETIRE_PREFIXES$",
-    # AUTH_ALLOW_ANONYMOUS_ADMIN and SYNTHETIC_FLEET_ENABLED are deliberately
-    # absent from this list, so a difference between environments is drift
-    # rather than a decision. SYNTHETIC_FLEET_ENABLED is set in all three;
-    # AUTH_ALLOW_ANONYMOUS_ADMIN in none, and keeping it off this list is what
-    # fails CI if it is ever restored to one environment alone.
+    # Only an environment running a synthetic fleet mounts its ingest routes
+    # (routes/sim_ingest.py): staging and test. Production runs none.
+    r"^services\.server\.environment\.SYNTHETIC_FLEET_ENABLED$",
+    # AUTH_ALLOW_ANONYMOUS_ADMIN is deliberately absent from this list, so a
+    # difference between environments is drift rather than a decision. It is
+    # set in none, and keeping it off this list is what fails CI if it is ever
+    # restored to one environment alone.
     # Published ports. Production exposes 3012 for real receiver nodes; staging
     # has none and closes it, so the two legitimately differ here. Recorded rather
     # than silently allowed: if staging ever needs node ingest, it should be
