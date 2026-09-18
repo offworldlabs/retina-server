@@ -37,7 +37,6 @@ const pageTitles = {
   "/events": { admin: "Events & Alerts" },
   "/storage": { admin: "Data & Storage" },
   "/system": { admin: "System Metrics" },
-  "/invites": { admin: "Invites" },
   "/custody": { admin: "Chain of Custody" },
   "/users": { admin: "User Management" },
   "/config": { admin: "Configuration" },

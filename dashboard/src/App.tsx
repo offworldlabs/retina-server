@@ -43,7 +43,6 @@ const EventsPage = lazy(() => import("./pages/admin/EventsPage"));
 const StoragePage = lazy(() => import("./pages/admin/StoragePage"));
 const CustodyPage = lazy(() => import("./pages/admin/CustodyPage"));
 const UserManagementPage = lazy(() => import("./pages/admin/UserManagementPage"));
-const InvitesPage = lazy(() => import("./pages/admin/InvitesPage"));
 const ConfigPage = lazy(() => import("./pages/admin/ConfigPage"));
 const SystemMetricsPage = lazy(() => import("./pages/admin/SystemMetricsPage"));
 const InfrastructurePage = lazy(() => import("./pages/admin/InfrastructurePage"));
@@ -87,7 +86,6 @@ export default function App() {
                       <Route path="storage" element={<StoragePage />} />
                       <Route path="custody" element={<CustodyPage />} />
                       <Route path="users" element={<UserManagementPage />} />
-                      <Route path="invites" element={<InvitesPage />} />
                       <Route path="config" element={<ConfigPage />} />
                       <Route path="system" element={<SystemMetricsPage />} />
                       <Route path="infrastructure" element={<InfrastructurePage />} />
