@@ -20,12 +20,29 @@ would fix that order here and make a store a client. A writer that spends one
 hands back nothing, a redeemed token being dead already.
 """
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.nodes import NodeClaim, NodeClaimChallenge
+from core.users import NodeOwner
+
+
+@dataclass(frozen=True)
+class ClaimStatus:
+    """What a node is told about its own claim, derived rather than stored.
+
+    Three states and a flag. `undeliverable` is not a fourth state: a node whose
+    address bounced is unclaimed, its field is live and a different address is
+    accepted normally, and the flag only changes what its setup UI should say
+    about the address still on file.
+    """
+
+    state: str
+    email: str | None
+    undeliverable: bool
 
 
 async def read_claim(session: AsyncSession, node_id: str) -> NodeClaim | None:
@@ -177,3 +194,39 @@ async def drop_challenge(session: AsyncSession, node_id: str) -> str | None:
     await session.delete(row)
     await session.flush()
     return handle
+
+
+async def read_owner(session: AsyncSession, node_id: str) -> str | None:
+    """The user this node belongs to, or None.
+
+    Read through the injected session rather than through core.auth's own, which
+    opens a second one against the application's database: a request handler
+    that already holds a session should not reach past it, and the two would not
+    be in the same transaction if it did.
+    """
+    return (await session.execute(select(NodeOwner.user_id).where(NodeOwner.node_id == node_id))).scalar_one_or_none()
+
+
+async def claim_status(session: AsyncSession, node_id: str, now: float) -> ClaimStatus:
+    """Derive what the node should be told, from the three rows that say it.
+
+    The order is the order the facts outrank each other. An owner settles it
+    whatever else is on file, since the challenge that produced the binding is
+    spent and any later one cannot outrank it. A bounced address comes next,
+    because the useful thing to say about an address nobody can receive at is
+    that, not that the node is unclaimed like any other.
+
+    An expired challenge reads as unclaimed with the address still on file,
+    which is what lets a fresh one be asked for without retyping it.
+    """
+    owner = await read_owner(session, node_id)
+    claim = await read_claim(session, node_id)
+    if owner is not None:
+        return ClaimStatus("owned", claim.email if claim is not None else None, False)
+    if claim is not None and claim.undeliverable:
+        return ClaimStatus("unclaimed", claim.email, True)
+
+    challenge = await read_challenge(session, node_id)
+    if challenge is not None and challenge.expires_at > now:
+        return ClaimStatus("pending", challenge.email, False)
+    return ClaimStatus("unclaimed", claim.email if claim is not None else None, False)

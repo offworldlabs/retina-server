@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RETINA node ingest
-  version: 1.2.2
+  version: 1.3.0
   description: |
     The RETINA server's HTTP API. The paths under `/v1/nodes` are the RETINA node
     ingest contract, generated from the server and versioned as a unit; everything
@@ -17,12 +17,19 @@ info:
 
     | Status | Means |
     |---|---|
-    | `400` | The body was refused. `invalid_config` for a configuration that failed validation, `invalid_contact` for contact details that failed it, `invalid_body` for a body that failed the schema |
+    | `400` | The body was refused. `invalid_config` for a configuration that failed validation, `invalid_contact` for contact details that failed it, `invalid_claim` for an address that failed it, `invalid_body` for a body that failed the schema |
     | `401` | The bearer token is bad, revoked or expired |
     | `403` | Registration refused, without saying why |
-    | `409` | The frame names a `config_version` this server never issued |
+    | `409` | The frame names a `config_version` this server never issued, or the node already has an owner |
     | `413` | The body exceeded the cap for its path |
     | `429` | Rate limited |
+
+    One refusal does not carry `Error`, and it is the only one: the `409` on
+    `PUT /v1/nodes/claim` answers with `ClaimResponse` instead. Nothing the node can
+    change makes that request succeed, so what it needs is not a slug naming the
+    field it got wrong but the address that already owns the node, which it
+    reconciles against without a second call. Every other refusal under this prefix
+    wears `Error`.
 
     `403` is deliberately opaque: unknown device, not yet accepted by Mender,
     already holding a valid token and in cooldown are one response, at one latency,
@@ -73,6 +80,8 @@ tags:
   description: Receiver and transmitter geometry, versioned by the server.
 - name: contact
   description: Whom to contact about the node, reported by the node itself.
+- name: claim
+  description: The address that owns the node, and where its claim stands.
 paths:
   /v1/nodes/register:
     post:
@@ -333,6 +342,256 @@ paths:
       security:
       - bearerAuth: []
       x-cadence: on local change only
+      x-max-body-bytes: 2048
+  /v1/nodes/claim:
+    get:
+      tags:
+      - claim
+      summary: Read where this node's claim stands.
+      description: |-
+        Where this node's claim stands. Cheap, and safe to poll every few seconds while a setup
+        page is open, and worth stopping once the answer settles.
+      operationId: getClaim
+      responses:
+        '200':
+          description: Where the claim stands.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimResponse'
+        '401':
+          description: 'Token bad, revoked or expired. Surface it locally and leave the address unsent:
+            nothing is lost by waiting for a credential, since an address can be offered at any point
+            in a node''s life. Do not re-register, for the reason detection and heartbeat give on their
+            own 401s.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: true
+        5XX:
+          description: 'Server side, though a 502 or 504 is the edge''s own response rather than the origin''s,
+            and carries whatever body that gateway sends instead of this `Error`. Abandon the request
+            and retry, backing off with jitter if it persists: on detection and heartbeat that retry is
+            the node''s next frame or beat rather than a resend of this one, while registration and configuration
+            retry the identical body.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: backoff
+          x-terminal: false
+      security:
+      - bearerAuth: []
+      x-cadence: every few seconds while a setup page is open, and not otherwise
+    put:
+      tags:
+      - claim
+      summary: Offer the address that owns this node.
+      description: |-
+        Offer the address that owns this node. The server mails it a link, and clicking that
+        link binds the node to the account behind the address, creating one if there is not
+        already one.
+
+        Sending an address the node already holds is accepted and changes nothing, so this may
+        be resent on every configuration sync. It does not mail anything again: asking for the
+        mail again is `POST /v1/nodes/claim/resend`, because a write that mailed every time it
+        ran would mail on every sync.
+
+        The response says where the claim stands, and is the same shape `GET` returns. Nothing
+        about the node's operation depends on any of it: an address that is never verified
+        grants nothing, and a node with no address at all runs unowned indefinitely and can be
+        claimed whenever its owner gets round to it.
+
+        Poll the `GET` every few seconds while a setup page is open and somebody is waiting,
+        and stop once the answer settles.
+      operationId: putClaim
+      requestBody:
+        description: The address to claim this node with.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NodeClaimRequest'
+        required: true
+      responses:
+        '200':
+          description: Where the claim stands after this call.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimResponse'
+        '400':
+          description: The address failed validation, as `invalid_claim`. A body that is not JSON at all
+            lands here too, since the remedy is the same. `detail` names the offending field and nothing
+            else, so retina-gui can put the message next to the input it belongs to. Retrying unchanged
+            will not help.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: false
+        '401':
+          description: 'Token bad, revoked or expired. Surface it locally and leave the address unsent:
+            nothing is lost by waiting for a credential, since an address can be offered at any point
+            in a node''s life. Do not re-register, for the reason detection and heartbeat give on their
+            own 401s.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: true
+        '409':
+          description: 'The node already has an owner, so there is nothing for this call to do: a nomination
+            names an address that is not theirs, and a resend would mail a link for a claim already settled.
+            Nothing was written. The body is a `ClaimResponse` rather than an `Error`: this is the one
+            refusal a node reconciles from rather than corrects, so it carries the state and the address
+            that won. A node that believed itself unclaimed should adopt what this says and stop offering
+            to claim. Releasing is the owner''s to do, from the dashboard, and cannot be done from here.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimResponse'
+          x-retry: never
+          x-terminal: false
+        '413':
+          description: 'The body exceeded this path''s cap, which is checked from `Content-Length` before
+            parsing. Per-field bounds in the schemas do not make this unreachable: `HeartbeatRequest.errors`
+            alone permits 16 KiB of strings, `RegisterRequest.config` carries no bound at all, and JSON
+            puts no length limit on a number''s text, so a schema-valid body can still exceed it.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: false
+        '429':
+          description: 'Rate limited, per token and per endpoint. The skipped frames are best dropped
+            rather than accumulated: a frame delivered late carries an old timestamp and is rejected by
+            the association gate rather than paired against whatever is current.'
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. Honour it, then back off with jitter.
+              required: true
+              schema:
+                type: integer
+                maximum: 86400.0
+                minimum: 0.0
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: retry-after
+          x-terminal: false
+        5XX:
+          description: 'Server side, though a 502 or 504 is the edge''s own response rather than the origin''s,
+            and carries whatever body that gateway sends instead of this `Error`. Abandon the request
+            and retry, backing off with jitter if it persists: on detection and heartbeat that retry is
+            the node''s next frame or beat rather than a resend of this one, while registration and configuration
+            retry the identical body.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: backoff
+          x-terminal: false
+      security:
+      - bearerAuth: []
+      x-cadence: on local change only
+      x-max-body-bytes: 2048
+  /v1/nodes/claim/resend:
+    post:
+      tags:
+      - claim
+      summary: Send the claim link again.
+      description: |-
+        Send the link again, to the address already on file. No body.
+
+        Separate from `PUT` because a write that mailed every time it ran would mail on every
+        configuration sync. This is the explicit ask, and it is what a person who did not get
+        the first mail presses.
+
+        Refused on a node that already has an owner, and answered without sending on an address
+        that bounced hard: a second copy to an address that does not exist earns nothing but a
+        second bounce, and bounces are how a sending domain loses its reputation.
+      operationId: resendClaim
+      responses:
+        '200':
+          description: Where the claim stands after this call.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimResponse'
+        '401':
+          description: 'Token bad, revoked or expired. Surface it locally and leave the address unsent:
+            nothing is lost by waiting for a credential, since an address can be offered at any point
+            in a node''s life. Do not re-register, for the reason detection and heartbeat give on their
+            own 401s.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: true
+        '409':
+          description: 'The node already has an owner, so there is nothing for this call to do: a nomination
+            names an address that is not theirs, and a resend would mail a link for a claim already settled.
+            Nothing was written. The body is a `ClaimResponse` rather than an `Error`: this is the one
+            refusal a node reconciles from rather than corrects, so it carries the state and the address
+            that won. A node that believed itself unclaimed should adopt what this says and stop offering
+            to claim. Releasing is the owner''s to do, from the dashboard, and cannot be done from here.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClaimResponse'
+          x-retry: never
+          x-terminal: false
+        '413':
+          description: 'The body exceeded this path''s cap, which is checked from `Content-Length` before
+            parsing. Per-field bounds in the schemas do not make this unreachable: `HeartbeatRequest.errors`
+            alone permits 16 KiB of strings, `RegisterRequest.config` carries no bound at all, and JSON
+            puts no length limit on a number''s text, so a schema-valid body can still exceed it.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: never
+          x-terminal: false
+        '429':
+          description: 'Rate limited, per token and per endpoint. The skipped frames are best dropped
+            rather than accumulated: a frame delivered late carries an old timestamp and is rejected by
+            the association gate rather than paired against whatever is current.'
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying. Honour it, then back off with jitter.
+              required: true
+              schema:
+                type: integer
+                maximum: 86400.0
+                minimum: 0.0
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: retry-after
+          x-terminal: false
+        5XX:
+          description: 'Server side, though a 502 or 504 is the edge''s own response rather than the origin''s,
+            and carries whatever body that gateway sends instead of this `Error`. Abandon the request
+            and retry, backing off with jitter if it persists: on detection and heartbeat that retry is
+            the node''s next frame or beat rather than a resend of this one, while registration and configuration
+            retry the identical body.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+          x-retry: backoff
+          x-terminal: false
+      security:
+      - bearerAuth: []
+      x-cadence: when somebody asks for the mail again, and never automatically
       x-max-body-bytes: 2048
   /v1/nodes/detection:
     post:
@@ -600,6 +859,35 @@ components:
       - publication
       title: Agreements
       description: Three separately versioned records, because they are withdrawn separately.
+    ClaimResponse:
+      properties:
+        state:
+          type: string
+          enum:
+          - unclaimed
+          - pending
+          - owned
+          title: State
+        email:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Email
+        undeliverable:
+          type: boolean
+          title: Undeliverable
+          default: false
+      type: object
+      required:
+      - state
+      title: ClaimResponse
+      description: |-
+        What the node is told about its own claim.
+
+        Carried by `GET` and `PUT /v1/nodes/claim` alike, and by the 409 a node
+        gets for nominating an address for a node that already has an owner: the
+        node has to reconcile from that answer rather than retry it, so it is told
+        which address won in the same response.
     ConfigResponse:
       properties:
         config_version:
@@ -791,6 +1079,32 @@ components:
       - streaming_allowed
       - node_ref
       title: HeartbeatResponse
+    NodeClaimRequest:
+      type: object
+      title: NodeClaimRequest
+      description: |-
+        The address to claim this node with. The server mails it a link; clicking that
+        link binds the node to the account behind the address, creating one if there is
+        not already one.
+
+        Required, and the only field. Sending an address the node already holds is
+        accepted and changes nothing, so this may be resent freely; it does not mail
+        anything again. Asking for the mail again is a separate call.
+
+        Surrounding whitespace is stripped and the address is lower cased before it is
+        judged, so the bound here describes the trimmed form rather than the bytes sent.
+
+        Nothing here verifies that the address exists. Until the link is clicked the
+        address grants nothing, and the node runs exactly as it would with no address
+        at all.
+      properties:
+        email:
+          type: string
+          maxLength: 255
+          description: The owner's address, lower cased and trimmed by the server.
+      required:
+      - email
+      additionalProperties: false
     NodeConfig:
       type: object
       title: NodeConfig

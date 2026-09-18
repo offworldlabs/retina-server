@@ -1,10 +1,13 @@
 """In-process fixed-window rate limits for the node API.
 
-Two limiters, because the fleet reaches the server two different ways. The
-authenticated paths are limited per (node_id, endpoint) and refuse with a 429:
-the caller already holds a token, so telling it that it is going too fast leaks
-nothing it does not know. Registration has no token, so it is limited on the
-node_id in the request body and refuses with the shared 403 rather than a 429.
+Three limiters, because three things need bounding and they are not the same
+thing. The authenticated paths are limited per (node_id, endpoint) and refuse
+with a 429: the caller already holds a token, so telling it that it is going too
+fast leaks nothing it does not know. Registration has no token, so it is limited
+on the node_id in the request body and refuses with the shared 403 rather than a
+429. Claiming is authenticated but is bounded on the address as well as the
+node, because what it spends is somebody else's mailbox rather than this
+server's time.
 
 Detections are held to 8 a second, sized against the 2 Hz contract ceiling
 rather than the roughly 1.1 Hz measured cadence of D45. A node cannot exceed one
@@ -215,6 +218,71 @@ class TokenRateLimiter:
 # token-authenticated paths that exist. PUT /nodes/config shares this instance
 # rather than building its own, since the allowance is per (node_id, endpoint).
 token_rate_limiter = TokenRateLimiter()
+
+
+# The claim limiter's address keys are an address a node holder types, so its
+# keyspace is caller-supplied the way registration's is rather than bounded by
+# the nodes table. A node's own limit caps that growth at five new addresses an
+# hour per node, so this sits far above any fleet: fifty nodes need two hundred
+# counters, four per (node, address) pair in play.
+MAX_CLAIM_KEYS = 10_000
+
+# (requests admitted, window in seconds), applied to the node and to the address
+# independently. Somebody bringing a node up types an address, mistypes it,
+# corrects it and asks for the mail again, so five in an hour covers the real
+# case several times over.
+#
+# The address half is the one that matters. A node is cheap to register, so a
+# per-node limit alone would bound nothing about how much mail one mailbox can
+# be sent from our domain, which is the surface claim codes never had.
+CLAIM_LIMITS: tuple[tuple[int, int], ...] = ((5, 3600), (20, 86400))
+
+
+class ClaimRateLimiter:
+    """Per node and per address, for the one endpoint that makes the server mail
+    somebody who has not asked to hear from us.
+
+    Both limits are spent together or neither is, which is what _FixedWindowCounters
+    already promises: a nomination refused because the address is busy must not
+    consume the node's own allowance, or one popular address would exhaust every
+    node that tried it.
+
+    A 429 tells the caller its own node is going too fast, which it already knows.
+    It does also say, faintly, that an address it named has been nominated
+    elsewhere recently, since the two limits are indistinguishable in the answer.
+    That is the price of bounding the mailbox rather than the node, and the
+    alternative is not bounding it.
+    """
+
+    def __init__(self, clock: Clock = time.monotonic, max_tracked: int = MAX_CLAIM_KEYS) -> None:
+        self._counters = _FixedWindowCounters(clock, max_tracked, refuse_when_full=True)
+
+    @property
+    def tracked_counters(self) -> int:
+        return self._counters.tracked_counters
+
+    def reset(self) -> None:
+        """Clear every tracked counter. For test fixtures only."""
+        self._counters.reset()
+
+    def admit(self, node_id: str, email: str) -> Refusal | None:
+        """Spend one nomination for this node and this address, or refuse.
+
+        None means the call is admitted and both allowances are spent; call this
+        once per request, not as a predicate to poll. `email` must be normalised,
+        or one address written two ways gets two allowances.
+        """
+        specs = [((node_id, ("claim", i)), limit, window_s) for i, (limit, window_s) in enumerate(CLAIM_LIMITS)]
+        specs += [((email, ("claim_address", i)), limit, window_s) for i, (limit, window_s) in enumerate(CLAIM_LIMITS)]
+        wait_s = self._counters.admit(specs)
+        if wait_s is None:
+            return None
+        return Refusal(429, dict(RATE_LIMITED_BODY), max(1, math.ceil(wait_s)))
+
+
+# The one instance, per the note above routes/node_stream.py's limiter:
+# routes/node_claim.py is the caller that made it worth having.
+claim_rate_limiter = ClaimRateLimiter()
 
 
 # (requests admitted, window in seconds), from the ADR's table. The escalating

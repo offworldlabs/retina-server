@@ -39,14 +39,18 @@ FRAME = {
 }
 
 # Every operationId the contract has published: the four the frozen 1.1.1
-# document carried, plus 1.2.0's `putContact`. A generated client turns these
-# into method names, so they are as much part of the contract as any field.
+# document carried, plus 1.2.0's `putContact` and 1.3.0's three claim
+# operations. A generated client turns these into method names, so they are as
+# much part of the contract as any field.
 OPERATION_IDS = {
     ("/v1/nodes/register", "post"): "registerNode",
     ("/v1/nodes/detection", "post"): "postDetection",
     ("/v1/nodes/heartbeat", "post"): "postHeartbeat",
     ("/v1/nodes/config", "put"): "putConfig",
     ("/v1/nodes/contact", "put"): "putContact",
+    ("/v1/nodes/claim", "put"): "putClaim",
+    ("/v1/nodes/claim", "get"): "getClaim",
+    ("/v1/nodes/claim/resend", "post"): "resendClaim",
 }
 
 X_RETRY_VALUES = {"never", "retry-after", "backoff"}
@@ -289,10 +293,16 @@ def test_the_contact_operation_reaches_its_own_component(document):
 def test_every_node_operation_publishes_its_body_as_a_component(document):
     """A generated client gets one named type per wire object, whichever
     operation carries it. An inline body is how that stops being true without
-    anything failing."""
+    anything failing.
+
+    An operation with no request body has no inline body to publish. Three of
+    them take none: the two reads, and the resend, which is an ask rather than
+    a document."""
     for path, methods in document["paths"].items():
         for method, operation in methods.items():
-            body = operation.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema", {})
+            if "requestBody" not in operation:
+                continue
+            body = operation["requestBody"]["content"]["application/json"]["schema"]
             assert "$ref" in body, f"{method.upper()} {path} publishes its body inline"
 
 
@@ -332,8 +342,25 @@ def test_only_a_refused_credential_is_terminal(document):
     assert terminal == {
         "PUT /v1/nodes/config 401",
         "PUT /v1/nodes/contact 401",
+        "PUT /v1/nodes/claim 401",
+        "GET /v1/nodes/claim 401",
+        "POST /v1/nodes/claim/resend 401",
         "POST /v1/nodes/detection 401",
         "POST /v1/nodes/heartbeat 401",
+    }
+
+
+def test_only_the_operations_that_cost_a_mailbox_or_the_pipeline_are_rate_limited(document):
+    """A declared 429 an operation cannot emit is a refusal a node writes a
+    handler for and never sees. The claim GET reads three rows and is polled
+    every few seconds by design, so it does not carry one."""
+    limited = {f"{method.upper()} {path}" for path, method, op in _operations(document) if "429" in op["responses"]}
+
+    assert limited == {
+        "POST /v1/nodes/detection",
+        "POST /v1/nodes/heartbeat",
+        "PUT /v1/nodes/claim",
+        "POST /v1/nodes/claim/resend",
     }
 
 
@@ -345,10 +372,24 @@ def test_every_retry_after_response_publishes_the_header(document):
             assert response["headers"]["Retry-After"]["required"] is True, name
 
 
+# The one refusal under this prefix that does not wear `Error`, on the two
+# operations that can raise it. A constant rather than a loosened assertion, so
+# that nothing else joins it without someone deciding to put it here.
+#
+# A node that has acquired an owner cannot correct either request, only
+# reconcile with it, so what it needs is the address that won rather than the
+# name of a field it got wrong. `ClaimResponse` carries that; `Error` cannot.
+_NOT_AN_ERROR_BODY = {
+    "PUT /v1/nodes/claim 409": "#/components/schemas/ClaimResponse",
+    "POST /v1/nodes/claim/resend 409": "#/components/schemas/ClaimResponse",
+}
+
+
 def test_every_refusal_carries_the_contracts_error_shape(document):
     for name, response in _error_responses(document):
         schema = response["content"]["application/json"]["schema"]
-        assert schema == {"$ref": "#/components/schemas/ErrorBody"}, name
+        expected = _NOT_AN_ERROR_BODY.get(name, "#/components/schemas/ErrorBody")
+        assert schema == {"$ref": expected}, name
 
 
 def test_the_operation_ids_are_the_ones_the_node_client_was_built_against(document):

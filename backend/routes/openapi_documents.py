@@ -27,6 +27,7 @@ confusing diff rather than a clean addition.
 from typing import Any
 
 from routes.nodes import NODE_API_SERVERS, NODE_API_TAGS, NODE_API_VERSION, is_node_path
+from services.node_claim import claim_json_schema
 from services.node_config import config_json_schema
 from services.node_contact import contact_json_schema
 
@@ -76,6 +77,7 @@ _REF_PREFIX = "#/components/schemas/"
 _INJECTED_SCHEMAS: dict[str, Any] = {
     "NodeConfig": config_json_schema,
     "NodeContact": contact_json_schema,
+    "NodeClaimRequest": claim_json_schema,
 }
 
 

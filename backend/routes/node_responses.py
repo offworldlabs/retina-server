@@ -13,7 +13,7 @@ published contract's, which is where the vocabulary is defined for a reader.
 
 from typing import Any
 
-from routes.node_schemas import ErrorBody
+from routes.node_schemas import ClaimResponse, ErrorBody
 
 # `x-retry` values. The question they answer is narrow on purpose: may the node
 # send this identical request again, and when.
@@ -39,6 +39,11 @@ NODE_BODY_LIMITS: dict[str, int] = {
     "/v1/nodes/heartbeat": 8 * 1024,
     "/v1/nodes/detection": 64 * 1024,
     "/v1/nodes/contact": 2 * 1024,
+    "/v1/nodes/claim": 2 * 1024,
+    # The resend takes no body. Capped anyway because the middleware matches on
+    # the exact path and an unlisted one falls back to the 5 MB global cap, so
+    # an absence here is a hole rather than an omission.
+    "/v1/nodes/claim/resend": 2 * 1024,
 }
 
 API_DESCRIPTION = """\
@@ -56,12 +61,19 @@ this API answers in FastAPI's `{"detail": ...}`, which its own callers parse.
 
 | Status | Means |
 |---|---|
-| `400` | The body was refused. `invalid_config` for a configuration that failed validation, `invalid_contact` for contact details that failed it, `invalid_body` for a body that failed the schema |
+| `400` | The body was refused. `invalid_config` for a configuration that failed validation, `invalid_contact` for contact details that failed it, `invalid_claim` for an address that failed it, `invalid_body` for a body that failed the schema |
 | `401` | The bearer token is bad, revoked or expired |
 | `403` | Registration refused, without saying why |
-| `409` | The frame names a `config_version` this server never issued |
+| `409` | The frame names a `config_version` this server never issued, or the node already has an owner |
 | `413` | The body exceeded the cap for its path |
 | `429` | Rate limited |
+
+One refusal does not carry `Error`, and it is the only one: the `409` on
+`PUT /v1/nodes/claim` answers with `ClaimResponse` instead. Nothing the node can
+change makes that request succeed, so what it needs is not a slug naming the
+field it got wrong but the address that already owns the node, which it
+reconciles against without a second call. Every other refusal under this prefix
+wears `Error`.
 
 `403` is deliberately opaque: unknown device, not yet accepted by Mender,
 already holding a valid token and in cooldown are one response, at one latency,
@@ -219,3 +231,32 @@ UNKNOWN_CONFIG_VERSION = _response(
     "set instead.",
     retry=RETRY_NEVER,
 )
+
+
+INVALID_CLAIM = _refused_body(
+    "The address failed validation, as `invalid_claim`. A body that is not JSON at all lands here "
+    "too, since the remedy is the same."
+)
+
+UNAUTHORIZED_CLAIM = _response(
+    "Token bad, revoked or expired. Surface it locally and leave the address unsent: nothing is lost "
+    "by waiting for a credential, since an address can be offered at any point in a node's life. Do "
+    "not re-register, for the reason detection and heartbeat give on their own 401s.",
+    retry=RETRY_NEVER,
+    terminal=True,
+)
+
+ALREADY_CLAIMED = {
+    "model": ClaimResponse,
+    "description": (
+        "The node already has an owner, so there is nothing for this call to do: a nomination names "
+        "an address that is not theirs, and a resend would mail a link for a claim already settled. "
+        "Nothing was written. The body is a `ClaimResponse` rather than an `Error`: this is the one "
+        "refusal a node reconciles from rather than corrects, so it carries the state and the "
+        "address that won. A node that believed itself unclaimed should adopt what this says and "
+        "stop offering to claim. Releasing is the owner's to do, from the dashboard, and cannot be "
+        "done from here."
+    ),
+    "x-retry": RETRY_NEVER,
+    "x-terminal": False,
+}

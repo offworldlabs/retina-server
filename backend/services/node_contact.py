@@ -2,8 +2,10 @@
 schema the contract publishes for them.
 
 A leaf on the same terms as services/node_config.py: it takes a dict and returns
-a dict, knowing nothing of identity, HTTP or the database, and nothing beyond the
-standard library may be imported here.
+a dict, knowing nothing of identity, HTTP or the database. Its one import is the
+address grammar it shares with claiming, so that an address this endpoint accepts
+is one the other does too; nothing beyond that and the standard library belongs
+here.
 
 Contact is not configuration. It is stored per node rather than per version, and
 none of it is verified: whoever holds a node's bearer token can set it.
@@ -11,12 +13,14 @@ none of it is verified: whoever holds a node's bearer token can set it.
 
 from typing import Any
 
+from services.email_address import MAX_ADDRESS_LENGTH, is_address
+
 # field -> the column width on node_contacts. The bounds and the published
 # schema are both built from this, so a width changed in one place moves both.
 _MAX_LENGTHS: dict[str, int] = {
     "first_name": 64,
     "last_name": 64,
-    "email": 255,
+    "email": MAX_ADDRESS_LENGTH,
     "phone": 32,
     "country": 2,
 }
@@ -99,14 +103,11 @@ def _string(field: str, value: Any) -> str | None:
 
 
 def _email(value: str) -> str:
-    if any(character.isspace() for character in value):
+    if not is_address(value):
         raise ContactInvalid("email", "not an address")
-    local, separator, domain = value.partition("@")
-    if not separator or not local or "@" in domain:
-        raise ContactInvalid("email", "not an address")
-    labels = domain.split(".")
-    if len(labels) < 2 or not all(labels):
-        raise ContactInvalid("email", "not an address")
+    # Returned as typed, like the phone beside it: this address is shown to
+    # whoever is about to write to it, and the one place case has to be
+    # normalised is claiming, where an address is a key into accounts.
     return value
 
 

@@ -9,9 +9,11 @@ import logging
 import pytest
 
 from services.node_rate_limits import (
+    CLAIM_LIMITS,
     ENDPOINT_LIMITS,
     OVERFLOW_LOG_INTERVAL_S,
     REGISTRATION_LIMITS,
+    ClaimRateLimiter,
     RegistrationRateLimiter,
     TokenRateLimiter,
 )
@@ -379,3 +381,105 @@ def test_a_previously_refused_node_id_is_admitted_once_its_window_is_reclaimed()
     clock.advance(86400)
     assert limiter.admit("ret000000002") is None
     assert limiter.tracked_counters == 2
+
+
+# ── Claiming ─────────────────────────────────────────────────────────────────
+
+
+def _claim_limiter(clock: FakeClock, max_tracked: int = 64) -> ClaimRateLimiter:
+    return ClaimRateLimiter(clock=clock, max_tracked=max_tracked)
+
+
+def test_the_documented_claim_rates_are_the_ones_configured():
+    assert CLAIM_LIMITS == ((5, 3600), (20, 86400))
+
+
+def test_five_nominations_an_hour_are_admitted_and_the_sixth_is_not():
+    clock = FakeClock()
+    limiter = _claim_limiter(clock)
+
+    for _ in range(5):
+        assert limiter.admit("ret1a2b3c4d", "ada@example.com") is None
+
+    refusal = limiter.admit("ret1a2b3c4d", "ada@example.com")
+    assert refusal is not None
+    assert (refusal.status_code, refusal.body) == (429, RATE_LIMITED_BODY)
+
+
+def test_two_nodes_nominating_one_address_share_its_allowance():
+    """The address limit is what bounds the mailbox, and a node is cheap to
+    register, so it cannot be per node."""
+    clock = FakeClock()
+    limiter = _claim_limiter(clock)
+
+    for i in range(5):
+        assert limiter.admit(f"ret0000000{i}", "ada@example.com") is None
+
+    assert limiter.admit("retdeadbeef", "ada@example.com") is not None
+
+
+def test_one_node_nominating_a_second_address_still_spends_its_own_allowance():
+    clock = FakeClock()
+    limiter = _claim_limiter(clock)
+
+    for i in range(5):
+        assert limiter.admit("ret1a2b3c4d", f"ada{i}@example.com") is None
+
+    assert limiter.admit("ret1a2b3c4d", "grace@example.com") is not None
+
+
+def test_a_refusal_by_the_address_limit_does_not_spend_the_node_limit():
+    """One popular address would otherwise exhaust every node that tried it."""
+    clock = FakeClock()
+    limiter = _claim_limiter(clock)
+    for i in range(5):
+        limiter.admit(f"ret0000000{i}", "ada@example.com")
+
+    assert limiter.admit("retdeadbeef", "ada@example.com") is not None
+
+    assert limiter.admit("retdeadbeef", "grace@example.com") is None
+
+
+def test_the_claim_daily_limit_outlives_the_hourly_one():
+    clock = FakeClock()
+    limiter = _claim_limiter(clock, max_tracked=512)
+
+    for _ in range(4):
+        for _ in range(5):
+            assert limiter.admit("ret1a2b3c4d", "ada@example.com") is None
+        clock.advance(3600)
+
+    assert limiter.admit("ret1a2b3c4d", "ada@example.com") is not None
+
+
+def test_the_claim_hourly_window_resets():
+    clock = FakeClock()
+    limiter = _claim_limiter(clock)
+    for _ in range(5):
+        limiter.admit("ret1a2b3c4d", "ada@example.com")
+
+    clock.advance(3600)
+
+    assert limiter.admit("ret1a2b3c4d", "ada@example.com") is None
+
+
+def test_a_full_claim_map_refuses_an_identity_it_does_not_already_track():
+    """The address keyspace is caller-supplied, so the bound is enforced rather
+    than merely reported, as registration's is."""
+    clock = FakeClock()
+    limiter = _claim_limiter(clock, max_tracked=4)
+    assert limiter.admit("ret1a2b3c4d", "ada@example.com") is None
+
+    assert limiter.admit("retdeadbeef", "grace@example.com") is not None
+
+    assert limiter.admit("ret1a2b3c4d", "ada@example.com") is None
+
+
+def test_the_claim_retry_after_is_never_zero():
+    clock = FakeClock(960.0)
+    limiter = _claim_limiter(clock)
+    for _ in range(5):
+        limiter.admit("ret1a2b3c4d", "ada@example.com")
+
+    refusal = limiter.admit("ret1a2b3c4d", "ada@example.com")
+    assert refusal.retry_after_s >= 1
