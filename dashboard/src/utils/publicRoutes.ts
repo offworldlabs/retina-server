@@ -41,6 +41,8 @@ export const PUBLIC_PATHS: readonly string[] = PUBLIC_ROUTES.map((r) => r.path);
  */
 export function isPublicRoute(pathname: string, isAdmin: boolean): boolean {
   if (isAdmin) return false;
+  // The index renders nothing of its own: it forwards to the map.
+  if (pathname === "/") return true;
   // First segment only, so a nested route travels with its parent. Split rather
   // than a prefix test: "/datasets" starts with "/data" and is a different page.
   const segment = `/${pathname.split("/")[1] ?? ""}`;

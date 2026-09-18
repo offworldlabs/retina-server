@@ -53,7 +53,8 @@ export default function ClaimPage() {
       // fresh session as signed out until a reload.
       signIn(user);
       setStage("bound");
-      window.setTimeout(() => navigate("/", { replace: true }), 1200);
+      // To the new owner's own nodes: the index opens on the map instead.
+      window.setTimeout(() => navigate("/overview", { replace: true }), 1200);
     } catch (e) {
       // 409 is the one refusal worth distinguishing: the link was real and the
       // node was claimed by somebody else while it sat in the inbox, which is
