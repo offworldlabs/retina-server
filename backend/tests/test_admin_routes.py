@@ -244,6 +244,67 @@ class TestLeaderboard:
     #: the published analytics snapshot.
     MISS_FIELDS = ("in_range", "detected_in_range", "missed", "miss_rate")
 
+    #: What the route publishes to anyone. Widening this set publishes a field,
+    #: so it is meant to take an edit here as well as one to the model.
+    PUBLIC_FIELDS = {
+        "avg_snr",
+        "detections",
+        "frames",
+        "name",
+        "node_ref",
+        "online",
+        "rank",
+        "reputation",
+        "tracks",
+        "trust_score",
+        "uptime_s",
+    }
+
+    def test_the_published_row_declares_exactly_the_public_fields(self):
+        from routes.admin import PublicLeaderboardRow, SignedInLeaderboardRow
+
+        assert set(PublicLeaderboardRow.model_fields) == self.PUBLIC_FIELDS
+        assert set(SignedInLeaderboardRow.model_fields) == self.PUBLIC_FIELDS | set(self.MISS_FIELDS)
+
+    def test_a_stray_field_is_refused_rather_than_dropped(self):
+        from pydantic import ValidationError
+
+        from routes.admin import PublicLeaderboardRow
+
+        fields = dict.fromkeys(self.PUBLIC_FIELDS, 0) | {"node_ref": "r", "name": "n", "online": True}
+        PublicLeaderboardRow(**fields)
+        with pytest.raises(ValidationError):
+            PublicLeaderboardRow(**fields, node_id="ret9f8e7d6c")
+
+    @pytest.mark.parametrize("cold", [False, True], ids=["snapshot", "cold-start"])
+    def test_each_caller_gets_exactly_its_row_keys(self, client, cold):
+        """Asserted on the wire, on both paths the rows can come from, so a
+        serialiser that dropped or added fields would show here and not only
+        in the model."""
+        from unittest.mock import patch
+
+        nid = "test-lb-keys"
+        prior = self._seed_miss_row(nid)
+        summaries = {nid: {"metrics": {"total_detections": 7}, "trust": {}, "reputation": {}}}
+        if cold:
+            state.latest_analytics_bytes = b'{"nodes":{}}'
+        try:
+            with (
+                patch.object(state.node_analytics, "get_all_summaries", return_value=summaries),
+                patch("services.publication.private_node_ids", return_value=set()),
+            ):
+                signed_in = client.get("/api/admin/leaderboard").json()
+                with patch("core.users.AUTH_BYPASS", False):
+                    anonymous = client.get("/api/admin/leaderboard").json()
+        finally:
+            self._restore(prior, nid)
+
+        (public,) = [e for e in anonymous["leaderboard"] if e["node_ref"] == nid]
+        (full,) = [e for e in signed_in["leaderboard"] if e["node_ref"] == nid]
+        assert set(public) == self.PUBLIC_FIELDS
+        assert set(full) == self.PUBLIC_FIELDS | set(self.MISS_FIELDS)
+        assert set(anonymous) == set(signed_in) == {"leaderboard", "total"}
+
     @staticmethod
     def _seed_miss_row(nid: str):
         """A node with both a published summary and a miss-detection row."""
