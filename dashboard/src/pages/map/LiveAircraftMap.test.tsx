@@ -23,6 +23,10 @@ vi.mock("react-leaflet", async (importOriginal) => {
   };
 });
 
+// The map reads identity from the console's AuthProvider; every case is signed in.
+const owner = vi.hoisted(() => ({ user: { email: "owner@example.invalid", name: "Owner" }, loading: false }));
+vi.mock("../../context/AuthContext", () => ({ useAuth: () => owner }));
+
 // Every case renders the whole map tree, which alone takes most of the default.
 vi.setConfig({ testTimeout: 20_000 });
 
@@ -47,9 +51,7 @@ beforeEach(() => {
   vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
   vi.stubGlobal("fetch", vi.fn(async (url: string) => ({
     ok: true,
-    json: async () => url.endsWith("/auth/me")
-      ? { email: "owner@example.invalid", name: "Owner" }
-      : url.endsWith("/auth/me/nodes") ? [{ node_ref: "mine" }] : {},
+    json: async () => url.endsWith("/auth/me/nodes") ? [{ node_ref: "mine" }] : {},
   })));
 });
 

@@ -73,7 +73,7 @@ import {
 import { IconScaleSync, iconZoomScale, useIconZoomScale } from "./iconScale";
 import ScaledCircleMarker from "./ScaledCircleMarker";
 
-import { fetchMlatVerification, fetchMlatHistory } from "./api";
+import { api } from "../../api/client";
 import { defaultsGroundTruthOff } from "./utils/domains";
 import { withCartoKey } from "./utils/basemap";
 import { usePersistedState } from "./usePersistedState";
@@ -400,7 +400,7 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
     const refresh = async () => {
       let nextDelayMs = ACTIVE_POLL_MS;
       try {
-        const data = await fetchMlatVerification();
+        const data = await api.mlatVerification();
         if (cancelled) return;
         if (!data) {
           nextDelayMs = IDLE_POLL_MS;
@@ -1884,9 +1884,12 @@ function AircraftMapScope({ ownerOnly, restoreSelection, auth, onOwnerChange }) 
     }
     let cancelled = false;
     const load = () => {
-      fetchMlatHistory(selectedMnHex).then((d) => {
-        if (!cancelled && d && d.hex === selectedMnHex) setMlatHistory(d);
-      });
+      api.mlatHistory(selectedMnHex)
+        .then((d) => {
+          if (!cancelled && d && d.hex === selectedMnHex) setMlatHistory(d);
+        })
+        // A failed load leaves the previous history on screen; the next tick asks again.
+        .catch(() => {});
     };
     reloadMlatHistoryRef.current = load;
     load();

@@ -4,6 +4,10 @@ import { useAircraftFeed, useAuth } from "./hooks";
 
 vi.mock("./utils/domains", () => ({ hidesRealNodes: false, usesRealOnlyFeed: false }));
 
+// The map reads identity from the console's AuthProvider.
+const auth = vi.hoisted(() => ({ current: { user: null as unknown, loading: false } }));
+vi.mock("../../context/AuthContext", () => ({ useAuth: () => auth.current }));
+
 class Socket {
   static OPEN = 1;
   static instances: Socket[] = [];
@@ -137,13 +141,11 @@ describe("HTTP fallback ordering", () => {
 describe("the map's view of who is signed in", () => {
   const ME = { id: "u1", email: "owner@example.invalid", name: "Owner" };
   const ok = (body: unknown) => ({ ok: true, json: async () => body });
-  const unauthorized = { ok: false, status: 401, json: async () => ({ detail: "Not authenticated" }) };
 
-  /** Answers the identity route with `me` and the ownership route with `nodes`. */
-  function stubAuth(me: unknown, nodes: unknown = []) {
-    const fetchMock = vi.fn(async (url: string) =>
-      url.endsWith("/auth/me") ? me : url.endsWith("/auth/me/nodes") ? ok(nodes) : ok({})
-    );
+  /** Signs `user` into the console and answers the ownership route with `nodes`. */
+  function stubAuth(user: unknown, nodes: unknown = ok([])) {
+    auth.current = { user, loading: false };
+    const fetchMock = vi.fn(async (url: string) => (url.endsWith("/auth/me/nodes") ? nodes : ok({})));
     vi.stubGlobal("fetch", fetchMock);
     return fetchMock;
   }
@@ -155,27 +157,25 @@ describe("the map's view of who is signed in", () => {
   it("resolves the user and the refs of the nodes they own", async () => {
     // A null ref is an owned node with no registry row, and the map has
     // nothing to match it against.
-    stubAuth(ok(ME), [{ node_ref: "mine" }, { node_ref: null }]);
+    stubAuth(ME, ok([{ node_ref: "mine" }, { node_ref: null }]));
     const { result } = renderHook(() => useAuth());
     await settle();
     expect(result.current).toEqual({ user: ME, ownedNodeRefs: ["mine"], loading: false });
   });
 
   it("asks nothing about ownership when nobody is signed in", async () => {
-    const fetchMock = stubAuth(unauthorized);
+    const fetchMock = stubAuth(null);
     const { result } = renderHook(() => useAuth());
     await settle();
     expect(result.current).toEqual({ user: null, ownedNodeRefs: [], loading: false });
-    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/auth/me"]);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("stays loading until the owned nodes arrive", async () => {
     // NodeOwnerControl renders nothing while loading. Releasing it early shows
     // the owner their panel with an ownership count that is still zero.
     const nodes = deferred<unknown>();
-    vi.stubGlobal("fetch", vi.fn(async (url: string) =>
-      url.endsWith("/auth/me") ? ok(ME) : nodes.promise
-    ));
+    stubAuth(ME, nodes.promise);
     const { result } = renderHook(() => useAuth());
     await settle();
     expect(result.current.loading).toBe(true);
@@ -183,18 +183,12 @@ describe("the map's view of who is signed in", () => {
     expect(result.current).toMatchObject({ loading: false, ownedNodeRefs: ["mine"] });
   });
 
-  it("retries an identity the server did not answer", async () => {
-    // The map is often the first page open when a droplet comes back up, and
-    // one unanswered call used to settle it as a signed-out visitor for the
-    // rest of the session.
-    const fetchMock = vi.fn()
-      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
-      .mockImplementation(async (url: string) =>
-        url.endsWith("/auth/me") ? ok(ME) : ok([{ node_ref: "mine" }])
-      );
-    vi.stubGlobal("fetch", fetchMock);
+  it("settles as owning nothing when the ownership request fails", async () => {
+    // Ownership left null reads as unsettled, which holds the owner panel in
+    // its loading state for the rest of the session.
+    stubAuth(ME, { ok: false, status: 500, json: async () => ({ detail: "boom" }) });
     const { result } = renderHook(() => useAuth());
     await settle();
-    expect(result.current.user).toEqual(ME);
+    expect(result.current).toEqual({ user: ME, ownedNodeRefs: [], loading: false });
   });
 });
