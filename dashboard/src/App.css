@@ -429,6 +429,15 @@ a:hover {
   padding: var(--content-pad);
 }
 
+/* A full-bleed page owns its own overflow and draws to every edge; a
+   scrollbar or padding on the pane would move its canvas under its panels. */
+.content.flush {
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  min-height: 0;
+}
+
 /* ── Tables ──────────────────────────────────────────────────────────────── */
 .table-wrapper {
   overflow-x: auto;

@@ -54,6 +54,9 @@ export default function DashboardLayout({ isAdmin, children }) {
   // The map wants the canvas; every other page wants the labels. An explicit
   // choice outranks both.
   const collapsed = stored ?? basePath === "/map";
+  // The map draws to the edges and scrolls nothing: its own panels own their
+  // overflow, and a scrollbar on the pane would move the canvas under them.
+  const flush = basePath === "/map";
 
   const toggle = () => {
     const next = !collapsed;
@@ -70,7 +73,7 @@ export default function DashboardLayout({ isAdmin, children }) {
       <Sidebar isAdmin={isAdmin} collapsed={collapsed} onToggle={toggle} />
       <div className="main-area">
         <Header title={title} />
-        <div className="content">{children}</div>
+        <div className={`content${flush ? " flush" : ""}`}>{children}</div>
       </div>
     </div>
   );
