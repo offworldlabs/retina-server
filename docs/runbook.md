@@ -909,12 +909,19 @@ carries — that is deliberate, so the operator sees which nodes were blocked an
 why. Use `backend/scripts/unblock_nodes.py`.
 
 The snapshot keys reputations by **node_id**, while the analytics API names
-nodes by `node_ref`. Resolve the ref first, while the server is still up:
+nodes by `node_ref`. For a node registered on this environment, resolve the ref
+from the registry while the server is still up:
 
 ```bash
 docker compose exec -w /app/backend server \
     python3 -c "from services import node_refs as n; print(n.id_for_ref('<node_ref>'))"
 ```
+
+A **mirrored** real node has no registry row here; its ref lives only in the
+running process (`state.connected_nodes`), which an `exec` cannot see, so that
+prints `None`. Pick its key by hand instead: it is a `ret*` id among the
+`synth-*` ones, and its `trust_scores` entry in the snapshot reproduces the
+ref's `rms_delay_error_us` from `/api/radar/analytics`. Or use `--all-blocked`.
 
 Then stop the server before editing — the save loop rewrites the snapshot every
 60 s, and the block that actually gates frames lives in memory, so the file only

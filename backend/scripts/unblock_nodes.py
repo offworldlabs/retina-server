@@ -22,15 +22,19 @@ Node *ids*, not node_refs
 -------------------------
 ``reputations`` is keyed by node_id (``retce36dbb4``, ``synth-GVL-0004``); the
 analytics API renames entries to node_ref only at publication, so the ref you
-read off ``/api/radar/analytics`` is not a key here.  Resolve it first, inside
-the running container, before you stop anything::
+read off ``/api/radar/analytics`` is not a key here.  For a node registered on
+this environment, resolve it from the registry before you stop anything::
 
     docker compose exec -w /app/backend server \\
-        python3 -c "from services import node_refs as n; print(n.id_for_ref('ndebvzgeoij5t2l'))"
+        python3 -c "from services import node_refs as n; print(n.id_for_ref('<node_ref>'))"
 
-(For a mirrored real node the ref comes from
-``state.connected_nodes[node_id]["node_ref"]`` — see ``services/node_refs.py``,
-``_mirrored_ref``.)  Or skip the lookup entirely with ``--all-blocked``.
+A *mirrored* real node has no registry row here: its ref lives only in the
+running process (``state.connected_nodes[node_id]["node_ref"]``, see
+``services/node_refs.py`` ``_mirrored_ref``), which a ``docker compose exec``
+cannot see, so the lookup above prints None for it.  Pick its key by hand
+instead — it is a ``ret*`` id among the ``synth-*`` ones, and its
+``trust_scores`` entry reproduces the ref's ``rms_delay_error_us`` — or skip
+the question entirely with ``--all-blocked``.
 
 Usage (droplet, snapshot on the backend-data volume)::
 
