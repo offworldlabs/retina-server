@@ -40,6 +40,7 @@ backend/      FastAPI API, TCP frame ingest, detection pipeline, background task
 frontend/     React SPA — the live map (Vite + Leaflet)
 dashboard/    React admin app (Vite)
 packages/shared/  Code both web apps share, imported as @retina/shared
+e2e/          Playwright suite run after each deploy; a failure on production rolls it back
 libs/         Git submodules (the algorithm libraries — see below)
 docs/         Architecture, pipeline, runbook, alerting, simulation, arc-display
 ```
@@ -182,8 +183,11 @@ uv pip install ../libs/retina-geolocator ../libs/retina-tracker \
 # backend
 cd backend && RETINA_ENV=test COVERAGE_CORE=sysmon pytest
 
-# every workspace; -w frontend (or -w dashboard, -w packages/shared) for one
-npm run test --workspaces && npm run typecheck --workspaces && npm run lint --workspaces
+# every workspace; -w frontend (or -w dashboard, -w packages/shared, -w e2e) for one
+npm run test --workspaces --if-present && npm run typecheck --workspaces && npm run lint --workspaces --if-present
+
+# the browser suite, against staging (local and prod are the other two targets)
+npm run test:e2e:staging -w e2e
 ```
 
 Backend coverage gate is 55%. Async tests need `pytest-asyncio` (in

@@ -323,7 +323,7 @@ class TestGoldenPath_Layer3_HttpApi:
         assert body["pipeline"]["node_pipelines"] >= 1
 
     def test_dashboard_publishes_the_refresh_cadence(self, client):
-        """frontend/e2e/nodes.spec.ts sizes its node-cache wait from this.
+        """e2e/specs/nodes.spec.ts sizes its node-cache wait from this.
 
         It falls back to a default when the field is missing, so dropping the
         field would not fail the E2E suite: it would quietly put the window back

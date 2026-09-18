@@ -43,7 +43,7 @@ backend/data/users.db-wal
 skills-lock.json
 # Whole directory, not just .last-run.json: a failing run also drops
 # error-context.md, traces and screenshots here. Unanchored, because Playwright
-# writes it relative to wherever it was invoked from, not just under frontend/.
+# writes it relative to wherever it was invoked from, not just under e2e/.
 test-results/
 .playwright-mcp/*
 

@@ -1952,7 +1952,7 @@ async def analytics_refresh_task():
                 check_node_health()
                 state.task_last_success["analytics_refresh"] = time.time()
                 # Fixed-rate: sleeping the interval flat would make the period the
-                # interval plus the cycle, and frontend/e2e/nodes.spec.ts sizes its
+                # interval plus the cycle, and e2e/specs/nodes.spec.ts sizes its
                 # wait on the period. Floored rather than clamped to zero so an
                 # overrunning cycle still yields the box.
                 elapsed = time.monotonic() - started
