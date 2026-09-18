@@ -51,7 +51,7 @@ import math
 import threading
 from collections import deque
 
-from retina_analytics.trust import AdsReportEntry, TrustScoreState
+from retina_analytics.trust import TRUST_MIN_SAMPLES, AdsReportEntry, TrustScoreState
 
 from core import state
 
@@ -94,8 +94,14 @@ _BIAS_SEM_MAX_HZ = _FIT_DOPPLER_HZ / 4.0
 # Neutral prior for unknown nodes, and the M-of-N bar again before the real
 # score replaces it: below 3 samples the score quantizes to {0, 1/2, 1} and a
 # single unlucky residual would zero a brand-new node's solver weight.
+#
+# The bar itself now lives in retina-analytics, because the reputation
+# evaluator there applies the same one: it used to act on any node with a
+# single sample, which blocked a real node off one out-of-threshold residual.
+# Sharing the constant keeps the solver's reading of a young node's trust and
+# the evaluator's willingness to act on it from drifting apart.
 _TRUST_PRIOR = 0.5
-_TRUST_MIN_SAMPLES = 3
+_TRUST_MIN_SAMPLES = TRUST_MIN_SAMPLES
 
 _PROVENANCE = "claim_residual"
 

@@ -537,3 +537,29 @@ async def registered_node(node_session):
     await node_pipeline.register_with_pipeline(node_session, node)
     await node_session.commit()
     return token, _NODE_ID
+
+
+@pytest.fixture
+def penalties_on():
+    """Turn reputation penalties on for one test (or class), then restore.
+
+    The deployed default is REPUTATION_PENALTY_SCALE=0 — core/state.py sets it
+    process-wide at import, so under the suite no penalty lands and no node
+    blocks.  That is the behaviour worth having as the ambient one: a test
+    that never asks for penalties is then running against what production
+    runs.  Every test that asserts a penalty *does* land asks for this fixture
+    explicitly, which also keeps the gate tests honest — a gate test asserting
+    "no penalty was recorded" proves nothing if penalties could not be
+    recorded at all.
+
+    Deliberately not autouse: an autouse version would make the whole suite
+    exercise a configuration no deployment runs.
+    """
+    from retina_analytics.reputation import NodeReputation, set_penalty_scale
+
+    previous = NodeReputation.penalty_scale
+    set_penalty_scale(1.0)
+    try:
+        yield 1.0
+    finally:
+        set_penalty_scale(previous)

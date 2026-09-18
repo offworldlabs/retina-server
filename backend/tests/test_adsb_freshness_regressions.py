@@ -211,6 +211,7 @@ def _truth(age_s=1.0):
     }
 
 
+@pytest.mark.usefixtures("penalties_on")
 class TestCrossValidationCannotBeBypassed:
     @pytest.fixture(autouse=True)
     def _clean_nodes(self):

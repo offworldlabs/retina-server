@@ -8,6 +8,7 @@ pure helpers that operate on them.
 retina_tracker YAML config stays separate (loaded at runtime via config.yaml).
 """
 
+import logging
 import math
 import os
 
@@ -477,6 +478,56 @@ GT_REFRESH_S = 5.0  # Ground-truth snapshot refresh cadence (s)
 REPUTATION_INTERVAL_S = 60  # Reputation evaluator sleep (s)
 ADSB_TRUTH_INTERVAL_S = 120  # ADS-B truth fetcher sleep (s)
 ADSB_BACKOFF_S = 300  # Rate-limit backoff (s)
+
+# ── Node reputation penalties ────────────────────────────────────────────────
+# Multiplier applied to EVERY reputation penalty in retina-analytics
+# (NodeReputation.penalty_scale): trust 0.15/0.05 per evaluator pass, stale
+# heartbeat 0.1, high detection rate 0.05, neighbour inconsistency 0.08, and
+# the ADS-B cross-validation 0.1 charged from services/tasks/periodic.py.
+# Rewards are untouched.
+#
+#   0  — no penalty is ever recorded, so no node can be blocked by any of
+#        these paths (a penalty of 0 is dropped entirely: no ledger entry, no
+#        reputation change).
+#   1  — the historical behaviour.
+#
+# The default is 0, and that is a TEMPORARY stance taken 2026-09-18, not a
+# decision that reputation should never bite.  The only trust input today is a
+# single claim residual from the identity-first lane, and one out-of-threshold
+# residual scores a node 0.0: the evaluator then charges 0.15 every
+# REPUTATION_INTERVAL_S (60 s) pass, so 1.0 crosses the 0.2 block threshold in
+# six minutes.  That is exactly what happened to a real mirrored node
+# (node_ref ndebvzgeoij5t2l) on the test droplet from ONE sample — once
+# blocked, record_detection_frame drops every frame it sends, apply_reward is
+# a no-op, and the block is persisted by services/state_snapshot.py, so it
+# survives restarts.  Restore penalties (scale 1) once trust is computed from
+# enough evidence to be worth acting on; the evaluator's own min-sample bar
+# lives in retina_analytics.trust.TRUST_MIN_SAMPLES.
+#
+# Blocks already recorded in a snapshot are NOT cleared by this switch — it
+# only stops new penalties.  Use backend/scripts/unblock_nodes.py for those.
+
+
+def _parse_penalty_scale(raw: str | None) -> float:
+    """REPUTATION_PENALTY_SCALE as a non-negative finite float, else 0.
+
+    A malformed or negative value must not silently become "penalties on":
+    the safe reading of an unparseable gate here is the deployed default.
+    """
+    if raw is None or not raw.strip():
+        return 0.0
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        logging.warning("REPUTATION_PENALTY_SCALE=%r is not a number — using 0 (no penalties)", raw)
+        return 0.0
+    if not math.isfinite(value) or value < 0:
+        logging.warning("REPUTATION_PENALTY_SCALE=%r is not finite and >= 0 — using 0 (no penalties)", raw)
+        return 0.0
+    return value
+
+
+REPUTATION_PENALTY_SCALE = _parse_penalty_scale(os.getenv("REPUTATION_PENALTY_SCALE"))
 
 # ── External ADS-B query regions ─────────────────────────────────────────────
 ADSB_CELL_SPACING_KM = 400.0  # Lattice cell size for grouping nodes into queries

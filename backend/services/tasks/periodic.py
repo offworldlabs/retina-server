@@ -631,6 +631,13 @@ def _cross_validate_adsb_reports():
     - (0, 0) is routes/analytics.py's default for an omitted position, not a
       claim to have seen an aircraft off West Africa.
 
+    The 0.1 below, like every other reputation penalty, is multiplied by
+    NodeReputation.penalty_scale (config.constants.REPUTATION_PENALTY_SCALE),
+    which currently defaults to 0 — so on a default deployment this records
+    nothing and blocks nobody, and the gates above are what keeps that from
+    being the only thing standing between a truthful node and a block when the
+    scale is turned back up.
+
     A sample is judged at most once because the age window (XVAL_MAX_AGE_S) is
     far shorter than the interval between cycles, and _adsb_truth_cycle calls
     this exactly once per cycle.  Both halves of that must hold: shortening the
