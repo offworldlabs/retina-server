@@ -42,7 +42,7 @@ export function nodeLabel(node: RadarNode | undefined | null): string {
 }
 
 /**
- * The server's own verdict, carried on the node (utils/nodeKind.ts resolves
+ * The server's own verdict, carried on the node (src/utils/nodeKind.ts resolves
  * it when the listing is read).  Not a prefix test: identities publish as
  * node_ref, and no prefix survives the substitution to match on.
  */
