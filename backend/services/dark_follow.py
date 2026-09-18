@@ -3,12 +3,13 @@ top-down claiming of aircraft that have no transponder.
 
 The dark lane is bottom-up all the way down — per-node tracker tracks, delay
 grid pairing, clustering, solve, and only THEN a key, chosen by proximity to
-whatever multinode entry happens to be nearest (solver.multinode_key_decision).
-Two consequences the map shows directly.  Continuity: consecutive solves of one
-aircraft less than 5 s apart land on a different key 15% of the time, any gap
-in solving re-mints the key from scratch, and two aircraft 3 km apart can share
-one.  Accuracy: nothing ever tells the solver where the aircraft is EXPECTED to
-be, so a solve starts from a 3 km grid centroid.
+whatever multinode entry happens to be nearest
+(multinode_identity.multinode_key_decision).  Two consequences the map shows
+directly.  Continuity: consecutive solves of one aircraft less than 5 s apart
+land on a different key 15% of the time, any gap in solving re-mints the key
+from scratch, and two aircraft 3 km apart can share one.  Accuracy: nothing
+ever tells the solver where the aircraft is EXPECTED to be, so a solve starts
+from a 3 km grid centroid.
 
 The known lane already solved both problems for ADS-B aircraft, by inverting
 the order: identity first (services/known_claiming.py claims detections against
@@ -24,9 +25,10 @@ forward and attach each new solve to the newest key sharing a node-track id —
 was simulated against a dense metro cluster and linked the WRONG aircraft 12%
 of the time.  Single-node tracker tracks are genuinely shared between the
 association candidates of different aircraft (the same measurement that made
-solver._supersession_match stop trusting a bare shared id), so a node-track id
-is evidence about a detection, not about an aircraft.  A predicted observation
-is evidence about an aircraft, which is what keying needs.
+multinode_identity._supersession_match stop trusting a bare shared id), so a
+node-track id is evidence about a detection, not about an aircraft.  A
+predicted observation is evidence about an aircraft, which is what keying
+needs.
 
 THE GHOST RISK, AND THE GUARD.  Following a track is a positive feedback loop:
 a solve keeps a key alive, the key keeps predicting, the prediction keeps
@@ -178,11 +180,12 @@ DARK_FOLLOW_INTERVAL_S = float(os.getenv("DARK_FOLLOW_INTERVAL_S", "2.0"))
 
 # ── Key ownership ────────────────────────────────────────────────────────────
 # How long after a follow-solve publishes on a key that key stays the follow
-# lane's, i.e. un-joinable by a bottom-up solve (solver.multinode_key_decision,
-# binding mode only).  Three follow-solve intervals: a followed track is solved
-# every DARK_FOLLOW_INTERVAL_S, so a key still inside this window is one the
-# lane is actively refreshing and does not need help keeping alive, while a key
-# that has missed three turns is one the lane has stopped answering for and the
+# lane's, i.e. un-joinable by a bottom-up solve
+# (multinode_identity.multinode_key_decision, binding mode only).  Three
+# follow-solve intervals: a followed track is solved every
+# DARK_FOLLOW_INTERVAL_S, so a key still inside this window is one the lane is
+# actively refreshing and does not need help keeping alive, while a key that
+# has missed three turns is one the lane has stopped answering for and the
 # bottom-up lane should be free to claim again.
 #
 # WHY OWNERSHIP AT ALL.  Measured on test with the lane binding (20 min, 625
@@ -408,11 +411,11 @@ def note_follow_publish(key: str, ts_s: float) -> None:
     """Record that a follow-lane solve published on ``key`` at epoch ``ts_s``.
 
     ``ts_s`` is the solve's MEASUREMENT epoch, not wall time, and that is not
-    an accident: the only reader is solver.multinode_key_decision, which is
-    deliberately clock-free — every time-of-day it uses arrives on the solve it
-    is judging — so that the keying rule stays replayable against recorded
-    history.  Feeding it wall time here would make the one gate that decides
-    key ownership the one thing a replay could not reproduce.
+    an accident: the only reader is multinode_identity.multinode_key_decision,
+    which is deliberately clock-free — every time-of-day it uses arrives on the
+    solve it is judging — so that the keying rule stays replayable against
+    recorded history.  Feeding it wall time here would make the one gate that
+    decides key ownership the one thing a replay could not reproduce.
 
     Called from the single point every follow-solve outcome passes through
     (solve_history._record_solve_history), so there is no path that

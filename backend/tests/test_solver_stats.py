@@ -651,7 +651,7 @@ class TestFragmentation:
 
     def test_supersession_counters_are_surfaced(self):
         """Entries popped as the same aircraft against shared-id entries the
-        spatial/identical-inputs guard refused (solver.py's
+        spatial/identical-inputs guard refused (multinode_identity.py's
         _supersession_match).  They belong beside the key decisions: a wrong
         pop deletes a live aircraft's key and its next solve reappears above
         as another dark_keys_minted.  The _alt split says how many of the
@@ -666,7 +666,7 @@ class TestFragmentation:
         assert out["fragmentation"]["mn_superseded_blocked_alt"] == 12
 
     def test_stale_coast_counters_are_reported(self):
-        """Mint-time retirement of coasting dark keys (solver.py's
+        """Mint-time retirement of coasting dark keys (multinode_identity.py's
         _stale_coast_candidate), beside the supersession counters for the same
         reason they sit beside the key decisions: it is the hard-turn re-key
         the shared-id prefilter above cannot see, and every mint it does not

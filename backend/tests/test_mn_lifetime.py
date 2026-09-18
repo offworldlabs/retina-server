@@ -15,10 +15,10 @@ Two problems in how state.multinode_tracks renders as mn-* aircraft:
   supersedes the earlier entry — but a shared source single-node track id is
   only the cheap prefilter for that, never the rule: tracker track ids are
   reused across the association candidates of DIFFERENT aircraft, so
-  solver.py's _supersession_match has to agree the two are the same target
-  before anything is popped: dead-reckoned inside the age-scaled gate grown
-  from the tighter _MN_SUPERSEDE_BASE_KM, or identical inputs close by, and
-  in both cases within _MN_SUPERSEDE_MAX_ALT_DIFF_M vertically.  Refusals
+  multinode_identity.py's _supersession_match has to agree the two are the same
+  target before anything is popped: dead-reckoned inside the age-scaled gate
+  grown from the tighter _MN_SUPERSEDE_BASE_KM, or identical inputs close by,
+  and in both cases within _MN_SUPERSEDE_MAX_ALT_DIFF_M vertically.  Refusals
   land on state.mn_superseded_blocked, and the altitude-only ones also on
   state.mn_superseded_blocked_alt.
 """
@@ -32,6 +32,7 @@ from core import state
 from services import aircraft_feed as aircraft_feed_mod
 from services.geo import offset_latlon_m
 from services.id_utils import multinode_hex_from_key
+from services.tasks import multinode_identity as identity_mod
 from services.tasks import solver as solver_mod
 
 LAT, LON = 35.0, -82.0
@@ -294,7 +295,7 @@ class TestSupersessionMatch:
         along its own velocity to where the aircraft was at this solve's
         epoch, and judged there."""
         entry = self._entry(12_000, *offset_latlon_m(LAT, LON, east_m=0.0, north_m=3000.0), ids=("t1", "t9"))
-        matched, dist = solver_mod._supersession_match(
+        matched, dist = identity_mod._supersession_match(
             "mn-dark-future", entry, {"t1", "t2"}, LAT, LON, 10_000, learned_vel_fn=self.NO_VEL
         )
         assert matched is True
@@ -306,7 +307,7 @@ class TestSupersessionMatch:
         backwards to manufacture a match is exactly what the window refuses.
         With only a partial id overlap there is nothing else to match on."""
         entry = self._entry(25_000, *offset_latlon_m(LAT, LON, east_m=0.0, north_m=3000.0), ids=("t1", "t9"))
-        matched, dist = solver_mod._supersession_match(
+        matched, dist = identity_mod._supersession_match(
             "mn-dark-future", entry, {"t1", "t2"}, LAT, LON, 10_000, learned_vel_fn=self.NO_VEL
         )
         assert matched is False
@@ -316,15 +317,15 @@ class TestSupersessionMatch:
         """Past _MN_ASSOC_MAX_AGE_S the map has already dropped it — the same
         window multinode_key_decision's scan uses."""
         entry = self._entry(0, ids=("t1", "t9"))
-        ts_ms = int((solver_mod._MN_ASSOC_MAX_AGE_S + 1.0) * 1000)
-        matched, dist = solver_mod._supersession_match(
+        ts_ms = int((identity_mod._MN_ASSOC_MAX_AGE_S + 1.0) * 1000)
+        matched, dist = identity_mod._supersession_match(
             "mn-dark-stale", entry, {"t1", "t2"}, LAT, LON, ts_ms, learned_vel_fn=self.NO_VEL
         )
         assert matched is False
         assert dist is None
         # One second younger, same position: the window is what refused it.
         entry_fresh = self._entry(1000, ids=("t1", "t9"))
-        matched_fresh, dist_fresh = solver_mod._supersession_match(
+        matched_fresh, dist_fresh = identity_mod._supersession_match(
             "mn-dark-fresh", entry_fresh, {"t1", "t2"}, LAT, LON, ts_ms, learned_vel_fn=self.NO_VEL
         )
         assert matched_fresh is True
@@ -333,7 +334,7 @@ class TestSupersessionMatch:
     def test_inside_the_age_scaled_gate_matches_and_reports_the_distance(self):
         e_lat, e_lon = offset_latlon_m(LAT, LON, east_m=0.0, north_m=4000.0)
         entry = self._entry(0, lat=e_lat, lon=e_lon, ids=("t1", "t9"))
-        matched, dist = solver_mod._supersession_match(
+        matched, dist = identity_mod._supersession_match(
             "mn-dark-near", entry, {"t1", "t2"}, LAT, LON, 10_000, learned_vel_fn=self.NO_VEL
         )
         assert matched is True
@@ -343,7 +344,7 @@ class TestSupersessionMatch:
         # dt = 10 s -> gate 4.0 + 1.3 = 5.3 km; sit at 8 km.
         e_lat, e_lon = offset_latlon_m(LAT, LON, east_m=0.0, north_m=8000.0)
         entry = self._entry(0, lat=e_lat, lon=e_lon, ids=("t1", "t9"))
-        matched, dist = solver_mod._supersession_match(
+        matched, dist = identity_mod._supersession_match(
             "mn-dark-far", entry, {"t1", "t2"}, LAT, LON, 10_000, learned_vel_fn=self.NO_VEL
         )
         assert matched is False
@@ -357,13 +358,13 @@ class TestSupersessionMatch:
         s_lat, s_lon = offset_latlon_m(LAT, LON, east_m=14_000.0, north_m=0.0)
         entry = self._entry(0, ids=("t1", "t9"))
 
-        still, still_dist = solver_mod._supersession_match(
+        still, still_dist = identity_mod._supersession_match(
             "mn-dark-fast", entry, {"t1", "t2"}, s_lat, s_lon, 30_000, learned_vel_fn=self.NO_VEL
         )
         assert still is False
         assert still_dist == pytest.approx(14.0, abs=0.2)
 
-        moving, moving_dist = solver_mod._supersession_match(
+        moving, moving_dist = identity_mod._supersession_match(
             "mn-dark-fast", entry, {"t1", "t2"}, s_lat, s_lon, 30_000, learned_vel_fn=lambda key: (250.0, 0.0)
         )
         assert moving is True
@@ -383,7 +384,7 @@ class TestSupersessionMatch:
         # dt = 10 s -> branch (a) gate 5.3 km, branch (b) bound 10.6 km.
         e_lat, e_lon = offset_latlon_m(LAT, LON, east_m=0.0, north_m=8000.0)
         entry = self._entry(0, lat=e_lat, lon=e_lon, ids=("t1", "t2"))
-        matched, dist = solver_mod._supersession_match(
+        matched, dist = identity_mod._supersession_match(
             "mn-dark-fragment", entry, {"t1", "t2", "t3"}, LAT, LON, 10_000, learned_vel_fn=self.NO_VEL
         )
         assert matched is True
@@ -391,7 +392,7 @@ class TestSupersessionMatch:
         assert dist == pytest.approx(8.0, abs=0.2)
 
         far = self._entry(0, *offset_latlon_m(LAT, LON, east_m=0.0, north_m=16_000.0), ids=("t1", "t2"))
-        matched_far, dist_far = solver_mod._supersession_match(
+        matched_far, dist_far = identity_mod._supersession_match(
             "mn-dark-multimodal", far, {"t1", "t2", "t3"}, LAT, LON, 10_000, learned_vel_fn=self.NO_VEL
         )
         assert matched_far is False
@@ -405,7 +406,7 @@ class TestSupersessionMatch:
         this."""
         e_lat, e_lon = offset_latlon_m(LAT, LON, east_m=0.0, north_m=1000.0)
         entry = self._entry(0, lat=e_lat, lon=e_lon, ids=("t1", "t2"), alt_m=2000.0)
-        matched, dist = solver_mod._supersession_match(
+        matched, dist = identity_mod._supersession_match(
             "mn-dark-lowmode",
             entry,
             {"t1", "t2", "t3"},
@@ -421,7 +422,7 @@ class TestSupersessionMatch:
         # 31 m apart in altitude at 1.8 km: the legitimate merge, and it still
         # goes through — via (a) here, since the spatial gate covers 1.8 km.
         near = self._entry(0, *offset_latlon_m(LAT, LON, east_m=0.0, north_m=1800.0), ids=("t1", "t2"), alt_m=9369.0)
-        merged, _dist = solver_mod._supersession_match(
+        merged, _dist = identity_mod._supersession_match(
             "mn-dark-merge", near, {"t1", "t2", "t3"}, LAT, LON, 10_000, learned_vel_fn=self.NO_VEL, alt_m=9400.0
         )
         assert merged is True
@@ -437,13 +438,13 @@ class TestSupersessionMatch:
         e_lat, e_lon = offset_latlon_m(LAT, LON, east_m=0.0, north_m=5000.0)
         entry = self._entry(0, lat=e_lat, lon=e_lon, ids=("t1", "t9"), alt_m=9000.0)
 
-        fresh, fresh_dist = solver_mod._supersession_match(
+        fresh, fresh_dist = identity_mod._supersession_match(
             "mn-dark-neighbour", entry, {"t1", "t2"}, LAT, LON, 0, learned_vel_fn=self.NO_VEL, alt_m=9000.0
         )
         assert fresh is False
         assert fresh_dist == pytest.approx(5.0, abs=0.1)
 
-        aged, _dist = solver_mod._supersession_match(
+        aged, _dist = identity_mod._supersession_match(
             "mn-dark-neighbour", entry, {"t1", "t2"}, LAT, LON, 20_000, learned_vel_fn=self.NO_VEL, alt_m=9000.0
         )
         assert aged is True
@@ -456,14 +457,14 @@ class TestSupersessionMatch:
         same-aircraft pops)."""
         e_lat, e_lon = offset_latlon_m(LAT, LON, east_m=0.0, north_m=2000.0)
         entry = self._entry(0, lat=e_lat, lon=e_lon, ids=("t1", "t9"), alt_m=6000.0)
-        matched, dist = solver_mod._supersession_match(
+        matched, dist = identity_mod._supersession_match(
             "mn-dark-below", entry, {"t1", "t2"}, LAT, LON, 10_000, learned_vel_fn=self.NO_VEL, alt_m=8500.0
         )
         assert matched is False
         assert dist == pytest.approx(2.0, abs=0.1)
 
         # Within 1000 m of each other, same geometry: matched.
-        same_alt, _dist = solver_mod._supersession_match(
+        same_alt, _dist = identity_mod._supersession_match(
             "mn-dark-below", entry, {"t1", "t2"}, LAT, LON, 10_000, learned_vel_fn=self.NO_VEL, alt_m=6900.0
         )
         assert same_alt is True
@@ -474,13 +475,13 @@ class TestSupersessionMatch:
         alone rather than becoming immortal."""
         e_lat, e_lon = offset_latlon_m(LAT, LON, east_m=0.0, north_m=2000.0)
         no_entry_alt = self._entry(0, lat=e_lat, lon=e_lon, ids=("t1", "t9"))
-        matched, _dist = solver_mod._supersession_match(
+        matched, _dist = identity_mod._supersession_match(
             "mn-dark-altless", no_entry_alt, {"t1", "t2"}, LAT, LON, 10_000, learned_vel_fn=self.NO_VEL, alt_m=8500.0
         )
         assert matched is True
 
         with_entry_alt = self._entry(0, lat=e_lat, lon=e_lon, ids=("t1", "t9"), alt_m=6000.0)
-        no_solve_alt, _dist = solver_mod._supersession_match(
+        no_solve_alt, _dist = identity_mod._supersession_match(
             "mn-dark-altless", with_entry_alt, {"t1", "t2"}, LAT, LON, 10_000, learned_vel_fn=self.NO_VEL
         )
         assert no_solve_alt is True
@@ -490,7 +491,7 @@ class TestSupersessionMatch:
         the guard exists for."""
         e_lat, e_lon = offset_latlon_m(LAT, LON, east_m=0.0, north_m=111_000.0)
         entry = self._entry(0, lat=e_lat, lon=e_lon, ids=("t1", "t9"))
-        matched, _dist = solver_mod._supersession_match(
+        matched, _dist = identity_mod._supersession_match(
             "mn-dark-other", entry, {"t1", "t2", "t3"}, LAT, LON, 10_000, learned_vel_fn=self.NO_VEL
         )
         assert matched is False
@@ -500,14 +501,14 @@ class TestSupersessionMatch:
         recorded its inputs must not be swept up by that."""
         e_lat, e_lon = offset_latlon_m(LAT, LON, east_m=0.0, north_m=111_000.0)
         entry = self._entry(0, lat=e_lat, lon=e_lon, ids=())
-        matched, _dist = solver_mod._supersession_match(
+        matched, _dist = identity_mod._supersession_match(
             "mn-dark-idless", entry, {"t1", "t2"}, LAT, LON, 10_000, learned_vel_fn=self.NO_VEL
         )
         assert matched is False
 
     def test_an_entry_with_no_position_cannot_match_spatially(self):
         entry = self._entry(0, lat=None, lon=None, ids=("t1", "t9"))
-        matched, dist = solver_mod._supersession_match(
+        matched, dist = identity_mod._supersession_match(
             "mn-dark-posless", entry, {"t1", "t2"}, LAT, LON, 10_000, learned_vel_fn=self.NO_VEL
         )
         assert matched is False
@@ -644,22 +645,22 @@ class TestForgetMnKey:
         state.multinode_tracks[key] = _mn_entry(3, age_s=1.0, solve_count=2)
         with state.anomaly_lock:
             state.anomaly_hexes.add(multinode_hex_from_key(key))
-        with solver_mod._MN_POS_HISTORY_LOCK:
-            solver_mod._MN_POS_HISTORY[key] = [(LAT, LON, 1_000)]
+        with identity_mod._MN_POS_HISTORY_LOCK:
+            identity_mod._MN_POS_HISTORY[key] = [(LAT, LON, 1_000)]
         track_filter.smooth_solve({"success": True, "lat": LAT, "lon": LON, "timestamp_ms": 1_000_000}, key, None)
         assert key in track_filter._KF_TRACKS
 
         with state.multinode_tracks_lock:
-            solver_mod._forget_mn_key(key)
+            identity_mod._forget_mn_key(key)
 
         assert key not in state.multinode_tracks
         assert multinode_hex_from_key(key) not in state.anomaly_hexes
-        assert key not in solver_mod._MN_POS_HISTORY
+        assert key not in identity_mod._MN_POS_HISTORY
         assert key not in track_filter._KF_TRACKS
 
     def test_forgetting_an_unknown_key_is_a_no_op(self):
         with state.multinode_tracks_lock:
-            solver_mod._forget_mn_key("mn-dark-never-existed")
+            identity_mod._forget_mn_key("mn-dark-never-existed")
 
 
 class TestHistoryRecordKfAction:

@@ -3,9 +3,9 @@
 is_transponder_hex is the single gate that keeps non-transponder ids (above
 all the simulator's ``obj-NNNNN`` object ids) out of the ADS-B world: it
 guards the sim adsb push (routes/sim_ingest.py) and the mn-adsb-* keying rule
-(services/tasks/solver.py:multinode_key_decision).  Callers pass values that
-already went through normalize_hex_key, so the rule is defined over stripped
-lowercase input.
+(services/tasks/multinode_identity.py:multinode_key_decision).  Callers pass
+values that already went through normalize_hex_key, so the rule is defined over
+stripped lowercase input.
 """
 
 import pytest

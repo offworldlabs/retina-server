@@ -924,10 +924,10 @@ not reach the Parquet archive, which writes a fixed schema.
 
 | Constant | Value | Defined in |
 |---|---|---|
-| `_MN_ASSOC_MAX_DIST_KM` / `_MN_ASSOC_MAX_AGE_S` (identity step 2/3) | 6.0 km / 60.0 s | `services/tasks/solver.py` |
-| `_MN_ASSOC_MAX_NEG_DT_S` (step 3 and supersession — how far the matched entry's measurement epoch may be AFTER the solve's own; the entry is then dead-reckoned BACKWARDS over the signed dt, with no drift allowance because `_mn_assoc_gate_km` clamps dt at 0) | 10.0 s | `services/tasks/solver.py` |
-| `_MN_ASSOC_DRIFT_KM_PER_S` / `_MN_ASSOC_MAX_DIST_CAP_KM` (step 3 only — the gate grows with the matched entry's age) | 0.13 km/s / 12.0 km | `services/tasks/solver.py` |
-| Supersession gate (`_supersession_match`) — the same age-scaled `_mn_assoc_gate_km` and the same signed dt window (`_MN_ASSOC_MAX_NEG_DT_S`..`_MN_ASSOC_MAX_AGE_S`) as step 3, applied to the solve's RAW position | 6.0 + 0.13·dt km, cap 12.0 / −10.0..60.0 s | `services/tasks/solver.py` |
+| `_MN_ASSOC_MAX_DIST_KM` / `_MN_ASSOC_MAX_AGE_S` (identity step 2/3) | 6.0 km / 60.0 s | `services/tasks/multinode_identity.py` |
+| `_MN_ASSOC_MAX_NEG_DT_S` (step 3 and supersession — how far the matched entry's measurement epoch may be AFTER the solve's own; the entry is then dead-reckoned BACKWARDS over the signed dt, with no drift allowance because `_mn_assoc_gate_km` clamps dt at 0) | 10.0 s | `services/tasks/multinode_identity.py` |
+| `_MN_ASSOC_DRIFT_KM_PER_S` / `_MN_ASSOC_MAX_DIST_CAP_KM` (step 3 only — the gate grows with the matched entry's age) | 0.13 km/s / 12.0 km | `services/tasks/multinode_identity.py` |
+| Supersession gate (`_supersession_match`) — the same age-scaled `_mn_assoc_gate_km` and the same signed dt window (`_MN_ASSOC_MAX_NEG_DT_S`..`_MN_ASSOC_MAX_AGE_S`) as step 3, applied to the solve's RAW position | 6.0 + 0.13·dt km, cap 12.0 / −10.0..60.0 s | `services/tasks/multinode_identity.py` |
 | `CV_VEL_ADOPT_CHI2_MAX` | 5.0 | `config/constants.py` |
 | `MN_N2_MIN_SOLVES` | 2 | `config/constants.py` |
 | `MN_ONESHOT_TTL_S` | 15.0 s | `config/constants.py` |
@@ -935,7 +935,7 @@ not reach the Parquet archive, which writes a fixed schema.
 | `MN_DARK_EXPIRY_S` (entry expiry, `mn-dark-*` only — `mn-adsb-*` keeps 60 s) | 30.0 s | `config/constants.py` |
 | `MN_STALE_COAST_ENABLED` (mint-time retirement of a coasting key; `0` disables) | on | `config/constants.py` |
 | `MN_STALE_COAST_MIN_S` / `MN_STALE_COAST_MAX_S` (candidate solve-age band — below the floor the key is being tracked, not coasted) | 4.0 / 60.0 s | `config/constants.py` |
-| `MN_STALE_COAST_MAX_KM` / `MN_STALE_COAST_VMAX_MS` / `_MN_STALE_COAST_BASE_KM` (raw-to-raw gate, `min(max_km, vmax·dt + base)`) | 10.0 km / 350 m/s / 2.0 km | `config/constants.py`, `services/tasks/solver.py` |
+| `MN_STALE_COAST_MAX_KM` / `MN_STALE_COAST_VMAX_MS` / `_MN_STALE_COAST_BASE_KM` (raw-to-raw gate, `min(max_km, vmax·dt + base)`) | 10.0 km / 350 m/s / 2.0 km | `config/constants.py`, `services/tasks/multinode_identity.py` |
 | `MN_STALE_COAST_MANOEUVRE` (KF manoeuvre level above which the filter counts as turn evidence) | 0.3 | `config/constants.py` |
 | `_DEDUP_SOURCE_RANK` order | multinode_solve 0 < adsb_single_node 1 < solver_adsb_seed 2 < solver_single_node 3 < single_node_ellipse_arc 4 | `services/feed_helpers.py` |
 | `CLAIMED_DISPLAY_FRESH_S` | 5.0 s | `config/constants.py` |

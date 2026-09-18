@@ -76,7 +76,7 @@ from services.known_claiming import KNOWN_CLAIM_MAX_FIX_AGE_S
 # known-lane records are queryable exactly like regular ones.  solver.py only
 # ever imports this module lazily, inside _run_solver_worker (see the wiring
 # there), so the solver import below cannot form a cycle.
-from services.tasks import displacement_caps, solve_history
+from services.tasks import displacement_caps, multinode_identity, solve_history
 from services.tasks import solver as solver_mod
 
 # ── Claim selection windows ───────────────────────────────────────────────────
@@ -101,8 +101,8 @@ _CLAIM_SPREAD_S = 5.0
 _PASS_MIN_INTERVAL_S = 2.0
 
 # Dict-level TTL for the per-hex dedup map, same shape/justification as
-# solver.py's _MN_HISTORY_TTL_S: the map otherwise grows one entry per
-# distinct hex for the process lifetime.  Swept opportunistically per pass.
+# multinode_identity.py's _MN_HISTORY_TTL_S: the map otherwise grows one entry
+# per distinct hex for the process lifetime.  Swept opportunistically per pass.
 _ATTEMPT_TTL_S = 600.0
 
 # Minimum spacing between accuracy samples for one hex — see _record_accuracy
@@ -449,7 +449,7 @@ def _publish(hexn: str, s_in: dict, result: dict) -> str:
     # No source tracks: claims are detection-level, so the anomaly collector
     # finds nothing and stamps clean flags; the latch below still carries any
     # flag a regular-pipeline solve raised on this hex earlier.
-    solver_mod._collect_track_anomalies(s_in, result)
+    multinode_identity._collect_track_anomalies(s_in, result)
     result["source_track_ids"] = []
     result["solver_vel_east"] = result.get("vel_east")
     result["solver_vel_north"] = result.get("vel_north")
@@ -460,8 +460,10 @@ def _publish(hexn: str, s_in: dict, result: dict) -> str:
     result["vel_untrusted"] = bool(result.get("vz_saturated")) or int(result.get("n_nodes") or 0) <= 3
 
     with state.multinode_tracks_lock:
-        key, _how, _dist_km, _dt_s = solver_mod.multinode_key_decision(state.multinode_tracks, result, hexn, None)
-        smoothed = track_filter.smooth_solve(result, key, hexn, ewma_fn=solver_mod._ewma_smooth_track)
+        key, _how, _dist_km, _dt_s = multinode_identity.multinode_key_decision(
+            state.multinode_tracks, result, hexn, None
+        )
+        smoothed = track_filter.smooth_solve(result, key, hexn, ewma_fn=multinode_identity._ewma_smooth_track)
         prev = state.multinode_tracks.get(key)
         if prev:
             # Latch, exactly as the regular path does: a tracker flag raised

@@ -53,9 +53,10 @@ chi-squared gate after 108-110 degrees of turn at every solve cadence
 aircraft's own speed — and the gate then re-anchored the track, because the
 code read a breach as an identity break by definition.  Downstream that
 mints a second mn-dark-* key for one aircraft (learned_velocity is what
-solver.py's _entry_dr_velocity dead-reckons the key decision with) and drops
-the dark_follow target for its 30 s cooldown (the re-anchored velocity sigma
-of 150 m/s is above DARK_FOLLOW_MAX_VEL_SIGMA_MS, 115 since PR #324).
+multinode_identity.py's _entry_dr_velocity dead-reckons the key decision with)
+and drops the dark_follow target for its 30 s cooldown (the re-anchored
+velocity sigma of 150 m/s is above DARK_FOLLOW_MAX_VEL_SIGMA_MS, 115 since PR
+#324).
 
 So sigma_a is MANOEUVRE-ADAPTIVE rather than constant, in two coupled parts
 (see _entry_sigma_a, _update_manoeuvre and the gate block in _smooth_kf):
@@ -78,7 +79,7 @@ straight-flight RMSE gain against raw solves 37.4% -> 35.1%.
 The filter is EWMA-compatible where it needs to be: first solve for a key is
 raw passthrough (no prior to smooth against, exactly like _ewma_smooth_track
 returning raw below len(positions) < 2) and a gap past _KF_MAX_GAP_S
-re-anchors instead of bridging — the same threshold solver.py's
+re-anchors instead of bridging — the same threshold multinode_identity.py's
 _MN_DR_MAX_AGE_S uses for the same reason (a multi-minute gap is not the same
 aircraft's continuous track).
 
@@ -166,10 +167,11 @@ _KF_SIGMA_A_MS2 = float(os.getenv("TRACK_KF_SIGMA_A", "1.5"))
 # dark_follow's DARK_FOLLOW_MAX_VEL_SIGMA_MS (115 since PR #324, 60 when this
 # was written), so the follow lane drops the target for its 30 s cooldown —
 # unless the manoeuvre reprieve below covers it, which is exactly what
-# manoeuvre_level() is exposed for; and learned_velocity — what solver.py's
-# _entry_dr_velocity dead-reckons the key decision with, and what
-# aircraft_feed draws with — is wrong by up to the aircraft's own speed on the
-# way there, which is what mints a second mn-dark-* key for one aircraft.
+# manoeuvre_level() is exposed for; and learned_velocity — what
+# multinode_identity.py's _entry_dr_velocity dead-reckons the key decision
+# with, and what aircraft_feed draws with — is wrong by up to the aircraft's
+# own speed on the way there, which is what mints a second mn-dark-* key for
+# one aircraft.
 #
 # So sigma_a is now ADAPTIVE rather than constant: each entry carries an EWMA
 # of the normalised innovation d^2 (Mahalanobis, 2 dof, so a well-matched
@@ -317,8 +319,8 @@ _KF_VEL_SIGMA_ADSB_MS = 5.0
 # anchoring the filter to a biased velocity for its whole early life.
 _KF_VEL_SIGMA_SOLVE_MS = float(os.getenv("TRACK_KF_VEL_SIGMA_SOLVE", "150"))
 
-# Mirrors solver.py's _MN_DR_MAX_AGE_S: a gap this long is not a continuous
-# track to bridge, it is a new one to start.
+# Mirrors multinode_identity.py's _MN_DR_MAX_AGE_S: a gap this long is not a
+# continuous track to bridge, it is a new one to start.
 _KF_MAX_GAP_S = 160.0
 
 # 99.9th percentile of chi-squared, 2 degrees of freedom.  An innovation this
@@ -334,9 +336,9 @@ _KF_MAX_GAP_S = 160.0
 # for both attempts on purpose: a 10 km jump breaches either way.
 _KF_GATE_CHI2 = 13.8
 
-# Dict-level TTL, mirrors solver.py's _MN_HISTORY_TTL_S / _sweep_mn_history —
-# same shape of problem (one entry per distinct key for the process lifetime
-# unless swept), same fix.
+# Dict-level TTL, mirrors multinode_identity.py's _MN_HISTORY_TTL_S /
+# _sweep_mn_history — same shape of problem (one entry per distinct key for the
+# process lifetime unless swept), same fix.
 _KF_TTL_S = 600.0
 
 
@@ -371,8 +373,9 @@ class _TrackKF:
     manoeuvre: float = 0.0
 
 
-# key -> _TrackKF.  Same shape as solver.py's _MN_POS_HISTORY: one entry per
-# multinode track key, swept opportunistically rather than expired eagerly.
+# key -> _TrackKF.  Same shape as multinode_identity.py's _MN_POS_HISTORY: one
+# entry per multinode track key, swept opportunistically rather than expired
+# eagerly.
 _KF_TRACKS: dict[str, _TrackKF] = {}
 _KF_LOCK = threading.Lock()
 _kf_last_sweep = 0.0
@@ -481,7 +484,7 @@ def learned_velocity(track_key: str) -> tuple[float, float, float, float] | None
 
     The sqrt is clamped for the same reason _smooth_kf's kf_pos_sigma_m one
     is: this is a read-only accessor on a hot display path with two callers
-    that each lose real work when it throws — solver.py's
+    that each lose real work when it throws — multinode_identity.py's
     multinode_key_decision (drops that solve) and aircraft_feed's
     multinode_to_aircraft (drops the whole broadcast) — so a pathological
     filter state must degrade to "sigma 0", never to a ValueError.  An
@@ -594,8 +597,8 @@ def _stamp(result: dict, action: str, d2: float | None = None, innov_m: float | 
 def _sweep(now_s: float) -> None:
     """Drop keys whose last update is stale.  Caller holds _KF_LOCK.
 
-    Copies solver.py's _sweep_mn_history pattern: cheap early-out most calls,
-    real sweep at most once per _KF_TTL_S/10.
+    Copies multinode_identity.py's _sweep_mn_history pattern: cheap early-out
+    most calls, real sweep at most once per _KF_TTL_S/10.
     """
     global _kf_last_sweep
     if now_s - _kf_last_sweep < _KF_TTL_S / 10:
@@ -1031,7 +1034,8 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
 
         if dt > _KF_MAX_GAP_S:
             # Too long a gap to bridge with any confidence — start over here,
-            # same threshold and same rationale as solver.py's _MN_DR_MAX_AGE_S.
+            # same threshold and same rationale as multinode_identity.py's
+            # _MN_DR_MAX_AGE_S.
             _KF_TRACKS[track_key] = _init_entry(r_lat, r_lon, ts_s, result, has_adsb_vel, v0e, v0n, r_pos)
             _kf_outcomes["gap_reinit"] += 1
             return _stamp(result, "init")
@@ -1136,8 +1140,9 @@ def smooth_solve(result: dict, track_key: str, adsb_hex: str | None, *, ewma_fn=
     it with monkeypatch and expect the next call to see the change):
       "kf"   (default, and the fallback for any unrecognised value) — the
              Kalman filter in this module.
-      "ewma" — delegate to ewma_fn (solver.py's legacy _ewma_smooth_track),
-               the pre-KF behaviour kept as an escape hatch.
+      "ewma" — delegate to ewma_fn (multinode_identity.py's legacy
+               _ewma_smooth_track), the pre-KF behaviour kept as an escape
+               hatch.
       "off"  — return result unchanged.
     """
     mode = os.getenv("TRACK_SMOOTHER", "kf")

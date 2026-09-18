@@ -40,6 +40,7 @@ from services import known_claiming as kc
 from services.frame_processor import get_or_create_node_pipeline, process_one_frame
 from services.geo import offset_latlon_m
 from services.tasks import known_lane
+from services.tasks import multinode_identity as identity_mod
 from services.tasks import solve_history as history_mod
 from services.tasks import solver as solver_mod
 from tests.node_helpers import register_test_node
@@ -1011,7 +1012,7 @@ class TestAnchorDeadReckoning:
         """15 s of coasting at 270 m/s is 4.05 km of travel; a solve 2 km past
         that is 6.05 km from where the entry was last STORED — outside the flat
         6 km gate, purely because the aircraft moved."""
-        key, how, _d, _dt = solver_mod.multinode_key_decision(
+        key, how, _d, _dt = identity_mod.multinode_key_decision(
             self._tracks(15.0, 270.0),
             self._result(6.05),
             None,
@@ -1021,7 +1022,7 @@ class TestAnchorDeadReckoning:
         assert how != "anchor"
 
     def test_dead_reckoning_honours_it(self):
-        key, how, dist, _dt = solver_mod.multinode_key_decision(
+        key, how, dist, _dt = identity_mod.multinode_key_decision(
             self._tracks(15.0, 270.0),
             self._result(6.05),
             None,
@@ -1035,7 +1036,7 @@ class TestAnchorDeadReckoning:
     def test_dead_reckoning_still_refuses_a_far_solve(self):
         """The check's job is unchanged: an anchor whose solve converged
         somewhere else entirely is not honoured just because it was named."""
-        key, how, _d, _dt = solver_mod.multinode_key_decision(
+        key, how, _d, _dt = identity_mod.multinode_key_decision(
             self._tracks(15.0, 270.0),
             self._result(30.0),
             None,
@@ -1086,7 +1087,7 @@ class TestKeyOwnership:
         return {"lat": lat, "lon": lon, "timestamp_ms": self._TS_MS}
 
     def _decide(self, north_km, anchor_key=None, dt_s=1.0):
-        return solver_mod.multinode_key_decision(
+        return identity_mod.multinode_key_decision(
             self._tracks(dt_s),
             self._result(north_km),
             None,
@@ -1147,7 +1148,7 @@ class TestKeyOwnership:
         dark_follow.note_follow_publish(_KEY, self._TS_S - 2.0)
         result = self._result(1.5)
         result["n_nodes"] = 2
-        key, how, _dist, _dt = solver_mod.multinode_key_decision(
+        key, how, _dist, _dt = identity_mod.multinode_key_decision(
             self._tracks(),
             result,
             None,

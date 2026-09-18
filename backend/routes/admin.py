@@ -50,16 +50,9 @@ from core.users import (
 from services import publication
 from services.node_claim_store import clear_claim
 from services.node_refs import id_for_ref, public_identity, public_name, ref_to_id_map
+from services.tasks import multinode_identity
 
 logger = logging.getLogger(__name__)
-
-
-def _mn_pos_history_size() -> int:
-    """Size of the solver's per-hex smoothing buffer (soak observability)."""
-    from services.tasks import solver as _solver
-
-    with _solver._MN_POS_HISTORY_LOCK:
-        return len(_solver._MN_POS_HISTORY)
 
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -914,7 +907,7 @@ async def system_metrics(_user=Depends(require_admin)):
         "track_arc_motion": len(state.track_arc_motion),
         "track_last_emit": len(state.track_last_emit),
         "track_gate_hold": len(state.track_gate_hold),
-        "mn_pos_history": _mn_pos_history_size(),
+        "mn_pos_history": multinode_identity.mn_pos_history_size(),
         "track_histories": len(state.track_histories),
         "ground_truth_trails": len(state.ground_truth_trails),
         "ws_clients": len(state.ws_clients),
