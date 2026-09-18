@@ -103,8 +103,6 @@ class TestArchiveBufferReclamation:
 
     def setup_method(self):
         fp._reset_for_tests()
-        state.connected_nodes.pop("gone", None)
-        state.connected_nodes.pop("live", None)
 
     def teardown_method(self):
         self.setup_method()

@@ -62,13 +62,12 @@ def _clean_nodes():
     from core import state
 
     yield
+    # The associator and analytics keep their own stores, outside the
+    # autouse reset of connected_nodes, so each test node still has to be
+    # retired from them by hand or it leaks into the rest of the session —
+    # one more pair the next registration has to grid.
     for node_id in list(state.connected_nodes):
         if node_id.startswith("test-"):
-            state.connected_nodes.pop(node_id, None)
-            # The associator and analytics keep their own stores, so dropping
-            # only connected_nodes leaks every test node into the rest of the
-            # session — and each leaked node is one more pair the next
-            # registration has to grid.
             state.node_associator.unregister_node(node_id)
             state.node_analytics.retire_node(node_id)
 

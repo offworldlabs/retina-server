@@ -137,13 +137,6 @@ class TestIsSyntheticNode:
 
 
 class TestHandshake:
-    @pytest.fixture(autouse=True)
-    def _cleanup_state(self):
-        """Ensure test node is removed from state after each test."""
-        yield
-        state.connected_nodes.pop("test-node-1", None)
-        state.connected_nodes.pop("test-node-2", None)
-
     def test_hello_config_registers_node(self):
         """HELLO + CONFIG → node appears in state.connected_nodes."""
         reader = MockStreamReader(
@@ -252,8 +245,6 @@ class TestHandshake:
 
         asyncio.run(handle_tcp_client(reader, writer))
 
-        state.connected_nodes.pop("synth-test-1", None)
-
 
 class TestConfigReplacementEvictsCachedPipeline:
     """86cb7jd84: the CONFIG handshake also fires on every reconnect, so a node
@@ -265,7 +256,6 @@ class TestConfigReplacementEvictsCachedPipeline:
     @pytest.fixture(autouse=True)
     def _cleanup_state(self):
         yield
-        state.connected_nodes.pop("test-geom-tcp", None)
         state.node_pipelines.pop("test-geom-tcp", None)
 
     def _make_config_with_geometry(

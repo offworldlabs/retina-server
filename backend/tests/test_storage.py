@@ -47,15 +47,12 @@ class TestArchiveStorage:
             "config": canonical_config({"lat": 51.5, "lon": -0.12, "tx_lat": 51.6, "tx_lon": -0.2}),
             "status": "active",
         }
-        try:
-            archive_detections(
-                "test-legacy-node",
-                [{"delay": [10.0], "doppler": [50.0], "snr": [12.0], "timestamp": 1000}],
-            )
-            result = list_archived_files(node_id="test-legacy-node")
-            data = read_archived_file(result["files"][0]["key"])
-        finally:
-            state.connected_nodes.pop("test-legacy-node", None)
+        archive_detections(
+            "test-legacy-node",
+            [{"delay": [10.0], "doppler": [50.0], "snr": [12.0], "timestamp": 1000}],
+        )
+        result = list_archived_files(node_id="test-legacy-node")
+        data = read_archived_file(result["files"][0]["key"])
 
         row = data["detections"][0]
         assert row["rx_lat"] is not None and row["rx_lon"] is not None

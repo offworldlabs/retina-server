@@ -117,18 +117,14 @@ async def _resolves(session, token: str) -> bool:
 
 @pytest.fixture(autouse=True)
 def _isolate_process_state():
-    """The limiter counters and the pipeline registry both outlive a test.
+    """The registration limiter's counters outlive a test.
 
-    Both are module-level singletons rather than per-request state, so a
-    registration in one test would otherwise spend another's allowance and leave
-    a node in `state.connected_nodes` for a suite that never registered one.
+    It is a module-level singleton rather than per-request state, so a
+    registration in one test would otherwise spend another's allowance.
     """
     registration_limiter.reset()
     yield
     registration_limiter.reset()
-    with state.connected_nodes_lock:
-        for node_id in (NODE_ID, UNKNOWN_ID, PENDING_ID, UNREACHABLE_ID, OTHER_ID):
-            state.connected_nodes.pop(node_id, None)
 
 
 # ── The happy path ───────────────────────────────────────────────────────────

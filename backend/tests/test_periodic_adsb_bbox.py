@@ -48,14 +48,6 @@ _ONE_STATE = [["abc123", "TST1", None, None, None, -84.5, 33.85, 1000.0, False, 
 _POSITIONED = (33.9, -84.6)
 
 
-@pytest.fixture(autouse=True)
-def _clean_nodes():
-    yield
-    with state.connected_nodes_lock:
-        for node_id in ("test-bbox-positionless", "test-bbox-positioned"):
-            state.connected_nodes.pop(node_id, None)
-
-
 @pytest.fixture
 def _no_fallback(monkeypatch):
     """Keep the adsb.lol fallback off the network for a partially covered region."""

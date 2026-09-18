@@ -18,9 +18,6 @@ def _clean_radar_state():
 
     yield
 
-    for node_id in list(state.connected_nodes.keys()):
-        if node_id.startswith("test-") or node_id.startswith("http-") or node_id.startswith("bulk-"):
-            state.connected_nodes.pop(node_id, None)
     for node_id in list(state.node_pipelines.keys()):
         if node_id.startswith("bulk-"):
             state.node_pipelines.pop(node_id, None)
@@ -368,12 +365,6 @@ class TestBulkRecordsTheMirroredRef:
 
         with state.connected_nodes_lock:
             return dict(state.connected_nodes.get(self.NODE) or {})
-
-    def teardown_method(self):
-        from core import state
-
-        with state.connected_nodes_lock:
-            state.connected_nodes.pop(self.NODE, None)
 
     def _post(self, client, **extra):
         body = {"nodes": [{"node_id": self.NODE, "frames": [], **extra}]}

@@ -588,13 +588,9 @@ class TestWorldStamp:
 
         with state.connected_nodes_lock:
             state.connected_nodes["oddname"] = {"is_synthetic": True}
-        try:
-            entry = {"hex": "wrld03", "lat": 33.9, "lon": -84.6}
-            _apply_synthetic_adsb({"data": {"timestamp": 1000, "adsb": [entry]}}, "oddname")
-            assert state.adsb_aircraft["wrld03"]["world"] == "sim"
-        finally:
-            with state.connected_nodes_lock:
-                state.connected_nodes.pop("oddname", None)
+        entry = {"hex": "wrld03", "lat": 33.9, "lon": -84.6}
+        _apply_synthetic_adsb({"data": {"timestamp": 1000, "adsb": [entry]}}, "oddname")
+        assert state.adsb_aircraft["wrld03"]["world"] == "sim"
 
     def test_frame_processor_writer_stamps_by_node_class(self):
         entry = {"hex": "wrld04", "lat": 33.9, "lon": -84.6}

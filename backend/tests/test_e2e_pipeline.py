@@ -153,7 +153,6 @@ def _clean_state():
     import services.tcp_handler as _th
 
     def _purge():
-        state.connected_nodes.pop(_NODE_ID, None)
         state.node_pipelines.pop(_NODE_ID, None)
         _th._per_node_last_enqueue.pop(_NODE_ID, None)
         with state.geo_aircraft_lock:
@@ -634,7 +633,6 @@ class TestRegressions:
         assert len(pipe_b.tracker.tracks) == 0, "node_b pipeline should have zero tracks — frames only went to node_a"
 
         # Cleanup node_b
-        state.connected_nodes.pop(node_b, None)
         state.node_pipelines.pop(node_b, None)
 
 

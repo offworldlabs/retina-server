@@ -330,12 +330,6 @@ class TestMirroredRef:
         with state.connected_nodes_lock:
             state.connected_nodes[_MIRRORED] = {"is_synthetic": False, "status": "active", **entry}
 
-    def teardown_method(self):
-        from core import state
-
-        with state.connected_nodes_lock:
-            state.connected_nodes.pop(_MIRRORED, None)
-
     def test_a_mirrored_ref_is_published_when_the_registry_has_none(self, seed):
         seed(ret1a2b3c4d="nde1a2b3c4d00")
         self._connected(node_ref="ndemirrored001")

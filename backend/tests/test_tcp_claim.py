@@ -11,8 +11,6 @@ import asyncio
 import json
 import time
 
-import pytest
-
 from services.tcp_handler import handle_tcp_client
 from tests.tcp_helpers import FakeReader, FakeWriter
 
@@ -28,15 +26,6 @@ def _hello(node_id: str = _NODE_ID, claim_code: str | None = None) -> bytes:
     if claim_code is not None:
         m["claim_code"] = claim_code
     return _msg(m)
-
-
-@pytest.fixture(autouse=True)
-def _clean_state():
-    from core import state
-
-    state.connected_nodes.pop(_NODE_ID, None)
-    yield
-    state.connected_nodes.pop(_NODE_ID, None)
 
 
 class TestTCPClaimACK:

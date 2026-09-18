@@ -208,14 +208,9 @@ class TestBuildStorageResult:
         per_node_data = {"node-X": {"bytes": node_bytes, "files": 10}}
         state.connected_nodes["node-X"] = {"first_seen_ts": first_seen}
 
-        try:
-            with patch(
-                "services.tasks.storage_refresh._scan_archive_dir", return_value=(10, node_bytes, per_node_data)
-            ):
-                with patch("services.tasks.storage_refresh.shutil.disk_usage", return_value=_make_disk_usage()):
-                    result = _build_storage_result(archive_dir)
-        finally:
-            state.connected_nodes.pop("node-X", None)
+        with patch("services.tasks.storage_refresh._scan_archive_dir", return_value=(10, node_bytes, per_node_data)):
+            with patch("services.tasks.storage_refresh.shutil.disk_usage", return_value=_make_disk_usage()):
+                result = _build_storage_result(archive_dir)
 
         parsed = orjson.loads(result)
         rate = parsed["write_rate"]["per_node_bytes_per_day"].get("node-X")

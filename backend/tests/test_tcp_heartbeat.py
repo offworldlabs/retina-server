@@ -84,12 +84,14 @@ def _heartbeat(
 class TestTCPHeartbeat:
     @pytest.fixture(autouse=True)
     def _cleanup(self):
-        """Remove test node from shared state before and after each test."""
-        state.connected_nodes.pop(NODE_ID, None)
+        """Remove the test node's analytics metrics before and after each test.
+
+        connected_nodes itself is handled by the autouse module reset;
+        node_analytics keeps its own store, outside that reset.
+        """
         if hasattr(state.node_analytics, "metrics"):
             state.node_analytics.metrics.pop(NODE_ID, None)
         yield
-        state.connected_nodes.pop(NODE_ID, None)
         if hasattr(state.node_analytics, "metrics"):
             state.node_analytics.metrics.pop(NODE_ID, None)
 
@@ -181,7 +183,6 @@ class TestTCPHeartbeat:
     def test_heartbeat_for_unknown_node_is_silently_ignored(self):
         """A HEARTBEAT for a node that was never CONFIGed is silently ignored — no crash, no CONFIG_REQUEST."""
         unknown_id = "never-registered-node"
-        state.connected_nodes.pop(unknown_id, None)
 
         reader = FakeReader(
             [

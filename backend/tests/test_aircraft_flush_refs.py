@@ -38,7 +38,6 @@ def seeded():
 def connected():
     state.connected_nodes[_ID] = {"status": "active", "is_synthetic": False, "config": {"node_id": _ID}}
     yield
-    state.connected_nodes.pop(_ID, None)
 
 
 def _frame() -> dict:

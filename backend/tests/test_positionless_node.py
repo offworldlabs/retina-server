@@ -45,7 +45,6 @@ _OVERLAP_IDS = [f"test-null-overlap-{i}" for i in range(10)]
 def _clean():
     yield
     for node_id in (*_NODE_IDS, *_OVERLAP_IDS):
-        state.connected_nodes.pop(node_id, None)
         state.node_pipelines.pop(node_id, None)
         state.node_associator.unregister_node(node_id)
         state.node_analytics.retire_node(node_id)

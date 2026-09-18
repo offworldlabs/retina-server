@@ -15,8 +15,6 @@ from services import node_refs
 def _clean_state():
     """Clean up injected state after each test."""
     yield
-    state.connected_nodes.pop("test-real-1", None)
-    state.connected_nodes.pop("synth-node-1", None)
     state.ground_truth_trails.clear()
     state.ground_truth_meta.clear()
     state.external_adsb_cache.clear()
@@ -134,7 +132,6 @@ class TestSolverAircraft:
             assert "node_id" not in body["aircraft"][0]
         finally:
             state.latest_aircraft_json_public = {}
-            state.connected_nodes.pop("ret1a2b3c4d", None)
 
 
 # ── Format aircraft ─────────────────────────────────────────────────────────
@@ -195,13 +192,9 @@ class TestRealNodeIds:
 
         state.connected_nodes["test-real-1"] = {"is_synthetic": False}
         state.connected_nodes["synth-node-1"] = {"is_synthetic": True}
-        try:
-            ids = _real_node_ids()
-            assert "test-real-1" in ids
-            assert "synth-node-1" not in ids
-        finally:
-            state.connected_nodes.pop("test-real-1", None)
-            state.connected_nodes.pop("synth-node-1", None)
+        ids = _real_node_ids()
+        assert "test-real-1" in ids
+        assert "synth-node-1" not in ids
 
 
 # ── Ground truth ─────────────────────────────────────────────────────────────

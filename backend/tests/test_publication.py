@@ -613,11 +613,7 @@ class TestRadarNodesPayload:
         cfg = {"rx_lat": 34.0, "rx_lon": -82.0, "rx_alt_ft": 100.0}
         state.connected_nodes[_PRIV] = {"status": "active", "config": {**cfg, "node_id": _PRIV}}
         state.connected_nodes[_PUB] = {"status": "active", "config": {**cfg, "node_id": _PUB}}
-        try:
-            _refresh_analytics_and_nodes()
-        finally:
-            state.connected_nodes.pop(_PRIV, None)
-            state.connected_nodes.pop(_PUB, None)
+        _refresh_analytics_and_nodes()
 
         body = orjson.loads(state.latest_nodes_bytes)
         assert _seed_ref(_PRIV) not in body["nodes"]
@@ -634,10 +630,7 @@ class TestRadarNodesPayload:
             "is_synthetic": False,
             "config": {**cfg, "node_id": "ret1a2b3c4d"},
         }
-        try:
-            _refresh_analytics_and_nodes()
-        finally:
-            state.connected_nodes.pop("ret1a2b3c4d", None)
+        _refresh_analytics_and_nodes()
 
         body = orjson.loads(state.latest_nodes_bytes)
         assert "ret1a2b3c4d" not in body["nodes"]
@@ -668,11 +661,7 @@ class TestRadarNodesPayload:
                 "is_synthetic": False,
                 "config": {**cfg, "node_id": nid, "name": name},
             }
-        try:
-            _refresh_analytics_and_nodes()
-        finally:
-            for nid in names:
-                state.connected_nodes.pop(nid, None)
+        _refresh_analytics_and_nodes()
 
         raw = state.latest_nodes_bytes
         for nid in names:
@@ -691,10 +680,7 @@ class TestRadarNodesPayload:
             "is_synthetic": False,
             "config": {"rx_lat": 34.0, "rx_lon": -82.0, "node_id": "ret1a2b3c4d", "name": "Example Site 3"},
         }
-        try:
-            _refresh_analytics_and_nodes()
-        finally:
-            state.connected_nodes.pop("ret1a2b3c4d", None)
+        _refresh_analytics_and_nodes()
 
         nodes = orjson.loads(state.latest_nodes_bytes)["nodes"]
         assert nodes[_seed_ref("ret1a2b3c4d")]["name"] == "Example Site 3"
@@ -712,10 +698,7 @@ class TestRadarNodesPayload:
             "is_synthetic": False,
             "config": {**cfg, "node_id": "ret1a2b3c4d"},
         }
-        try:
-            _refresh_analytics_and_nodes()
-        finally:
-            state.connected_nodes.pop("ret1a2b3c4d", None)
+        _refresh_analytics_and_nodes()
 
         expected_lat, expected_lon = public_latlon(34.0, -82.0, "ret1a2b3c4d")
         (block,) = [n["location"] for n in orjson.loads(state.latest_nodes_bytes)["nodes"].values()]
@@ -735,11 +718,7 @@ class TestRadarNodesPayload:
                 "is_synthetic": False,
                 "config": {**cfg, "node_id": nid},
             }
-        try:
-            _refresh_analytics_and_nodes()
-        finally:
-            for nid in ("ret1a2b3c4d", "ret9f8e7d6c"):
-                state.connected_nodes.pop(nid, None)
+        _refresh_analytics_and_nodes()
 
         body = orjson.loads(state.latest_nodes_bytes)
         assert list(body["nodes"]) == [_seed_ref("ret1a2b3c4d")]
@@ -767,7 +746,6 @@ class TestRadarNodesPayload:
         finally:
             state.node_analytics.retire_node("ret1a2b3c4d")
             state.node_analytics._summaries_cache = None
-            state.connected_nodes.pop("ret1a2b3c4d", None)
 
         real = orjson.loads(state.latest_analytics_real_bytes)["nodes"]
         assert list(real) == [_seed_ref("ret1a2b3c4d")]
@@ -822,7 +800,6 @@ class TestAnalyticsPayloadIdentities:
             yield
         finally:
             for nid in (self._A, self._B, self._GHOST):
-                state.connected_nodes.pop(nid, None)
                 state.node_analytics.retire_node(nid)
             state.node_analytics._summaries_cache = None
             state.node_analytics._cross_node_cache = None
@@ -904,7 +881,6 @@ class TestAnalyticsPayloadIsSynthetic:
             yield
         finally:
             for nid in (self._REAL, self._FLAGGED):
-                state.connected_nodes.pop(nid, None)
                 state.node_analytics.retire_node(nid)
             state.node_analytics._summaries_cache = None
 
@@ -1863,7 +1839,6 @@ class TestMlatVerificationPayload:
             # applied to this one.
             assert data["tracks"][0]["solver_lat"] == 34.5
         finally:
-            state.connected_nodes.pop(self._A, None)
             state.multinode_tracks.clear()
             state.ground_truth_trails.clear()
             state.ground_truth_meta.clear()
