@@ -181,6 +181,7 @@ def _reset_module_state():
     one test's detection_arcs/ground_truth to the next test verbatim.
     """
     from core import state
+    from routes import admin
     from services import (
         aircraft_feed,
         alerting,
@@ -215,6 +216,7 @@ def _reset_module_state():
         publication,
         infrastructure,
         periodic,
+        admin,
     ):
         mod._reset_for_tests()
     yield
