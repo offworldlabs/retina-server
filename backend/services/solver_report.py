@@ -648,8 +648,8 @@ def _solver_window_stats(minutes: float) -> dict:
         },
         # Empirical FOV beam gate (FOV_MODE) — since-boot counters, same
         # "cumulative regardless of mode" convention as claiming/consensus
-        # above.  See routes/test.py's dashboard "fov" block / solver.py's
-        # beam gate for what agree/would_pass/would_reject mean.
+        # above.  See solver.py's beam gate for what agree/would_pass/
+        # would_reject mean.
         "fov": {
             "mode": state.FOV_MODE,
             "shadow_agree": state.fov_shadow_agree,
