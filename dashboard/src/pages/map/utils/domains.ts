@@ -33,8 +33,9 @@
  *   test-app.*                         the retina-test droplet (real-radar)
  *   app.localhost                      the laptop Docker stack
  *
- * These names serve the map at `/` and mount the other bundles under sub-paths,
- * so this file is loaded on the map surface alone.
+ * This file is read on every console page, admin included. That is safe
+ * because each flag is a pure hostname test that cannot throw on a host it
+ * does not recognise; an unfamiliar host simply matches nothing.
  *
  * Hostname is read once at module load — we never switch domains at runtime.
  */

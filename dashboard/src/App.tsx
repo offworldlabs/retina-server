@@ -6,6 +6,7 @@ import ClaimPage from "./pages/ClaimPage";
 import DashboardLayout from "./components/DashboardLayout";
 import RequireAuth from "./components/RequireAuth";
 import { resolveSurface, warnIfModeIgnored } from "./utils/surface";
+import { usesRealOnlyFeed } from "./pages/map/utils/domains";
 
 // User pages — lazy-loaded so each chunk is only downloaded when first visited
 const OverviewPage = lazy(() => import("./pages/user/OverviewPage"));
@@ -24,6 +25,15 @@ const OnboardingPage = lazy(() => import("./pages/user/OnboardingPage"));
 // Leaflet and the map tree are ~400 KB, so they load when the map is first
 // opened rather than on every console page.
 const MapPage = lazy(() => import("./pages/map/MapPage"));
+const PhysicsPage = lazy(() => import("./pages/map/PhysicsPage"));
+
+// Toy radar sim, dev- and flag-gated so it does not ship to production. The
+// lazy import itself sits behind the flag rather than just the route: an
+// unconditional `lazy(() => import(...))` emits the sandbox's chunk into
+// every build regardless of which branch ever renders it.
+const TEST_RADAR_ENABLED =
+  import.meta.env.DEV || import.meta.env.VITE_ENABLE_TEST_RADAR === "1";
+const TestRadar = TEST_RADAR_ENABLED ? lazy(() => import("./pages/map/TestRadar")) : null;
 
 // Admin pages — lazy-loaded
 const NetworkHealthPage = lazy(() => import("./pages/admin/NetworkHealthPage"));
@@ -88,6 +98,8 @@ export default function App() {
                       <Route index element={<OverviewPage />} />
                       <Route path="nodes/:nodeId" element={<NodeDetailPage />} />
                       <Route path="map" element={<MapPage />} />
+                      {!usesRealOnlyFeed && <Route path="physics" element={<PhysicsPage />} />}
+                      {TestRadar && <Route path="test-radar" element={<TestRadar />} />}
                       <Route path="detections" element={<DetectionsPage />} />
                       <Route path="rf" element={<RFEnvironmentPage />} />
                       <Route path="contribution" element={<ContributionPage />} />
