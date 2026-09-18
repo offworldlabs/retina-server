@@ -1,8 +1,7 @@
 """Domain-specific auth helpers: node ownership and emailed links.
 
 All data is stored in the shared SQLite database (users.db) via SQLAlchemy
-async sessions. On first startup, migrate_json_to_db() imports a legacy
-node_owners.json and renames it to *.json.migrated so it is not re-imported.
+async sessions.
 
 JWT, user storage, and session management are handled by fastapi-users
 (see core/users.py). This module contains only the business logic that
@@ -10,21 +9,17 @@ has no equivalent in a general-purpose auth library.
 """
 
 import hashlib
-import json
 import logging
 import secrets
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 from sqlalchemy import delete, select, update
 
-from core.users import MagicLink, NodeOwner, async_session_maker
+from core.nodes import NodeClaim
+from core.users import MagicLink, async_session_maker
 
 logger = logging.getLogger(__name__)
-
-_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-NODE_OWNERS_FILE = _DATA_DIR / "node_owners.json"
 
 # Short, because the link is a bearer credential sitting in a mailbox and the
 # person asking for it is, by definition, in front of the page.
@@ -45,67 +40,44 @@ _MAX_OUTSTANDING_MAGIC_LINKS = 5
 INTENT_SIGNIN = "signin"
 
 
-# ── One-time JSON → SQLite migration ─────────────────────────────────────────
-
-
-async def migrate_json_to_db() -> None:
-    """Import a legacy node_owners.json into SQLite on first startup (idempotent)."""
-    async with async_session_maker() as session:
-        async with session.begin():
-            source = await _migrate_node_owners(session)
-    # Keep the source available until its records are committed. A crash or
-    # rename failure afterwards is safe to retry: the importer skips known keys.
-    if source is not None:
-        source.rename(source.with_suffix(".json.migrated"))
-        logger.info("Migrated auth records from %s", source)
-
-
-async def _migrate_node_owners(session) -> Path | None:
-    if not NODE_OWNERS_FILE.exists():
-        return
-    try:
-        data = json.loads(NODE_OWNERS_FILE.read_text())
-    except Exception:
-        logger.exception("Could not read %s for migration", NODE_OWNERS_FILE)
-        return
-    for node_id, user_id in data.items():
-        if await session.get(NodeOwner, node_id):
-            continue
-        session.add(NodeOwner(node_id=node_id, user_id=user_id))
-    return NODE_OWNERS_FILE
-
-
 # ── Node ownership ────────────────────────────────────────────────────────────
+#
+# The owner is `node_claims.user_id`, on the same row as the address the node
+# was claimed with, so a binding and the claim that made it are written and
+# cleared together.
 
 
 async def get_node_owner(node_id: str) -> str | None:
     async with async_session_maker() as session:
-        owner = await session.get(NodeOwner, node_id)
-        return owner.user_id if owner else None
+        return (
+            await session.execute(select(NodeClaim.user_id).where(NodeClaim.node_id == node_id))
+        ).scalar_one_or_none()
 
 
 async def list_node_owners() -> dict[str, str]:
     async with async_session_maker() as session:
-        result = await session.execute(select(NodeOwner))
-        return {o.node_id: o.user_id for o in result.scalars().all()}
+        result = await session.execute(
+            select(NodeClaim.node_id, NodeClaim.user_id).where(NodeClaim.user_id.is_not(None))
+        )
+        return dict(result.tuples().all())
 
 
 async def set_node_owner(node_id: str, user_id: str | None) -> None:
+    """Assign or clear the owner in a transaction of its own.
+
+    services/node_claim_store.set_owner is the write, and says what a change of
+    owner clears. The node must be registered, or this raises IntegrityError.
+    """
+    from services.node_claim_store import set_owner
+
     async with async_session_maker() as session:
-        if user_id is None:
-            await session.execute(delete(NodeOwner).where(NodeOwner.node_id == node_id))
-        else:
-            owner = await session.get(NodeOwner, node_id)
-            if owner:
-                owner.user_id = user_id
-            else:
-                session.add(NodeOwner(node_id=node_id, user_id=user_id))
-        await session.commit()
+        async with session.begin():
+            await set_owner(session, node_id, user_id)
 
 
 async def get_user_nodes(user_id: str) -> list[str]:
     async with async_session_maker() as session:
-        result = await session.execute(select(NodeOwner.node_id).where(NodeOwner.user_id == user_id))
+        result = await session.execute(select(NodeClaim.node_id).where(NodeClaim.user_id == user_id))
         return list(result.scalars().all())
 
 

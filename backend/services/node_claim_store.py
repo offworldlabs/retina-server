@@ -1,4 +1,5 @@
-"""Persisting which address a node was claimed with, and its one pending challenge.
+"""Persisting who owns a node, the address it was claimed with, and its one
+pending challenge.
 
 Two tables with different lifetimes. `node_claims` is durable and survives
 re-registration; `node_claim_challenges` exists only between a nomination and
@@ -27,7 +28,6 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.nodes import NodeClaim, NodeClaimChallenge
-from core.users import NodeOwner
 
 
 @dataclass(frozen=True)
@@ -59,7 +59,7 @@ class ClaimStatus:
 
 
 async def read_claim(session: AsyncSession, node_id: str) -> NodeClaim | None:
-    """The node's claim row, or None if it has never been given an address."""
+    """The node's claim row, or None if it has neither an owner nor an address."""
     return await session.get(NodeClaim, node_id)
 
 
@@ -147,7 +147,7 @@ async def mark_undeliverable(session: AsyncSession, node_id: str, email: str) ->
 
 
 async def clear_claim(session: AsyncSession, node_id: str) -> None:
-    """Return the node to the unclaimed state: no address, no challenge.
+    """Return the node to the unclaimed state: no owner, no address, no challenge.
 
     The address goes with the binding. It is a spent token recording what the
     node was claimed with, and a second-hand node that kept it would show its
@@ -155,6 +155,46 @@ async def clear_claim(session: AsyncSession, node_id: str) -> None:
     """
     await session.execute(delete(NodeClaimChallenge).where(NodeClaimChallenge.node_id == node_id))
     await session.execute(delete(NodeClaim).where(NodeClaim.node_id == node_id))
+
+
+async def set_owner(session: AsyncSession, node_id: str, user_id: str | None) -> None:
+    """Assign or clear the node's owner, on somebody's behalf.
+
+    A change of owner clears what a release clears: the address, its
+    confirmation, its bounce and any pending challenge. Leaving the address
+    would show the new owner the last one's, or a stranger's that was declined,
+    and leaving the challenge would let a link already in a mailbox rebind a
+    node an administrator has just freed. Assigning the owner a node already has
+    changes nothing, so it keeps the address that claimed it.
+
+    The node must be registered: an id that is not fails on the foreign key.
+    """
+    row = await session.get(NodeClaim, node_id)
+    if row is not None and user_id is not None and row.user_id == user_id:
+        return
+    if user_id is None:
+        await clear_claim(session, node_id)
+        return
+    # The link the challenge named needs no invalidating here: the bind re-reads
+    # the address it was sent to, and finds it gone.
+    await drop_challenge(session, node_id)
+    if row is None:
+        session.add(
+            NodeClaim(
+                node_id=node_id,
+                user_id=user_id,
+                verified=False,
+                undeliverable=False,
+                updated_at=datetime.now(UTC),
+            )
+        )
+    else:
+        row.user_id = user_id
+        row.email = None
+        row.verified = False
+        row.undeliverable = False
+        row.updated_at = datetime.now(UTC)
+    await session.flush()
 
 
 async def read_challenge(session: AsyncSession, node_id: str) -> NodeClaimChallenge | None:
@@ -217,11 +257,12 @@ async def read_owner(session: AsyncSession, node_id: str) -> str | None:
     that already holds a session should not reach past it, and the two would not
     be in the same transaction if it did.
     """
-    return (await session.execute(select(NodeOwner.user_id).where(NodeOwner.node_id == node_id))).scalar_one_or_none()
+    claim = await read_claim(session, node_id)
+    return claim.user_id if claim is not None else None
 
 
 async def claim_status(session: AsyncSession, node_id: str, now: float) -> ClaimStatus:
-    """Derive what the node should be told, from the three rows that say it.
+    """Derive what the node should be told, from the two rows that say it.
 
     The order is the order the facts outrank each other. An owner settles it
     whatever else is on file, since the challenge that produced the binding is
@@ -232,19 +273,17 @@ async def claim_status(session: AsyncSession, node_id: str, now: float) -> Claim
     An expired challenge reads as unclaimed with the address still on file,
     which is what lets a fresh one be asked for without retyping it.
     """
-    owner = await read_owner(session, node_id)
     claim = await read_claim(session, node_id)
-    if owner is not None:
-        return ClaimStatus("owned", claim.email if claim is not None else None, False)
-    if claim is not None and claim.undeliverable:
-        return ClaimStatus("unclaimed", claim.email, True)
-
     if claim is None:
-        # No address has ever been offered, so there is no challenge to find: a
-        # challenge is only ever written alongside one, in the same transaction.
-        # Worth the branch because this is the common case and this runs on
-        # every heartbeat from every node.
+        # No owner and no address has ever been offered, so there is no
+        # challenge to find: a challenge is only ever written alongside an
+        # address, in the same transaction. Worth the branch because this is
+        # the common case and this runs on every heartbeat from every node.
         return ClaimStatus("unclaimed", None, False)
+    if claim.user_id is not None:
+        return ClaimStatus("owned", claim.email, False)
+    if claim.undeliverable:
+        return ClaimStatus("unclaimed", claim.email, True)
 
     challenge = await read_challenge(session, node_id)
     if challenge is not None and challenge.expires_at > now:
@@ -260,10 +299,9 @@ async def claim_addresses(node_ids: list[str]) -> dict[str, str | None]:
     at thirty. Nodes with no address are absent rather than null, so a caller
     reads the two the same way through `.get`.
 
-    Only a verified address counts. An owner reached any other way, such as an
-    administrator's assignment, can sit beside an address somebody offered and
-    nobody confirmed, including one its recipient declined, and that is not what
-    the node was claimed with.
+    Only a verified address counts. A nomination racing the click that binds
+    the node can leave an address nobody confirmed beside the owner, and that is
+    not what the node was claimed with.
 
     Opens its own session, unlike everything else here: the one caller is an
     owner-facing route in the `core/auth.py` style, which reaches the database

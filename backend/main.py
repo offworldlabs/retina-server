@@ -167,13 +167,8 @@ async def lifespan(app: FastAPI):
 
     await create_db_and_tables()
 
-    # Migrate a legacy node_owners.json to SQLite
-    from core.auth import migrate_json_to_db
-
-    await migrate_json_to_db()
-
-    # Prime visibility after the schema and legacy data are ready. A cold
-    # failure withholds public data while leaving the owner aircraft feed available.
+    # Prime visibility after the schema is ready. A cold failure withholds public
+    # data while leaving the owner aircraft feed available.
     publication.invalidate()
     try:
         publication.private_node_ids()

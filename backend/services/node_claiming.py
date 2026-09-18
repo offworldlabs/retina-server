@@ -16,9 +16,16 @@ from enum import StrEnum
 from sqlalchemy import select
 
 from core.nodes import Node
-from core.users import MagicLinkRefused, NodeOwner, User, async_session_maker, get_or_create_magic_link_user
+from core.users import MagicLinkRefused, User, async_session_maker, get_or_create_magic_link_user
 from services import claim_links
-from services.node_claim_store import clear_claim, drop_challenge, mark_verified, read_challenge, read_claim
+from services.node_claim_store import (
+    clear_claim,
+    drop_challenge,
+    mark_verified,
+    read_challenge,
+    read_claim,
+    read_owner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +76,8 @@ async def complete_claim(token: str):
     node_id, email = resolved.node_id, resolved.email
 
     async with async_session_maker() as session:
-        existing = await session.get(NodeOwner, node_id)
-        if existing is not None and existing.user_id != await _user_id_for(session, email):
+        existing = await read_owner(session, node_id)
+        if existing is not None and existing != await _user_id_for(session, email):
             # Valid link, but the node acquired an owner since it was sent, and
             # not the one this link would bind it to. The joint proof this
             # design rests on is that the person holding the hardware is the
@@ -103,9 +110,9 @@ async def complete_claim(token: str):
             # Re-read inside the writing transaction. The account lookup above
             # released the first one, so the check that nobody else owns this
             # node has to be the one that holds while the row is written.
-            incumbent = await session.get(NodeOwner, node_id)
-            if incumbent is not None:
-                if incumbent.user_id != str(user.id):
+            claim = await read_claim(session, node_id)
+            if claim is not None and claim.user_id is not None:
+                if claim.user_id != str(user.id):
                     return ClaimOutcome.TAKEN, None, None
                 # A second link for the same address, such as one a resend
                 # minted while the first click was binding, finds the binding
@@ -121,12 +128,12 @@ async def complete_claim(token: str):
             # to. A nomination of another address, or a release, between the
             # link being read and this write has replaced it, and binding would
             # hand the node to an address its holder has already withdrawn.
-            claim = await read_claim(session, node_id)
             if claim is None or claim.email != email:
                 return ClaimOutcome.INVALID, None, None
-            session.add(NodeOwner(node_id=node_id, user_id=str(user.id)))
+            claim.user_id = str(user.id)
             # Spends the challenge as well as confirming the address, so the
-            # link cannot be walked into twice.
+            # link cannot be walked into twice. The same row as the binding, so
+            # the two are one write.
             await mark_verified(session, node_id, email)
         node = await session.get(Node, node_id)
 
@@ -184,10 +191,8 @@ async def release_node(node_id: str, user_id: str) -> bool:
     """
     async with async_session_maker() as session:
         async with session.begin():
-            owner = await session.get(NodeOwner, node_id)
-            if owner is None or owner.user_id != user_id:
+            if await read_owner(session, node_id) != user_id:
                 return False
-            await session.delete(owner)
             await clear_claim(session, node_id)
     logger.info("Node %s was released by its owner", node_id)
     return True

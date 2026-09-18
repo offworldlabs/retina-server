@@ -178,6 +178,100 @@ def test_upgrading_a_pre_alembic_database_succeeds(tmp_path):
     assert "head" in stamped.stdout, stamped.stdout + stamped.stderr
 
 
+# ── 0015: node_owners folded into node_claims ────────────────────────────────
+
+
+def _at_0014_with_owners(db: Path, owners: str) -> None:
+    """A database at 0014 holding three registered nodes, two claim rows and
+    the given node_owners rows, as SQL values."""
+    import sqlite3
+
+    base = _alembic("upgrade", "0014", db_path=db)
+    assert base.returncode == 0, base.stdout + base.stderr
+    con = sqlite3.connect(db)
+    try:
+        con.executescript(
+            "INSERT INTO nodes (node_id, node_ref) VALUES "
+            "('retclaimed', 'ndeclaimed00000'), ('retassigned', 'ndeassigned0000'), ('retoffered', 'ndeoffered00000');"
+            "INSERT INTO node_claims (node_id, email, verified) VALUES "
+            "('retclaimed', 'ada@example.com', 1), ('retoffered', 'bob@example.com', 0);"
+            f"INSERT INTO node_owners (node_id, user_id) VALUES {owners};"
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def _query(db: Path, sql: str) -> list[tuple]:
+    import sqlite3
+
+    con = sqlite3.connect(db)
+    try:
+        return con.execute(sql).fetchall()
+    finally:
+        con.close()
+
+
+def test_0015_folds_every_owner_into_the_claims(tmp_path):
+    """An owner whose node already had a claim row gains the column on it; one
+    whose node had none, an administrator's assignment, gets a row with no
+    address. A claim nobody owns is left unowned."""
+    db = tmp_path / "fold.db"
+    _at_0014_with_owners(db, "('retclaimed', 'user-a'), ('retassigned', 'user-b')")
+
+    up = _alembic("upgrade", "head", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+
+    assert _query(db, "SELECT node_id, user_id, email, verified FROM node_claims ORDER BY node_id") == [
+        ("retassigned", "user-b", None, 0),
+        ("retclaimed", "user-a", "ada@example.com", 1),
+        ("retoffered", None, "bob@example.com", 0),
+    ]
+    assert _query(db, "SELECT name FROM sqlite_master WHERE name = 'node_owners'") == []
+
+
+def test_0015_refuses_an_owner_for_a_node_that_never_registered(tmp_path):
+    """node_claims holds only registered nodes, and the migration connection
+    does not enforce the key, so such a row would otherwise be copied in
+    silently. Refused before anything changes: an ownership row is an
+    authorisation fact, and a failed upgrade leaves the previous image serving."""
+    db = tmp_path / "orphan.db"
+    _at_0014_with_owners(db, "('retclaimed', 'user-a'), ('legacy-tcp-node', 'user-b')")
+
+    up = _alembic("upgrade", "head", db_path=db)
+
+    assert up.returncode != 0
+    assert "legacy-tcp-node" in up.stdout + up.stderr
+    assert _query(db, "SELECT version_num FROM alembic_version") == [("0014",)]
+    assert _query(db, "SELECT node_id, user_id FROM node_owners ORDER BY node_id") == [
+        ("legacy-tcp-node", "user-b"),
+        ("retclaimed", "user-a"),
+    ]
+    assert "user_id" not in {row[1] for row in _query(db, "PRAGMA table_info(node_claims)")}
+
+
+def test_0015_downgrade_hands_the_owners_back(tmp_path):
+    db = tmp_path / "back.db"
+    _at_0014_with_owners(db, "('retclaimed', 'user-a'), ('retassigned', 'user-b')")
+    up = _alembic("upgrade", "head", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+
+    down = _alembic("downgrade", "0014", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+
+    assert _query(db, "SELECT node_id, user_id FROM node_owners ORDER BY node_id") == [
+        ("retassigned", "user-b"),
+        ("retclaimed", "user-a"),
+    ]
+    # The row that only carried an owner goes; every claim row before 0015 had
+    # an address.
+    assert _query(db, "SELECT node_id, email, verified FROM node_claims ORDER BY node_id") == [
+        ("retclaimed", "ada@example.com", 1),
+        ("retoffered", "bob@example.com", 0),
+    ]
+    assert "user_id" not in {row[1] for row in _query(db, "PRAGMA table_info(node_claims)")}
+
+
 def test_rollback_ahead_sentinel_matches_alembics_wording(tmp_path):
     """deploy/start.sh greps a failed `alembic upgrade head`'s output for the
     literal substring ROLLBACK_AHEAD_SENTINEL to tell a tolerable rollback
