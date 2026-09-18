@@ -1,5 +1,6 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SCALAR_THEME_CSS } from "../utils/scalarTheme";
 
 let theme: "light" | "dark" = "light";
 
@@ -54,7 +55,7 @@ describe("ApiDocsPage", () => {
     expect(injected()!.getAttribute("src")).toBe("/vendor/scalar-api-reference-1.69.0/standalone.js");
   });
 
-  it("mounts Scalar on the whole schema, uploads off, and destroys it on leaving", async () => {
+  it("mounts Scalar on the whole schema, uploads off, in RETINA's palette, and destroys it on leaving", async () => {
     const { createApiReference, destroy } = scalar();
     const { default: ApiDocsPage, DOCUMENT_URL } = await freshPage();
 
@@ -69,6 +70,8 @@ describe("ApiDocsPage", () => {
       mcp: { disabled: true },
       withDefaultFonts: false,
       telemetry: false,
+      theme: "none",
+      customCss: SCALAR_THEME_CSS,
       forceDarkModeState: "light",
     });
 

@@ -25,11 +25,12 @@ router = APIRouter(include_in_schema=False)
 SCALAR_URL = "https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.69.0/dist/browser/standalone.js"
 SCALAR_INTEGRITY = "sha384-UL+pt9bcR3hCuzEybA1bAyu6yv9qkzJuYCP5N+HZPOo9ZkUXcMflxqBjC1vfDzfe"
 
-# Values are transcribed from packages/shared/css/tokens.css (the dashboard and
-# map's own dark/light palette, in turn RETINA's brand spec in claude-shared) into
-# Scalar's own custom-property vocabulary; the two cannot share one stylesheet
-# since their variable names differ. theme:"none" drops Scalar's bundled palette
-# so these are the only source of colour — layout and spacing stay Scalar's own.
+# RETINA's palette (packages/shared/css/tokens.css) in Scalar's own variable
+# names. The admin console's viewer carries the same stylesheet in
+# dashboard/src/utils/scalarTheme.ts, and dashboard/src/test/scalarTheme.test.ts
+# fails if the two copies differ or either leaves the tokens. theme:"none" leaves
+# Scalar its plain base palette, which these override; layout, spacing and any
+# colour not named here stay Scalar's.
 THEME_CSS = """
 .dark-mode {
   --scalar-background-1: #0d1b2a;

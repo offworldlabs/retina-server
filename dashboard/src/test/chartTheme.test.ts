@@ -1,27 +1,6 @@
 import { describe, it, expect } from "vitest";
-/* Read by path rather than through the package's exports map, which a `?raw`
-   query does not survive. */
-import rawCss from "../../../packages/shared/css/tokens.css?raw";
 import { CHART_THEMES, seriesColour } from "../utils/chartTheme";
-
-const css = rawCss.replace(/\/\*[\s\S]*?\*\//g, "");
-
-/** One token's value in a theme, read out of the stylesheet. */
-function token(selector: string, name: string): string {
-  const open = css.indexOf("{", css.indexOf(selector));
-  const close = css.indexOf("}", open);
-  const match = css.slice(open + 1, close).match(new RegExp(`${name}\\s*:\\s*([^;]+);`));
-  expect(match, `${name} not declared under ${selector}`).not.toBeNull();
-  return match![1].trim();
-}
-
-/* Each palette block carries several selectors, one per surface, so these
-   anchor on the selector this console is drawn by rather than on the whole
-   list. */
-const TOKENS = {
-  light: (name: string) => token(":root,", name),
-  dark: (name: string) => token(':root[data-theme="dark"]', name),
-} as const;
+import { TOKENS } from "./paletteTokens";
 
 describe.each(["light", "dark"] as const)("the %s chart chrome", (theme) => {
   const chart = CHART_THEMES[theme];
