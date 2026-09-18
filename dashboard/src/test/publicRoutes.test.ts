@@ -25,9 +25,17 @@ describe("the routes a visitor reaches without signing in", () => {
     expect(isPublicRoute("/settings", false)).toBe(false);
   });
 
+  it("admits the index, which only forwards to the map", () => {
+    expect(isPublicRoute("/", false)).toBe(true);
+  });
+
+  it("still refuses the index on the admin surface", () => {
+    expect(isPublicRoute("/", true)).toBe(false);
+  });
+
   // Overview, which reports the caller's own nodes.
-  it("refuses the index", () => {
-    expect(isPublicRoute("/", false)).toBe(false);
+  it("refuses the overview", () => {
+    expect(isPublicRoute("/overview", false)).toBe(false);
   });
 
   it("refuses every path on the admin surface", () => {
