@@ -5,6 +5,7 @@ import AuthLinkPage from "./pages/AuthLinkPage";
 import ClaimPage from "./pages/ClaimPage";
 import DashboardLayout from "./components/DashboardLayout";
 import RequireAuth from "./components/RequireAuth";
+import MapFrontDoor from "./components/MapFrontDoor";
 import { resolveSurface, warnIfModeIgnored } from "./utils/surface";
 import { useAuth } from "./context/AuthContext";
 import { showsPhysics } from "./utils/physics";
@@ -97,7 +98,8 @@ export default function App() {
                     </>
                   ) : (
                     <>
-                      <Route index element={<OverviewPage />} />
+                      <Route index element={<MapFrontDoor />} />
+                      <Route path="overview" element={<OverviewPage />} />
                       <Route path="nodes/:nodeId" element={<NodeDetailPage />} />
                       <Route path="map" element={<MapPage />} />
                       {showsPhysics(user) && <Route path="physics" element={<PhysicsPage />} />}
