@@ -1,8 +1,9 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import DataExplorerPage from "../../pages/user/DataExplorerPage";
+import { timelineProps } from "../stubs/edscTimeline";
 
 const { requestMock } = vi.hoisted(() => ({ requestMock: vi.fn() }));
 vi.mock("@retina/shared", () => ({ request: requestMock }));
@@ -165,5 +166,26 @@ describe("DataExplorerPage, node selection and geography", () => {
     fireEvent.click(screen.getByRole("button", { name: /nodes$/ }));
     const row = screen.getByRole("checkbox", { name: /London/ }).closest("label")!;
     expect(within(row).getByText("1")).toBeInTheDocument();
+  });
+
+  it("draws the timeline from the selection, and moves the filters when it is dragged", async () => {
+    serve(FLEET);
+    renderAt("?node=ret-london&from=2026-09-17&to=2026-09-17");
+
+    const drawn = await screen.findByTestId("edsc-timeline");
+    await waitFor(() => expect(drawn).toHaveTextContent("ret-london: 1"));
+    expect(drawn).not.toHaveTextContent("ret-oxford");
+
+    act(() =>
+      timelineProps.last.onTemporalSet({
+        temporalStart: Date.parse("2026-09-12T00:00:00Z"),
+        temporalEnd: Date.parse("2026-09-14T00:00:00Z"),
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("de-share")).toHaveTextContent(
+        "?node=ret-london&from=2026-09-12&to=2026-09-13",
+      ),
+    );
   });
 });

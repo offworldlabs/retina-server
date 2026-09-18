@@ -4,6 +4,7 @@ import { useSearchParams } from "react-router-dom";
 import { StatCard } from "../../components/StatCard";
 import { formatBytes } from "../../utils/format";
 import { entryForScope, horizon } from "./dataExplorer/archive";
+import { AvailabilityTimeline } from "./dataExplorer/AvailabilityTimeline";
 import { DateRangeControls } from "./dataExplorer/DateRangeControls";
 import { daysBetween, todayUTC } from "./dataExplorer/dates";
 import { makePredicate } from "./dataExplorer/filters";
@@ -11,7 +12,7 @@ import { JSON_FACTOR, type ArchiveFile } from "./dataExplorer/keys";
 import { NearControls } from "./dataExplorer/NearControls";
 import { NodeMap } from "./dataExplorer/NodeMap";
 import { NodePicker } from "./dataExplorer/NodePicker";
-import { effectiveNodeIds } from "./dataExplorer/nodes";
+import { anyNodeSynthetic, effectiveNodeIds, isSynthetic } from "./dataExplorer/nodes";
 import { ResultsTree, type SortKey } from "./dataExplorer/ResultsTree";
 import { useArchiveScan } from "./dataExplorer/useArchiveScan";
 import { useNodeRegistry } from "./dataExplorer/useNodeRegistry";
@@ -108,6 +109,13 @@ export default function DataExplorerPage() {
     }
     return { byDay: out, matched: all };
   }, [days, scan.entries, entryScope, effective, filters]);
+
+  const effectiveIds = useMemo(() => Array.from(effective).sort(), [effective]);
+  const synthetic = useCallback((id: string) => isSynthetic(registry.nodes, id), [registry.nodes]);
+  const anySynthetic = useMemo(
+    () => anyNodeSynthetic(registry.nodes, scan.nodeIds),
+    [registry.nodes, scan.nodeIds],
+  );
 
   const listed = days.filter((d) => entryFor(d)?.status === "done").length;
   const failed = days.filter((d) => entryFor(d)?.status === "error").length;
@@ -211,6 +219,16 @@ export default function DataExplorerPage() {
           />
         )}
       </div>
+
+      <AvailabilityTimeline
+        filters={filters}
+        today={today}
+        ids={effectiveIds}
+        files={matched}
+        synthetic={synthetic}
+        anySynthetic={anySynthetic}
+        onChange={setFilters}
+      />
 
       <div className="card">
         <ResultsTree

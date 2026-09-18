@@ -6,8 +6,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { isSyntheticNode } from "../../../utils/nodeKind";
-import { knownNodeIds, type RegistryNode } from "./nodes";
+import { anyNodeSynthetic, isSynthetic, knownNodeIds, type RegistryNode } from "./nodes";
 import type { ExplorerFilters } from "./urlState";
 
 interface Props {
@@ -43,13 +42,8 @@ export function NodePicker({ filters, nodes, discovered, fileCountFor, onChange 
 
   const nameOf = (id: string) => nodes.get(id)?.name || id;
 
-  // A node seen only in an archive key has no registry entry and so no server
-  // flag; its prefix is the only thing left to classify it by.
-  const synthetic = (id: string) => {
-    const known = nodes.get(id);
-    return known ? known.synthetic : isSyntheticNode({}, id);
-  };
-  const anySynthetic = ids.some(synthetic);
+  const synthetic = (id: string) => isSynthetic(nodes, id);
+  const anySynthetic = anyNodeSynthetic(nodes, discovered);
 
   const needle = search.trim().toLowerCase();
   const visible = needle
