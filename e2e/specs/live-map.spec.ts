@@ -1,10 +1,10 @@
 /**
  * Live Aircraft Map E2E tests, on the synthetic map surface.
  *
- * This suite visits whichever host `hosts.testmap` names — in CI that is
- * staging's app hostname, which serves the synthetic fleet unfiltered. It
- * verifies the map page loads, WebSocket connects, aircraft appear, and key
- * interactive elements work correctly.
+ * This suite visits the console's /map on whichever host `hosts.testmap` names
+ * — in CI that is staging's app hostname, which serves the synthetic fleet
+ * unfiltered. It verifies the map page loads, WebSocket connects, aircraft
+ * appear, and key interactive elements work correctly.
  *
  * NOTE: These tests require the synthetic fleet to be running on the target
  * environment. They use generous timeouts to account for warm-up time.
@@ -24,10 +24,10 @@ test.skip(
   "no synthetic map surface in this environment (production runs no fleet)",
 );
 
-// Interpolated inside test bodies only. test.skip aborts the tests, not this
-// module — every top-level statement still runs during collection — so a
-// method call on this at module scope would throw where it is null.
-const BASE = TESTMAP as string;
+// test.skip aborts the tests, not this module — every top-level statement still
+// runs during collection — so nothing here may call a method on TESTMAP where it
+// is null. Interpolating it is safe.
+const BASE = `${TESTMAP}/map`;
 
 // Helper: wait for the connection badge to show "LIVE"
 async function waitForLive(page: Page, timeoutMs = 15_000) {
@@ -101,23 +101,19 @@ async function rowsOrSkip(page: Page) {
 }
 
 test.describe("Live Map — page identity", () => {
-  test("page title contains RETINA", async ({ page }) => {
+  test("the console names the page Live Map", async ({ page }) => {
     await page.goto(BASE);
-    // Asserted on the h1 rather than the HTML <title>, which is static across
-    // every domain this bundle serves.
-    await expect(page.locator("h1")).toContainText(/RETINA/i);
+    // The header's title rather than the HTML <title>, which is static across
+    // every page of the console.
+    await expect(page.locator(".header-title")).toHaveText("Live Map");
   });
 
-  test("header shows RETINA, not Tower Finder", async ({ page }) => {
+  test("the console's brand is RETINA, not Tower Finder", async ({ page }) => {
     await page.goto(BASE);
-    await expect(page.locator("h1")).not.toHaveText(/Tower Finder/i);
-    await expect(page.locator("h1")).toContainText(/RETINA/i);
-  });
-
-  test("Live Radar tab is visible and active by default", async ({ page }) => {
-    await page.goto(BASE);
-    await expect(page.getByRole("button", { name: /Live Radar/i })).toBeVisible();
-    await expect(page.getByRole("button", { name: /Tower Search/i })).toBeHidden();
+    // Text content, not visibility: the map opens with the sidebar collapsed to
+    // its icon rail, which hides the brand's labels.
+    await expect(page.locator(".brand-text")).toHaveText(/RETINA/i);
+    await expect(page.locator(".brand-text")).not.toHaveText(/Tower Finder/i);
   });
 
   test("no JavaScript errors on page load", async ({ page }) => {
