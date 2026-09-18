@@ -9,9 +9,8 @@
 # Endpoints (nginx is rendered from deploy/nginx/nginx.conf.template, same as
 # every other environment; *.localhost resolves to 127.0.0.1 without a hosts entry
 # on macOS and most Linux):
-#   http://app.localhost:8080      → live radar map on the synthetic fleet, with
-#                                    the dashboard at /dash/ and the data
-#                                    explorer at /dash/data
+#   http://app.localhost:8080      → the console, opening on the live map of the
+#                                    synthetic fleet; the data explorer at /data
 #   http://towers.localhost:8080   → tower search SPA (also plain localhost:8080).
 #                                    Its API needs tower-finder-service running;
 #                                    see TOWER_FINDER_ENABLED below.
