@@ -115,6 +115,53 @@ describe("DataExplorerPage", () => {
     expect(screen.queryByText(/cold storage/i)).not.toBeInTheDocument();
   });
 
+  it("keeps a ticked file in the basket after the filters stop matching it", async () => {
+    requestMock.mockImplementation(withRegistry(oneFilePerDay));
+    renderAt("?from=2026-09-10&to=2026-09-17");
+    const oldest = await screen.findByRole("checkbox", { name: "Select every file on 2026-09-10" });
+    await waitFor(() => expect(oldest).toBeEnabled());
+    fireEvent.click(oldest);
+    expect(screen.getByTestId("de-basket-count")).toHaveTextContent("1 file selected");
+
+    // Reset narrows the range to the last three days, which no longer
+    // include the file, and the basket must not notice.
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("checkbox", { name: /on 2026-09-10/ })).not.toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("de-basket-count")).toHaveTextContent("1 file selected");
+    fireEvent.click(screen.getByRole("button", { name: "Show manifest" }));
+    expect(screen.getByRole("textbox", { name: /manifest/i })).toHaveValue(
+      `${window.location.origin}/api/data/archive/year=2026/month=09/day=10/node_id=ret-a/part-0.parquet`,
+    );
+  });
+
+  it("selects everything the filters match, and clears it again", async () => {
+    requestMock.mockImplementation(withRegistry(oneFilePerDay));
+    renderAt();
+    await waitFor(() => expect(screen.getByTestId("de-stat-files")).toHaveTextContent("3"));
+    fireEvent.click(screen.getByRole("button", { name: "Select all matching" }));
+    expect(screen.getByTestId("de-basket-count")).toHaveTextContent("3 files selected");
+    fireEvent.click(screen.getByRole("button", { name: "Clear" }));
+    expect(screen.getByTestId("de-basket-count")).toHaveTextContent("0 files selected");
+  });
+
+  it("previews a file and adds it to the basket from the drawer", async () => {
+    requestMock.mockImplementation(withRegistry(oneFilePerDay));
+    renderAt("?from=2026-09-17&to=2026-09-17");
+    fireEvent.click(await screen.findByRole("button", { name: "Preview part-0.parquet" }));
+    const dialog = screen.getByRole("dialog", { name: "part-0.parquet" });
+    expect(dialog).toHaveTextContent("node_id=ret-a");
+    fireEvent.click(screen.getByRole("button", { name: "Add to basket" }));
+    expect(screen.getByTestId("de-basket-count")).toHaveTextContent("1 file selected");
+    // The manifest opens with the addition, so it is seen to land.
+    expect(screen.getByRole<HTMLTextAreaElement>("textbox", { name: /manifest/i }).value).toMatch(
+      /part-0\.parquet$/,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("puts every filter back to its default at once", async () => {
     renderAt("?from=2026-09-01&to=2026-09-17&minsize=4096&tod=06:00-07:00&near=51.5,-0.1,10");
     await waitFor(() => expect(screen.getByRole("button", { name: "Reset" })).toBeInTheDocument());
