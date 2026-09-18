@@ -11,8 +11,10 @@ async function loadFor(hostname: string) {
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe("feed selection by surface", () => {
-  it("the real-radar surfaces show real nodes only", async () => {
+// These are the hostname's answer, which is /map's default and nothing more:
+// /sim asks for the synthetic fleet whatever the host says (feedMode.test.ts).
+describe("the fleet each surface runs", () => {
+  it("the real-radar surfaces run the real fleet", async () => {
     for (const host of ["app.retina.fm", "test-app.retina.fm"]) {
       const m = await loadFor(host);
       expect(m.usesRealOnlyFeed, host).toBe(true);
@@ -21,14 +23,14 @@ describe("feed selection by surface", () => {
     }
   });
 
-  it("the public demo shows synthetic nodes only", async () => {
+  it("the public demo runs the synthetic fleet", async () => {
     const m = await loadFor("staging-app.retina.fm");
     expect(m.usesRealOnlyFeed).toBe(false);
     expect(m.defaultsGroundTruthOff).toBe(false);
     expect(m.hidesRealNodes).toBe(true);
   });
 
-  it("the laptop shows everything", async () => {
+  it("the laptop runs both fleets", async () => {
     const m = await loadFor("app.localhost");
     expect(m.usesRealOnlyFeed).toBe(false);
     expect(m.hidesRealNodes).toBe(false);
