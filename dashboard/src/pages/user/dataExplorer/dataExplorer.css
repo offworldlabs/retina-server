@@ -6,6 +6,21 @@
   overflow: visible;
 }
 
+/* `.mono` is written throughout the dashboard and defined nowhere in it. The
+   explorer's ids, keys and coordinates are unreadable proportionally, so it is
+   given a face inside the feature rather than by changing every other page's
+   type in the same breath. */
+.de-card,
+.de-tree {
+  --de-mono: "SF Mono", "Fira Code", ui-monospace, Menlo, Consolas, monospace;
+}
+
+.de-card .mono,
+.de-tree .mono {
+  font-family: var(--de-mono);
+  font-size: 12px;
+}
+
 /* The cold-storage banner. A panel rather than a line of prose, because it
    qualifies everything in the listing below it. */
 .de-notice {
@@ -21,41 +36,143 @@
   margin-bottom: 24px;
 }
 
+/* The dashboard styles its form fields per page; the explorer has two dozen
+   of them, so they are styled once here rather than at each call site. */
+.de-card input,
+.de-card select {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 6px 9px;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+}
+
+.de-card input:focus,
+.de-card select:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.de-card input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.de-muted {
+  color: var(--text-muted);
+}
+
+/* Each filter is a labelled column, and the row wraps between them: the
+   controls are different widths and a single line of them does not fit. */
 .de-filters {
   display: flex;
   flex-wrap: wrap;
-  gap: 16px 24px;
+  gap: 14px;
   align-items: flex-end;
 }
 
 .de-fgroup {
   display: flex;
-  gap: 8px;
-  align-items: center;
+  flex-direction: column;
+  gap: 5px;
 }
 
-.de-fgroup label {
-  font-size: 13px;
+.de-fgroup > label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
   color: var(--text-muted);
 }
 
+.de-frow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.de-km {
+  width: 70px;
+}
+
+.de-fgroup input[type="number"] {
+  width: 96px;
+}
+
 .de-chipset {
+  display: flex;
   gap: 4px;
 }
 
 .de-chip {
-  padding: 4px 10px;
-  border: 1px solid var(--border);
+  padding: 5px 10px;
+  border: 1px solid var(--border-light);
   border-radius: 999px;
   background: transparent;
-  color: var(--text-muted);
-  font-size: 13px;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12px;
   cursor: pointer;
 }
 
+.de-chip:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
 .de-chip.on {
+  background: var(--accent-light);
   border-color: var(--accent);
   color: var(--accent);
+}
+
+.de-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The node picker's own control, which looks like a select and is a button
+   because it opens a panel rather than a native list. */
+.de-select {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  min-width: 230px;
+  padding: 6px 9px;
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.de-urlbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.de-urlbar code {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
 }
 
 /* One definition for the results grid, used by the header and every row: they
@@ -152,4 +269,187 @@
   .de-tree {
     --de-cols: 1fr 120px 96px 96px;
   }
+}
+
+/* The node picker. Anchored rather than in flow: the panel is taller than the
+   filter row and would otherwise push the results tree down each time it
+   opens. .de-card keeps overflow visible so it can escape. */
+.de-nodes {
+  position: relative;
+}
+
+.de-node-panel {
+  position: absolute;
+  z-index: 2;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 300px;
+  padding: 8px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  box-shadow: 0 8px 28px var(--shadow);
+}
+
+.de-node-panel input[type="search"] {
+  width: 100%;
+  margin-bottom: 6px;
+}
+
+/* Bounded, because a fleet is not a fixed size and the panel must not grow
+   past the viewport. */
+.de-node-list {
+  max-height: 240px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.de-node-list label {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.de-node-list label:hover {
+  background: var(--bg-card-hover);
+}
+
+.de-node-empty {
+  padding: 8px 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.de-node-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Tabular, so the counts line up down the column rather than wandering with
+   their digit widths. */
+.de-node-count {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.de-node-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+/* The node map. No basemap: an image host is not on this page's CSP and would
+   be a third party watching who looks at what. The graticule and the nodes
+   are the only landmarks it has. */
+.de-map {
+  padding: 0 20px 16px;
+}
+
+.de-map-wrap {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-input);
+}
+
+.de-map-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  cursor: crosshair;
+}
+
+.de-map-grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.de-map-gridlab {
+  fill: var(--text-muted);
+  font-family: var(--de-mono);
+  font-size: 9px;
+}
+
+.de-map-node {
+  fill: var(--accent);
+  stroke: var(--bg-card);
+  stroke-width: 1.5;
+  cursor: pointer;
+}
+
+.de-map-node-synth {
+  fill: var(--text-muted);
+}
+
+.de-map-node:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Faded rather than absent: the drawing has to agree with the list, and a
+   node vanishing on every filter change is harder to read than one that
+   dims. */
+.de-map-faded {
+  opacity: 0.35;
+}
+
+.de-map-selected {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.de-map-ring {
+  fill: var(--warning-light);
+  stroke: var(--warning);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  pointer-events: none;
+}
+
+.de-map-pin {
+  stroke: var(--warning);
+  stroke-width: 2;
+  pointer-events: none;
+}
+
+/* Outlined in the background colour so an id stays readable where it crosses
+   a graticule line or another node. */
+.de-map-nlab {
+  fill: var(--text-secondary);
+  font-family: var(--de-mono);
+  font-size: 10px;
+  paint-order: stroke;
+  stroke: var(--bg-input);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.de-map-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.de-map-empty {
+  font-size: 12px;
+  color: var(--text-muted);
 }

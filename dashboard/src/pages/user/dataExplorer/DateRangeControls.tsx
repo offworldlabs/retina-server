@@ -1,5 +1,6 @@
+import type { ExplorerFilters } from "./urlState";
 import { addDays } from "./dates";
-import { defaultFilters, type ExplorerFilters, TOD_END, TOD_START } from "./urlState";
+import { TOD_END, TOD_START } from "./urlState";
 
 /** A chip sets a range ending today, so "24h" is today rather than a rolling
  *  day: the archive is partitioned by day and cannot answer finer. */
@@ -30,59 +31,70 @@ export function DateRangeControls({ filters, today, onChange }: Props) {
   );
 
   return (
-    <div className="de-filters">
+    <>
       <div className="de-fgroup">
-        <label htmlFor="de-from">From</label>
-        <input
-          id="de-from"
-          type="date"
-          value={filters.from}
-          max={today}
-          onChange={(e) => set({ from: e.target.value })}
-        />
-        <label htmlFor="de-to">To</label>
-        <input
-          id="de-to"
-          type="date"
-          value={filters.to}
-          max={today}
-          onChange={(e) => set({ to: e.target.value })}
-        />
-      </div>
-
-      <div className="de-fgroup de-chipset">
-        {QUICK_RANGES.map((q) => (
-          <button
-            key={q.label}
-            type="button"
-            className={`de-chip${quickDays === q ? " on" : ""}`}
-            aria-pressed={quickDays === q}
-            onClick={() => set({ from: addDays(today, -(q.days - 1)), to: today })}
-          >
-            {q.label}
-          </button>
-        ))}
+        <label htmlFor="de-from">Date range (UTC)</label>
+        <div className="de-frow">
+          <input
+            id="de-from"
+            type="date"
+            aria-label="From"
+            value={filters.from}
+            max={today}
+            onChange={(e) => set({ from: e.target.value })}
+          />
+          <span className="de-muted" aria-hidden="true">→</span>
+          <input
+            id="de-to"
+            type="date"
+            aria-label="To"
+            value={filters.to}
+            max={today}
+            onChange={(e) => set({ to: e.target.value })}
+          />
+        </div>
       </div>
 
       <div className="de-fgroup">
-        <label htmlFor="de-tod-from">From time</label>
-        <input
-          id="de-tod-from"
-          type="time"
-          value={filters.todFrom}
-          onChange={(e) => set({ todFrom: e.target.value || TOD_START })}
-        />
-        <label htmlFor="de-tod-to">To time</label>
-        <input
-          id="de-tod-to"
-          type="time"
-          value={filters.todTo}
-          onChange={(e) => set({ todTo: e.target.value || TOD_END })}
-        />
+        <label id="de-quick-label">Quick</label>
+        <div className="de-chipset" role="group" aria-labelledby="de-quick-label">
+          {QUICK_RANGES.map((q) => (
+            <button
+              key={q.label}
+              type="button"
+              className={`de-chip${quickDays === q ? " on" : ""}`}
+              aria-pressed={quickDays === q}
+              onClick={() => set({ from: addDays(today, -(q.days - 1)), to: today })}
+            >
+              {q.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="de-fgroup">
-        <label htmlFor="de-minsize">Minimum size</label>
+        <label htmlFor="de-tod-from">Time of day (UTC)</label>
+        <div className="de-frow">
+          <input
+            id="de-tod-from"
+            type="time"
+            aria-label="From time"
+            value={filters.todFrom}
+            onChange={(e) => set({ todFrom: e.target.value || TOD_START })}
+          />
+          <span className="de-muted" aria-hidden="true">→</span>
+          <input
+            id="de-tod-to"
+            type="time"
+            aria-label="To time"
+            value={filters.todTo}
+            onChange={(e) => set({ todTo: e.target.value || TOD_END })}
+          />
+        </div>
+      </div>
+
+      <div className="de-fgroup">
+        <label htmlFor="de-minsize">Min size</label>
         <select
           id="de-minsize"
           value={String(filters.minSize)}
@@ -95,12 +107,6 @@ export function DateRangeControls({ filters, today, onChange }: Props) {
           ))}
         </select>
       </div>
-
-      <div className="de-fgroup">
-        <button type="button" className="btn btn-secondary btn-sm" onClick={() => onChange(defaultFilters(today))}>
-          Reset
-        </button>
-      </div>
-    </div>
+    </>
   );
 }

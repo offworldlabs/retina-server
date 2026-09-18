@@ -91,8 +91,33 @@ export function ResultsTree({ days, byDay, entryFor, sort, onSort, onRetry }: Pr
       return next;
     });
 
+  // A day collapses as a whole; its nodes keep whatever they had, so opening
+  // the day again does not undo a reader's choices inside it.
+  const collapseAll = () => setCollapsed((prev) => new Set([...prev, ...days]));
+
+  const matched = Array.from(byDay.values()).flat();
+
   return (
     <div className="de-tree">
+      <div className="card-header">
+        <h3>Archived detections</h3>
+        <div className="de-frow">
+          <span className="mono de-muted">
+            {matched.length} files · {formatBytes(total(matched))}
+          </span>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => setCollapsed(new Set())}
+          >
+            Expand all
+          </button>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={collapseAll}>
+            Collapse all
+          </button>
+        </div>
+      </div>
+
       <div className="de-colhead">
         {COLUMNS.map((c) => (
           <span key={c.key}>

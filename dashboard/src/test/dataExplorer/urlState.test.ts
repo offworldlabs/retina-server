@@ -97,12 +97,6 @@ describe("writeFilters", () => {
     expect(qs.getAll("node")).toEqual(["a", "b"]);
   });
 
-  it("omits an empty selection, which is why it does not round-trip", () => {
-    const qs = writeFilters(base({ nodeSel: new Set() }));
-    expect(qs.getAll("node")).toEqual([]);
-    expect(readFilters(`?${qs}`, TODAY).nodeSel).toBeNull();
-  });
-
   it("omits a default time-of-day window and a zero minimum size", () => {
     const qs = writeFilters(base()).toString();
     expect(qs).not.toContain("tod=");
@@ -125,5 +119,27 @@ describe("writeFilters", () => {
       near: { lat: 51.5, lon: -0.1276, km: 40 },
     });
     expect(readFilters(`?${writeFilters(f)}`, TODAY)).toEqual(f);
+  });
+});
+
+describe("an empty selection", () => {
+  const empty = (): ExplorerFilters => ({ ...defaultFilters(TODAY), nodeSel: new Set<string>() });
+
+  it("round-trips, because it means none and not every node", () => {
+    const back = readFilters(writeFilters(empty()).toString(), TODAY);
+    expect(back.nodeSel).toBeInstanceOf(Set);
+    expect(back.nodeSel!.size).toBe(0);
+  });
+
+  it("is spelled differently from selecting everything", () => {
+    expect(writeFilters(empty()).toString()).not.toBe(
+      writeFilters(defaultFilters(TODAY)).toString(),
+    );
+  });
+
+  it("leaves a named selection alone", () => {
+    const named = { ...defaultFilters(TODAY), nodeSel: new Set(["ret-a", "ret-b"]) };
+    const back = readFilters(writeFilters(named).toString(), TODAY);
+    expect([...back.nodeSel!].sort()).toEqual(["ret-a", "ret-b"]);
   });
 });

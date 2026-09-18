@@ -111,7 +111,6 @@ export function useArchiveScan(days: string[], nodeSel: Set<string> | null): Sca
   useEffect(() => {
     for (const day of days) {
       if (entryForScope(entriesRef.current, day, scope)) continue;
-      if (entriesRef.current.has(cacheKey(day, only))) continue;
       start(day, only);
     }
   }, [days, scope, only, start]);

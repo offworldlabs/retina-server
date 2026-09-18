@@ -185,4 +185,31 @@ describe("ResultsTree", () => {
       "/api/data/archive/2026-09-17/ret-a/a.parquet",
     );
   });
+
+  it("summarises what the filters matched", () => {
+    setup();
+    expect(screen.getByText("2 files · 2.0 KB")).toBeInTheDocument();
+  });
+
+  it("opens every day at once", () => {
+    setup();
+    fireEvent.click(screen.getByRole("button", { name: "Collapse all" }));
+    fireEvent.click(screen.getByRole("button", { name: "Expand all" }));
+    for (const day of ["2026-09-16", "2026-09-17"]) {
+      expect(screen.getByRole("button", { name: new RegExp(day) })).toHaveAttribute(
+        "aria-expanded",
+        "true",
+      );
+    }
+  });
+
+  it("closes every day at once, and the files with them", () => {
+    setup();
+    fireEvent.click(screen.getByRole("button", { name: "Collapse all" }));
+    expect(screen.getByRole("button", { name: /2026-09-17/ })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(screen.queryByText("a.parquet")).not.toBeInTheDocument();
+  });
 });

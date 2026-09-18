@@ -24,6 +24,17 @@ const dayOf = (url: string) =>
 const oneFilePerDay = (url: string) =>
   Promise.resolve({ files: [row(dayOf(url), "ret-a", "part-0")], total: 1 });
 
+/** The page fetches the node registry as well as listings, and only listings
+ *  carry a `date`, so fixtures have to tell the two apart. */
+const isArchive = (url: string) => url.startsWith("/api/data/archive");
+
+const archiveCalls = () => requestMock.mock.calls.map((c) => c[0] as string).filter(isArchive);
+
+const withRegistry =
+  (listing: (url: string) => Promise<unknown>, nodes: Record<string, unknown> = {}) =>
+  (url: string) =>
+    isArchive(url) ? listing(url) : Promise.resolve({ nodes });
+
 function renderAt(search = "") {
   return render(
     <MemoryRouter initialEntries={[`/data${search}`]}>
@@ -46,7 +57,7 @@ afterEach(() => {
 
 describe("DataExplorerPage", () => {
   it("lists the default range and shows what it found", async () => {
-    requestMock.mockImplementation(oneFilePerDay);
+    requestMock.mockImplementation(withRegistry(oneFilePerDay));
     renderAt();
 
     await waitFor(() => expect(screen.getByText("Files matching")).toBeInTheDocument());
@@ -55,7 +66,7 @@ describe("DataExplorerPage", () => {
   });
 
   it("sums sizes in gigabytes", async () => {
-    requestMock.mockImplementation(oneFilePerDay);
+    requestMock.mockImplementation(withRegistry(oneFilePerDay));
     renderAt();
     // Three 2 GB files, which the old megabyte-only formatter could not say.
     await waitFor(() => expect(screen.getByTestId("de-stat-bytes")).toHaveTextContent("6.00 GB"));
@@ -63,15 +74,14 @@ describe("DataExplorerPage", () => {
 
   it("reads its filters from the query string", async () => {
     renderAt("?from=2026-09-17&to=2026-09-17");
-    await waitFor(() => expect(requestMock).toHaveBeenCalled());
-    const dates = requestMock.mock.calls.map((c) => c[0]);
-    expect(dates.every((u: string) => u.includes("date=2026%2F09%2F17"))).toBe(true);
+    await waitFor(() => expect(archiveCalls().length).toBeGreaterThan(0));
+    expect(archiveCalls().every((u) => u.includes("date=2026%2F09%2F17"))).toBe(true);
   });
 
   it("scopes the listing to a single node named in the query string", async () => {
     renderAt("?node=ret-a&from=2026-09-17&to=2026-09-17");
-    await waitFor(() => expect(requestMock).toHaveBeenCalled());
-    expect(requestMock.mock.calls[0][0]).toContain("node_id=ret-a");
+    await waitFor(() => expect(archiveCalls().length).toBeGreaterThan(0));
+    expect(archiveCalls()[0]).toContain("node_id=ret-a");
   });
 
   it("writes a filter change back to the query string", async () => {
@@ -86,8 +96,10 @@ describe("DataExplorerPage", () => {
   it("says when the range reaches past what is still on disk", async () => {
     // The oldest day of the three is empty, the two after it are not, which is
     // what a retention horizon looks like from the client's side.
-    requestMock.mockImplementation((url: string) =>
-      dayOf(url) === "2026-09-15" ? Promise.resolve({ files: [], total: 0 }) : oneFilePerDay(url),
+    requestMock.mockImplementation(
+      withRegistry((url: string) =>
+        dayOf(url) === "2026-09-15" ? Promise.resolve({ files: [], total: 0 }) : oneFilePerDay(url),
+      ),
     );
     renderAt();
     // Scoped to the notice: the day it names is also a day header below.
@@ -97,9 +109,20 @@ describe("DataExplorerPage", () => {
   });
 
   it("does not claim a horizon while the range is fully populated", async () => {
-    requestMock.mockImplementation(oneFilePerDay);
+    requestMock.mockImplementation(withRegistry(oneFilePerDay));
     renderAt();
     await waitFor(() => expect(screen.getByTestId("de-stat-files")).toHaveTextContent("3"));
     expect(screen.queryByText(/cold storage/i)).not.toBeInTheDocument();
+  });
+
+  it("puts every filter back to its default at once", async () => {
+    renderAt("?from=2026-09-01&to=2026-09-17&minsize=4096&tod=06:00-07:00&near=51.5,-0.1,10");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reset" })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("de-share")).toHaveTextContent(
+        "?from=2026-09-15&to=2026-09-17",
+      ),
+    );
   });
 });

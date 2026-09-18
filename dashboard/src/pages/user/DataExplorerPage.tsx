@@ -8,15 +8,32 @@ import { DateRangeControls } from "./dataExplorer/DateRangeControls";
 import { daysBetween, todayUTC } from "./dataExplorer/dates";
 import { makePredicate } from "./dataExplorer/filters";
 import { JSON_FACTOR, type ArchiveFile } from "./dataExplorer/keys";
+import { NearControls } from "./dataExplorer/NearControls";
+import { NodeMap } from "./dataExplorer/NodeMap";
+import { NodePicker } from "./dataExplorer/NodePicker";
+import { effectiveNodeIds } from "./dataExplorer/nodes";
 import { ResultsTree, type SortKey } from "./dataExplorer/ResultsTree";
 import { useArchiveScan } from "./dataExplorer/useArchiveScan";
-import { readFilters, writeFilters } from "./dataExplorer/urlState";
+import { useNodeRegistry } from "./dataExplorer/useNodeRegistry";
+import {
+  DEFAULT_RADIUS_KM,
+  defaultFilters,
+  readFilters,
+  writeFilters,
+} from "./dataExplorer/urlState";
 
 import "./dataExplorer/dataExplorer.css";
 
 export default function DataExplorerPage() {
   const [search, setSearch] = useSearchParams();
   const [sort, setSort] = useState<SortKey>("span");
+  // Off by default: the map is a second way to say what the coordinate fields
+  // already say, and it is half the height of the page when it is open.
+  const [mapOpen, setMapOpen] = useState(false);
+  // The radius to apply to the next centre. It cannot live in the query string,
+  // which spells a radius only as part of `near`, and it has to outlive the gap
+  // between choosing a distance and choosing a point to measure it from.
+  const [pendingKm, setPendingKm] = useState(DEFAULT_RADIUS_KM);
 
   const today = useMemo(() => todayUTC(), []);
   const filters = useMemo(() => readFilters(search.toString(), today), [search, today]);
@@ -43,16 +60,39 @@ export default function DataExplorerPage() {
 
   const scan = useArchiveScan(days, nodeSel);
 
-  // What the page filters and counts by. The scan derives its own copy for
-  // deciding what to fetch; this one is for display.
+  const registry = useNodeRegistry();
+
+  // Which cached listing is allowed to answer. This has to be what was asked
+  // for, never what survives the filters: a radius that narrows the view to a
+  // single node has not changed the request, and that node's listing cannot
+  // stand in for the whole fleet's.
+  const entryScope = useMemo(() => nodeSel ?? new Set<string>(), [nodeSel]);
+
+  // What the page filters and counts by, which the radius does narrow.
   const effective = useMemo(
-    () => nodeSel || scan.nodeIds,
-    [nodeSel, scan.nodeIds],
+    () => effectiveNodeIds(registry.nodes, scan.nodeIds, nodeSel, filters.near),
+    [registry.nodes, scan.nodeIds, nodeSel, filters.near],
   );
 
   const entryFor = useCallback(
-    (day: string) => entryForScope(scan.entries, day, effective),
-    [scan.entries, effective],
+    (day: string) => entryForScope(scan.entries, day, entryScope),
+    [scan.entries, entryScope],
+  );
+
+  // Files this node has in the range, regardless of every other filter. A
+  // count that fell to zero the moment you deselected the node would say
+  // nothing about whether to select it again.
+  const fileCountFor = useCallback(
+    (id: string) => {
+      let n = 0;
+      for (const day of days) {
+        const entry = entryForScope(scan.entries, day, entryScope);
+        if (!entry || entry.status !== "done") continue;
+        for (const f of entry.files) if (f.day === day && f.node === id) n += 1;
+      }
+      return n;
+    },
+    [days, scan.entries, entryScope],
   );
 
   const { byDay, matched } = useMemo(() => {
@@ -60,20 +100,20 @@ export default function DataExplorerPage() {
     const out = new Map<string, ArchiveFile[]>();
     const all: ArchiveFile[] = [];
     for (const day of days) {
-      const entry = entryForScope(scan.entries, day, effective);
+      const entry = entryForScope(scan.entries, day, entryScope);
       if (!entry || entry.status !== "done") continue;
       const files = entry.files.filter((f) => f.day === day && predicate(f));
       out.set(day, files);
       all.push(...files);
     }
     return { byDay: out, matched: all };
-  }, [days, scan.entries, effective, filters]);
+  }, [days, scan.entries, entryScope, effective, filters]);
 
   const listed = days.filter((d) => entryFor(d)?.status === "done").length;
   const failed = days.filter((d) => entryFor(d)?.status === "error").length;
   const bytes = matched.reduce((sum, f) => sum + f.size, 0);
   const nodesWithData = new Set(matched.map((f) => f.node)).size;
-  const coldFrom = horizon(scan.entries, days, effective);
+  const coldFrom = horizon(scan.entries, days, entryScope);
   const shareQuery = writeFilters(filters).toString();
 
   return (
@@ -89,6 +129,16 @@ export default function DataExplorerPage() {
         </div>
       )}
 
+      {registry.error && (
+        <div className="de-notice">
+          The node list could not be loaded ({registry.error}), so names and positions are missing
+          and the radius filter has nothing to measure against.
+          <button type="button" className="btn btn-secondary btn-sm" onClick={registry.retry}>
+            Retry
+          </button>
+        </div>
+      )}
+
       <div className="stats-grid">
         <StatCard
           label="Files matching"
@@ -101,7 +151,12 @@ export default function DataExplorerPage() {
           value={<span data-testid="de-stat-bytes">{formatBytes(bytes)}</span>}
           sub={`≈ ${formatBytes(bytes * JSON_FACTOR)} as JSON (≈ ${JSON_FACTOR}×)`}
         />
-        <StatCard label="Nodes with data" value={nodesWithData} tone="success" />
+        <StatCard
+          label="Nodes with data"
+          value={nodesWithData}
+          tone="success"
+          sub={`of ${registry.nodes.size} known`}
+        />
         <StatCard
           label="Range"
           value={`${days.length}d`}
@@ -113,18 +168,51 @@ export default function DataExplorerPage() {
       <div className="card de-card">
         <div className="card-header">
           <h3>Filters</h3>
-          <code className="mono" data-testid="de-share">?{shareQuery}</code>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => setFilters(defaultFilters(today))}
+          >
+            Reset
+          </button>
         </div>
-        <DateRangeControls filters={filters} today={today} onChange={setFilters} />
+        <div className="card-body">
+          <div className="de-filters">
+            <NodePicker
+              filters={filters}
+              nodes={registry.nodes}
+              discovered={scan.nodeIds}
+              fileCountFor={fileCountFor}
+              onChange={setFilters}
+            />
+            <DateRangeControls filters={filters} today={today} onChange={setFilters} />
+            <NearControls
+              filters={filters}
+              radiusKm={filters.near?.km ?? pendingKm}
+              onRadiusChange={setPendingKm}
+              mapOpen={mapOpen}
+              onToggleMap={() => setMapOpen(!mapOpen)}
+              onChange={setFilters}
+            />
+          </div>
+          <div className="de-urlbar">
+            <span>Shareable:</span>
+            <code className="mono" data-testid="de-share">?{shareQuery}</code>
+          </div>
+        </div>
+        {mapOpen && (
+          <NodeMap
+            filters={filters}
+            nodes={registry.nodes}
+            effective={effective}
+            radiusKm={filters.near?.km ?? pendingKm}
+            loading={registry.loading}
+            onChange={setFilters}
+          />
+        )}
       </div>
 
       <div className="card">
-        <div className="card-header">
-          <h3>Archived detections</h3>
-          <span className="mono">
-            {matched.length} files · {formatBytes(bytes)}
-          </span>
-        </div>
         <ResultsTree
           days={days}
           byDay={byDay}
