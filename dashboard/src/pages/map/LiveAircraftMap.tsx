@@ -74,7 +74,7 @@ import { IconScaleSync, iconZoomScale, useIconZoomScale } from "./iconScale";
 import ScaledCircleMarker from "./ScaledCircleMarker";
 
 import { api } from "../../api/client";
-import { defaultsGroundTruthOff } from "./utils/domains";
+import { defaultFeedMode, type FeedMode } from "./feedMode";
 import { withCartoKey } from "./utils/basemap";
 import { usePersistedState } from "./usePersistedState";
 import { parseHash, useHashWriter, encodeLayers, decodeLayers } from "./useUrlHashState";
@@ -1225,15 +1225,30 @@ const HashSync = memo(function HashSync({ onMove, showRangeRings, selectedHex, s
 
 /* ── Main component ───────────────────────────────────────────── */
 
-export default function LiveAircraftMap() {
+/**
+ * `feed` is the page's fleet. Unset, the hostname decides, which is what /map
+ * does; /sim passes "synthetic" so one console serves both fleets (feedMode.ts).
+ */
+export default function LiveAircraftMap({ feed }: { feed?: FeedMode }) {
   const auth = useAuth();
+  // Resolved here rather than in each hook, so the feed, the node listing and
+  // the layer defaults below cannot disagree about which fleet this page is.
+  const mode = feed ?? defaultFeedMode();
   const [scope, setScope] = useState({ ownerOnly: false, initial: true });
   // The feed, animation stores, Leaflet layers and playback all belong to one
   // scope. Remount them together so a newly filtered feed cannot inherit old
   // positions or optional channels. Persisted display preferences survive.
+  //
+  // The mode is part of the key for the same reason the owner toggle is: a
+  // route change from /map to /sim reuses this component, and a scope carried
+  // across it would keep the old fleet's positions, and would keep the
+  // persisted-state keys it read at mount (usePersistedState reads storage
+  // once, on mount) — including the ground-truth default below, which differs
+  // between the two.
   return (
     <AircraftMapScope
-      key={String(scope.ownerOnly)}
+      key={`${mode}:${scope.ownerOnly}`}
+      mode={mode}
       ownerOnly={scope.ownerOnly}
       restoreSelection={scope.initial}
       auth={auth}
@@ -1242,7 +1257,7 @@ export default function LiveAircraftMap() {
   );
 }
 
-function AircraftMapScope({ ownerOnly, restoreSelection, auth, onOwnerChange }) {
+function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChange }) {
   const { ANOMALY, COVERAGE, LANE_MN_ADSB, LANE_MN_DARK, SELECTED, WARN } = usePalette();
   const theme = useResolvedTheme();
   /* ── Node-owner view ─────────────────────────────────────────── */
@@ -1265,9 +1280,9 @@ function AircraftMapScope({ ownerOnly, restoreSelection, auth, onOwnerChange }) 
     setPaused: setFeedPaused,
     arcsBufferRef,
     detectionsRef,
-  } = useAircraftFeed(ownerOnly);
+  } = useAircraftFeed(ownerOnly, mode);
 
-  const allNodes = useNodes();
+  const allNodes = useNodes(mode);
   // In owner mode the map shows only the user's own nodes. The aircraft/arc
   // feed is already server-filtered; this filters the node markers/coverage to
   // match. Falls back to all nodes when the toggle is off.
@@ -1312,10 +1327,19 @@ function AircraftMapScope({ ownerOnly, restoreSelection, auth, onOwnerChange }) 
   const [displayAircraft, setDisplayAircraft] = useState([]);
   const [showCoverage, setShowCoverage] = usePersistedState("tf.layer.coverage", initialLayers?.coverage ?? false);
   const [showTrails, setShowTrails] = usePersistedState("tf.layer.trails", initialLayers?.trails ?? true);
-  // Default GT on wherever the radar is synthetic (testmap, staging, test, laptop) —
-  // there the truth overlay is the reference you are comparing against. Off only on
-  // production's map.*, the one real-receiver surface. See utils/domains.ts.
-  const [showGroundTruth, setShowGroundTruth] = usePersistedState("tf.layer.groundTruth", initialLayers?.groundTruth ?? !defaultsGroundTruthOff);
+  // Default GT on wherever the fleet is synthetic — there the truth overlay is
+  // the reference you are comparing against. Off on a real-fleet page, where the
+  // receivers are the thing being shown.
+  //
+  // Stored under its own key in the synthetic mode, because /map and /sim share
+  // one origin's localStorage: without the suffix, turning ground truth on in
+  // the simulator would turn it on over the real map too, where it is off by
+  // design. The default mode keeps the original key so nobody loses the setting
+  // they already have.
+  const [showGroundTruth, setShowGroundTruth] = usePersistedState(
+    mode === "synthetic" ? "tf.layer.groundTruth.sim" : "tf.layer.groundTruth",
+    initialLayers?.groundTruth ?? mode !== "real",
+  );
   const [showLabels, setShowLabels] = usePersistedState("tf.layer.labels", initialLayers?.labels ?? true);
   const [selectedHex, setSelectedHex] = useState(restoreSelection ? initialHash.hex ?? null : null);
   const [selectedNodeRef, setSelectedNodeRef] = useState(null);
