@@ -8,10 +8,9 @@
   overflow: visible;
 }
 
-/* `.mono` is written throughout the dashboard and defined nowhere in it. The
-   explorer's ids, keys and coordinates are unreadable proportionally, so it is
-   given a face inside the feature rather than by changing every other page's
-   type in the same breath. */
+/* Ids, keys and coordinates are unreadable in a proportional face. `.mono`
+   gets its face only inside the explorer's containers below: no shared
+   stylesheet defines it, so it does nothing on any other page. */
 .de-card,
 .de-timeline,
 .de-tree,
