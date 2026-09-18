@@ -49,6 +49,15 @@ class TestMeEndpoint:
         assert body["email"] == "someone@offworldlab.com"
         assert body["auth_enabled"] is True
 
+    def test_me_says_whether_this_server_runs_a_fleet(self, client, monkeypatch):
+        """The console shows the physics layer only where there is a fleet to draw."""
+        monkeypatch.setenv("SYNTHETIC_FLEET_ENABLED", "1")
+        assert client.get("/api/auth/me").json()["synthetic_fleet"] is True
+
+    def test_me_says_there_is_no_fleet_when_the_flag_is_unset(self, client, monkeypatch):
+        monkeypatch.delenv("SYNTHETIC_FLEET_ENABLED", raising=False)
+        assert client.get("/api/auth/me").json()["synthetic_fleet"] is False
+
     def test_logout_returns_ok(self, client):
         r = client.post("/api/auth/logout")
         assert r.status_code == 200
@@ -544,6 +553,12 @@ class TestClaimRoutes:
         assert r.json()["node_ref"] == "nde1a2b3c4d00"
         assert r.json()["user"]["email"] == "ada@example.com"
         assert "auth_token" in SimpleCookie(r.headers.get("set-cookie", ""))
+
+    def test_the_signed_in_user_carries_the_fleet_flag(self, client, monkeypatch):
+        """ClaimPage adopts this user without asking /me."""
+        monkeypatch.setenv("SYNTHETIC_FLEET_ENABLED", "1")
+        r = client.post("/api/auth/claim/consume", json={"token": self._mailed()})
+        assert r.json()["user"]["synthetic_fleet"] is True
 
     def test_a_spent_link_is_400_rather_than_saying_which_of_three_it_was(self, client):
         token = self._mailed()
