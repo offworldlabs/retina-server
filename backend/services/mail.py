@@ -83,6 +83,23 @@ def transport() -> str:
     return chosen
 
 
+def link_to(path: str) -> str | None:
+    """The URL a mail carries for `path` on HOST_APP, or None when HOST_APP is unset.
+
+    Built from configuration, never from a request. `request.base_url` derives
+    from the Host header, and an attacker who could set it would ask for a link
+    to somebody else's address and have the mail carry a URL pointing at their
+    own server: the recipient clicks, and the token is handed over. Callers
+    refuse or drop the send when this is None rather than fall back on a
+    request's host, which would restore exactly that.
+    """
+    host = os.getenv("HOST_APP", "").strip()
+    if not host:
+        return None
+    scheme = "https" if os.getenv("FORCE_HTTPS", "true").lower() == "true" else "http"
+    return f"{scheme}://{host}{path}"
+
+
 def is_configured() -> bool:
     return transport() != ""
 

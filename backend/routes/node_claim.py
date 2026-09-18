@@ -37,6 +37,7 @@ from services.node_claim import ClaimInvalid, claim_json_schema, validate_claim
 from services.node_claim_store import (
     ClaimStatus,
     claim_status,
+    drop_challenge,
     put_challenge,
     read_challenge,
     set_claim_address,
@@ -257,6 +258,10 @@ async def _start_claim(session: AsyncSession, node_id: str, email: str, now: flo
     new one is committed before it is delivered, so nothing can be sent that the
     database does not already know how to redeem; and delivery is last because a
     transport that will not take it does not make the nomination untrue.
+
+    The link store commits on its own rather than in this transaction. A failure
+    after `issue` leaves a link nobody was sent, which expires unused, and a
+    challenge row naming a dead one, which the node's retry replaces.
     """
     refusal = claim_rate_limiter.admit(node_id, email)
     if refusal is not None:
@@ -268,9 +273,20 @@ async def _start_claim(session: AsyncSession, node_id: str, email: str, now: flo
 
     outstanding = await read_challenge(session, node_id)
     if outstanding is not None:
-        await claim_links.invalidate(session, outstanding.handle)
+        await claim_links.invalidate(outstanding.handle)
 
-    challenge = claim_links.issue(intent=claim_links.INTENT_CLAIM, node_id=node_id, now=now)
+    challenge = await claim_links.issue(email=email, node_id=node_id, now=now)
+    if challenge is None:
+        # The address is holding as many outstanding claim links as it may. The
+        # node is told where its claim stands and nothing else: whether a link
+        # went out is what an attacker wants told, and the node cannot act on
+        # the difference anyway. The row naming the displaced link goes with
+        # it, or the node would read `pending` for a link nobody can click.
+        await drop_challenge(session, node_id)
+        await set_claim_address(session, node_id, email)
+        await session.commit()
+        return _state(ClaimStatus("unclaimed", email, False))
+
     await put_challenge(session, node_id, email, challenge.handle, challenge.expires_at)
     await set_claim_address(session, node_id, email)
     node = await session.get(Node, node_id)

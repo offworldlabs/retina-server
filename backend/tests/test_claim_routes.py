@@ -17,11 +17,12 @@ import time
 import pytest
 from sqlalchemy import select
 
-from core.auth import ClaimOutcome, complete_claim, decline_claim, get_node_owner, release_node, set_node_owner
+from core.auth import get_node_owner, set_node_owner
 from core.nodes import Node, NodeClaim, NodeClaimChallenge
 from core.users import async_session_maker
 from services import claim_links
 from services.node_claim_store import clear_claim, put_challenge, read_challenge, read_claim, set_claim_address
+from services.node_claiming import ClaimOutcome, complete_claim, decline_claim, release_node
 
 ADA = "ada@example.com"
 GRACE = "grace@example.com"
@@ -38,7 +39,7 @@ async def claimable_node():
     rather than leaving this suite testing a shape nothing produces.
     """
     now = time.time()
-    challenge = claim_links.issue(intent=claim_links.INTENT_CLAIM, node_id=NODE_ID, now=now)
+    challenge = await claim_links.issue(email=ADA, node_id=NODE_ID, now=now)
     async with async_session_maker() as session:
         async with session.begin():
             if await session.get(Node, NODE_ID) is None:
@@ -111,7 +112,7 @@ async def test_a_second_node_joins_the_account_the_address_already_has(claimable
     hardware to somebody else's account, so it has to land on the same one."""
     _outcome, first_user, _ref = await complete_claim(claimable_node)
 
-    second = claim_links.issue(intent=claim_links.INTENT_CLAIM, node_id="retdeadbeef", now=time.time())
+    second = await claim_links.issue(email=ADA, node_id="retdeadbeef", now=time.time())
     async with async_session_maker() as session:
         async with session.begin():
             session.add(Node(node_id="retdeadbeef", node_ref="ndedeadbeef00", board_model="raspberrypi5-4gb"))
@@ -125,15 +126,33 @@ async def test_a_second_node_joins_the_account_the_address_already_has(claimable
 
 
 async def test_an_expired_link_is_refused(claimable_node):
+    """Expiry is the primitive's: the row beside the node carries a copy so the
+    node can be told `unclaimed` without a second lookup on every heartbeat, but
+    what gates a redemption is the link itself."""
+    from core.users import MagicLink
+
     async with async_session_maker() as session:
         async with session.begin():
-            row = await session.get(NodeClaimChallenge, NODE_ID)
-            row.expires_at = 0.0
+            link = await session.get(MagicLink, claim_links.handle_for(claimable_node))
+            link.expires_at = 0.0
 
     outcome, _user, _ref = await complete_claim(claimable_node)
 
     assert outcome is ClaimOutcome.INVALID
     assert await _owner() is None
+
+
+async def test_the_two_expiries_agree(claimable_node):
+    """The node reads `pending` off its own row and the click is gated by the
+    link. Set from one clock reading through one constant, so a node cannot be
+    told to keep waiting for a link that is already dead."""
+    from core.users import MagicLink
+
+    async with async_session_maker() as session:
+        link = await session.get(MagicLink, claim_links.handle_for(claimable_node))
+        challenge = await session.get(NodeClaimChallenge, NODE_ID)
+
+    assert link.expires_at == challenge.expires_at
 
 
 async def test_an_unknown_link_is_refused():
@@ -149,12 +168,13 @@ async def test_an_empty_token_is_refused():
 
 
 async def test_a_click_landing_on_the_clickers_own_binding_succeeds(claimable_node):
-    """Two clicks on one link, racing: the second finds the binding the first
-    made. It is the same person's, so that is success, not a collision."""
+    """A second link for the same address, as a resend racing the first click
+    leaves, finds the binding the first made. It is the same person's, so that
+    is success, not a collision."""
     _outcome, user, _ref = await complete_claim(claimable_node)
     async with async_session_maker() as session:
         async with session.begin():
-            second = claim_links.issue(intent=claim_links.INTENT_CLAIM, node_id=NODE_ID, now=time.time())
+            second = await claim_links.issue(email=ADA, node_id=NODE_ID, now=time.time())
             await put_challenge(session, NODE_ID, ADA, second.handle, second.expires_at)
 
     outcome, again, node_ref = await complete_claim(second.token)
@@ -183,6 +203,19 @@ async def test_a_refused_click_leaves_the_address_unconfirmed(claimable_node):
     await complete_claim(claimable_node)
 
     assert (await _claim_row()).verified is False
+
+
+async def test_a_click_refused_for_a_taken_node_does_not_spend_the_link(claimable_node):
+    """A refusal knowable before anything is written costs the clicker nothing:
+    the link still reads, and a second click is told the same thing rather than
+    that the link is dead."""
+    await set_node_owner(NODE_ID, "11111111-1111-1111-1111-111111111111")
+
+    await complete_claim(claimable_node)
+
+    assert await claim_links.peek(claimable_node) is not None
+    outcome, _user, _ref = await complete_claim(claimable_node)
+    assert outcome is ClaimOutcome.TAKEN
 
 
 async def test_a_link_for_an_address_the_node_has_since_replaced_is_refused(claimable_node):
@@ -238,6 +271,20 @@ async def test_a_declined_link_cannot_then_be_redeemed(claimable_node):
     assert outcome is ClaimOutcome.INVALID
 
 
+async def test_a_decline_leaves_a_link_minted_since_alone(claimable_node):
+    """The state a resend landing mid-decline leaves: a fresh link beside the
+    node, and the declined one not yet killed. The decline spends its own link
+    and must not take the fresh one's row with it."""
+    fresh = await claim_links.issue(email=ADA, node_id=NODE_ID, now=time.time())
+    async with async_session_maker() as session:
+        async with session.begin():
+            await put_challenge(session, NODE_ID, ADA, fresh.handle, fresh.expires_at)
+
+    assert await decline_claim(claimable_node) is True
+
+    assert (await _challenge_row()).handle == fresh.handle
+
+
 async def test_declining_an_unknown_link_is_false():
     assert await decline_claim("not-a-token") is False
 
@@ -260,7 +307,7 @@ async def test_a_released_node_can_be_claimed_again(claimable_node):
     _outcome, user, _ref = await complete_claim(claimable_node)
     await release_node(NODE_ID, str(user.id))
 
-    second = claim_links.issue(intent=claim_links.INTENT_CLAIM, node_id=NODE_ID, now=time.time())
+    second = await claim_links.issue(email=GRACE, node_id=NODE_ID, now=time.time())
     async with async_session_maker() as session:
         async with session.begin():
             await set_claim_address(session, NODE_ID, GRACE)
@@ -288,12 +335,17 @@ async def test_releasing_an_unowned_node_is_false():
 # ── The seam ─────────────────────────────────────────────────────────────────
 
 
-async def test_a_challenge_minted_under_another_intent_cannot_claim():
+async def test_a_sign_in_link_cannot_claim_a_node():
     """A claim link must not work as a bare sign-in if it is forwarded, and a
-    sign-in link must not claim. Both rest on this check rather than on a token
-    only ever reaching the endpoint it was minted for."""
-    with pytest.raises(ValueError):
-        claim_links.issue(intent="signin", node_id=NODE_ID, now=time.time())
+    sign-in link must not claim. The primitive matches on intent inside the
+    statement that spends the token; this is the claiming half of that."""
+    from core.auth import create_magic_link
+
+    token = await create_magic_link(ADA)
+
+    assert await claim_links.redeem(token) is None
+    outcome, _user, _ref = await complete_claim(token)
+    assert outcome is ClaimOutcome.INVALID
 
 
 async def test_only_the_hash_of_a_token_is_ever_stored(claimable_node):

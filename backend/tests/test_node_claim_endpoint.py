@@ -171,6 +171,27 @@ async def test_a_second_address_replaces_the_first_challenge(registered_node, no
     assert [address for address, _token in delivered] == [ADA, GRACE]
 
 
+async def test_an_address_at_its_link_cap_leaves_no_dead_challenge_behind(
+    registered_node, node_session, node_client, delivered
+):
+    """The correction kills the link it displaced even when the new address may
+    not be sent another. The node must then read `unclaimed`, not `pending` for
+    a link nobody can click."""
+    from core.auth import _MAX_OUTSTANDING_MAGIC_LINKS, create_magic_link
+
+    token, node_id = registered_node
+    node_client.put("/v1/nodes/claim", json={"email": ADA}, headers=_auth(token))
+    for _ in range(_MAX_OUTSTANDING_MAGIC_LINKS):
+        await create_magic_link(GRACE, intent=claim_links.INTENT_CLAIM, node_id="retdeadbeef")
+
+    r = node_client.put("/v1/nodes/claim", json={"email": GRACE}, headers=_auth(token))
+
+    assert r.json()["state"] == "unclaimed"
+    assert await _challenge(node_session, node_id) is None
+    assert node_client.get("/v1/nodes/claim", headers=_auth(token)).json()["state"] == "unclaimed"
+    assert [address for address, _token in delivered] == [ADA]
+
+
 async def test_a_second_address_drops_the_verified_flag(registered_node, node_session, node_client, delivered):
     token, node_id = registered_node
     node_client.put("/v1/nodes/claim", json={"email": ADA}, headers=_auth(token))
