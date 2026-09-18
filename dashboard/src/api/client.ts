@@ -47,6 +47,30 @@ function request(path: string, opts?: RequestOptions) {
   });
 }
 
+// The map asks from more than one component on the same tick, so the answer is
+// held briefly and concurrent askers share one request rather than each making
+// it. A failed request is not cached.
+const MLAT_VERIFICATION_TTL_MS = 5000;
+let mlatCache: any = null;
+let mlatCacheTs = 0;
+let mlatInflight: Promise<any> | null = null;
+
+function mlatVerification() {
+  const now = Date.now();
+  if (mlatCache && now - mlatCacheTs < MLAT_VERIFICATION_TTL_MS) return Promise.resolve(mlatCache);
+  if (mlatInflight) return mlatInflight;
+  mlatInflight = request("/api/test/mlat-verification")
+    .then((data) => {
+      mlatCache = data;
+      mlatCacheTs = Date.now();
+      return data;
+    })
+    .finally(() => {
+      mlatInflight = null;
+    });
+  return mlatInflight;
+}
+
 export const api = {
   // Auth. Who the caller is comes from the shared useCurrentUser, which goes
   // straight to the shared client: a 401 there is the answer it wants, and
@@ -141,8 +165,12 @@ export const api = {
   adminInfrastructure: () => request("/api/admin/infrastructure"),
 
   // MLAT verification — aggregated solver-vs-truth stats
-  mlatVerification: () => request("/api/test/mlat-verification"),
+  mlatVerification,
   mlatAccuracy: () => request("/api/test/mlat-accuracy"),
+  // Per-solve history for one MLAT marker (mn<sha256[:10]> hex): the raw solves
+  // behind it over the last ~30 min, plus gate rejections near its position.
+  mlatHistory: (hex: string) =>
+    request(`/api/test/mlat-history?hex=${encodeURIComponent(hex)}`),
 
   // Admin: invites
   adminInvites: () => request("/api/admin/invites"),

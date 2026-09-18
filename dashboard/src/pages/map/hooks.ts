@@ -12,8 +12,9 @@ import {
   scrubToSyntheticNodes,
   syntheticDetectingNodes,
 } from "./syntheticOnly";
-import { request, useCurrentUser } from "@retina/shared";
-import { fetchMyNodes } from "./api";
+import { request } from "@retina/shared";
+import { api } from "../../api/client";
+import { useAuth as useConsoleAuth } from "../../context/AuthContext";
 
 /**
  * Manages the WebSocket connection to /ws/aircraft with auto-reconnect,
@@ -450,15 +451,11 @@ export function useNodes() {
 const NO_NODES = [];
 
 /**
- * Resolves the current user (via the shared auth_token cookie) and the set of
- * node refs they own. `user` is null when not authenticated. Used to gate the
- * node-owner view on the testmap.
- *
- * A hook rather than a provider: one component on this surface has a use for
- * an identity, so the call sits where it is read.
+ * The console's identity plus the node refs that user owns. `user` is null
+ * when nobody is signed in. Gates the map's node-owner view.
  */
 export function useAuth() {
-  const { user, loading } = useCurrentUser();
+  const { user, loading } = useConsoleAuth();
   // null while ownership is unsettled, which the map must not read as owning
   // nothing: the owner panel would render mid-flight with a count of zero.
   const [ownedNodeRefs, setOwnedNodeRefs] = useState(null);
@@ -467,7 +464,13 @@ export function useAuth() {
     if (loading || !user) return;
     let cancelled = false;
     (async () => {
-      const myNodes = await fetchMyNodes();
+      let myNodes = [];
+      try {
+        myNodes = await api.myNodes();
+      } catch {
+        // Unanswered ownership is owning nothing, not unsettled: null would
+        // hold the owner panel in its loading state for the session.
+      }
       // /api/auth/me/nodes carries both identifiers; take the ref, which is
       // the key space the analytics node map and the aircraft feed use. It
       // is null for an owned node with no registry row, and a null in this
