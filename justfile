@@ -1,8 +1,8 @@
 set shell := ["bash", "-cu"]
 
-# Local dev runner for the testmap live map: backend + synthetic fleet + frontend.
+# Local dev runner for the console and its live map: backend + synthetic fleet + console.
 # `just setup` once, then `just up` / `just down`. Runtime logs go in .testmap-run/.
-# up/down/status are PORT-based (backend :8000+:3012, frontend :5173) so stale state
+# up/down/status are PORT-based (backend :8000+:3012, console :5174) so stale state
 # can't strand orphaned processes or silently fail on a port clash.
 
 root := justfile_directory()
@@ -97,7 +97,7 @@ migrate:
         exit 1
     fi
 
-# Bring up backend + synthetic fleet + frontend (background). Open http://app.localhost:5173/
+# Bring up backend + synthetic fleet + console (background). Open http://app.localhost:5174/
 # Fleet profile: `just up` (local, dense) · `just up test` (50 fps) · `just up prod` (12.5 fps).
 # test/prod read their fleet params LIVE from the real deploy configs so they can't drift.
 up profile="local":
@@ -138,7 +138,7 @@ up profile="local":
     # fail loudly if extraction ever silently breaks, rather than launch a wrong fleet
     : "${FLEET_INTERVAL:?could not resolve fleet params for profile '{{profile}}'}"
     # preflight: refuse to start (silently half-broken) if a port is already taken
-    for p in 8000 3012 5173; do
+    for p in 8000 3012 5174; do
         if lsof -nP -iTCP:$p -sTCP:LISTEN >/dev/null 2>&1; then
             echo "✗ port :$p already in use — run 'just down' first (inspect: lsof -iTCP:$p)"; exit 1
         fi
@@ -184,12 +184,12 @@ up profile="local":
         --seed "${FLEET_SEED:-42}" ) \
         > "{{run}}/fleet.log" 2>&1 &
 
-    echo "→ frontend (vite :5173)"
-    ( cd "{{root}}" && npm run dev -w frontend ) > "{{run}}/frontend.log" 2>&1 &
+    echo "→ console (vite :5174)"
+    ( cd "{{root}}" && npm run dev -w dashboard ) > "{{run}}/console.log" 2>&1 &
 
     echo
-    echo "✓ up [{{profile}}].  Open →  http://app.localhost:5173/"
-    echo "  (plain localhost shows the tower-search SPA — its API needs tower-finder-service; the app.* host selects the live map)"
+    echo "✓ up [{{profile}}].  Open →  http://app.localhost:5174/"
+    echo "  (add ?mode=admin for the admin console; the backend's anonymous admin signs you in to either)"
     echo "  fleet [{{profile}}]: ${FLEET_NODES} nodes @ ${FLEET_INTERVAL}s/node.  Profiles: local | test (50 fps) | prod (12.5 fps)"
     echo "  logs: just logs    status: just status    stop: just down"
 
@@ -198,7 +198,7 @@ down:
     #!/usr/bin/env bash
     set -uo pipefail
     kt() { local p="$1"; for c in $(pgrep -P "$p" 2>/dev/null); do kt "$c"; done; kill "$p" 2>/dev/null || true; }
-    for port in 8000 3012 5173; do
+    for port in 8000 3012 5174; do
         for pid in $(lsof -nP -tiTCP:$port -sTCP:LISTEN 2>/dev/null); do
             echo "→ killing pid $pid on :$port"; kt "$pid"
         done
@@ -213,7 +213,7 @@ down:
     # contradict it, which is exactly the sequence anyone types.
     for _ in $(seq 1 40); do
         alive=0
-        for port in 8000 3012 5173; do
+        for port in 8000 3012 5174; do
             lsof -nP -tiTCP:$port -sTCP:LISTEN >/dev/null 2>&1 && alive=1
         done
         pgrep -f 'retina_simulation.orchestrator' >/dev/null 2>&1 && alive=1
@@ -230,11 +230,11 @@ status:
     #!/usr/bin/env bash
     lsof -nP -iTCP:8000 -sTCP:LISTEN >/dev/null 2>&1 && echo "  backend:  running (:8000/:3012)" || echo "  backend:  not running"
     pgrep -f 'retina_simulation.orchestrator' >/dev/null 2>&1 && echo "  fleet:    running" || echo "  fleet:    not running"
-    lsof -nP -iTCP:5173 -sTCP:LISTEN >/dev/null 2>&1 && echo "  frontend: running (:5173)" || echo "  frontend: not running"
+    lsof -nP -iTCP:5174 -sTCP:LISTEN >/dev/null 2>&1 && echo "  console:  running (:5174)" || echo "  console:  not running"
 
 # Tail all three logs (Ctrl-C to stop tailing; services keep running)
 logs:
-    tail -n +1 -f "{{run}}/backend.log" "{{run}}/fleet.log" "{{run}}/frontend.log"
+    tail -n +1 -f "{{run}}/backend.log" "{{run}}/fleet.log" "{{run}}/console.log"
 
 # ── retina-test droplet ──────────────────────────────────────────────────────
 # `deploy-test` deploys by rsync from the working tree, not by git. That is
@@ -363,7 +363,7 @@ deploy-test:
     # The .env top-up mirrors what CI does on staging and production: the
     # example is committed and therefore keyless, and the droplet's own
     # /root/.secrets/carto.env carries the CARTO basemap key that
-    # docker-compose.yml interpolates into the frontend build arg. Guarded so a
+    # docker-compose.yml interpolates into the console's build arg. Guarded so a
     # droplet that was never given a key builds watermarked tiles rather
     # than failing here.
     ssh "{{host_test}}" "cd {{app_test}} && cp deploy/env.test.example .env && if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; fi && docker compose up -d --build"

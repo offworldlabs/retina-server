@@ -28,7 +28,7 @@ server {
 # mistyped name got the tower SPA's HTML with a 200. Keep it first, so the
 # positional default and the declared one cannot disagree.
 #
-# TLS-only: the laptop stack renders plain HTTP and reaches the frontend on bare
+# TLS-only: the laptop stack renders plain HTTP and is reached on bare
 # localhost:8080, a name no server_name claims, so it still needs the fall-through.
 server {
     listen 443 ssl default_server;
@@ -47,7 +47,10 @@ server {
 }
 # RETINA_ENDIF
 
-# ${HOST_MAIN} — tower finder frontend
+# ${HOST_MAIN} — the towers hostname. In every deployed environment Cloudflare
+# routes it to tower-finder-service's own edge, so only the laptop stack reaches
+# this block, which serves the console like ${HOST_APP}. The vhost stays so that
+# its API routes and the tower proxy have a name everywhere.
 server {
     # RETINA_IF TLS
     listen 443 ssl;
@@ -61,7 +64,7 @@ server {
     # RETINA_ENDIF
     # RETINA_INCLUDE snippets/security-headers-page.conf
 
-    root /app/frontend/dist;
+    root /app/dashboard/dist;
     index index.html;
 
     # WebSocket → FastAPI backend
@@ -97,12 +100,6 @@ server {
     # RETINA_IF TOWER_FINDER
     # RETINA_INCLUDE snippets/towers-proxy.conf
     # RETINA_ENDIF
-
-    # Frontend SPA at /towers as well as at the root
-    location /towers {
-        alias /app/frontend/dist;
-        try_files $uri $uri/ /index.html;
-    }
 
     # RETINA_INCLUDE snippets/spa.conf
 }

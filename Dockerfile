@@ -9,54 +9,35 @@
 ARG UV_VERSION=0.12.5
 
 # ── Stage 1: Web dependencies ───────────────────────────────────────────────
-# One `npm ci` for both Vite apps, from the lockfile CI installs, so the bundles
-# that ship are built from the tree CI tested. `npm install` would be free to
-# re-resolve and rewrite the lockfile.
+# One `npm ci`, from the lockfile CI installs, so the bundle that ships is built
+# from the tree CI tested. `npm install` would be free to re-resolve and rewrite
+# the lockfile.
 FROM node:20-alpine AS web-deps
 WORKDIR /app
 # Manifests first, so a source-only change leaves the install layer cached.
 COPY package.json package-lock.json .npmrc ./
 # One line per workspace, beside the list in package.json: the lockfile names
 # each one, so `npm ci` refuses a manifest that is missing here.
-COPY frontend/package.json frontend/
 COPY dashboard/package.json dashboard/
 COPY packages/shared/package.json packages/shared/
 COPY e2e/package.json e2e/
 RUN npm ci
-# Vite's TypeScript transform follows each app's tsconfig `extends` chain, so
-# the build needs this even though nothing here runs tsc.
+# Vite's TypeScript transform follows the app's tsconfig `extends` chain, so the
+# build needs this even though nothing here runs tsc.
 COPY tsconfig.base.json ./
-# Both apps import from it, so it belongs to the shared layer beneath them.
+# The console imports from it, so it belongs to the shared layer beneath.
 COPY packages/ packages/
 
-# ── Stages 1a and 1b: the two builds, from one install ──────────────────────
-# Separate stages so each app's build is cached and scheduled on its own: a
-# source change in one app does not rebuild the other (a dependency change
-# rebuilds both, through the shared install), and BuildKit runs the two in
-# parallel.
-FROM web-deps AS frontend-build
-COPY frontend/ frontend/
-# The CARTO basemap key, baked into the bundle by Vite. Declared here rather
-# than in the dependency stage so that changing it re-runs this build alone.
-# The empty default matters: a host that has no key (or a plain `docker build`)
-# produces unkeyed URLs, and so CARTO's watermarked tiles.
-ARG VITE_CARTO_API_KEY=""
-ENV VITE_CARTO_API_KEY=${VITE_CARTO_API_KEY}
-RUN npm run build -w frontend
-
+# ── Stage 1a: the console, served at the root of every page vhost ──────────
 FROM web-deps AS dashboard-build
 COPY dashboard/ dashboard/
-# The CARTO basemap key, for the live map page. Declared again here because an
-# ARG is scoped to its stage; the frontend-build stage says why it is baked in.
+# The CARTO basemap key, baked into the bundle by Vite for the live map. Declared
+# here rather than in the dependency stage so that changing it re-runs this build
+# alone. The empty default matters: a host that has no key (or a plain `docker
+# build`) produces unkeyed URLs, and so CARTO's watermarked tiles.
 ARG VITE_CARTO_API_KEY=""
 ENV VITE_CARTO_API_KEY=${VITE_CARTO_API_KEY}
-# Twice, because one bundle is served at two different mount points and Vite
-# bakes the asset prefix in at build time. `dist` is rooted at `/` for the admin
-# vhost; `dist-dash` is rooted at `/dash/` for the app vhost's mount. A single
-# relative-base build would resolve its assets against the CURRENT path, which
-# breaks the moment a route is more than one segment deep: `/dash/nodes/:nodeId`
-# would look for its JS under `/dash/nodes/assets/`.
-RUN npm run build -w dashboard && npm run build:dash -w dashboard
+RUN npm run build -w dashboard
 
 # ── uv, for the Python installs in the production stage ─────────────────────
 # A stage of its own so the version is written once. It is only ever a mount
@@ -103,10 +84,8 @@ RUN --mount=from=uv,source=/uv,target=/bin/uv \
 # Backend code
 COPY backend/ ./backend/
 
-# Built web apps
-COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
+# The built console
 COPY --from=dashboard-build /app/dashboard/dist /app/dashboard/dist
-COPY --from=dashboard-build /app/dashboard/dist-dash /app/dashboard/dist-dash
 
 # Rate-limit zones — http{} context, identical in every environment.
 COPY deploy/nginx-security.conf /etc/nginx/conf.d/security.conf
