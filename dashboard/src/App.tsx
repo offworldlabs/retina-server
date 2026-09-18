@@ -6,7 +6,8 @@ import ClaimPage from "./pages/ClaimPage";
 import DashboardLayout from "./components/DashboardLayout";
 import RequireAuth from "./components/RequireAuth";
 import { resolveSurface, warnIfModeIgnored } from "./utils/surface";
-import { usesRealOnlyFeed } from "./pages/map/utils/domains";
+import { useAuth } from "./context/AuthContext";
+import { showsPhysics } from "./utils/physics";
 
 // User pages — lazy-loaded so each chunk is only downloaded when first visited
 const OverviewPage = lazy(() => import("./pages/user/OverviewPage"));
@@ -59,6 +60,7 @@ const { isAdmin: isAdminSite, modeParamIgnored } = resolveSurface(
 warnIfModeIgnored(modeParamIgnored);
 
 export default function App() {
+  const { user } = useAuth();
   return (
     <Routes>
       <Route path="/login" element={<LoginPage isAdmin={isAdminSite} />} />
@@ -96,7 +98,7 @@ export default function App() {
                       <Route index element={<OverviewPage />} />
                       <Route path="nodes/:nodeId" element={<NodeDetailPage />} />
                       <Route path="map" element={<MapPage />} />
-                      {!usesRealOnlyFeed && <Route path="physics" element={<PhysicsPage />} />}
+                      {showsPhysics(user) && <Route path="physics" element={<PhysicsPage />} />}
                       {TestRadar && <Route path="test-radar" element={<TestRadar />} />}
                       <Route path="detections" element={<DetectionsPage />} />
                       <Route path="rf" element={<RFEnvironmentPage />} />
