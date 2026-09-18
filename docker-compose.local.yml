@@ -11,7 +11,7 @@
 # on macOS and most Linux):
 #   http://app.localhost:8080      → live radar map on the synthetic fleet, with
 #                                    the dashboard at /dash/ and the data
-#                                    explorer at /data/
+#                                    explorer at /dash/data
 #   http://towers.localhost:8080   → tower search SPA (also plain localhost:8080).
 #                                    Its API needs tower-finder-service running;
 #                                    see TOWER_FINDER_ENABLED below.

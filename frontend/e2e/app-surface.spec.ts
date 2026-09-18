@@ -1,5 +1,5 @@
 /**
- * The consolidated surface: three bundles on one hostname.
+ * The consolidated surface: two bundles on one hostname.
  *
  * What a browser adds over the smoke tests is that the mounted bundle actually
  * executes. `/dash/` answered 200 for the whole of #426 while rendering nothing,
@@ -62,8 +62,13 @@ test.describe("the consolidated app surface", () => {
     expect(page.url()).toContain("next=nodes");
   });
 
-  test("serves the data explorer under /data/", async ({ page }) => {
-    await page.goto(`${BASE}/data/`, { waitUntil: "domcontentloaded" });
-    await expect(page.locator("#topnav")).toBeAttached({ timeout: 30_000 });
+  test("sends an old /data/ link to the dashboard's explorer, filters intact", async ({ page }) => {
+    await page.goto(`${BASE}/data/?from=2026-09-01&to=2026-09-03`, { waitUntil: "domcontentloaded" });
+    await expect(page).toHaveURL(new RegExp(`^${originPattern()}/dash/data\\?`));
+    // The page renders its shareable link from the filters it read, so this
+    // needs the bundle to have run and the query to have survived the redirect.
+    await expect(page.getByTestId("de-share")).toContainText("from=2026-09-01&to=2026-09-03", {
+      timeout: 30_000,
+    });
   });
 });

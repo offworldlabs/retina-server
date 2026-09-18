@@ -10,9 +10,9 @@ import { defineConfig, devices } from "@playwright/test";
  *
  * The entries below are roles, not hostnames, which is why several of them hold
  * the same origin on a deployed environment: one hostname now serves the map at
- * `/`, the dashboard under `/dash/` and the data explorer under `/data/`. They
- * stay separate because they differ where it matters — on production and on the
- * dev server, where each answers its own question about what exists.
+ * `/` and the dashboard under `/dash/`. They stay separate because they differ
+ * where it matters — on production and on the dev server, where each answers
+ * its own question about what exists.
  *
  * No entry names a towers hostname. Those are routed to tower-finder-service's
  * own edge by a Cloudflare Origin Rule, so nothing this repo builds answers

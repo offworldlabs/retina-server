@@ -57,15 +57,15 @@ def test_every_other_static_file_is_revalidated(rendered):
 # The app vhost's bundle mounts. `^~` keeps spa.conf's regex pair off them,
 # which is what makes /dash/assets/ reachable at all — and also what leaves
 # them outside the pairing asserted above, so they are checked directly.
-_PREFIXED_BUNDLES = ("location ^~ /dash/ {", "location ^~ /data/ {")
+_PREFIXED_BUNDLES = ("location ^~ /dash/ {",)
 
 
 def test_prefixed_bundles_revalidate_their_unhashed_files(rendered):
     """A name that survives a deploy must not be cached under a new index.html.
 
-    The dashboard's theme-boot.js and everything the data explorer ships are
-    exactly that: no content hash, so the edge would serve the old copy for a
-    week if the mount inherited nothing and said nothing.
+    The dashboard's theme-boot.js is exactly that: no content hash, so the
+    edge would serve the old copy for a week if the mount inherited nothing and
+    said nothing.
     """
     for opener in _PREFIXED_BUNDLES:
         body = block(rendered, opener)

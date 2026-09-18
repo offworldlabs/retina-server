@@ -20,8 +20,10 @@ the session cookie is host-only and a login has to cover all of them:
   and are backed only by endpoints that already publish. A caller with no
   session gets a nav holding those routes alone, so nothing on screen leads to
   the login card.
-- **data explorer** (`/data/`, `data-explorer/`, static) — the public detection
-  archive browser.
+- **data explorer** (`/dash/data`) — the public detection archive browser, one
+  of the dashboard's public routes. The standalone page it replaced lived at
+  `/data/`, which nginx redirects here with its query string, so old links
+  keep their filters.
 - **admin** (`admin.retina.fm`) — the dashboard bundle again, built at a root and
   serving the admin route table, which `dashboard/src/utils/surface.ts` selects
   from the hostname. It keeps a name of its own because a Cloudflare Access

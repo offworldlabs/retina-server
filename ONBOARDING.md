@@ -21,8 +21,7 @@ session cookie is host-only and a login has to cover all of them:
 | Surface | What it is |
 | --- | --- |
 | **map** (`/`) | Live aircraft map. Production and the test droplet show real radar nodes only; staging shows its synthetic fleet, and is the dev/demo surface, being the only environment still running one. The feed is chosen by hostname in `frontend/src/utils/domains.ts`. |
-| **dashboard** (`/dash/`) | Node ownership, claim codes, MLAT verification, metrics. Auth required. |
-| **data explorer** (`/data/`) | The public detection archive browser. |
+| **dashboard** (`/dash/`) | Node ownership, claim codes, MLAT verification, metrics. Auth required, bar the public pages such as the detection archive browser at `/dash/data`, which the old `/data/` redirects to. |
 | **admin** (`admin.retina.fm`) | The same dashboard bundle with the admin route table, on a hostname of its own so a Cloudflare Access application can gate it. |
 
 Illuminator search is deliberately absent from that table: **tower-finder-service**
@@ -146,7 +145,7 @@ docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
 ```
 
 Serves `http://app.localhost:8080` (live map + synthetic fleet, with the
-dashboard at `/dash/` and the data explorer at `/data/`),
+dashboard at `/dash/` and the data explorer at `/dash/data`),
 `http://api.localhost:8080`, and towers/admin on the same port — the endpoint
 list and the reasoning live in `docker-compose.local.yml`'s header.
 Always pass `--build`: the frontend bundle and backend are baked into the

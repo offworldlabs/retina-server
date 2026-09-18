@@ -1,7 +1,8 @@
 """A bundle mounted under a path prefix must behave like one served at a root.
 
-The app vhost serves three bundles from one server block, which costs two
-things a root-served bundle gets for free. Both failures are silent — a 200
+The app vhost serves two bundles from one server block, the map at its root
+and the dashboard under /dash/, which costs the mounted one two things a
+root-served bundle gets for free. Both failures are silent — a 200
 carrying the wrong bytes — so neither shows up in a status check.
 
 Asserted on the RENDERED config: `location /` and the regex cache locations
@@ -15,10 +16,10 @@ import re
 
 import pytest
 
-from tests.nginx_helpers import render
+from tests.nginx_helpers import block, render
 
 # Prefix -> the root the mount aliases to.
-_MOUNTS = {"/dash/": "/app/dashboard/dist-dash/", "/data/": "/app/data-explorer/"}
+_MOUNTS = {"/dash/": "/app/dashboard/dist-dash/"}
 
 
 @pytest.fixture(scope="module")
@@ -64,3 +65,15 @@ def test_no_mount_names_a_hostname(rendered):
     for prefix, root in _MOUNTS.items():
         assert f"return 301 {prefix}" in rendered, f"{prefix} redirect is not a relative target"
         assert f"alias {root}" in rendered, f"{prefix} does not alias {root}"
+
+
+def test_the_retired_explorer_redirects_to_its_dashboard_page(rendered):
+    """Links to /data/ are in circulation, and their query is the page's filters.
+
+    Both spellings go straight to /dash/data in one hop. The `^~` opener is
+    asserted by `block`, which raises if it is missing: without it spa.conf's
+    regexes answer /data/app.js from the map's root instead of redirecting.
+    """
+    for opener in ("location = /data {", "location ^~ /data/ {"):
+        body = block(rendered, opener)
+        assert "return 301 /dash/data$is_args$args;" in body, f"{opener} does not redirect to /dash/data with its query"
