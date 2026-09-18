@@ -24,7 +24,9 @@ function renderAt(token = "tok") {
     <MemoryRouter initialEntries={[`/auth/claim/${token}`]}>
       <Routes>
         <Route path="/auth/claim/:token" element={<ClaimPage />} />
-        <Route path="/" element={<div>dashboard</div>} />
+        {/* The new owner's own nodes, not the map the index opens on. */}
+        <Route path="/overview" element={<div>dashboard</div>} />
+        <Route path="/" element={<div>front door</div>} />
       </Routes>
     </MemoryRouter>,
   );

@@ -18,7 +18,9 @@ function storedCollapsed(): boolean | null {
 }
 
 const pageTitles = {
-  "/": { user: "Overview", admin: "Network Health" },
+  // The user surface's index only forwards to the map, so it borrows its title.
+  "/": { user: "Live Map", admin: "Network Health" },
+  "/overview": { user: "Overview" },
   "/map": { user: "Live Map" },
   "/physics": { user: "Physics Layer" },
   "/detections": { user: "Detections" },

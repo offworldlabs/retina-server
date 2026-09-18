@@ -22,7 +22,7 @@ const userNav = (physics: boolean): NavSection[] => [
   {
     title: "Dashboard",
     items: [
-      { to: "/", label: "Overview", icon: "home" },
+      { to: "/overview", label: "Overview", icon: "home" },
       { to: "/detections", label: "Detections", icon: "radar" },
       { to: "/rf", label: "RF Environment", icon: "activity" },
       { to: "/contribution", label: "Network", icon: "globe" },
