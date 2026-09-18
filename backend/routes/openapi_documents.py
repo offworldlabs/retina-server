@@ -2,6 +2,9 @@
 
 `node_contract` is the v1 node API's wire contract, which
 scripts/generate_openapi.py commits to `contracts/nodes-v1.openapi.yaml`.
+`public_document` is that contract plus the unauthenticated reads, and is what
+`/openapi.json` serves; the application's whole schema, with its admin, account
+and test routes, goes only to an administrator (routes/reference.py).
 
 Everything in a document comes from the application: the descriptions and the
 `x-` annotations from the route decorators, the schemas from the Pydantic
@@ -28,6 +31,26 @@ from services.node_config import config_json_schema
 from services.node_contact import contact_json_schema
 
 TITLE = "RETINA node ingest"
+PUBLIC_TITLE = "RETINA server API"
+
+# Outside the node API only reads are published: every write there is an
+# internal ingest path keyed on X-API-Key.
+_PUBLIC_READ_PREFIXES = ("/api/v1/", "/api/radar/", "/api/data/", "/api/stats/", "/api/custody/")
+_PUBLIC_READ_PATHS = frozenset({"/api/health"})
+
+# Stands in for the application description's lead paragraph, which speaks for
+# the node contract alone; the sections after it apply here as written.
+_PUBLIC_INTRO = """\
+The RETINA server's public HTTP API, in two parts:
+
+- **Node ingest** (`/v1/nodes`): the contract RETINA nodes are built against,
+  versioned as a unit and committed as `contracts/nodes-v1.openapi.yaml`.
+- **Public reads**: the unauthenticated endpoints the live map, the dashboard
+  and the data archive are built on. They are not versioned and move with those
+  surfaces.
+
+Account, administration and test routes are not listed.
+"""
 
 _REF_PREFIX = "#/components/schemas/"
 
@@ -167,4 +190,34 @@ def node_contract(schema: dict[str, Any], description: str) -> dict[str, Any]:
         "tags": NODE_API_TAGS,
         "paths": paths,
         "components": _components(paths, schemas, schema.get("components", {}).get("securitySchemes", {})),
+    }
+
+
+def is_public_read(path: str, method: str) -> bool:
+    return method == "get" and (path in _PUBLIC_READ_PATHS or path.startswith(_PUBLIC_READ_PREFIXES))
+
+
+def public_document(schema: dict[str, Any], description: str) -> dict[str, Any]:
+    """The node contract's operations plus the public reads, for `/openapi.json`.
+
+    The node operations are the contract's own, so the live reference and the
+    committed file cannot describe the node API differently.
+    """
+    paths, schemas = _hoisted_parts(schema)
+    public = _node_paths(paths)
+    for path, operations in paths.items():
+        reads = {method: operation for method, operation in operations.items() if is_public_read(path, method)}
+        if reads and not is_node_path(path):
+            public[path] = reads
+    sections = description.find("\n## ")
+    return {
+        "openapi": schema["openapi"],
+        "info": {
+            "title": PUBLIC_TITLE,
+            "version": schema["info"]["version"],
+            "description": _PUBLIC_INTRO + (description[sections:] if sections >= 0 else ""),
+        },
+        "tags": NODE_API_TAGS,
+        "paths": public,
+        "components": _components(public, schemas, schema.get("components", {}).get("securitySchemes", {})),
     }

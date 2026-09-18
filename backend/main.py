@@ -51,6 +51,7 @@ from routes.nodes import NODE_API_TAGS, NODE_BODY_LIMITS, install_error_handlers
 from routes.nodes import router as nodes_router
 from routes.output import router as output_router
 from routes.radar import router as radar_router
+from routes.reference import router as reference_router
 from routes.sim_ingest import router as sim_ingest_router
 from routes.sim_ingest import synthetic_fleet_enabled
 from routes.stats import router as stats_router
@@ -386,6 +387,9 @@ app = FastAPI(
     description=API_DESCRIPTION,
     openapi_tags=NODE_API_TAGS,
     lifespan=lifespan,
+    # The defaults would publish every route, admin and test included; the
+    # public document and the whole one are served by routes/reference.py.
+    openapi_url=None,
 )
 
 
@@ -440,6 +444,7 @@ for router in (
     admin_infrastructure_router,
     output_router,
     nodes_router,
+    reference_router,
 ):
     app.include_router(router)
 
