@@ -5,7 +5,6 @@ import App from "./App";
 import { AuthProvider } from "./context/AuthContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import ErrorBoundary from "./components/ErrorBoundary";
-import { ROUTER_BASENAME } from "./utils/basePath";
 import "@retina/shared/css/tokens.css";
 import "@retina/shared/css/ui.css";
 import "./App.css";
@@ -16,7 +15,7 @@ import "./App.css";
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <ThemeProvider>
-      <BrowserRouter basename={ROUTER_BASENAME}>
+      <BrowserRouter>
         <ErrorBoundary>
           <AuthProvider>
             <App />

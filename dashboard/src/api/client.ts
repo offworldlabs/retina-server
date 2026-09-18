@@ -1,13 +1,10 @@
 import { UnauthorizedError, request as sharedRequest, type RequestOptions } from "@retina/shared";
 
-import { stripBase, withBase } from "../utils/basePath";
 import { isPublicRoute } from "../utils/publicRoutes";
 import { resolveSurface } from "../utils/surface";
 
-/** Must match the route in App.tsx. Mounted, because this drives a full-page
- *  navigation rather than a router one: under `/dash/` a bare `/login` lands on
- *  the app vhost's root, which is the MAP bundle. */
-const LOGIN_PATH = withBase("/login");
+/** Must match the route in App.tsx. */
+const LOGIN_PATH = "/login";
 
 /** Trailing slashes trimmed: the router matches `/login/` to the same route, so
  *  comparing the raw pathname would send a caller who arrived that way through
@@ -27,7 +24,7 @@ function onLoginPage() {
  *  disagreement is whether a 401 redirects on a laptop. */
 function onPublicPage() {
   const { hostname, pathname, search } = window.location;
-  return isPublicRoute(stripBase(pathname), resolveSurface(hostname, search).isAdmin);
+  return isPublicRoute(pathname, resolveSurface(hostname, search).isAdmin);
 }
 
 // The shared client answers a 401 with UnauthorizedError; sending the caller to
