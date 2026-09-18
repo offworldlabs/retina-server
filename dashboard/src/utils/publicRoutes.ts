@@ -15,18 +15,13 @@ export type PublicRoute = {
   label: string;
   /** A key into the sidebar's icon set. */
   icon: string;
-  /** Served by a sibling bundle rather than by a route in this one. */
-  external?: true;
 };
 
 /**
- * `/map` is here ahead of its route. It is the live map's own bundle for now,
- * hence `external`; when the route lands the flag comes off and nothing else
- * moves. Listing it early costs nothing and saves a mount that ships gated for
- * however long it takes anyone to notice.
+ * `/map` is the SPA's own page, like the rest of this list.
  */
 export const PUBLIC_ROUTES: readonly PublicRoute[] = [
-  { path: "/map", label: "Map", icon: "map", external: true },
+  { path: "/map", label: "Map", icon: "map" },
   { path: "/data", label: "Data Explorer", icon: "database" },
   { path: "/leaderboard", label: "Leaderboard", icon: "trophy" },
   { path: "/knowledge", label: "Knowledge Base", icon: "book" },

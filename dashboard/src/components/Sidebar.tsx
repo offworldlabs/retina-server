@@ -1,6 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { BASE_PATH } from "../utils/basePath";
-import { mapUrl, towerFinderUrl } from "../utils/siblings";
+import { towerFinderUrl } from "../utils/siblings";
 import { useAuth } from "../context/AuthContext";
 import { PUBLIC_ROUTES } from "../utils/publicRoutes";
 
@@ -27,7 +26,7 @@ const userNav = (): NavSection[] => [
       { to: "/contribution", label: "Network", icon: "globe" },
       { to: "/alerts", label: "Alerts", icon: "bell" },
       { to: "/anomalies", label: "Anomalies", icon: "alertTriangle" },
-      { href: mapUrl(location.host, location.protocol, BASE_PATH), label: "Map", icon: "map", external: true },
+      { to: "/map", label: "Map", icon: "map" },
       { href: towerFinderUrl(location.host, location.protocol), label: "Tower Finder", icon: "radio", external: true },
     ],
   },
@@ -54,11 +53,6 @@ const userNav = (): NavSection[] => [
   },
 ];
 
-// Where a route the guard admits becomes somewhere to click. Only the map has
-// a bundle of its own today, so it is the only path with a URL to build.
-const externalUrl = (path: string): string =>
-  path === "/map" ? mapUrl(location.host, location.protocol, BASE_PATH) : path;
-
 // What a caller with no session is offered: the open routes and nothing else,
 // read off the same list the guard reads, so neither can be changed alone.
 // One section rather than scattered through the four the signed-in nav has,
@@ -66,9 +60,7 @@ const externalUrl = (path: string): string =>
 const publicNav = (): NavSection[] => [
   {
     title: "Explore",
-    items: PUBLIC_ROUTES.map(({ path, label, icon, external }) =>
-      external ? { href: externalUrl(path), label, icon, external } : { to: path, label, icon }
-    ),
+    items: PUBLIC_ROUTES.map(({ path, label, icon }) => ({ to: path, label, icon })),
   },
 ];
 

@@ -20,6 +20,9 @@ const KnowledgeBasePage = lazy(() => import("./pages/user/KnowledgeBasePage"));
 const TunnelLinkPage = lazy(() => import("./pages/user/TunnelLinkPage"));
 const AnomalyPage = lazy(() => import("./pages/user/AnomalyPage"));
 const OnboardingPage = lazy(() => import("./pages/user/OnboardingPage"));
+// Leaflet and the map tree are ~400 KB, so they load when the map is first
+// opened rather than on every console page.
+const MapPage = lazy(() => import("./pages/map/MapPage"));
 
 // Admin pages — lazy-loaded
 const NetworkHealthPage = lazy(() => import("./pages/admin/NetworkHealthPage"));
@@ -81,6 +84,7 @@ export default function App() {
                     <>
                       <Route index element={<OverviewPage />} />
                       <Route path="nodes/:nodeId" element={<NodeDetailPage />} />
+                      <Route path="map" element={<MapPage />} />
                       <Route path="detections" element={<DetectionsPage />} />
                       <Route path="rf" element={<RFEnvironmentPage />} />
                       <Route path="contribution" element={<ContributionPage />} />
