@@ -292,7 +292,7 @@ assert_geocode_contract() {
 # cannot check the search and forget the other two.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     set -uo pipefail
-    TARGET="${1:-https://tower-finder.retina.fm/api/towers}"
+    TARGET="${1:-https://towers.retina.fm/api/towers}"
     BASE="${TARGET%/api/towers}"
     RC=0
     printf 'Asserting %s honours what our vhosts will forward... ' "$TARGET"
