@@ -1,5 +1,5 @@
 /**
- * Dashboard E2E tests, against the `/dash/` mount on the app hostname.
+ * Dashboard E2E tests, against the console at the root of the app hostname.
  *
  * The dashboard has two legitimate auth modes, and the server says which one
  * it is in on every unauthenticated GET /api/auth/me:
@@ -29,14 +29,12 @@
  * Authenticated flows are covered via API-level assumptions (see api.spec.ts).
  */
 import { test, expect, request as playwrightRequest, type Page } from "@playwright/test";
-import { hosts, dashBase } from "../playwright.config";
+import { hosts } from "../playwright.config";
 
-// The origin the dashboard is served from, and the base its pages sit at on it.
-// A page route takes the mount; a same-origin API call does not, because the
-// API is the vhost's rather than the bundle's.
+// The origin the dashboard is served from, at its root.
 const DASH = hosts.dash;
-const DASH_PAGE = `${DASH}${dashBase}`;
-const LOGIN_PATH = `${dashBase}/login`;
+const DASH_PAGE = DASH;
+const LOGIN_PATH = "/login";
 // A page that needs a session. The index does not: it forwards to the map.
 const PRIVATE_PAGE = `${DASH_PAGE}/overview`;
 const ADMIN = hosts.admin;
@@ -88,12 +86,8 @@ async function holdAuthUnresolved(page: Page) {
  */
 async function expectSurface(page: Page, base: string, mode: AuthMode, name: string) {
   if (mode === "oauth") {
-    // `base` carries the mount as well as the origin, so the login path is
-    // derived from it rather than assumed to be at the root: on the app
-    // hostname the dashboard's own /login is /dash/login.
-    const { origin, pathname } = new URL(base);
-    const login = `${pathname.replace(/\/$/, "")}/login`;
-    await page.waitForURL((url) => url.origin === origin && url.pathname.startsWith(login), {
+    const { origin } = new URL(base);
+    await page.waitForURL((url) => url.origin === origin && url.pathname.startsWith(LOGIN_PATH), {
       timeout: 10_000,
     });
     await expect(page.locator(".login-card")).toBeVisible({ timeout: 5_000 });
@@ -180,7 +174,7 @@ async function resolves(url: string): Promise<boolean> {
 
 test.describe("Admin surface selection", () => {
   // The whole point of the admin vhost: the same bundle the app hostname
-  // mounts at /dash/, with a different route table, chosen client-side from the
+  // serves, with a different route table, chosen client-side from the
   // hostname. Null on prod (see playwright.config.ts) so a wobble here cannot
   // roll production back.
   test.skip(!ADMIN, "no admin surface on this environment");
@@ -198,7 +192,7 @@ test.describe("Admin surface selection", () => {
     authMode ??= await serverAuthMode();
   });
 
-  // Separate tests, not two assertions in one: the /dash/ half is the control
+  // Separate tests, not two assertions in one: the app-host half is the control
   // that tells "admin selection broke" apart from "the sidebar markup changed
   // and both are wrong", and a shared body would stop at the first failure.
   //
@@ -211,7 +205,7 @@ test.describe("Admin surface selection", () => {
     await expectSurface(page, ADMIN!, authMode!, "Admin Console");
   });
 
-  test("the /dash/ mount serves the user dashboard", async ({ page }) => {
+  test("the app host serves the user dashboard", async ({ page }) => {
     await page.goto(PRIVATE_PAGE);
     await expectSurface(page, DASH_PAGE, authMode!, "Node Dashboard");
   });
