@@ -1,8 +1,8 @@
 """Daily SQLite backup of users.db to R2 with N-day retention.
 
-Why this exists: users.db holds all auth state — users, invites, claim codes,
-node ownership. Losing it means every user has to be re-onboarded by hand,
-and any in-flight invites/claim codes vanish. The drive can fail, the
+Why this exists: users.db holds all auth state — users, claim codes, node
+ownership. Losing it means every user has to be re-onboarded by hand, and
+any in-flight claim codes vanish. The drive can fail, the
 container can be deleted, the WAL/SHM files can desync — none of those are
 recoverable from the runtime alone, so the only safe answer is an off-host
 copy.

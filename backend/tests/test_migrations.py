@@ -113,23 +113,18 @@ def _schema(db_path: Path) -> dict:
         con.close()
 
 
-def _create_all(db_path: Path, *, with_nodes: bool = True) -> subprocess.CompletedProcess:
-    """Build a database the pre-Alembic way, for comparison.
-
-    with_nodes=False reproduces the droplets: core.nodes did not exist when
-    their schema was built, so they carry the four auth tables and nothing else.
-    """
+def _create_all(db_path: Path) -> subprocess.CompletedProcess:
+    """Build a database from the models, the way the test suite does, for comparison."""
     env = os.environ | {
         "RETINA_ENV": "test",
         "RETINA_DB_PATH": str(db_path),
         "RETINA_SCHEMA_SOURCE": "create_all",
     }
-    nodes_import = "import core.nodes;  # noqa: F401  registers the tables\n" if with_nodes else ""
     return subprocess.run(  # noqa: S603
         [
             sys.executable,
             "-c",
-            f"import asyncio; {nodes_import}"
+            "import asyncio; import core.nodes;  # noqa: F401  registers the tables\n"
             "from core.users import create_db_and_tables; "
             "asyncio.run(create_db_and_tables())",
         ],
@@ -154,16 +149,26 @@ def test_migrations_produce_the_schema_create_all_produces(tmp_path):
     assert _schema(migrated) == _schema(direct)
 
 
-def test_upgrading_a_create_all_database_succeeds(tmp_path):
-    """The state of all three droplets: the four auth tables, no alembic_version,
-    and no node tables, since core.nodes did not exist when they were built.
+def test_upgrading_a_pre_alembic_database_succeeds(tmp_path):
+    """The state all three droplets were in before Alembic: the four baseline
+    auth tables, no alembic_version, and no node tables.
 
-    Without the early return in 0001 this fails on `table user already exists`,
-    and every deploy after the guard lands would refuse to boot.
+    Built from 0001's own tables rather than by create_all, which builds what
+    the models declare today and stops matching once a revision drops one of
+    the four. Without the early return in 0001 this fails on `table user
+    already exists`, and every deploy after the guard lands would refuse to boot.
     """
+    import sqlite3
+
     db = tmp_path / "pre_existing.db"
-    built = _create_all(db, with_nodes=False)
-    assert built.returncode == 0, built.stderr
+    base = _alembic("upgrade", "0001", db_path=db)
+    assert base.returncode == 0, base.stderr
+    con = sqlite3.connect(db)
+    try:
+        con.execute("DROP TABLE alembic_version")
+        con.commit()
+    finally:
+        con.close()
 
     up = _alembic("upgrade", "head", db_path=db)
     assert up.returncode == 0, up.stderr

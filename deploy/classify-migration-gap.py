@@ -128,8 +128,8 @@ def classify(target_ref: str) -> tuple[str, bool]:
         # No revision to downgrade to, and no safe one to infer. `base` is the
         # only target git can offer here and it is the wrong one: 0001's
         # downgrade drops the tables the pre-Alembic code creates for itself
-        # with create_all, so it would destroy the accounts, invites, owners and
-        # claim codes the restored code goes straight back to reading. Guessing
+        # with create_all, so it would destroy the accounts, owners and claim
+        # codes the restored code goes straight back to reading. Guessing
         # 0001 instead would be this tool inventing a boundary nobody declared.
         header = MANUAL_HEADER
         verdict = (

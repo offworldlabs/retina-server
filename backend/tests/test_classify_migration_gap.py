@@ -134,7 +134,7 @@ def test_restoring_a_pre_alembic_tree_puts_the_whole_history_in_the_gap(tmp_path
     is then every revision, and no target can be named: `base` is the only one
     git could offer and it drops the baseline tables the restored code creates
     for itself, so offering it would talk an operator mid-incident into
-    destroying every account, invite, owner and claim code on the droplet.
+    destroying every account, owner and claim code on the droplet.
     """
     repo = _repo(tmp_path)
     _git(repo, "tag", "pre-alembic")

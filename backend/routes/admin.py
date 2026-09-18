@@ -29,14 +29,7 @@ from config.constants import (
     NODE_OFFLINE_THRESHOLD_S,
 )
 from core import state
-from core.auth import (
-    create_invite,
-    get_node_owner,
-    list_invites,
-    list_node_owners,
-    revoke_invite,
-    set_node_owner,
-)
+from core.auth import get_node_owner, list_node_owners, set_node_owner
 from core.runtime_config import runtime_path, write_runtime_file
 from core.task_registry import get_stale_tasks
 from core.users import (
@@ -173,44 +166,6 @@ async def set_user_role(
     await session.refresh(user)
     log_event("user", f"Role changed to {body.role} for {user.email}", "warning")
     return user_to_dict(user)
-
-
-# ── Invites (admin pre-approves users by email) ──────────────────────────────
-
-
-class InviteCreate(BaseModel):
-    email: str
-    role: str = "user"
-
-
-@router.get("/invites")
-async def admin_list_invites(_admin=Depends(require_admin)):
-    invites = await list_invites()
-    invites.sort(key=lambda i: i.get("created_at", 0), reverse=True)
-    return invites
-
-
-@router.post("/invites")
-async def admin_create_invite(body: InviteCreate, admin=Depends(require_admin)):
-    try:
-        invite = await create_invite(body.email, body.role, admin["id"])
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from e
-    log_event(
-        "user",
-        f"Invited {body.email} as {body.role}",
-        "info",
-        {"email": body.email, "role": body.role, "by": admin["email"]},
-    )
-    return invite
-
-
-@router.delete("/invites/{token}")
-async def admin_revoke_invite(token: str, admin=Depends(require_admin)):
-    if not await revoke_invite(token):
-        raise HTTPException(404, "Invite not found")
-    log_event("user", "Invite revoked", "info", {"token": token, "by": admin["email"]})
-    return {"ok": True}
 
 
 # ── Node ownership (admin override) ──────────────────────────────────────────

@@ -1,4 +1,4 @@
-"""Tests for auth system: fastapi-users JWT, invite/claim/ownership logic, and FastAPI deps."""
+"""Tests for auth system: fastapi-users JWT, claim/ownership logic, and FastAPI deps."""
 
 import asyncio
 import json
@@ -18,7 +18,7 @@ class TestSqlitePragmas:
     """The users.db engine MUST run in WAL mode with safety pragmas.
 
     Without WAL, a crash mid-commit can leave the database file in a state
-    that the next process can't read — and we'd lose every user, invite,
+    that the next process can't read — and we'd lose every user,
     claim code, and node-ownership record. This test exists so that
     accidentally removing the `_set_sqlite_pragmas` event listener fails
     loudly in CI rather than silently shipping to prod.
@@ -400,87 +400,17 @@ def clean_auth_tables():
     """Wipe all auth-related tables before a test that requests this fixture."""
     from sqlalchemy import delete
 
-    from core.users import ClaimCode, Invite, NodeOwner, async_session_maker, create_db_and_tables
+    from core.users import ClaimCode, NodeOwner, async_session_maker, create_db_and_tables
 
     async def _setup():
         await create_db_and_tables()
         async with async_session_maker() as session:
-            await session.execute(delete(Invite))
             await session.execute(delete(NodeOwner))
             await session.execute(delete(ClaimCode))
             await session.commit()
 
     asyncio.run(_setup())
     yield
-
-
-# ── Invites ───────────────────────────────────────────────────────────────────
-
-
-class TestInvites:
-    @pytest.fixture(autouse=True)
-    def _clean_tables(self, clean_auth_tables):
-        pass
-
-    async def test_create_and_list_invite(self):
-        from core.auth import create_invite, list_invites
-
-        inv = await create_invite("alice@example.com", "user", "admin-id")
-        assert inv["email"] == "alice@example.com"
-        assert inv["role"] == "user"
-        assert inv["used_at"] is None
-        invites = await list_invites()
-        assert len(invites) == 1
-        assert invites[0]["token"] == inv["token"]
-
-    async def test_invite_invalid_role_rejected(self):
-        from core.auth import create_invite
-
-        with pytest.raises(ValueError):
-            await create_invite("a@b.com", "owner", "x")
-
-    async def test_invite_invalid_email_rejected(self):
-        from core.auth import create_invite
-
-        with pytest.raises(ValueError):
-            await create_invite("not-an-email", "user", "x")
-
-    async def test_revoke_invite(self):
-        from core.auth import create_invite, list_invites, revoke_invite
-
-        inv = await create_invite("a@b.com", "user", "x")
-        assert await revoke_invite(inv["token"]) is True
-        assert await list_invites() == []
-        assert await revoke_invite(inv["token"]) is False
-
-    async def test_consume_invite_for_email(self):
-        from core.auth import consume_invite_for_email, create_invite
-
-        await create_invite("bob@example.com", "admin", "admin-id")
-        role = await consume_invite_for_email("bob@example.com")
-        assert role == "admin"
-        # Invite is now used — cannot be consumed again
-        assert await consume_invite_for_email("bob@example.com") is None
-
-    async def test_invite_email_match_is_case_insensitive(self):
-        from core.auth import consume_invite_for_email, create_invite
-
-        await create_invite("Carol@Example.com", "admin", "x")
-        assert await consume_invite_for_email("carol@example.com") == "admin"
-
-    async def test_invite_does_not_apply_to_other_emails(self):
-        from core.auth import consume_invite_for_email, create_invite
-
-        await create_invite("dave@example.com", "admin", "x")
-        assert await consume_invite_for_email("eve@example.com") is None
-
-    async def test_invite_does_not_downgrade(self):
-        """A 'user' invite for an email must not affect an admin — role logic is caller's job."""
-        from core.auth import consume_invite_for_email, create_invite
-
-        await create_invite("admin2@example.com", "user", "attacker")
-        role = await consume_invite_for_email("admin2@example.com")
-        assert role == "user"  # invite returns what it says; caller decides whether to apply
 
 
 # ── Claim codes & node ownership ──────────────────────────────────────────────
@@ -655,7 +585,6 @@ class TestMigration:
         from core import auth
 
         files = {
-            "INVITES_FILE": {"legacy-invite": {"email": "legacy@example.com"}},
             "NODE_OWNERS_FILE": {"legacy-node": "legacy-user"},
             "CLAIM_CODES_FILE": {"LEGACYCODE01": {"user_id": "legacy-user"}},
         }
@@ -666,9 +595,9 @@ class TestMigration:
         return [getattr(auth, name) for name in files]
 
     async def test_later_migration_failure_preserves_every_source(self, legacy_files):
-        from core.auth import list_claim_codes, list_invites, list_node_owners, migrate_json_to_db
+        from core.auth import list_claim_codes, list_node_owners, migrate_json_to_db
 
-        claims = legacy_files[2]
+        claims = legacy_files[1]
         valid_claims = claims.read_text()
         claims.write_text(json.dumps({"LEGACYCODE01": {"created_at": "invalid"}}))
 
@@ -677,20 +606,18 @@ class TestMigration:
 
         assert all(path.exists() for path in legacy_files)
         assert not any(path.with_suffix(".json.migrated").exists() for path in legacy_files)
-        assert await list_invites() == []
         assert await list_node_owners() == {}
         assert await list_claim_codes() == []
 
         claims.write_text(valid_claims)
         await migrate_json_to_db()
-        assert len(await list_invites()) == 1
         assert await list_node_owners() == {"legacy-node": "legacy-user"}
         assert len(await list_claim_codes()) == 1
 
     async def test_commit_failure_preserves_every_source(self, legacy_files):
         from sqlalchemy import event
 
-        from core.auth import list_claim_codes, list_invites, list_node_owners, migrate_json_to_db
+        from core.auth import list_claim_codes, list_node_owners, migrate_json_to_db
         from core.users import engine
 
         def fail_commit(connection):
@@ -705,88 +632,34 @@ class TestMigration:
 
         assert all(path.exists() for path in legacy_files)
         assert not any(path.with_suffix(".json.migrated").exists() for path in legacy_files)
-        assert await list_invites() == []
         assert await list_node_owners() == {}
         assert await list_claim_codes() == []
 
     async def test_rename_failure_after_commit_can_be_retried(self, legacy_files, monkeypatch):
         from pathlib import Path
 
-        from core.auth import list_claim_codes, list_invites, list_node_owners, migrate_json_to_db
+        from core.auth import list_claim_codes, list_node_owners, migrate_json_to_db
 
         rename = Path.rename
 
-        def fail_owner_rename(path, target):
+        # The second source, so the retry meets one already renamed and one not.
+        def fail_claims_rename(path, target):
             if path == legacy_files[1]:
                 raise OSError("rename failed")
             return rename(path, target)
 
         with monkeypatch.context() as context:
-            context.setattr(Path, "rename", fail_owner_rename)
+            context.setattr(Path, "rename", fail_claims_rename)
             with pytest.raises(OSError, match="rename failed"):
                 await migrate_json_to_db()
 
-        assert len(await list_invites()) == 1
         assert await list_node_owners() == {"legacy-node": "legacy-user"}
         assert len(await list_claim_codes()) == 1
         assert legacy_files[1].exists()
         await migrate_json_to_db()
-        assert len(await list_invites()) == 1
         assert await list_node_owners() == {"legacy-node": "legacy-user"}
         assert len(await list_claim_codes()) == 1
         assert all(path.with_suffix(".json.migrated").exists() for path in legacy_files)
-
-    async def test_migrate_invites_from_json(self, tmp_path):
-        from core.auth import list_invites, migrate_json_to_db
-
-        invite_file = tmp_path / "invites.json"
-        invite_file.write_text(
-            json.dumps(
-                {
-                    "test-token-abc": {
-                        "email": "User@Example.COM",
-                        "role": "admin",
-                        "created_by": "migrator",
-                        "created_at": 1000.0,
-                        "expires_at": 9999999999.0,
-                        "used_at": None,
-                    }
-                }
-            )
-        )
-
-        with (
-            patch("core.auth.INVITES_FILE", invite_file),
-            patch("core.auth.NODE_OWNERS_FILE", tmp_path / "node_owners.json"),
-            patch("core.auth.CLAIM_CODES_FILE", tmp_path / "claim_codes.json"),
-        ):
-            await migrate_json_to_db()
-
-        invites = await list_invites()
-        assert len(invites) == 1
-        assert invites[0]["token"] == "test-token-abc"
-        assert invites[0]["email"] == "user@example.com"  # lowercased
-        assert invites[0]["role"] == "admin"
-        migrated = invite_file.with_suffix(".json.migrated")
-        assert migrated.exists()
-        assert not invite_file.exists()
-
-    async def test_migrate_invites_corrupted_json_logs_and_skips(self, tmp_path):
-        from core.auth import list_invites, migrate_json_to_db
-
-        invite_file = tmp_path / "invites.json"
-        invite_file.write_text("not valid json")
-
-        with (
-            patch("core.auth.INVITES_FILE", invite_file),
-            patch("core.auth.NODE_OWNERS_FILE", tmp_path / "node_owners.json"),
-            patch("core.auth.CLAIM_CODES_FILE", tmp_path / "claim_codes.json"),
-        ):
-            await migrate_json_to_db()
-
-        assert invite_file.exists()
-        assert not invite_file.with_suffix(".json.migrated").exists()
-        assert await list_invites() == []
 
     async def test_migrate_node_owners_from_json(self, tmp_path):
         from core.auth import get_node_owner, migrate_json_to_db
@@ -795,7 +668,6 @@ class TestMigration:
         node_owners_file.write_text(json.dumps({"node-A": "user-X"}))
 
         with (
-            patch("core.auth.INVITES_FILE", tmp_path / "invites.json"),
             patch("core.auth.NODE_OWNERS_FILE", node_owners_file),
             patch("core.auth.CLAIM_CODES_FILE", tmp_path / "claim_codes.json"),
         ):
@@ -825,7 +697,6 @@ class TestMigration:
         )
 
         with (
-            patch("core.auth.INVITES_FILE", tmp_path / "invites.json"),
             patch("core.auth.NODE_OWNERS_FILE", tmp_path / "node_owners.json"),
             patch("core.auth.CLAIM_CODES_FILE", claim_codes_file),
         ):

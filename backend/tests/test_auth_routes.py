@@ -5,7 +5,6 @@ Covers:
   /api/auth/me/claim-codes  (GET / POST / DELETE)
   /api/auth/me/nodes
   /api/auth/me/nodes/{id}/location-privacy (PUT / DELETE)
-  /api/admin/invites         (GET / POST / DELETE)
   /api/admin/node-owners     (GET)
   /api/admin/nodes/{id}/owner (PUT)
 """
@@ -396,53 +395,6 @@ class TestMyNodesCarriesLocationPrivacy:
         entry = self._entry(client, owned)
         assert entry["location_private"] is False
         assert entry["location_privacy_source"] == "override"
-
-
-# ── /api/admin/invites ────────────────────────────────────────────────────────
-
-
-class TestAdminInviteRoutes:
-    def test_list_invites_empty(self, client):
-        r = client.get("/api/admin/invites")
-        assert r.status_code == 200
-        assert r.json() == []
-
-    def test_create_invite(self, client):
-        r = client.post("/api/admin/invites", json={"email": "alice@example.com", "role": "user"})
-        assert r.status_code == 200
-        body = r.json()
-        assert body["email"] == "alice@example.com"
-        assert body["role"] == "user"
-        assert body["used_at"] is None
-
-    def test_create_invite_appears_in_list(self, client):
-        client.post("/api/admin/invites", json={"email": "bob@example.com", "role": "user"})
-        invites = client.get("/api/admin/invites").json()
-        assert any(i["email"] == "bob@example.com" for i in invites)
-
-    def test_create_invite_invalid_email_returns_400(self, client):
-        r = client.post("/api/admin/invites", json={"email": "not-an-email", "role": "user"})
-        assert r.status_code == 400
-
-    def test_create_invite_invalid_role_returns_400(self, client):
-        r = client.post("/api/admin/invites", json={"email": "c@example.com", "role": "owner"})
-        assert r.status_code == 400
-
-    def test_revoke_invite(self, client):
-        token = client.post("/api/admin/invites", json={"email": "d@example.com", "role": "user"}).json()["token"]
-        r = client.delete(f"/api/admin/invites/{token}")
-        assert r.status_code == 200
-        assert r.json() == {"ok": True}
-
-    def test_revoke_invite_removes_from_list(self, client):
-        token = client.post("/api/admin/invites", json={"email": "e@example.com", "role": "user"}).json()["token"]
-        client.delete(f"/api/admin/invites/{token}")
-        invites = client.get("/api/admin/invites").json()
-        assert not any(i["token"] == token for i in invites)
-
-    def test_revoke_nonexistent_invite_returns_404(self, client):
-        r = client.delete("/api/admin/invites/does-not-exist")
-        assert r.status_code == 404
 
 
 # ── /api/admin/node-owners + /api/admin/nodes/{id}/owner ─────────────────────
