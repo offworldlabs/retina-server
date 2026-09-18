@@ -363,14 +363,14 @@ jobs:
       # Production's instance answers on a name with public DNS, so it can be
       # checked from anywhere, including on a pull request.
       - name: Production's instance
-        run: bash deploy/tower-contract.sh https://tower-finder.retina.fm/api/towers
+        run: bash deploy/tower-contract.sh https://towers.retina.fm/api/towers
 
       # Staging's is a DIFFERENT container, and staging is what deploys first.
       # Checking production's instead would pass while staging's still drops the
-      # parameter on the public demo, which staging serves. It has no public DNS
-      # (staging-tower-finder.retina.fm does not resolve), so the only way to
-      # reach it before our own deploy puts a vhost in front is from inside the
-      # droplet, over the same retina-edge network nginx will use.
+      # parameter on the public demo, which staging serves. It is checked from
+      # inside the droplet, over retina-edge, because that is the path our vhosts
+      # forward on (tower-finder-service:8000). staging-towers.retina.fm reaches
+      # the same container, but through the service's own edge, not that path.
       #
       # base64 so the JSON fragment survives the trip without quoting games.
       - name: Staging's instance, over retina-edge
