@@ -381,7 +381,7 @@ _kf_last_sweep = 0.0
 # _KF_LOCK (they are only ever touched inside _smooth_kf's critical section).
 # Module-level rather than core.state counters because nothing else in this
 # module touches state's counter block and there is no lock-order story to
-# get wrong here; routes/test.py reads them through filter_stats().
+# get wrong here; solver_report.py reads them through filter_stats().
 #
 # _kf_reanchors counts gate breaches that survived the manoeuvre retry and
 # therefore re-anchored — the honest identity-break tally.  _kf_manoeuvre_
@@ -429,7 +429,7 @@ def filter_stats() -> dict:
     """Since-boot _smooth_kf outcome counts plus a live manoeuvre gauge.
 
     Surfaced on /api/test/solver-stats under "display_filter" (see
-    routes/test.py's _solver_window_stats) because these counters are the only
+    solver_report.py's _solver_window_stats) because these counters are the only
     way to see from outside this module how a published position came about —
     the per-solve payload carries kf_action, but nothing aggregates it, and a
     turn, an identity break and an unsmoothed (init / gap / same-epoch) result
