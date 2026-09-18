@@ -472,7 +472,7 @@ fi
 # actually resists brute force; the session reads a page load spends on every
 # visit carry a looser one. Testing only /api/auth/me would leave the
 # credential limit — the one that matters — unasserted.
-# On API_URL: the limit_req zones live in the auth/session/claim-codes
+# On API_URL: the limit_req zones live in the auth and session
 # snippets, which the api vhost includes and which no longer sit on any
 # hostname the edge routes past us.
 check_rate_limit "credential endpoints rate limited" "${API_URL}/api/auth/magic-link" 10 POST

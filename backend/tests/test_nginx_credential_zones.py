@@ -68,5 +68,4 @@ def test_the_session_endpoints_are_still_the_only_ones_excused():
     assert excused == {
         "/api/auth/me",
         "/api/auth/logout",
-        "/api/auth/me/claim-codes",
     }, excused

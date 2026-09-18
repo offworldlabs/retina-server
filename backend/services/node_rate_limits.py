@@ -234,7 +234,7 @@ MAX_CLAIM_KEYS = 10_000
 #
 # The address half is the one that matters. A node is cheap to register, so a
 # per-node limit alone would bound nothing about how much mail one mailbox can
-# be sent from our domain, which is the surface claim codes never had.
+# be sent from our domain.
 CLAIM_LIMITS: tuple[tuple[int, int], ...] = ((5, 3600), (20, 86400))
 
 

@@ -260,10 +260,10 @@ async def claim_addresses(node_ids: list[str]) -> dict[str, str | None]:
     at thirty. Nodes with no address are absent rather than null, so a caller
     reads the two the same way through `.get`.
 
-    Only a verified address counts. An owner reached any other way, such as a
-    claim code, can sit beside an address somebody offered and nobody confirmed,
-    including one its recipient declined, and that is not what the node was
-    claimed with.
+    Only a verified address counts. An owner reached any other way, such as an
+    administrator's assignment, can sit beside an address somebody offered and
+    nobody confirmed, including one its recipient declined, and that is not what
+    the node was claimed with.
 
     Opens its own session, unlike everything else here: the one caller is an
     owner-facing route in the `core/auth.py` style, which reaches the database

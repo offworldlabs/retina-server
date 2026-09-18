@@ -112,7 +112,6 @@ def _clean_db():
 
     from core.nodes import Node, NodeClaim, NodeClaimChallenge, NodeConfig, NodeLocationPrivacy, NodeToken
     from core.users import (
-        ClaimCode,
         MagicLink,
         NodeOwner,
         User,
@@ -129,7 +128,6 @@ def _clean_db():
             # is refused for a superuser, so one test promoting an account
             # silently changes what every later test in the session sees.
             await session.execute(delete(User))
-            await session.execute(delete(ClaimCode))
             await session.execute(delete(NodeOwner))
             # No foreign key to nodes, by design (core/nodes.py), so its order
             # here is free — it sits with the other keyed-by-node-id tables.

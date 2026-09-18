@@ -2,7 +2,6 @@
 
 Covers:
   /api/auth/me, /api/auth/logout
-  /api/auth/me/claim-codes  (GET / POST / DELETE)
   /api/auth/me/nodes
   /api/auth/me/nodes/{id}/location-privacy (PUT / DELETE)
   /api/admin/node-owners     (GET)
@@ -121,68 +120,6 @@ class TestLogoutEndsTheAccessSession:
         with patch("core.users.access_identity", self._stub(None)):
             r = client.post("/api/auth/logout", headers={"Cf-Access-Jwt-Assertion": "a-token"})
         assert "redirect" not in r.json()
-
-
-# ── /api/auth/me/claim-codes ─────────────────────────────────────────────────
-
-
-class TestClaimCodeRoutes:
-    def test_create_claim_code_returns_code(self, client):
-        r = client.post("/api/auth/me/claim-codes")
-        assert r.status_code == 200
-        body = r.json()
-        assert "code" in body
-        assert len(body["code"]) == 12
-        assert body["code"] == body["code"].upper()
-        assert body["used_at"] is None
-
-    def test_list_claim_codes_includes_created(self, client):
-        client.post("/api/auth/me/claim-codes")
-        r = client.get("/api/auth/me/claim-codes")
-        assert r.status_code == 200
-        codes = r.json()
-        assert isinstance(codes, list)
-        assert len(codes) == 1
-
-    def test_list_claim_codes_sorted_newest_first(self, client):
-        client.post("/api/auth/me/claim-codes")
-        client.post("/api/auth/me/claim-codes")
-        r = client.get("/api/auth/me/claim-codes")
-        codes = r.json()
-        timestamps = [c.get("created_at", 0) for c in codes]
-        assert timestamps == sorted(timestamps, reverse=True)
-
-    def test_revoke_claim_code(self, client):
-        code = client.post("/api/auth/me/claim-codes").json()["code"]
-        r = client.delete(f"/api/auth/me/claim-codes/{code}")
-        assert r.status_code == 200
-        assert r.json() == {"ok": True}
-
-    def test_revoke_removes_code_from_list(self, client):
-        code = client.post("/api/auth/me/claim-codes").json()["code"]
-        client.delete(f"/api/auth/me/claim-codes/{code}")
-        codes = client.get("/api/auth/me/claim-codes").json()
-        assert not any(c["code"] == code for c in codes)
-
-    def test_revoke_nonexistent_code_returns_404(self, client):
-        r = client.delete("/api/auth/me/claim-codes/DOESNOTEXIST")
-        assert r.status_code == 404
-
-    def test_revoke_used_code_returns_404(self, client):
-        from core.auth import consume_claim_code
-
-        code = client.post("/api/auth/me/claim-codes").json()["code"]
-        asyncio.run(consume_claim_code(code, "some-node"))
-        r = client.delete(f"/api/auth/me/claim-codes/{code}")
-        assert r.status_code == 404
-
-    def test_claim_code_cap_returns_429(self, client):
-        from core.auth import _MAX_ACTIVE_CLAIM_CODES_PER_USER
-
-        for _ in range(_MAX_ACTIVE_CLAIM_CODES_PER_USER):
-            client.post("/api/auth/me/claim-codes")
-        r = client.post("/api/auth/me/claim-codes")
-        assert r.status_code == 429
 
 
 # ── /api/auth/me/nodes ────────────────────────────────────────────────────────
@@ -628,9 +565,9 @@ class TestClaimRoutes:
         assert node["claimed_with"] == "ada@example.com"
 
     def test_an_address_nobody_confirmed_is_not_what_a_node_was_claimed_with(self, client):
-        """An owner reached some other way, such as a claim code, beside an
-        address that was offered and never confirmed: that address is a
-        stranger's as far as this owner is concerned."""
+        """An owner reached some other way, such as an administrator's
+        assignment, beside an address that was offered and never confirmed:
+        that address is a stranger's as far as this owner is concerned."""
         self._mailed()
         self._owned_by_the_caller(verified=False)
 

@@ -131,19 +131,9 @@ class NodeOwner(Base):
     user_id: Mapped[str] = mapped_column(String(255), index=True)
 
 
-class ClaimCode(Base):
-    __tablename__ = "claim_codes"
-
-    code: Mapped[str] = mapped_column(String(12), primary_key=True)
-    user_id: Mapped[str] = mapped_column(String(255), index=True)
-    created_at: Mapped[float] = mapped_column(Float)
-    expires_at: Mapped[float] = mapped_column(Float)
-    used_at: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
-    used_by_node_id: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
-
-
 class MagicLink(Base):
-    """One outstanding sign-in link.
+    """One outstanding emailed link: a sign-in, or a node claim, told apart by
+    `intent`.
 
     The primary key is a SHA-256 of the token, never the token itself: the link
     in the mailbox is the whole credential, so a database read must not be
@@ -455,13 +445,13 @@ class MagicLinkRefused(Exception):
 
 
 async def get_or_create_magic_link_user(email: str) -> User:
-    """Find or create the account a redeemed sign-in link belongs to.
+    """Find or create the account a redeemed link belongs to, sign-in or claim.
 
     No address list is consulted, so an account reached this way is never a
     superuser. Administrator identity is Cloudflare Access and only Cloudflare
     Access; an address that can receive mail is not a claim to the console. The
-    account grants nothing by itself either way — node ownership comes from a
-    claim code.
+    account grants nothing by itself either way — node ownership comes from the
+    node claiming it by email (services/node_claiming.py).
 
     Raises MagicLinkRefused for an account that is already a superuser. The
     invariant has to hold for a row that exists, not only for one created here,

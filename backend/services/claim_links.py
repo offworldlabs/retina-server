@@ -129,9 +129,8 @@ def _body(node_ref: str, link: str) -> str:
 
     Whoever receives this may have nothing to do with the node: anyone who can
     get one registered can make this server write to an address of their
-    choosing, which is a surface claim codes never had. So it reads as somebody
-    asking, it says what happens if they ignore it, and the page it opens offers
-    declining as plainly as accepting.
+    choosing. So it reads as somebody asking, it says what happens if they
+    ignore it, and the page it opens offers declining as plainly as accepting.
     """
     return (
         f"Someone entered this address while setting up a RETINA node, {node_ref}.\n\n"
