@@ -686,6 +686,50 @@ class Leaderboard[LeaderboardRow: PublicLeaderboardRow](BaseModel):
     total: int
 
 
+# Shared by every leaderboard request during the cold-start gap (see
+# leaderboard() below): a burst of concurrent anonymous callers submits one
+# work item to the two-worker _admin_executor rather than one each.
+# get_all_summaries() already caches its own result, so this needs no
+# freshness window of its own, unlike services.infrastructure.snapshot()'s
+# lock-plus-TTL-cache single-flight — only the one in-flight call to avoid
+# duplicating.
+_cold_start_summaries_task: asyncio.Future | None = None
+
+
+def _reset_for_tests() -> None:
+    """Drop the in-flight task reference.
+
+    The happy path is self-clearing (a completed future is always replaced),
+    but a test that fails mid-await can leave this pending across its closed
+    event loop; the next test to touch it would then hit a confusing "Future
+    attached to a different loop" error that masks the original failure.
+    """
+    global _cold_start_summaries_task
+    _cold_start_summaries_task = None
+
+
+def _consume_result(future: asyncio.Future) -> None:
+    """Mark an abandoned Future's exception as read, so asyncio does not log
+    it as never retrieved (services.tasks.executor guards the same way)."""
+    if not future.cancelled():
+        future.exception()
+
+
+async def _cold_start_summaries() -> dict:
+    """The raw {node_id: summary} map, coalesced across concurrent callers."""
+    global _cold_start_summaries_task
+    # No lock: nothing awaits between the check and the assignment, so the
+    # single-threaded event loop makes this atomic.
+    if _cold_start_summaries_task is None or _cold_start_summaries_task.done():
+        loop = asyncio.get_running_loop()
+        _cold_start_summaries_task = loop.run_in_executor(_admin_executor, state.node_analytics.get_all_summaries)
+        _cold_start_summaries_task.add_done_callback(_consume_result)
+    # Shielded: an unshielded await lets one caller's cancellation (a client
+    # disconnect) cancel this shared Future, handing CancelledError to every
+    # other caller sharing it.
+    return await asyncio.shield(_cold_start_summaries_task)
+
+
 @router.get("/leaderboard")
 async def leaderboard(caller=Depends(get_optional_user)):
     """Rankings by detections, uptime and trust, open to anyone.
@@ -725,8 +769,7 @@ async def leaderboard(caller=Depends(get_optional_user)):
         # and public_identity leaves out one with no handle rather than naming
         # it.  The second does not imply the first — it asks whether a node has
         # a registry ref, not whether it consented to being published.
-        loop = asyncio.get_running_loop()
-        live = await loop.run_in_executor(_admin_executor, state.node_analytics.get_all_summaries)
+        live = await _cold_start_summaries()
         published = publication.public_summaries(live)
         rows = [(ref, nid, s) for nid, s in published.items() if (ref := public_identity(nid))]
 

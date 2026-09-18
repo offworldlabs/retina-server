@@ -405,6 +405,70 @@ class TestLeaderboard:
         finally:
             state.latest_analytics_bytes = prior
 
+    async def test_concurrent_cold_start_requests_share_one_summaries_call(self):
+        """A burst of anonymous callers arriving during the cold-start gap
+        must not each schedule their own get_all_summaries() call onto the
+        shared two-worker admin executor: they share the one in flight.
+
+        No await happens between the coalescing check and the assignment in
+        _cold_start_summaries(), so every gathered task observes the shared
+        future before the executor thread can finish — the race is real
+        without needing a delay in the mock.
+        """
+        import asyncio
+        from unittest.mock import patch
+
+        from routes import admin as admin_routes
+
+        nid = "test-lb-burst"
+        prior = self._cold_start(nid)
+        calls = []
+
+        def counting_summaries():
+            calls.append(1)
+            return {nid: {"metrics": {"total_detections": 5}, "trust": {}, "reputation": {}}}
+
+        try:
+            with patch.object(state.node_analytics, "get_all_summaries", side_effect=counting_summaries):
+                results = await asyncio.gather(*(admin_routes.leaderboard(caller=None) for _ in range(20)))
+        finally:
+            state.latest_analytics_bytes = prior
+            state.connected_nodes.pop(nid, None)
+
+        assert len(calls) == 1
+        assert all(any(e.node_ref == nid for e in r.leaderboard) for r in results)
+
+    async def test_cancelling_one_caller_does_not_cancel_the_others_sharing_it(self):
+        """A client that disconnects mid-request must not take the shared
+        computation down for every other caller waiting on the same one.
+        """
+        import asyncio
+        from unittest.mock import patch
+
+        from routes import admin as admin_routes
+
+        nid = "test-lb-cancel"
+        prior = self._cold_start(nid)
+
+        def slow_summaries():
+            time.sleep(0.1)
+            return {nid: {"metrics": {"total_detections": 5}, "trust": {}, "reputation": {}}}
+
+        try:
+            with patch.object(state.node_analytics, "get_all_summaries", side_effect=slow_summaries):
+                cancelled = asyncio.create_task(admin_routes.leaderboard(caller=None))
+                survivor = asyncio.create_task(admin_routes.leaderboard(caller=None))
+                await asyncio.sleep(0.02)
+                cancelled.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await cancelled
+                result = await survivor
+        finally:
+            state.latest_analytics_bytes = prior
+            state.connected_nodes.pop(nid, None)
+
+        assert any(e.node_ref == nid for e in result.leaderboard)
+
     def test_its_neighbours_under_the_same_prefix_still_want_a_session(self, client):
         """Opening the route above opens the route above, not the prefix."""
         from unittest.mock import patch
