@@ -27,15 +27,15 @@ def sent(monkeypatch):
     return posted
 
 
-async def test_the_link_lands_on_the_dashboard_claim_page(sent):
-    """HOST_APP serves the map bundle at `/` and mounts the dashboard under
-    `/dash/`, so a link without that prefix renders the map and never redeems."""
+async def test_the_link_lands_on_the_consoles_claim_page(sent):
+    """HOST_APP serves the console at `/`; the old /dash/ mount only redirects."""
     assert await claim_links.deliver("ada@example.com", NODE_REF, "a-token") is True
 
     [(to, subject, body)] = sent
     assert to == "ada@example.com"
     assert NODE_REF in subject
-    assert "https://app.retina.fm/dash/auth/claim/a-token" in body
+    assert "https://app.retina.fm/auth/claim/a-token" in body
+    assert "/dash/" not in body
 
 
 async def test_the_link_follows_force_https(sent, monkeypatch):
@@ -43,7 +43,7 @@ async def test_the_link_follows_force_https(sent, monkeypatch):
 
     await claim_links.deliver("ada@example.com", NODE_REF, "a-token")
 
-    assert "http://app.retina.fm/dash/auth/claim/a-token" in sent[0][2]
+    assert "http://app.retina.fm/auth/claim/a-token" in sent[0][2]
 
 
 async def test_nothing_is_sent_without_a_host_to_address_the_link_to(sent, monkeypatch):

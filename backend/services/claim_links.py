@@ -40,12 +40,9 @@ INTENT_CLAIM = "claim"
 # it from here rather than reaching into the primitive.
 CHALLENGE_EXPIRY_S = MAGIC_LINK_EXPIRY_S
 
-# `/dash/` because HOST_APP serves the map bundle at `/` and mounts the
-# dashboard beneath, and the dashboard's router carries a matching basename: a
-# link to `/auth/claim/...` would render the map and never redeem the token.
-# This, routes/auth.py's `_SIGN_IN_PATH` and dashboard/src/utils/basePath.ts all
-# have to agree.
-_CLAIM_PATH = "/dash/auth/claim/"
+# The console's own route (ClaimPage), at the root of HOST_APP, beside
+# routes/auth.py's `_SIGN_IN_PATH`.
+_CLAIM_PATH = "/auth/claim/"
 
 
 @dataclass(frozen=True)
