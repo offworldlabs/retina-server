@@ -1,0 +1,1279 @@
+/* ── Live radar map ───────────────────────────────────────────────────────
+   Built on the dash tokens defined in map-surface.css. Every rule here sits
+   inside `.app.map-surface`, which is the only place `.live-map-container`
+   renders, so the var() calls always resolve. */
+
+.live-map-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-primary);
+}
+
+/* ── Body row: sidebar + map ──────────────────────────────────── */
+.live-map-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.live-map-area {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.live-map-area .leaflet-container {
+  background: var(--bg-primary);
+  font: inherit;
+}
+
+/* How far the basemap is pushed back: Voyager tinted down until the tracks sit
+   clearly in front of it.
+
+   On each tile, not on the tile pane. A filter forces the browser to rasterise
+   the filtered element as one layer, and the pane is far larger than the
+   viewport — keepBuffer 4 keeps four rings of tiles beyond every edge. WebKit
+   caps how large such a layer may be and, past the cap, paints part of it
+   filtered, part blank and part raw: Safari showed the map cut off with a
+   blank band and an unfiltered strip at the right edge. Chrome tiles filtered
+   layers internally and never showed it. A tile is 256px square, so filtering
+   each one keeps every layer far below the cap. dash's App.css does the same. */
+.live-map-area .leaflet-tile {
+  filter: var(--tile-filter);
+}
+
+/* Leaflet's own controls ship with their own borders and shadows. Bring them
+   onto the surface's hairline-and-radius language. */
+.live-map-area .leaflet-bar,
+.live-map-area .leaflet-control-attribution {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--panel-shadow);
+}
+
+.live-map-area .leaflet-bar a {
+  color: var(--text-secondary);
+  border-bottom-color: var(--border);
+}
+
+.live-map-area .leaflet-bar a:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+}
+
+.live-map-area .leaflet-control-attribution {
+  background: var(--attribution-bg);
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+/* Shared stack for the top-right map overlays (node-owner control, stats
+   panel, …) so they never render on top of one another — each panel just
+   becomes a flex item instead of owning its own absolute top/right offset. */
+.live-map-top-right-stack {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: 260px;
+}
+
+/* ── Left aircraft list sidebar ───────────────────────────────── */
+.aircraft-list-panel {
+  width: 280px;
+  flex-shrink: 0;
+  background: var(--bg-sunk);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width 0.2s ease;
+}
+
+.aircraft-list-panel.collapsed {
+  width: 36px;
+}
+
+.al-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  min-height: 40px;
+}
+
+.al-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.al-count {
+  background: var(--accent-light);
+  color: var(--accent-hover);
+  padding: 1px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.al-collapse-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 0.6rem;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.al-collapse-btn:hover {
+  background: var(--accent-tint);
+  border-color: var(--border-light);
+  color: var(--text-primary);
+}
+
+.al-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.al-search svg {
+  width: 13px;
+  height: 13px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* --bg-input matches --bg-sunk on light, so a field on this pane would be left
+   with only its border. Controls here take the card colour instead. */
+.app.map-surface .aircraft-list-panel input[type="text"],
+.app.map-surface .aircraft-list-panel select {
+  background: var(--bg-card);
+}
+
+.al-search input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  min-width: 0;
+  padding: 0;
+}
+
+.al-clear {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 2px;
+  flex-shrink: 0;
+}
+
+.al-clear:hover {
+  color: var(--text-primary);
+}
+
+.al-sort {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.al-sort label {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+.al-sort select {
+  flex: 1;
+}
+
+.al-list {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.al-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 48px 20px;
+}
+
+.al-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 8px;
+  height: 40px;
+  box-sizing: border-box;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.1s;
+  border-left: 2px solid transparent;
+}
+
+.al-row:hover {
+  background: var(--accent-tint);
+}
+
+/* Selection in the list is the accent, matching dash's active nav row. The
+   map keeps amber for the selected track — the list is chrome, the map is
+   data, and they are allowed to mark selection in their own languages. */
+.al-row.selected {
+  background: var(--accent-light);
+  border-left-color: var(--accent);
+}
+
+.al-row.truth-only {
+  opacity: 0.7;
+}
+
+.al-indicator {
+  width: 3px;
+  height: 26px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.al-icon {
+  font-size: 13px;
+  line-height: 1;
+  flex-shrink: 0;
+  width: 14px;
+  text-align: center;
+  display: inline-block;
+}
+
+.al-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.al-callsign {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.al-sub {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.al-stats {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  flex-shrink: 0;
+}
+
+.al-alt {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.al-spd {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Toolbar ──────────────────────────────────────────────────────────────
+   Two rows in one element: status and actions on top, the layer toggles
+   beneath, grouped under micro-labels. Grouping is the point — the
+   old single row put twenty identical buttons in a line and left the reader
+   to work out which of them changed what. */
+
+.live-map-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  padding: 0 12px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-secondary);
+  /* A flex item takes z-index even while static, so this value is the whole
+     toolbar's stacking context — its popovers can only rise as far as it does.
+     It has to clear everything floating over the map (the top-right stack and
+     detail panel at 1000–1001) or a menu opening downwards is painted over. */
+  z-index: 1100;
+}
+
+/* Forces the layer row onto its own line however the first row reflows. */
+.toolbar-break {
+  flex-basis: 100%;
+  height: 0;
+  margin: 0;
+}
+
+.toolbar-row-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  min-height: 38px;
+  flex-wrap: wrap;
+}
+
+.toolbar-row-layers {
+  display: flex;
+  align-items: center;
+  gap: 4px 10px;
+  flex-wrap: wrap;
+  min-height: 32px;
+  padding-bottom: 4px;
+  width: 100%;
+  border-top: 1px solid var(--border);
+  padding-top: 4px;
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.toolbar-group-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-right: 2px;
+  white-space: nowrap;
+}
+
+.toolbar-separator {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.toolbar-spacer {
+  margin-left: auto;
+}
+
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  position: relative;
+}
+
+.connection-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.connection-badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.connection-badge.connected {
+  background: var(--success-light);
+  color: var(--success);
+}
+
+/* Only the live dot pulses. The old rule pulsed the whole badge, which made
+   the text itself flicker. */
+.connection-badge.connected::before {
+  animation: pulse-live 2s infinite;
+}
+
+.connection-badge.disconnected {
+  background: var(--warning-light);
+  color: var(--warning);
+}
+
+@keyframes pulse-live {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.aircraft-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+/* Toggle buttons */
+.toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  padding: 3px 9px;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.toggle-btn:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-light);
+  color: var(--text-primary);
+}
+
+.toggle-btn.active {
+  background: var(--accent-light);
+  border-color: var(--accent);
+  color: var(--accent-hover);
+}
+
+/* The anomalies toggle is the one control that reports a condition as well as
+   a state, so it takes the error colour when it is filtering. */
+.toggle-btn.alert.active {
+  background: var(--error-light);
+  border-color: var(--error);
+  color: var(--error);
+}
+
+/* ── Overflow menu for the low-traffic actions ───────────────────────────── */
+
+.toolbar-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 1200;
+  /* Wide enough that the longest entry stays on one line — a wrapped menu row
+     reads as two items. */
+  min-width: 226px;
+  padding: 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--panel-shadow);
+  display: flex;
+  flex-direction: column;
+}
+
+.toolbar-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 10px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.toolbar-menu button:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+}
+
+.toolbar-menu button.active {
+  color: var(--accent-hover);
+}
+
+.toolbar-menu .menu-hint {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Legend ───────────────────────────────────────────────────────────────
+   Out of the toolbar and onto the map, where a chart legend belongs. In the
+   toolbar it competed with the controls for the same row and got shoved
+   around whenever the row wrapped. */
+
+.map-legend {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 900;
+  min-width: 128px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--panel-shadow);
+  overflow: hidden;
+  font-size: 11px;
+}
+
+/* Clears the playback bar when there is history to scrub. */
+.map-legend.with-playback {
+  bottom: 46px;
+}
+
+.map-legend-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.map-legend-header:hover {
+  color: var(--text-primary);
+}
+
+.map-legend-body {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* ── Stats panel ─────────────────────────────────────────────────────────
+   Label/value pairs on a two-column grid, the same shape dash gives a fact
+   list. Collapsed it is just its header, so it never covers a target. */
+
+.stats-panel {
+  min-width: 210px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--panel-shadow);
+  overflow: hidden;
+  font-size: 12px;
+}
+
+.stats-panel.collapsed {
+  min-width: 0;
+}
+
+.stats-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 12px;
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.stats-panel-header:hover {
+  color: var(--text-primary);
+}
+
+.stats-panel-body {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  row-gap: 5px;
+  column-gap: 12px;
+  align-items: baseline;
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.stats-row-label {
+  color: var(--text-secondary);
+}
+
+.stats-row-value {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Secondary qualifier on a count — "3 hidden", "2 stale", a callsign. */
+.stats-note {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin-left: 5px;
+}
+
+/* ── Node-owner control ──────────────────────────────────────────────────
+   Sits above the stats panel in the same top-right stack, so it is the same
+   card with the same hairline. */
+
+.owner-panel {
+  min-width: 190px;
+  max-width: 240px;
+  padding: 10px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--panel-shadow);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.owner-panel .owner-name {
+  color: var(--text-primary);
+  font-weight: 600;
+  margin-bottom: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.owner-panel label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.owner-panel .owner-warning {
+  color: var(--warning-ink);
+  margin-top: 8px;
+  line-height: 1.4;
+}
+
+/* ── Keyboard shortcut dialog ────────────────────────────────────────────── */
+
+.shortcut-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(2, 6, 23, 0.45);
+}
+
+.shortcut-dialog {
+  width: min(440px, 90%);
+  max-height: 80%;
+  overflow-y: auto;
+  padding: 16px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.22);
+  color: var(--text-primary);
+}
+
+.shortcut-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.shortcut-dialog-header strong {
+  font-size: 15px;
+}
+
+.shortcut-dialog-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.shortcut-dialog-close:hover {
+  color: var(--text-primary);
+}
+
+.shortcut-dialog table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.shortcut-dialog td {
+  padding: 4px 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.shortcut-dialog td:first-child {
+  padding-right: 12px;
+  vertical-align: top;
+  width: 1%;
+  white-space: nowrap;
+}
+
+.shortcut-key {
+  display: inline-block;
+  padding: 1px 6px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  font-family: "SF Mono", "Fira Code", monospace;
+  font-size: 11px;
+  color: var(--text-primary);
+}
+
+.shortcut-dialog-footer {
+  margin-top: 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* ── Filters popover ─────────────────────────────────────────────────────
+   Anchored under its own button rather than pinned to a hardcoded offset
+   that had to dodge Leaflet's zoom control. */
+
+.toolbar-filters-anchor {
+  position: relative;
+}
+
+/* Fixed, and placed by script rather than anchored to a side.  Neither side
+   works on its own: pinned left it runs off the right of the window with the
+   View group at the end of the layer row, and pinned right it runs off the LEFT
+   once that row wraps and the button moves inboard.  Both were shipped.  The
+   component measures the button and clamps the popover into the viewport, which
+   is the only version that holds at every width. */
+.filters-popover {
+  position: fixed;
+  z-index: 1200;
+  width: 232px;
+  max-width: calc(100vw - 16px);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--panel-shadow);
+}
+
+/* A popover title rather than a panel title, so it takes the micro-label's
+   11px and a tighter box than the shared card header's. */
+.app.map-surface .filters-popover .card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.filters-popover .card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+/* Label above its controls: at this width a label-beside-input row wrapped
+   mid-field and read as two separate settings. */
+.filter-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.filter-row .filter-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.filter-inputs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.filter-inputs input {
+  width: 64px;
+}
+
+.filter-inputs select {
+  flex: 1;
+}
+
+.filter-clear {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.filter-clear:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+/* ── Detail panel ────────────────────────────────────────────── */
+
+.detail-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 300px;
+  height: 100%;
+  background: var(--bg-card);
+  border-left: 1px solid var(--border);
+  box-shadow: -4px 0 16px rgba(15, 23, 42, 0.18);
+  z-index: 1001;
+  display: flex;
+  flex-direction: column;
+  animation: slide-in-right 0.2s ease-out;
+  overflow: hidden;
+}
+
+@keyframes slide-in-right {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.detail-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-secondary);
+  flex-shrink: 0;
+}
+
+.detail-panel-header h3 {
+  margin: 0;
+  font-size: 16px;
+  color: var(--text-primary);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.detail-panel-header .close-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.detail-panel-header .close-btn:hover {
+  background: var(--error-light);
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.detail-panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 14px 14px;
+}
+
+.detail-section {
+  margin-bottom: 16px;
+}
+
+.detail-section-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin: 14px 0 4px;
+  font-weight: 600;
+}
+
+.detail-field {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.detail-label {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.detail-value {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* The quality scale. Bare .good/.warn/.bad are used on their own inside the
+   panel's tables and match rows, so they carry the colour rather than only
+   qualifying .detail-value. */
+.detail-panel .good,
+.detail-value.good {
+  color: var(--success);
+}
+.detail-panel .warn,
+.detail-value.warn {
+  color: var(--warning);
+}
+.detail-panel .bad,
+.detail-value.bad {
+  color: var(--error);
+}
+
+.detail-hex-badge {
+  display: inline-block;
+  background: var(--accent-light);
+  border: 1px solid var(--accent);
+  color: var(--accent-hover);
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-family: "SF Mono", "Fira Code", monospace;
+  letter-spacing: 0.5px;
+}
+
+.detail-source-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.detail-source-badge.multinode {
+  background: color-mix(in srgb, var(--violet) 14%, transparent);
+  color: var(--violet);
+}
+
+.detail-source-badge.adsb {
+  background: var(--accent-light);
+  color: var(--accent-hover);
+}
+
+.detail-source-badge.other {
+  background: var(--success-light);
+  color: var(--success);
+}
+
+.detail-alert {
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--error-light);
+  border: 1px solid var(--error);
+  color: var(--error-ink);
+}
+
+/* The trail-export action sits below a rule, separated from the readings. */
+.detail-actions {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  margin-top: 4px;
+}
+
+/* ── Aircraft markers ────────────────────────────────────────── */
+
+.aircraft-marker {
+  background: none !important;
+  border: none !important;
+}
+
+/* Zoom-aware size, read from the custom property IconScaleSync (iconScale.ts)
+   keeps on the Leaflet container.  The scale goes on the INNER div, never the
+   outer .leaflet-marker-icon: Leaflet owns the outer element's transform (the
+   translate3d that positions it) and rewrites it on every pan and zoom, so a
+   scale there would be clobbered.  Not on the svg either — the 60 fps loop in
+   LiveAircraftMap.tsx writes the heading rotation to `.ac-hex-<hex> svg`'s
+   inline transform, and a scale on the same element would be overwritten each
+   frame.  The transform-origin is set inline by the icon factory, per icon
+   size, so the glyph shrinks and grows about the point it claims to be at
+   (the divIcon's iconAnchor) rather than about the 90 px box's corner.
+   will-change keeps the zoom-animation frames on the compositor. */
+.aircraft-marker > div {
+  transform: scale(var(--map-icon-scale, 1));
+  will-change: transform;
+}
+
+/* Below ICON_SCALE_LABEL_MIN the container is tagged "far" and the callsign
+   labels go: a 9.5 px chip at 0.6× is an illegible smear that only adds to
+   the pile.  The Labels toggle still owns whether they come back on zoom-in;
+   this rule merely hides what it turned on. */
+.leaflet-container[data-icon-tier="far"] .aircraft-label {
+  display: none;
+}
+
+/* A white chip with dark text: on pale tiles the old dark chip read as a
+   blob before it read as a callsign. */
+.aircraft-label {
+  font-size: 9.5px;
+  color: var(--map-chip-ink);
+  white-space: nowrap;
+  font-weight: 700;
+  text-align: center;
+  line-height: 1.3;
+  background: var(--map-chip-bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  margin-top: 2px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.15);
+  pointer-events: none;
+}
+
+.aircraft-alt {
+  font-size: 8px;
+  color: var(--text-secondary);
+  font-weight: 500;
+  margin-left: 2px;
+}
+
+.node-marker {
+  background: none !important;
+  border: none !important;
+}
+
+/* Same zoom scale for the node glyphs.  Their html is the svg itself (no
+   wrapper div) and the anchor is the glyph's centre, so the origin is simply
+   50%/50%.  Nothing else writes a transform on this svg — its inline style is
+   display + filter only (nodeGlyphSvg / nodeSiteGlyphSvg in icons.ts). */
+.node-marker > svg {
+  transform: scale(var(--map-icon-scale, 1));
+  transform-origin: 50% 50%;
+  will-change: transform;
+}
+
+/* Per-node "Show"/"Hide" control in a shared site's popup.  A site with two
+   receivers has no single node for a marker click to select, so the choice
+   moves into the popup. */
+.node-select {
+  margin-top: 3px;
+  padding: 1px 7px;
+  border: 1px solid rgba(250, 204, 21, 0.5);
+  border-radius: 3px;
+  background: rgba(250, 204, 21, 0.12);
+  color: #facc15;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.node-select:hover {
+  background: rgba(250, 204, 21, 0.24);
+}
+
+/* ── Bottom playback bar ─────────────────────────────────────── */
+
+.playback-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border);
+  padding: 6px 14px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.playback-bar input[type="range"] {
+  flex: 1;
+  accent-color: var(--accent);
+  height: 4px;
+}
+
+.playback-time {
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  min-width: 34px;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+/* ── Anomaly flag ring ───────────────────────────────────────── */
+@keyframes anomaly-pulse {
+  0%,
+  100% {
+    opacity: 0.85;
+    stroke-width: 2.5;
+  }
+  50% {
+    opacity: 0.4;
+    stroke-width: 1.5;
+  }
+}
+.anomaly-ring {
+  animation: anomaly-pulse 1.5s ease-in-out infinite;
+}
+
+/* Node location-uncertainty disc and empirical coverage region — both are
+   approximate areas, and both say so with a soft edge.  Screen-space blur is
+   deliberate: it keeps the edge equally soft at every zoom, where a blur in
+   map units would sharpen as you zoom out and disappear once the shape is a
+   few pixels wide.  Values are in px and were picked against the disc's 1–3 km
+   radius: enough to kill the rim, not so much that the shape stops reading. */
+.node-uncertainty-disc {
+  filter: blur(5px);
+}
+.coverage-fuzzy {
+  filter: blur(3.5px);
+}
+
+/* km labels on truth-vs-track error lines.  Permanent tooltips (their lines
+   render on pointer-events:none canvases, so there is nothing to hover) —
+   restyle Leaflet's white tooltip box into a small unobtrusive chip. */
+.radar3-error-label {
+  background: var(--map-chip-bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  box-shadow: none;
+  color: var(--warning-ink);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0 4px;
+  pointer-events: none;
+}
+.radar3-error-label::before {
+  display: none; /* no pointer arrow */
+}
+/* The Labels toolbar button hides these together with the callsign labels.
+   CSS toggle rather than a prop: the owning layers are mount-once/ref-driven,
+   and the tooltips live in Leaflet's tooltipPane, outside our custom panes. */
+.live-map-container.tf-hide-error-labels .radar3-error-label {
+  display: none;
+}
+
+/* ── Narrow viewports ────────────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+  .aircraft-list-panel {
+    width: 220px;
+  }
+  .detail-panel {
+    width: 260px;
+  }
+  /* Each group already wraps onto its own line here, so the dividers between
+     them land at the end of a line separating nothing. */
+  .toolbar-row-layers .toolbar-separator {
+    display: none;
+  }
+}

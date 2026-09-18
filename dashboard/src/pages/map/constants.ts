@@ -1,0 +1,205 @@
+import { activePalette } from "./mapPalette";
+
+export const API_BASE = "/api";
+export const STALE_AIRCRAFT_MS = 8000;
+export const MAX_HISTORY = 150;
+export const VIEWPORT_PAD_DEG = 1.5;
+
+// Arc fade lifecycle.  Single source of truth for the renderer (LiveAircraftMap
+// DetectionArcs) and the buffer pruner (hooks.useAircraftFeed).  They must
+// agree: a renderer life > pruner TTL would leave the renderer hunting for
+// already-deleted buffer entries; the reverse keeps stale entries in memory.
+export const ARC_HOLD_MS = 0;
+export const ARC_FADE_MS = 5_000;
+export const ARC_TOTAL_LIFE_MS = ARC_HOLD_MS + ARC_FADE_MS;
+
+// Ground-truth objects and radar tracks both live in the frontend's per-hex
+// animation stores (fixesRef / smoothRef / trail buffers).  In simulation a
+// radar track carries the *same* ICAO hex as the aircraft it came from, so
+// without a namespace the two write to one key and the marker alternates
+// between the solved position and the true one on every ingest — measured at
+// 29.8 km apart for a single-node arc track on staging.  Truth entries are
+// therefore stored under this prefix; `hex` on the object stays the real hex
+// so labels, selection and error computation are unaffected.
+// TTL for truth objects when the feed stops (pushes arrive every ~2 s).
+export const GT_FEED_STALE_MS = 30_000;
+// Grace before a truth object missing from a snapshot is forgotten.  The
+// backend can legitimately drop a hex from one snapshot and bring it back:
+// the GT snapshot is rebuilt only every 5 s (GT_REFRESH_S) while the trail GC
+// runs on a 10 s staleness rule, so a push hiccup or a single dropped WS
+// frame produced a visible blink when the prune fired on first absence.
+export const GT_PRUNE_GRACE_MS = 10_000;
+export const GT_KEY_PREFIX = "gt:";
+export const groundTruthKey = (hex) => GT_KEY_PREFIX + hex;
+
+// position_source string for single-node arc-only aircraft (lat/lon is the
+// arc midpoint, not a real fix).  Backend emits this verbatim — keep in sync
+// with the backend constant if it ever moves.
+export const POSITION_SOURCE_ARC_ONLY = "single_node_ellipse_arc";
+
+// position_source for an aircraft claimed by exactly ONE node: lat/lon is the
+// real ADS-B fix (not an estimate), and the entry carries that node's full
+// bistatic locus in ambiguity_arc for the frontend to trim.  Backend emits
+// this verbatim — keep in sync with the backend constant if it ever moves.
+export const POSITION_SOURCE_ADSB_SINGLE = "adsb_single_node";
+
+// Three lanes, three colours (getAircraftColor, StatsOverlay, the trimmed arc):
+// this blue for a claimed single-node ADS-B target, cyan LANE_MN_ADSB for a
+// multi-node solve that carried a transponder tag (mn-adsb-*, adsb_assisted),
+// fuchsia LANE_MN_DARK for a dark multi-node solve (mn-dark-*).  Blue and cyan
+// sit next to each other because both lanes know the transponder identity;
+// fuchsia is the odd one out because a dark solve does not.  Green
+// LANE_SOLVER_SEED stays on the ADS-B-seeded solver source, and cyan doubles as
+// the fallback colour for the rare solver_single_node relic.  The values live
+// in mapPalette.ts, which is where every map colour is chosen, where the
+// separation between them is justified, and where each theme states its own
+// values — which is why there is no colour constant here to import.
+
+// The claimed arc is drawn at a FIXED SCREEN LENGTH — a multiple of the plane
+// icon it sits under — rather than a fixed ground length.  The locus spans
+// tens of km, so any geographic length either vanishes at low zoom or swamps
+// the map at high zoom; pinning it to the icon keeps it readable as "the
+// locus runs this way through this target" at every zoom.  2.5 × the 18–30 px
+// altitude bands (icons.ts) gives a 45–75 px section.
+export const ADSB_SINGLE_ARC_ICON_MULTIPLE = 2.5;
+
+// Dead-reckoning elapsed cap (seconds) for arc-only tracks.  Their backend
+// position is pinned to the arc midpoint between delay updates, so a long
+// glide walks the anchor straight off the measured locus: with the generic
+// 60 s cap, staging measured 26/415 displayed arc-only positions outside
+// their own node's beam wedge, median 5.9 km from their own arc (7–11 km
+// after a full 60 s glide).  10 s keeps short gaps smooth while bounding the
+// divergence.  Other position sources keep the 60 s cap.  (Arc-only tracks
+// render no plane icon, but the DR position still drives arc-rebuild
+// anchoring, list centering, and the smooth store.)
+export const ARC_DR_MAX_S = 10;
+
+// Dead-reckoning drift budget (metres) past which the plane ICON stops being
+// drawn as an ordinary live target.  The backend keeps feeding an mn entry past
+// its last solve (MN_DARK_EXPIRY_S 30 s dark, 60 s ADS-B-assisted), so a target
+// whose solves stop is drawn kilometres from where it actually is — the icon
+// reads as a real target because nothing about it looks stale.
+//
+// The budget is LANE-AWARE, because the two multi-node lanes re-solve at very
+// different rates and one budget cannot describe both:
+//
+//  * Assisted lane (mn-adsb-*) and every other source — 2 km.  Measured
+//    re-solve cadence is 2.9 s median, so a healthy target accrues a few
+//    hundred metres and never trips it; at airliner speed the icon survives
+//    ~6–8 s of solve loss.  2 km also matches the known-lane publish
+//    displacement gate (_MAX_DISPLACEMENT_KM) and sits under backend dedup's
+//    3 km proximity gate, so a second icon cannot appear at the true position
+//    while the drifted one is still shown.
+//  * Dark lane (mn-dark-*) — 3 km.  It was 6 km, sized when the solver refused
+//    to re-solve the same tracks inside SOLVER_RESOLVE_INTERVAL_S = 12 s and
+//    the measured dark cadence was 9.0 s median / 24.9 s p90: at that cadence
+//    2 km hid 48% of published dark track-frames and only 6 km got 90% of them
+//    drawn.  Dark solves now land every 1–3 s, so the drift a healthy track
+//    accrues is metres, and the budget stopped buying coverage and started
+//    buying wrong icons: measured against ground truth over 20 minutes, dark
+//    entries run 1.50 km median error at 8–15 s of solve age but 2.02 km at
+//    15–30 s (7% over 5 km) and 3.99 km at 30–60 s (32% over 5 km).  3 km sits
+//    at that knee — it still tolerates the odd missed solve, and it no longer
+//    draws a confident icon 6 km from any aircraft.
+//
+// Exceeding the budget does not mean the same thing in both lanes, so neither
+// does the rendering (see drIconState in icons.ts): an assisted track over
+// budget is a genuine anomaly and loses its icon, while a dark track over
+// budget is the normal consequence of a missed solve and is drawn in a
+// degraded "stale solve" style instead — "solved but stale" has to stay
+// distinguishable from "not solved".  Either way the TRACK stays alive —
+// stores, trails, list, selection — so a new solve restores the normal icon on
+// the next 2 Hz render.
+export const DR_ICON_HIDE_DISTANCE_M = 2000;
+export const DR_ICON_HIDE_DISTANCE_DARK_M = 3000;
+
+// Time budget for a DARK multi-node icon, in seconds of SOLVE AGE (`seen` plus
+// the wall-clock gap since ingest — the same age the disc grows on).  Distance
+// alone cannot describe a lost dark track: a slow or gs-less entry drifts far
+// too little to trip the 3 km budget, yet the backend keeps re-broadcasting it
+// for MN_DARK_EXPIRY_S = 30 s after its solves stop, so the map went on drawing
+// a confident icon — and a violet disc still growing under it — for tracks that
+// no longer existed.
+//
+// 12 s, measured against ground truth over three 20-minute captures: dark
+// entries under 4 s of solve age are 1% ghosts (over 5 km from any aircraft)
+// and 0.3 km off at the median, while entries past 12 s are 15% ghosts and
+// 1.5–2.4 km off.  Dark solves now land every 1–3 s, so 12 s of silence is a
+// lost track rather than a cadence gap.  Withdrawing the drawing there removes
+// 45–49% of ghost display-seconds for 21% of dark display-seconds hidden.
+//
+// About half of the tracks that go quiet for 12 s do re-solve later, at a
+// median of 16 s, so only the DRAWING is withdrawn: the entry stays in the
+// stores, the list, the trail buffers and the selection, and the next solve
+// resets `seen` and brings the icon straight back.  A selected aircraft keeps a
+// degraded icon instead of losing it, matching the drift budget's selected-hex
+// bypass.  See drIconState in icons.ts.
+export const DR_ICON_MAX_AGE_DARK_S = 12;
+
+// Ground speed (knots) assumed when a multi-node entry carries no `gs` at all.
+// The backend deletes gs from entries whose velocity vector it does not trust
+// (aircraft_feed, VEL_TRUST_MODE=active) — precisely the entries whose
+// dead-reckoned position deserves the least confidence.  Reading an absent gs
+// as "0 kt, therefore no drift" inverted the gate: untrustworthy entries were
+// the only ones that could never be hidden, while trustworthy fast ones were.
+// 250 kt is a deliberately middling airliner cruise figure: high enough that a
+// long solve gap trips the budget, low enough that it does not hide a track
+// after a couple of seconds on an assumption the feed never made.
+export const DR_UNKNOWN_GS_KT = 250;
+
+// Doppler colour gradient — blue (approaching) through neutral to red
+// (receding).  t ∈ [-1, +1] maps linearly across the 5 stops, which live in
+// mapPalette.ts because each theme needs its own: on the light surface the
+// previous ramp's light-blue, cyan and light-red stops measured 2.27, 1.61 and
+// 2.47 against Positron, so the arcs nearest zero Doppler — the common case —
+// were the ones you could least see.  Both ramps now keep a neutral centre, so
+// "no radial motion" reads as the absence of a direction rather than a third
+// colour.
+export function dopplerColor(doppler_hz, maxDop = 200) {
+  const stops = activePalette().DOPPLER_STOPS;
+  const t = Math.max(-1, Math.min(1, doppler_hz / maxDop)); // [-1, +1]
+  const pos = ((t + 1) / 2) * (stops.length - 1);           // [0, 4]
+  const lo = Math.floor(pos);
+  const hi = Math.min(lo + 1, stops.length - 1);
+  const f = pos - lo;
+  const [r, g, b] = stops[lo].map((c, i) => Math.round(c + f * (stops[hi][i] - c)));
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
+// Window length for the centred moving average drawn over the per-solve dark
+// trail (map/trails.ts smoothTrailPositions, LiveAircraftMap solveTrailsRef).
+// From an 8-min 1 Hz capture of 155 non-ADS-B tracks on the test droplet,
+// pooled interior fixes of multinode_solve tracks: deviation from the local
+// path p90 33 m raw → 10 m at k=3 (p99 102 → 53 m) and heading churn p90
+// 20.6° → 5.8°, for floor(k/2) = 1 solve of lag ≈ 1.2 s, which the live icon
+// covers because the icon is still drawn at the dead-reckoned position.
+// k=5 buys p90 6 m for 2.5 s of lag; that lag starts to be visible as the
+// dashed head trailing a turn, so 3 is the default.  Ground-truth error is
+// bias-dominated and no window improves it (236 → 250 m at k=3): this is
+// presentational only.
+export const TRAIL_SMOOTH_K = 3;
+
+// Sigma assumed for a dark solve whose entry states no pos_sigma_m (absent on
+// ~3/4 of tracks in the capture: 37 of 155).  It feeds ONLY the smoother's
+// teleport gate, max(500 m, 3σ) + v_max·dt — it is never written into the
+// buffer, so it cannot leak into the inverse-variance weights (which apply
+// only when every point in a window states a real sigma).  It matters that
+// it is not zero: dark solve error is ~1 km median, so a bare 500 m floor
+// would read ordinary scatter as a teleport and split the averaging window.
+export const TRAIL_SOLVE_SIGMA_FALLBACK_M = 300;
+
+// Depth of the per-solve dark trail buffer (LiveAircraftMap solveTrailsRef).
+// Dark solves land every 1–3 s, so 40 points is 40–120 s of track — longer
+// than the 30 s the 2 Hz icon buffer holds, and comfortably longer than the
+// 7–33 s median life of a dark solver key, which is the real limit on how
+// much history a dark trail can ever have.
+export const SOLVE_TRAIL_MAX_POINTS = 40;
+
+// How much of a RETIRED dark key's solve buffer a replacement key may borrow
+// (stitchPredecessorTrail, driven by the feed's predecessor_hex).  Bounded
+// well under SOLVE_TRAIL_MAX_POINTS on purpose: the seed is history, and a
+// buffer filled with it would leave the new key no depth for the solves it is
+// about to make — 24 borrowed points still restore ~24-70 s of pre-turn track
+// while keeping 16 for the new one, which at the 1-3 s dark cadence is the
+// next 16-48 s.
+export const SOLVE_TRAIL_STITCH_MAX_POINTS = 24;
