@@ -146,7 +146,8 @@ per-node trust residuals, and the feed's `adsb_single_node` display section).
   A restart drops them.
 - **Snapshots.** State is serialized to disk every 60s and restored on boot
   (trust scores, reputations, accuracy samples, node identities).
-- **SQLite** (`data/users.db`) — users, node owners, node claims.
+- **SQLite** (`data/users.db`) — users, and node claims: who owns each node and
+  the address it was claimed with.
 - **R2 (Cloudflare).** Archived coverage/track Parquet is offloaded to the
   `retina-server-archive` bucket and pruned locally (see the runbook).
 

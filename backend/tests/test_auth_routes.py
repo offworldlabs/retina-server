@@ -14,6 +14,8 @@ from http.cookies import SimpleCookie
 
 import pytest
 
+from tests.ownership_helpers import own, register_node_row
+
 # ── /api/auth/me + /api/auth/logout ──────────────────────────────────────────
 
 
@@ -135,7 +137,7 @@ class TestMyNodes:
         from core.auth import set_node_owner
         from core.users import ANONYMOUS_USER
 
-        asyncio.run(set_node_owner("my-owned-node", ANONYMOUS_USER["id"]))
+        own("my-owned-node", ANONYMOUS_USER["id"])
         try:
             r = client.get("/api/auth/me/nodes")
             assert r.status_code == 200
@@ -148,7 +150,7 @@ class TestMyNodes:
         from core.auth import set_node_owner
         from core.users import ANONYMOUS_USER
 
-        asyncio.run(set_node_owner("field-check-node", ANONYMOUS_USER["id"]))
+        own("field-check-node", ANONYMOUS_USER["id"])
         try:
             nodes = client.get("/api/auth/me/nodes").json()
             node = next(n for n in nodes if n["node_id"] == "field-check-node")
@@ -163,12 +165,12 @@ class TestMyNodes:
         from core.auth import set_node_owner
         from core.users import ANONYMOUS_USER
 
-        node_id = "test-ref-join-node"  # synthetic: publishes under its own id
-        asyncio.run(set_node_owner(node_id, ANONYMOUS_USER["id"]))
+        node_id = "ref-join-node"
+        ref = own(node_id, ANONYMOUS_USER["id"])
         try:
             nodes = client.get("/api/auth/me/nodes").json()
             node = next(n for n in nodes if n["node_id"] == node_id)
-            assert node["node_ref"] == node_id
+            assert node["node_ref"] == ref
         finally:
             asyncio.run(set_node_owner(node_id, None))
 
@@ -180,7 +182,7 @@ class TestMyNodes:
         from core.users import ANONYMOUS_USER
 
         node_id = "position-status-node"
-        asyncio.run(set_node_owner(node_id, ANONYMOUS_USER["id"]))
+        own(node_id, ANONYMOUS_USER["id"])
         with state.connected_nodes_lock:
             state.connected_nodes[node_id] = {
                 "status": "active",
@@ -201,8 +203,9 @@ class TestMyNodeLocationPrivacy:
     """The owner's half of the location-privacy switch.
 
     The suite runs with core.users' anonymous-admin bypass opted in, so the
-    caller is that admin and "owning" a node is a node_owners row against its
-    all-zero uuid.  These go through the HTTP routes rather than the storage
+    caller is that admin and "owning" a node is a node_claims row carrying its
+    all-zero uuid. An owned node is always a registered one, public unless a
+    test registers it otherwise.  These go through the HTTP routes rather than the storage
     helpers — tests/test_publication.py owns the precedence rule; what is
     asserted here is the ownership gate, the shape on the wire, and that the
     cache is dropped so a change is visible immediately.
@@ -215,7 +218,7 @@ class TestMyNodeLocationPrivacy:
         from core.auth import set_node_owner
         from core.users import ANONYMOUS_USER
 
-        asyncio.run(set_node_owner(self.NODE, ANONYMOUS_USER["id"]))
+        own(self.NODE, ANONYMOUS_USER["id"])
         try:
             yield self.NODE
         finally:
@@ -223,16 +226,9 @@ class TestMyNodeLocationPrivacy:
 
     @staticmethod
     def _register(node_id, choice):
-        from core.nodes import Node
-        from core.users import async_session_maker
         from services import publication
 
-        async def _go():
-            async with async_session_maker() as session:
-                session.add(Node(node_id=node_id, node_ref=f"nde-{node_id}"[:15], publication=choice))
-                await session.commit()
-
-        asyncio.run(_go())
+        asyncio.run(register_node_row(node_id, choice))
         # Startup has already primed the cache; mirror the registration route's
         # invalidation after this fixture writes directly to the database.
         publication.invalidate()
@@ -293,13 +289,13 @@ class TestMyNodeLocationPrivacy:
         }
         assert is_private(owned)
 
-    def test_clearing_a_node_that_never_registered_falls_back_to_the_default(self, client, owned):
+    def test_clearing_a_node_registered_public_makes_it_public_again(self, client, owned):
         client.put(f"/api/auth/me/nodes/{owned}/location-privacy", json={"private": True})
         r = client.delete(f"/api/auth/me/nodes/{owned}/location-privacy")
         assert r.json() == {
             "node_id": owned,
             "location_private": False,
-            "location_privacy_source": "default",
+            "location_privacy_source": "registration",
         }
 
     def test_a_body_without_private_is_rejected(self, client, owned):
@@ -307,7 +303,9 @@ class TestMyNodeLocationPrivacy:
 
 
 class TestMyNodesCarriesLocationPrivacy:
-    """All three sources, on the listing the dashboard renders the card from."""
+    """Both sources an owned node can have, on the listing the dashboard renders
+    the card from. Only a registered node can be owned, so the default, which
+    is the answer for a node with neither row, never reaches this listing."""
 
     @pytest.fixture()
     def owned(self):
@@ -315,7 +313,7 @@ class TestMyNodesCarriesLocationPrivacy:
         from core.users import ANONYMOUS_USER
 
         node_id = "privacy-listing-node"
-        asyncio.run(set_node_owner(node_id, ANONYMOUS_USER["id"]))
+        own(node_id, ANONYMOUS_USER["id"])
         try:
             yield node_id
         finally:
@@ -324,10 +322,10 @@ class TestMyNodesCarriesLocationPrivacy:
     def _entry(self, client, node_id):
         return next(n for n in client.get("/api/auth/me/nodes").json() if n["node_id"] == node_id)
 
-    def test_a_node_with_neither_row_reads_public_by_default(self, client, owned):
+    def test_a_node_registered_public_reads_public_from_its_registration(self, client, owned):
         entry = self._entry(client, owned)
         assert entry["location_private"] is False
-        assert entry["location_privacy_source"] == "default"
+        assert entry["location_privacy_source"] == "registration"
 
     def test_a_registered_node_names_its_registration(self, client, owned):
         TestMyNodeLocationPrivacy._register(owned, "private")
@@ -355,7 +353,7 @@ class TestAdminNodeOwnerRoutes:
     def test_list_node_owners_shows_owned(self, client):
         from core.auth import set_node_owner
 
-        asyncio.run(set_node_owner("admin-test-node", "some-user-id"))
+        own("admin-test-node", "some-user-id")
         try:
             owners = client.get("/api/admin/node-owners").json()
             assert "admin-test-node" in owners
@@ -364,25 +362,42 @@ class TestAdminNodeOwnerRoutes:
             asyncio.run(set_node_owner("admin-test-node", None))
 
     def test_set_node_owner_null_clears_ownership(self, client):
-        from core.auth import get_node_owner, set_node_owner
+        from core.auth import get_node_owner
 
-        asyncio.run(set_node_owner("clear-me-node", "some-user-id"))
+        own("clear-me-node", "some-user-id")
         r = client.put("/api/admin/nodes/clear-me-node/owner", json={"user_id": None})
         assert r.status_code == 200
         assert r.json()["user_id"] is None
         assert asyncio.run(get_node_owner("clear-me-node")) is None
 
     def test_set_node_owner_invalid_uuid_returns_404(self, client):
+        asyncio.run(register_node_row("some-node"))
         r = client.put("/api/admin/nodes/some-node/owner", json={"user_id": "not-a-uuid"})
         assert r.status_code == 404
+        assert r.json()["detail"] == "User not found"
 
     def test_set_node_owner_nonexistent_user_returns_404(self, client):
-
+        asyncio.run(register_node_row("some-node"))
         r = client.put(
             "/api/admin/nodes/some-node/owner",
             json={"user_id": str(uuid.uuid4())},
         )
         assert r.status_code == 404
+        assert r.json()["detail"] == "User not found"
+
+    def test_a_node_that_never_registered_cannot_be_given_an_owner(self, client):
+        """Ownership lives beside the claim, and only a registered node can be
+        claimed. Refused before anything is written, whichever way the call
+        goes, rather than failing on the foreign key as a 500."""
+        from core.auth import get_node_owner
+        from core.users import ANONYMOUS_USER
+
+        assign = client.put("/api/admin/nodes/never-registered/owner", json={"user_id": ANONYMOUS_USER["id"]})
+        clear = client.put("/api/admin/nodes/never-registered/owner", json={"user_id": None})
+
+        assert (assign.status_code, assign.json()["detail"]) == (404, "Node not found")
+        assert (clear.status_code, clear.json()["detail"]) == (404, "Node not found")
+        assert asyncio.run(get_node_owner("never-registered")) is None
 
 
 # ── /api/auth/claim/* and the owner's release ────────────────────────────────
@@ -516,7 +531,8 @@ class TestClaimRoutes:
 
     def test_an_admin_reassigning_a_node_clears_the_claim_that_bound_it(self, client):
         """A reassignment is a release and a new owner at once, so the new owner
-        must not be shown the address that claimed the node for somebody else."""
+        must not be shown the address that claimed the node for somebody else.
+        The row stays, since it now carries the owner, and carries nothing else."""
         from core.users import get_or_create_magic_link_user
 
         token = self._mailed()
@@ -527,7 +543,8 @@ class TestClaimRoutes:
         r = client.put("/api/admin/nodes/ret1a2b3c4d/owner", json={"user_id": str(bob.id)})
 
         assert r.status_code == 200
-        assert self._claim_on_file() is None
+        claim = self._claim_on_file()
+        assert (claim.user_id, claim.email, claim.verified, claim.undeliverable) == (str(bob.id), None, False, False)
 
     def test_an_admin_reassigning_a_node_to_its_own_owner_keeps_the_claim(self, client):
         token = self._mailed()
@@ -540,18 +557,19 @@ class TestClaimRoutes:
 
     @staticmethod
     def _owned_by_the_caller(verified: bool, node_id="ret1a2b3c4d"):
-        """The node owned by the test client's account, with the address that
-        was offered for it either confirmed or not."""
-        from core.auth import set_node_owner
+        """The node bound to the test client's account, beside the address that
+        was offered for it, either confirmed or not. Written as the click writes
+        it, on the claim row: an administrator's assignment would clear the
+        address instead."""
         from core.users import ANONYMOUS_USER, async_session_maker
-        from services.node_claim_store import mark_verified
+        from services.node_claim_store import mark_verified, read_claim
 
         async def _own():
-            if verified:
-                async with async_session_maker() as session:
-                    async with session.begin():
+            async with async_session_maker() as session:
+                async with session.begin():
+                    (await read_claim(session, node_id)).user_id = ANONYMOUS_USER["id"]
+                    if verified:
                         await mark_verified(session, node_id, "ada@example.com")
-            await set_node_owner(node_id, ANONYMOUS_USER["id"])
 
         asyncio.run(_own())
         asyncio.set_event_loop(asyncio.new_event_loop())
@@ -565,9 +583,9 @@ class TestClaimRoutes:
         assert node["claimed_with"] == "ada@example.com"
 
     def test_an_address_nobody_confirmed_is_not_what_a_node_was_claimed_with(self, client):
-        """An owner reached some other way, such as an administrator's
-        assignment, beside an address that was offered and never confirmed:
-        that address is a stranger's as far as this owner is concerned."""
+        """An owner beside an address that was offered and never confirmed,
+        which a nomination racing the click that binds the node can leave: that
+        address is a stranger's as far as this owner is concerned."""
         self._mailed()
         self._owned_by_the_caller(verified=False)
 

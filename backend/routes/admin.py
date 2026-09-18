@@ -29,7 +29,8 @@ from config.constants import (
     NODE_OFFLINE_THRESHOLD_S,
 )
 from core import state
-from core.auth import get_node_owner, list_node_owners, set_node_owner
+from core.auth import list_node_owners
+from core.nodes import Node
 from core.runtime_config import runtime_path, write_runtime_file
 from core.task_registry import get_stale_tasks
 from core.users import (
@@ -41,7 +42,7 @@ from core.users import (
     user_to_dict,
 )
 from services import publication
-from services.node_claim_store import clear_claim
+from services.node_claim_store import set_owner
 from services.node_refs import id_for_ref, public_identity, public_name, ref_to_id_map
 from services.tasks import multinode_identity
 
@@ -205,7 +206,15 @@ async def admin_set_node_owner(
     session: AsyncSession = Depends(get_async_session),
     admin=Depends(require_admin),
 ):
-    """Assign or clear node ownership. Pass user_id=null to unassign."""
+    """Assign or clear node ownership. Pass user_id=null to unassign.
+
+    Only a registered node can have an owner, so an id that never came through
+    v1 registration is 404 whichever way the call goes. This route is behind
+    require_admin, whose caller can already list every node, so the answer
+    tells them nothing new.
+    """
+    if await session.get(Node, node_id) is None:
+        raise HTTPException(404, "Node not found")
     if body.user_id is not None:
         try:
             uid = uuid.UUID(body.user_id)
@@ -214,17 +223,10 @@ async def admin_set_node_owner(
         user = await session.get(User, uid)
         if not user:
             raise HTTPException(404, "User not found")
-    previous = await get_node_owner(node_id)
-    await set_node_owner(node_id, body.user_id)
-    if body.user_id is None or body.user_id != previous:
-        # A change of owner made on somebody's behalf clears what a release
-        # clears. Leaving the address behind would show the new owner the last
-        # one's, or a stranger's that was declined, and leaving a stale
-        # challenge would let a link already in a mailbox rebind a node an
-        # administrator has just freed. Reassigning a node to the owner it
-        # already has changes nothing, so it keeps the address that claimed it.
-        await clear_claim(session, node_id)
-        await session.commit()
+    # The checks above and the write in one transaction. A changed owner takes
+    # the address and any pending challenge with it; set_owner says why.
+    await set_owner(session, node_id, body.user_id)
+    await session.commit()
     log_event(
         "user",
         f"Node {node_id} owner set to {body.user_id or '(unassigned)'}",

@@ -1,7 +1,6 @@
 """Tests for auth system: fastapi-users JWT, node ownership, and FastAPI deps."""
 
 import asyncio
-import json
 import os
 import time
 import uuid
@@ -9,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tests.ownership_helpers import register_node_row
 from tests.probe_helpers import run_probe
 
 # ── SQLite durability pragmas ─────────────────────────────────────────────────
@@ -400,12 +400,14 @@ def clean_auth_tables():
     """Wipe all auth-related tables before a test that requests this fixture."""
     from sqlalchemy import delete
 
-    from core.users import NodeOwner, async_session_maker, create_db_and_tables
+    from core.nodes import NodeClaim, NodeClaimChallenge
+    from core.users import async_session_maker, create_db_and_tables
 
     async def _setup():
         await create_db_and_tables()
         async with async_session_maker() as session:
-            await session.execute(delete(NodeOwner))
+            await session.execute(delete(NodeClaimChallenge))
+            await session.execute(delete(NodeClaim))
             await session.commit()
 
     asyncio.run(_setup())
@@ -413,6 +415,37 @@ def clean_auth_tables():
 
 
 # ── Node ownership ────────────────────────────────────────────────────────────
+
+
+async def _claimed(node_id: str, owner: str) -> None:
+    """A registered node its owner claimed by email, with a challenge still on
+    file and every flag set, so that clearing any of them shows."""
+    from core.nodes import NodeClaim, NodeClaimChallenge
+    from core.users import async_session_maker
+
+    await register_node_row(node_id)
+    async with async_session_maker() as session:
+        async with session.begin():
+            session.add(
+                NodeClaim(node_id=node_id, user_id=owner, email="ada@example.com", verified=True, undeliverable=True)
+            )
+            session.add(
+                NodeClaimChallenge(
+                    node_id=node_id,
+                    email="ada@example.com",
+                    handle="0" * 64,
+                    created_at=time.time(),
+                    expires_at=time.time() + 900,
+                )
+            )
+
+
+async def _claim_and_challenge(node_id: str):
+    from core.nodes import NodeClaim, NodeClaimChallenge
+    from core.users import async_session_maker
+
+    async with async_session_maker() as session:
+        return await session.get(NodeClaim, node_id), await session.get(NodeClaimChallenge, node_id)
 
 
 class TestNodeOwnership:
@@ -423,6 +456,8 @@ class TestNodeOwnership:
     async def test_set_and_clear_node_owner(self):
         from core.auth import get_node_owner, list_node_owners, set_node_owner
 
+        await register_node_row("node-1")
+        await register_node_row("node-2")
         await set_node_owner("node-1", "user-A")
         await set_node_owner("node-2", "user-B")
         assert await get_node_owner("node-1") == "user-A"
@@ -431,90 +466,57 @@ class TestNodeOwnership:
         assert await get_node_owner("node-1") is None
         assert "node-1" not in await list_node_owners()
 
-
-# ── Migration tests ───────────────────────────────────────────────────────────
-
-
-class TestMigration:
-    @pytest.fixture(autouse=True)
-    def _clean_tables(self, clean_auth_tables):
-        pass
-
-    @pytest.fixture()
-    def legacy_file(self, tmp_path, monkeypatch):
-        from core import auth
-
-        path = tmp_path / auth.NODE_OWNERS_FILE.name
-        path.write_text(json.dumps({"legacy-node": "legacy-user"}))
-        monkeypatch.setattr(auth, "NODE_OWNERS_FILE", path)
-        return path
-
-    async def test_commit_failure_preserves_the_source(self, legacy_file):
-        from sqlalchemy import event
-
-        from core.auth import list_node_owners, migrate_json_to_db
-        from core.users import engine
-
-        def fail_commit(connection):
-            raise RuntimeError("database commit failed")
-
-        event.listen(engine.sync_engine, "commit", fail_commit)
-        try:
-            with pytest.raises(RuntimeError, match="database commit failed"):
-                await migrate_json_to_db()
-        finally:
-            event.remove(engine.sync_engine, "commit", fail_commit)
-
-        assert legacy_file.exists()
-        assert not legacy_file.with_suffix(".json.migrated").exists()
-        assert await list_node_owners() == {}
-
-    async def test_rename_failure_after_commit_can_be_retried(self, legacy_file, monkeypatch):
-        from pathlib import Path
-
-        from core.auth import list_node_owners, migrate_json_to_db
-
-        def fail_rename(path, target):
-            raise OSError("rename failed")
-
-        with monkeypatch.context() as context:
-            context.setattr(Path, "rename", fail_rename)
-            with pytest.raises(OSError, match="rename failed"):
-                await migrate_json_to_db()
-
-        # Committed but not renamed, so the retry meets rows it already holds.
-        assert await list_node_owners() == {"legacy-node": "legacy-user"}
-        assert legacy_file.exists()
-        await migrate_json_to_db()
-        assert await list_node_owners() == {"legacy-node": "legacy-user"}
-        assert legacy_file.with_suffix(".json.migrated").exists()
-
-    async def test_migrate_node_owners_from_json(self, tmp_path):
-        from core.auth import get_node_owner, migrate_json_to_db
-
-        node_owners_file = tmp_path / "node_owners.json"
-        node_owners_file.write_text(json.dumps({"node-A": "user-X"}))
-
-        with patch("core.auth.NODE_OWNERS_FILE", node_owners_file):
-            await migrate_json_to_db()
-
-        assert await get_node_owner("node-A") == "user-X"
-        migrated = node_owners_file.with_suffix(".json.migrated")
-        assert migrated.exists()
-        assert not node_owners_file.exists()
-
-
-# ── set_node_owner UPDATE branch ──────────────────────────────────────────────
-
-
-class TestSetNodeOwnerUpdate:
-    @pytest.fixture(autouse=True)
-    def _clean_tables(self, clean_auth_tables):
-        pass
-
     async def test_set_node_owner_updates_existing_owner(self):
+        from core.auth import get_node_owner, get_user_nodes, set_node_owner
+
+        await register_node_row("reassigned-node")
+        await set_node_owner("reassigned-node", "user-1")
+        await set_node_owner("reassigned-node", "user-2")
+        assert await get_node_owner("reassigned-node") == "user-2"
+        assert await get_user_nodes("user-1") == []
+        assert await get_user_nodes("user-2") == ["reassigned-node"]
+
+    async def test_a_new_owner_takes_the_node_without_the_last_ones_claim(self):
+        """Owner and address are one row, so a reassignment clears the address,
+        its confirmation, its bounce and the challenge in the write that sets
+        the owner, rather than leaving a caller to remember a second one."""
+        from core.auth import set_node_owner
+
+        await _claimed("claimed-node", "user-A")
+
+        await set_node_owner("claimed-node", "user-B")
+
+        claim, challenge = await _claim_and_challenge("claimed-node")
+        assert (claim.user_id, claim.email, claim.verified, claim.undeliverable) == ("user-B", None, False, False)
+        assert challenge is None
+
+    async def test_assigning_the_owner_a_node_already_has_changes_nothing(self):
+        from core.auth import set_node_owner
+
+        await _claimed("claimed-node", "user-A")
+
+        await set_node_owner("claimed-node", "user-A")
+
+        claim, challenge = await _claim_and_challenge("claimed-node")
+        assert (claim.user_id, claim.email, claim.verified) == ("user-A", "ada@example.com", True)
+        assert challenge is not None
+
+    async def test_clearing_the_owner_leaves_the_node_unclaimed(self):
+        from core.auth import set_node_owner
+
+        await _claimed("claimed-node", "user-A")
+
+        await set_node_owner("claimed-node", None)
+
+        assert await _claim_and_challenge("claimed-node") == (None, None)
+
+    async def test_a_node_that_never_registered_cannot_be_owned(self):
+        """The foreign key is the rule; the administrator's route checks first
+        so that nobody meets it as a 500."""
+        from sqlalchemy.exc import IntegrityError
+
         from core.auth import get_node_owner, set_node_owner
 
-        await set_node_owner("migrate-node", "user-1")
-        await set_node_owner("migrate-node", "user-2")
-        assert await get_node_owner("migrate-node") == "user-2"
+        with pytest.raises(IntegrityError):
+            await set_node_owner("never-registered", "user-A")
+        assert await get_node_owner("never-registered") is None

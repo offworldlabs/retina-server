@@ -124,13 +124,6 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     )
 
 
-class NodeOwner(Base):
-    __tablename__ = "node_owners"
-
-    node_id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    user_id: Mapped[str] = mapped_column(String(255), index=True)
-
-
 class MagicLink(Base):
     """One outstanding emailed link: a sign-in, or a node claim, told apart by
     `intent`.

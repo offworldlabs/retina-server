@@ -14,7 +14,6 @@ import pytest
 from sqlalchemy import select
 
 from core.nodes import NodeClaim, NodeClaimChallenge
-from core.users import NodeOwner
 from services import claim_links
 from services.node_rate_limits import claim_rate_limiter
 
@@ -65,7 +64,12 @@ async def _challenge(session, node_id: str) -> NodeClaimChallenge | None:
 
 
 async def _own(session, node_id: str, user_id: str = "11111111-1111-1111-1111-111111111111") -> None:
-    session.add(NodeOwner(node_id=node_id, user_id=user_id))
+    """Bind the node, beside whatever address is already on file."""
+    claim = await session.get(NodeClaim, node_id)
+    if claim is None:
+        session.add(NodeClaim(node_id=node_id, user_id=user_id, verified=False, undeliverable=False))
+    else:
+        claim.user_id = user_id
     await session.commit()
 
 

@@ -1009,7 +1009,7 @@ class TestOwnerSeesTheirOwnPrivateNodeInAnalytics:
 
     The suite runs with core.users' anonymous-admin bypass opted in, so "the
     logged-in caller" here is that anonymous admin and ownership is a
-    ``node_owners`` row against its all-zero uuid.  The unauthenticated test
+    ``node_claims`` row carrying its all-zero uuid.  The unauthenticated test
     below switches the bypass off in the route module to get a genuinely
     anonymous caller.
     """

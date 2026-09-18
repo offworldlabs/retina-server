@@ -51,11 +51,11 @@ class NodeLocationPrivacy(Base):
     any node id the system knows by string.
 
     So no foreign key to `nodes`, deliberately, and `String(255)` rather than
-    the `String(32)` of `Node.node_id` — the same key space as
-    `node_owners.node_id`, which is what the owner routes join against and which
-    likewise accepts ids that never registered. A row here for an id nothing has
-    ever heard of is inert rather than an error, which is the behaviour a
-    pre-registration override needs.
+    the `String(32)` of `Node.node_id`. A row here for an id nothing has ever
+    heard of is inert rather than an error, which is the behaviour a
+    pre-registration override needs. Ownership (`node_claims`) is narrower: only
+    a registered node can have an owner, so the owner's own route only ever
+    reaches the registered subset of this key space.
 
     A row wins over the registration choice and deleting it hands the node back
     to that choice, so a reflash rewriting `Node.publication` cannot quietly
@@ -151,27 +151,35 @@ class NodeContact(Base):
 
 
 class NodeClaim(Base):
-    """The address a node was claimed with, and whether it was ever confirmed.
+    """Who owns a node, the address it was claimed with, and whether that
+    address was ever confirmed.
 
     Separate from NodeContact above, which is the site contact: freely
     writable, replaced wholesale, granting nothing. This one is an
-    authorisation input. It cannot be rewritten while the node has an owner, an
-    omission does not clear it, and clearing it is release rather than a write
-    from the node.
+    authorisation boundary: `user_id` is what gates an owner's data. The address
+    cannot be rewritten while the node has an owner, an omission does not clear
+    it, and clearing it is release rather than a write from the node.
 
     Outside `node_contacts` for a second reason: routes/node_register.py calls
     delete_contact, so a re-register wipes that document, and neither the
     binding nor the confirmed address may go with it.
 
-    `verified` and the binding in `node_owners` are set by the same click and
-    agree at first, but they are different facts with different lifetimes. This
-    one says an address was confirmed; the binding says who owns the node.
-    Nothing here gates data: `node_owners` does.
+    `verified` is not `user_id IS NOT NULL` under another name. A click sets
+    both, but an owner an administrator assigned has `user_id` set and
+    `verified` false, and that difference is the whole of what the flag carries.
+
+    Only a registered node can be owned: the foreign key makes an owner for an
+    id that never came through v1 registration an integrity error, which the
+    administrator's route answers as 404 before it writes.
     """
 
     __tablename__ = "node_claims"
 
     node_id: Mapped[str] = mapped_column(String(32), ForeignKey("nodes.node_id"), primary_key=True)
+    # Indexed because "which nodes does this account own" is the hot lookup:
+    # the owner websocket resolves it per connection and the analytics payload
+    # per request.
+    user_id: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     # A hard bounce from the provider's feed. Not a state: a node whose address

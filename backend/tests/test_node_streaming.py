@@ -680,12 +680,11 @@ async def test_a_heartbeat_carries_the_claim_state(registered_node, node_client)
 
 
 async def test_a_heartbeat_on_an_owned_node_names_the_bound_address(registered_node, node_session, node_client):
-    from core.users import NodeOwner
     from services.node_claim_store import set_claim_address
 
     token, node_id = registered_node
-    await set_claim_address(node_session, node_id, "ada@example.com")
-    node_session.add(NodeOwner(node_id=node_id, user_id="11111111-1111-1111-1111-111111111111"))
+    claim = await set_claim_address(node_session, node_id, "ada@example.com")
+    claim.user_id = "11111111-1111-1111-1111-111111111111"
     await node_session.commit()
 
     body = node_client.post(HEARTBEAT, json=_beat(), headers=_auth(token)).json()
@@ -743,18 +742,14 @@ async def test_a_heartbeat_carries_a_bounced_address(registered_node, node_sessi
 async def test_a_release_reaches_the_node_on_the_next_beat(registered_node, node_session, node_client):
     """The whole reason this rides the heartbeat: a node that stopped polling
     months ago still learns its owner let it go, within a beat."""
-    from sqlalchemy import delete
-
-    from core.users import NodeOwner
     from services.node_claim_store import clear_claim, set_claim_address
 
     token, node_id = registered_node
-    await set_claim_address(node_session, node_id, "ada@example.com")
-    node_session.add(NodeOwner(node_id=node_id, user_id="11111111-1111-1111-1111-111111111111"))
+    claim = await set_claim_address(node_session, node_id, "ada@example.com")
+    claim.user_id = "11111111-1111-1111-1111-111111111111"
     await node_session.commit()
     assert node_client.post(HEARTBEAT, json=_beat(), headers=_auth(token)).json()["claim_state"] == "owned"
 
-    await node_session.execute(delete(NodeOwner).where(NodeOwner.node_id == node_id))
     await clear_claim(node_session, node_id)
     await node_session.commit()
 
