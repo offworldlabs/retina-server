@@ -43,7 +43,8 @@ export default defineConfig({
   server: {
     port: 5174,
     proxy: {
-      "/api": "http://localhost:8000",
+      // With the slash, as nginx matches it: the admin console's /api-docs is a page.
+      "/api/": "http://localhost:8000",
       "/ws": { target: "ws://localhost:8000", ws: true },
     },
   },

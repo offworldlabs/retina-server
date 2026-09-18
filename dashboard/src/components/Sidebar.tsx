@@ -92,6 +92,7 @@ const adminNav: NavSection[] = [
       { to: "/infrastructure", label: "Infrastructure", icon: "server" },
       { to: "/custody", label: "Chain of Custody", icon: "shield" },
       { to: "/config", label: "Configuration", icon: "sliders" },
+      { to: "/api-docs", label: "API Reference", icon: "book" },
     ],
   },
   {
