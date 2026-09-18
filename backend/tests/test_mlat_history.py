@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from config.constants import ASSOC_GRID_STEP_KM
 from core import state
 from services.id_utils import multinode_hex_from_key
+from services.tasks import displacement_caps as caps_mod
 from services.tasks import solver as solver_mod
 
 # n=2 input whose track pairing already passed the CV fit (see
@@ -253,8 +254,8 @@ class TestDisplacementCapByLane:
         return result, state.mlat_solve_history[0]
 
     def test_default_dark_cap_is_two_grid_steps(self):
-        assert solver_mod._MAX_DISPLACEMENT_KM_DARK == 2.0 * ASSOC_GRID_STEP_KM
-        assert solver_mod._MAX_DISPLACEMENT_KM == 2.0
+        assert caps_mod._MAX_DISPLACEMENT_KM_DARK == 2.0 * ASSOC_GRID_STEP_KM
+        assert caps_mod._MAX_DISPLACEMENT_KM == 2.0
 
     def test_dark_solve_inside_the_dark_cap_is_published(self):
         """4 km: past the ADS-B cap, inside the dark one.  This is the case
@@ -277,7 +278,7 @@ class TestDisplacementCapByLane:
         result, rec = self._run_displaced(4.0, adsb_hex=self.OBJ_ID)
         assert result is not None
         assert rec["outcome"] == "published"
-        assert rec["displacement_cap_km"] == solver_mod._MAX_DISPLACEMENT_KM_DARK
+        assert rec["displacement_cap_km"] == caps_mod._MAX_DISPLACEMENT_KM_DARK
 
     def test_adsb_anchored_solve_keeps_the_tight_cap(self):
         """The same 4 km displacement that publishes dark still rejects here:
@@ -289,11 +290,11 @@ class TestDisplacementCapByLane:
 
     def test_history_record_carries_the_cap_that_judged_it(self):
         _, dark_rec = self._run_displaced(4.0)
-        assert dark_rec["displacement_cap_km"] == solver_mod._MAX_DISPLACEMENT_KM_DARK
+        assert dark_rec["displacement_cap_km"] == caps_mod._MAX_DISPLACEMENT_KM_DARK
         state._reset_for_tests()
         solver_mod._reset_for_tests()
         _, adsb_rec = self._run_displaced(4.0, adsb_hex=self.ADSB_HEX)
-        assert adsb_rec["displacement_cap_km"] == solver_mod._MAX_DISPLACEMENT_KM
+        assert adsb_rec["displacement_cap_km"] == caps_mod._MAX_DISPLACEMENT_KM
 
     def test_dark_reject_bumps_the_dark_counter_as_well(self):
         """The dark counter is a SUBSET of the aggregate, never a substitute:
@@ -312,14 +313,14 @@ class TestDisplacementCapByLane:
     def test_env_var_overrides_the_dark_cap(self, monkeypatch):
         """The override is an absolute km value, not a grid multiple."""
         monkeypatch.setenv("SOLVER_MAX_DISPLACEMENT_KM_DARK", "3.5")
-        assert solver_mod._dark_displacement_cap_km() == 3.5
+        assert caps_mod._dark_displacement_cap_km() == 3.5
         monkeypatch.delenv("SOLVER_MAX_DISPLACEMENT_KM_DARK")
-        assert solver_mod._dark_displacement_cap_km() == 2.0 * ASSOC_GRID_STEP_KM
+        assert caps_mod._dark_displacement_cap_km() == 2.0 * ASSOC_GRID_STEP_KM
 
     def test_a_narrowed_dark_cap_rejects_what_the_default_publishes(self, monkeypatch):
         """The other half of the override: the resolved value is what the
         gate reads, so lowering it takes the 4 km publish above back out."""
-        monkeypatch.setattr(solver_mod, "_MAX_DISPLACEMENT_KM_DARK", 3.0)
+        monkeypatch.setattr(caps_mod, "_MAX_DISPLACEMENT_KM_DARK", 3.0)
         result, rec = self._run_displaced(4.0)
         assert result is None
         assert rec["outcome"] == "rejected_displacement"
@@ -359,7 +360,7 @@ class TestAnchoredN2DisplacementCap:
         return result, state.mlat_solve_history[0]
 
     def test_default_cap_is_1_5_km(self):
-        assert solver_mod._DARK_FOLLOW_N2_MAX_DISP_KM == 1.5
+        assert caps_mod._DARK_FOLLOW_N2_MAX_DISP_KM == 1.5
 
     def test_anchored_n2_past_the_tight_cap_is_rejected(self):
         """3 km: inside the dark lane cap (6 km) that would otherwise judge
@@ -367,7 +368,7 @@ class TestAnchoredN2DisplacementCap:
         result, rec = self._run_displaced(3.0)
         assert result is None
         assert rec["outcome"] == "rejected_displacement"
-        assert rec["displacement_cap_km"] == solver_mod._DARK_FOLLOW_N2_MAX_DISP_KM
+        assert rec["displacement_cap_km"] == caps_mod._DARK_FOLLOW_N2_MAX_DISP_KM
         assert rec["displacement_km"] == pytest.approx(3.0, abs=0.05)
         # The reject is the point: it counts toward the follow lane's
         # two-consecutive-rejects drop, which is the intended guard.
@@ -378,7 +379,7 @@ class TestAnchoredN2DisplacementCap:
         result, rec = self._run_displaced(1.0)
         assert result is not None and result["success"]
         assert rec["outcome"] == "published"
-        assert rec["displacement_cap_km"] == solver_mod._DARK_FOLLOW_N2_MAX_DISP_KM
+        assert rec["displacement_cap_km"] == caps_mod._DARK_FOLLOW_N2_MAX_DISP_KM
 
     def test_bottom_up_n2_keeps_the_lane_cap(self):
         """No anchor_key: an ordinary dark n=2 pairing, whose guess IS the
@@ -386,7 +387,7 @@ class TestAnchoredN2DisplacementCap:
         result, rec = self._run_displaced(3.0, anchored=False)
         assert result is not None and result["success"]
         assert rec["outcome"] == "published"
-        assert rec["displacement_cap_km"] == solver_mod._MAX_DISPLACEMENT_KM_DARK
+        assert rec["displacement_cap_km"] == caps_mod._MAX_DISPLACEMENT_KM_DARK
 
     def test_anchored_n3_keeps_the_lane_cap(self):
         """The tight cap is about the n=2 fit, not about being anchored: at
@@ -394,12 +395,12 @@ class TestAnchoredN2DisplacementCap:
         result, rec = self._run_displaced(3.0, n_nodes=3)
         assert result is not None and result["success"]
         assert rec["outcome"] == "published"
-        assert rec["displacement_cap_km"] == solver_mod._MAX_DISPLACEMENT_KM_DARK
+        assert rec["displacement_cap_km"] == caps_mod._MAX_DISPLACEMENT_KM_DARK
 
     def test_cap_is_tunable_without_a_deploy(self, monkeypatch):
         """The resolved value is what the gate reads, so widening it takes
         the 3 km reject above back to a publish."""
-        monkeypatch.setattr(solver_mod, "_DARK_FOLLOW_N2_MAX_DISP_KM", 5.0)
+        monkeypatch.setattr(caps_mod, "_DARK_FOLLOW_N2_MAX_DISP_KM", 5.0)
         result, rec = self._run_displaced(3.0)
         assert result is not None and result["success"]
         assert rec["outcome"] == "published"

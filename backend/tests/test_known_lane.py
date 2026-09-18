@@ -35,8 +35,8 @@ from retina_geolocator.multinode_solver import _lla_to_enu_km, solve_multinode
 
 from core import state
 from services import track_filter
+from services.tasks import displacement_caps as caps_mod
 from services.tasks import known_lane
-from services.tasks import solver as solver_mod
 
 HEX = "abc123"
 
@@ -227,7 +227,7 @@ class TestRealSolve:
         assert s["position_source"] == "known_lane_truth_match"
         assert s["label"] == "truth_match"
         assert s["n_nodes"] == 2
-        assert s["error_km"] < solver_mod._MAX_DISPLACEMENT_KM
+        assert s["error_km"] < caps_mod._MAX_DISPLACEMENT_KM
 
         recs = _known_records()
         assert len(recs) == 1
@@ -262,7 +262,7 @@ class TestClassification:
         assert state.known_lane_truth_match == 0
         (sample,) = list(state.accuracy_samples)
         assert sample["position_source"] == "known_lane_ghost"
-        assert sample["error_km"] > solver_mod._MAX_DISPLACEMENT_KM
+        assert sample["error_km"] > caps_mod._MAX_DISPLACEMENT_KM
         (rec,) = _known_records()
         assert rec["outcome"] == "known_ghost"
         assert rec["published"] is False
