@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 import main
-from services.tasks import solver, track_archive
+from services.tasks import solver, solver_pool, track_archive
 
 
 @pytest.mark.parametrize("exceptional", [False, True])
@@ -155,7 +155,7 @@ async def test_restart_refuses_stopping_solver_before_restoring_or_priming_state
     prime = AsyncMock()
     monkeypatch.setattr(main, "restore_snapshot", lambda: restored.append(True))
     monkeypatch.setattr(node_pipeline, "prime_pipeline_at_startup", prime)
-    monkeypatch.setattr(solver, "_N_SOLVER_WORKERS", 1)
+    monkeypatch.setattr(solver_pool, "_N_SOLVER_WORKERS", 1)
     monkeypatch.setattr(main.state, "solver_queue", queue.Queue())
 
     def work(*_args):

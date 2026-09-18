@@ -14,7 +14,7 @@ from tests.migration_helpers import _alembic
 os.environ.setdefault("RETINA_ENV", "test")
 # No solver process pool under pytest: tests monkeypatch the compute functions,
 # and an unpicklable closure cannot be shipped to a pool child.  See the
-# _POOL_ENABLED comment in services/tasks/solver.py.
+# _POOL_ENABLED comment in services/tasks/solver_pool.py.
 os.environ.setdefault("SOLVER_POOL", "0")
 # Keep background claiming off unless a test explicitly exercises it. Live
 # TestClient workers otherwise compete with direct calls for dedup windows

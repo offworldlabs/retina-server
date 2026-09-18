@@ -83,7 +83,7 @@ own. Everything that reaches a solve passes through one gate stack
 | `frame_queue` size (`FRAME_QUEUE_SIZE`) | 10000 | `core/state.py` |
 | `solver_queue` size (`SOLVER_QUEUE_SIZE`) | 200 | `core/state.py` |
 | `FRAME_WORKERS` | 4 (compose sets 6) | `core/state.py` (`FRAME_WORKERS`), `docker-compose.yml` |
-| `SOLVER_WORKERS` | 2 daemon threads + same-size process pool | `services/tasks/solver.py` (`_N_SOLVER_WORKERS`, `_make_solver_pool`) |
+| `SOLVER_WORKERS` | 2 daemon threads + same-size process pool | `services/tasks/solver_pool.py` (`_N_SOLVER_WORKERS`, `_make_solver_pool`) |
 | `KNOWN_LANE_MODE` default | `binding` | `core/state.py` (`KNOWN_LANE_MODE`) |
 | `SOLVER_ALT_MODE` default | `sweep` | `core/state.py` (`SOLVER_ALT_MODE`) |
 | `SOLVER_FREE_ALT_STARTS` default | 1 | `core/state.py` (`SOLVER_FREE_ALT_STARTS`) |
@@ -757,7 +757,7 @@ this sub-branch never reaches `active` outside staging.
 
 `solve_multinode` — `libs/retina-geolocator/retina_geolocator/multinode_solver.py`,
 invoked through the process pool via `_pool_solve_multinode`
-(`services/tasks/solver.py`).
+(`services/tasks/solver_pool.py`).
 
 ```mermaid
 flowchart TD

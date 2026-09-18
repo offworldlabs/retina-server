@@ -16,6 +16,7 @@ from core import state
 from services import dark_follow
 from services.geo import in_node_beam
 from services.tasks import solver as solver_mod
+from services.tasks import solver_pool as pool_mod
 
 # An n=2 solver input whose track pairing has already passed the
 # constant-velocity fit.  At n=2 a solve is published only once the pairing has
@@ -1834,21 +1835,21 @@ class TestSolverProcessPool:
     """
 
     def test_pool_call_is_inline_without_a_pool(self, monkeypatch):
-        monkeypatch.setattr(solver_mod, "_solver_pool", None)
-        assert solver_mod._pool_call(_marker_fn, 7) == {"marker": 7}
+        monkeypatch.setattr(pool_mod, "_solver_pool", None)
+        assert pool_mod._pool_call(_marker_fn, 7) == {"marker": 7}
 
     def test_round_trip_through_a_real_spawn_pool(self, monkeypatch):
         """Spawn a real pool once: proves the child can import the lib and the
         submitted functions/arguments survive pickling in this image."""
         from retina_geolocator.multinode_solver import solve_multinode
 
-        pool = solver_mod._make_solver_pool()
+        pool = pool_mod._make_solver_pool()
         try:
-            monkeypatch.setattr(solver_mod, "_solver_pool", pool)
+            monkeypatch.setattr(pool_mod, "_solver_pool", pool)
             # <2 measurements short-circuits to None inside the child — the
             # assertion is about transport, not solving.
             noop = {"initial_guess": {"lat": 0.0, "lon": 0.0}, "measurements": []}
-            assert solver_mod._pool_call(solve_multinode, noop, {}) is None
+            assert pool_mod._pool_call(solve_multinode, noop, {}) is None
         finally:
             pool.shutdown(wait=True)
 
@@ -1866,13 +1867,13 @@ class TestSolverProcessPool:
 
         replacement = object()
         broken = _BrokenPool()
-        monkeypatch.setattr(solver_mod, "_solver_pool", broken)
-        monkeypatch.setattr(solver_mod, "_make_solver_pool", lambda: replacement)
+        monkeypatch.setattr(pool_mod, "_solver_pool", broken)
+        monkeypatch.setattr(pool_mod, "_make_solver_pool", lambda: replacement)
 
-        assert solver_mod._pool_call(_marker_fn, 9) == {"marker": 9}
+        assert pool_mod._pool_call(_marker_fn, 9) == {"marker": 9}
         assert events == ["shutdown"]
-        assert solver_mod._solver_pool is replacement
-        monkeypatch.setattr(solver_mod, "_solver_pool", None)
+        assert pool_mod._solver_pool is replacement
+        monkeypatch.setattr(pool_mod, "_solver_pool", None)
 
     def test_hung_child_times_out_counts_and_falls_back_inline(self, monkeypatch):
         """A child that is alive but stuck must cost one solve, not the lane.
@@ -1894,24 +1895,24 @@ class TestSolverProcessPool:
 
         replacement = object()
         pool = _HungPool()
-        monkeypatch.setattr(solver_mod, "_solver_pool", pool)
-        monkeypatch.setattr(solver_mod, "_make_solver_pool", lambda: replacement)
-        monkeypatch.setattr(solver_mod, "_POOL_CALL_TIMEOUT_S", 0.05)
+        monkeypatch.setattr(pool_mod, "_solver_pool", pool)
+        monkeypatch.setattr(pool_mod, "_make_solver_pool", lambda: replacement)
+        monkeypatch.setattr(pool_mod, "_POOL_CALL_TIMEOUT_S", 0.05)
         before = state.solver_pool_timeouts
         errors_before = state.task_error_counts.get("solver_pool", 0)
 
         try:
             # First arg is the s_in dict the real solve calls pass, so the
             # n_nodes the warning logs comes off a realistic shape.
-            assert solver_mod._pool_call(_marker_fn, {"n_nodes": 3}) == {"marker": {"n_nodes": 3}}
+            assert pool_mod._pool_call(_marker_fn, {"n_nodes": 3}) == {"marker": {"n_nodes": 3}}
             assert state.solver_pool_timeouts == before + 1
             assert state.task_error_counts["solver_pool"] == errors_before + 1
             # The wedged executor is torn down and replaced, exactly as the
             # broken-pool branch does — a stuck child never frees its slot.
             assert events == ["shutdown"]
-            assert solver_mod._solver_pool is replacement
+            assert pool_mod._solver_pool is replacement
         finally:
-            monkeypatch.setattr(solver_mod, "_solver_pool", None)
+            monkeypatch.setattr(pool_mod, "_solver_pool", None)
             state.task_error_counts.pop("solver_pool", None)
 
 

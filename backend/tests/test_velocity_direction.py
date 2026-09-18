@@ -26,6 +26,7 @@ from core import state
 from services.geo import offset_latlon_m
 from services.tasks import analytics_refresh
 from services.tasks import solver as solver_mod
+from services.tasks import solver_pool as pool_mod
 
 LAT0, LON0 = 35.0, -82.0
 
@@ -197,7 +198,7 @@ class TestVelocityAdoptionN3(_SolverTestBase):
     def test_good_fit_is_adopted_and_recorded(self, monkeypatch):
         calls = []
         monkeypatch.setattr(
-            solver_mod,
+            pool_mod,
             "_pool_call",
             _fake_pool_call(
                 {
@@ -244,7 +245,7 @@ class TestVelocityAdoptionRejectionFallbacks(_SolverTestBase):
     def _publish_with_fit(self, fit_result, monkeypatch):
         calls = []
         monkeypatch.setattr(
-            solver_mod,
+            pool_mod,
             "_pool_call",
             _fake_pool_call(fit_result, calls),
         )
@@ -282,7 +283,7 @@ class TestVelocityAdoptionRejectionFallbacks(_SolverTestBase):
         def boom(*a, **kw):
             raise RuntimeError("pool broke")
 
-        monkeypatch.setattr(solver_mod, "_pool_call", boom)
+        monkeypatch.setattr(pool_mod, "_pool_call", boom)
         node_ids = ["n1", "n2", "n3"]
         s_in = _s_in(node_ids, cv_epochs=[{"t_s": float(i)} for i in range(6)])
         result = self._run(
@@ -311,7 +312,7 @@ class TestVelocityAdoptionN2SharesPoolCall(_SolverTestBase):
 
         calls = []
         monkeypatch.setattr(
-            solver_mod,
+            pool_mod,
             "_pool_call",
             _fake_pool_call(
                 {

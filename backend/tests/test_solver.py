@@ -16,6 +16,7 @@ from retina_geolocator.multinode_solver import (
 
 from core import state
 from services.tasks import solver as solver_mod
+from services.tasks import solver_pool as pool_mod
 
 # ── Coordinate conversions ────────────────────────────────────────────────────
 
@@ -439,7 +440,7 @@ class TestVelUntrustedDerivation:
                 "vel_up": 3.0,
             }
 
-        monkeypatch.setattr(solver_mod, "_pool_call", fake_pool_call)
+        monkeypatch.setattr(pool_mod, "_pool_call", fake_pool_call)
         s_in = _untrusted_s_in(
             node_ids,
             cv_epochs=[{"t_s": float(i)} for i in range(6)],
@@ -489,7 +490,7 @@ class TestVelUntrustedDerivation:
                 "vel_up": 1.0,
             }
 
-        monkeypatch.setattr(solver_mod, "_pool_call", fake_pool_call)
+        monkeypatch.setattr(pool_mod, "_pool_call", fake_pool_call)
         s_in = _untrusted_s_in(
             node_ids,
             cv_epochs=[{"t_s": float(i)} for i in range(6)],
