@@ -415,7 +415,7 @@ docker compose logs --tail=500 | grep -i "error\|exception\|traceback" | tail -2
 docker compose logs --tail=500 server | grep "Analytics refresh completed"
 ```
 
-It paces fixed-rate against `ANALYTICS_REFRESH_INTERVAL_S`, so durations should sit well below it. A duration at or over the interval means the cycle has become the period, and the node cache stops keeping up with registrations; `frontend/e2e/nodes.spec.ts` starts failing its cache wait shortly after.
+It paces fixed-rate against `ANALYTICS_REFRESH_INTERVAL_S`, so durations should sit well below it. A duration at or over the interval means the cycle has become the period, and the node cache stops keeping up with registrations; `e2e/specs/nodes.spec.ts` starts failing its cache wait shortly after.
 
 ### Checking a node's configured geometry
 

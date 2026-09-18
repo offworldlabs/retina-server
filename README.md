@@ -29,6 +29,7 @@ backend/          Python API (FastAPI)
 frontend/         React SPA (Vite)
 dashboard/        Admin dashboard (React/Vite)
 packages/shared/  Code both web apps share, imported as @retina/shared
+e2e/              Playwright suite run after each deploy
 docs/             Architecture, pipeline, runbook, simulation, arc-display
 libs/             Git submodules
   retina-geolocator/   Bistatic passive radar geolocation solver

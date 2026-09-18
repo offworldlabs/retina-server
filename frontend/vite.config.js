@@ -7,7 +7,7 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["@testing-library/jest-dom/vitest"],
-    exclude: ["**/node_modules/**", "**/dist/**", "e2e/**"],
+    exclude: ["**/node_modules/**", "**/dist/**"],
   },
   build: {
     rollupOptions: {

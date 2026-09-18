@@ -413,7 +413,7 @@ jobs:
         # timing the step out and losing the report. That spec derives its hook
         # budgets from the server's refresh cadence; raise this if it widens.
         timeout-minutes: 20
-        run: npm run test:e2e:staging -w frontend
+        run: npm run test:e2e:staging -w e2e
         env:
           CI: "true"
           RADAR_API_KEY: ${{ secrets.STAGING_RADAR_API_KEY }}
