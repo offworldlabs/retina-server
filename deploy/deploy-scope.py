@@ -16,7 +16,7 @@ this script fails outright.
 
 Two things are inert:
 
-* **Markdown**, except under data-explorer/ (see SERVED_VERBATIM).
+* **Markdown**, except under a public/ directory (see PUBLIC_SEGMENT).
 * **Python whose syntax tree has not moved.** Comments and formatting are absent
   from the AST, so a reworded comment and a `ruff format` pass both compare
   equal, while a renamed local does not. Docstrings ARE nodes and so count as
@@ -42,14 +42,11 @@ from typing import NamedTuple
 # blob to read, and libs/ is where the solver lives.
 GITLINK = "160000"
 
-# Copied into the served tree byte for byte, so nothing under either is inert.
-# The Dockerfile COPYs data-explorer/ into the image and nginx serves it with
-# `root /app/data-explorer`, which makes the markdown under it (including
-# vendor/NOTICE.md, a third-party licence) a served file. Vite copies each app's
-# public/ directory into the dist/ that nginx serves, so a file put there is
-# served under its own name too. Matched on the path segment rather than on the
-# app names, which move: the surfaces have been renamed and merged twice.
-SERVED_VERBATIM = "data-explorer/"
+# Copied into the served tree byte for byte, so nothing under it is inert. Vite
+# copies each app's public/ directory into the dist/ that nginx serves, so a
+# file put there, markdown included, is served under its own name. Matched on
+# the path segment rather than on the app names, which move: the surfaces have
+# been renamed and merged twice.
 PUBLIC_SEGMENT = "public/"
 
 # Only a regular file's blob is program text. A symlink's blob is its target path,
@@ -152,7 +149,7 @@ def _why_deploys(change: Change) -> str | None:
         return f"{change.path}: submodule pointer moved"
     if change.src_mode not in REGULAR_FILE:
         return f"{change.path}: mode {change.src_mode} is not a regular file"
-    if change.path.startswith((SERVED_VERBATIM, PUBLIC_SEGMENT)) or f"/{PUBLIC_SEGMENT}" in change.path:
+    if change.path.startswith(PUBLIC_SEGMENT) or f"/{PUBLIC_SEGMENT}" in change.path:
         return f"{change.path}: served verbatim"
     if change.path.endswith(".md"):
         return None

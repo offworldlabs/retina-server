@@ -1,6 +1,5 @@
 /**
- * The RETINA palette. One copy, read by the dashboard, the live map and the
- * data explorer.
+ * The RETINA palette. One copy, read by the dashboard and the live map.
  *
  * Two things make the selector lists below less obvious than they look.
  *
@@ -24,9 +23,9 @@
  * choice override a dark OS.
  *
  * Surface-specific tokens are not here. The map's chrome (`--panel-shadow`,
- * `--map-chip-*`, `--violet`), the dashboard's `--sidebar-width` and the
- * explorer's `--scrim` and `--mono` each live with the surface that spends
- * them.
+ * `--map-chip-*`, `--violet`), the dashboard's `--sidebar-width` and its Data
+ * Explorer page's `--de-scrim` and `--de-mono` each live with the code that
+ * spends them.
  */
 
 :root,

@@ -8,9 +8,10 @@
  * `.app.map-surface .card` outranks `.card` — which keeps the delta visible in
  * the file that owns it instead of forking the whole object.
  *
- * Tables are not here. The three surfaces do not share a table idiom: the
- * dashboard's row metrics are its own, the explorer scopes a denser set under
- * `.prev`, and the map's live tables are inline-styled inside a detail panel.
+ * Tables are not here. The two surfaces do not share a table idiom: the
+ * dashboard's are its own (its Data Explorer page scopes a denser set under
+ * `.de-prev`), and the map's live tables are inline-styled inside a detail
+ * panel.
  */
 
 /* ── Buttons ─────────────────────────────────────────────────────────────── */
