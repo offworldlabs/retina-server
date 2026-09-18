@@ -6,10 +6,18 @@ import Sidebar from "../components/Sidebar";
 import Header from "../components/Header";
 import LoginPage from "../pages/LoginPage";
 import { ThemeProvider } from "../context/ThemeContext";
-import { PUBLIC_ROUTES } from "../utils/publicRoutes";
+import { advertisedPublicRoutes } from "../utils/publicRoutes";
 
 const state = vi.hoisted(() => ({
-  auth: { user: null as { name: string; email: string } | null, loading: false, logout: async () => ({ redirected: false }) },
+  auth: {
+    user: null as { name: string; email: string } | null,
+    loading: false,
+    // What /api/health told AuthProvider at boot. A visitor has no
+    // /api/auth/me, so this is the only thing that can say whether pointing
+    // them at the simulator would be honest.
+    syntheticFleet: false,
+    logout: async () => ({ redirected: false }),
+  },
 }));
 
 vi.mock("../context/AuthContext", () => ({ useAuth: () => state.auth }));
@@ -40,7 +48,12 @@ function stubBrowser() {
 const signedIn = { name: "Ada", email: "ada@example.com" };
 
 beforeEach(() => {
-  state.auth = { user: null, loading: false, logout: async () => ({ redirected: false }) };
+  state.auth = {
+    user: null,
+    loading: false,
+    syntheticFleet: false,
+    logout: async () => ({ redirected: false }),
+  };
 });
 
 describe("the sidebar shown to a caller with no session", () => {
@@ -52,23 +65,49 @@ describe("the sidebar shown to a caller with no session", () => {
     );
   }
 
-  // Drawn from the allowlist rather than repeating it, so opening a route and
-  // advertising it are the same edit: a fifth entry in PUBLIC_ROUTES that the
-  // nav did not pick up fails here rather than going unmentioned.
-  it("offers every open route, and only those", () => {
-    renderSidebar();
-    const shown = screen
+  /** What is on screen, in order. */
+  const shownLabels = () =>
+    screen
       .getAllByRole("link")
       .map((a) => a.textContent?.trim())
       .filter(Boolean);
-    expect(shown).toEqual(PUBLIC_ROUTES.map((r) => r.label));
+
+  // Drawn from the allowlist rather than repeating it, so opening a route and
+  // advertising it are the same edit: an entry in PUBLIC_ROUTES that the nav
+  // did not pick up fails here rather than going unmentioned.
+  it("offers every route open everywhere, and only those", () => {
+    renderSidebar();
+    expect(shownLabels()).toEqual(advertisedPublicRoutes(false).map((r) => r.label));
   });
 
   it("points each internal entry at its own route", () => {
     renderSidebar();
-    for (const { path, label } of PUBLIC_ROUTES) {
+    for (const { path, label } of advertisedPublicRoutes(false)) {
       expect(screen.getByRole("link", { name: label })).toHaveAttribute("href", path);
     }
+  });
+
+  // /sim is open on every deployment — one bundle serves all three, and a
+  // path that existed on one hostname and not another is what this change
+  // removed. What varies is whether it is worth pointing at: production runs
+  // no simulator, so the entry there would lead to a map that stays empty.
+  it("withholds the simulation where the server runs no fleet", () => {
+    renderSidebar();
+    expect(screen.queryByText("Simulation")).not.toBeInTheDocument();
+  });
+
+  it("offers it where one is running", () => {
+    state.auth = { ...state.auth, syntheticFleet: true };
+    renderSidebar();
+    expect(screen.getByRole("link", { name: "Simulation" })).toHaveAttribute("href", "/sim");
+    expect(shownLabels()).toEqual(advertisedPublicRoutes(true).map((r) => r.label));
+  });
+
+  // The page that configures the fleet, whose save is admin-only server-side.
+  it("never offers the physics page, fleet or no fleet", () => {
+    state.auth = { ...state.auth, syntheticFleet: true };
+    renderSidebar();
+    expect(screen.queryByText("Physics Layer")).not.toBeInTheDocument();
   });
 
   // Nothing on screen leads to a wall: an entry that only answers to a session

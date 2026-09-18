@@ -1,11 +1,47 @@
-import { createContext, useContext } from "react";
-import { useCurrentUser } from "@retina/shared";
+import { createContext, useContext, useEffect, useState } from "react";
+import { request, useCurrentUser } from "@retina/shared";
 import { api } from "../api/client";
 
 const AuthContext = createContext(null);
 
+/** Whether this server runs a synthetic fleet, for a caller who has no session
+ *  to read it off.
+ *
+ *  A signed-in user gets the same fact as `synthetic_fleet` on /api/auth/me,
+ *  and the console's own gates (utils/physics.ts) go on using that. A visitor
+ *  does not, and the signed-out nav has to decide whether to point at /sim:
+ *  test and staging run a fleet, production does not, and one bundle serves
+ *  all three. /api/health is the only thing the server tells everyone, so the
+ *  flag is answered there.
+ *
+ *  Asked once at boot, beside the /me fetch, and never again — it is a
+ *  property of the deployment, which does not change under a running tab. A
+ *  failure is swallowed and leaves it false: this decides whether one nav
+ *  entry is drawn, and a console that will not render because a liveness probe
+ *  timed out would be a far worse trade. */
+function useSyntheticFleet(): boolean {
+  const [syntheticFleet, setSyntheticFleet] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    request<{ synthetic_fleet?: boolean }>("/api/health")
+      .then((h) => {
+        if (!cancelled) setSyntheticFleet(Boolean(h?.synthetic_fleet));
+      })
+      .catch(() => {
+        /* unadvertised is the safe answer; see above */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return syntheticFleet;
+}
+
 export function AuthProvider({ children }) {
   const { user, loading, setUser } = useCurrentUser();
+  const syntheticFleet = useSyntheticFleet();
 
   // Resolves { redirected } so a caller knows not to route over a navigation
   // that is still in flight.
@@ -33,7 +69,7 @@ export function AuthProvider({ children }) {
   // until /api/auth/me was asked again. Passed bare so it stays referentially
   // stable, which callers may depend on in an effect.
   return (
-    <AuthContext.Provider value={{ user, loading, logout, signIn: setUser }}>
+    <AuthContext.Provider value={{ user, loading, logout, signIn: setUser, syntheticFleet }}>
       {children}
     </AuthContext.Provider>
   );

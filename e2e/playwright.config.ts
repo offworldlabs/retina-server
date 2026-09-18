@@ -19,13 +19,15 @@ import { defineConfig, devices } from "@playwright/test";
  * there: a test against one asserts another service's markup, and on prod a
  * failed E2E rolls production back.
  *
- * `testmap` is null on prod, and that is load-bearing rather than tidiness.
- * Production runs no simulator and has no synthetic map surface; staging is the
- * only environment that still has one. Pointing the production suite at
- * staging's would mean the production E2E exercising staging, and because a
- * failed production E2E auto-rolls-back production (ci.yml), a staging wobble
- * would revert a good production build. The one suite that needs the surface
- * skips itself instead.
+ * `testmap` names the environment whose console has a simulator behind its
+ * /sim page — the surface is a path on the one console now, not a hostname of
+ * its own, so this entry differs from `map` only in which origin is worth
+ * asking. It is null on prod, and that is load-bearing rather than tidiness:
+ * production runs no simulator, so /sim there is an empty map. Pointing the
+ * production suite at staging's would mean the production E2E exercising
+ * staging, and because a failed production E2E auto-rolls-back production
+ * (ci.yml), a staging wobble would revert a good production build. The one
+ * suite that needs the surface skips itself instead.
  */
 
 const ENV = (process.env.E2E_ENV ?? "staging") as "staging" | "prod" | "local";
@@ -35,10 +37,10 @@ const HOSTS = {
     api:       "https://staging-api.retina.fm",
     // The consolidated surface, whose root opens on the live map.
     map:       "https://staging-app.retina.fm",
-    // The synthetic map surface, which is what the live-map suite needs. Staging
-    // is the environment running the fleet, so on staging it is the same origin
-    // as `map` above: the two differ on production, where one exists and the
-    // other does not.
+    // The console whose /sim page has a fleet behind it, which is what the
+    // live-map suite needs. Staging runs one, so this is the same origin as
+    // `map` above and always will be — one console per environment. The two
+    // entries differ on production, where the fleet does not exist.
     testmap:   "https://staging-app.retina.fm",
     // The dashboard's origin.
     dash:      "https://staging-app.retina.fm",
@@ -118,8 +120,8 @@ export default defineConfig({
   reporter: process.env.CI ? "github" : "list",
   use: {
     // The console, which exists on every environment and is ours: testmap is
-    // staging-only and the towers name is not ours. Every spec names
-    // its host explicitly, so this only resolves a relative URL.
+    // null wherever no fleet runs and the towers name is not ours. Every spec
+    // names its host explicitly, so this only resolves a relative URL.
     baseURL: hosts.map,
     extraHTTPHeaders: accessHeaders,
     trace: "on-first-retry",

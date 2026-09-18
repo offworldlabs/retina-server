@@ -1,16 +1,17 @@
 /**
- * Live Aircraft Map E2E tests, on the synthetic map surface.
+ * Live Aircraft Map E2E tests, on the simulation surface.
  *
- * This suite visits the console's /map on whichever host `hosts.testmap` names
- * — in CI that is staging's app hostname, which serves the synthetic fleet
- * unfiltered. It verifies the map page loads, WebSocket connects, aircraft
- * appear, and key interactive elements work correctly.
+ * This suite visits the console's /sim on whichever host `hosts.testmap` names
+ * — in CI that is staging's app hostname. /sim asks for the synthetic fleet by
+ * name, which is why this suite no longer has to be pointed at a hostname that
+ * happened to serve it: it verifies the map page loads, WebSocket connects,
+ * aircraft appear, and key interactive elements work correctly.
  *
  * NOTE: These tests require the synthetic fleet to be running on the target
  * environment. They use generous timeouts to account for warm-up time.
  *
- * Production has no synthetic map surface — it runs no simulator — so the whole
- * file skips there rather than reaching across environments. See the note in
+ * Production runs no simulator, so its /sim is an empty map and the whole file
+ * skips there rather than reaching across environments. See the note in
  * playwright.config.ts: a failed production E2E auto-rolls-back production, so a
  * suite that silently tested staging could revert a good production build.
  */
@@ -27,7 +28,7 @@ test.skip(
 // test.skip aborts the tests, not this module — every top-level statement still
 // runs during collection — so nothing here may call a method on TESTMAP where it
 // is null. Interpolating it is safe.
-const BASE = `${TESTMAP}/map`;
+const BASE = `${TESTMAP}/sim`;
 
 // Helper: wait for the connection badge to show "LIVE"
 async function waitForLive(page: Page, timeoutMs = 15_000) {
@@ -37,8 +38,8 @@ async function waitForLive(page: Page, timeoutMs = 15_000) {
 }
 
 /**
- * The unfiltered feed, which is what this surface renders: usesRealOnlyFeed is
- * anchored to the bare `app.` name (utils/domains.ts), which staging is never.
+ * The unfiltered feed, which is what /sim renders: the page asks for the
+ * synthetic fleet by name rather than inheriting a hostname's default.
  * Unreadable counts as non-empty so the caller's original failure stands.
  */
 async function feedIsEmpty(page: Page): Promise<boolean> {
@@ -146,7 +147,7 @@ test.describe("Live Map — map rendering", () => {
     await expect(page.getByRole("button", { name: /Trails/i })).toBeVisible();
   });
 
-  test("Debug Truth toggle is present on testmap domain", async ({ page }) => {
+  test("Debug Truth toggle is present on the simulation surface", async ({ page }) => {
     await page.goto(BASE);
     await expect(page.locator(".live-map-toolbar")).toBeVisible({ timeout: 10_000 });
     await expect(page.getByRole("button", { name: /Debug Truth/i })).toBeVisible();

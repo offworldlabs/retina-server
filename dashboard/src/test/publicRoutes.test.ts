@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { PUBLIC_PATHS, isPublicRoute } from "../utils/publicRoutes";
+import { PUBLIC_PATHS, advertisedPublicRoutes, isPublicRoute } from "../utils/publicRoutes";
 
 describe("the routes a visitor reaches without signing in", () => {
   it.each(PUBLIC_PATHS)("admits %s on the user surface", (path) => {
@@ -40,5 +40,58 @@ describe("the routes a visitor reaches without signing in", () => {
 
   it("refuses every path on the admin surface", () => {
     for (const path of PUBLIC_PATHS) expect(isPublicRoute(path, true)).toBe(false);
+  });
+});
+
+describe("the simulation surface", () => {
+  // The public demo the retired *testmap hostnames used to be. It is a path on
+  // the one console now, so it has to be open the way /map is rather than by
+  // being served from a name nobody signs in on.
+  it("admits the sim map", () => {
+    expect(isPublicRoute("/sim", false)).toBe(true);
+  });
+
+  // The page that writes the fleet's configuration. The PUT behind it is
+  // admin-only server-side, so this is defence in depth rather than the only
+  // lock — but a console that renders the form to a visitor and then refuses
+  // every save is worse than one that never offers it.
+  it("refuses the physics page nested under it", () => {
+    expect(isPublicRoute("/sim/physics", false)).toBe(false);
+  });
+
+  it("refuses anything else nested under it", () => {
+    expect(isPublicRoute("/sim/anything", false)).toBe(false);
+  });
+
+  it("still admits it spelled with a trailing slash", () => {
+    expect(isPublicRoute("/sim/", false)).toBe(true);
+  });
+
+  it("refuses a route that merely starts like it", () => {
+    expect(isPublicRoute("/simulation", false)).toBe(false);
+  });
+});
+
+describe("what a visitor is pointed at", () => {
+  const labels = (fleet: boolean) => advertisedPublicRoutes(fleet).map((r) => r.label);
+
+  it("leaves the simulation out where the server runs no fleet", () => {
+    expect(labels(false)).not.toContain("Simulation");
+  });
+
+  it("offers it where one is running", () => {
+    expect(labels(true)).toContain("Simulation");
+  });
+
+  // Advertisement is the only thing the flag moves; the route stays reachable
+  // by link everywhere, because one bundle serves every environment.
+  it("does not close the route it declines to advertise", () => {
+    expect(isPublicRoute("/sim", false)).toBe(true);
+  });
+
+  it("offers every other open route either way", () => {
+    for (const fleet of [false, true]) {
+      expect(labels(fleet)).toEqual(expect.arrayContaining(["Map", "Data Explorer", "Leaderboard"]));
+    }
   });
 });
