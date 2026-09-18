@@ -100,7 +100,8 @@ function writeHash(state: HashState) {
   // Use replaceState so each pan/zoom doesn't fill the browser back stack.
   if (window.location.hash !== next) {
     const url = window.location.pathname + window.location.search + next;
-    window.history.replaceState(null, "", url);
+    // Carry the entry's state over: React Router keys POP navigation off it.
+    window.history.replaceState(window.history.state, "", url);
   }
 }
 
