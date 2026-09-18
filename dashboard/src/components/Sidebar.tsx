@@ -1,7 +1,7 @@
 import { NavLink } from "react-router-dom";
 import { towerFinderUrl } from "../utils/siblings";
 import { useAuth } from "../context/AuthContext";
-import { PUBLIC_ROUTES } from "../utils/publicRoutes";
+import { advertisedPublicRoutes } from "../utils/publicRoutes";
 import { showsPhysics } from "../utils/physics";
 import { externalLinkIcon } from "./RetnodeLink";
 
@@ -11,6 +11,10 @@ type NavItem = {
   to?: string; // internal route (react-router)
   href?: string; // external URL, opens in a new tab
   external?: boolean;
+  /** Highlight on this exact path only, not on the routes nested under it.
+   *  NavLink's default is to light up for a whole subtree, which reads as two
+   *  entries being current at once where one nests inside the other. */
+  end?: boolean;
 };
 
 type NavSection = { title: string; items: NavItem[] };
@@ -29,7 +33,16 @@ const userNav = (physics: boolean): NavSection[] => [
       { to: "/alerts", label: "Alerts", icon: "bell" },
       { to: "/anomalies", label: "Anomalies", icon: "alertTriangle" },
       { to: "/map", label: "Map", icon: "map" },
-      ...(physics ? [{ to: "/physics", label: "Physics Layer", icon: "layers" }] : []),
+      // The simulator and the page that tunes it, together and in that order,
+      // because the second is a setting of the first. Both exist only where
+      // the server runs a fleet; on a fleetless deployment /sim would be an
+      // empty map and the physics form would have nothing to configure.
+      ...(physics
+        ? [
+            { to: "/sim", label: "Simulation", icon: "target", end: true },
+            { to: "/sim/physics", label: "Physics Layer", icon: "layers" },
+          ]
+        : []),
       { href: towerFinderUrl(location.host, location.protocol), label: "Tower Finder", icon: "radio", external: true },
     ],
   },
@@ -60,10 +73,19 @@ const userNav = (physics: boolean): NavSection[] => [
 // read off the same list the guard reads, so neither can be changed alone.
 // One section rather than scattered through the four the signed-in nav has,
 // since sections exist to group and one entry apiece groups nothing.
-const publicNav = (): NavSection[] => [
+//
+// `syntheticFleet` is the one thing that narrows it. /sim is open on every
+// deployment, but only worth pointing at where a fleet is behind it, and a
+// visitor has no /api/auth/me to learn that from — see publicRoutes.ts.
+const publicNav = (syntheticFleet: boolean): NavSection[] => [
   {
     title: "Explore",
-    items: PUBLIC_ROUTES.map(({ path, label, icon }) => ({ to: path, label, icon })),
+    items: advertisedPublicRoutes(syntheticFleet).map(({ path, label, icon, exact }) => ({
+      to: path,
+      label,
+      icon,
+      end: exact,
+    })),
   },
 ];
 
@@ -268,10 +290,14 @@ const icons = {
 };
 
 export default function Sidebar({ isAdmin, collapsed, onToggle }) {
-  const { user } = useAuth();
+  const { user, syntheticFleet } = useAuth();
   // The console is never reached without a session, so its nav does not have a
   // signed-out form to choose between.
-  const nav = isAdmin ? adminNav : user ? userNav(showsPhysics(user)) : publicNav();
+  const nav = isAdmin
+    ? adminNav
+    : user
+      ? userNav(showsPhysics(user))
+      : publicNav(Boolean(syntheticFleet));
 
   return (
     <aside className="sidebar" id="console-sidebar">
@@ -314,7 +340,7 @@ export default function Sidebar({ isAdmin, collapsed, onToggle }) {
                 <NavLink
                   key={item.to}
                   to={item.to}
-                  end={item.to === "/"}
+                  end={item.end ?? item.to === "/"}
                   className={({ isActive }) =>
                     `nav-item${isActive ? " active" : ""}`
                   }

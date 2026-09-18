@@ -71,10 +71,12 @@ services:
       # the parity check assert the rendered configs are identical.
       - HOST_MAIN=staging-towers.retina.fm
       - HOST_API=staging-api.retina.fm
-      # The public surface, and staging's is the public demo: this is the only
-      # environment still running a simulator, so `testmap.retina.fm` — the name
-      # people already have — is a Cloudflare redirect into this one, as
-      # `staging-map`, `staging-dash` and `staging-data` are.
+      # The public surface, and the whole console: real nodes at /map, the
+      # simulator at /sim (and /sim/physics, which tunes it), since this
+      # environment sets SYNTHETIC_FLEET_ENABLED above. Staging's is the
+      # public demo, so `testmap.retina.fm` — the name people already have —
+      # is a Cloudflare redirect into this one, landing on the console root;
+      # `staging-map`, `staging-dash` and `staging-data` are the same.
       - HOST_APP=staging-app.retina.fm
       - HOST_ADMIN=staging-admin.retina.fm
       # The only host-naming part of the CSP. wss://*.retina.fm already covers

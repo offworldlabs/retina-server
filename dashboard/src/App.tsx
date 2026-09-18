@@ -6,6 +6,7 @@ import ClaimPage from "./pages/ClaimPage";
 import DashboardLayout from "./components/DashboardLayout";
 import RequireAuth from "./components/RequireAuth";
 import MapFrontDoor from "./components/MapFrontDoor";
+import PhysicsRedirect from "./components/PhysicsRedirect";
 import { resolveSurface, warnIfModeIgnored } from "./utils/surface";
 import { useAuth } from "./context/AuthContext";
 import { showsPhysics } from "./utils/physics";
@@ -100,7 +101,23 @@ export default function App() {
                       <Route path="overview" element={<OverviewPage />} />
                       <Route path="nodes/:nodeId" element={<NodeDetailPage />} />
                       <Route path="map" element={<MapPage />} />
-                      {showsPhysics(user) && <Route path="physics" element={<PhysicsPage />} />}
+                      {/* The simulator is a path, not a hostname. /map keeps
+                          whatever feed its hostname implies — real nodes on
+                          app and test-app — while /sim asks for the synthetic
+                          fleet by name, so one console serves both and neither
+                          depends on what the browser's address bar says. */}
+                      <Route path="sim" element={<MapPage feed="synthetic" />} />
+                      {/* Gated as /physics was: the page draws the fleet's
+                          solver internals and saves its configuration, so it
+                          is a signed-in page on a server that has a fleet. The
+                          old address below forwards whether or not this route
+                          exists, so a stale link lands on the new one and then
+                          renders nothing where there is no fleet — exactly
+                          what /physics did on such a deployment already. */}
+                      {showsPhysics(user) && (
+                        <Route path="sim/physics" element={<PhysicsPage />} />
+                      )}
+                      <Route path="physics" element={<PhysicsRedirect />} />
                       {TestRadar && <Route path="test-radar" element={<TestRadar />} />}
                       <Route path="detections" element={<DetectionsPage />} />
                       <Route path="rf" element={<RFEnvironmentPage />} />

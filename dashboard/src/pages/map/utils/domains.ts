@@ -6,12 +6,21 @@
  *
  *   isMapDomain:            any "map" surface, on any environment. Used to
  *                           derive the public-demo predicates below.
- *   usesRealOnlyFeed:       hits /ws/aircraft/live so the synthetic fleet never
+ *   usesRealOnlyFeed:       this host's own fleet is the real one, reached via
+ *                           /ws/aircraft/live so the synthetic fleet never
  *                           appears, even if a node leaks through a bad filter.
  *   defaultsGroundTruthOff: ADS-B ground truth starts hidden.
- *   hidesRealNodes:         drops the real fleet out of the unfiltered feed, so
- *                           a public demo shows the synthetic nodes and nothing
- *                           else.
+ *   hidesRealNodes:         this host's own fleet is the synthetic one: the real
+ *                           fleet comes out of the unfiltered feed, so a public
+ *                           demo shows the synthetic nodes and nothing else.
+ *
+ * What the hostname settles is now only a DEFAULT, and only /map's. Which fleet
+ * a map page shows is a property of the page (see pages/map/feedMode.ts): /sim
+ * asks for the synthetic fleet on every host, the real-radar ones included,
+ * which is how one console serves both fleets at two addresses. So these
+ * predicates belong behind defaultFeedMode() and not at a render site — a call
+ * site that reads them directly answers for the hostname when the page has
+ * already answered for itself, and /sim would show the real fleet on test-app.
  *
  * usesRealOnlyFeed and defaultsGroundTruthOff are both asking "is this a
  * real-radar surface?", and the answer is a property of the environment rather

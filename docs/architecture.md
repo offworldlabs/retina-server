@@ -107,7 +107,8 @@ The math lives in separate repos under `libs/` so it can be versioned and reused
   produces an ellipse arc (a locus, not a point); multi-node (n≥2) runs an LM
   least-squares solve for a position, with an altitude sweep for n≥3.
 - **retina-tracker** — Kalman multi-target tracker + anomaly detection.
-- **retina-simulation** — synthetic fleet generator (powers testmap + CI).
+- **retina-simulation** — synthetic fleet generator (powers the console's
+  `/sim` surface + CI), on the deployments that set `SYNTHETIC_FLEET_ENABLED`.
   Runtime-tunable via `PUT /api/simulation/config` (target-class fractions,
   aircraft counts), which the fleet polls every 5 s; fleet scale itself comes
   from the deployment env (`FLEET_*` in the compose files).

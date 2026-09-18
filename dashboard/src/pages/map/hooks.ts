@@ -5,7 +5,7 @@ import { updateDetections } from "./detections";
 import { MAX_TRAIL_POINTS, mergeTrailPositions } from "./trails";
 import { validLatLon } from "./geo";
 import type { RadarNode } from "./types";
-import { hidesRealNodes, usesRealOnlyFeed } from "./utils/domains";
+import { defaultFeedMode, type FeedMode } from "./feedMode";
 import { isSyntheticNode } from "../../utils/nodeKind";
 import {
   fromSyntheticNode,
@@ -25,8 +25,15 @@ import { useAuth as useConsoleAuth } from "../../context/AuthContext";
  * aircraft/arcs for nodes the logged-in user owns. The HTTP polling fallback
  * is disabled in this mode because the public aircraft.json is unfiltered and
  * would leak other nodes' data.
+ *
+ * `mode` names which fleet the caller shows (see feedMode.ts). It arrives as an
+ * argument rather than being read from the hostname here, because it is now a
+ * property of the page: /map takes the hostname's answer, /sim asks for the
+ * synthetic fleet on every host. It is therefore in every dependency list
+ * below — a different mode is a different feed, and the socket has to be
+ * reopened onto it rather than left streaming the one the page opened with.
  */
-export function useAircraftFeed(ownerOnly = false) {
+export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedMode()) {
   const [aircraft, setAircraft] = useState([]);
   const [connected, setConnected] = useState(false);
 
@@ -116,20 +123,21 @@ export function useAircraftFeed(ownerOnly = false) {
   // Shared history + state update
   const ingestAircraft = useCallback(
     (rawAircraft, groundTruth, groundTruthMeta, anomalyHexes, rawDetectingNodes, rawArcs) => {
-      // A public demo reads the unfiltered feed, because the real-only one
+      // A synthetic page reads the unfiltered feed, because the real-only one
       // carries no synthetic fleet to show, so the real nodes come off here
       // instead. Everything node-attributed goes together or the map contradicts
       // itself: an aircraft kept without its node is a detection nothing on the
       // map made, and the detail panel prints detecting_nodes by name. Each kept
       // entry is then scrubbed as well, because one can name both fleets at once
       // (see syntheticOnly.ts).
-      const newAircraft = hidesRealNodes
+      const syntheticOnly = mode === "synthetic";
+      const newAircraft = syntheticOnly
         ? (rawAircraft || []).filter(fromSyntheticNode).map(scrubToSyntheticNodes)
         : rawAircraft;
-      const detectionArcs = hidesRealNodes
+      const detectionArcs = syntheticOnly
         ? (rawArcs || []).filter(fromSyntheticNode).map(scrubToSyntheticNodes)
         : rawArcs;
-      const detectingNodes = hidesRealNodes
+      const detectingNodes = syntheticOnly
         ? syntheticDetectingNodes(rawDetectingNodes)
         : rawDetectingNodes;
 
@@ -180,7 +188,7 @@ export function useAircraftFeed(ownerOnly = false) {
 
       updateTrails(newAircraft);
     },
-    [updateTrails],
+    [updateTrails, mode],
   );
 
   // --- WebSocket connection with reconnect ---
@@ -188,10 +196,11 @@ export function useAircraftFeed(ownerOnly = false) {
     if (wsRef.current || wsClosedRef.current) return;
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     // Owner mode overrides the public feeds with a server-filtered, cookie-authed feed.
-    // Otherwise a real-radar surface streams only the real nodes; the demo streams all.
+    // Otherwise a real-fleet page streams only the real nodes; the synthetic and
+    // all-fleet pages take the unfiltered feed and sort it out client-side.
     const wsPath = ownerOnly
       ? "/ws/aircraft/owner"
-      : usesRealOnlyFeed ? "/ws/aircraft/live" : "/ws/aircraft";
+      : mode === "real" ? "/ws/aircraft/live" : "/ws/aircraft";
     const ws = new WebSocket(`${proto}//${window.location.host}${wsPath}`);
     // A closed socket may still have queued callbacks. A scope switch resets
     // wsClosedRef for the new connection, so also check the socket identity.
@@ -230,7 +239,7 @@ export function useAircraftFeed(ownerOnly = false) {
 
     ws.onerror = () => { if (isCurrent()) ws.close(); };
     wsRef.current = ws;
-  }, [ingestAircraft, ownerOnly]);
+  }, [ingestAircraft, ownerOnly, mode]);
 
   useEffect(() => {
     // Feed scope owns all accumulated state, including optional channels the
@@ -289,9 +298,9 @@ export function useAircraftFeed(ownerOnly = false) {
     // No HTTP fallback in owner mode: the public aircraft.json is unfiltered,
     // so polling it would leak other nodes' data. Wait for the WS to reconnect.
     if (ownerOnly) return;
-    // On a real-radar surface use the real-node-only endpoint so unfiltered synthetic
+    // On a real-fleet page use the real-node-only endpoint so unfiltered synthetic
     // aircraft never appear even when the WS is temporarily disconnected.
-    const pollPath = usesRealOnlyFeed
+    const pollPath = mode === "real"
       ? `${API_BASE}/radar/data/aircraft-live.json`
       : `${API_BASE}/radar/data/aircraft.json`;
     const controller = new AbortController();
@@ -316,7 +325,7 @@ export function useAircraftFeed(ownerOnly = false) {
       clearInterval(interval);
       controller.abort();
     };
-  }, [connected, ingestAircraft, ownerOnly]);
+  }, [connected, ingestAircraft, ownerOnly, mode]);
 
   return {
     aircraft,
@@ -344,8 +353,12 @@ export function useAircraftFeed(ownerOnly = false) {
 
 /**
  * Fetch radar node positions for coverage zones.
+ *
+ * `mode` is the page's fleet (see feedMode.ts), on the same footing as the
+ * aircraft feed's: the node listing has to agree with the tracks drawn over it,
+ * so both take the mode from the page and the poll re-runs when it changes.
  */
-export function useNodes() {
+export function useNodes(mode: FeedMode = defaultFeedMode()) {
   const [nodes, setNodes] = useState<RadarNode[]>([]);
 
   useEffect(() => {
@@ -354,9 +367,9 @@ export function useNodes() {
     const controller = new AbortController();
     async function loadNodes() {
       try {
-        // On a real-radar surface request only real nodes from the backend — avoids
-        // relying on client-side hostname detection to filter 900+ synthetic markers.
-        const url = usesRealOnlyFeed
+        // A real-fleet page asks the backend for the real nodes only — avoids
+        // relying on a client-side filter to drop 900+ synthetic markers.
+        const url = mode === "real"
           ? `${API_BASE}/radar/analytics?real_only=true`
           : `${API_BASE}/radar/analytics`;
         const data = await request(url, { signal: controller.signal });
@@ -369,11 +382,11 @@ export function useNodes() {
           // this is defence in depth against a leftover leak, decided from
           // the server's own is_synthetic flag rather than parsed from the
           // identifier. See src/utils/nodeKind.ts.
-          if (usesRealOnlyFeed && isSyntheticNode(info as { is_synthetic?: boolean }, ref)) continue;
+          if (mode === "real" && isSyntheticNode(info as { is_synthetic?: boolean }, ref)) continue;
           // The mirror, and the only filter standing between a real node and a
-          // public demo: this listing has no real_only-style parameter for
-          // "synthetic only", so the surface has to drop them itself.
-          if (hidesRealNodes && !isSyntheticNode(info as { is_synthetic?: boolean }, ref)) continue;
+          // synthetic page: this listing has no real_only-style parameter for
+          // "synthetic only", so the page has to drop them itself.
+          if (mode === "synthetic" && !isSyntheticNode(info as { is_synthetic?: boolean }, ref)) continue;
           const da = (info as any).detection_area;
           const ec = (info as any).empirical_coverage;
           if (da) {
@@ -441,7 +454,7 @@ export function useNodes() {
       controller.abort();
       clearInterval(interval);
     };
-  }, []);
+  }, [mode]);
 
   return nodes;
 }

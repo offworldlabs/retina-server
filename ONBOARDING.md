@@ -53,7 +53,7 @@ the algorithms can be reused and versioned independently:
 | --- | --- |
 | `retina-geolocator` | Bistatic delay/Doppler position solver (single- and multi-node, LM least-squares). |
 | `retina-tracker` | Multi-target Kalman tracker + anomaly detection. |
-| `retina-simulation` | Fleet simulator that generates synthetic radar frames for testmap/CI. |
+| `retina-simulation` | Fleet simulator that generates synthetic radar frames for the console's `/sim` surface and CI. |
 | `retina-custody` | Custody-protocol library. |
 | `retina-analytics` | Node trust/reputation analysis. |
 
@@ -307,11 +307,17 @@ branch, open a PR, get it green, then merge.
   assume persistence.
 - **Submodules.** After pulling, run `git submodule update --init --recursive`
   if `libs/` looks stale or imports fail.
-- **The map opens on localhost too.** Hostnames choose its feed and display
-  defaults: `app` and `test-app` use real-only data, while `staging-app` is the
-  synthetic demo surface. `map`, `testmap`, `staging-map` and the other retired
-  names are Cloudflare redirects into those. Local hostnames retain both kinds
-  of nodes. Tower search has its own SPA in
+- **The map opens on localhost too.** There is one console per environment —
+  `app`, `staging-app`, `test-app` — and the surface is chosen by path, not by
+  hostname: `/map` is the real network, `/sim` the simulated fleet, and
+  `/sim/physics` the page that tunes it. `/sim` exists everywhere but is only
+  worth opening where the server sets `SYNTHETIC_FLEET_ENABLED` (test,
+  staging, the laptop — not production), which is what `/api/health` and
+  `/api/auth/me` both report so the nav can say so. `map`, `testmap`,
+  `test-testmap`, `staging-map` and the other retired names are Cloudflare
+  redirects into those consoles. `/map` still takes its feed from the
+  hostname: `app` and `test-app` are real-only, and a local hostname retains
+  both kinds of node. Tower search has its own SPA in
   tower-finder-service; the laptop overlay sets `TOWER_FINDER_ENABLED=false`,
   and this backend no longer implements `/api/towers`.
 - **Config vs runtime config.** `backend/config/` is image-only (baked into the

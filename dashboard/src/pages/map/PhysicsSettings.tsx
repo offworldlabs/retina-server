@@ -1097,7 +1097,7 @@ export default function PhysicsSettings() {
         </div>
         <p className="ps-doppler-body">
           Single-node aircraft (detected by only one radar node) render a
-          coloured bistatic arc on the Live Map instead of a position fix.
+          coloured bistatic arc on the simulation map instead of a position fix.
           The arc colour encodes the Doppler shift measured by that node.
         </p>
         <div className="ps-doppler-gradient-row">
@@ -1108,8 +1108,11 @@ export default function PhysicsSettings() {
           />
           <span className="ps-doppler-end">Receding →</span>
         </div>
+        {/* /sim, not /map. The arcs described here are the fleet's, and this
+            form is what shapes them; /map on a deployed console shows the real
+            nodes, where none of this is reproducible. */}
         <p className="ps-doppler-hint">
-          <strong>Where to find them:</strong> <Link to="/map">Live Map</Link> → zoom into SE United States (Florida / Gulf Coast)
+          <strong>Where to find them:</strong> <Link to="/sim">Simulation Map</Link> → zoom into SE United States (Florida / Gulf Coast)
           → look for curved coloured lines instead of aircraft icons. Solo nodes there produce the most arcs.
         </p>
       </div>
