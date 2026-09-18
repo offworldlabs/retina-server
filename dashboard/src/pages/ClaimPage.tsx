@@ -3,7 +3,6 @@ import { useNavigate, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
 import { useAuth } from "../context/AuthContext";
-import { withBase } from "../utils/basePath";
 
 /** What the page is showing. `asking` is the only state with buttons: every
  *  other one is terminal and says why. */
@@ -126,7 +125,7 @@ export default function ClaimPage() {
               That link is no longer valid. Links last fifteen minutes and work once.
             </p>
             <p className="subtitle">Ask the node to send another, then use the newest email.</p>
-            <a className="login-btn" href={withBase("/login")}>
+            <a className="login-btn" href="/login">
               Sign in instead
             </a>
           </>
