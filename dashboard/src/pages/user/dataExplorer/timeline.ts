@@ -7,6 +7,7 @@
 import type { TimelineChange, TimelineRow } from "@edsc/timeline";
 
 import { DAY_MS, hhmm, isoDay } from "./dates";
+import { todSpans } from "./filters";
 import type { ArchiveFile } from "./keys";
 import { defaultFilters, TOD_END, TOD_START, type ExplorerFilters } from "./urlState";
 
@@ -95,11 +96,13 @@ export function timelineRows(
 }
 
 const allDay = (f: ExplorerFilters) => f.todFrom === TOD_START && f.todTo === TOD_END;
+const wrapsMidnight = (f: ExplorerFilters) => todSpans(f.todFrom, f.todTo).length > 1;
 
 /** The filters as the timeline's highlighted range: whole days, or the exact
- *  times when a time of day is set. */
+ *  times when a time of day is set. A window that wraps midnight takes from
+ *  both ends of every day, so it gets whole days too. */
 export function temporalRangeFor(f: ExplorerFilters): { start: number; end: number } {
-  if (!allDay(f)) {
+  if (!allDay(f) && !wrapsMidnight(f)) {
     return {
       start: Date.parse(`${f.from}T${f.todFrom}:00Z`),
       end: Date.parse(`${f.to}T${f.todTo}:00Z`),

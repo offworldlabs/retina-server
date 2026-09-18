@@ -13,21 +13,23 @@ const minuteOfDayFromMs = (ms: number): number => {
   return d.getUTCHours() * 60 + d.getUTCMinutes();
 };
 
-/** A file covers an estimated hour, so this asks whether that hour overlaps
- *  the window. An hour straddling midnight is two spans: without the split, a
- *  file written at 00:30 would fall outside every window ending at 23:59. */
-export function inTod(file: ArchiveFile, todFrom: string, todTo: string): boolean {
-  const lo = minuteOfDay(todFrom);
-  const hi = minuteOfDay(todTo);
-  if (lo === 0 && hi >= LAST_MINUTE) return true;
+/** Minutes `from` to `to` as spans within one day: two of them when `to` is
+ *  earlier, since the range then runs past midnight. */
+const spansOf = (from: number, to: number): [number, number][] =>
+  from <= to ? [[from, to]] : [[from, LAST_MINUTE], [0, to]];
 
-  const a = minuteOfDayFromMs(file.startMs);
-  const b = minuteOfDayFromMs(file.endMs);
-  // The window itself never wraps: `todFrom` later than `todTo` selects
-  // nothing rather than spanning midnight. Only the file's hour wraps, and
-  // that is what the two spans below are for.
-  const spans: [number, number][] = a <= b ? [[a, b]] : [[a, LAST_MINUTE], [0, b]];
-  return spans.some(([x, y]) => x <= hi && y >= lo);
+/** The time-of-day window as spans of minutes: two when it wraps midnight. */
+export const todSpans = (todFrom: string, todTo: string): [number, number][] =>
+  spansOf(minuteOfDay(todFrom), minuteOfDay(todTo));
+
+/** A file covers an estimated hour, so this asks whether that hour overlaps
+ *  the window. Either can wrap midnight: a window of 22:00–02:00 is the
+ *  overnight period, and a file written at 00:30 covers the end of one day and
+ *  the start of the next. */
+export function inTod(file: ArchiveFile, todFrom: string, todTo: string): boolean {
+  const windows = todSpans(todFrom, todTo);
+  const hour = spansOf(minuteOfDayFromMs(file.startMs), minuteOfDayFromMs(file.endMs));
+  return hour.some(([x, y]) => windows.some(([p, q]) => x <= q && y >= p));
 }
 
 export function makePredicate(

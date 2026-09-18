@@ -50,6 +50,23 @@ describe("inTod", () => {
     expect(inTod(f, "00:15", "01:00")).toBe(true);
     expect(inTod(f, "23:00", "23:45")).toBe(true);
   });
+
+  it("wraps a window whose start is later than its end past midnight", () => {
+    // 22:00–02:00 is the overnight period, taken from both ends of the day.
+    expect(inTod(fileEndingAt("2026-09-17T23:30:00Z"), "22:00", "02:00")).toBe(true);
+    expect(inTod(fileEndingAt("2026-09-17T01:00:00Z"), "22:00", "02:00")).toBe(true);
+    expect(inTod(fileEndingAt("2026-09-18T00:30:00Z"), "22:00", "02:00")).toBe(true);
+    expect(inTod(fileEndingAt("2026-09-17T13:00:00Z"), "22:00", "02:00")).toBe(false);
+  });
+
+  it("matches a wrapped window on overlap at either of its edges", () => {
+    // Covers 01:30–02:30 and 21:30–22:30: each reaches past one end.
+    expect(inTod(fileEndingAt("2026-09-17T02:30:00Z"), "22:00", "02:00")).toBe(true);
+    expect(inTod(fileEndingAt("2026-09-17T22:30:00Z"), "22:00", "02:00")).toBe(true);
+    // Covers 02:30–03:30 and 20:30–21:30: clear of the window on each side.
+    expect(inTod(fileEndingAt("2026-09-17T03:30:00Z"), "22:00", "02:00")).toBe(false);
+    expect(inTod(fileEndingAt("2026-09-17T21:30:00Z"), "22:00", "02:00")).toBe(false);
+  });
 });
 
 describe("makePredicate", () => {
@@ -75,5 +92,12 @@ describe("makePredicate", () => {
     const p = makePredicate({ ...defaultFilters(TODAY), todFrom: "08:00", todTo: "09:00" }, eff);
     expect(p(fileEndingAt("2026-09-17T06:00:00Z"))).toBe(false);
     expect(p(fileEndingAt("2026-09-17T09:00:00Z"))).toBe(true);
+  });
+
+  it("applies a window that wraps midnight", () => {
+    const p = makePredicate({ ...defaultFilters(TODAY), todFrom: "22:00", todTo: "02:00" }, eff);
+    expect(p(fileEndingAt("2026-09-17T01:00:00Z"))).toBe(true);
+    expect(p(fileEndingAt("2026-09-17T23:00:00Z"))).toBe(true);
+    expect(p(fileEndingAt("2026-09-17T12:00:00Z"))).toBe(false);
   });
 });

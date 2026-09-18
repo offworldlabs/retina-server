@@ -107,6 +107,17 @@ describe("the highlighted range", () => {
     expect(rangeLabel(f)).toBe("2026-09-15 → 2026-09-17");
   });
 
+  it("covers whole days when the time of day wraps past midnight", () => {
+    // 22:00–02:00 matches both ends of every day, so no span of exact
+    // times holds it without inverting.
+    const f = { ...defaultFilters(TODAY), from: TODAY, todFrom: "22:00", todTo: "02:00" };
+    expect(temporalRangeFor(f)).toEqual({
+      start: at("2026-09-17T00:00:00Z"),
+      end: at("2026-09-18T00:00:00Z"),
+    });
+    expect(rangeLabel(f)).toBe("2026-09-17 → 2026-09-17 · 22:00–02:00Z");
+  });
+
   it("uses the exact times when a time of day is set", () => {
     const f = { ...defaultFilters(TODAY), from: TODAY, todFrom: "06:00", todTo: "09:30" };
     expect(temporalRangeFor(f)).toEqual({
