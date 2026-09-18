@@ -45,6 +45,10 @@ RUN npm run build -w frontend
 
 FROM web-deps AS dashboard-build
 COPY dashboard/ dashboard/
+# The CARTO basemap key, for the live map page. Declared again here because an
+# ARG is scoped to its stage; the frontend-build stage says why it is baked in.
+ARG VITE_CARTO_API_KEY=""
+ENV VITE_CARTO_API_KEY=${VITE_CARTO_API_KEY}
 # Twice, because one bundle is served at two different mount points and Vite
 # bakes the asset prefix in at build time. `dist` is rooted at `/` for the admin
 # vhost; `dist-dash` is rooted at `/dash/` for the app vhost's mount. A single
