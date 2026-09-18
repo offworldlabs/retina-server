@@ -4,8 +4,10 @@ import { MemoryRouter } from "react-router-dom";
 import Header from "../components/Header";
 import { ThemeProvider } from "../context/ThemeContext";
 
+const state = vi.hoisted(() => ({ user: null as { name: string; email: string } | null }));
+
 vi.mock("../context/AuthContext", () => ({
-  useAuth: () => ({ user: { name: "Ada", email: "ada@example.com" }, loading: false, logout: vi.fn(async () => ({ redirected: false })) }),
+  useAuth: () => ({ user: state.user, loading: false, logout: vi.fn(async () => ({ redirected: false })) }),
 }));
 
 /** As in theme.test.tsx: stubbed rather than borrowed, because jsdom has no
@@ -31,8 +33,7 @@ function stubBrowser() {
   }) as unknown as typeof window.matchMedia;
 }
 
-/** Open the avatar menu the switch lives inside. */
-function openMenu() {
+function renderHeader() {
   render(
     <MemoryRouter>
       <ThemeProvider>
@@ -40,41 +41,51 @@ function openMenu() {
       </ThemeProvider>
     </MemoryRouter>,
   );
-  act(() => screen.getByText("Ada").click());
 }
+
+/** The switch sits in the bar whether or not there is a session, and must be
+ *  the same control either way, so every test below runs in both states. */
+const CALLERS = [
+  { caller: "a caller with a session", user: { name: "Ada", email: "ada@example.com" } },
+  { caller: "a caller with no session", user: null },
+];
 
 beforeEach(() => {
   stubBrowser();
   document.documentElement.removeAttribute("data-theme");
 });
 
-describe("the appearance switch", () => {
+describe.each(CALLERS)("the appearance switch shown to $caller", ({ user }) => {
+  beforeEach(() => {
+    state.user = user;
+  });
+
   // Two things at once, both easy to lose. The buttons hold a glyph and no
   // text, so without aria-label a screen reader reads three unlabelled radios
   // and the control becomes unusable rather than merely ugly. And the order is
   // light → system → dark, a run from one extreme to the other with the neutral
   // between them, which is a decision rather than an accident of the array.
   it("names all three settings in order, though none of them carries text", () => {
-    openMenu();
+    renderHeader();
     const radios = screen.getAllByRole("radio");
     expect(radios.map((r) => r.getAttribute("aria-label"))).toEqual(["Light", "System", "Dark"]);
     expect(radios.every((r) => r.textContent === "")).toBe(true);
   });
 
   it("offers the same words as a tooltip", () => {
-    openMenu();
+    renderHeader();
     expect(screen.getAllByRole("radio").map((r) => r.getAttribute("title"))).toEqual(["Light", "System", "Dark"]);
   });
 
   it("hides the glyph itself from assistive tech, so the name is not read twice", () => {
-    openMenu();
+    renderHeader();
     for (const r of screen.getAllByRole("radio")) {
       expect(r.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
     }
   });
 
   it("marks the current setting, and moves the mark when another is picked", () => {
-    openMenu();
+    renderHeader();
     const checked = () =>
       screen.getAllByRole("radio").find((r) => r.getAttribute("aria-checked") === "true");
 
@@ -83,13 +94,25 @@ describe("the appearance switch", () => {
     expect(checked()).toHaveAttribute("aria-label", "Dark");
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
   });
+});
 
-  // The whole .header-user toggles the menu, so a click that bubbled would shut
-  // it — and comparing the three settings means reopening it every time.
-  it("leaves the menu open so the settings can be compared", () => {
-    openMenu();
-    act(() => screen.getByRole("radio", { name: "Light" }).click());
-    expect(screen.getAllByRole("radio")).toHaveLength(3);
+describe("where the appearance switch sits", () => {
+  it("is in the bar without opening anything, beside the avatar", () => {
+    state.user = { name: "Ada", email: "ada@example.com" };
+    renderHeader();
+    expect(screen.getByRole("radiogroup", { name: "Appearance" })).toBeInTheDocument();
+
+    // And not a second time in the avatar menu.
+    act(() => screen.getByText("Ada").click());
+    expect(screen.getByText("Sign out")).toBeInTheDocument();
+    expect(screen.getAllByRole("radiogroup")).toHaveLength(1);
+  });
+
+  it("is in the bar beside Sign in for a caller with no session", () => {
+    state.user = null;
+    renderHeader();
+    expect(screen.getByRole("link", { name: "Sign in" })).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "Appearance" })).toBeInTheDocument();
   });
 });
 
@@ -99,7 +122,11 @@ describe("the appearance switch", () => {
  * announced as one control with three options, and a keyboard user expects one
  * tab stop with the arrows moving inside it.
  */
-describe("the appearance switch by keyboard", () => {
+describe.each(CALLERS)("the appearance switch by keyboard, shown to $caller", ({ user }) => {
+  beforeEach(() => {
+    state.user = user;
+  });
+
   const group = () => screen.getByRole("radiogroup");
   const labels = () => screen.getAllByRole("radio").map((r) => r.getAttribute("aria-label"));
   const focused = () => document.activeElement?.getAttribute("aria-label");
@@ -110,14 +137,14 @@ describe("the appearance switch by keyboard", () => {
       ?.getAttribute("aria-label");
 
   it("is one tab stop, on whichever option is checked", () => {
-    openMenu();
+    renderHeader();
     const tabbable = screen.getAllByRole("radio").filter((r) => r.getAttribute("tabindex") === "0");
     expect(tabbable).toHaveLength(1);
     expect(tabbable[0]).toHaveAttribute("aria-label", checked()!);
   });
 
   it("moves the selection right, and takes focus with it", () => {
-    openMenu();
+    renderHeader();
     expect(labels()).toEqual(["Light", "System", "Dark"]);
     expect(checked()).toBe("System");
 
@@ -127,14 +154,14 @@ describe("the appearance switch by keyboard", () => {
   });
 
   it("moves the selection left", () => {
-    openMenu();
+    renderHeader();
     act(() => void fireEvent.keyDown(group(), { key: "ArrowLeft" }));
     expect(checked()).toBe("Light");
     expect(focused()).toBe("Light");
   });
 
   it("wraps at both ends rather than stopping", () => {
-    openMenu();
+    renderHeader();
     act(() => void fireEvent.keyDown(group(), { key: "ArrowLeft" })); // to Light
     act(() => void fireEvent.keyDown(group(), { key: "ArrowLeft" })); // wraps to Dark
     expect(checked()).toBe("Dark");
@@ -144,7 +171,7 @@ describe("the appearance switch by keyboard", () => {
   });
 
   it("takes Home and End to the ends", () => {
-    openMenu();
+    renderHeader();
     act(() => void fireEvent.keyDown(group(), { key: "End" }));
     expect(checked()).toBe("Dark");
     act(() => void fireEvent.keyDown(group(), { key: "Home" }));
@@ -154,13 +181,13 @@ describe("the appearance switch by keyboard", () => {
   // Without preventDefault the arrows scroll the dropdown and Home/End jump the
   // page, while the selection moves underneath. Everything else must pass.
   it("swallows only the keys it handles", () => {
-    openMenu();
+    renderHeader();
     expect(fireEvent.keyDown(group(), { key: "ArrowRight" })).toBe(false);
     expect(fireEvent.keyDown(group(), { key: "a" })).toBe(true);
   });
 
   it("applies an arrow selection to the document, not just the markup", () => {
-    openMenu();
+    renderHeader();
     act(() => void fireEvent.keyDown(group(), { key: "ArrowRight" }));
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
   });

@@ -722,6 +722,11 @@ td.table-note {
   .stats-grid {
     grid-template-columns: 1fr 1fr;
   }
+  /* The bar also holds the appearance switch, and the avatar alone is enough
+     to open the menu, which carries the email. */
+  .header-user .user-name {
+    display: none;
+  }
 }
 
 /* ── User dropdown ───────────────────────────────────────────────────────── */
@@ -797,24 +802,6 @@ td.table-note {
 }
 
 /* ── Appearance switch ───────────────────────────────────────────────────── */
-.dropdown-group {
-  padding: 8px 12px 10px;
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-  margin: 4px 0;
-}
-
-/* The guide's micro-label: small, uppercase, letter-spaced, muted. */
-.dropdown-label {
-  display: block;
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
-  margin-bottom: 6px;
-}
-
 .theme-switch {
   display: flex;
   gap: 2px;
@@ -824,16 +811,14 @@ td.table-note {
   border-radius: var(--radius-sm);
 }
 
-/* Outranks the block layout .user-dropdown button sets, since these three sit
-   side by side and hold a glyph rather than a line of text. */
 .theme-switch button {
-  flex: 1;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  width: auto;
   padding: 6px;
+  background: none;
+  border: none;
   border-radius: 3px;
+  color: var(--text-secondary);
+  cursor: pointer;
 }
 
 .theme-switch button svg {
@@ -842,15 +827,15 @@ td.table-note {
   display: block;
 }
 
-/* The glyph is drawn in currentColor, so setting the ink is what tints it. */
-.theme-switch button.active {
-  background: var(--accent-light);
-  color: var(--accent);
+.theme-switch button:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
 }
 
-/* The hover rule above is a plain descendant selector of equal weight, so
-   without this an active segment loses its wash on the way to being clicked. */
-.theme-switch button.active:hover {
+/* The glyph is drawn in currentColor, so setting the ink is what tints it.
+   Equal in weight to the hover rule, so it must stay below it for an active
+   segment to keep its wash under the pointer. */
+.theme-switch button.active {
   background: var(--accent-light);
   color: var(--accent);
 }

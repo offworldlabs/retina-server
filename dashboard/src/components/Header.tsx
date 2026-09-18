@@ -96,7 +96,7 @@ export default function Header({ title }) {
       default:
         return;
     }
-    // Arrows scroll the dropdown otherwise, and Home/End jump the page.
+    // Otherwise the arrows scroll the page and Home/End jump it.
     e.preventDefault();
     setPreference(APPEARANCE[next].value);
     radios.current[next]?.focus();
@@ -106,6 +106,47 @@ export default function Header({ title }) {
     <header className="header">
       <div className="header-title">{title}</div>
       <div className="header-actions">
+        {/* In the bar rather than the avatar menu, so a caller with no session
+            has it too, and finds it in the same place once they have one. */}
+        <div
+          className="theme-switch"
+          role="radiogroup"
+          aria-label="Appearance"
+          onKeyDown={onRadioKeyDown}
+        >
+          {APPEARANCE.map(({ value, label, icon }, i) => (
+            <button
+              key={value}
+              ref={(el) => {
+                radios.current[i] = el;
+              }}
+              role="radio"
+              aria-checked={preference === value}
+              // One tab stop for the group, not three: Tab reaches the
+              // checked option and the arrows move from there.
+              tabIndex={preference === value ? 0 : -1}
+              // The glyph carries no text, so the name has to be said
+              // outright; `title` gives the same word as a tooltip, for
+              // anyone who cannot tell the monitor from the moon.
+              aria-label={label}
+              title={label}
+              className={preference === value ? "active" : ""}
+              onClick={() => setPreference(value)}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                {icon}
+              </svg>
+            </button>
+          ))}
+        </div>
         {/* A caller with no session is on one of the open routes, and the
             way on from there is in, not out. */}
         {!user ? (
@@ -140,51 +181,6 @@ export default function Header({ title }) {
               <button disabled style={{ color: "var(--text-muted)", fontSize: 11 }}>
                 {user?.email}
               </button>
-              {/* Clicks are stopped here because the whole .header-user toggles
-                  the menu: without it the menu shuts on the first press, and
-                  comparing the three settings means reopening it each time. */}
-              <div className="dropdown-group" onClick={(e) => e.stopPropagation()}>
-                <span className="dropdown-label">Appearance</span>
-                <div
-                  className="theme-switch"
-                  role="radiogroup"
-                  aria-label="Appearance"
-                  onKeyDown={onRadioKeyDown}
-                >
-                  {APPEARANCE.map(({ value, label, icon }, i) => (
-                    <button
-                      key={value}
-                      ref={(el) => {
-                        radios.current[i] = el;
-                      }}
-                      role="radio"
-                      aria-checked={preference === value}
-                      // One tab stop for the group, not three: Tab reaches the
-                      // checked option and the arrows move from there.
-                      tabIndex={preference === value ? 0 : -1}
-                      // The glyph carries no text, so the name has to be said
-                      // outright; `title` gives the same word as a tooltip, for
-                      // anyone who cannot tell the monitor from the moon.
-                      aria-label={label}
-                      title={label}
-                      className={preference === value ? "active" : ""}
-                      onClick={() => setPreference(value)}
-                    >
-                      <svg
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden="true"
-                      >
-                        {icon}
-                      </svg>
-                    </button>
-                  ))}
-                </div>
-              </div>
               <button onClick={handleLogout}>Sign out</button>
             </div>
           )}
