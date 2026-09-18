@@ -20,6 +20,7 @@ function storedCollapsed(): boolean | null {
 const pageTitles = {
   "/": { user: "Overview", admin: "Network Health" },
   "/map": { user: "Live Map" },
+  "/physics": { user: "Physics Layer" },
   "/detections": { user: "Detections" },
   "/rf": { user: "RF Environment" },
   "/contribution": { user: "Network Contribution" },
@@ -54,9 +55,10 @@ export default function DashboardLayout({ isAdmin, children }) {
   // The map wants the canvas; every other page wants the labels. An explicit
   // choice outranks both.
   const collapsed = stored ?? basePath === "/map";
-  // The map draws to the edges and scrolls nothing: its own panels own their
-  // overflow, and a scrollbar on the pane would move the canvas under them.
-  const flush = basePath === "/map";
+  // The map and the physics layer draw to the edges and scroll nothing: their
+  // own panels own their overflow, and a scrollbar on the pane would move the
+  // canvas under them.
+  const flush = basePath === "/map" || basePath === "/physics";
 
   const toggle = () => {
     const next = !collapsed;

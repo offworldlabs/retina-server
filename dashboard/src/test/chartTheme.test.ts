@@ -50,6 +50,9 @@ describe("the chart pages", () => {
     "src/pages/admin/NetworkHealthPage.tsx",
     // Its own documented domain palette, with a value per theme.
     "src/pages/user/AnomalyPage.tsx",
+    // A dev-only sandbox, gated out of production builds and drawn dark on
+    // purpose; it never reads the console's theme.
+    "src/pages/map/TestRadar.tsx",
   ];
 
   const pages = import.meta.glob("../pages/**/*.tsx", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
