@@ -122,12 +122,7 @@ def test_synthetic_active_counts_only_fleet_nodes_answering_now():
     }
     with state.connected_nodes_lock:
         state.connected_nodes.update(entries)
-    try:
-        nodes = orjson.loads(_build_dashboard_data())["nodes"]
-    finally:
-        with state.connected_nodes_lock:
-            for node_id in entries:
-                state.connected_nodes.pop(node_id, None)
+    nodes = orjson.loads(_build_dashboard_data())["nodes"]
 
     assert nodes["synthetic_active"] == 1, "synthetic_active counted a dead or non-fleet node"
     assert nodes["active"] == 2, "active still counts the HTTP pseudo-node, which is why it cannot be the gate"

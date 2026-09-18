@@ -157,7 +157,6 @@ def _clean():
     import services.tcp_handler as _th
 
     def _purge():
-        state.connected_nodes.pop(_NODE_ID, None)
         state.node_pipelines.pop(_NODE_ID, None)
         _th._per_node_last_enqueue.pop(_NODE_ID, None)
         with state.geo_aircraft_lock:

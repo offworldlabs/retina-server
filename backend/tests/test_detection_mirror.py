@@ -149,9 +149,6 @@ def _connected():
     _connect("mirror-node-a", {"rx_lat": 33.9, "rx_lon": -84.6, "tx_lat": 34.0, "tx_lon": -84.7})
     _connect("mirror-node-b", {"rx_lat": 34.8, "rx_lon": -82.3, "tx_lat": 35.1, "tx_lon": -82.2})
     yield
-    with state.connected_nodes_lock:
-        state.connected_nodes.pop("mirror-node-a", None)
-        state.connected_nodes.pop("mirror-node-b", None)
 
 
 def test_batch_groups_by_node_and_carries_config(_connected):
@@ -503,13 +500,6 @@ class TestBatchCarriesTheRef:
 
         with state.connected_nodes_lock:
             state.connected_nodes[node_id] = {"config": {"node_id": node_id}, "is_synthetic": False}
-
-    def teardown_method(self):
-        from core import state
-
-        with state.connected_nodes_lock:
-            for nid in ("ret1a2b3c4d", "ret9f8e7d6c"):
-                state.connected_nodes.pop(nid, None)
 
     def test_a_registered_node_sends_its_ref(self, monkeypatch):
         from services import detection_mirror, node_refs

@@ -53,7 +53,6 @@ def _clean_nodes():
     yield
     for node_id in list(state.connected_nodes):
         if node_id.startswith("test-"):
-            state.connected_nodes.pop(node_id, None)
             state.node_associator.unregister_node(node_id)
             state.node_analytics.retire_node(node_id)
 

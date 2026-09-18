@@ -15,51 +15,43 @@ class TestRealOnlyDict:
 
         state.connected_nodes["real-1"] = {"is_synthetic": False, "status": "active"}
         state.connected_nodes["synth-1"] = {"is_synthetic": True, "status": "active"}
-        try:
-            data = {
-                "now": time.time(),
-                "aircraft": [
-                    {"hex": "R1", "node_id": "real-1", "multinode": False},
-                    {"hex": "S1", "node_id": "synth-1", "multinode": False},
-                ],
-                "detection_arcs": [
-                    {"node_id": "real-1", "arc": []},
-                    {"node_id": "synth-1", "arc": []},
-                ],
-            }
-            result = _real_only_dict(data)
-            assert len(result["aircraft"]) == 1
-            assert result["aircraft"][0]["hex"] == "R1"
-            assert len(result["detection_arcs"]) == 1
-            assert result["detection_arcs"][0]["node_id"] == "real-1"
-        finally:
-            state.connected_nodes.pop("real-1", None)
-            state.connected_nodes.pop("synth-1", None)
+        data = {
+            "now": time.time(),
+            "aircraft": [
+                {"hex": "R1", "node_id": "real-1", "multinode": False},
+                {"hex": "S1", "node_id": "synth-1", "multinode": False},
+            ],
+            "detection_arcs": [
+                {"node_id": "real-1", "arc": []},
+                {"node_id": "synth-1", "arc": []},
+            ],
+        }
+        result = _real_only_dict(data)
+        assert len(result["aircraft"]) == 1
+        assert result["aircraft"][0]["hex"] == "R1"
+        assert len(result["detection_arcs"]) == 1
+        assert result["detection_arcs"][0]["node_id"] == "real-1"
 
     def test_includes_multinode_with_real_contributor(self):
         from services.tasks.aircraft_flush import _real_only_dict
 
         state.connected_nodes["real-1"] = {"is_synthetic": False, "status": "active"}
         state.connected_nodes["synth-1"] = {"is_synthetic": True, "status": "active"}
-        try:
-            data = {
-                "now": time.time(),
-                "aircraft": [
-                    {
-                        "hex": "M1",
-                        "node_id": "synth-1",
-                        "multinode": True,
-                        "contributing_node_ids": ["synth-1", "real-1"],
-                    },
-                ],
-                "detection_arcs": [],
-            }
-            result = _real_only_dict(data)
-            assert len(result["aircraft"]) == 1
-            assert result["aircraft"][0]["hex"] == "M1"
-        finally:
-            state.connected_nodes.pop("real-1", None)
-            state.connected_nodes.pop("synth-1", None)
+        data = {
+            "now": time.time(),
+            "aircraft": [
+                {
+                    "hex": "M1",
+                    "node_id": "synth-1",
+                    "multinode": True,
+                    "contributing_node_ids": ["synth-1", "real-1"],
+                },
+            ],
+            "detection_arcs": [],
+        }
+        result = _real_only_dict(data)
+        assert len(result["aircraft"]) == 1
+        assert result["aircraft"][0]["hex"] == "M1"
 
     def test_empty_data(self):
         from services.tasks.aircraft_flush import _real_only_dict

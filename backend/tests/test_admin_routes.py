@@ -327,7 +327,6 @@ class TestLeaderboard:
         state.latest_analytics_bytes, restored = prior
         state.latest_missed_detections.clear()
         state.latest_missed_detections.update(restored)
-        state.connected_nodes.pop(nid, None)
 
     def test_a_caller_with_no_session_is_not_told_what_each_node_missed(self, client):
         """The per-node miss counts are not on the published side of the boundary.
@@ -405,7 +404,6 @@ class TestLeaderboard:
             assert len([e for e in r.json()["leaderboard"] if e["node_ref"] == nid]) == expected
         finally:
             state.latest_analytics_bytes = prior
-            state.connected_nodes.pop(nid, None)
 
     def test_its_neighbours_under_the_same_prefix_still_want_a_session(self, client):
         """Opening the route above opens the route above, not the prefix."""
@@ -459,7 +457,6 @@ class TestLeaderboard:
             assert found[0]["rank"] >= 1
         finally:
             state.latest_analytics_bytes = orig
-            state.connected_nodes.pop("test-lb-1", None)
 
     @staticmethod
     def _seed_node(nid: str) -> str:
@@ -513,7 +510,6 @@ class TestLeaderboard:
             body = r.text
         finally:
             state.latest_analytics_bytes = orig
-            state.connected_nodes.pop(nid, None)
             state.latest_missed_detections.pop(nid, None)
 
         (entry,) = [e for e in entries if e["node_ref"] == ref]
@@ -583,7 +579,6 @@ class TestLeaderboard:
             body = r.text
         finally:
             state.latest_analytics_bytes = orig
-            state.connected_nodes.pop(nid, None)
 
         (entry,) = [e for e in entries if e["node_ref"] == ref]
         assert entry["name"] == ref
@@ -641,12 +636,9 @@ class TestNodeHealth:
             "last_heartbeat": "2020-01-01T00:00:00Z",
             "config": {},
         }
-        try:
-            check_node_health()
-            # Node should be marked disconnected
-            assert state.connected_nodes["test-offline"]["status"] == "disconnected"
-        finally:
-            state.connected_nodes.pop("test-offline", None)
+        check_node_health()
+        # Node should be marked disconnected
+        assert state.connected_nodes["test-offline"]["status"] == "disconnected"
 
 
 # ── Stale tasks ──────────────────────────────────────────────────────────────
@@ -750,15 +742,9 @@ class TestNodeReconnectEvent:
         ]
         assert len(reconnect_events) >= 1, "Expected a reconnect event in the event log"
 
-        # Cleanup
-        state.connected_nodes.pop("reconnect-test", None)
-
     def test_fresh_connect_has_no_reconnect_flag(self):
         """A brand-new node (not seen before) should not have reconnect=True."""
         from routes.admin import _events
-
-        # Ensure node is not in state
-        state.connected_nodes.pop("fresh-node-test", None)
 
         was_disconnected = state.connected_nodes.get("fresh-node-test", {}).get("status") == "disconnected"
         assert not was_disconnected

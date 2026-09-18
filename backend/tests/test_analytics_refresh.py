@@ -162,9 +162,6 @@ class TestConnectedNodesSnapshot:
 
         assert any(nid == "test-snap-1" for nid, _ in snap)
 
-        # Cleanup
-        state.connected_nodes.pop("test-snap-1", None)
-
 
 # ── Reputation evaluations ────────────────────────────────────────────────────
 
@@ -444,7 +441,6 @@ class TestNodeRefInPublicPayloads:
             "is_synthetic": False,
         }
         yield
-        state.connected_nodes.pop(self.NODE, None)
         state.node_analytics.retire_node(self.NODE)
 
     def _refresh(self):

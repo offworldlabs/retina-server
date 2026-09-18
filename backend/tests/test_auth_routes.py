@@ -246,8 +246,6 @@ class TestMyNodes:
             assert node["position_status"] == "missing_both"
         finally:
             asyncio.run(set_node_owner(node_id, None))
-            with state.connected_nodes_lock:
-                state.connected_nodes.pop(node_id, None)
 
 
 # ── /api/auth/me/nodes/{id}/location-privacy ─────────────────────────────────

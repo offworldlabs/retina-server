@@ -862,11 +862,7 @@ class TestWorldGate:
         node_id = "oddly-named-sim-node"
         with state.connected_nodes_lock:
             state.connected_nodes[node_id] = {"is_synthetic": True}
-        try:
-            assert state.node_world(node_id) == "sim"
-        finally:
-            with state.connected_nodes_lock:
-                state.connected_nodes.pop(node_id, None)
+        assert state.node_world(node_id) == "sim"
 
     def test_unregistered_node_falls_back_to_the_prefix_rule(self):
         assert state.node_world("synth-GVL-0001") == "sim"
