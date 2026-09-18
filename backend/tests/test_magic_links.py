@@ -12,9 +12,14 @@ import pytest
 from sqlalchemy import select
 
 from core.auth import (
+    INTENT_SIGNIN,
     MAGIC_LINK_EXPIRY_S,
+    _hash_token,
     consume_magic_link,
     create_magic_link,
+    invalidate_magic_link,
+    peek_magic_link,
+    redeem_magic_link,
 )
 from core.users import MagicLink
 
@@ -166,3 +171,155 @@ class TestOutstandingLinkCap:
             await session.commit()
         await create_magic_link("owner@example.com")
         assert len(await _rows(async_session_maker)) == 1
+
+
+# ── Intent ───────────────────────────────────────────────────────────────────
+#
+# A link is a bearer credential in a mailbox, and mailboxes get forwarded. What
+# a token may do therefore travels with it rather than being inferred from which
+# endpoint happened to receive it.
+
+CLAIM = "claim"
+ADDRESS = "ada@example.com"
+
+
+async def test_a_claim_link_cannot_be_redeemed_as_a_sign_in():
+    """The forwarded-link attack: whoever is sent a claim link for somebody
+    else's node must not be able to spend it as a session on their account."""
+    token = await create_magic_link(ADDRESS, intent=CLAIM, node_id="ret1a2b3c4d")
+
+    assert await consume_magic_link(token) is None
+
+
+async def test_a_sign_in_link_cannot_be_redeemed_as_a_claim():
+    token = await create_magic_link(ADDRESS)
+
+    assert await redeem_magic_link(token, intent=CLAIM) is None
+
+
+async def test_a_refusal_by_intent_leaves_the_link_usable_by_its_rightful_redeemer():
+    """The intent is part of the WHERE rather than a check afterwards, so the
+    endpoint that refused a link has not quietly spent it."""
+    token = await create_magic_link(ADDRESS, intent=CLAIM, node_id="ret1a2b3c4d")
+    assert await consume_magic_link(token) is None
+
+    redeemed = await redeem_magic_link(token, intent=CLAIM)
+
+    assert redeemed is not None
+    assert redeemed.node_id == "ret1a2b3c4d"
+
+
+async def test_signing_in_does_not_wipe_an_outstanding_claim_link():
+    """The sweep is what stops an abandoned link in a readable mailbox opening a
+    session. Unscoped it would also wipe the challenge for a node its owner is
+    halfway through setting up, leaving them at `pending` with nothing to click."""
+    claim_token = await create_magic_link(ADDRESS, intent=CLAIM, node_id="ret1a2b3c4d")
+    signin_token = await create_magic_link(ADDRESS)
+
+    assert await consume_magic_link(signin_token) == ADDRESS
+
+    assert await redeem_magic_link(claim_token, intent=CLAIM) is not None
+
+
+async def test_claiming_does_not_wipe_an_outstanding_sign_in_link():
+    signin_token = await create_magic_link(ADDRESS)
+    claim_token = await create_magic_link(ADDRESS, intent=CLAIM, node_id="ret1a2b3c4d")
+
+    assert await redeem_magic_link(claim_token, intent=CLAIM) is not None
+
+    assert await consume_magic_link(signin_token) == ADDRESS
+
+
+async def test_the_sweep_still_clears_abandoned_links_of_the_same_intent():
+    first = await create_magic_link(ADDRESS)
+    second = await create_magic_link(ADDRESS)
+
+    assert await consume_magic_link(second) == ADDRESS
+
+    assert await consume_magic_link(first) is None
+
+
+async def test_claiming_one_node_does_not_wipe_the_link_for_another():
+    """One address bringing up two nodes holds a claim link for each. Spending
+    one must leave the other, or that node waits out its expiry with nothing to
+    click."""
+    first = await create_magic_link(ADDRESS, intent=CLAIM, node_id="ret1a2b3c4d")
+    second = await create_magic_link(ADDRESS, intent=CLAIM, node_id="retdeadbeef")
+
+    assert await redeem_magic_link(first, intent=CLAIM) is not None
+
+    redeemed = await redeem_magic_link(second, intent=CLAIM)
+    assert redeemed is not None
+    assert redeemed.node_id == "retdeadbeef"
+
+
+async def test_the_cap_is_counted_per_intent():
+    """Somebody bringing up four nodes and signing in twice would otherwise
+    exhaust one shared allowance, and create_magic_link answers None silently."""
+    for _ in range(5):
+        assert await create_magic_link(ADDRESS) is not None
+    assert await create_magic_link(ADDRESS) is None
+
+    assert await create_magic_link(ADDRESS, intent=CLAIM, node_id="ret1a2b3c4d") is not None
+
+
+async def test_the_node_travels_with_a_claim_link():
+    token = await create_magic_link(ADDRESS, intent=CLAIM, node_id="ret1a2b3c4d")
+
+    redeemed = await redeem_magic_link(token, intent=CLAIM)
+
+    assert (redeemed.email, redeemed.intent, redeemed.node_id) == (ADDRESS, CLAIM, "ret1a2b3c4d")
+
+
+async def test_a_sign_in_link_is_about_nobody_s_node():
+    token = await create_magic_link(ADDRESS)
+
+    redeemed = await redeem_magic_link(token, intent=INTENT_SIGNIN)
+
+    assert redeemed.node_id is None
+
+
+# ── Peeking and invalidating ─────────────────────────────────────────────────
+
+
+async def test_peeking_does_not_spend_the_link():
+    token = await create_magic_link(ADDRESS, intent=CLAIM, node_id="ret1a2b3c4d")
+
+    assert (await peek_magic_link(token, intent=CLAIM)).node_id == "ret1a2b3c4d"
+    assert (await peek_magic_link(token, intent=CLAIM)).node_id == "ret1a2b3c4d"
+
+    assert await redeem_magic_link(token, intent=CLAIM) is not None
+
+
+async def test_peeking_is_bound_by_intent_like_redeeming():
+    token = await create_magic_link(ADDRESS, intent=CLAIM, node_id="ret1a2b3c4d")
+
+    assert await peek_magic_link(token, intent=INTENT_SIGNIN) is None
+
+
+async def test_peeking_a_spent_link_gives_nothing():
+    token = await create_magic_link(ADDRESS, intent=CLAIM, node_id="ret1a2b3c4d")
+    await redeem_magic_link(token, intent=CLAIM)
+
+    assert await peek_magic_link(token, intent=CLAIM) is None
+
+
+async def test_invalidating_makes_a_link_unredeemable():
+    token = await create_magic_link(ADDRESS, intent=CLAIM, node_id="ret1a2b3c4d")
+
+    await invalidate_magic_link(_hash_token(token))
+
+    assert await redeem_magic_link(token, intent=CLAIM) is None
+
+
+async def test_invalidating_an_unknown_handle_is_not_an_error():
+    await invalidate_magic_link("0" * 64)
+
+
+async def test_invalidating_one_link_leaves_the_others_alone():
+    doomed = await create_magic_link(ADDRESS, intent=CLAIM, node_id="ret1a2b3c4d")
+    kept = await create_magic_link(ADDRESS, intent=CLAIM, node_id="retdeadbeef")
+
+    await invalidate_magic_link(_hash_token(doomed))
+
+    assert await redeem_magic_link(kept, intent=CLAIM) is not None
