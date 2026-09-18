@@ -75,7 +75,8 @@ from services.known_claiming import KNOWN_CLAIM_MAX_FIX_AGE_S
 # record store, gates, publication lock and smoother so known-lane records
 # are queryable exactly like regular ones.  solver.py only ever imports this
 # module lazily, inside _run_solver_worker (see the wiring there), so the
-# import below cannot form a cycle.
+# solver import below cannot form a cycle.
+from services.tasks import displacement_caps
 from services.tasks import solver as solver_mod
 
 # ── Claim selection windows ───────────────────────────────────────────────────
@@ -372,7 +373,7 @@ def _reanchor(hexn: str, raw_lat: float, raw_lon: float, ts_ms: int) -> bool:
     if (
         prev is not None
         and 0.0 <= now_s - prev["ts_ms"] / 1000.0 <= _REANCHOR_TTL_S
-        and haversine_km(prev["lat"], prev["lon"], raw_lat, raw_lon) <= solver_mod._MAX_DISPLACEMENT_KM
+        and haversine_km(prev["lat"], prev["lon"], raw_lat, raw_lon) <= displacement_caps._MAX_DISPLACEMENT_KM
     ):
         streak = int(prev["streak"]) + 1
     if streak >= KNOWN_LANE_REANCHOR_STREAK:
@@ -530,7 +531,7 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
     ig = s_in["initial_guess"]
     raw_lat, raw_lon = float(result["lat"]), float(result["lon"])
     err_km = haversine_km(float(ig["lat"]), float(ig["lon"]), raw_lat, raw_lon)
-    label = "truth_match" if err_km <= solver_mod._MAX_DISPLACEMENT_KM else "ghost"
+    label = "truth_match" if err_km <= displacement_caps._MAX_DISPLACEMENT_KM else "ghost"
     # The prior is only a prior — when it is the lane's OWN dead-reckoned
     # solve rather than a transponder fix, a repeated self-consistent
     # disagreement means the prior moved, not the solve.  See _reanchor.
@@ -773,7 +774,7 @@ def _follow_shadow_attempt(key: str, s_in: dict, node_cfgs: dict, solve_fn) -> N
     if result and result.get("success"):
         ig = s_in["initial_guess"]
         disp_km = haversine_km(float(ig["lat"]), float(ig["lon"]), float(result["lat"]), float(result["lon"]))
-        ok = disp_km <= solver_mod._MAX_DISPLACEMENT_KM_DARK
+        ok = disp_km <= displacement_caps._MAX_DISPLACEMENT_KM_DARK
     solver_mod._record_solve_history(
         "dark_follow_shadow",
         s_in,

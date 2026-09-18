@@ -15,6 +15,7 @@ docstring for the fallback rules.
 import time
 
 from core import state
+from services.tasks import displacement_caps as caps_mod
 from services.tasks import solver as solver_mod
 
 LAT, LON = 35.0, -82.0
@@ -413,7 +414,7 @@ class TestDisplacementAnchor(_ConsensusTestBase):
     # adsb_hex, so it is a dark input), and ~0 km from itself.  Written
     # against the constant rather than a literal so retuning the dark cap
     # cannot silently turn these anchor tests into no-ops.
-    CENTROID_LAT = LAT + (solver_mod._MAX_DISPLACEMENT_KM_DARK + 2.0) / 111.32
+    CENTROID_LAT = LAT + (caps_mod._MAX_DISPLACEMENT_KM_DARK + 2.0) / 111.32
     CENTROID_LON = LON
     # Far from both the guess and the centroid above (~106-111 km either
     # way) — unambiguously rejects regardless of which anchor is in play.

@@ -854,9 +854,10 @@ solver_resolve_skips: int = 0
 # read completely differently: an ADS-B-anchored duplicate that is skipped
 # costs nothing (the transponder keeps the track alive anyway), while a
 # skipped dark candidate may be the only chance that aircraft had of reaching
-# the map this window.  Lane is decided by solver._is_dark_solver_input, the
-# same predicate solver_report._record_lane falls back to for a record that
-# never got a key — and a skip never gets one.
+# the map this window.  Lane is decided by
+# displacement_caps._is_dark_solver_input, the same predicate
+# solver_report._record_lane falls back to for a record that never got a key —
+# and a skip never gets one.
 solver_resolve_skips_dark: int = 0
 
 # Candidates the resolve-slot rule would have skipped on width alone but let

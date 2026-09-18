@@ -356,7 +356,7 @@ LM's SNR weighting maps to a uniform weight of 1.0.
 | `_PASS_MIN_INTERVAL_S` | 2.0 s | `services/tasks/known_lane.py` |
 | `_CLAIM_MAX_AGE_S` / `_CLAIM_SPREAD_S` | 45.0 s / 5.0 s | `known_lane.py` |
 | `_ATTEMPT_TTL_S` | 600 s | `known_lane.py` |
-| `_MAX_DISPLACEMENT_KM` (truth_match cutoff) | 2.0 km | `services/tasks/solver.py` |
+| `_MAX_DISPLACEMENT_KM` (truth_match cutoff) | 2.0 km | `services/tasks/displacement_caps.py` |
 
 ### 3d. Dark track following (`DARK_FOLLOW_MODE`)
 
@@ -840,7 +840,7 @@ mode per environment and read the two lanes' `rms_delay` and `gt_error_km` off
 | `SOLVER_RMS_DELAY_MAX_US` (6.5) | 3.0 us | `services/tasks/solver.py` (`_SOLVER_RMS_DELAY_MAX_US`) |
 | `_SOLVER_RMS_DOPPLER_MAX_HZ` (6.6) | 200.0 Hz (hardcoded), n≠3 | `services/tasks/solver.py` |
 | `SOLVER_N3_RMS_DOPPLER_MAX_HZ` (6.6) | 60.0 Hz, n=3 only (post-trim count; the exactly-determined 3-node fit leaves ~0 Hz unless it is a two-aircraft cluster) | `services/tasks/solver.py` (`_SOLVER_N3_RMS_DOPPLER_MAX_HZ`, `_rms_doppler_max_hz`) |
-| `_MAX_DISPLACEMENT_KM` (6.8) | 2.0 km | `services/tasks/solver.py` |
+| `_MAX_DISPLACEMENT_KM` (6.8) | 2.0 km | `services/tasks/displacement_caps.py` |
 | `N2_CONFIRM_CHI2_MAX` (6.9) | 2.0 | `config/constants.py` |
 | `_TRACK_CLAIM_TTL_S` (6.10) | 60.0 s | `services/tasks/solver.py` |
 | `_CONSENSUS_MIN_NODES` | 3 | `services/tasks/solver.py` |
