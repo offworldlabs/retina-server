@@ -53,6 +53,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  Reflect.deleteProperty(navigator, "clipboard");
 });
 
 describe("DataExplorerPage", () => {
@@ -91,6 +92,20 @@ describe("DataExplorerPage", () => {
     await waitFor(() =>
       expect(screen.getByTestId("de-share")).toHaveTextContent("from=2026-09-11"),
     );
+  });
+
+  it("copies the shareable link as the bar spells it, not as the address bar does", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    renderAt("?to=2026-09-17&node=ret-b&node=ret-a&from=2026-09-17");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Copy link" }));
+    await waitFor(() =>
+      expect(writeText).toHaveBeenCalledWith(
+        `${window.location.origin}/data?node=ret-a&node=ret-b&from=2026-09-17&to=2026-09-17`,
+      ),
+    );
+    expect(await screen.findByRole("button", { name: "Copied" })).toBeInTheDocument();
   });
 
   it("says when the range reaches past what is still on disk", async () => {

@@ -1,12 +1,7 @@
-import { useEffect, useRef, useState } from "react";
-
 import { formatBytes } from "../../../utils/format";
 import { curlExcerpt, curlScript, manifest } from "./download";
 import { JSON_FACTOR, type ArchiveFile } from "./keys";
-
-/** How long a copy's outcome stays on the button before it reads "Copy curl"
- *  again. */
-export const COPY_FEEDBACK_MS = 1200;
+import { useCopy } from "./useCopy";
 
 interface Props {
   /** The basket, resolved and in display order. */
@@ -14,36 +9,6 @@ interface Props {
   manifestOpen: boolean;
   onToggleManifest: () => void;
   onClear: () => void;
-}
-
-/** A clipboard write whose outcome is reported on the button that asked for
- *  it, since nothing else on the page changes when a copy lands. */
-function useCopy(): [string | null, (text: string) => Promise<void>] {
-  const [outcome, setOutcome] = useState<string | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(
-    () => () => {
-      if (timer.current) clearTimeout(timer.current);
-    },
-    [],
-  );
-
-  const copy = async (text: string) => {
-    let result: string;
-    try {
-      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
-      await navigator.clipboard.writeText(text);
-      result = "Copied";
-    } catch {
-      result = "Copy failed";
-    }
-    setOutcome(result);
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => setOutcome(null), COPY_FEEDBACK_MS);
-  };
-
-  return [outcome, copy];
 }
 
 export function DownloadBasket({ files, manifestOpen, onToggleManifest, onClear }: Props) {
