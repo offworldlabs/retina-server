@@ -1,6 +1,7 @@
-/* Layout for the explorer's own controls and its results tree. Colours come
-   from the dashboard's tokens; the timeline's scrim is the one declared here,
-   because the palette has no wash. */
+/* Layout for the explorer's own controls, its results tree, the basket and
+   the preview drawer. Colours come from the dashboard's tokens; the scrim,
+   which the drawer and the timeline share, is the one declared here, because
+   the palette has no wash. */
 
 /* This card's own children, such as the filter chips, must not be clipped. */
 .de-card {
@@ -13,12 +14,16 @@
    type in the same breath. */
 .de-card,
 .de-timeline,
-.de-tree {
+.de-tree,
+.de-basket,
+.de-drawer {
   --de-mono: "SF Mono", "Fira Code", ui-monospace, Menlo, Consolas, monospace;
 }
 
 .de-card .mono,
-.de-tree .mono {
+.de-tree .mono,
+.de-basket .mono,
+.de-drawer .mono {
   font-family: var(--de-mono);
   font-size: 12px;
 }
@@ -180,7 +185,7 @@
 /* One definition for the results grid, used by the header and every row: they
    must stay aligned, and three copies did not. */
 .de-tree {
-  --de-cols: 1fr 150px 132px 120px;
+  --de-cols: 22px 1fr 150px 132px 140px;
 }
 
 .de-colhead,
@@ -192,7 +197,7 @@
 }
 
 .de-colhead {
-  padding: 8px 12px;
+  padding: 8px 12px 8px 52px;
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -215,13 +220,25 @@
   border-bottom: 1px solid var(--border);
 }
 
+/* A head answers a click anywhere along it. The checkbox inside keeps its
+   own, and the toggle button carries the label and the counts so that its
+   accessible name says which group it opens. */
 .de-day-head,
 .de-node-head {
   display: flex;
   gap: 8px;
   align-items: center;
-  width: 100%;
   padding: 10px 12px;
+  cursor: pointer;
+}
+
+.de-toggle {
+  flex: 1;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 0;
   background: none;
   border: 0;
   font: inherit;
@@ -230,15 +247,43 @@
   cursor: pointer;
 }
 
+.de-tree input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.de-tree input[type="checkbox"]:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
 .de-node-head {
   padding-left: 32px;
   color: var(--text-muted);
   font-size: 13px;
 }
 
+/* A row opens its preview; the controls in it keep their own clicks. */
 .de-file {
   padding: 6px 12px 6px 52px;
   font-size: 13px;
+  cursor: pointer;
+}
+
+.de-file:hover {
+  background: var(--bg-card-hover);
+}
+
+.de-file.active {
+  background: var(--accent-light);
+}
+
+.de-acts {
+  display: flex;
+  gap: 6px;
 }
 
 .de-caret {
@@ -269,7 +314,14 @@
 
 @media (max-width: 1100px) {
   .de-tree {
-    --de-cols: 1fr 120px 96px 96px;
+    --de-cols: 22px 1fr 120px 96px;
+  }
+
+  /* The actions drop to a line of their own rather than squeezing the
+     columns beside them. */
+  .de-colhead > :last-child,
+  .de-file > :last-child {
+    grid-column: 2 / -1;
   }
 }
 
@@ -463,7 +515,6 @@
 }
 
 .de-tl-host {
-  --de-scrim: rgba(15, 23, 42, 0.35);
   position: relative;
   margin: 0 20px 12px;
   border-radius: var(--radius);
@@ -472,13 +523,22 @@
   min-height: 120px;
 }
 
+/* The wash behind the drawer and over the timeline's unfocused range. The
+   palette has no wash, so it is declared here, once, for both. */
+.de-tl-host,
+.de-scrim {
+  --de-scrim: rgba(15, 23, 42, 0.35);
+}
+
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) .de-tl-host {
+  :root:not([data-theme="light"]) .de-tl-host,
+  :root:not([data-theme="light"]) .de-scrim {
     --de-scrim: rgba(2, 6, 23, 0.55);
   }
 }
 
-:root[data-theme="dark"] .de-tl-host {
+:root[data-theme="dark"] .de-tl-host,
+:root[data-theme="dark"] .de-scrim {
   --de-scrim: rgba(2, 6, 23, 0.55);
 }
 
@@ -556,4 +616,261 @@
 .de-sw-range {
   background: var(--warning-light);
   border: 1px solid var(--warning);
+}
+
+/* The basket. Stuck to the foot of the dashboard's scroller rather than fixed
+   to the viewport: the content pane is what scrolls, so a fixed bar would
+   sit over the sidebar and hide the last rows of the tree. The negative
+   margins bleed it out through the pane's own padding, and the negative
+   bottom keeps it flush while stuck: the sticky rectangle is inset by that
+   padding, so a bottom of zero would hold it a strip short of the edge. */
+.de-basket {
+  position: sticky;
+  bottom: calc(-1 * var(--content-pad));
+  z-index: 70;
+  margin: var(--content-pad) calc(-1 * var(--content-pad)) calc(-1 * var(--content-pad));
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-light);
+  box-shadow: 0 -6px 20px var(--shadow);
+}
+
+.de-basket-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 24px;
+  flex-wrap: wrap;
+}
+
+.de-basket-count {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.de-basket-n {
+  color: var(--accent);
+}
+
+.de-basket-count .de-muted {
+  font-weight: 400;
+  font-size: 12px;
+}
+
+.de-basket-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+
+.de-basket-body {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 16px;
+  padding: 0 24px 16px;
+}
+
+.de-basket textarea {
+  width: 100%;
+  height: 132px;
+  padding: 6px 9px;
+  resize: vertical;
+  font-family: var(--de-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+}
+
+.de-basket textarea:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.de-basket-body .de-sec {
+  margin-top: 0;
+}
+
+@media (max-width: 1100px) {
+  .de-basket-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* The preview drawer, over everything but the header's own menus. */
+.de-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: var(--de-scrim);
+}
+
+.de-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  width: 560px;
+  max-width: 94vw;
+  background: var(--bg-card);
+  border-left: 1px solid var(--border);
+  animation: de-slide-in 0.18s ease;
+}
+
+@keyframes de-slide-in {
+  from {
+    transform: translateX(100%);
+  }
+}
+
+.de-drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.de-drawer-head h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.de-drawer-key {
+  margin-top: 3px;
+  word-break: break-all;
+}
+
+.de-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 18px;
+  font-size: 13px;
+}
+
+.de-drawer-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border);
+}
+
+.de-drawer-add {
+  margin-left: auto;
+}
+
+.de-kv {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 5px 12px;
+  margin: 0 0 16px;
+  font-size: 12px;
+}
+
+.de-kv dt {
+  color: var(--text-muted);
+}
+
+.de-kv dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-family: var(--de-mono);
+  font-size: 11.5px;
+  word-break: break-all;
+}
+
+.de-sec {
+  margin: 18px 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.de-codeblock {
+  margin: 0;
+  padding: 11px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--de-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.de-hint {
+  margin-top: 6px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+
+.de-hint b {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.de-warnline,
+.de-errline {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+}
+
+.de-warnline {
+  color: var(--warning);
+  background: var(--warning-light);
+}
+
+.de-errline {
+  color: var(--error);
+  background: var(--error-light);
+}
+
+.de-prev-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.de-prev {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--de-mono);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+/* The dashboard uppercases every table header, which would turn µs into a
+   capital mu; these are column names from the file and stay as written. */
+.de-prev th {
+  padding: 6px 9px;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+  font-size: inherit;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: var(--bg-input);
+  border-bottom: 1px solid var(--border);
+}
+
+.de-prev td {
+  padding: 5px 9px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
 }

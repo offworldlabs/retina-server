@@ -361,9 +361,11 @@ a:hover {
 }
 
 .content {
+  /* Named so that a page can bleed an element out to the pane's edges. */
+  --content-pad: 24px;
   flex: 1;
   overflow-y: auto;
-  padding: 24px;
+  padding: var(--content-pad);
 }
 
 /* ── Tables ──────────────────────────────────────────────────────────────── */

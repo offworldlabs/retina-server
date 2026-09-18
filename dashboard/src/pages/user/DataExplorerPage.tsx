@@ -7,6 +7,8 @@ import { entryForScope, horizon } from "./dataExplorer/archive";
 import { AvailabilityTimeline } from "./dataExplorer/AvailabilityTimeline";
 import { DateRangeControls } from "./dataExplorer/DateRangeControls";
 import { daysBetween, todayUTC } from "./dataExplorer/dates";
+import { DownloadBasket } from "./dataExplorer/DownloadBasket";
+import { FilePreviewDrawer } from "./dataExplorer/FilePreviewDrawer";
 import { makePredicate } from "./dataExplorer/filters";
 import { JSON_FACTOR, type ArchiveFile } from "./dataExplorer/keys";
 import { NearControls } from "./dataExplorer/NearControls";
@@ -35,6 +37,12 @@ export default function DataExplorerPage() {
   // which spells a radius only as part of `near`, and it has to outlive the gap
   // between choosing a distance and choosing a point to measure it from.
   const [pendingKm, setPendingKm] = useState(DEFAULT_RADIUS_KM);
+  // The basket and the open preview hold keys, not files: they resolve
+  // through the scan's key map, which is never pruned, so a selection
+  // outlives the filters that produced it.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [active, setActive] = useState<string | null>(null);
+  const [manifestOpen, setManifestOpen] = useState(false);
 
   const today = useMemo(() => todayUTC(), []);
   const filters = useMemo(() => readFilters(search.toString(), today), [search, today]);
@@ -60,6 +68,43 @@ export default function DataExplorerPage() {
   );
 
   const scan = useArchiveScan(days, nodeSel);
+
+  const select = useCallback((keys: string[], on: boolean) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      for (const key of keys) {
+        if (on) next.add(key);
+        else next.delete(key);
+      }
+      return next;
+    });
+  }, []);
+
+  // Adding from the drawer also opens the manifest, so the addition is seen
+  // to land somewhere.
+  const addToBasket = useCallback(
+    (key: string) => {
+      select([key], true);
+      setManifestOpen(true);
+    },
+    [select],
+  );
+
+  const closePreview = useCallback(() => setActive(null), []);
+  const toggleManifest = useCallback(() => setManifestOpen((open) => !open), []);
+  const clearBasket = useCallback(() => setSelected(new Set()), []);
+
+  // The key map keeps its identity as listings land, which is enough: an
+  // archive key is written once, so a record re-listed later is the same
+  // record, and only the selection can change what the basket holds.
+  const basket = useMemo(
+    () =>
+      Array.from(selected, (key) => scan.files.get(key))
+        .filter((f): f is ArchiveFile => f !== undefined)
+        .sort((a, b) => b.endMs - a.endMs),
+    [selected, scan.files],
+  );
+  const activeFile = active === null ? null : (scan.files.get(active) ?? null);
 
   const registry = useNodeRegistry();
 
@@ -238,8 +283,26 @@ export default function DataExplorerPage() {
           sort={sort}
           onSort={setSort}
           onRetry={scan.retry}
+          selected={selected}
+          onSelect={select}
+          active={active}
+          onPreview={setActive}
         />
       </div>
+
+      <DownloadBasket
+        files={basket}
+        manifestOpen={manifestOpen}
+        onToggleManifest={toggleManifest}
+        onClear={clearBasket}
+      />
+
+      <FilePreviewDrawer
+        file={activeFile}
+        node={activeFile ? registry.nodes.get(activeFile.node) : undefined}
+        onClose={closePreview}
+        onAddToBasket={addToBasket}
+      />
     </>
   );
 }

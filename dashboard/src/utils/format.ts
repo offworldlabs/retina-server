@@ -5,7 +5,8 @@
  * "NaN", "0h 0m" or "undefined".
  */
 
-const DASH = "—";
+/** What a missing value renders as, everywhere. */
+export const DASH = "—";
 
 /** A number to fixed decimals, or a dash for a missing one. */
 export function fmt(n: number | null | undefined, decimals = 2): string {

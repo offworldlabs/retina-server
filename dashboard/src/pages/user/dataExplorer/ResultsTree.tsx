@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { type SyntheticEvent, useEffect, useMemo, useRef, useState } from "react";
 
 import { formatBytes } from "../../../utils/format";
 import type { DayEntry } from "./archive";
@@ -30,12 +30,34 @@ interface Props {
   sort: SortKey;
   onSort: (key: SortKey) => void;
   onRetry: (day: string) => void;
+  /** The basket, by archive key. */
+  selected: Set<string>;
+  onSelect: (keys: string[], on: boolean) => void;
+  /** The file open in the preview drawer. */
+  active: string | null;
+  onPreview: (key: string) => void;
 }
 
 const nodeKey = (day: string, node: string) => `${day}|${node}`;
 const total = (files: ArchiveFile[]) => files.reduce((sum, f) => sum + f.size, 0);
+const keysOf = (files: ArchiveFile[]) => files.map((f) => f.key);
 
-export function ResultsTree({ days, byDay, entryFor, sort, onSort, onRetry }: Props) {
+/** The heads and the rows answer a click as a whole, so the controls inside
+ *  them keep theirs to themselves. */
+const stop = (e: SyntheticEvent) => e.stopPropagation();
+
+export function ResultsTree({
+  days,
+  byDay,
+  entryFor,
+  sort,
+  onSort,
+  onRetry,
+  selected,
+  onSelect,
+  active,
+  onPreview,
+}: Props) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   // The node set last seen per day. The collapse default is applied when that
   // changes, so a group the reader opened survives the listings still landing.
@@ -96,6 +118,8 @@ export function ResultsTree({ days, byDay, entryFor, sort, onSort, onRetry }: Pr
   const collapseAll = () => setCollapsed((prev) => new Set([...prev, ...days]));
 
   const matched = Array.from(byDay.values()).flat();
+  const allSelected = (files: ArchiveFile[]) =>
+    files.length > 0 && files.every((f) => selected.has(f.key));
 
   return (
     <div className="de-tree">
@@ -115,10 +139,19 @@ export function ResultsTree({ days, byDay, entryFor, sort, onSort, onRetry }: Pr
           <button type="button" className="btn btn-secondary btn-sm" onClick={collapseAll}>
             Collapse all
           </button>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            disabled={!matched.length}
+            onClick={() => onSelect(keysOf(matched), true)}
+          >
+            Select all matching
+          </button>
         </div>
       </div>
 
       <div className="de-colhead">
+        <span aria-hidden="true" />
         {COLUMNS.map((c) => (
           <span key={c.key}>
             <button type="button" onClick={() => onSort(c.key)} aria-pressed={sort === c.key}>
@@ -126,7 +159,7 @@ export function ResultsTree({ days, byDay, entryFor, sort, onSort, onRetry }: Pr
             </button>
           </span>
         ))}
-        <span>Download</span>
+        <span>Actions</span>
       </div>
 
       {days.length === 0 && <div className="de-day-state">Pick a date range.</div>}
@@ -139,23 +172,28 @@ export function ResultsTree({ days, byDay, entryFor, sort, onSort, onRetry }: Pr
 
         return (
           <div key={day} className={`de-group${dayCollapsed ? " collapsed" : ""}`}>
-            <button
-              type="button"
-              className="de-day-head"
-              aria-expanded={!dayCollapsed}
-              onClick={() => toggle(day)}
-            >
+            <div className="de-day-head" onClick={() => toggle(day)}>
               <span className="de-caret" aria-hidden="true">▾</span>
-              <span className="mono">{day}</span>
-              {entry?.status === "error" && <span className="de-day-state err">failed</span>}
-              {(!entry || entry.status === "loading") && (
-                <span className="de-day-state">Listing {day}…</span>
-              )}
-              <span className="de-spacer">
-                {files.length} file{files.length === 1 ? "" : "s"} · {formatBytes(total(files))}
-                {byNode.size > AUTO_COLLAPSE_NODES && ` · ${byNode.size} nodes`}
-              </span>
-            </button>
+              <input
+                type="checkbox"
+                checked={allSelected(files)}
+                disabled={!files.length}
+                aria-label={`Select every file on ${day}`}
+                onClick={stop}
+                onChange={(e) => onSelect(keysOf(files), e.target.checked)}
+              />
+              <button type="button" className="de-toggle" aria-expanded={!dayCollapsed}>
+                <span className="mono">{day}</span>
+                {entry?.status === "error" && <span className="de-day-state err">failed</span>}
+                {(!entry || entry.status === "loading") && (
+                  <span className="de-day-state">Listing {day}…</span>
+                )}
+                <span className="de-spacer">
+                  {files.length} file{files.length === 1 ? "" : "s"} · {formatBytes(total(files))}
+                  {byNode.size > AUTO_COLLAPSE_NODES && ` · ${byNode.size} nodes`}
+                </span>
+              </button>
+            </div>
 
             {!dayCollapsed && entry?.status === "error" && (
               <div className="de-day-state err" style={{ padding: "8px 32px" }}>
@@ -178,22 +216,38 @@ export function ResultsTree({ days, byDay, entryFor, sort, onSort, onRetry }: Pr
                 const nodeCollapsed = collapsed.has(key);
                 return (
                   <div key={key} className={`de-group${nodeCollapsed ? " collapsed" : ""}`}>
-                    <button
-                      type="button"
-                      className="de-node-head"
-                      aria-expanded={!nodeCollapsed}
-                      onClick={() => toggle(key)}
-                    >
+                    <div className="de-node-head" onClick={() => toggle(key)}>
                       <span className="de-caret" aria-hidden="true">▾</span>
-                      <span className="mono">{node}</span>
-                      <span className="de-spacer">
-                        {nodeFiles.length} · {formatBytes(total(nodeFiles))}
-                      </span>
-                    </button>
+                      <input
+                        type="checkbox"
+                        checked={allSelected(nodeFiles)}
+                        aria-label={`Select every file from ${node} on ${day}`}
+                        onClick={stop}
+                        onChange={(e) => onSelect(keysOf(nodeFiles), e.target.checked)}
+                      />
+                      <button type="button" className="de-toggle" aria-expanded={!nodeCollapsed}>
+                        <span className="mono">{node}</span>
+                        <span className="de-spacer">
+                          {nodeFiles.length} · {formatBytes(total(nodeFiles))}
+                        </span>
+                      </button>
+                    </div>
 
                     {!nodeCollapsed &&
                       nodeFiles.map((f) => (
-                        <div key={f.key} className="de-file" data-testid="de-file">
+                        <div
+                          key={f.key}
+                          className={`de-file${f.key === active ? " active" : ""}`}
+                          data-testid="de-file"
+                          onClick={() => onPreview(f.key)}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selected.has(f.key)}
+                            aria-label={`Select ${f.name}`}
+                            onClick={stop}
+                            onChange={(e) => onSelect([f.key], e.target.checked)}
+                          />
                           <span className="mono">{f.name}</span>
                           <span>
                             {hhmm(f.startMs)} → {hhmm(f.endMs)}
@@ -203,14 +257,28 @@ export function ResultsTree({ days, byDay, entryFor, sort, onSort, onRetry }: Pr
                             {formatBytes(f.size)}
                             <span className="de-est">≈ {formatBytes(f.size * JSON_FACTOR)} JSON</span>
                           </span>
-                          <a
-                            className="btn btn-outline btn-sm"
-                            href={`/api/data/archive/${f.key}`}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            JSON
-                          </a>
+                          <span className="de-acts">
+                            <button
+                              type="button"
+                              className="btn btn-outline btn-sm"
+                              aria-label={`Preview ${f.name}`}
+                              onClick={(e) => {
+                                stop(e);
+                                onPreview(f.key);
+                              }}
+                            >
+                              Preview
+                            </button>
+                            <a
+                              className="btn btn-outline btn-sm"
+                              href={`/api/data/archive/${f.key}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              onClick={stop}
+                            >
+                              JSON
+                            </a>
+                          </span>
                         </div>
                       ))}
                   </div>
