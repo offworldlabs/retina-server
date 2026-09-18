@@ -60,7 +60,7 @@ export default function SettingsPage() {
           <div className="card-body">
             {nodes.length === 0 ? (
               <div className="empty-state">
-                <p>You don&rsquo;t own any nodes yet. Visit <Link to="/onboarding">My Nodes</Link> to generate a claim code.</p>
+                <p>You don&rsquo;t own any nodes yet. <Link to="/onboarding">My Nodes</Link> explains how to connect one.</p>
               </div>
             ) : (
               <table>

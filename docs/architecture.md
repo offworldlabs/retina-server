@@ -17,7 +17,7 @@ All of them are one SPA, the console (`dashboard/`), served at the root; the old
   `dashboard/src/pages/map/utils/domains.ts`: production and the test droplet
   are real nodes only, staging shows the synthetic simulation fleet and is the
   demo surface, being the only environment that still runs one.
-- **console pages** — node ownership, claim codes, MLAT verification, metrics.
+- **console pages** — node ownership, the node claim page, MLAT verification, metrics.
   A session is required for all of it bar the routes listed in
   `dashboard/src/utils/publicRoutes.ts`, which render to anyone and are backed
   only by endpoints that already publish. A caller with no session gets a nav
