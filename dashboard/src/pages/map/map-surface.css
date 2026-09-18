@@ -15,6 +15,11 @@
 .app.map-surface {
   background: var(--bg-primary);
   color: var(--text-primary);
+  /* Lifts the Physics Layer's small SVG glyphs off whatever they sit on
+     (a stat card, a slider track). One value for both themes: unlike
+     --panel-shadow the icons are already palette-coloured, so the shadow
+     itself doesn't need to answer to the theme underneath it. */
+  --icon-shadow: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.25));
 }
 
 /* ── Chrome tokens ────────────────────────────────────────────────────────
