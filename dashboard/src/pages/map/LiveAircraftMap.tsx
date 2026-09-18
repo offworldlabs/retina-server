@@ -2199,25 +2199,27 @@ function AircraftMapScope({ ownerOnly, restoreSelection, auth, onOwnerChange }) 
           pinned={pinnedSet}
           onTogglePin={togglePinned}
           userLoc={userLoc}
+          header={
+            <>
+              <NodeOwnerControl
+                user={user}
+                ownedCount={ownedNodeRefs.length}
+                ownerOnly={ownerOnly}
+                loading={authLoading}
+                onToggle={onOwnerChange}
+              />
+              <StatsOverlay
+                aircraft={radarAircraft}
+                truth={showGroundTruth ? truthOnlyAircraft : []}
+                anomalyCount={anomalyCount}
+                visible={showStats}
+                onToggle={() => setShowStats((v) => !v)}
+              />
+            </>
+          }
         />
 
         <div className="live-map-area">
-          <div className="live-map-top-right-stack">
-            <NodeOwnerControl
-              user={user}
-              ownedCount={ownedNodeRefs.length}
-              ownerOnly={ownerOnly}
-              loading={authLoading}
-              onToggle={onOwnerChange}
-            />
-            <StatsOverlay
-              aircraft={radarAircraft}
-              truth={showGroundTruth ? truthOnlyAircraft : []}
-              anomalyCount={anomalyCount}
-              visible={showStats}
-              onToggle={() => setShowStats((v) => !v)}
-            />
-          </div>
           <MapLegend
             colorByAlt={colorByAlt}
             showGroundTruth={showGroundTruth}
