@@ -427,7 +427,7 @@ Real nodes never take this path: their declared aim is unsurveyed
 configuration, which is exactly what the paragraph above exists to keep off
 the map. Every summary names its rule in `empirical_coverage.polygon_source`
 (`declared` / `evidence` / `learned`), and the map quotes a declared beam only
-when it reads `declared` (`frontend/src/components/map/nodeSites.ts::coverageLine`).
+when it reads `declared` (`dashboard/src/pages/map/nodeSites.ts::coverageLine`).
 The fuzz rewrite is unchanged: `public_location.translate_polygon` shifts a
 declared wedge rigidly like any other polygon.
 

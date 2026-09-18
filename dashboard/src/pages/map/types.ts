@@ -179,7 +179,7 @@ export interface RadarNode {
    * node under FOV_MODE=off, drawn only from what it has been seen to
    * detect; `learned` for the FOV_MODE shadow/active wedge, itself derived
    * from evidence.  Only `declared` lets the map call a declared beam
-   * coverage — see components/map/nodeSites.ts::coverageLine.
+   * coverage — see nodeSites.ts::coverageLine.
    */
   empirical_polygon_source: "declared" | "evidence" | "learned";
   /**
