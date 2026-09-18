@@ -1,4 +1,4 @@
-"""Tests for auth system: fastapi-users JWT, claim/ownership logic, and FastAPI deps."""
+"""Tests for auth system: fastapi-users JWT, node ownership, and FastAPI deps."""
 
 import asyncio
 import json
@@ -18,10 +18,10 @@ class TestSqlitePragmas:
     """The users.db engine MUST run in WAL mode with safety pragmas.
 
     Without WAL, a crash mid-commit can leave the database file in a state
-    that the next process can't read — and we'd lose every user,
-    claim code, and node-ownership record. This test exists so that
-    accidentally removing the `_set_sqlite_pragmas` event listener fails
-    loudly in CI rather than silently shipping to prod.
+    that the next process can't read — and we'd lose every user and
+    node-ownership record. This test exists so that accidentally removing the
+    `_set_sqlite_pragmas` event listener fails loudly in CI rather than
+    silently shipping to prod.
     """
 
     @pytest.mark.asyncio
@@ -400,150 +400,25 @@ def clean_auth_tables():
     """Wipe all auth-related tables before a test that requests this fixture."""
     from sqlalchemy import delete
 
-    from core.users import ClaimCode, NodeOwner, async_session_maker, create_db_and_tables
+    from core.users import NodeOwner, async_session_maker, create_db_and_tables
 
     async def _setup():
         await create_db_and_tables()
         async with async_session_maker() as session:
             await session.execute(delete(NodeOwner))
-            await session.execute(delete(ClaimCode))
             await session.commit()
 
     asyncio.run(_setup())
     yield
 
 
-# ── Claim codes & node ownership ──────────────────────────────────────────────
+# ── Node ownership ────────────────────────────────────────────────────────────
 
 
-class TestClaimCodesAndOwnership:
+class TestNodeOwnership:
     @pytest.fixture(autouse=True)
     def _clean_tables(self, clean_auth_tables):
         pass
-
-    async def test_create_claim_code(self):
-        from core.auth import create_claim_code, list_claim_codes
-
-        rec = await create_claim_code("user-123")
-        assert rec["user_id"] == "user-123"
-        assert rec["used_at"] is None
-        assert len(rec["code"]) == 12
-        assert rec["code"] == rec["code"].upper()
-        codes = await list_claim_codes("user-123")
-        assert len(codes) == 1
-        assert await list_claim_codes("other-user") == []
-
-    async def test_consume_claim_code_assigns_ownership(self):
-        from core.auth import (
-            consume_claim_code,
-            create_claim_code,
-            get_node_owner,
-            get_user_nodes,
-        )
-
-        rec = await create_claim_code("user-A")
-        owner = await consume_claim_code(rec["code"], "node-42")
-        assert owner == "user-A"
-        assert await get_node_owner("node-42") == "user-A"
-        assert await get_user_nodes("user-A") == ["node-42"]
-
-    async def test_consume_claim_code_is_one_shot(self):
-        from core.auth import consume_claim_code, create_claim_code
-
-        rec = await create_claim_code("user-A")
-        assert await consume_claim_code(rec["code"], "node-42") == "user-A"
-        assert await consume_claim_code(rec["code"], "node-43") is None
-
-    async def test_concurrent_claims_only_assign_one_node(self, monkeypatch):
-        from sqlalchemy.ext.asyncio import AsyncSession
-
-        from core.auth import consume_claim_code, create_claim_code, get_user_nodes, list_claim_codes
-        from core.users import ClaimCode
-
-        rec = await create_claim_code("user-A")
-        original_get = AsyncSession.get
-        readers = asyncio.Barrier(2)
-
-        async def overlap_claim_reads(session, model, key, **kwargs):
-            result = await original_get(session, model, key, **kwargs)
-            if model is ClaimCode:
-                # Force both read/check/write callers to see the unused code.
-                # A conditional database UPDATE does not need a preliminary read.
-                await asyncio.wait_for(readers.wait(), timeout=5)
-            return result
-
-        monkeypatch.setattr(AsyncSession, "get", overlap_claim_reads)
-        results = await asyncio.gather(
-            consume_claim_code(rec["code"], "node-42"),
-            consume_claim_code(rec["code"], "node-43"),
-        )
-
-        assert results.count("user-A") == 1
-        assert results.count(None) == 1
-        winner = ("node-42", "node-43")[results.index("user-A")]
-        assert await get_user_nodes("user-A") == [winner]
-        assert (await list_claim_codes("user-A"))[0]["used_by_node_id"] == winner
-
-    async def test_failed_ownership_write_leaves_claim_code_unused(self, monkeypatch):
-        from sqlalchemy.ext.asyncio import AsyncSession
-
-        from core.auth import consume_claim_code, create_claim_code, get_node_owner, list_claim_codes
-        from core.users import NodeOwner
-
-        rec = await create_claim_code("user-A")
-        original_get = AsyncSession.get
-
-        async def fail_owner_lookup(session, model, key, **kwargs):
-            if model is NodeOwner:
-                raise RuntimeError("ownership lookup failed")
-            return await original_get(session, model, key, **kwargs)
-
-        with monkeypatch.context() as context:
-            context.setattr(AsyncSession, "get", fail_owner_lookup)
-            with pytest.raises(RuntimeError, match="ownership lookup failed"):
-                await consume_claim_code(rec["code"], "node-42")
-
-        assert (await list_claim_codes("user-A"))[0]["used_at"] is None
-        assert await get_node_owner("node-42") is None
-        assert await consume_claim_code(rec["code"], "node-42") == "user-A"
-
-    async def test_consume_unknown_code_returns_none(self):
-        from core.auth import consume_claim_code
-
-        assert await consume_claim_code("DOESNOTEXIST", "node-42") is None
-
-    async def test_consume_expired_code_fails(self):
-        from core.auth import consume_claim_code, create_claim_code
-        from core.users import ClaimCode, async_session_maker
-
-        rec = await create_claim_code("user-A")
-        async with async_session_maker() as session:
-            claim = await session.get(ClaimCode, rec["code"])
-            claim.expires_at = time.time() - 60
-            await session.commit()
-        assert await consume_claim_code(rec["code"], "node-42") is None
-
-    async def test_revoke_claim_code_owner_check(self):
-        from core.auth import create_claim_code, revoke_claim_code
-
-        rec = await create_claim_code("user-A")
-        assert await revoke_claim_code(rec["code"], "user-B") is False
-        assert await revoke_claim_code(rec["code"], "user-A") is True
-
-    async def test_revoke_used_code_fails(self):
-        from core.auth import consume_claim_code, create_claim_code, revoke_claim_code
-
-        rec = await create_claim_code("user-A")
-        await consume_claim_code(rec["code"], "node-42")
-        assert await revoke_claim_code(rec["code"], "user-A") is False
-
-    async def test_claim_code_cap_enforced(self):
-        from core.auth import _MAX_ACTIVE_CLAIM_CODES_PER_USER, create_claim_code
-
-        for _ in range(_MAX_ACTIVE_CLAIM_CODES_PER_USER):
-            await create_claim_code("user-cap")
-        with pytest.raises(ValueError, match="Maximum"):
-            await create_claim_code("user-cap")
 
     async def test_set_and_clear_node_owner(self):
         from core.auth import get_node_owner, list_node_owners, set_node_owner
@@ -556,21 +431,6 @@ class TestClaimCodesAndOwnership:
         assert await get_node_owner("node-1") is None
         assert "node-1" not in await list_node_owners()
 
-    async def test_already_owned_claim_ack_omits_user_id(self):
-        """The already_owned CLAIM_ACK message must not leak ownership info."""
-        from core.auth import get_node_owner, set_node_owner
-
-        await set_node_owner("node-owned", "user-secret")
-        assert await get_node_owner("node-owned") == "user-secret"
-
-        response_msg = {
-            "type": "CLAIM_ACK",
-            "node_id": "node-owned",
-            "note": "already_owned",
-        }
-        assert "user_id" not in response_msg
-        assert response_msg["note"] == "already_owned"
-
 
 # ── Migration tests ───────────────────────────────────────────────────────────
 
@@ -581,43 +441,18 @@ class TestMigration:
         pass
 
     @pytest.fixture()
-    def legacy_files(self, tmp_path, monkeypatch):
+    def legacy_file(self, tmp_path, monkeypatch):
         from core import auth
 
-        files = {
-            "NODE_OWNERS_FILE": {"legacy-node": "legacy-user"},
-            "CLAIM_CODES_FILE": {"LEGACYCODE01": {"user_id": "legacy-user"}},
-        }
-        for name, data in files.items():
-            path = tmp_path / getattr(auth, name).name
-            path.write_text(json.dumps(data))
-            monkeypatch.setattr(auth, name, path)
-        return [getattr(auth, name) for name in files]
+        path = tmp_path / auth.NODE_OWNERS_FILE.name
+        path.write_text(json.dumps({"legacy-node": "legacy-user"}))
+        monkeypatch.setattr(auth, "NODE_OWNERS_FILE", path)
+        return path
 
-    async def test_later_migration_failure_preserves_every_source(self, legacy_files):
-        from core.auth import list_claim_codes, list_node_owners, migrate_json_to_db
-
-        claims = legacy_files[1]
-        valid_claims = claims.read_text()
-        claims.write_text(json.dumps({"LEGACYCODE01": {"created_at": "invalid"}}))
-
-        with pytest.raises(ValueError):
-            await migrate_json_to_db()
-
-        assert all(path.exists() for path in legacy_files)
-        assert not any(path.with_suffix(".json.migrated").exists() for path in legacy_files)
-        assert await list_node_owners() == {}
-        assert await list_claim_codes() == []
-
-        claims.write_text(valid_claims)
-        await migrate_json_to_db()
-        assert await list_node_owners() == {"legacy-node": "legacy-user"}
-        assert len(await list_claim_codes()) == 1
-
-    async def test_commit_failure_preserves_every_source(self, legacy_files):
+    async def test_commit_failure_preserves_the_source(self, legacy_file):
         from sqlalchemy import event
 
-        from core.auth import list_claim_codes, list_node_owners, migrate_json_to_db
+        from core.auth import list_node_owners, migrate_json_to_db
         from core.users import engine
 
         def fail_commit(connection):
@@ -630,36 +465,29 @@ class TestMigration:
         finally:
             event.remove(engine.sync_engine, "commit", fail_commit)
 
-        assert all(path.exists() for path in legacy_files)
-        assert not any(path.with_suffix(".json.migrated").exists() for path in legacy_files)
+        assert legacy_file.exists()
+        assert not legacy_file.with_suffix(".json.migrated").exists()
         assert await list_node_owners() == {}
-        assert await list_claim_codes() == []
 
-    async def test_rename_failure_after_commit_can_be_retried(self, legacy_files, monkeypatch):
+    async def test_rename_failure_after_commit_can_be_retried(self, legacy_file, monkeypatch):
         from pathlib import Path
 
-        from core.auth import list_claim_codes, list_node_owners, migrate_json_to_db
+        from core.auth import list_node_owners, migrate_json_to_db
 
-        rename = Path.rename
-
-        # The second source, so the retry meets one already renamed and one not.
-        def fail_claims_rename(path, target):
-            if path == legacy_files[1]:
-                raise OSError("rename failed")
-            return rename(path, target)
+        def fail_rename(path, target):
+            raise OSError("rename failed")
 
         with monkeypatch.context() as context:
-            context.setattr(Path, "rename", fail_claims_rename)
+            context.setattr(Path, "rename", fail_rename)
             with pytest.raises(OSError, match="rename failed"):
                 await migrate_json_to_db()
 
+        # Committed but not renamed, so the retry meets rows it already holds.
         assert await list_node_owners() == {"legacy-node": "legacy-user"}
-        assert len(await list_claim_codes()) == 1
-        assert legacy_files[1].exists()
+        assert legacy_file.exists()
         await migrate_json_to_db()
         assert await list_node_owners() == {"legacy-node": "legacy-user"}
-        assert len(await list_claim_codes()) == 1
-        assert all(path.with_suffix(".json.migrated").exists() for path in legacy_files)
+        assert legacy_file.with_suffix(".json.migrated").exists()
 
     async def test_migrate_node_owners_from_json(self, tmp_path):
         from core.auth import get_node_owner, migrate_json_to_db
@@ -667,47 +495,13 @@ class TestMigration:
         node_owners_file = tmp_path / "node_owners.json"
         node_owners_file.write_text(json.dumps({"node-A": "user-X"}))
 
-        with (
-            patch("core.auth.NODE_OWNERS_FILE", node_owners_file),
-            patch("core.auth.CLAIM_CODES_FILE", tmp_path / "claim_codes.json"),
-        ):
+        with patch("core.auth.NODE_OWNERS_FILE", node_owners_file):
             await migrate_json_to_db()
 
         assert await get_node_owner("node-A") == "user-X"
         migrated = node_owners_file.with_suffix(".json.migrated")
         assert migrated.exists()
         assert not node_owners_file.exists()
-
-    async def test_migrate_claim_codes_from_json(self, tmp_path):
-        from core.auth import list_claim_codes, migrate_json_to_db
-
-        claim_codes_file = tmp_path / "claim_codes.json"
-        claim_codes_file.write_text(
-            json.dumps(
-                {
-                    "ABCDEF123456": {
-                        "user_id": "user-migrate",
-                        "created_at": 1000.0,
-                        "expires_at": 9999999999.0,
-                        "used_at": None,
-                        "used_by_node_id": None,
-                    }
-                }
-            )
-        )
-
-        with (
-            patch("core.auth.NODE_OWNERS_FILE", tmp_path / "node_owners.json"),
-            patch("core.auth.CLAIM_CODES_FILE", claim_codes_file),
-        ):
-            await migrate_json_to_db()
-
-        codes = await list_claim_codes("user-migrate")
-        assert len(codes) == 1
-        assert codes[0]["code"] == "ABCDEF123456"
-        migrated = claim_codes_file.with_suffix(".json.migrated")
-        assert migrated.exists()
-        assert not claim_codes_file.exists()
 
 
 # ── set_node_owner UPDATE branch ──────────────────────────────────────────────
@@ -724,53 +518,3 @@ class TestSetNodeOwnerUpdate:
         await set_node_owner("migrate-node", "user-1")
         await set_node_owner("migrate-node", "user-2")
         assert await get_node_owner("migrate-node") == "user-2"
-
-
-# ── revoke_claim_code edge cases ──────────────────────────────────────────────
-
-
-class TestRevokeClaimCodeEdgeCases:
-    @pytest.fixture(autouse=True)
-    def _clean_tables(self, clean_auth_tables):
-        pass
-
-    async def test_revoke_nonexistent_code_returns_false(self):
-        from core.auth import revoke_claim_code
-
-        result = await revoke_claim_code("DOESNOTEXIST")
-        assert result is False
-
-
-# ── consume_claim_code edge cases ─────────────────────────────────────────────
-
-
-class TestConsumeClaimCodeEdgeCases:
-    @pytest.fixture(autouse=True)
-    def _clean_tables(self, clean_auth_tables):
-        pass
-
-    async def test_consume_empty_code_returns_none(self):
-        from core.auth import consume_claim_code
-
-        result = await consume_claim_code("", "node-X")
-        assert result is None
-
-    async def test_consume_empty_node_returns_none(self):
-        from core.auth import consume_claim_code
-
-        result = await consume_claim_code("SOMECODE", "")
-        assert result is None
-
-    async def test_consume_updates_existing_node_owner(self):
-        from core.auth import (
-            consume_claim_code,
-            create_claim_code,
-            get_node_owner,
-            set_node_owner,
-        )
-
-        await set_node_owner("node-X", "old-user")
-        rec = await create_claim_code("new-user")
-        result = await consume_claim_code(rec["code"], "node-X")
-        assert result == "new-user"
-        assert await get_node_owner("node-X") == "new-user"

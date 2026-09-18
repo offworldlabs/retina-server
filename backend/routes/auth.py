@@ -16,14 +16,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr
 
 from core import state
-from core.auth import (
-    consume_magic_link,
-    create_claim_code,
-    create_magic_link,
-    get_user_nodes,
-    list_claim_codes,
-    revoke_claim_code,
-)
+from core.auth import consume_magic_link, create_magic_link, get_user_nodes
 from core.users import (
     ACCESS_LOGOUT_PATH,
     ANONYMOUS_USER,
@@ -433,28 +426,3 @@ async def clear_my_node_location_privacy(node_id: str, request: Request):
         "location_private": state_after["location_private"],
         "location_privacy_source": state_after["location_privacy_source"],
     }
-
-
-@router.get("/me/claim-codes")
-async def my_claim_codes(request: Request):
-    user = await get_current_user(request)
-    codes = await list_claim_codes(user["id"])
-    codes.sort(key=lambda c: c.get("created_at", 0), reverse=True)
-    return codes
-
-
-@router.post("/me/claim-codes")
-async def create_my_claim_code(request: Request):
-    user = await get_current_user(request)
-    try:
-        return await create_claim_code(user["id"])
-    except ValueError as e:
-        raise HTTPException(status_code=429, detail=str(e)) from e
-
-
-@router.delete("/me/claim-codes/{code}")
-async def revoke_my_claim_code(code: str, request: Request):
-    user = await get_current_user(request)
-    if not await revoke_claim_code(code, user["id"]):
-        raise HTTPException(404, "Code not found, already used, or not yours")
-    return {"ok": True}

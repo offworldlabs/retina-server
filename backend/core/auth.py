@@ -1,8 +1,8 @@
-"""Domain-specific auth helpers: node ownership, claim codes, sign-in links.
+"""Domain-specific auth helpers: node ownership and emailed links.
 
 All data is stored in the shared SQLite database (users.db) via SQLAlchemy
-async sessions. On first startup, migrate_json_to_db() imports any existing
-JSON files and renames them to *.json.migrated so they are not re-imported.
+async sessions. On first startup, migrate_json_to_db() imports a legacy
+node_owners.json and renames it to *.json.migrated so it is not re-imported.
 
 JWT, user storage, and session management are handled by fastapi-users
 (see core/users.py). This module contains only the business logic that
@@ -19,17 +19,12 @@ from pathlib import Path
 
 from sqlalchemy import delete, select, update
 
-from core.users import ClaimCode, MagicLink, NodeOwner, async_session_maker
+from core.users import MagicLink, NodeOwner, async_session_maker
 
 logger = logging.getLogger(__name__)
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 NODE_OWNERS_FILE = _DATA_DIR / "node_owners.json"
-CLAIM_CODES_FILE = _DATA_DIR / "claim_codes.json"
-
-CLAIM_CODE_EXPIRY_S = 86400 * 30  # 30 days
-
-_MAX_ACTIVE_CLAIM_CODES_PER_USER = 10
 
 # Short, because the link is a bearer credential sitting in a mailbox and the
 # person asking for it is, by definition, in front of the page.
@@ -54,17 +49,13 @@ INTENT_SIGNIN = "signin"
 
 
 async def migrate_json_to_db() -> None:
-    """Import existing JSON stores into SQLite on first startup (idempotent)."""
-    imported = []
+    """Import a legacy node_owners.json into SQLite on first startup (idempotent)."""
     async with async_session_maker() as session:
         async with session.begin():
-            for migrate in (_migrate_node_owners, _migrate_claim_codes):
-                source = await migrate(session)
-                if source is not None:
-                    imported.append(source)
-    # Keep every source available until all records are committed. A crash or
-    # rename failure afterwards is safe to retry: each importer skips known keys.
-    for source in imported:
+            source = await _migrate_node_owners(session)
+    # Keep the source available until its records are committed. A crash or
+    # rename failure afterwards is safe to retry: the importer skips known keys.
+    if source is not None:
         source.rename(source.with_suffix(".json.migrated"))
         logger.info("Migrated auth records from %s", source)
 
@@ -82,30 +73,6 @@ async def _migrate_node_owners(session) -> Path | None:
             continue
         session.add(NodeOwner(node_id=node_id, user_id=user_id))
     return NODE_OWNERS_FILE
-
-
-async def _migrate_claim_codes(session) -> Path | None:
-    if not CLAIM_CODES_FILE.exists():
-        return
-    try:
-        data = json.loads(CLAIM_CODES_FILE.read_text())
-    except Exception:
-        logger.exception("Could not read %s for migration", CLAIM_CODES_FILE)
-        return
-    for code, rec in data.items():
-        if await session.get(ClaimCode, code):
-            continue
-        session.add(
-            ClaimCode(
-                code=code,
-                user_id=rec.get("user_id", ""),
-                created_at=float(rec.get("created_at", 0)),
-                expires_at=float(rec.get("expires_at", 0)),
-                used_at=rec.get("used_at"),
-                used_by_node_id=rec.get("used_by_node_id"),
-            )
-        )
-    return CLAIM_CODES_FILE
 
 
 # ── Node ownership ────────────────────────────────────────────────────────────
@@ -140,101 +107,6 @@ async def get_user_nodes(user_id: str) -> list[str]:
     async with async_session_maker() as session:
         result = await session.execute(select(NodeOwner.node_id).where(NodeOwner.user_id == user_id))
         return list(result.scalars().all())
-
-
-# ── Claim codes ───────────────────────────────────────────────────────────────
-
-
-async def create_claim_code(user_id: str) -> dict:
-    """Create a one-time claim code for the user.
-
-    Raises ValueError if the user already has _MAX_ACTIVE_CLAIM_CODES_PER_USER
-    active (unused, non-expired) codes.
-    """
-    now = time.time()
-    async with async_session_maker() as session:
-        result = await session.execute(
-            select(ClaimCode).where(
-                ClaimCode.user_id == user_id,
-                ClaimCode.used_at.is_(None),
-                ClaimCode.expires_at >= now,
-            )
-        )
-        if len(result.scalars().all()) >= _MAX_ACTIVE_CLAIM_CODES_PER_USER:
-            raise ValueError(
-                f"Maximum of {_MAX_ACTIVE_CLAIM_CODES_PER_USER} active claim codes "
-                "allowed per user. Revoke an existing code first."
-            )
-        code = secrets.token_hex(6).upper()  # 12 hex chars = 48 bits of entropy
-        record = ClaimCode(
-            code=code,
-            user_id=user_id,
-            created_at=now,
-            expires_at=now + CLAIM_CODE_EXPIRY_S,
-            used_at=None,
-            used_by_node_id=None,
-        )
-        session.add(record)
-        await session.commit()
-    return _claim_code_to_dict(record)
-
-
-async def list_claim_codes(user_id: str | None = None) -> list[dict]:
-    async with async_session_maker() as session:
-        q = select(ClaimCode)
-        if user_id is not None:
-            q = q.where(ClaimCode.user_id == user_id)
-        result = await session.execute(q)
-        return [_claim_code_to_dict(c) for c in result.scalars().all()]
-
-
-async def revoke_claim_code(code: str, user_id: str | None = None) -> bool:
-    async with async_session_maker() as session:
-        rec = await session.get(ClaimCode, code)
-        if not rec:
-            return False
-        if user_id is not None and rec.user_id != user_id:
-            return False
-        if rec.used_at is not None:
-            return False
-        await session.delete(rec)
-        await session.commit()
-    return True
-
-
-async def consume_claim_code(code: str, node_id: str) -> str | None:
-    """Mark a claim code used and assign node ownership atomically.
-
-    Returns the user_id that now owns the node, or None for an invalid/used code.
-    Database failures propagate, with both changes rolled back.
-    """
-    if not code or not node_id:
-        return None
-    code = code.strip().upper()
-    now = time.time()
-    async with async_session_maker() as session:
-        async with session.begin():
-            # Claim the code in the database before reading ownership. A
-            # read/check/write sequence lets concurrent requests both consume it.
-            result = await session.execute(
-                update(ClaimCode)
-                .where(
-                    ClaimCode.code == code,
-                    ClaimCode.used_at.is_(None),
-                    ClaimCode.expires_at >= now,
-                )
-                .values(used_at=now, used_by_node_id=node_id)
-                .returning(ClaimCode.user_id)
-            )
-            user_id = result.scalar_one_or_none()
-            if user_id is None:
-                return None
-            owner = await session.get(NodeOwner, node_id)
-            if owner:
-                owner.user_id = user_id
-            else:
-                session.add(NodeOwner(node_id=node_id, user_id=user_id))
-        return user_id
 
 
 # ── Magic links ───────────────────────────────────────────────────────────────
@@ -324,9 +196,9 @@ async def redeem_magic_link(token: str | None, *, intent: str = INTENT_SIGNIN) -
     now = time.time()
     async with async_session_maker() as session:
         async with session.begin():
-            # Claim it in the database before reading anything off it, the way
-            # consume_claim_code does: a read/check/write sequence lets two
-            # concurrent redemptions both succeed.
+            # Claim it in the database before reading anything off it: a
+            # read/check/write sequence lets two concurrent redemptions both
+            # succeed.
             result = await session.execute(
                 update(MagicLink)
                 .where(
@@ -411,14 +283,3 @@ async def invalidate_magic_link(handle: str) -> None:
     async with async_session_maker() as session:
         async with session.begin():
             await session.execute(delete(MagicLink).where(MagicLink.token_hash == handle))
-
-
-def _claim_code_to_dict(rec: ClaimCode) -> dict:
-    return {
-        "code": rec.code,
-        "user_id": rec.user_id,
-        "created_at": rec.created_at,
-        "expires_at": rec.expires_at,
-        "used_at": rec.used_at,
-        "used_by_node_id": rec.used_by_node_id,
-    }

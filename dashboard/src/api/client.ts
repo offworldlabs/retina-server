@@ -97,10 +97,6 @@ export const api = {
 
   // Self-service node ownership
   myNodes: () => request("/api/auth/me/nodes"),
-  myClaimCodes: () => request("/api/auth/me/claim-codes"),
-  createClaimCode: () => request("/api/auth/me/claim-codes", { method: "POST" }),
-  revokeClaimCode: (code) =>
-    request(`/api/auth/me/claim-codes/${encodeURIComponent(code)}`, { method: "DELETE" }),
 
   // Claiming a node. The first three take no session: whoever clicked the link
   // in their mail may have no account yet, which is the point. They go through

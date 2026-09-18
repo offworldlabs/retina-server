@@ -17,7 +17,7 @@ All of them are one SPA, the console (`dashboard/`), served at the root; the old
   `dashboard/src/pages/map/utils/domains.ts`: production and the test droplet
   are real nodes only, staging shows the synthetic simulation fleet and is the
   demo surface, being the only environment that still runs one.
-- **console pages** — node ownership, claim codes, MLAT verification, metrics.
+- **console pages** — node ownership, the node claim page, MLAT verification, metrics.
   A session is required for all of it bar the routes listed in
   `dashboard/src/utils/publicRoutes.ts`, which render to anyone and are backed
   only by endpoints that already publish. A caller with no session gets a nav
@@ -97,7 +97,7 @@ are in [`arc-display.md`](arc-display.md).
 - **`core/state.py`** — the in-memory world: connected nodes, tracks, aircraft,
   arc buffers, WebSocket client sets, latest JSON payloads.
 - **`core/users.py` + `core/auth.py`** — fastapi-users (cookie JWT, sign-in by
-  emailed link) plus domain auth: node ownership, claim codes (SQLite).
+  emailed link) plus domain auth: node ownership and emailed links (SQLite).
 
 ## The algorithm libraries (submodules)
 
@@ -146,7 +146,7 @@ per-node trust residuals, and the feed's `adsb_single_node` display section).
   A restart drops them.
 - **Snapshots.** State is serialized to disk every 60s and restored on boot
   (trust scores, reputations, accuracy samples, node identities).
-- **SQLite** (`data/users.db`) — users, node owners, claim codes.
+- **SQLite** (`data/users.db`) — users, node owners, node claims.
 - **R2 (Cloudflare).** Archived coverage/track Parquet is offloaded to the
   `retina-server-archive` bucket and pruned locally (see the runbook).
 

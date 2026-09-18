@@ -99,12 +99,6 @@ server {
         # RETINA_INCLUDE snippets/session.conf
     }
 
-    # Longer still than /api/auth/me, so it wins over the session zone above:
-    # minting and revoking device-claim credentials is not a session read.
-    location /api/auth/me/claim-codes {
-        # RETINA_INCLUDE snippets/claim-codes.conf
-    }
-
     # RETINA_IF TOWER_FINDER
     # RETINA_INCLUDE snippets/towers-proxy.conf
     # RETINA_ENDIF
@@ -142,12 +136,6 @@ server {
 
     location /api/auth/logout {
         # RETINA_INCLUDE snippets/session.conf
-    }
-
-    # Longer still than /api/auth/me, so it wins over the session zone above:
-    # minting and revoking device-claim credentials is not a session read.
-    location /api/auth/me/claim-codes {
-        # RETINA_INCLUDE snippets/claim-codes.conf
     }
 
     # The public name for tower ranking; `/api/api/towers` is what a prefix
@@ -224,12 +212,6 @@ server {
 
     location /api/auth/logout {
         # RETINA_INCLUDE snippets/session.conf
-    }
-
-    # Longer still than /api/auth/me, so it wins over the session zone above:
-    # minting and revoking device-claim credentials is not a session read.
-    location /api/auth/me/claim-codes {
-        # RETINA_INCLUDE snippets/claim-codes.conf
     }
 
     # RETINA_IF TOWER_FINDER

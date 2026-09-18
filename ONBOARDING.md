@@ -21,7 +21,7 @@ session cookie is host-only and a login has to cover all of them:
 | Surface | What it is |
 | --- | --- |
 | **map** (`/map`, where `/` opens) | Live aircraft map, the console's front page. Production and the test droplet show real radar nodes only; staging shows its synthetic fleet, and is the dev/demo surface, being the only environment still running one. The feed is chosen by hostname in `dashboard/src/pages/map/utils/domains.ts`. |
-| **console** (the rest of `/`) | Node ownership, claim codes, MLAT verification, metrics. Auth required, bar the public pages such as the map and the detection archive browser at `/data`. The old `/dash/…` and `/data/…` addresses redirect in. |
+| **console** (the rest of `/`) | Node ownership, the node claim page, MLAT verification, metrics. Auth required, bar the public pages such as the map and the detection archive browser at `/data`. The old `/dash/…` and `/data/…` addresses redirect in. |
 | **admin** (`admin.retina.fm`) | The same dashboard bundle with the admin route table, on a hostname of its own so a Cloudflare Access application can gate it. |
 
 Illuminator search is deliberately absent from that table: **tower-finder-service**
