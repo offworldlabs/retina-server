@@ -32,9 +32,6 @@ export const PUBLIC_PATHS: readonly string[] = PUBLIC_ROUTES.map((r) => r.path);
 /**
  * Whether `pathname` is open to a caller with no session.
  *
- * Router-space: the basename is already off, which is what `useLocation` gives
- * and what `stripBase` makes of `window.location.pathname`.
- *
  * The admin surface has none, whatever the path. Its routes are a different
  * tree, but a shared path — `/nodes/:nodeId` exists in both — would otherwise
  * turn an entry added here into a hole in the console.
