@@ -15,6 +15,14 @@
 # and CI asserts the two environments render to the same config modulo
 # hostnames (deploy/check-env-parity.sh).
 
+# A redirect to a relative target (`return 301 /path/`, `rewrite ... permanent`,
+# a directory's missing slash) goes out as a relative Location, which the
+# browser resolves against the URL it requested. An absolute one is built from
+# the listen port, the container's 80 on the laptop stack, and loses the
+# published 8080. This file is included inside http {}, so the line covers every
+# vhost.
+absolute_redirect off;
+
 # RETINA_IF TLS
 # Redirect all HTTP → HTTPS
 server {
