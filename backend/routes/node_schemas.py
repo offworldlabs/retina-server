@@ -267,12 +267,30 @@ class HeartbeatRequest(_RequestModel):
     errors: list[Annotated[str, Field(max_length=512)]] = Field(default_factory=list, max_length=32)
 
 
+# Three states, and a bounce is not a fourth. A node whose address could not be
+# delivered to is unclaimed: its address field is live and a different address
+# is accepted normally, which is exactly what unclaimed means. What differs is
+# only what its setup UI should say, so that travels as `undeliverable`.
+ClaimState = Literal["unclaimed", "pending", "owned"]
+
+
 class HeartbeatResponse(BaseModel):
     server_time: ServerTime
     config_stale: bool
     streaming_allowed: bool
     # The only place the node learns its public identifier has rotated.
     node_ref: NodeRef
+    # Restated every beat rather than sent on change, like everything else here.
+    # `GET /v1/nodes/claim` covers the minutes around setup, when somebody is
+    # watching a wizard; this covers the years afterwards, and is how a release
+    # performed in the dashboard reaches a node that stopped polling long ago.
+    claim_state: ClaimState
+    # No defaults: every handler that builds one of these sets all three, and a
+    # default would let a future one omit a field and publish `unclaimed` for a
+    # node that is owned. Required here also means non-optional in a generated
+    # client, which is what a node author wants to read.
+    claim_email: str | None
+    claim_undeliverable: bool
 
 
 class ConfigResponse(BaseModel):
@@ -281,13 +299,16 @@ class ConfigResponse(BaseModel):
 
 class ContactResponse(BaseModel):
     updated_at: ServerTime
-
-
-# Three states, and a bounce is not a fourth. A node whose address could not be
-# delivered to is unclaimed: its address field is live and a different address
-# is accepted normally, which is exactly what unclaimed means. What differs is
-# only what its setup UI should say, so that travels as `undeliverable`.
-ClaimState = Literal["unclaimed", "pending", "owned"]
+    # The same three the heartbeat carries. A node correcting a phone number
+    # learns its claim state from the answer rather than waiting for a beat,
+    # which costs nothing: the handler has already read the node.
+    claim_state: ClaimState
+    # No defaults: every handler that builds one of these sets all three, and a
+    # default would let a future one omit a field and publish `unclaimed` for a
+    # node that is owned. Required here also means non-optional in a generated
+    # client, which is what a node author wants to read.
+    claim_email: str | None
+    claim_undeliverable: bool
 
 
 class ClaimResponse(BaseModel):
@@ -303,10 +324,10 @@ class ClaimResponse(BaseModel):
     # The address in play: the one awaiting verification while `pending`, the
     # one the node was claimed with while `owned`, and the last one offered, or
     # null, while `unclaimed`.
-    email: str | None = None
+    email: str | None
     # `email` bounced hard and will not be mailed again. Nominating a different
     # address clears it.
-    undeliverable: bool = False
+    undeliverable: bool
 
 
 class ErrorBody(BaseModel):

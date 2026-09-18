@@ -84,13 +84,15 @@ about the node's operation depends on any of it: an address that is never verifi
 grants nothing, and a node with no address at all runs unowned indefinitely and can be
 claimed whenever its owner gets round to it.
 
-Poll the `GET` every few seconds while a setup page is open and somebody is waiting,
-and stop once the answer settles.
+Poll the `GET` every few seconds while a setup page is open and somebody is waiting.
+Afterwards stop: `HeartbeatResponse` carries the same three fields once a minute, which
+is how a release performed months later reaches a node that stopped polling long ago.
 """
 
 _GET_DESCRIPTION = """\
 Where this node's claim stands. Cheap, and safe to poll every few seconds while a setup
-page is open, and worth stopping once the answer settles.
+page is open; `HeartbeatResponse` carries the same three fields for the rest of the
+node's life, so there is no reason to keep polling once the page closes.
 """
 
 _RESEND_DESCRIPTION = """\

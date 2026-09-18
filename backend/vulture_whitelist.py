@@ -103,6 +103,12 @@ seq
 accepted
 config_stale
 streaming_allowed
+# Carried by both HeartbeatResponse and ContactResponse, which is what puts
+# them here: a field one model declares alone is traced through the keyword
+# argument that fills it, and a name two models declare is not.
+claim_state
+claim_email
+claim_undeliverable
 disk_free_mb
 temp_c
 blah2

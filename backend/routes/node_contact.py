@@ -10,6 +10,8 @@ and it is stored per node rather than per configuration version, so no detection
 frame refers to it.
 """
 
+import time
+
 from fastapi import APIRouter, Depends, Request, Security
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +26,7 @@ from routes.node_responses import (
 )
 from routes.node_schemas import ContactResponse, ErrorBody
 from services.node_auth import bearer_node, node_bearer_scheme
+from services.node_claim_store import claim_status
 from services.node_contact import ContactInvalid, contact_json_schema, validate_contact
 from services.node_contact_store import upsert_contact
 
@@ -104,5 +107,6 @@ async def put_contact(
         return _error(400, "invalid_contact", exc.field)
 
     updated_at = await upsert_contact(session, node_id, contact)
+    claim = await claim_status(session, node_id, time.time())
     await session.commit()
-    return ContactResponse(updated_at=updated_at)
+    return ContactResponse(updated_at=updated_at, **claim.as_downlink())

@@ -120,7 +120,23 @@ NODE_PATH_PREFIX = "/v1/nodes"
 # acquired an owner cannot correct its request, only reconcile, and what it
 # needs is the address that won rather than the name of a field. The taxonomy in
 # routes/node_responses.py states the exception where it is defined.
-NODE_API_VERSION = "1.3.0"
+#
+# 1.4.0 repeats the claim state on `HeartbeatResponse` and `ContactResponse`.
+# The beat is the one channel that is live whether or not anything else is, and
+# it is how a release performed in the dashboard reaches a node that stopped
+# polling the claim endpoint the day its setup page closed. `node_ref`,
+# `config_stale` and `streaming_allowed` are carried there for the same reason.
+#
+# A minor, not the patch 1.2.1 took for `country`. That precedent does not
+# transfer: `country` was optional and nullable, and its own note says nothing
+# about the choice was load-bearing because the field was optional either way.
+# These three are required. The conformance harness validates against a pinned
+# version, and a document whose responses gained required fields is one it can
+# tell apart from its predecessor, which is exactly what a version is for.
+#
+# What it must not be is 1.3.0. That would put two documents at one version a
+# client cannot tell apart, which is the cost 1.1.3 records having paid once.
+NODE_API_VERSION = "1.4.0"
 
 # No tag here: each sub-router carries the contract's own grouping, since those
 # are what a generated client is built around.

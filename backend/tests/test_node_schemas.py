@@ -409,18 +409,30 @@ def test_the_heartbeat_response_round_trips_with_a_z_suffixed_time():
         config_stale=True,
         streaming_allowed=False,
         node_ref="nde4f2k9xq7m3b8",
+        claim_state="unclaimed",
+        claim_email=None,
+        claim_undeliverable=False,
     )
     assert response.model_dump(mode="json") == {
         "server_time": "2026-07-31T09:12:01Z",
         "config_stale": True,
         "streaming_allowed": False,
         "node_ref": "nde4f2k9xq7m3b8",
+        "claim_state": "unclaimed",
+        "claim_email": None,
+        "claim_undeliverable": False,
     }
 
 
 def test_a_synthetic_node_ref_is_accepted():
     response = HeartbeatResponse(
-        server_time=datetime.now(UTC), config_stale=False, streaming_allowed=True, node_ref="sim4f2k9xq7m3b8"
+        server_time=datetime.now(UTC),
+        config_stale=False,
+        streaming_allowed=True,
+        node_ref="sim4f2k9xq7m3b8",
+        claim_state="unclaimed",
+        claim_email=None,
+        claim_undeliverable=False,
     )
     assert response.node_ref.startswith("sim")
 
@@ -467,3 +479,15 @@ def test_an_error_over_64_characters_is_rejected():
 def test_a_detail_over_512_characters_is_rejected():
     with pytest.raises(ValidationError):
         ErrorBody(error="invalid_config", detail="x" * 513)
+
+
+def test_the_heartbeat_refuses_to_be_built_without_a_claim_state():
+    """The fields carry no defaults, so a handler cannot omit one and publish
+    `unclaimed` for a node that has an owner."""
+    with pytest.raises(ValidationError):
+        HeartbeatResponse(
+            server_time=datetime.now(UTC),
+            config_stale=False,
+            streaming_allowed=True,
+            node_ref="nde4f2k9xq7m3b8",
+        )

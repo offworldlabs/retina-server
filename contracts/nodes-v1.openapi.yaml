@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RETINA node ingest
-  version: 1.3.0
+  version: 1.4.0
   description: |
     The RETINA server's HTTP API. The paths under `/v1/nodes` are the RETINA node
     ingest contract, generated from the server and versioned as a unit; everything
@@ -350,7 +350,8 @@ paths:
       summary: Read where this node's claim stands.
       description: |-
         Where this node's claim stands. Cheap, and safe to poll every few seconds while a setup
-        page is open, and worth stopping once the answer settles.
+        page is open; `HeartbeatResponse` carries the same three fields for the rest of the
+        node's life, so there is no reason to keep polling once the page closes.
       operationId: getClaim
       responses:
         '200':
@@ -404,8 +405,9 @@ paths:
         grants nothing, and a node with no address at all runs unowned indefinitely and can be
         claimed whenever its owner gets round to it.
 
-        Poll the `GET` every few seconds while a setup page is open and somebody is waiting,
-        and stop once the answer settles.
+        Poll the `GET` every few seconds while a setup page is open and somebody is waiting.
+        Afterwards stop: `HeartbeatResponse` carries the same three fields once a minute, which
+        is how a release performed months later reaches a node that stopped polling long ago.
       operationId: putClaim
       requestBody:
         description: The address to claim this node with.
@@ -876,10 +878,11 @@ components:
         undeliverable:
           type: boolean
           title: Undeliverable
-          default: false
       type: object
       required:
       - state
+      - email
+      - undeliverable
       title: ClaimResponse
       description: |-
         What the node is told about its own claim.
@@ -904,9 +907,27 @@ components:
           type: string
           format: date-time
           title: Updated At
+        claim_state:
+          type: string
+          enum:
+          - unclaimed
+          - pending
+          - owned
+          title: Claim State
+        claim_email:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Claim Email
+        claim_undeliverable:
+          type: boolean
+          title: Claim Undeliverable
       type: object
       required:
       - updated_at
+      - claim_state
+      - claim_email
+      - claim_undeliverable
       title: ContactResponse
     DetectionAck:
       properties:
@@ -1072,12 +1093,30 @@ components:
           type: string
           pattern: ^(nde|sim)[0-9a-z]{12}$
           title: Node Ref
+        claim_state:
+          type: string
+          enum:
+          - unclaimed
+          - pending
+          - owned
+          title: Claim State
+        claim_email:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Claim Email
+        claim_undeliverable:
+          type: boolean
+          title: Claim Undeliverable
       type: object
       required:
       - server_time
       - config_stale
       - streaming_allowed
       - node_ref
+      - claim_state
+      - claim_email
+      - claim_undeliverable
       title: HeartbeatResponse
     NodeClaimRequest:
       type: object
