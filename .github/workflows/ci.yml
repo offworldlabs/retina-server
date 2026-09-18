@@ -1086,7 +1086,7 @@ jobs:
           # towers.retina.fm to tower-finder-service's own edge, so that probe
           # asserted a different service's frontend while this job rolls THIS
           # one back on failure. app is the production surface we still serve.
-          check_status "GET / (frontend)"         "https://app.retina.fm/"            "200"
+          check_status "GET / (console)"          "https://app.retina.fm/"            "200"
           check_status "GET /api/health (api.retina.fm)" "${BASE_URL}/api/health"     "200"
 
           echo ""
@@ -1103,18 +1103,17 @@ jobs:
           # request with a 302 from the edge, carrying no origin headers.
           check_origin "api vhost is this origin"  "${BASE_URL}/api/health"
           # /api/health, not a page path: nginx drops every inherited add_header
-          # in a location that declares one of its own, and this vhost's /dash/
-          # mount declares a Cache-Control, so the marker reaches its API
+          # in a location that declares one of its own, and spa.conf's page
+          # locations declare a Cache-Control, so the marker reaches its API
           # responses only.
           check_origin "app vhost is this origin"  "https://app.retina.fm/api/health"
 
           echo ""
-          echo "── Does the mounted bundle render ──"
-          # The app vhost serves two bundles from one hostname, and the one
-          # under /dash/ is built for that prefix. Get that wrong and the page
-          # still answers 200 with its index.html while every asset in it
-          # misses — a blank screen no status check here can see.
-          check_page_asset "app /dash/ loads its bundle" "https://app.retina.fm/dash/"
+          echo "── Does the console render ──"
+          # An index.html whose assets miss still answers 200: a blank screen
+          # no status check here can see. This follows the page's own script
+          # URL and requires JavaScript back.
+          check_page_asset "app / loads its bundle" "https://app.retina.fm/"
 
           echo ""
           echo "── Do the retired hostnames still reach it ──"

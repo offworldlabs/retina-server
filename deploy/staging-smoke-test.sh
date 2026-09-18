@@ -14,15 +14,14 @@ set -euo pipefail
 # retina-server's own API goes to API_URL.
 BASE_URL="https://staging-towers.retina.fm"
 API_URL="https://staging-api.retina.fm"
-# The admin bundle's own vhost. It and the /dash/ mount on APP_URL serve the
-# same dashboard source; the hostname is what selects the admin route table
+# The admin bundle's own vhost. It and APP_URL serve the same dashboard build; the hostname is what selects the admin route table
 # (dashboard/src/utils/surface.ts), so this is the only name here that renders
 # the admin console.
 ADMIN_URL="https://staging-admin.retina.fm"
-# The public surface: the map at / and the dashboard under /dash/, which the
-# old /data/ redirects into. `staging-map`, `staging-dash`, `staging-data` and the
-# public `testmap` are Cloudflare redirects into it and reach no origin, so
-# nothing below probes them.
+# The public surface: the console at /, opening on its map, with the old /dash/
+# and /data/ addresses redirecting into it. `staging-map`, `staging-dash`,
+# `staging-data` and the public `testmap` are Cloudflare redirects into it and
+# reach no origin, so nothing below probes them.
 APP_URL="https://staging-app.retina.fm"
 # TOWER_CONTRACT_QUERY / TOWER_CONTRACT_ECHO: what a backend must echo back.
 # shellcheck source=deploy/tower-contract.sh
@@ -378,32 +377,32 @@ check_status "GET /api/test/mlat-verification" "${API_URL}/api/test/mlat-verific
 
 echo ""
 echo "── Public app surface (staging-app.retina.fm) ──"
-# Both bundles on one hostname, each built for the mount it is served at.
-# `/` is the only place this repo's own frontend/dist is still served, so it is
-# the only probe that this repo serves its own map bundle.
-check_status "app GET / (map)"              "${APP_URL}/"                   "200"
+# The console at the root. `/` forwards to /map inside the router, so nginx
+# answers both with the same index.html.
+check_status "app GET /"                    "${APP_URL}/"                   "200"
 check        "HTML has app root"            "${APP_URL}/"                   "id=\"root\""
-check_status "app GET /dash/"               "${APP_URL}/dash/"              "200"
-# Slashless: without its own exact-match redirect this is a 200 carrying the
-# WRONG bundle, which no status check would ever notice.
-check_status "app /dash redirects"          "${APP_URL}/dash"               "301"
-# The standalone explorer's old links. Their query is the page's filters, so
-# it has to survive. The asset path is the one spa.conf's regexes would take,
-# and a 301 on a .js name is one the edge keeps, hence BUST.
-check_redirect "app /data/ redirects"       "${APP_URL}/data/?node=ret-smoke&from=2026-09-01" "${APP_URL}/dash/data?node=ret-smoke&from=2026-09-01"
-check_redirect "app /data redirects"        "${APP_URL}/data?from=2026-09-01" "${APP_URL}/dash/data?from=2026-09-01"
-check_redirect "app /data/ asset redirects" "${APP_URL}/data/app.js?${BUST}" "${APP_URL}/dash/data?${BUST}"
+check_status "app GET /map"                 "${APP_URL}/map"                "200"
 # A deep link the SPA owns and nginx does not: proves the try_files fallback
-# reaches the bundle's index.html rather than 404ing inside the alias.
-check_status "app /dash/ deep link"         "${APP_URL}/dash/nodes"         "200"
-# The mounted bundle resolves its own assets. The page passed every status
-# check above while rendering nothing, which is what this is here for.
-check_page_asset    "app /dash/ loads its bundle" "${APP_URL}/dash/"
-# Two segments deep, which is where a relative base path fails and a rooted one
-# does not: the browser would resolve `./assets/...` against /dash/nodes/ and
-# get the SPA fallback back as JavaScript. /dash/ alone cannot tell the two
-# apart, because at one segment both spellings land in the same directory.
-check_page_asset    "app /dash/ deep link loads it too" "${APP_URL}/dash/nodes/ret-smoke"
+# reaches the bundle's index.html.
+check_status "app deep link"                "${APP_URL}/nodes"              "200"
+# The console's old mount. Its links are in circulation, sign-in mail among
+# them, so every path lands on its root twin with the query intact. The
+# slashless form needs its own match, which is why it is probed separately.
+check_redirect "app /dash/ path redirects"  "${APP_URL}/dash/nodes/ret-smoke?x=1" "${APP_URL}/nodes/ret-smoke?x=1"
+check_redirect "app /dash redirects"        "${APP_URL}/dash?x=1"           "${APP_URL}/?x=1"
+# /data is the console's own page; an exact-match redirect there would bounce
+# it. The standalone explorer's old paths still redirect, filters intact. The
+# asset path is the one spa.conf's regexes would take, and a 301 on a .js name
+# is one the edge keeps, hence BUST.
+check_status   "app GET /data"              "${APP_URL}/data"               "200"
+check_redirect "app /data/ redirects"       "${APP_URL}/data/?node=ret-smoke&from=2026-09-01" "${APP_URL}/data?node=ret-smoke&from=2026-09-01"
+check_redirect "app /data/ asset redirects" "${APP_URL}/data/app.js?${BUST}" "${APP_URL}/data?${BUST}"
+# The bundle resolves its own assets. A page can pass every status check above
+# while rendering nothing, which is what these are here for. Two segments deep
+# as well as one: a relative base resolves `./assets/...` against the document
+# path, and only a deeper page tells a rooted base from a relative one.
+check_page_asset    "app / loads its bundle"       "${APP_URL}/"
+check_page_asset    "app deep link loads it too"   "${APP_URL}/nodes/ret-smoke"
 
 echo ""
 echo "── Retired hostnames reach the app surface ──"
@@ -448,8 +447,8 @@ echo "── Which origin answered ──"
 # tower-contract.sh reaches that vhost with service-token headers; this does not.
 check_origin        "api vhost is this origin"   "${API_URL}/api/health"
 # /api/health, not a page path: nginx drops every inherited add_header in a
-# location that declares one of its own, and the app vhost's /dash/ mount
-# declares a Cache-Control. The marker reaches this vhost's API responses only.
+# location that declares one of its own, and spa.conf's page locations declare
+# a Cache-Control. The marker reaches this vhost's API responses only.
 check_origin        "app vhost is this origin"   "${APP_URL}/api/health"
 # Edge caching follows what nginx says, and Cloudflare keeps a `public,
 # immutable` response for the whole `expires` window, so that policy is safe
@@ -461,7 +460,7 @@ check_origin        "app vhost is this origin"   "${APP_URL}/api/health"
 #
 # Probed with BUST: the header under test is nginx's, and a copy the edge
 # already holds answers with the headers it was stored with.
-check_header_value "dash theme-boot.js is not cached"   "${APP_URL}/dash/theme-boot.js?${BUST}" "cache-control" "no-store"
+check_header_value "theme-boot.js is not cached"        "${APP_URL}/theme-boot.js?${BUST}" "cache-control" "no-store"
 MAP_ASSET=$($CURL "${APP_URL}/" 2>/dev/null | grep -o '/assets/index-[^"]*\.js' | head -n1 || true)
 if [ -n "$MAP_ASSET" ]; then
     check_header_value "hashed /assets/ file is immutable" "${APP_URL}${MAP_ASSET}?${BUST}" "cache-control" "immutable"
@@ -562,7 +561,7 @@ else
 fi
 
 echo ""
-echo "── Detection archive (app /dash/data) ──"
+echo "── Detection archive (app /data) ──"
 # The Data Explorer reads this endpoint. It returns an empty list for the first
 # hour after a deploy (ARCHIVE_FLUSH_INTERVAL_S), so assert the endpoint answers
 # rather than that it has rows — the volume that makes those rows survive a

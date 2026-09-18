@@ -1,16 +1,12 @@
 /**
- * The consolidated surface: two bundles on one hostname.
+ * The consolidated surface: the console at the root of the app hostname,
+ * opening on its map, and the old addresses that redirect into it.
  *
- * What a browser adds over the smoke tests is that the mounted bundle actually
- * executes. `/dash/` answered 200 for the whole of #426 while rendering nothing,
- * because the dashboard was built for a vhost root and every asset URL in its
- * index.html resolved against this vhost's root instead — the map's directory.
- * A status check cannot see that, and neither can a fetch of the HTML.
- *
- * So the assertion is a rendered element and the URL the router settled on. Both
- * require the JavaScript to have loaded and run: the redirect to the login page
- * is react-router's, and it carries the mount prefix only if the basename Vite
- * baked in came through with it.
+ * What a browser adds over the smoke tests is that the bundle executes and the
+ * router lands where it should. The arrival at /map is react-router's own
+ * redirect, so it needs the JavaScript to have loaded and run; the old /dash/
+ * and /data/ addresses are nginx's redirects, followed through to a page that
+ * renders.
  *
  * Skipped where hosts.app is null — see the table in playwright.config.ts for
  * why production and the dev server are.
@@ -34,41 +30,32 @@ function originPattern(): string {
 }
 
 test.describe("the consolidated app surface", () => {
-  test("serves the map at the root", async ({ page }) => {
+  test("opens on the map", async ({ page }) => {
     await page.goto(`${BASE}/`, { waitUntil: "domcontentloaded" });
-    // The map's own chrome, so this cannot pass on the dashboard bundle.
+    await expect(page).toHaveURL(new RegExp(`^${originPattern()}/map`));
     await expect(page.locator(".connection-badge")).toBeVisible({ timeout: 30_000 });
   });
 
-  test("runs the dashboard bundle under /dash/, opening on its own map", async ({ page }) => {
-    await page.goto(`${BASE}/dash/`, { waitUntil: "domcontentloaded" });
-
-    // The console's index forwards to its map, and that redirect is
-    // react-router's, so reaching /dash/map proves the bundle's assets resolved,
-    // it executed, and the router kept the mount. Without the basename this
-    // would be `/map`, which on this vhost is the other bundle.
-    await expect(page).toHaveURL(new RegExp(`^${originPattern()}/dash/map`));
-    await expect(page.locator(".connection-badge")).toBeVisible({ timeout: 30_000 });
+  test("keeps an old map link's view, which lives in the hash", async ({ page }) => {
+    // Not the map's default view, so arriving there cannot pass by accident.
+    await page.goto(`${BASE}/#lat=51.5000&lon=-0.1200&z=6`, { waitUntil: "domcontentloaded" });
+    await expect(page).toHaveURL(new RegExp(`^${originPattern()}/map#.*lat=51\\.5`));
   });
 
-  test("still sends a private page to the login card under /dash/", async ({ page }) => {
-    await page.goto(`${BASE}/dash/overview`, { waitUntil: "domcontentloaded" });
+  test("sends a private page to the login card", async ({ page }) => {
+    await page.goto(`${BASE}/overview`, { waitUntil: "domcontentloaded" });
     await expect(page.locator(".login-card")).toBeVisible({ timeout: 30_000 });
-    await expect(page).toHaveURL(new RegExp(`^${originPattern()}/dash/login/?$`));
+    await expect(page).toHaveURL(new RegExp(`^${originPattern()}/login/?$`));
   });
 
-  test("redirects the slashless /dash, keeping the query string", async ({ page }) => {
-    await page.goto(`${BASE}/dash?next=nodes`, { waitUntil: "domcontentloaded" });
-    // `/dash` does not match the `/dash/` mount, so without its own exact-match
-    // redirect it falls through to the map. A `return` would drop the query
-    // string; the template keeps it with $is_args$args.
-    expect(page.url()).toContain("/dash/");
-    expect(page.url()).toContain("next=nodes");
+  test("sends the old /dash/ mount to the same page at the root", async ({ page }) => {
+    await page.goto(`${BASE}/dash/leaderboard?x=1`, { waitUntil: "domcontentloaded" });
+    await expect(page).toHaveURL(new RegExp(`^${originPattern()}/leaderboard\\?x=1$`));
   });
 
-  test("sends an old /data/ link to the dashboard's explorer, filters intact", async ({ page }) => {
+  test("sends an old /data/ link to the explorer, filters intact", async ({ page }) => {
     await page.goto(`${BASE}/data/?from=2026-09-01&to=2026-09-03`, { waitUntil: "domcontentloaded" });
-    await expect(page).toHaveURL(new RegExp(`^${originPattern()}/dash/data\\?`));
+    await expect(page).toHaveURL(new RegExp(`^${originPattern()}/data\\?`));
     // The page renders its shareable link from the filters it read, so this
     // needs the bundle to have run and the query to have survived the redirect.
     await expect(page.getByTestId("de-share")).toContainText("from=2026-09-01&to=2026-09-03", {
