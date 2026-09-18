@@ -177,7 +177,7 @@ jobs:
       # list in package.json.
       fail-fast: false
       matrix:
-        workspace: [frontend, dashboard, packages/shared, e2e]
+        workspace: [dashboard, packages/shared, e2e]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -196,7 +196,7 @@ jobs:
       # checks before a deploy depends on them.
       - run: npm run typecheck -w ${{ matrix.workspace }}
       - run: npm test -w ${{ matrix.workspace }} --if-present
-      # The shared package has nothing to build; the two apps do.
+      # Only the console has a build.
       - run: npm run build -w ${{ matrix.workspace }} --if-present
 
   docker-build:
