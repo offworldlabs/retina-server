@@ -415,8 +415,8 @@ def note_follow_publish(key: str, ts_s: float) -> None:
     key ownership the one thing a replay could not reproduce.
 
     Called from the single point every follow-solve outcome passes through
-    (solver._record_solve_history), so there is no path that publishes on a
-    followed key without marking it.
+    (solve_history._record_solve_history), so there is no path that
+    publishes on a followed key without marking it.
     """
     if not key or ts_s <= 0.0:
         return

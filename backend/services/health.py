@@ -208,8 +208,9 @@ def compute_health_issues() -> list[dict]:
     # solves.  Concretely, and as of the dark sampling fix below, that is
     # `multinode_solve` (BOTH lanes: ADS-B-anchored samples from
     # track_gates._record_accuracy_sample, and dark samples carrying
-    # lane="dark" from solver._record_dark_accuracy_sample), `solver_adsb_seed`
-    # and anything else a future source adds that is not named untrusted here.
+    # lane="dark" from solve_history._record_dark_accuracy_sample),
+    # `solver_adsb_seed` and anything else a future source adds that is not
+    # named untrusted here.
     # Until that fix the dark lane was structurally invisible to this check:
     # its only sampler was gated on an ADS-B fix the dark lane by definition
     # does not have, so the alert spoke for "multi-node accuracy" while

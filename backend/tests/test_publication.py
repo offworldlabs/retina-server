@@ -1527,7 +1527,7 @@ class TestMlatHistoryPayload:
                     "contributing_node_ids": [self._A, self._B],
                     "trimmed_node_ids": [self._B],
                     # The contamination stamp and the point it was taken at:
-                    # solver._stamp_foreign_nodes writes both onto a dark
+                    # solve_history._stamp_foreign_nodes writes both onto a dark
                     # record that matched ground truth.
                     "foreign_node_ids": [self._B],
                     "contaminated": True,

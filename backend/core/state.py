@@ -735,10 +735,10 @@ dark_follow_gate_sigma_clamped: int = 0
 # own n=2 candidates.
 #
 # n2_withheld counts follow-solve records whose n2_unconfirmed outcome was NOT
-# fed to the guard (solver._record_solve_history); n2_skipped counts follow
-# inputs never built at all because the claim round matched only two nodes and
-# the bypass is off (known_lane.run_dark_follow_pass), each of which also saves
-# a pool solve that could never have published.  Read them against
+# fed to the guard (solve_history._record_solve_history); n2_skipped counts
+# follow inputs never built at all because the claim round matched only two
+# nodes and the bypass is off (known_lane.run_dark_follow_pass), each of which
+# also saves a pool solve that could never have published.  Read them against
 # dark_follow_inputs: skipped is the input that no longer happens, withheld the
 # verdict that no longer counts.
 dark_follow_n2_withheld: int = 0

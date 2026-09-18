@@ -72,11 +72,11 @@ from services.id_utils import normalize_hex_key
 from services.known_claiming import KNOWN_CLAIM_MAX_FIX_AGE_S
 
 # Deliberate one-way dependency: this module reuses the solver worker's
-# record store, gates, publication lock and smoother so known-lane records
-# are queryable exactly like regular ones.  solver.py only ever imports this
-# module lazily, inside _run_solver_worker (see the wiring there), so the
-# solver import below cannot form a cycle.
-from services.tasks import displacement_caps
+# gates, keying and smoother, and records through the same solve history, so
+# known-lane records are queryable exactly like regular ones.  solver.py only
+# ever imports this module lazily, inside _run_solver_worker (see the wiring
+# there), so the solver import below cannot form a cycle.
+from services.tasks import displacement_caps, solve_history
 from services.tasks import solver as solver_mod
 
 # ── Claim selection windows ───────────────────────────────────────────────────
@@ -514,7 +514,7 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
 
     if not result or not result.get("success"):
         state.bump_counter("known_lane_no_converge")
-        solver_mod._record_solve_history(
+        solve_history._record_solve_history(
             "known_no_converge",
             s_in,
             result if isinstance(result, dict) else None,
@@ -581,7 +581,7 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
             state.bump_counter("known_lane_publish_errors")
             published = False
 
-    solver_mod._record_solve_history(
+    solve_history._record_solve_history(
         f"known_{label}",
         s_in,
         result,
@@ -683,8 +683,8 @@ def _build_follow_solver_input(key: str, claims: dict[str, dict]) -> dict | None
       not pop a neighbour on a track id this solve never used.
 
     ``lane``/``guess_source``/``follow_key`` ride through to the history record
-    (solver._record_solve_history stamps all three) so the lane is separable in
-    /api/test/solver-stats without inferring it from the key.
+    (solve_history._record_solve_history stamps all three) so the lane is
+    separable in /api/test/solver-stats without inferring it from the key.
 
     A CONSEQUENCE WORTH KNOWING: with no cv_epochs on the input, an n=2 follow
     solve cannot pass the n=2 confirmation gate and is always withheld, so the
@@ -775,7 +775,7 @@ def _follow_shadow_attempt(key: str, s_in: dict, node_cfgs: dict, solve_fn) -> N
         ig = s_in["initial_guess"]
         disp_km = haversine_km(float(ig["lat"]), float(ig["lon"]), float(result["lat"]), float(result["lon"]))
         ok = disp_km <= displacement_caps._MAX_DISPLACEMENT_KM_DARK
-    solver_mod._record_solve_history(
+    solve_history._record_solve_history(
         "dark_follow_shadow",
         s_in,
         result if isinstance(result, dict) else None,
