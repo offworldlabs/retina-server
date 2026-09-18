@@ -65,7 +65,7 @@ export const defaultsGroundTruthOff = isRealRadar;
 // prevent: the real-only feed carries no synthetic fleet, so it would empty the
 // very map they exist to demonstrate. They stay on the unfiltered feed and the
 // real nodes come off client-side instead, decided from the server's
-// is_synthetic flag (see utils/nodeKind.ts).
+// is_synthetic flag (see src/utils/nodeKind.ts).
 const isPublicDemo = isMapDomain && !isRealRadar;
 
 // Ruled out on the laptop by the same suffix test as isRealRadar: a local
