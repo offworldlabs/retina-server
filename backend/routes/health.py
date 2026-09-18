@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse
 
 from services.health import compute_health_issues
 
-router = APIRouter()
+router = APIRouter(tags=["health"])
 
 
 @router.get("/api/health")

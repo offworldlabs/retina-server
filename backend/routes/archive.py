@@ -16,7 +16,7 @@ from fastapi import APIRouter, HTTPException, Query
 from services.publication import private_node_ids
 from services.storage import list_archived_files, read_archived_file
 
-router = APIRouter()
+router = APIRouter(tags=["archive"])
 
 
 def _key_node_id(key: str) -> str:

@@ -15,7 +15,7 @@ from config.constants import CHAIN_ENTRIES_MAX_PER_NODE, IQ_COMMITMENTS_MAX_PER_
 from core import state
 from services.node_refs import id_for_identity, public_identity
 
-router = APIRouter()
+router = APIRouter(tags=["custody"])
 
 RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
 

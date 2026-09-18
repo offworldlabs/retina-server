@@ -160,6 +160,14 @@ server {
         # RETINA_INCLUDE snippets/tower-finder.conf
         rewrite ^/towers$ /api/towers break;
     }
+
+    # tower-finder-service's schema, for the API reference at /
+    # (backend/routes/reference.py). That service sends no CORS header, so the
+    # page reads it from this origin. Rewrite last, as above.
+    location = /openapi/tower-finder.json {
+        # RETINA_INCLUDE snippets/tower-finder.conf
+        rewrite ^ /openapi.json break;
+    }
     # RETINA_ENDIF
 
     location / {

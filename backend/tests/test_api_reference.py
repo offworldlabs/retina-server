@@ -5,12 +5,18 @@ operation list is pinned: a route appearing in the public reference is a
 publication decision, so it should arrive as a change to this file.
 """
 
+import base64
+import hashlib
+import json
+import re
 from unittest.mock import patch
 
 import pytest
 
 from main import app
 from routes.openapi_documents import node_contract, public_document
+from routes.reference import CSP, DOCUMENTS, SCALAR_INTEGRITY, SCALAR_URL
+from tests.nginx_helpers import VALUES, locations, render
 
 PUBLIC_OPERATIONS = {
     ("get", "/api/custody/chain/{node_ref}"),
@@ -118,3 +124,62 @@ def test_the_whole_schema_is_for_an_administrator(client):
 @pytest.mark.parametrize("path", ["/docs", "/redoc", "/docs/oauth2-redirect"])
 def test_fastapis_own_pages_are_gone(client, path):
     assert client.get(path).status_code == 404
+
+
+def test_every_published_tag_is_declared_and_grouped_once(document):
+    used = {tag for operations in document["paths"].values() for op in operations.values() for tag in op["tags"]}
+    declared = [tag["name"] for tag in document["tags"]]
+    grouped = [tag for group in document["x-tagGroups"] for tag in group["tags"]]
+    assert set(declared) == used
+    assert sorted(grouped) == sorted(declared)
+
+
+def _inline_script(html: str) -> str:
+    scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
+    assert len(scripts) == 1
+    return scripts[0]
+
+
+def test_the_page_loads_the_pinned_scalar_under_its_own_policy(client):
+    page = client.get("/")
+    assert page.status_code == 200
+    assert page.headers["content-type"].startswith("text/html")
+    assert page.headers["content-security-policy"] == CSP
+    assert re.search(r"@scalar/api-reference@\d+\.\d+\.\d+/", SCALAR_URL)
+    assert f'src="{SCALAR_URL}" integrity="{SCALAR_INTEGRITY}" crossorigin="anonymous"' in page.text
+
+
+def test_the_policy_admits_the_inline_script_by_its_hash(client):
+    script = _inline_script(client.get("/").text)
+    digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+    assert f"'sha256-{digest}'" in CSP
+    assert "'unsafe-inline'" not in CSP.split("script-src", 1)[1].split(";", 1)[0]
+
+
+def test_the_page_renders_each_document_with_scalars_uploads_off(client):
+    script = _inline_script(client.get("/").text)
+    configs = json.loads(script[script.index("[") : script.rindex("]") + 1])
+    assert [config["url"] for config in configs] == [document["url"] for document in DOCUMENTS]
+    assert configs[0]["url"] == "/openapi.json"
+    for config in configs:
+        assert config["agent"] == {"disabled": True}
+        assert config["mcp"] == {"disabled": True}
+        assert config["withDefaultFonts"] is False
+
+
+def _api_location(rendered: str, header: str) -> str | None:
+    api = rendered[rendered.index(f"server_name {VALUES['HOST_API']};") :]
+    api = api[: api.index("\nserver {")] if "\nserver {" in api else api
+    return next((body for head, body in locations(api) if head.strip() == header), None)
+
+
+def test_the_api_vhost_serves_tower_finders_schema_from_its_own_origin():
+    body = _api_location(render(), "location = /openapi/tower-finder.json")
+    assert body is not None
+    assert "proxy_pass http://$tfs_upstream:8000" in body
+    assert "rewrite ^ /openapi.json break;" in body
+
+
+def test_without_tower_finder_the_location_is_not_rendered():
+    rendered = render(VALUES | {"TOWER_FINDER_ENABLED": "false"})
+    assert _api_location(rendered, "location = /openapi/tower-finder.json") is None

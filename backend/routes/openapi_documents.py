@@ -52,6 +52,17 @@ The RETINA server's public HTTP API, in two parts:
 Account, administration and test routes are not listed.
 """
 
+# The public reads' tags, which each router declares by name.
+READ_TAGS = [
+    {"name": "aircraft", "description": "Solver positions and ADS-B ground truth, in a shape kept for outside use."},
+    {"name": "radar", "description": "The live map's feeds: aircraft, receivers, node status and the aircraft stream."},
+    {"name": "analytics", "description": "Per-node analytics, association between nodes, accuracy and anomalies."},
+    {"name": "archive", "description": "Archived detection files, by day and node."},
+    {"name": "custody", "description": "Each node's custody hash chain, and its verification."},
+    {"name": "stats", "description": "Which illuminator towers nodes have selected."},
+    {"name": "health", "description": "Liveness, and readiness with `strict=1`."},
+]
+
 _REF_PREFIX = "#/components/schemas/"
 
 # The components this module names into existence rather than finding among the
@@ -217,7 +228,11 @@ def public_document(schema: dict[str, Any], description: str) -> dict[str, Any]:
             "version": schema["info"]["version"],
             "description": _PUBLIC_INTRO + (description[sections:] if sections >= 0 else ""),
         },
-        "tags": NODE_API_TAGS,
+        "tags": NODE_API_TAGS + READ_TAGS,
+        "x-tagGroups": [
+            {"name": "Node ingest", "tags": [tag["name"] for tag in NODE_API_TAGS]},
+            {"name": "Public reads", "tags": [tag["name"] for tag in READ_TAGS]},
+        ],
         "paths": public,
         "components": _components(public, schemas, schema.get("components", {}).get("securitySchemes", {})),
     }

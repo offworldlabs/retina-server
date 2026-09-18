@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Body, Header, HTTPException
 
-router = APIRouter()
+router = APIRouter(tags=["stats"])
 
 _STATS_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "tower_stats.json")
 _RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
