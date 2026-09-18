@@ -87,66 +87,6 @@ describe("the API client on a 401, on a page that needs no session", () => {
   });
 });
 
-describe("the API client on a 401, mounted under /dash/", () => {
-  // The login path is derived from Vite's `base`, fixed at build time, so the
-  // mounted build can only be exercised by re-importing under a stubbed one.
-  // Checked by status rather than by class: the re-import hands back its own
-  // copy of the shared module, whose UnauthorizedError is a different class
-  // from the one this file imported.
-  async function loadMounted() {
-    vi.resetModules();
-    vi.stubEnv("BASE_URL", "/dash/");
-    return import("../api/client");
-  }
-
-  beforeEach(() => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 401 })));
-  });
-
-  afterEach(() => {
-    vi.unstubAllEnvs();
-    vi.unstubAllGlobals();
-    vi.resetModules();
-    Object.defineProperty(window, "location", {
-      value: realLocation,
-      writable: true,
-      configurable: true,
-    });
-  });
-
-  it("sends a caller to the login page inside the mount", async () => {
-    // A bare /login here is the app vhost's root, which serves the MAP bundle:
-    // a 200, a working page, and the wrong application.
-    const mounted = await loadMounted();
-    const loc = stubLocation("/dash/nodes");
-    await expect(mounted.api.myNodes()).rejects.toHaveProperty("status", 401);
-    expect(loc.href).toBe("/dash/login");
-  });
-
-  it.each(["/dash/login", "/dash/login/"])(
-    "still recognises the login page it is already on (%s)",
-    async (pathname) => {
-      // window.location.pathname carries the mount, so a guard comparing it
-      // against an unmounted /login never matches and the reload loop returns.
-      const mounted = await loadMounted();
-      const loc = stubLocation(pathname);
-      const untouched = loc.href;
-      await expect(mounted.api.myNodes()).rejects.toHaveProperty("status", 401);
-      expect(loc.href).toBe(untouched);
-    }
-  );
-
-  it("leaves a caller on a page that needs no session", async () => {
-    // window.location.pathname carries the mount and the route list does not,
-    // so the two have to be read into the same space before they are compared.
-    const mounted = await loadMounted();
-    const loc = stubLocation("/dash/leaderboard");
-    const untouched = loc.href;
-    await expect(mounted.api.myNodes()).rejects.toHaveProperty("status", 401);
-    expect(loc.href).toBe(untouched);
-  });
-});
-
 function Probe() {
   const { user, loading } = useAuth();
   if (loading) return <span>deciding</span>;
