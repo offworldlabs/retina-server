@@ -3,13 +3,14 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 /**
  * Which palette the console is drawn with, and the switch for it.
  *
- * The mechanism is the map's (frontend/src/components/map/useMapTheme.tsx),
- * with the two themes the other way round. The map carries dark on its base
- * selector and light behind the attribute, because dark is its default and the
- * default must never be the theme that flashes. Here light is the default, so
- * light is what the bare selector holds and dark is what the attribute buys.
+ * The mechanism is the map surface's (`.map-surface` in @retina/shared's
+ * tokens.css), with the two themes the other way round. The map carries dark on
+ * its base selector and light behind the attribute, because dark was its
+ * default and the default must never be the theme that flashes. Here light is
+ * the default, so light is what the bare selector holds and dark is what the
+ * attribute buys.
  *
- * The third state is the reason this is not simply the map's boolean. `system`
+ * The third state is the reason this is not a boolean. `system`
  * stamps no attribute at all and lets the `prefers-color-scheme` block in
  * App.css answer, which means the OS preference is honoured with no JavaScript
  * and keeps working when the OS changes its mind mid-session. Stamping a

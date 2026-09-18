@@ -1,6 +1,6 @@
 /**
  * Which of the two surfaces this bundle renders. Sibling of the map-surface
- * predicates in frontend/src/utils/domains.ts, but no longer symmetric with
+ * predicates in pages/map/utils/domains.ts, but no longer symmetric with
  * them: ADMIN_HOST below takes any environment prefix, while isMapDomain there
  * is a fixed staging-|test- allowlist. A new environment needs that file
  * edited and not this one, and until it is, its map surface silently gets the

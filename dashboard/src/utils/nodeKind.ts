@@ -5,10 +5,6 @@
  * the answer. The prefix fallback covers only payloads predating the flag:
  * once identities are published as node_ref, no prefix survives to match. It
  * still runs for nodes discovered from an archive key, which carry no flag.
- *
- * A twin of frontend/src/utils/nodeKind.ts. The apps cannot import across the
- * boundary, so the copy stands until one of them moves to packages/shared;
- * change both or neither.
  */
 const SYNTHETIC_PREFIXES = ["synth-", "e2e-", "test-", "realnode-"];
 
