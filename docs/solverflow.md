@@ -465,8 +465,8 @@ would disagree. A followed key is therefore dropped for
 `DARK_FOLLOW_COOLDOWN_S` on **two consecutive rejected follow-solves** or a
 velocity sigma past the ceiling, and the bottom-up lane has to re-find it.
 Every follow-solve outcome reaches the guard through one hook in
-`solver._record_solve_history` (published, every `rejected_*`, unconverged, and
-the shadow pass's own record).
+`solve_history._record_solve_history` (published, every `rejected_*`,
+unconverged, and the shadow pass's own record).
 
 **...except in a turn, where the ceiling used to fire on the wrong thing.** The
 display filter inflates its process noise *deliberately* when an aircraft

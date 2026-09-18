@@ -689,9 +689,9 @@ async def mlat_history(
     newest published position — the signal for "the gates starved this track
     and the display held a stale point".  ``?all=1`` dumps the whole window
     for scripted debugging.  Records are written by the solver worker
-    (services.tasks.solver._record_solve_history) into one deque per lane and
-    merged here, so both lanes answer either query exactly as they did when
-    they shared a deque.
+    (services.tasks.solve_history._record_solve_history) into one deque per
+    lane and merged here, so both lanes answer either query exactly as they
+    did when they shared a deque.
 
     ``?lane=dark|known|adsb`` narrows the answer to one lane (default
     ``all``, classified by ``_record_lane``); ``?limit=`` caps the record

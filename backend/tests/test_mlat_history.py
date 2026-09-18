@@ -16,6 +16,7 @@ from config.constants import ASSOC_GRID_STEP_KM
 from core import state
 from services.id_utils import multinode_hex_from_key
 from services.tasks import displacement_caps as caps_mod
+from services.tasks import solve_history as history_mod
 from services.tasks import solver as solver_mod
 
 # n=2 input whose track pairing already passed the CV fit (see
@@ -622,7 +623,7 @@ class TestTrailSnapshotRace:
             for _ in range(2000):
                 if time.monotonic() >= deadline:
                     break
-                solver_mod._nearest_gt(LAT, LON, now)
+                history_mod._nearest_gt(LAT, LON, now)
                 completed += 1
         finally:
             stop.set()
@@ -654,7 +655,7 @@ class TestGtIdentityBinding:
         solver_mod._reset_for_tests()
 
     def _record(self, adsb_hex=None, lat=LAT, lon=LON, ts_ms=None):
-        solver_mod._record_solve_history(
+        history_mod._record_solve_history(
             "rejected_gate",
             {"adsb_hex": adsb_hex, "timestamp_ms": ts_ms or int(time.time() * 1000)},
             None,
@@ -671,7 +672,7 @@ class TestGtIdentityBinding:
         inheriting an established key's altitude actually moved the position
         error, and /api/test/mlat-history is where that split is taken.
         """
-        solver_mod._record_solve_history(
+        history_mod._record_solve_history(
             "rejected_gate",
             {
                 "timestamp_ms": int(time.time() * 1000),
@@ -806,7 +807,7 @@ class TestPerLaneDeques:
         assert not state.mlat_solve_history_known
 
     def test_known_lane_records_go_to_the_known_deque(self):
-        solver_mod._record_solve_history(
+        history_mod._record_solve_history(
             "known_truth_match",
             {"n_nodes": 2, "adsb_hex": "abc123", "initial_guess": {"lat": LAT, "lon": LON}},
             {"success": True, "lat": LAT, "lon": LON, "n_nodes": 2},
@@ -822,7 +823,7 @@ class TestPerLaneDeques:
         monkeypatch.setattr(state, "mlat_solve_history_known", deque(maxlen=8))
         solver_mod._process_solver_item((dict(_CONFIRMED_N2), {}, time.time()), _solve_fn())
         for _ in range(40):
-            solver_mod._record_solve_history(
+            history_mod._record_solve_history(
                 "known_truth_match",
                 {"n_nodes": 2, "adsb_hex": "abc123", "initial_guess": {"lat": LAT, "lon": LON}},
                 {"success": True, "lat": LAT, "lon": LON, "n_nodes": 2},
@@ -833,7 +834,7 @@ class TestPerLaneDeques:
         assert len(state.mlat_solve_history_known) == 8
 
     def test_all_query_merges_both_lanes_in_ts_order(self):
-        solver_mod._record_solve_history(
+        history_mod._record_solve_history(
             "known_truth_match",
             {"n_nodes": 2, "adsb_hex": "abc123", "initial_guess": {"lat": LAT, "lon": LON}},
             {"success": True, "lat": LAT, "lon": LON, "n_nodes": 2},
@@ -850,7 +851,7 @@ class TestPerLaneDeques:
         """The known lane publishes under mn-adsb-*, so its records are
         reachable by marker hex exactly as before the split."""
         key = "mn-adsb-abc123"
-        solver_mod._record_solve_history(
+        history_mod._record_solve_history(
             "known_truth_match",
             {"n_nodes": 2, "adsb_hex": "abc123", "initial_guess": {"lat": LAT, "lon": LON}},
             {"success": True, "lat": LAT, "lon": LON, "n_nodes": 2},
@@ -936,7 +937,7 @@ class TestDarkAccuracySamples:
         """The known lane has its own throttled sampler with its own source
         names, which health.py deliberately excludes."""
         _put_gt()
-        solver_mod._record_solve_history(
+        history_mod._record_solve_history(
             "known_truth_match",
             {"n_nodes": 2, "adsb_hex": "abc123", "initial_guess": {"lat": LAT, "lon": LON}},
             {"success": True, "lat": LAT, "lon": LON, "n_nodes": 2},
@@ -1030,7 +1031,7 @@ class TestForeignNodeStamp:
         _put_gt(lat=LAT + 0.05, lon=LON)
         _register_geo("n_in", beam_azimuth_deg=0.0)
         _register_geo("n_trimmed", beam_azimuth_deg=180.0)
-        solver_mod._record_solve_history(
+        history_mod._record_solve_history(
             "published",
             dict(_CONFIRMED_N2),
             {"success": True, "lat": LAT, "lon": LON, "n_nodes": 2, "contributing_node_ids": ["n_in"]},
@@ -1093,7 +1094,7 @@ class TestLaneFilterAndPerLaneCap:
 
     def _dark(self, n=1):
         for _ in range(n):
-            solver_mod._record_solve_history(
+            history_mod._record_solve_history(
                 "published",
                 {"n_nodes": 3},
                 {"success": True, "lat": LAT, "lon": LON, "n_nodes": 3},
@@ -1104,7 +1105,7 @@ class TestLaneFilterAndPerLaneCap:
 
     def _known(self, n=1):
         for _ in range(n):
-            solver_mod._record_solve_history(
+            history_mod._record_solve_history(
                 "known_truth_match",
                 {"n_nodes": 2, "adsb_hex": "abc123", "initial_guess": {"lat": LAT, "lon": LON}},
                 {"success": True, "lat": LAT, "lon": LON, "n_nodes": 2},
@@ -1113,7 +1114,7 @@ class TestLaneFilterAndPerLaneCap:
 
     def _adsb(self, n=1):
         for _ in range(n):
-            solver_mod._record_solve_history(
+            history_mod._record_solve_history(
                 "published",
                 {"n_nodes": 3, "adsb_hex": "abc123"},
                 {"success": True, "lat": LAT, "lon": LON, "n_nodes": 3},

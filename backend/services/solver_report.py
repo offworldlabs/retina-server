@@ -357,7 +357,7 @@ def _solver_window_stats(minutes: float) -> dict:
     # Records without the stamp are records nothing could be asked about (no
     # GT match, or no registered geometry for any contributing node) and stay
     # out of the denominator rather than counting as clean; see
-    # solver._stamp_foreign_nodes.
+    # solve_history._stamp_foreign_nodes.
     judged = [r for r in records if r.get("foreign_node_ids") is not None]
     contaminated = [r for r in judged if r.get("contaminated")]
     n_judged = len(judged)

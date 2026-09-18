@@ -40,6 +40,7 @@ from services import known_claiming as kc
 from services.frame_processor import get_or_create_node_pipeline, process_one_frame
 from services.geo import offset_latlon_m
 from services.tasks import known_lane
+from services.tasks import solve_history as history_mod
 from services.tasks import solver as solver_mod
 from tests.node_helpers import register_test_node
 
@@ -927,7 +928,7 @@ class TestGhostGuard:
         s_in = {"follow_key": _KEY, "lane": "dark_follow", "n_nodes": 3}
 
         for _ in range(2):
-            solver_mod._record_solve_history("rejected_rms_delay", s_in, _reject_result())
+            history_mod._record_solve_history("rejected_rms_delay", s_in, _reject_result())
 
         dark_follow._expire_targets_for_tests()
         assert dark_follow.follow_targets() == []
@@ -948,7 +949,7 @@ class TestGhostGuard:
         s_in = {"follow_key": _KEY, "lane": "dark_follow", "n_nodes": 2}
 
         for _ in range(4):
-            solver_mod._record_solve_history("n2_unconfirmed", s_in, _reject_result())
+            history_mod._record_solve_history("n2_unconfirmed", s_in, _reject_result())
 
         dark_follow._expire_targets_for_tests()
         assert len(dark_follow.follow_targets()) == 1
@@ -963,9 +964,9 @@ class TestGhostGuard:
         self._armed(monkeypatch)
         s_in = {"follow_key": _KEY, "lane": "dark_follow", "n_nodes": 2}
 
-        solver_mod._record_solve_history("rejected_rms_delay", s_in, _reject_result())
-        solver_mod._record_solve_history("n2_unconfirmed", s_in, _reject_result())
-        solver_mod._record_solve_history("rejected_rms_delay", s_in, _reject_result())
+        history_mod._record_solve_history("rejected_rms_delay", s_in, _reject_result())
+        history_mod._record_solve_history("n2_unconfirmed", s_in, _reject_result())
+        history_mod._record_solve_history("rejected_rms_delay", s_in, _reject_result())
 
         dark_follow._expire_targets_for_tests()
         assert dark_follow.follow_targets() == []
@@ -974,8 +975,8 @@ class TestGhostGuard:
     def test_a_published_record_counts_and_clears(self, monkeypatch):
         self._armed(monkeypatch)
         s_in = {"follow_key": _KEY, "lane": "dark_follow", "n_nodes": 3}
-        solver_mod._record_solve_history("rejected_rms_delay", s_in, _reject_result())
-        solver_mod._record_solve_history("published", s_in, _reject_result(), solve_key=_KEY)
+        history_mod._record_solve_history("rejected_rms_delay", s_in, _reject_result())
+        history_mod._record_solve_history("published", s_in, _reject_result(), solve_key=_KEY)
 
         assert state.dark_follow_published == 1
         dark_follow._expire_targets_for_tests()

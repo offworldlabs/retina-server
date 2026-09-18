@@ -25,6 +25,7 @@ import pytest
 from core import state
 from services.geo import offset_latlon_m
 from services.tasks import analytics_refresh
+from services.tasks import solve_history as history_mod
 from services.tasks import solver as solver_mod
 from services.tasks import solver_pool as pool_mod
 
@@ -114,7 +115,7 @@ class TestNearestGtVelocity(_SolverTestBase):
                 [lat1, lon1, 9000.0, now],
             ]
         )
-        gt = solver_mod._nearest_gt(LAT0, LON0, now)
+        gt = history_mod._nearest_gt(LAT0, LON0, now)
         assert gt["gt_hex"] == "abc123"
         assert gt["gt_speed_ms"] == pytest.approx(100.0, abs=5)
         assert gt["gt_heading_deg"] == pytest.approx(90.0, abs=2)
@@ -123,13 +124,13 @@ class TestNearestGtVelocity(_SolverTestBase):
         now = time.time()
         state.ground_truth_trails["solo"] = deque([[LAT0, LON0, 9000.0, now]])
         state.ground_truth_meta["solo"] = {"speed_ms": 42.0, "heading": 123.0}
-        gt = solver_mod._nearest_gt(LAT0, LON0, now)
+        gt = history_mod._nearest_gt(LAT0, LON0, now)
         assert gt["gt_hex"] == "solo"
         assert gt["gt_speed_ms"] == 42.0
         assert gt["gt_heading_deg"] == 123.0
 
     def test_no_gt_returns_all_four_keys_none(self):
-        gt = solver_mod._nearest_gt(LAT0, LON0, time.time())
+        gt = history_mod._nearest_gt(LAT0, LON0, time.time())
         assert gt == {
             "gt_hex": None,
             "gt_error_km": None,
@@ -153,7 +154,7 @@ class TestDerivedVelocityError(_SolverTestBase):
             "vel_north": vel_north,
             "timestamp_ms": int(time.time() * 1000),
         }
-        solver_mod._record_solve_history(
+        history_mod._record_solve_history(
             "published",
             {},
             result,
