@@ -1,6 +1,21 @@
+import { useState } from "react";
 import { useLocation } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import Header from "./Header";
+
+const SIDEBAR_KEY = "retina.sidebarCollapsed";
+
+/** The stored choice, or null when the user has never made one. Storage throws
+ *  in private mode, and a console that will not render is worse than one whose
+ *  sidebar forgets. */
+function storedCollapsed(): boolean | null {
+  try {
+    const raw = window.localStorage.getItem(SIDEBAR_KEY);
+    return raw === null ? null : raw === "true";
+  } catch {
+    return null;
+  }
+}
 
 const pageTitles = {
   "/": { user: "Overview", admin: "Network Health" },
@@ -34,9 +49,24 @@ export default function DashboardLayout({ isAdmin, children }) {
   const entry = pageTitles[basePath];
   const title = entry?.[mode] || (pathname.includes("/nodes/") ? "Node Detail" : "Dashboard");
 
+  const [stored, setStored] = useState(storedCollapsed);
+  // The map wants the canvas; every other page wants the labels. An explicit
+  // choice outranks both.
+  const collapsed = stored ?? basePath === "/map";
+
+  const toggle = () => {
+    const next = !collapsed;
+    setStored(next);
+    try {
+      window.localStorage.setItem(SIDEBAR_KEY, String(next));
+    } catch {
+      /* private mode: the choice still holds for this tab */
+    }
+  };
+
   return (
-    <div className="dashboard">
-      <Sidebar isAdmin={isAdmin} />
+    <div className={`dashboard${collapsed ? " sidebar-collapsed" : ""}`}>
+      <Sidebar isAdmin={isAdmin} collapsed={collapsed} onToggle={toggle} />
       <div className="main-area">
         <Header title={title} />
         <div className="content">{children}</div>

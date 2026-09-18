@@ -46,7 +46,7 @@ describe("the sidebar shown to a caller with no session", () => {
   function renderSidebar() {
     render(
       <MemoryRouter>
-        <Sidebar isAdmin={false} />
+        <Sidebar isAdmin={false} collapsed={false} onToggle={() => {}} />
       </MemoryRouter>
     );
   }
