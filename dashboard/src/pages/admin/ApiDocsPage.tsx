@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useResolvedTheme, type Theme } from "../../context/ThemeContext";
+import { SCALAR_THEME_CSS } from "../../utils/scalarTheme";
 
 /** The whole schema, admin, account and test routes included, behind
  *  require_admin. The public subset is the reference at the api host's root. */
@@ -37,6 +38,8 @@ function configuration(theme: Theme): object {
     showDeveloperTools: "never",
     withDefaultFonts: false,
     telemetry: false,
+    theme: "none",
+    customCss: SCALAR_THEME_CSS,
     forceDarkModeState: theme,
     hideDarkModeToggle: true,
   };

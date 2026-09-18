@@ -32,4 +32,6 @@ upgrade from being served stale by anything that does cache it.
 
 Replace `standalone.js`, rename the directory and `SCALAR_BUNDLE` in `ApiDocsPage.tsx` to the new
 version, update the URL and hash above, and update the pin in `backend/routes/reference.py` to the
-same version and its new SRI hash.
+same version and its new SRI hash. Point the bundle import in `src/test/scalarTheme.test.ts` at the
+new directory too: it fails if the new version no longer reads a `--scalar-*` variable the RETINA
+theme sets, which would otherwise drop that colour silently on both surfaces.
