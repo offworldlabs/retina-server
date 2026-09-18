@@ -177,7 +177,7 @@ jobs:
       # list in package.json.
       fail-fast: false
       matrix:
-        workspace: [frontend, dashboard, packages/shared]
+        workspace: [frontend, dashboard, packages/shared, e2e]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -188,12 +188,14 @@ jobs:
       # One workspace, one lockfile, one install; the matrix chooses whose
       # scripts run against it.
       - run: npm ci
-      - run: npm run lint -w ${{ matrix.workspace }}
-      # For the frontend this runs both tsc projects, src and e2e (see
-      # frontend/package.json), as one step and the same command ONBOARDING
-      # gives, so the two cannot drift.
+      # The browser suite has no lint or unit tests of its own, hence
+      # --if-present on those two.
+      - run: npm run lint -w ${{ matrix.workspace }} --if-present
+      # The same command ONBOARDING gives, so the two cannot drift. For e2e it
+      # typechecks the specs and the Playwright config, which nothing else
+      # checks before a deploy depends on them.
       - run: npm run typecheck -w ${{ matrix.workspace }}
-      - run: npm test -w ${{ matrix.workspace }}
+      - run: npm test -w ${{ matrix.workspace }} --if-present
       # The shared package has nothing to build; the two apps do.
       - run: npm run build -w ${{ matrix.workspace }} --if-present
 
@@ -318,7 +320,7 @@ jobs:
         # See the staging job: the step cap has to clear nodes.spec.ts's retried
         # hooks. It matters more here, where a timed-out step rolls production back.
         timeout-minutes: 20
-        run: npm run test:e2e:prod -w frontend
+        run: npm run test:e2e:prod -w e2e
         env:
           CI: "true"
           RADAR_API_KEY: ${{ secrets.RADAR_API_KEY }}

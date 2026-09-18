@@ -121,7 +121,7 @@ export const accessHeaders: Record<string, string> =
     : {};
 
 export default defineConfig({
-  testDir: "./e2e",
+  testDir: "./specs",
   timeout: 30_000,
   expect: { timeout: 10_000 },
   fullyParallel: true,

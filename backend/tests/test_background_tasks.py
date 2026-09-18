@@ -141,7 +141,7 @@ class TestTaskTimestamps:
 class TestAnalyticsRefreshPacing:
     """The refresh loop must hold a period, not a gap.
 
-    frontend/e2e/nodes.spec.ts waits a fixed window for a newly registered node
+    e2e/specs/nodes.spec.ts waits a fixed window for a newly registered node
     to reach /api/radar/nodes, and derives that window from this interval. Under
     fixed-delay the period is the interval PLUS the cycle cost, so the window is
     only wide enough while the cycle happens to be cheap.

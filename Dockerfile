@@ -21,6 +21,7 @@ COPY package.json package-lock.json .npmrc ./
 COPY frontend/package.json frontend/
 COPY dashboard/package.json dashboard/
 COPY packages/shared/package.json packages/shared/
+COPY e2e/package.json e2e/
 RUN npm ci
 # Vite's TypeScript transform follows each app's tsconfig `extends` chain, so
 # the build needs this even though nothing here runs tsc.
