@@ -12,7 +12,8 @@ export function retnodeUrl(nodeId: string | null | undefined): string | null {
   return `https://${nodeId.toLowerCase()}.${RETNODE_DOMAIN}`;
 }
 
-const externalLinkIcon = (
+/** The glyph for a link that opens outside the console — used wherever one is needed, not just here. */
+export const externalLinkIcon = (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
     <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6" />
     <polyline points="15 3 21 3 21 9" />

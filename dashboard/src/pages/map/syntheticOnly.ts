@@ -12,7 +12,7 @@
 // carry a real node's ref inside it, and each kept entry is scrubbed as well
 // as filtered.
 
-import { isSyntheticNode } from "./utils/nodeKind";
+import { isSyntheticNode } from "../../utils/nodeKind";
 
 // A feed entry carries no is_synthetic flag of its own, so the ref is all there
 // is to go on: isSyntheticNode falls back to the prefix, which is what still
