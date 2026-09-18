@@ -6,7 +6,7 @@ import { MAX_TRAIL_POINTS, mergeTrailPositions } from "./trails";
 import { validLatLon } from "./geo";
 import type { RadarNode } from "./types";
 import { hidesRealNodes, usesRealOnlyFeed } from "./utils/domains";
-import { isSyntheticNode } from "./utils/nodeKind";
+import { isSyntheticNode } from "../../utils/nodeKind";
 import {
   fromSyntheticNode,
   scrubToSyntheticNodes,
@@ -368,7 +368,7 @@ export function useNodes() {
           // The backend already strips synthetic nodes from real_only feeds;
           // this is defence in depth against a leftover leak, decided from
           // the server's own is_synthetic flag rather than parsed from the
-          // identifier. See utils/nodeKind.ts.
+          // identifier. See src/utils/nodeKind.ts.
           if (usesRealOnlyFeed && isSyntheticNode(info as { is_synthetic?: boolean }, ref)) continue;
           // The mirror, and the only filter standing between a real node and a
           // public demo: this listing has no real_only-style parameter for
