@@ -1,35 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mapUrl, towerFinderUrl } from "../utils/siblings";
-
-describe("mapUrl", () => {
-  it("stays on this origin under the /dash/ mount", () => {
-    for (const host of ["app.retina.fm", "staging-app.retina.fm", "test-app.retina.fm"]) {
-      expect(mapUrl(host, "https:", "/dash"), host).toBe("/");
-    }
-  });
-
-  it("names the app host of this environment from the admin vhost", () => {
-    expect(mapUrl("admin.retina.fm", "https:", "")).toBe("https://app.retina.fm/");
-    expect(mapUrl("staging-admin.retina.fm", "https:", "")).toBe("https://staging-app.retina.fm/");
-    expect(mapUrl("test-admin.retina.fm", "https:", "")).toBe("https://test-app.retina.fm/");
-  });
-
-  // The bug this file exists to prevent: a staging page linking to production.
-  it("never leaves the environment", () => {
-    for (const host of ["staging-admin.retina.fm", "test-admin.retina.fm"]) {
-      expect(mapUrl(host, "https:", ""), host).not.toContain("//app.retina.fm");
-    }
-  });
-
-  it("falls back to production where the host names no environment", () => {
-    expect(mapUrl("localhost:5174", "http:", "")).toBe("https://app.retina.fm/");
-    expect(mapUrl("192.168.1.9:5174", "http:", "")).toBe("https://app.retina.fm/");
-  });
-
-  it("keeps the port of the laptop stack's admin vhost", () => {
-    expect(mapUrl("admin.localhost:8080", "http:", "")).toBe("http://app.localhost:8080/");
-  });
-});
+import { towerFinderUrl } from "../utils/siblings";
 
 describe("towerFinderUrl", () => {
   it("is absolute from either surface, and stays in the environment", () => {

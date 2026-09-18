@@ -65,8 +65,7 @@ describe("the sidebar shown to a caller with no session", () => {
 
   it("points each internal entry at its own route", () => {
     renderSidebar();
-    for (const { path, label, external } of PUBLIC_ROUTES) {
-      if (external) continue;
+    for (const { path, label } of PUBLIC_ROUTES) {
       expect(screen.getByRole("link", { name: label })).toHaveAttribute("href", path);
     }
   });

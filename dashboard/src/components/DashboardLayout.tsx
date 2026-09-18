@@ -19,6 +19,7 @@ function storedCollapsed(): boolean | null {
 
 const pageTitles = {
   "/": { user: "Overview", admin: "Network Health" },
+  "/map": { user: "Live Map" },
   "/detections": { user: "Detections" },
   "/rf": { user: "RF Environment" },
   "/contribution": { user: "Network Contribution" },
