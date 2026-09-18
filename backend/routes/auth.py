@@ -131,12 +131,9 @@ def _magic_link_quota_available(source: str) -> bool:
         return True
 
 
-#: Where the mailed link lands. HOST_APP serves the map bundle at `/` and mounts
-#: the dashboard under `/dash/` (deploy/nginx/nginx.conf.template), and the
-#: dashboard's router carries a matching basename, so a link to `/auth/link/...`
-#: would render the map and never redeem the token. This prefix and
-#: dashboard/src/utils/basePath.ts have to agree.
-_SIGN_IN_PATH = "/dash/auth/link/"
+#: Where the mailed link lands: the console's own route (AuthLinkPage), at the
+#: root of HOST_APP.
+_SIGN_IN_PATH = "/auth/link/"
 
 
 def _session_user(user_dict: dict) -> dict:
