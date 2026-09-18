@@ -22,6 +22,12 @@ const pageTitles = {
   "/": { user: "Live Map", admin: "Network Health" },
   "/overview": { user: "Overview" },
   "/map": { user: "Live Map" },
+  "/sim": { user: "Simulation Map" },
+  // Two segments, so this table is looked up by the whole path before it falls
+  // back to the first one: /sim/physics is its own page, not a view of /sim.
+  "/sim/physics": { user: "Physics Layer" },
+  // The old address, which only forwards to /sim/physics. Kept so the hop does
+  // not flash a header that says "Dashboard" on its way there.
   "/physics": { user: "Physics Layer" },
   "/detections": { user: "Detections" },
   "/rf": { user: "RF Environment" },
@@ -48,18 +54,24 @@ export default function DashboardLayout({ isAdmin, children }) {
   const { pathname } = useLocation();
   const mode = isAdmin ? "admin" : "user";
   const segments = pathname.split("/").filter(Boolean);
+  const fullPath = segments.length ? `/${segments.join("/")}` : "/";
   const basePath = segments.length ? `/${segments[0]}` : "/";
-  const entry = pageTitles[basePath];
+  // Whole path first, first segment second. Almost every page is named by its
+  // first segment and owns whatever nests under it (/nodes/:nodeId is "Node
+  // Detail"); /sim is the one that does not, because the page nested under it
+  // is a different page rather than a detail view of the same one.
+  const entry = pageTitles[fullPath] ?? pageTitles[basePath];
   const title = entry?.[mode] || (pathname.includes("/nodes/") ? "Node Detail" : "Dashboard");
 
   const [stored, setStored] = useState(storedCollapsed);
   // The map wants the canvas; every other page wants the labels. An explicit
   // choice outranks both.
-  const collapsed = stored ?? basePath === "/map";
+  const collapsed = stored ?? (basePath === "/map" || fullPath === "/sim");
   // The map and the physics layer draw to the edges and scroll nothing: their
   // own panels own their overflow, and a scrollbar on the pane would move the
-  // canvas under them.
-  const flush = basePath === "/map" || basePath === "/physics";
+  // canvas under them. `/sim` by first segment covers both the sim map and the
+  // physics page now living under it.
+  const flush = basePath === "/map" || basePath === "/sim" || basePath === "/physics";
 
   const toggle = () => {
     const next = !collapsed;
