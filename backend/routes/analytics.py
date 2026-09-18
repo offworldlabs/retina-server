@@ -19,7 +19,7 @@ from services.publication import is_private, private_node_ids
 
 _RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
 
-router = APIRouter()
+router = APIRouter(tags=["analytics"])
 
 
 async def _optional_owned_nodes(request: Request) -> set[str]:

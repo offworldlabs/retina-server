@@ -79,7 +79,8 @@ or just the API on its own:
 cd backend && .venv/bin/uvicorn main:app --reload
 ```
 
-The API runs at `http://localhost:8000`. Interactive docs at `/docs`. The tower
+The API runs at `http://localhost:8000`, with its reference at `/` (published at
+`https://api.retina.fm`) and the whole schema at `/api/admin/openapi.json`. The tower
 search is not part of this process: run tower-finder-service (its own repo and
 container) if you need `/api/towers`, `/api/elevation`, `/api/config` or
 `/api/geocode` locally.

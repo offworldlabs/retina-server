@@ -21,7 +21,7 @@ from fastapi.responses import HTMLResponse, Response
 from core import state
 from services import node_refs
 
-router = APIRouter()
+router = APIRouter(tags=["aircraft"])
 
 
 def _real_node_ids() -> set:

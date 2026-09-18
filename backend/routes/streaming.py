@@ -13,7 +13,7 @@ from core.auth import get_user_nodes
 from core.users import AUTH_BYPASS, read_user_from_token
 from services.tasks.aircraft_flush import filter_payload_to_nodes, published_bytes
 
-router = APIRouter()
+router = APIRouter(tags=["radar"])
 
 _WS_AUTH_TOKEN = os.getenv("WS_AUTH_TOKEN", "")
 

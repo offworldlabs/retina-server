@@ -85,7 +85,9 @@ cp .env.example .env          # fill in what you need (see below)
 RETINA_ENV=dev AUTH_ALLOW_ANONYMOUS_ADMIN=1 SYNTHETIC_FLEET_ENABLED=1 uvicorn main:app --reload
 ```
 
-API at `http://localhost:8000`, interactive docs at `/docs`.
+API at `http://localhost:8000`, and its reference at `/`. That page and
+`/openapi.json` list only the public routes; with the bypass below, the whole
+schema is at `/api/admin/openapi.json`.
 
 `AUTH_ALLOW_ANONYMOUS_ADMIN=1` grants the anonymous-admin bypass, so you need
 no identity provider locally: with Cloudflare Access unconfigured, you're

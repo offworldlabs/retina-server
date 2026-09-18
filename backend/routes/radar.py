@@ -21,7 +21,7 @@ from services.public_location import public_latlon
 from services.publication import is_private
 from services.tcp_handler import is_synthetic_node
 
-router = APIRouter()
+router = APIRouter(tags=["radar"])
 
 
 # ── Request models ────────────────────────────────────────────────────────────
