@@ -1,12 +1,10 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  COPY_FEEDBACK_MS,
-  DownloadBasket,
-} from "../../pages/user/dataExplorer/DownloadBasket";
+import { DownloadBasket } from "../../pages/user/dataExplorer/DownloadBasket";
 import { curlLine, downloadUrl } from "../../pages/user/dataExplorer/download";
 import type { ArchiveFile } from "../../pages/user/dataExplorer/keys";
+import { COPY_FEEDBACK_MS } from "../../pages/user/dataExplorer/useCopy";
 
 const file = (node: string, name: string, size = 1024): ArchiveFile => ({
   key: `year=2026/month=09/day=17/node_id=${node}/${name}`,

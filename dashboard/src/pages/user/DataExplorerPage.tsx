@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useHref, useSearchParams } from "react-router-dom";
 
 import { StatCard } from "../../components/StatCard";
 import { formatBytes } from "../../utils/format";
@@ -17,6 +17,7 @@ import { NodePicker } from "./dataExplorer/NodePicker";
 import { anyNodeSynthetic, effectiveNodeIds, isSynthetic } from "./dataExplorer/nodes";
 import { ResultsTree, type SortKey } from "./dataExplorer/ResultsTree";
 import { useArchiveScan } from "./dataExplorer/useArchiveScan";
+import { useCopy } from "./dataExplorer/useCopy";
 import { useNodeRegistry } from "./dataExplorer/useNodeRegistry";
 import {
   DEFAULT_RADIUS_KM,
@@ -168,6 +169,10 @@ export default function DataExplorerPage() {
   const nodesWithData = new Set(matched.map((f) => f.node)).size;
   const coldFrom = horizon(scan.entries, days, entryScope);
   const shareQuery = writeFilters(filters).toString();
+  // From the filters rather than the address bar, which keeps a link's query
+  // as it arrived until a filter changes.
+  const shareHref = useHref({ search: `?${shareQuery}` });
+  const [shareCopyOutcome, copyShare] = useCopy();
 
   return (
     <>
@@ -251,6 +256,13 @@ export default function DataExplorerPage() {
           <div className="de-urlbar">
             <span>Shareable:</span>
             <code className="mono" data-testid="de-share">?{shareQuery}</code>
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => copyShare(`${window.location.origin}${shareHref}`)}
+            >
+              {shareCopyOutcome ?? "Copy link"}
+            </button>
           </div>
         </div>
         {mapOpen && (
