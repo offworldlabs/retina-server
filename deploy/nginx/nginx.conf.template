@@ -175,9 +175,9 @@ server {
     }
 }
 
-# ${HOST_APP} — the consolidated public surface: the live map at /, the
-# dashboard's public and owner pages under /dash/, the data explorer under
-# /data/. One hostname because the session cookie is host-only
+# ${HOST_APP} — the consolidated public surface: the live map at / and the
+# dashboard's public and owner pages, the data explorer among them, under
+# /dash/. One hostname because the session cookie is host-only
 # (backend/core/users.py sets no cookie_domain), so a login on the map is only
 # a login on the dashboard while the two share an origin.
 server {
@@ -234,14 +234,10 @@ server {
 
     # `/dash` does not contain `/dash/`, so it misses the mount below, falls
     # through to spa.conf's `location /` and answers 200 with the MAP bundle.
-    # An exact match outranks every prefix, so these win without disturbing it.
+    # An exact match outranks every prefix, so this wins without disturbing it.
     location = /dash {
         # $is_args$args: a `return` drops the query string, a rewrite keeps it.
         return 301 /dash/$is_args$args;
-    }
-
-    location = /data {
-        return 301 /data/$is_args$args;
     }
 
     # The dashboard bundle, the same one ${HOST_ADMIN} serves at its root.
@@ -270,13 +266,18 @@ server {
         }
     }
 
-    # The data explorer (data-explorer/, static, no build step). Nothing it
-    # ships carries a content hash, so it has no immutable tree: every file is
-    # revalidated, which is what spa.conf already does for these names.
+    # The standalone data explorer's old address, still in circulation as
+    # links. Their query parameters are the ones the dashboard's page reads
+    # (dataExplorer/urlState.ts), so keeping the query string keeps them
+    # working, and every path under it lands on the one page. `/data` needs the
+    # exact match for the reason `/dash` does, and `^~` stops spa.conf's regexes
+    # answering /data/*.js from the map's root.
+    location = /data {
+        return 301 /dash/data$is_args$args;
+    }
+
     location ^~ /data/ {
-        alias /app/data-explorer/;
-        try_files $uri $uri/ /data/index.html;
-        add_header Cache-Control "no-store, no-cache";
+        return 301 /dash/data$is_args$args;
     }
 
     # RETINA_INCLUDE snippets/spa.conf

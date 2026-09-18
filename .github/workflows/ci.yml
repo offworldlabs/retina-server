@@ -1102,23 +1102,22 @@ jobs:
           check_origin "api vhost is this origin"  "${BASE_URL}/api/health"
           # /api/health, not a page path: nginx drops every inherited add_header
           # in a location that declares one of its own, and this vhost's /dash/
-          # and /data/ mounts each declare a Cache-Control, so the marker reaches
-          # its API responses only.
+          # mount declares a Cache-Control, so the marker reaches its API
+          # responses only.
           check_origin "app vhost is this origin"  "https://app.retina.fm/api/health"
 
           echo ""
-          echo "── Do the mounted bundles render ──"
-          # The app vhost serves three bundles from one hostname, and the two
-          # under a path prefix are built for that prefix. Get that wrong and the
-          # page still answers 200 with its index.html while every asset in it
+          echo "── Does the mounted bundle render ──"
+          # The app vhost serves two bundles from one hostname, and the one
+          # under /dash/ is built for that prefix. Get that wrong and the page
+          # still answers 200 with its index.html while every asset in it
           # misses — a blank screen no status check here can see.
           check_page_asset "app /dash/ loads its bundle" "https://app.retina.fm/dash/"
-          check_page_asset "app /data/ loads its bundle" "https://app.retina.fm/data/"
 
           echo ""
           echo "── Do the retired hostnames still reach it ──"
-          # No vhost claims these; Cloudflare redirects them into the mounts
-          # above, and this origin would refuse them with a 421. Warned rather
+          # No vhost claims these; Cloudflare redirects them into the app host,
+          # and this origin would refuse them with a 421. Warned rather
           # than failed: the rules are the edge's, so no deploy here can have
           # broken one and rolling this release back cannot fix one.
           for pair in "map.retina.fm|https://app.retina.fm" \

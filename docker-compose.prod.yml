@@ -68,9 +68,10 @@ services:
       # both environments; only these values change.
       - HOST_MAIN=towers.retina.fm
       - HOST_API=api.retina.fm
-      # The public surface: the live map at /, the dashboard under /dash/, the
-      # data explorer under /data/. `map`, `dash` and `data` are Cloudflare
-      # redirect rules into these paths and reach no origin.
+      # The public surface: the live map at / and the dashboard under /dash/.
+      # `map`, `dash` and `data` are Cloudflare redirect rules into these paths
+      # (`data` by way of /data/, which nginx redirects on to /dash/data) and
+      # reach no origin.
       - HOST_APP=app.retina.fm
       - HOST_ADMIN=admin.retina.fm
       # The only host-naming part of the CSP. wss://*.retina.fm already covers
