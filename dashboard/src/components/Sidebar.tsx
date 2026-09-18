@@ -2,7 +2,7 @@ import { NavLink } from "react-router-dom";
 import { towerFinderUrl } from "../utils/siblings";
 import { useAuth } from "../context/AuthContext";
 import { PUBLIC_ROUTES } from "../utils/publicRoutes";
-import { usesRealOnlyFeed } from "../pages/map/utils/domains";
+import { showsPhysics } from "../utils/physics";
 import { externalLinkIcon } from "./RetnodeLink";
 
 type NavItem = {
@@ -18,7 +18,7 @@ type NavSection = { title: string; items: NavItem[] };
 // Built per render rather than at module scope. The links below read
 // window.location, and an import-time read that threw would take down every
 // module that transitively imports this one, not just the sidebar.
-const userNav = (): NavSection[] => [
+const userNav = (physics: boolean): NavSection[] => [
   {
     title: "Dashboard",
     items: [
@@ -29,7 +29,7 @@ const userNav = (): NavSection[] => [
       { to: "/alerts", label: "Alerts", icon: "bell" },
       { to: "/anomalies", label: "Anomalies", icon: "alertTriangle" },
       { to: "/map", label: "Map", icon: "map" },
-      ...(usesRealOnlyFeed ? [] : [{ to: "/physics", label: "Physics Layer", icon: "layers" }]),
+      ...(physics ? [{ to: "/physics", label: "Physics Layer", icon: "layers" }] : []),
       { href: towerFinderUrl(location.host, location.protocol), label: "Tower Finder", icon: "radio", external: true },
     ],
   },
@@ -272,7 +272,7 @@ export default function Sidebar({ isAdmin, collapsed, onToggle }) {
   const { user } = useAuth();
   // The console is never reached without a session, so its nav does not have a
   // signed-out form to choose between.
-  const nav = isAdmin ? adminNav : user ? userNav() : publicNav();
+  const nav = isAdmin ? adminNav : user ? userNav(showsPhysics(user)) : publicNav();
 
   return (
     <aside className="sidebar" id="console-sidebar">

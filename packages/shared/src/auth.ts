@@ -15,6 +15,8 @@ export interface CurrentUser {
   is_superuser?: boolean;
   created_at?: number;
   auth_enabled?: boolean;
+  /** Whether this server runs a synthetic fleet. */
+  synthetic_fleet?: boolean;
 }
 
 /** The first ask waits on a server that may still be opening its database, so
