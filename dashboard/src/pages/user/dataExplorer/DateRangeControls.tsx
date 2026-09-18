@@ -1,3 +1,4 @@
+import { formatBytes } from "../../../utils/format";
 import type { ExplorerFilters } from "./urlState";
 import { addDays } from "./dates";
 import { TOD_END, TOD_START } from "./urlState";
@@ -17,6 +18,16 @@ const SIZE_STEPS = [
   { bytes: 1024 * 1024, label: "≥ 1 MB" },
   { bytes: 10 * 1024 * 1024, label: "≥ 10 MB" },
 ];
+
+/** The steps, plus the size in force when a link names one they lack. A select
+ *  with no matching option shows its first, "Any size", over a filter that is
+ *  still applied. */
+function sizeOptions(minSize: number) {
+  if (SIZE_STEPS.some((s) => s.bytes === minSize)) return SIZE_STEPS;
+  return [...SIZE_STEPS, { bytes: minSize, label: `≥ ${formatBytes(minSize)}` }].sort(
+    (a, b) => a.bytes - b.bytes,
+  );
+}
 
 interface Props {
   filters: ExplorerFilters;
@@ -100,7 +111,7 @@ export function DateRangeControls({ filters, today, onChange }: Props) {
           value={String(filters.minSize)}
           onChange={(e) => set({ minSize: Number(e.target.value) })}
         >
-          {SIZE_STEPS.map((s) => (
+          {sizeOptions(filters.minSize).map((s) => (
             <option key={s.bytes} value={s.bytes}>
               {s.label}
             </option>
