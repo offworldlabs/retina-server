@@ -88,8 +88,8 @@ import { arcNearestPoint } from "./arcErrors";
 import { detectingNodeRefsFor } from "./detections";
 import { ensureDebugPanes, DEBUG_PASSIVE_PANE, GT_CLICK_PANE } from "./panes";
 import { ARC_TOTAL_LIFE_MS } from "./constants";
-import { useMapTheme, usePalette } from "./useMapTheme";
-import { DEFAULT_MAP_THEME } from "./mapPalette";
+import { usePalette } from "./useMapTheme";
+import { useResolvedTheme } from "../../context/ThemeContext";
 
 // Each theme has a basemap its colours were picked against: Positron for light,
 // Voyager tinted down for dark. Voyager under the light palette reads as two
@@ -1244,7 +1244,7 @@ export default function LiveAircraftMap() {
 
 function AircraftMapScope({ ownerOnly, restoreSelection, auth, onOwnerChange }) {
   const { ANOMALY, COVERAGE, LANE_MN_ADSB, LANE_MN_DARK, SELECTED, WARN } = usePalette();
-  const { theme, setTheme } = useMapTheme();
+  const theme = useResolvedTheme();
   /* ── Node-owner view ─────────────────────────────────────────── */
   // Resolved before the feed so `ownerOnly` can pick the server-filtered
   // /ws/aircraft/owner endpoint. Only takes effect once the user is logged in.
@@ -1371,23 +1371,28 @@ function AircraftMapScope({ ownerOnly, restoreSelection, auth, onOwnerChange }) 
   // User geolocation — opt-in. Drives the "you are here" marker and the
   // distance column in the list panel.
   const [userLoc, setUserLoc] = useState(null); // { lat, lon } | null
-  // Tile theme — voyager (default dark-ish), positron (light), osm (classic).
-  const [tileTheme, setTileTheme] = usePersistedState("tf.tile.theme", DEFAULT_BASEMAP[DEFAULT_MAP_THEME]);
+  // The basemap (positron, voyager or osm), and who chose it: a theme, or a
+  // hand on the cycle control. Both are stored, because the basemap alone
+  // cannot say: voyager is dark's default and also a stop on the cycle.
+  const [tileTheme, setTileTheme] = usePersistedState("tf.tile.theme", DEFAULT_BASEMAP[theme]);
+  const [tileChosenBy, setTileChosenBy] = usePersistedState("tf.tile.chosenBy", theme);
 
-  // Switching theme moves the basemap with it, but only when the basemap is
-  // still the one the OLD theme picked.  Anyone who has cycled it by hand has
-  // said what they want the tiles to be, and a theme switch is not a request to
-  // undo that — a guard that only checked "is this a mount?" still clobbered
-  // an OSM basemap the moment the theme changed.
-  const prevThemeRef = useRef(theme);
+  // A basemap a theme chose follows the theme, including a change made while
+  // the map was closed (the Header on another page, the OS overnight). One
+  // chosen by hand stays: a theme switch is not a request to undo it.
   useEffect(() => {
-    const prev = prevThemeRef.current;
-    if (prev === theme) return;
-    prevThemeRef.current = theme;
-    setTileTheme((current) =>
-      current === DEFAULT_BASEMAP[prev] ? DEFAULT_BASEMAP[theme] : current,
-    );
-  }, [theme, setTileTheme]);
+    if (tileChosenBy === "hand" || tileChosenBy === theme) return;
+    setTileTheme(DEFAULT_BASEMAP[theme]);
+    setTileChosenBy(theme);
+  }, [theme, tileChosenBy, setTileTheme, setTileChosenBy]);
+
+  // Cycling onto the current theme's own default hands the basemap back to the
+  // theme, so one stray click does not stop it following for good.
+  const cycleBasemap = useCallback(() => {
+    const next = tileTheme === "positron" ? "voyager" : tileTheme === "voyager" ? "osm" : "positron";
+    setTileTheme(next);
+    setTileChosenBy(next === DEFAULT_BASEMAP[theme] ? theme : "hand");
+  }, [tileTheme, theme, setTileTheme, setTileChosenBy]);
 
   const animationFrameRef = useRef(null);
   const fixesRef = useRef({});   // hex → last server fix
@@ -2170,7 +2175,7 @@ function AircraftMapScope({ ownerOnly, restoreSelection, auth, onOwnerChange }) 
         onToggleArcs={() => setShowArcs((v) => !v)}
         onToggleUncertainty={() => setShowUncertainty((v) => !v)}
         onToggleSound={() => setSoundOn((v) => !v)}
-        onCycleTheme={() => setTileTheme((t) => t === "positron" ? "voyager" : t === "voyager" ? "osm" : "positron")}
+        onCycleTheme={cycleBasemap}
         onShare={shareLink}
         onLocate={locateMe}
         onExportAll={exportAllTrails}
@@ -2179,8 +2184,6 @@ function AircraftMapScope({ ownerOnly, restoreSelection, auth, onOwnerChange }) 
         onFit={() => setFocusNonce((n) => n + 1)}
         filters={filters}
         onFiltersChange={setFilters}
-        theme={theme}
-        onToggleTheme={() => setTheme(theme === "dark" ? "light" : "dark")}
       />
 
       <div className="live-map-body">
