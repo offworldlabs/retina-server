@@ -3,7 +3,6 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "frontend",
     "dashboard",
     "packages/shared",
     "e2e"

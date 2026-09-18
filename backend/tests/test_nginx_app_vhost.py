@@ -65,6 +65,11 @@ def test_the_old_explorers_paths_land_on_the_page(app_vhost):
     assert "return 301 /data$is_args$args;" in body
 
 
+def test_no_vhost_serves_the_deleted_map():
+    """frontend/ is gone, so a root or alias into its dist is a 404 site."""
+    assert "/app/frontend/dist" not in render()
+
+
 def test_no_redirect_names_a_hostname(app_vhost):
     """deploy/check-env-parity.py maps each environment's HOST_* values back to
     a role token, so a literal hostname here would read as a parity failure."""

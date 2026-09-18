@@ -6,7 +6,6 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build:dash": "vite build --base=/dash/ --outDir=dist-dash",
     "preview": "vite preview",
     "lint": "eslint src/",
     "typecheck": "tsc --noEmit",
