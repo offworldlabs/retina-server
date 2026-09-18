@@ -150,6 +150,60 @@ class NodeContact(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class NodeClaim(Base):
+    """The address a node was claimed with, and whether it was ever confirmed.
+
+    Separate from NodeContact above, which is the site contact: freely
+    writable, replaced wholesale, granting nothing. This one is an
+    authorisation input. It cannot be rewritten while the node has an owner, an
+    omission does not clear it, and clearing it is release rather than a write
+    from the node.
+
+    Outside `node_contacts` for a second reason: routes/node_register.py calls
+    delete_contact, so a re-register wipes that document, and neither the
+    binding nor the confirmed address may go with it.
+
+    `verified` and the binding in `node_owners` are set by the same click and
+    agree at first, but they are different facts with different lifetimes. This
+    one says an address was confirmed; the binding says who owns the node.
+    Nothing here gates data: `node_owners` does.
+    """
+
+    __tablename__ = "node_claims"
+
+    node_id: Mapped[str] = mapped_column(String(32), ForeignKey("nodes.node_id"), primary_key=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # A hard bounce from the provider's feed. Not a state: a node whose address
+    # bounced is unclaimed, with the field live and a different address accepted
+    # normally. The flag only changes what its setup UI says about the address
+    # still on file, and refuses a re-send to that one.
+    undeliverable: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class NodeClaimChallenge(Base):
+    """The one address a node has awaiting verification.
+
+    `node_id` is the primary key, so "at most one pending challenge per node"
+    is the schema's rule rather than a convention its writers keep. Nominating
+    a new address replaces this row, and the handle it held is invalidated by
+    the caller that displaced it, which is what stops a link mailed to a
+    mistyped address working once the address is corrected.
+
+    `handle` is what services/claim_links.py returns and what invalidation is
+    called with. The token that goes in the mail is never stored.
+    """
+
+    __tablename__ = "node_claim_challenges"
+
+    node_id: Mapped[str] = mapped_column(String(32), ForeignKey("nodes.node_id"), primary_key=True)
+    email: Mapped[str] = mapped_column(String(255), index=True)
+    handle: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[float] = mapped_column(Float)
+    expires_at: Mapped[float] = mapped_column(Float)
+
+
 class NodeToken(Base):
     """A node's bearer credential, stored only as a SHA-256.
 
