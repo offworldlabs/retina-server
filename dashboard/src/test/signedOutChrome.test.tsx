@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { MemoryRouter, Route, Routes, useLocation, useNavigationType } from "react-router-dom";
 
 import Sidebar from "../components/Sidebar";
 import Header from "../components/Header";
+import LoginPage from "../pages/LoginPage";
 import { ThemeProvider } from "../context/ThemeContext";
 import { PUBLIC_ROUTES } from "../utils/publicRoutes";
 
@@ -108,5 +109,34 @@ describe("the header shown to a caller with no session", () => {
   it("does not offer a way out of a session that does not exist", () => {
     renderHeader();
     expect(screen.queryByText("Sign out")).not.toBeInTheDocument();
+  });
+});
+
+describe("signing in from an open page and changing one's mind", () => {
+  function Where() {
+    const { pathname, search } = useLocation();
+    return <output aria-label="location">{`${useNavigationType()} ${pathname}${search}`}</output>;
+  }
+
+  it("returns to the page the sign-in link was on, as it was left", () => {
+    stubBrowser();
+    render(
+      <MemoryRouter initialEntries={["/leaderboard?page=2"]}>
+        <ThemeProvider>
+          <Routes>
+            <Route path="/leaderboard" element={<Header title="Leaderboard" />} />
+            <Route path="/login" element={<LoginPage />} />
+          </Routes>
+          <Where />
+        </ThemeProvider>
+      </MemoryRouter>
+    );
+
+    fireEvent.click(screen.getByRole("link", { name: "Sign in" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+
+    // A pop rather than a fresh visit, so the browser's own Back does not
+    // then lead to the login card again.
+    expect(screen.getByLabelText("location")).toHaveTextContent("POP /leaderboard?page=2");
   });
 });

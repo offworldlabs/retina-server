@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import LoginPage from "../pages/LoginPage";
 
 // Mock the auth context to return no user (unauthenticated)
@@ -110,5 +110,53 @@ describe("LoginPage", () => {
     // AuthLinkPage renders this page with the reason a link failed to redeem.
     renderLogin({ message: "That sign-in link is no longer valid" });
     expect(screen.getByText("That sign-in link is no longer valid")).toBeInTheDocument();
+  });
+});
+
+describe("the way back from the login card", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", answer(202, { status: "accepted" }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function openDirectly(props = {}) {
+    render(
+      <MemoryRouter initialEntries={["/login"]}>
+        <Routes>
+          <Route path="/login" element={<LoginPage {...props} />} />
+          <Route path="/map" element={<div>Map page</div>} />
+        </Routes>
+      </MemoryRouter>
+    );
+  }
+
+  it("takes a visitor who arrived directly to the map", () => {
+    openDirectly();
+    fireEvent.click(screen.getByRole("button", { name: "Back to the map" }));
+    expect(screen.getByText("Map page")).toBeInTheDocument();
+  });
+
+  it("is still there once the link is on its way", async () => {
+    openDirectly();
+    requestLink();
+    await screen.findByText(CONFIRMATION);
+    expect(screen.getByRole("button", { name: "Back to the map" })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["arriving directly", "/login"],
+    ["marked as from an open page", { pathname: "/login", state: { fromOpenPage: true } }],
+  ])("is not offered on the admin console, %s", (_case, entry) => {
+    // No admin route opens without a session, so any destination would put
+    // the caller straight back on this card.
+    render(
+      <MemoryRouter initialEntries={[entry]}>
+        <LoginPage isAdmin />
+      </MemoryRouter>
+    );
+    expect(screen.queryByRole("button", { name: /back/i })).not.toBeInTheDocument();
   });
 });

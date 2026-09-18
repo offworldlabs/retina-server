@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../api/client";
 import LoginPage from "./LoginPage";
+import LoginBack from "../components/LoginBack";
 
 /** The server's single answer for unknown, expired and already-redeemed. */
 const DEAD_LINK = "That sign-in link is no longer valid";
@@ -11,7 +12,7 @@ const DEAD_LINK = "That sign-in link is no longer valid";
  *  mail providers prefetch links, and a token spent by a scanner is a link
  *  that is already dead when its recipient clicks it — so the redemption is
  *  this POST, made once the page is in front of a person. */
-export default function AuthLinkPage() {
+export default function AuthLinkPage({ isAdmin = false }) {
   const { token } = useParams();
   const navigate = useNavigate();
   const { signIn } = useAuth();
@@ -52,12 +53,13 @@ export default function AuthLinkPage() {
     })();
   }, [token, signIn, navigate, attempt]);
 
-  if (failure === "dead") return <LoginPage message={DEAD_LINK} />;
+  if (failure === "dead") return <LoginPage message={DEAD_LINK} isAdmin={isAdmin} />;
 
   if (failure === "transient") {
     return (
       <div className="login-page">
         <div className="login-card">
+          <LoginBack isAdmin={isAdmin} />
           <div className="logo">◉</div>
           <h1>Retina</h1>
           <p className="login-error">We could not reach the server to sign you in.</p>

@@ -66,6 +66,7 @@ a:hover {
 }
 
 .login-card {
+  position: relative;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -84,6 +85,33 @@ a:hover {
 .login-card .subtitle {
   color: var(--text-secondary);
   margin-bottom: 32px;
+}
+
+/* Inside the card's 48px top padding, so it never collides with the logo. */
+.login-back {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--text-secondary);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.login-back:hover {
+  background: var(--bg-card-hover);
+  color: var(--text-primary);
+}
+
+.login-back:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .login-card .logo {
