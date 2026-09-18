@@ -124,18 +124,6 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     )
 
 
-class Invite(Base):
-    __tablename__ = "invites"
-
-    token: Mapped[str] = mapped_column(String(32), primary_key=True)
-    email: Mapped[str] = mapped_column(String(255), index=True)
-    role: Mapped[str] = mapped_column(String(20))
-    created_by: Mapped[str] = mapped_column(String(255))
-    created_at: Mapped[float] = mapped_column(Float)
-    expires_at: Mapped[float] = mapped_column(Float)
-    used_at: Mapped[float | None] = mapped_column(Float, nullable=True, default=None)
-
-
 class NodeOwner(Base):
     __tablename__ = "node_owners"
 
@@ -469,11 +457,11 @@ class MagicLinkRefused(Exception):
 async def get_or_create_magic_link_user(email: str) -> User:
     """Find or create the account a redeemed sign-in link belongs to.
 
-    No invite is consumed and no address list is consulted, so an account
-    reached this way is never a superuser. Administrator identity is Cloudflare
-    Access and only Cloudflare Access; an address that can receive mail is not a
-    claim to the console. The account grants nothing by itself either way — node
-    ownership comes from a claim code.
+    No address list is consulted, so an account reached this way is never a
+    superuser. Administrator identity is Cloudflare Access and only Cloudflare
+    Access; an address that can receive mail is not a claim to the console. The
+    account grants nothing by itself either way — node ownership comes from a
+    claim code.
 
     Raises MagicLinkRefused for an account that is already a superuser. The
     invariant has to hold for a row that exists, not only for one created here,

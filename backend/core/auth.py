@@ -1,4 +1,4 @@
-"""Domain-specific auth helpers: invites, node ownership, claim codes.
+"""Domain-specific auth helpers: node ownership, claim codes, sign-in links.
 
 All data is stored in the shared SQLite database (users.db) via SQLAlchemy
 async sessions. On first startup, migrate_json_to_db() imports any existing
@@ -19,16 +19,14 @@ from pathlib import Path
 
 from sqlalchemy import delete, select, update
 
-from core.users import ClaimCode, Invite, MagicLink, NodeOwner, async_session_maker
+from core.users import ClaimCode, MagicLink, NodeOwner, async_session_maker
 
 logger = logging.getLogger(__name__)
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-INVITES_FILE = _DATA_DIR / "invites.json"
 NODE_OWNERS_FILE = _DATA_DIR / "node_owners.json"
 CLAIM_CODES_FILE = _DATA_DIR / "claim_codes.json"
 
-INVITE_EXPIRY_S = 86400 * 14  # 14 days
 CLAIM_CODE_EXPIRY_S = 86400 * 30  # 30 days
 
 _MAX_ACTIVE_CLAIM_CODES_PER_USER = 10
@@ -60,7 +58,7 @@ async def migrate_json_to_db() -> None:
     imported = []
     async with async_session_maker() as session:
         async with session.begin():
-            for migrate in (_migrate_invites, _migrate_node_owners, _migrate_claim_codes):
+            for migrate in (_migrate_node_owners, _migrate_claim_codes):
                 source = await migrate(session)
                 if source is not None:
                     imported.append(source)
@@ -69,31 +67,6 @@ async def migrate_json_to_db() -> None:
     for source in imported:
         source.rename(source.with_suffix(".json.migrated"))
         logger.info("Migrated auth records from %s", source)
-
-
-async def _migrate_invites(session) -> Path | None:
-    if not INVITES_FILE.exists():
-        return
-    try:
-        data = json.loads(INVITES_FILE.read_text())
-    except Exception:
-        logger.exception("Could not read %s for migration", INVITES_FILE)
-        return
-    for token, inv in data.items():
-        if await session.get(Invite, token):
-            continue
-        session.add(
-            Invite(
-                token=token,
-                email=inv.get("email", "").lower(),
-                role=inv.get("role", "user"),
-                created_by=inv.get("created_by", ""),
-                created_at=float(inv.get("created_at", 0)),
-                expires_at=float(inv.get("expires_at", 0)),
-                used_at=inv.get("used_at"),
-            )
-        )
-    return INVITES_FILE
 
 
 async def _migrate_node_owners(session) -> Path | None:
@@ -133,84 +106,6 @@ async def _migrate_claim_codes(session) -> Path | None:
             )
         )
     return CLAIM_CODES_FILE
-
-
-# ── Invites ───────────────────────────────────────────────────────────────────
-
-
-async def create_invite(email: str, role: str, created_by: str) -> dict:
-    if role not in ("user", "admin"):
-        raise ValueError("invalid role")
-    email = email.lower().strip()
-    if not email or "@" not in email:
-        raise ValueError("invalid email")
-    now = time.time()
-    token = secrets.token_urlsafe(16)
-    invite = Invite(
-        token=token,
-        email=email,
-        role=role,
-        created_by=created_by,
-        created_at=now,
-        expires_at=now + INVITE_EXPIRY_S,
-        used_at=None,
-    )
-    async with async_session_maker() as session:
-        session.add(invite)
-        await session.commit()
-    return _invite_to_dict(invite)
-
-
-async def list_invites() -> list[dict]:
-    async with async_session_maker() as session:
-        result = await session.execute(select(Invite))
-        return [_invite_to_dict(i) for i in result.scalars().all()]
-
-
-async def revoke_invite(token: str) -> bool:
-    async with async_session_maker() as session:
-        invite = await session.get(Invite, token)
-        if not invite:
-            return False
-        await session.delete(invite)
-        await session.commit()
-    return True
-
-
-async def consume_invite_for_email(email: str) -> str | None:
-    """Consume the oldest valid invite for this email. Returns role or None."""
-    email = email.lower().strip()
-    now = time.time()
-    async with async_session_maker() as session:
-        result = await session.execute(
-            select(Invite)
-            .where(
-                Invite.email == email,
-                Invite.used_at.is_(None),
-                Invite.expires_at > now,
-            )
-            .order_by(Invite.created_at)
-            .limit(1)
-        )
-        invite = result.scalar_one_or_none()
-        if invite is None:
-            return None
-        invite.used_at = now
-        role = invite.role
-        await session.commit()
-    return role
-
-
-def _invite_to_dict(invite: Invite) -> dict:
-    return {
-        "token": invite.token,
-        "email": invite.email,
-        "role": invite.role,
-        "created_by": invite.created_by,
-        "created_at": invite.created_at,
-        "expires_at": invite.expires_at,
-        "used_at": invite.used_at,
-    }
 
 
 # ── Node ownership ────────────────────────────────────────────────────────────

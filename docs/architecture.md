@@ -96,7 +96,7 @@ are in [`arc-display.md`](arc-display.md).
 - **`core/state.py`** — the in-memory world: connected nodes, tracks, aircraft,
   arc buffers, WebSocket client sets, latest JSON payloads.
 - **`core/users.py` + `core/auth.py`** — fastapi-users (cookie JWT, sign-in by
-  emailed link) plus domain auth: invites, node ownership, claim codes (SQLite).
+  emailed link) plus domain auth: node ownership, claim codes (SQLite).
 
 ## The algorithm libraries (submodules)
 
@@ -145,7 +145,7 @@ per-node trust residuals, and the feed's `adsb_single_node` display section).
   A restart drops them.
 - **Snapshots.** State is serialized to disk every 60s and restored on boot
   (trust scores, reputations, accuracy samples, node identities).
-- **SQLite** (`data/users.db`) — users, invites, node owners, claim codes.
+- **SQLite** (`data/users.db`) — users, node owners, claim codes.
 - **R2 (Cloudflare).** Archived coverage/track Parquet is offloaded to the
   `retina-server-archive` bucket and pruned locally (see the runbook).
 

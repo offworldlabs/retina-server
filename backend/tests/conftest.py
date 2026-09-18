@@ -113,7 +113,6 @@ def _clean_db():
     from core.nodes import Node, NodeClaim, NodeClaimChallenge, NodeConfig, NodeLocationPrivacy, NodeToken
     from core.users import (
         ClaimCode,
-        Invite,
         MagicLink,
         NodeOwner,
         User,
@@ -132,7 +131,6 @@ def _clean_db():
             await session.execute(delete(User))
             await session.execute(delete(ClaimCode))
             await session.execute(delete(NodeOwner))
-            await session.execute(delete(Invite))
             # No foreign key to nodes, by design (core/nodes.py), so its order
             # here is free — it sits with the other keyed-by-node-id tables.
             await session.execute(delete(NodeLocationPrivacy))

@@ -413,9 +413,9 @@ ARCHIVE_LIFECYCLE_INTERVAL_S = 3600  # Run lifecycle check every hour
 # ── users.db backup to R2 ────────────────────────────────────────────────────
 # Daily snapshot via VACUUM INTO + upload to R2 under backups/users-db/.
 # 30 days is the cheapest "sane" retention: enough to recover from a
-# realised-too-late deletion (typical "I revoked the wrong invite" scenario
-# manifests within a week), short enough that the bucket doesn't grow
-# unbounded as the user table itself does.
+# realised-too-late deletion (a node owner cleared or a claim code revoked
+# by mistake typically surfaces within a week), short enough that the bucket
+# doesn't grow unbounded as the user table itself does.
 USERS_DB_BACKUP_INTERVAL_S = 86400  # Once per day
 USERS_DB_BACKUP_RETENTION_DAYS = 30  # Keep last N daily snapshots in R2
 
