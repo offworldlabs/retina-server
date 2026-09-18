@@ -4,15 +4,16 @@
  * The dashboard has two legitimate auth modes, and the server says which one
  * it is in on every unauthenticated GET /api/auth/me:
  *
- *   oauth   — auth is enforced. /api/auth/me answers 401, `/` redirects to
- *             /login, and /login renders the login card. Every deployed
+ *   oauth   — auth is enforced. /api/auth/me answers 401, a private page
+ *             such as /overview redirects to /login, and /login renders the
+ *             login card. (`/` is public: it forwards to the map.) Every deployed
  *             environment is in this mode; the name predates Cloudflare Access,
  *             and on a droplet it is a verified Access assertion rather than an
  *             OAuth client that satisfies it.
  *   bypass  — AUTH_ALLOW_ANONYMOUS_ADMIN=1 with no OAuth client, which only
  *             docker-compose.local.yml sets now (see backend/.env.example).
  *             /api/auth/me answers 200 with the anonymous
- *             admin and `auth_enabled: false`. `/` renders the dashboard
+ *             admin and `auth_enabled: false`. A private page renders
  *             directly, and /login is a transient page: LoginPage navigates to
  *             `/` the moment the auth call resolves, so it shows the login card
  *             only for the one round trip to /api/auth/me.
@@ -36,6 +37,8 @@ import { hosts, dashBase } from "../playwright.config";
 const DASH = hosts.dash;
 const DASH_PAGE = `${DASH}${dashBase}`;
 const LOGIN_PATH = `${dashBase}/login`;
+// A page that needs a session. The index does not: it forwards to the map.
+const PRIVATE_PAGE = `${DASH_PAGE}/overview`;
 const ADMIN = hosts.admin;
 const API = hosts.api;
 
@@ -100,9 +103,9 @@ async function expectSurface(page: Page, base: string, mode: AuthMode, name: str
 }
 
 test.describe("Dashboard — unauthenticated access (real auth mode)", () => {
-  test("/ renders what the server's auth mode says it should", async ({ page }) => {
+  test("a private page renders what the server's auth mode says it should", async ({ page }) => {
     const mode = await serverAuthMode();
-    await page.goto(DASH_PAGE);
+    await page.goto(PRIVATE_PAGE);
     if (mode === "oauth") {
       await page.waitForURL(/\/login/, { timeout: 10_000 });
       await expect(page.locator(".login-card")).toBeVisible({ timeout: 5_000 });
@@ -209,7 +212,7 @@ test.describe("Admin surface selection", () => {
   });
 
   test("the /dash/ mount serves the user dashboard", async ({ page }) => {
-    await page.goto(DASH_PAGE);
+    await page.goto(PRIVATE_PAGE);
     await expectSurface(page, DASH_PAGE, authMode!, "Node Dashboard");
   });
 });

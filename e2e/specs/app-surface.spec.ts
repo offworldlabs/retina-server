@@ -40,16 +40,20 @@ test.describe("the consolidated app surface", () => {
     await expect(page.locator(".connection-badge")).toBeVisible({ timeout: 30_000 });
   });
 
-  test("runs the dashboard bundle under /dash/, not the map", async ({ page }) => {
+  test("runs the dashboard bundle under /dash/, opening on its own map", async ({ page }) => {
     await page.goto(`${BASE}/dash/`, { waitUntil: "domcontentloaded" });
 
-    // Unauthenticated, so RequireAuth sends us to the login route. Rendering
-    // this card at all proves the bundle's assets resolved and it executed.
-    await expect(page.locator(".login-card")).toBeVisible({ timeout: 30_000 });
+    // The console's index forwards to its map, and that redirect is
+    // react-router's, so reaching /dash/map proves the bundle's assets resolved,
+    // it executed, and the router kept the mount. Without the basename this
+    // would be `/map`, which on this vhost is the other bundle.
+    await expect(page).toHaveURL(new RegExp(`^${originPattern()}/dash/map`));
+    await expect(page.locator(".connection-badge")).toBeVisible({ timeout: 30_000 });
+  });
 
-    // And the router kept the mount. Without the basename this would be
-    // `/login`, which on this vhost is the map bundle — a 200, and the wrong
-    // application.
+  test("still sends a private page to the login card under /dash/", async ({ page }) => {
+    await page.goto(`${BASE}/dash/overview`, { waitUntil: "domcontentloaded" });
+    await expect(page.locator(".login-card")).toBeVisible({ timeout: 30_000 });
     await expect(page).toHaveURL(new RegExp(`^${originPattern()}/dash/login/?$`));
   });
 
