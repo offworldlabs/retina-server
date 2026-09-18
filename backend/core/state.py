@@ -826,10 +826,10 @@ solver_queue_drops_recent: deque = deque(maxlen=SOLVER_QUEUE_DROPS_RECENT_MAX)
 ws_send_timeouts: int = 0
 
 # Solve calls that hit SOLVER_POOL_CALL_TIMEOUT_S waiting on a pool child and
-# were retried inline (services/tasks/solver._pool_call).  A stuck-but-alive
-# child used to block one of the two solver worker threads for the process
-# lifetime with no counter moving anywhere; nonzero here means the pool was
-# torn down and rebuilt at least that many times.
+# were retried inline (services/tasks/solver_pool._pool_call).  A
+# stuck-but-alive child used to block one of the two solver worker threads for
+# the process lifetime with no counter moving anywhere; nonzero here means the
+# pool was torn down and rebuilt at least that many times.
 solver_pool_timeouts: int = 0
 # Queue items discarded unsolved because they aged past _SOLVER_MAX_QUEUE_AGE_S
 # waiting for a worker.  Was only a DEBUG log, which staging does not emit —
