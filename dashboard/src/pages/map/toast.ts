@@ -1,5 +1,3 @@
-import { activePalette, activeTheme } from "./mapPalette";
-
 /**
  * Tiny toast system — no library, no provider. A singleton mounts itself
  * lazily into `document.body` the first time `toast()` is called and
@@ -20,28 +18,18 @@ let _container: HTMLDivElement | null = null;
 let _entries: ToastEntry[] = [];
 let _idSeq = 1;
 
-// Toasts mount on document.body, outside the `.app.map-surface` subtree the
-// tokens are scoped to, so a var() here resolves to nothing. They read the
-// active palette instead — hardcoding either theme would leave every toast
-// mismatched with the surface it appears over half the time.
-function toneColours(): { bg: Record<Tone, string>; border: Record<Tone, string>; ink: string } {
-  const p = activePalette();
-  const wash = (hex: string, alpha: number) => {
-    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
-    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-  };
-  const dark = activeTheme() === "dark";
-  return {
-    bg: {
-      info: dark ? "#132240" : "#ffffff",
-      success: wash(p.GOOD, dark ? 0.18 : 0.1),
-      error: wash(p.BAD, dark ? 0.18 : 0.1),
-      warn: wash(p.WARN, dark ? 0.18 : 0.1),
-    },
-    border: { info: dark ? "#334155" : "#e2e8f0", success: p.GOOD, error: p.BAD, warn: p.WARN },
-    ink: dark ? "#e2e8f0" : "#0f172a",
-  };
-}
+// Toasts sit on document.body, under `:root`, so the console's tokens resolve
+// here and each toast takes the console's theme.
+const TONES: { bg: Record<Tone, string>; border: Record<Tone, string>; ink: string } = {
+  bg: {
+    info: "var(--bg-card)",
+    success: "var(--success-light)",
+    error: "var(--error-light)",
+    warn: "var(--warning-light)",
+  },
+  border: { info: "var(--border-light)", success: "var(--success)", error: "var(--error)", warn: "var(--warning)" },
+  ink: "var(--text-primary)",
+};
 
 function ensureContainer(): HTMLDivElement {
   if (_container && document.body.contains(_container)) return _container;
@@ -65,15 +53,14 @@ function ensureContainer(): HTMLDivElement {
 
 function render() {
   const c = ensureContainer();
-  const tones = toneColours();
   c.innerHTML = "";
   for (const e of _entries) {
     const el = document.createElement("div");
     el.textContent = e.text;
     Object.assign(el.style, {
-      background: tones.bg[e.tone],
-      border: `1px solid ${tones.border[e.tone]}`,
-      color: tones.ink,
+      background: TONES.bg[e.tone],
+      border: `1px solid ${TONES.border[e.tone]}`,
+      color: TONES.ink,
       padding: "8px 12px",
       borderRadius: "8px",
       fontSize: "13px",

@@ -7,9 +7,9 @@
  * elevation, the tokens for chips drawn onto tiles, and the density this
  * surface reads at.
  *
- * Everything is scoped to `.app.map-surface`, the class App sets on the root,
- * which is also the hook the shared palette uses to give this surface dark by
- * default while the consoles default to light.
+ * Everything is scoped to `.app.map-surface`, the class MapSurface sets. It
+ * always stamps the console's resolved theme as `data-theme`, which is what the
+ * shared palette and the tokens below key off.
  */
 
 .app.map-surface {
@@ -25,8 +25,9 @@
 /* ── Chrome tokens ────────────────────────────────────────────────────────
    The names the consoles have no equivalent for, because they have no map:
    how far the basemap is pushed back, the chips drawn onto it, and the one
-   violet the Physics tab uses for a control that is not an object class.
-   Dark first, because dark is this surface's default. */
+   violet the Physics Layer uses for a control that is not an object class.
+   Dark first, because its selector is `:not([data-theme="light"])`, mirroring
+   tokens.css. */
 
 .app.map-surface:not([data-theme="light"]) {
   /* Panels float over the map, and on a dark surface a soft shadow does
