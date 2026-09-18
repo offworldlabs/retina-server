@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { fetchMlatAccuracy, fetchMlatVerification } from "./api";
+import { api } from "../../api/client";
 import { POSITION_SOURCE_ARC_ONLY, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
 import { classifyHex, emergencySquawkLabel } from "./hexInfo";
 import { trailToCsv, downloadCsv } from "./trailExport";
@@ -423,11 +423,14 @@ function MlatVerificationSection({ solverHex }) {
   useEffect(() => {
     let cancelled = false;
     const load = () => {
-      Promise.all([fetchMlatVerification(), fetchMlatAccuracy()]).then(([verification, rolling]) => {
-        if (cancelled) return;
-        if (verification) setData(verification);
-        if (rolling) setAccuracy(rolling);
-      });
+      // Two requests, each settling on its own: one endpoint failing leaves the
+      // other's figure updating, and the failed one keeps what it last showed.
+      api.mlatVerification()
+        .then((verification) => { if (!cancelled && verification) setData(verification); })
+        .catch(() => {});
+      api.mlatAccuracy()
+        .then((rolling) => { if (!cancelled && rolling) setAccuracy(rolling); })
+        .catch(() => {});
     };
     load();
     const interval = setInterval(load, 30000);
