@@ -41,8 +41,8 @@ def locations(text: str) -> list[tuple[str, str]]:
     """(header, body) for every `location ... { ... }`, innermost braces only.
 
     A block containing another one is invisible here — the pattern stops at the
-    first closing brace — so the app vhost's `^~ /dash/`, which nests its
-    /assets/ location, is reached with block() below instead.
+    first closing brace — so a nested location is reached with block() below
+    instead.
     """
     return [(m.group(1), m.group(2)) for m in re.finditer(r"(location[^\n{]*)\{([^{}]*)\}", text)]
 

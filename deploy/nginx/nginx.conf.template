@@ -175,11 +175,9 @@ server {
     }
 }
 
-# ${HOST_APP} — the consolidated public surface: the live map at / and the
-# dashboard's public and owner pages, the data explorer among them, under
-# /dash/. One hostname because the session cookie is host-only
-# (backend/core/users.py sets no cookie_domain), so a login on the map is only
-# a login on the dashboard while the two share an origin.
+# ${HOST_APP} — the consolidated public surface: the console at /, opening on
+# the live map, with its public and owner pages beside it. One hostname because
+# the session cookie is host-only (backend/core/users.py sets no cookie_domain).
 server {
     # RETINA_IF TLS
     listen 443 ssl;
@@ -193,7 +191,8 @@ server {
     # RETINA_ENDIF
     # RETINA_INCLUDE snippets/security-headers-page.conf
 
-    root /app/frontend/dist;
+    # The same bundle ${HOST_ADMIN} serves; the hostname picks its route table.
+    root /app/dashboard/dist;
     index index.html;
 
     # WebSocket → FastAPI backend
@@ -232,60 +231,34 @@ server {
     # RETINA_INCLUDE snippets/towers-proxy.conf
     # RETINA_ENDIF
 
-    # `/dash` does not contain `/dash/`, so it misses the mount below, falls
-    # through to spa.conf's `location /` and answers 200 with the MAP bundle.
-    # An exact match outranks every prefix, so this wins without disturbing it.
+    # The console's old mount. Its links are in circulation, mailed sign-in
+    # links among them, so each lands on the same page at the root. `/dash`
+    # needs its own exact match: it does not contain `/dash/`, and the SPA has
+    # no route of that name.
     location = /dash {
         # $is_args$args: a `return` drops the query string, a rewrite keeps it.
-        return 301 /dash/$is_args$args;
+        return 301 /$is_args$args;
     }
 
-    # The dashboard bundle, the same one ${HOST_ADMIN} serves at its root.
-    #
-    # `^~` is load-bearing, not decoration: spa.conf below ends in regex
-    # locations, a regex beats a prefix whatever their lengths, and those
-    # regexes resolve against this vhost's root — so without it
-    # /dash/assets/index-<hash>.js is served from /app/frontend/dist and 404s.
-    # `^~` tells nginx to stop at the prefix and never consult them.
-    #
-    # Declaring add_header here costs this location the server-level security
-    # headers, as spa.conf's locations already cost every other page vhost
-    # theirs: no HTML response anywhere carries a CSP today (ClickUp
-    # 123zgec37tp). Fixing that has to cover this mount too.
+    # `^~` so spa.conf's regex locations below never answer /dash/*.js
+    # themselves: a regex beats a prefix whatever their lengths.
     location ^~ /dash/ {
-        alias /app/dashboard/dist-dash/;
-        try_files $uri $uri/ /dash/index.html;
-        add_header Cache-Control "no-store, no-cache";
-
-        # Vite's hashed output, and nothing else, may be kept for a week —
-        # same rule and same reasoning as spa.conf's /assets/ location.
-        location ^~ /dash/assets/ {
-            alias /app/dashboard/dist-dash/assets/;
-            expires 7d;
-            add_header Cache-Control "public, immutable";
-        }
+        rewrite ^/dash/(.*)$ /$1 permanent;
     }
 
-    # The standalone data explorer's old address, still in circulation as
-    # links. Their query parameters are the ones the dashboard's page reads
-    # (dataExplorer/urlState.ts), so keeping the query string keeps them
-    # working, and every path under it lands on the one page. `/data` needs the
-    # exact match for the reason `/dash` does, and `^~` stops spa.conf's regexes
-    # answering /data/*.js from the map's root.
-    location = /data {
-        return 301 /dash/data$is_args$args;
-    }
-
+    # The standalone data explorer's old paths, still in circulation as links.
+    # /data itself is the console's page, and the query is its filters
+    # (dataExplorer/urlState.ts), so it survives the hop. `^~` for the reason
+    # above: /data/app.js would otherwise be a regex match.
     location ^~ /data/ {
-        return 301 /dash/data$is_args$args;
+        return 301 /data$is_args$args;
     }
 
     # RETINA_INCLUDE snippets/spa.conf
 }
 
-# ${HOST_ADMIN} — admin dashboard. The same bundle ${HOST_APP} mounts at
-# /dash/, built at the root instead, and the hostname is what selects the admin
-# route table (dashboard/src/utils/surface.ts). It keeps a name of its own
+# ${HOST_ADMIN} — admin dashboard. The same bundle ${HOST_APP} serves, and the
+# hostname is what selects the admin route table (dashboard/src/utils/surface.ts). It keeps a name of its own
 # because a Cloudflare Access application can only be scoped to one.
 server {
     # RETINA_IF TLS
