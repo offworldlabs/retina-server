@@ -18,7 +18,7 @@ _admin_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_na
 import orjson
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -630,20 +630,74 @@ async def storage_stats(_admin=Depends(require_admin)):
 # ── Leaderboard ──────────────────────────────────────────────────────────────
 
 
+class PublicLeaderboardRow(BaseModel):
+    """One leaderboard row as published to anyone, session or none.
+
+    Keyed on node_ref and carrying only the per-ref metrics
+    /api/radar/analytics already publishes, so it stands on the publication
+    side of D16. A field declared here is published by that act; node_id in
+    particular would let this feed and /api/radar/analytics be joined and
+    recover the mapping the boundary exists to withhold.
+
+    `extra="forbid"` makes a stray keyword at construction an error, which on
+    this route is a 500 that publishes nothing rather than a field that
+    quietly does or does not go out.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_ref: str
+    name: str
+    rank: int
+    detections: int
+    frames: int
+    tracks: int
+    uptime_s: float
+    avg_snr: float
+    trust_score: float
+    reputation: float
+    online: bool
+
+
+class SignedInLeaderboardRow(PublicLeaderboardRow):
+    """A row with the per-node miss counts, for a caller with a session.
+
+    These come from state.latest_missed_detections rather than from the
+    published analytics snapshot, and nothing else serves them per node
+    without one: /health reduces the same global to a fleet-wide average
+    precisely so the breakdown stays off an unauthenticated endpoint.
+    """
+
+    in_range: int
+    detected_in_range: int
+    missed: int
+    miss_rate: float
+
+
+class Leaderboard[LeaderboardRow: PublicLeaderboardRow](BaseModel):
+    """Parametrised by row class because pydantic serialises a field by its
+    declared type: `Leaderboard[PublicLeaderboardRow]` sends only the public
+    fields whatever rows it holds, and would strip a signed-in caller's miss
+    counts in the same way."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    leaderboard: list[LeaderboardRow]
+    total: int
+
+
 @router.get("/leaderboard")
 async def leaderboard(caller=Depends(get_optional_user)):
     """Rankings by detections, uptime and trust, open to anyone.
 
-    The odd one out under this prefix, which is otherwise the admin API. The
-    row a caller with no session gets carries node_ref and the same per-ref
-    metrics /api/radar/analytics already publishes, so it stands on the
-    publication side of D16 and gives them nothing they could not already
-    read — which is what lets the dashboard's /leaderboard render to a
-    visitor. A signed-in caller gets the miss-detection fields on top.
+    The odd one out under this prefix, which is otherwise the admin API. A
+    caller with no session gets PublicLeaderboardRow, which is what lets the
+    dashboard's /leaderboard render to a visitor; one with a session gets
+    SignedInLeaderboardRow.
 
-    Anything added to the anonymous row is published by that act; node_id in
-    particular would let this feed and /api/radar/analytics be joined and
-    recover the mapping the boundary exists to withhold.
+    No response_model: one would filter every caller's rows to the same
+    shape. The row class is chosen per caller below and every field is passed
+    by name, so what leaves is exactly what that class declares.
     """
     import orjson
 
@@ -676,53 +730,39 @@ async def leaderboard(caller=Depends(get_optional_user)):
         published = publication.public_summaries(live)
         rows = [(ref, nid, s) for nid, s in published.items() if (ref := public_identity(nid))]
 
-    entries = []
     with state.connected_nodes_lock:
         connected = dict(state.connected_nodes)
-    # Rows carry the same metrics /api/radar/analytics publishes per node_ref,
-    # so naming the node_id here would let any logged-in caller join the two
-    # and recover the mapping the boundary exists to withhold.
-    for node_ref, node_id, s in rows:
+    rows.sort(key=lambda row: row[2].get("metrics", {}).get("total_detections", 0), reverse=True)
+    entries: list[PublicLeaderboardRow] = []
+    for rank, (node_ref, node_id, s) in enumerate(rows, start=1):
         m = s.get("metrics", {})
-        t = s.get("trust", {})
-        r = s.get("reputation", {})
-        entries.append(
-            {
-                "node_ref": node_ref,
-                "name": public_name(
-                    connected.get(node_id, {}).get("config", {}).get("name"), node_ref, connected.keys()
-                ),
-                "detections": m.get("total_detections", 0),
-                "frames": m.get("total_frames", 0),
-                "tracks": m.get("total_tracks", 0),
-                "uptime_s": m.get("uptime_s", 0),
-                "avg_snr": m.get("avg_snr", 0),
-                "trust_score": t.get("trust_score", 0),
-                "reputation": r.get("reputation", 0),
-                "online": connected.get(node_id, {}).get("status") not in ("disconnected", None),
-            }
+        node = connected.get(node_id, {})
+        row = PublicLeaderboardRow(
+            node_ref=node_ref,
+            name=public_name(node.get("config", {}).get("name"), node_ref, connected.keys()),
+            rank=rank,
+            detections=m.get("total_detections", 0),
+            frames=m.get("total_frames", 0),
+            tracks=m.get("total_tracks", 0),
+            uptime_s=m.get("uptime_s", 0),
+            avg_snr=m.get("avg_snr", 0),
+            trust_score=s.get("trust", {}).get("trust_score", 0),
+            reputation=s.get("reputation", {}).get("reputation", 0),
+            online=node.get("status") not in ("disconnected", None),
         )
-        # Withheld from a caller with no session. These come from
-        # state.latest_missed_detections rather than from the published
-        # analytics snapshot, and nothing else serves them per node without
-        # one: /health reduces the same global to a fleet-wide average
-        # precisely so the breakdown stays off an unauthenticated endpoint.
         if caller is not None:
             miss = state.latest_missed_detections.get(node_id, {})
-            entries[-1].update(
-                {
-                    "in_range": miss.get("in_range", 0),
-                    "detected_in_range": miss.get("detected", 0),
-                    "missed": miss.get("missed", 0),
-                    "miss_rate": miss.get("miss_rate", 0.0),
-                }
+            # The spread is bounded by PublicLeaderboardRow's declared fields.
+            row = SignedInLeaderboardRow(
+                **row.model_dump(),
+                in_range=miss.get("in_range", 0),
+                detected_in_range=miss.get("detected", 0),
+                missed=miss.get("missed", 0),
+                miss_rate=miss.get("miss_rate", 0.0),
             )
-    # Sort by detections descending
-    entries.sort(key=lambda e: e["detections"], reverse=True)
-    # Add rank
-    for i, e in enumerate(entries):
-        e["rank"] = i + 1
-    return {"leaderboard": entries, "total": len(entries)}
+        entries.append(row)
+    row_class = PublicLeaderboardRow if caller is None else SignedInLeaderboardRow
+    return Leaderboard[row_class](leaderboard=entries, total=len(entries))
 
 
 # ── User alerts (public, non-admin) ─────────────────────────────────────────

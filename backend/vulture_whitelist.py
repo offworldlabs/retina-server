@@ -116,6 +116,16 @@ detail
 _arrays_are_parallel
 _omit_absent_detail
 
+# ── routes/admin.py ─────────────────────────────────────────────────────────
+
+# Leaderboard response fields, set by keyword and read only by Pydantic's
+# serialisation. Each is a key the route publishes; see PublicLeaderboardRow.
+avg_snr
+trust_score
+online
+miss_rate
+leaderboard
+
 # ── core/nodes.py ───────────────────────────────────────────────────────────
 
 # SQLAlchemy's declarative mapper reads these class-level attributes to build
