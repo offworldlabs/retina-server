@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom";
 import { towerFinderUrl } from "../utils/siblings";
 import { useAuth } from "../context/AuthContext";
 import { PUBLIC_ROUTES } from "../utils/publicRoutes";
+import { usesRealOnlyFeed } from "../pages/map/utils/domains";
 
 type NavItem = {
   label: string;
@@ -27,6 +28,7 @@ const userNav = (): NavSection[] => [
       { to: "/alerts", label: "Alerts", icon: "bell" },
       { to: "/anomalies", label: "Anomalies", icon: "alertTriangle" },
       { to: "/map", label: "Map", icon: "map" },
+      ...(usesRealOnlyFeed ? [] : [{ to: "/physics", label: "Physics Layer", icon: "layers" }]),
       { href: towerFinderUrl(location.host, location.protocol), label: "Tower Finder", icon: "radio", external: true },
     ],
   },
@@ -133,6 +135,13 @@ const icons = {
   activity: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+    </svg>
+  ),
+  layers: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polygon points="12 2 2 7 12 12 22 7 12 2" />
+      <polyline points="2 17 12 22 22 17" />
+      <polyline points="2 12 12 17 22 12" />
     </svg>
   ),
   server: (
