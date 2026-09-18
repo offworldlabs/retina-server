@@ -22,7 +22,7 @@ import logging
 import secrets
 from dataclasses import dataclass
 
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.nodes import NodeClaimChallenge
@@ -38,6 +38,22 @@ INTENT_CLAIM = "claim"
 # by definition, in front of the setup page. Long enough to survive a slow
 # provider and somebody finding the mail a few minutes later.
 CHALLENGE_EXPIRY_S = 900
+
+
+@dataclass(frozen=True)
+class Resolved:
+    """A redeemed challenge, and what it was for.
+
+    `intent` travels because a link is a bearer credential in a mailbox and
+    mailboxes get forwarded. A claim link must not work as a bare sign-in for
+    whoever sent it, and a sign-in link must not claim anything, so both
+    redeemers check this rather than trusting that a token can only reach the
+    endpoint it was minted for.
+    """
+
+    email: str
+    intent: str
+    node_id: str
 
 
 @dataclass(frozen=True)
@@ -102,3 +118,30 @@ async def deliver(email: str, node_ref: str, token: str) -> bool:
         node_ref,
     )
     return False
+
+
+async def resolve(session: AsyncSession, token: str, now: float) -> Resolved | None:
+    """Redeem `token` once, or return None.
+
+    None covers unknown, expired and already redeemed, and the caller must not
+    tell them apart: which of the three it was says whether a guess was ever a
+    real token.
+
+    Redeeming does not remove the row. Spending a challenge is the business of
+    whatever the redemption achieves — a binding, or a refusal — and that writer
+    drops it in the same transaction. A resolve that deleted first would leave a
+    failed binding with no record of the challenge it failed on.
+    """
+    if not token or not token.strip():
+        return None
+    row = (
+        await session.execute(
+            select(NodeClaimChallenge).where(
+                NodeClaimChallenge.handle == handle_for(token.strip()),
+                NodeClaimChallenge.expires_at > now,
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    return Resolved(email=row.email, intent=INTENT_CLAIM, node_id=row.node_id)

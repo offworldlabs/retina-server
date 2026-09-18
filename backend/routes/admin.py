@@ -31,6 +31,7 @@ from config.constants import (
 from core import state
 from core.auth import (
     create_invite,
+    get_node_owner,
     list_invites,
     list_node_owners,
     revoke_invite,
@@ -47,6 +48,7 @@ from core.users import (
     user_to_dict,
 )
 from services import publication
+from services.node_claim_store import clear_claim
 from services.node_refs import id_for_ref, public_identity, public_name, ref_to_id_map
 
 logger = logging.getLogger(__name__)
@@ -264,7 +266,17 @@ async def admin_set_node_owner(
         user = await session.get(User, uid)
         if not user:
             raise HTTPException(404, "User not found")
+    previous = await get_node_owner(node_id)
     await set_node_owner(node_id, body.user_id)
+    if body.user_id is None or body.user_id != previous:
+        # A change of owner made on somebody's behalf clears what a release
+        # clears. Leaving the address behind would show the new owner the last
+        # one's, or a stranger's that was declined, and leaving a stale
+        # challenge would let a link already in a mailbox rebind a node an
+        # administrator has just freed. Reassigning a node to the owner it
+        # already has changes nothing, so it keeps the address that claimed it.
+        await clear_claim(session, node_id)
+        await session.commit()
     log_event(
         "user",
         f"Node {node_id} owner set to {body.user_id or '(unassigned)'}",
