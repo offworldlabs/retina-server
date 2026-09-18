@@ -1,8 +1,8 @@
 """How far a multinode solve may land from the guess it was seeded with.
 
 The solver's displacement gate judges each solve against one of these caps,
-chosen by lane (_is_dark_solver_input) and anchoring (_is_anchored_n2).  The
-solve-history record stamps which cap judged it, and the known lane labels its
+chosen by displacement_cap_km from lane and anchoring.  The solve-history
+record stamps the cap through the same helper, and the known lane labels its
 own solves against the lane caps.
 """
 
@@ -125,9 +125,8 @@ _DARK_FOLLOW_N2_MAX_DISP_KM = float(os.getenv("DARK_FOLLOW_N2_MAX_DISP_KM", "1.5
 def _is_anchored_n2(s, r) -> bool:
     """True if this is an anchored solver input that solved at exactly n=2.
 
-    Both the displacement gate and the history record ask this — the gate to
-    pick the cap, the record to stamp which cap judged the solve — and they
-    must not be able to disagree, so the predicate lives in one place.
+    displacement_cap_km asks this for both the gate and the history record,
+    which must not be able to disagree about the cap that judged a solve.
     """
     if not isinstance(s, dict) or not s.get("anchor_key"):
         return False
@@ -151,3 +150,16 @@ def _is_dark_solver_input(s_in) -> bool:
     """
     hx = s_in.get("adsb_hex") if isinstance(s_in, dict) else None
     return not (hx and is_transponder_hex(hx))
+
+
+def displacement_cap_km(s, r, *, dark: bool) -> float:
+    """The cap a solve's displacement is judged against.
+
+    Anchored n=2 takes the tight cap whichever lane it is in; otherwise the
+    lane decides.  ``dark`` is the caller's: the gate asks
+    _is_dark_solver_input, while the history record trusts the lane its
+    solve_key was minted into when it has one.
+    """
+    if _is_anchored_n2(s, r):
+        return _DARK_FOLLOW_N2_MAX_DISP_KM
+    return _MAX_DISPLACEMENT_KM_DARK if dark else _MAX_DISPLACEMENT_KM

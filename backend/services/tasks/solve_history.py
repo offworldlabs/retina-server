@@ -444,19 +444,11 @@ def _record_solve_history(
         # the number this inheritance exists to move.
         "alt_source": s.get("alt_source") if isinstance(s, dict) else None,
         "displacement_km": round(displacement_km, 3) if displacement_km is not None else None,
-        # Which displacement cap judged this solve (see _MAX_DISPLACEMENT_KM
-        # and _MAX_DISPLACEMENT_KM_DARK).  Stamped on every record, not only
-        # rejected_displacement, so /api/test/mlat-history can read a
+        # Which displacement cap judged this solve.  Stamped on every record,
+        # not only rejected_displacement, so /api/test/mlat-history can read a
         # published solve's displacement against the cap that let it through
-        # and a reject's against the cap that killed it — the two lanes are
-        # judged differently and the record has to say which applied.
-        # ...and an anchored n=2 solve is judged by neither lane cap but by
-        # _DARK_FOLLOW_N2_MAX_DISP_KM, so the record has to say that too.
-        "displacement_cap_km": (
-            displacement_caps._DARK_FOLLOW_N2_MAX_DISP_KM
-            if displacement_caps._is_anchored_n2(s, r)
-            else (displacement_caps._MAX_DISPLACEMENT_KM_DARK if _dark else displacement_caps._MAX_DISPLACEMENT_KM)
-        ),
+        # and a reject's against the cap that killed it.
+        "displacement_cap_km": displacement_caps.displacement_cap_km(s, r, dark=_dark),
         # How this solve got its key, and how far it was from the entry it
         # was keyed onto (see multinode_key_decision).  Fragmentation is a
         # question about key DECISIONS, and until now the history recorded

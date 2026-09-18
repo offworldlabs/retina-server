@@ -2868,12 +2868,7 @@ def _process_solver_item(
         _disp_km: float | None = None
         _dark_input = displacement_caps._is_dark_solver_input(s_in)
         _anchored_n2 = displacement_caps._is_anchored_n2(s_in, result)
-        if _anchored_n2:
-            _disp_cap_km = displacement_caps._DARK_FOLLOW_N2_MAX_DISP_KM
-        else:
-            _disp_cap_km = (
-                displacement_caps._MAX_DISPLACEMENT_KM_DARK if _dark_input else displacement_caps._MAX_DISPLACEMENT_KM
-            )
+        _disp_cap_km = displacement_caps.displacement_cap_km(s_in, result, dark=_dark_input)
         if "initial_guess" in s_in:
             _ig = s_in["initial_guess"]
             _anchor_lat, _anchor_lon = _ig.get("lat"), _ig.get("lon")
