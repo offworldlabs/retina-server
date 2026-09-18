@@ -2,13 +2,14 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../api/client";
+import LoginBack from "../components/LoginBack";
 
 /** The only two failures this page repeats back. Both describe the request or
  *  the deployment; neither says anything about the address. */
 const INVALID_EMAIL = "Enter a valid email address";
 const MAIL_UNAVAILABLE = "Sign-in by email is unavailable";
 
-export default function LoginPage({ message = null }) {
+export default function LoginPage({ message = null, isAdmin = false }) {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
@@ -46,6 +47,7 @@ export default function LoginPage({ message = null }) {
   return (
     <div className="login-page">
       <div className="login-card">
+        <LoginBack isAdmin={isAdmin} />
         <div className="logo">◉</div>
         <h1>Retina</h1>
         <p className="subtitle">Passive Radar Network Dashboard</p>

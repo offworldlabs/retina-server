@@ -31,12 +31,12 @@ function answer(status: number, body: unknown) {
   );
 }
 
-function openLink(token = "tok-123") {
+function openLink(token = "tok-123", { isAdmin = false } = {}) {
   return render(
     <StrictMode>
       <MemoryRouter initialEntries={[`/auth/link/${token}`]}>
         <Routes>
-          <Route path="/auth/link/:token" element={<AuthLinkPage />} />
+          <Route path="/auth/link/:token" element={<AuthLinkPage isAdmin={isAdmin} />} />
           <Route path="/" element={<div>Dashboard</div>} />
         </Routes>
       </MemoryRouter>
@@ -116,5 +116,18 @@ describe("the sign-in link page", () => {
     expect(screen.getByText("Retina")).toBeInTheDocument();
     expect(screen.getByLabelText("Email address")).toBeInTheDocument();
     expect(signIn).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a spent link", 400, "That sign-in link is no longer valid", false, 1],
+    ["a spent link", 400, "That sign-in link is no longer valid", true, 0],
+    ["an unreachable server", 503, "We could not reach the server to sign you in.", false, 1],
+    ["an unreachable server", 503, "We could not reach the server to sign you in.", true, 0],
+  ])("offers the map after %s unless on the admin console (%i, admin: %s)", async (_case, status, shown, isAdmin, offered) => {
+    vi.stubGlobal("fetch", answer(status, { detail: "whatever the server said" }));
+    openLink("tok-123", { isAdmin });
+
+    await screen.findByText(shown);
+    expect(screen.queryAllByRole("button", { name: "Back to the map" })).toHaveLength(offered);
   });
 });

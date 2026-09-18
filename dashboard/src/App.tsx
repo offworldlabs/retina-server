@@ -62,11 +62,11 @@ warnIfModeIgnored(modeParamIgnored);
 export default function App() {
   return (
     <Routes>
-      <Route path="/login" element={<LoginPage />} />
+      <Route path="/login" element={<LoginPage isAdmin={isAdminSite} />} />
       {/* Both outside RequireAuth: whoever opens either link has no session
           yet, and the guard would send them to the login card instead. The
           claim link goes further and creates the account on the click. */}
-      <Route path="/auth/link/:token" element={<AuthLinkPage />} />
+      <Route path="/auth/link/:token" element={<AuthLinkPage isAdmin={isAdminSite} />} />
       <Route path="/auth/claim/:token" element={<ClaimPage />} />
       <Route
         path="/*"

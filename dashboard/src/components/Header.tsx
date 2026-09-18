@@ -109,7 +109,7 @@ export default function Header({ title }) {
         {/* A caller with no session is on one of the open routes, and the
             way on from there is in, not out. */}
         {!user ? (
-          <Link className="header-signin" to="/login">
+          <Link className="header-signin" to="/login" state={{ fromOpenPage: true }}>
             Sign in
           </Link>
         ) : (
