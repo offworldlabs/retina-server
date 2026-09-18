@@ -228,20 +228,18 @@ reduce regressions as the UI grows.
 **Priority:** medium
 **Effort:** Phase 1 (ESLint) is under an hour
 
-### 6.3 Migrate frontend to TypeScript
+### 6.3 Turn on strict TypeScript in the console
 
-Both `frontend/` and `dashboard/` are plain JavaScript. Migrating to TypeScript
-catches type mismatches between API response shapes and component expectations
-at build time rather than as runtime surprises. This is especially valuable
-given the number of nested structures coming from `/api/radar/analytics`,
-`/api/radar/nodes`, and the aircraft WebSocket — all of which have complex,
-variant-heavy shapes that are currently untyped. The migration can be done
-incrementally: rename files to `.tsx`/`.ts`, add `tsconfig.json` and the
-`@types/*` packages, then tighten types file by file.
+The console is TypeScript, but `tsconfig.base.json` sets `strict`,
+`noImplicitAny` and `strictNullChecks` off, so type mismatches between API
+response shapes and component expectations still surface at runtime. That
+matters most for the nested structures from `/api/radar/analytics`,
+`/api/radar/nodes` and the aircraft WebSocket, whose variant-heavy shapes are
+largely untyped. It can be tightened incrementally: `strictNullChecks` first,
+then typing the API shapes file by file.
 
 **Priority:** medium
-**Effort:** moderate (~1–2 days to rename + add tsconfig + fix initial errors;
-  typing all API shapes fully is a longer tail)
+**Effort:** moderate; typing every API shape fully is a longer tail
 
 ---
 
