@@ -6,6 +6,7 @@ fully delegated to fastapi-users' JWTStrategy + CookieTransport.
 """
 
 import logging
+import os
 import threading
 from ipaddress import IPv6Address, ip_address, ip_network
 from time import monotonic
@@ -34,6 +35,7 @@ from core.users import (
     has_access_session,
     user_to_dict,
 )
+from routes.sim_ingest import synthetic_fleet_enabled
 from services import mail, publication
 from services.node_claim_store import claim_addresses
 from services.node_claiming import (
@@ -137,6 +139,17 @@ def _magic_link_quota_available(source: str) -> bool:
 _SIGN_IN_PATH = "/dash/auth/link/"
 
 
+def _session_user(user_dict: dict) -> dict:
+    """The user as the console holds it, from /me or straight from a sign-in.
+
+    The sign-in pages adopt the user they are handed without asking /me again,
+    so everything the console reads off its user has to be here for both.
+    `synthetic_fleet` is the rule that mounts the fleet's ingest routes, so the
+    physics layer is offered exactly where there is a fleet for it to draw.
+    """
+    return {**user_dict, "synthetic_fleet": synthetic_fleet_enabled(os.environ)}
+
+
 class MagicLinkRequest(BaseModel):
     email: EmailStr
 
@@ -200,7 +213,7 @@ async def consume_magic_link_route(body: MagicLinkConsume, request: Request):
         # which addresses are privileged, and the link is spent either way.
         raise HTTPException(status_code=400, detail="That sign-in link is no longer valid") from None
 
-    response = JSONResponse({"user": user_to_dict(user)})
+    response = JSONResponse({"user": _session_user(user_to_dict(user))})
     await _set_auth_cookie(response, user)
     return response
 
@@ -243,7 +256,7 @@ async def consume_claim_link(body: ClaimToken):
         # links cannot be used to learn which ones were ever real.
         raise HTTPException(status_code=400, detail="That link is no longer valid")
 
-    response = JSONResponse({"user": user_to_dict(user), "node_ref": node_ref})
+    response = JSONResponse({"user": _session_user(user_to_dict(user)), "node_ref": node_ref})
     await _set_auth_cookie(response, user)
     return response
 
@@ -288,7 +301,7 @@ async def me(request: Request):
     # bypass, and answering "Admin (no auth)" while the admin routes attribute a
     # real person would make the console wrong about its own session.
     anonymous = user_dict["id"] == ANONYMOUS_USER["id"]
-    return {**user_dict, "auth_enabled": not anonymous}
+    return {**_session_user(user_dict), "auth_enabled": not anonymous}
 
 
 @router.post("/logout")

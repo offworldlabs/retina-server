@@ -312,6 +312,14 @@ class TestConsumeMagicLink:
         assert user["is_superuser"] is False
         assert user["role"] == "user"
 
+    async def test_the_signed_in_user_carries_what_me_would_say_about_the_fleet(self, client, monkeypatch):
+        """The page adopts this user without asking /me, so it must not lack
+        anything /me would have told it: the physics layer reads the fleet flag."""
+        monkeypatch.setenv("SYNTHETIC_FLEET_ENABLED", "1")
+        token = await create_magic_link("owner@example.com")
+        r = client.post("/api/auth/magic-link/consume", json={"token": token})
+        assert r.json()["user"]["synthetic_fleet"] is True
+
     async def test_the_account_records_how_it_was_made(self, client):
         token = await create_magic_link("owner@example.com")
         r = client.post("/api/auth/magic-link/consume", json={"token": token})
