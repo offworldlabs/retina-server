@@ -67,18 +67,18 @@ class TestRequestMagicLink:
         assert len(sent) == 1
         to, subject, body = sent[0]
         assert to == "owner@example.com"
-        assert "/dash/auth/link/" in body
+        assert "/auth/link/" in body
 
     def test_the_mailed_link_carries_the_token_and_nothing_else_does(self, client, sent):
         client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
         _, _, body = sent[0]
-        token = body.split("/dash/auth/link/")[1].split()[0]
+        token = body.split("/auth/link/")[1].split()[0]
         assert len(token) > 20
 
     def test_the_response_body_never_carries_the_token(self, client, sent):
         r = client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
         _, _, body = sent[0]
-        token = body.split("/dash/auth/link/")[1].split()[0]
+        token = body.split("/auth/link/")[1].split()[0]
         assert token not in r.text
 
     def test_the_link_host_comes_from_configuration_not_the_request(self, client, sent, monkeypatch):
@@ -92,18 +92,17 @@ class TestRequestMagicLink:
             headers={"Host": "evil.example.com"},
         )
         _, _, body = sent[0]
-        assert "https://app.retina.fm/dash/auth/link/" in body
+        assert "https://app.retina.fm/auth/link/" in body
         assert "evil.example.com" not in body
 
-    def test_the_link_lands_on_the_dashboard_mount_not_the_map(self, client, sent, monkeypatch):
-        """HOST_APP serves the map bundle at / and mounts the dashboard under
-        /dash/. A link to /auth/link/... renders the map, which has no router,
-        and the token is never redeemed."""
+    def test_the_link_lands_at_the_consoles_root(self, client, sent, monkeypatch):
+        """HOST_APP serves the console at /; the old /dash/ mount only redirects,
+        so a link through it costs the reader a hop and depends on it staying."""
         monkeypatch.setenv("HOST_APP", "app.retina.fm")
         client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
         _, _, body = sent[0]
-        assert "/dash/auth/link/" in body
-        assert "app.retina.fm/auth/link/" not in body
+        assert "https://app.retina.fm/auth/link/" in body
+        assert "/dash/" not in body
 
     def test_an_unknown_address_gets_the_same_answer_as_a_known_one(self, client):
         """The whole point. A differing status, body or shape here says which

@@ -161,10 +161,12 @@ class TestSend:
         assert "Your link" in message.get_content()
 
     def test_a_long_url_survives_the_encoding_unbroken(self, smtp_configured):
-        """A sign-in URL runs past the 78 columns that select quoted-printable,
-        and QP splits it with a soft `=`. A compliant client rejoins it, but a
-        plain-text view or a copy-paste hands the reader half a token."""
-        url = "https://app.retina.fm/dash/auth/link/" + "t" * 43
+        """A sign-in URL can run past the 78 columns that select quoted-printable
+        (staging's does), and QP splits it with a soft `=`. A compliant client
+        rejoins it, but a plain-text view or a copy-paste hands the reader half a
+        token."""
+        url = "https://staging-app.retina.fm/auth/link/" + "t" * 43
+        assert len(url) > 78
         with patch.object(_mail.smtplib, "SMTP_SSL") as ssl:
             send("owner@example.com", "Sign in", f"Click:\n\n{url}\n")
         message = ssl.return_value.__enter__.return_value.send_message.call_args.args[0]
