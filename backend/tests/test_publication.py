@@ -846,7 +846,7 @@ class TestAnalyticsPayloadIdentities:
 
 class TestAnalyticsPayloadIsSynthetic:
     """/api/radar/analytics carries is_synthetic per node so the client can stop
-    guessing it from the identifier (see frontend/src/utils/nodeKind.ts): once
+    guessing it from the identifier (see dashboard/src/utils/nodeKind.ts): once
     identity is published as node_ref, no prefix survives to match. This must
     agree with /api/radar/nodes, which the same refresh cycle derives it for.
     """

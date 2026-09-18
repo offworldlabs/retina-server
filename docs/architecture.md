@@ -9,21 +9,22 @@ A single FastAPI app (`backend/`) serves every user-facing surface. The public
 ones share one hostname, `app.retina.fm` (`staging-app`, `test-app`), because
 the session cookie is host-only and a login has to cover all of them:
 
-- **map** (`/`) — the live map. Which feed it shows is a property of the
-  environment, resolved client-side in `frontend/src/utils/domains.ts`:
-  production and the test droplet are real nodes only, staging shows the
-  synthetic simulation fleet and is the demo surface, being the only environment
-  that still runs one.
-- **dashboard** (`/dash/`, `dashboard/`, separate SPA) — node ownership, claim
-  codes, MLAT verification, metrics. A session is required for all of it bar the
-  routes listed in `dashboard/src/utils/publicRoutes.ts`, which render to anyone
-  and are backed only by endpoints that already publish. A caller with no
-  session gets a nav holding those routes alone, so nothing on screen leads to
-  the login card.
-- **data explorer** (`/dash/data`) — the public detection archive browser, one
-  of the dashboard's public routes. The standalone page it replaced lived at
-  `/data/`, which nginx redirects here with its query string, so old links
-  keep their filters. It reads `/api/data/archive`, which is unauthenticated
+All of them are one SPA, the console (`dashboard/`), served at the root; the old
+`/dash/…` and `/data/…` addresses redirect into it with their query strings.
+
+- **map** (`/map`, where `/` opens) — the live map, the console's front page.
+  Which feed it shows is a property of the environment, resolved client-side in
+  `dashboard/src/pages/map/utils/domains.ts`: production and the test droplet
+  are real nodes only, staging shows the synthetic simulation fleet and is the
+  demo surface, being the only environment that still runs one.
+- **console pages** — node ownership, claim codes, MLAT verification, metrics.
+  A session is required for all of it bar the routes listed in
+  `dashboard/src/utils/publicRoutes.ts`, which render to anyone and are backed
+  only by endpoints that already publish. A caller with no session gets a nav
+  holding those routes alone, so nothing on screen leads to the login card.
+- **data explorer** (`/data`) — the public detection archive browser, one of the
+  console's public routes. Old links to the standalone page it replaced keep
+  their filters through the redirect. It reads `/api/data/archive`, which is unauthenticated
   and drops private nodes for every caller, so a signed-in owner sees their own
   private nodes' files only once an authenticated listing exists; the public
   route must not grow one.
