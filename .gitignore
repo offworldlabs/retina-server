@@ -1,6 +1,5 @@
 node_modules/
 dist/
-dist-dash/
 build/
 __pycache__/
 *.pyc
