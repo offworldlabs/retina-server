@@ -129,3 +129,9 @@ it("updates the selected trail as new positions arrive without changing selectio
   deliver(51.002, [[51.002, -1, 1000, 3]]);
   expect(drawnPositions()).toContainEqual([51.002, -1]);
 });
+
+it("draws its live stats in the aircraft list, not floating over the map", () => {
+  const { container } = render(<MapThemeProvider><LiveAircraftMap /></MapThemeProvider>);
+  expect(container.querySelector(".live-map-top-right-stack")).toBeNull();
+  expect(container.querySelector(".aircraft-list-panel .stats-panel")).not.toBeNull();
+});
