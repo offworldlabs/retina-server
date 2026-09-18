@@ -1,4 +1,5 @@
 import { MapThemeProvider } from "./useMapTheme";
+import MapSurface from "./MapSurface";
 import PhysicsSettings from "./PhysicsSettings";
 import "./map-surface.css";
 import "./PhysicsSettings.css";
@@ -9,9 +10,9 @@ import "./PhysicsSettings.css";
 export default function PhysicsPage() {
   return (
     <MapThemeProvider>
-      <div className="app map-surface map-embedded">
+      <MapSurface>
         <PhysicsSettings />
-      </div>
+      </MapSurface>
     </MapThemeProvider>
   );
 }
