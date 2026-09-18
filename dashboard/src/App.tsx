@@ -34,6 +34,7 @@ const ConfigPage = lazy(() => import("./pages/admin/ConfigPage"));
 const SystemMetricsPage = lazy(() => import("./pages/admin/SystemMetricsPage"));
 const InfrastructurePage = lazy(() => import("./pages/admin/InfrastructurePage"));
 const MlatVerificationPage = lazy(() => import("./pages/admin/MlatVerificationPage"));
+const ApiDocsPage = lazy(() => import("./pages/admin/ApiDocsPage"));
 
 const { isAdmin: isAdminSite, modeParamIgnored } = resolveSurface(
   window.location.hostname,
@@ -74,6 +75,7 @@ export default function App() {
                       <Route path="config" element={<ConfigPage />} />
                       <Route path="system" element={<SystemMetricsPage />} />
                       <Route path="infrastructure" element={<InfrastructurePage />} />
+                      <Route path="api-docs" element={<ApiDocsPage />} />
                     </>
                   ) : (
                     <>
