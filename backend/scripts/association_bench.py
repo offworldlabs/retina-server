@@ -1329,8 +1329,8 @@ def run(
                         continue
 
                 # Bench-side state.multinode_tracks equivalent — accepted
-                # solves only, mirroring where production's _MN_TRACKS_LOCK
-                # block runs (after every gate above, before GT matching).
+                # solves only, mirroring where production's keying block
+                # runs (after every gate above, before GT matching).
                 if mode == "track":
                     _anchor_key = s_in.get("anchor_key")
                     _key, _how, _dist_km, _dt_s = multinode_key_decision(

@@ -472,7 +472,7 @@ def _solver_window_stats(minutes: float) -> dict:
     # the frame workers, the sim ingest and the solver threads while this
     # request runs.  ground_truth_trails/adsb_aircraft follow core/state.py's
     # unlocked list(dict) snapshot idiom; multinode_tracks takes the lock the
-    # solver writes it under (solver._MN_TRACKS_LOCK, also honoured by
+    # solver writes it under (state.multinode_tracks_lock, also honoured by
     # known_lane._publish) because a plain iteration here raced its inserts
     # and 500'd the endpoint with "dictionary changed size during iteration".
     gt_trails = [(hx, list(trail)) for hx, trail in list(state.ground_truth_trails.items())]
@@ -481,7 +481,7 @@ def _solver_window_stats(minutes: float) -> dict:
         for a in list(state.adsb_aircraft.values())
         if a.get("last_seen_ms") is not None and now_ms - a["last_seen_ms"] <= _ADSB_FRESH_S * 1000.0
     ]
-    with solver_mod._MN_TRACKS_LOCK:
+    with state.multinode_tracks_lock:
         mn_tracks = list(state.multinode_tracks.items())
 
     live_tracks = 0

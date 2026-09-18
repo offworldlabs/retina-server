@@ -758,9 +758,9 @@ def _inherit_key_altitude(s_in: dict, learned_vel_fn=track_filter.learned_veloci
       than the climb it is meant to track.
 
     Nearest wins when several qualify.  No lock: this runs on the solve path,
-    which does not hold _MN_TRACKS_LOCK here, and taking it would put a lock
-    acquisition in front of every n=2 solve to read a dict that the keying
-    block rewrites wholesale a moment later anyway.  ``list(...items())``
+    which does not hold state.multinode_tracks_lock here, and taking it would
+    put a lock acquisition in front of every n=2 solve to read a dict that the
+    keying block rewrites wholesale a moment later anyway.  ``list(...items())``
     snapshots under the GIL, and a donor that goes stale between this read and
     the solve costs an initial guess, not a correctness property.
     """
@@ -1418,12 +1418,6 @@ _MN_SUPERSEDE_BASE_KM = 4.0
 # than being made unpoppable.
 _MN_SUPERSEDE_MAX_ALT_DIFF_M = 1000.0
 
-# Guards the read-modify-write in _process_solver_item.  Solver workers run
-# _N_SOLVER_WORKERS-way concurrently, and two threads associating the same
-# aircraft at once would each miss the other's entry and mint two tracks — the
-# very duplication this exists to prevent.
-_MN_TRACKS_LOCK = threading.Lock()
-
 
 def _mn_assoc_gate_km(dt_s: float, base_km: float = _MN_ASSOC_MAX_DIST_KM) -> float:
     """Proximity gate for an entry last solved ``dt_s`` seconds ago.
@@ -1452,7 +1446,7 @@ def _entry_dr_velocity(key: str, entry: dict, learned_vel_fn) -> tuple[float, fl
     offline bench — which has no filter — takes the fallback naturally rather
     than through a mode flag.  learned_velocity takes _KF_LOCK, a leaf lock;
     the established solver.py -> track_filter order is what the caller already
-    uses for smooth_solve under _MN_TRACKS_LOCK.
+    uses for smooth_solve under state.multinode_tracks_lock.
     """
     if learned_vel_fn is not None and (os.getenv("TRACK_DR_SOURCE", "kf") or "kf").strip().lower() != "solve":
         lv = learned_vel_fn(key)
@@ -1470,8 +1464,8 @@ def _collect_track_anomalies(s_in, result: dict) -> None:
     entries hardcoded is_anomalous False, so a dark anomalous target went
     quiet the moment it was solved.  Dark solves are restricted to the same
     physically-loud allowlist as arc-only tracks.  The caller latches the
-    flags with the previous entry under _MN_TRACKS_LOCK so a one-frame tracker
-    flag survives for the multinode track's lifetime.
+    flags with the previous entry under state.multinode_tracks_lock so a
+    one-frame tracker flag survives for the multinode track's lifetime.
     """
     track_ids = set(s_in.get("track_ids") or []) if isinstance(s_in, dict) else set()
     anom_types: set[str] = set()
@@ -1591,8 +1585,9 @@ def multinode_key_decision(
     this scan needs is the best available estimate of where the aircraft
     actually is, and the max_age_s window already bounds dt.
 
-    Caller holds _MN_TRACKS_LOCK — it reads `tracks` and the caller writes
-    back into it under the same lock.  Returns (key, how, dist_km, dt_s) with
+    Caller holds state.multinode_tracks_lock — it reads `tracks` and the
+    caller writes back into it under the same lock.  Returns
+    (key, how, dist_km, dt_s) with
     how in {"adsb", "anchor", "proximity", "tracks", "shadowed", "minted"};
     dist_km is
     how far this solve landed from the entry it was keyed onto (dead-reckoned,
@@ -1857,8 +1852,8 @@ def _forget_mn_key(old_key: str) -> None:
     flagging a hex nothing renders), the smoother's position history, and the
     Kalman state.  Every removal path has to erase all four or the next key
     minted at the same place inherits the dead one's filter.  Caller holds
-    _MN_TRACKS_LOCK; _MN_POS_HISTORY_LOCK is taken inside, which is the lock
-    order everywhere else in this module.
+    state.multinode_tracks_lock; _MN_POS_HISTORY_LOCK is taken inside, which is
+    the lock order everywhere else in this module.
     """
     state.multinode_tracks.pop(old_key, None)
     with state.anomaly_lock:
@@ -3899,8 +3894,8 @@ def _process_solver_item(
         # already ran this fit and cached it on s_in, so this is free; for
         # n≥3 it is a fresh ~86 ms pool call (publish rate here is ~0.2/s,
         # so affordable) and must not run while other solver workers are
-        # blocked on _MN_TRACKS_LOCK.  Gates and rms residuals above are
-        # untouched — they already ran on the single-epoch values.
+        # blocked on state.multinode_tracks_lock.  Gates and rms residuals
+        # above are untouched — they already ran on the single-epoch values.
         fit = _resolve_cv_fit(s_in, node_cfgs) if isinstance(s_in, dict) else None
         result["solver_vel_east"] = result.get("vel_east")
         result["solver_vel_north"] = result.get("vel_north")
@@ -3927,15 +3922,15 @@ def _process_solver_item(
         )
         if result["vel_untrusted"]:
             state.bump_counter("solver_vel_untrusted_published")
-        with _MN_TRACKS_LOCK:
+        with state.multinode_tracks_lock:
             # Identity before smoothing: the track key is the smoother's
             # history key, so dark targets accumulate history too.  Key
             # association uses the raw solve position — the same position its
             # own dead-reckoned 6 km gate was tuned against.  Both steps stay
             # under this lock so two workers solving the same aircraft cannot
-            # each mint a fresh key.  Lock order _MN_TRACKS_LOCK →
-            # _MN_POS_HISTORY_LOCK (inside the smoother) is never taken in
-            # reverse anywhere.
+            # each mint a fresh key.  Lock order
+            # state.multinode_tracks_lock → _MN_POS_HISTORY_LOCK (inside the
+            # smoother) is never taken in reverse anywhere.
             _anchor_key = s_in.get("anchor_key") if isinstance(s_in, dict) else None
             key, _key_how, _key_dist_km, _key_dt_s = multinode_key_decision(
                 state.multinode_tracks,
@@ -4236,8 +4231,9 @@ def _process_solver_item(
         # The re-solve claim, taken here and nowhere else: this aircraft is now
         # on the map at this width, which is the only thing that makes a
         # duplicate not worth solving.  Survivors only — source_track_ids is
-        # rebuilt from the post-trim node set.  Outside _MN_TRACKS_LOCK on
-        # purpose, so _RECENT_SOLVES_LOCK is never nested inside it.
+        # rebuilt from the post-trim node set.  Outside
+        # state.multinode_tracks_lock on purpose, so _RECENT_SOLVES_LOCK is
+        # never nested inside it.
         _record_resolve_slot(result.get("source_track_ids"), result.get("n_nodes"), time.time())
         _record_solve_history(
             "published",

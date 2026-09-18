@@ -460,15 +460,11 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     # snapshot below cannot contain an entry the display gates would have to
     # re-derive an expiry for.  Everything from here down only READS.
     prune_multinode_tracks(now)
-    # Snapshot under the solver's track lock: the solver worker iterates
+    # Snapshot under the track lock: the solver worker iterates
     # state.multinode_tracks inside multinode_key_decision while holding it,
     # and a pop from this thread mid-iteration raised "dictionary changed size
-    # during iteration" live (2026-09-05).  Lazy import: solver.py owns the
-    # lock and importing it at module level here would create a cycle through
-    # the task modules.
-    from services.tasks import solver as _solver_mod
-
-    with _solver_mod._MN_TRACKS_LOCK:
+    # during iteration" live (2026-09-05).
+    with state.multinode_tracks_lock:
         _mn_snapshot = list(state.multinode_tracks.items())
     for key, r in _mn_snapshot:
         age_s = now - r.get("timestamp_ms", 0) / 1000

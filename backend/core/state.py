@@ -1087,6 +1087,14 @@ peak_connected_nodes: int = 0
 connected_nodes_lock = threading.Lock()
 geo_aircraft_lock = threading.Lock()
 anomaly_lock = threading.Lock()
+# Guards multinode_tracks.  Every solver worker thread runs the keying block's
+# read-modify-write on it, and two associating the same aircraft at once would
+# each miss the other's entry and mint two tracks.  The feed build, its GC and
+# the Solver Report snapshot under it as well, because iterating while a solver
+# inserts raised "dictionary changed size during iteration".  It is held while
+# taking solver._MN_POS_HISTORY_LOCK, track_filter._KF_LOCK, anomaly_lock and
+# counters_lock, so none of those may be held while acquiring it.
+multinode_tracks_lock = threading.Lock()
 # Guards solver_last_latency_s / solver_total_latency_s / solver_total_solved
 solver_latency_lock = threading.Lock()
 # Guards the plain int counters above.  `x += 1` on a module global is
