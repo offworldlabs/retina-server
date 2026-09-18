@@ -183,7 +183,7 @@ export interface RadarNode {
    */
   empirical_polygon_source: "declared" | "evidence" | "learned";
   /**
-   * Server-derived, not parsed from the identifier: see utils/nodeKind.ts.
+   * Server-derived, not parsed from the identifier: see src/utils/nodeKind.ts.
    * Identities publish as node_ref, so no prefix survives to match on.
    */
   is_synthetic: boolean;
