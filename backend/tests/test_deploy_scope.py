@@ -320,16 +320,6 @@ def test_a_submodule_bump_deploys(repo: Path) -> None:
     assert _verdict(repo, before) == DEPLOY
 
 
-def test_markdown_under_data_explorer_deploys(repo: Path) -> None:
-    """nginx serves that directory verbatim, so its markdown is a served file."""
-    before, _ = _history(
-        repo,
-        {"data-explorer/vendor/NOTICE.md": "one"},
-        {"data-explorer/vendor/NOTICE.md": "two"},
-    )
-    assert _verdict(repo, before) == DEPLOY
-
-
 def test_a_requirements_change_deploys(repo: Path) -> None:
     before, _ = _history(
         repo,

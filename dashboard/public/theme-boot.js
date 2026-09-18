@@ -5,7 +5,7 @@
    `script-src 'self'` (deploy/nginx/snippets/security-headers-page.conf), which
    does not cover inline code — and the dev server sends no CSP at all, so an
    inline version works in every local check and silently never runs once
-   deployed. That is the same trap data-explorer/ vendors its libraries to avoid.
+   deployed.
 
    Only an explicit choice is stamped: `system` is the default, and App.css's own
    prefers-color-scheme block answers it with no flash to avoid. The key and the

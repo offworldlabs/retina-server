@@ -23,7 +23,10 @@ the session cookie is host-only and a login has to cover all of them:
 - **data explorer** (`/dash/data`) — the public detection archive browser, one
   of the dashboard's public routes. The standalone page it replaced lived at
   `/data/`, which nginx redirects here with its query string, so old links
-  keep their filters.
+  keep their filters. It reads `/api/data/archive`, which is unauthenticated
+  and drops private nodes for every caller, so a signed-in owner sees their own
+  private nodes' files only once an authenticated listing exists; the public
+  route must not grow one.
 - **admin** (`admin.retina.fm`) — the dashboard bundle again, built at a root and
   serving the admin route table, which `dashboard/src/utils/surface.ts` selects
   from the hostname. It keeps a name of its own because a Cloudflare Access
