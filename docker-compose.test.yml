@@ -100,8 +100,12 @@ services:
       # bother checking them.
       - HOST_MAIN=test-towers.retina.fm
       - HOST_API=test-api.retina.fm
-      # The public surface. `test-map`, `test-testmap`, `test-dash` and
-      # `test-data` are Cloudflare redirects into it and reach no origin.
+      # The public surface, and the whole console: real nodes at /map, the
+      # simulator at /sim (and /sim/physics, which tunes it). One name per
+      # environment, so the route table no longer depends on which hostname
+      # the browser used. `test-map`, `test-testmap`, `test-dash` and
+      # `test-data` are retired: Cloudflare redirects into this name that
+      # reach no origin.
       - HOST_APP=test-app.retina.fm
       - HOST_ADMIN=test-admin.retina.fm
       - CSP_CONNECT_SRC=https://test-api.retina.fm https://test-admin.retina.fm wss://*.retina.fm
