@@ -1,5 +1,6 @@
 /* Layout for the explorer's own controls and its results tree. Colours come
-   from the dashboard's tokens; nothing here declares one. */
+   from the dashboard's tokens; the timeline's scrim is the one declared here,
+   because the palette has no wash. */
 
 /* This card's own children, such as the filter chips, must not be clipped. */
 .de-card {
@@ -11,6 +12,7 @@
    given a face inside the feature rather than by changing every other page's
    type in the same breath. */
 .de-card,
+.de-timeline,
 .de-tree {
   --de-mono: "SF Mono", "Fira Code", ui-monospace, Menlo, Consolas, monospace;
 }
@@ -452,4 +454,106 @@
 .de-map-empty {
   font-size: 12px;
   color: var(--text-muted);
+}
+
+/* ── Availability timeline ── */
+
+.de-tl-range {
+  font-size: 12px;
+}
+
+.de-tl-host {
+  --de-scrim: rgba(15, 23, 42, 0.35);
+  position: relative;
+  margin: 0 20px 12px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  min-height: 120px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .de-tl-host {
+    --de-scrim: rgba(2, 6, 23, 0.55);
+  }
+}
+
+:root[data-theme="dark"] .de-tl-host {
+  --de-scrim: rgba(2, 6, 23, 0.55);
+}
+
+.de-tl-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg-input);
+}
+
+.de-tl-state.err {
+  color: var(--error);
+  padding: 16px;
+  text-align: center;
+}
+
+/* @edsc/timeline ships a fixed dark palette; this re-skins it onto the tokens.
+   Never give .edsc-timeline-primary-section an opaque background: it spans the
+   row list and would hide every interval bar. */
+.de-tl-host .edsc-timeline{border-color:var(--border);font-family:inherit}
+.de-tl-host .edsc-timeline-list,.de-tl-host .edsc-timeline-tools{background-color:var(--bg-input);color:var(--text-primary)}
+.de-tl-host .edsc-timeline-primary-section{color:var(--text-primary)}
+.de-tl-host .edsc-timeline-list{box-shadow:none}
+.de-tl-host .edsc-timeline-primary-section__title{font-family:var(--de-mono);font-size:11px;color:var(--text-secondary)}
+.de-tl-host .edsc-timeline-interval__interval-label{color:var(--text-muted);font-variant-numeric:tabular-nums}
+.de-tl-host .edsc-timeline-interval__interval-section-label{color:var(--text-secondary)}
+.de-tl-host .edsc-timeline-interval__interval-top,.de-tl-host .edsc-timeline-interval__interval-bottom{border-left-color:var(--border-light)}
+.de-tl-host .edsc-timeline-interval--is-focused{background:var(--accent-light)}
+.de-tl-host .edsc-timeline-interval--is-focused .edsc-timeline-interval__interval-bottom,
+.de-tl-host .edsc-timeline-list__focused-range{border-color:var(--accent)}
+.de-tl-host .edsc-timeline-list__line{border-bottom-color:var(--border-light)}
+.de-tl-host .edsc-timeline-list__temporal-marker{background-color:var(--warning)}
+.de-tl-host .edsc-timeline-list__temporal-range{background-color:var(--warning-light)}
+.de-tl-host .edsc-timeline-list__temporal-mouseover-marker{background-color:var(--warning)}
+.de-tl-host .edsc-timeline-list__focused-range-mask{background:var(--de-scrim)}
+.de-tl-host .edsc-timeline-tools__action{color:var(--text-secondary)}
+.de-tl-host .edsc-timeline-tools__action:hover{color:var(--text-primary)}
+.de-tl-host .edsc-timeline-tools__label{color:var(--text-muted);font-size:11px}
+.de-tl-host .edsc-timeline__center{background-color:var(--error)}
+
+.de-tl-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  padding: 0 20px 14px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.de-swatches {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.de-sw {
+  width: 16px;
+  height: 12px;
+  border-radius: 2px;
+}
+
+.de-sw-real {
+  background: var(--accent);
+}
+
+.de-sw-synth {
+  background: var(--text-muted);
+}
+
+.de-sw-range {
+  background: var(--warning-light);
+  border: 1px solid var(--warning);
 }

@@ -4,6 +4,7 @@
  * fields pass and takes the node set as given.
  */
 
+import { isSyntheticNode } from "../../../utils/nodeKind";
 import type { NearFilter } from "./urlState";
 
 export interface RegistryNode {
@@ -38,6 +39,23 @@ export function distanceKm(aLat: number, aLon: number, bLat: number, bLon: numbe
     Math.sin(dLat / 2) ** 2 +
     Math.cos(toRadians(aLat)) * Math.cos(toRadians(bLat)) * Math.sin(dLon / 2) ** 2;
   return 2 * EARTH_RADIUS_KM * Math.asin(Math.sqrt(h));
+}
+
+/** A node seen only in an archive key has no registry entry and so no server
+ *  flag; its prefix is the only thing left to classify it by. */
+export function isSynthetic(registry: Map<string, RegistryNode>, id: string): boolean {
+  const known = registry.get(id);
+  return known ? known.synthetic : isSyntheticNode({}, id);
+}
+
+/** Whether the fleet has a synthetic node at all, selected or not. Asked of
+ *  every known node so it does not flip as the selection narrows; it can
+ *  still turn true after first paint as listings discover synthetic ids. */
+export function anyNodeSynthetic(
+  registry: Map<string, RegistryNode>,
+  discovered: Set<string>,
+): boolean {
+  return knownNodeIds(registry, discovered).some((id) => isSynthetic(registry, id));
 }
 
 /** Every node the picker can offer: the registry, plus ids that only ever
