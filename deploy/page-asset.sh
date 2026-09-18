@@ -5,9 +5,7 @@
 # A status check cannot see the failure this exists for. A bundle built for one
 # mount point and served at another returns its index.html intact, with a 200 and
 # every header in place, while each asset URL inside it points somewhere that
-# does not hold the file — a blank screen behind a green tick. That is what
-# app.retina.fm/dash/ did between #426 and the base-path work: /dash/ answered
-# 200 and its JS, CSS and theme-boot.js all 404'd at the vhost root.
+# does not hold the file — a blank screen behind a green tick.
 #
 # The content type carries the assertion, not the status code. An SPA fallback
 # answers a missed asset with index.html and a 200, so a code-only check passes

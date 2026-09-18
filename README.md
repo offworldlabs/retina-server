@@ -26,9 +26,8 @@ rather than a 404 from this backend.
 
 ```
 backend/          Python API (FastAPI)
-frontend/         React SPA (Vite)
-dashboard/        Admin dashboard (React/Vite)
-packages/shared/  Code both web apps share, imported as @retina/shared
+dashboard/        The console, live map included (React/Vite)
+packages/shared/  Code the console shares, imported as @retina/shared
 e2e/              Playwright suite run after each deploy
 docs/             Architecture, pipeline, runbook, simulation, arc-display
 libs/             Git submodules
@@ -62,7 +61,7 @@ with `uv`, installs all five `libs/` packages editable, seeds `backend/.env` fro
 the example, applies the database migrations (`backend/data/users.db` does not
 exist yet on a fresh clone, and `create_all` no longer builds it outside the test
 suite), and installs the web dependencies, one `npm ci` at the root for the
-frontend, the dashboard and the shared package together. Install all five even if you only
+console, the shared package and the browser suite together. Install all five even if you only
 care about tower search: `retina-simulation` imports the other four, so a partial
 install fails at import time rather than at use.
 
@@ -85,7 +84,7 @@ The API runs at `http://localhost:8000`, with its reference at `/` (published at
 search is not part of this process: run tower-finder-service (its own repo and
 container) if you need `/api/towers`, `/api/elevation`, `/api/config` or
 `/api/geocode` locally.
-The live map and the dashboard do not need it.
+The console, live map included, does not need it.
 
 #### Database migrations
 
@@ -107,17 +106,17 @@ must go through `op.batch_alter_table`, because SQLite cannot `ALTER`.
 `RETINA_DB_PATH` points Alembic at a scratch file if you want to try a
 migration without touching `backend/data/users.db`.
 
-### Frontend
+### The console
 
 `just setup` already installed the dependencies, and `just up` runs this alongside
 the backend. To run it on its own:
 
 ```bash
-npm run dev -w frontend
+npm run dev -w dashboard
 ```
 
-Opens at `http://localhost:5173`. API calls are proxied to the backend during
-development.
+Opens at `http://localhost:5174` on the live map; `?mode=admin` selects the admin
+console. API calls are proxied to the backend during development.
 
 ## API
 

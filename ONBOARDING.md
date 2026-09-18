@@ -20,8 +20,8 @@ session cookie is host-only and a login has to cover all of them:
 
 | Surface | What it is |
 | --- | --- |
-| **map** (`/`) | Live aircraft map. Production and the test droplet show real radar nodes only; staging shows its synthetic fleet, and is the dev/demo surface, being the only environment still running one. The feed is chosen by hostname in `frontend/src/utils/domains.ts`. |
-| **dashboard** (`/dash/`) | Node ownership, claim codes, MLAT verification, metrics. Auth required, bar the public pages such as the detection archive browser at `/dash/data`, which the old `/data/` redirects to. |
+| **map** (`/map`, where `/` opens) | Live aircraft map, the console's front page. Production and the test droplet show real radar nodes only; staging shows its synthetic fleet, and is the dev/demo surface, being the only environment still running one. The feed is chosen by hostname in `dashboard/src/pages/map/utils/domains.ts`. |
+| **console** (the rest of `/`) | Node ownership, claim codes, MLAT verification, metrics. Auth required, bar the public pages such as the map and the detection archive browser at `/data`. The old `/dash/…` and `/data/…` addresses redirect in. |
 | **admin** (`admin.retina.fm`) | The same dashboard bundle with the admin route table, on a hostname of its own so a Cloudflare Access application can gate it. |
 
 Illuminator search is deliberately absent from that table: **tower-finder-service**
@@ -37,9 +37,8 @@ map over WebSocket. See [`docs/pipeline.md`](docs/pipeline.md).
 
 ```
 backend/      FastAPI API, TCP frame ingest, detection pipeline, background tasks
-frontend/     React SPA — the live map (Vite + Leaflet)
-dashboard/    React admin app (Vite)
-packages/shared/  Code both web apps share, imported as @retina/shared
+dashboard/    The console, live map included (React, Vite, Leaflet)
+packages/shared/  Code the console shares, imported as @retina/shared
 e2e/          Playwright suite run after each deploy; a failure on production rolls it back
 libs/         Git submodules (the algorithm libraries — see below)
 docs/         Architecture, pipeline, runbook, alerting, simulation, arc-display
@@ -99,19 +98,19 @@ local run needs no real `JWT_SECRET`; a deployed environment requires one.
 All three go on the command line rather than in `.env`, because `main.py` loads
 the dotenv file after the modules that read them. `just up` passes them for you.
 
-### Frontend / dashboard
+### The console
 
-The two apps are workspaces of one npm package at the repo root: one lockfile,
+The console is a workspace of one npm package at the repo root: one lockfile,
 one `npm ci`, and the toolchain (Vite, Vitest, TypeScript, ESLint) declared once
-in the root `package.json`. Install at the root, then address an app with `-w`:
+in the root `package.json`. Install at the root, then address it with `-w`:
 
 ```bash
 npm ci                    # once, at the repo root
-npm run dev -w frontend   # or: -w dashboard
+npm run dev -w dashboard
 ```
 
-Code both apps use lives in `packages/shared`, imported as `@retina/shared`; it is
-a third workspace with its own lint, typecheck and tests. Reach for its
+Shared code lives in `packages/shared`, imported as `@retina/shared`; it is a
+workspace with its own lint, typecheck and tests. Reach for its
 `request()` rather than a raw `fetch`: it carries the timeout, the JSON
 conventions and the typed errors every surface wants. `useCurrentUser()` sits on
 top of it and resolves who the caller is, retries included.
@@ -127,14 +126,15 @@ docker run --rm -v "$PWD":/w -w /w --user "$(id -u):$(id -g)" -e npm_config_cach
 npm ci
 ```
 
-Frontend is at `http://localhost:5173` and opens the live map; `/api` and `/ws`
-are proxied to the backend on `:8000`. `http://app.localhost:5173/` also opens
-the map. Hostname flags select feed and display behavior (see
-`frontend/src/utils/domains.ts`); a local map hostname shows both real and
-synthetic nodes.
+The console is at `http://localhost:5174` (or `http://app.localhost:5174/`) and
+opens on the live map; `/api` and `/ws` are proxied to the backend on `:8000`,
+and `?mode=admin` selects the admin console. Hostname flags select feed and
+display behaviour (see `dashboard/src/pages/map/utils/domains.ts`); a local
+hostname shows both real and synthetic nodes.
 
 There's a backend-free map sandbox at `/test-radar` (one node, one aircraft,
-one ellipse) for working on map rendering without the pipeline.
+one ellipse) for working on map rendering without the pipeline. Only dev builds
+carry it.
 
 ### Full stack in Docker
 
@@ -145,11 +145,10 @@ shared template, plain HTTP), overlay the laptop compose file on the base:
 docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
 ```
 
-Serves `http://app.localhost:8080` (live map + synthetic fleet, with the
-dashboard at `/dash/` and the data explorer at `/dash/data`),
-`http://api.localhost:8080`, and towers/admin on the same port — the endpoint
-list and the reasoning live in `docker-compose.local.yml`'s header.
-Always pass `--build`: the frontend bundle and backend are baked into the
+Serves `http://app.localhost:8080` (the console, opening on the live map of the
+synthetic fleet), `http://api.localhost:8080`, and towers/admin on the same
+port — the endpoint list and the reasoning live in `docker-compose.local.yml`'s
+header. Always pass `--build`: the console bundle and backend are baked into the
 image, so a plain `up` silently reuses the previous build.
 
 ### See real data without running the pipeline
@@ -183,7 +182,7 @@ uv pip install ../libs/retina-geolocator ../libs/retina-tracker \
 # backend
 cd backend && RETINA_ENV=test COVERAGE_CORE=sysmon pytest
 
-# every workspace; -w frontend (or -w dashboard, -w packages/shared, -w e2e) for one
+# every workspace; -w dashboard (or -w packages/shared, -w e2e) for one
 npm run test --workspaces --if-present && npm run typecheck --workspaces && npm run lint --workspaces --if-present
 
 # the browser suite, against staging (local and prod are the other two targets)
@@ -295,7 +294,7 @@ branch, open a PR, get it green, then merge.
 - **The CARTO basemap key lives on the droplet, not in this repo.** Every
   deploy appends `/root/.secrets/carto.env` to `./.env` after copying
   `deploy/env.<env>.example`, and `docker-compose.yml` interpolates it into the
-  frontend's `VITE_CARTO_API_KEY` build arg. The file is one line,
+  console's `VITE_CARTO_API_KEY` build arg. The file is one line,
   `CARTO_API_KEY=<key>`; create it on a new droplet with
   `install -d -m 700 /root/.secrets` and a `printf` into
   `/root/.secrets/carto.env` (`chmod 600`). It is deliberately not in
@@ -309,9 +308,10 @@ branch, open a PR, get it green, then merge.
 - **Submodules.** After pulling, run `git submodule update --init --recursive`
   if `libs/` looks stale or imports fail.
 - **The map opens on localhost too.** Hostnames choose its feed and display
-  defaults: deployed `map` and `test-map` use real-only data, while `testmap`,
-  `staging-map` and `test-testmap` are synthetic demo surfaces. Local map
-  hostnames retain both kinds of nodes. Tower search has its own SPA in
+  defaults: `app` and `test-app` use real-only data, while `staging-app` is the
+  synthetic demo surface. `map`, `testmap`, `staging-map` and the other retired
+  names are Cloudflare redirects into those. Local hostnames retain both kinds
+  of nodes. Tower search has its own SPA in
   tower-finder-service; the laptop overlay sets `TOWER_FINDER_ENABLED=false`,
   and this backend no longer implements `/api/towers`.
 - **Config vs runtime config.** `backend/config/` is image-only (baked into the

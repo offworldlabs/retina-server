@@ -27,10 +27,9 @@ const toRadians = (degrees: number): number => (degrees * Math.PI) / 180;
  * Great-circle distance. The haversine form rather than the cosine rule,
  * which loses its precision over the short separations these nodes sit at.
  *
- * A third copy, alongside frontend/src/components/map/geo.ts and its
- * distance.ts: the apps cannot import across the boundary, and the map's pair
- * carries Leaflet types this page has no use for. It stands until one of them
- * moves to packages/shared, which should take all three.
+ * A copy of the map's pages/map/geo.ts and distance.ts, whose pair carries
+ * Leaflet types this page has no use for. It stands until the map's pair sheds
+ * them or moves to packages/shared, which should then take this one too.
  */
 export function distanceKm(aLat: number, aLon: number, bLat: number, bLon: number): number {
   const dLat = toRadians(bLat - aLat);
