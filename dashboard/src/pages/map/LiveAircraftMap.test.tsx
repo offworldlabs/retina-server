@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Children, isValidElement, type ReactElement } from "react";
 import LiveAircraftMap from "./LiveAircraftMap";
 import { MapThemeProvider } from "./useMapTheme";
+import { ThemeProvider, useTheme } from "../../context/ThemeContext";
 
 // Leaflet layers need a browser layout. Keep the real map controller, toolbar,
 // playback and feed lifecycle; geometry and layer helpers have their own tests.
@@ -134,4 +135,62 @@ it("draws its live stats in the aircraft list, not floating over the map", () =>
   const { container } = render(<MapThemeProvider><LiveAircraftMap /></MapThemeProvider>);
   expect(container.querySelector(".live-map-top-right-stack")).toBeNull();
   expect(container.querySelector(".aircraft-list-panel .stats-panel")).not.toBeNull();
+});
+
+it("moves its default basemap with the console's theme", () => {
+  // Console starts light, so the default basemap is Positron.
+  localStorage.setItem("retina.theme", "light");
+  vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({
+    matches: false,
+    media: "(prefers-color-scheme: dark)",
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
+  function Flip() {
+    const { setPreference } = useTheme();
+    return <button onClick={() => setPreference("dark")}>flip</button>;
+  }
+  render(
+    <ThemeProvider>
+      <Flip />
+      <MapThemeProvider><LiveAircraftMap /></MapThemeProvider>
+    </ThemeProvider>,
+  );
+  fireEvent.click(screen.getByText("flip"));
+  expect(window.localStorage.getItem("tf.tile.theme")).toBe(JSON.stringify("voyager"));
+});
+
+function mountUnderStoredTheme(theme: string, tile: string, chosenBy: string) {
+  localStorage.setItem("retina.theme", theme);
+  localStorage.setItem("tf.tile.theme", JSON.stringify(tile));
+  localStorage.setItem("tf.tile.chosenBy", JSON.stringify(chosenBy));
+  vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({
+    matches: false,
+    media: "(prefers-color-scheme: dark)",
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }));
+  render(
+    <ThemeProvider>
+      <MapThemeProvider><LiveAircraftMap /></MapThemeProvider>
+    </ThemeProvider>,
+  );
+}
+
+it("mounts onto its own theme's basemap when the theme that chose it has since changed", () => {
+  // Dark chose Voyager; the console went light while the map was not mounted.
+  mountUnderStoredTheme("light", "voyager", "dark");
+  expect(window.localStorage.getItem("tf.tile.theme")).toBe(JSON.stringify("positron"));
+});
+
+it("keeps a hand-picked basemap when it mounts", () => {
+  mountUnderStoredTheme("light", "osm", "hand");
+  expect(window.localStorage.getItem("tf.tile.theme")).toBe(JSON.stringify("osm"));
+});
+
+it("keeps a hand-picked basemap that happens to be the other theme's default", () => {
+  // Voyager is dark's default and also a stop on the cycle control; picked by
+  // hand under a light console, it is the user's choice, not dark's.
+  mountUnderStoredTheme("light", "voyager", "hand");
+  expect(window.localStorage.getItem("tf.tile.theme")).toBe(JSON.stringify("voyager"));
 });
