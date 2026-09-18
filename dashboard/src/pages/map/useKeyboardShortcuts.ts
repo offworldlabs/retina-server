@@ -5,7 +5,9 @@ export type ShortcutMap = Record<string, (e: KeyboardEvent) => void>;
 /**
  * Wire up a small set of single-key shortcuts.  Ignores events fired while
  * an input/textarea is focused so typing into the search box doesn't
- * accidentally toggle the trail layer.
+ * accidentally toggle the trail layer, and ignores events when focus is outside
+ * the map surface so that console controls (like the header's theme radiogroup)
+ * are not interrupted.
  */
 export function useKeyboardShortcuts(map: ShortcutMap, enabled = true) {
   useEffect(() => {
@@ -23,6 +25,12 @@ export function useKeyboardShortcuts(map: ShortcutMap, enabled = true) {
       // Ignore when a modifier is pressed — we don't want to intercept
       // browser shortcuts (Cmd+R, Ctrl+L, …).
       if (e.metaKey || e.ctrlKey || e.altKey) return;
+      // A key pressed while something outside the surface holds focus
+      // belongs to whatever holds it. With nothing
+      // focused the target is the body, which is outside the surface but is
+      // nobody else's control, so it still reaches the map.
+      const focused = document.activeElement;
+      if (focused && focused !== document.body && !focused.closest?.(".map-surface")) return;
       const handler = map[e.key] || map[e.key.toLowerCase()];
       if (handler) {
         handler(e);
