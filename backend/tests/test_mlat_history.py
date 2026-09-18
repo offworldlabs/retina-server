@@ -408,6 +408,39 @@ class TestAnchoredN2DisplacementCap:
         assert rec["displacement_cap_km"] == 5.0
 
 
+class TestDisplacementCapKm:
+    """displacement_cap_km is the one statement of the cap precedence, read
+    by both the solver's gate and the history record."""
+
+    ANCHORED_N2 = {"anchor_key": "mn-dark-0001", "n_nodes": 2}
+    KM_DEG = 1.0 / 111.32
+
+    @pytest.mark.parametrize("dark", [True, False])
+    def test_anchored_n2_beats_either_lane(self, dark):
+        assert caps_mod.displacement_cap_km(self.ANCHORED_N2, {}, dark=dark) == caps_mod._DARK_FOLLOW_N2_MAX_DISP_KM
+
+    def test_lane_caps_apply_otherwise(self):
+        s = {"n_nodes": 2}
+        assert caps_mod.displacement_cap_km(s, {}, dark=True) == caps_mod._MAX_DISPLACEMENT_KM_DARK
+        assert caps_mod.displacement_cap_km(s, {}, dark=False) == caps_mod._MAX_DISPLACEMENT_KM
+
+    def test_dark_is_taken_as_given(self):
+        """The record decides the lane from its solve_key when it has one, so
+        a transponder-shaped hex must not override the caller's answer."""
+        s = {"n_nodes": 3, "adsb_hex": "a1b2c3"}
+        assert caps_mod.displacement_cap_km(s, {}, dark=True) == caps_mod._MAX_DISPLACEMENT_KM_DARK
+
+    def test_gate_and_record_both_read_it(self, monkeypatch):
+        monkeypatch.setattr(caps_mod, "displacement_cap_km", lambda s, r, *, dark: 0.5)
+        s_in = dict(_CONFIRMED_N2)
+        s_in["initial_guess"] = {"lat": LAT - 1.0 * self.KM_DEG, "lon": LON, "alt_km": 9.0}
+        result = solver_mod._process_solver_item((s_in, {}, time.time()), _solve_fn())
+        assert result is None
+        rec = state.mlat_solve_history[0]
+        assert rec["outcome"] == "rejected_displacement"
+        assert rec["displacement_cap_km"] == 0.5
+
+
 class TestKeyDecisionObservability:
     """key_how / key_dist_km / key_dt_s on the history record, and the dark
     key-decision counters behind them.
