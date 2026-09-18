@@ -2654,19 +2654,6 @@ function AircraftMapScope({ ownerOnly, restoreSelection, auth, onOwnerChange }) 
 
           <ShortcutHelp visible={showShortcutHelp} onClose={() => setShowShortcutHelp(false)} />
 
-          {selectedAc && (
-            <AircraftDetailPanel
-              ac={selectedAc}
-              onClose={() => setSelectedHex(null)}
-              groundTruth={groundTruthRef.current}
-              trails={trailsRef.current}
-              computeError={computeError}
-              detectingNodes={selectedTruthDetectingNodes}
-              solveHistory={mlatHistory}
-              nodeLabelFor={nodeLabelFor}
-            />
-          )}
-
           {paused && historyRef.current.length > 0 && (
             <PlaybackBar
               history={historyRef.current}
@@ -2676,6 +2663,19 @@ function AircraftMapScope({ ownerOnly, restoreSelection, auth, onOwnerChange }) 
             />
           )}
         </div>
+
+        {selectedAc && (
+          <AircraftDetailPanel
+            ac={selectedAc}
+            onClose={() => setSelectedHex(null)}
+            groundTruth={groundTruthRef.current}
+            trails={trailsRef.current}
+            computeError={computeError}
+            detectingNodes={selectedTruthDetectingNodes}
+            solveHistory={mlatHistory}
+            nodeLabelFor={nodeLabelFor}
+          />
+        )}
       </div>
     </div>
   );
