@@ -90,9 +90,13 @@ describe("the sidebar shown to a caller with no session", () => {
 });
 
 describe("the header shown to a caller with no session", () => {
-  function renderHeader() {
+  beforeEach(() => {
     stubBrowser();
-    render(
+    document.documentElement.removeAttribute("data-theme");
+  });
+
+  function renderHeader() {
+    return render(
       <MemoryRouter>
         <ThemeProvider>
           <Header title="Leaderboard" />
@@ -109,6 +113,18 @@ describe("the header shown to a caller with no session", () => {
   it("does not offer a way out of a session that does not exist", () => {
     renderHeader();
     expect(screen.queryByText("Sign out")).not.toBeInTheDocument();
+  });
+
+  // The switch itself is appearanceSwitch.test.tsx's, run in both states.
+  it("keeps a visitor's choice for their next visit", () => {
+    const { unmount } = renderHeader();
+    fireEvent.click(screen.getByRole("radio", { name: "Dark" }));
+    unmount();
+    document.documentElement.removeAttribute("data-theme");
+
+    renderHeader();
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+    expect(screen.getByRole("radio", { name: "Dark" })).toHaveAttribute("aria-checked", "true");
   });
 });
 
