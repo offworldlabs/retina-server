@@ -2,8 +2,8 @@
 filter over solve positions.
 
 services.tasks.solver publishes one multinode solve at a time, keyed by the
-same track key state.multinode_tracks uses (see _MN_TRACKS_LOCK / the
-supersession block there).  Each solve has its own position error — GDOP ×
+same track key state.multinode_tracks uses (see the keying and supersession
+blocks there).  Each solve has its own position error — GDOP ×
 delay noise, worse at n=2 than n=4 — and until now that error was smoothed by
 _ewma_smooth_track: dead-reckon up to _MN_HISTORY_K past positions forward to
 the current solve time and take an unweighted mean.  That treats every solve
@@ -107,12 +107,12 @@ without reimporting:
     "off"  — raw passthrough, no smoothing at all.
     anything else — treated as "kf".
 
-Lock-order constraint: every caller of smooth_solve() holds solver.py's
-_MN_TRACKS_LOCK (see the comment at that call site).  _KF_LOCK below is a
-LEAF lock — nothing under it may call back into solver.py, acquire
-_MN_TRACKS_LOCK, or acquire _MN_POS_HISTORY_LOCK.  Keeping that one-directional
-means solver.py -> track_filter is the only lock order that ever exists, so
-there is no deadlock to reason about.
+Lock-order constraint: every caller of smooth_solve() holds
+state.multinode_tracks_lock (see the comment at solver.py's call site).
+_KF_LOCK below is a LEAF lock — nothing under it may call back into solver.py,
+acquire state.multinode_tracks_lock, or acquire _MN_POS_HISTORY_LOCK.  Keeping
+that one-directional means solver.py -> track_filter is the only lock order
+that ever exists, so there is no deadlock to reason about.
 """
 
 import logging
@@ -1129,7 +1129,7 @@ def _smooth_kf(result: dict, track_key: str, adsb_hex: str | None) -> dict:
 
 def smooth_solve(result: dict, track_key: str, adsb_hex: str | None, *, ewma_fn=None) -> dict:
     """Smooth a multinode solver result for display.  Called under
-    solver.py's _MN_TRACKS_LOCK — see this module's docstring for the lock
+    state.multinode_tracks_lock — see this module's docstring for the lock
     order this implies.
 
     TRACK_SMOOTHER selects the strategy, read fresh on every call (tests flip

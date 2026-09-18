@@ -649,7 +649,7 @@ class TestForgetMnKey:
         track_filter.smooth_solve({"success": True, "lat": LAT, "lon": LON, "timestamp_ms": 1_000_000}, key, None)
         assert key in track_filter._KF_TRACKS
 
-        with solver_mod._MN_TRACKS_LOCK:
+        with state.multinode_tracks_lock:
             solver_mod._forget_mn_key(key)
 
         assert key not in state.multinode_tracks
@@ -658,7 +658,7 @@ class TestForgetMnKey:
         assert key not in track_filter._KF_TRACKS
 
     def test_forgetting_an_unknown_key_is_a_no_op(self):
-        with solver_mod._MN_TRACKS_LOCK:
+        with state.multinode_tracks_lock:
             solver_mod._forget_mn_key("mn-dark-never-existed")
 
 

@@ -863,7 +863,7 @@ flowchart TD
     cv --> untrust
     slv --> untrust["vel_untrusted =<br/>vz_saturated OR<br/>(vel_source==solve AND n<=3)"]
 
-    untrust --> lock["under _MN_TRACKS_LOCK"]
+    untrust --> lock["under state.multinode_tracks_lock"]
     lock --> ident{"multinode_key_decision"}
     ident -->|"1. adsb_hex present"| kADSB["mn-adsb-hex"]
     ident -->|"2. anchor_key mn-dark-*,<br/>live, within 6.0km"| kAnchor["reuse anchor key"]

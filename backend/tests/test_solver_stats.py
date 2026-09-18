@@ -23,7 +23,6 @@ from services.solver_report import (
     _record_lane,
     _solver_window_stats,
 )
-from services.tasks import solver as solver_mod
 
 
 def _client():
@@ -979,12 +978,12 @@ class TestLiveStateSnapshots:
     def setup_method(self):
         state._reset_for_tests()
 
-    def test_multinode_tracks_iterated_under_the_solver_lock(self, monkeypatch):
-        """The snapshot is taken while solver._MN_TRACKS_LOCK is held — the
-        same lock solver._process_solver_item and known_lane._publish write
-        the dict under."""
+    def test_multinode_tracks_iterated_under_the_track_lock(self, monkeypatch):
+        """The snapshot is taken while state.multinode_tracks_lock is held —
+        the same lock solver._process_solver_item and known_lane._publish
+        write the dict under."""
         lock = threading.Lock()
-        monkeypatch.setattr(solver_mod, "_MN_TRACKS_LOCK", lock)
+        monkeypatch.setattr(state, "multinode_tracks_lock", lock)
         seen = []
 
         class _Tracks(dict):
@@ -995,7 +994,7 @@ class TestLiveStateSnapshots:
         monkeypatch.setattr(state, "multinode_tracks", _Tracks({"mn-dark-1": {"lat": 35.0, "lon": -82.0}}))
         out = _solver_window_stats(10.0)
         assert out["ghosts"]["live"]["dark_tracks"] == 1
-        assert seen and all(seen), "multinode_tracks was iterated without _MN_TRACKS_LOCK"
+        assert seen and all(seen), "multinode_tracks was iterated without multinode_tracks_lock"
 
     def test_concurrent_track_insert_does_not_raise(self):
         tracks = state.multinode_tracks

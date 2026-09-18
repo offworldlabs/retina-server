@@ -458,7 +458,7 @@ def _publish(hexn: str, s_in: dict, result: dict) -> str:
     # leaked into the horizontal components.
     result["vel_untrusted"] = bool(result.get("vz_saturated")) or int(result.get("n_nodes") or 0) <= 3
 
-    with solver_mod._MN_TRACKS_LOCK:
+    with state.multinode_tracks_lock:
         key, _how, _dist_km, _dt_s = solver_mod.multinode_key_decision(state.multinode_tracks, result, hexn, None)
         smoothed = track_filter.smooth_solve(result, key, hexn, ewma_fn=solver_mod._ewma_smooth_track)
         prev = state.multinode_tracks.get(key)

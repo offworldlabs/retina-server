@@ -140,12 +140,10 @@ def prune_stale_stores(now: float) -> None:
 def prune_multinode_tracks(now: float) -> None:
     """Age out state.multinode_tracks, discarding each entry's anomaly hex.
 
-    Snapshot and evict under the solver's track lock: the solver worker
-    iterates state.multinode_tracks inside multinode_key_decision while holding
-    it, and a pop from another thread mid-iteration raised "dictionary changed
-    size during iteration" live (2026-09-05).  Lazy import: solver.py owns the
-    lock and importing it at module level here would create a cycle through the
-    task modules.
+    Snapshot and evict under the track lock: the solver worker iterates
+    state.multinode_tracks inside multinode_key_decision while holding it, and
+    a pop from another thread mid-iteration raised "dictionary changed size
+    during iteration" live (2026-09-05).
 
     This is the ONLY pruner of the store the solver writes at full rate.  It
     used to live inside the feed build, which meant a stalled flush — or a feed
@@ -153,9 +151,7 @@ def prune_multinode_tracks(now: float) -> None:
     unbounded.  It is idempotent, so the feed build still calls it before
     reading its snapshot and gets a store with nothing expired in it.
     """
-    from services.tasks import solver as _solver_mod
-
-    with _solver_mod._MN_TRACKS_LOCK:
+    with state.multinode_tracks_lock:
         snapshot = list(state.multinode_tracks.items())
     stale = []
     for key, r in snapshot:
@@ -171,5 +167,5 @@ def prune_multinode_tracks(now: float) -> None:
         # without bound — enough to trip the anomaly_flood health check.
         with state.anomaly_lock:
             state.anomaly_hexes.discard(multinode_hex_from_key(k))
-        with _solver_mod._MN_TRACKS_LOCK:
+        with state.multinode_tracks_lock:
             state.multinode_tracks.pop(k, None)
