@@ -264,22 +264,38 @@ const icons = {
       <line x1="10" y1="14" x2="21" y2="3" />
     </svg>
   ),
+  chevronLeft: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+         strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="15 18 9 12 15 6" />
+    </svg>
+  ),
 };
 
-export default function Sidebar({ isAdmin }) {
+export default function Sidebar({ isAdmin, collapsed, onToggle }) {
   const { user } = useAuth();
   // The console is never reached without a session, so its nav does not have a
   // signed-out form to choose between.
   const nav = isAdmin ? adminNav : user ? userNav() : publicNav();
 
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" id="console-sidebar">
       <div className="sidebar-brand">
         <div className="brand-icon">R</div>
-        <div>
+        <div className="brand-labels">
           <div className="brand-text">Retina</div>
           <div className="brand-sub">{isAdmin ? "Admin Console" : "Node Dashboard"}</div>
         </div>
+        <button
+          className="sidebar-toggle"
+          onClick={onToggle}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded={!collapsed}
+          aria-controls="console-sidebar"
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        >
+          {icons.chevronLeft}
+        </button>
       </div>
       <nav className="sidebar-nav">
         {nav.map((section) => (
@@ -293,9 +309,10 @@ export default function Sidebar({ isAdmin }) {
                   target="_blank"
                   rel="noopener noreferrer"
                   className="nav-item"
+                  title={item.label}
                 >
                   {icons[item.icon]}
-                  {item.label}
+                  <span className="nav-label">{item.label}</span>
                   <span className="nav-external">{icons.externalLink}</span>
                 </a>
               ) : (
@@ -306,9 +323,10 @@ export default function Sidebar({ isAdmin }) {
                   className={({ isActive }) =>
                     `nav-item${isActive ? " active" : ""}`
                   }
+                  title={item.label}
                 >
                   {icons[item.icon]}
-                  {item.label}
+                  <span className="nav-label">{item.label}</span>
                 </NavLink>
               )
             )}

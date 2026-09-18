@@ -198,6 +198,66 @@ a:hover {
   overflow-y: auto;
 }
 
+/* Collapsed, the sidebar keeps its icons and drops everything that needs a
+   line of text. Width only: the nav is the same tree either way, so nothing
+   remounts and no scroll position is lost. */
+.dashboard.sidebar-collapsed .sidebar {
+  width: 64px;
+}
+
+.dashboard.sidebar-collapsed .brand-labels,
+.dashboard.sidebar-collapsed .nav-section-title,
+.dashboard.sidebar-collapsed .nav-label,
+.dashboard.sidebar-collapsed .nav-external {
+  display: none;
+}
+
+.dashboard.sidebar-collapsed .nav-item {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* 64px cannot hold the brand icon and the toggle side by side, so the rail
+   stacks them. */
+.dashboard.sidebar-collapsed .sidebar-brand {
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 8px;
+}
+
+.dashboard.sidebar-collapsed .sidebar-toggle {
+  margin-left: 0;
+}
+
+.sidebar-toggle {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius, 8px);
+}
+
+.sidebar-toggle:hover {
+  color: var(--text-primary);
+  background: var(--bg-card-hover);
+}
+
+/* Nothing here resets <svg>, so an unsized glyph takes the browser's 300x150
+   default. */
+.sidebar-toggle svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.dashboard.sidebar-collapsed .sidebar-toggle svg {
+  transform: rotate(180deg);
+}
+
 .sidebar-brand {
   padding: 20px 20px 12px;
   border-bottom: 1px solid var(--border);
@@ -209,6 +269,7 @@ a:hover {
 .sidebar-brand .brand-icon {
   width: 32px;
   height: 32px;
+  flex-shrink: 0;
   background: var(--accent);
   color: var(--accent-ink);
   border-radius: 8px;
