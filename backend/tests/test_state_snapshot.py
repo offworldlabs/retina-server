@@ -6,6 +6,7 @@ import time
 from collections import deque
 from unittest.mock import patch
 
+import pytest
 from retina_analytics.reputation import NodeReputation
 from retina_analytics.trust import AdsReportEntry, TrustScoreState
 
@@ -71,6 +72,7 @@ class TestSnapshotRoundTrip:
         # Cleanup
         state.node_analytics.trust_scores.pop("node-42", None)
 
+    @pytest.mark.usefixtures("penalties_on")
     def test_reputations_survive_round_trip(self, tmp_path):
         from core import state
 

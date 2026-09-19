@@ -12,7 +12,13 @@ class TestHealth:
     def test_health_returns_ok(self, client):
         r = client.get("/api/health")
         assert r.status_code == 200
-        assert r.json() == {"status": "ok"}
+        body = r.json()
+        assert body["status"] == "ok"
+        # Not health: the console reads this to decide whether to show the
+        # simulator surface (routes/health.py). Present and boolean is the
+        # contract; its value depends on SYNTHETIC_FLEET_ENABLED.
+        assert isinstance(body["synthetic_fleet"], bool)
+        assert set(body) == {"status", "synthetic_fleet"}
 
 
 # ── Detections ────────────────────────────────────────────────────────────────

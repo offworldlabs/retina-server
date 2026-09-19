@@ -13,6 +13,7 @@ from collections import defaultdict, deque
 
 from retina_analytics.association import InterNodeAssociator
 from retina_analytics.manager import NodeAnalyticsManager
+from retina_analytics.reputation import set_penalty_scale
 from retina_custody.crypto_backend import SignatureVerifier
 from retina_custody.models import NodeIdentity
 
@@ -27,6 +28,7 @@ from config.constants import (
     GROUND_TRUTH_MAX,  # noqa: F401 — re-exported, used via state.GROUND_TRUTH_MAX
     N2_CONFIRM_MIN_EPOCHS,
     N2_CONFIRM_MIN_SPAN_S,
+    REPUTATION_PENALTY_SCALE,
     TRACK_HISTORY_MAX,  # noqa: F401 — re-exported, used via state.TRACK_HISTORY_MAX
     as_num,
 )
@@ -147,6 +149,18 @@ if DARK_FOLLOW_MODE not in ("off", "shadow", "binding"):
     DARK_FOLLOW_MODE = "shadow"
 
 node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR, fov_mode=FOV_MODE)
+
+# Every reputation penalty in retina-analytics is multiplied by this, and the
+# default is 0 — no node can be blocked by a penalty (see
+# config/constants.REPUTATION_PENALTY_SCALE for why, and
+# backend/scripts/unblock_nodes.py for clearing blocks a snapshot already
+# carries).  It is a process-wide ClassVar, so it has to be set before
+# anything reads it: at import here it lands before restore_snapshot()
+# rebuilds the NodeReputation objects and before the reputation evaluator's
+# first pass, which are the only two things that could act on it.  Logged
+# from main.py's startup, not here: this runs before logging.basicConfig,
+# where an INFO line is dropped.
+set_penalty_scale(REPUTATION_PENALTY_SCALE)
 
 
 def _coverage_limit_for(node_id: str):

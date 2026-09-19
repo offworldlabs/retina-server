@@ -137,6 +137,7 @@ class TestSelfReportCoexistence:
         assert len(ts.samples) == 3
         assert ts.summary()["samples_by_provenance"] == {"self_report": 1, "claim_residual": 2}
 
+    @pytest.mark.usefixtures("penalties_on")
     def test_cross_validation_skips_backend_fed_samples(self, now_ms):
         """Claim residuals carry no position claim (lat/lon 0.0), so the
         external-truth cross-check must not read them as a >10 km mismatch."""
@@ -171,9 +172,13 @@ def _self_report(client, node_id, hex_, **position):
     )
 
 
+@pytest.mark.usefixtures("penalties_on")
 class TestCrossValidationRejectsUnusableFixes:
     """A sample the route accepted but haversine_km cannot measure must not be
-    charged for the distance it appears to be from truth."""
+    charged for the distance it appears to be from truth.
+
+    With penalties on, so "no penalty was recorded" is evidence about the
+    guard rather than about the deployed REPUTATION_PENALTY_SCALE=0."""
 
     def _fresh_truth(self, hex_, lat, lon):
         # Stamped now, or the entry's age skips the sample and the assertion

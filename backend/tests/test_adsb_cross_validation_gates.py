@@ -21,6 +21,12 @@ from config.constants import ADSB_TRUTH_INTERVAL_S, XVAL_MAX_AGE_S
 from core import state
 from services.tasks.periodic import _cross_validate_adsb_reports
 
+# Every test in this file is about which samples do and do not earn a penalty,
+# which is only a question while penalties can be recorded at all — the
+# deployed default (REPUTATION_PENALTY_SCALE=0) would pass the "penalises
+# nobody" tests vacuously.
+pytestmark = pytest.mark.usefixtures("penalties_on")
+
 _NODE = "xval-node"
 _HEX = "cafe01"
 # Truth and claim ~30 km apart: unambiguously a mismatch, well past the 10 km bar.

@@ -751,6 +751,7 @@ class TestRadarNodesPayload:
         assert list(real) == [_seed_ref("ret1a2b3c4d")]
 
 
+@pytest.mark.usefixtures("penalties_on")
 class TestAnalyticsPayloadIdentities:
     """/api/radar/analytics is the one surface that could give the map away.
 
