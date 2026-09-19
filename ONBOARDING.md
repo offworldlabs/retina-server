@@ -310,10 +310,13 @@ branch, open a PR, get it green, then merge.
 - **The map opens on localhost too.** There is one console per environment —
   `app`, `staging-app`, `test-app` — and the surface is chosen by path, not by
   hostname: `/map` is the real network, `/sim` the simulated fleet, and
-  `/sim/physics` the page that tunes it. `/sim` exists everywhere but is only
-  worth opening where the server sets `SYNTHETIC_FLEET_ENABLED` (test,
-  staging, the laptop — not production), which is what `/api/health` and
-  `/api/auth/me` both report so the nav can say so. `map`, `testmap`,
+  `/sim/physics` the page that tunes it. Both are open without signing in,
+  and so is the save behind the physics page — there is no identity provider
+  to sign an operator in with yet, and the fleet is synthetic. `/sim` exists
+  everywhere but is only worth opening where the server sets
+  `SYNTHETIC_FLEET_ENABLED` (test, staging, the laptop — not production),
+  which is what `/api/health` and `/api/auth/me` both report so the nav and
+  the physics route can follow it. `map`, `testmap`,
   `test-testmap`, `staging-map` and the other retired names are Cloudflare
   redirects into those consoles. `/map` still takes its feed from the
   hostname: `app` and `test-app` are real-only, and a local hostname retains

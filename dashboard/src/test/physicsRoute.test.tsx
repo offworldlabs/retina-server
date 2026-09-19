@@ -4,15 +4,16 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import App from "../App";
 import Sidebar from "../components/Sidebar";
 import { ThemeProvider } from "../context/ThemeContext";
-import { showsPhysics } from "../utils/physics";
 
 type User = { name: string; email: string; synthetic_fleet?: boolean };
 
-// The Physics item is in the signed-in nav, so the mocked caller has a session.
+// AuthProvider answers `syntheticFleet` from /api/auth/me for a session and
+// from /api/health for a visitor; the mock hands the cases the folded answer.
 const state = vi.hoisted(() => ({
   auth: {
     user: { name: "Ada", email: "ada@example.com" } as User | null,
     loading: false,
+    syntheticFleet: false,
     logout: async () => ({ redirected: false }),
   },
 }));
@@ -42,8 +43,17 @@ function Where() {
   return <output aria-label="location">{`${pathname}${search}${hash}`}</output>;
 }
 
-function renderSidebar({ fleet, realOnly }: { fleet: boolean; realOnly: boolean }) {
-  state.auth.user = { name: "Ada", email: "ada@example.com", synthetic_fleet: fleet };
+function renderSidebar({
+  fleet,
+  realOnly,
+  signedIn = true,
+}: {
+  fleet: boolean;
+  realOnly: boolean;
+  signedIn?: boolean;
+}) {
+  state.auth.user = signedIn ? { name: "Ada", email: "ada@example.com", synthetic_fleet: fleet } : null;
+  state.auth.syntheticFleet = fleet;
   flags.realOnly = realOnly;
   return render(
     <MemoryRouter>
@@ -66,6 +76,12 @@ describe("the Physics Layer route", () => {
   it("is absent where the server runs no fleet, whatever the hostname", () => {
     const { container } = renderSidebar({ fleet: false, realOnly: false });
     expect(container.querySelector('a[href="/sim/physics"]')).toBeNull();
+  });
+
+  // The save behind it is open, so there is no session to wait for.
+  it("is offered to a visitor with no session", () => {
+    const { container } = renderSidebar({ fleet: true, realOnly: false, signedIn: false });
+    expect(container.querySelector('a[href="/sim/physics"]')).toHaveTextContent("Physics Layer");
   });
 
   // The old address is gone from the nav entirely: it survives only as a
@@ -91,21 +107,26 @@ describe("the Simulation route", () => {
   // Otherwise NavLink lights both entries up at once on /sim/physics, since a
   // link without `end` is current for its whole subtree.
   it("is not current while the physics page under it is", () => {
-    state.auth.user = { name: "Ada", email: "ada@example.com", synthetic_fleet: true };
-    flags.realOnly = false;
-    const { container } = render(
-      <MemoryRouter initialEntries={["/sim/physics"]}>
-        <Sidebar isAdmin={false} collapsed={false} onToggle={() => {}} />
-      </MemoryRouter>,
-    );
-    expect(container.querySelector('a[href="/sim"]')).not.toHaveClass("active");
-    expect(container.querySelector('a[href="/sim/physics"]')).toHaveClass("active");
+    for (const signedIn of [true, false]) {
+      state.auth.user = signedIn ? { name: "Ada", email: "ada@example.com", synthetic_fleet: true } : null;
+      state.auth.syntheticFleet = true;
+      flags.realOnly = false;
+      const { container, unmount } = render(
+        <MemoryRouter initialEntries={["/sim/physics"]}>
+          <Sidebar isAdmin={false} collapsed={false} onToggle={() => {}} />
+        </MemoryRouter>,
+      );
+      expect(container.querySelector('a[href="/sim"]')).not.toHaveClass("active");
+      expect(container.querySelector('a[href="/sim/physics"]')).toHaveClass("active");
+      unmount();
+    }
   });
 });
 
 describe("the /sim/physics address", () => {
-  function visit(fleet: boolean, at = "/sim/physics") {
-    state.auth.user = { name: "Ada", email: "ada@example.com", synthetic_fleet: fleet };
+  function visit(fleet: boolean, at = "/sim/physics", { signedIn = true } = {}) {
+    state.auth.user = signedIn ? { name: "Ada", email: "ada@example.com", synthetic_fleet: fleet } : null;
+    state.auth.syntheticFleet = fleet;
     window.matchMedia = vi.fn().mockReturnValue({
       matches: false,
       addEventListener: () => {},
@@ -124,6 +145,13 @@ describe("the /sim/physics address", () => {
   it("opens the page where the server runs a fleet", async () => {
     visit(true);
     expect(await screen.findByText("physics page")).toBeInTheDocument();
+  });
+
+  // No login card on the way: the route is open like /sim above it.
+  it("opens the page to a visitor with no session", async () => {
+    visit(true, "/sim/physics", { signedIn: false });
+    expect(await screen.findByText("physics page")).toBeInTheDocument();
+    expect(screen.getByLabelText("location")).toHaveTextContent("/sim/physics");
   });
 
   it("is no page at all where it runs none", async () => {
@@ -147,23 +175,5 @@ describe("the /sim/physics address", () => {
     expect(screen.getByLabelText("location")).toHaveTextContent(
       "/sim/physics?tab=solver#doppler",
     );
-  });
-});
-
-describe("showsPhysics", () => {
-  it("shows it to a signed-in user on a server with a fleet", () => {
-    expect(showsPhysics({ synthetic_fleet: true })).toBe(true);
-  });
-
-  it("hides it where the server runs no fleet", () => {
-    expect(showsPhysics({ synthetic_fleet: false })).toBe(false);
-  });
-
-  it("hides it from a server that does not say", () => {
-    expect(showsPhysics({})).toBe(false);
-  });
-
-  it("hides it when signed out", () => {
-    expect(showsPhysics(null)).toBe(false);
   });
 });

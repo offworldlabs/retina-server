@@ -7,12 +7,13 @@ const AuthContext = createContext(null);
 /** Whether this server runs a synthetic fleet, for a caller who has no session
  *  to read it off.
  *
- *  A signed-in user gets the same fact as `synthetic_fleet` on /api/auth/me,
- *  and the console's own gates (utils/physics.ts) go on using that. A visitor
- *  does not, and the signed-out nav has to decide whether to point at /sim:
- *  test and staging run a fleet, production does not, and one bundle serves
- *  all three. /api/health is the only thing the server tells everyone, so the
- *  flag is answered there.
+ *  A signed-in user gets the same fact as `synthetic_fleet` on /api/auth/me.
+ *  A visitor does not, and the console has to decide whether to point at
+ *  /sim and mount the physics page under it: test and staging run a fleet,
+ *  production does not, and one bundle serves all three. /api/health is the
+ *  only thing the server tells everyone, so the flag is answered there, and
+ *  AuthProvider folds the two sources into the one `syntheticFleet` it hands
+ *  out.
  *
  *  Asked once at boot, beside the /me fetch, and never again — it is a
  *  property of the deployment, which does not change under a running tab. A
@@ -41,7 +42,11 @@ function useSyntheticFleet(): boolean {
 
 export function AuthProvider({ children }) {
   const { user, loading, setUser } = useCurrentUser();
-  const syntheticFleet = useSyntheticFleet();
+  const healthFleet = useSyntheticFleet();
+  // /me's word first: it arrives under the loading gate, so a signed-in
+  // caller's pages mount on the first settled render rather than a health
+  // round trip later.
+  const syntheticFleet = Boolean(user?.synthetic_fleet ?? healthFleet);
 
   // Resolves { redirected } so a caller knows not to route over a navigation
   // that is still in flight.

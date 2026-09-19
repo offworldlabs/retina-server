@@ -440,8 +440,12 @@ async def get_simulation_config():
 
 
 @router.put("/api/simulation/config")
-async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_admin)):
+async def put_simulation_config(body: dict = Body(...)):
     """Update simulation physics fractions.
+
+    Open to anyone, like the GET beside it and the page that calls both: the
+    simulator is a public demo, the console has no identity provider yet, and
+    the fleet it reconfigures is synthetic. Nothing here touches a real node.
 
     Accepted keys: frac_anomalous, frac_drone, frac_dark (0.0–1.0 each).
     Sum of the three must not exceed 1.0 — the remainder is commercial aircraft.

@@ -9,7 +9,6 @@ import MapFrontDoor from "./components/MapFrontDoor";
 import PhysicsRedirect from "./components/PhysicsRedirect";
 import { resolveSurface, warnIfModeIgnored } from "./utils/surface";
 import { useAuth } from "./context/AuthContext";
-import { showsPhysics } from "./utils/physics";
 
 // User pages — lazy-loaded so each chunk is only downloaded when first visited
 const OverviewPage = lazy(() => import("./pages/user/OverviewPage"));
@@ -62,7 +61,7 @@ const { isAdmin: isAdminSite, modeParamIgnored } = resolveSurface(
 warnIfModeIgnored(modeParamIgnored);
 
 export default function App() {
-  const { user } = useAuth();
+  const { syntheticFleet } = useAuth();
   return (
     <Routes>
       <Route path="/login" element={<LoginPage isAdmin={isAdminSite} />} />
@@ -107,14 +106,15 @@ export default function App() {
                           fleet by name, so one console serves both and neither
                           depends on what the browser's address bar says. */}
                       <Route path="sim" element={<MapPage feed="synthetic" />} />
-                      {/* Gated as /physics was: the page draws the fleet's
-                          solver internals and saves its configuration, so it
-                          is a signed-in page on a server that has a fleet. The
-                          old address below forwards whether or not this route
+                      {/* Open like /sim, session or not: the page draws the
+                          fleet's solver internals and saves its configuration,
+                          and both ends of that are public on a server that
+                          has a fleet. Absent where there is none. The old
+                          address below forwards whether or not this route
                           exists, so a stale link lands on the new one and then
                           renders nothing where there is no fleet — exactly
                           what /physics did on such a deployment already. */}
-                      {showsPhysics(user) && (
+                      {syntheticFleet && (
                         <Route path="sim/physics" element={<PhysicsPage />} />
                       )}
                       <Route path="physics" element={<PhysicsRedirect />} />
