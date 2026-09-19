@@ -104,11 +104,14 @@ async function rowsOrSkip(page: Page) {
 }
 
 test.describe("Live Map — page identity", () => {
-  test("the console names the page Live Map", async ({ page }) => {
+  test("the console names the page Simulation Map", async ({ page }) => {
     await page.goto(BASE);
     // The header's title rather than the HTML <title>, which is static across
-    // every page of the console.
-    await expect(page.locator(".header-title")).toHaveText("Live Map");
+    // every page of the console. "Simulation Map", not "Live Map": this suite
+    // visits /sim, and DashboardLayout's page-title table names that page for
+    // the fleet it shows (#506) — "Live Map" is /map, the real network. This
+    // is the assertion that failed three consecutive main runs after #506.
+    await expect(page.locator(".header-title")).toHaveText("Simulation Map");
   });
 
   test("the console's brand is RETINA, not Tower Finder", async ({ page }) => {
