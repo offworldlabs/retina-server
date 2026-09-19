@@ -4,7 +4,7 @@ from copy import deepcopy
 
 import pytest
 
-from scripts.blind_replay import TruthIndex, blind_detections, evaluate, solve_candidate
+from scripts.blind_replay import DetectionLabels, TruthIndex, blind_detections, evaluate, solve_candidate
 
 
 def candidate():
@@ -25,6 +25,36 @@ def test_truth_and_identity_cannot_enter_tracker():
     frame = {"delay": [10], "doppler": [30], "snr": [12]}
     tagged = {**frame, "adsb_hex": ["abc123"], "adsb": [{"lat": 89, "lon": 0, "alt_baro": 90000}]}
     assert blind_detections(tagged, 4) == blind_detections(frame, 4) == [{"delay": 10, "doppler": 30, "snr": 12}]
+
+
+def test_post_solve_identity_join_detects_crossed_aircraft():
+    frames = [
+        {"node_id": nid, "frame": {"timestamp": 20000, "delay": [50], "doppler": [20], "adsb_hex": [h]}}
+        for nid, h in (("one", "abc123"), ("two", "def456"))
+    ]
+    raw = candidate()
+    raw["measurements"].append({"node_id": "two", "delay_us": 50, "doppler_hz": 20})
+    assert DetectionLabels(frames).for_candidate(raw) == (None, "identity_conflict")
+    frames[1]["frame"]["adsb_hex"] = ["abc123"]
+    assert DetectionLabels(frames).for_candidate(raw) == ("abc123", "node_identity_consensus")
+
+
+def test_uncertainty_gate_does_not_depend_on_truth(monkeypatch):
+    monkeypatch.setattr("scripts.blind_replay.reference_for", lambda *a: (None, "no_reference_match"))
+    rec = {
+        "candidate": candidate(),
+        "result": {
+            "lat": 34,
+            "lon": -82,
+            "alt_m": 7000,
+            "timestamp_ms": 20000,
+            "chi2_per_dof": 0.1,
+            "horizontal_sigma_km": 12,
+        },
+        "outcome": "converged",
+    }
+    assert evaluate([rec], {}, TruthIndex([]))["counts"]["accepted"] == 1
+    assert evaluate([rec], {}, TruthIndex([]), max_horizontal_sigma=2)["counts"]["accepted"] == 0
 
 
 def test_solver_boundary_allowlist_and_altitude_starts_are_truth_independent(monkeypatch):

@@ -16,8 +16,19 @@ def finite(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
+def reference_position_allowed(record: dict) -> bool:
+    """Do not evaluate radar against another radar/MLAT-derived position."""
+    if record.get("reference_eligible") is False:
+        return False
+    if record.get("type") in ("mlat", "tisb_icao", "tisb_other", "tisb_trackfile"):
+        return False
+    return not any(k in (record.get("mlat") or []) or k in (record.get("tisb") or []) for k in ("lat", "lon"))
+
+
 def normalize_reference(record: dict, hexn: str, *, source: str, world: str = "real") -> dict | None:
     """A usable position, with absent altitude/velocity kept absent."""
+    if not reference_position_allowed(record):
+        return None
     hexn = normalize_hex_key(hexn)
     lat, lon = record.get("lat"), record.get("lon")
     stamp = record.get("last_seen_ms")
@@ -70,9 +81,7 @@ def readsb_references(payload: dict, received_s: float, *, source: str = "adsb_s
     for row in rows:
         if not isinstance(row, dict):
             continue
-        if row.get("type") in ("mlat", "tisb_icao", "tisb_other", "tisb_trackfile"):
-            continue
-        if any(k in (row.get("mlat") or []) or k in (row.get("tisb") or []) for k in ("lat", "lon")):
+        if not reference_position_allowed(row):
             continue
         age = row.get("seen_pos")
         if not finite(age) or age < 0 or age > 60:

@@ -9,8 +9,11 @@ is conditional on captured radar detections; it is not airspace-wide recall.
 import argparse
 import bisect
 import copy
+import hashlib
 import json
 import math
+import sys
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -22,6 +25,11 @@ from retina_geolocator import multinode_solver as solver
 from retina_tracker import config as tracker_config
 from retina_tracker.track import TrackState
 from retina_tracker.tracker import Tracker
+
+SOURCE_HASHES = {
+    "replay": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    "solver": hashlib.sha256(Path(solver.__file__).read_bytes()).hexdigest(),
+}
 
 
 def blind_detections(frame: dict, min_snr: float) -> list[dict]:
@@ -53,7 +61,7 @@ def track_views(tracker, now_ms, history_n=40):
     return views
 
 
-def solve_candidate(candidate, configs, altitudes=(3.0, 7.0, 11.0)):
+def solve_candidate(candidate, configs, altitudes=(3.0, 7.0, 11.0), max_nfev=200):
     """Only radar-derived guesses, measurements and history enter the solver."""
     epochs = candidate.get("cv_epochs") or []
     if len(epochs) < 4 or epochs[-1]["t_s"] - epochs[0]["t_s"] < 12:
@@ -77,10 +85,12 @@ def solve_candidate(candidate, configs, altitudes=(3.0, 7.0, 11.0)):
     results = []
     for altitude in altitudes:
         fit["initial_guess"]["alt_km"] = altitude
-        result = solver.fit_constant_velocity(fit, configs)
+        kwargs = {"max_nfev": max_nfev} if max_nfev != 200 else {}
+        result = solver.fit_constant_velocity(fit, configs, **kwargs)
         if (
             result
             and result.get("success")
+            and result.get("optimizer_success", True)
             and all(math.isfinite(result[k]) for k in ("lat", "lon", "alt_m", "chi2_per_dof"))
         ):
             results.append(result)
@@ -110,10 +120,11 @@ def solve_candidate(candidate, configs, altitudes=(3.0, 7.0, 11.0)):
             "timestamp_ms": candidate["timestamp_ms"],
         }
         result = solver.solve_multinode(radar_input, configs, free_altitude=True)
-        if not result or not result.get("success"):
+        if not result or not result.get("success") or not result.get("optimizer_success", True):
             return None, "no_convergence"
         result["chi2_per_dof"] = best["chi2_per_dof"]
         result["cv_n_nodes"] = len(best["contributing_node_ids"])
+        result["horizontal_sigma_km"] = best.get("horizontal_sigma_km")
         return result, "converged"
     return best, "converged"
 
@@ -150,6 +161,56 @@ class TruthIndex:
             lat, lon = offset_latlon_m(rec["lat"], rec["lon"], rec["vel_east"] * dt, rec["vel_north"] * dt)
             out[hexn] = {**rec, "lat": lat, "lon": lon, "age_s": abs(dt)}
         return out
+
+
+class DetectionLabels:
+    """Evaluation-only labels joined back to the exact captured measurement.
+
+    Constructed after replay. Identities are never attached to tracker inputs,
+    histories, association candidates or solver inputs.
+    """
+
+    def __init__(self, frames, calibration=None):
+        self.labels = defaultdict(set)
+        coincident = defaultdict(set)
+        for row in frames:
+            nid, frame = row["node_id"], row["frame"]
+            correction = (calibration or {}).get(nid, {})
+            labels, tags = frame.get("adsb_hex") or [], frame.get("adsb") or []
+            for i, (d, f) in enumerate(zip(frame.get("delay", []), frame.get("doppler", []))):
+                label = labels[i] if i < len(labels) else None
+                if not label and i < len(tags) and isinstance(tags[i], dict):
+                    label = tags[i].get("hex") or tags[i].get("icao")
+                if isinstance(label, str) and label:
+                    key = self.key(
+                        nid,
+                        frame["timestamp"],
+                        d - correction.get("delay_bias_us", 0),
+                        f - correction.get("doppler_bias_hz", 0),
+                    )
+                    self.labels[key].add(label.lower())
+                    coincident[(label.lower(), frame["timestamp"] // 5000)].add(nid)
+        self.opportunities = {(label, bin5 // 12) for (label, bin5), nodes in coincident.items() if len(nodes) >= 2}
+
+    @staticmethod
+    def key(nid, timestamp_ms, delay, doppler):
+        return nid, round(timestamp_ms), round(delay, 6), round(doppler, 6)
+
+    def for_candidate(self, candidate):
+        labels, labeled_nodes = set(), set()
+        for m in candidate["measurements"]:
+            key = self.key(
+                m["node_id"], m.get("t_s", candidate["timestamp_ms"] / 1000) * 1000, m["delay_us"], m["doppler_hz"]
+            )
+            found = self.labels.get(key, set())
+            labels.update(found)
+            if found:
+                labeled_nodes.add(m["node_id"])
+        if len(labels) > 1:
+            return None, "identity_conflict"
+        if len(labels) == 1 and len(labeled_nodes) >= 2:
+            return next(iter(labels)), "node_identity_consensus"
+        return None, "measurement_space"
 
 
 def reference_for(candidate, geometries, truth, delay_gate=3.0, doppler_gate=20.0):
@@ -190,6 +251,11 @@ def replay(
     assoc_interval=30.0,
     process_noise_doppler=20.0,
     max_candidates=10000,
+    history_size=20,
+    unknown_beam="declared",
+    progress=False,
+    calibration=None,
+    max_nfev=200,
 ):
     """Pure radar stage. No truth object or provider is accepted by this API."""
     import retina_tracker
@@ -206,20 +272,30 @@ def replay(
         assoc_interval_s=0, adsb_seed_mode="off", claim_mode="off", cv_fit=None, max_pairs_per_round=64
     )
     configs, trackers, last_assoc = {}, {}, {}
+    raw_configs = {}
     counts = Counter()
     records = []
+    started = time.monotonic()
     for row in sorted(frame_rows, key=lambda r: (r["frame"]["timestamp"], r["node_id"])):
         nid, frame, config = row["node_id"], row["frame"], row["config"]
-        if config != configs.get(nid):
+        if config != raw_configs.get(nid):
+            raw_configs[nid] = config
+            config = dict(config)
+            if unknown_beam == "omni" and config.get("beam_width_deg") is None:
+                config["beam_width_deg"] = 360.0
             associator.register_node(nid, config)
             configs[nid] = config
-            trackers[nid] = Tracker(detection_window=40)
+            trackers[nid] = Tracker(detection_window=history_size)
         tracker = trackers[nid]
         detections = blind_detections(frame, min_snr)
+        correction = (calibration or {}).get(nid, {})
+        for detection in detections:
+            detection["delay"] -= correction.get("delay_bias_us", 0)
+            detection["doppler"] -= correction.get("doppler_bias_hz", 0)
         counts["frames"] += 1
         counts["detections"] += len(detections)
         tracker.process_frame(detections, frame["timestamp"])
-        views = track_views(tracker, frame["timestamp"])
+        views = track_views(tracker, frame["timestamp"], history_size)
         # Library cadence is wall-clock-based. Replay gates in capture time
         # and still updates each node's history between association rounds.
         if frame["timestamp"] - last_assoc.get(nid, 0) < assoc_interval * 1000:
@@ -229,26 +305,55 @@ def replay(
         round_ = associator.submit_tracks_round(nid, views, frame["timestamp"])
         candidates = associator.format_track_pairs_for_solver(round_.pairs) if round_.pairs else []
         for candidate in candidates:
+            counts[f"candidate_n{candidate['n_nodes']}"] += 1
+            counts[f"pool_n{candidate.get('pool_n_nodes') or candidate['n_nodes']}"] += 1
             if len(records) >= max_candidates:
                 counts["candidate_budget_dropped"] += 1
                 continue
-            result, outcome = solve_candidate(candidate, configs)
+            result, outcome = solve_candidate(candidate, configs, max_nfev=max_nfev)
             counts[outcome] += 1
             records.append({"candidate": copy.deepcopy(candidate), "result": result, "outcome": outcome})
+            if progress and len(records) % 100 == 0:
+                print(
+                    json.dumps({"elapsed_s": round(time.monotonic() - started), **counts}), file=sys.stderr, flush=True
+                )
     return records, dict(counts), associator.node_geometries
 
 
-def evaluate(records, geometries, truth, *, chi2_max=2.0):
+def evaluate(records, geometries, truth, *, chi2_max=2.0, labels=None, max_horizontal_sigma=None):
     counts = Counter(attempts=len(records))
     errors, by_n = [], defaultdict(Counter)
+    attempted_windows, accepted_windows, accurate_windows = set(), set(), set()
     scored = []
     for rec in records:
         candidate, result = rec["candidate"], rec["result"]
         refs = truth.at(candidate["timestamp_ms"])
-        ref, label = reference_for(candidate, geometries, refs)
+        identity, label_basis = labels.for_candidate(candidate) if labels else (None, "measurement_space")
+        if label_basis == "identity_conflict":
+            ref, label = None, "identity_conflict"
+        elif identity:
+            ref, label = refs.get(identity), identity
+            if ref is None:
+                label = "identity_reference_stale_or_missing"
+        else:
+            ref, label = reference_for(candidate, geometries, refs)
         n = str(candidate["n_nodes"])
         by_n[n]["attempts"] += 1
-        accepted = bool(result and result["chi2_per_dof"] <= chi2_max)
+        accepted = bool(
+            result
+            and result["chi2_per_dof"] <= chi2_max
+            and not result.get("z_saturated", False)
+            and 50 < result["alt_m"] < 20000
+            and result.get("rms_delay", 0) <= 2
+            and result.get("rms_doppler", 0) <= 20
+            and (
+                max_horizontal_sigma is None
+                or (
+                    result.get("horizontal_sigma_km") is not None
+                    and result["horizontal_sigma_km"] <= max_horizontal_sigma
+                )
+            )
+        )
         counts["converged"] += result is not None
         counts["accepted"] += accepted
         by_n[n]["accepted"] += accepted
@@ -258,14 +363,24 @@ def evaluate(records, geometries, truth, *, chi2_max=2.0):
             "outcome": rec["outcome"],
             "accepted": accepted,
             "reference": label,
+            "reference_basis": label_basis,
             "result": result,
             "position_error_km": None,
         }
         if ref is None:
             counts[label] += 1
+            if label == "identity_conflict":
+                counts["accepted_identity_conflicts"] += accepted
         else:
             counts["reference_eligible"] += 1
             counts["reference_eligible_accepted"] += accepted
+            counts[f"{label_basis}_eligible"] += 1
+            counts[f"{label_basis}_accepted"] += accepted
+            window = (label, candidate["timestamp_ms"] // 60000)
+            if labels and window in labels.opportunities:
+                attempted_windows.add(window)
+                if accepted:
+                    accepted_windows.add(window)
             if result:
                 # Score at the result epoch, which can differ from the frame's
                 # association epoch by the track histories' temporal skew.
@@ -278,6 +393,8 @@ def evaluate(records, geometries, truth, *, chi2_max=2.0):
                     errors.append(err)
                     counts["accepted_within_1km"] += err <= 1
                     counts["accepted_within_5km"] += err <= 5
+                    if labels and window in labels.opportunities and err <= 5:
+                        accurate_windows.add(window)
         scored.append(row)
     eligible = counts["reference_eligible"]
     return {
@@ -289,8 +406,33 @@ def evaluate(records, geometries, truth, *, chi2_max=2.0):
             "median": float(np.median(errors)) if errors else None,
             "p95": float(np.percentile(errors, 95)) if errors else None,
         },
+        "identity_window_funnel": {
+            "definition": "Aircraft-minute with tagged radar detections at >=2 nodes in the same 5-second bin; captures only, not airspace recall",
+            "opportunities": len(labels.opportunities) if labels else None,
+            "attempted": len(attempted_windows),
+            "accepted": len(accepted_windows),
+            "accepted_within_5km": len(accurate_windows),
+        },
         "records": scored,
     }
+
+
+def load_captures(paths, start_ms=0, end_ms=2**63 - 1):
+    frames, truth_rows = [], []
+    for path in paths:
+        with path.open() as stream:
+            for line in stream:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    if not line.endswith("\n"):
+                        continue  # an active capture can have an incomplete last line
+                    raise
+                if row.get("kind") == "frame" and start_ms <= row["frame"]["timestamp"] <= end_ms:
+                    frames.append(row)
+                elif row.get("kind") == "truth":
+                    truth_rows.append(row)
+    return frames, truth_rows
 
 
 def main():
@@ -303,21 +445,34 @@ def main():
     parser.add_argument("--assoc-interval", type=float, default=30)
     parser.add_argument("--process-noise-doppler", type=float, default=20)
     parser.add_argument("--max-candidates", type=int, default=10000)
+    parser.add_argument("--max-nfev", type=int, default=200)
+    parser.add_argument("--history-size", type=int, default=20)
+    parser.add_argument("--unknown-beam", choices=("declared", "omni"), default="declared")
+    parser.add_argument("--progress", action="store_true")
+    parser.add_argument("--calibration", type=Path, help="Frozen reference_report from an EARLIER capture")
+    parser.add_argument(
+        "--records-output", type=Path, help="Optional private estimator records for repeatable rescoring"
+    )
+    parser.add_argument(
+        "--max-horizontal-sigma", type=float, help="Optional local uncertainty gate in km; does not use truth"
+    )
     parser.add_argument("--start-ms", type=int, default=0)
     parser.add_argument("--end-ms", type=int, default=2**63 - 1)
     args = parser.parse_args()
-    frames, truth_rows = [], []
-    for path in args.captures:
-        with path.open() as stream:
-            for line in stream:
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue  # a still-open capture can have an incomplete last line
-                if row.get("kind") == "frame" and args.start_ms <= row["frame"]["timestamp"] <= args.end_ms:
-                    frames.append(row)
-                elif row.get("kind") == "truth":
-                    truth_rows.append(row)
+    if min(args.sigma_delay, args.sigma_doppler, args.assoc_interval, args.history_size, args.max_nfev) <= 0:
+        parser.error("noise, association interval and history size must be positive")
+    frames, truth_rows = load_captures(args.captures, args.start_ms, args.end_ms)
+    calibration = None
+    if args.calibration:
+        trained = json.loads(args.calibration.read_text())
+        if frames and min(r["frame"]["timestamp"] for r in frames) <= trained["trained_until_ms"]:
+            parser.error("calibration and evaluation captures must not overlap")
+        calibration = trained["suggested_calibration"]
+        for correction in calibration.values():
+            for key, limit in (("delay_bias_us", 5), ("doppler_bias_hz", 20)):
+                value = correction.get(key, 0)
+                if not isinstance(value, (int, float)) or not math.isfinite(value) or abs(value) > limit:
+                    parser.error("calibration bias exceeds the permitted range")
     records, counts, geometries = replay(
         frames,
         min_snr=args.min_snr,
@@ -326,11 +481,27 @@ def main():
         assoc_interval=args.assoc_interval,
         process_noise_doppler=args.process_noise_doppler,
         max_candidates=args.max_candidates,
+        history_size=args.history_size,
+        unknown_beam=args.unknown_beam,
+        progress=args.progress,
+        calibration=calibration,
+        max_nfev=args.max_nfev,
     )
-    report = evaluate(records, geometries, TruthIndex(truth_rows))
+    if args.records_output:
+        args.records_output.write_text(json.dumps(records, allow_nan=False))
+    report = evaluate(
+        records,
+        geometries,
+        TruthIndex(truth_rows),
+        labels=DetectionLabels(frames, calibration),
+        max_horizontal_sigma=args.max_horizontal_sigma,
+    )
     report["replay"] = counts
+    report["source_sha256"] = SOURCE_HASHES
     report["parameters"] = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items() if k != "captures"}
-    report["evaluation_mode"] = "blind_tracking_association_and_solve; measurement_space_truth_labels_after_solve"
+    report["evaluation_mode"] = (
+        "blind_tracking_association_and_solve; exact_detection_identities_or_measurement_space_labels_after_solve"
+    )
     args.output.write_text(json.dumps(report, indent=2, allow_nan=False))
     print(json.dumps({k: v for k, v in report.items() if k != "records"}, indent=2))
 

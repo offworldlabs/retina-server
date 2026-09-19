@@ -236,6 +236,15 @@ def _opensky_entry(s: list, poll_ts: float) -> dict | None:
         "heading": s[10] if len(s) > 10 else None,
         "last_seen_ms": _capture_ms(s[3], poll_ts),
         "source": "opensky",
+        # API index 16 is position_source (0 ADS-B, 2 MLAT). Keep display
+        # compatibility while excluding unsupported positions from scoring.
+        "reference_eligible": (len(s) <= 16 or s[16] in (None, 0))
+        and is_num(s[3])
+        and is_num(alt_val)
+        and len(s) > 10
+        and is_num(s[9])
+        and is_num(s[10]),
+        "precision_eligible": False,
     }
 
 
@@ -613,6 +622,8 @@ async def _fetch_adsb_lol(regions: list[Region]) -> tuple[dict, set[str]]:
                 "heading": ac.get("track"),
                 "last_seen_ms": _capture_ms(captured, poll_ts),
                 "source": "adsb_lol",
+                "reference_eligible": ac.get("reference_eligible", True),
+                "precision_eligible": False,
             }
         return result, covered
 

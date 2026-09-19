@@ -228,6 +228,12 @@ def _select_claims(dq, now_ms: int, follow: bool = False) -> dict[str, dict]:
         return {}
     newest_ts = max(int(c["ts_ms"]) for c in best.values())
     best = {nid: c for nid, c in best.items() if newest_ts - int(c["ts_ms"]) <= _CLAIM_SPREAD_S * 1000.0}
+    # The simulator can replay actual transponder identities. A shared hex
+    # is not permission to fit simulated echoes together with real echoes.
+    # Abstain while both worlds claim this key; never publish a hybrid track.
+    if len({state.node_world(nid) for nid in best}) > 1:
+        state.bump_counter("known_lane_mixed_world_skipped")
+        return {}
     return best if len(best) >= 2 else {}
 
 

@@ -302,6 +302,8 @@ class TestOpenSkyFetch:
             "heading": 90.0,
             "last_seen_ms": int(captured * 1000),
             "source": "opensky",
+            "reference_eligible": True,
+            "precision_eligible": False,
         }
 
     @pytest.mark.asyncio
@@ -738,6 +740,8 @@ class TestAdsbLolFetch:
             "heading": 90,
             "last_seen_ms": int(captured_at * 1000),
             "source": "adsb_lol",
+            "reference_eligible": True,
+            "precision_eligible": False,
         }
 
     @pytest.mark.asyncio

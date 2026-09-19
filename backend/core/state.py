@@ -643,6 +643,7 @@ known_claims_visibility_rejects: int = 0
 # one).  Sustained nonzero on a hardware-only deployment means mistagged
 # entries, not decoys.
 known_claims_world_rejects: int = 0
+known_lane_mixed_world_skipped: int = 0
 # Claiming-stage exceptions absorbed by frame_processor's fail-open guard.
 # Nonzero means the known lane is broken and silently contributing nothing.
 known_claims_errors: int = 0

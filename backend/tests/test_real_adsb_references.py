@@ -105,7 +105,7 @@ def test_colliding_sim_identity_cannot_replace_real_truth():
     assert state._adsb_for_seeding("sim")["abc123"]["lat"] == 10
 
 
-def test_v1_identity_claim_uses_reference_clock_and_preserves_array_alignment():
+def test_v1_identity_claim_uses_reference_clock_and_preserves_array_alignment(monkeypatch):
     nid = "hardware-reference-test"
     state.node_associator.register_node(nid, _NODE_CFG)
     geo = state.node_associator.node_geometries[nid]
@@ -127,7 +127,16 @@ def test_v1_identity_claim_uses_reference_clock_and_preserves_array_alignment():
         "snr": [20, 20],
         "adsb_hex": ["ABC123", None],
     }
+    original = state._adsb_for_seeding
+    snapshots = []
+
+    def snapshot(world=None):
+        snapshots.append(world)
+        return original(world)
+
+    monkeypatch.setattr(state, "_adsb_for_seeding", snapshot)
     assert claim_known_targets(nid, frame) == {0}
+    assert snapshots == ["real"]
     claim = state.known_claims["abc123"][-1]
     assert claim["adsb_fix"]["fix_ts_ms"] == ts - 1000
     assert claim["node_identity"] is True

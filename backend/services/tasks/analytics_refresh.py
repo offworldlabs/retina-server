@@ -961,6 +961,8 @@ def _external_truth_entries(now: float):
         if previous is None or entry.get("last_seen_ms", 0) > previous.get("last_seen_ms", 0):
             references[hex_code] = entry
     for hex_code, entry in references.items():
+        if entry.get("reference_eligible") is False:
+            continue
         ts_ms = entry.get("last_seen_ms")
         if not ts_ms or abs(now - ts_ms / 1000) > EXTERNAL_TRUTH_MAX_AGE_S:
             continue

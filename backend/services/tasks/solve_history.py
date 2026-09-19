@@ -146,6 +146,8 @@ def _gt_for_record(adsb_hex, lat: float, lon: float, ts_s: float, world: str | N
     real hexes proximity-bound to whatever synthetic trail was nearest).
     Dark records (adsb_hex None) keep the legacy proximity scan.
     """
+    if world == "mixed":
+        return dict(_GT_NO_MATCH)
     hexn = normalize_hex_key(adsb_hex)
     if not hexn:
         return dict(_GT_NO_MATCH) if world in ("real", "mixed") else _nearest_gt(lat, lon, ts_s)
