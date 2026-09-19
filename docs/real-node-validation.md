@@ -156,3 +156,7 @@ It does not measure losses upstream or during a server restart.
 single-node nonlinear fit frequency under CPU pressure, while tracking,
 reference refresh and MLAT retain their existing cadence. Check the queue over
 a sustained mixed real/synthetic load before treating a deployment as stable.
+
+Archive task health uses the actual hourly flush cadence. A successful flush
+must not become a stale-task alert four minutes later while the task is in its
+scheduled sleep; a task missing two full intervals still becomes stale.
