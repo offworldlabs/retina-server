@@ -461,7 +461,7 @@ install_error_handlers(app)
 # Simulation ingest is a WRITE path (state.adsb_aircraft /
 # ground_truth_trails) that only the synthetic fleet uses, so a deployment that
 # runs no fleet should not carry it. The rule lives beside the router it gates;
-# staging and test set the flag, production does not.
+# the test droplet sets the flag, staging and production do not.
 if synthetic_fleet_enabled(os.environ):
     app.include_router(sim_ingest_router)
 else:

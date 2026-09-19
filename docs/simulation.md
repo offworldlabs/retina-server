@@ -2,7 +2,8 @@
 
 The fleet simulator (`libs/retina-simulation`) runs synthetic radar nodes and
 injects real or simulated aircraft traffic to exercise the full server
-pipeline. It powers staging's public map surface and CI.
+pipeline. It powers the test droplet's `/sim` surface, local development and
+CI; production and staging run no fleet.
 
 ---
 
@@ -113,11 +114,14 @@ wearing no lane colour.
 
 ---
 
-## Deployed fleet (staging)
+## Deployed fleet (the test droplet)
 
-Staging's fleet container regenerates `fleet_config.json` from `FLEET_*` env
-on every boot (`deploy/fleet-entrypoint.sh`); scale changes are compose-file
-changes, not code changes. Current staging scale (`docker-compose.staging.yml`):
+Only the test droplet runs a fleet; production and staging keep theirs behind
+an unenabled `sim` compose profile. The fleet container regenerates
+`fleet_config.json` from `FLEET_*` env on every boot
+(`deploy/fleet-entrypoint.sh`); scale changes are compose-file changes, not
+code changes. The scale below is illustrative — `docker-compose.test.yml` is
+the source of truth for what the test droplet currently runs:
 
 | Env | Value | Meaning |
 |-----|-------|---------|

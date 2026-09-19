@@ -153,9 +153,9 @@ image, so a plain `up` silently reuses the previous build.
 
 ### See real data without running the pipeline
 
-The simulation fleet (`retina-simulation`) feeds the demo map. Production runs
-no fleet, so `staging-app.retina.fm` is the surface that shows one. To drive a
-local backend with synthetic frames, see
+The simulation fleet (`retina-simulation`) feeds the `/sim` map. Production
+and staging run no fleet, so `test-app.retina.fm/sim` is the deployed surface
+that shows one. To drive a local backend with synthetic frames, see
 [`docs/simulation.md`](docs/simulation.md).
 
 ### Working in a git worktree
@@ -314,7 +314,8 @@ branch, open a PR, get it green, then merge.
   and so is the save behind the physics page — there is no identity provider
   to sign an operator in with yet, and the fleet is synthetic. `/sim` exists
   everywhere but is only worth opening where the server sets
-  `SYNTHETIC_FLEET_ENABLED` (test, staging, the laptop — not production),
+  `SYNTHETIC_FLEET_ENABLED` (the test droplet and the laptop — not staging or
+  production, which run no simulator),
   which is what `/api/health` and `/api/auth/me` both report so the nav and
   the physics route can follow it. `map`, `testmap`,
   `test-testmap`, `staging-map` and the other retired names are Cloudflare

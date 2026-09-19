@@ -816,7 +816,7 @@ jobs:
             # here means a broken Dockerfile.fleet can't abort the production
             # app deploy. Production runs no fleet simulator (see the `sim`
             # profile in docker-compose.prod.yml), so `server` is the
-            # whole of the production deploy; staging still builds both.
+            # whole of the production deploy; staging is the same now.
             # --remove-orphans because this deploy renamed the compose
             # service. container_name is pinned, so the container kept by the
             # old service key is an orphan holding the exact name the new one

@@ -13,10 +13,11 @@ All of them are one SPA, the console (`dashboard/`), served at the root; the old
 `/dash/…` and `/data/…` addresses redirect into it with their query strings.
 
 - **map** (`/map`, where `/` opens) — the live map, the console's front page.
-  Which feed it shows is a property of the environment, resolved client-side in
-  `dashboard/src/pages/map/utils/domains.ts`: production and the test droplet
-  are real nodes only, staging shows the synthetic simulation fleet and is the
-  demo surface, being the only environment that still runs one.
+  Every deployed environment shows real nodes only here (the default is
+  resolved client-side in `dashboard/src/pages/map/utils/domains.ts`; the
+  laptop keeps both fleets). The synthetic simulation fleet has its own page,
+  `/sim`, which is populated only where a fleet runs: the test droplet, and a
+  local stack. Production and staging run none.
 - **console pages** — node ownership, the node claim page, MLAT verification, metrics.
   A session is required for all of it bar the routes listed in
   `dashboard/src/utils/publicRoutes.ts`, which render to anyone and are backed

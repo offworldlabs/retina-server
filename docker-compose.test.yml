@@ -140,9 +140,9 @@ services:
       # re-arms at +interval — so the aggregate the server sees is
       # n_nodes / interval = 50 frames/s, 4x production's 12.5.
       #
-      # Kept identical to staging on purpose. This droplet's value is telling you
-      # what staging will do before main does, which only works while the two run
-      # the same fleet.
+      # This is the only deployed fleet: production and staging keep theirs
+      # behind an unenabled `sim` profile, so what this droplet measures under
+      # load is what the pipeline can take, not what staging will do next.
       #
       # 4x production's frame rate and, on the same 4 cores, 4x its per-core
       # load: 12.5 fps/core against prod's 3.1.

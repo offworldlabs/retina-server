@@ -72,8 +72,8 @@ ALLOWED_DIVERGENCE = (
     # container say which droplet it is, for services/alerting.py's `host` field.
     r"^services\.[^.]+\.hostname$",
     # Not droplet size: all three boxes are 4 cores and 8 GB. The caps follow
-    # each environment's workload instead. Production carries real nodes and
-    # runs no simulator; staging and test drive synthetic fleets, whose solver
+    # each environment's workload instead. Production and staging carry real
+    # nodes and run no simulator; test drives a synthetic fleet, whose solver
     # bursts want more cores than production ever asks for.
     r"^services\.[^.]+\.deploy\.resources\.limits\.(cpus|memory)$",
     # Which environment this is, and the hostnames that follow from it.
@@ -99,7 +99,9 @@ ALLOWED_DIVERGENCE = (
     # entry, long after the fact. See backend/config/constants.py.
     r"^services\.server\.environment\.NODE_FORCE_RETIRE_PREFIXES$",
     # Only an environment running a synthetic fleet mounts its ingest routes
-    # (routes/sim_ingest.py): staging and test. Production runs none.
+    # (routes/sim_ingest.py): the test droplet alone. Production and staging
+    # run none and leave the flag unset, so on this key they already agree; the
+    # entry is what lets test differ from the reference.
     r"^services\.server\.environment\.SYNTHETIC_FLEET_ENABLED$",
     # AUTH_ALLOW_ANONYMOUS_ADMIN is deliberately absent from this list, so a
     # difference between environments is drift rather than a decision. It is
@@ -110,14 +112,14 @@ ALLOWED_DIVERGENCE = (
     # than silently allowed: if staging ever needs node ingest, it should be
     # opened deliberately and this entry revisited.
     r"^services\.server\.ports(\..*)?$",
-    # The whole fleet service, not just its FLEET_* scale knobs. Production runs
-    # no simulator at all (docker-compose.prod.yml puts it behind an unenabled
-    # `sim` profile), so it drops out of the merged prod config entirely and
+    # The whole fleet service, not just its FLEET_* scale knobs. Production and
+    # staging run no simulator at all (both overlays put it behind an unenabled
+    # `sim` profile), so it drops out of their merged configs entirely and
     # every fleet key reads as absent here. Since production is the REFERENCE,
-    # that also means fleet settings are no longer compared anywhere — staging
-    # and test can drift from each other on them unnoticed. Accepted: the
-    # simulator feeds nothing anyone depends on. If production ever runs a fleet
-    # again, narrow this back to `\.environment\.FLEET_[A-Z_]+$`.
+    # that also means fleet settings are no longer compared anywhere — the test
+    # droplet's fleet is its own. Accepted: the simulator feeds nothing anyone
+    # depends on. If production ever runs a fleet again, narrow this back to
+    # `\.environment\.FLEET_[A-Z_]+$`.
     r"^services\.fleet(\..*)?$",
     # No entry for the external edge network that fronts tower-finder-service:
     # every environment runs that stack now (the test droplet's came up

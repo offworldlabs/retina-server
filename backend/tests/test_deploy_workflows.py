@@ -49,8 +49,13 @@ def test_the_stack_stays_up_until_the_new_image_exists(workflow, job):
     # the previous build serving. A `down` (or a stop, in any spelling) ahead
     # of it turns every build failure into an outage with nothing to restore it.
     commands = _commands(_script(workflow, job))
-    assert [line for line in commands if re.search(r"\bdocker compose up -d --build\b", line)]
-    assert not [line for line in commands if STOPS.search(line)]
+    swaps = [i for i, line in enumerate(commands) if re.search(r"\bdocker compose up -d --build\b", line)]
+    assert swaps
+    # Ahead of the first swap, specifically. Once the new image is serving, a
+    # deploy may take down what the stack no longer runs — staging removes the
+    # fleet container a profile-gated service leaves behind — and that stops
+    # nothing the build failure above would have needed.
+    assert not [line for line in commands[: swaps[0]] if STOPS.search(line)]
 
 
 # ── The deploy-failure rollback's marker ─────────────────────────────────────

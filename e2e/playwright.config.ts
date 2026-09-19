@@ -22,12 +22,14 @@ import { defineConfig, devices } from "@playwright/test";
  * `testmap` names the environment whose console has a simulator behind its
  * /sim page — the surface is a path on the one console now, not a hostname of
  * its own, so this entry differs from `map` only in which origin is worth
- * asking. It is null on prod, and that is load-bearing rather than tidiness:
- * production runs no simulator, so /sim there is an empty map. Pointing the
- * production suite at staging's would mean the production E2E exercising
- * staging, and because a failed production E2E auto-rolls-back production
- * (ci.yml), a staging wobble would revert a good production build. The one
- * suite that needs the surface skips itself instead.
+ * asking. It is null on prod AND on staging, and that is load-bearing rather
+ * than tidiness: neither runs a simulator (only the test droplet does), so
+ * /sim on either is an empty map. Pointing a deployed suite at another
+ * environment's simulator would mean that suite exercising a box it does not
+ * deploy, and because a failed production E2E auto-rolls-back production
+ * (ci.yml), a wobble elsewhere would revert a good production build. The one
+ * suite that needs the surface skips itself instead, and runs against the
+ * dev server locally.
  */
 
 const ENV = (process.env.E2E_ENV ?? "staging") as "staging" | "prod" | "local";
@@ -38,10 +40,10 @@ const HOSTS = {
     // The consolidated surface, whose root opens on the live map.
     map:       "https://staging-app.retina.fm",
     // The console whose /sim page has a fleet behind it, which is what the
-    // live-map suite needs. Staging runs one, so this is the same origin as
-    // `map` above and always will be — one console per environment. The two
-    // entries differ on production, where the fleet does not exist.
-    testmap:   "https://staging-app.retina.fm",
+    // live-map suite needs. Staging runs none any more — its fleet sits behind
+    // the same unenabled `sim` profile as production's, and its /map is the
+    // real network — so the suite skips here as it does on prod.
+    testmap:   null,
     // The dashboard's origin.
     dash:      "https://staging-app.retina.fm",
     // Same bundle as dash, built at a root instead; the hostname is what selects
