@@ -20,7 +20,7 @@ session cookie is host-only and a login has to cover all of them:
 
 | Surface | What it is |
 | --- | --- |
-| **map** (`/map`, where `/` opens) | Live aircraft map, the console's front page. Production and the test droplet show real radar nodes only; staging shows its synthetic fleet, and is the dev/demo surface, being the only environment still running one. The feed is chosen by hostname in `dashboard/src/pages/map/utils/domains.ts`. |
+| **map** (`/map`, where `/` opens) | Live aircraft map, the console's front page. Every deployed environment shows real radar nodes only here; the synthetic fleet, where one runs, has its own page at `/sim`. The `/map` default is chosen by hostname in `dashboard/src/pages/map/utils/domains.ts`, and only the laptop keeps both fleets on it. |
 | **console** (the rest of `/`) | Node ownership, the node claim page, MLAT verification, metrics. Auth required, bar the public pages such as the map and the detection archive browser at `/data`. The old `/dash/…` and `/data/…` addresses redirect in. |
 | **admin** (`admin.retina.fm`) | The same dashboard bundle with the admin route table, on a hostname of its own so a Cloudflare Access application can gate it. |
 
@@ -319,8 +319,8 @@ branch, open a PR, get it green, then merge.
   the physics route can follow it. `map`, `testmap`,
   `test-testmap`, `staging-map` and the other retired names are Cloudflare
   redirects into those consoles. `/map` still takes its feed from the
-  hostname: `app` and `test-app` are real-only, and a local hostname retains
-  both kinds of node. Tower search has its own SPA in
+  hostname: every deployed environment (`app`, `staging-app`, `test-app`) is
+  real-only there, and a local hostname retains both kinds of node. Tower search has its own SPA in
   tower-finder-service; the laptop overlay sets `TOWER_FINDER_ENABLED=false`,
   and this backend no longer implements `/api/towers`.
 - **Config vs runtime config.** `backend/config/` is image-only (baked into the

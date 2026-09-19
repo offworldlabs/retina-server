@@ -14,26 +14,21 @@ afterEach(() => vi.unstubAllGlobals());
 // These are the hostname's answer, which is /map's default and nothing more:
 // /sim asks for the synthetic fleet whatever the host says (feedMode.test.ts).
 describe("the fleet each surface runs", () => {
-  it("the real-radar surfaces run the real fleet", async () => {
-    for (const host of ["app.retina.fm", "test-app.retina.fm"]) {
+  // Staging included: its synthetic fleet lives at /sim like everyone else's,
+  // so its /map names the real network, the same as production and test.
+  it("every deployed environment's /map runs the real fleet", async () => {
+    for (const host of ["app.retina.fm", "staging-app.retina.fm", "test-app.retina.fm"]) {
       const m = await loadFor(host);
       expect(m.usesRealOnlyFeed, host).toBe(true);
       expect(m.defaultsGroundTruthOff, host).toBe(true);
-      expect(m.hidesRealNodes, host).toBe(false);
     }
-  });
-
-  it("the public demo runs the synthetic fleet", async () => {
-    const m = await loadFor("staging-app.retina.fm");
-    expect(m.usesRealOnlyFeed).toBe(false);
-    expect(m.defaultsGroundTruthOff).toBe(false);
-    expect(m.hidesRealNodes).toBe(true);
   });
 
   it("the laptop runs both fleets", async () => {
     const m = await loadFor("app.localhost");
+    expect(m.isMapDomain).toBe(true);
     expect(m.usesRealOnlyFeed).toBe(false);
-    expect(m.hidesRealNodes).toBe(false);
+    expect(m.defaultsGroundTruthOff).toBe(false);
   });
 
   it("every map surface still defaults to the Live Radar tab", async () => {
@@ -58,7 +53,6 @@ describe("the fleet each surface runs", () => {
       const m = await loadFor(host);
       expect(m.isMapDomain, host).toBe(false);
       expect(m.usesRealOnlyFeed, host).toBe(false);
-      expect(m.hidesRealNodes, host).toBe(false);
     }
   });
 
@@ -67,7 +61,6 @@ describe("the fleet each surface runs", () => {
       const m = await loadFor(host);
       expect(m.isMapDomain, host).toBe(false);
       expect(m.usesRealOnlyFeed, host).toBe(false);
-      expect(m.hidesRealNodes, host).toBe(false);
     }
   });
 });

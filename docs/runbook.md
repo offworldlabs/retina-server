@@ -838,8 +838,9 @@ so the bare `docker compose` above resolves to base + the production overlay.
 Params (nodes/interval/mode/aircraft) live in the `fleet` service block in
 `docker-compose.yml` — edit them there, not on the command line.
 
-**Staging's fleet is public.** `staging-app.retina.fm` is fed by this fleet and
-is the demo people are shown, so bouncing it blanks the map for a minute or so;
+**Staging's fleet is public.** `staging-app.retina.fm/sim` is fed by this fleet
+and is the demo people are shown (its `/map` is the real network, like every
+environment's), so bouncing it blanks the sim map for a minute or so;
 a staging deploy blanks it only for the server's restart and the fleet's
 reconnect, unless the fleet image or config changed and it is recreated too. Note
 the tuning is deliberate: staging runs 50 nodes @ 1.0s, which saturates the

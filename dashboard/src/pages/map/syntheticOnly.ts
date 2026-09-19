@@ -1,8 +1,8 @@
-// The public demo's fleet filter, pure so it can be unit-tested without
+// The simulator page's fleet filter, pure so it can be unit-tested without
 // mounting the aircraft hook.
 //
-// A demo surface (hidesRealNodes, utils/domains.ts) reads the unfiltered feed
-// and takes the real fleet off client-side. Dropping whole entries does not
+// /sim (the "synthetic" mode in feedMode.ts) reads the unfiltered feed and
+// takes the real fleet off client-side. Dropping whole entries does not
 // finish the job, because an entry can name both fleets at once: the backend
 // hands every track within 8 km of an active simulated trail the same
 // ground_truth_hex (services/track_gates.py, resolve_ground_truth_hex, which
