@@ -22,7 +22,8 @@ def reference_position_allowed(record: dict) -> bool:
         return False
     if record.get("type") in ("mlat", "tisb_icao", "tisb_other", "tisb_trackfile"):
         return False
-    return not any(k in (record.get("mlat") or []) or k in (record.get("tisb") or []) for k in ("lat", "lon"))
+    mlat, tisb = record.get("mlat") or [], record.get("tisb") or []
+    return not mlat and not tisb or not any(k in mlat or k in tisb for k in ("lat", "lon"))
 
 
 def normalize_reference(record: dict, hexn: str, *, source: str, world: str = "real") -> dict | None:
@@ -40,10 +41,13 @@ def normalize_reference(record: dict, hexn: str, *, source: str, world: str = "r
         return None
     out = {**record, "hex": hexn, "source": source, "world": world, "timestamp_ms": stamp}
     alt = record.get("alt_m")
+    altitude_source = record.get("altitude_source", "unspecified")
     if not finite(alt):
         feet = record.get("alt_baro")
         alt = feet * FT_TO_M if finite(feet) else None
+        altitude_source = record.get("altitude_source", "barometric") if alt is not None else "missing"
     out["alt_m"] = alt
+    out["altitude_source"] = altitude_source
     out["alt_baro"] = alt / FT_TO_M if alt is not None else None
     speed = record.get("velocity")
     if not finite(speed):
@@ -59,6 +63,51 @@ def normalize_reference(record: dict, hexn: str, *, source: str, world: str = "r
     out["vel_east"] = speed * math.sin(math.radians(heading)) if speed is not None and heading is not None else None
     out["vel_north"] = speed * math.cos(math.radians(heading)) if speed is not None and heading is not None else None
     return out
+
+
+def node_reference(record: dict, hexn: str, frame_ms: float, received_ms: float) -> dict | None:
+    """Real node tags: keep their clock and missing fields, including legacy alt (ft)."""
+    stamp = frame_ms
+    time_basis = "node_frame_assumed"
+    for key in ("timestamp_ms", "last_seen_ms", "timestamp"):
+        if key in record:
+            stamp = record[key]
+            if key == "timestamp" and finite(stamp) and stamp < 100_000_000_000:
+                stamp *= 1000
+            time_basis = "node_position"
+            break
+    if not finite(stamp) or stamp <= 0 or stamp > received_ms + 2000:
+        return None
+    altitude = record.get("alt_baro")
+    altitude_source = "barometric"
+    if not finite(altitude):
+        altitude = record.get("alt_geom")
+        altitude_source = "geometric"
+    if not finite(altitude):
+        altitude = record.get("alt")
+        altitude_source = record.get("altitude_source", "node_unspecified")
+    fields = {
+        k: record[k]
+        for k in ("lat", "lon", "gs", "track", "flight", "type", "mlat", "tisb", "position_timestamp")
+        if k in record
+    }
+    rec = normalize_reference(
+        {
+            **fields,
+            "alt_baro": altitude,
+            "last_seen_ms": stamp,
+            "recv_ms": received_ms,
+            "time_basis": time_basis,
+            "altitude_source": altitude_source,
+            "reference_eligible": record.get("reference_eligible", True),
+            "precision_eligible": False,
+        },
+        hexn,
+        source="node",
+    )
+    if rec is not None:
+        rec["reference_eligible"] = all(finite(rec.get(k)) for k in ("alt_m", "vel_east", "vel_north"))
+    return rec
 
 
 def readsb_references(payload: dict, received_s: float, *, source: str = "adsb_service") -> dict[str, dict]:
@@ -112,6 +161,21 @@ def seeding_references(node_records: dict, service_records: dict, external_recor
     Frame-level callers request their world explicitly to resolve collisions.
     """
     out = {}
+    prepared_fields = {
+        "hex",
+        "lat",
+        "lon",
+        "last_seen_ms",
+        "timestamp_ms",
+        "alt_baro",
+        "gs",
+        "track",
+        "alt_m",
+        "vel_east",
+        "vel_north",
+        "source",
+        "world",
+    }
     for records, source, default_world in (
         (external_records, "external", "real"),
         (service_records, "adsb_service", "real"),
@@ -121,7 +185,19 @@ def seeding_references(node_records: dict, service_records: dict, external_recor
             rec_world = raw.get("world", default_world)
             if world is not None and rec_world is not None and rec_world != world:
                 continue
-            rec = normalize_reference(raw, hexn, source=raw.get("source", source), world=rec_world)
+            # The source pollers already normalize once at write time.
+            # Reuse its complete records across frames, as the node cache
+            # does, instead of repeating unit conversion and trig per frame.
+            if prepared_fields.issubset(raw) and raw["hex"] == hexn and raw["timestamp_ms"] == raw["last_seen_ms"]:
+                rec = (
+                    raw
+                    if reference_position_allowed(raw)
+                    and all(finite(raw.get(k)) for k in ("lat", "lon", "timestamp_ms"))
+                    and valid_latlon(raw["lat"], raw["lon"])
+                    else None
+                )
+            else:
+                rec = normalize_reference(raw, hexn, source=raw.get("source", source), world=rec_world)
             if rec is None or not all(finite(rec.get(k)) for k in ("alt_m", "vel_east", "vel_north")):
                 continue
             prev = out.get(rec["hex"])

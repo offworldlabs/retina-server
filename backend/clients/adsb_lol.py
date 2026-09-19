@@ -143,7 +143,7 @@ class AdsbLolClient:
                         "precision_eligible": False,
                         "squawk": ac.get("squawk", ""),
                         "category": ac.get("category", ""),
-                        "type": ac.get("type", "adsb_icao"),
+                        "type": ac.get("type", "unknown"),
                         "registration": ac.get("r", ""),
                         "aircraft_type": ac.get("t", ""),
                     }

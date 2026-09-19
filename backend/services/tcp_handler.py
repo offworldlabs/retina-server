@@ -16,6 +16,7 @@ from retina_custody.hash_chain import HashChainEntry, HashChainVerifier
 from config.constants import CHAIN_ENTRIES_MAX_PER_NODE, IQ_COMMITMENTS_MAX_PER_NODE
 from core import state
 from services import node_registration
+from services.adsb_truth import node_reference
 from services.feed_helpers import adsb_capture_ts_ms, adsb_store
 from services.geo import valid_latlon
 from services.id_utils import normalize_hex_key
@@ -559,6 +560,11 @@ def _apply_synthetic_adsb(msg: dict, node_id: str):
         lat = entry.get("lat")
         lon = entry.get("lon")
         if not valid_latlon(lat, lon) or not _math.isfinite(lat) or not _math.isfinite(lon):
+            continue
+        if world == "real":
+            rec = node_reference(entry, hex_code, ts_ms, recv_ms)
+            if rec is not None:
+                adsb_store(hex_code, rec)
             continue
         rec = {
             "hex": hex_code,

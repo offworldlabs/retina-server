@@ -23,6 +23,7 @@ from config.constants import (
 )
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
+from services.adsb_truth import node_reference
 from services.geo import (
     valid_latlon,
 )
@@ -640,6 +641,11 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             if not _hex or not valid_latlon(_lat, _lon):
                 continue
             if not math.isfinite(_lat) or not math.isfinite(_lon):
+                continue
+            if _world == "real":
+                _rec = node_reference(_ae, _hex, _ts_ms, _recv_ms)
+                if _rec is not None:
+                    adsb_store(_hex, _rec)
                 continue
             _rec = {
                 "hex": _hex,

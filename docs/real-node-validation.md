@@ -18,6 +18,14 @@ refresh its age. MLAT and TIS-B positions are excluded from validation reference
 and absent altitude or velocity does not become a zero-valued measurement.
 External-source eligibility is retained through the fallback adapters.
 
+Real node-carried positions follow the same eligibility rules, preserve an
+explicit position timestamp, and support the node API's legacy `alt` field in
+feet. Missing altitude or velocity remains missing. Older tags without their
+own position clock are marked as assuming the frame's time. Capture retains
+source type and clock/altitude provenance; replay reports source-type counts.
+An SBS `type=other` position is a coarse external reference, not a verified
+direct ADS-B or precision GNSS observation.
+
 These feeds can include upstream latency and barometric altitude. They support
 coarse validation but are marked ineligible for precision truth. See the source
 contracts for [readsb](https://github.com/wiedehopf/readsb/blob/dev/README-json.md)
@@ -32,6 +40,9 @@ scored against nearby synthetic trails.
 Reference normalization is shared across a frame's tagged detections, held
 tracks and candidate assignment. It must not scan the fleet cache separately
 for every detection; this becomes a significant ingest cost with real traffic.
+Source pollers prepare normalized records once when writing their caches.
+Reputation evaluation similarly reuses one trust score per node per pass,
+rather than scanning the residual history again for every neighbor.
 
 ## Private capture
 

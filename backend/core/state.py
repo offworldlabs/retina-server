@@ -305,10 +305,12 @@ def _adsb_for_seeding(world: str | None = None) -> dict[str, dict]:
     already on them (see adsb_derived_fields), so the only per-call work is
     dropping records with an unusable position.
     """
-    from services.adsb_truth import seeding_references
+    from services.adsb_truth import reference_position_allowed, seeding_references
 
     out = seeding_references({}, service_adsb_cache, external_adsb_cache, world)
     for hexn, rec in list(adsb_aircraft.items()):
+        if not reference_position_allowed(rec):
+            continue
         if world is not None and rec.get("world") not in (None, world):
             continue
         lat, lon = rec.get("lat"), rec.get("lon")

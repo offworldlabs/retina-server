@@ -370,6 +370,7 @@ def evaluate(records, geometries, truth, *, chi2_max=2.0, labels=None, max_horiz
     errors, altitude_errors, by_n = [], [], defaultdict(Counter)
     attempted_windows, accepted_windows, accurate_windows = set(), set(), set()
     scored = []
+    sources = defaultdict(Counter)
     for rec in records:
         candidate, result = rec["candidate"], rec["result"]
         refs = truth.at(candidate["timestamp_ms"])
@@ -403,6 +404,12 @@ def evaluate(records, geometries, truth, *, chi2_max=2.0, labels=None, max_horiz
             if label == "identity_conflict":
                 counts["accepted_identity_conflicts"] += accepted
         else:
+            source_key = f"{ref.get('source', 'unknown')}/{ref.get('type', 'unknown')}"
+            sources[source_key]["eligible"] += 1
+            sources[source_key]["accepted"] += accepted
+            row["reference_source"] = ref.get("source", "unknown")
+            row["reference_type"] = ref.get("type", "unknown")
+            row["reference_precision_eligible"] = ref.get("precision_eligible", False)
             counts["reference_eligible"] += 1
             counts["reference_eligible_accepted"] += accepted
             counts[f"{label_basis}_eligible"] += 1
@@ -432,6 +439,7 @@ def evaluate(records, geometries, truth, *, chi2_max=2.0, labels=None, max_horiz
     eligible = counts["reference_eligible"]
     return {
         "counts": dict(counts),
+        "reference_sources": dict(sources),
         "by_n_nodes": dict(by_n),
         "reference_solve_rate": counts["reference_eligible_accepted"] / eligible if eligible else None,
         "accepted_error_km": {

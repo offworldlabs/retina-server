@@ -7,7 +7,7 @@ import pytest
 
 from core import state
 from services.adsb_regions import regions_for_nodes
-from services.adsb_truth import readsb_references
+from services.adsb_truth import node_reference, readsb_references
 from services.known_claiming import claim_known_targets, strip_claimed_detections
 from services.tasks.adsb_service import fetch_region
 from tests.test_known_claiming import _NODE_CFG, _stationary_pred
@@ -71,6 +71,62 @@ def test_missing_kinematics_is_position_only_not_a_zero_velocity_seed():
     state.service_adsb_cache.update(readsb_references(envelope(gs=None), 1001))
     assert state.service_adsb_cache["abc123"]["gs"] is None
     assert "abc123" not in state._adsb_for_seeding("real")
+
+
+def test_node_tag_legacy_altitude_units_and_observation_clock():
+    tag = {"lat": 34, "lon": -82, "alt": 10000, "gs": 200, "track": 0, "timestamp": 998}
+    rec = node_reference(tag, "abc123", 1000000, 1001000)
+    assert rec["alt_m"] == pytest.approx(3048)
+    assert rec["timestamp_ms"] == 998000
+    assert rec["time_basis"] == "node_position"
+    assert rec["vel_north"] == pytest.approx(102.8888)
+    assert rec["reference_eligible"] is True
+    assert rec["precision_eligible"] is False
+
+
+@pytest.mark.parametrize("field", ["alt_baro", "gs", "track"])
+def test_incomplete_node_kinematics_cannot_replace_a_complete_external_reference(field):
+    state.service_adsb_cache.update(readsb_references(envelope(), 1001))
+    tag = {"lat": 10, "lon": 20, "alt_baro": 10000, "gs": 200, "track": 0}
+    tag.pop(field)
+    state.adsb_aircraft["abc123"] = node_reference(tag, "abc123", 1000000, 1001000)
+    assert state.adsb_aircraft["abc123"]["reference_eligible"] is False
+    assert state._adsb_for_seeding("real")["abc123"]["lat"] == 34.88
+
+
+@pytest.mark.parametrize("extra", [{"type": "mlat"}, {"tisb": ["lat"]}, {"timestamp": None}, {"timestamp": 1010}])
+def test_invalid_node_sources_and_clocks_abstain(extra):
+    tag = {"lat": 34, "lon": -82, "alt_baro": 10000, "gs": 200, "track": 0, **extra}
+    assert node_reference(tag, "abc123", 1000000, 1001000) is None
+
+
+def test_tcp_node_positions_keep_their_own_clock_and_legacy_feet_altitude():
+    from services.tcp_handler import _apply_synthetic_adsb
+
+    ts_ms = int(time.time() * 1000)
+    tag = {"hex": "abc123", "lat": 34, "lon": -82, "alt": 10000, "gs": 200, "track": 0}
+    tag["timestamp"] = (ts_ms - 3000) / 1000
+    _apply_synthetic_adsb({"data": {"timestamp": ts_ms, "adsb": [tag]}}, "hardware-reference-test")
+    rec = state._adsb_for_seeding("real")["abc123"]
+    assert rec["timestamp_ms"] == ts_ms - 3000
+    assert rec["alt_m"] == pytest.approx(3048)
+
+
+def test_real_node_mlat_tag_cannot_enter_known_claims():
+    nid = "hardware-reference-test"
+    state.node_associator.register_node(nid, _NODE_CFG)
+    delay, doppler = _stationary_pred(state.node_associator.node_geometries[nid])
+    frame = {
+        "timestamp": int(time.time() * 1000),
+        "delay": [delay],
+        "doppler": [doppler],
+        "snr": [20],
+        "adsb": [
+            {"hex": "abc123", "lat": 34.88, "lon": -82.35, "alt_baro": 23000, "gs": 0, "track": 0, "type": "mlat"}
+        ],
+    }
+    assert claim_known_targets(nid, frame) == set()
+    assert not state.known_claims.get("abc123")
 
 
 def test_external_truth_reaches_claiming_with_correct_units():

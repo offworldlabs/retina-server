@@ -20,8 +20,43 @@ _queue = queue.Queue(maxsize=5000)
 _enabled = False
 _counters = {"frames": 0, "dropped": 0, "bytes": 0, "errors": 0}
 _FRAME_FIELDS = ("timestamp", "delay", "doppler", "snr", "adsb_hex", "seq", "boot_id", "config_version")
-_TAG_FIELDS = ("hex", "icao", "lat", "lon", "alt_baro", "gs", "track", "last_seen_ms", "seen_pos")
-_TRUTH_FIELDS = ("lat", "lon", "alt_m", "vel_east", "vel_north", "timestamp_ms", "source", "precision_eligible")
+_TAG_FIELDS = (
+    "hex",
+    "icao",
+    "lat",
+    "lon",
+    "alt_baro",
+    "alt_geom",
+    "alt",
+    "gs",
+    "track",
+    "last_seen_ms",
+    "seen_pos",
+    "timestamp",
+    "timestamp_ms",
+    "position_timestamp",
+    "type",
+    "reference_eligible",
+    "altitude_source",
+)
+_TRUTH_FIELDS = (
+    "lat",
+    "lon",
+    "alt_m",
+    "vel_east",
+    "vel_north",
+    "timestamp_ms",
+    "source",
+    "precision_eligible",
+    "reference_eligible",
+    "type",
+    "time_basis",
+    "altitude_source",
+    "nic",
+    "nac_p",
+    "rc",
+    "position_timestamp",
+)
 _CONFIG_FIELDS = (
     "rx_lat",
     "rx_lon",

@@ -269,7 +269,7 @@ class TestDerivedFieldsAtWriteTime:
 
     @pytest.mark.parametrize("name,kin", _WRITE_CASES)
     def test_frame_processor_writer(self, name, kin):
-        hexn = f"fp{name}"
+        hexn = _SIM_CASE_HEX[name]
         entry = {"hex": hexn, "lat": 33.9, "lon": -84.6, **kin}
         frame = {
             "timestamp": int(time.time() * 1000),
@@ -280,7 +280,16 @@ class TestDerivedFieldsAtWriteTime:
         }
         process_one_frame("node-derived", frame, PassiveRadarPipeline(DEFAULT_NODE_CONFIG))
 
-        _assert_derived(hexn, entry)
+        if name == "moving":
+            _assert_derived(hexn, entry)
+        else:
+            # Real incomplete reports remain position-only. They cannot
+            # acquire zero altitude/velocity and enter the solver as truth.
+            rec = state.adsb_aircraft[hexn]
+            assert rec["alt_m"] is None
+            assert rec["vel_east"] is None
+            assert rec["reference_eligible"] is False
+            assert hexn not in state._adsb_for_seeding("real")
 
     @pytest.mark.parametrize("name,kin", _WRITE_CASES)
     async def test_sim_ingest_writer(self, name, kin):
@@ -577,9 +586,9 @@ class TestWorldStamp:
     def test_tcp_writer_stamps_real_for_a_hardware_node(self):
         from services.tcp_handler import _apply_synthetic_adsb
 
-        entry = {"hex": "wrld02", "lat": 33.9, "lon": -84.6}
+        entry = {"hex": "aabb02", "lat": 33.9, "lon": -84.6}
         _apply_synthetic_adsb({"data": {"timestamp": 1000, "adsb": [entry]}}, "example-node-a")
-        assert state.adsb_aircraft["wrld02"]["world"] == "real"
+        assert state.adsb_aircraft["aabb02"]["world"] == "real"
 
     def test_tcp_writer_honours_the_handshake_verdict(self):
         """A registered node's CONFIG verdict beats the prefix rule — a node
@@ -593,7 +602,7 @@ class TestWorldStamp:
         assert state.adsb_aircraft["wrld03"]["world"] == "sim"
 
     def test_frame_processor_writer_stamps_by_node_class(self):
-        entry = {"hex": "wrld04", "lat": 33.9, "lon": -84.6}
+        entry = {"hex": "aabb04", "lat": 33.9, "lon": -84.6}
         frame = {
             "timestamp": int(time.time() * 1000),
             "delay": [50.0],
@@ -602,7 +611,7 @@ class TestWorldStamp:
             "adsb": [entry],
         }
         process_one_frame("blah2-hw-node", frame, PassiveRadarPipeline(DEFAULT_NODE_CONFIG))
-        assert state.adsb_aircraft["wrld04"]["world"] == "real"
+        assert state.adsb_aircraft["aabb04"]["world"] == "real"
 
 
 class TestSeedWorldWiring:

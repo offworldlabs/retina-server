@@ -302,6 +302,7 @@ class TestOpenSkyFetch:
             "heading": 90.0,
             "last_seen_ms": int(captured * 1000),
             "source": "opensky",
+            "type": "unknown",
             "reference_eligible": True,
             "precision_eligible": False,
         }
@@ -740,6 +741,7 @@ class TestAdsbLolFetch:
             "heading": 90,
             "last_seen_ms": int(captured_at * 1000),
             "source": "adsb_lol",
+            "type": "unknown",
             "reference_eligible": True,
             "precision_eligible": False,
         }

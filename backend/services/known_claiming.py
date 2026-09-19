@@ -93,6 +93,7 @@ from config.constants import (
 )
 from core import state
 from services import dark_follow, track_filter
+from services.adsb_truth import node_reference
 from services.calibration import record_claim_calibration
 from services.id_utils import normalize_hex_key
 from services.node_config import position_status
@@ -1067,6 +1068,18 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
                 continue
             hexn = normalize_hex_key(tag.get("hex") or tag.get("icao"))
             if not hexn or hexn in claimed_hexes:
+                continue
+            if node_world == "real":
+                reference = node_reference(tag, hexn, ts_ms, time.time() * 1000)
+                if reference is None or not reference["reference_eligible"]:
+                    continue
+                prediction = _fresh_fix_prediction(hexn, geo, frame_ts_s, node_world, {hexn: reference})
+                if prediction is None:
+                    continue
+                pred_d, pred_f, _, fix, dr_lat, dr_lon = prediction
+                claims.append((i, hexn, fix, pred_d, pred_f, {_CAL_DR_KEY: (dr_lat, dr_lon)}))
+                claimed_idx.add(i)
+                claimed_hexes.add(hexn)
                 continue
             lat, lon = tag.get("lat"), tag.get("lon")
             if lat is None or lon is None or not (math.isfinite(lat) and math.isfinite(lon)):
