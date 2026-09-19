@@ -307,7 +307,9 @@ def _adsb_for_seeding(world: str | None = None) -> dict[str, dict]:
     """
     from services.adsb_truth import reference_position_allowed, seeding_references
 
-    out = seeding_references({}, service_adsb_cache, external_adsb_cache, world)
+    # Both remote writers contain real observations only. Synthetic frames
+    # need no scan of this (often much larger) catalogue.
+    out = {} if world == "sim" else seeding_references({}, service_adsb_cache, external_adsb_cache, world)
     for hexn, rec in list(adsb_aircraft.items()):
         if not reference_position_allowed(rec):
             continue

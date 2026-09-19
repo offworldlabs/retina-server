@@ -55,6 +55,17 @@ def test_prepared_references_still_honor_eligibility_changes():
     assert not seeding_references({}, rows, {}, "real")
 
 
+def test_synthetic_snapshot_never_scans_real_remote_catalogues(monkeypatch):
+    class RealOnlyCache(dict):
+        def items(self):
+            raise AssertionError("Synthetic snapshot scanned real observations")
+
+    monkeypatch.setattr(state, "service_adsb_cache", RealOnlyCache())
+    monkeypatch.setattr(state, "external_adsb_cache", RealOnlyCache())
+    monkeypatch.setattr(state, "adsb_aircraft", {})
+    assert state._adsb_for_seeding("sim") == {}
+
+
 def test_readsb_v2_millisecond_envelope_uses_seconds_for_seen_pos():
     payload = envelope()
     payload["now"] = 1_789_815_972_001

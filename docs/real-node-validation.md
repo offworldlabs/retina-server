@@ -144,3 +144,15 @@ is a blind solve with frozen, previously learned calibration, and should be
 reported separately from an uncalibrated baseline. Do not tune acceptance gates
 on the final evaluation interval or deploy settings based on acceptance rate
 without checking errors and identity conflicts.
+
+## Sustained-load checks
+
+Monitor queue depth and delivery age alongside solve rates. The frame drop
+counter includes queue rejections on TCP, v1 and both HTTP ingestion routes;
+for bulk HTTP it counts every discarded timestamped frame after saturation.
+It does not measure losses upstream or during a server restart.
+
+`SINGLE_NODE_GEO_INTERVAL_S` defaults to 10 seconds. A value such as 20 reduces
+single-node nonlinear fit frequency under CPU pressure, while tracking,
+reference refresh and MLAT retain their existing cadence. Check the queue over
+a sustained mixed real/synthetic load before treating a deployment as stable.

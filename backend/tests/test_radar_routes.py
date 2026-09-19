@@ -2,6 +2,7 @@
 plus unit tests for _check_rate_limit.
 """
 
+import asyncio
 import time
 
 import pytest
@@ -9,6 +10,28 @@ from fastapi import HTTPException
 
 VALID_KEY = "test-key-abc123"
 HEADERS_OK = {"X-API-Key": VALID_KEY}
+
+
+@pytest.mark.parametrize("bulk", [False, True])
+def test_queue_overflow_counts_every_rejected_timestamped_frame(node_client, monkeypatch, bulk):
+    from core import state
+
+    accepted = []
+
+    def enqueue(item):
+        if accepted:
+            raise asyncio.QueueFull
+        accepted.append(item)
+
+    monkeypatch.setattr(state.frame_queue, "put_nowait", enqueue)
+    before = state.frames_dropped
+    node = {"node_id": "bulk-overflow", "frames": [{"timestamp": 1}, {}, {"timestamp": 2}, {"timestamp": 3}, {}]}
+    endpoint = "/api/radar/detections/bulk" if bulk else "/api/radar/detections"
+    response = node_client.post(endpoint, json={"nodes": [node]} if bulk else node, headers=HEADERS_OK)
+    assert response.status_code == 200
+    assert response.json()["frames_queued"] == 1
+    assert state.frames_dropped - before == 2
+    assert len(accepted) == 1
 
 
 @pytest.fixture(autouse=True)
