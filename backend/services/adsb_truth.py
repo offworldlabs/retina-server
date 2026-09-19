@@ -12,6 +12,17 @@ from services.geo import valid_latlon
 from services.id_utils import is_transponder_hex, normalize_hex_key
 
 
+class _NormalizedReference(dict):
+    """Process-local marker for records validated by this module.
+
+    Source caches replace these records on updates; consumers must not mutate
+    their measurement fields. JSON/restored/raw records are ordinary dicts and
+    must pass normalization again. A wire field cannot forge this marker.
+    """
+
+    __slots__ = ("kinematics_complete",)
+
+
 def finite(value) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
@@ -62,7 +73,9 @@ def normalize_reference(record: dict, hexn: str, *, source: str, world: str = "r
     out["heading"] = heading
     out["vel_east"] = speed * math.sin(math.radians(heading)) if speed is not None and heading is not None else None
     out["vel_north"] = speed * math.cos(math.radians(heading)) if speed is not None and heading is not None else None
-    return out
+    prepared = _NormalizedReference(out)
+    prepared.kinematics_complete = all(out[k] is not None for k in ("alt_m", "vel_east", "vel_north"))
+    return prepared
 
 
 def node_reference(record: dict, hexn: str, frame_ms: float, received_ms: float) -> dict | None:
@@ -161,21 +174,6 @@ def seeding_references(node_records: dict, service_records: dict, external_recor
     Frame-level callers request their world explicitly to resolve collisions.
     """
     out = {}
-    prepared_fields = {
-        "hex",
-        "lat",
-        "lon",
-        "last_seen_ms",
-        "timestamp_ms",
-        "alt_baro",
-        "gs",
-        "track",
-        "alt_m",
-        "vel_east",
-        "vel_north",
-        "source",
-        "world",
-    }
     for records, source, default_world in (
         (external_records, "external", "real"),
         (service_records, "adsb_service", "real"),
@@ -185,20 +183,15 @@ def seeding_references(node_records: dict, service_records: dict, external_recor
             rec_world = raw.get("world", default_world)
             if world is not None and rec_world is not None and rec_world != world:
                 continue
-            # The source pollers already normalize once at write time.
-            # Reuse its complete records across frames, as the node cache
-            # does, instead of repeating unit conversion and trig per frame.
-            if prepared_fields.issubset(raw) and raw["hex"] == hexn and raw["timestamp_ms"] == raw["last_seen_ms"]:
-                rec = (
-                    raw
-                    if reference_position_allowed(raw)
-                    and all(finite(raw.get(k)) for k in ("lat", "lon", "timestamp_ms"))
-                    and valid_latlon(raw["lat"], raw["lon"])
-                    else None
-                )
-            else:
-                rec = normalize_reference(raw, hexn, source=raw.get("source", source), world=rec_world)
-            if rec is None or not all(finite(rec.get(k)) for k in ("alt_m", "vel_east", "vel_north")):
+            # Process-local normalized records are replaced on source updates.
+            # Raw/restored dictionaries cannot bypass validation merely by
+            # containing the expected keys or claiming a preparation flag.
+            rec = (
+                raw
+                if isinstance(raw, _NormalizedReference)
+                else normalize_reference(raw, hexn, source=raw.get("source", source), world=rec_world)
+            )
+            if rec is None or not rec.kinematics_complete or not reference_position_allowed(rec):
                 continue
             prev = out.get(rec["hex"])
             if prev is None or (world is None and rec_world == "sim") or rec["last_seen_ms"] >= prev["last_seen_ms"]:

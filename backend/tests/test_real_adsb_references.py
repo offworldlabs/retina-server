@@ -1,5 +1,6 @@
 """Real-feed clocks, provenance, units, world isolation and v1 identity plumbing."""
 
+import json
 import time
 
 import httpx
@@ -7,7 +8,7 @@ import pytest
 
 from core import state
 from services.adsb_regions import regions_for_nodes
-from services.adsb_truth import node_reference, readsb_references
+from services.adsb_truth import node_reference, readsb_references, seeding_references
 from services.known_claiming import claim_known_targets, strip_claimed_detections
 from services.tasks.adsb_service import fetch_region
 from tests.test_known_claiming import _NODE_CFG, _stationary_pred
@@ -35,6 +36,23 @@ def test_capture_age_is_not_refreshed_on_repoll():
     assert b["vel_east"] == pytest.approx(102.8888)
     assert b["world"] == "real"
     assert b["precision_eligible"] is False
+
+
+def test_restored_reference_is_revalidated_and_does_not_forge_prepared_status():
+    original = readsb_references(envelope(), 1001)
+    restored = json.loads(json.dumps(original))
+    assert seeding_references({}, original, {}, "real") == seeding_references({}, restored, {}, "real")
+    restored["abc123"]["lat"] = float("nan")
+    restored["abc123"]["kinematics_complete"] = True
+    assert not seeding_references({}, restored, {}, "real")
+
+
+def test_prepared_references_still_honor_eligibility_changes():
+    rows = readsb_references(envelope(), 1001)
+    rows["abc123"]["reference_eligible"] = False
+    assert not seeding_references({}, rows, {}, "real")
+    rows = readsb_references(envelope(gs=None), 1001)
+    assert not seeding_references({}, rows, {}, "real")
 
 
 def test_readsb_v2_millisecond_envelope_uses_seconds_for_seen_pos():
