@@ -53,7 +53,10 @@ The directory is mode 0700 and new files are mode 0600. This is private material
 do not move it into the public coverage archive or commit it to the repository.
 
 Capture uses a bounded queue, asynchronous disk writes and a 512 MiB total
-budget. Reaching the budget stops capture. The test dashboard exposes enabled
+budget. `REAL_DATA_CAPTURE_MAX_MIB` can set a total budget of 1–4096 MiB,
+including files from earlier runs. Reaching the budget stops capture.
+Explicitly invalid signatures are excluded, and changed truth is saved even
+on ticks without radar frames. The test dashboard exposes enabled
 state, bytes, frames, errors, drops and queue depth. Observe these counters and
 the main ingest queue when running offline experiments on the server host.
 

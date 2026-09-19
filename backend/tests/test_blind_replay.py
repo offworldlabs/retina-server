@@ -153,6 +153,18 @@ def test_truth_age_uses_capture_time_and_propagates_to_measurement_epoch():
     assert index.at(120000) == {}
 
 
+@pytest.mark.parametrize("fc", [None, 0, -1, True, "100000000", float("nan"), float("inf")])
+def test_bad_multinode_frequency_rejects_candidate_without_aborting_replay(monkeypatch, fc):
+    monkeypatch.setattr(
+        "scripts.blind_replay.solver.fit_constant_velocity",
+        lambda *a: {"success": True, "lat": 34, "lon": -82, "alt_m": 7000, "chi2_per_dof": 1},
+    )
+    raw = candidate()
+    raw["n_nodes"] = 3
+    assert solve_candidate(raw, {"one": {"fc_hz": fc}}) == (None, "invalid_geometry")
+    assert solve_candidate(raw, {}) == (None, "invalid_geometry")
+
+
 def test_failed_solves_remain_in_reference_denominator(monkeypatch):
     ref = {"lat": 34, "lon": -82, "alt_m": 7000, "vel_east": 0, "vel_north": 0}
     monkeypatch.setattr("scripts.blind_replay.reference_for", lambda *a: (ref, "abc123"))

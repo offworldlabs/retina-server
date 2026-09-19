@@ -146,6 +146,36 @@ def test_external_truth_reaches_claiming_with_correct_units():
     assert not state._adsb_for_seeding("sim")
 
 
+@pytest.mark.parametrize("with_reference", [False, True])
+def test_incomplete_node_tag_requires_a_fresh_independent_reference(with_reference):
+    nid = "hardware-reference-test"
+    state.node_associator.register_node(nid, _NODE_CFG)
+    delay, doppler = _stationary_pred(state.node_associator.node_geometries[nid])
+    ts = int(time.time() * 1000)
+    if with_reference:
+        state.external_adsb_cache["abc123"] = {
+            "lat": 34.88,
+            "lon": -82.35,
+            "alt_m": 7000,
+            "velocity": 0,
+            "heading": 0,
+            "last_seen_ms": ts - 1000,
+            "source": "opensky",
+        }
+    frame = {
+        "timestamp": ts,
+        "delay": [delay],
+        "doppler": [doppler],
+        "snr": [20],
+        "adsb": [{"hex": "abc123", "lat": 34.88, "lon": -82.35}],
+    }
+    assert claim_known_targets(nid, frame) == ({0} if with_reference else set())
+    if with_reference:
+        fix = state.known_claims["abc123"][-1]["adsb_fix"]
+        assert fix["fix_ts_ms"] == ts - 1000
+        assert fix["alt_baro"] == pytest.approx(7000 / 0.3048)
+
+
 def test_colliding_sim_identity_cannot_replace_real_truth():
     state.service_adsb_cache.update(readsb_references(envelope(), 1001))
     state.adsb_aircraft["abc123"] = {

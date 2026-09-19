@@ -105,7 +105,10 @@ def solve_candidate(candidate, configs, altitudes=(3.0, 7.0, 11.0), max_nfev=200
         epoch_s = candidate["timestamp_ms"] / 1000
         measurements = []
         for m in candidate["measurements"]:
-            fc = configs[m["node_id"]].get("fc_hz", configs[m["node_id"]].get("FC"))
+            config = configs.get(m["node_id"], {})
+            fc = config.get("fc_hz", config.get("FC"))
+            if not isinstance(fc, (int, float)) or isinstance(fc, bool) or not math.isfinite(fc) or fc <= 0:
+                return None, "invalid_geometry"
             dt = epoch_s - m.get("t_s", epoch_s)
             measurements.append(
                 {

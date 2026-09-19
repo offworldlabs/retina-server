@@ -93,7 +93,7 @@ from config.constants import (
 )
 from core import state
 from services import dark_follow, track_filter
-from services.adsb_truth import node_reference
+from services.adsb_truth import node_reference, reference_position_allowed
 from services.calibration import record_claim_calibration
 from services.id_utils import normalize_hex_key
 from services.node_config import position_status
@@ -1007,11 +1007,13 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
     the returned indices actually leave the dark pool (binding only).
 
     Two claim paths, in precedence order:
-      1. Node-supplied frame["adsb"] entries become claims directly.  The
-         node's own correlation is authoritative (existing invariant — the
-         backend never overwrites a node-provided list), so it is not
-         re-gated; the prediction is still computed so the record carries
-         the residual the trust path needs.
+      1. Node-supplied frame["adsb"] identities are authoritative; the backend
+         never overwrites the node's list or applies a residual association
+         gate. Real tags still need a complete, fresh position/velocity to
+         predict a residual. An incomplete tag can use an independent cached
+         reference; without either, it remains unclaimed rather than gaining
+         invented zero altitude or velocity. Simulation retains its legacy
+         coercion. Explicit MLAT/TIS-B positions are not ADS-B references.
       H. This node's own HELD tracks (state.known_track_holds): hexes this
          node has claimed before, predicted forward from their last measured
          (delay, Doppler) rather than from a transponder fix.  Ahead of path 2
@@ -1072,6 +1074,8 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
             if node_world == "real":
                 reference = node_reference(tag, hexn, ts_ms, time.time() * 1000)
                 if reference is None or not reference["reference_eligible"]:
+                    reference = reference_states.get(hexn) if reference_position_allowed(tag) else None
+                if reference is None:
                     continue
                 prediction = _fresh_fix_prediction(hexn, geo, frame_ts_s, node_world, {hexn: reference})
                 if prediction is None:

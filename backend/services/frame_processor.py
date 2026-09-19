@@ -450,8 +450,6 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
 
     from services.real_capture import offer as capture_real_frame
 
-    capture_real_frame(node_id, frame)
-
     # Deferred signature verification (moved off the event loop)
     if frame.pop("_needs_sig_verify", False):
         det_node_id = frame.get("node_id") or frame.get("_node_id") or node_id
@@ -466,6 +464,8 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
         frame["_signature_valid"] = sig_valid
         if not sig_valid and det_node_id in state.node_identities:
             logging.warning("Invalid signature on detection from %s", det_node_id)
+
+    capture_real_frame(node_id, frame)
 
     _t1 = time.thread_time()
     state.node_analytics.record_detection_frame(node_id, frame)
