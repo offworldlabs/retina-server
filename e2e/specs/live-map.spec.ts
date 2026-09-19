@@ -2,18 +2,20 @@
  * Live Aircraft Map E2E tests, on the simulation surface.
  *
  * This suite visits the console's /sim on whichever host `hosts.testmap` names
- * — in CI that is staging's app hostname. /sim asks for the synthetic fleet by
- * name, which is why this suite no longer has to be pointed at a hostname that
+ * — the local dev server, today. /sim asks for the synthetic fleet by name,
+ * which is why this suite no longer has to be pointed at a hostname that
  * happened to serve it: it verifies the map page loads, WebSocket connects,
  * aircraft appear, and key interactive elements work correctly.
  *
  * NOTE: These tests require the synthetic fleet to be running on the target
  * environment. They use generous timeouts to account for warm-up time.
  *
- * Production runs no simulator, so its /sim is an empty map and the whole file
- * skips there rather than reaching across environments. See the note in
- * playwright.config.ts: a failed production E2E auto-rolls-back production, so a
- * suite that silently tested staging could revert a good production build.
+ * Neither production nor staging runs a simulator (only the test droplet
+ * does), so /sim on either is an empty map and the whole file skips there
+ * rather than reaching across environments. See the note in
+ * playwright.config.ts: a failed production E2E auto-rolls-back production, so
+ * a suite that silently tested another box could revert a good production
+ * build.
  */
 import { test, expect, Page } from "@playwright/test";
 import { hosts } from "../playwright.config";
@@ -22,7 +24,7 @@ const TESTMAP = hosts.testmap;
 
 test.skip(
   TESTMAP === null,
-  "no synthetic map surface in this environment (production runs no fleet)",
+  "no synthetic map surface in this environment (only the test droplet runs a fleet)",
 );
 
 // test.skip aborts the tests, not this module — every top-level statement still

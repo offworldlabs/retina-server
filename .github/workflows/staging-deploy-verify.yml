@@ -92,8 +92,8 @@ jobs:
             # A .env naming another environment means this job is pointed
             # at a box it does not own. Without this the write further down simply
             # takes that box over: overwriting its .env and rebuilding would bring
-            # production back on staging's hostnames, fleet size and container
-            # names. A MISSING .env is allowed through; that is the normal state
+            # production back on staging's hostnames and container names. A
+            # MISSING .env is allowed through; that is the normal state
             # of a box awaiting its first deploy, and we write it below.
             if [ -f .env ] && ! grep -q '^COMPOSE_FILE=.*docker-compose\.staging\.yml' .env; then
               echo "::error::${{ env.APP_DIR }}/.env exists but does not select the staging overlay — this host is not staging. Inspect it; do not deploy."
@@ -147,8 +147,8 @@ jobs:
             git reset --hard origin/main
             git submodule update --init --recursive
             # The host's ./.env sets COMPOSE_FILE (base + staging overlay), so the
-            # compose commands below match the production deploy block; only the
-            # fleet step is staging's own. Written from the tree on every deploy
+            # compose commands below match the production deploy block exactly:
+            # staging runs no fleet either. Written from the tree on every deploy
             # so a rebuilt droplet or a hand-edited .env cannot select the wrong
             # overlay.
             cp deploy/env.staging.example .env
@@ -164,9 +164,11 @@ jobs:
             # cache reused); the disk pre-flight now catches that root cause, so a
             # full wipe is redundant and only forced slow from-scratch rebuilds.
             docker builder prune -f --keep-storage 10GB
-            # Deploy the app FIRST, on its own — building only `server`
-            # means a broken Dockerfile.fleet can't abort the staging app deploy
-            # (which would block the whole pipeline). Fleet is a separate step below.
+            # Only `server`: staging runs no fleet simulator (docker-compose.
+            # staging.yml keeps it behind the same unenabled `sim` profile as
+            # production), so `server` is the whole of the staging deploy, as it
+            # is of production's. Naming `fleet` here would auto-enable its
+            # profile and bring it back.
             # No `docker compose down` before this: `up --build` swaps the container
             # only once the image exists, so a failed build leaves the old one
             # serving, and an unchanged image is not swapped at all.
@@ -195,16 +197,15 @@ jobs:
             done
 
             # Reached only by the loop's `break`: the app answered /api/health,
-            # so the box is no longer mid-deploy. The fleet step below can still
-            # fail, but with the app up on the new build, which is not a
-            # rollback case.
+            # so the box is no longer mid-deploy.
             rm -f ${{ env.APP_DIR }}/.deploy-in-progress
 
-            # Now the fleet, separately — a fleet build/start failure surfaces
-            # loudly here without taking the already-healthy app down with it.
-            # Recreated only when its image or config changed; otherwise the old
-            # fleet reconnects to the new server by itself and the demo stays up.
-            docker compose up -d --build --no-deps fleet
+            # The fleet container from before the simulator left staging. A
+            # profile-gated service is invisible to `up --remove-orphans`, so
+            # the container it left behind neither restarts nor gets removed by
+            # the deploy above; it would keep POSTing frames at a server that
+            # no longer mounts the ingest path. Idempotent once it is gone.
+            docker rm -f retina-staging-fleet >/dev/null 2>&1 || true
   rollback:
     name: Roll back staging if the deploy failed after it began
     runs-on: ubuntu-latest
@@ -243,10 +244,10 @@ jobs:
 
             # No marker: the deploy refused in a pre-flight with the stack
             # untouched, or it had already cleared the marker with the app
-            # healthy on the new build and only the fleet step failed. Neither
-            # is a rollback case; ci.yml's production pair has the reasoning.
+            # healthy on the new build. Neither is a rollback case; ci.yml's
+            # production pair has the reasoning.
             if [ ! -f .deploy-in-progress ]; then
-              echo "No .deploy-in-progress marker: the deploy either refused before touching the box or failed after the app was already healthy on the new build (the fleet step). Nothing to roll back."
+              echo "No .deploy-in-progress marker: the deploy either refused before touching the box or failed after the app was already healthy on the new build. Nothing to roll back."
               exit 0
             fi
 
@@ -299,72 +300,11 @@ jobs:
     needs: [deploy]
     steps:
       - uses: actions/checkout@v4
-      - name: Wait for fleet to connect
-        timeout-minutes: 10
-        run: |
-          echo "Waiting for synthetic fleet nodes to connect..."
-          # Through the edge, not at the droplet's address: the origin now requires
-          # Cloudflare's client certificate (ssl_verify_client in
-          # deploy/nginx/snippets/tls.conf) and the DOCKER-USER boundary drops
-          # anything on 443 that is not from a Cloudflare range, so a direct-to-IP
-          # request can only ever time out or 400. `-k` does not help — that flag
-          # governs verification of the SERVER's certificate, not presentation of
-          # a client one. Same hostname deploy/staging-smoke-test.sh uses for this
-          # endpoint (API_URL there), so both agree on what "staging" means.
-          #
-          # NOT the towers hostname: a Cloudflare Origin Rule routes that to the
-          # tower-finder-edge container on port 8443, which has no such route.
-          # The 404 body fails the parse below, `|| COUNT=0` swallows it, and the
-          # loop then reports "0 nodes" for the whole window whatever the fleet is
-          # doing — a wrong URL that reads exactly like a fleet that never came up.
-          #
-          # nodes.synthetic_active, and neither of the two counts beside it.
-          # `active` includes the pseudo-nodes the HTTP ingest path registers
-          # for its callers; `synthetic` keeps entries a disconnect only marked,
-          # so it stays high after the fleet has gone. Must stay the field
-          # deploy/staging-smoke-test.sh asserts on.
-          #
-          # Against a floor, not against 1: on run 35085480844 six nodes
-          # connected, the gate took that as ready, and all six had dropped
-          # eighteen seconds later. One node answering is not a fleet serving.
-          source deploy/fleet-scale.sh
-          # Takes an optional compose path as "${1:-}" and is called bare here,
-          # which is what it is written for. shellcheck before 0.11 reads that as
-          # the script's own $1 leaking in; inert on versions that do not.
-          # shellcheck disable=SC2119
-          MIN=$(fleet_min_active) || {
-            echo "docker-compose.staging.yml no longer declares FLEET_NODES, so"
-            echo "there is nothing to hold the fleet to. Refusing to guess."
-            exit 1
-          }
-          echo "Waiting for $MIN of the configured $(fleet_configured_nodes) fleet nodes..."
-          #
-          # Bounded by wall clock rather than by an iteration count, because
-          # each probe may take up to --max-time; the deadline sits inside the
-          # step's cap so the message below is what the log shows.
-          DEADLINE=$(( $(date +%s) + 540 ))
-          COUNT=0
-          i=0
-          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-            i=$((i + 1))
-            COUNT=$(curl -s --connect-timeout 10 --max-time 30 https://staging-api.retina.fm/api/test/dashboard \
-              | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['synthetic_active'])" 2>/dev/null) || COUNT=0
-            if [ "${COUNT:-0}" -ge "$MIN" ]; then
-              echo "Fleet ready: ${COUNT} synthetic node(s) answering on attempt $i"
-              exit 0
-            fi
-            echo "Attempt $i: ${COUNT:-0}/${MIN} synthetic nodes — waiting 10s..."
-            sleep 10
-          done
-          echo "Only ${COUNT:-0} of $MIN synthetic nodes were answering after 9 min."
-          echo "The smoke suite still runs below: if its other checks pass, staging"
-          echo "is up and only the recreated fleet is late (ClickUp 123zgec26kw)."
-          exit 1
       - name: Run smoke tests against staging
-        # Runs even when the gate above failed. The checks in this suite are how
-        # a fleet that is merely slow is told apart from staging being down, and
-        # skipping them leaves the run saying only that the fleet never came up.
-        if: ${{ !cancelled() }}
+        # No fleet gate ahead of this any more: staging runs no simulator, so
+        # there is nothing to wait for between the deploy and the suite, and the
+        # suite asserts the opposite (deploy/staging-smoke-test.sh, "No
+        # simulator here").
         timeout-minutes: 15
         # Same service token as production: one token, admitted by a Service Auth
         # policy on each admin application. Inert while the secrets are unset.

@@ -81,15 +81,16 @@ services:
     # even cut over. A profile no environment enables is what keeps a bare
     # `docker compose up -d` on the droplet from quietly bringing it back.
     #
-    # The public demo this fleet used to feed is staging's now — the only
-    # environment still running a simulator — so starting this one would
-    # populate nothing anyone looks at.
+    # The demo this fleet used to feed lives on the test droplet's /sim now —
+    # the only environment still running a simulator — so starting this one
+    # would populate nothing anyone looks at.
     #
     # The sizing below is kept, not deleted, so the fleet can be brought back for
     # an afternoon without a PR:
     #   docker compose --profile sim up -d --build --no-deps fleet
     #   docker compose restart server   # re-registers the synthetic nodes
-    # Staging and test are unaffected and still run theirs by default.
+    # Staging keeps its fleet behind this same profile; test runs its own by
+    # default.
     profiles: ["sim"]
     environment:
       # Fleet is scoped to one metro (Greenville, SC), so counts are sized for a

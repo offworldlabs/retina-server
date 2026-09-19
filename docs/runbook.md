@@ -838,13 +838,19 @@ so the bare `docker compose` above resolves to base + the production overlay.
 Params (nodes/interval/mode/aircraft) live in the `fleet` service block in
 `docker-compose.yml` — edit them there, not on the command line.
 
-**Staging's fleet is public.** `staging-app.retina.fm` is fed by this fleet and
-is the demo people are shown, so bouncing it blanks the map for a minute or so;
-a staging deploy blanks it only for the server's restart and the fleet's
-reconnect, unless the fleet image or config changed and it is recreated too. Note
-the tuning is deliberate: staging runs 50 nodes @ 1.0s, which saturates the
-solver (45–52 s per solve),
-so the public map is denser but laggier than production's used to be.
+**Staging runs no fleet either.** Its `fleet` service sits behind the same
+unenabled `sim` profile as production's, and its server leaves
+`SYNTHETIC_FLEET_ENABLED` unset, so the ingest path is not mounted and the
+console hides `/sim`. Its `/map` is the real network, like every environment's.
+The bounce command above is therefore not inert on staging any more than on
+prod: naming `fleet` auto-enables the profile, and the server would then also
+need the flag before it accepted a frame. The deploy removes a leftover
+`retina-staging-fleet` container on every run.
+
+**The test droplet is where the simulator lives.** `test-app.retina.fm/sim` is
+fed by its fleet, so bouncing that one blanks the sim map for a minute or so.
+The tuning there is deliberate: 50 nodes @ 1.0s, which saturates the solver
+(45–52 s per solve), so that map is denser but laggier than production.
 
 ⚠️ Do NOT start the fleet as a host process (`systemd-run`, a systemd unit, or a
 bare `python3 -m retina_simulation.orchestrator`) while the Compose `fleet` service

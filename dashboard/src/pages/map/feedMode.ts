@@ -8,15 +8,14 @@
  *
  * The mode used to be a property of the hostname alone. It is now a property
  * of the page: /map takes the hostname's default below, /sim is always
- * `synthetic`, so one console serves both fleets at two addresses.
+ * `synthetic`, so one console serves both fleets at two addresses. No hostname
+ * defaults to `synthetic` any more — /sim is the only way to ask for it.
  */
-import { hidesRealNodes, usesRealOnlyFeed } from "./utils/domains";
+import { usesRealOnlyFeed } from "./utils/domains";
 
 export type FeedMode = "real" | "synthetic" | "all";
 
 /** The mode /map takes on this hostname. */
 export function defaultFeedMode(): FeedMode {
-  if (usesRealOnlyFeed) return "real";
-  if (hidesRealNodes) return "synthetic";
-  return "all";
+  return usesRealOnlyFeed ? "real" : "all";
 }

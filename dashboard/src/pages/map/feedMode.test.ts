@@ -13,18 +13,14 @@ async function loadFor(hostname: string) {
 afterEach(() => vi.unstubAllGlobals());
 
 // Only /map takes this answer. /sim passes "synthetic" explicitly, so none of
-// these hosts can put the real fleet on the simulator's page.
+// these hosts can put the real fleet on the simulator's page — and no host
+// puts the synthetic fleet on /map, staging included.
 describe("the fleet /map defaults to", () => {
-  it("is the real one on production and the test droplet", async () => {
-    for (const host of ["app.retina.fm", "test-app.retina.fm"]) {
+  it("is the real one on every deployed environment", async () => {
+    for (const host of ["app.retina.fm", "staging-app.retina.fm", "test-app.retina.fm"]) {
       const m = await loadFor(host);
       expect(m.defaultFeedMode(), host).toBe("real");
     }
-  });
-
-  it("is the synthetic one on staging, the public demo", async () => {
-    const m = await loadFor("staging-app.retina.fm");
-    expect(m.defaultFeedMode()).toBe("synthetic");
   });
 
   it("is both fleets on the laptop", async () => {
