@@ -130,6 +130,7 @@ gitignored `backend/.env`; unset = the safe default):
 | `ADSB_SEED_MODE` | `off/shadow/active` | `off` | `active` | ADS-B-seeded detection assignment: verified lit tracklets leave dark pairing, re-emitted as `mn-adsb-*` seeded solves |
 | `KNOWN_LANE_MODE` | `off/shadow/binding` | `binding` | `binding` | identity-first known-target claiming: per-frame detections bound to live ADS-B hexes (`state.known_claims`) leave the dark pool before the tracker/association ever see them |
 | `TRACK_SMOOTHER` | `kf/ewma/off` | `kf` | `kf` | display smoothing for multinode tracks (`ewma` is the rollback) |
+| `REPUTATION_PENALTY_SCALE` | float ≥ 0 | `0` | `0` | multiplier on every node-reputation penalty; `0` means no node can be blocked, `1` is the historical behaviour (temporary — see [`runbook.md`](runbook.md)) |
 
 `shadow` computes and counts a stage's verdicts (exposed in
 `/api/test/solver-stats`) without letting them bind — the standard soak step

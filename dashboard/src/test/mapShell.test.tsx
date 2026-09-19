@@ -104,7 +104,7 @@ describe("the header's name for a page", () => {
   });
 
   it("still names a page that owns its subtree by its first segment", () => {
-    const { container } = renderAt("/nodes/ret72b1909e");
+    const { container } = renderAt("/nodes/nde0example0001");
     expect(container.textContent).toContain("Node Detail");
   });
 });

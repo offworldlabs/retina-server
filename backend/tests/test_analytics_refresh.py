@@ -166,8 +166,14 @@ class TestConnectedNodesSnapshot:
 # ── Reputation evaluations ────────────────────────────────────────────────────
 
 
+@pytest.mark.usefixtures("penalties_on")
 class TestReputationEvaluations:
-    """Test NodeReputation evaluation methods for trust, heartbeat, detection rate."""
+    """Test NodeReputation evaluation methods for trust, heartbeat, detection rate.
+
+    Penalties are off by default (REPUTATION_PENALTY_SCALE=0); this class is
+    about what the evaluation paths do when downrating is switched on, so it
+    asks for the scale explicitly.
+    """
 
     def test_low_trust_blocks_node(self):
         from retina_analytics.reputation import NodeReputation

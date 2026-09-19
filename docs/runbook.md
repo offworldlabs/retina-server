@@ -111,6 +111,11 @@ arriving on production means it is working; confirm it positively by checking
 that the real nodes appear in the test droplet's `/api/radar/analytics`, which
 names them by `node_ref` rather than by node id.
 
+A mirrored node that appears there with `total_frames` stuck at 0 while the
+others rise is almost certainly **blocked** in its reputation, not missing from
+the mirror: check `cross_node.blocked_nodes`, and see "Node reputation penalties"
+below for the switch and the unblock procedure.
+
 ---
 
 ## Server basics
@@ -863,6 +868,81 @@ Standard rollout is `shadow` first: shadow counters accumulate in
 stage binding; flip to `active` only after the shadow soak looks sane.
 Instant rollbacks: any mode flag back to `shadow`/`off`, and
 `TRACK_SMOOTHER=ewma` for display smoothing.
+
+### Node reputation penalties (`REPUTATION_PENALTY_SCALE`)
+
+Every node carries a reputation, and a node whose reputation falls below 0.2 is
+**blocked**: `record_detection_frame` drops every frame it sends, `apply_reward`
+is a no-op so it cannot climb back, and the block is written to the state
+snapshot, so a restart restores it. There is no admin unblock route.
+
+`REPUTATION_PENALTY_SCALE` multiplies every penalty that can get a node there —
+trust (0.15/0.05 per 60 s evaluator pass), stale heartbeat (0.1), high detection
+rate (0.05), neighbour inconsistency (0.08), ADS-B cross-validation (0.1).
+Rewards are not scaled.
+
+| Value | Effect |
+|---|---|
+| `0` (default) | no penalty is recorded at all — no node can be blocked by any of these paths |
+| `1` | the historical behaviour |
+
+**The 0 is temporary** (set 2026-09-18). The only trust input today is a single
+claim residual from the identity-first lane, and one out-of-threshold residual
+scores a node 0.0 — 0.15 a pass then crosses the block threshold in six minutes.
+That is how a real mirrored node on the test droplet was blocked permanently off
+one sample. Put it back to `1` once trust is computed from enough evidence to
+act on; the evaluator's min-sample bar is `TRUST_MIN_SAMPLES` in retina-analytics.
+
+To flip it: edit `backend/.env` (or the environment's compose overlay), then
+`docker compose up -d` — env-only, no `--build`. The startup log says which way
+it went (`Node reputation penalty scale: …`).
+
+Read it back from `/api/radar/analytics`: each node's `reputation` block carries
+`penalty_scale` (0 here explains a reputation that never moves), `reputation`,
+`blocked` and `n_penalties`; the fleet-wide list of blocked nodes is
+`cross_node.blocked_nodes`.
+
+#### Unblocking a node
+
+The switch stops *new* penalties. It does not clear a block the snapshot already
+carries — that is deliberate, so the operator sees which nodes were blocked and
+why. Use `backend/scripts/unblock_nodes.py`.
+
+The snapshot keys reputations by **node_id**, while the analytics API names
+nodes by `node_ref`. For a node registered on this environment, resolve the ref
+from the registry while the server is still up:
+
+```bash
+docker compose exec -w /app/backend server \
+    python3 -c "from services import node_refs as n; print(n.id_for_ref('<node_ref>'))"
+```
+
+A **mirrored** real node has no registry row here; its ref lives only in the
+running process (`state.connected_nodes`), which an `exec` cannot see, so that
+prints `None`. Pick its key by hand instead: it is a `ret*` id among the
+`synth-*` ones, and its `trust_scores` entry in the snapshot reproduces the
+ref's `rms_delay_error_us` from `/api/radar/analytics`. Or use `--all-blocked`.
+
+Then stop the server before editing — the save loop rewrites the snapshot every
+60 s, and the block that actually gates frames lives in memory, so the file only
+takes effect on the restart:
+
+```bash
+docker compose stop server
+docker run --rm -v retina-server_backend-data:/data -v $PWD/backend/scripts:/s \
+    python:3.12-slim python /s/unblock_nodes.py --path /data/state_snapshot.json --all-blocked
+docker compose up -d server
+```
+
+`--node <node_id>` (repeatable) instead of `--all-blocked` to pick individual
+nodes, and `--dry-run` first to see what would change. The script is stdlib-only,
+so it also runs straight on the host against the volume's mountpoint
+(`/var/lib/docker/volumes/<project>_backend-data/_data/state_snapshot.json`). It
+verifies the snapshot's checksum before touching it, rewrites it atomically with
+a fresh one, and resets each selected entry to reputation 1.0, unblocked, with an
+empty penalty ledger. Confirm afterwards that `cross_node.blocked_nodes` in
+`/api/radar/analytics` no longer names the node and that its `total_frames`
+starts rising.
 
 ### Empirical coverage / learned FOV health
 
