@@ -95,7 +95,7 @@ def _world_funnels(records: list[dict]) -> dict:
     for rec in records:
         node_ids = rec.get("contributing_node_ids") or []
         labels = {state.node_world(nid) for nid in node_ids}
-        world = next(iter(labels)) if len(labels) == 1 else "mixed" if labels else "unknown"
+        world = rec.get("world") or (next(iter(labels)) if len(labels) == 1 else "mixed" if labels else "unknown")
         lanes = worlds.setdefault(world, {})
         lane = lanes.setdefault(_record_lane(rec), {"attempts": 0, "published": 0, "truth_scored": 0})
         lane["attempts"] += 1

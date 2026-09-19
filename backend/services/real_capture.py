@@ -21,6 +21,7 @@ _enabled = False
 _counters = {"frames": 0, "dropped": 0, "bytes": 0, "errors": 0}
 _FRAME_FIELDS = ("timestamp", "delay", "doppler", "snr", "adsb_hex", "seq", "boot_id", "config_version")
 _TAG_FIELDS = ("hex", "icao", "lat", "lon", "alt_baro", "gs", "track", "last_seen_ms", "seen_pos")
+_TRUTH_FIELDS = ("lat", "lon", "alt_m", "vel_east", "vel_north", "timestamp_ms", "source", "precision_eligible")
 _CONFIG_FIELDS = (
     "rx_lat",
     "rx_lon",
@@ -114,12 +115,20 @@ async def capture_task():
     budget = 512 * 1024 * 1024
     _counters["bytes"] = sum(p.stat().st_size for p in path.glob("*.jsonl"))
     _enabled = _counters["bytes"] < budget
+    last_truth = {}
     try:
         async with task_executor("real-capture") as run:
             while _enabled:
                 await asyncio.sleep(2)
                 try:
-                    await run(_write_batch, path, state._adsb_for_seeding("real"), budget)
+                    snapshot = state._adsb_for_seeding("real")
+                    changed = {
+                        h: {k: rec[k] for k in _TRUTH_FIELDS if k in rec}
+                        for h, rec in snapshot.items()
+                        if rec.get("timestamp_ms") != last_truth.get(h)
+                    }
+                    await run(_write_batch, path, changed, budget)
+                    last_truth = {h: rec.get("timestamp_ms") for h, rec in snapshot.items()}
                 except (OSError, ValueError):
                     _counters["errors"] += 1
                     _enabled = False

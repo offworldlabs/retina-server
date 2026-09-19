@@ -37,6 +37,13 @@ def test_capture_age_is_not_refreshed_on_repoll():
     assert b["precision_eligible"] is False
 
 
+def test_readsb_v2_millisecond_envelope_uses_seconds_for_seen_pos():
+    payload = envelope()
+    payload["now"] = 1_789_815_972_001
+    rec = readsb_references(payload, 1_789_815_973)["abc123"]
+    assert rec["timestamp_ms"] == 1_789_815_970_001
+
+
 @pytest.mark.parametrize(
     "change",
     [
@@ -136,3 +143,25 @@ async def test_service_client_reads_v2_and_preserves_source(monkeypatch):
     ) as client:
         result = await fetch_region(client, "https://example.invalid", regions_for_nodes([(34.8, -82.3)])[0])
     assert result["abc123"]["source"] == "adsb_service"
+
+
+def test_real_solve_never_scores_against_a_synthetic_trail():
+    from services.tasks.solve_history import _gt_for_record
+
+    state.ground_truth_trails["abc123"] = [(34.0, -82.0, 7000, 1000)]
+    assert _gt_for_record(None, 34, -82, 1000, "real")["gt_error_km"] is None
+    assert _gt_for_record("abc123", 34, -82, 1000, "real")["gt_error_km"] is None
+
+
+def test_world_funnel_retains_failed_attempts_without_result_geometry():
+    from services.solver_report import _world_funnels
+
+    result = _world_funnels(
+        [
+            {"world": "real", "n_nodes": 2, "outcome": "no_converge"},
+            {"world": "sim", "outcome": "published", "gt_error_km": 0.1},
+        ]
+    )
+    assert result["real"]["dark"]["attempts"] == 1
+    assert result["real"]["dark"]["publish_rate"] == 0
+    assert result["sim"]["dark"]["publish_rate"] == 1

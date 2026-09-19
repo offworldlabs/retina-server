@@ -136,7 +136,7 @@ def _nearest_gt(lat: float, lon: float, ts_s: float) -> dict:
     return stamp
 
 
-def _gt_for_record(adsb_hex, lat: float, lon: float, ts_s: float) -> dict:
+def _gt_for_record(adsb_hex, lat: float, lon: float, ts_s: float, world: str | None = None) -> dict:
     """Identity-aware GT stamp for one history record.
 
     A record carrying adsb_hex is scored against that identity ONLY — its
@@ -148,10 +148,10 @@ def _gt_for_record(adsb_hex, lat: float, lon: float, ts_s: float) -> dict:
     """
     hexn = normalize_hex_key(adsb_hex)
     if not hexn:
-        return _nearest_gt(lat, lon, ts_s)
+        return dict(_GT_NO_MATCH) if world in ("real", "mixed") else _nearest_gt(lat, lon, ts_s)
     # (a) own trail, same freshness rule as the proximity scan
     # tuple() snapshots the deque in one C call — see _nearest_gt above.
-    trail = tuple(state.ground_truth_trails.get(hexn) or ())
+    trail = tuple(state.ground_truth_trails.get(hexn) or ()) if world != "real" else ()
     if trail:
         pt = min(trail, key=lambda p: abs(p[3] - ts_s))
         if abs(pt[3] - ts_s) <= _MLAT_HISTORY_GT_MAX_DT_S:
@@ -159,7 +159,9 @@ def _gt_for_record(adsb_hex, lat: float, lon: float, ts_s: float) -> dict:
     # (b) trail missing or stale — fall back to the live ADS-B fix,
     # dead-reckoned to solve time.  Deliberate: a stale synthetic trail with
     # a live sim ADS-B fix should still score, source "adsb".
-    fix = state.adsb_aircraft.get(hexn) or state._adsb_for_seeding("real").get(hexn)
+    fix = state._adsb_for_seeding("real").get(hexn) if world == "real" else state.adsb_aircraft.get(hexn)
+    if fix is None and world != "sim":
+        fix = state._adsb_for_seeding("real").get(hexn)
     if fix:
         f_lat, f_lon = fix.get("lat"), fix.get("lon")
         ts_fix_s = (fix.get("last_seen_ms") or 0) / 1000.0
@@ -541,9 +543,12 @@ def _record_solve_history(
             # the lane's solve went somewhere else, and that is the entry it
             # is now refreshing.
             dark_follow.note_follow_publish(solve_key or _follow_key, rec["measurement_ts_ms"] / 1000.0)
+    source_nodes = rec["contributing_node_ids"] or [m["node_id"] for m in s.get("measurements", [])]
+    worlds = {state.node_world(nid) for nid in source_nodes}
+    rec["world"] = next(iter(worlds)) if len(worlds) == 1 else "mixed" if worlds else "unknown"
     if raw_lat is not None and raw_lon is not None:
         meas_ts_s = (rec["measurement_ts_ms"] or now_ms) / 1000.0
-        rec.update(_gt_for_record(rec["adsb_hex"], float(raw_lat), float(raw_lon), meas_ts_s))
+        rec.update(_gt_for_record(rec["adsb_hex"], float(raw_lat), float(raw_lon), meas_ts_s, rec["world"]))
     else:
         rec.update(_GT_NO_MATCH)
     # Direction error: how far off the solved velocity vector points from

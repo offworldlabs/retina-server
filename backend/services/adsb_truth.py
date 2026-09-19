@@ -57,6 +57,10 @@ def readsb_references(payload: dict, received_s: float, *, source: str = "adsb_s
     that fact; receipt-derived timestamps do not qualify as precision truth.
     """
     envelope_s = payload.get("now")
+    # readsb's v2 re-api uses milliseconds; aircraft.json uses seconds.
+    # Accept both envelopes without assigning a new age on receipt.
+    if finite(envelope_s) and envelope_s > 100_000_000_000:
+        envelope_s /= 1000
     if not finite(envelope_s) or envelope_s > received_s + 2 or envelope_s < received_s - 60:
         return {}
     rows = payload.get("ac", payload.get("aircraft", []))
