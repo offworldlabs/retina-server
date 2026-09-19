@@ -94,22 +94,34 @@ Note when reading alerts from any environment: production currently reports
 evidence of a problem with the fleet size or with a branch under test.
 
 
-### Real node detections on the test droplet
+### Real node detections on the test droplet and staging
 
-Production forwards each accepted v1 detection frame to the test droplet's
-`/api/radar/detections/bulk`, so real nodes appear there beside the synthetic
-fleet. It is one-way: nodes talk only to production, and nothing the test
-droplet returns reaches a board.
+Production forwards each accepted v1 detection frame to the
+`/api/radar/detections/bulk` of every environment listed in its
+`DETECTION_MIRROR_URL`, currently the test droplet and staging, so real nodes
+appear there beside the synthetic fleet. It is one-way: nodes talk only to
+production, and nothing a receiver returns reaches a board.
 
-Turn it off by unsetting `DETECTION_MIRROR_URL` on production and redeploying.
+`DETECTION_MIRROR_URL` and `DETECTION_MIRROR_KEY` are comma-separated lists in
+the same order, one key per URL, and each receiver holds its key as its own
+`RADAR_API_KEY`. A receiver that has no `RADAR_API_KEY` set takes an empty
+key entry (`k1,`); whether that is acceptable is a question about that
+receiver, not about the mirror. Add a receiver by appending to both lists on
+production and redeploying; turn the mirror off by unsetting
+`DETECTION_MIRROR_URL`. Lists of different lengths, an empty URL entry, or a
+URL that is not https, leave the mirror unarmed with an error line in
+production's log rather than arming the receivers that were fine.
 
-The mirror drops rather than retrying, so an unreachable test droplet costs
-mirrored frames and nothing else. It logs `detection mirror failing` on the
-transition and once a minute after that, and raises a `detection_mirror` admin
-event on each transition. Silence in the admin event log with frames still
-arriving on production means it is working; confirm it positively by checking
-that the real nodes appear in the test droplet's `/api/radar/analytics`, which
-names them by `node_ref` rather than by node id.
+One batch is built per second and posted to every receiver at once, so a slow or
+unreachable receiver costs its own mirrored frames and nothing else; the mirror
+drops rather than retrying. Each receiver has its own counters and health. The
+mirror logs `detection mirror to <host> failing` on that receiver's transition
+and once a minute after that, and raises a `detection_mirror` admin event naming
+the host on each transition, so a failing staging beside a healthy test droplet
+is distinguishable. Silence in the admin event log with frames still arriving on
+production means every receiver is working; confirm it positively, one receiver
+at a time, by checking that the real nodes appear in that receiver's
+`/api/radar/analytics`, which names them by `node_ref` rather than by node id.
 
 A mirrored node that appears there with `total_frames` stuck at 0 while the
 others rise is almost certainly **blocked** in its reputation, not missing from

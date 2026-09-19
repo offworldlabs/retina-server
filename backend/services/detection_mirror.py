@@ -1,4 +1,4 @@
-"""Forward accepted v1 detection frames to another environment's bulk ingest.
+"""Forward accepted v1 detection frames to other environments' bulk ingest.
 
 Inert unless DETECTION_MIRROR_URL is set, which is why every environment but
 production behaves exactly as it did before this existed.
@@ -8,13 +8,19 @@ queued: that dict is stamped with `_node_id` and mutated further by the frame
 workers, so sharing it would let the mirror send something a worker had since
 altered. Conversion happens in the drain task instead, off the path that runs
 at frame rate.
+
+One queue feeds every target: the batch is built once per flush and the same
+batch is posted to each target concurrently, so a slow or dead receiver costs
+its own frames and never delays another's.
 """
 
 import asyncio
 import logging
 import os
 import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -38,44 +44,108 @@ logger = logging.getLogger(__name__)
 QUEUE_MAX = DETECTION_MIRROR_QUEUE_MAX
 LOG_INTERVAL_S = DETECTION_MIRROR_LOG_INTERVAL_S
 
-_url = ""
-_key = ""
+
+@dataclass
+class Target:
+    """One receiving environment, with the accounting and health that are its own.
+
+    "sent" is frames the receiver's response admitted it queued, "rejected" is
+    frames a 200 response admitted it did not, and "failed" is frames that
+    never got a usable answer. Per target rather than global because the same
+    batch goes to every target and each can lose it independently: for each
+    target, sent + rejected + failed + the global unregistered reconciles
+    against the global accepted.
+    """
+
+    label: str
+    url: str
+    key: str
+    sent: int = 0
+    rejected: int = 0
+    failed: int = 0
+    healthy: bool = True
+    logged_at: float = 0.0
+
+    def stats(self) -> dict:
+        return {"sent": self.sent, "rejected": self.rejected, "failed": self.failed, "healthy": self.healthy}
+
+
+_targets: list[Target] = []
 _queue: "asyncio.Queue[tuple[str, DetectionFrame]] | None" = None
 # "accepted" is cumulative, not a queue depth: stats() adds the live depth
-# alongside it so an operator cannot mistake one for the other. "rejected" is
-# frames a 200 response admitted the receiver did not queue. "unregistered" is
-# frames whose node left state.connected_nodes between offer() and the drain
+# alongside it so an operator cannot mistake one for the other. "unregistered"
+# is frames whose node left state.connected_nodes between offer() and the drain
 # that would have sent them, so build_batch had nothing to carry them in —
-# distinct from "dropped", which means the local queue was full.
-_counters = {"accepted": 0, "dropped": 0, "sent": 0, "rejected": 0, "failed": 0, "unregistered": 0}
+# distinct from "dropped", which means the local queue was full. All three are
+# properties of the one queue, which is why they are not on Target.
+_counters = {"accepted": 0, "dropped": 0, "unregistered": 0}
+
+
+def _parse_targets(env) -> list[Target]:
+    """The configured targets, or an empty list when there are none or the
+    configuration is unusable.
+
+    DETECTION_MIRROR_URL and DETECTION_MIRROR_KEY are parallel comma-separated
+    lists, whitespace trimmed, so the single-value form is the one-entry case
+    of the same rule. The lists are positional: a key entry may be left empty
+    (`k1,` sends the second receiver no key, which is that receiver's business
+    to accept or refuse), whereas an empty URL entry is an error, since it
+    would otherwise silently shift every key after it onto the wrong receiver.
+    A mismatch in length, a non-https URL or a duplicate host refuses the whole
+    configuration rather than arming the targets that were fine: half a mirror
+    with an error line nobody reads is harder to notice than no mirror at all.
+    Only https, because DETECTION_MIRROR_KEY would otherwise cross the wire in
+    clear on every batch.
+
+    The one allowance is a single URL with DETECTION_MIRROR_KEY unset, which
+    armed before the lists existed and still does. With more than one URL the
+    variable must be present so that a keyless receiver is a stated choice
+    rather than a forgotten line.
+    """
+    raw_urls = (env.get("DETECTION_MIRROR_URL") or "").strip()
+    raw_keys = (env.get("DETECTION_MIRROR_KEY") or "").strip()
+    if not raw_urls:
+        return []
+    urls = [u.strip().rstrip("/") for u in raw_urls.split(",")]
+    keys = [k.strip() for k in raw_keys.split(",")] if raw_keys else []
+    if not keys and len(urls) == 1:
+        keys = [""]
+    if len(keys) != len(urls):
+        logger.error(
+            "DETECTION_MIRROR_URL lists %d targets but DETECTION_MIRROR_KEY lists %d keys, detection mirror stays unarmed",
+            len(urls),
+            len(keys),
+        )
+        return []
+    targets: list[Target] = []
+    for url, key in zip(urls, keys, strict=True):
+        label = urlsplit(url).netloc
+        if not url.startswith("https://") or not label:
+            logger.error("DETECTION_MIRROR_URL entries must be https:// with a host, detection mirror stays unarmed")
+            return []
+        if any(t.label == label for t in targets):
+            logger.error("DETECTION_MIRROR_URL names %s twice, detection mirror stays unarmed", label)
+            return []
+        targets.append(Target(label=label, url=url, key=key))
+    return targets
 
 
 def configure_from_env(env=None) -> bool:
-    """Arm the mirror if a target is configured, and report whether it is armed.
+    """Arm the mirror if at least one target is configured, and report whether it is armed.
 
-    Called once at startup, and by tests. Replaces the queue, clears the
-    counters and resets the health state, so an unarmed call is also the reset.
-
-    Refuses a non-https URL rather than arming against it: DETECTION_MIRROR_KEY
-    would otherwise cross the wire in clear on every batch.
+    Called once at startup, and by tests. Replaces the queue and the targets
+    and clears the counters, so an unarmed call is also the reset.
     """
-    global _url, _key, _queue, _healthy, _logged_at, _dropped_logged_at, _dropped_at_last_log
+    global _targets, _queue, _dropped_logged_at, _dropped_at_last_log
     env = os.environ if env is None else env
-    url = (env.get("DETECTION_MIRROR_URL") or "").rstrip("/")
-    if url and not url.startswith("https://"):
-        logger.error("DETECTION_MIRROR_URL must be https://, detection mirror stays unarmed")
-        url = ""
-    _url = url
-    _key = env.get("DETECTION_MIRROR_KEY", "")
-    _queue = asyncio.Queue(maxsize=QUEUE_MAX) if _url else None
+    _targets = _parse_targets(env)
+    _queue = asyncio.Queue(maxsize=QUEUE_MAX) if _targets else None
     for name in _counters:
         _counters[name] = 0
-    _healthy = True
-    _logged_at = 0.0
     _dropped_logged_at = -LOG_INTERVAL_S  # not 0.0, for the same reason as the module-level default
     _dropped_at_last_log = 0
     if _queue is not None:
-        logger.info("detection mirror armed, forwarding accepted v1 frames onward")
+        logger.info("detection mirror armed, forwarding accepted v1 frames to %s", ", ".join(t.label for t in _targets))
     return _queue is not None
 
 
@@ -110,13 +180,13 @@ def drain() -> list:
 
 
 def stats() -> dict:
-    """Cumulative counters plus the queue's live depth.
+    """Queue counters plus the queue's live depth, and each target's own accounting by label.
 
     `_counters` alone reads as a snapshot of the backlog; `queue_depth` is the
     one number here that actually is one.
     """
     depth = _queue.qsize() if _queue is not None else 0
-    return {**_counters, "queue_depth": depth}
+    return {**_counters, "queue_depth": depth, "targets": {t.label: t.stats() for t in _targets}}
 
 
 def build_batch(items) -> list:
@@ -151,8 +221,8 @@ def build_batch(items) -> list:
     return entries
 
 
-async def send_batch(client, entries) -> bool:
-    """POST one batch. Reports success; never raises, and never retries.
+async def send_to_target(client, target: Target, entries) -> bool:
+    """POST one batch to one target. Reports success; never raises, and never retries.
 
     Success is judged on the response body's `frames_queued`, not on the status
     code alone: the receiving endpoint answers 200 with a shortfall for a frame
@@ -165,25 +235,40 @@ async def send_batch(client, entries) -> bool:
     frame_count = sum(len(entry["frames"]) for entry in entries)
     try:
         response = await client.post(
-            f"{_url}/api/radar/detections/bulk",
+            f"{target.url}/api/radar/detections/bulk",
             json={"nodes": entries},
-            headers={"X-API-Key": _key},
+            headers={"X-API-Key": target.key},
         )
         response.raise_for_status()
         landed = int(response.json()["frames_queued"])
     except Exception as exc:
-        _counters["failed"] += frame_count
-        _note(False, exc)
+        target.failed += frame_count
+        _note(target, False, exc)
         return False
     shortfall = frame_count - landed
     if shortfall > 0:
-        _counters["sent"] += landed
-        _counters["rejected"] += shortfall
-        _note(False, RuntimeError(f"receiver only queued {landed}/{frame_count} frames"))
+        target.sent += landed
+        target.rejected += shortfall
+        _note(target, False, RuntimeError(f"receiver only queued {landed}/{frame_count} frames"))
         return False
-    _counters["sent"] += frame_count
-    _note(True, None)
+    target.sent += frame_count
+    _note(target, True, None)
     return True
+
+
+async def send_batch(client, entries) -> bool:
+    """POST one batch to every target at once. True only when every target took all of it.
+
+    Concurrent rather than in turn so a target that hangs until the client
+    timeout cannot hold the others' frames back for that long. Each send does
+    its own accounting and cannot raise; `return_exceptions` is the guard
+    against that guarantee ever slipping, so one target's fault stays one
+    target's fault rather than surfacing through the gather as everyone's.
+    """
+    results = await asyncio.gather(
+        *(send_to_target(client, target, entries) for target in _targets), return_exceptions=True
+    )
+    return all(result is True for result in results)
 
 
 async def mirror_task() -> None:
@@ -191,11 +276,16 @@ async def mirror_task() -> None:
 
     The drain-and-convert step is guarded the same as the network call: left
     unguarded, a raise here would exit the loop for good, and the queue would
-    fill and drop every frame afterward with no sign anything had stopped.
+    fill and drop every frame afterward with no sign anything had stopped. A
+    fault there happens before any target is tried, so every target lost the
+    frames and every target is charged for them.
     """
     if _queue is None:
         return
-    limits = httpx.Limits(max_connections=2, max_keepalive_connections=2)
+    # Two per target: the batches are concurrent, so a pool sized for one
+    # target would serialise the rest behind whichever is slowest.
+    pool = 2 * len(_targets)
+    limits = httpx.Limits(max_connections=pool, max_keepalive_connections=pool)
     async with httpx.AsyncClient(timeout=DETECTION_MIRROR_TIMEOUT_S, limits=limits) as client:
         while True:
             await asyncio.sleep(DETECTION_MIRROR_FLUSH_INTERVAL_S)
@@ -211,46 +301,49 @@ async def mirror_task() -> None:
                     # see its docstring), whether it is the whole drain or
                     # shares the drain with a survivor. Crediting the
                     # shortfall here, rather than only when entries is empty,
-                    # is what keeps sent + rejected + failed + unregistered
-                    # reconciling against accepted.
+                    # is what keeps each target's sent + rejected + failed +
+                    # unregistered reconciling against accepted.
                     if len(items) > built:
                         _counters["unregistered"] += len(items) - built
                     if entries:
                         await send_batch(client, entries)
             except Exception as exc:
-                _counters["failed"] += len(items)
-                _note(False, exc)
+                for target in _targets:
+                    target.failed += len(items)
+                    _note(target, False, exc)
 
 
-_healthy = True
-_logged_at = 0.0
-# Separate throttle from the pair above: the local queue can saturate while the
-# receiver stays perfectly healthy, so a drop is not a healthy/failing transition.
+# Throttle for the dropped-frame line, separate from each target's health: the
+# local queue can saturate while every receiver stays perfectly healthy, so a
+# drop is not a healthy/failing transition.
 # -LOG_INTERVAL_S, not 0.0: time.monotonic() counts from boot, so 0.0 would
 # suppress the first drop line on a host that has been up less than LOG_INTERVAL_S.
 _dropped_logged_at = -LOG_INTERVAL_S
 _dropped_at_last_log = 0
 
 
-def _note(ok: bool, exc: Exception | None) -> None:
-    """Log a transition immediately, and a continuing fault once a minute."""
-    global _healthy, _logged_at
+def _note(target: Target, ok: bool, exc: Exception | None) -> None:
+    """Log a target's transition immediately, and its continuing fault once a minute.
+
+    The target is named in the line and the event so a failing receiver is
+    distinguishable from a healthy one beside it.
+    """
     if ok:
-        if not _healthy:
-            _healthy = True
-            logger.warning("detection mirror recovered (%s)", stats())
-            _log_event("detection_mirror", "Detection mirror recovered", "info", stats())
+        if not target.healthy:
+            target.healthy = True
+            logger.warning("detection mirror to %s recovered (%s)", target.label, stats())
+            _log_event("detection_mirror", f"Detection mirror to {target.label} recovered", "info", stats())
         return
     now = time.monotonic()
-    if _healthy:
-        _healthy = False
-        _logged_at = now
-        logger.warning("detection mirror failing: %s (%s)", exc, stats())
-        _log_event("detection_mirror", f"Detection mirror failing: {exc}", "warning", stats())
+    if target.healthy:
+        target.healthy = False
+        target.logged_at = now
+        logger.warning("detection mirror to %s failing: %s (%s)", target.label, exc, stats())
+        _log_event("detection_mirror", f"Detection mirror to {target.label} failing: {exc}", "warning", stats())
         return
-    if now - _logged_at >= LOG_INTERVAL_S:
-        _logged_at = now
-        logger.warning("detection mirror still failing: %s (%s)", exc, stats())
+    if now - target.logged_at >= LOG_INTERVAL_S:
+        target.logged_at = now
+        logger.warning("detection mirror to %s still failing: %s (%s)", target.label, exc, stats())
 
 
 def _note_dropped() -> None:

@@ -99,3 +99,40 @@ Real receiver and transmitter geometry now lands on a droplet running
 The test droplet keeps its 25 node synthetic fleet running beside the real feed. The synthetic nodes
 sit near Greenville, roughly 230 km from the real nodes, with a 50 km maximum range, so the
 associator's overlap grid should not pair the two groups.
+
+## 2026-09-16: fan-out to more than one receiver
+
+Staging wanted the same feed. `DETECTION_MIRROR_URL` and `DETECTION_MIRROR_KEY` are now parallel
+comma-separated lists, and production posts each batch to every target at once with
+`asyncio.gather`, so a receiver that hangs until the two second timeout delays nobody else. The
+single-value form is the one-entry case of the same rule, so the existing production configuration
+did not have to move for the code to.
+
+There is still one queue and one batch per flush. The batch depends on nothing about the receiver,
+so building it once and posting it N times costs one `build_batch` per second however many
+receivers there are, and leaves `offer()` exactly as it was: one `put_nowait`, no per-target work on
+the ingest path.
+
+Accounting and health are per receiver, keyed by host, because the same batch can land on one and
+fail on another. `sent`, `rejected` and `failed` live on the target; `accepted`, `dropped` and
+`unregistered` describe the one queue and stay global, so for each target sent + rejected + failed +
+unregistered reconciles against accepted. Log lines and `detection_mirror` admin events name the
+host. A fault before any send, drain or build raising, is charged to every target, since every
+target lost the frames.
+
+The configuration refuses to arm at all on a length mismatch, a non-https URL or a duplicate host,
+rather than arming the targets that were fine: half a mirror behind an error line nobody reads is
+harder to notice than no mirror.
+
+### Why fan out from production rather than chain test to staging
+
+The test droplet could have re-forwarded what it received, leaving production's configuration
+alone. That would have needed a second `offer()` hook, on the bulk ingest path this time, and it
+would compound drops: staging would see the product of two drop rates, and a test droplet outage
+would take staging's feed with it, so a gap on staging could never be read as staging's own fault.
+Fanning out from production keeps every receiver a subset of what production filed and independent
+of the others.
+
+Nothing on the receiving side changed. Each receiver sets its own `RADAR_API_KEY`, and production
+carries that value in the matching position of `DETECTION_MIRROR_KEY`; staging needed only that key,
+which it should have had regardless.
