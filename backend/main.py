@@ -36,6 +36,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from config.constants import REPUTATION_PENALTY_SCALE
 from core import state
 from core.env_parsing import parse_comma_list
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
@@ -184,6 +185,15 @@ async def lifespan(app: FastAPI):
     from services.node_pipeline import prime_pipeline_at_startup
 
     await prime_pipeline_at_startup()
+
+    # Set at import in core/state.py (it must precede the restore below); said
+    # here, after logging is configured, so a deploy log says plainly whether
+    # node reputation penalties are on.
+    logging.info(
+        "Node reputation penalty scale: %.3g (%s)",
+        REPUTATION_PENALTY_SCALE,
+        "penalties DISABLED — no node can be blocked" if REPUTATION_PENALTY_SCALE == 0 else "penalties active",
+    )
 
     # Restore persisted state before accepting connections
     restored = restore_snapshot()

@@ -157,14 +157,10 @@ node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR, fov_mode
 # carries).  It is a process-wide ClassVar, so it has to be set before
 # anything reads it: at import here it lands before restore_snapshot()
 # rebuilds the NodeReputation objects and before the reputation evaluator's
-# first pass, which are the only two things that could act on it.  Logged at
-# INFO so a deploy log says plainly whether penalties are on.
+# first pass, which are the only two things that could act on it.  Logged
+# from main.py's startup, not here: this runs before logging.basicConfig,
+# where an INFO line is dropped.
 set_penalty_scale(REPUTATION_PENALTY_SCALE)
-logging.info(
-    "Node reputation penalty scale: %.3g (%s)",
-    REPUTATION_PENALTY_SCALE,
-    "penalties DISABLED — no node can be blocked" if REPUTATION_PENALTY_SCALE == 0 else "penalties active",
-)
 
 
 def _coverage_limit_for(node_id: str):
