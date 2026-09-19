@@ -53,6 +53,19 @@ def _lol_row(gs_knots):
     return {"hex": "abc123", "lat": 48.0, "lon": 16.0, "alt_baro": 32808, "gs": gs_knots, "track": 90.0}
 
 
+def test_opensky_mlat_is_not_an_adsb_validation_reference():
+    row = _opensky_row(_CRUISE_MS) + [0, None, 10000, None, False, 2]
+    assert _opensky_entry(row, 1_700_000_000)["reference_eligible"] is False
+    row[16] = 0
+    assert _opensky_entry(row, 1_700_000_000)["reference_eligible"] is True
+
+
+def test_missing_kinematics_cannot_become_a_zero_altitude_reference():
+    row = _opensky_row(_CRUISE_MS)
+    row[7] = None
+    assert _opensky_entry(row, 1_700_000_000)["reference_eligible"] is False
+
+
 def test_adsb_lol_ground_speed_is_converted_from_knots(monkeypatch):
     _stub_adsb_lol(monkeypatch, [_lol_row(_CRUISE_KNOTS)])
 

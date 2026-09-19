@@ -93,6 +93,7 @@ from config.constants import (
 )
 from core import state
 from services import dark_follow, track_filter
+from services.adsb_truth import node_reference, reference_position_allowed
 from services.calibration import record_claim_calibration
 from services.id_utils import normalize_hex_key
 from services.node_config import position_status
@@ -714,11 +715,13 @@ def _fix_record(st: dict) -> dict:
         "gs": st.get("gs"),
         "track": st.get("track"),
         "fix_ts_ms": st.get("timestamp_ms", 0),
+        "source": st.get("source", "node"),
+        "precision_eligible": st.get("precision_eligible", False),
     }
 
 
 def _fresh_fix_prediction(
-    hexn: str, geo, frame_ts_s: float, node_world: str
+    hexn: str, geo, frame_ts_s: float, node_world: str, reference_states: dict | None = None
 ) -> tuple[float, float, float, dict, float, float] | None:
     """Path 2's own prediction for one hex, the fix record it would carry and
     the dead-reckoned position that prediction was built from, or None when no
@@ -731,7 +734,9 @@ def _fresh_fix_prediction(
     re-deriving it at the recording site would be a second offset_latlon_m
     that could silently disagree with the one the prediction was built from.
     """
-    st = state._adsb_for_seeding().get(hexn)
+    if reference_states is None:
+        reference_states = state._adsb_for_seeding(node_world)
+    st = reference_states.get(hexn)
     if st is None:
         return None
     cand_world = st.get("world")
@@ -790,7 +795,7 @@ def _follow_fix_record(hexn: str, lat: float, lon: float, alt_m: float, ve: floa
     }
 
 
-def _follow_states(frame_ts_s: float, claimed_hexes: set[str]) -> dict[str, dict]:
+def _follow_states(frame_ts_s: float, claimed_hexes: set[str], reference_states: dict | None = None) -> dict[str, dict]:
     """Synthetic path-2 candidates built from the known lane's own published
     entries, for hexes whose transponder has gone stale or silent.
 
@@ -807,7 +812,7 @@ def _follow_states(frame_ts_s: float, claimed_hexes: set[str]) -> dict[str, dict
     """
     if KNOWN_FOLLOW_MAX_AGE_S <= 0:
         return {}
-    cache = state._adsb_for_seeding()
+    cache = state._adsb_for_seeding() if reference_states is None else reference_states
     out: dict[str, dict] = {}
     for key, rec in list(state.multinode_tracks.items()):
         if not key.startswith("mn-adsb-") or not isinstance(rec, dict):
@@ -846,7 +851,11 @@ def _follow_states(frame_ts_s: float, claimed_hexes: set[str]) -> dict[str, dict
         # candidate with NO world would pass the world gate on every node,
         # and real traffic flies over the simulated fleet's footprint —
         # exactly the decoy case that gate exists for.
-        world = cached.get("world") if isinstance(cached, dict) else None
+        source_worlds = {state.node_world(nid) for nid in (rec.get("contributing_node_ids") or [])}
+        if len(source_worlds) > 1:
+            continue
+        fallback_record = cached or state.adsb_aircraft.get(hexn, {})
+        world = next(iter(source_worlds)) if source_worlds else fallback_record.get("world")
         if world is None:
             for holds in list(state.known_track_holds.values()):
                 e = holds.get(hexn)
@@ -880,6 +889,7 @@ def _claim_holds(
     dopplers: list,
     free: list[int],
     claimed_hexes: set[str],
+    reference_states: dict | None = None,
 ) -> list[tuple[int, str, dict, float, float, dict]]:
     """Path H: claim leftover detections against this node's own held tracks.
 
@@ -949,7 +959,7 @@ def _claim_holds(
             continue
         i = free[r]
         hexn, e, pred_d, pred_f, _d_gate, _f_gate, dt = cands[c]
-        ref = _fresh_fix_prediction(hexn, geo, frame_ts_s, node_world)
+        ref = _fresh_fix_prediction(hexn, geo, frame_ts_s, node_world, reference_states)
         extra = {"hold": True, "hold_gap_s": round(dt, 3)}
         if ref is not None:
             ref_d, ref_f, scale, fresh_fix, ref_lat, ref_lon = ref
@@ -997,11 +1007,13 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
     the returned indices actually leave the dark pool (binding only).
 
     Two claim paths, in precedence order:
-      1. Node-supplied frame["adsb"] entries become claims directly.  The
-         node's own correlation is authoritative (existing invariant — the
-         backend never overwrites a node-provided list), so it is not
-         re-gated; the prediction is still computed so the record carries
-         the residual the trust path needs.
+      1. Node-supplied frame["adsb"] identities are authoritative; the backend
+         never overwrites the node's list or applies a residual association
+         gate. Real tags still need a complete, fresh position/velocity to
+         predict a residual. An incomplete tag can use an independent cached
+         reference; without either, it remains unclaimed rather than gaining
+         invented zero altitude or velocity. Simulation retains its legacy
+         coercion. Explicit MLAT/TIS-B positions are not ADS-B references.
       H. This node's own HELD tracks (state.known_track_holds): hexes this
          node has claimed before, predicted forward from their last measured
          (delay, Doppler) rather than from a transponder fix.  Ahead of path 2
@@ -1038,6 +1050,10 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
 
     ts_ms = int(frame.get("timestamp", 0))
     frame_ts_s = ts_ms / 1000.0
+    node_world = state.node_world(node_id)
+    # Normalize the source caches once per frame, not once per detection or
+    # held track. Real frames can carry dozens of indexed ADS-B identities.
+    reference_states = state._adsb_for_seeding(node_world)
 
     # (det_idx, hexn, adsb_fix, pred_delay_us, pred_doppler_hz, extra)
     claims: list[tuple[int, str, dict, float, float, dict]] = []
@@ -1054,6 +1070,20 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
                 continue
             hexn = normalize_hex_key(tag.get("hex") or tag.get("icao"))
             if not hexn or hexn in claimed_hexes:
+                continue
+            if node_world == "real":
+                reference = node_reference(tag, hexn, ts_ms, time.time() * 1000)
+                if reference is None or not reference["reference_eligible"]:
+                    reference = reference_states.get(hexn) if reference_position_allowed(tag) else None
+                if reference is None:
+                    continue
+                prediction = _fresh_fix_prediction(hexn, geo, frame_ts_s, node_world, {hexn: reference})
+                if prediction is None:
+                    continue
+                pred_d, pred_f, _, fix, dr_lat, dr_lon = prediction
+                claims.append((i, hexn, fix, pred_d, pred_f, {_CAL_DR_KEY: (dr_lat, dr_lon)}))
+                claimed_idx.add(i)
+                claimed_hexes.add(hexn)
                 continue
             lat, lon = tag.get("lat"), tag.get("lon")
             if lat is None or lon is None or not (math.isfinite(lat) and math.isfinite(lon)):
@@ -1078,6 +1108,23 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
             claimed_idx.add(i)
             claimed_hexes.add(hexn)
 
+    # v1 transports identity separately from position. Resolve it against a
+    # fresh reference of the same world, retaining its actual capture time.
+    # A label alone is never a position and cannot calibrate a receiver.
+    for i, raw_hex in enumerate(frame.get("adsb_hex") or []):
+        if i >= len(delays) or i in claimed_idx:
+            continue
+        hexn = normalize_hex_key(raw_hex)
+        if not hexn or hexn in claimed_hexes:
+            continue
+        prediction = _fresh_fix_prediction(hexn, geo, frame_ts_s, node_world, reference_states)
+        if prediction is None:
+            continue
+        pred_d, pred_f, _, fix, dr_lat, dr_lon = prediction
+        claims.append((i, hexn, fix, pred_d, pred_f, {_CAL_DR_KEY: (dr_lat, dr_lon), "node_identity": True}))
+        claimed_idx.add(i)
+        claimed_hexes.add(hexn)
+
     # ── Path H: this node's own held tracks ──────────────────────────────────
     # Between path 1 and path 2 on purpose — see _claim_holds.
     for hold_claim in _claim_holds(
@@ -1088,6 +1135,7 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
         dopplers,
         [i for i in range(len(delays)) if i not in claimed_idx],
         claimed_hexes,
+        reference_states,
     ):
         claims.append(hold_claim)
         claimed_idx.add(hold_claim[0])
@@ -1124,8 +1172,8 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
     # a second loop so each hex appears exactly once in the assignment;
     # the snapshot _adsb_for_seeding returns is freshly built per call, so
     # writing into it cannot touch the cache.
-    cand_states = state._adsb_for_seeding()
-    cand_states.update(_follow_states(frame_ts_s, claimed_hexes))
+    cand_states = dict(reference_states)
+    cand_states.update(_follow_states(frame_ts_s, claimed_hexes, reference_states))
     for hexn, st in cand_states.items():
         # No claimed_hexes skip here — it moved to the column build below,
         # so an already-claimed hex stays visible to the exclusivity test
@@ -1381,7 +1429,7 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
 
 # Frame keys aligned by detection index.  snr and adsb may legitimately be
 # absent; anything absent or non-list is passed through untouched.
-_INDEXED_FRAME_KEYS = ("delay", "doppler", "snr", "adsb")
+_INDEXED_FRAME_KEYS = ("delay", "doppler", "snr", "adsb", "adsb_hex")
 
 
 def strip_claimed_detections(frame: dict, claimed_idx: set[int]) -> dict:

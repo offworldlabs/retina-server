@@ -557,6 +557,14 @@ class TestPublishFailureContainment:
 
 
 class TestClaimSelection:
+    def test_shared_identity_never_combines_real_and_simulated_echoes(self, monkeypatch):
+        monkeypatch.setattr(state, "node_world", lambda nid: "sim" if nid == "node_a" else "real")
+        _install(_mk_claims(["node_a", "node_b"]))
+        before = state.known_lane_mixed_world_skipped
+        assert _run(_stub_solve()) == 0
+        assert state.known_lane_mixed_world_skipped == before + 1
+        assert not state.multinode_tracks
+
     def test_stale_claims_produce_no_attempt(self):
         stale_ms = int(time.time() * 1000) - int((known_lane._CLAIM_MAX_AGE_S + 5.0) * 1000)
         _install(_mk_claims(["node_a", "node_b"], ts_ms=stale_ms))

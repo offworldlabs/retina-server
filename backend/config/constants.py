@@ -420,8 +420,22 @@ ARCHIVE_LIFECYCLE_INTERVAL_S = 3600  # Run lifecycle check every hour
 USERS_DB_BACKUP_INTERVAL_S = 86400  # Once per day
 USERS_DB_BACKUP_RETENTION_DAYS = 30  # Keep last N daily snapshots in R2
 
+
 # ── Geolocation solver ───────────────────────────────────────────────────────
-GEO_INTERVAL_S = 10.0  # Per-track solver rate limit (seconds)
+def _single_node_geo_interval_s() -> float:
+    """Bound expensive single-node fits without slowing tracking or MLAT."""
+    raw = os.getenv("SINGLE_NODE_GEO_INTERVAL_S", "10")
+    try:
+        value = float(raw)
+        if math.isfinite(value) and value > 0:
+            return value
+    except ValueError:
+        pass
+    logging.warning("Invalid SINGLE_NODE_GEO_INTERVAL_S=%r; using 10 seconds", raw)
+    return 10.0
+
+
+GEO_INTERVAL_S = _single_node_geo_interval_s()  # Per-track single-node fit cadence
 PRUNE_INTERVAL_S = 60.0  # Stale-entry pruning interval (seconds)
 STALE_TRACK_S = 120.0  # Remove tracks not updated in this window
 

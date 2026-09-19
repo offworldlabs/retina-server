@@ -81,6 +81,8 @@ async def test_network_dashboard():
 
 
 def _build_dashboard_data() -> bytes:
+    from services.real_capture import status as capture_status
+
     # Snapshot mutable dicts to avoid RuntimeError from concurrent mutation
     with state.connected_nodes_lock:
         _cn_snapshot = list(state.connected_nodes.values())
@@ -157,6 +159,7 @@ def _build_dashboard_data() -> bytes:
             "streaming": {
                 "websocket_clients": ws_clients,
                 "external_adsb_cached": ext_adsb,
+                "service_adsb_cached": len(state.service_adsb_cache),
             },
             "server_health": {
                 "frame_queue_depth": state.frame_queue.qsize(),
@@ -169,6 +172,7 @@ def _build_dashboard_data() -> bytes:
                 # so its ADS-B positions are aged against our clock rather than
                 # its own.  A node-clock signal, not a feed one.
                 "adsb_capture_ts_fallback": state.adsb_capture_ts_fallback,
+                "real_data_capture": capture_status(),
             },
             "chain_of_custody": {
                 "registered_keys": len(state.node_identities),

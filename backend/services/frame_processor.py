@@ -23,6 +23,7 @@ from config.constants import (
 )
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
+from services.adsb_truth import node_reference
 from services.geo import (
     valid_latlon,
 )
@@ -447,6 +448,8 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     _t0_wall = time.monotonic()
     _t0_cpu = time.thread_time()
 
+    from services.real_capture import offer as capture_real_frame
+
     # Deferred signature verification (moved off the event loop)
     if frame.pop("_needs_sig_verify", False):
         det_node_id = frame.get("node_id") or frame.get("_node_id") or node_id
@@ -461,6 +464,8 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
         frame["_signature_valid"] = sig_valid
         if not sig_valid and det_node_id in state.node_identities:
             logging.warning("Invalid signature on detection from %s", det_node_id)
+
+    capture_real_frame(node_id, frame)
 
     _t1 = time.thread_time()
     state.node_analytics.record_detection_frame(node_id, frame)
@@ -537,7 +542,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             # call is node-agnostic, so the filter lives here with the node
             # context.  Untagged states pass, matching the gates elsewhere.
             _nw = state.node_world(node_id)
-            _states = {h: s for h, s in state._adsb_for_seeding().items() if s.get("world") in (None, _nw)}
+            _states = {h: s for h, s in state._adsb_for_seeding(_nw).items() if s.get("world") in (None, _nw)}
             _tags = associate_detections_to_adsb(
                 _geo,
                 _pframe.get("delay", []),
@@ -636,6 +641,11 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             if not _hex or not valid_latlon(_lat, _lon):
                 continue
             if not math.isfinite(_lat) or not math.isfinite(_lon):
+                continue
+            if _world == "real":
+                _rec = node_reference(_ae, _hex, _ts_ms, _recv_ms)
+                if _rec is not None:
+                    adsb_store(_hex, _rec)
                 continue
             _rec = {
                 "hex": _hex,
