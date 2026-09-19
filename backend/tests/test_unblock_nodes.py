@@ -88,7 +88,7 @@ def snapshot(tmp_path):
         {
             # node_id keys, not node_refs: the analytics API renames entries to
             # node_ref only at publication.
-            "retce36dbb4": _blocked_entry("retce36dbb4"),
+            "blocked-real-1": _blocked_entry("blocked-real-1"),
             "synth-GVL-0004": _blocked_entry("synth-GVL-0004"),
             "synth-GVL-0005": _healthy_entry("synth-GVL-0005"),
         },
@@ -99,10 +99,10 @@ def snapshot(tmp_path):
 def test_a_named_node_is_reset_and_the_rest_are_untouched(unblock, snapshot):
     before = _read_payload(snapshot)
 
-    assert unblock.main(["--path", str(snapshot), "--node", "retce36dbb4"]) == 0
+    assert unblock.main(["--path", str(snapshot), "--node", "blocked-real-1"]) == 0
 
     after = _read_payload(snapshot)
-    reset = after["reputations"]["retce36dbb4"]
+    reset = after["reputations"]["blocked-real-1"]
     assert reset["reputation"] == 1.0
     assert reset["blocked"] is False
     assert reset["block_reason"] == ""
@@ -117,7 +117,7 @@ def test_all_blocked_resets_every_block_and_nothing_else(unblock, snapshot):
     assert unblock.main(["--path", str(snapshot), "--all-blocked"]) == 0
 
     after = _read_payload(snapshot)["reputations"]
-    assert after["retce36dbb4"]["blocked"] is False
+    assert after["blocked-real-1"]["blocked"] is False
     assert after["synth-GVL-0004"]["blocked"] is False
     # The healthy node was never blocked, so --all-blocked must not have
     # touched its reputation either.
@@ -146,12 +146,12 @@ def test_the_result_still_restores_as_a_NodeReputation(unblock, snapshot):
 
 
 def test_an_unknown_node_exits_non_zero(unblock, snapshot, capsys):
-    rc = unblock.main(["--path", str(snapshot), "--node", "retce36dbb4", "--node", "no-such-node"])
+    rc = unblock.main(["--path", str(snapshot), "--node", "blocked-real-1", "--node", "no-such-node"])
     assert rc != 0
     assert "no-such-node" in capsys.readouterr().err
     # The one that did exist is still reset — a typo in a second --node must
     # not silently roll back the unblock the operator came for.
-    assert _read_payload(snapshot)["reputations"]["retce36dbb4"]["blocked"] is False
+    assert _read_payload(snapshot)["reputations"]["blocked-real-1"]["blocked"] is False
 
 
 def test_a_corrupt_snapshot_is_refused_unless_forced(unblock, snapshot):
@@ -166,18 +166,18 @@ def test_a_corrupt_snapshot_is_refused_unless_forced(unblock, snapshot):
     assert unblock.main(["--path", str(snapshot), "--all-blocked", "--force"]) == 0
     # Forcing rewrites it with a checksum that matches, so the server will
     # accept the repaired file on boot.
-    assert _read_payload(snapshot)["reputations"]["retce36dbb4"]["blocked"] is False
+    assert _read_payload(snapshot)["reputations"]["blocked-real-1"]["blocked"] is False
 
 
 def test_a_legacy_schema_1_snapshot_is_upgraded(unblock, tmp_path):
     path = tmp_path / "legacy.json"
-    payload = json.dumps({"saved_at": 1.0, "reputations": {"retce36dbb4": _blocked_entry("retce36dbb4")}})
+    payload = json.dumps({"saved_at": 1.0, "reputations": {"blocked-real-1": _blocked_entry("blocked-real-1")}})
     path.write_text(payload)
     Path(str(path) + ".sha256").write_text(hashlib.sha256(payload.encode()).hexdigest())
 
     assert unblock.main(["--path", str(path), "--all-blocked"]) == 0
 
-    assert _read_payload(path)["reputations"]["retce36dbb4"]["blocked"] is False
+    assert _read_payload(path)["reputations"]["blocked-real-1"]["blocked"] is False
 
 
 def test_selecting_nothing_is_an_error(unblock, snapshot):

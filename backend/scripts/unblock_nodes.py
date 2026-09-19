@@ -20,7 +20,7 @@ only matters because the restart restores from it.  Stop, edit, start.
 
 Node *ids*, not node_refs
 -------------------------
-``reputations`` is keyed by node_id (``retce36dbb4``, ``synth-GVL-0004``); the
+``reputations`` is keyed by node_id (``ret<hex>``, ``synth-GVL-0004``); the
 analytics API renames entries to node_ref only at publication, so the ref you
 read off ``/api/radar/analytics`` is not a key here.  For a node registered on
 this environment, resolve it from the registry before you stop anything::
@@ -47,7 +47,7 @@ or straight on the host against the volume's mountpoint::
 
     python3 backend/scripts/unblock_nodes.py \\
         --path /var/lib/docker/volumes/<project>_backend-data/_data/state_snapshot.json \\
-        --node retce36dbb4
+        --node <node_id>
 
 Add ``--dry-run`` first to see what would change.  Stdlib only, deliberately:
 it has to run in a bare ``python:3.12-slim`` with the repo's dependencies
@@ -169,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description="Reset blocked node reputations in a RETINA state snapshot. "
         "Stop the server first — the save loop rewrites the snapshot every 60 s.",
-        epilog="--node takes node_ids (retce36dbb4, synth-GVL-0004), NOT node_refs; "
+        epilog="--node takes node_ids (a ret<hex> id, synth-GVL-0004), NOT node_refs; "
         "resolve a ref with services.node_refs.id_for_ref inside the container.",
     )
     ap.add_argument(
