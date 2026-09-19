@@ -159,7 +159,7 @@ def _gt_for_record(adsb_hex, lat: float, lon: float, ts_s: float) -> dict:
     # (b) trail missing or stale — fall back to the live ADS-B fix,
     # dead-reckoned to solve time.  Deliberate: a stale synthetic trail with
     # a live sim ADS-B fix should still score, source "adsb".
-    fix = state.adsb_aircraft.get(hexn)
+    fix = state.adsb_aircraft.get(hexn) or state._adsb_for_seeding("real").get(hexn)
     if fix:
         f_lat, f_lon = fix.get("lat"), fix.get("lon")
         ts_fix_s = (fix.get("last_seen_ms") or 0) / 1000.0

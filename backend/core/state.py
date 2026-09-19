@@ -290,7 +290,7 @@ def node_world(node_id: str) -> str:
     return "sim" if is_synthetic_node(node_id) else "real"
 
 
-def _adsb_for_seeding() -> dict[str, dict]:
+def _adsb_for_seeding(world: str | None = None) -> dict[str, dict]:
     """Unlocked snapshot of currently-live ADS-B fixes, in the seeding
     provider contract InterNodeAssociator documents on adsb_provider.
 
@@ -305,10 +305,17 @@ def _adsb_for_seeding() -> dict[str, dict]:
     already on them (see adsb_derived_fields), so the only per-call work is
     dropping records with an unusable position.
     """
-    out = {}
+    from services.adsb_truth import seeding_references
+
+    out = seeding_references({}, service_adsb_cache, external_adsb_cache, world)
     for hexn, rec in list(adsb_aircraft.items()):
+        if world is not None and rec.get("world") not in (None, world):
+            continue
         lat, lon = rec.get("lat"), rec.get("lon")
         if lat is None or lon is None or not (math.isfinite(lat) and math.isfinite(lon)):
+            continue
+        prev = out.get(hexn)
+        if prev and rec.get("world") != "sim" and prev["timestamp_ms"] > rec.get("last_seen_ms", 0):
             continue
         if "alt_m" in rec:
             out[hexn] = rec
@@ -542,6 +549,9 @@ anomaly_hexes: set[str] = set()  # hex codes currently flagged as anomalous
 
 # ── External ADS-B truth (OpenSky cache) ──────────────────────────────────────
 external_adsb_cache: dict[str, dict] = {}
+# Fast, first-party references have their own cache: a slow fallback-provider
+# poll must not overwrite them. Each reader applies observation-time freshness.
+service_adsb_cache: dict[str, dict] = {}
 
 # ── WebSocket broadcast infrastructure ────────────────────────────────────────
 from fastapi import WebSocket  # noqa: E402  (deferred to avoid import loops)
@@ -1257,6 +1267,7 @@ def _reset_for_tests() -> None:
         iq_commitments,
         anomaly_hexes,
         external_adsb_cache,
+        service_adsb_cache,
         ws_clients,
         ws_live_clients,
         ws_owner_clients,

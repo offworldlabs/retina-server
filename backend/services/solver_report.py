@@ -84,6 +84,29 @@ def _record_lane(rec: dict) -> str:
 _LANES = ("dark", "known", "adsb", "dark_follow")
 
 
+def _world_funnels(records: list[dict]) -> dict:
+    """Windowed denominators, so a synthetic fleet cannot mask real failures.
+
+    Known/ADS-B lanes are explicitly assisted. Dark-lane inputs can still have
+    learned coverage/bias from ADS-B: a fully blind benchmark is the isolated
+    replay tool, not this production publication funnel.
+    """
+    worlds = {}
+    for rec in records:
+        node_ids = rec.get("contributing_node_ids") or []
+        labels = {state.node_world(nid) for nid in node_ids}
+        world = next(iter(labels)) if len(labels) == 1 else "mixed" if labels else "unknown"
+        lanes = worlds.setdefault(world, {})
+        lane = lanes.setdefault(_record_lane(rec), {"attempts": 0, "published": 0, "truth_scored": 0})
+        lane["attempts"] += 1
+        lane["published"] += bool(rec.get("published") or rec.get("outcome") == "published")
+        lane["truth_scored"] += rec.get("gt_error_km") is not None
+    for lanes in worlds.values():
+        for lane in lanes.values():
+            lane["publish_rate"] = lane["published"] / lane["attempts"]
+    return worlds
+
+
 def _cap_per_lane(records: list[dict], limit: int) -> list[dict]:
     """Keep the ``limit`` newest records OF EACH LANE, newest first.
 
@@ -597,6 +620,8 @@ def _solver_window_stats(minutes: float) -> dict:
         # each lane wrote.  Sums to the whole merged window, so the dark-lane
         # funnel below can be read against what it excludes.
         "lane_split": lane_split,
+        "by_world": _world_funnels(all_records),
+        "evaluation_note": "known/adsb lanes use ADS-B inputs; blind replay is reported separately",
         # ── DARK LANE ONLY, from here to fragmentation ──────────────────────
         "attempts": attempts,
         "published": {"total": n2 + n3plus, "n2": n2, "n3plus": n3plus},

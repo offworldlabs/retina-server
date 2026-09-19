@@ -245,11 +245,16 @@ async def lifespan(app: FastAPI):
             # environment.
             detection_mirror.configure_from_env()
 
+            from services.real_capture import capture_task
+            from services.tasks.adsb_service import adsb_service_task
+
             for task_fn in (
                 server.serve_forever,
                 reputation_evaluator,
                 prune_synthetic_nodes,
                 adsb_truth_fetcher,
+                adsb_service_task,
+                capture_task,
                 feed_gc_task,
                 archive_flush_task,
                 track_flush_task,

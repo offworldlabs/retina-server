@@ -446,7 +446,7 @@ class TestPredictiveAttach:
                 "flight": "TST1",
             },
         }
-        monkeypatch.setattr(state, "_adsb_for_seeding", lambda: fixed_states)
+        monkeypatch.setattr(state, "_adsb_for_seeding", lambda world=None: fixed_states)
         monkeypatch.setattr(state, "ADSB_SEED_MODE", "active")
 
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)
@@ -481,7 +481,7 @@ class TestPredictiveAttach:
             "timestamp_ms": frame["timestamp"],
             "world": "real",
         }
-        monkeypatch.setattr(state, "_adsb_for_seeding", lambda: {"a97cf2": decoy})
+        monkeypatch.setattr(state, "_adsb_for_seeding", lambda world=None: {"a97cf2": decoy})
         monkeypatch.setattr(state, "ADSB_SEED_MODE", "active")
 
         process_one_frame(node_id, frame, PassiveRadarPipeline(DEFAULT_NODE_CONFIG))
@@ -491,7 +491,7 @@ class TestPredictiveAttach:
         # Same state tagged with the node's own world attaches — the filter
         # removes decoys, not the capability.
         own = dict(decoy, world="sim")
-        monkeypatch.setattr(state, "_adsb_for_seeding", lambda: {"a97cf2": own})
+        monkeypatch.setattr(state, "_adsb_for_seeding", lambda world=None: {"a97cf2": own})
         frame2 = _make_frame()
         frame2["delay"] = [d0]
         frame2["doppler"] = [f0]
@@ -506,7 +506,7 @@ class TestPredictiveAttach:
         self._register(node_id)
         frame = _make_frame()
         frame["adsb"] = [{"hex": "already", "lat": 33.9, "lon": -84.6, "alt_baro": 0, "gs": 0, "track": 0}]
-        monkeypatch.setattr(state, "_adsb_for_seeding", lambda: {})
+        monkeypatch.setattr(state, "_adsb_for_seeding", lambda world=None: {})
         monkeypatch.setattr(state, "ADSB_SEED_MODE", "active")
 
         default = PassiveRadarPipeline(DEFAULT_NODE_CONFIG)

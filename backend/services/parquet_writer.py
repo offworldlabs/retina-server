@@ -147,6 +147,7 @@ def _flatten(
         doppler = frame.get("doppler") or []
         snr = frame.get("snr") or []
         adsb = frame.get("adsb") or []
+        adsb_hex = frame.get("adsb_hex") or []
         n = max(len(delay), len(doppler), len(snr))
         if n == 0:
             continue
@@ -193,7 +194,7 @@ def _flatten(
             cols["delay_us"].append(_safe_float(delay, i))
             cols["doppler_hz"].append(_safe_float(doppler, i))
             cols["snr_db"].append(_safe_float(snr, i))
-            cols["adsb_hex"].append(ae.get("hex") if ae else None)
+            cols["adsb_hex"].append(ae.get("hex") if ae else (adsb_hex[i] if i < len(adsb_hex) else None))
             cols["adsb_lat"].append(_get_float(ae, "lat"))
             cols["adsb_lon"].append(_get_float(ae, "lon"))
             cols["adsb_alt_baro"].append(_get_int(ae, "alt_baro"))

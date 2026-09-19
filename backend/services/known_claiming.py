@@ -714,6 +714,8 @@ def _fix_record(st: dict) -> dict:
         "gs": st.get("gs"),
         "track": st.get("track"),
         "fix_ts_ms": st.get("timestamp_ms", 0),
+        "source": st.get("source", "node"),
+        "precision_eligible": st.get("precision_eligible", False),
     }
 
 
@@ -731,7 +733,7 @@ def _fresh_fix_prediction(
     re-deriving it at the recording site would be a second offset_latlon_m
     that could silently disagree with the one the prediction was built from.
     """
-    st = state._adsb_for_seeding().get(hexn)
+    st = state._adsb_for_seeding(node_world).get(hexn)
     if st is None:
         return None
     cand_world = st.get("world")
@@ -1078,6 +1080,23 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
             claimed_idx.add(i)
             claimed_hexes.add(hexn)
 
+    # v1 transports identity separately from position. Resolve it against a
+    # fresh reference of the same world, retaining its actual capture time.
+    # A label alone is never a position and cannot calibrate a receiver.
+    for i, raw_hex in enumerate(frame.get("adsb_hex") or []):
+        if i >= len(delays) or i in claimed_idx:
+            continue
+        hexn = normalize_hex_key(raw_hex)
+        if not hexn or hexn in claimed_hexes:
+            continue
+        prediction = _fresh_fix_prediction(hexn, geo, frame_ts_s, state.node_world(node_id))
+        if prediction is None:
+            continue
+        pred_d, pred_f, _, fix, dr_lat, dr_lon = prediction
+        claims.append((i, hexn, fix, pred_d, pred_f, {_CAL_DR_KEY: (dr_lat, dr_lon), "node_identity": True}))
+        claimed_idx.add(i)
+        claimed_hexes.add(hexn)
+
     # ── Path H: this node's own held tracks ──────────────────────────────────
     # Between path 1 and path 2 on purpose — see _claim_holds.
     for hold_claim in _claim_holds(
@@ -1124,7 +1143,7 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
     # a second loop so each hex appears exactly once in the assignment;
     # the snapshot _adsb_for_seeding returns is freshly built per call, so
     # writing into it cannot touch the cache.
-    cand_states = state._adsb_for_seeding()
+    cand_states = state._adsb_for_seeding(node_world)
     cand_states.update(_follow_states(frame_ts_s, claimed_hexes))
     for hexn, st in cand_states.items():
         # No claimed_hexes skip here — it moved to the column build below,
@@ -1381,7 +1400,7 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
 
 # Frame keys aligned by detection index.  snr and adsb may legitimately be
 # absent; anything absent or non-list is passed through untouched.
-_INDEXED_FRAME_KEYS = ("delay", "doppler", "snr", "adsb")
+_INDEXED_FRAME_KEYS = ("delay", "doppler", "snr", "adsb", "adsb_hex")
 
 
 def strip_claimed_detections(frame: dict, claimed_idx: set[int]) -> dict:

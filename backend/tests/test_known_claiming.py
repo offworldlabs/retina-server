@@ -692,7 +692,16 @@ class TestRegistryContract:
             "adsb_fix",
             "contested",
         }
-        assert set(rec["adsb_fix"].keys()) == {"lat", "lon", "alt_baro", "gs", "track", "fix_ts_ms"}
+        assert set(rec["adsb_fix"].keys()) == {
+            "lat",
+            "lon",
+            "alt_baro",
+            "gs",
+            "track",
+            "fix_ts_ms",
+            "source",
+            "precision_eligible",
+        }
         assert rec["node_id"] == _NODE_ID
         assert rec["ts_ms"] == ts
         # Assignment-path claims carry the REPORTED fix and its own timestamp.
@@ -809,7 +818,8 @@ class TestWorldGate:
 
         assert kc.claim_known_targets(_NODE_ID, _frame(ts, [pd], [pf])) == set()
         assert state.known_claims == {}
-        assert state.known_claims_world_rejects == 1
+        # The world-aware provider now excludes this before the claiming gate.
+        assert state.known_claims_world_rejects == 0
 
     def test_sim_node_claims_a_sim_world_candidate(self):
         geo = _register()
@@ -830,7 +840,8 @@ class TestWorldGate:
         pd, pf = _stationary_pred(geo)
 
         assert kc.claim_known_targets(node_id, _frame(ts, [pd], [pf])) == set()
-        assert state.known_claims_world_rejects == 1
+        # The world-aware provider now excludes this before the claiming gate.
+        assert state.known_claims_world_rejects == 0
 
     def test_untagged_candidate_is_not_gated(self):
         """No writer in this tree leaves world unset, so an untagged entry is
