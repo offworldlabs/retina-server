@@ -35,6 +35,7 @@ def node_report(frames, truth):
     associator = InterNodeAssociator(adsb_seed_mode="off", claim_mode="off")
     stats = defaultdict(Counter)
     samples, lags = defaultdict(list), defaultdict(list)
+    ranges, altitudes = defaultdict(list), defaultdict(list)
     cells = defaultdict(lambda: defaultdict(lambda: {"samples": 0, "aircraft": set()}))
     last_config = {}
     for row in frames:
@@ -73,6 +74,8 @@ def node_report(frames, truth):
             if agreed:
                 distance = haversine_km(geo.rx_lat, geo.rx_lon, ref["lat"], ref["lon"])
                 azimuth = bearing_deg(geo.rx_lat, geo.rx_lon, ref["lat"], ref["lon"])
+                ranges[nid].append(distance)
+                altitudes[nid].append(ref["alt_m"])
                 key = (int(azimuth // 15), int(distance // 5), int(ref["alt_m"] // 1000))
                 cell = cells[nid][key]
                 cell["samples"] += 1
@@ -88,6 +91,8 @@ def node_report(frames, truth):
             "delay_residual_us": distribution(delays),
             "doppler_residual_hz": distribution(dopplers),
             "delivery_lag_s": distribution(lags[nid]),
+            "observed_range_km": distribution(ranges[nid]),
+            "observed_altitude_m": distribution(altitudes[nid]),
             "reference_sources": dict(Counter(r[4] for r in rows)),
             "beam_declared": last_config[nid].get("beam_width_deg") is not None,
             "observed_cells": [
@@ -109,6 +114,7 @@ def node_report(frames, truth):
     return {
         "nodes": nodes,
         "suggested_calibration": calibration,
+        "trained_from_ms": min((r["frame"]["timestamp"] for r in frames), default=0),
         "trained_until_ms": max((r["frame"]["timestamp"] for r in frames), default=0),
         "coverage_basis": "Observed, identity-tagged radar detections agreeing with fresh ADS-B within 3 us / 20 Hz; cells 15 deg x 5 km x 1 km. No airspace-wide recall denominator.",
         "reference_limitations": "Feed timing can include upstream latency; altitude may be barometric. Coarse validation, not precision survey truth.",

@@ -111,6 +111,27 @@ def test_fixed_layer_experiment_never_reads_adsb_altitude(monkeypatch):
     assert calls == [(alt, {"fix_altitude": True}) for alt in (3, 7, 11)]
 
 
+def test_all_node_refit_cannot_inherit_uncertainty_from_a_different_pair_fit(monkeypatch):
+    pair_result = {
+        "success": True,
+        "lat": 34,
+        "lon": -82,
+        "alt_m": 7000,
+        "chi2_per_dof": 0.1,
+        "vel_east": 100,
+        "vel_north": 20,
+        "horizontal_sigma_km": 0.01,
+        "contributing_node_ids": ["one", "two"],
+    }
+    monkeypatch.setattr("scripts.blind_replay.solver.fit_constant_velocity", lambda *a: dict(pair_result))
+    monkeypatch.setattr("scripts.blind_replay.solver.solve_multinode", lambda *a, **kw: dict(pair_result))
+    raw = candidate()
+    raw["n_nodes"] = 3
+    result, outcome = solve_candidate(raw, {"one": {"fc_hz": 100e6}})
+    assert outcome == "converged"
+    assert result["horizontal_sigma_km"] is None
+
+
 def test_truth_age_uses_capture_time_and_propagates_to_measurement_epoch():
     index = TruthIndex(
         [

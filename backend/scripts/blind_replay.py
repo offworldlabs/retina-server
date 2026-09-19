@@ -126,7 +126,11 @@ def solve_candidate(candidate, configs, altitudes=(3.0, 7.0, 11.0), max_nfev=200
             return None, "no_convergence"
         result["chi2_per_dof"] = best["chi2_per_dof"]
         result["cv_n_nodes"] = len(best["contributing_node_ids"])
-        result["horizontal_sigma_km"] = best.get("horizontal_sigma_km")
+        # This is a different fit at a different epoch. The pair's CV
+        # covariance cannot certify the all-node position. Until the latter
+        # exposes a rank-checked horizontal covariance, the uncertainty gate
+        # must abstain instead of reusing the pair's optimistic number.
+        result["horizontal_sigma_km"] = None
         return result, "converged"
     return best, "converged"
 
@@ -546,6 +550,10 @@ def main():
     )
     report["replay"] = counts
     report["source_sha256"] = SOURCE_HASHES
+    report["capture_sha256"] = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in args.captures}
+    report["calibration_sha256"] = (
+        hashlib.sha256(args.calibration.read_bytes()).hexdigest() if args.calibration else None
+    )
     report["parameters"] = {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items() if k != "captures"}
     report["evaluation_mode"] = (
         "blind_tracking_association_and_solve; exact_detection_identities_or_measurement_space_labels_after_solve"
