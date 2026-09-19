@@ -46,12 +46,23 @@ def node_report(frames, truth):
         geo = associator.node_geometries.get(nid)
         stats[nid]["frames"] += 1
         lags[nid].append(row["received_s"] - frame["timestamp"] / 1000)
-        refs = truth.at(frame["timestamp"])
+        labels, tags = frame.get("adsb_hex") or [], frame.get("adsb") or []
+        identities = {label.lower() for label in labels if isinstance(label, str) and label}
+        identities.update(
+            label.lower()
+            for tag in tags
+            if isinstance(tag, dict)
+            for label in [tag.get("hex") or tag.get("icao")]
+            if isinstance(label, str) and label
+        )
+        # This report uses node labels as reference identities. Propagating
+        # every aircraft in the region for each radar frame wastes most of
+        # the evaluation CPU, especially in multi-hour captures.
+        refs = truth.at(frame["timestamp"], identities=identities)
         for i, (delay, doppler, snr) in enumerate(
             zip(frame.get("delay", []), frame.get("doppler", []), frame.get("snr", []))
         ):
             stats[nid]["detections"] += 1
-            labels, tags = frame.get("adsb_hex") or [], frame.get("adsb") or []
             label = labels[i] if i < len(labels) else None
             if not label and i < len(tags) and isinstance(tags[i], dict):
                 label = tags[i].get("hex") or tags[i].get("icao")

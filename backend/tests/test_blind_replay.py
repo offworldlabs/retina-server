@@ -151,6 +151,9 @@ def test_truth_age_uses_capture_time_and_propagates_to_measurement_epoch():
     )
     assert index.at(105000)["abc123"]["lon"] > -82
     assert index.at(120000) == {}
+    assert index.at(105000, identities={"abc123", "missing"}) == index.at(105000)
+    assert index.at(105000, identities=set()) == {}
+    assert index.at(120000, identities={"abc123"}) == {}
 
 
 @pytest.mark.parametrize("fc", [None, 0, -1, True, "100000000", float("nan"), float("inf")])

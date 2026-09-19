@@ -151,9 +151,14 @@ class TruthIndex:
         self.rows = {h: sorted(rows.items()) for h, rows in grouped.items()}
         self.times = {h: [r[0] for r in rows] for h, rows in self.rows.items()}
 
-    def at(self, timestamp_ms, max_age_s=10):
+    def at(self, timestamp_ms, max_age_s=10, *, identities=None):
+        """Propagate references, optionally only for already-known identities."""
         out = {}
-        for hexn, rows in self.rows.items():
+        selected = self.rows if identities is None else identities
+        for hexn in selected:
+            rows = self.rows.get(hexn)
+            if not rows:
+                continue
             i = bisect.bisect_left(self.times[hexn], timestamp_ms)
             candidates = rows[max(0, i - 1) : i + 1]
             if not candidates:
