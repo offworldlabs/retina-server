@@ -103,9 +103,15 @@ describe("the sidebar shown to a caller with no session", () => {
     expect(shownLabels()).toEqual(advertisedPublicRoutes(true).map((r) => r.label));
   });
 
-  // The page that configures the fleet, whose save is admin-only server-side.
-  it("never offers the physics page, fleet or no fleet", () => {
+  // The page that configures the fleet. Its save is open like the rest of
+  // the simulator, so a visitor is pointed at it wherever there is a fleet.
+  it("offers the physics page beside the simulation where one is running", () => {
     state.auth = { ...state.auth, syntheticFleet: true };
+    renderSidebar();
+    expect(screen.getByRole("link", { name: "Physics Layer" })).toHaveAttribute("href", "/sim/physics");
+  });
+
+  it("withholds the physics page with the simulation where there is no fleet", () => {
     renderSidebar();
     expect(screen.queryByText("Physics Layer")).not.toBeInTheDocument();
   });

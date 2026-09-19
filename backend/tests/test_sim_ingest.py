@@ -216,6 +216,22 @@ class TestSimulationConfig:
         assert cfg["live_adsb_enabled"] is True
         assert cfg["frac_live_dark"] == 0.15
 
+    def test_config_put_needs_no_session(self, client, monkeypatch):
+        # The suite reaches admin routes through the anonymous-admin bypass,
+        # which would mask an auth gate on this one. Off, an unsigned PUT is
+        # still accepted here while the admin PUT beside it goes on refusing.
+        import core.users as users
+
+        monkeypatch.setattr(users, "AUTH_BYPASS", False)
+        try:
+            r = client.put("/api/simulation/config", json={"frac_live_dark": 0.2})
+            assert r.status_code == 200
+            assert r.json()["config"]["frac_live_dark"] == 0.2
+            assert client.put("/api/test/known-hold", json={}).status_code == 401
+        finally:
+            monkeypatch.undo()
+            client.put("/api/simulation/config", json={"frac_live_dark": 0.15})
+
     def test_live_knobs_accepted_and_echoed(self, client):
         r = client.put("/api/simulation/config", json={"frac_live_dark": 0.6, "live_adsb_enabled": False})
         assert r.status_code == 200

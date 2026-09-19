@@ -16,16 +16,14 @@ export type PublicRoute = {
   /** A key into the sidebar's icon set. */
   icon: string;
   /**
-   * Open at this path alone, rather than at everything nested under it.
+   * Current in the nav at this path alone, not for everything under it.
    *
-   * The default is the other way round, because most of these pages own a
-   * subtree that is the same publication: /data/2026/09/17 is the archive
-   * listing's own deep link. /sim is the exception — it has a child, /sim/
-   * physics, that writes the fleet's configuration through an admin-only PUT.
-   * Opening the parent must not open the child, and the honest way to say so
-   * is on the parent rather than as a list of exceptions somewhere else.
+   * Openness is by first segment regardless (see `isPublicRoute`); this only
+   * stops a parent's entry lighting up beside its child's. /sim wants it
+   * because /sim/physics is its own entry, and without `end` NavLink would
+   * mark both current at once.
    */
-  exact?: boolean;
+  end?: boolean;
   /**
    * Advertised only where the server runs a synthetic fleet.
    *
@@ -44,7 +42,12 @@ export type PublicRoute = {
  */
 export const PUBLIC_ROUTES: readonly PublicRoute[] = [
   { path: "/map", label: "Map", icon: "map" },
-  { path: "/sim", label: "Simulation", icon: "target", exact: true, needsFleet: true },
+  { path: "/sim", label: "Simulation", icon: "target", end: true, needsFleet: true },
+  // The page that tunes the fleet. Its save used to be admin-only, which is
+  // why /sim once opened without it; the console has no identity provider to
+  // sign an operator in with, so the PUT is open now and the page goes with
+  // it. Listed for the nav: openness it already has, as a child of /sim.
+  { path: "/sim/physics", label: "Physics Layer", icon: "layers", needsFleet: true },
   { path: "/data", label: "Data Explorer", icon: "database" },
   { path: "/leaderboard", label: "Leaderboard", icon: "trophy" },
   { path: "/knowledge", label: "Knowledge Base", icon: "book" },
@@ -75,11 +78,10 @@ export function isPublicRoute(pathname: string, isAdmin: boolean): boolean {
   if (isAdmin) return false;
   // The index renders nothing of its own: it forwards to the map.
   if (pathname === "/") return true;
-  // First segment only, so a nested route travels with its parent unless the
-  // entry says otherwise. Split rather than a prefix test: "/datasets" starts
-  // with "/data" and is a different page.
-  const segments = pathname.split("/").filter(Boolean);
-  const entry = PUBLIC_ROUTES.find((r) => r.path === `/${segments[0] ?? ""}`);
-  if (!entry) return false;
-  return !entry.exact || segments.length === 1;
+  // First segment only, so a nested route travels with its parent: /data/
+  // 2026/09/17 is the archive listing's own deep link, and /sim/physics is a
+  // setting of the simulator. Split rather than a prefix test: "/datasets"
+  // starts with "/data" and is a different page.
+  const first = `/${pathname.split("/").filter(Boolean)[0] ?? ""}`;
+  return PUBLIC_ROUTES.some((r) => r.path === first);
 }

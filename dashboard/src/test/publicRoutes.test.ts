@@ -51,16 +51,15 @@ describe("the simulation surface", () => {
     expect(isPublicRoute("/sim", false)).toBe(true);
   });
 
-  // The page that writes the fleet's configuration. The PUT behind it is
-  // admin-only server-side, so this is defence in depth rather than the only
-  // lock — but a console that renders the form to a visitor and then refuses
-  // every save is worse than one that never offers it.
-  it("refuses the physics page nested under it", () => {
-    expect(isPublicRoute("/sim/physics", false)).toBe(false);
+  // The page that writes the fleet's configuration. It used to be refused
+  // here because the PUT behind it was admin-only; the save is open now, so
+  // the page travels with its parent like every other nested route.
+  it("admits the physics page nested under it", () => {
+    expect(isPublicRoute("/sim/physics", false)).toBe(true);
   });
 
-  it("refuses anything else nested under it", () => {
-    expect(isPublicRoute("/sim/anything", false)).toBe(false);
+  it("admits the rest of the subtree, as the other open routes do", () => {
+    expect(isPublicRoute("/sim/anything", false)).toBe(true);
   });
 
   it("still admits it spelled with a trailing slash", () => {
@@ -81,6 +80,18 @@ describe("what a visitor is pointed at", () => {
 
   it("offers it where one is running", () => {
     expect(labels(true)).toContain("Simulation");
+  });
+
+  // Right after the simulator, as its setting.
+  it("offers the physics page beside it, and only there", () => {
+    expect(labels(true).indexOf("Physics Layer")).toBe(labels(true).indexOf("Simulation") + 1);
+    expect(labels(false)).not.toContain("Physics Layer");
+  });
+
+  // NavLink would otherwise mark /sim current on /sim/physics as well.
+  it("ends the simulation entry at its own path", () => {
+    const sim = advertisedPublicRoutes(true).find((r) => r.path === "/sim");
+    expect(sim?.end).toBe(true);
   });
 
   // Advertisement is the only thing the flag moves; the route stays reachable

@@ -2,7 +2,6 @@ import { NavLink } from "react-router-dom";
 import { towerFinderUrl } from "../utils/siblings";
 import { useAuth } from "../context/AuthContext";
 import { advertisedPublicRoutes } from "../utils/publicRoutes";
-import { showsPhysics } from "../utils/physics";
 import { externalLinkIcon } from "./RetnodeLink";
 
 type NavItem = {
@@ -22,7 +21,7 @@ type NavSection = { title: string; items: NavItem[] };
 // Built per render rather than at module scope. The links below read
 // window.location, and an import-time read that threw would take down every
 // module that transitively imports this one, not just the sidebar.
-const userNav = (physics: boolean): NavSection[] => [
+const userNav = (syntheticFleet: boolean): NavSection[] => [
   {
     title: "Dashboard",
     items: [
@@ -37,7 +36,7 @@ const userNav = (physics: boolean): NavSection[] => [
       // because the second is a setting of the first. Both exist only where
       // the server runs a fleet; on a fleetless deployment /sim would be an
       // empty map and the physics form would have nothing to configure.
-      ...(physics
+      ...(syntheticFleet
         ? [
             { to: "/sim", label: "Simulation", icon: "target", end: true },
             { to: "/sim/physics", label: "Physics Layer", icon: "layers" },
@@ -80,11 +79,11 @@ const userNav = (physics: boolean): NavSection[] => [
 const publicNav = (syntheticFleet: boolean): NavSection[] => [
   {
     title: "Explore",
-    items: advertisedPublicRoutes(syntheticFleet).map(({ path, label, icon, exact }) => ({
+    items: advertisedPublicRoutes(syntheticFleet).map(({ path, label, icon, end }) => ({
       to: path,
       label,
       icon,
-      end: exact,
+      end,
     })),
   },
 ];
@@ -296,7 +295,7 @@ export default function Sidebar({ isAdmin, collapsed, onToggle }) {
   const nav = isAdmin
     ? adminNav
     : user
-      ? userNav(showsPhysics(user))
+      ? userNav(Boolean(syntheticFleet))
       : publicNav(Boolean(syntheticFleet));
 
   return (
