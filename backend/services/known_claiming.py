@@ -850,7 +850,7 @@ def _follow_states(frame_ts_s: float, claimed_hexes: set[str], reference_states:
         # candidate with NO world would pass the world gate on every node,
         # and real traffic flies over the simulated fleet's footprint —
         # exactly the decoy case that gate exists for.
-        source_worlds = {state.node_world(nid) for nid in rec.get("contributing_node_ids", [])}
+        source_worlds = {state.node_world(nid) for nid in (rec.get("contributing_node_ids") or [])}
         if len(source_worlds) > 1:
             continue
         fallback_record = cached or state.adsb_aircraft.get(hexn, {})

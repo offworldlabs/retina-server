@@ -61,7 +61,7 @@ def track_views(tracker, now_ms, history_n=40):
     return views
 
 
-def solve_candidate(candidate, configs, altitudes=(3.0, 7.0, 11.0), max_nfev=200):
+def solve_candidate(candidate, configs, altitudes=(3.0, 7.0, 11.0), max_nfev=200, altitude_model="free"):
     """Only radar-derived guesses, measurements and history enter the solver."""
     epochs = candidate.get("cv_epochs") or []
     if len(epochs) < 4 or epochs[-1]["t_s"] - epochs[0]["t_s"] < 12:
@@ -86,6 +86,8 @@ def solve_candidate(candidate, configs, altitudes=(3.0, 7.0, 11.0), max_nfev=200
     for altitude in altitudes:
         fit["initial_guess"]["alt_km"] = altitude
         kwargs = {"max_nfev": max_nfev} if max_nfev != 200 else {}
+        if altitude_model == "layers":
+            kwargs["fix_altitude"] = True
         result = solver.fit_constant_velocity(fit, configs, **kwargs)
         if (
             result
@@ -242,6 +244,44 @@ def reference_for(candidate, geometries, truth, delay_gate=3.0, doppler_gate=20.
     return matches[0][2], matches[0][1]
 
 
+def numerical_gate(result, chi2_max=2.0, max_horizontal_sigma=None):
+    """A publication experiment using only the radar fit and its uncertainty."""
+    return bool(
+        result
+        and result["chi2_per_dof"] <= chi2_max
+        and not result.get("z_saturated", False)
+        and 50 < result["alt_m"] < 20000
+        and result.get("rms_delay", 0) <= 2
+        and result.get("rms_doppler", 0) <= 20
+        and (
+            max_horizontal_sigma is None
+            or (result.get("horizontal_sigma_km") is not None and result["horizontal_sigma_km"] <= max_horizontal_sigma)
+        )
+    )
+
+
+def select_exclusive_hypotheses(records, chi2_max=2.0, max_horizontal_sigma=None):
+    """At most one accepted candidate may consume a node track in one round.
+
+    Greedy residual ordering is an experiment, not a guarantee that the winning
+    association is correct. No identities or truth enter this decision.
+    """
+    rounds = defaultdict(list)
+    for rec in records:
+        rec["selected"] = False
+        if numerical_gate(rec["result"], chi2_max, max_horizontal_sigma):
+            rounds[rec["candidate"]["timestamp_ms"]].append(rec)
+    for group in rounds.values():
+        used = set()
+        for rec in sorted(group, key=lambda r: r["result"]["chi2_per_dof"]):
+            source = rec["candidate"].get("track_ids_by_node") or {}
+            tracks = {(nid, tid) for nid, ids in source.items() for tid in ids}
+            if tracks & used:
+                continue
+            rec["selected"] = True
+            used.update(tracks)
+
+
 def replay(
     frame_rows,
     *,
@@ -256,6 +296,7 @@ def replay(
     progress=False,
     calibration=None,
     max_nfev=200,
+    altitude_model="free",
 ):
     """Pure radar stage. No truth object or provider is accepted by this API."""
     import retina_tracker
@@ -310,7 +351,7 @@ def replay(
             if len(records) >= max_candidates:
                 counts["candidate_budget_dropped"] += 1
                 continue
-            result, outcome = solve_candidate(candidate, configs, max_nfev=max_nfev)
+            result, outcome = solve_candidate(candidate, configs, max_nfev=max_nfev, altitude_model=altitude_model)
             counts[outcome] += 1
             records.append({"candidate": copy.deepcopy(candidate), "result": result, "outcome": outcome})
             if progress and len(records) % 100 == 0:
@@ -322,7 +363,7 @@ def replay(
 
 def evaluate(records, geometries, truth, *, chi2_max=2.0, labels=None, max_horizontal_sigma=None):
     counts = Counter(attempts=len(records))
-    errors, by_n = [], defaultdict(Counter)
+    errors, altitude_errors, by_n = [], [], defaultdict(Counter)
     attempted_windows, accepted_windows, accurate_windows = set(), set(), set()
     scored = []
     for rec in records:
@@ -339,21 +380,7 @@ def evaluate(records, geometries, truth, *, chi2_max=2.0, labels=None, max_horiz
             ref, label = reference_for(candidate, geometries, refs)
         n = str(candidate["n_nodes"])
         by_n[n]["attempts"] += 1
-        accepted = bool(
-            result
-            and result["chi2_per_dof"] <= chi2_max
-            and not result.get("z_saturated", False)
-            and 50 < result["alt_m"] < 20000
-            and result.get("rms_delay", 0) <= 2
-            and result.get("rms_doppler", 0) <= 20
-            and (
-                max_horizontal_sigma is None
-                or (
-                    result.get("horizontal_sigma_km") is not None
-                    and result["horizontal_sigma_km"] <= max_horizontal_sigma
-                )
-            )
-        )
+        accepted = numerical_gate(result, chi2_max, max_horizontal_sigma) and rec.get("selected", True)
         counts["converged"] += result is not None
         counts["accepted"] += accepted
         by_n[n]["accepted"] += accepted
@@ -391,8 +418,10 @@ def evaluate(records, geometries, truth, *, chi2_max=2.0, labels=None, max_horiz
                 row["altitude_error_m"] = abs(result["alt_m"] - ref["alt_m"])
                 if accepted:
                     errors.append(err)
+                    altitude_errors.append(row["altitude_error_m"])
                     counts["accepted_within_1km"] += err <= 1
                     counts["accepted_within_5km"] += err <= 5
+                    counts["accepted_within_5km_3d"] += math.hypot(err, row["altitude_error_m"] / 1000) <= 5
                     if labels and window in labels.opportunities and err <= 5:
                         accurate_windows.add(window)
         scored.append(row)
@@ -405,6 +434,11 @@ def evaluate(records, geometries, truth, *, chi2_max=2.0, labels=None, max_horiz
             "n": len(errors),
             "median": float(np.median(errors)) if errors else None,
             "p95": float(np.percentile(errors, 95)) if errors else None,
+        },
+        "accepted_altitude_error_m": {
+            "n": len(altitude_errors),
+            "median": float(np.median(altitude_errors)) if altitude_errors else None,
+            "p95": float(np.percentile(altitude_errors, 95)) if altitude_errors else None,
         },
         "identity_window_funnel": {
             "definition": "Aircraft-minute with tagged radar detections at >=2 nodes in the same 5-second bin; captures only, not airspace recall",
@@ -446,6 +480,12 @@ def main():
     parser.add_argument("--process-noise-doppler", type=float, default=20)
     parser.add_argument("--max-candidates", type=int, default=10000)
     parser.add_argument("--max-nfev", type=int, default=200)
+    parser.add_argument(
+        "--altitude-model",
+        choices=("free", "layers"),
+        default="free",
+        help="Free altitude or three fixed radar-independent layers with level flight",
+    )
     parser.add_argument("--history-size", type=int, default=20)
     parser.add_argument("--unknown-beam", choices=("declared", "omni"), default="declared")
     parser.add_argument("--progress", action="store_true")
@@ -457,6 +497,11 @@ def main():
         "--max-horizontal-sigma", type=float, help="Optional local uncertainty gate in km; does not use truth"
     )
     parser.add_argument("--start-ms", type=int, default=0)
+    parser.add_argument(
+        "--exclusive-tracks",
+        action="store_true",
+        help="Experimental one-candidate-per-track selection within each round",
+    )
     parser.add_argument("--end-ms", type=int, default=2**63 - 1)
     args = parser.parse_args()
     if min(args.sigma_delay, args.sigma_doppler, args.assoc_interval, args.history_size, args.max_nfev) <= 0:
@@ -486,9 +531,12 @@ def main():
         progress=args.progress,
         calibration=calibration,
         max_nfev=args.max_nfev,
+        altitude_model=args.altitude_model,
     )
     if args.records_output:
         args.records_output.write_text(json.dumps(records, allow_nan=False))
+    if args.exclusive_tracks:
+        select_exclusive_hypotheses(records, max_horizontal_sigma=args.max_horizontal_sigma)
     report = evaluate(
         records,
         geometries,

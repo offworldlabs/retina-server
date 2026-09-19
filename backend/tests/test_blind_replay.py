@@ -4,7 +4,14 @@ from copy import deepcopy
 
 import pytest
 
-from scripts.blind_replay import DetectionLabels, TruthIndex, blind_detections, evaluate, solve_candidate
+from scripts.blind_replay import (
+    DetectionLabels,
+    TruthIndex,
+    blind_detections,
+    evaluate,
+    select_exclusive_hypotheses,
+    solve_candidate,
+)
 
 
 def candidate():
@@ -57,6 +64,19 @@ def test_uncertainty_gate_does_not_depend_on_truth(monkeypatch):
     assert evaluate([rec], {}, TruthIndex([]), max_horizontal_sigma=2)["counts"]["accepted"] == 0
 
 
+def test_one_track_cannot_publish_two_hypotheses_in_the_same_round():
+    records = []
+    for chi2, tid in ((0.2, "a"), (0.1, "a"), (0.3, "b")):
+        c = candidate()
+        c["track_ids_by_node"] = {"one": [tid]}
+        records.append({"candidate": c, "result": {"chi2_per_dof": chi2, "alt_m": 7000}, "outcome": "converged"})
+    select_exclusive_hypotheses(records)
+    assert [r["selected"] for r in records] == [False, True, True]
+    records[0]["candidate"]["timestamp_ms"] += 30000
+    select_exclusive_hypotheses(records)
+    assert all(r["selected"] for r in records)
+
+
 def test_solver_boundary_allowlist_and_altitude_starts_are_truth_independent(monkeypatch):
     calls = []
 
@@ -75,6 +95,20 @@ def test_solver_boundary_allowlist_and_altitude_starts_are_truth_independent(mon
     solve_candidate(raw, {})
     assert calls == first
     assert [c["initial_guess"]["alt_km"] for c in calls] == [3, 7, 11]
+
+
+def test_fixed_layer_experiment_never_reads_adsb_altitude(monkeypatch):
+    calls = []
+
+    def solve(inp, configs, **kwargs):
+        calls.append((inp["initial_guess"]["alt_km"], kwargs))
+        return None
+
+    monkeypatch.setattr("scripts.blind_replay.solver.fit_constant_velocity", solve)
+    raw = candidate()
+    raw["adsb_fix"] = {"alt_m": 13000}
+    solve_candidate(raw, {}, altitude_model="layers")
+    assert calls == [(alt, {"fix_altitude": True}) for alt in (3, 7, 11)]
 
 
 def test_truth_age_uses_capture_time_and_propagates_to_measurement_epoch():

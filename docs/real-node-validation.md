@@ -95,6 +95,13 @@ fits without using truth. Local uncertainty does not resolve global branch
 ambiguity or unknown calibration errors. A low residual alone is insufficient
 evidence for publication, especially with two nearly redundant bistatic paths.
 
+`--exclusive-tracks` tests a greedy, residual-ordered selection that prevents
+one node track from being accepted in multiple hypotheses during the same
+association round. `--altitude-model layers` tests level flight at fixed 3, 7
+and 11 km layers; those layers are independent of the target's ADS-B altitude.
+Neither experiment establishes a correct identity by itself. Report horizontal
+and vertical error and accepted identity conflicts for each.
+
 ## Node residuals and observed detection area
 
 ```bash
