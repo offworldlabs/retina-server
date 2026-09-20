@@ -59,6 +59,7 @@ frame it stays linked.  The one thing it may not do is contradict a live
 transponder — see the consistency rule in _claim_holds.
 """
 
+import dataclasses
 import logging
 import math
 import os
@@ -393,6 +394,42 @@ def _calibration_from_claim(
     )
 
 
+def _claim_visibility_geo(geo):
+    """The geometry path 2 judges visibility against: the node's own, with the
+    learned coverage prior lifted.
+
+    The prior (NodeGeometry.coverage_limit, bound to
+    empirical_coverage.observed_limit_km — the P85 of recorded ranges per
+    bearing, times OBSERVED_LIMIT_MARGIN inside _point_in_beam) is learned
+    from calibration points, and under KNOWN_LANE_MODE != "off" every
+    calibration point comes from a path-2 claim (services/calibration.py,
+    the fourth rule).  Gating the claim on the prior therefore gated the
+    prior's own evidence: a fix past the boundary was never a candidate,
+    never claimed, never recorded, so a bin could shrink freely as near
+    traffic turned it over but grow by at most the margin per turnover.
+    Measured on test 2026-09-20, the gate sat 6-9% above the maximum range
+    of the (already censored) recent sample on every well-fed real node, and
+    a false reject there is not "a claim the dark lane can still solve" — the
+    prior has already removed those grid cells from association.
+
+    So this lane sees the theoretical footprint, the beam wedge and the
+    learned FOV (active mode) exactly as before, and not the prior.  A claim
+    still has to match the predicted delay/Doppler inside the age-scaled
+    gate and, to calibrate, pass the five rules in _calibration_from_claim;
+    a wrong aircraft past the boundary is refused by those the same way it
+    is inside it.  The association grids (compute_overlap_zone) and path 3
+    keep the prior — the dark lane's ghost defence is unchanged — and can
+    now follow the polygon outward as the claims feed it.
+
+    A copy, never a mutation: the instance in node_geometries is the one the
+    associator builds grids from.  Once per frame per node, so the fresh
+    instance's footprint memo costs one haversine.
+    """
+    if geo.coverage_limit is None:
+        return geo
+    return dataclasses.replace(geo, coverage_limit=None)
+
+
 def _gate_scale(age_s: float) -> float:
     """Gate allowance multiplier for a fix age: 1.0 fresh, 2.0 at the age cap.
 
@@ -523,10 +560,13 @@ def _claim_dark_follow(
             east_m=t["vel_east"] * dt,
             north_m=t["vel_north"] * dt,
         )
-        # The associator's own visibility predicate, applied whole — the same
-        # call path 2 makes, for the same asymmetry: a false accept binds a
-        # detection to an aircraft this node cannot see and takes it out of the
-        # lane that would have disagreed.
+        # The associator's own visibility predicate, applied whole — coverage
+        # prior included, unlike path 2 (_claim_visibility_geo): a dark track
+        # lives in the grids the prior shaped, so following one past the
+        # boundary would bind a detection to a track that could not have been
+        # solved there.  A false accept binds a detection to an aircraft this
+        # node cannot see and takes it out of the lane that would have
+        # disagreed.
         if not _point_in_beam(dr_lat, dr_lon, geo):
             continue
         alt_km = t["alt_m"] / 1000.0
@@ -1035,6 +1075,7 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
         return set()
     if position_status(state.node_associator.node_configs.get(node_id, {})) != "positioned":
         return set()
+    claim_geo = _claim_visibility_geo(geo)
 
     ts_ms = int(frame.get("timestamp", 0))
     frame_ts_s = ts_ms / 1000.0
@@ -1193,14 +1234,13 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
             east_m=st.get("vel_east", 0.0) * age_s,
             north_m=st.get("vel_north", 0.0) * age_s,
         )
-        # A false reject costs a claim the dark lane can still solve; a
-        # false accept puts a fix this node never saw into the known lane
-        # and charges its residual to the node's trust.  The asymmetry is
-        # why this is the associator's own visibility predicate applied
-        # whole (beam wedge, footprint, learned FOV, coverage prior)
-        # rather than a looser bespoke one — claiming and the dark lane
-        # must mean the same thing by "this node can see there".
-        if not _point_in_beam(dr_lat, dr_lon, geo):
+        # The associator's own visibility predicate (beam wedge, footprint,
+        # learned FOV) rather than a looser bespoke one: a false accept puts
+        # a fix this node never saw into the known lane and charges its
+        # residual to the node's trust.  Minus the learned coverage prior,
+        # which this lane feeds and so must not be gated by — see
+        # _claim_visibility_geo.
+        if not _point_in_beam(dr_lat, dr_lon, claim_geo):
             visibility_rejects += int(counts_as_reject)
             continue
         pred_d, pred_f = predict_observation(

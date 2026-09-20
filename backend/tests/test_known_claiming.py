@@ -217,6 +217,40 @@ class TestVisibilityGate:
         assert kc.claim_known_targets(_NODE_ID, _frame(ts, [pd], [pf])) == {0}
         assert state.known_claims_visibility_rejects == 0
 
+    def test_the_learned_coverage_prior_does_not_gate_claims(self):
+        """The prior is learned from this lane's own claims — under binding
+        the only calibration source — so a prior that gated claims censored
+        its own evidence and could never grow past its margin.  Path 2 judges
+        visibility with the prior lifted; the associator's geometry, the one
+        the grids are built from, keeps it.  See kc._claim_visibility_geo."""
+        geo = _register()
+        # 2 km on every bearing.  The shared aircraft sits ~5.7 km out, past
+        # 2 km x OBSERVED_LIMIT_MARGIN, so the whole predicate rejects it...
+        geo.coverage_limit = lambda bearing: 2.0
+        assert not _point_in_beam(_LAT, _LON, geo)
+        ts = int(time.time() * 1000)
+        _cache_state("prior1", ts)
+        pd, pf = _stationary_pred(geo)
+
+        # ...and the claim lane does not.
+        assert kc.claim_known_targets(_NODE_ID, _frame(ts, [pd], [pf])) == {0}
+        assert "prior1" in state.known_claims
+        assert state.known_claims_visibility_rejects == 0
+        # Judged on a copy: the grids' geometry still carries the prior.
+        assert geo.coverage_limit is not None
+
+    def test_the_wedge_and_footprint_still_gate_with_a_prior_present(self):
+        """Lifting the prior lifts only the prior — the copy keeps every other
+        check, or a node with a populated polygon would claim behind itself."""
+        geo = _register()
+        geo.coverage_limit = lambda bearing: 2.0
+        ts = int(time.time() * 1000)
+        _cache_state("blind4", ts, lat=self._BEHIND[0], lon=self._BEHIND[1])
+        pd, pf = self._pred_at(geo, *self._BEHIND)
+
+        assert kc.claim_known_targets(_NODE_ID, _frame(ts, [pd], [pf])) == set()
+        assert state.known_claims_visibility_rejects == 1
+
     def test_prescreen_rejects_are_counted_as_visibility_rejects(self, monkeypatch):
         """_BEYOND is far enough out that the range prescreen rejects it
         before _point_in_beam is ever called.  The tally must not notice: a
@@ -368,9 +402,10 @@ class TestRangePrescreen:
     """
 
     # Monostatic, bistatic (a long baseline moves the footprint's centre off
-    # the RX), a populated coverage_limit (shrink-only, so it can only make
-    # the gate tighter than the prescreen), and a learned FOV reaching past
-    # the theoretical footprint (the one case that widens it).
+    # the RX), a populated coverage_limit (which path 2 LIFTS — the oracle
+    # below lifts it the same way, so a shipped loop that re-applied the prior
+    # would over-reject here), and a learned FOV reaching past the theoretical
+    # footprint (the one case that widens it).
     #
     # high_latitude is deliberately beyond anything the fleet flies: a big
     # footprint near the pole is where the prescreen's flat-earth projection
@@ -449,14 +484,15 @@ class TestRangePrescreen:
 
         # Reference: the gate on its own, applied exactly where the shipped
         # loop applies it — to the dead-reckoned position, off the same
-        # snapshot the shipped loop reads.
+        # snapshot the shipped loop reads, against the same prior-lifted
+        # geometry.
         expect_pass, expect_rejects = set(), 0
         for hexn, st in state._adsb_for_seeding().items():
             age_s = frame_ts_s - st["timestamp_ms"] / 1000.0
             if abs(age_s) > kc.KNOWN_CLAIM_MAX_FIX_AGE_S:
                 continue
             dr = offset_latlon_m(st["lat"], st["lon"], east_m=st["vel_east"] * age_s, north_m=st["vel_north"] * age_s)
-            if _point_in_beam(dr[0], dr[1], geo):
+            if _point_in_beam(dr[0], dr[1], kc._claim_visibility_geo(geo)):
                 expect_pass.add(dr)
             else:
                 expect_rejects += 1
