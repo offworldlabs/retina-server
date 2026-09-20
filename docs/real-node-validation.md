@@ -160,3 +160,8 @@ a sustained mixed real/synthetic load before treating a deployment as stable.
 Archive task health uses the actual hourly flush cadence. A successful flush
 must not become a stale-task alert four minutes later while the task is in its
 scheduled sleep; a task missing two full intervals still becomes stale.
+
+Single-node display arcs use the closed-form ground-plane ellipse intersection
+instead of 32 bisection steps per point. The measured delay, beam/range clipping,
+point budget and separate public receiver geometry are unchanged. This reduces
+feed-rendering CPU; it does not add information to MLAT or improve solve accuracy.
