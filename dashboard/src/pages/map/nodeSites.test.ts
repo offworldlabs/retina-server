@@ -113,12 +113,12 @@ describe("coverageLine", () => {
     // it is the source that decides what the map is allowed to call it.
     expect(
       coverageLine(node({ empirical_polygon: lobe, empirical_n_points: 240 })),
-    ).toBe("Coverage: measured from 240 calibration pts, reach ≤ 111 km");
+    ).toBe("Typical observed footprint: ~111 km (240 retained samples; last evidence time unavailable); not a detection limit");
   });
 
   it("says nothing is measured yet when there is no polygon", () => {
     expect(coverageLine(node({ empirical_n_points: 7 }))).toBe(
-      "Coverage: not yet measured (7 calibration pts)",
+      "Observed footprint: collecting evidence (7 retained samples; last evidence time unavailable)",
     );
   });
 
@@ -131,6 +131,13 @@ describe("coverageLine", () => {
   it("treats the learned wedge as measured, not declared", () => {
     expect(
       coverageLine(node({ empirical_polygon_source: "learned", empirical_polygon: lobe })),
-    ).toBe("Coverage: measured from 0 calibration pts, reach ≤ 111 km");
+    ).toBe("Learned footprint: ~111 km (0 retained samples; last evidence time unavailable)");
+  });
+
+  it("shows evidence age independently of the bounded sample count", () => {
+    const n = node({ empirical_polygon: lobe, empirical_n_points: 200, empirical_last_detection_ts: 1000 });
+    expect(coverageLine(n, 1120)).toContain("200 retained samples; last evidence 2 min ago");
+    expect(coverageLine({ ...n, empirical_last_detection_ts: 1110 }, 1120)).toContain("last evidence under 1 min ago");
+    expect(coverageLine(n, 8200)).toContain("last evidence 2 h ago");
   });
 });

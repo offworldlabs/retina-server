@@ -15,6 +15,7 @@ import urllib.request
 from collections.abc import Mapping
 
 from config.constants import is_num
+from services.adsb_truth import finite, reference_position_allowed
 
 log = logging.getLogger(__name__)
 
@@ -137,9 +138,12 @@ class AdsbLolClient:
                         "gs": ac.get("gs") or 0,
                         "track": ac.get("track") or 0,
                         "captured_at": captured_at,  # epoch seconds
+                        "reference_eligible": reference_position_allowed(ac)
+                        and all(finite(ac.get(k)) for k in ("alt_baro", "gs", "track", "seen_pos")),
+                        "precision_eligible": False,
                         "squawk": ac.get("squawk", ""),
                         "category": ac.get("category", ""),
-                        "type": ac.get("type", "adsb_icao"),
+                        "type": ac.get("type", "unknown"),
                         "registration": ac.get("r", ""),
                         "aircraft_type": ac.get("t", ""),
                     }

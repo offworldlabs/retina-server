@@ -75,6 +75,16 @@ class TestPositionGuard:
 
 
 class TestFanOut:
+    def test_missing_coverage_state_is_not_counted_as_a_recorded_point(self, nodes):
+        assert record_adsb_calibration(["missing"], 34.9, -82.35, age_s=1, fix_ts=_T0, detection_ts=_T0) == 0
+        assert not record_claim_calibration("missing", 34.9, -82.35, fix_age_s=1, detection_ts=_T0)
+
+    @pytest.mark.parametrize("lat, lon", [(34.85, -82.40), (45.0, -82.35)])
+    def test_storage_rejection_is_not_counted_as_coverage_progress(self, nodes, lat, lon):
+        assert record_adsb_calibration(nodes, lat, lon, age_s=1, fix_ts=_T0, detection_ts=_T0) == 0
+        assert not record_claim_calibration(nodes[0], lat, lon, fix_age_s=1, detection_ts=_T0)
+        assert _points(nodes[0]) == 0
+
     def test_every_contributing_node_gets_the_point(self, nodes):
         record_adsb_calibration(nodes, 34.9, -82.35, age_s=1.0, fix_ts=_T0, detection_ts=_T0)
         assert _points("cal-a") == 1

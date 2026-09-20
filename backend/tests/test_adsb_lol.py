@@ -46,6 +46,18 @@ _MOCK_RESPONSE = {
 
 
 class TestAdsbLolClient:
+    @patch("clients.adsb_lol.urllib.request.urlopen")
+    def test_mlat_position_and_missing_speed_are_ineligible_truth(self, mock_urlopen):
+        records = [
+            {**_MOCK_RESPONSE["ac"][0], "seen_pos": 1, "type": "mlat"},
+            {**_MOCK_RESPONSE["ac"][0], "seen_pos": 1, "mlat": ["lat"]},
+            {**_MOCK_RESPONSE["ac"][0], "seen_pos": 1, "gs": None},
+            {**_MOCK_RESPONSE["ac"][0], "seen_pos": 1},
+        ]
+        mock_urlopen.return_value = self._mock_urlopen({"ac": records})
+        rows = AdsbLolClient(_AREAS).fetch_area(_AREAS[0])
+        assert [r["reference_eligible"] for r in rows] == [False, False, False, True]
+
     def _mock_urlopen(self, response_data):
         mock_resp = MagicMock()
         mock_resp.read.return_value = json.dumps(response_data).encode()

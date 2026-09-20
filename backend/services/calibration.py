@@ -99,8 +99,8 @@ def record_adsb_calibration(
     for nid in node_ids:
         if not nid:
             continue
-        state.node_analytics.record_calibration_point(nid, lat, lon, ts=detection_ts)
-        recorded += 1
+        if state.node_analytics.record_calibration_point(nid, lat, lon, ts=detection_ts):
+            recorded += 1
     return recorded
 
 
@@ -145,5 +145,4 @@ def record_claim_calibration(
         return False
     if fix_age_s > CAL_MAX_ADSB_AGE_S:
         return False
-    state.node_analytics.record_calibration_point(node_id, lat, lon, ts=detection_ts)
-    return True
+    return state.node_analytics.record_calibration_point(node_id, lat, lon, ts=detection_ts)

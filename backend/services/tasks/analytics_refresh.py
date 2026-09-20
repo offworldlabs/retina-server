@@ -955,7 +955,14 @@ def _external_truth_entries(now: float):
     what a consumer scoring solves should accept.  Entries carry their own
     capture time; this is the one place that reads it on their behalf.
     """
-    for hex_code, entry in list(state.external_adsb_cache.items()):
+    references = dict(state.external_adsb_cache)
+    for hex_code, entry in list(state.service_adsb_cache.items()):
+        previous = references.get(hex_code)
+        if previous is None or entry.get("last_seen_ms", 0) > previous.get("last_seen_ms", 0):
+            references[hex_code] = entry
+    for hex_code, entry in references.items():
+        if entry.get("reference_eligible") is False:
+            continue
         ts_ms = entry.get("last_seen_ms")
         if not ts_ms or abs(now - ts_ms / 1000) > EXTERNAL_TRUTH_MAX_AGE_S:
             continue

@@ -1,6 +1,6 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useAircraftFeed, useAuth } from "./hooks";
+import { useAircraftFeed, useAuth, useNodes } from "./hooks";
 
 vi.mock("./utils/domains", () => ({ usesRealOnlyFeed: false }));
 
@@ -42,6 +42,24 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+it("refreshes coverage geometry and evidence time when retained counts are unchanged", async () => {
+  let stamp = 1000;
+  const payload = () => ({ nodes: { nde0123456789: {
+    is_synthetic: false,
+    detection_area: { rx: { lat: 35, lon: -80 }, tx: { lat: 36, lon: -80 } },
+    empirical_coverage: { n_points: 200, last_detection_ts: stamp, polygon: [[stamp / 100, -80]], polygon_source: "evidence" },
+  } } });
+  vi.mocked(fetch).mockImplementation(async () => ({ ok: true, json: async () => payload() }) as Response);
+  const { result } = renderHook(() => useNodes("real"));
+  await act(async () => { await Promise.resolve(); });
+  expect(result.current[0].empirical_last_detection_ts).toBe(1000);
+  stamp = 1030;
+  await act(async () => { vi.advanceTimersByTime(30_000); });
+  expect(result.current[0].empirical_n_points).toBe(200);
+  expect(result.current[0].empirical_last_detection_ts).toBe(1030);
+  expect(result.current[0].empirical_polygon).toEqual([[10.3, -80]]);
 });
 
 describe("aircraft feed scope", () => {

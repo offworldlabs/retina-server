@@ -137,16 +137,7 @@ def _build_single_node_arc(
         # the floor exemption in track_entry).
         return None
 
-    # Ground-plane (2-D) per-bearing solve — the only locus this builder
-    # solves (see the docstring).
-    def _differential_at(range_km: float, bearing_deg: float) -> float:
-        bearing_rad = math.radians(bearing_deg)
-        east_km = math.sin(bearing_rad) * range_km
-        north_km = math.cos(bearing_rad) * range_km
-        tx_dist_km = math.hypot(east_km - tx_east_km, north_km - tx_north_km)
-        return tx_dist_km + range_km - baseline_km
-
-    # Ceiling for the per-bearing binary search below.  Note this is a
+    # Ceiling for the per-bearing ground-plane solution.  Note this is a
     # *monostatic* RX-range bound, so a node's bistatic limit cannot be
     # substituted for it directly — doing so would silently truncate every arc.
     #
@@ -181,29 +172,34 @@ def _build_single_node_arc(
         steps = 36
 
     half_sweep = sweep_width_deg / 2.0
+    path_length_km = baseline_km + differential_range_km
+    # For bearing unit vector u and TX vector t, the ellipse satisfies
+    # |r*u-t| + r = L. Squaring gives r=(L²-|t|²)/(2*(L-u·t)).
+    # Factor the numerator as D*(2*baseline+D) to avoid subtracting squares.
+    # D is strictly positive above, so the denominator cannot vanish.
+    numerator = differential_range_km * (2.0 * baseline_km + differential_range_km)
     points: list[list[float]] = []
     for step in range(steps + 1):
         bearing_deg = centre_bearing - half_sweep + sweep_width_deg * (step / steps)
-        lo = 0.0
-        hi = search_max_km
-        if _differential_at(hi, bearing_deg) < differential_range_km:
-            continue
-        # differential_at(0, ·) is exactly 0 in the 2-D solve, so RX's own
-        # ground point is always inside the locus and lo=0 already brackets
-        # the crossing — no bracket restart needed.
-        for _ in range(32):
-            mid = (lo + hi) / 2.0
-            if _differential_at(mid, bearing_deg) < differential_range_km:
-                lo = mid
-            else:
-                hi = mid
         bearing_rad = math.radians(bearing_deg)
+        east_unit = math.sin(bearing_rad)
+        north_unit = math.cos(bearing_rad)
+        # Keep the former boundary test, including its floating-point behavior
+        # at the range ceiling. Only the interior root search changes.
+        edge_tx_distance = math.hypot(
+            search_max_km * east_unit - tx_east_km,
+            search_max_km * north_unit - tx_north_km,
+        )
+        if edge_tx_distance + search_max_km - baseline_km < differential_range_km:
+            continue
+        projection_km = east_unit * tx_east_km + north_unit * tx_north_km
+        range_km = min(search_max_km, numerator / (2.0 * (path_length_km - projection_km)))
         points.append(
             _enu_to_lla(
                 rx_lat,
                 rx_lon,
-                hi * math.sin(bearing_rad),
-                hi * math.cos(bearing_rad),
+                range_km * east_unit,
+                range_km * north_unit,
             )
         )
 

@@ -9,6 +9,7 @@ import asyncio
 import time
 
 import pytest
+from retina_analytics.empirical_coverage import EmpiricalCoverageState
 from retina_analytics.reputation import NodeReputation
 from retina_analytics.trust import AdsReportEntry
 
@@ -95,13 +96,15 @@ class TestLastGoodRowsKeepTheirOriginalAge:
 
 
 class TestCalibrationSkewStaysOnOneClock:
-    def test_a_node_whose_clock_is_off_still_calibrates(self):
+    def test_a_node_whose_clock_is_off_still_calibrates(self, monkeypatch):
         """CAL_FIX_DETECTION_SKEW_S bounds fix-vs-detection co-timing at 2 s.
 
         The detection stamp is server wall clock, so comparing it against a
         node-clock capture stamp silently turned that rule into an NTP test:
         a board 3 s out recorded no calibration points at all.
         """
+        coverage = EmpiricalCoverageState(47.9, 16.0, max_range_km=50)
+        monkeypatch.setitem(state.node_analytics.empirical_coverages, "node-1", coverage)
         now = time.time()
         skew_s = 30.0
         fix = {
@@ -121,6 +124,7 @@ class TestCalibrationSkewStaysOnOneClock:
         )
 
         assert recorded == 1
+        assert coverage.n_points == 1
 
     def test_both_ingest_paths_record_server_receipt_alongside_capture(self):
         """The skew rule needs a server-clock stamp; the age gates need capture."""

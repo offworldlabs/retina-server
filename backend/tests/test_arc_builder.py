@@ -113,6 +113,33 @@ class TestEnuToLla:
 
 
 class TestBuildSingleNodeArc:
+    @pytest.mark.parametrize("baseline_km", [0.0, 0.001, 100.0])
+    @pytest.mark.parametrize("differential_km", [3.0, 30.0, 100.0])
+    def test_analytic_arc_satisfies_ground_plane_path_length(self, baseline_km, differential_km):
+        """Cover coincident foci and bearings along/across a long baseline."""
+        from services.geo import C_KM_US, enu_km, offset_latlon
+
+        tx_lat, tx_lon = offset_latlon(35.0, -80.0, baseline_km, 0.0)
+        cfg = {
+            **_NODE_CFG,
+            "rx_lat": 35.0,
+            "rx_lon": -80.0,
+            "tx_lat": tx_lat,
+            "tx_lon": tx_lon,
+            "beam_azimuth_deg": 90.0,
+            "beam_width_deg": 360.0,
+            "max_bistatic_range_km": 150.0,
+        }
+        arc = _build_single_node_arc(differential_km / C_KM_US, cfg)
+        assert arc is not None
+        # The exact ceiling can round a tangent bearing just outside the
+        # established boundary test; every retained point must be on the locus.
+        assert len(arc) >= 70
+        for lat, lon in arc:
+            east, north = enu_km(35.0, -80.0, lat, lon)
+            path = math.hypot(east, north) + math.hypot(east - baseline_km, north)
+            assert path - baseline_km == pytest.approx(differential_km, abs=1e-8)
+
     def test_returns_none_for_zero_delay(self):
         track = _FakeTrack(delay_us=0)
         assert _build_single_node_arc(track, _NODE_CFG) is None

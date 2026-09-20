@@ -157,6 +157,7 @@ async def ingest_detections(
             state.frame_queue.put_nowait((node_id, frame))
             processed += 1
         except asyncio.QueueFull:
+            state.bump_counter("frames_dropped")
             logging.warning("Frame queue full, dropping frame from %s", node_id)
 
     return {
@@ -251,7 +252,7 @@ async def ingest_detections_bulk(
             # every existing node without one until a restart.
             _record_mirrored_ref(node_id, entry.node_ref)
 
-        for frame in frames:
+        for frame_index, frame in enumerate(frames):
             if "timestamp" not in frame:
                 continue
             frame["_node_id"] = node_id
@@ -259,6 +260,9 @@ async def ingest_detections_bulk(
                 state.frame_queue.put_nowait((node_id, frame))
                 queued += 1
             except asyncio.QueueFull:
+                # The remaining timestamped frames in this batch are also
+                # discarded by the early exit; count all of them.
+                state.bump_counter("frames_dropped", sum("timestamp" in pending for pending in frames[frame_index:]))
                 break
 
     return {"status": "ok", "nodes_registered": registered, "frames_queued": queued}

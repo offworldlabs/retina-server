@@ -12,6 +12,7 @@ import time
 from unittest.mock import patch
 
 import pytest
+from retina_analytics.empirical_coverage import EmpiricalCoverageState
 
 from clients.adsb_lol import AdsbLolClient
 from config.constants import ADSB_CAPTURE_MAX_SKEW_S, EXTERNAL_ADSB_MAX_AGE_S
@@ -146,8 +147,10 @@ class TestCalibrationCanNowRefuseAnOldFix:
 
         assert self._record(fresh_adsb(_HEX, now), now) == 0
 
-    def test_a_live_fix_within_the_budget_is_still_recorded(self):
+    def test_a_live_fix_within_the_budget_is_still_recorded(self, monkeypatch):
         """The capability being protected: this must not refuse everything."""
+        coverage = EmpiricalCoverageState(47.9, 16.0, max_range_km=50)
+        monkeypatch.setitem(state.node_analytics.empirical_coverages, "node-1", coverage)
         now = time.time()
         state.adsb_aircraft[_HEX] = {
             "hex": _HEX,
@@ -157,6 +160,7 @@ class TestCalibrationCanNowRefuseAnOldFix:
         }
 
         assert self._record(fresh_adsb(_HEX, now), now) == 1
+        assert coverage.n_points == 1
 
 
 class TestIngestCaptureStamp:

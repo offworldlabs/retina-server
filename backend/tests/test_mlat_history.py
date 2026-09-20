@@ -49,6 +49,10 @@ def _solve_fn(lat=LAT, lon=LON, **overrides):
 
 
 def _put_gt(hex_code="abc123", lat=LAT + 0.001, lon=LON, age_s=0.0):
+    # These fixtures model the synthetic fleet. Real receivers must never be
+    # scored against this trail merely because it is the nearest one.
+    for nid in ("n1", "n2", "n_in", "n_out", "n_trimmed"):
+        state.connected_nodes[nid] = {"is_synthetic": True}
     state.ground_truth_trails[hex_code] = deque([[lat, lon, 9000.0, time.time() - age_s]])
 
 

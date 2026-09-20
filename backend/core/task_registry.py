@@ -6,6 +6,8 @@ grown byte-identical copies of the check, for the staleness rule itself.
 
 import time
 
+from config.constants import ARCHIVE_FLUSH_INTERVAL_S
+
 # Task name → expected success interval in seconds.
 # A task is considered stale if it hasn't reported success within 2× this value.
 TASK_EXPECTED_INTERVAL_S: dict[str, int] = {
@@ -14,7 +16,9 @@ TASK_EXPECTED_INTERVAL_S: dict[str, int] = {
     "aircraft_flush": 5,
     # services.tasks.feed_gc runs every 5 s; stale at 2x.
     "feed_gc": 5,
-    "archive_flush": 120,
+    # This task sleeps for an hour between successful flushes. A two-minute
+    # expected interval marked a healthy archive stale for most of each hour.
+    "archive_flush": ARCHIVE_FLUSH_INTERVAL_S,
     "archive_lifecycle": 3600,
     "reputation_evaluator": 120,
     "prune_synthetic_nodes": 21600,  # Every 6 hours
