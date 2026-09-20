@@ -435,6 +435,7 @@ export function useNodes(mode: FeedMode = defaultFeedMode()) {
               max_bistatic_range_km: da.max_bistatic_range_km ?? null,
               empirical_polygon: ec?.polygon ?? null,
               empirical_n_points: ec?.n_points ?? 0,
+              empirical_last_detection_ts: ec?.last_detection_ts ?? null,
               // Absent on a payload from a server older than the declared
               // wedge: evidence-only is what every node published then, and
               // is the conservative reading either way.

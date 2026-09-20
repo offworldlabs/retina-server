@@ -165,3 +165,29 @@ Single-node display arcs use the closed-form ground-plane ellipse intersection
 instead of 32 bisection steps per point. The measured delay, beam/range clipping,
 point budget and separate public receiver geometry are unchanged. This reduces
 feed-rendering CPU; it does not add information to MLAT or improve solve accuracy.
+
+## Reading empirical coverage
+
+The evidence polygon is a smoothed per-bearing 85th-percentile footprint, not
+an outer envelope or a hard detection limit. Verified detections can lie outside
+it, and unverified solves never expand it. The map calls it a typical observed
+footprint and shows the latest accepted evidence time separately from its
+retained sample count. Each bearing stores at most 200 samples, so that count
+can stay fixed while the timestamps and polygon continue updating. Analytics
+are cached for up to 60 seconds and the map polls every 30 seconds; brief display
+lag is expected. Public coverage geometry is also displaced with the receiver's
+privacy offset, while solved aircraft positions are not.
+
+The evidence renderer uses the same range-admission multiplier as the recorder.
+Previously it could accept a point up to four times a configured monostatic
+radius but draw it at no more than twice that radius. The repair retains the
+robust percentile and evidence checks; it does not alter MLAT acceptance gates.
+Recording counters count only points accepted by coverage storage, including
+its distance guards and requirement for a registered coverage state.
+
+For untagged measurements, reference assignment still searches inside the
+configured beam and association coverage prior. That can censor evidence beyond
+the current area; a flat footprint there is not proof of a physical boundary.
+Node-provided identities can supply independently matched evidence outside the
+prior. Broadening automatic reference assignment needs separate false-match
+validation rather than feeding arbitrary solve positions into coverage.

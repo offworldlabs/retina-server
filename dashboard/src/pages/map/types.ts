@@ -172,6 +172,8 @@ export interface RadarNode {
   max_bistatic_range_km: number | null;
   empirical_polygon: [number, number][] | null;
   empirical_n_points: number;
+  /** Unix seconds of the latest accepted coverage evidence, not a render time. */
+  empirical_last_detection_ts?: number | null;
   /**
    * Which rule produced `empirical_polygon`, decided by the backend:
    * `declared` for a synthetic node, whose declared cone is what the

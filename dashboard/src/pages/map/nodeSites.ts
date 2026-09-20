@@ -95,11 +95,10 @@ export function groupNodesBySite(nodes: RadarNode[]): NodeSite[] {
  * How far the measured coverage reaches, in whole km: the distance to the
  * furthest polygon vertex from the receiver.
  *
- * The polygon is the answer to "where has this node been seen to detect", so
- * its outermost vertex is the only reach figure the map can quote without
- * inventing one — the node's declared `max_range_km` is configuration, and
- * quoting it beside a measured area would read as a measurement.  Returns null
- * when there is no polygon to measure.
+ * This measures the displayed footprint, not maximum detection range. The
+ * evidence polygon uses smoothed per-bearing percentiles, so valid detections
+ * can lie beyond it. Declared max_range_km is configuration, not measurement.
+ * Returns null when there is no polygon to measure.
  */
 export function polygonMaxReachKm(
   rxLat: number,
@@ -132,7 +131,7 @@ export function polygonMaxReachKm(
  * Reach comes from the served polygon either way (polygonMaxReachKm), never
  * from the node's declared `max_range_km`.
  */
-export function coverageLine(node: RadarNode): string {
+export function coverageLine(node: RadarNode, nowSeconds = Date.now() / 1000): string {
   const reach = polygonMaxReachKm(node.rx_lat, node.rx_lon, node.empirical_polygon);
   const drawable = Array.isArray(node.empirical_polygon) && node.empirical_polygon.length >= 3;
   if (node.empirical_polygon_source === "declared") {
@@ -140,8 +139,15 @@ export function coverageLine(node: RadarNode): string {
       ? `Coverage: declared beam (synthetic node), reach ≤ ${reach} km`
       : "Coverage: declared beam (synthetic node)";
   }
-  if (drawable) {
-    return `Coverage: measured from ${node.empirical_n_points} calibration pts, reach ≤ ${reach} km`;
+  const ts = node.empirical_last_detection_ts;
+  let freshness = "last evidence time unavailable";
+  if (typeof ts === "number" && Number.isFinite(ts) && ts > 0) {
+    const age = Math.max(0, nowSeconds - ts);
+    const elapsed = age < 60 ? "under 1 min" : age < 3600 ? `${Math.floor(age / 60)} min` : `${Math.floor(age / 3600)} h`;
+    freshness = `last evidence ${elapsed} ago`;
   }
-  return `Coverage: not yet measured (${node.empirical_n_points || 0} calibration pts)`;
+  const evidence = `${node.empirical_n_points || 0} retained samples; ${freshness}`;
+  if (!drawable) return `Observed footprint: collecting evidence (${evidence})`;
+  if (node.empirical_polygon_source === "learned") return `Learned footprint: ~${reach} km (${evidence})`;
+  return `Typical observed footprint: ~${reach} km (${evidence}); not a detection limit`;
 }
