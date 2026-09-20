@@ -15,7 +15,7 @@ assertion here reads
 import time
 
 import pytest
-from retina_analytics.association import predict_observation
+from retina_analytics.association import _point_in_beam, predict_observation
 from retina_analytics.constants import offset_latlon_m
 from retina_analytics.empirical_coverage import _bearing_and_range, _bin_for_bearing
 
@@ -519,6 +519,25 @@ class TestNodeTags:
 
         assert claimed == {0}
         assert len(state.known_claims["aaa111"]) == 1
+
+
+class TestBeyondTheCoveragePrior:
+    """The prior is learned from these points, so it must not decide which of
+    them get recorded (kc._claim_visibility_geo).  Before this, a bin's P85
+    times the margin was the ceiling on the ranges it could ever be fed."""
+
+    def test_a_fix_past_the_prior_still_records(self, _binding, _no_holds):
+        geo = _register()
+        # The shared aircraft is ~5.7 km out; a 2 km prior x the margin
+        # rejects it under the whole predicate.
+        geo.coverage_limit = lambda bearing: 2.0
+        assert not _point_in_beam(_LAT, _LON, geo)
+        pd, pf = _stationary_pred(geo)
+        ts0 = int(time.time() * 1000)
+
+        _claim_frames(CAL_CLAIM_MIN_CLAIMS, ts0, [pd], [pf])
+
+        assert _n_points() == 1
 
 
 class TestRecordedPosition:
