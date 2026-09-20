@@ -71,15 +71,24 @@ def pipeline_frame(frame: "DetectionFrame") -> dict:
     microseconds on the wire and microseconds on the queue.
 
     `adsb_hex` travels under its own key rather than `adsb`, which
-    frame_processor reads as position reports. The contract's array is an
+    frame_processor reads as position reports. The contract's hex array is an
     association and carries no lat/lon, so filing it there would be filing an
     empty position for every detection.
+
+    The contract's `adsb` tags DO carry a position, so those are filed under
+    `adsb` in the shape the TCP ingest has always produced (`alt_baro`, not
+    `alt`): frame_processor stores each one in the aircraft cache, the known
+    lane claims against them (path 1), and the tracker reads them per
+    detection.  Keys the node left null are omitted rather than sent as None —
+    the geolocator branches on `"gs" in adsb`, and a None there would be read
+    as a value.  Absent on the wire means absent here, so a hex-only node's
+    frame is byte-identical to what it was.
 
     `seq` and `boot_id` are carried rather than dropped at the boundary: they are
     the pair the server counts loss against, and only meaningful together, since
     `seq` restarts from zero with the process.
     """
-    return {
+    out = {
         "timestamp": int(frame.t * 1000),
         "delay": list(frame.delay),
         "doppler": list(frame.doppler),
@@ -89,6 +98,27 @@ def pipeline_frame(frame: "DetectionFrame") -> dict:
         "boot_id": frame.boot_id,
         "config_version": frame.config_version,
     }
+    if frame.adsb is not None:
+        out["adsb"] = [_tag_record(tag) if tag is not None else None for tag in frame.adsb]
+    return out
+
+
+def _tag_record(tag) -> dict:
+    """One wire AdsbTag as the per-detection record the pipeline reads."""
+    rec = {"hex": tag.hex, "lat": tag.lat, "lon": tag.lon}
+    optional = (
+        ("alt_baro", tag.alt),
+        ("gs", tag.gs),
+        ("track", tag.track),
+        ("expected_delay", tag.expected_delay),
+        ("expected_doppler", tag.expected_doppler),
+        ("delay_residual", tag.delay_residual),
+        ("doppler_residual", tag.doppler_residual),
+    )
+    for key, value in optional:
+        if value is not None:
+            rec[key] = value
+    return rec
 
 
 def config_hash(config: dict) -> str:

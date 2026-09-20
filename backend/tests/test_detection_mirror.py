@@ -183,6 +183,40 @@ def test_batch_groups_by_node_and_carries_config(_connected):
     assert entries["mirror-node-a"]["frames"][0]["timestamp"] == 1753900000123
 
 
+def test_batch_carries_position_tags_in_the_pipeline_shape(_connected):
+    """A node's own ADS-B correlation crosses the mirror with its position, in
+    the record shape the receiving frame_processor files: this is the only fix
+    the receiving environment will ever have for a mirrored node's detection."""
+    from routes.node_schemas import DetectionFrame
+
+    detection_mirror.configure_from_env(ARMED)
+    detection_mirror.offer(
+        "mirror-node-a",
+        DetectionFrame(
+            t=1753900000.123,
+            seq=1,
+            boot_id="k3n8v2qp71ab",
+            config_version=1,
+            delay=[12.4, 30.1],
+            doppler=[-118.0, 44.5],
+            snr=[14.2, 9.8],
+            adsb_hex=["4ca1f2", None],
+            adsb=[{"hex": "4ca1f2", "lat": 33.87, "lon": -84.68, "alt": 15375, "gs": 189, "track": 238.4}, None],
+        ),
+    )
+
+    entries = {e["node_id"]: e for e in detection_mirror.build_batch(detection_mirror.drain())}
+
+    assert entries["mirror-node-a"]["frames"][0]["adsb"] == [
+        {"hex": "4ca1f2", "lat": 33.87, "lon": -84.68, "alt_baro": 15375, "gs": 189, "track": 238.4},
+        None,
+    ]
+    # A hex-only frame stays byte-identical to what it was.
+    detection_mirror.offer("mirror-node-b", _frame())
+    (entry,) = detection_mirror.build_batch(detection_mirror.drain())
+    assert "adsb" not in entry["frames"][0]
+
+
 def test_batch_skips_a_node_whose_config_left_the_registry(_connected):
     """A `config: None` entry would replace the node's last-known geometry on
     the receiver, not read as an unconfigured node: the receiving endpoint

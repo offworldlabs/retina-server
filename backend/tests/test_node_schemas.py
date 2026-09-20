@@ -200,7 +200,8 @@ FRAME = {
 
 def test_the_documented_frame_round_trips():
     frame = DetectionFrame(**FRAME)
-    assert frame.model_dump(mode="json") == FRAME
+    # `adsb` is the one optional column (1.5.0); a hex-only frame dumps it as None.
+    assert frame.model_dump(mode="json") == FRAME | {"adsb": None}
 
 
 def test_an_empty_frame_is_valid():
@@ -491,3 +492,58 @@ def test_the_heartbeat_refuses_to_be_built_without_a_claim_state():
             streaming_allowed=True,
             node_ref="nde4f2k9xq7m3b8",
         )
+
+
+# The node's own correlation with its position — the shape blah2-api's
+# enrichment already produces, one entry per detection.
+TAG = {
+    "hex": "4ca1f2",
+    "lat": 33.868698,
+    "lon": -84.676732,
+    "alt": 15375,
+    "gs": 189,
+    "track": 238.4,
+    "expected_delay": 7.9,
+    "expected_doppler": -82.06,
+    "delay_residual": 0.18,
+    "doppler_residual": -0.26,
+}
+
+
+class TestAdsbTags:
+    """`adsb` is a fifth, optional column of the frame's table: the hex the
+    node matched, with the position it matched it at."""
+
+    def test_a_tagged_frame_round_trips(self):
+        frame = DetectionFrame(**(FRAME | {"adsb": [TAG, None]}))
+        assert frame.model_dump(mode="json")["adsb"] == [TAG, None]
+
+    def test_absent_is_none_and_the_documented_frame_still_round_trips(self):
+        assert DetectionFrame(**FRAME).adsb is None
+        assert "adsb" not in DetectionFrame(**FRAME).model_dump(mode="json", exclude_none=True)
+
+    def test_a_tag_needs_only_hex_and_position(self):
+        frame = DetectionFrame(**(FRAME | {"adsb": [{"hex": "4ca1f2", "lat": 1.0, "lon": 2.0}, None]}))
+        assert frame.adsb[0].alt is None and frame.adsb[0].gs is None
+
+    def test_the_list_must_be_parallel(self):
+        with pytest.raises(ValidationError, match="same length as delay"):
+            DetectionFrame(**(FRAME | {"adsb": [TAG]}))
+
+    def test_a_tags_hex_must_agree_with_adsb_hex(self):
+        with pytest.raises(ValidationError, match=r"adsb\[0\].hex must equal adsb_hex\[0\]"):
+            DetectionFrame(**(FRAME | {"adsb": [TAG | {"hex": "abcdef"}, None]}))
+
+    def test_a_tag_on_an_unassociated_detection_is_refused(self):
+        """adsb_hex[1] is null: a position there would be a second, silent association."""
+        with pytest.raises(ValidationError, match=r"adsb\[1\].hex"):
+            DetectionFrame(**(FRAME | {"adsb": [None, TAG]}))
+
+    def test_unknown_keys_in_a_tag_are_refused(self):
+        with pytest.raises(ValidationError):
+            DetectionFrame(**(FRAME | {"adsb": [TAG | {"rssi": -5.0}, None]}))
+
+    @pytest.mark.parametrize(("field", "value"), [("lat", 90.5), ("lon", -180.5), ("hex", "4CA1F2"), ("alt", "ground")])
+    def test_malformed_tag_values_are_refused(self, field, value):
+        with pytest.raises(ValidationError):
+            DetectionFrame(**(FRAME | {"adsb": [TAG | {field: value}, None]}))

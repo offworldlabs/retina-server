@@ -136,7 +136,13 @@ NODE_PATH_PREFIX = "/v1/nodes"
 #
 # What it must not be is 1.3.0. That would put two documents at one version a
 # client cannot tell apart, which is the cost 1.1.3 records having paid once.
-NODE_API_VERSION = "1.4.0"
+# 1.5.0 adds the optional `adsb` column to `DetectionFrame`: the node's own
+# correlation with the position it was made at (`AdsbTag`), parallel to
+# `adsb_hex` and agreeing with it entry for entry.  A hex-only node omits it and
+# is unchanged; a node that sends it gives the server, and everything the
+# server mirrors to, a fix for the detection that no aircraft cache has to
+# supply.
+NODE_API_VERSION = "1.5.0"
 
 # No tag here: each sub-router carries the contract's own grouping, since those
 # are what a generated client is built around.

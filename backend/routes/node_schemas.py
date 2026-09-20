@@ -187,6 +187,35 @@ class RegisterResponse(BaseModel):
     server_time: ServerTime
 
 
+class AdsbTag(_RequestModel):
+    """The node's own ADS-B correlation for one detection, position included.
+
+    `adsb_hex` says which aircraft the node matched; this says where that
+    aircraft was, from the node's own receiver, at the frame instant.  The
+    server files the position into its aircraft cache under the node's world,
+    so the known lane can claim the detection and record a coverage
+    calibration point without a position source of its own.  That matters
+    most where the server only ever sees a node second-hand — the detection
+    mirror — since a hex alone cannot be placed there.
+
+    `alt` is barometric feet, `gs` knots and `track` degrees true, the units
+    the node's enrichment reports and the TCP ingest already stores.  The
+    expected/residual pair is the node's own prediction check, carried for
+    the record; the server recomputes its own.
+    """
+
+    hex: Annotated[str, Field(pattern=r"^[0-9a-f]{6}$")]
+    lat: Number = Field(ge=-90, le=90)
+    lon: Number = Field(ge=-180, le=180)
+    alt: Number | None = None
+    gs: Number | None = None
+    track: Number | None = None
+    expected_delay: Number | None = None
+    expected_doppler: Number | None = None
+    delay_residual: Number | None = None
+    doppler_residual: Number | None = None
+
+
 class DetectionFrame(_RequestModel):
     """One CPI's worth of detections. Carries no node identifier: the bearer
     token resolves to a node, and the frame is stamped server side.
@@ -208,12 +237,26 @@ class DetectionFrame(_RequestModel):
     doppler: list[Number] = Field(max_length=MAX_DETECTIONS)
     snr: list[Number] = Field(max_length=MAX_DETECTIONS)
     adsb_hex: list[AdsbHex] = Field(max_length=MAX_DETECTIONS)
+    # The same correlation with the position attached, parallel to the four
+    # arrays; a node that has only the hex omits the whole list.  See AdsbTag.
+    adsb: list[AdsbTag | None] | None = Field(default=None, max_length=MAX_DETECTIONS)
 
     @model_validator(mode="after")
     def _arrays_are_parallel(self) -> "DetectionFrame":
-        """The four arrays are one table on its side, so a mismatch is a 422."""
+        """The four arrays are one table on its side, so a mismatch is a 422.
+
+        `adsb`, when sent, is a fifth column of that table, and its hexes must
+        agree with `adsb_hex` entry for entry: one correlation, said twice,
+        must not be two correlations.
+        """
         if len({len(self.delay), len(self.doppler), len(self.snr), len(self.adsb_hex)}) > 1:
             raise ValueError("delay, doppler, snr and adsb_hex must be the same length")
+        if self.adsb is not None:
+            if len(self.adsb) != len(self.delay):
+                raise ValueError("adsb must be the same length as delay")
+            for i, tag in enumerate(self.adsb):
+                if tag is not None and tag.hex != self.adsb_hex[i]:
+                    raise ValueError(f"adsb[{i}].hex must equal adsb_hex[{i}]")
         return self
 
 
