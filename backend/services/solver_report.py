@@ -537,11 +537,12 @@ def _fov() -> dict:
 
 
 def _counter_snapshot() -> SimpleNamespace:
-    """The counters behind the known_lane, known_claims and dark_follow blocks,
-    read in one counters_lock acquisition so they are a single consistent
-    snapshot rather than a series of reads interleaved with the frame and
-    solver workers bumping them.  Attributes are named as on ``state``, and
-    each per-reason dict after its attributes' shared prefix.
+    """The counters behind the known_lane, known_claims and dark_follow blocks
+    and the dark-follow entries in ``counters``, read in one counters_lock
+    acquisition so they are a single consistent snapshot rather than a series
+    of reads interleaved with the frame and solver workers bumping them.
+    Attributes are named as on ``state``, and each per-reason dict after its
+    attributes' shared prefix.
     """
     with state.counters_lock:
         return SimpleNamespace(
@@ -571,7 +572,10 @@ def _counter_snapshot() -> SimpleNamespace:
             # The follow lane's funnel and the per-reason ineligibility tally
             # beside it are only readable against each other (see
             # _dark_follow), so they must not be sampled a rebuild apart.
+            # ``counters`` repeats the funnel, so it must report these same
+            # values rather than a later read.
             dark_follow_targets=state.dark_follow_targets,
+            dark_follow_claims=state.dark_follow_claims,
             dark_follow_inputs=state.dark_follow_inputs,
             dark_follow_published=state.dark_follow_published,
             dark_follow_dropped=state.dark_follow_dropped,
@@ -849,7 +853,7 @@ def _fragmentation(published_records: list[dict]) -> dict:
     }
 
 
-def _counters() -> dict:
+def _counters(snap: SimpleNamespace) -> dict:
     """Solver counters, since boot unless an entry says it is a gauge."""
     return {
         "successes": state.solver_successes,
@@ -903,14 +907,15 @@ def _counters() -> dict:
         # Dark track following (services/dark_follow.py), since boot except
         # targets, which is a live gauge of the current pseudo-state list.
         # The funnel is targets -> claims -> inputs -> published; dropped is
-        # the ghost guard's tally of keys it stopped following.
-        "dark_follow_targets": state.dark_follow_targets,
-        "dark_follow_claims": state.dark_follow_claims,
-        "dark_follow_inputs": state.dark_follow_inputs,
-        "dark_follow_published": state.dark_follow_published,
-        "dark_follow_dropped": state.dark_follow_dropped,
-        "dark_follow_n2_withheld": state.dark_follow_n2_withheld,
-        "dark_follow_n2_skipped": state.dark_follow_n2_skipped,
+        # the ghost guard's tally of keys it stopped following.  Taken from
+        # the locked snapshot, so each agrees with its dark_follow entry.
+        "dark_follow_targets": snap.dark_follow_targets,
+        "dark_follow_claims": snap.dark_follow_claims,
+        "dark_follow_inputs": snap.dark_follow_inputs,
+        "dark_follow_published": snap.dark_follow_published,
+        "dark_follow_dropped": snap.dark_follow_dropped,
+        "dark_follow_n2_withheld": snap.dark_follow_n2_withheld,
+        "dark_follow_n2_skipped": snap.dark_follow_n2_skipped,
         # The other side of the lane: bottom-up dark solves refused at
         # keying because the follow lane owns the key they landed on.  It
         # belongs beside the funnel because it is the same trade — the
@@ -1019,5 +1024,5 @@ def _solver_window_stats(minutes: float) -> dict:
         # one).  A rising re-anchor count with rescues near zero means the
         # manoeuvre sigma is too small for the turns being flown.
         "display_filter": track_filter.filter_stats(),
-        "counters": _counters(),
+        "counters": _counters(snap),
     }
