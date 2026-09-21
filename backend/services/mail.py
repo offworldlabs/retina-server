@@ -1,9 +1,10 @@
 """Outbound transactional mail over Cloudflare Email Service.
 
-Authenticated SMTP rather than the Workers binding or the REST API: the backend
-is not a Worker, `smtplib` reaches Cloudflare directly, and all three routes
-enter the same pipeline with the same DKIM and ARC signing and the same
-delivery logs.
+The Email Sending REST API rather than authenticated SMTP or the Workers
+binding. DigitalOcean drops outbound traffic to ports 25, 465 and 587 on every
+droplet, so SMTP to smtp.mx.cloudflare.net times out from where this runs, and
+the backend is not a Worker. All three enter the same pipeline, with the same
+DKIM signing and the same delivery logs.
 
 Settings are read from the environment on each call rather than once at import.
 main.py calls load_dotenv() after its service imports, so an import-time read
@@ -17,20 +18,17 @@ is_configured() and fail their own feature closed instead.
 
 import logging
 import os
-import smtplib
 import threading
 from email.message import EmailMessage
+from email.utils import parseaddr
+
+import httpx
 
 logger = logging.getLogger(__name__)
 
-SMTP_HOST = "smtp.mx.cloudflare.net"
-SMTP_PORT = 465
+_SEND_URL = "https://api.cloudflare.com/client/v4/accounts/{account}/email/sending/send"
 
-#: Cloudflare authenticates the token, not an account, so the username is this
-#: fixed string for every sender and the API token is the password.
-SMTP_USERNAME = "api_token"
-
-_SMTP_TIMEOUT_S = 15.0
+_TIMEOUT_S = 15.0
 
 #: Concurrent delivery threads, over all recipients. nginx limits the credential
 #: endpoints to 5r/m, but only on the three vhosts that carry a
@@ -45,7 +43,7 @@ _inflight_lock = threading.Lock()
 #: `log` writes what would have been sent to the application log, for a laptop
 #: with no Cloudflare token. It never resolves in production: a magic link in a
 #: log file is a credential in a log file.
-_TRANSPORTS = ("smtp", "log")
+_TRANSPORTS = ("cloudflare", "log")
 
 
 def _setting(name: str) -> str:
@@ -77,9 +75,11 @@ def transport() -> str:
     if not _setting("MAIL_FROM"):
         logger.warning("MAIL_FROM is not set; no mail will be sent.")
         return ""
-    if chosen == "smtp" and not _setting("CLOUDFLARE_EMAIL_TOKEN"):
-        logger.warning("CLOUDFLARE_EMAIL_TOKEN is not set; no mail will be sent.")
-        return ""
+    if chosen == "cloudflare":
+        for name in ("CLOUDFLARE_EMAIL_TOKEN", "CLOUDFLARE_ACCOUNT_ID"):
+            if not _setting(name):
+                logger.warning("%s is not set; no mail will be sent.", name)
+                return ""
     return chosen
 
 
@@ -116,7 +116,7 @@ def log_destination() -> None:
             sender,
         )
         return
-    logger.info("Mail: %s via %s as %s", chosen, SMTP_HOST, sender)
+    logger.info("Mail: %s Email Sending API as %s", chosen, sender)
 
 
 def _build(to: str, subject: str, body: str) -> EmailMessage:
@@ -137,6 +137,33 @@ def _build(to: str, subject: str, body: str) -> EmailMessage:
     return message
 
 
+def _post(to: str, subject: str, body: str) -> str | None:
+    """Hand one message to Cloudflare: None when it was accepted, else why not."""
+    name, address = parseaddr(_setting("MAIL_FROM"))
+    sender = {"address": address, "name": name} if name else {"address": address}
+    response = httpx.post(
+        _SEND_URL.format(account=_setting("CLOUDFLARE_ACCOUNT_ID")),
+        headers={"Authorization": f"Bearer {_setting('CLOUDFLARE_EMAIL_TOKEN')}"},
+        json={"from": sender, "to": [to], "subject": subject, "text": body},
+        timeout=_TIMEOUT_S,
+    )
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if not isinstance(payload, dict):
+        payload = {}
+    if not response.is_success or not payload.get("success"):
+        reasons = "; ".join(f"{e.get('code')} {e.get('message')}" for e in payload.get("errors") or [])
+        return f"HTTP {response.status_code}: {reasons or response.reason_phrase}"
+    # Both come back with a 200 and success: true, so neither shows in the status.
+    result = payload.get("result") or {}
+    for outcome in ("permanent_bounces", "suppressed_recipients"):
+        if result.get(outcome):
+            return outcome.replace("_", " ")
+    return None
+
+
 def send(to: str, subject: str, body: str) -> bool:
     """Deliver one message, returning whether it went.
 
@@ -150,22 +177,21 @@ def send(to: str, subject: str, body: str) -> bool:
         return False
 
     try:
-        # Inside the guard: EmailMessage's default policy refuses a header
-        # value carrying a linefeed, which is how an address like
-        # "someone@example.com\nBcc: ..." is stopped. It refuses by raising, so
-        # building outside would let a hostile address answer differently from
-        # an unknown one.
+        # Built for both transports and inside the guard: EmailMessage's default
+        # policy refuses a header value carrying a linefeed, which is how an
+        # address like "someone@example.com\nBcc: ..." is stopped before the API
+        # is handed it. It refuses by raising, so building outside would let a
+        # hostile address answer differently from an unknown one.
         message = _build(to, subject, body)
         if chosen == "log":
             logger.info("MAIL_TRANSPORT=log, not sent:\n%s", message.as_string())
             return True
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=_SMTP_TIMEOUT_S) as server:
-            server.login(SMTP_USERNAME, _setting("CLOUDFLARE_EMAIL_TOKEN"))
-            server.send_message(message)
-    except (smtplib.SMTPException, OSError, ValueError) as exc:
-        # str(exc), not the traceback: an SMTPAuthenticationError's repr can
-        # carry the credential it failed with.
+        failure = _post(to, subject, body)
+    except (httpx.HTTPError, ValueError) as exc:
         logger.error("Mail to %s failed: %s: %s", to, type(exc).__name__, exc)
+        return False
+    if failure:
+        logger.error("Mail to %s failed: %s", to, failure)
         return False
     return True
 
@@ -174,7 +200,7 @@ def send_in_background(to: str, subject: str, body: str) -> None:
     """Hand the send to a daemon thread and return immediately.
 
     The caller's response time must not vary with whether an address was worth
-    mailing, and `smtplib` is blocking. Failures are the thread's to log.
+    mailing, and the request is blocking. Failures are the thread's to log.
     """
     global _inflight
 

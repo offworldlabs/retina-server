@@ -13,9 +13,10 @@ NODE_REF = "nde1a2b3c4d00"
 
 @pytest.fixture(autouse=True)
 def _mail_configured(monkeypatch):
-    monkeypatch.setenv("MAIL_TRANSPORT", "smtp")
+    monkeypatch.setenv("MAIL_TRANSPORT", "cloudflare")
     monkeypatch.setenv("MAIL_FROM", "RETINA <no-reply@retina.fm>")
     monkeypatch.setenv("CLOUDFLARE_EMAIL_TOKEN", "t")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acct123")
     monkeypatch.setenv("HOST_APP", "app.retina.fm")
     monkeypatch.delenv("FORCE_HTTPS", raising=False)
 

@@ -92,7 +92,7 @@ fi
 # 172.x container address so no Cloudflare RETURN matches either. That would
 # break `npm install` and `pip install` during `docker compose up --build`, and
 # every backend call to api.adsb.lol, opensky-network.org, api.open-meteo.com
-# and smtp.mx.cloudflare.net — as a hang rather than an error, because DROP
+# and api.cloudflare.com — as a hang rather than an error, because DROP
 # sends nothing back.
 #
 # Scoping every rule with `-i` fixes it: egress leaves via this interface (-o),
