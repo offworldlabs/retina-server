@@ -95,8 +95,11 @@ services:
       # sending them, and services/mail.py refuses it outright when
       # RETINA_ENV=production, so it cannot travel from the two overlays that
       # choose it.
-      - MAIL_TRANSPORT=smtp
+      - MAIL_TRANSPORT=cloudflare
       - MAIL_FROM=RETINA <no-reply@retina.fm>
+      # The account that holds retina.fm, named in the send endpoint's path.
+      # An identifier, not a credential: the token alone authorises a send.
+      - CLOUDFLARE_ACCOUNT_ID=05ded1830623d1c9a3f0c60140d87e27
     # bash, not sh: start.sh's supervisor uses `wait -n`, a bash builtin that
     # dash rejects ("Illegal option -n"), which crash-loops the server. The
     # script's shebang already says bash; naming it here keeps that true even if

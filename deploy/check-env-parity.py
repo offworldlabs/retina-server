@@ -151,7 +151,7 @@ ALLOWED_DIVERGENCE = (
     # otherwise make the endpoint answer 503 and the flow untestable there.
     # Refused in production by services/mail.py regardless of this entry, so
     # widening it to another environment cannot silently disable delivery on
-    # the one that matters. Staging keeps `smtp` deliberately: a transport only
+    # the one that matters. Staging keeps `cloudflare` deliberately: a transport only
     # production exercises is one nobody has tested.
     ("test", r"^services\.server\.environment\.MAIL_TRANSPORT$"),
     # Compose records the file list it was assembled from.

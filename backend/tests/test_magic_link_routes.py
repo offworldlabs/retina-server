@@ -30,9 +30,10 @@ def _mail_configured(monkeypatch):
     HOST_APP belongs here rather than in the tests that assert on the link:
     without it the endpoint refuses outright, so every test that expects a 202
     depends on it being set."""
-    monkeypatch.setenv("MAIL_TRANSPORT", "smtp")
+    monkeypatch.setenv("MAIL_TRANSPORT", "cloudflare")
     monkeypatch.setenv("MAIL_FROM", "RETINA <no-reply@retina.fm>")
     monkeypatch.setenv("CLOUDFLARE_EMAIL_TOKEN", "t")
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acct123")
     monkeypatch.setenv("HOST_APP", "app.retina.fm")
 
 
