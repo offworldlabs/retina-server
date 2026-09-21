@@ -36,9 +36,9 @@ export default function LoginPage({ message = null, isAdmin = false }) {
         return;
       }
       // Every other failure is answered with the confirmation below, the same
-      // as a send that worked. The server already refuses to say whether an
-      // address has an account; a page that showed its own errors here would
-      // give that back by the difference between the two screens.
+      // as a send that worked. The server mails any address and answers them
+      // all alike; a page that showed its own errors here would be the one
+      // place two addresses could look different.
     }
     setSending(false);
     setSent(true);
@@ -54,9 +54,7 @@ export default function LoginPage({ message = null, isAdmin = false }) {
         {message && <p className="login-error">{message}</p>}
         {sent ? (
           <>
-            <p className="login-note">
-              If that address has an account, a sign-in link is on its way.
-            </p>
+            <p className="login-note">A sign-in link is on its way to {email}.</p>
             <p className="login-note">The link works once and expires in 15 minutes.</p>
             <button
               type="button"

@@ -13,7 +13,7 @@ vi.mock("../context/AuthContext", () => ({
   }),
 }));
 
-const CONFIRMATION = "If that address has an account, a sign-in link is on its way.";
+const CONFIRMATION = /^A sign-in link is on its way to /;
 
 function answer(status: number, body: unknown = {}) {
   return vi.fn(
@@ -76,13 +76,13 @@ describe("LoginPage", () => {
     ["an address the server accepted", 202, { status: "accepted" }],
     ["a send that failed inside the server", 500, { detail: "smtp refused the recipient" }],
   ])("confirms without saying what happened: %s", async (_case, status, body) => {
-    // The two answers must be one screen. Anything that told them apart would
-    // hand back the existence check the 202 exists to withhold.
+    // The two answers must be one screen: the server answers every address the
+    // same way, and the page must not be where two addresses look different.
     vi.stubGlobal("fetch", answer(status, body));
     renderLogin();
     requestLink("ghost@example.com");
 
-    expect(await screen.findByText(CONFIRMATION)).toBeInTheDocument();
+    expect(await screen.findByText("A sign-in link is on its way to ghost@example.com.")).toBeInTheDocument();
     expect(screen.queryByText(/smtp refused/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Email address")).not.toBeInTheDocument();
   });
