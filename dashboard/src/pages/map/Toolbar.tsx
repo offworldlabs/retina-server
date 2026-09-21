@@ -24,6 +24,7 @@ export default function Toolbar({
   showLabels,
   showTrails,
   showGroundTruth,
+  truthAvailable,
   showAnomaliesOnly,
   showIlluminators,
   colorByAlt,
@@ -197,13 +198,15 @@ export default function Toolbar({
 
         <div className="toolbar-group">
           <span className="toolbar-group-label">Analysis</span>
-          <button
-            className={`toggle-btn${showGroundTruth ? " active" : ""}`}
-            onClick={onToggleGroundTruth}
-            title="Overlay the ADS-B positions the solver is being measured against"
-          >
-            Debug Truth
-          </button>
+          {truthAvailable && (
+            <button
+              className={`toggle-btn${showGroundTruth ? " active" : ""}`}
+              onClick={onToggleGroundTruth}
+              title="Overlay the ADS-B positions the solver is being measured against"
+            >
+              Debug Truth
+            </button>
+          )}
           <button
             className={`toggle-btn alert${showAnomaliesOnly ? " active" : ""}`}
             onClick={onToggleAnomaliesOnly}

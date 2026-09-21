@@ -24,7 +24,11 @@ vi.mock("react-leaflet", async (importOriginal) => {
 });
 
 // The map reads identity from the console's AuthProvider; every case is signed in.
-const owner = vi.hoisted(() => ({ user: { email: "owner@example.invalid", name: "Owner" }, loading: false }));
+const owner = vi.hoisted(() => ({
+  user: { email: "owner@example.invalid", name: "Owner" },
+  loading: false,
+  syntheticFleet: false,
+}));
 vi.mock("../../context/AuthContext", () => ({ useAuth: () => owner }));
 
 // Every case renders the whole map tree, which alone takes most of the default.
@@ -42,6 +46,7 @@ class Socket {
 }
 
 beforeEach(() => {
+  owner.syntheticFleet = false;
   localStorage.clear();
   window.history.replaceState(null, "", "/");
   Socket.instances = [];
@@ -195,4 +200,52 @@ it("keeps a hand-picked basemap that happens to be the other theme's default", (
   // hand under a light console, it is the user's choice, not dark's.
   mountUnderStoredTheme("light", "voyager", "hand");
   expect(window.localStorage.getItem("tf.tile.theme")).toBe(JSON.stringify("voyager"));
+});
+
+/** One simulated spawn with a transponder, as the fleet's truth snapshot carries it. */
+function deliverSimTruth() {
+  act(() => {
+    Socket.instances[0].readyState = Socket.OPEN;
+    Socket.instances[0].onopen?.();
+    Socket.instances[0].onmessage?.({ data: JSON.stringify({
+      aircraft: [],
+      ground_truth: { abc123: [[51, -1, 3000, 1]] },
+      ground_truth_meta: { abc123: { object_type: "aircraft", has_adsb: true, source: "sim" } },
+    }) });
+  });
+  act(() => {
+    for (let i = 0; i < 30; i++) {
+      const calls = vi.mocked(requestAnimationFrame).mock.calls;
+      calls[calls.length - 1][0](i * 16);
+    }
+  });
+}
+
+it("offers no ground truth where the server runs no synthetic fleet", async () => {
+  render(<MapThemeProvider><LiveAircraftMap /></MapThemeProvider>);
+  await screen.findByRole("checkbox", { name: "My nodes only" });
+  deliverSimTruth();
+  expect(screen.queryByRole("button", { name: "Debug Truth" })).not.toBeInTheDocument();
+  expect(screen.queryByText(/^Truth:/)).not.toBeInTheDocument();
+  fireEvent.keyDown(window, { key: "?" });
+  expect(screen.getByRole("dialog", { name: "Keyboard shortcuts" })).toBeInTheDocument();
+  expect(screen.queryByText("Toggle ground-truth overlay")).not.toBeInTheDocument();
+});
+
+it("keys only the truth classes the fleet is actually sending", async () => {
+  owner.syntheticFleet = true;
+  render(<MapThemeProvider><LiveAircraftMap feed="synthetic" /></MapThemeProvider>);
+  await screen.findByRole("checkbox", { name: "My nodes only" });
+  expect(screen.getByRole("button", { name: "Debug Truth" })).toBeInTheDocument();
+  deliverSimTruth();
+  expect(screen.getByText("Truth: sim ADS-B")).toBeInTheDocument();
+  expect(screen.queryByText("Truth: sim dark")).not.toBeInTheDocument();
+  expect(screen.queryByText(/Truth: live/)).not.toBeInTheDocument();
+});
+
+it("offers no ground truth on the real-only feed even beside a fleet", async () => {
+  owner.syntheticFleet = true;
+  render(<MapThemeProvider><LiveAircraftMap feed="real" /></MapThemeProvider>);
+  await screen.findByRole("checkbox", { name: "My nodes only" });
+  expect(screen.queryByRole("button", { name: "Debug Truth" })).not.toBeInTheDocument();
 });

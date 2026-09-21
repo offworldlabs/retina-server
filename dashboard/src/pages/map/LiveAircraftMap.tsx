@@ -1263,7 +1263,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   /* ── Node-owner view ─────────────────────────────────────────── */
   // Resolved before the feed so `ownerOnly` can pick the server-filtered
   // /ws/aircraft/owner endpoint. Only takes effect once the user is logged in.
-  const { user, ownedNodeRefs, loading: authLoading } = auth;
+  const { user, ownedNodeRefs, loading: authLoading, syntheticFleet } = auth;
   const ownedSet = useMemo(() => new Set(ownedNodeRefs), [ownedNodeRefs]);
 
   /* ── Data feeds ─────────────────────────────────────────────── */
@@ -1336,10 +1336,17 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   // the simulator would turn it on over the real map too, where it is off by
   // design. The default mode keeps the original key so nobody loses the setting
   // they already have.
-  const [showGroundTruth, setShowGroundTruth] = usePersistedState(
+  const [groundTruthPref, setShowGroundTruth] = usePersistedState(
     mode === "synthetic" ? "tf.layer.groundTruth.sim" : "tf.layer.groundTruth",
     initialLayers?.groundTruth ?? mode !== "real",
   );
+  // Truth comes only from a synthetic fleet, and the real-only feed strips it
+  // server-side, so without both the layer has nothing to draw. Derived rather
+  // than written back: the fleet flag can arrive after mount, and the stored
+  // preference must survive the render before it does.
+  // The URL hash carries the preference too, so a shared link keeps it.
+  const truthAvailable = Boolean(syntheticFleet) && mode !== "real";
+  const showGroundTruth = truthAvailable && groundTruthPref;
   const [showLabels, setShowLabels] = usePersistedState("tf.layer.labels", initialLayers?.labels ?? true);
   const [selectedHex, setSelectedHex] = useState(restoreSelection ? initialHash.hex ?? null : null);
   const [selectedNodeRef, setSelectedNodeRef] = useState(null);
@@ -1760,6 +1767,11 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
     () => displayAircraft.filter((ac) => ac._isTruth),
     [displayAircraft],
   );
+  // The legend keys only the truth classes on the map.
+  const truthClassesPresent = useMemo(
+    () => new Set(truthOnlyAircraft.map((ac) => truthClass(ac))),
+    [truthOnlyAircraft],
+  );
 
 
   /* ── Derived: viewport culling ──────────────────────────────── */
@@ -2009,12 +2021,12 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
       hex: selectedHex,
       layers: encodeLayers({
         coverage: showCoverage, labels: showLabels, trails: showTrails,
-        groundTruth: showGroundTruth, illuminators: showIlluminators,
+        groundTruth: groundTruthPref, illuminators: showIlluminators,
         colorByAlt, stats: showStats, rangeRings: showRangeRings,
         inBeamDiag: showInBeamDiag, arcs: showArcs, uncertainty: showUncertainty,
       }),
     });
-  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings, showInBeamDiag, showArcs, showUncertainty]);
+  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, groundTruthPref, showIlluminators, colorByAlt, showStats, showRangeRings, showInBeamDiag, showArcs, showUncertainty]);
 
   // Push hash when selection or toggles change without waiting for a pan.
   useEffect(() => {
@@ -2024,12 +2036,12 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
       hex: selectedHex,
       layers: encodeLayers({
         coverage: showCoverage, labels: showLabels, trails: showTrails,
-        groundTruth: showGroundTruth, illuminators: showIlluminators,
+        groundTruth: groundTruthPref, illuminators: showIlluminators,
         colorByAlt, stats: showStats, rangeRings: showRangeRings,
         inBeamDiag: showInBeamDiag, arcs: showArcs, uncertainty: showUncertainty,
       }),
     });
-  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, showGroundTruth, showIlluminators, colorByAlt, showStats, showRangeRings, showInBeamDiag, showArcs, showUncertainty]);
+  }, [writeHash, selectedHex, showCoverage, showLabels, showTrails, groundTruthPref, showIlluminators, colorByAlt, showStats, showRangeRings, showInBeamDiag, showArcs, showUncertainty]);
 
   /* ── Keyboard shortcuts ─────────────────────────────────────
      Single-letter bindings.  Suppressed while typing in inputs so the
@@ -2113,7 +2125,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
     t: () => setShowTrails((v) => !v),
     c: () => setShowCoverage((v) => !v),
     i: () => setShowIlluminators((v) => !v),
-    g: () => setShowGroundTruth((v) => !v),
+    g: () => { if (truthAvailable) setShowGroundTruth((v) => !v); },
     a: () => setColorByAlt((v) => !v),
     s: () => setShowStats((v) => !v),
     r: () => setShowRangeRings((v) => !v),
@@ -2123,7 +2135,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
     p: () => { if (selectedHex) { togglePinned(selectedHex); toast(pinnedSet.has(selectedHex) ? "Unpinned" : "Pinned"); } },
     m: () => locateMe(),
     n: () => { setSoundOn((v) => { toast(v ? "Sound off" : "Sound on"); return !v; }); },
-  }), [showShortcutHelp, searchQuery, handleTogglePause, exportSelectedTrail, exportAllTrails, locateMe, selectedHex, togglePinned, pinnedSet, setSoundOn, setShowLabels, setShowTrails, setShowCoverage, setShowIlluminators, setShowGroundTruth, setColorByAlt, setShowStats, setShowRangeRings, setShowArcs]);
+  }), [truthAvailable, showShortcutHelp, searchQuery, handleTogglePause, exportSelectedTrail, exportAllTrails, locateMe, selectedHex, togglePinned, pinnedSet, setSoundOn, setShowLabels, setShowTrails, setShowCoverage, setShowIlluminators, setShowGroundTruth, setColorByAlt, setShowStats, setShowRangeRings, setShowArcs]);
   useKeyboardShortcuts(shortcutMap);
 
   function computeError(hex, ac) {
@@ -2174,6 +2186,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
         showLabels={showLabels}
         showTrails={showTrails}
         showGroundTruth={showGroundTruth}
+        truthAvailable={truthAvailable}
         showAnomaliesOnly={showAnomaliesOnly}
         showIlluminators={showIlluminators}
         colorByAlt={colorByAlt}
@@ -2253,6 +2266,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
           <MapLegend
             colorByAlt={colorByAlt}
             showGroundTruth={showGroundTruth}
+            truthClasses={truthClassesPresent}
             showIlluminators={showIlluminators}
             hasPlayback={paused && historyRef.current.length > 0}
           />
@@ -2684,7 +2698,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
             )}
           </MapContainer>
 
-          <ShortcutHelp visible={showShortcutHelp} onClose={() => setShowShortcutHelp(false)} />
+          <ShortcutHelp visible={showShortcutHelp} truthAvailable={truthAvailable} onClose={() => setShowShortcutHelp(false)} />
 
           {paused && historyRef.current.length > 0 && (
             <PlaybackBar
