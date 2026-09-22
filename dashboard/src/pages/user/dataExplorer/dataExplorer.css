@@ -307,6 +307,12 @@
   margin-left: 4px;
 }
 
+/* A day's listing in progress, or empty under the filters. */
+.de-day-state {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .de-day-state.err {
   color: var(--error);
 }

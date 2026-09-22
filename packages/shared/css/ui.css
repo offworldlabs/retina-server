@@ -72,6 +72,24 @@
   font-size: 12px;
 }
 
+/* For the action that cannot be taken back. Set in the error ink on its wash,
+   the pairing the tokens keep readable in both themes, where white on the
+   error hue is not. */
+.btn-danger {
+  background: var(--error-light);
+  border: 1px solid transparent;
+  color: var(--error-ink);
+}
+.btn-danger:hover {
+  border-color: var(--error);
+}
+
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 /* ── Badges ──────────────────────────────────────────────────────────────── */
 
 .badge {
@@ -164,6 +182,16 @@
   padding: 20px;
 }
 
+/* A body of prose and actions rather than a table or a chart: a paragraph, a
+   note, a row of buttons, spaced as a column. */
+.card-body.stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  font-size: 14px;
+}
+
 /* ── Stat cards ──────────────────────────────────────────────────────────── */
 
 .stats-grid {
@@ -241,6 +269,10 @@
   color: var(--text-secondary);
   font-size: 14px;
   max-width: 80ch;
+}
+
+.muted {
+  color: var(--text-muted);
 }
 
 .empty-state {
