@@ -39,6 +39,7 @@ type Page = () => Promise<{ default: ComponentType }>;
 
 const PAGES: [string, Page, string][] = [
   ["Analytics", () => import("../pages/admin/AnalyticsPage"), "analytics"],
+  ["Configuration", () => import("../pages/admin/ConfigPage"), "the configuration"],
   ["Custody", () => import("../pages/admin/CustodyPage"), "custody records"],
   ["Events", () => import("../pages/admin/EventsPage"), "events"],
   ["Infrastructure", () => import("../pages/admin/InfrastructurePage"), "the infrastructure snapshot"],
@@ -48,6 +49,7 @@ const PAGES: [string, Page, string][] = [
   ["Storage", () => import("../pages/admin/StoragePage"), "storage figures"],
   ["Storage archive", () => import("../pages/admin/StoragePage"), "the archive listing"],
   ["System Metrics", () => import("../pages/admin/SystemMetricsPage"), "system metrics"],
+  ["User Management", () => import("../pages/admin/UserManagementPage"), "the user list"],
   ["Alerts", () => import("../pages/user/AlertsPage"), "alerts"],
   ["Anomaly", () => import("../pages/user/AnomalyPage"), "anomaly data"],
   ["Contribution", () => import("../pages/user/ContributionPage"), "network contribution"],
