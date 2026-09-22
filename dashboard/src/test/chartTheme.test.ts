@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { CHART_THEMES, seriesColour } from "../utils/chartTheme";
+import { CHART_THEMES, anomalyColour, seriesColour } from "../utils/chartTheme";
 import { TOKENS } from "./paletteTokens";
 
 describe.each(["light", "dark"] as const)("the %s chart chrome", (theme) => {
@@ -48,8 +48,6 @@ describe("the chart pages", () => {
   const ALLOWED = [
     // Painted onto OSM tiles, which stay light in both themes.
     "src/pages/admin/NetworkHealthPage.tsx",
-    // Its own documented domain palette, with a value per theme.
-    "src/pages/user/AnomalyPage.tsx",
     // A dev-only sandbox, gated out of production builds and drawn dark on
     // purpose; it never reads the console's theme.
     "src/pages/map/TestRadar.tsx",
@@ -104,5 +102,44 @@ describe("the series palette", () => {
     expect(seriesColour(light, 0)).toBe(light.series[0]);
     expect(seriesColour(light, 10)).toBe(light.series[0]);
     expect(seriesColour(light, 13)).toBe(light.series[3]);
+  });
+});
+
+describe("the anomaly palette", () => {
+  const light = CHART_THEMES.light.anomaly;
+  const dark = CHART_THEMES.dark.anomaly;
+
+  it("names the same types in both themes", () => {
+    expect(Object.keys(dark.types)).toEqual(Object.keys(light.types));
+  });
+
+  it("gives every type its own colour", () => {
+    for (const palette of [light, dark]) {
+      const colours = Object.values(palette.types);
+      expect(new Set(colours).size).toBe(colours.length);
+    }
+  });
+
+  it("shares no colour between the two themes, so neither is half-ported", () => {
+    expect(Object.values(dark.types).filter((c) => Object.values(light.types).includes(c))).toEqual([]);
+  });
+
+  it("falls back to the catch-all type's colour", () => {
+    for (const theme of [CHART_THEMES.light, CHART_THEMES.dark]) {
+      expect(anomalyColour(theme, "a_reason_added_later")).toBe(theme.anomaly.types.anomalous_behavior);
+      expect(anomalyColour(theme, undefined)).toBe(theme.anomaly.fallback);
+    }
+  });
+
+  // The keys are the backend's; one that names an Object.prototype member must
+  // not hand Recharts a function.
+  it("does not resolve a type up the prototype chain", () => {
+    expect(anomalyColour(CHART_THEMES.light, "constructor")).toBe(light.fallback);
+    expect(anomalyColour(CHART_THEMES.light, "toString")).toBe(light.fallback);
+  });
+
+  it("inks its badges for the ground each theme's fills sit on", () => {
+    expect(light.ink).toBe("#ffffff");
+    expect(dark.ink).not.toBe(light.ink);
   });
 });
