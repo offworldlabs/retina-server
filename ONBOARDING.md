@@ -20,7 +20,7 @@ session cookie is host-only and a login has to cover all of them:
 
 | Surface | What it is |
 | --- | --- |
-| **map** (`/map`, where `/` opens) | Live aircraft map, the console's front page. Every deployed environment shows real radar nodes only here; the synthetic fleet, where one runs, has its own page at `/sim`. The `/map` default is chosen by hostname in `dashboard/src/pages/map/utils/domains.ts`, and only the laptop keeps both fleets on it. |
+| **map** (`/map`, where `/` opens) | Live aircraft map, the console's front page. Every deployed environment shows real radar nodes only here; the synthetic fleet, where one runs, has its own page at `/sim`. The `/map` default is chosen by hostname in `dashboard/src/utils/domains.ts`, and only the laptop keeps both fleets on it. |
 | **console** (the rest of `/`) | Node ownership, the node claim page, MLAT verification, metrics. Auth required, bar the public pages such as the map and the detection archive browser at `/data`. The old `/dash/…` and `/data/…` addresses redirect in. |
 | **admin** (`admin.retina.fm`) | The same dashboard bundle with the admin route table, on a hostname of its own so a Cloudflare Access application can gate it. |
 
@@ -129,9 +129,9 @@ npm ci
 
 The console is at `http://localhost:5174` (or `http://app.localhost:5174/`) and
 opens on the live map; `/api` and `/ws` are proxied to the backend on `:8000`,
-and `?mode=admin` selects the admin console. Hostname flags select feed and
-display behaviour (see `dashboard/src/pages/map/utils/domains.ts`); a local
-hostname shows both real and synthetic nodes.
+and `?mode=admin` selects the admin console. The hostname selects `/map`'s
+default feed (see `dashboard/src/utils/domains.ts`); a local hostname shows
+both real and synthetic nodes.
 
 There's a backend-free map sandbox at `/test-radar` (one node, one aircraft,
 one ellipse) for working on map rendering without the pipeline. Only dev builds

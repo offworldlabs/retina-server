@@ -2,7 +2,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAircraftFeed, useAuth } from "./hooks";
 
-vi.mock("./utils/domains", () => ({ usesRealOnlyFeed: false }));
+vi.mock("../../utils/domains", () => ({ usesRealOnlyFeed: false }));
 
 // The map reads identity from the console's AuthProvider.
 const auth = vi.hoisted(() => ({ current: { user: null as unknown, loading: false } }));
