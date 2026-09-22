@@ -77,7 +77,7 @@ import { api } from "../../api/client";
 import { defaultFeedMode, type FeedMode } from "./feedMode";
 import { withCartoKey } from "./utils/basemap";
 import { TILES } from "./utils/tiles";
-import { usePersistedState } from "./usePersistedState";
+import { useMapPreference } from "./useMapPreference";
 import { parseHash, useHashWriter, encodeLayers, decodeLayers } from "./useUrlHashState";
 import { useKeyboardShortcuts } from "./useKeyboardShortcuts";
 import { trailToCsv, trailsToBulkCsv, downloadCsv } from "./trailExport";
@@ -1243,7 +1243,7 @@ export default function LiveAircraftMap({ feed }: { feed?: FeedMode }) {
   // The mode is part of the key for the same reason the owner toggle is: a
   // route change from /map to /sim reuses this component, and a scope carried
   // across it would keep the old fleet's positions, and would keep the
-  // persisted-state keys it read at mount (usePersistedState reads storage
+  // persisted-state keys it read at mount (useMapPreference reads storage
   // once, on mount) — including the ground-truth default below, which differs
   // between the two.
   return (
@@ -1326,8 +1326,8 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   );
 
   const [displayAircraft, setDisplayAircraft] = useState([]);
-  const [showCoverage, setShowCoverage] = usePersistedState("tf.layer.coverage", initialLayers?.coverage ?? false);
-  const [showTrails, setShowTrails] = usePersistedState("tf.layer.trails", initialLayers?.trails ?? true);
+  const [showCoverage, setShowCoverage] = useMapPreference("layer.coverage", initialLayers?.coverage ?? false);
+  const [showTrails, setShowTrails] = useMapPreference("layer.trails", initialLayers?.trails ?? true);
   // Default GT on wherever the fleet is synthetic — there the truth overlay is
   // the reference you are comparing against. Off on a real-fleet page, where the
   // receivers are the thing being shown.
@@ -1337,8 +1337,8 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   // the simulator would turn it on over the real map too, where it is off by
   // design. The default mode keeps the original key so nobody loses the setting
   // they already have.
-  const [groundTruthPref, setShowGroundTruth] = usePersistedState(
-    mode === "synthetic" ? "tf.layer.groundTruth.sim" : "tf.layer.groundTruth",
+  const [groundTruthPref, setShowGroundTruth] = useMapPreference(
+    mode === "synthetic" ? "layer.groundTruth.sim" : "layer.groundTruth",
     initialLayers?.groundTruth ?? mode !== "real",
   );
   // Truth comes only from a synthetic fleet, and the real-only feed strips it
@@ -1348,7 +1348,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   // The URL hash carries the preference too, so a shared link keeps it.
   const truthAvailable = Boolean(syntheticFleet) && mode !== "real";
   const showGroundTruth = truthAvailable && groundTruthPref;
-  const [showLabels, setShowLabels] = usePersistedState("tf.layer.labels", initialLayers?.labels ?? true);
+  const [showLabels, setShowLabels] = useMapPreference("layer.labels", initialLayers?.labels ?? true);
   const [selectedHex, setSelectedHex] = useState(restoreSelection ? initialHash.hex ?? null : null);
   const [selectedNodeRef, setSelectedNodeRef] = useState(null);
   const [focusNonce, setFocusNonce] = useState(0);
@@ -1359,15 +1359,15 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   const pausedLoopRef = useRef(false);
   // Controlled slider position for the playback bar; null = live end.
   const [seekIndex, setSeekIndex] = useState(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = usePersistedState("tf.sidebar.collapsed", false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useMapPreference("sidebar.collapsed", false);
   const [viewport, setViewport] = useState(null);
   const [showAnomaliesOnly, setShowAnomaliesOnly] = useState(false);
-  const [showIlluminators, setShowIlluminators] = usePersistedState("tf.layer.illuminators", initialLayers?.illuminators ?? false);
-  const [colorByAlt, setColorByAlt] = usePersistedState("tf.layer.colorByAlt", initialLayers?.colorByAlt ?? false);
+  const [showIlluminators, setShowIlluminators] = useMapPreference("layer.illuminators", initialLayers?.illuminators ?? false);
+  const [colorByAlt, setColorByAlt] = useMapPreference("layer.colorByAlt", initialLayers?.colorByAlt ?? false);
   const [followSelected, setFollowSelected] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
-  const [showStats, setShowStats] = usePersistedState("tf.layer.stats", initialLayers?.stats ?? true);
-  const [showRangeRings, setShowRangeRings] = usePersistedState("tf.layer.rangeRings", initialLayers?.rangeRings ?? false);
+  const [showStats, setShowStats] = useMapPreference("layer.stats", initialLayers?.stats ?? true);
+  const [showRangeRings, setShowRangeRings] = useMapPreference("layer.rangeRings", initialLayers?.rangeRings ?? false);
   // Coverage-gap diagnostic defaults OFF: it draws one line per (aircraft,
   // node) pair, so a metro-scoped fleet whose nodes all cover the same airspace
   // turns the map into a thicket. Still available from the "Coverage gaps"
@@ -1375,20 +1375,20 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   // Storage key is versioned (.v2) so the new default reaches anyone who
   // already has the old `tf.layer.inBeamDiag: true` persisted in localStorage —
   // without it, every existing user keeps seeing the lines.
-  const [showInBeamDiag, setShowInBeamDiag] = usePersistedState("tf.layer.inBeamDiag.v2", initialLayers?.inBeamDiag ?? false);
+  const [showInBeamDiag, setShowInBeamDiag] = useMapPreference("layer.inBeamDiag.v2", initialLayers?.inBeamDiag ?? false);
   // Detection arcs default ON — preserves the previously-unconditional render.
-  const [showArcs, setShowArcs] = usePersistedState("tf.layer.arcs", initialLayers?.arcs ?? true);
+  const [showArcs, setShowArcs] = useMapPreference("layer.arcs", initialLayers?.arcs ?? true);
   // 68% position-uncertainty disc around multi-node solves. Default ON: the
   // disc is the honest reading of a solved position, and hiding it by default
   // would leave the icon looking more precise than it is.
-  const [showUncertainty, setShowUncertainty] = usePersistedState("tf.layer.uncertainty", initialLayers?.uncertainty ?? true);
+  const [showUncertainty, setShowUncertainty] = useMapPreference("layer.uncertainty", initialLayers?.uncertainty ?? true);
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   // Enthusiast filters: altitude band (FL, hundreds of ft), speed floor, type.
-  const [filters, setFilters] = usePersistedState("tf.filters", { minFl: "", maxFl: "", minGs: "", type: "all" });
+  const [filters, setFilters] = useMapPreference("filters", { minFl: "", maxFl: "", minGs: "", type: "all" });
   // List sort & pinning. Pinned hex codes always render at the top of the
   // list and survive page reloads.
-  const [sortMode, setSortMode] = usePersistedState("tf.list.sort", "altitude");
-  const [pinned, setPinned] = usePersistedState("tf.list.pinned", []);
+  const [sortMode, setSortMode] = useMapPreference("list.sort", "altitude");
+  const [pinned, setPinned] = useMapPreference("list.pinned", []);
   const pinnedSet = useMemo(() => new Set(pinned || []), [pinned]);
   const togglePinned = useCallback((hex) => {
     if (!hex) return;
@@ -1399,15 +1399,15 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   }, [setPinned]);
   // Audio alert for emergency squawks (7500/7600/7700). One chime per
   // (hex, squawk) until the user clears the cache.
-  const [soundOn, setSoundOn] = usePersistedState("tf.sound.emergency", true);
+  const [soundOn, setSoundOn] = useMapPreference("sound.emergency", true);
   // User geolocation — opt-in. Drives the "you are here" marker and the
   // distance column in the list panel.
   const [userLoc, setUserLoc] = useState(null); // { lat, lon } | null
   // The basemap (positron, voyager or osm), and who chose it: a theme, or a
   // hand on the cycle control. Both are stored, because the basemap alone
   // cannot say: voyager is dark's default and also a stop on the cycle.
-  const [tileTheme, setTileTheme] = usePersistedState("tf.tile.theme", DEFAULT_BASEMAP[theme]);
-  const [tileChosenBy, setTileChosenBy] = usePersistedState("tf.tile.chosenBy", theme);
+  const [tileTheme, setTileTheme] = useMapPreference("tile.theme", DEFAULT_BASEMAP[theme]);
+  const [tileChosenBy, setTileChosenBy] = useMapPreference("tile.chosenBy", theme);
 
   // A basemap a theme chose follows the theme, including a change made while
   // the map was closed (the Header on another page, the OS overnight). One
