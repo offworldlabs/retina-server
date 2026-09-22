@@ -66,14 +66,7 @@ export default function DetectionsPage() {
             <select
               value={filterNode}
               onChange={(e) => { setFilterNode(e.target.value); setPage(0); }}
-              style={{
-                padding: "4px 8px",
-                borderRadius: 6,
-                border: "1px solid var(--border)",
-                background: "var(--bg-input)",
-                color: "var(--text-primary)",
-                fontSize: 12,
-              }}
+              className="input input-sm"
             >
               <option value="">All Nodes</option>
               {nodes.map((nid) => (
