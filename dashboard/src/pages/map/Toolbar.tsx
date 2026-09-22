@@ -107,7 +107,7 @@ export default function Toolbar({
   return (
     <div className="live-map-toolbar">
       <div className="toolbar-row-status">
-        <span className={`connection-badge ${connected ? "connected" : "disconnected"}`}>
+        <span className={`badge connection-badge ${connected ? "online" : "warning"}`}>
           {connected ? (paused ? "PAUSED" : "LIVE") : "POLL"}
         </span>
         <span className="aircraft-count">{aircraftCount} aircraft</span>
