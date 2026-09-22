@@ -57,13 +57,13 @@ export default function CustodyPage() {
         />
       </div>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+      <div className="toolbar">
         <input
           type="text"
           placeholder="Search nodes…"
           value={search}
           onChange={(e) => { setSearch(e.target.value); setPage(0); }}
-          style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid var(--border)", fontSize: 13, width: 260 }}
+          className="input"
         />
         <span className="card-note">
           Showing {paged.length} of {filtered.length} nodes
