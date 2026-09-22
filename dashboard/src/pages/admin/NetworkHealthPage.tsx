@@ -14,7 +14,7 @@ import { formatMHz, formatRelativeTime, formatUptime } from "../../utils/format"
 import { useChartTheme } from "../../utils/chartTheme";
 import { RetnodeLink } from "../../components/RetnodeLink";
 import { StatusBadge } from "../../components/StatusBadge";
-import { useNodeIds } from "../../components/useNodeIds";
+import { useNodeIds } from "../../hooks/useNodeIds";
 import { detectionCount, isOnline, statusLabel } from "../../utils/nodes";
 
 const PAGE_SIZE = 25;
