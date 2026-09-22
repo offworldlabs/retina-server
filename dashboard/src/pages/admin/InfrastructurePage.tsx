@@ -56,6 +56,7 @@ function Spark({ series, colour, theme }: { series: Point[]; colour: string; the
           <YAxis domain={[0, 100]} hide />
           <Tooltip
             contentStyle={theme.tooltip}
+            cursor={theme.cursor}
             formatter={(v) => `${v}%`}
             labelFormatter={(t) => new Date(Number(t) * 1000).toLocaleString()}
           />
