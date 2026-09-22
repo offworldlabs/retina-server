@@ -2,6 +2,7 @@ import { useState } from "react";
 import { matchPath, useLocation } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import Header from "./Header";
+import ErrorBoundary from "./ErrorBoundary";
 
 const SIDEBAR_KEY = "retina.sidebarCollapsed";
 
@@ -98,7 +99,17 @@ export default function DashboardLayout({ isAdmin, children }) {
       <Sidebar isAdmin={isAdmin} collapsed={collapsed} onToggle={toggle} />
       <div className="main-area">
         <Header title={title} />
-        <div className={`content${flush ? " flush" : ""}`}>{children}</div>
+        <div className={`content${flush ? " flush" : ""}`}>
+          {/* Keyed on the path, which names the page: the query string and hash
+              are state within it. */}
+          <ErrorBoundary
+            resetKey={pathname}
+            title="Something went wrong on this page"
+            message="The rest of the console still works. Try the page again, or choose another from the sidebar."
+          >
+            {children}
+          </ErrorBoundary>
+        </div>
       </div>
     </div>
   );
