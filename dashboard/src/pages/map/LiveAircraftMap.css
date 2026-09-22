@@ -1138,21 +1138,23 @@
 
 /* Per-node "Show"/"Hide" control in a shared site's popup.  A site with two
    receivers has no single node for a marker click to select, so the choice
-   moves into the popup. */
+   moves into the popup.  Drawn in the popup's own ink: Leaflet paints its
+   popups white whatever the theme, so a palette colour would be wrong in one
+   of them. */
 .node-select {
   margin-top: 3px;
   padding: 1px 7px;
-  border: 1px solid rgba(250, 204, 21, 0.5);
+  border: 1px solid currentColor;
   border-radius: 3px;
-  background: rgba(250, 204, 21, 0.12);
-  color: #facc15;
+  background: transparent;
+  color: inherit;
   font-size: 0.7rem;
   font-weight: 600;
   cursor: pointer;
 }
 
 .node-select:hover {
-  background: rgba(250, 204, 21, 0.24);
+  background: color-mix(in srgb, currentColor 8%, transparent);
 }
 
 /* ── Bottom playback bar ─────────────────────────────────────── */
