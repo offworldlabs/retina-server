@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import appCss from "../App.css?raw";
 /* Read by path rather than through the package's exports map, which a `?raw`
    query does not survive. */
 import uiCss from "../../../packages/shared/css/ui.css?raw";
@@ -21,6 +22,7 @@ const pages = Object.entries(sources)
   .map(([path, source]) => [path, source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "")] as const);
 
 const ui = uiCss.replace(/\/\*[\s\S]*?\*\//g, "");
+const app = appCss.replace(/\/\*[\s\S]*?\*\//g, "");
 
 function sweep(pattern: RegExp) {
   return pages.flatMap(([path, source]) => (source.match(pattern) ?? []).map((m) => `${path}: ${m}`));
@@ -43,7 +45,37 @@ describe("text", () => {
     expect(sweep(/fontFamily: "monospace"/g)).toEqual([]);
   });
 
-  it("mutes text with .muted or .card-note", () => {
-    expect(sweep(/style=\{\{ (?:fontSize: \d+, )?color: "var\(--text-muted\)"(?:, fontSize: \d+)? \}\}/g)).toEqual([]);
+  it("mutes text with .muted, .card-note or .reading-label", () => {
+    // Whatever else the style object holds: a muted colour set inline is one
+    // of the three, or it is a colour the page has picked for itself.
+    expect(sweep(/style=\{\{[^}]*color: "var\(--text-muted\)"[^}]*\}\}/g)).toEqual([]);
+  });
+});
+
+describe("stacking and layout", () => {
+  it("gives a card on the page the same gap below it as every other block", () => {
+    const gap = declarations(app, ".content > .card {")["margin-bottom"];
+    expect(gap).toBe("24px");
+    expect(declarations(app, ".grid-2 {")["margin-bottom"]).toBe(gap);
+  });
+
+  it("leaves card spacing to the stylesheet", () => {
+    expect(sweep(/className="(?:card|grid-2|stats-grid)"[^>]*style=\{\{[^}]*margin/g)).toEqual([]);
+  });
+
+  it("pads a card's contents with .card-body", () => {
+    expect(sweep(/padding: "0 20px 16px"/g)).toEqual([]);
+  });
+
+  it("lays two cards side by side with .grid-2", () => {
+    expect(sweep(/gridTemplateColumns: "1fr 1fr"/g)).toEqual([]);
+  });
+
+  it("spaces a badge by the group it sits in, not a margin of its own", () => {
+    expect(sweep(/className="badge[^"]*" style=\{\{ margin/g)).toEqual([]);
+  });
+
+  it("styles no heading inline", () => {
+    expect(sweep(/<h[1-6] style=\{\{[^}]*fontSize/g)).toEqual([]);
   });
 });
