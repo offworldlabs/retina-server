@@ -11,7 +11,7 @@ export default function NodeOwnerControl({ user, ownedCount, ownerOnly, onToggle
   if (!user) return null;
 
   return (
-    <div className="owner-panel">
+    <div className="card owner-panel">
       <div className="owner-name">{user.name || user.email}</div>
       <label>
         <input type="checkbox" checked={ownerOnly} onChange={(e) => onToggle(e.target.checked)} />
