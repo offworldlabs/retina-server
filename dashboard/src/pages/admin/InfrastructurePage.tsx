@@ -1,9 +1,10 @@
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api } from "../../api/client";
 import { FetchNotice } from "../../components/Notice";
+import { StatCard } from "../../components/StatCard";
 import { UsageBar } from "../../components/UsageBar";
 import { usePolling } from "../../hooks/usePolling";
-import { useChartTheme, type ChartTheme } from "../../utils/chartTheme";
+import { seriesColour, useChartTheme, type ChartTheme } from "../../utils/chartTheme";
 
 // DigitalOcean's checks run every minute and the backend caches for one, so
 // polling faster than this only re-reads the cache.
@@ -200,20 +201,17 @@ export default function InfrastructurePage() {
       ) : (
         <>
           <div className="stats-grid">
-            <div className="stat-card">
-              <div className="stat-label">Checks up</div>
-              <div className="stat-value">
-                {snap.checks.filter((c) => c.status === "UP").length} <span style={{ fontSize: 13, color: "var(--text-muted)" }}>/ {snap.checks.length}</span>
-              </div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">Droplets ({snap.tag})</div>
-              <div className="stat-value">{snap.droplets.length}</div>
-            </div>
-            <div className={`stat-card ${snap.errors.length > 0 ? "error" : ""}`}>
-              <div className="stat-label">Degraded items</div>
-              <div className="stat-value">{snap.errors.length}</div>
-            </div>
+            <StatCard
+              label="Checks up"
+              value={snap.checks.filter((c) => c.status === "UP").length}
+              unit={`/ ${snap.checks.length}`}
+            />
+            <StatCard label={`Droplets (${snap.tag})`} value={snap.droplets.length} />
+            <StatCard
+              label="Degraded items"
+              value={snap.errors.length}
+              tone={snap.errors.length > 0 ? "error" : undefined}
+            />
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16, marginBottom: 16 }}>
@@ -222,7 +220,7 @@ export default function InfrastructurePage() {
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16, marginBottom: 16 }}>
             {snap.droplets.map((d, i) => (
-              <DropletCard key={d.id} droplet={d} colour={theme.series[i % theme.series.length]} theme={theme} />
+              <DropletCard key={d.id} droplet={d} colour={seriesColour(theme, i)} theme={theme} />
             ))}
           </div>
 
