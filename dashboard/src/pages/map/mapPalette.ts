@@ -270,6 +270,9 @@ const DARK: MapPalette = {
 
 export const PALETTES: Record<MapTheme, MapPalette> = { light: LIGHT, dark: DARK };
 
+/** The palette until a MapThemeProvider publishes the console's theme. Every
+ *  map page mounts one, so only TestRadar and tests that render a panel bare
+ *  see this. */
 export const DEFAULT_MAP_THEME: MapTheme = "dark";
 
 /* ── The active palette, for code that cannot use a hook ──────────────────

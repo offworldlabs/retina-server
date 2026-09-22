@@ -7,7 +7,9 @@
  * because the theme attribute is stamped from JavaScript and whichever theme
  * depends on it is the one that can flash the other on first paint. The
  * consoles default to light, so light is on the bare selector and dark is what
- * the attribute buys. The map defaults to dark and inverts that. Both are
+ * the attribute buys. The map's blocks are keyed the other way round (dark
+ * unless `data-theme="light"`), but MapSurface always stamps the console's
+ * resolved theme, so on the map the attribute decides either way. Both are
  * served by giving each block a second selector.
  *
  * The second is why the map's selectors can be weaker than the consoles' and
@@ -62,8 +64,8 @@
   --neutral-light: rgba(15, 23, 42, 0.06);
   /* Ink for the things that sit ON the accent rather than beside it. It is a
      token and not a literal white because the dark accent is a bright sky blue:
-     white on it is about 1.8:1, which is why the sidebar mark and the primary
-     button take a near-black there instead. */
+     white on it is about 2.1:1 (1.7:1 on the hover shade), which is why the
+     sidebar mark and the primary button take a near-black there instead. */
   --accent-ink: #ffffff;
   /* Ink for a semantic colour set as text on its own wash, where the pure hue
      is too light to read. */

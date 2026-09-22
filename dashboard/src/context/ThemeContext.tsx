@@ -13,7 +13,7 @@ import { readStored, writeStored } from "../utils/storage";
  *
  * The third state is the reason this is not a boolean. `system`
  * stamps no attribute at all and lets the `prefers-color-scheme` block in
- * App.css answer, which means the OS preference is honoured with no JavaScript
+ * tokens.css answer, which means the OS preference is honoured with no JavaScript
  * and keeps working when the OS changes its mind mid-session. Stamping a
  * resolved value instead would pin the console to whatever the OS happened to
  * be at load.
