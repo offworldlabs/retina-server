@@ -705,6 +705,16 @@ td.table-note {
   cursor: not-allowed;
 }
 
+/* ── Toolbars ────────────────────────────────────────────────────────────── */
+/* The controls over a listing: a search, a picker, a sort, and a count. */
+.toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
 /* ── Grid layouts ────────────────────────────────────────────────────────── */
 /* A run of like cards, one per check or machine, as many to a row as fit. */
 .card-grid {
