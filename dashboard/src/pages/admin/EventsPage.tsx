@@ -59,7 +59,7 @@ export default function EventsPage() {
       <div className="card">
         <div className="card-header">
           <h3>Event Log</h3>
-          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          <span className="card-note">
             Showing {paged.length} of {events.length} events
           </span>
         </div>
@@ -70,7 +70,7 @@ export default function EventsPage() {
         >
           {paged.map((ev, i) => (
             <tr key={page * PAGE_SIZE + i}>
-              <td style={{ fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>
+              <td className="mono" style={{ whiteSpace: "nowrap" }}>
                 {ev.ts ? new Date(ev.ts * 1000).toLocaleString() : "—"}
               </td>
               <td>

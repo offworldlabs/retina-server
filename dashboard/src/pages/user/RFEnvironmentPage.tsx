@@ -99,7 +99,7 @@ export default function RFEnvironmentPage() {
             </option>
           ))}
         </select>
-        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{nodes.length} nodes</span>
+        <span className="card-note">{nodes.length} nodes</span>
       </div>
 
       <div className="stats-grid">
@@ -117,7 +117,7 @@ export default function RFEnvironmentPage() {
         <div className="card">
           <div className="card-header">
             <h3>SNR Trend (Live)</h3>
-            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Updates every 5s</span>
+            <span className="card-note">Updates every 5s</span>
           </div>
           <div className="card-body">
             <div className="chart-container">
@@ -137,7 +137,7 @@ export default function RFEnvironmentPage() {
         <div className="card">
           <div className="card-header">
             <h3>Signal Strength — Top 20</h3>
-            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{nodes.length} total nodes</span>
+            <span className="card-note">{nodes.length} total nodes</span>
           </div>
           <div className="card-body">
             <div className="chart-container">
@@ -160,7 +160,7 @@ export default function RFEnvironmentPage() {
         <div className="card-body">
           <table className="kv-table">
             <tbody>
-              <tr><td>Node ref</td><td style={{ fontFamily: "monospace" }}>{selected?.node_ref}</td></tr>
+              <tr><td>Node ref</td><td className="mono">{selected?.node_ref}</td></tr>
               <tr><td>Frequency</td><td>{formatMHz(freq)}</td></tr>
               <tr><td>Average SNR</td><td>{(metrics.avg_snr || 0).toFixed(2)} dB</td></tr>
               <tr><td>Total Frames Processed</td><td>{(metrics.total_frames || 0).toLocaleString()}</td></tr>

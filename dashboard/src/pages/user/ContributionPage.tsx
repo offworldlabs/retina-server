@@ -80,7 +80,7 @@ export default function ContributionPage() {
         <div className="card" style={{ marginBottom: 24 }}>
           <div className="card-header">
             <h3>Detections per Node — Top 20</h3>
-            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{summaries.length} total nodes</span>
+            <span className="card-note">{summaries.length} total nodes</span>
           </div>
           <div className="card-body">
             <div className="chart-container">
@@ -104,7 +104,7 @@ export default function ContributionPage() {
         <div className="card">
           <div className="card-header">
             <h3>Coverage Overlaps</h3>
-            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{overlaps.length} pairs</span>
+            <span className="card-note">{overlaps.length} pairs</span>
           </div>
           {(() => {
             const totalPages = Math.ceil(overlaps.length / PAGE_SIZE);
@@ -115,8 +115,8 @@ export default function ContributionPage() {
                 <DataTable headers={["Node A", "Node B", "Jaccard Index", "Shared Bins"]} count={paged.length}>
                   {paged.map((o, i) => (
                     <tr key={current * PAGE_SIZE + i}>
-                      <td style={{ fontFamily: "monospace" }}>{shortRef(o.node_a)}</td>
-                      <td style={{ fontFamily: "monospace" }}>{shortRef(o.node_b)}</td>
+                      <td className="mono">{shortRef(o.node_a)}</td>
+                      <td className="mono">{shortRef(o.node_b)}</td>
                       <td>{(o.jaccard || o.overlap || 0).toFixed(3)}</td>
                       <td>{o.shared_bins || o.shared || "—"}</td>
                     </tr>
@@ -138,7 +138,7 @@ export default function ContributionPage() {
             {leaderboard.slice(0, 10).map((entry, i) => (
               <tr key={entry.node_ref || i}>
                 <td style={{ fontWeight: 600, color: i < 3 ? "var(--accent)" : "var(--text-muted)" }}>{i + 1}</td>
-                <td style={{ fontFamily: "monospace", fontSize: 12 }}>{shortRef(entry.node_ref)}</td>
+                <td className="mono">{shortRef(entry.node_ref)}</td>
                 <td>{(entry.detections || 0).toLocaleString()}</td>
                 <td>{((entry.trust || 0) * 100).toFixed(0)}%</td>
               </tr>
