@@ -5,6 +5,7 @@ import { StatCard } from "../../components/StatCard";
 import { UsageBar } from "../../components/UsageBar";
 import { usePolling } from "../../hooks/usePolling";
 import { seriesColour, useChartTheme, type ChartTheme } from "../../utils/chartTheme";
+import { DASH, formatDuration, formatPercent, formatRelativeTime } from "../../utils/format";
 
 // DigitalOcean's checks run every minute and the backend caches for one, so
 // polling faster than this only re-reads the cache.
@@ -26,28 +27,6 @@ type Snapshot = {
   configured: boolean; reason: string | null; fetched_at: number; tag: string;
   stale: boolean; checks: Check[]; droplets: Droplet[]; errors: string[];
 };
-
-function pct(n: number | null | undefined, decimals = 1): string {
-  if (n === null || n === undefined) return "—";
-  return `${Number(n).toFixed(decimals)}%`;
-}
-
-function duration(seconds: number): string {
-  if (seconds < 60) return `${seconds} s`;
-  if (seconds < 3600) return `${Math.round(seconds / 60)} min`;
-  return `${(seconds / 3600).toFixed(1)} h`;
-}
-
-function ago(iso: string | null): string {
-  if (!iso) return "unknown";
-  const at = Date.parse(iso);
-  // A timestamp the API never promised to parse would render as "NaN min ago".
-  if (Number.isNaN(at)) return "unknown";
-  const s = Math.floor((Date.now() - at) / 1000);
-  if (s < 3600) return `${Math.floor(s / 60)} min ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
-  return `${Math.floor(s / 86400)} d ago`;
-}
 
 // Checks and regions are only ever UP, DOWN, or something in between (a
 // region's CHECKING, a check's MIXED/UNKNOWN); the third bucket reads as a
@@ -111,18 +90,21 @@ function CheckCard({ check }: { check: Check }) {
         <div style={{ color: "var(--text-muted)", marginBottom: 8, wordBreak: "break-all" }}>{check.target}</div>
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
           <span>30-day uptime</span>
-          <span style={{ fontWeight: 600 }}>{pct(check.uptime_30d, 2)}</span>
+          <span style={{ fontWeight: 600 }}>{formatPercent(check.uptime_30d, 2)}</span>
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
-          {Object.entries(check.regions).map(([name, r]) => (
-            <span key={name} className={`badge ${badgeClass(r.status)}`} title={`since ${ago(r.since)}`}>
-              {name} {r.status}
-            </span>
-          ))}
+          {Object.entries(check.regions).map(([name, r]) => {
+            const since = formatRelativeTime(r.since);
+            return (
+              <span key={name} className={`badge ${badgeClass(r.status)}`} title={since === DASH ? undefined : `since ${since}`}>
+                {name} {r.status}
+              </span>
+            );
+          })}
         </div>
         <div style={{ color: "var(--text-muted)" }}>
           {check.last_outage
-            ? `Last outage: ${duration(check.last_outage.duration_seconds)}, ${ago(check.last_outage.ended_at)} (${check.last_outage.region})`
+            ? `Last outage: ${formatDuration(check.last_outage.duration_seconds)}, ${formatRelativeTime(check.last_outage.ended_at)} (${check.last_outage.region})`
             : "No outage recorded"}
         </div>
       </div>
@@ -144,9 +126,9 @@ function DropletCard({ droplet, colour, theme }: { droplet: Droplet; colour: str
         </span>
       </div>
       <div style={{ padding: "0 20px 16px" }}>
-        <UsageBar label="CPU" value={pct(droplet.cpu_pct)} pct={droplet.cpu_pct} />
-        <UsageBar label="Memory" value={pct(droplet.memory_pct)} pct={droplet.memory_pct} />
-        <UsageBar label="Disk" value={pct(droplet.disk_pct)} pct={droplet.disk_pct} />
+        <UsageBar label="CPU" value={formatPercent(droplet.cpu_pct)} pct={droplet.cpu_pct} />
+        <UsageBar label="Memory" value={formatPercent(droplet.memory_pct)} pct={droplet.memory_pct} />
+        <UsageBar label="Disk" value={formatPercent(droplet.disk_pct)} pct={droplet.disk_pct} />
         <Series label="CPU, last 24 h" series={droplet.series.cpu} colour={colour} theme={theme} />
         <Series label="Memory, last 24 h" series={droplet.series.memory} colour={colour} theme={theme} />
         <Series label="Disk, last 24 h" series={droplet.series.disk} colour={colour} theme={theme} />

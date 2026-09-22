@@ -34,7 +34,7 @@ const configured = {
     regions: {
       us_east: { status: "UP", since: "2026-09-01T00:00:00Z", uptime_30d: 99.97 },
       eu_west: { status: "CHECKING", since: "2026-09-05T00:00:00Z", uptime_30d: 98.5 },
-      // A since Date.parse cannot read must read as unknown, not as NaN min ago.
+      // A since Date.parse cannot read.
       ap_south: { status: "UP", since: "not-a-date", uptime_30d: 99.1 },
     },
     last_outage: { region: "us_east", started_at: "2026-09-10T00:00:00Z", ended_at: "2026-09-10T00:02:00Z", duration_seconds: 120 },
@@ -81,6 +81,7 @@ describe("InfrastructurePage", () => {
     const checking = screen.getByText("eu_west CHECKING");
     expect(checking.className).toContain("badge");
     expect(checking.className).toContain("warning");
+    expect(screen.getByText(/^Last outage: 2m, \d+d ago \(us_east\)$/)).toBeInTheDocument();
   });
 
   it("counts checks up out of all, and reddens a non-zero degraded count", async () => {
@@ -95,11 +96,19 @@ describe("InfrastructurePage", () => {
     expect(degraded).toHaveClass("stat-card", "error");
   });
 
-  it("reads an unparseable region timestamp as unknown", async () => {
+  it("says how long a region has held its status", async () => {
+    vi.mocked(api.adminInfrastructure).mockResolvedValue(configured);
+    render(<InfrastructurePage />);
+    const region = await screen.findByText("us_east UP");
+    expect(region.getAttribute("title")).toMatch(/^since \d+d ago$/);
+  });
+
+  // Rather than "since NaN min ago", or a tooltip with nothing in it.
+  it("gives a region whose timestamp does not parse no tooltip", async () => {
     vi.mocked(api.adminInfrastructure).mockResolvedValue(configured);
     render(<InfrastructurePage />);
     const region = await screen.findByText("ap_south UP");
-    expect(region.getAttribute("title")).toBe("since unknown");
+    expect(region).not.toHaveAttribute("title");
   });
 
   it("marks a snapshot the route served past its deadline as stale", async () => {
