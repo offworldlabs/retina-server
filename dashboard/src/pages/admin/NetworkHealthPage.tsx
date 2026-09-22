@@ -104,7 +104,7 @@ export default function NetworkHealthPage() {
         <div className="card" style={{ marginBottom: 24 }}>
           <div className="card-header">
             <h3>Live Network Activity</h3>
-            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            <span className="card-note">
               Updates every 5s
             </span>
           </div>
@@ -139,7 +139,7 @@ export default function NetworkHealthPage() {
           <div className="card" style={{ marginBottom: 24 }}>
             <div className="card-header">
               <h3>Node Map</h3>
-              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              <span className="card-note">
                 {geoNodes.length} nodes with location
               </span>
             </div>
@@ -227,18 +227,18 @@ export default function NetworkHealthPage() {
                   const nodeId = idsByRef?.[ref] ?? null;
                   return (
                     <tr key={ref}>
-                      <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
+                      <td className="mono" style={{ color: "var(--accent)" }}>
                         <RetnodeLink nodeId={nodeId} synthetic={node.is_synthetic}>
                           {ref}
                         </RetnodeLink>
                       </td>
-                      <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text-muted)" }}>
+                      <td className="mono muted">
                         {nodeId ?? "—"}
                       </td>
                       <td>
                         <StatusBadge status={node.status} />
                       </td>
-                      <td style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                      <td className="card-note">
                         {formatRelativeTime(node.last_heartbeat)}
                       </td>
                       <td>{detectionCount(node._analytics).toLocaleString()}</td>
