@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 
-// defaultFeedMode reads the predicates in utils/domains, and those capture the
-// hostname once at module load, so a hostname can only be varied by re-importing
-// the pair: resetModules drops both cached copies and the stubbed window is what
-// the fresh ones read. Same pattern, and the same reason, as domains.test.ts.
+// defaultFeedMode reads utils/domains, which captures the hostname once at
+// module load, so a hostname can only be varied by re-importing the pair:
+// resetModules drops both cached copies and the stubbed window is what the
+// fresh ones read. Same pattern, and the same reason, as domains.test.ts.
 async function loadFor(hostname: string) {
   vi.resetModules();
   vi.stubGlobal("window", { location: { hostname } });
