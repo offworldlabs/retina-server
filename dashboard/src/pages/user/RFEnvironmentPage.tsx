@@ -118,7 +118,7 @@ export default function RFEnvironmentPage() {
                   <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
                   <XAxis dataKey="time" stroke={chart.axis} tick={{ fontSize: 10 }} />
                   <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
-                  <Tooltip contentStyle={chart.tooltip} />
+                  <Tooltip contentStyle={chart.tooltip} cursor={chart.cursor} />
                   <Line type="monotone" dataKey="snr" stroke={chart.series[0]} strokeWidth={2} dot={false} name="Avg SNR (dB)" />
                 </LineChart>
               </ResponsiveContainer>
@@ -138,7 +138,7 @@ export default function RFEnvironmentPage() {
                   <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
                   <XAxis dataKey="name" stroke={chart.axis} tick={{ fontSize: 10 }} />
                   <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
-                  <Tooltip contentStyle={chart.tooltip} />
+                  <Tooltip contentStyle={chart.tooltip} cursor={chart.cursor} />
                   <Bar dataKey="snr" fill={chart.series[1]} name="Avg SNR (dB)" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>

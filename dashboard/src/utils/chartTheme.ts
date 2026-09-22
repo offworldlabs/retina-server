@@ -21,6 +21,10 @@ export interface ChartTheme {
   axis: string;
   /** Recharts wants the tooltip as one style object. */
   tooltip: { background: string; border: string; borderRadius: number; fontSize: number; color: string };
+  /** The Tooltip's hover cursor: a band behind a bar chart's column (fill), a
+   *  rule across a line or area chart (stroke). Recharts' own is a light grey
+   *  that glares on the dark ground. */
+  cursor: { fill: string; stroke: string };
   /** Categorical series, in the guide's order. */
   series: readonly string[];
   /** The "others" slice of a top-N breakdown. Neutral in both themes: it is an
@@ -51,6 +55,7 @@ export const CHART_THEMES: Record<Theme, ChartTheme> = {
     grid: "#e2e8f0",
     axis: "#94a3b8",
     tooltip: { ...TOOLTIP_SHAPE, background: "#ffffff", border: "1px solid #e2e8f0", color: "#0f172a" },
+    cursor: { fill: "#cbd5e1", stroke: "#cbd5e1" },
     series: ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#14b8a6"],
     others: "#94a3b8",
     anomaly: {
@@ -77,6 +82,7 @@ export const CHART_THEMES: Record<Theme, ChartTheme> = {
       border: "1px solid rgba(100, 180, 255, 0.28)",
       color: "#e2e8f0",
     },
+    cursor: { fill: "rgba(100, 180, 255, 0.28)", stroke: "rgba(100, 180, 255, 0.28)" },
     series: ["#60a5fa", "#34d399", "#fbbf24", "#f87171", "#a78bfa", "#f472b6", "#22d3ee", "#a3e635", "#fb923c", "#2dd4bf"],
     others: "#94a3b8",
     anomaly: {

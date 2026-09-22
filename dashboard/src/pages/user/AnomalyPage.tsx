@@ -123,6 +123,7 @@ export default function AnomalyPage() {
                     <Tooltip
                       labelFormatter={(v) => new Date((v as number) * 1000).toLocaleString()}
                       contentStyle={chart.tooltip}
+                      cursor={chart.cursor}
                     />
                     <Area
                       type="monotone"
@@ -159,7 +160,7 @@ export default function AnomalyPage() {
                       width={140}
                       tickFormatter={(v) => v.replace(/_/g, " ")}
                     />
-                    <Tooltip contentStyle={chart.tooltip} />
+                    <Tooltip contentStyle={chart.tooltip} cursor={chart.cursor} />
                     <Bar dataKey="count" radius={[0, 4, 4, 0]}>
                       {typeData.map((entry, i) => (
                         <Cell key={i} fill={anomalyColour(chart, entry.name)} />
