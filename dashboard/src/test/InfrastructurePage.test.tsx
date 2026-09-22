@@ -3,7 +3,8 @@ import { act, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../api/client", () => ({ api: { adminInfrastructure: vi.fn() } }));
-vi.mock("../utils/chartTheme", () => ({
+vi.mock("../utils/chartTheme", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../utils/chartTheme")>()),
   useChartTheme: () => ({ grid: "#eee", axis: "#999", tooltip: {}, series: ["#123456"], others: "#999" }),
 }));
 // Recharts measures a real layout; under jsdom there is none, so the chart
@@ -80,6 +81,18 @@ describe("InfrastructurePage", () => {
     const checking = screen.getByText("eu_west CHECKING");
     expect(checking.className).toContain("badge");
     expect(checking.className).toContain("warning");
+  });
+
+  it("counts checks up out of all, and reddens a non-zero degraded count", async () => {
+    vi.mocked(api.adminInfrastructure).mockResolvedValue(configured);
+    const { container } = render(<InfrastructurePage />);
+    await screen.findByText("retina-server prod");
+    const cards = [...container.querySelectorAll(".stat-card")];
+    const checksUp = cards.find((c) => c.textContent?.startsWith("Checks up"))!;
+    expect(checksUp.querySelector(".stat-value")).toHaveTextContent("1/ 2");
+    expect(checksUp.querySelector(".stat-unit")).toHaveTextContent("/ 2");
+    const degraded = cards.find((c) => c.textContent?.startsWith("Degraded items"))!;
+    expect(degraded).toHaveClass("stat-card", "error");
   });
 
   it("reads an unparseable region timestamp as unknown", async () => {
