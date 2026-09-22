@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { api } from "../../api/client";
+import { DASH } from "../../utils/format";
 import { POSITION_SOURCE_ARC_ONLY, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
 import { classifyHex, emergencySquawkLabel } from "./hexInfo";
 import { trailToCsv, downloadCsv } from "./trailExport";
@@ -212,13 +213,13 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
         {isAdsbSingleNode && (
           <div className="detail-section">
             <div className="detail-section-title">Claimed detection</div>
-            <Field label="Claiming node" value={ac.node_ref ? nodeLabelFor(ac.node_ref) : "—"} />
+            <Field label="Claiming node" value={ac.node_ref ? nodeLabelFor(ac.node_ref) : DASH} />
             <Field
               label="ADS-B fix age"
-              value={ac.adsb_fix_age_s != null ? `${ac.adsb_fix_age_s}s` : "—"}
+              value={ac.adsb_fix_age_s != null ? `${ac.adsb_fix_age_s}s` : DASH}
             />
-            <Field label="Latest delay" value={ac.delay_us != null ? `${ac.delay_us} μs` : "—"} />
-            <Field label="Latest doppler" value={ac.doppler_hz != null ? `${ac.doppler_hz} Hz` : "—"} />
+            <Field label="Latest delay" value={ac.delay_us != null ? `${ac.delay_us} μs` : DASH} />
+            <Field label="Latest doppler" value={ac.doppler_hz != null ? `${ac.doppler_hz} Hz` : DASH} />
             <Field
               label="Note"
               value={
@@ -346,7 +347,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
                   : <span style={{ color: INK_MUTED, fontWeight: 600 }}>no — dark target</span>
               }
             />
-            <Field label="Callsign" value={ac.adsb_callsign || "—"} />
+            <Field label="Callsign" value={ac.adsb_callsign || DASH} />
             <Field label="Object type" value={ac.object_type || "aircraft"} />
             {ac.is_anomalous && (
               <Field
@@ -526,17 +527,17 @@ function MlatSolveHistorySection({ history }) {
                   <td style={cell}>{s.n_nodes}</td>
                   <td style={cell}>
                     <span className={errClass(s.gt_error_km)}>
-                      {s.gt_error_km != null ? `${s.gt_error_km.toFixed(2)} km` : "—"}
+                      {s.gt_error_km != null ? `${s.gt_error_km.toFixed(2)} km` : DASH}
                     </span>
                   </td>
                   <td style={cell}>
                     <span style={{ color: hdgErrColor(s.heading_err_deg) }}>
-                      {s.heading_err_deg != null ? `${s.heading_err_deg}°` : "—"}
+                      {s.heading_err_deg != null ? `${s.heading_err_deg}°` : DASH}
                     </span>
                   </td>
                   <td style={cell}>{s.rms_delay}</td>
                   <td style={cell}>{s.rms_doppler}</td>
-                  <td style={{ ...cell, color: INK_SUBTLE }}>{s.gt_hex || "—"}</td>
+                  <td style={{ ...cell, color: INK_SUBTLE }}>{s.gt_hex || DASH}</td>
                 </tr>
               ))}
             </tbody>
