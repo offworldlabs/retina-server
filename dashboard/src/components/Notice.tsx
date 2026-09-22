@@ -17,7 +17,7 @@ export function Notice({ children, tone = "warning", onRetry }: NoticeProps) {
     <div className={tone === "error" ? "notice error" : "notice"} role="alert">
       <div className="notice-text">{children}</div>
       {onRetry && (
-        <button type="button" className="btn btn-outline btn-sm" onClick={onRetry}>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={onRetry}>
           Retry
         </button>
       )}
