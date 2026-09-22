@@ -26,6 +26,22 @@ export interface ChartTheme {
   /** The "others" slice of a top-N breakdown. Neutral in both themes: it is an
    *  absence of category rather than one more of them. */
   others: string;
+  /** The Anomaly Monitor's categories, keyed by the backend's reason. */
+  anomaly: AnomalyPalette;
+}
+
+/**
+ * A domain palette, not the status ramp: these hues say which kind of anomaly,
+ * not how bad it is. Dark keeps every hue and takes it one step lighter, the
+ * same move the series makes, so a type is recognisably itself in either theme.
+ */
+export interface AnomalyPalette {
+  types: Readonly<Record<string, string>>;
+  /** For a reason the backend added before this palette did. */
+  fallback: string;
+  /** Text on a badge filled with one of the colours above. White is unreadable
+   *  on the lighter dark variants. */
+  ink: string;
 }
 
 const TOOLTIP_SHAPE = { borderRadius: 6, fontSize: 12 } as const;
@@ -37,6 +53,20 @@ export const CHART_THEMES: Record<Theme, ChartTheme> = {
     tooltip: { ...TOOLTIP_SHAPE, background: "#ffffff", border: "1px solid #e2e8f0", color: "#0f172a" },
     series: ["#3b82f6", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#06b6d4", "#84cc16", "#f97316", "#14b8a6"],
     others: "#94a3b8",
+    anomaly: {
+      types: {
+        supersonic: "#ef4444",
+        instant_acceleration: "#f97316",
+        instant_direction_change: "#eab308",
+        sustained_orbit: "#8b5cf6",
+        position_mismatch: "#3b82f6",
+        identity_swap: "#ec4899",
+        altitude_jump: "#14b8a6",
+        anomalous_behavior: "#6b7280",
+      },
+      fallback: "#6b7280",
+      ink: "#ffffff",
+    },
   },
   dark: {
     grid: "rgba(100, 180, 255, 0.14)",
@@ -49,6 +79,20 @@ export const CHART_THEMES: Record<Theme, ChartTheme> = {
     },
     series: ["#60a5fa", "#34d399", "#fbbf24", "#f87171", "#a78bfa", "#f472b6", "#22d3ee", "#a3e635", "#fb923c", "#2dd4bf"],
     others: "#94a3b8",
+    anomaly: {
+      types: {
+        supersonic: "#f87171",
+        instant_acceleration: "#fb923c",
+        instant_direction_change: "#facc15",
+        sustained_orbit: "#a78bfa",
+        position_mismatch: "#60a5fa",
+        identity_swap: "#f472b6",
+        altitude_jump: "#2dd4bf",
+        anomalous_behavior: "#9ca3af",
+      },
+      fallback: "#9ca3af",
+      ink: "#0b1220",
+    },
   },
 };
 
@@ -62,4 +106,14 @@ export function useChartTheme(): ChartTheme {
  *  running out and painting SVG's default black. */
 export function seriesColour(theme: ChartTheme, index: number): string {
   return theme.series[index % theme.series.length];
+}
+
+/** The colour for an anomaly type, or the fallback for one the palette does not
+ *  know. */
+export function anomalyColour(theme: ChartTheme, type: string | undefined): string {
+  const { types, fallback } = theme.anomaly;
+  // hasOwnProperty, not a plain lookup: these keys come from the backend, and
+  // `constructor` or `toString` would otherwise resolve up the prototype chain
+  // and hand Recharts a function as a colour.
+  return type && Object.prototype.hasOwnProperty.call(types, type) ? types[type] : fallback;
 }
