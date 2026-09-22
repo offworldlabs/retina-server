@@ -17,7 +17,7 @@ import { usePalette } from "./useMapTheme";
  * unknown node rather than echoing an identifier it cannot resolve.
  */
 export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError, detectingNodes = [], solveHistory = null, nodeLabelFor = (_nodeRef) => "unlisted node" }) {
-  const { ANOMALY, DRONE, GOOD, INK_MUTED, INK_SUBTLE, LANE_MN_ADSB } = usePalette();
+  const { ANOMALY, DRONE, LANE_MN_ADSB } = usePalette();
   if (!ac) return null;
 
   const err = computeError(ac.hex, ac);
@@ -200,7 +200,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
           {isSolverOnly && (
             <Field
               label="Note"
-              value={<span style={{ color: INK_SUBTLE, fontStyle: "italic" }}>Position uncertain — single node, no arc</span>}
+              value={<span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>Position uncertain — single node, no arc</span>}
             />
           )}
         </div>
@@ -223,7 +223,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
             <Field
               label="Note"
               value={
-                <span style={{ color: INK_SUBTLE, fontStyle: "italic" }}>
+                <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
                   Position is the ADS-B fix; the arc is the delay locus from the claiming node
                 </span>
               }
@@ -343,8 +343,8 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
               label="ADS-B"
               value={
                 ac.has_adsb
-                  ? <span style={{ color: GOOD, fontWeight: 600 }}>yes</span>
-                  : <span style={{ color: INK_MUTED, fontWeight: 600 }}>no — dark target</span>
+                  ? <span style={{ color: "var(--success)", fontWeight: 600 }}>yes</span>
+                  : <span style={{ color: "var(--text-secondary)", fontWeight: 600 }}>no — dark target</span>
               }
             />
             <Field label="Callsign" value={ac.adsb_callsign || DASH} />
@@ -366,10 +366,10 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
                   ? (
                     <span style={{ wordBreak: "break-word" }}>
                       {detectingNodes.map(nodeLabelFor).join(", ")}
-                      <span style={{ color: INK_MUTED }}> ({detectingNodes.length})</span>
+                      <span style={{ color: "var(--text-secondary)" }}> ({detectingNodes.length})</span>
                     </span>
                   )
-                  : <span style={{ color: INK_MUTED }}>no nodes right now</span>
+                  : <span style={{ color: "var(--text-secondary)" }}>no nodes right now</span>
               }
             />
           </div>
@@ -479,7 +479,7 @@ function MlatVerificationSection({ solverHex }) {
 }
 
 function MlatSolveHistorySection({ history }) {
-  const { ANOMALY, GOOD, INK_MUTED, INK_SUBTLE, MLAT, WARN } = usePalette();
+  const { MLAT } = usePalette();
   // Per-solve records behind this marker over the last ~30 min, newest first
   // (GET /api/test/mlat-history?hex=...).  gt_error_km is frozen at solve
   // time against the nearest GT trail point — independent of the display's
@@ -490,11 +490,10 @@ function MlatSolveHistorySection({ history }) {
   if (!solves.length && !rejects?.n) return null;
 
   const errClass = (e) => (e == null ? "" : e < 3 ? "good" : e < 8 ? "warn" : "bad");
-  // Direction error color, same threshold-bucket idiom as errClass above but
-  // inline — heading_err_deg is None whenever truth is near-hover or the
-  // solve has no meaningful velocity, which errClass's km buckets don't fit.
-  const hdgErrColor = (e) =>
-    e == null ? INK_MUTED : e < 15 ? GOOD : e < 45 ? WARN : ANOMALY;
+  // The same scale over direction error, in degrees rather than km.
+  // heading_err_deg is None whenever truth is near-hover or the solve has no
+  // meaningful velocity.
+  const hdgErrClass = (e) => (e == null ? "" : e < 15 ? "good" : e < 45 ? "warn" : "bad");
   const ago = (ts) => {
     const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
     return s < 60 ? `-${s}s` : `-${Math.round(s / 60)}m`;
@@ -510,7 +509,7 @@ function MlatSolveHistorySection({ history }) {
         <div style={{ maxHeight: 180, overflowY: "auto", fontSize: 11 }}>
           <table style={{ borderCollapse: "collapse", width: "100%" }}>
             <thead>
-              <tr style={{ color: INK_MUTED, textAlign: "left" }}>
+              <tr style={{ color: "var(--text-secondary)", textAlign: "left" }}>
                 <th style={cell}>t</th>
                 <th style={cell}>N</th>
                 <th style={cell}>GT err</th>
@@ -523,7 +522,7 @@ function MlatSolveHistorySection({ history }) {
             <tbody>
               {solves.map((s, i) => (
                 <tr key={`${s.ts_ms}-${i}`} style={{ borderTop: "1px solid var(--border)" }}>
-                  <td style={{ ...cell, color: INK_SUBTLE }}>{ago(s.ts_ms)}</td>
+                  <td style={{ ...cell, color: "var(--text-muted)" }}>{ago(s.ts_ms)}</td>
                   <td style={cell}>{s.n_nodes}</td>
                   <td style={cell}>
                     <span className={errClass(s.gt_error_km)}>
@@ -531,13 +530,13 @@ function MlatSolveHistorySection({ history }) {
                     </span>
                   </td>
                   <td style={cell}>
-                    <span style={{ color: hdgErrColor(s.heading_err_deg) }}>
+                    <span className={hdgErrClass(s.heading_err_deg)}>
                       {s.heading_err_deg != null ? `${s.heading_err_deg}°` : DASH}
                     </span>
                   </td>
                   <td style={cell}>{s.rms_delay}</td>
                   <td style={cell}>{s.rms_doppler}</td>
-                  <td style={{ ...cell, color: INK_SUBTLE }}>{s.gt_hex || DASH}</td>
+                  <td style={{ ...cell, color: "var(--text-muted)" }}>{s.gt_hex || DASH}</td>
                 </tr>
               ))}
             </tbody>
@@ -548,7 +547,7 @@ function MlatSolveHistorySection({ history }) {
         <Field
           label="Rejects nearby"
           value={
-            <span style={{ color: WARN }} title="Gate-rejected solves within 10 km of the latest published solve">
+            <span className="warn" title="Gate-rejected solves within 10 km of the latest published solve">
               {Object.entries(rejects.by_outcome || {})
                 .map(([k, v]) => `${k.replace(/^rejected_|^n2_/, "")}:${v}`)
                 .join("  ") || rejects.n}
