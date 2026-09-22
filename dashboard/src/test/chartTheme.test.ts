@@ -20,6 +20,12 @@ describe.each(["light", "dark"] as const)("the %s chart chrome", (theme) => {
     expect(chart.tooltip.background).toBe(tokenFor("--bg-card"));
     expect(chart.tooltip.color).toBe(tokenFor("--text-primary"));
   });
+
+  // A hairline's colour reads as a band behind a bar and as a rule across a
+  // line, and it is quiet on either ground where Recharts' grey is not.
+  it("draws its hover cursor in the stronger hairline", () => {
+    expect(chart.cursor).toEqual({ fill: tokenFor("--border-light"), stroke: tokenFor("--border-light") });
+  });
 });
 
 // A tooltip floats over a chart that is itself on a card, so its border is the
@@ -66,6 +72,20 @@ describe("the chart pages", () => {
       expect(source.match(/#[0-9a-f]{3,8}\b|\brgba?\([\d\s,.]+\)/gi) ?? []).toEqual([]);
     },
   );
+
+  // Every chart tooltip is themed through the same object, cursor included.
+  // react-leaflet has a Tooltip too, which draws no cursor.
+  const charted = Object.keys(pages).filter((p) => /import[^;]*\bTooltip\b[^;]*from "recharts"/.test(pages[p]));
+
+  it("finds chart pages, so a filter that matched nothing cannot pass", () => {
+    expect(charted.length).toBeGreaterThan(5);
+  });
+
+  it.each(charted)("%s themes every tooltip's cursor", (path) => {
+    // `=>` is let through so an inline formatter does not end the tag early.
+    const tooltips = pages[path].match(/<Tooltip\b(?:=>|[^>])*>/g) ?? [];
+    expect(tooltips.filter((tag) => !/cursor=\{\w+\.cursor\}/.test(tag))).toEqual([]);
+  });
 
   // A named colour is as pinned to one theme as a hex is, and an inline style
   // outranks the class rule it sits on — `color: "white"` on a .btn-primary
