@@ -54,8 +54,26 @@ from sqlalchemy.pool import NullPool
 
 from core.nodes import Node, NodeLocationPrivacy
 from core.users import DATABASE_URL, async_session_maker
+from services import probation
 
 logger = logging.getLogger(__name__)
+
+
+class PrivateNodeIds(frozenset):
+    """The private set, with every polled node on probation folded in.
+
+    Probation reaches ids no table holds (services/probation.py fails closed on
+    an unknown `bla` id), so membership asks it per id, and while the fence is on
+    the set is never empty. Iterating or intersecting sees only the ids the
+    registry knows, which is enough for an owner's own nodes.
+    """
+
+    def __contains__(self, node_id) -> bool:
+        return frozenset.__contains__(self, node_id) or probation.in_probation(node_id)
+
+    def __bool__(self) -> bool:
+        return frozenset.__len__(self) > 0 or probation.enabled()
+
 
 # How long an answer is reused.  The choice is a registration, so it changes at
 # human speed — a node that re-registers with a new choice is honoured within
@@ -70,7 +88,7 @@ _TTL_S = 30.0
 _ERROR_RETRY_S = 5.0
 
 _lock = threading.Lock()
-_cached: frozenset[str] = frozenset()
+_cached: PrivateNodeIds = PrivateNodeIds()
 _expires_at: float = 0.0
 # Distinct from ``_cached`` being empty: an empty set from a healthy database
 # means "no node is private", and the boot state means "nobody has asked yet".
@@ -85,7 +103,7 @@ class PublicationUnavailable(RuntimeError):
     """No privacy policy has been read successfully in this process yet."""
 
 
-def _cached_policy() -> frozenset[str]:
+def _cached_policy() -> PrivateNodeIds:
     if not _have_data:
         raise PublicationUnavailable("Publication policy is temporarily unavailable")
     return _cached
@@ -95,7 +113,7 @@ def _reset_for_tests() -> None:
     """Drop the cached answer and the engine.  Tests only."""
     global _cached, _expires_at, _have_data, _engine
     with _lock:
-        _cached = frozenset()
+        _cached = PrivateNodeIds()
         _expires_at = 0.0
         _have_data = False
         if _engine is not None:
@@ -174,7 +192,8 @@ def _query() -> frozenset[str]:
 
     ``Node.publication`` is read for every node rather than filtered to the
     private ones, because a node registered *public* with a private override is
-    in the answer and a filter would drop the row that says so.
+    in the answer and a filter would drop the row that says so.  A registered
+    polled node on probation is listed too, so an owner merge can find it.
     """
     with _sync_engine().connect() as conn:
         registration = {nid: choice for nid, choice in conn.execute(select(Node.node_id, Node.publication)) if nid}
@@ -186,7 +205,7 @@ def _query() -> frozenset[str]:
     return frozenset(
         nid
         for nid in registration.keys() | overrides.keys()
-        if effective_privacy(registration.get(nid), overrides.get(nid))[0]
+        if effective_privacy(registration.get(nid), overrides.get(nid))[0] or probation.in_probation(nid)
     )
 
 
@@ -202,17 +221,18 @@ def invalidate() -> None:
         _expires_at = 0.0
 
 
-def private_node_ids() -> frozenset[str]:
+def private_node_ids() -> PrivateNodeIds:
     """Node ids whose owner chose not to publish, as of at most _TTL_S ago.
 
-    A node absent from both tables is public: registration is what records the
-    choice, and the synthetic fleet and any pre-registration node never made
-    one.  The default is public because that is what the fleet was before the
-    column was enforced, and silently retiring nodes from the map on a schema
-    reading would be its own kind of wrong.  Such a node is not stuck there —
-    the override table takes an id the ``nodes`` table has never seen, which on
-    a deployment whose fleet never registered is the only way to make one
-    private.
+    Membership also covers polled nodes on probation, answered live (see
+    ``PrivateNodeIds``).  Otherwise a node absent from both tables is public:
+    registration is what records the choice, and the synthetic fleet and any
+    pre-registration node never made one.  The default is public because that
+    is what the fleet was before the column was enforced, and silently retiring
+    nodes from the map on a schema reading would be its own kind of wrong.
+    Such a node is not stuck there — the override table takes an id the
+    ``nodes`` table has never seen, which on a deployment whose fleet never
+    registered is the only way to make one private.
     """
     global _cached, _expires_at, _have_data
     now = time.monotonic()
@@ -224,7 +244,7 @@ def private_node_ids() -> frozenset[str]:
         if time.monotonic() < _expires_at:
             return _cached_policy()
         try:
-            _cached = _query()
+            _cached = PrivateNodeIds(_query())
             _have_data = True
             _expires_at = time.monotonic() + _TTL_S
         except Exception:
@@ -281,8 +301,8 @@ def public_aircraft_payload(data: dict) -> dict:
     aircraft hex and carry no node identity at all; they are left alone here and
     stripped by the per-owner filter as before.
 
-    Returns the input object itself when no node is private, so the caller can
-    reuse the bytes it already serialised.
+    Returns the input object itself when the private set is empty, which it
+    never is while the probation fence is on.
     """
     try:
         private = private_node_ids()

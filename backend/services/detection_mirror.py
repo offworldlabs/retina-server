@@ -31,7 +31,7 @@ from config.constants import (
     DETECTION_MIRROR_TIMEOUT_S,
 )
 from core import state
-from services import node_refs
+from services import node_refs, probation
 from services.node_pipeline import pipeline_frame
 
 if TYPE_CHECKING:
@@ -157,7 +157,8 @@ def offer(node_id: str, frame: "DetectionFrame") -> None:
     backpressure policy. Retrying or buffering here would put a backlog on
     production, which is the thing this design exists to avoid.
     """
-    if _queue is None:
+    # A receiver would solve and archive what it is sent.
+    if _queue is None or probation.in_probation(node_id):
         return
     try:
         _queue.put_nowait((node_id, frame))

@@ -67,7 +67,9 @@ async def radar_analytics(request: Request, real_only: bool = False):
     """
     cached = state.latest_analytics_real_bytes if real_only else state.latest_analytics_bytes
     private = private_node_ids()
-    if not private:
+    # By size, not truth: probation keeps the set truthy while holding nothing
+    # an owner could have registered (services/publication.PrivateNodeIds).
+    if not len(private):
         return Response(content=cached, media_type="application/json")
 
     owned_private = private & await _optional_owned_nodes(request)
