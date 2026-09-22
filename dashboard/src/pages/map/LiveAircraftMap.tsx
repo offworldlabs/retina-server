@@ -24,52 +24,50 @@ import {
   TRAIL_SOLVE_SIGMA_FALLBACK_M,
   SOLVE_TRAIL_MAX_POINTS,
   SOLVE_TRAIL_STITCH_MAX_POINTS,
-  MLAT_HISTORY_REFRESH_MS,
-  newSolveArrived,
+  ARC_TOTAL_LIFE_MS,
   groundTruthKey,
+} from "./constants";
+import { MLAT_HISTORY_REFRESH_MS, newSolveArrived } from "./mlatHistory";
+import {
   applyGroundTruthFixes,
   pruneGroundTruthFixes,
   sweepStaleGroundTruthFixes,
-  truthClass,
-  truthFill,
-  truthBorder,
-  isPointInViewport,
-  isAircraftInViewport,
+} from "./groundTruthFixes";
+import { truthClass, truthFill, truthBorder } from "./truthColor";
+import { isPointInViewport, isAircraftInViewport, uncertaintyDiscRadiusM, validLatLon } from "./geo";
+import {
   sampleTrailPositions,
   buildTrailSegments,
   smoothTrailPositions,
   stitchPredecessorTrail,
+} from "./trails";
+import {
   makeAircraftIcon,
   makeDroneIcon,
   drIconState,
   getAircraftColor,
   isDarkMultinodeSolve,
-  solveDiscCenter,
-  solveUncertaintyRadiusM,
   nodeSiteIcon,
-  isRingOnlyRadius,
-  uncertaintyDiscRadiusM,
-  nodeLabel,
-  groupNodesBySite,
-  coverageLine,
+} from "./icons";
+import { solveDiscCenter, solveUncertaintyRadiusM, isRingOnlyRadius } from "./uncertainty";
+import { nodeLabel, groupNodesBySite, coverageLine } from "./nodeSites";
+import {
   FitBounds,
   ViewportTracker,
   MapClickClear,
   InvalidateSizeOnResize,
   WorldWrap,
-  useAircraftFeed,
-  useNodes,
-  useAuth,
-  NodeOwnerControl,
-  AircraftListPanel,
-  AircraftDetailPanel,
-  Toolbar,
-  MapLegend,
-  PlaybackBar,
-  DetectionArcs,
-  ClaimedArcs,
-  InBeamDiagnostic,
-} from "./index";
+} from "./MapControls";
+import { useAircraftFeed, useNodes, useMapAuth } from "./hooks";
+import NodeOwnerControl from "./NodeOwnerControl";
+import AircraftListPanel from "./AircraftListPanel";
+import AircraftDetailPanel from "./AircraftDetailPanel";
+import Toolbar from "./Toolbar";
+import MapLegend from "./MapLegend";
+import PlaybackBar from "./PlaybackBar";
+import DetectionArcs from "./DetectionArcs";
+import ClaimedArcs from "./ClaimedArcs";
+import InBeamDiagnostic from "./InBeamDiagnostic";
 import { IconScaleSync, iconZoomScale, useIconZoomScale } from "./iconScale";
 import ScaledCircleMarker from "./ScaledCircleMarker";
 
@@ -84,11 +82,9 @@ import { trailToCsv, trailsToBulkCsv, downloadCsv } from "./trailExport";
 import { toast, copyToClipboard } from "./toast";
 import { checkEmergencySquawks, resetEmergencyAlertCache } from "./emergencyAudio";
 import { distanceKm } from "../../utils/geo";
-import { validLatLon } from "./geo";
 import { arcNearestPoint } from "./arcErrors";
 import { detectingNodeRefsFor } from "./detections";
 import { ensureDebugPanes, DEBUG_PASSIVE_PANE, GT_CLICK_PANE } from "./panes";
-import { ARC_TOTAL_LIFE_MS } from "./constants";
 import { usePalette } from "./useMapTheme";
 import { useResolvedTheme } from "../../context/ThemeContext";
 
@@ -1231,7 +1227,7 @@ const HashSync = memo(function HashSync({ onMove, showRangeRings, selectedHex, s
  * does; /sim passes "synthetic" so one console serves both fleets (feedMode.ts).
  */
 export default function LiveAircraftMap({ feed }: { feed?: FeedMode }) {
-  const auth = useAuth();
+  const auth = useMapAuth();
   // Resolved here rather than in each hook, so the feed, the node listing and
   // the layer defaults below cannot disagree about which fleet this page is.
   const mode = feed ?? defaultFeedMode();
