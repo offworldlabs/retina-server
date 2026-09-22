@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useLocation } from "react-router-dom";
+import { matchPath, useLocation } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import Header from "./Header";
 
@@ -17,7 +17,7 @@ function storedCollapsed(): boolean | null {
   }
 }
 
-const pageTitles = {
+export const pageTitles: Record<string, { user?: string; admin?: string }> = {
   // The user surface's index only forwards to the map, so it borrows its title.
   "/": { user: "Live Map", admin: "Network Health" },
   "/overview": { user: "Overview" },
@@ -29,6 +29,8 @@ const pageTitles = {
   // The old address, which only forwards to /sim/physics. Kept so the hop does
   // not flash a header that says "Dashboard" on its way there.
   "/physics": { user: "Physics Layer" },
+  // Dev builds only.
+  "/test-radar": { user: "Test Radar" },
   "/detections": { user: "Detections" },
   "/rf": { user: "RF Environment" },
   "/contribution": { user: "Network Contribution" },
@@ -42,6 +44,9 @@ const pageTitles = {
   // Forwards to /onboarding; named for the same reason as /physics above.
   "/settings": { user: "My Nodes" },
   "/nodes": { admin: "Node Management" },
+  // A pattern, because the first segment alone would name the admin list.
+  "/nodes/:nodeId": { user: "Node Detail", admin: "Node Detail" },
+  "/mlat": { admin: "MLAT Verification" },
   "/analytics": { admin: "Analytics" },
   "/events": { admin: "Events & Alerts" },
   "/storage": { admin: "Data & Storage" },
@@ -49,6 +54,8 @@ const pageTitles = {
   "/custody": { admin: "Chain of Custody" },
   "/users": { admin: "User Management" },
   "/config": { admin: "Configuration" },
+  "/infrastructure": { admin: "Infrastructure" },
+  "/api-docs": { admin: "API Reference" },
 };
 
 export default function DashboardLayout({ isAdmin, children }) {
@@ -57,12 +64,14 @@ export default function DashboardLayout({ isAdmin, children }) {
   const segments = pathname.split("/").filter(Boolean);
   const fullPath = segments.length ? `/${segments.join("/")}` : "/";
   const basePath = segments.length ? `/${segments[0]}` : "/";
-  // Whole path first, first segment second. Almost every page is named by its
-  // first segment and owns whatever nests under it (/nodes/:nodeId is "Node
-  // Detail"); /sim is the one that does not, because the page nested under it
-  // is a different page rather than a detail view of the same one.
-  const entry = pageTitles[fullPath] ?? pageTitles[basePath];
-  const title = entry?.[mode] || (pathname.includes("/nodes/") ? "Node Detail" : "Dashboard");
+  // An exact match first, patterns included, and the first segment second, so
+  // a page owns whatever nests under it unless the table names the nested
+  // path itself: /sim/physics is a different page from /sim, and a node's own
+  // page is not the admin node list.
+  const entry =
+    Object.entries(pageTitles).find(([pattern]) => matchPath(pattern, pathname))?.[1] ??
+    pageTitles[basePath];
+  const title = entry?.[mode] || "Dashboard";
 
   const [stored, setStored] = useState(storedCollapsed);
   // The map wants the canvas; every other page wants the labels. An explicit
