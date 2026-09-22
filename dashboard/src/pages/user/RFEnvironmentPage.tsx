@@ -154,15 +154,15 @@ export default function RFEnvironmentPage() {
       <div className="card">
         <div className="card-header"><h3>Node RF Details</h3></div>
         <div className="card-body">
-          <table>
+          <table className="kv-table">
             <tbody>
-              <tr><td style={{ color: "var(--text-muted)" }}>Node ID</td><td style={{ fontFamily: "monospace" }}>{selected?.node_id}</td></tr>
-              <tr><td style={{ color: "var(--text-muted)" }}>Frequency</td><td>{freq ? `${(freq / 1e6).toFixed(3)} MHz` : "Not configured"}</td></tr>
-              <tr><td style={{ color: "var(--text-muted)" }}>Average SNR</td><td>{(metrics.avg_snr || 0).toFixed(2)} dB</td></tr>
-              <tr><td style={{ color: "var(--text-muted)" }}>Total Frames Processed</td><td>{(metrics.total_frames || 0).toLocaleString()}</td></tr>
-              <tr><td style={{ color: "var(--text-muted)" }}>Detection Rate</td><td>{metrics.total_frames ? ((metrics.total_detections / metrics.total_frames) * 100).toFixed(1) + "%" : "—"}</td></tr>
-              <tr><td style={{ color: "var(--text-muted)" }}>RX Location</td><td>{location.rx_lat != null && location.rx_lon != null ? `${location.rx_lat.toFixed(4)}, ${location.rx_lon.toFixed(4)}` : "—"}</td></tr>
-              <tr><td style={{ color: "var(--text-muted)" }}>TX Location</td><td>{location.tx_lat != null && location.tx_lon != null ? `${location.tx_lat.toFixed(4)}, ${location.tx_lon.toFixed(4)}` : "—"}</td></tr>
+              <tr><td>Node ID</td><td style={{ fontFamily: "monospace" }}>{selected?.node_id}</td></tr>
+              <tr><td>Frequency</td><td>{freq ? `${(freq / 1e6).toFixed(3)} MHz` : "Not configured"}</td></tr>
+              <tr><td>Average SNR</td><td>{(metrics.avg_snr || 0).toFixed(2)} dB</td></tr>
+              <tr><td>Total Frames Processed</td><td>{(metrics.total_frames || 0).toLocaleString()}</td></tr>
+              <tr><td>Detection Rate</td><td>{metrics.total_frames ? ((metrics.total_detections / metrics.total_frames) * 100).toFixed(1) + "%" : "—"}</td></tr>
+              <tr><td>RX Location</td><td>{location.rx_lat != null && location.rx_lon != null ? `${location.rx_lat.toFixed(4)}, ${location.rx_lon.toFixed(4)}` : "—"}</td></tr>
+              <tr><td>TX Location</td><td>{location.tx_lat != null && location.tx_lon != null ? `${location.tx_lat.toFixed(4)}, ${location.tx_lon.toFixed(4)}` : "—"}</td></tr>
             </tbody>
           </table>
         </div>
