@@ -3,10 +3,22 @@ import { act, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../api/client", () => ({ api: { adminInfrastructure: vi.fn() } }));
-vi.mock("../utils/chartTheme", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../utils/chartTheme")>()),
-  useChartTheme: () => ({ grid: "#eee", axis: "#999", tooltip: {}, series: ["#123456"], others: "#999" }),
-}));
+vi.mock("../utils/chartTheme", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../utils/chartTheme")>();
+  return {
+    ...real,
+    // Spread the real light theme, so a field added to ChartTheme reaches this
+    // page's charts here as it does in the console.
+    useChartTheme: () => ({
+      ...real.CHART_THEMES.light,
+      grid: "#eee",
+      axis: "#999",
+      tooltip: {},
+      series: ["#123456"],
+      others: "#999",
+    }),
+  };
+});
 // Recharts measures a real layout; under jsdom there is none, so the chart
 // chrome is stubbed and the page's own text is what gets asserted.
 vi.mock("recharts", () => ({

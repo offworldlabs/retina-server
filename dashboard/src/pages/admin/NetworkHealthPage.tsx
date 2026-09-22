@@ -117,6 +117,7 @@ export default function NetworkHealthPage() {
                   <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
                   <Tooltip
                     contentStyle={chart.tooltip}
+                    cursor={chart.cursor}
                   />
                   <Area type="monotone" dataKey="aircraft" stroke={chart.series[0]} fill={chart.series[0]} fillOpacity={0.15} name="Aircraft" />
                   <Area type="monotone" dataKey="nodes" stroke={chart.series[1]} fill={chart.series[1]} fillOpacity={0.15} name="Nodes" />
