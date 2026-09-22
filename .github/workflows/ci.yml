@@ -79,24 +79,6 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv pip install --system -r requirements-dev.txt
       - run: uv pip install --system ../libs/retina-geolocator ../libs/retina-tracker ../libs/retina-custody ../libs/retina-simulation ../libs/retina-analytics
-      # working-directory overrides the job default of `backend`: pre-commit
-      # reads .pre-commit-config.yaml from the repo root. args: [backend] in
-      # that config is what scopes both ops hooks.
-      - name: Lint (pre-commit)
-        working-directory: .
-        run: pre-commit run --all-files --show-diff-on-failure
-      # The node API's wire contract is generated from the routes, not authored,
-      # so this is what makes it trustworthy: the committed file cannot be
-      # hand-edited to match a change, because the next run regenerates it and
-      # notices. Ahead of pytest, which asserts the same thing, because a
-      # dedicated step names the remediation instead of burying it in a diff.
-      #
-      # RETINA_ENV because importing the app outside a test process otherwise
-      # resolves as production, which refuses to start without its secrets.
-      - name: Node API contract is current
-        env:
-          RETINA_ENV: dev
-        run: python -m scripts.generate_openapi --check
       # When coverage cannot honour COVERAGE_CORE it warns and uses the C tracer
       # anyway, and one warning is invisible among the hundreds pytest prints, so
       # both the speed and the greenlet fix below could regress with nothing
@@ -168,6 +150,51 @@ jobs:
       # --pdb cannot attach to a worker, and both are wanted more often when
       # debugging than the speed is.
       - run: pytest tests/ -v --tb=short -m "not external" -n logical --dist worksteal
+
+  # Its own job so that backend-tests, which gates every deploy, does not wait
+  # on it: pre-commit builds its hook environments from scratch on every run,
+  # actionlint's alone taking ~16s to compile.
+  lint:
+    name: Lint and node API contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # `edited` covers title and body edits as well as the base change we want,
+    # and `changes.base` is populated only for the latter.
+    if: github.event.action != 'edited' || github.event.changes.base
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      # Installed as backend-tests installs them: the contract check imports the
+      # app, and with it every lib.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - run: uv pip install --system -r requirements-dev.txt
+      - run: uv pip install --system ../libs/retina-geolocator ../libs/retina-tracker ../libs/retina-custody ../libs/retina-simulation ../libs/retina-analytics
+      # working-directory overrides the job default of `backend`: pre-commit
+      # reads .pre-commit-config.yaml from the repo root. args: [backend] in
+      # that config is what scopes both ops hooks.
+      - name: Lint (pre-commit)
+        working-directory: .
+        run: pre-commit run --all-files --show-diff-on-failure
+      # The node API's wire contract is generated from the routes, not authored,
+      # so this is what makes it trustworthy: the committed file cannot be
+      # hand-edited to match a change, because the next run regenerates it and
+      # notices. A step of its own although pytest asserts the same thing,
+      # because a dedicated step names the remediation instead of burying it in
+      # a diff.
+      #
+      # RETINA_ENV because importing the app outside a test process otherwise
+      # resolves as production, which refuses to start without its secrets.
+      - name: Node API contract is current
+        env:
+          RETINA_ENV: dev
+        run: python -m scripts.generate_openapi --check
 
   web-build:
     name: Web (${{ matrix.workspace }})
@@ -560,7 +587,7 @@ jobs:
     # `playwright-image` joins the deploy's own prerequisites so an unpublished
     # image fails the run before the droplet is touched, rather than after a
     # deploy and a smoke suite have already landed on it.
-    needs: [changes, backend-tests, web-build, docker-build, env-parity, tower-service-contract, playwright-image]
+    needs: [changes, backend-tests, lint, web-build, docker-build, env-parity, tower-service-contract, playwright-image]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.changes.outputs.code == 'true'
     concurrency:
       group: staging-deploy
