@@ -185,13 +185,13 @@ export default function ConfigPage() {
             </>
           ) : showLiveTable ? (
             <>
-              <div style={{ marginBottom: 12 }}>
+              <div className="toolbar">
                 <input
                   type="text"
                   placeholder="Search…"
                   value={search}
                   onChange={(e) => { setSearch(e.target.value); setPage(0); }}
-                  style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid var(--border)", fontSize: 13, width: 260 }}
+                  className="input"
                 />
               </div>
 

@@ -79,3 +79,24 @@ describe("stacking and layout", () => {
     expect(sweep(/<h[1-6] style=\{\{[^}]*fontSize/g)).toEqual([]);
   });
 });
+
+describe("fields", () => {
+  it("draws a field from the theme's input tokens", () => {
+    const input = declarations(ui, ".input {");
+    expect(input.background).toBe("var(--bg-input)");
+    expect(input.color).toBe("var(--text-primary)");
+  });
+
+  // `=>` is let through so an inline handler does not end the tag early.
+  const fields = pages.flatMap(([path, source]) =>
+    (source.match(/<(?:input|select)\b(?:=>|[^>])*>/g) ?? []).map((tag) => [path, tag] as const),
+  );
+
+  it("finds the fields, so a pattern that matched nothing cannot pass", () => {
+    expect(fields.length).toBeGreaterThanOrEqual(7);
+  });
+
+  it.each(fields)("%s gives its field the shared class", (_path, tag) => {
+    expect(tag).toMatch(/className="input\b/);
+  });
+});
