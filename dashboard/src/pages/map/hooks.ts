@@ -468,7 +468,7 @@ const NO_NODES = [];
  * when nobody is signed in. Gates the map's node-owner view, and passes on
  * whether the server runs a synthetic fleet, which gates ground truth.
  */
-export function useAuth() {
+export function useMapAuth() {
   const { user, loading, syntheticFleet } = useConsoleAuth();
   // null while ownership is unsettled, which the map must not read as owning
   // nothing: the owner panel would render mid-flight with a count of zero.
