@@ -49,7 +49,7 @@ export default class ErrorBoundary extends Component<Props, State> {
             </button>
             {/* A lazy page whose chunk failed to load throws the same error on
                 every retry, until the document itself is reloaded. */}
-            <button type="button" className="btn btn-outline" onClick={() => window.location.reload()}>
+            <button type="button" className="btn btn-secondary" onClick={() => window.location.reload()}>
               Reload page
             </button>
           </div>
