@@ -133,6 +133,16 @@
   background: var(--warning);
 }
 
+/* Something to know rather than to act on: an info-level event. Accent, so it
+   reads as neither healthy nor in trouble. */
+.badge.info {
+  background: var(--accent-light);
+  color: var(--accent-hover);
+}
+.badge.info::before {
+  background: var(--accent);
+}
+
 /* Neutral on purpose: a private node is a normal node with its location
    withheld, not a warning state. */
 .badge.private {
@@ -143,7 +153,7 @@
   background: var(--text-muted);
 }
 
-/* A badge with no leading dot, for counts and tags. */
+/* A badge with no leading dot, for counts and tags such as a user's role. */
 .badge.plain {
   background: var(--accent-light);
   color: var(--accent-hover);
