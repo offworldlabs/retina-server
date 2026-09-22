@@ -146,7 +146,7 @@ export default function ConfigPage() {
                 </>
               ) : (
                 <button
-                  className="btn btn-outline btn-sm"
+                  className="btn btn-secondary btn-sm"
                   onClick={() => {
                     setEditText(JSON.stringify(nodeConfig, null, 2));
                     setEditing(true);
