@@ -760,15 +760,13 @@
    View group at the end of the layer row, and pinned right it runs off the LEFT
    once that row wraps and the button moves inboard.  Both were shipped.  The
    component measures the button and clamps the popover into the viewport, which
-   is the only version that holds at every width. */
+   is the only version that holds at every width.  A .card, lifted off the
+   map by the panel shadow. */
 .filters-popover {
   position: fixed;
   z-index: 1200;
   width: 232px;
   max-width: calc(100vw - 16px);
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
   box-shadow: var(--panel-shadow);
 }
 
