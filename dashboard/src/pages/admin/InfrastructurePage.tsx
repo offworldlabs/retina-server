@@ -1,6 +1,7 @@
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api } from "../../api/client";
 import { FetchNotice } from "../../components/Notice";
+import { UsageBar } from "../../components/UsageBar";
 import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme, type ChartTheme } from "../../utils/chartTheme";
 
@@ -47,11 +48,6 @@ function ago(iso: string | null): string {
   return `${Math.floor(s / 86400)} d ago`;
 }
 
-function barColour(value: number | null): string {
-  if (value === null) return "var(--text-muted)";
-  return value > 90 ? "var(--error)" : value > 70 ? "var(--warning)" : "var(--success)";
-}
-
 // Checks and regions are only ever UP, DOWN, or something in between (a
 // region's CHECKING, a check's MIXED/UNKNOWN); the third bucket reads as a
 // warning rather than as fully down.
@@ -59,21 +55,6 @@ function badgeClass(status: string): string {
   if (status === "UP") return "online";
   if (status === "DOWN") return "offline";
   return "warning";
-}
-
-function UsageBar({ label, value }: { label: string; value: number | null }) {
-  const width = value === null ? 0 : Math.min(100, value);
-  return (
-    <div style={{ marginBottom: 10 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
-        <span>{label}</span>
-        <span style={{ color: "var(--text-muted)" }}>{pct(value)}</span>
-      </div>
-      <div style={{ height: 8, background: "var(--bg-secondary)", borderRadius: 4, overflow: "hidden" }}>
-        <div style={{ height: "100%", width: `${width}%`, background: barColour(value), borderRadius: 4 }} />
-      </div>
-    </div>
-  );
 }
 
 function Spark({ series, colour, theme }: { series: Point[]; colour: string; theme: ChartTheme }) {
@@ -162,9 +143,9 @@ function DropletCard({ droplet, colour, theme }: { droplet: Droplet; colour: str
         </span>
       </div>
       <div style={{ padding: "0 20px 16px" }}>
-        <UsageBar label="CPU" value={droplet.cpu_pct} />
-        <UsageBar label="Memory" value={droplet.memory_pct} />
-        <UsageBar label="Disk" value={droplet.disk_pct} />
+        <UsageBar label="CPU" value={pct(droplet.cpu_pct)} pct={droplet.cpu_pct} />
+        <UsageBar label="Memory" value={pct(droplet.memory_pct)} pct={droplet.memory_pct} />
+        <UsageBar label="Disk" value={pct(droplet.disk_pct)} pct={droplet.disk_pct} />
         <Series label="CPU, last 24 h" series={droplet.series.cpu} colour={colour} theme={theme} />
         <Series label="Memory, last 24 h" series={droplet.series.memory} colour={colour} theme={theme} />
         <Series label="Disk, last 24 h" series={droplet.series.disk} colour={colour} theme={theme} />

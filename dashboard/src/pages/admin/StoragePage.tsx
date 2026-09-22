@@ -3,6 +3,7 @@ import { api } from "../../api/client";
 import { DataTable } from "../../components/DataTable";
 import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { StatCard } from "../../components/StatCard";
+import { UsageBar } from "../../components/UsageBar";
 import { useFetch } from "../../hooks/usePolling";
 import { formatBytes } from "../../utils/format";
 
@@ -140,25 +141,11 @@ function StorageSummary({ storage }) {
           <div className="card-body">
             {storage?.disk ? (
               <>
-                <div style={{ marginBottom: 12 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
-                    <span style={{ color: "var(--text-muted)" }}>
-                      {storage.disk.used_gb?.toFixed(1)} GB used of {storage.disk.total_gb?.toFixed(1)} GB
-                    </span>
-                    <span style={{ fontWeight: 600 }}>{storage.disk.used_pct?.toFixed(1)}%</span>
-                  </div>
-                  <div style={{
-                    height: 8, borderRadius: 4, background: "var(--border)",
-                    overflow: "hidden",
-                  }}>
-                    <div style={{
-                      height: "100%", borderRadius: 4,
-                      width: `${Math.min(storage.disk.used_pct || 0, 100)}%`,
-                      background: (storage.disk.used_pct || 0) > 90 ? "var(--error)"
-                        : (storage.disk.used_pct || 0) > 75 ? "var(--warning)" : "var(--success)",
-                    }} />
-                  </div>
-                </div>
+                <UsageBar
+                  label={<>{storage.disk.used_gb?.toFixed(1)} GB used of {storage.disk.total_gb?.toFixed(1)} GB</>}
+                  value={<>{storage.disk.used_pct?.toFixed(1)}%</>}
+                  pct={storage.disk.used_pct ?? null}
+                />
                 <table>
                   <tbody>
                     <tr>
