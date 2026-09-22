@@ -670,7 +670,7 @@ export default function PhysicsSettings() {
       {/* ── Apply ───────────────────────────────────────────────────── */}
       <div className="ps-actions">
         <button
-          className="ps-apply-btn"
+          className="btn btn-primary"
           onClick={handleApply}
           disabled={saving || overLimit}
         >
@@ -778,7 +778,7 @@ export default function PhysicsSettings() {
 
             <div className="ps-actions">
               <button
-                className={`ps-scene-apply-btn${sceneArmed ? " ps-scene-apply-armed" : ""}`}
+                className={`btn ps-scene-apply-btn${sceneArmed ? " ps-scene-apply-armed" : ""}`}
                 onClick={handleSceneApplyClick}
                 disabled={sceneApplying}
               >
