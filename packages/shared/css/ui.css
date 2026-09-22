@@ -275,6 +275,35 @@
   color: var(--text-muted);
 }
 
+/* A problem the page carries on through, set under its header: a failed
+   refresh with the last answer still showing, a save that did not land.
+   `.error` is for when the notice is all there is to show. */
+.notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--warning-light);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius);
+  padding: 11px 14px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 24px;
+}
+
+.notice.error {
+  background: var(--error-light);
+  border-color: var(--error);
+}
+
+/* Takes the free space so the message wraps and the Retry button keeps its
+   place at the end of the row. */
+.notice-text {
+  flex: 1;
+  min-width: 0;
+}
+
 .empty-state {
   text-align: center;
   padding: 48px 20px;
