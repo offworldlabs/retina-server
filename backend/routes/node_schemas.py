@@ -34,6 +34,7 @@ from pydantic import (
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema
 
+from core.node_ids import FLEET, node_id_pattern
 from services.node_config import config_json_schema
 
 
@@ -82,7 +83,8 @@ ServerTime = Annotated[
     PlainSerializer(_rfc3339_z, return_type=str),
     WithJsonSchema({"type": "string", "format": "date-time"}, mode="serialization"),
 ]
-NodeId = Annotated[str, Field(pattern=r"^ret[0-9a-f]{8}$")]
+# Fleet only: this is the Mender-anchored door, and no other system registers here.
+NodeId = Annotated[str, Field(pattern=node_id_pattern(FLEET))]
 NodeRef = Annotated[str, Field(pattern=r"^(nde|sim)[0-9a-z]{12}$")]
 BootId = Annotated[str, Field(pattern=r"^[0-9a-z]{8,32}$")]
 
