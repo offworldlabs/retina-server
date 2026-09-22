@@ -8,6 +8,7 @@ import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme } from "../../utils/chartTheme";
+import { formatMHz } from "../../utils/format";
 import { detectionCount } from "../../utils/nodes";
 
 export default function RFEnvironmentPage() {
@@ -102,7 +103,7 @@ export default function RFEnvironmentPage() {
 
       <div className="stats-grid">
         <StatCard label="Average SNR" value={<>{(metrics.avg_snr || 0).toFixed(1)} dB</>} tone="accent" />
-        <StatCard label="Frequency" value={freq ? `${(freq / 1e6).toFixed(1)} MHz` : "—"} tone="success" />
+        <StatCard label="Frequency" value={formatMHz(freq)} tone="success" />
         <StatCard label="Total Frames" value={(metrics.total_frames || 0).toLocaleString()} />
         <StatCard
           label="Detections"
@@ -159,7 +160,7 @@ export default function RFEnvironmentPage() {
           <table className="kv-table">
             <tbody>
               <tr><td>Node ID</td><td style={{ fontFamily: "monospace" }}>{selected?.node_id}</td></tr>
-              <tr><td>Frequency</td><td>{freq ? `${(freq / 1e6).toFixed(3)} MHz` : "Not configured"}</td></tr>
+              <tr><td>Frequency</td><td>{formatMHz(freq)}</td></tr>
               <tr><td>Average SNR</td><td>{(metrics.avg_snr || 0).toFixed(2)} dB</td></tr>
               <tr><td>Total Frames Processed</td><td>{(metrics.total_frames || 0).toLocaleString()}</td></tr>
               <tr><td>Detection Rate</td><td>{metrics.total_frames ? ((detections / metrics.total_frames) * 100).toFixed(1) + "%" : "—"}</td></tr>

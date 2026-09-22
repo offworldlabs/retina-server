@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { request } from "@retina/shared";
 
-import { DASH, fmt, formatBytes } from "../../../utils/format";
+import { DASH, fmt, formatBytes, formatMHz } from "../../../utils/format";
 import { hhmm } from "./dates";
 import { curlLine, downloadUrl } from "./download";
 import { JSON_FACTOR, type ArchiveFile } from "./keys";
@@ -27,8 +27,6 @@ interface Props {
   onClose: () => void;
   onAddToBasket: (key: string) => void;
 }
-
-const mhz = (hz: number | null) => (hz === null ? DASH : `${(hz / 1e6).toFixed(3)} MHz`);
 
 function FetchBlock({ file }: { file: ArchiveFile }) {
   return (
@@ -103,7 +101,7 @@ function Summary({ summary }: { summary: PreviewSummary }) {
         </dd>
         <dt>fc / fs</dt>
         <dd>
-          {mhz(summary.fcHz)} / {mhz(summary.fsHz)}
+          {formatMHz(summary.fcHz)} / {formatMHz(summary.fsHz)}
         </dd>
       </dl>
       <div className="de-warnline">

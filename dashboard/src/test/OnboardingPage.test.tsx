@@ -42,7 +42,7 @@ describe("OnboardingPage", () => {
     render(<OnboardingPage />);
 
     expect(await screen.findByText("ret1a2b3c4d")).toBeInTheDocument();
-    expect(screen.getByText("195.00 MHz")).toBeInTheDocument();
+    expect(screen.getByText("195.000 MHz")).toBeInTheDocument();
   });
 
   it("shows each node under its node_ref, not its name", async () => {
