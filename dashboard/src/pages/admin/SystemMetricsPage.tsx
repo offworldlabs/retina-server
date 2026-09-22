@@ -61,11 +61,11 @@ export default function SystemMetricsPage() {
         <StatCard label="Load Avg" value={m.load_avg?.map((v: number) => fmt(v, 2)).join(" / ")} />
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+      <div className="grid-2">
         {/* Queue utilisation */}
         <div className="card">
           <div className="card-header"><h3>Queue Utilisation</h3></div>
-          <div style={{ padding: "0 20px 16px" }}>
+          <div className="card-body">
             <QueueBar depth={m.frame_queue_depth} max={m.frame_queue_max} label="Frame Queue" />
             <QueueBar depth={m.solver_queue_depth} max={200} label="Solver Queue" />
           </div>
@@ -74,8 +74,8 @@ export default function SystemMetricsPage() {
         {/* Solver stats */}
         <div className="card">
           <div className="card-header"><h3>Solver</h3></div>
-          <div style={{ padding: "0 20px 16px" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div className="card-body">
+            <div className="readings">
               {[
                 ["Successes", m.solver_successes?.toLocaleString()],
                 ["Failures", m.solver_failures?.toLocaleString()],
@@ -85,8 +85,8 @@ export default function SystemMetricsPage() {
                 ["Queue %", `${fmt(m.solver_queue_pct, 1)}%`],
               ].map(([label, val]) => (
                 <div key={label as string}>
-                  <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", marginBottom: 2 }}>{label}</div>
-                  <div style={{ fontSize: 16, fontWeight: 600 }}>{val}</div>
+                  <div className="reading-label">{label}</div>
+                  <div className="reading-value">{val}</div>
                 </div>
               ))}
             </div>
@@ -94,11 +94,11 @@ export default function SystemMetricsPage() {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+      <div className="grid-2">
         {/* Disk */}
         <div className="card">
           <div className="card-header"><h3>Disk (Archive)</h3></div>
-          <div style={{ padding: "0 20px 16px" }}>
+          <div className="card-body">
             {(() => {
               const total = m.disk_total_gb ?? 1;
               const used = m.disk_used_gb ?? 0;
@@ -118,7 +118,7 @@ export default function SystemMetricsPage() {
         {/* WebSocket clients */}
         <div className="card">
           <div className="card-header"><h3>WebSocket Clients</h3></div>
-          <div style={{ padding: "0 20px 16px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div className="card-body readings">
             {[
               ["All Clients", m.ws_clients],
               ["Live Clients", m.ws_live_clients],
@@ -126,8 +126,8 @@ export default function SystemMetricsPage() {
               ["ADS-B Aircraft", m.adsb_aircraft],
             ].map(([label, val]) => (
               <div key={label as string}>
-                <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", marginBottom: 2 }}>{label}</div>
-                <div style={{ fontSize: 16, fontWeight: 600 }}>{val}</div>
+                <div className="reading-label">{label}</div>
+                <div className="reading-value">{val}</div>
               </div>
             ))}
           </div>

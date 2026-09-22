@@ -106,7 +106,7 @@ export default function OverviewPage() {
       </div>
 
       {needsAttention.length > 0 && (
-        <div className="card" style={{ marginBottom: 24 }}>
+        <div className="card">
           <div className="card-header">
             <h3>Needs Attention</h3>
             <span className="card-note">
@@ -138,7 +138,7 @@ export default function OverviewPage() {
       )}
 
       {chartData.length > 0 && (
-        <div className="card" style={{ marginBottom: 24 }}>
+        <div className="card">
           <div className="card-header">
             <h3>Detections by Node</h3>
           </div>
