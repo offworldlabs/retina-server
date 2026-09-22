@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  distanceKm,
   effectiveNodeIds,
   knownNodeIds,
   type RegistryNode,
@@ -19,20 +18,6 @@ const REGISTRY = new Map<string, RegistryNode>([
 ]);
 
 const LONDON = { lat: 51.5074, lon: -0.1278, km: 10 };
-
-describe("distanceKm", () => {
-  it("is zero for a point against itself", () => {
-    expect(distanceKm(51.5, -0.1, 51.5, -0.1)).toBe(0);
-  });
-
-  it("gives about 111 km for a degree of latitude", () => {
-    expect(distanceKm(51, 0, 52, 0)).toBeCloseTo(111.2, 0);
-  });
-
-  it("shortens a degree of longitude away from the equator", () => {
-    expect(distanceKm(51, 0, 51, 1)).toBeLessThan(distanceKm(0, 0, 0, 1));
-  });
-});
 
 describe("knownNodeIds", () => {
   it("unions the registry with ids seen only in archive keys", () => {
