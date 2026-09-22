@@ -723,7 +723,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(2, 6, 23, 0.45);
+  background: var(--map-scrim);
 }
 
 .shortcut-dialog {
@@ -734,7 +734,7 @@
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.22);
+  box-shadow: 0 12px 32px var(--shadow);
   color: var(--text-primary);
 }
 
@@ -1110,7 +1110,7 @@
   border-radius: 3px;
   padding: 0 4px;
   margin-top: 2px;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.15);
+  box-shadow: 0 1px 2px var(--shadow);
   pointer-events: none;
 }
 

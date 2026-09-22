@@ -20,6 +20,9 @@
      --panel-shadow the icons are already palette-coloured, so the shadow
      itself doesn't need to answer to the theme underneath it. */
   --icon-shadow: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.25));
+  /* The wash behind a dialog over the map. One value for both themes, since
+     it only has to darken whatever it covers. */
+  --map-scrim: rgba(2, 6, 23, 0.45);
 }
 
 /* ── Chrome tokens ────────────────────────────────────────────────────────

@@ -1,40 +1,74 @@
 import { describe, it, expect } from "vitest";
-import rawCss from "../App.css?raw";
 
 /* The palette itself, and the invariants that hold it together, live with the
    stylesheet that declares it — packages/shared/src/tokens.test.ts. What is
-   asserted here is that this console's own rules stay theme-safe: they inherit
-   both palettes and must therefore name no colour of their own. */
+   asserted here is that this console's own stylesheets stay theme-safe: their
+   rules inherit both palettes and must therefore name no colour of their own. */
 
-// Comments go first and everything below reads the remainder: prose is free to
-// contain a semicolon, a brace or a hex code, and every one of those confuses a
-// parser this small.
-const bare = rawCss.replace(/\/\*[\s\S]*?\*\//g, "");
+/* Every stylesheet under src, so one added later is swept without being listed. */
+const sheets = import.meta.glob("../**/*.css", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
 
-describe("the dashboard stylesheet", () => {
+/* The one place a colour may be named: as the value a token is declared with,
+   once per theme, so every rule that spends the token stays theme-safe. */
+const TOKEN_DECLARATIONS: Record<string, RegExp> = {
+  // The map's chrome: panel elevation, chips drawn onto tiles, the dialog
+  // scrim, the Physics Layer's violet, and the map's deltas over the palette.
+  "../pages/map/map-surface.css": /--[\w-]+\s*:[^;]*;/g,
+  // The Data Explorer's scrim.
+  "../pages/user/dataExplorer/dataExplorer.css": /--de-scrim\s*:[^;]*;/g,
+};
+
+/* The surface stylesheet exists to lay the map's deltas over the palette, so
+   it is the one sheet allowed to redeclare a palette token. */
+const MAP_SURFACE = "../pages/map/map-surface.css";
+
+describe("the stylesheets", () => {
+  // A glob that matched nothing would pass every sweep below.
+  it("include every surface's", () => {
+    expect(Object.keys(sheets)).toEqual(
+      expect.arrayContaining([
+        "../App.css",
+        "../pages/map/LiveAircraftMap.css",
+        "../pages/map/PhysicsSettings.css",
+        ...Object.keys(TOKEN_DECLARATIONS),
+      ]),
+    );
+  });
+});
+
+describe.each(Object.keys(sheets))("%s", (path) => {
+  // Comments go first and everything below reads the remainder: prose is free
+  // to contain a semicolon, a brace or a hex code, and every one of those
+  // confuses a parser this small.
+  const bare = sheets[path].replace(/\/\*[\s\S]*?\*\//g, "");
+  const rules = TOKEN_DECLARATIONS[path] ? bare.replace(TOKEN_DECLARATIONS[path], "") : bare;
+
   // Every one of these is invisible or wrong in the other theme.
   it("hardcodes no colour", () => {
-    expect(bare.match(/#[0-9a-f]{3,8}\b|\brgba?\([^)]*\)/gi) ?? []).toEqual([]);
+    expect(rules.match(/#[0-9a-f]{3,8}\b|\brgba?\([^)]*\)/gi) ?? []).toEqual([]);
   });
 
   // `color: white` is as invisible on navy as `color: #fff` is, and the hex
   // sweep above does not see it. `transparent` and `currentColor` are fine.
   it("hardcodes no named colour either", () => {
     const named = /:\s*(white|black|red|green|blue|grey|gray|silver|navy|teal|orange)\b/gi;
-    expect(bare.match(named) ?? []).toEqual([]);
+    expect(rules.match(named) ?? []).toEqual([]);
   });
 
-  // Reading a palette token is the point; redeclaring one here would fork the
+  // Reading a palette token is the point; redeclaring one would fork the
   // shared palette silently. The colon is what separates the two — `var(--x)`
-  // has none.
-  it("declares no palette token of its own", () => {
-    expect(bare).not.toContain("color-scheme");
-    expect(bare).not.toMatch(/--(bg|text|border|accent|success|warning|error)-[\w-]*\s*:/);
-  });
+  // has none. The same holds for `color-scheme`, which the lookbehind keeps
+  // apart from the `prefers-color-scheme` media feature.
+  if (path !== MAP_SURFACE) {
+    it("declares no palette token of its own", () => {
+      expect(bare).not.toMatch(/(?<![\w-])color-scheme\s*:/);
+      expect(bare).not.toMatch(/--(bg|text|border|accent|success|warning|error)(-[\w-]+)?\s*:/);
+    });
+  }
 
-  // A parse that matched nothing would pass all three sweeps above.
+  // A parse that matched nothing would pass every sweep above.
   it("is not empty", () => {
-    expect(bare.length).toBeGreaterThan(1000);
+    expect(rules.length).toBeGreaterThan(1000);
   });
 });
 
