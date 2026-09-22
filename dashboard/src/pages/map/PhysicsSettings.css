@@ -469,7 +469,7 @@
 .ps-apply-btn {
   padding: 9px 22px;
   background: var(--accent);
-  color: #fff;
+  color: var(--accent-ink);
   border: none;
   border-radius: var(--radius-sm);
   font: inherit;
@@ -535,7 +535,7 @@
 .ps-scene-apply-btn {
   padding: 9px 22px;
   background: var(--violet);
-  color: #fff;
+  color: var(--violet-ink);
   border: none;
   border-radius: var(--radius-sm);
   font: inherit;
@@ -555,13 +555,14 @@
 }
 
 /* Armed: the next click actually restarts the fleet, so it turns into the
-   destructive colour first. */
+   destructive colour first. --error-ink rather than --error, because the
+   button's ink is under 4.5:1 on --error in both themes. */
 .ps-scene-apply-armed {
-  background: var(--error);
+  background: var(--error-ink);
 }
 
 .ps-scene-apply-armed:hover:not(:disabled) {
-  background: var(--error);
+  background: var(--error-ink);
 }
 
 .ps-scene-pending-chip {
