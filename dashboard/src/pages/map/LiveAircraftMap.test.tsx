@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { Children, isValidElement, type ReactElement } from "react";
 import LiveAircraftMap from "./LiveAircraftMap";
 import { MapThemeProvider } from "./useMapTheme";
+import { MLAT_HISTORY_REFRESH_MS } from "./mlatHistory";
 import { ThemeProvider, useTheme } from "../../context/ThemeContext";
 
 // Leaflet layers need a browser layout. Keep the real map controller, toolbar,
@@ -136,6 +137,49 @@ it("updates the selected trail as new positions arrive without changing selectio
   expect(drawnPositions()).toContainEqual([51.001, -1]);
   deliver(51.002, [[51.002, -1, 1000, 3]]);
   expect(drawnPositions()).toContainEqual([51.002, -1]);
+});
+
+it("polls the solve history only while an MLAT track is selected, and again on a fresh solve", async () => {
+  // The display list is rebuilt from the animation loop, so drive its frames.
+  let frames: FrameRequestCallback[] = [];
+  vi.stubGlobal("requestAnimationFrame", vi.fn((cb: FrameRequestCallback) => frames.push(cb)));
+  const runFrames = () => act(() => {
+    for (let i = 0; i < 30; i++) {
+      const due = frames;
+      frames = [];
+      due.forEach((cb) => cb(performance.now()));
+    }
+  });
+  window.history.replaceState(null, "", "/#hex=mn1");
+  render(<MapThemeProvider><LiveAircraftMap /></MapThemeProvider>);
+  await screen.findByRole("checkbox", { name: "My nodes only" });
+  const historyCalls = () => vi.mocked(fetch).mock.calls
+    .filter(([url]) => String(url).includes("/mlat-history")).map(([url]) => String(url));
+  const deliver = (fields: object) => {
+    act(() => Socket.instances[0].onmessage?.({ data: JSON.stringify({
+      aircraft: [{ hex: "mn1", lat: 51, lon: -1, ...fields }],
+    }) }));
+    runFrames();
+  };
+
+  expect(historyCalls()).toEqual([]);
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    deliver({ position_source: "multinode_solve", seen: 2 });
+    expect(historyCalls()).toEqual(["/api/test/mlat-history?hex=mn1"]);
+    act(() => { vi.advanceTimersByTime(MLAT_HISTORY_REFRESH_MS); });
+    expect(historyCalls()).toHaveLength(2);
+
+    // `seen` falling is a new solve for this track: fetched off the schedule.
+    deliver({ position_source: "multinode_solve", seen: 0.5 });
+    expect(historyCalls()).toHaveLength(3);
+
+    deliver({ position_source: "adsb" });
+    act(() => { vi.advanceTimersByTime(MLAT_HISTORY_REFRESH_MS * 3); });
+    expect(historyCalls()).toHaveLength(3);
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("draws its live stats in the aircraft list, not floating over the map", () => {
