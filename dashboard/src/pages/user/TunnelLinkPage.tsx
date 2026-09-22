@@ -93,7 +93,7 @@ export default function TunnelLinkPage() {
                   const online = isOnline(node.status);
                   return (
                     <tr key={id}>
-                      <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
+                      <td className="mono" style={{ color: "var(--accent)" }}>
                         <RetnodeLink nodeId={id} synthetic={node.is_synthetic}>
                           {node.name || id}
                         </RetnodeLink>{" "}
@@ -102,7 +102,7 @@ export default function TunnelLinkPage() {
                       <td>
                         <StatusBadge status={node.status} />
                       </td>
-                      <td style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                      <td className="card-note">
                         {online ? "http://[node-ip]:8080" : "—"}
                       </td>
                       <td>

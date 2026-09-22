@@ -212,6 +212,13 @@
   font-size: 14px;
 }
 
+/* The small print beside a card's title, or under a reading: a count, a
+   refresh interval, a unit. */
+.card-note {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 /* ── Stat cards ──────────────────────────────────────────────────────────── */
 
 .stats-grid {
@@ -293,6 +300,12 @@
 
 .muted {
   color: var(--text-muted);
+}
+
+/* Ids, hashes, keys and coordinates, which are read character by character. */
+.mono {
+  font-family: "SF Mono", "Fira Code", ui-monospace, Menlo, Consolas, monospace;
+  font-size: 12px;
 }
 
 /* A problem the page carries on through, set under its header: a failed

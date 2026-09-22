@@ -76,8 +76,8 @@ export default function StoragePage() {
                 const date = file.modified ? new Date(file.modified).toLocaleString() : "—";
                 return (
                   <tr key={i}>
-                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{name}</td>
-                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{node}</td>
+                    <td className="mono">{name}</td>
+                    <td className="mono">{node}</td>
                     <td>{size}</td>
                     <td style={{ fontSize: 12 }}>{date}</td>
                   </tr>
@@ -149,7 +149,7 @@ function StorageSummary({ storage }) {
                 </table>
               </>
             ) : (
-              <p style={{ color: "var(--text-muted)" }}>
+              <p className="muted">
                 {storage?.status === "initializing" ? "Scan in progress…" : "No disk data"}
               </p>
             )}
@@ -183,7 +183,7 @@ function StorageSummary({ storage }) {
                 </tbody>
               </table>
             ) : (
-              <p style={{ color: "var(--text-muted)" }}>
+              <p className="muted">
                 {storage?.status === "initializing" ? "Scan in progress…" : "No write rate data"}
               </p>
             )}
@@ -227,7 +227,7 @@ function StorageSummary({ storage }) {
               const rate = storage.write_rate?.per_node_bytes_per_day?.[nodeId] || 0;
               return (
                 <tr key={nodeId}>
-                  <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>{nodeId}</td>
+                  <td className="mono" style={{ color: "var(--accent)" }}>{nodeId}</td>
                   <td>{(info.files || 0).toLocaleString()}</td>
                   <td>{formatBytes(info.bytes || 0)}</td>
                   <td>{rate > 0 ? formatBytes(rate) + "/day" : "—"}</td>

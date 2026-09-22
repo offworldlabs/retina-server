@@ -53,7 +53,8 @@ export default function SystemMetricsPage() {
         />
         <StatCard
           label="Active Nodes"
-          value={<>{m.connected_nodes} <span style={{ fontSize: 13, color: "var(--text-muted)" }}>/ peak {m.peak_connected_nodes}</span></>}
+          value={m.connected_nodes}
+          unit={`/ peak ${m.peak_connected_nodes}`}
         />
         <StatCard label="Aircraft on Map" value={m.active_geo_aircraft} />
         <StatCard label="Process RAM" value={<>{fmt(m.process_rss_mb, 0)} MB</>} />
@@ -153,13 +154,13 @@ export default function SystemMetricsPage() {
             const errors = m.task_error_counts?.[name] ?? 0;
             return (
               <tr key={name}>
-                <td style={{ fontFamily: "monospace", fontSize: 13 }}>{name}</td>
+                <td className="mono">{name}</td>
                 <td>
                   <span className={`badge ${isStale ? "offline" : "online"}`}>
                     {isStale ? "stale" : "ok"}
                   </span>
                 </td>
-                <td style={{ color: "var(--text-muted)", fontSize: 13 }}>
+                <td className="muted">
                   {formatRelativeTime(m.task_last_success?.[name])}
                 </td>
                 <td>
