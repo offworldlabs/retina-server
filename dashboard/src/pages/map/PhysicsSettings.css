@@ -232,8 +232,8 @@
   cursor: pointer;
   background: linear-gradient(
     to right,
-    var(--thumb-color, #3b82f6) 0%,
-    var(--thumb-color, #3b82f6) var(--fill-pct, 0%),
+    var(--thumb-color, var(--accent)) 0%,
+    var(--thumb-color, var(--accent)) var(--fill-pct, 0%),
     var(--border) var(--fill-pct, 0%),
     var(--border) 100%
   );
@@ -246,9 +246,9 @@
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: var(--thumb-color, #3b82f6);
+  background: var(--thumb-color, var(--accent));
   border: 2px solid var(--bg-card);
-  box-shadow: 0 0 0 2px var(--thumb-color, #3b82f6);
+  box-shadow: 0 0 0 2px var(--thumb-color, var(--accent));
   cursor: pointer;
   transition: transform 0.1s, box-shadow 0.1s;
 }
@@ -261,9 +261,9 @@
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: var(--thumb-color, #3b82f6);
+  background: var(--thumb-color, var(--accent));
   border: 2px solid var(--bg-card);
-  box-shadow: 0 0 0 2px var(--thumb-color, #3b82f6);
+  box-shadow: 0 0 0 2px var(--thumb-color, var(--accent));
   cursor: pointer;
 }
 
@@ -614,13 +614,12 @@
   white-space: nowrap;
 }
 
-/* The stops are DOPPLER_STOPS from map/mapPalette.ts, in order: the guide has
-   to show the ramp the arcs are actually drawn with. */
+/* The ramp itself is set by the component, from the DOPPLER_STOPS the arcs
+   are drawn with. */
 .ps-doppler-bar {
   flex: 1;
   height: 8px;
   border-radius: 4px;
-  background: linear-gradient(to right, #1e3a8a, #60a5fa, #22d3ee, #f87171, #991b1b);
 }
 
 .ps-doppler-hint {
