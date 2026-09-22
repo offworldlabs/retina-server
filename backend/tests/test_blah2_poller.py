@@ -11,6 +11,7 @@ import http.server
 import ipaddress
 import json
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -433,7 +434,8 @@ async def test_a_radar_clock_beyond_the_limit_files_nothing_and_says_so(node_ses
     assert queue.empty()
     assert poller_.reason == Blah2Refusal.CLOCK_OFFSET
     assert poller_.clock_offset_s == pytest.approx(-30, abs=2)
-    assert any("clock offset -3" in r.getMessage() for r in caplog.records)
+    logged = [re.search(r"clock offset (-?[\d.]+) s", r.getMessage()) for r in caplog.records]
+    assert any(m and float(m.group(1)) == pytest.approx(-30, abs=2) for m in logged)
 
 
 async def test_a_radar_that_keeps_failing_is_unreachable(node_session, maker, queue):
