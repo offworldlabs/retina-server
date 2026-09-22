@@ -5,7 +5,7 @@ import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { Pager } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
-import { formatUptime } from "../../utils/format";
+import { formatMHz, formatUptime } from "../../utils/format";
 import { PositionStatusBadge } from "../../components/PositionStatusBadge";
 import {
   LocationPrivacyBadge,
@@ -164,7 +164,7 @@ export default function NodeManagementPage() {
                 <span className="meta-label">Node ID</span>
                 <span style={MONO}>{nodeId ?? "—"}</span>
                 <span className="meta-label">Frequency</span>
-                <span>{node.frequency ? `${(node.frequency / 1e6).toFixed(2)} MHz` : "—"}</span>
+                <span>{formatMHz(node.frequency)}</span>
                 <span className="meta-label">Detections</span>
                 <span>{detectionCount(summary).toLocaleString()}</span>
                 <span className="meta-label">Frames</span>

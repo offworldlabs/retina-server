@@ -8,7 +8,7 @@ import { api } from "../../api/client";
 import { FetchNotice, Notice } from "../../components/Notice";
 import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
-import { formatUptime } from "../../utils/format";
+import { formatMHz, formatUptime } from "../../utils/format";
 import { useChartTheme } from "../../utils/chartTheme";
 import { detectionCount } from "../../utils/nodes";
 import { RetnodeLink } from "../../components/RetnodeLink";
@@ -330,7 +330,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
               <tbody>
                 <tr>
                   <td>Center Frequency</td>
-                  <td>{nodeInfo.frequency ? `${(nodeInfo.frequency / 1e6).toFixed(3)} MHz` : "—"}</td>
+                  <td>{formatMHz(nodeInfo.frequency)}</td>
                 </tr>
                 <tr>
                   <td>Sample Rate</td>
