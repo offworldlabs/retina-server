@@ -25,17 +25,13 @@ import { usePolling } from "../../hooks/usePolling";
 
 const API = "/api";
 
-// The lift under a type icon, read off the map surface's own token so the
-// three icons below that carry one cannot drift from each other.
-const ICON_DROP_SHADOW = "var(--icon-shadow)";
-
 // SVG icon components — colours match map rendering exactly. These are called
 // during render of a component that re-renders on a theme change, so reading
 // the active palette here sees the theme the tree is being drawn with.
 function PlaneIcon({ color = undefined, size = 26 }) {
   color = color ?? activePalette().SIM_COMMERCIAL;
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" style={{ display: "block", filter: ICON_DROP_SHADOW }}>
+    <svg width={size} height={size} viewBox="0 0 32 32" className="ps-glyph ps-glyph-lifted">
       <path d={PLANE_PATH} fill={color} />
     </svg>
   );
@@ -45,7 +41,7 @@ function DarkPlaneIcon({ size = 26 }) {
   const { SIM_DARK, INK_MUTED } = activePalette();
   // Grey plane with a diagonal "no-signal" bar — conveys ADS-B-off
   return (
-    <svg width={size} height={size} viewBox="0 0 32 32" style={{ display: "block" }}>
+    <svg width={size} height={size} viewBox="0 0 32 32" className="ps-glyph">
       <path d={PLANE_PATH} fill={SIM_DARK} opacity="0.5" />
       <line x1="6" y1="6" x2="26" y2="26" stroke={INK_MUTED} strokeWidth="2.5" strokeLinecap="round" />
     </svg>
@@ -55,7 +51,7 @@ function DarkPlaneIcon({ size = 26 }) {
 function DroneIcon({ size = 26 }) {
   const { SIM_DRONE } = activePalette();
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" style={{ display: "block", filter: ICON_DROP_SHADOW }}>
+    <svg width={size} height={size} viewBox="0 0 24 24" className="ps-glyph ps-glyph-lifted">
       <line x1="4" y1="4" x2="20" y2="20" stroke={SIM_DRONE} strokeWidth="2.2" strokeLinecap="round" />
       <line x1="20" y1="4" x2="4" y2="20" stroke={SIM_DRONE} strokeWidth="2.2" strokeLinecap="round" />
       <circle cx="4"  cy="4"  r="3" fill="none" stroke={SIM_DRONE} strokeWidth="1.5" />
@@ -70,7 +66,7 @@ function DroneIcon({ size = 26 }) {
 function AnomalousIcon({ size = 26 }) {
   const { SIM_ANOMALOUS } = activePalette();
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" style={{ display: "block", filter: ICON_DROP_SHADOW }}>
+    <svg width={size} height={size} viewBox="0 0 24 24" className="ps-glyph ps-glyph-lifted">
       <circle cx="12" cy="12" r="9"  fill="none" stroke={SIM_ANOMALOUS} strokeWidth="1.5" strokeDasharray="4 2" />
       <circle cx="12" cy="12" r="5.5" fill="none" stroke={SIM_ANOMALOUS} strokeWidth="1" opacity="0.5" />
       <line  x1="12" y1="7.5" x2="12" y2="13.5" stroke={SIM_ANOMALOUS} strokeWidth="1.8" strokeLinecap="round" />
@@ -79,16 +75,15 @@ function AnomalousIcon({ size = 26 }) {
   );
 }
 
-// Object type definitions — colours and SVG icons match LiveAircraftMap
-// rendering precisely. A function because the colours are per-theme.
-function objectTypes(palette) {
-  const { SIM_ANOMALOUS, SIM_DRONE, SIM_DARK } = palette;
-  return [
+// Object type definitions. Each names its colour by the class that carries
+// it (see classColourProperties); the SVG icons match LiveAircraftMap
+// rendering precisely.
+const OBJECT_TYPES = [
   {
     key: "frac_anomalous",
     label: "Anomalous",
     countKey: "anomalous",
-    color: SIM_ANOMALOUS,
+    colorClass: "ps-sim-anomalous",
     Icon: AnomalousIcon,
     description: "Erratic flight — irregular altitude, speed, and heading changes.",
     mapNote: "Pulsing red ring on map",
@@ -98,7 +93,7 @@ function objectTypes(palette) {
     key: "frac_drone",
     label: "Drone",
     countKey: "drone",
-    color: SIM_DRONE,
+    colorClass: "ps-sim-drone",
     Icon: DroneIcon,
     description: "Low-altitude, slow-moving quadrotor — no ADS-B transponder.",
     mapNote: "Orange X-frame icon on map",
@@ -108,14 +103,13 @@ function objectTypes(palette) {
     key: "frac_dark",
     label: "Dark Aircraft",
     countKey: "dark",
-    color: SIM_DARK,
+    colorClass: "ps-sim-dark",
     Icon: DarkPlaneIcon,
     description: "Commercial aircraft without ADS-B — radar-only detection.",
     mapNote: "Grey bistatic arc only (no ADS-B icon)",
     maxPct: 50,
   },
-  ];
-}
+];
 
 function pct(v) { return Math.round(v * 100); }
 function frac(p) { return Math.round(p) / 100; }
@@ -149,12 +143,11 @@ function serverToScene(data) {
 export default function PhysicsSettings() {
   const palette = usePalette();
   const theme = activeTheme();
-  const { ACCENT_STRONG, SIM_ANOMALOUS, SIM_COMMERCIAL, SIM_DARK, SIM_DRONE, SIM_SCENE, TRUTH_LIVE, TRUTH_LIVE_DARK } = palette;
-  // Both depend on the palette and nothing else, so neither is rebuilt on the
-  // slider drags that dominate this page's re-renders.
-  const types = useMemo(() => objectTypes(palette), [palette]);
+  const { SIM_COMMERCIAL, SIM_DARK } = palette;
   // The guide has to show the ramp the arcs are actually drawn with, so it is
   // built from the same stops dopplerColor interpolates rather than restated.
+  // It depends on the palette alone, so the slider drags that dominate this
+  // page's re-renders never rebuild it.
   const dopplerRamp = useMemo(
     () => palette.DOPPLER_STOPS.map(([r, g, b]) => `rgb(${r}, ${g}, ${b})`).join(", "),
     [palette],
@@ -428,7 +421,7 @@ export default function PhysicsSettings() {
   const overLimit      = fracSum > 1.0;
 
   return (
-    <div className="ps-container">
+    <div className="ps-container" style={classColourProperties(palette)}>
 
       {/* ── Header ──────────────────────────────────────────────────── */}
       <div className="page-header">
@@ -471,22 +464,22 @@ export default function PhysicsSettings() {
 
       {/* ── Live Count Grid ──────────────────────────────────────────── */}
       <div className="ps-count-grid">
-        <div className="stat-card ps-count-card" style={{ "--class-color": SIM_ANOMALOUS }}>
+        <div className="stat-card ps-count-card ps-sim-anomalous">
           <AnomalousIcon size={28} />
           <span className="stat-value">{counts.anomalous ?? 0}</span>
           <span className="stat-label">Anomalous</span>
         </div>
-        <div className="stat-card ps-count-card" style={{ "--class-color": SIM_DRONE }}>
+        <div className="stat-card ps-count-card ps-sim-drone">
           <DroneIcon size={28} />
           <span className="stat-value">{counts.drone ?? 0}</span>
           <span className="stat-label">Drones</span>
         </div>
-        <div className="stat-card ps-count-card" style={{ "--class-color": SIM_DARK }}>
+        <div className="stat-card ps-count-card ps-sim-dark">
           <PlaneIcon color={SIM_DARK} size={28} />
           <span className="stat-value">{counts.aircraft ?? 0}</span>
           <span className="stat-label">Aircraft</span>
         </div>
-        <div className="stat-card ps-count-card" style={{ "--class-color": SIM_COMMERCIAL }}>
+        <div className="stat-card ps-count-card ps-sim-commercial">
           <PlaneIcon color={SIM_COMMERCIAL} size={28} />
           <span className="stat-value">{totalGt}</span>
           <span className="stat-label">Total Live</span>
@@ -498,32 +491,32 @@ export default function PhysicsSettings() {
         <div className="ps-comp-label">Fleet composition</div>
         <div className="ps-comp-bar">
           {draft.frac_anomalous > 0 && (
-            <div className="ps-comp-seg" style={{ flex: draft.frac_anomalous, background: SIM_ANOMALOUS }} />
+            <div className="ps-comp-seg ps-sim-anomalous" style={{ flex: draft.frac_anomalous }} />
           )}
           {draft.frac_drone > 0 && (
-            <div className="ps-comp-seg" style={{ flex: draft.frac_drone, background: SIM_DRONE }} />
+            <div className="ps-comp-seg ps-sim-drone" style={{ flex: draft.frac_drone }} />
           )}
           {draft.frac_dark > 0 && (
-            <div className="ps-comp-seg" style={{ flex: draft.frac_dark, background: SIM_DARK }} />
+            <div className="ps-comp-seg ps-sim-dark" style={{ flex: draft.frac_dark }} />
           )}
           {fracCommercial > 0 && (
-            <div className="ps-comp-seg" style={{ flex: fracCommercial, background: SIM_COMMERCIAL }} />
+            <div className="ps-comp-seg ps-sim-commercial" style={{ flex: fracCommercial }} />
           )}
         </div>
         <div className="ps-comp-legend">
-          <span style={{ color: SIM_ANOMALOUS }}>■ {pct(draft.frac_anomalous)}% anomalous</span>
-          <span style={{ color: SIM_DRONE }}>■ {pct(draft.frac_drone)}% drone</span>
-          <span style={{ color: SIM_DARK }}>■ {pct(draft.frac_dark)}% dark</span>
-          <span style={{ color: SIM_COMMERCIAL }}>■ {pct(fracCommercial)}% commercial</span>
+          <span className="ps-sim-anomalous">■ {pct(draft.frac_anomalous)}% anomalous</span>
+          <span className="ps-sim-drone">■ {pct(draft.frac_drone)}% drone</span>
+          <span className="ps-sim-dark">■ {pct(draft.frac_dark)}% dark</span>
+          <span className="ps-sim-commercial">■ {pct(fracCommercial)}% commercial</span>
         </div>
       </div>
 
       {/* ── Type Sliders ────────────────────────────────────────────── */}
       <div className="ps-sliders">
-        {types.map(({ key, label, countKey, color, Icon, description, mapNote, maxPct }) => {
+        {OBJECT_TYPES.map(({ key, label, countKey, colorClass, Icon, description, mapNote, maxPct }) => {
           const fillPct = (pct(draft[key]) / maxPct) * 100;
           return (
-            <div key={key} className="card ps-type-card" style={{ "--class-color": color }}>
+            <div key={key} className={`card ps-type-card ${colorClass}`}>
               <div className="ps-type-header">
                 <div className="ps-type-icon-wrap">
                   <Icon size={24} />
@@ -532,7 +525,7 @@ export default function PhysicsSettings() {
                   <span className="ps-type-name">{label}</span>
                   <span className="ps-type-note">{mapNote}</span>
                 </div>
-                <div className="ps-type-badge" style={{ background: color + "22", color }}>
+                <div className="ps-type-badge">
                   {counts[countKey] ?? 0} live
                 </div>
               </div>
@@ -546,19 +539,16 @@ export default function PhysicsSettings() {
                   value={pct(draft[key])}
                   onChange={e => handleSlider(key, Number(e.target.value))}
                   className="ps-range"
-                  style={{
-                    "--thumb-color": color,
-                    "--fill-pct":    `${fillPct}%`,
-                  }}
+                  style={{ "--fill-pct": `${fillPct}%` }}
                 />
-                <span className="ps-pct-val" style={{ color }}>{pct(draft[key])}%</span>
+                <span className="ps-pct-val">{pct(draft[key])}%</span>
               </div>
             </div>
           );
         })}
 
         {/* Commercial — derived, read-only */}
-        <div className="card ps-type-card ps-commercial" style={{ "--class-color": SIM_COMMERCIAL }}>
+        <div className="card ps-type-card ps-commercial ps-sim-commercial">
           <div className="ps-type-header">
             <div className="ps-type-icon-wrap">
               <PlaneIcon color={SIM_COMMERCIAL} size={24} />
@@ -567,7 +557,7 @@ export default function PhysicsSettings() {
               <span className="ps-type-name">Commercial</span>
               <span className="ps-type-note">Drawn as ground truth · ADS-B transponder</span>
             </div>
-            <div className="ps-type-badge" style={{ background: "var(--accent-light)", color: SIM_COMMERCIAL }}>
+            <div className="ps-type-badge">
               derived
             </div>
           </div>
@@ -576,13 +566,10 @@ export default function PhysicsSettings() {
             <div className="ps-derived-track">
               <div
                 className="ps-derived-fill"
-                style={{
-                  width:      `${overLimit ? 0 : pct(fracCommercial)}%`,
-                  background: SIM_COMMERCIAL,
-                }}
+                style={{ width: `${overLimit ? 0 : pct(fracCommercial)}%` }}
               />
             </div>
-            <span className="ps-pct-val" style={{ color: overLimit ? "var(--error)" : SIM_COMMERCIAL }}>
+            <span className={`ps-pct-val${overLimit ? " ps-pct-over" : ""}`}>
               {overLimit ? "—" : `${pct(fracCommercial)}%`}
             </span>
           </div>
@@ -597,7 +584,7 @@ export default function PhysicsSettings() {
 
       {/* ── Settings ────────────────────────────────────────────────── */}
       <div className="ps-settings-grid">
-        <div className="card ps-settings-card">
+        <div className="card ps-settings-card ps-sim-commercial">
           <div className="ps-settings-label">
             Total objects target
             <span className="ps-settings-sublabel"> (spawns {draft.min_aircraft}–{draft.max_aircraft})</span>
@@ -615,12 +602,9 @@ export default function PhysicsSettings() {
                 setDraft(prev => ({ ...prev, max_aircraft: v, min_aircraft: Math.max(1, Math.floor(v * 0.8)) }));
               }}
               className="ps-range"
-              style={{
-                "--thumb-color": SIM_COMMERCIAL,
-                "--fill-pct": `${((draft.max_aircraft - 5) / 195) * 100}%`,
-              }}
+              style={{ "--fill-pct": `${((draft.max_aircraft - 5) / 195) * 100}%` }}
             />
-            <span className="ps-pct-val" style={{ color: SIM_COMMERCIAL, minWidth: "3rem" }}>
+            <span className="ps-pct-val">
               {draft.max_aircraft}
             </span>
           </div>
@@ -635,7 +619,7 @@ export default function PhysicsSettings() {
             Deliberately its own card, not a segment of the composition bar:
             the feed sets the live headcount, so it is not a share of the
             synthetic mix and must not be summed with it. */}
-        <div className="card ps-settings-card ps-live-card" style={{ "--class-color": TRUTH_LIVE_DARK }}>
+        <div className="card ps-settings-card ps-live-card ps-truth-live-dark">
           <div className="ps-settings-label">
             Live ADS-B traffic
             <span className="ps-settings-sublabel"> (real aircraft from adsb.retina.fm, echoed by the synthetic nodes)</span>
@@ -651,10 +635,10 @@ export default function PhysicsSettings() {
               }}
             />
             <span className="ps-toggle-text">Pull live aircraft into the simulation</span>
-            <span className="ps-type-badge" style={{ background: TRUTH_LIVE_DARK + "22", color: TRUTH_LIVE }}>
-              <span style={{ color: TRUTH_LIVE }}>● {counts.live_adsb ?? 0} ADS-B</span>
+            <span className="ps-type-badge">
+              <span className="ps-truth-live">● {counts.live_adsb ?? 0} ADS-B</span>
               {" · "}
-              <span style={{ color: TRUTH_LIVE_DARK }}>● {counts.live_dark ?? 0} dark</span>
+              <span className="ps-truth-live-dark">● {counts.live_dark ?? 0} dark</span>
             </span>
           </label>
           <div className="ps-settings-label ps-live-sublabel">
@@ -672,12 +656,9 @@ export default function PhysicsSettings() {
               onChange={e => handleSlider("frac_live_dark", Number(e.target.value))}
               className="ps-range"
               aria-label="Dark share of live aircraft"
-              style={{
-                "--thumb-color": TRUTH_LIVE_DARK,
-                "--fill-pct":    `${pct(draft.frac_live_dark)}%`,
-              }}
+              style={{ "--fill-pct": `${pct(draft.frac_live_dark)}%` }}
             />
-            <span className="ps-pct-val" style={{ color: TRUTH_LIVE_DARK }}>{pct(draft.frac_live_dark)}%</span>
+            <span className="ps-pct-val">{pct(draft.frac_live_dark)}%</span>
           </div>
           <p className="ps-type-desc ps-settings-desc">
             Independent of the synthetic mix above: the dark slider and the objects target only govern
@@ -707,7 +688,7 @@ export default function PhysicsSettings() {
         const dualPct = Math.round(sceneDraft.dual_fraction * 100);
         const dualSitesPreview = Math.round(sceneDraft.n_nodes * sceneDraft.dual_fraction / 2);
         return (
-          <div className="ps-scene-section">
+          <div className="ps-scene-section ps-sim-scene">
             <div className="ps-scene-title">Fleet Scene</div>
             <p className="ps-scene-running">
               {runningScene
@@ -730,12 +711,9 @@ export default function PhysicsSettings() {
                       setSceneDraft(prev => ({ ...prev, n_nodes: Number(e.target.value) }));
                     }}
                     className="ps-range"
-                    style={{
-                      "--thumb-color": SIM_SCENE,
-                      "--fill-pct": `${((sceneDraft.n_nodes - 10) / 50) * 100}%`,
-                    }}
+                    style={{ "--fill-pct": `${((sceneDraft.n_nodes - 10) / 50) * 100}%` }}
                   />
-                  <span className="ps-pct-val" style={{ color: SIM_SCENE, minWidth: "3rem" }}>
+                  <span className="ps-pct-val">
                     {sceneDraft.n_nodes}
                   </span>
                 </div>
@@ -760,12 +738,9 @@ export default function PhysicsSettings() {
                       setSceneDraft(prev => ({ ...prev, dual_fraction: Number(e.target.value) / 100 }));
                     }}
                     className="ps-range"
-                    style={{
-                      "--thumb-color": SIM_SCENE,
-                      "--fill-pct": `${dualPct}%`,
-                    }}
+                    style={{ "--fill-pct": `${dualPct}%` }}
                   />
-                  <span className="ps-pct-val" style={{ color: SIM_SCENE, minWidth: "3rem" }}>
+                  <span className="ps-pct-val">
                     {dualPct}%
                   </span>
                 </div>
@@ -785,14 +760,10 @@ export default function PhysicsSettings() {
                       setSceneDraft(prev => ({ ...prev, max_range_km: Number(e.target.value) }));
                     }}
                     className="ps-range"
-                    style={{
-                      "--thumb-color": SIM_SCENE,
-                      "--fill-pct":    `${(sceneDraft.max_range_km / 300) * 100}%`,
-                    }}
+                    style={{ "--fill-pct": `${(sceneDraft.max_range_km / 300) * 100}%` }}
                   />
                   <span
-                    className="ps-pct-val"
-                    style={{ color: SIM_SCENE, minWidth: "4.5rem" }}
+                    className="ps-pct-val ps-pct-wide"
                     title={sceneDraft.max_range_km === 0 ? "Per-node generated ranges (no uniform override)" : undefined}
                   >
                     {sceneDraft.max_range_km === 0 ? "auto" : `${sceneDraft.max_range_km} km`}
@@ -850,7 +821,7 @@ export default function PhysicsSettings() {
               <MapContainer
                 center={[centerLat, centerLon]}
                 zoom={6}
-                style={{ width: "100%", height: "100%" }}
+                className="ps-gt-leaflet"
                 zoomControl={false}
                 attributionControl={false}
               >
@@ -890,8 +861,8 @@ export default function PhysicsSettings() {
               {truthLegend(palette).map((t) => (
                 <span key={t.cls} style={{ color: t.color }}>● {t.label.replace("Truth: ", "")}</span>
               ))}
-              <span style={{ color: SIM_DRONE }}>● Drone</span>
-              <span style={{ color: SIM_ANOMALOUS }}>● Anomalous</span>
+              <span className="ps-sim-drone">● Drone</span>
+              <span className="ps-sim-anomalous">● Anomalous</span>
             </div>
           </div>
         );
@@ -1043,9 +1014,9 @@ export default function PhysicsSettings() {
       {/* ── Doppler Arc Guide ───────────────────────────────────────── */}
       <div className="card ps-doppler-guide">
         <div className="ps-doppler-title">
-          <svg width="14" height="14" viewBox="0 0 24 24" style={{ display:"inline-block", verticalAlign:"middle", marginRight:6 }}>
-            <path d="M12 2 Q20 12 12 22 Q4 12 12 2Z" fill="none" stroke={ACCENT_STRONG} strokeWidth="1.5" />
-            <ellipse cx="12" cy="12" rx="4" ry="8" fill="none" stroke={ACCENT_STRONG} strokeWidth="1" opacity="0.5" />
+          <svg width="14" height="14" viewBox="0 0 24 24" className="ps-doppler-glyph">
+            <path d="M12 2 Q20 12 12 22 Q4 12 12 2Z" fill="none" stroke="currentColor" strokeWidth="1.5" />
+            <ellipse cx="12" cy="12" rx="4" ry="8" fill="none" stroke="currentColor" strokeWidth="1" opacity="0.5" />
           </svg>
           Doppler Bistatic Arcs
         </div>
@@ -1073,4 +1044,20 @@ export default function PhysicsSettings() {
 
     </div>
   );
+}
+
+/* The palette's class colours as custom properties, set once on the page. An
+   element takes its class's colour by naming the class (`.ps-sim-drone`),
+   which sets --class-color, rather than carrying the value in a style of its
+   own. */
+function classColourProperties(palette) {
+  return {
+    "--sim-anomalous": palette.SIM_ANOMALOUS,
+    "--sim-drone": palette.SIM_DRONE,
+    "--sim-dark": palette.SIM_DARK,
+    "--sim-commercial": palette.SIM_COMMERCIAL,
+    "--sim-scene": palette.SIM_SCENE,
+    "--truth-live": palette.TRUTH_LIVE,
+    "--truth-live-dark": palette.TRUTH_LIVE_DARK,
+  };
 }

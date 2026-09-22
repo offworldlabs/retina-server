@@ -8,10 +8,42 @@
    stylesheets load in.
 
    Object-class colours are NOT set here: they come from mapPalette.ts via the
-   component, so this legend and the map cannot drift apart. A card receives
-   its class as --class-color, a property of its own rather than an override
-   of --accent, so the focus rings and controls inside it keep the surface
-   accent unless they ask for the class. */
+   component, which sets them on the page as --sim-* and --truth-* properties,
+   so this legend and the map cannot drift apart. An element takes one by
+   class, below, as --class-color: a property of its own rather than an
+   override of --accent, so the focus rings and controls inside it keep the
+   surface accent unless they ask for the class. */
+
+.ps-sim-anomalous {
+  --class-color: var(--sim-anomalous);
+}
+.ps-sim-drone {
+  --class-color: var(--sim-drone);
+}
+.ps-sim-dark {
+  --class-color: var(--sim-dark);
+}
+.ps-sim-commercial {
+  --class-color: var(--sim-commercial);
+}
+.ps-sim-scene {
+  --class-color: var(--sim-scene);
+}
+.ps-truth-live {
+  --class-color: var(--truth-live);
+}
+.ps-truth-live-dark {
+  --class-color: var(--truth-live-dark);
+}
+
+/* The type icons. The lifted ones sit on a card and carry the surface's icon
+   shadow; the dark plane is already half-transparent and goes without. */
+.ps-glyph {
+  display: block;
+}
+.ps-glyph-lifted {
+  filter: var(--icon-shadow);
+}
 
 /* ── Container ───────────────────────────────────────────────── */
 /* The console's pane is flush and scrolls nothing, so the page scrolls itself.
@@ -92,6 +124,7 @@
 }
 
 .ps-comp-seg {
+  background: var(--class-color);
   transition: flex 0.3s ease;
   min-width: 2px;
 }
@@ -103,6 +136,11 @@
   margin-top: 10px;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+
+.ps-comp-legend > span,
+.ps-gt-legend > span {
+  color: var(--class-color);
 }
 
 /* ── Type cards ─────────────────────────────────────────────── */
@@ -163,6 +201,7 @@
   font-style: italic;
 }
 
+/* A tint of the card's class colour, in that colour. */
 .ps-type-badge {
   font-size: 11px;
   padding: 2px 9px;
@@ -170,6 +209,12 @@
   font-weight: 600;
   white-space: nowrap;
   letter-spacing: 0.03em;
+  background: color-mix(in srgb, var(--class-color) 13%, transparent);
+  color: var(--class-color);
+}
+
+.ps-type-badge > span {
+  color: var(--class-color);
 }
 
 .ps-type-desc {
@@ -196,8 +241,8 @@
   cursor: pointer;
   background: linear-gradient(
     to right,
-    var(--thumb-color, var(--accent)) 0%,
-    var(--thumb-color, var(--accent)) var(--fill-pct, 0%),
+    var(--class-color, var(--accent)) 0%,
+    var(--class-color, var(--accent)) var(--fill-pct, 0%),
     var(--border) var(--fill-pct, 0%),
     var(--border) 100%
   );
@@ -210,9 +255,9 @@
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: var(--thumb-color, var(--accent));
+  background: var(--class-color, var(--accent));
   border: 2px solid var(--bg-card);
-  box-shadow: 0 0 0 2px var(--thumb-color, var(--accent));
+  box-shadow: 0 0 0 2px var(--class-color, var(--accent));
   cursor: pointer;
   transition: transform 0.1s, box-shadow 0.1s;
 }
@@ -225,9 +270,9 @@
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: var(--thumb-color, var(--accent));
+  background: var(--class-color, var(--accent));
   border: 2px solid var(--bg-card);
-  box-shadow: 0 0 0 2px var(--thumb-color, var(--accent));
+  box-shadow: 0 0 0 2px var(--class-color, var(--accent));
   cursor: pointer;
 }
 
@@ -237,6 +282,17 @@
   font-size: 14px;
   font-weight: 600;
   font-variant-numeric: tabular-nums;
+  color: var(--class-color);
+}
+
+/* Room for "auto" and "300 km". */
+.ps-pct-wide {
+  min-width: 4.5rem;
+}
+
+/* The derived share cannot be shown while the others exceed 100%. */
+.ps-pct-over {
+  color: var(--error);
 }
 
 /* ── Derived commercial bar ─────────────────────────────────── */
@@ -250,6 +306,7 @@
 
 .ps-derived-fill {
   height: 100%;
+  background: var(--class-color);
   border-radius: 3px;
   transition: width 0.25s ease;
 }
@@ -497,6 +554,13 @@
   padding: 16px 18px;
 }
 
+.ps-doppler-glyph {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 6px;
+  color: var(--accent-hover);
+}
+
 .ps-doppler-title {
   font-size: 11px;
   font-weight: 600;
@@ -581,6 +645,11 @@
   border-radius: var(--radius-sm);
   overflow: hidden;
   border: 1px solid var(--border);
+}
+
+.ps-gt-leaflet {
+  width: 100%;
+  height: 100%;
 }
 
 .ps-gt-legend {
