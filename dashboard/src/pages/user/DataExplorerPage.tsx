@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { useHref, useSearchParams } from "react-router-dom";
 
+import { Notice } from "../../components/Notice";
 import { StatCard } from "../../components/StatCard";
 import { formatBytes } from "../../utils/format";
 import { entryForScope, horizon } from "./dataExplorer/archive";
@@ -182,19 +183,14 @@ export default function DataExplorerPage() {
       </div>
 
       {coldFrom && (
-        <div className="de-notice">
-          Files before {coldFrom} have been moved to cold storage and are not served here.
-        </div>
+        <Notice>Files before {coldFrom} have been moved to cold storage and are not served here.</Notice>
       )}
 
       {registry.error && (
-        <div className="de-notice">
+        <Notice onRetry={registry.retry}>
           The node list could not be loaded ({registry.error}), so names and positions are missing
           and the radius filter has nothing to measure against.
-          <button type="button" className="btn btn-secondary btn-sm" onClick={registry.retry}>
-            Retry
-          </button>
-        </div>
+        </Notice>
       )}
 
       <div className="stats-grid">
