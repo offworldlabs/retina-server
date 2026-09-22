@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../../api/client";
+import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
 import { Pager } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
@@ -9,9 +10,10 @@ const PAGE_SIZE = 25;
 
 export default function EventsPage() {
   const [page, setPage] = useState(0);
-  const { data, loading } = useFetch(() =>
+  const polled = useFetch(() =>
     api.adminEvents(500).then((d) => (Array.isArray(d) ? d : [])),
   );
+  const { data, loading } = polled;
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
@@ -20,12 +22,25 @@ export default function EventsPage() {
   const totalPages = Math.ceil(events.length / PAGE_SIZE);
   const paged = events.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
+  const header = (
+    <div className="page-header">
+      <h1>Events & Alerts</h1>
+      <p>Structured event log from the network</p>
+    </div>
+  );
+  if (nothingLoaded(polled)) {
+    return (
+      <>
+        {header}
+        <FetchNotice polled={polled} what="events" />
+      </>
+    );
+  }
+
   return (
     <>
-      <div className="page-header">
-        <h1>Events & Alerts</h1>
-        <p>Structured event log from the network</p>
-      </div>
+      {header}
+      <FetchNotice polled={polled} what="events" />
 
       <div className="stats-grid">
         <StatCard label="Total Events" value={events.length} />

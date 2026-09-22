@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
+import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { Pager } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
@@ -35,7 +36,7 @@ export default function NodeManagementPage() {
   const idsByRef = useNodeIds();
   const navigate = useNavigate();
 
-  const { data, loading } = useFetch(async () => {
+  const polled = useFetch(async () => {
     // Contacts are caught on their own so a failure there costs the contact
     // cells rather than the node list. Logged before the fallback: an empty
     // object is also what "nobody has reported one" looks like, and the two
@@ -54,6 +55,7 @@ export default function NodeManagementPage() {
     }));
     return { nodes, analytics: a, contacts: c };
   });
+  const { data, loading } = polled;
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
@@ -80,12 +82,25 @@ export default function NodeManagementPage() {
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
   const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
+  const header = (
+    <div className="page-header">
+      <h1>Node Management</h1>
+      <p>View and manage all nodes in the network</p>
+    </div>
+  );
+  if (nothingLoaded(polled)) {
+    return (
+      <>
+        {header}
+        <FetchNotice polled={polled} what="the node list" />
+      </>
+    );
+  }
+
   return (
     <>
-      <div className="page-header">
-        <h1>Node Management</h1>
-        <p>View and manage all nodes in the network</p>
-      </div>
+      {header}
+      <FetchNotice polled={polled} what="the node list" />
 
       <div className="stats-grid">
         <StatCard label="Total Nodes" value={nodes.length} tone="accent" />

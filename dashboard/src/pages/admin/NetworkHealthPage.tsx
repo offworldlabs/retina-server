@@ -4,6 +4,7 @@ import {
 } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import { api } from "../../api/client";
+import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
 import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
@@ -22,7 +23,7 @@ export default function NetworkHealthPage() {
   const [search, setSearch] = useState("");
   const idsByRef = useNodeIds();
 
-  const { data, loading } = usePolling(async () => {
+  const polled = usePolling(async () => {
     // Fetch fleet dashboard and node data in parallel; if fleetDashboard fails
     // we still render the node list from nodes/analytics.
     const [d, a, n, an] = await Promise.all([
@@ -52,6 +53,7 @@ export default function NetworkHealthPage() {
       },
     ].slice(-30));
   });
+  const { data, loading } = polled;
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
@@ -63,12 +65,25 @@ export default function NetworkHealthPage() {
   const coc = dashboard?.chain_of_custody || {};
   const onlineNodes = nodes.filter((n) => n.status !== "disconnected" && n.status !== undefined);
 
+  const header = (
+    <div className="page-header">
+      <h1>Network Health</h1>
+      <p>Real-time monitoring of the passive radar network</p>
+    </div>
+  );
+  if (nothingLoaded(polled)) {
+    return (
+      <>
+        {header}
+        <FetchNotice polled={polled} what="network health" />
+      </>
+    );
+  }
+
   return (
     <>
-      <div className="page-header">
-        <h1>Network Health</h1>
-        <p>Real-time monitoring of the passive radar network</p>
-      </div>
+      {header}
+      <FetchNotice polled={polled} what="network health" />
 
       <div className="stats-grid">
         <StatCard

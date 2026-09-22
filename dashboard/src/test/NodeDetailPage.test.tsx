@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import NodeDetailPage from "../pages/user/NodeDetailPage";
+import { HttpError } from "@retina/shared";
 import { api } from "../api/client";
 
 vi.mock("../api/client", () => ({
@@ -59,7 +60,7 @@ describe("NodeDetailPage route identity", () => {
     expect(screen.queryAllByRole("radio")).toHaveLength(0);
     expect(screen.getByText("Loading…")).toBeInTheDocument();
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
-    await act(async () => next.reject(new Error("missing B")));
+    await act(async () => next.reject(new HttpError(404, "Not Found", null)));
     expect(screen.getByText("Node not found")).toBeInTheDocument();
     expect(screen.queryAllByRole("radio")).toHaveLength(0);
     errorLog.mockRestore();
