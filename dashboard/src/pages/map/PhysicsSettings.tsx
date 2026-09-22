@@ -148,7 +148,7 @@ function serverToScene(data) {
 export default function PhysicsSettings() {
   const palette = usePalette();
   const theme = activeTheme();
-  const { ACCENT_STRONG, BAD, SIM_ANOMALOUS, SIM_COMMERCIAL, SIM_DARK, SIM_DRONE, SIM_SCENE, TRUTH_LIVE, TRUTH_LIVE_DARK } = palette;
+  const { ACCENT_STRONG, SIM_ANOMALOUS, SIM_COMMERCIAL, SIM_DARK, SIM_DRONE, SIM_SCENE, TRUTH_LIVE, TRUTH_LIVE_DARK } = palette;
   // Both depend on the palette and nothing else, so neither is rebuilt on the
   // slider drags that dominate this page's re-renders.
   const types = useMemo(() => objectTypes(palette), [palette]);
@@ -630,7 +630,7 @@ export default function PhysicsSettings() {
                 }}
               />
             </div>
-            <span className="ps-pct-val" style={{ color: overLimit ? BAD : SIM_COMMERCIAL }}>
+            <span className="ps-pct-val" style={{ color: overLimit ? "var(--error)" : SIM_COMMERCIAL }}>
               {overLimit ? "—" : `${pct(fracCommercial)}%`}
             </span>
           </div>
