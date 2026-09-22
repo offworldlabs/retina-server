@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { readStored, writeStored } from "../utils/storage";
 
 /**
  * Which palette the console is drawn with, and the switch for it.
@@ -37,12 +38,8 @@ function isPreference(v: unknown): v is ThemePreference {
 /** The stored preference, or `system` for anything this version cannot read —
  *  a value from a future one, a hand-edited key, or no storage at all. */
 function storedPreference(): ThemePreference {
-  try {
-    const raw = window.localStorage.getItem(THEME_KEY);
-    return isPreference(raw) ? raw : "system";
-  } catch {
-    return "system";
-  }
+  const raw = readStored(THEME_KEY);
+  return isPreference(raw) ? raw : "system";
 }
 
 /** Absent in jsdom and in any non-browser render, so every caller has to cope
@@ -82,11 +79,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   const setPreference = (p: ThemePreference) => {
     setPreferenceState(p);
-    try {
-      window.localStorage.setItem(THEME_KEY, p);
-    } catch {
-      /* quota exceeded / private mode — the choice still holds for this tab */
-    }
+    writeStored(THEME_KEY, p);
   };
 
   const value = useMemo<ThemeValue>(
