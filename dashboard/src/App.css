@@ -455,6 +455,10 @@ a:hover {
   flex: 1;
   overflow-y: auto;
   padding: var(--content-pad);
+  /* A page's z-indexes stay inside the page. The map floats its toolbar and
+     Leaflet's controls at 1000 and above, which would otherwise paint over the
+     header's account menu. */
+  isolation: isolate;
 }
 
 /* A full-bleed page owns its own overflow and draws to every edge; a
