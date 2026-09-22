@@ -253,8 +253,10 @@ class DetectionFrame(_RequestModel):
         """The arrays are one table on its side, so a mismatch is a 422.
 
         `adsb_hex` and `adsb` are optional columns of that table.  A node that
-        sends both says one correlation twice, and the two must agree entry for
-        entry rather than become two correlations.
+        sends both says one correlation twice, so a tag's hex must match the hex
+        beside it rather than become a second correlation.  A hex beside a null
+        tag is one correlation without a position: the node matched the aircraft
+        but had no usable fix for it.
         """
         n = len(self.delay)
         if len(self.doppler) != n or len(self.snr) != n:

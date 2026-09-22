@@ -539,6 +539,13 @@ class TestAdsbTags:
         with pytest.raises(ValidationError, match=r"adsb\[1\].hex"):
             DetectionFrame(**(FRAME | {"adsb": [None, TAG]}))
 
+    def test_a_hex_beside_a_null_tag_is_accepted(self):
+        """The node matched the aircraft but had no usable position for it, which
+        is a correlation without a fix rather than a disagreement."""
+        frame = DetectionFrame(**(FRAME | {"adsb": [None, None]}))
+        assert frame.adsb_hex == ["4ca1f2", None]
+        assert frame.adsb == [None, None]
+
     def test_unknown_keys_in_a_tag_are_refused(self):
         with pytest.raises(ValidationError):
             DetectionFrame(**(FRAME | {"adsb": [TAG | {"rssi": -5.0}, None]}))
