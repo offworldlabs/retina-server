@@ -14,7 +14,7 @@ export default function AlertsPage() {
   if (loading) return <div className="empty-state">Loading…</div>;
 
   const alerts = data ?? [];
-  const severityClass = { info: "online", warning: "warning", error: "offline", critical: "offline" };
+  const severityClass = { info: "info", warning: "warning", error: "offline", critical: "offline" };
   const warnings = alerts.filter((e) => e.severity === "warning");
   const errors = alerts.filter((e) => e.severity === "error" || e.severity === "critical");
 
@@ -60,7 +60,7 @@ export default function AlertsPage() {
                 {ev.ts ? new Date(ev.ts * 1000).toLocaleString() : "—"}
               </td>
               <td>
-                <span className={`badge ${severityClass[ev.severity] || "online"}`}>
+                <span className={`badge ${severityClass[ev.severity] || "info"}`}>
                   {ev.severity}
                 </span>
               </td>

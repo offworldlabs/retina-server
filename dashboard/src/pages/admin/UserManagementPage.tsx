@@ -62,7 +62,7 @@ export default function UserManagementPage() {
 
       <div className="stats-grid">
         <StatCard label="Total Users" value={users.length} tone="accent" />
-        <StatCard label="Admins" value={users.filter((u) => u.role === "admin").length} tone="warning" />
+        <StatCard label="Admins" value={users.filter((u) => u.role === "admin").length} tone="accent" />
       </div>
 
       <div className="card">
@@ -90,9 +90,7 @@ export default function UserManagementPage() {
               <td>{user.email}</td>
               <td style={{ textTransform: "capitalize" }}>{user.provider}</td>
               <td>
-                <span className={`badge ${user.role === "admin" ? "warning" : "online"}`}>
-                  {user.role}
-                </span>
+                <span className="badge plain">{user.role}</span>
               </td>
               <td style={{ fontFamily: "monospace", fontSize: 11, color: "var(--text-muted)" }}>
                 {nodeCount(user.id)}
