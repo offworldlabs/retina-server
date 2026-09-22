@@ -4,6 +4,7 @@ import {
   fmt,
   formatBytes,
   formatDuration,
+  formatMHz,
   formatPercent,
   formatRelativeTime,
   formatUptime,
@@ -123,6 +124,18 @@ describe("formatPercent", () => {
 
   it.each([undefined, null, NaN])("renders %s as a dash, with no percent sign", (v) => {
     expect(formatPercent(v)).toBe("—");
+  });
+});
+
+describe("formatMHz", () => {
+  it("shows megahertz to the kilohertz", () => {
+    expect(formatMHz(174_928_000)).toBe("174.928 MHz");
+    expect(formatMHz(195_000_000)).toBe("195.000 MHz");
+    expect(formatMHz(98_100_000)).toBe("98.100 MHz");
+  });
+
+  it.each([undefined, null, NaN, 0])("renders %s as a dash", (v) => {
+    expect(formatMHz(v)).toBe("—");
   });
 });
 
