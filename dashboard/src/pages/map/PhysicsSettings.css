@@ -4,7 +4,10 @@
    which sets `.app.map-surface`, so the var() calls always resolve.
 
    Object-class colours are NOT set here: they come from mapPalette.ts via the
-   component, so this legend and the map cannot drift apart. */
+   component, so this legend and the map cannot drift apart. A card receives
+   its class as --class-color, a property of its own rather than an override
+   of --accent, so the focus rings and controls inside it keep the surface
+   accent unless they ask for the class. */
 
 /* ── Container ───────────────────────────────────────────────── */
 /* The console's pane is flush and scrolls nothing, so the page scrolls itself.
@@ -52,7 +55,7 @@
 
 /* ── Live count grid ────────────────────────────────────────────
    dash's stat cards: uppercase micro-label under a large tabular value. The
-   accent rule on top is how each card says which object class it counts. */
+   rule on top is how each card says which object class it counts. */
 .ps-count-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -68,7 +71,7 @@
   padding: 16px 10px;
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-top: 2px solid var(--accent, #3b82f6);
+  border-top: 2px solid var(--class-color, var(--accent));
   border-radius: var(--radius);
   transition: background 0.15s;
 }
@@ -84,7 +87,7 @@
 .ps-count-num {
   font-size: 28px;
   font-weight: 700;
-  color: var(--accent, #3b82f6);
+  color: var(--class-color, var(--accent));
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
@@ -147,7 +150,7 @@
   padding: 14px 16px 12px;
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-left: 3px solid var(--accent, #3b82f6);
+  border-left: 3px solid var(--class-color, var(--accent));
   border-radius: var(--radius);
   transition: background 0.15s;
 }
@@ -393,7 +396,7 @@
 .ps-toggle-row input[type="checkbox"] {
   width: 16px;
   height: 16px;
-  accent-color: var(--accent);
+  accent-color: var(--class-color, var(--accent));
   cursor: pointer;
 }
 
