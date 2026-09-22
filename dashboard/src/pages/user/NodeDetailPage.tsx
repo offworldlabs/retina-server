@@ -230,7 +230,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
 
       {/* Location privacy — owners only; the control writes the /me routes. */}
       {privacy && (
-        <div className="card" style={{ marginBottom: 24 }}>
+        <div className="card">
           <div className="card-header">
             <h3>Location privacy</h3>
             <LocationPrivacyBadge isPrivate={privacy.location_private} />
@@ -252,7 +252,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
       {/* Ownership — owners only. Releasing is here rather than on a list page
           because it wants the node named in front of it. */}
       {ownership && (
-        <div className="card" style={{ marginBottom: 24 }}>
+        <div className="card">
           <div className="card-header"><h3>Ownership</h3></div>
           <div className="card-body stack">
             <p>
@@ -288,7 +288,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
 
       {/* Detection Area */}
       {data.detection_area && (
-        <div className="card" style={{ marginBottom: 24 }}>
+        <div className="card">
           <div className="card-header"><h3>Detection Area</h3></div>
           <div className="card-body">
             <table className="kv-table">
@@ -323,7 +323,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
 
       {/* RF Configuration */}
       {nodeInfo && (
-        <div className="card" style={{ marginBottom: 24 }}>
+        <div className="card">
           <div className="card-header"><h3>RF Configuration</h3></div>
           <div className="card-body">
             <table className="kv-table">

@@ -101,7 +101,7 @@ export default function NetworkHealthPage() {
 
       {/* Live trend chart */}
       {history.length > 1 && (
-        <div className="card" style={{ marginBottom: 24 }}>
+        <div className="card">
           <div className="card-header">
             <h3>Live Network Activity</h3>
             <span className="card-note">
@@ -136,7 +136,7 @@ export default function NetworkHealthPage() {
         const avgLat = geoNodes.reduce((s, n) => s + n.location.rx_lat, 0) / geoNodes.length;
         const avgLon = geoNodes.reduce((s, n) => s + n.location.rx_lon, 0) / geoNodes.length;
         return (
-          <div className="card" style={{ marginBottom: 24 }}>
+          <div className="card">
             <div className="card-header">
               <h3>Node Map</h3>
               <span className="card-note">

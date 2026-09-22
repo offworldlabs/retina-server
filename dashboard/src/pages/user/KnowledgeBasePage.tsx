@@ -53,7 +53,7 @@ export default function KnowledgeBasePage() {
       </div>
 
       {guides.map((guide, gi) => (
-        <div className="card" key={gi} style={{ marginBottom: 16 }}>
+        <div className="card" key={gi}>
           <div className="card-header">
             <h3>{guide.title}</h3>
           </div>
@@ -62,7 +62,7 @@ export default function KnowledgeBasePage() {
               {guide.description}
             </p>
             {guide.sections && (
-              <ol style={{ paddingLeft: 20, color: "var(--text-secondary)", fontSize: 13, lineHeight: 2 }}>
+              <ol style={{ color: "var(--text-secondary)", fontSize: 13, lineHeight: 2 }}>
                 {guide.sections.map((s, i) => (
                   <li key={i}>{s}</li>
                 ))}
@@ -91,7 +91,7 @@ export default function KnowledgeBasePage() {
         </div>
       ))}
 
-      <div className="card" style={{ marginTop: 16 }}>
+      <div className="card">
         <div className="card-header"><h3>External Resources</h3></div>
         <div className="card-body">
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
@@ -100,7 +100,6 @@ export default function KnowledgeBasePage() {
               target="_blank"
               rel="noopener noreferrer"
               className="btn btn-primary"
-              style={{ textDecoration: "none" }}
             >
               Community Discord
             </a>
@@ -109,7 +108,6 @@ export default function KnowledgeBasePage() {
               target="_blank"
               rel="noopener noreferrer"
               className="btn btn-secondary"
-              style={{ textDecoration: "none" }}
             >
               Website
             </a>
