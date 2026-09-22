@@ -100,3 +100,21 @@ describe("fields", () => {
     expect(tag).toMatch(/className="input\b/);
   });
 });
+
+describe("the outlined button", () => {
+  // One rule under one name. Spelt in two parts so this file does not match.
+  const retired = "btn-" + "outline";
+  const code = Object.entries(
+    import.meta.glob("../**/*.{ts,tsx,css}", { query: "?raw", import: "default", eager: true }) as Record<string, string>,
+  ).filter(([path]) => !path.startsWith("../test/"));
+
+  it("is .btn-secondary in the shared vocabulary", () => {
+    expect(declarations(ui, ".btn-secondary {").border).toBe("1px solid var(--border-light)");
+    expect(uiCss).not.toContain(retired);
+  });
+
+  it("goes by that name everywhere in the console", () => {
+    expect(code.length).toBeGreaterThan(50);
+    expect(code.filter(([, source]) => source.includes(retired)).map(([path]) => path)).toEqual([]);
+  });
+});
