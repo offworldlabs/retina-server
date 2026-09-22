@@ -91,6 +91,7 @@ export default function ContributionPage() {
                   <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
                   <Tooltip
                     contentStyle={chart.tooltip}
+                    cursor={chart.cursor}
                   />
                   <Bar dataKey="detections" fill={chart.series[0]} radius={[4, 4, 0, 0]} />
                 </BarChart>
