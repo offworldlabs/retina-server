@@ -519,22 +519,22 @@ export default function PhysicsSettings() {
 
       {/* ── Live Count Grid ──────────────────────────────────────────── */}
       <div className="ps-count-grid">
-        <div className="ps-count-card" style={{ "--accent": SIM_ANOMALOUS }}>
+        <div className="ps-count-card" style={{ "--class-color": SIM_ANOMALOUS }}>
           <AnomalousIcon size={28} />
           <span className="ps-count-num">{counts.anomalous ?? 0}</span>
           <span className="ps-count-lbl">Anomalous</span>
         </div>
-        <div className="ps-count-card" style={{ "--accent": SIM_DRONE }}>
+        <div className="ps-count-card" style={{ "--class-color": SIM_DRONE }}>
           <DroneIcon size={28} />
           <span className="ps-count-num">{counts.drone ?? 0}</span>
           <span className="ps-count-lbl">Drones</span>
         </div>
-        <div className="ps-count-card" style={{ "--accent": SIM_DARK }}>
+        <div className="ps-count-card" style={{ "--class-color": SIM_DARK }}>
           <PlaneIcon color={SIM_DARK} size={28} />
           <span className="ps-count-num">{counts.aircraft ?? 0}</span>
           <span className="ps-count-lbl">Aircraft</span>
         </div>
-        <div className="ps-count-card ps-count-total" style={{ "--accent": SIM_COMMERCIAL }}>
+        <div className="ps-count-card ps-count-total" style={{ "--class-color": SIM_COMMERCIAL }}>
           <PlaneIcon color={SIM_COMMERCIAL} size={28} />
           <span className="ps-count-num">{totalGt}</span>
           <span className="ps-count-lbl">Total Live</span>
@@ -571,7 +571,7 @@ export default function PhysicsSettings() {
         {types.map(({ key, label, countKey, color, Icon, description, mapNote, maxPct }) => {
           const fillPct = (pct(draft[key]) / maxPct) * 100;
           return (
-            <div key={key} className="ps-type-card" style={{ "--accent": color }}>
+            <div key={key} className="ps-type-card" style={{ "--class-color": color }}>
               <div className="ps-type-header">
                 <div className="ps-type-icon-wrap">
                   <Icon size={24} />
@@ -606,7 +606,7 @@ export default function PhysicsSettings() {
         })}
 
         {/* Commercial — derived, read-only */}
-        <div className="ps-type-card ps-commercial" style={{ "--accent": SIM_COMMERCIAL }}>
+        <div className="ps-type-card ps-commercial" style={{ "--class-color": SIM_COMMERCIAL }}>
           <div className="ps-type-header">
             <div className="ps-type-icon-wrap">
               <PlaneIcon color={SIM_COMMERCIAL} size={24} />
@@ -683,7 +683,7 @@ export default function PhysicsSettings() {
             Deliberately its own card, not a segment of the composition bar:
             the feed sets the live headcount, so it is not a share of the
             synthetic mix and must not be summed with it. */}
-        <div className="ps-settings-card ps-live-card" style={{ "--accent": TRUTH_LIVE_DARK }}>
+        <div className="ps-settings-card ps-live-card" style={{ "--class-color": TRUTH_LIVE_DARK }}>
           <div className="ps-settings-label">
             Live ADS-B traffic
             <span className="ps-settings-sublabel"> (real aircraft from adsb.retina.fm, echoed by the synthetic nodes)</span>
