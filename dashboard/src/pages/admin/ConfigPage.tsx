@@ -128,7 +128,7 @@ export default function ConfigPage() {
               already broken whenever no overlay file existed, because the
               live view never validated as tower config. */}
           {activeTab === "nodes" && (
-            <div style={{ display: "flex", gap: 8 }}>
+            <div className="card-aside">
               {editing ? (
                 <>
                   <button className="btn btn-primary btn-sm" disabled={saving} onClick={save}>
@@ -249,7 +249,7 @@ export default function ConfigPage() {
         </div>
       </div>
 
-      <div className="card" style={{ marginTop: 16 }}>
+      <div className="card">
         <div className="card-header">
           <h3>Version History</h3>
         </div>

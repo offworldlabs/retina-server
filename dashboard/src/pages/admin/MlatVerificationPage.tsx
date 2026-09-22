@@ -20,7 +20,7 @@ function ErrorRow({ label, stats, unit, decimals = 2 }: {
   const p95    = (stats as any)[`p95_${unit}`];
   const max    = (stats as any)[`max_${unit}`];
   return (
-    <div className="stats-grid" style={{ marginBottom: 16 }}>
+    <div className="stats-grid">
       <StatCard label={`${label} — mean`}   value={fmt(mean,   decimals)} unit={unit === "km" ? "km" : unit === "ms" ? "m/s" : "m"} />
       <StatCard label={`${label} — median`} value={fmt(median, decimals)} unit={unit === "km" ? "km" : unit === "ms" ? "m/s" : "m"} />
       <StatCard label={`${label} — p95`}    value={fmt(p95,    decimals)} unit={unit === "km" ? "km" : unit === "ms" ? "m/s" : "m"} />
@@ -87,8 +87,8 @@ export default function MlatVerificationPage() {
       <FetchNotice polled={polled} what="MLAT verification" />
 
       {/* ── Latest snapshot ───────────────────────────────────────── */}
-      <h2 style={{ fontSize: 16, marginTop: 24, marginBottom: 12 }}>Latest snapshot</h2>
-      <div className="stats-grid" style={{ marginBottom: 16 }}>
+      <h2 className="section-title">Latest snapshot</h2>
+      <div className="stats-grid">
         <StatCard label="Solves"          value={(v.n_solves ?? 0).toLocaleString()} />
         <StatCard label="Matched to truth" value={(v.n_matched ?? 0).toLocaleString()}
                   sub={matchThresh ? `≤ ${matchThresh} km from ground truth` : undefined} />
@@ -100,16 +100,16 @@ export default function MlatVerificationPage() {
       {v.altitude && <ErrorRow label="Altitude error" stats={v.altitude} unit="m" decimals={0} />}
 
       {/* ── Rolling accuracy ──────────────────────────────────────── */}
-      <h2 style={{ fontSize: 16, marginTop: 32, marginBottom: 12 }}>
+      <h2 className="section-title">
         Rolling accuracy
-        <span style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: "normal", marginLeft: 8 }}>
+        <span className="card-note">
           last {(a.n_samples ?? 0).toLocaleString()} matched samples
         </span>
       </h2>
 
       {a.n_samples > 0 ? (
         <>
-          <div className="stats-grid" style={{ marginBottom: 16 }}>
+          <div className="stats-grid">
             <StatCard label="Overall mean"   value={fmt(a.mean_km)}   unit="km" />
             <StatCard label="Overall median" value={fmt(a.median_km)} unit="km" />
             <StatCard label="Overall p95"    value={fmt(a.p95_km)}    unit="km" />
@@ -118,11 +118,11 @@ export default function MlatVerificationPage() {
 
           {a.normal_only?.n_samples > 0 && (
             <>
-              <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 8 }}>
+              <div className="section-caption">
                 Normal-only (excludes spoofed/anomalous aircraft —
                 {" "}{a.normal_only.n_samples.toLocaleString()} samples):
               </div>
-              <div className="stats-grid" style={{ marginBottom: 16 }}>
+              <div className="stats-grid">
                 <StatCard label="Mean"   value={fmt(a.normal_only.mean_km)}   unit="km" />
                 <StatCard label="Median" value={fmt(a.normal_only.median_km)} unit="km" />
                 <StatCard label="p95"    value={fmt(a.normal_only.p95_km)}    unit="km" />
@@ -133,11 +133,11 @@ export default function MlatVerificationPage() {
 
           {a.good_geometry?.n_samples > 0 && (
             <>
-              <div style={{ fontSize: 13, color: "var(--text-muted)", marginBottom: 8 }}>
+              <div className="section-caption">
                 Good-geometry only (bistatic angle &lt; {a.good_geometry.bistatic_angle_threshold_deg}° —
                 {" "}{a.good_geometry.n_samples.toLocaleString()} samples):
               </div>
-              <div className="stats-grid" style={{ marginBottom: 16 }}>
+              <div className="stats-grid">
                 <StatCard label="Mean"   value={fmt(a.good_geometry.mean_km)}   unit="km" />
                 <StatCard label="Median" value={fmt(a.good_geometry.median_km)} unit="km" />
                 <StatCard label="p95"    value={fmt(a.good_geometry.p95_km)}    unit="km" />
@@ -146,8 +146,10 @@ export default function MlatVerificationPage() {
             </>
           )}
 
-          <h3 style={{ fontSize: 14, marginTop: 24, marginBottom: 8 }}>By node count</h3>
-          <NodeBreakdownTable byNodeCount={a.by_node_count ?? {}} />
+          <div className="card">
+            <div className="card-header"><h3>By node count</h3></div>
+            <NodeBreakdownTable byNodeCount={a.by_node_count ?? {}} />
+          </div>
         </>
       ) : (
         <div className="empty-state">No matched samples in the rolling window yet.</div>
