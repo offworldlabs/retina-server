@@ -100,6 +100,33 @@
   gap: 8px;
 }
 
+/* ── Fields ──────────────────────────────────────────────────────────────── */
+
+/* A text box or select on a page: a search over a listing, a node picker. */
+.input {
+  width: 260px;
+  max-width: 100%;
+  padding: 6px 12px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+/* Sized to sit beside a card title or a row of `.btn-sm`. */
+.input-sm {
+  width: 180px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
 /* ── Badges ──────────────────────────────────────────────────────────────── */
 
 .badge {
