@@ -65,7 +65,7 @@ export default function CustodyPage() {
           onChange={(e) => { setSearch(e.target.value); setPage(0); }}
           style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid var(--border)", fontSize: 13, width: 260 }}
         />
-        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+        <span className="card-note">
           Showing {paged.length} of {filtered.length} nodes
         </span>
       </div>
@@ -82,8 +82,8 @@ export default function CustodyPage() {
           const keyInfo = custody?.node_keys?.[ref] || {};
           return (
             <tr key={ref}>
-              <td style={{ fontFamily: "monospace", fontSize: 12 }}>{ref}</td>
-              <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--text-muted)" }}>
+              <td className="mono">{ref}</td>
+              <td className="mono muted">
                 {idsByRef?.[ref] ?? "—"}
               </td>
               <td>
@@ -92,10 +92,10 @@ export default function CustodyPage() {
                 </span>
               </td>
               <td>{count}</td>
-              <td style={{ fontFamily: "monospace", fontSize: 11 }}>{chain.latest_hour || "—"}</td>
+              <td className="mono">{chain.latest_hour || "—"}</td>
               <td>{custody?.iq_commitments?.[ref] || 0}</td>
               <td>{keyInfo.signing_mode || "—"}</td>
-              <td style={{ fontFamily: "monospace", fontSize: 11 }}>{keyInfo.fingerprint || "—"}</td>
+              <td className="mono">{keyInfo.fingerprint || "—"}</td>
             </tr>
           );
         })}

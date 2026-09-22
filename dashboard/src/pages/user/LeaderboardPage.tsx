@@ -97,11 +97,11 @@ export default function LeaderboardPage() {
                 <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>
                   #{i + 1}
                 </div>
-                <div style={{ fontSize: 12, fontFamily: "monospace", color: "var(--accent)", marginBottom: 4 }}>
+                <div className="mono" style={{ color: "var(--accent)", marginBottom: 4 }}>
                   {rowName(entry)}
                 </div>
                 <div style={{ fontSize: 20, fontWeight: 700 }}>{entry.detections.toLocaleString()}</div>
-                <div style={{ fontSize: 11, color: "var(--text-muted)" }}>detections</div>
+                <div className="card-note">detections</div>
               </div>
             ))}
           </div>
@@ -110,7 +110,7 @@ export default function LeaderboardPage() {
 
       {/* Sort control */}
       <div style={{ marginBottom: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <span style={{ fontSize: 13, color: "var(--text-muted)" }}>Sort by:</span>
+        <span className="card-note">Sort by:</span>
         {["detections", "uptime", "trust", "snr", ...(showsMisses ? ["miss_rate"] : [])].map((key) => (
           <button
             key={key}
@@ -168,7 +168,7 @@ export default function LeaderboardPage() {
                 {paged.map((entry, i) => (
                   <tr key={entry.node_ref}>
                     <td style={{ fontWeight: 600, color: "var(--text-primary)" }}>{offset + i + 1}</td>
-                    <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
+                    <td className="mono" style={{ color: "var(--accent)" }}>
                       {rowName(entry)}
                     </td>
                     <td>

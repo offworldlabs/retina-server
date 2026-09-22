@@ -19,10 +19,6 @@ import type { LocationPrivacyState } from "../../types";
 
 const PAGE_SIZE = 25;
 
-// Both identifiers are opaque strings read character by character when they are
-// compared against something else on screen.
-const MONO = { fontFamily: "monospace", fontSize: 12 } as const;
-
 // Every field is independently optional server side, so a contact can be a
 // phone number and nothing else; falling through to it is what keeps such a
 // node from reading as "nobody reported anything".
@@ -120,7 +116,7 @@ export default function NodeManagementPage() {
           onChange={(e) => { setSearch(e.target.value); setPage(0); }}
           style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid var(--border)", fontSize: 13, width: 260 }}
         />
-        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+        <span className="card-note">
           Showing {paged.length} of {filtered.length} nodes
         </span>
       </div>
@@ -153,9 +149,9 @@ export default function NodeManagementPage() {
               </div>
               <div className="node-meta">
                 <span className="meta-label">Node ref</span>
-                <span style={MONO}>{ref}</span>
+                <span className="mono">{ref}</span>
                 <span className="meta-label">Node ID</span>
-                <span style={MONO}>{nodeId ?? "—"}</span>
+                <span className="mono">{nodeId ?? "—"}</span>
                 <span className="meta-label">Frequency</span>
                 <span>{formatMHz(node.frequency)}</span>
                 <span className="meta-label">Detections</span>
