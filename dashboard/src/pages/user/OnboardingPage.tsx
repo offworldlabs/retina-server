@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
 import { api } from "../../api/client";
 import { DataTable } from "../../components/DataTable";
-import { Notice } from "../../components/Notice";
+import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { StatCard } from "../../components/StatCard";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
+import { useFetch } from "../../hooks/usePolling";
 import type { LocationPrivacySource } from "../../types";
 
 type OwnedNode = {
@@ -21,26 +21,8 @@ type OwnedNode = {
 };
 
 export default function OnboardingPage() {
-  const [nodes, setNodes] = useState<OwnedNode[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const refresh = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const n = await api.myNodes();
-      setNodes(Array.isArray(n) ? n : []);
-    } catch (e: any) {
-      setError(e?.message || "Failed to load");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    refresh();
-  }, []);
+  const polled = useFetch(() => api.myNodes().then((n): OwnedNode[] => (Array.isArray(n) ? n : [])));
+  const { loading } = polled;
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
@@ -53,17 +35,16 @@ export default function OnboardingPage() {
       </p>
     </div>
   );
-  // Fetched once, so a failure always means nothing loaded.
-  if (error) {
+  if (nothingLoaded(polled)) {
     return (
       <>
         {header}
-        <Notice tone="error" onRetry={refresh}>
-          Could not load your nodes: {error}
-        </Notice>
+        <FetchNotice polled={polled} what="your nodes" />
       </>
     );
   }
+
+  const nodes = polled.data ?? [];
 
   return (
     <>
