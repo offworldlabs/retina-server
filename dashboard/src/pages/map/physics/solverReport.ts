@@ -127,10 +127,12 @@ export interface FunnelSegment {
   color: string;
 }
 
+/* Surface tokens rather than hex: the bar and its legend are HTML, so var()
+   resolves and each theme draws its own. */
 const FUNNEL_COLORS: Record<FunnelSegment["key"], string> = {
-  n2: "#38bdf8",
-  n3plus: "#a78bfa",
-  rejected: "#f43f5e",
+  n2: "var(--accent)",
+  n3plus: "var(--violet)",
+  rejected: "var(--error)",
 };
 
 /**
