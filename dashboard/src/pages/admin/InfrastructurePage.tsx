@@ -1,5 +1,6 @@
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api } from "../../api/client";
+import { FetchNotice } from "../../components/Notice";
 import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme, type ChartTheme } from "../../utils/chartTheme";
 
@@ -173,24 +174,18 @@ function DropletCard({ droplet, colour, theme }: { droplet: Droplet; colour: str
 }
 
 export default function InfrastructurePage() {
-  const { data: snap, error } = usePolling<Snapshot>(api.adminInfrastructure, REFRESH_MS);
+  const polled = usePolling<Snapshot>(api.adminInfrastructure, REFRESH_MS);
+  const { data: snap, loading } = polled;
   const theme = useChartTheme();
 
-  if (!snap) {
-    if (error) return <div className="empty-state" style={{ color: "var(--error)" }}>Error: {error.message}</div>;
-    return <div className="empty-state">Loading…</div>;
-  }
+  if (loading) return <div className="empty-state">Loading…</div>;
 
-  return (
-    <>
-      {/* A refresh that failed costs the reading its freshness, not the page. */}
-      {error && (
-        <div className="empty-state" style={{ color: "var(--error)" }}>Error: {error.message}. Showing the last reading.</div>
-      )}
-      <div className="page-header">
-        <h1>Infrastructure</h1>
-        <p>Uptime checks and droplet health from DigitalOcean. A view only: the alerts email whether or not this page loads.</p>
-        {/* The backend caches for a minute, so the reading can lag the refresh. */}
+  const header = (
+    <div className="page-header">
+      <h1>Infrastructure</h1>
+      <p>Uptime checks and droplet health from DigitalOcean. A view only: the alerts email whether or not this page loads.</p>
+      {/* The backend caches for a minute, so the reading can lag the refresh. */}
+      {snap && (
         <p style={{ fontSize: 12, color: "var(--text-muted)" }}>
           as of {new Date(snap.fetched_at * 1000).toLocaleTimeString()}{" "}
           {/* The route serves the previous build when a refresh overruns its deadline. */}
@@ -198,7 +193,24 @@ export default function InfrastructurePage() {
             <span className="badge warning" title="The last refresh timed out; showing the previous snapshot">stale</span>
           )}
         </p>
-      </div>
+      )}
+    </div>
+  );
+  // A refresh that failed costs the reading its freshness, not the page.
+  const notice = <FetchNotice polled={polled} what="the infrastructure snapshot" />;
+  if (!snap) {
+    return (
+      <>
+        {header}
+        {notice}
+      </>
+    );
+  }
+
+  return (
+    <>
+      {header}
+      {notice}
 
       {!snap.configured ? (
         <div className="empty-state">

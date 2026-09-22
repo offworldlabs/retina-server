@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../../api/client";
+import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
 import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
@@ -11,10 +12,11 @@ export default function DetectionsPage() {
   const [filterNode, setFilterNode] = useState("");
   const [page, setPage] = useState(0);
   const { data: nodeRefs } = useFetch(() => api.nodes().then((n) => Object.keys(n.nodes || {})));
-  const { data: feed, loading } = usePolling(
+  const polled = usePolling(
     () => api.aircraft().then((d) => d.aircraft || []),
     3000,
   );
+  const { data: feed, loading } = polled;
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
@@ -26,12 +28,25 @@ export default function DetectionsPage() {
     ? aircraft.filter((a) => a.node_ref === filterNode || a.source === filterNode)
     : aircraft;
 
+  const header = (
+    <div className="page-header">
+      <h1>Live Detections</h1>
+      <p>Real-time aircraft feed from the passive radar network</p>
+    </div>
+  );
+  if (nothingLoaded(polled)) {
+    return (
+      <>
+        {header}
+        <FetchNotice polled={polled} what="detections" />
+      </>
+    );
+  }
+
   return (
     <>
-      <div className="page-header">
-        <h1>Live Detections</h1>
-        <p>Real-time aircraft feed from the passive radar network</p>
-      </div>
+      {header}
+      <FetchNotice polled={polled} what="detections" />
 
       <div className="stats-grid">
         <StatCard label="Aircraft Tracked" value={filtered.length} tone="accent" />

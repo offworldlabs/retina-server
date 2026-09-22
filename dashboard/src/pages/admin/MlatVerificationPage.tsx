@@ -1,4 +1,5 @@
 import { api } from "../../api/client";
+import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
@@ -52,25 +53,38 @@ function NodeBreakdownTable({ byNodeCount }: {
 }
 
 export default function MlatVerificationPage() {
-  const { data, loading, error } = usePolling(
+  const polled = usePolling(
     () => Promise.all([api.mlatVerification(), api.mlatAccuracy()]),
     REFRESH_MS,
   );
+  const { data, loading } = polled;
 
   if (loading) return <div className="empty-state">Loading…</div>;
-  if (error)   return <div className="empty-state" style={{ color: "var(--error)" }}>Error: {error.message}</div>;
 
   const [verification, accuracy] = data ?? [null, null];
   const v = verification ?? {};
   const a = accuracy ?? {};
   const matchThresh = v.match_threshold_km;
 
+  const header = (
+    <div className="page-header">
+      <h1>MLAT Verification</h1>
+      <p>Solver-vs-truth accuracy across all matched aircraft — auto-refreshes every 5 s</p>
+    </div>
+  );
+  if (nothingLoaded(polled)) {
+    return (
+      <>
+        {header}
+        <FetchNotice polled={polled} what="MLAT verification" />
+      </>
+    );
+  }
+
   return (
     <>
-      <div className="page-header">
-        <h1>MLAT Verification</h1>
-        <p>Solver-vs-truth accuracy across all matched aircraft — auto-refreshes every 5 s</p>
-      </div>
+      {header}
+      <FetchNotice polled={polled} what="MLAT verification" />
 
       {/* ── Latest snapshot ───────────────────────────────────────── */}
       <h2 style={{ fontSize: 16, marginTop: 24, marginBottom: 12 }}>Latest snapshot</h2>

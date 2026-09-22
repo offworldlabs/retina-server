@@ -3,6 +3,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
@@ -14,7 +15,7 @@ import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
 export default function OverviewPage() {
   const chart = useChartTheme();
   const navigate = useNavigate();
-  const { data, loading } = usePolling(async () => {
+  const polled = usePolling(async () => {
     // myNodes fails soft: it is only needed for the needs-attention list, and
     // an unauthenticated view of this page must still render the rest.
     const [n, a, ac, mine] = await Promise.all([
@@ -35,6 +36,7 @@ export default function OverviewPage() {
       aircraftCount: (ac.aircraft || []).length,
     };
   }, 15000);
+  const { data, loading } = polled;
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
@@ -78,12 +80,25 @@ export default function OverviewPage() {
     tracks: n._analytics?.metrics?.total_tracks || 0,
   }));
 
+  const header = (
+    <div className="page-header">
+      <h1>My Nodes Overview</h1>
+      <p>Monitor your passive radar nodes in real time</p>
+    </div>
+  );
+  if (nothingLoaded(polled)) {
+    return (
+      <>
+        {header}
+        <FetchNotice polled={polled} what="your nodes" />
+      </>
+    );
+  }
+
   return (
     <>
-      <div className="page-header">
-        <h1>My Nodes Overview</h1>
-        <p>Monitor your passive radar nodes in real time</p>
-      </div>
+      {header}
+      <FetchNotice polled={polled} what="your nodes" />
 
       <div className="stats-grid">
         <StatCard label="Nodes Online" value={<>{onlineCount} / {nodeList.length}</>} tone="accent" />

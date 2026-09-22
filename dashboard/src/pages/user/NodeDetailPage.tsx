@@ -3,7 +3,9 @@ import { useParams, useNavigate } from "react-router-dom";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
+import { HttpError } from "@retina/shared";
 import { api } from "../../api/client";
+import { FetchNotice, Notice } from "../../components/Notice";
 import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
 import { formatUptime } from "../../utils/format";
@@ -34,7 +36,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
   const navigate = useNavigate();
 
   // Keyed on the route parameter, so moving between nodes fetches again.
-  const { data: page, loading, error } = useFetch(async () => {
+  const polled = useFetch(async () => {
     const [analytics, nodeData, mine] = await Promise.all([
       api.nodeAnalytics(nodeId),
       // Both of these fail soft: a private node is absent from /api/radar/nodes
@@ -68,6 +70,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
       ownership: owned ? { node_id: owned.node_id, claimed_with: owned.claimed_with || null } : null,
     };
   }, nodeId ?? "");
+  const { data: page, loading, error } = polled;
   // What the privacy control last saved. It outranks the fetched answer for
   // the node it was saved on, and lapses when the route moves to another.
   const [applied, setApplied] = useState<{ nodeId: string; privacy: LocationPrivacyState } | null>(null);
@@ -84,10 +87,35 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
   const [releaseError, setReleaseError] = useState<string | null>(null);
 
   if (loading) return <div className="empty-state">Loading…</div>;
-  // A failed fetch is this node not being found, not the previous node's
-  // details standing in for it.
+  // With no answer to name the page by, the route's own identifier does, and
+  // the way back stays.
+  const bareHeader = (
+    <div className="page-header">
+      <h1 style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <button className="btn btn-outline btn-sm" onClick={() => navigate(-1)}>← Back</button>
+        {nodeId}
+      </h1>
+    </div>
+  );
+  // A 404 is this node not existing; any other failure says what went wrong.
+  // Neither lets the previous node's details stand in for it.
+  if (error && !(error instanceof HttpError && error.status === 404)) {
+    return (
+      <>
+        {bareHeader}
+        <FetchNotice polled={polled} what="this node" />
+      </>
+    );
+  }
   const data = error ? null : page?.analytics;
-  if (!data) return <div className="empty-state">Node not found</div>;
+  if (!data) {
+    return (
+      <>
+        {bareHeader}
+        <div className="empty-state">Node not found</div>
+      </>
+    );
+  }
 
   const nodeInfo = page?.nodeInfo ?? null;
   const privacy: LocationPrivacyState | null =
@@ -235,7 +263,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
               Releasing hands it back so its next owner can claim it. You stop seeing its unpublished
               data straight away, and the node learns within a minute.
             </p>
-            {releaseError && <p className="login-error">{releaseError}</p>}
+            {releaseError && <Notice tone="error">{releaseError}</Notice>}
             {confirmingRelease ? (
               <>
                 <p><strong>Release this node?</strong> Whoever claims it next becomes its owner.</p>

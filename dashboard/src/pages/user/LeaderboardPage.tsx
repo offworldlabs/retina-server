@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../../api/client";
+import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
 import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
@@ -13,7 +14,8 @@ export default function LeaderboardPage() {
   const [sortBy, setSortBy] = useState("detections");
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
-  const { data, loading } = usePolling(() => api.leaderboard(), 30000);
+  const polled = usePolling(() => api.leaderboard(), 30000);
+  const { data, loading } = polled;
   // The server sends the miss-detection fields only to a caller with a
   // session, so the columns over them exist only for one. Rendering them
   // regardless would report every node as having missed nothing.
@@ -36,12 +38,25 @@ export default function LeaderboardPage() {
 
   const top3 = sorted.slice(0, 3);
 
+  const header = (
+    <div className="page-header">
+      <h1>Leaderboard & Community</h1>
+      <p>Network-wide rankings and community links</p>
+    </div>
+  );
+  if (nothingLoaded(polled)) {
+    return (
+      <>
+        {header}
+        <FetchNotice polled={polled} what="the leaderboard" />
+      </>
+    );
+  }
+
   return (
     <>
-      <div className="page-header">
-        <h1>Leaderboard & Community</h1>
-        <p>Network-wide rankings and community links</p>
-      </div>
+      {header}
+      <FetchNotice polled={polled} what="the leaderboard" />
 
       <div className="stats-grid">
         <StatCard label="Total Nodes" value={entries.length} tone="accent" />

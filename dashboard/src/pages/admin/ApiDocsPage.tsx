@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Notice } from "../../components/Notice";
 import { useResolvedTheme, type Theme } from "../../context/ThemeContext";
 import { SCALAR_THEME_CSS } from "../../utils/scalarTheme";
 
@@ -49,8 +50,10 @@ export default function ApiDocsPage() {
   const mount = useRef<HTMLDivElement>(null);
   const theme = useResolvedTheme();
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   // Re-created on a theme change: Scalar reads its colour mode once, at mount.
+  // A retry is one more pass through the same effect.
   useEffect(() => {
     let instance: ScalarInstance | undefined;
     let cancelled = false;
@@ -71,7 +74,7 @@ export default function ApiDocsPage() {
       cancelled = true;
       instance?.destroy();
     };
-  }, [theme]);
+  }, [theme, attempt]);
 
   return (
     <>
@@ -83,9 +86,9 @@ export default function ApiDocsPage() {
         </p>
       </div>
       {error && (
-        <div className="empty-state" style={{ color: "var(--error)" }}>
-          Error: {error}.
-        </div>
+        <Notice tone="error" onRetry={() => setAttempt((n) => n + 1)}>
+          Could not load the API reference: {error}
+        </Notice>
       )}
       {/* Always rendered, so a retry after a failed load has somewhere to mount. */}
       <div ref={mount} />

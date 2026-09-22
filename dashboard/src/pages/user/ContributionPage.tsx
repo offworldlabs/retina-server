@@ -3,6 +3,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
+import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
 import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
@@ -14,7 +15,7 @@ const PAGE_SIZE = 25;
 export default function ContributionPage() {
   const chart = useChartTheme();
   const [overlapPage, setOverlapPage] = useState(0);
-  const { data, loading } = usePolling(async () => {
+  const polled = usePolling(async () => {
     const [a, o, lb] = await Promise.all([api.analytics(), api.overlaps(), api.leaderboard().catch(() => [])]);
     return {
       analytics: a,
@@ -22,6 +23,7 @@ export default function ContributionPage() {
       leaderboard: Array.isArray(lb) ? lb : lb.leaderboard || [],
     };
   }, 30000);
+  const { data, loading } = polled;
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
@@ -50,12 +52,25 @@ export default function ContributionPage() {
     ? summaries.reduce((s, n) => s + (n.trust?.trust_score || 0), 0) / summaries.length
     : 0;
 
+  const header = (
+    <div className="page-header">
+      <h1>Network Contribution</h1>
+      <p>Your contribution metrics across the passive radar network</p>
+    </div>
+  );
+  if (nothingLoaded(polled)) {
+    return (
+      <>
+        {header}
+        <FetchNotice polled={polled} what="network contribution" />
+      </>
+    );
+  }
+
   return (
     <>
-      <div className="page-header">
-        <h1>Network Contribution</h1>
-        <p>Your contribution metrics across the passive radar network</p>
-      </div>
+      {header}
+      <FetchNotice polled={polled} what="network contribution" />
 
       <div className="stats-grid">
         <StatCard label="Network Detections" value={totalDetections.toLocaleString()} tone="accent" />

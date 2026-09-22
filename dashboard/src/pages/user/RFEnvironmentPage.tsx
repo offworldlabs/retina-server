@@ -4,6 +4,7 @@ import {
   LineChart, Line,
 } from "recharts";
 import { api } from "../../api/client";
+import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme } from "../../utils/chartTheme";
@@ -15,7 +16,7 @@ export default function RFEnvironmentPage() {
 
   // Keyed on the selection, so changing it fetches at once and restarts the
   // schedule rather than waiting out the current interval.
-  const { data, loading } = usePolling(async () => {
+  const polled = usePolling(async () => {
     const [n, a] = await Promise.all([api.nodes(), api.analytics()]);
     const nodeMap = n.nodes || {};
     const analyticsMap = a?.nodes || {};
@@ -37,6 +38,7 @@ export default function RFEnvironmentPage() {
     if (!selectedNode && snapshot.nodes.length > 0) setSelectedNode(snapshot.nodes[0].node_id);
     if (snapshot.sample) setSnrHistory((prev) => [...prev.slice(-30), snapshot.sample]);
   });
+  const { data, loading } = polled;
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
@@ -53,12 +55,25 @@ export default function RFEnvironmentPage() {
     snr: n._analytics?.metrics?.avg_snr || 0,
   })).sort((a, b) => b.snr - a.snr).slice(0, 20);
 
+  const header = (
+    <div className="page-header">
+      <h1>RF Environment</h1>
+      <p>Noise floor, signal strengths, and frequency utilization</p>
+    </div>
+  );
+  if (nothingLoaded(polled)) {
+    return (
+      <>
+        {header}
+        <FetchNotice polled={polled} what="RF environment data" />
+      </>
+    );
+  }
+
   return (
     <>
-      <div className="page-header">
-        <h1>RF Environment</h1>
-        <p>Noise floor, signal strengths, and frequency utilization</p>
-      </div>
+      {header}
+      <FetchNotice polled={polled} what="RF environment data" />
 
       <div style={{ marginBottom: 16, display: "flex", alignItems: "center", gap: 12 }}>
         <select
