@@ -19,6 +19,10 @@ describe("formatKm", () => {
     expect(formatKm(null)).toBe("—");
     expect(formatKm(undefined)).toBe("—");
   });
+
+  it("renders a dash for NaN, with no unit after it", () => {
+    expect(formatKm(Number.NaN)).toBe("—");
+  });
 });
 
 describe("formatPct", () => {
