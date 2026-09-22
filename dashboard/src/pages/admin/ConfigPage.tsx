@@ -5,6 +5,7 @@ import { FetchNotice, Notice, nothingLoaded } from "../../components/Notice";
 import { Pager } from "../../components/Pager";
 import { useFetch } from "../../hooks/usePolling";
 import { StatusBadge } from "../../components/StatusBadge";
+import { formatMHz } from "../../utils/format";
 
 const PAGE_SIZE = 25;
 
@@ -210,7 +211,7 @@ export default function ConfigPage() {
                         <td>{n.rx_lon != null ? n.rx_lon.toFixed(4) : "—"}</td>
                         <td>{n.tx_lat != null ? n.tx_lat.toFixed(4) : "—"}</td>
                         <td>{n.tx_lon != null ? n.tx_lon.toFixed(4) : "—"}</td>
-                        <td>{n.frequency || "—"}</td>
+                        <td>{formatMHz(n.frequency)}</td>
                       </tr>
                     ))}
                   </DataTable>
@@ -228,7 +229,7 @@ export default function ConfigPage() {
                         <td style={{ fontFamily: "monospace", fontSize: 12 }}>{key}</td>
                         <td>{t.lat?.toFixed(4)}</td>
                         <td>{t.lon?.toFixed(4)}</td>
-                        <td>{t.frequency || "—"}</td>
+                        <td>{formatMHz(t.frequency)}</td>
                         <td style={{ fontSize: 11 }}>{(t.nodes_using || []).length}</td>
                       </tr>
                     ))}

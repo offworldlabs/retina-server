@@ -9,7 +9,7 @@ import { DataTable } from "../../components/DataTable";
 import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
-import { formatRelativeTime, formatUptime } from "../../utils/format";
+import { formatMHz, formatRelativeTime, formatUptime } from "../../utils/format";
 import { useChartTheme } from "../../utils/chartTheme";
 import { RetnodeLink } from "../../components/RetnodeLink";
 import { StatusBadge } from "../../components/StatusBadge";
@@ -169,7 +169,7 @@ export default function NetworkHealthPage() {
                         Ref: {ref}<br />
                         Node ID: {idsByRef?.[ref] ?? "—"}<br />
                         Status: {statusLabel(node.status)}<br />
-                        {node.frequency ? `Freq: ${(node.frequency / 1e6).toFixed(1)} MHz` : ""}
+                        {node.frequency ? `Freq: ${formatMHz(node.frequency)}` : ""}
                       </Popup>
                     </CircleMarker>
                   );
