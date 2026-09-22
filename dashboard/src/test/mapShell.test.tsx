@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import DashboardLayout from "../components/DashboardLayout";
+import appSource from "../App.tsx?raw";
+import DashboardLayout, { pageTitles } from "../components/DashboardLayout";
 import { ThemeProvider } from "../context/ThemeContext";
 
 const state = vi.hoisted(() => ({
@@ -41,11 +42,11 @@ function stubBrowser(seed: Record<string, string> = {}) {
   return store;
 }
 
-function renderAt(path: string) {
+function renderAt(path: string, isAdmin = false) {
   return render(
     <ThemeProvider>
       <MemoryRouter initialEntries={[path]}>
-        <DashboardLayout isAdmin={false}><div>page</div></DashboardLayout>
+        <DashboardLayout isAdmin={isAdmin}><div>page</div></DashboardLayout>
       </MemoryRouter>
     </ThemeProvider>,
   );
@@ -103,8 +104,49 @@ describe("the header's name for a page", () => {
     expect(container.textContent).not.toContain("Simulation Map");
   });
 
-  it("still names a page that owns its subtree by its first segment", () => {
+  it("names a node's own page, not the list above it", () => {
     const { container } = renderAt("/nodes/nde0example0001");
     expect(container.textContent).toContain("Node Detail");
+  });
+
+  // The sidebar carries most of these words too, so read the header alone.
+  const titleAt = (path: string, isAdmin: boolean) =>
+    renderAt(path, isAdmin).container.querySelector(".header-title")?.textContent;
+
+  it("names a node's own page on the admin surface too, where /nodes is the list", () => {
+    expect(titleAt("/nodes", true)).toBe("Node Management");
+    expect(titleAt("/nodes/nde0example0001", true)).toBe("Node Detail");
+  });
+
+  it.each([
+    ["/mlat", "MLAT Verification"],
+    ["/infrastructure", "Infrastructure"],
+    ["/api-docs", "API Reference"],
+  ])("names the admin page at %s", (path, title) => {
+    expect(titleAt(path, true)).toBe(title);
+  });
+
+  it("names a page that owns its subtree by its first segment", () => {
+    expect(renderAt("/sim/anything").container.textContent).toContain("Simulation Map");
+  });
+});
+
+// The routes live in App.tsx and the titles here, and nothing else ties the
+// two: a route added without a title reads "Dashboard".
+describe("every routed console page", () => {
+  const branches = appSource.match(/isAdminSite \? \(([\s\S]*?)\) : \(([\s\S]*?)\)\}\s*<\/Routes>/);
+  const routes = (branch: string | undefined) =>
+    [...(branch ?? "").matchAll(/<Route (?:index|path="([^"]+)")/g)].map((m) => (m[1] ? `/${m[1]}` : "/"));
+  const surfaces = [
+    ["admin", routes(branches?.[1])],
+    ["user", routes(branches?.[2])],
+  ] as const;
+
+  it.each(surfaces)("on the %s surface is found, so an empty parse cannot pass", (_, paths) => {
+    expect(paths.length).toBeGreaterThan(10);
+  });
+
+  it.each(surfaces)("on the %s surface has a title", (surface, paths) => {
+    expect(paths.filter((path) => !pageTitles[path]?.[surface])).toEqual([]);
   });
 });
