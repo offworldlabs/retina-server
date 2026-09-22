@@ -1,3 +1,4 @@
+import copy
 import re
 from datetime import UTC, datetime
 
@@ -8,12 +9,16 @@ from sqlalchemy import delete, func, select, text
 from core.node_ids import node_id_pattern
 from core.nodes import Node, NodeClaim, NodeConfig, PolledRadar, PolledRadarEndpointHistory
 from core.secrets import SecretKeyUnavailable
+from services.blah2_probe import parse_config
+from services.node_config import ConfigInvalid
 from services.polled_radars import (
     EndpointAlreadyRegistered,
     RadarGeometry,
     create_polled_radar,
     poller_credentials,
+    probed_config,
 )
+from tests.radar_stub import STOCK_CONFIG
 
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
 # SQLite returns a timezone-aware column naive, as UTC wall time.
@@ -240,3 +245,72 @@ async def test_history_goes_with_the_registration(node_session):
 async def test_an_unknown_publication_is_refused(node_session):
     with pytest.raises(ValueError, match="publication"):
         await create_polled_radar(node_session, **_args(publication="secret"))
+
+
+# ── A configuration from what the radar declares ──────────────────────────────
+
+# A configuration held for a radar before it declares anything new: every field
+# differs from STOCK_CONFIG's declaration, so the test sees which side won.
+HELD = {
+    "rx_lat": 51.42,
+    "rx_lon": -0.91,
+    "rx_alt_ft": 120.0,
+    "tx_lat": 51.37,
+    "tx_lon": -0.88,
+    "tx_alt_ft": 900.0,
+    "tx_callsign": "Crystal Palace",
+    "fc_hz": 570_000_000.0,
+    "fs_hz": 2_400_000.0,
+    "beam_width_deg": 41.0,
+    "beam_azimuth_deg": 90.0,
+    "max_range_km": 50.0,
+    "cpi_s": 0.5,
+    "delay_tolerance_us": 6.67,
+    "doppler_tolerance_hz": 5.0,
+}
+
+
+def test_a_probed_configuration_takes_what_the_radar_declares_and_keeps_the_rest():
+    config = probed_config(parse_config(STOCK_CONFIG), HELD)
+
+    assert config == HELD | {
+        "rx_lat": 10.5,
+        "rx_lon": -30.25,
+        "rx_alt_ft": pytest.approx(12 / 0.3048),
+        "tx_lat": 10.75,
+        "tx_lon": -30.5,
+        "tx_alt_ft": pytest.approx(300 / 0.3048),
+        "fc_hz": 204_640_000.0,
+        "fs_hz": 2_000_000.0,
+        "cpi_s": 0.75,
+    }
+
+
+def test_fs_and_cpi_the_radar_does_not_declare_keep_the_values_held():
+    stock = copy.deepcopy(STOCK_CONFIG)
+    del stock["capture"]["fs"], stock["process"]["data"]["cpi"]
+
+    config = probed_config(parse_config(stock), HELD)
+
+    assert (config["fs_hz"], config["cpi_s"]) == (HELD["fs_hz"], HELD["cpi_s"])
+
+
+# Conversion noise is relative to the value, so it is absorbed at sea level too.
+@pytest.mark.parametrize("rx_alt_m", [12, 0.05, 0])
+def test_a_declaration_within_float_noise_of_the_held_value_keeps_it(rx_alt_m):
+    stock = copy.deepcopy(STOCK_CONFIG)
+    stock["location"]["rx"]["altitude"] = rx_alt_m
+    held = probed_config(parse_config(stock), HELD)
+    noisy = held | {"rx_alt_ft": held["rx_alt_ft"] * (1 + 1e-12)}
+
+    assert probed_config(parse_config(stock), held) == held
+    assert probed_config(parse_config(stock), noisy) == noisy
+
+
+def test_a_declaration_the_validator_refuses_is_refused():
+    stock = copy.deepcopy(STOCK_CONFIG)
+    stock["capture"]["fc"] = 500_000
+
+    with pytest.raises(ConfigInvalid) as info:
+        probed_config(parse_config(stock), HELD)
+    assert info.value.field == "fc_hz"

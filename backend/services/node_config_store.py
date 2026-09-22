@@ -47,6 +47,21 @@ _CONFIG_FIELDS = (
 )
 
 
+async def active_config(session: AsyncSession, node_id: str) -> NodeConfig | None:
+    """The node's version not yet superseded, if it has one."""
+    rows = await session.execute(
+        select(NodeConfig)
+        .where(NodeConfig.node_id == node_id, NodeConfig.superseded_at.is_(None))
+        .order_by(NodeConfig.version.desc())
+    )
+    return rows.scalars().first()
+
+
+def config_fields(row: NodeConfig) -> dict[str, Any]:
+    """A version's configuration in validate_config's shape, as upsert_config takes it."""
+    return {field: getattr(row, field) for field in _CONFIG_FIELDS}
+
+
 async def upsert_config(session: AsyncSession, node_id: str, config: dict[str, Any]) -> int:
     """Return the node's active configuration version, minting one if it moved.
 
@@ -61,17 +76,7 @@ async def upsert_config(session: AsyncSession, node_id: str, config: dict[str, A
     in the database would mint a version per resend for the whole fleet, tell each
     node `config_stale` in perpetuity, and have each one resend in response.
     """
-    active = (
-        (
-            await session.execute(
-                select(NodeConfig)
-                .where(NodeConfig.node_id == node_id, NodeConfig.superseded_at.is_(None))
-                .order_by(NodeConfig.version.desc())
-            )
-        )
-        .scalars()
-        .first()
-    )
+    active = await active_config(session, node_id)
 
     if active is not None and all(getattr(active, field) == config[field] for field in _CONFIG_FIELDS):
         return active.version

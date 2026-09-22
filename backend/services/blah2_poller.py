@@ -14,15 +14,29 @@ reconnect after a failure, and a resolution is never held longer than that.
 Liveness is the server's own record of what the radar did, since stock blah2
 reports nothing about itself: `streaming` while new frames arrive, `stalled`
 while it answers without one, and `unreachable` once polls keep failing.
+
+Each session begins by reading the radar's /api/config. Nothing on a stock box
+proves which radar is answering, so trust rides on the row's epoch: a changed
+site, site name or fc may be another box, and is re-probed. A pass starts a
+new epoch on probation with the radar's declaration as its configuration; fs
+or CPI changing alone is a new configuration version in the same epoch. A
+session whose configuration cannot be taken as it stands files no frames.
+
+A name that resolves into another network is re-probed too, but keeps its
+epoch and its graduation: an address is the operator's ISP or proxy moving
+them about. The move is counted on the row as evidence for the trust layer.
 """
 
 import asyncio
+import ipaddress
 import logging
 import os
 import secrets
 import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import Enum, auto
 
 from cryptography.fernet import InvalidToken
 from pydantic import ValidationError
@@ -34,25 +48,34 @@ from core import state
 from core.nodes import Node, PolledRadar
 from core.secrets import SecretKeyUnavailable
 from routes.node_schemas import MAX_DETECTIONS, DetectionFrame
-from services import detection_mirror
+from services import detection_mirror, probation, publication
 from services.blah2_probe import (
+    CONFIG_MAX_BYTES,
+    CONFIG_PATH,
     DETECTION_MAX_BYTES,
     DETECTION_PATH,
     MAX_CLOCK_OFFSET_S,
+    Blah2Config,
     Blah2Refusal,
     parse_detection,
+    probe_blah2,
+    read_config,
 )
 from services.blah2_probe import DetectionFrame as Blah2Frame
+from services.node_config import ConfigInvalid
+from services.node_config_store import active_config, config_fields, upsert_config
 from services.node_pipeline import pipeline_frame, register_with_pipeline, submit_frame
 from services.polled_endpoint import (
     AddressPolicy,
     EndpointRefused,
+    IPAddress,
+    PinnedClient,
     PolledEndpoint,
     Resolver,
     pinned_client,
     resolve_host,
 )
-from services.polled_radars import poller_credentials
+from services.polled_radars import poller_credentials, probed_config
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +105,13 @@ UNREACHABLE = "unreachable"
 
 # Why an answer carried no frame, beside the probe's own refusal codes.
 TOO_MANY_DETECTIONS = "too_many_detections"
+# The radar declares a configuration the server's validator refuses.
+INVALID_CONFIG = "invalid_config"
+NO_CONFIGURATION = "no_configuration"
+
+# An address has moved when it leaves the network of this prefix length around
+# the one before, by IP version.
+_NETWORK_PREFIX = {4: 16, 6: 32}
 
 
 def _raise_if_cancelled() -> None:
@@ -99,6 +129,34 @@ def _raise_if_cancelled() -> None:
 def enabled() -> bool:
     """Whether this deployment polls registered radars. Exactly `1`, nothing else."""
     return os.environ.get(ENABLED_ENV, "") == "1"
+
+
+def moved_network(previous: str | None, current: Iterable[IPAddress]) -> bool:
+    """Whether a name that last resolved to `previous` now points into another network.
+
+    Compared within `previous`'s family only, so a dual-stack radar reached
+    over the other one has not moved. While any address the name gives is
+    still in the old network it has not moved either, so a name with several
+    records does not start an epoch per session.
+    """
+    try:
+        before = ipaddress.ip_address(previous or "")
+    except ValueError:
+        return False
+    network = ipaddress.ip_network(f"{before}/{_NETWORK_PREFIX[before.version]}", strict=False)
+    same_family = [address for address in current if address.version == before.version]
+    return bool(same_family) and not any(address in network for address in same_family)
+
+
+class _Verdict(Enum):
+    """What a session's configuration check leaves the session to do."""
+
+    # Poll detections under the target as it stands.
+    CURRENT = auto()
+    # The radar answered, but nothing may be filed this session.
+    HELD = auto()
+    # The target has moved on, so the task ends and the poller starts its successor.
+    SUPERSEDED = auto()
 
 
 @dataclass(frozen=True)
@@ -186,12 +244,15 @@ class RadarPoller:
         semaphore: asyncio.Semaphore,
         resolver: Resolver = resolve_host,
         policy: AddressPolicy | None = None,
+        wake: Callable[[], None] = lambda: None,
     ) -> None:
         self.target = target
         self._session_maker = session_maker
         self._semaphore = semaphore
         self._resolver = resolver
         self._policy = policy
+        # Tells the poller the registry has moved on from this task's target.
+        self._wake = wake
         # A fresh pair per task, so the pipeline counts loss per run of the poller.
         self.boot_id = secrets.token_hex(8)
         self.seq = 0
@@ -210,10 +271,12 @@ class RadarPoller:
         self._register_due = 0.0
 
     async def run(self) -> None:
+        """Poll session after session until cancelled or the target moves on."""
         while True:
             _raise_if_cancelled()
             try:
-                await self._session()
+                if not await self._session():
+                    return
                 continue
             except EndpointRefused as exc:
                 self.failures += 1
@@ -231,30 +294,217 @@ class RadarPoller:
             return POLL_INTERVAL_S
         return min(BACKOFF_MAX_S, BACKOFF_BASE_S * 2 ** min(self.failures - MAX_FAILURES, 16))
 
-    async def _session(self) -> None:
+    async def _session(self) -> bool:
+        """One session. False once the target has moved on and the task should end."""
         async with pinned_client(self.target.endpoint, resolver=self._resolver, policy=self._policy) as client:
             ends = time.monotonic() + SESSION_S
+            verdict = await self._check_config(client)
+            if verdict is _Verdict.SUPERSEDED:
+                return False
             while True:
                 started = time.monotonic()
-                async with self._semaphore:
-                    body = await client.get(DETECTION_PATH, max_bytes=DETECTION_MAX_BYTES)
-                _raise_if_cancelled()
-                frame = self._answered(body)
-                if frame is not None:
-                    await self._file(frame)
+                if verdict is _Verdict.CURRENT:
+                    async with self._semaphore:
+                        body = await client.get(DETECTION_PATH, max_bytes=DETECTION_MAX_BYTES)
+                    _raise_if_cancelled()
+                    frame = self._answered(body)
+                    if frame is not None:
+                        await self._file(frame)
                 await self._settle()
                 if time.monotonic() >= ends:
-                    return
+                    return True
                 await asyncio.sleep(max(0.0, POLL_INTERVAL_S - (time.monotonic() - started)))
 
-    def _answered(self, body: bytes) -> Blah2Frame | None:
-        """The frame in an answer, if it is new and on time."""
+    async def _check_config(self, client: PinnedClient) -> _Verdict:
+        """Read the radar's configuration and act on what moved since its epoch began."""
+        node_id = self.target.node_id
+        async with self._semaphore:
+            body = await client.get(CONFIG_PATH, max_bytes=CONFIG_MAX_BYTES)
+        _raise_if_cancelled()
+        try:
+            config = read_config(body)
+        except EndpointRefused as exc:
+            # An answer, though no longer from a stock blah2 the server can poll.
+            return self._held(exc.code)
+        async with self._session_maker() as session:
+            radar = await session.get(PolledRadar, node_id)
+            if radar is None or radar.epoch != self.target.epoch:
+                return _Verdict.SUPERSEDED
+            if await active_config(session, node_id) is None:
+                return self._unconfigured()
+            declaration_changed = config.fingerprint != radar.config_fingerprint
+            moved = moved_network(radar.last_resolved_ip, client.addresses)
+        if declaration_changed:
+            return await self._next_epoch()
+        if moved:
+            await self._address_moved(client)
+        return await self._same_epoch(config)
+
+    async def _address_moved(self, client: PinnedClient) -> None:
+        """Re-probe a radar whose name now points into another network, and record the move.
+
+        The move does not start an epoch and costs no graduation: an address is
+        the operator's ISP or proxy moving them about, and says nothing about
+        which box answers. What the radar declares is still judged by its
+        fingerprint every session, and the count is evidence for the trust
+        layer to weigh (123zgec4bxx). Recording the address either way is what
+        stops the move being probed again every session.
+        """
+        node_id = self.target.node_id
+        address, passed = client.address, False
+        try:
+            # One slot for the whole probe, its wait between reads included.
+            async with self._semaphore:
+                probe = await probe_blah2(self.target.endpoint, resolver=self._resolver, policy=self._policy)
+            address, passed = probe.address, True
+        except EndpointRefused as exc:
+            _raise_if_cancelled()
+            logger.warning(
+                "polled radar %s: its address moved network and the re-probe was refused (%s); still polling it",
+                node_id,
+                exc.code,
+            )
+        _raise_if_cancelled()
+        now = datetime.now(UTC)
+        values: dict = {
+            "last_resolved_ip": address,
+            "resolved_at": now,
+            "network_moves": PolledRadar.network_moves + 1,
+            "last_network_move_at": now,
+        }
+        if passed:
+            # Only a probe that passed says the radar was judged whole here.
+            values["probe_passed_at"] = now
+            logger.warning("polled radar %s: its address moved network; the re-probe passed", node_id)
+        async with self._session_maker() as session:
+            await session.execute(
+                update(PolledRadar)
+                .where(PolledRadar.node_id == node_id, PolledRadar.epoch == self.target.epoch)
+                .values(**values)
+            )
+            await session.commit()
+
+    async def _same_epoch(self, config: Blah2Config) -> _Verdict:
+        """Record the configuration as read, taking a change to fs or CPI as a new version."""
+        node_id = self.target.node_id
+        async with self._session_maker() as session:
+            active = await active_config(session, node_id)
+            if active is None:
+                return self._unconfigured()
+            try:
+                adopted = probed_config(config, config_fields(active))
+            except ConfigInvalid as exc:
+                return self._unholdable(exc)
+            version = await upsert_config(session, node_id, adopted)
+            read = await session.execute(
+                update(PolledRadar)
+                .where(PolledRadar.node_id == node_id, PolledRadar.epoch == self.target.epoch)
+                .values(last_config_at=datetime.now(UTC))
+            )
+            if read.rowcount != 1:
+                # Another writer moved the epoch on since this session read it.
+                await session.rollback()
+                return _Verdict.SUPERSEDED
+            if version == active.version:
+                await session.commit()
+                return _Verdict.CURRENT
+            await session.execute(update(Node).where(Node.node_id == node_id).values(active_config_version=version))
+            await session.commit()
+            self._wake()
+        logger.warning("polled radar %s: configuration version %d for its new fs or CPI", node_id, version)
+        return _Verdict.SUPERSEDED
+
+    async def _next_epoch(self) -> _Verdict:
+        """Re-probe a radar that declares something new, and on a pass start a new epoch on probation.
+
+        A refusal changes nothing and the session files nothing, since the
+        epoch does not hold the declaration the frames would be filed against.
+        The next session tries again.
+        """
+        node_id = self.target.node_id
+        try:
+            # One slot for the whole probe, its wait between reads included.
+            async with self._semaphore:
+                probe = await probe_blah2(self.target.endpoint, resolver=self._resolver, policy=self._policy)
+        except EndpointRefused as exc:
+            _raise_if_cancelled()
+            if self.reason != exc.code:
+                logger.warning(
+                    "polled radar %s: its configuration changed and the re-probe was refused (%s); "
+                    "filing none of its frames",
+                    node_id,
+                    exc.code,
+                )
+            return self._held(exc.code)
+        _raise_if_cancelled()
+        epoch = self.target.epoch + 1
+        now = datetime.now(UTC)
+        async with self._session_maker() as session:
+            active = await active_config(session, node_id)
+            if active is None:
+                return self._unconfigured()
+            try:
+                adopted = probed_config(probe.config, config_fields(active))
+            except ConfigInvalid as exc:
+                return self._unholdable(exc)
+            version = await upsert_config(session, node_id, adopted)
+            moved = await session.execute(
+                update(PolledRadar)
+                .where(PolledRadar.node_id == node_id, PolledRadar.epoch == self.target.epoch)
+                .values(
+                    epoch=epoch,
+                    trust_state="probation",
+                    config_fingerprint=probe.config_fingerprint,
+                    probe_passed_at=now,
+                    last_resolved_ip=probe.address,
+                    resolved_at=now,
+                    last_config_at=now,
+                )
+            )
+            if moved.rowcount != 1:
+                # Another writer moved the epoch on first.
+                await session.rollback()
+                return _Verdict.SUPERSEDED
+            await session.execute(update(Node).where(Node.node_id == node_id).values(active_config_version=version))
+            await session.commit()
+            # Nothing awaited from the commit to the wake, so no cancel lands between them.
+            probation.invalidate()
+            publication.invalidate()
+            self._wake()
+        logger.warning("polled radar %s: its configuration changed; epoch %d begins, on probation", node_id, epoch)
+        return _Verdict.SUPERSEDED
+
+    def _unconfigured(self) -> _Verdict:
+        if self.reason != NO_CONFIGURATION:
+            logger.error("polled radar %s has no active configuration; filing none of its frames", self.target.node_id)
+        return self._held(NO_CONFIGURATION)
+
+    def _unholdable(self, exc: ConfigInvalid) -> _Verdict:
+        if self.reason != INVALID_CONFIG:
+            logger.warning(
+                "polled radar %s declares a configuration the server refuses (%s); filing none of its frames",
+                self.target.node_id,
+                exc,
+            )
+        return self._held(INVALID_CONFIG)
+
+    def _held(self, reason: str) -> _Verdict:
+        self._heard()
+        self.reason = reason
+        return _Verdict.HELD
+
+    def _heard(self) -> None:
+        """Record that the radar answered: its heartbeat, and an end to its failures."""
         self.failures = 0
         self._answered_at = datetime.now(UTC)
         with state.connected_nodes_lock:
             entry = state.connected_nodes.get(self.target.node_id)
             if entry is not None:
                 entry["last_heartbeat"] = self._answered_at.isoformat()
+
+    def _answered(self, body: bytes) -> Blah2Frame | None:
+        """The frame in an answer, if it is new and on time."""
+        self._heard()
         try:
             frame = parse_detection(body)
         except EndpointRefused as exc:
@@ -427,8 +677,13 @@ class Poller:
             if targets.get(node_id) != target or task.done()
         ]
         for node_id in stopping:
-            _, task = self._running.pop(node_id)
+            previous, task = self._running.pop(node_id)
             await _stop(task)
+            target = targets.get(node_id)
+            if target is None:
+                continue
+            if (target.epoch, target.config_version) != (previous.epoch, previous.config_version):
+                await self._rejoin(node_id)
         for node_id, target in targets.items():
             if node_id not in self._running:
                 poller = RadarPoller(
@@ -437,8 +692,25 @@ class Poller:
                     semaphore=self._semaphore,
                     resolver=self._resolver,
                     policy=self._policy,
+                    wake=self.wake,
                 )
                 self._running[node_id] = (target, asyncio.create_task(poller.run(), name=f"poll {node_id}"))
+
+    async def _rejoin(self, node_id: str) -> None:
+        """Hand the pipeline a radar's configuration for its new epoch or version.
+
+        The poller does this rather than the radar's task: the task's own
+        commit changes its target, and any sync from then on cancels it.
+        Re-registering evicts the node's pipeline, so no track runs on from the
+        epoch before.
+        """
+        try:
+            async with self._session_maker() as session:
+                node = await session.get(Node, node_id)
+                if node is not None:
+                    await register_with_pipeline(session, node)
+        except Exception:
+            logger.exception("polled radar %s: could not hand its configuration to the pipeline", node_id)
 
     async def run(self) -> None:
         """Keep in step with the registry until cancelled, then stop every radar."""

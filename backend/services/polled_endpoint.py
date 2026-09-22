@@ -334,7 +334,8 @@ class PinnedClient:
 
     def __init__(self, endpoint: PolledEndpoint, addresses: Sequence[IPAddress], http: httpx.AsyncClient) -> None:
         self._endpoint = endpoint
-        self._addresses = tuple(addresses)
+        # Every address vetted for the name, in the resolver's order.
+        self.addresses = tuple(addresses)
         self._http = http
         # The address that answered, in canonical text form, once one has.
         self.address: str | None = None
@@ -369,7 +370,7 @@ class PinnedClient:
         return EndpointRefused(code, f"{self._endpoint.host} {reason}")
 
     async def _get(self, path: str, max_bytes: int) -> bytes:
-        candidates = self._addresses if self.address is None else (ipaddress.ip_address(self.address),)
+        candidates = self.addresses if self.address is None else (ipaddress.ip_address(self.address),)
         for address in candidates:
             host = f"[{address}]" if address.version == 6 else str(address)
             request = self._http.build_request(

@@ -24,6 +24,20 @@ Route = Callable[[], Awaitable[bytes | tuple[int, bytes]]]
 
 LOOPBACK = ipaddress.ip_address("127.0.0.1")
 
+# /api/config as stock blah2 serves it: the whole YAML, rendered by js-yaml.
+# The sites are invented and sit in open ocean.
+STOCK_CONFIG = {
+    "capture": {"fs": 2000000, "fc": 204640000, "device": {"type": "RspDuo", "agcSetPoint": -20}},
+    "process": {"data": {"cpi": 0.75, "buffer": 2, "overlap": 0}},
+    "network": {"ip": "0.0.0.0", "ports": {"api": 3000, "detection": 3002}},
+    "truth": {"adsb": {"enabled": True, "tar1090": "adsb.example.net", "adsb2dd": "adsb2dd.example.net"}},
+    "location": {
+        "rx": {"latitude": 10.5, "longitude": -30.25, "altitude": 12, "name": "Receiver"},
+        "tx": {"latitude": 10.75, "longitude": -30.5, "altitude": 300, "name": "Transmitter"},
+    },
+    "save": {"iq": True, "path": "/blah2/save/"},
+}
+
 
 def only_loopback(address) -> bool:
     """An address policy that admits the stub and nothing else."""

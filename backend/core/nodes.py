@@ -245,9 +245,11 @@ class PolledRadar(Base):
     __tablename__ = "polled_radars"
 
     node_id: Mapped[str] = mapped_column(String(32), ForeignKey("nodes.node_id"), primary_key=True)
-    # Moves on an endpoint edit, geometry drift, a config-fingerprint change or
-    # the resolved address changing network: whenever the box behind the id may
-    # have changed. Probation restarts with it; a credential change alone does not.
+    # Moves on an endpoint edit or a config-fingerprint change: whenever what
+    # the radar declares may have come from another box. Probation restarts
+    # with it. Neither a credential change nor the address moving network does
+    # this: an address is the operator's ISP or proxy moving them about, and
+    # says nothing about which box answers.
     epoch: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     # As typed, with any userinfo removed.
     endpoint_raw: Mapped[str] = mapped_column(String(2048))
@@ -262,6 +264,10 @@ class PolledRadar(Base):
     # Evidence of where the name pointed, never used to reach the radar.
     last_resolved_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # How often the name has moved to another network, and when it last did.
+    # Evidence for the trust layer to weigh (123zgec4bxx), not a fence.
+    network_moves: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    last_network_move_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     config_fingerprint: Mapped[str] = mapped_column(String(128))
     probe_passed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     endpoint_changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -270,6 +276,7 @@ class PolledRadar(Base):
     # pending, streaming, stalled or unreachable.
     liveness: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
     last_frame_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # When the radar last served the configuration its epoch holds.
     last_config_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
