@@ -23,6 +23,14 @@ vi.mock("../pages/user/OverviewPage", () => ({
   },
 }));
 vi.mock("../pages/user/LeaderboardPage", () => ({ default: () => <div>leaderboard page</div> }));
+// Leaflet stays out of the suite. The real feed crashes and the simulated one
+// draws, so a move between the two routes shows whether the map recovers.
+vi.mock("../pages/map/LiveAircraftMap", () => ({
+  default: ({ feed }: { feed?: string }) => {
+    if (feed !== "synthetic" && state.crash) throw new Error("map boom");
+    return <div>{feed ?? "real"} map</div>;
+  },
+}));
 
 function Boom() {
   if (state.crash) throw new Error("boom");
@@ -35,6 +43,7 @@ const cancel = (e: ErrorEvent) => e.preventDefault();
 let quiet: MockInstance;
 beforeEach(() => {
   state.crash = true;
+  state.auth.syntheticFleet = false;
   quiet = vi.spyOn(console, "error").mockImplementation(() => {});
   window.addEventListener("error", cancel);
 });
@@ -73,10 +82,10 @@ describe("the error fallback", () => {
   });
 });
 
-/** The whole console at `at`. */
-function visit(at: string) {
+/** The whole console at `at`, under an OS that prefers dark or light. */
+function visit(at: string, { prefersDark = false } = {}) {
   window.matchMedia = vi.fn().mockReturnValue({
-    matches: false,
+    matches: prefersDark,
     addEventListener: () => {},
     removeEventListener: () => {},
   }) as unknown as typeof window.matchMedia;
@@ -105,5 +114,24 @@ describe("a page that throws while rendering", () => {
     state.crash = false;
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByText("overview page")).toBeInTheDocument();
+  });
+});
+
+describe("a map that throws while rendering", () => {
+  it("is caught on the map surface, in the map's theme", async () => {
+    visit("/map", { prefersDark: true });
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Something went wrong with the map");
+    expect(alert.closest(".map-surface")).toHaveAttribute("data-theme", "dark");
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+  });
+
+  it("recovers on the simulation, which the same page instance draws", async () => {
+    state.auth.syntheticFleet = true;
+    visit("/map");
+    await screen.findByRole("alert");
+    fireEvent.click(screen.getByRole("link", { name: /^simulation$/i }));
+    expect(await screen.findByText("synthetic map")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });
