@@ -77,7 +77,7 @@ export default function ContributionPage() {
       </div>
 
       {chartData.length > 0 && (
-        <div className="card" style={{ marginBottom: 24 }}>
+        <div className="card">
           <div className="card-header">
             <h3>Detections per Node — Top 20</h3>
             <span className="card-note">{summaries.length} total nodes</span>
@@ -130,7 +130,7 @@ export default function ContributionPage() {
       )}
 
       {leaderboard.length > 0 && (
-        <div className="card" style={{ marginTop: 16 }}>
+        <div className="card">
           <div className="card-header">
             <h3>Network Rankings</h3>
           </div>

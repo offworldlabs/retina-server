@@ -151,7 +151,7 @@ export default function AnomalyPage() {
       </div>
 
       {/* ── Charts Row ──────────────────────────────────────── */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+      <div className="grid-2">
         {/* Timeline */}
         <div className="card">
           <div className="card-header"><h3>Event Timeline (24h)</h3></div>
@@ -221,7 +221,7 @@ export default function AnomalyPage() {
 
       {/* ── Geographic Clusters ─────────────────────────────── */}
       {geographic_clusters && geographic_clusters.length > 0 && (
-        <div className="card" style={{ marginBottom: 16 }}>
+        <div className="card">
           <div className="card-header">
             <h3>Geographic Hotspots</h3>
             <span className="card-note">Grouped by 0.1° grid</span>
@@ -255,10 +255,12 @@ export default function AnomalyPage() {
       <div className="card">
         <div className="card-header">
           <h3>Recent Anomaly Events</h3>
-          <span className="card-note">
+          <span className="card-aside">
             {/* The page's notice is a long scroll above this table. */}
-            {polled.error && <span className="badge warning" style={{ marginRight: 8 }}>stale</span>}
-            {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : "Auto-refreshes every 10s"}
+            {polled.error && <span className="badge warning">stale</span>}
+            <span className="card-note">
+              {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : "Auto-refreshes every 10s"}
+            </span>
           </span>
         </div>
         <DataTable

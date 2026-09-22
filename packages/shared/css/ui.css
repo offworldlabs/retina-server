@@ -198,6 +198,13 @@
   font-weight: 600;
 }
 
+/* What sits against the title: badges, a note, a control or two. */
+.card-aside {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .card-body {
   padding: 20px;
 }
