@@ -7,9 +7,11 @@ fully delegated to fastapi-users' JWTStrategy + CookieTransport.
 
 import logging
 import os
+import re
 import threading
 from ipaddress import IPv6Address, ip_address, ip_network
 from time import monotonic
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -128,6 +130,11 @@ def _magic_link_quota_available(source: str) -> bool:
 #: root of HOST_APP.
 _SIGN_IN_PATH = "/auth/link/"
 
+#: A console page for the link to open once redeemed. Anyone may ask for a link
+#: to anyone's address, so this is a stranger's text in a genuine mail from us:
+#: plain path characters only, and never `//`, which a browser reads as a host.
+_NEXT_PATH = re.compile(r"/(?!/)[A-Za-z0-9/_.-]{0,200}")
+
 
 def _session_user(user_dict: dict) -> dict:
     """The user as the console holds it, from /me or straight from a sign-in.
@@ -142,10 +149,21 @@ def _session_user(user_dict: dict) -> dict:
 
 class MagicLinkRequest(BaseModel):
     email: EmailStr
+    #: The page the visitor asked for before being sent to sign in.
+    next: str | None = None
 
 
 class MagicLinkConsume(BaseModel):
     token: str
+
+
+def _next_query(path: str | None) -> str:
+    """The mailed link's `?next=`, or nothing for a value that is not a plain
+    console path. Dropped rather than refused: a bad destination costs the
+    visitor the page they wanted, not the sign-in."""
+    if path is None or not _NEXT_PATH.fullmatch(path):
+        return ""
+    return "?" + urlencode({"next": path}, safe="/")
 
 
 def _sign_in_body(link: str) -> str:
@@ -177,7 +195,7 @@ async def request_magic_link(body: MagicLinkRequest, request: Request):
     if _magic_link_quota_available(_client_source(request)):
         token = await create_magic_link(body.email)
         if token:
-            link = mail.link_to(_SIGN_IN_PATH + token)
+            link = mail.link_to(_SIGN_IN_PATH + token + _next_query(body.next))
             mail.send_in_background(body.email, "Sign in to RETINA", _sign_in_body(link))
 
     return {"status": "accepted"}
