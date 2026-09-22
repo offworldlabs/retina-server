@@ -1,10 +1,10 @@
 /**
  * Placing nodes on the explorer's own map.
  *
- * There is no basemap and no tile source: an image host is not on this page's
- * CSP and would be a third party watching who looks at what. An
- * equirectangular frame with a graticule is enough to place a radius against
- * the published positions.
+ * There is no basemap and no tile source: a tile host would be a third party
+ * watching who looks at what, and tiles would bring Leaflet into a page that
+ * otherwise never loads it. An equirectangular frame with a graticule is
+ * enough to place a radius against the published positions.
  *
  * The frame is fitted in kilometres, not degrees, and forced to the box's own
  * 3:1 shape, so a radius draws as a circle rather than as an ellipse whose
