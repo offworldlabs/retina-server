@@ -3,6 +3,7 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
+import { TILES } from "../map/utils/tiles";
 import { api } from "../../api/client";
 import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
@@ -146,7 +147,7 @@ export default function NetworkHealthPage() {
               <MapContainer center={[avgLat, avgLon]} zoom={5} style={{ height: "100%", width: "100%", borderRadius: "0 0 8px 8px" }}>
                 <TileLayer
                   attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
-                  url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                  url={TILES.osm}
                 />
                 {geoNodes.map((node) => {
                   const ref = node.node_ref;
