@@ -56,6 +56,22 @@ a:hover {
   color: var(--text-secondary);
 }
 
+/* ── Error fallback ──────────────────────────────────────────────────────── */
+/* The empty state's muted ink is right for its explanation and too faint for
+   the line that says something broke. */
+.error-fallback h2 {
+  color: var(--text-primary);
+  font-size: 18px;
+  margin-bottom: 8px;
+}
+
+.error-fallback-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
 /* ── Login Page ──────────────────────────────────────────────────────────── */
 .login-page {
   display: flex;
