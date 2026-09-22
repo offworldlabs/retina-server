@@ -80,6 +80,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
 pip install -e ../libs/retina-geolocator -e ../libs/retina-tracker \
   -e ../libs/retina-custody -e ../libs/retina-simulation -e ../libs/retina-analytics
+pre-commit install --install-hooks   # the lint gate on every commit; see "Before you push"
 cp .env.example .env          # fill in what you need (see below)
 RETINA_ENV=dev AUTH_ALLOW_ANONYMOUS_ADMIN=1 SYNTHETIC_FLEET_ENABLED=1 uvicorn main:app --reload
 ```
@@ -224,15 +225,22 @@ ten times slower than sysmon and there is no longer a reason to reach for it.
 
 ### Before you push
 
-The lint gate is pre-commit, not the two ruff commands:
+The lint gate is pre-commit, not the two ruff commands. Once installed (see
+Local setup) it runs on the staged files at every commit, in every worktree:
+hooks live in the clone's shared `.git/hooks`. The hook records the absolute
+path of the venv it was installed from, so reinstall it if that venv moves.
+
+CI runs it over every file, and so should you before pushing, since a commit
+made with `--no-verify` or from somewhere without the hook skipped it:
 
 ```bash
 backend/.venv/bin/pre-commit run --all-files
 ```
 
-It runs `ruff-check`, `ruff-format`, a dead-code check (vulture) and `ruff-config`
-twice, once per copy of the shared standard in this repo. A change can pass
-`ruff check` and `ruff format` by hand and still fail CI on dead code.
+It runs `ruff-check`, `ruff-format`, actionlint over the workflows, a dead-code
+check (vulture) and `ruff-config` twice, once per copy of the shared standard in
+this repo. A change can pass `ruff check` and `ruff format` by hand and still
+fail CI on dead code.
 
 Touching a node route or one of its models also moves the node API's wire
 contract, which is generated rather than written. So does changing a
