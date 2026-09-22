@@ -160,6 +160,20 @@ a:hover {
   cursor: default;
 }
 
+/* The quieter of two answers on a card, such as declining a claim: the same
+   footprint as the button above it, without its fill or its border. */
+.login-btn.secondary {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-secondary);
+}
+
+.login-btn.secondary:hover {
+  background: var(--bg-card-hover);
+  border-color: transparent;
+  color: var(--text-primary);
+}
+
 .login-form {
   display: flex;
   flex-direction: column;

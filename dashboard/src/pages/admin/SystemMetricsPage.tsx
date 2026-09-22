@@ -166,7 +166,7 @@ export default function SystemMetricsPage() {
               <tr key={name}>
                 <td style={{ fontFamily: "monospace", fontSize: 13 }}>{name}</td>
                 <td>
-                  <span className={`status-badge ${isStale ? "offline" : "online"}`}>
+                  <span className={`badge ${isStale ? "offline" : "online"}`}>
                     {isStale ? "stale" : "ok"}
                   </span>
                 </td>

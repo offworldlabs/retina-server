@@ -225,7 +225,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
       {ownership && (
         <div className="card" style={{ marginBottom: 24 }}>
           <div className="card-header"><h3>Ownership</h3></div>
-          <div className="card-body">
+          <div className="card-body stack">
             <p>
               {ownership.claimed_with
                 ? <>Claimed with <strong>{ownership.claimed_with}</strong>.</>
@@ -239,15 +239,17 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
             {confirmingRelease ? (
               <>
                 <p><strong>Release this node?</strong> Whoever claims it next becomes its owner.</p>
-                <button className="btn danger" onClick={release} disabled={releasing}>
-                  {releasing ? "Releasing…" : "Yes, release it"}
-                </button>
-                <button className="btn" onClick={() => setConfirmingRelease(false)} disabled={releasing}>
-                  Keep it
-                </button>
+                <div className="btn-row">
+                  <button className="btn btn-danger" onClick={release} disabled={releasing}>
+                    {releasing ? "Releasing…" : "Yes, release it"}
+                  </button>
+                  <button className="btn btn-outline" onClick={() => setConfirmingRelease(false)} disabled={releasing}>
+                    Keep it
+                  </button>
+                </div>
               </>
             ) : (
-              <button className="btn" onClick={() => setConfirmingRelease(true)}>
+              <button className="btn btn-outline" onClick={() => setConfirmingRelease(true)}>
                 Release this node
               </button>
             )}
