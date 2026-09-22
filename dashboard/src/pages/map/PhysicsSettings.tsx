@@ -21,6 +21,7 @@ import {
 } from "./physics/solverReport";
 import { request } from "@retina/shared";
 import { isOnline } from "../../utils/nodes";
+import { usePolling } from "../../hooks/usePolling";
 
 const API = "/api";
 
@@ -158,12 +159,9 @@ export default function PhysicsSettings() {
     () => palette.DOPPLER_STOPS.map(([r, g, b]) => `rgb(${r}, ${g}, ${b})`).join(", "),
     [palette],
   );
-  const [config, setConfig] = useState(null);
   const [draft, setDraft] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState(null);
-  const [error, setError] = useState(null);
-  const [gtData, setGtData] = useState(null);
 
   // Fleet Scene — node count / dual fraction. Deliberately separate from
   // `draft` above: merging it in would restart the fleet simulator on every
@@ -173,7 +171,6 @@ export default function PhysicsSettings() {
   const [sceneArmed, setSceneArmed] = useState(false);
   const [sceneMsg, setSceneMsg] = useState(null);
   const [scenePending, setScenePending] = useState(false);
-  const [runningScene, setRunningScene] = useState(null);
   const sceneArmTimerRef = useRef(null);
   useEffect(() => {
     return () => { if (sceneArmTimerRef.current) clearTimeout(sceneArmTimerRef.current); };
@@ -196,115 +193,81 @@ export default function PhysicsSettings() {
   const sceneDirtyRef = useRef(false);
   const [drift, setDrift] = useState(null);
 
-  // Aborted on unmount — in-flight responses used to resolve into setState
-  // on an unmounted component.
-  const abortRef = useRef(null);
-  useEffect(() => {
-    abortRef.current = new AbortController();
-    return () => abortRef.current?.abort();
-  }, []);
+  function onConfig(data) {
+    const stamp = typeof data._updated_at === "number" ? data._updated_at : null;
+    const prevStamp = lastStampRef.current;
+    lastStampRef.current = stamp;
 
-  const fetchConfig = useCallback(async () => {
-    try {
-      const data = await request(`${API}/simulation/config`, { signal: abortRef.current?.signal });
-      if (abortRef.current?.signal.aborted) return;
-      setConfig(data);
-
-      const stamp = typeof data._updated_at === "number" ? data._updated_at : null;
-      const prevStamp = lastStampRef.current;
-      lastStampRef.current = stamp;
-
-      // First payload seeds both drafts. sceneDraft is seeded here too but is
-      // NEVER merged into `draft` — the two PUT different payloads.
-      if (!seededRef.current) {
-        seededRef.current = true;
-        setDraft(serverToDraft(data));
-        setSceneDraft(serverToScene(data));
-        return;
-      }
-
-      // Nothing to compare against on the first stamp we see, and a payload
-      // without one (older backend) can't be reasoned about at all.
-      if (prevStamp === null || stamp === null || stamp === prevStamp) return;
-
-      // A restart reverting to boot state usually moves the stamp *backwards*
-      // (import time of the new process vs the operator's later PUT), but a
-      // long-running backend restarted after a stale snapshot can move it
-      // forwards — either way it is a change this page did not make.
-      const reverted = stamp < prevStamp;
-      if (dirtyRef.current || sceneDirtyRef.current) {
-        // Unapplied edits belong to the operator — never overwrite them.
-        // Say the baseline moved and let them apply or discard.
-        setDrift({ kind: "stale", reverted });
-      } else {
-        setDraft(serverToDraft(data));
-        setSceneDraft(serverToScene(data));
-        setDrift({ kind: "resynced", reverted });
-      }
-    } catch (e) {
-      setError(e.message);
+    // First payload seeds both drafts. sceneDraft is seeded here too but is
+    // NEVER merged into `draft` — the two PUT different payloads.
+    if (!seededRef.current) {
+      seededRef.current = true;
+      setDraft(serverToDraft(data));
+      setSceneDraft(serverToScene(data));
+      return;
     }
-  }, []);
+
+    // Nothing to compare against on the first stamp we see, and a payload
+    // without one (older backend) can't be reasoned about at all.
+    if (prevStamp === null || stamp === null || stamp === prevStamp) return;
+
+    // A restart reverting to boot state usually moves the stamp *backwards*
+    // (import time of the new process vs the operator's later PUT), but a
+    // long-running backend restarted after a stale snapshot can move it
+    // forwards — either way it is a change this page did not make.
+    const reverted = stamp < prevStamp;
+    if (dirtyRef.current || sceneDirtyRef.current) {
+      // Unapplied edits belong to the operator — never overwrite them.
+      // Say the baseline moved and let them apply or discard.
+      setDrift({ kind: "stale", reverted });
+    } else {
+      setDraft(serverToDraft(data));
+      setSceneDraft(serverToScene(data));
+      setDrift({ kind: "resynced", reverted });
+    }
+  }
+  const {
+    data: config,
+    error: configError,
+    refresh: fetchConfig,
+  } = usePolling(() => request(`${API}/simulation/config`), 10_000, "", onConfig);
 
   // Discard unapplied edits and take whatever the simulator is running.
   // Clearing seededRef makes the next payload seed instead of compare, so
   // there is no window where the drafts and the stamp disagree.
-  const reloadFromSimulator = useCallback(async () => {
+  const reloadFromSimulator = useCallback(() => {
     dirtyRef.current = false;
     sceneDirtyRef.current = false;
     seededRef.current = false;
     lastStampRef.current = null;
     setDrift(null);
-    await fetchConfig();
-  }, [fetchConfig]);
-
-  useEffect(() => {
     fetchConfig();
-    const id = setInterval(fetchConfig, 10000);
-    return () => clearInterval(id);
   }, [fetchConfig]);
 
-  const fetchGt = useCallback(async () => {
-    try {
-      const data = await request(`${API}/simulation/ground-truth`, { signal: abortRef.current?.signal });
-      if (abortRef.current?.signal.aborted) return;
+  // A failed read of any of the polls below is non-fatal: its section keeps
+  // the last good answer, or stays empty until there is one.
+  const { data: gtData } = usePolling(
+    () => request(`${API}/simulation/ground-truth`),
+    2000,
+    "",
+    (data) => {
       // Store fixes for dead-reckoning
       const newFixes = {};
       for (const ac of data.aircraft) {
         newFixes[ac.hex] = { ...ac };
       }
       fixesRef.current = newFixes;
-      setGtData(data);
-    } catch {
-      // non-fatal — GT section just stays empty
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchGt();
-    const id = setInterval(fetchGt, 2000);
-    return () => clearInterval(id);
-  }, [fetchGt]);
+    },
+  );
 
   // Solver Report — funnel/error/ghost/consensus stats. Separate, slower
-  // poll from fetchGt: it scans up to 8000 mlat_solve_history records, so a
-  // 2 Hz cadence would be wasted work for numbers that only move on solves.
-  const [solverStats, setSolverStats] = useState(null);
-  const fetchSolverStats = useCallback(async () => {
-    try {
-      const data = await request(`${API}/test/solver-stats?minutes=10`, { signal: abortRef.current?.signal });
-      if (abortRef.current?.signal.aborted) return;
-      setSolverStats(data);
-    } catch {
-      // non-fatal — Solver Report just holds the last good data
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchSolverStats();
-    const id = setInterval(fetchSolverStats, 5000);
-    return () => clearInterval(id);
-  }, [fetchSolverStats]);
+  // poll from the ground truth: it scans up to 8000 mlat_solve_history
+  // records, so a 2 Hz cadence would be wasted work for numbers that only
+  // move on solves.
+  const { data: solverStats } = usePolling(
+    () => request(`${API}/test/solver-stats?minutes=10`),
+    5000,
+  );
 
   // Dead-reckoning animation — smooth position updates at 500 ms
   useEffect(() => {
@@ -367,7 +330,7 @@ export default function PhysicsSettings() {
       setDrift(null);
       setSaveMsg("Applied — live aircraft are re-cast within ~5 s; new synthetic objects spawn with the updated fractions.");
       setTimeout(() => setSaveMsg(null), 4000);
-      await fetchConfig();
+      fetchConfig();
     } catch (e) {
       setSaveMsg(`Error: ${e.message}`);
     } finally {
@@ -382,28 +345,17 @@ export default function PhysicsSettings() {
 
   // Running scene — zero new plumbing: counts what's actually connected
   // rather than trusting the config the fleet booted with.
-  const fetchRunningScene = useCallback(async () => {
-    try {
-      const data = await request(`${API}/radar/nodes`, { signal: abortRef.current?.signal });
-      if (abortRef.current?.signal.aborted) return;
-      const entries = Object.entries(data.nodes || {});
-      const connectedSynthetic = entries.filter(
-        ([, n]: any) => n.is_synthetic && isOnline(n.status),
-      );
-      const dualSites = Math.floor(
-        connectedSynthetic.filter(([id]) => /-DUAL-\d{4}[ab]$/.test(id)).length / 2,
-      );
-      setRunningScene({ connected: connectedSynthetic.length, dualSites });
-    } catch {
-      // non-fatal — the running-scene line just holds the last good read
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchRunningScene();
-    const id = setInterval(fetchRunningScene, 10000);
-    return () => clearInterval(id);
-  }, [fetchRunningScene]);
+  const { data: runningScene } = usePolling(async () => {
+    const data = await request(`${API}/radar/nodes`);
+    const entries = Object.entries(data.nodes || {});
+    const connectedSynthetic = entries.filter(
+      ([, n]: any) => n.is_synthetic && isOnline(n.status),
+    );
+    const dualSites = Math.floor(
+      connectedSynthetic.filter(([id]) => /-DUAL-\d{4}[ab]$/.test(id)).length / 2,
+    );
+    return { connected: connectedSynthetic.length, dualSites };
+  }, 10_000);
 
   // "restart pending" clears once the connected count has caught up with
   // the draft — generation can come out a couple of nodes short when
@@ -462,8 +414,8 @@ export default function PhysicsSettings() {
   if (!draft) {
     return (
       <div className="ps-container ps-loading">
-        {error
-          ? <span className="ps-error">{error}</span>
+        {configError
+          ? <span className="ps-error">{configError.message}</span>
           : <span className="ps-loading-text">Loading simulation config…</span>}
       </div>
     );
