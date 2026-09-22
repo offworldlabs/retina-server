@@ -504,6 +504,12 @@ a:hover {
   isolation: isolate;
 }
 
+/* A page is a column of blocks, each carrying the gap below it: the page
+   header, a notice, a stats grid, a grid of cards, and a card on its own. */
+.content > .card {
+  margin-bottom: 24px;
+}
+
 /* A full-bleed page owns its own overflow and draws to every edge; a
    scrollbar or padding on the pane would move its canvas under its panels. */
 .content.flush {
@@ -700,6 +706,14 @@ td.table-note {
 }
 
 /* ── Grid layouts ────────────────────────────────────────────────────────── */
+/* A run of like cards, one per check or machine, as many to a row as fit. */
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
 .grid-2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -712,6 +726,51 @@ td.table-note {
   grid-template-columns: 1fr 1fr 1fr;
   gap: 16px;
   margin-bottom: 24px;
+}
+
+/* ── Card contents ───────────────────────────────────────────────────────── */
+/* The reset takes a list's padding, and with it the room for its markers. */
+.card-body ul,
+.card-body ol {
+  padding-left: 20px;
+}
+
+/* Small labelled figures, two to a row, inside a card. */
+.readings {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.reading-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+}
+
+.reading-value {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+/* Stat grids set on the page rather than in a card, in named groups. */
+.section-title {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 32px 0 12px;
+}
+
+.section-title .card-note {
+  font-weight: 400;
+  margin-left: 8px;
+}
+
+.section-caption {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
 }
 
 /* ── Charts ──────────────────────────────────────────────────────────────── */

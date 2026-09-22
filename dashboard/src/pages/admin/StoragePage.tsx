@@ -57,7 +57,7 @@ export default function StoragePage() {
 
       <FetchNotice polled={pageFetch} what="the archive listing" />
       {!nothingLoaded(archiveFetch) && (
-        <div className="card" style={{ marginTop: 16 }}>
+        <div className="card">
           <div className="card-header"><h3>Recent Archives</h3></div>
           {/* Withheld when this page failed; the pager stays, so it can be left. */}
           {!nothingLoaded(pageFetch) && (
@@ -191,7 +191,7 @@ function StorageSummary({ storage }) {
         </div>
       </div>
 
-      <div className="grid-2" style={{ marginTop: 16 }}>
+      <div className="grid-2">
         <div className="card">
           <div className="card-header"><h3>Local Storage</h3></div>
           <div className="card-body">
@@ -217,7 +217,7 @@ function StorageSummary({ storage }) {
       </div>
 
       {perNode.length > 0 && (
-        <div className="card" style={{ marginTop: 16 }}>
+        <div className="card">
           <div className="card-header"><h3>Storage by Node</h3></div>
           <DataTable
             headers={["Node", "Files", "Size", "Write Rate"]}
