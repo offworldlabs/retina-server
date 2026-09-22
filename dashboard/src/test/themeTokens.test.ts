@@ -37,3 +37,25 @@ describe("the dashboard stylesheet", () => {
     expect(bare.length).toBeGreaterThan(1000);
   });
 });
+
+/* A style object that sets a palette token repaints everything beneath it: a
+   card that sets --accent to its own colour takes every focus ring, checkbox
+   and primary button inside it along. A component with a colour of its own
+   gives it a property of its own. */
+describe("the components", () => {
+  const all = import.meta.glob("../**/*.{ts,tsx}", { query: "?raw", import: "default", eager: true }) as Record<string, string>;
+  const sources = Object.fromEntries(Object.entries(all).filter(([path]) => !path.startsWith("../test/")));
+
+  it("are found, so a glob that matched nothing cannot pass", () => {
+    expect(Object.keys(sources).length).toBeGreaterThan(50);
+  });
+
+  it("override no palette token inline", () => {
+    const overrides = Object.entries(sources).flatMap(([path, source]) =>
+      (source.match(/["']--(bg|text|border|accent|success|warning|error)(-[\w-]+)?["']\s*:/g) ?? []).map(
+        (found) => `${path}: ${found}`,
+      ),
+    );
+    expect(overrides).toEqual([]);
+  });
+});
