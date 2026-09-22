@@ -356,7 +356,7 @@ function FiltersPopover({ filters, onChange, anchorRef }) {
   return (
     <div
       ref={popRef}
-      className="filters-popover"
+      className="card filters-popover"
       // Hidden until measured, so it can never be seen at a placeholder
       // position — the failure mode of placing in an effect.
       style={pos ? { top: pos.top, left: pos.left } : { visibility: "hidden", top: 0, left: 0 }}
