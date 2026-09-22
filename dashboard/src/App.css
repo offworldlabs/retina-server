@@ -57,6 +57,12 @@ a:hover {
 }
 
 /* ── Error fallback ──────────────────────────────────────────────────────── */
+/* Takes the width of the page it stands in for, including in a `.content.flush`
+   pane, which lays its page out as a row. */
+.error-fallback {
+  flex: 1;
+}
+
 /* The empty state's muted ink is right for its explanation and too faint for
    the line that says something broke. */
 .error-fallback h2 {
