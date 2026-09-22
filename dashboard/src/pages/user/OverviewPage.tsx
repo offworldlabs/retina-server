@@ -109,7 +109,7 @@ export default function OverviewPage() {
         <div className="card" style={{ marginBottom: 24 }}>
           <div className="card-header">
             <h3>Needs Attention</h3>
-            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            <span className="card-note">
               {POSITION_STATUS_EXPLANATION}
             </span>
           </div>
@@ -202,7 +202,7 @@ export default function OverviewPage() {
                   <span className="meta-label">Heartbeat</span>
                   <span>{formatRelativeTime(node.last_heartbeat)}</span>
                   <span className="meta-label">Config</span>
-                  <span style={{ fontFamily: "monospace", fontSize: 11 }}>{node.config_hash ? node.config_hash.slice(0, 8) : "—"}</span>
+                  <span className="mono">{node.config_hash ? node.config_hash.slice(0, 8) : "—"}</span>
                 </div>
               </div>
             );

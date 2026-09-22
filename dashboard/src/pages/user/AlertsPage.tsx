@@ -47,7 +47,7 @@ export default function AlertsPage() {
       <div className="card">
         <div className="card-header">
           <h3>Recent Alerts</h3>
-          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Auto-refreshes every 15s</span>
+          <span className="card-note">Auto-refreshes every 15s</span>
         </div>
         <DataTable
           headers={["Time", "Severity", "Category", "Message"]}
@@ -56,7 +56,7 @@ export default function AlertsPage() {
         >
           {alerts.map((ev, i) => (
             <tr key={i}>
-              <td style={{ fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>
+              <td className="mono" style={{ whiteSpace: "nowrap" }}>
                 {ev.ts ? new Date(ev.ts * 1000).toLocaleString() : "—"}
               </td>
               <td>

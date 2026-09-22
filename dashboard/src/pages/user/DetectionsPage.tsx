@@ -80,7 +80,7 @@ export default function DetectionsPage() {
                 <option key={nid} value={nid}>{shortRef(nid)}</option>
               ))}
             </select>
-            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            <span className="card-note">
               Auto-refreshes every 3s
             </span>
           </div>
@@ -98,7 +98,7 @@ export default function DetectionsPage() {
               >
                 {paged.map((ac, i) => (
                   <tr key={ac.hex || current * PAGE_SIZE + i}>
-                    <td style={{ fontFamily: "monospace", color: "var(--accent)" }}>
+                    <td className="mono" style={{ color: "var(--accent)" }}>
                       {ac.hex || "—"}
                     </td>
                     <td style={{ fontWeight: 500, color: "var(--text-primary)" }}>
