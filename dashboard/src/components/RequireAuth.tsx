@@ -20,7 +20,9 @@ export default function RequireAuth({ isAdmin, children }) {
   if (loading) return <div className="loading-screen">Loading…</div>;
   if (!user) {
     if (isPublicRoute(pathname, isAdmin)) return children;
-    return <Navigate to="/login" replace />;
+    // Carrying the page, so signing in ends on it. Not from the admin console:
+    // the mailed link opens on the app host, which has none of its routes.
+    return <Navigate to="/login" replace state={isAdmin ? null : { next: pathname }} />;
   }
   if (isAdmin && user.role !== "admin") {
     return (

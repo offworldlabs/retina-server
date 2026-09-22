@@ -11,6 +11,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
 from routes.sim_ingest import synthetic_fleet_enabled
+from services import blah2_poller, probation
 from services.health import compute_health_issues
 
 router = APIRouter(tags=["health"])
@@ -37,13 +38,24 @@ async def health(strict: bool = Query(False)):
     this public repo, and the sim routes themselves are already unauthenticated
     reads wherever they are mounted.
 
+    ``polled_radar_probation`` rides along on the same terms: it says whether
+    this deployment holds unvetted polled radars back from the solve, the
+    archive and the public map. On by default;
+    POLLED_RADAR_PROBATION_ENABLED=0 switches it off. ``polled_radar_polling``
+    says whether this deployment polls registered radars at all, which exactly
+    one environment may.
+
     The strict body is left alone. A readiness probe's caller reads the status
     code and nothing else, and an uptime monitor parsing a 503 for a feature
     flag would be reading it at the one moment the server is least able to
     answer honestly.
     """
     issues = compute_health_issues()
-    fleet = {"synthetic_fleet": synthetic_fleet_enabled(os.environ)}
+    fleet = {
+        "synthetic_fleet": synthetic_fleet_enabled(os.environ),
+        "polled_radar_probation": probation.enabled(),
+        "polled_radar_polling": blah2_poller.enabled(),
+    }
     if issues:
         # Details are logged (and alerted on by the monitor), never exposed on
         # this unauthenticated endpoint.

@@ -465,10 +465,11 @@ const NO_NODES = [];
 
 /**
  * The console's identity plus the node refs that user owns. `user` is null
- * when nobody is signed in. Gates the map's node-owner view.
+ * when nobody is signed in. Gates the map's node-owner view, and passes on
+ * whether the server runs a synthetic fleet, which gates ground truth.
  */
 export function useAuth() {
-  const { user, loading } = useConsoleAuth();
+  const { user, loading, syntheticFleet } = useConsoleAuth();
   // null while ownership is unsettled, which the map must not read as owning
   // nothing: the owner panel would render mid-flight with a count of zero.
   const [ownedNodeRefs, setOwnedNodeRefs] = useState(null);
@@ -499,5 +500,6 @@ export function useAuth() {
     user,
     ownedNodeRefs: user ? ownedNodeRefs ?? NO_NODES : NO_NODES,
     loading: loading || (!!user && ownedNodeRefs === null),
+    syntheticFleet,
   };
 }

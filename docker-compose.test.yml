@@ -72,13 +72,13 @@ services:
       # Sign-in links go to this container's log, not to a mailbox. This box is
       # deployed to from any branch on a whim, so real mail from it means
       # mailing whoever a half-finished change happens to name; and it holds no
-      # Cloudflare token, so `smtp` would resolve to unconfigured and answer 503,
+      # Cloudflare token, so `cloudflare` would resolve to unconfigured and answer 503,
       # leaving the flow untestable here. Read one with:
       #
       #     docker compose logs server | grep -A 12 'not sent'
       #
       # services/mail.py refuses this value outright when RETINA_ENV=production,
-      # so it cannot travel. Staging deliberately keeps `smtp`: a transport only
+      # so it cannot travel. Staging deliberately keeps `cloudflare`: a transport only
       # production exercises is one nobody has tested.
       - MAIL_TRANSPORT=log
       # Labels alerts. It matches RETINA_ENV above only because this droplet is

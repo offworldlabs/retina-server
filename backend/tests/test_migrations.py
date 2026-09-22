@@ -385,3 +385,18 @@ def test_every_migration_declares_rollback_safety():
             f"{path.name} declares rollback_safety = {match.group(1)!r}, "
             f"expected one of {sorted(VALID_ROLLBACK_SAFETY)}"
         )
+
+
+# ── 0016: polled radars ──────────────────────────────────────────────────────
+
+
+def test_0016_downgrade_drops_both_polled_radar_tables(tmp_path):
+    db = tmp_path / "polled.db"
+    up = _alembic("upgrade", "0016", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    tables = "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'polled_radar%' ORDER BY name"
+    assert _query(db, tables) == [("polled_radar_endpoint_history",), ("polled_radars",)]
+
+    down = _alembic("downgrade", "0015", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, tables) == []

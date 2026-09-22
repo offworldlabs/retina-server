@@ -1,7 +1,7 @@
-import { NavLink } from "react-router-dom";
+import { Link, NavLink } from "react-router-dom";
 import { towerFinderUrl } from "../utils/siblings";
 import { useAuth } from "../context/AuthContext";
-import { advertisedPublicRoutes } from "../utils/publicRoutes";
+import { isPublicRoute } from "../utils/publicRoutes";
 import { externalLinkIcon } from "./RetnodeLink";
 
 type NavItem = {
@@ -63,28 +63,7 @@ const userNav = (syntheticFleet: boolean): NavSection[] => [
     title: "Account",
     items: [
       { to: "/onboarding", label: "My Nodes", icon: "server" },
-      { to: "/settings", label: "Settings", icon: "settings" },
     ],
-  },
-];
-
-// What a caller with no session is offered: the open routes and nothing else,
-// read off the same list the guard reads, so neither can be changed alone.
-// One section rather than scattered through the four the signed-in nav has,
-// since sections exist to group and one entry apiece groups nothing.
-//
-// `syntheticFleet` is the one thing that narrows it. /sim is open on every
-// deployment, but only worth pointing at where a fleet is behind it, and a
-// visitor has no /api/auth/me to learn that from — see publicRoutes.ts.
-const publicNav = (syntheticFleet: boolean): NavSection[] => [
-  {
-    title: "Explore",
-    items: advertisedPublicRoutes(syntheticFleet).map(({ path, label, icon, end }) => ({
-      to: path,
-      label,
-      icon,
-      end,
-    })),
   },
 ];
 
@@ -145,12 +124,6 @@ const icons = {
       <ellipse cx="12" cy="5" rx="9" ry="3" />
       <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
       <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
-    </svg>
-  ),
-  settings: (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" />
     </svg>
   ),
   activity: (
@@ -290,13 +263,12 @@ const icons = {
 
 export default function Sidebar({ isAdmin, collapsed, onToggle }) {
   const { user, syntheticFleet } = useAuth();
-  // The console is never reached without a session, so its nav does not have a
-  // signed-out form to choose between.
-  const nav = isAdmin
-    ? adminNav
-    : user
-      ? userNav(Boolean(syntheticFleet))
-      : publicNav(Boolean(syntheticFleet));
+  const nav = isAdmin ? adminNav : userNav(Boolean(syntheticFleet));
+  // A visitor is shown every entry, so the nav says what signing in opens;
+  // those behind a session are greyed out and lead to sign-in. Read off the list
+  // the route guard reads, so an entry is live exactly where its page is open.
+  const locked = (item: NavItem) =>
+    !user && item.to !== undefined && !isPublicRoute(item.to, isAdmin);
 
   return (
     <aside className="sidebar" id="console-sidebar">
@@ -335,6 +307,21 @@ export default function Sidebar({ isAdmin, collapsed, onToggle }) {
                   <span className="nav-label">{item.label}</span>
                   <span className="nav-external">{icons.externalLink}</span>
                 </a>
+              ) : locked(item) ? (
+                // Straight to the sign-in card rather than to a page that would
+                // only bounce there, carrying the page so signing in ends on it.
+                // Marked like the header's Sign in link, so the card's Back
+                // returns to the open page the visitor was on.
+                <Link
+                  key={item.to}
+                  to="/login"
+                  state={{ fromOpenPage: true, next: item.to }}
+                  className="nav-item locked"
+                  title={`${item.label} is only available when signed in`}
+                >
+                  {icons[item.icon]}
+                  <span className="nav-label">{item.label}</span>
+                </Link>
               ) : (
                 <NavLink
                   key={item.to}

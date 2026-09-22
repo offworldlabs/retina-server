@@ -362,6 +362,13 @@ a:hover {
   color: var(--accent);
 }
 
+/* An entry that needs a session, shown to a caller without one. It still
+   takes the hover background, since clicking it leads to sign-in. */
+.nav-item.locked,
+.nav-item.locked:hover {
+  color: var(--text-muted);
+}
+
 .nav-item svg {
   width: 18px;
   height: 18px;
@@ -455,6 +462,10 @@ a:hover {
   flex: 1;
   overflow-y: auto;
   padding: var(--content-pad);
+  /* A page's z-indexes stay inside the page. The map floats its toolbar and
+     Leaflet's controls at 1000 and above, which would otherwise paint over the
+     header's account menu. */
+  isolation: isolate;
 }
 
 /* A full-bleed page owns its own overflow and draws to every edge; a

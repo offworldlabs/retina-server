@@ -16,9 +16,13 @@ class TestHealth:
         assert body["status"] == "ok"
         # Not health: the console reads this to decide whether to show the
         # simulator surface (routes/health.py). Present and boolean is the
-        # contract; its value depends on SYNTHETIC_FLEET_ENABLED.
+        # contract; its value depends on SYNTHETIC_FLEET_ENABLED. The same goes
+        # for polled_radar_probation and POLLED_RADAR_PROBATION_ENABLED, and for
+        # polled_radar_polling and POLLED_RADAR_POLLING_ENABLED.
         assert isinstance(body["synthetic_fleet"], bool)
-        assert set(body) == {"status", "synthetic_fleet"}
+        assert isinstance(body["polled_radar_probation"], bool)
+        assert isinstance(body["polled_radar_polling"], bool)
+        assert set(body) == {"status", "synthetic_fleet", "polled_radar_probation", "polled_radar_polling"}
 
 
 # ── Detections ────────────────────────────────────────────────────────────────

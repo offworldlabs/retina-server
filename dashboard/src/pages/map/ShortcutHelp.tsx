@@ -1,6 +1,8 @@
 interface ShortcutHelpProps {
   visible: boolean;
   onClose: () => void;
+  /** Whether G does anything on this page; see truthAvailable in LiveAircraftMap. */
+  truthAvailable?: boolean;
 }
 
 // Keep in sync with `shortcutMap` in LiveAircraftMap.tsx — this table is the
@@ -28,7 +30,7 @@ const SHORTCUTS: Array<[string, string]> = [
   ["N",       "Toggle emergency-squawk sound"],
 ];
 
-export default function ShortcutHelp({ visible, onClose }: ShortcutHelpProps) {
+export default function ShortcutHelp({ visible, onClose, truthAvailable = false }: ShortcutHelpProps) {
   if (!visible) return null;
   return (
     <div className="shortcut-backdrop" onClick={onClose}>
@@ -47,7 +49,7 @@ export default function ShortcutHelp({ visible, onClose }: ShortcutHelpProps) {
         </div>
         <table>
           <tbody>
-            {SHORTCUTS.map(([key, label]) => (
+            {SHORTCUTS.filter(([key]) => key !== "G" || truthAvailable).map(([key, label]) => (
               <tr key={key}>
                 <td>
                   <kbd className="shortcut-key">{key}</kbd>

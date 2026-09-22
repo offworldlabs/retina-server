@@ -13,7 +13,7 @@ vi.mock("../context/AuthContext", () => ({
   }),
 }));
 
-const CONFIRMATION = "If that address has an account, a sign-in link is on its way.";
+const CONFIRMATION = /^A sign-in link is on its way to /;
 
 function answer(status: number, body: unknown = {}) {
   return vi.fn(
@@ -76,13 +76,13 @@ describe("LoginPage", () => {
     ["an address the server accepted", 202, { status: "accepted" }],
     ["a send that failed inside the server", 500, { detail: "smtp refused the recipient" }],
   ])("confirms without saying what happened: %s", async (_case, status, body) => {
-    // The two answers must be one screen. Anything that told them apart would
-    // hand back the existence check the 202 exists to withhold.
+    // The two answers must be one screen: the server answers every address the
+    // same way, and the page must not be where two addresses look different.
     vi.stubGlobal("fetch", answer(status, body));
     renderLogin();
     requestLink("ghost@example.com");
 
-    expect(await screen.findByText(CONFIRMATION)).toBeInTheDocument();
+    expect(await screen.findByText("A sign-in link is on its way to ghost@example.com.")).toBeInTheDocument();
     expect(screen.queryByText(/smtp refused/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Email address")).not.toBeInTheDocument();
   });
@@ -110,6 +110,54 @@ describe("LoginPage", () => {
     // AuthLinkPage renders this page with the reason a link failed to redeem.
     renderLogin({ message: "That sign-in link is no longer valid" });
     expect(screen.getByText("That sign-in link is no longer valid")).toBeInTheDocument();
+  });
+});
+
+describe("the page a sign-in ends on", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", answer(202, { status: "accepted" }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function requestedBody(entry, { isAdmin = false } = {}) {
+    render(
+      <MemoryRouter initialEntries={[entry]}>
+        <Routes>
+          <Route path="*" element={<LoginPage isAdmin={isAdmin} />} />
+        </Routes>
+      </MemoryRouter>
+    );
+    requestLink("pilot@example.com");
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    return JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+  }
+
+  it("asks for a link that opens the page the visitor was sent here from", async () => {
+    const body = await requestedBody({ pathname: "/login", state: { next: "/onboarding" } });
+    expect(body).toEqual({ email: "pilot@example.com", next: "/onboarding" });
+  });
+
+  // A dead mailed link renders this card at its own URL, which carries the page.
+  it("keeps the page a dead link was carrying", async () => {
+    const body = await requestedBody("/auth/link/dead?next=/alerts");
+    expect(body).toEqual({ email: "pilot@example.com", next: "/alerts" });
+  });
+
+  it("asks for nothing it would not open", async () => {
+    const body = await requestedBody({ pathname: "/login", state: { next: "//evil.example.com" } });
+    expect(body).toEqual({ email: "pilot@example.com" });
+  });
+
+  // The mailed link opens on the app host, where no admin route exists.
+  it.each([
+    ["handed over", { pathname: "/login", state: { next: "/nodes" } }],
+    ["in the URL", "/login?next=/nodes"],
+  ])("asks for no page from the admin console (%s)", async (_case, entry) => {
+    const body = await requestedBody(entry, { isAdmin: true });
+    expect(body).toEqual({ email: "pilot@example.com" });
   });
 });
 

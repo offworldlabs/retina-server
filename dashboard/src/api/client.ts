@@ -1,6 +1,7 @@
 import { UnauthorizedError, request as sharedRequest, type RequestOptions } from "@retina/shared";
 
 import { isPublicRoute } from "../utils/publicRoutes";
+import { signInNext } from "../utils/signInNext";
 import { resolveSurface } from "../utils/surface";
 
 /** Must match the route in App.tsx. */
@@ -27,6 +28,15 @@ function onPublicPage() {
   return isPublicRoute(pathname, resolveSurface(hostname, search).isAdmin);
 }
 
+/** The login page, carrying the page the session ran out on so that signing in
+ *  again returns there. Not from the admin console: the mailed link opens on
+ *  the app host, which has none of its routes. */
+function loginUrl() {
+  const { hostname, pathname, search } = window.location;
+  const next = resolveSurface(hostname, search).isAdmin ? null : signInNext(pathname);
+  return next ? `${LOGIN_PATH}?${new URLSearchParams({ next })}` : LOGIN_PATH;
+}
+
 // The shared client answers a 401 with UnauthorizedError; sending the caller to
 // the login page is this app's decision, made here beside the route it names.
 //
@@ -38,7 +48,7 @@ function onPublicPage() {
 function request(path: string, opts?: RequestOptions) {
   return sharedRequest(path, opts).catch((e) => {
     if (e instanceof UnauthorizedError && !onLoginPage() && !onPublicPage()) {
-      window.location.href = LOGIN_PATH;
+      window.location.href = loginUrl();
     }
     throw e;
   });
@@ -81,11 +91,12 @@ export const api = {
   // requestMagicLink resolves 202 whatever the address is, so a caller cannot
   // learn from it whether an account exists. It rejects with an HttpError for
   // a malformed address (422) and for a deployment with no mail configured
-  // (503) — the only two failures a page may repeat back.
-  requestMagicLink: (email) =>
+  // (503) — the only two failures a page may repeat back. `next` is the page
+  // the mailed link opens once redeemed; omitted, it opens the console's root.
+  requestMagicLink: (email, next: string | null = null) =>
     request("/api/auth/magic-link", {
       method: "POST",
-      body: JSON.stringify({ email }),
+      body: JSON.stringify(next ? { email, next } : { email }),
     }),
   // Resolves {user} and leaves the session cookie behind it; rejects 400 with
   // one detail for unknown, expired and already-redeemed alike.

@@ -1029,6 +1029,45 @@ class TestLiveStateSnapshots:
         state.adsb_aircraft["real1"] = _MutatingFix({"lat": 35.009, "lon": -82.0, "last_seen_ms": now_ms})
         assert _solver_window_stats(10.0)["ghosts"]["live"]["ghost_tracks"] == 0
 
+    def test_duplicated_dark_follow_counters_come_from_the_locked_snapshot(self, monkeypatch):
+        """``counters`` repeats six of the dark_follow block's values.  Both
+        must come from the one counters_lock snapshot, or a write landing
+        after it makes one response report two values for the same counter."""
+        block_to_counter = {
+            "targets_now": "dark_follow_targets",
+            "inputs": "dark_follow_inputs",
+            "published": "dark_follow_published",
+            "dropped": "dark_follow_dropped",
+            "n2_withheld": "dark_follow_n2_withheld",
+            "n2_skipped": "dark_follow_n2_skipped",
+        }
+        names = [*block_to_counter.values(), "dark_follow_claims"]
+        for i, name in enumerate(names):
+            setattr(state, name, 10 * (i + 1))
+        sampled = {name: getattr(state, name) for name in names}
+        lock = state.counters_lock
+        this_thread = threading.get_ident()
+
+        class _WriteOnRelease:
+            """counters_lock, with a worker bumping every counter the moment
+            this thread releases it.  Other threads (workers leaked by earlier
+            TestClient lifespans) use it too, and must not trigger the bump."""
+
+            def __enter__(self):
+                lock.acquire()
+
+            def __exit__(self, *exc):
+                lock.release()
+                if threading.get_ident() == this_thread:
+                    for name in names:
+                        setattr(state, name, getattr(state, name) + 1)
+
+        monkeypatch.setattr(state, "counters_lock", _WriteOnRelease())
+        out = _solver_window_stats(10.0)
+        for block_key, counter in block_to_counter.items():
+            assert out["counters"][counter] == out["dark_follow"][block_key], counter
+        assert {name: out["counters"][name] for name in names} == sampled
+
 
 def _skip_rec(lane="dark", age_s=0.0, track_ids=("a1",), n_nodes=3):
     return {

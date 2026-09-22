@@ -8,7 +8,7 @@ is here for.
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.users import Base
@@ -229,3 +229,75 @@ class NodeToken(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PolledRadar(Base):
+    """What polling a stock blah2 radar adds to its node.
+
+    The node itself is an ordinary `nodes` row with a configuration version and
+    a claim, so the pipeline, ownership and publication code read it unchanged.
+    This row holds only how to reach the radar and how the poller finds it.
+
+    The address is the operator's home: `__repr__` names neither it nor the
+    credential, and the secret is Fernet ciphertext (core/secrets.py).
+    """
+
+    __tablename__ = "polled_radars"
+
+    node_id: Mapped[str] = mapped_column(String(32), ForeignKey("nodes.node_id"), primary_key=True)
+    # Moves on an endpoint edit, geometry drift, a config-fingerprint change or
+    # the resolved address changing network: whenever the box behind the id may
+    # have changed. Probation restarts with it; a credential change alone does not.
+    epoch: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    # As typed, with any userinfo removed.
+    endpoint_raw: Mapped[str] = mapped_column(String(2048))
+    scheme: Mapped[str] = mapped_column(String(8))
+    host: Mapped[str] = mapped_column(String(255))
+    port: Mapped[int] = mapped_column(Integer)
+    # Normalised `host:port`. Unique, so one radar cannot be registered twice
+    # however differently its address was typed.
+    endpoint_key: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    auth_user: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    auth_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Evidence of where the name pointed, never used to reach the radar.
+    last_resolved_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    config_fingerprint: Mapped[str] = mapped_column(String(128))
+    probe_passed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    endpoint_changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    trust_state: Mapped[str] = mapped_column(String(16), default="probation", server_default="probation")
+    unprotected: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    # pending, streaming, stalled or unreachable.
+    liveness: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
+    last_frame_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_config_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    def __repr__(self) -> str:
+        return f"PolledRadar(node_id={self.node_id!r}, epoch={self.epoch!r}, liveness={self.liveness!r})"
+
+
+class PolledRadarEndpointHistory(Base):
+    """Each endpoint a polled radar has had, oldest first.
+
+    Deleted with the registration by the database's cascade, which needs
+    `PRAGMA foreign_keys=ON` (core/users.py). `changed_by` follows
+    NodeLocationPrivacy.set_by: a user id for an owner, `admin:<email>` for an
+    administrator.
+    """
+
+    __tablename__ = "polled_radar_endpoint_history"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    node_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("polled_radars.node_id", ondelete="CASCADE"), index=True
+    )
+    old_key: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    new_key: Mapped[str] = mapped_column(String(320))
+    resolved_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    changed_by: Mapped[str] = mapped_column(String(255))
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    def __repr__(self) -> str:
+        return f"PolledRadarEndpointHistory(id={self.id!r}, node_id={self.node_id!r})"

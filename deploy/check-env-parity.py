@@ -103,6 +103,9 @@ ALLOWED_DIVERGENCE = (
     # run none and leave the flag unset, so on this key they already agree; the
     # entry is what lets test differ from the reference.
     r"^services\.server\.environment\.SYNTHETIC_FLEET_ENABLED$",
+    # A registered radar must be polled by exactly one server, so production
+    # alone polls (services/blah2_poller.py) and the others leave the flag unset.
+    r"^services\.server\.environment\.POLLED_RADAR_POLLING_ENABLED$",
     # AUTH_ALLOW_ANONYMOUS_ADMIN is deliberately absent from this list, so a
     # difference between environments is drift rather than a decision. It is
     # set in none, and keeping it off this list is what fails CI if it is ever
@@ -151,7 +154,7 @@ ALLOWED_DIVERGENCE = (
     # otherwise make the endpoint answer 503 and the flow untestable there.
     # Refused in production by services/mail.py regardless of this entry, so
     # widening it to another environment cannot silently disable delivery on
-    # the one that matters. Staging keeps `smtp` deliberately: a transport only
+    # the one that matters. Staging keeps `cloudflare` deliberately: a transport only
     # production exercises is one nobody has tested.
     ("test", r"^services\.server\.environment\.MAIL_TRANSPORT$"),
     # Compose records the file list it was assembled from.
