@@ -431,36 +431,12 @@
   cursor: not-allowed;
 }
 
-/* ── Apply ───────────────────────────────────────────────────
-   Flat solid accent, as dash's primary button is. The old gradient-and-lift
-   treatment belongs to the marketing surfaces, not a console. */
+/* ── Apply ─────────────────────────────────────────────────── */
 .ps-actions {
   display: flex;
   align-items: center;
   gap: 16px;
   margin-bottom: 32px;
-}
-
-.ps-apply-btn {
-  padding: 9px 22px;
-  background: var(--accent);
-  color: var(--accent-ink);
-  border: none;
-  border-radius: var(--radius-sm);
-  font: inherit;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.ps-apply-btn:hover:not(:disabled) {
-  background: var(--accent-hover);
-}
-
-.ps-apply-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
 }
 
 .ps-save-msg {
@@ -505,28 +481,15 @@
   margin-bottom: 16px;
 }
 
-/* Violet, because respawning the world is not one of the object-class
-   controls above it. */
+/* A .btn filled violet, because respawning the world is not one of the
+   object-class controls above it. */
 .ps-scene-apply-btn {
-  padding: 9px 22px;
   background: var(--violet);
   color: var(--violet-ink);
-  border: none;
-  border-radius: var(--radius-sm);
-  font: inherit;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: background 0.15s;
 }
 
 .ps-scene-apply-btn:hover:not(:disabled) {
   background: var(--violet-hover);
-}
-
-.ps-scene-apply-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
 }
 
 /* Armed: the next click actually restarts the fleet, so it turns into the
