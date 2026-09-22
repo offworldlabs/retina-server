@@ -115,4 +115,10 @@ describe("the shared component vocabulary", () => {
   it("scopes nothing to a surface", () => {
     expect(ui).not.toContain(".map-surface");
   });
+
+  // One pressed state for every toggle, keyed to the ARIA attribute, so a
+  // surface has no reason to invent an `.active` or `.on` of its own.
+  it("draws a pressed toggle from its ARIA state", () => {
+    expect(ui).toMatch(/\.btn\[aria-pressed="true"\][^{]*\{[^}]*background:\s*var\(--accent-light\)/);
+  });
 });

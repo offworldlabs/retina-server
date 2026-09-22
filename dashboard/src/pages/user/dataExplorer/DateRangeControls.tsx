@@ -73,7 +73,7 @@ export function DateRangeControls({ filters, today, onChange }: Props) {
             <button
               key={q.label}
               type="button"
-              className={`de-chip${quickDays === q ? " on" : ""}`}
+              className="btn btn-outline de-chip"
               aria-pressed={quickDays === q}
               onClick={() => set({ from: addDays(today, -(q.days - 1)), to: today })}
             >

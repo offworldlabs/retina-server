@@ -228,7 +228,7 @@ export function NodeMap({ filters, nodes, effective, radiusKm, loading, onChange
         <span className="de-chipset">
           <button
             type="button"
-            className={`de-chip${centred ? "" : " on"}`}
+            className="btn btn-outline de-chip"
             aria-pressed={!centred}
             onClick={() => setMode("fit")}
           >
@@ -236,7 +236,7 @@ export function NodeMap({ filters, nodes, effective, radiusKm, loading, onChange
           </button>
           <button
             type="button"
-            className={`de-chip${centred ? " on" : ""}`}
+            className="btn btn-outline de-chip"
             aria-pressed={centred}
             disabled={!near}
             onClick={() => setMode("centre")}
