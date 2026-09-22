@@ -102,7 +102,7 @@ export default function UserManagementPage() {
               </td>
               <td>
                 <button
-                  className="btn btn-outline btn-sm"
+                  className="btn btn-secondary btn-sm"
                   disabled={changing !== null || pending}
                   onClick={() => toggleRole(user)}
                 >
