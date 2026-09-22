@@ -60,6 +60,7 @@ describe("PhysicsSettings", () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it("falls back to numeric draft defaults when the config payload omits min/max_aircraft and max_range_km (no NaN)", async () => {
@@ -283,6 +284,35 @@ describe("PhysicsSettings", () => {
     await pollOnce();
 
     expect(document.body.textContent).not.toMatch(/changed outside this page/);
+
+    vi.useRealTimers();
+  });
+
+  // ── Polling ───────────────────────────────────────────────────────────
+
+  it("polls each endpoint on its own period, and stops when the page closes", async () => {
+    const fetchMock = installFetchMock();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.useFakeTimers();
+    const { unmount } = renderSettings();
+    const calls = (path: string) =>
+      fetchMock.mock.calls.filter(([url, opts]) => String(url).includes(path) && !opts?.method).length;
+    const counts = () => ({
+      config: calls("/simulation/config"),
+      groundTruth: calls("/simulation/ground-truth"),
+      solverStats: calls("/test/solver-stats"),
+      nodes: calls("/radar/nodes"),
+    });
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(counts()).toEqual({ config: 1, groundTruth: 1, solverStats: 1, nodes: 1 });
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(counts()).toEqual({ config: 2, groundTruth: 6, solverStats: 3, nodes: 2 });
+
+    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(counts()).toEqual({ config: 2, groundTruth: 6, solverStats: 3, nodes: 2 });
 
     vi.useRealTimers();
   });
