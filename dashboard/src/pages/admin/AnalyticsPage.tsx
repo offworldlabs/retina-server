@@ -24,8 +24,7 @@ export default function AnalyticsPage() {
     const [a, o] = await Promise.all([api.analytics(), api.overlaps()]);
     return { analytics: a, overlaps: Array.isArray(o) ? o : o.overlaps || [] };
   }, 10000, "", (snapshot) => {
-    const rawNodes = snapshot.analytics?.nodes || {};
-    const summaries = Array.isArray(rawNodes) ? rawNodes : Object.values(rawNodes);
+    const summaries: any[] = Object.values(snapshot.analytics?.nodes || {});
     const totalDet = summaries.reduce((s, n) => s + detectionCount(n), 0);
     setTrend((prev) => [
       ...prev,
@@ -42,12 +41,9 @@ export default function AnalyticsPage() {
 
   const analytics = data?.analytics;
   const overlaps = data?.overlaps ?? [];
-  const rawNodes = analytics?.nodes || {};
-  const summaries = Array.isArray(rawNodes) ? rawNodes : Object.values(rawNodes);
-  // Node identity is the map key (node_ref); values no longer carry node_id.
-  const nodeEntries: [string, any][] = Array.isArray(rawNodes)
-    ? rawNodes.map((n) => [n.node_ref || "", n])
-    : Object.entries(rawNodes);
+  // Node identity is the map key (node_ref).
+  const nodeEntries: [string, any][] = Object.entries(analytics?.nodes || {});
+  const summaries = nodeEntries.map(([, n]) => n);
 
   // Trust distribution — show top N by trust, sorted descending
   const allTrust = nodeEntries.map(([ref, n]) => ({
