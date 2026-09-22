@@ -92,7 +92,7 @@ export default function UserManagementPage() {
               <td>
                 <span className="badge plain">{user.role}</span>
               </td>
-              <td style={{ fontFamily: "monospace", fontSize: 11, color: "var(--text-muted)" }}>
+              <td className="mono muted">
                 {nodeCount(user.id)}
               </td>
               <td>

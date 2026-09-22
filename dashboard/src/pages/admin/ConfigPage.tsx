@@ -170,11 +170,10 @@ export default function ConfigPage() {
               <textarea
                 value={editText}
                 onChange={(e) => setEditText(e.target.value)}
+                className="mono"
                 style={{
                   width: "100%",
                   minHeight: 400,
-                  fontFamily: "monospace",
-                  fontSize: 12,
                   background: "var(--bg-input)",
                   color: "var(--text-primary)",
                   border: "1px solid var(--border)",
@@ -205,7 +204,7 @@ export default function ConfigPage() {
                   >
                     {pagedNodes.map(([id, n]: [string, any]) => (
                       <tr key={id}>
-                        <td style={{ fontFamily: "monospace", fontSize: 12 }}>{id}</td>
+                        <td className="mono">{id}</td>
                         <td><StatusBadge status={n.status} /></td>
                         <td>{n.rx_lat != null ? n.rx_lat.toFixed(4) : "—"}</td>
                         <td>{n.rx_lon != null ? n.rx_lon.toFixed(4) : "—"}</td>
@@ -226,7 +225,7 @@ export default function ConfigPage() {
                   >
                     {pagedTowers.map(([key, t]: [string, any]) => (
                       <tr key={key}>
-                        <td style={{ fontFamily: "monospace", fontSize: 12 }}>{key}</td>
+                        <td className="mono">{key}</td>
                         <td>{t.lat?.toFixed(4)}</td>
                         <td>{t.lon?.toFixed(4)}</td>
                         <td>{formatMHz(t.frequency)}</td>
@@ -275,7 +274,7 @@ export default function ConfigPage() {
               <tr key={i}>
                 <td style={{ fontSize: 12 }}>{v.timestamp ? new Date(v.timestamp).toLocaleString() : v.file || "—"}</td>
                 <td>{v.type || "config"}</td>
-                <td style={{ fontFamily: "monospace", fontSize: 12 }}>{v.file || v.name || "—"}</td>
+                <td className="mono">{v.file || v.name || "—"}</td>
               </tr>
             ))}
           </DataTable>
