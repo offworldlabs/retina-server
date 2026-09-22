@@ -6,18 +6,24 @@ service, each fetched live from where it is generated. Only the api vhost sends
 `/` to this app; every other vhost serves its SPA there. FastAPI's own
 `/openapi.json`, `/docs` and `/redoc` are switched off in main.py, since they
 publish every route the application mounts.
+
+Above Scalar sits the console's header: the RETINA mark, a light, system and
+dark switch in place of Scalar's own toggle, and a link back to HOST_APP.
 """
 
 import base64
 import hashlib
+import html
 import json
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from core.users import require_admin
 from routes.openapi_documents import public_document
+from services import mail
 
 router = APIRouter(include_in_schema=False)
 
@@ -114,6 +120,34 @@ THEME_CSS = """
 }
 """.strip()
 
+# The console's font stack and radii (dashboard/src/App.css, tokens.css), and
+# room for the header. This page's alone: the admin viewer sits inside the
+# console. The selectors name Scalar's own classes, which
+# test_api_reference.py finds in the vendored bundle.
+SHELL_CSS = r"""
+body {
+  margin: 0;
+  background: var(--scalar-background-1);
+}
+:root {
+  --scalar-custom-header-height: 56px;
+  --scalar-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  --scalar-radius: 4px;
+  --scalar-radius-lg: 8px;
+  --scalar-radius-xl: 8px;
+}
+li.group\/sidebar-section > .group\/button .group\/button-label {
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: var(--scalar-color-3);
+}
+.markdown th:first-child,
+.markdown td:first-child {
+  white-space: nowrap;
+}
+""".strip()
+
 # Scalar's AI chat and "Generate MCP" upload the document to Scalar, and its
 # default fonts come from Scalar's own CDN; the CSP below would refuse all three.
 _SHARED = {
@@ -123,7 +157,7 @@ _SHARED = {
     "withDefaultFonts": False,
     "telemetry": False,
     "theme": "none",
-    "customCss": THEME_CSS,
+    "hideDarkModeToggle": True,
 }
 
 DOCUMENTS = [
@@ -139,7 +173,44 @@ DOCUMENTS = [
     },
 ]
 
-_INIT = f"Scalar.createApiReference('#app', {json.dumps([_SHARED | document for document in DOCUMENTS])});"
+# The class on <body>, which every colour in THEME_CSS keys on, is this
+# script's to set; Scalar reads its own mode only at mount. It runs before
+# Scalar's bundle so the first paint is already in the chosen mode. The
+# documents sit on a line of their own for the tests.
+_INIT = f"""(function () {{
+  var documents = {json.dumps([_SHARED | document for document in DOCUMENTS])};
+  var dark = matchMedia("(prefers-color-scheme: dark)");
+  var buttons = document.querySelectorAll(".retina-theme button");
+  var mode;
+
+  function apply() {{
+    var chosen = null;
+    try {{ chosen = localStorage.getItem("retina.theme"); }} catch (e) {{}}
+    if (chosen !== "light" && chosen !== "dark") chosen = "system";
+    mode = chosen === "system" ? (dark.matches ? "dark" : "light") : chosen;
+    buttons.forEach(function (b) {{ b.setAttribute("aria-pressed", String(b.dataset.theme === chosen)); }});
+    document.body.classList.toggle("dark-mode", mode === "dark");
+    document.body.classList.toggle("light-mode", mode === "light");
+  }}
+
+  buttons.forEach(function (b) {{
+    b.addEventListener("click", function () {{
+      try {{ localStorage.setItem("retina.theme", b.dataset.theme); }} catch (e) {{}}
+      apply();
+    }});
+  }});
+  dark.addEventListener("change", apply);
+  // Scalar sets the class too: light as its bundle loads, and on an OS change
+  // the mode it was mounted in. This puts ours back before the frame paints.
+  new MutationObserver(apply).observe(document.body, {{ attributes: true, attributeFilter: ["class"] }});
+  apply();
+
+  document.addEventListener("DOMContentLoaded", function () {{
+    Scalar.createApiReference("#app", documents.map(function (d) {{
+      return Object.assign({{ forceDarkModeState: mode }}, d);
+    }}));
+  }});
+}})();"""
 
 CSP = "; ".join(
     [
@@ -155,17 +226,145 @@ CSP = "; ".join(
     ]
 )
 
-PAGE = f"""<!doctype html>
+# The console's mark, as a data: URI the policy's img-src admits.
+FAVICON = "data:image/svg+xml," + quote(
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<rect width="32" height="32" rx="8" fill="#3b82f6"/>'
+    '<text x="16" y="21.5" fill="#fff" font-family="-apple-system, Segoe UI, sans-serif" '
+    'font-size="15" font-weight="700" text-anchor="middle">R</text></svg>'
+)
+
+# The console's header (dashboard/src/App.css) in Scalar's variables, which
+# THEME_CSS defines for the mode on <body>.
+_HEADER_CSS = """
+.retina-header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  box-sizing: border-box;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  background: var(--scalar-background-2);
+  border-bottom: 1px solid var(--scalar-border-color);
+  color: var(--scalar-color-1);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.retina-mark {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--scalar-button-1);
+  color: var(--scalar-button-1-color);
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: none;
+}
+.retina-title {
+  flex: 1;
+  font-size: 16px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.retina-theme {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--scalar-background-1);
+  border: 1px solid var(--scalar-border-color);
+  border-radius: 4px;
+}
+.retina-theme button {
+  display: flex;
+  padding: 6px;
+  background: none;
+  border: none;
+  border-radius: 3px;
+  color: var(--scalar-color-2);
+  cursor: pointer;
+}
+.retina-theme button svg {
+  width: 15px;
+  height: 15px;
+}
+.retina-theme button:hover {
+  background: var(--scalar-background-3);
+  color: var(--scalar-color-1);
+}
+.retina-theme button[aria-pressed="true"] {
+  background: var(--scalar-background-accent);
+  color: var(--scalar-color-accent);
+}
+.retina-open {
+  padding: 6px 14px;
+  border-radius: 6px;
+  background: var(--scalar-button-1);
+  color: var(--scalar-button-1-color);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.retina-open:hover {
+  background: var(--scalar-button-1-hover);
+}
+""".strip()
+
+# The console's icons, in its order.
+_THEMES = {
+    "light": '<circle cx="12" cy="12" r="5"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42'
+    'M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>',
+    "system": '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>',
+    "dark": '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>',
+}
+_SWITCH = "".join(
+    f'<button type="button" data-theme="{theme}" aria-pressed="false" title="{theme.title()}" '
+    f'aria-label="{theme.title()}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+    f'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">{icon}</svg></button>'
+    for theme, icon in _THEMES.items()
+)
+
+
+def _page() -> str:
+    # HOST_APP is the environment's console, so staging's page links to staging's.
+    app = mail.link_to("/")
+    if app:
+        href = html.escape(app)
+        mark = f'<a class="retina-mark" href="{href}" aria-label="RETINA">R</a>'
+        open_app = f'<a class="retina-open" href="{href}">Open app</a>'
+    else:
+        mark = '<span class="retina-mark" aria-hidden="true">R</span>'
+        open_app = ""
+    return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RETINA API reference</title>
+<link rel="icon" href="{FAVICON}">
+<style>
+{THEME_CSS}
+{SHELL_CSS}
+{_HEADER_CSS}
+</style>
 </head>
 <body>
+<header class="retina-header">
+{mark}
+<span class="retina-title">API Reference</span>
+<div class="retina-theme" role="group" aria-label="Appearance">{_SWITCH}</div>
+{open_app}
+</header>
 <div id="app"></div>
-<script src="{SCALAR_URL}" integrity="{SCALAR_INTEGRITY}" crossorigin="anonymous"></script>
 <script>{_INIT}</script>
+<script src="{SCALAR_URL}" integrity="{SCALAR_INTEGRITY}" crossorigin="anonymous"></script>
 </body>
 </html>
 """
@@ -181,7 +380,7 @@ def _public(app: FastAPI) -> dict[str, Any]:
 
 @router.get("/")
 async def reference_page() -> HTMLResponse:
-    return HTMLResponse(PAGE, headers={"Content-Security-Policy": CSP})
+    return HTMLResponse(_page(), headers={"Content-Security-Policy": CSP})
 
 
 @router.get("/openapi.json")
