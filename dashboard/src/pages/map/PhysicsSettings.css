@@ -3,6 +3,10 @@
    map chrome tokens in map-surface.css. PhysicsPage renders inside MapSurface,
    which sets `.app.map-surface`, so the var() calls always resolve.
 
+   The page, cards and stat cards are ui.css's. What differs here is written as
+   an `.app.map-surface` rule, which outranks the shared one whatever order the
+   stylesheets load in.
+
    Object-class colours are NOT set here: they come from mapPalette.ts via the
    component, so this legend and the map cannot drift apart. A card receives
    its class as --class-color, a property of its own rather than an override
@@ -36,25 +40,8 @@
   color: var(--error);
 }
 
-/* ── Header ─────────────────────────────────────────────────────
-   dash's page-header proportions: 24px bold title over 14px secondary. */
-.ps-header h2 {
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin: 0 0 4px;
-  letter-spacing: -0.01em;
-}
-
-.ps-subtitle {
-  font-size: 14px;
-  color: var(--text-secondary);
-  margin: 0 0 24px;
-  line-height: 1.55;
-}
-
 /* ── Live count grid ────────────────────────────────────────────
-   dash's stat cards: uppercase micro-label under a large tabular value. The
+   Stat cards stacked under the class's glyph, label beneath the value. The
    rule on top is how each card says which object class it counts. */
 .ps-count-grid {
   display: grid;
@@ -63,41 +50,21 @@
   margin-bottom: 24px;
 }
 
-.ps-count-card {
+.app.map-surface .stat-card.ps-count-card {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
   padding: 16px 10px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
   border-top: 2px solid var(--class-color, var(--accent));
-  border-radius: var(--radius);
-  transition: background 0.15s;
 }
 
-.ps-count-card:hover {
-  background: var(--bg-card-hover);
-}
-
-.ps-count-total {
-  background: var(--bg-card);
-}
-
-.ps-count-num {
-  font-size: 28px;
-  font-weight: 700;
+.app.map-surface .stat-card.ps-count-card .stat-value {
   color: var(--class-color, var(--accent));
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
 }
 
-.ps-count-lbl {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+.app.map-surface .stat-card.ps-count-card .stat-label {
+  margin-bottom: 0;
   text-align: center;
 }
 
@@ -146,16 +113,13 @@
   margin-bottom: 24px;
 }
 
-.ps-type-card {
+.app.map-surface .card.ps-type-card {
   padding: 14px 16px 12px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
   border-left: 3px solid var(--class-color, var(--accent));
-  border-radius: var(--radius);
   transition: background 0.15s;
 }
 
-.ps-type-card:hover {
+.app.map-surface .card.ps-type-card:hover {
   background: var(--bg-card-hover);
 }
 
@@ -351,11 +315,8 @@
   margin-bottom: 24px;
 }
 
-.ps-settings-card {
+.app.map-surface .card.ps-settings-card {
   padding: 14px 16px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
 }
 
 .ps-settings-label {
@@ -578,10 +539,7 @@
 }
 
 /* ── Doppler arc guide ──────────────────────────────────────── */
-.ps-doppler-guide {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+.app.map-surface .card.ps-doppler-guide {
   padding: 16px 18px;
 }
 
@@ -704,42 +662,34 @@
   gap: 10px;
 }
 
-.ps-perf-card {
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  padding: 12px 10px;
+/* Stat cards again, smaller: three to a row inside the sunk section, with the
+   label beneath the value as in the count grid. */
+.app.map-surface .stat-card.ps-perf-card {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 4px;
+  padding: 12px 10px;
+}
+
+.app.map-surface .stat-card.ps-perf-card .stat-value {
+  font-size: 22px;
+}
+
+.app.map-surface .stat-card.ps-perf-card .stat-label {
+  margin-bottom: 0;
+  font-size: 10px;
+  text-align: center;
 }
 
 /* The headline rate is the one figure worth colouring. */
-.ps-perf-rate {
+.app.map-surface .stat-card.ps-perf-rate {
   background: var(--accent-light);
   border-color: var(--accent);
 }
 
-.ps-perf-val {
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--text-primary);
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-}
-
-.ps-perf-rate .ps-perf-val {
+.app.map-surface .stat-card.ps-perf-rate .stat-value {
   color: var(--accent-hover);
-}
-
-.ps-perf-lbl {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-align: center;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 
 .ps-perf-sublbl {
