@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigationType } from "react-router-dom";
 
 import Sidebar from "../components/Sidebar";
@@ -260,5 +260,46 @@ describe("signing in from an open page and changing one's mind", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect(screen.getByLabelText("location")).toHaveTextContent("POP /leaderboard?page=2");
+  });
+});
+
+describe("signing in from an open page and going through with it", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Open `/leaderboard` drawing `chrome`, click `link`, and ask for a sign-in
+   *  link; returns what the request asked the server to mail. */
+  async function requestFrom(chrome: React.ReactNode, link: string) {
+    stubBrowser();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ status: "accepted" }), { status: 202 }))
+    );
+    render(
+      <MemoryRouter initialEntries={["/leaderboard"]}>
+        <ThemeProvider>
+          <Routes>
+            <Route path="/leaderboard" element={chrome} />
+            <Route path="/login" element={<LoginPage />} />
+          </Routes>
+        </ThemeProvider>
+      </MemoryRouter>
+    );
+    fireEvent.click(screen.getByRole("link", { name: link }));
+    fireEvent.change(screen.getByLabelText("Email address"), { target: { value: "ada@example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /sign-in link/i }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    return JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+  }
+
+  it("asks for a link to the greyed-out page that was clicked", async () => {
+    const body = await requestFrom(<Sidebar isAdmin={false} collapsed={false} onToggle={() => {}} />, "My Nodes");
+    expect(body).toEqual({ email: "ada@example.com", next: "/onboarding" });
+  });
+
+  it("asks for a link back to the page the header's Sign in was on", async () => {
+    const body = await requestFrom(<Header title="Leaderboard" />, "Sign in");
+    expect(body).toEqual({ email: "ada@example.com", next: "/leaderboard" });
   });
 });

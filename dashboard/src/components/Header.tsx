@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
 import { useTheme, type ThemePreference } from "../context/ThemeContext";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
 /* Feather's sun, monitor and moon, inlined in the same house style as the
    sidebar's set: 24-unit box, no fill, 2-unit round-capped stroke in
@@ -53,6 +53,7 @@ export default function Header({ title }) {
   const ref = useRef<HTMLDivElement>(null);
   const radios = useRef<(HTMLButtonElement | null)[]>([]);
   const navigate = useNavigate();
+  const { pathname } = useLocation();
 
   useEffect(() => {
     const handler = (e) => {
@@ -148,9 +149,9 @@ export default function Header({ title }) {
           ))}
         </div>
         {/* A caller with no session is on one of the open routes, and the
-            way on from there is in, not out. */}
+            way on from there is in, not out, and back to this page. */}
         {!user ? (
-          <Link className="header-signin" to="/login" state={{ fromOpenPage: true }}>
+          <Link className="header-signin" to="/login" state={{ fromOpenPage: true, next: pathname }}>
             Sign in
           </Link>
         ) : (

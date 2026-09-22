@@ -37,8 +37,16 @@ describe("the API client on a 401", () => {
     });
   });
 
+  // With the page it was on, so signing in again returns there.
   it("sends a caller elsewhere in the app to the login page", async () => {
-    const loc = stubLocation("/nodes");
+    const loc = stubLocation("/nodes/ret-0042");
+    await expect(api.myNodes()).rejects.toBeInstanceOf(UnauthorizedError);
+    expect(loc.href).toBe("/login?next=%2Fnodes%2Fret-0042");
+  });
+
+  // The mailed link opens on the app host, where no admin route exists.
+  it("sends a caller on the admin console there without its page", async () => {
+    const loc = stubLocation("/nodes", "admin.retina.fm");
     await expect(api.myNodes()).rejects.toBeInstanceOf(UnauthorizedError);
     expect(loc.href).toBe("/login");
   });

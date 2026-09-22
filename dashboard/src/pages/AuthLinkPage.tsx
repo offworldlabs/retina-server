@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../api/client";
+import { signInNext } from "../utils/signInNext";
 import LoginPage from "./LoginPage";
 import LoginBack from "../components/LoginBack";
 
@@ -15,6 +16,10 @@ const DEAD_LINK = "That sign-in link is no longer valid";
 export default function AuthLinkPage({ isAdmin = false }) {
   const { token } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  // The page asked for before signing in, which the mailed link carries. None
+  // on the admin console, which the mailed link never opens on.
+  const next = isAdmin ? null : signInNext(searchParams.get("next"));
   const { signIn } = useAuth();
   const [failure, setFailure] = useState(null);
   const [attempt, setAttempt] = useState(0);
@@ -34,7 +39,7 @@ export default function AuthLinkPage({ isAdmin = false }) {
         // told directly; left to discover it, the guard would bounce a valid
         // session back to the login card.
         signIn(user);
-        navigate("/", { replace: true });
+        navigate(next ?? "/", { replace: true });
       } catch (err) {
         // 400 is the server's one answer for unknown, expired and
         // already-redeemed, and it is final. Anything else — a 5xx, a dropped
@@ -51,7 +56,7 @@ export default function AuthLinkPage({ isAdmin = false }) {
         setFailure("transient");
       }
     })();
-  }, [token, signIn, navigate, attempt]);
+  }, [token, signIn, navigate, attempt, next]);
 
   if (failure === "dead") return <LoginPage message={DEAD_LINK} isAdmin={isAdmin} />;
 

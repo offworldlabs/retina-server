@@ -131,3 +131,44 @@ describe("the sign-in link page", () => {
     expect(screen.queryAllByRole("button", { name: "Back to the map" })).toHaveLength(offered);
   });
 });
+
+describe("where the sign-in link ends", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function openLinkTo(search: string, { isAdmin = false } = {}) {
+    vi.stubGlobal("fetch", answer(200, { user: USER }));
+    render(
+      <StrictMode>
+        <MemoryRouter initialEntries={[`/auth/link/tok-123${search}`]}>
+          <Routes>
+            <Route path="/auth/link/:token" element={<AuthLinkPage isAdmin={isAdmin} />} />
+            <Route path="/" element={<div>Dashboard</div>} />
+            <Route path="/onboarding" element={<div>My Nodes page</div>} />
+          </Routes>
+        </MemoryRouter>
+      </StrictMode>
+    );
+  }
+
+  it("opens the page the visitor asked for before signing in", async () => {
+    openLinkTo("?next=/onboarding");
+    expect(await screen.findByText("My Nodes page")).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  // The mailed URL is anyone's to edit, whatever the server put in it.
+  it.each(["?next=//evil.example.com", "?next=https://evil.example.com/", ""])(
+    "opens the console's root for anything else (%s)",
+    async (search) => {
+      openLinkTo(search);
+      expect(await screen.findByText("Dashboard")).toBeInTheDocument();
+    }
+  );
+
+  it("opens the root on the admin console whatever the link carries", async () => {
+    openLinkTo("?next=/onboarding", { isAdmin: true });
+    expect(await screen.findByText("Dashboard")).toBeInTheDocument();
+  });
+});

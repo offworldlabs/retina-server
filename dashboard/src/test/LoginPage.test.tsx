@@ -113,6 +113,54 @@ describe("LoginPage", () => {
   });
 });
 
+describe("the page a sign-in ends on", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", answer(202, { status: "accepted" }));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function requestedBody(entry, { isAdmin = false } = {}) {
+    render(
+      <MemoryRouter initialEntries={[entry]}>
+        <Routes>
+          <Route path="*" element={<LoginPage isAdmin={isAdmin} />} />
+        </Routes>
+      </MemoryRouter>
+    );
+    requestLink("pilot@example.com");
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    return JSON.parse((fetch as ReturnType<typeof vi.fn>).mock.calls[0][1].body);
+  }
+
+  it("asks for a link that opens the page the visitor was sent here from", async () => {
+    const body = await requestedBody({ pathname: "/login", state: { next: "/onboarding" } });
+    expect(body).toEqual({ email: "pilot@example.com", next: "/onboarding" });
+  });
+
+  // A dead mailed link renders this card at its own URL, which carries the page.
+  it("keeps the page a dead link was carrying", async () => {
+    const body = await requestedBody("/auth/link/dead?next=/alerts");
+    expect(body).toEqual({ email: "pilot@example.com", next: "/alerts" });
+  });
+
+  it("asks for nothing it would not open", async () => {
+    const body = await requestedBody({ pathname: "/login", state: { next: "//evil.example.com" } });
+    expect(body).toEqual({ email: "pilot@example.com" });
+  });
+
+  // The mailed link opens on the app host, where no admin route exists.
+  it.each([
+    ["handed over", { pathname: "/login", state: { next: "/nodes" } }],
+    ["in the URL", "/login?next=/nodes"],
+  ])("asks for no page from the admin console (%s)", async (_case, entry) => {
+    const body = await requestedBody(entry, { isAdmin: true });
+    expect(body).toEqual({ email: "pilot@example.com" });
+  });
+});
+
 describe("the way back from the login card", () => {
   beforeEach(() => {
     vi.stubGlobal("fetch", answer(202, { status: "accepted" }));
