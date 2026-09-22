@@ -12,6 +12,7 @@ vi.mock("../api/client", () => ({
 
 const NODE = {
   node_id: "ret1a2b3c4d",
+  node_ref: "nde0123456789",
   name: "Rooftop",
   status: "active",
   last_heartbeat: null,
@@ -22,6 +23,14 @@ const NODE = {
   location_private: false,
   location_privacy_source: "registration",
 };
+
+// The Node ref cell of the row for `nodeId`, found by its header so the
+// assertion follows the column if the table is reordered.
+async function refCell(nodeId: string) {
+  const row = (await screen.findByText(nodeId)).closest("tr")!;
+  const column = screen.getAllByRole("columnheader").findIndex((h) => h.textContent === "Node ref");
+  return row.children[column];
+}
 
 describe("OnboardingPage", () => {
   beforeEach(() => {
@@ -34,6 +43,30 @@ describe("OnboardingPage", () => {
 
     expect(await screen.findByText("ret1a2b3c4d")).toBeInTheDocument();
     expect(screen.getByText("195.00 MHz")).toBeInTheDocument();
+  });
+
+  it("shows each node under its node_ref, not its name", async () => {
+    vi.mocked(api.myNodes).mockResolvedValue([NODE]);
+    render(<OnboardingPage />);
+
+    expect(await screen.findByText("nde0123456789")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Node ref" })).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "Name" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Rooftop")).not.toBeInTheDocument();
+  });
+
+  it("marks a node with no published handle rather than leaving the cell blank", async () => {
+    vi.mocked(api.myNodes).mockResolvedValue([{ ...NODE, node_ref: null }]);
+    render(<OnboardingPage />);
+
+    expect(await refCell("ret1a2b3c4d")).toHaveTextContent(/^—/);
+  });
+
+  it("keeps the location privacy badge beside the node_ref", async () => {
+    vi.mocked(api.myNodes).mockResolvedValue([{ ...NODE, location_private: true }]);
+    render(<OnboardingPage />);
+
+    expect(await refCell("ret1a2b3c4d")).toHaveTextContent("nde0123456789 Private");
   });
 
   it("tells an owner of nothing how a node joins their account", async () => {
