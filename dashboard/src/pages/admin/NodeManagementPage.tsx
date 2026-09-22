@@ -13,7 +13,7 @@ import {
 } from "../../components/LocationPrivacyControl";
 import { RetnodeLink } from "../../components/RetnodeLink";
 import { StatusBadge } from "../../components/StatusBadge";
-import { useNodeIds } from "../../components/useNodeIds";
+import { useNodeIds } from "../../hooks/useNodeIds";
 import { detectionCount, isOnline } from "../../utils/nodes";
 import type { LocationPrivacyState } from "../../types";
 
