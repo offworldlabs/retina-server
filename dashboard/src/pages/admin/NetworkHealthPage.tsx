@@ -190,15 +190,7 @@ export default function NetworkHealthPage() {
             placeholder="Search nodes…"
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(0); }}
-            style={{
-              padding: "4px 10px",
-              borderRadius: 6,
-              border: "1px solid var(--border)",
-              background: "var(--bg-input)",
-              color: "var(--text-primary)",
-              fontSize: 12,
-              width: 180,
-            }}
+            className="input input-sm"
           />
         </div>
         {(() => {
