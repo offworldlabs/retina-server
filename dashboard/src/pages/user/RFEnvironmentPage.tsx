@@ -79,19 +79,11 @@ export default function RFEnvironmentPage() {
       {header}
       <FetchNotice polled={polled} what="RF environment data" />
 
-      <div style={{ marginBottom: 16, display: "flex", alignItems: "center", gap: 12 }}>
+      <div className="toolbar">
         <select
           value={selectedNode}
           onChange={(e) => { setSelectedNode(e.target.value); setSnrHistory([]); }}
-          style={{
-            padding: "8px 12px",
-            borderRadius: "var(--radius-sm)",
-            border: "1px solid var(--border)",
-            fontSize: 13,
-            background: "var(--bg-input)",
-            color: "var(--text-primary)",
-            maxWidth: 300,
-          }}
+          className="input"
         >
           {nodes.map((n) => (
             <option key={n.node_ref} value={n.node_ref}>
