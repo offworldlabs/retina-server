@@ -3,6 +3,7 @@ import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
+import { severityTone } from "../../utils/severity";
 
 export default function AlertsPage() {
   const polled = usePolling(
@@ -14,7 +15,6 @@ export default function AlertsPage() {
   if (loading) return <div className="empty-state">Loading…</div>;
 
   const alerts = data ?? [];
-  const severityClass = { info: "info", warning: "warning", error: "offline", critical: "offline" };
   const warnings = alerts.filter((e) => e.severity === "warning");
   const errors = alerts.filter((e) => e.severity === "error" || e.severity === "critical");
 
@@ -60,7 +60,7 @@ export default function AlertsPage() {
                 {ev.ts ? new Date(ev.ts * 1000).toLocaleString() : "—"}
               </td>
               <td>
-                <span className={`badge ${severityClass[ev.severity] || "info"}`}>
+                <span className={`badge ${severityTone(ev.severity)}`}>
                   {ev.severity}
                 </span>
               </td>
