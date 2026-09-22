@@ -32,17 +32,13 @@ export default function ContributionPage() {
   const overlaps = data?.overlaps ?? [];
   const leaderboard = data?.leaderboard ?? [];
 
-  // analytics.nodes is a dict {node_ref: summary} from the backend; the ref
-  // is the map key, values no longer carry node_id.
-  const rawNodes = analytics?.nodes || {};
-  const summaries = Array.isArray(rawNodes) ? rawNodes : Object.values(rawNodes);
-  const nodeEntries: [string, any][] = Array.isArray(rawNodes)
-    ? rawNodes.map((n) => [n.node_ref || "", n])
-    : Object.entries(rawNodes);
+  // analytics.nodes is a dict {node_ref: summary}; the ref is the map key.
+  const nodeEntries: [string, any][] = Object.entries(analytics?.nodes || {});
+  const summaries = nodeEntries.map(([, n]) => n);
 
   // Build contribution chart — top 20 by detections
   const chartDataAll = nodeEntries.map(([ref, n]) => ({
-    name: shortRef(ref) || n.name || "",
+    name: shortRef(ref),
     detections: detectionCount(n),
     trust: Math.round((n.trust?.trust_score || 0) * 100),
   })).sort((a, b) => b.detections - a.detections);

@@ -65,15 +65,8 @@ export default function NodeManagementPage() {
   const analytics = data?.analytics;
   const contacts = data?.contacts ?? {};
 
-  const rawSummaries = analytics?.nodes || {};
-  // Keyed on node_ref, the same key space `nodes` (built above) uses; summary
-  // values no longer carry node_id to key off instead.
-  const summaryMap = {};
-  if (Array.isArray(rawSummaries)) {
-    rawSummaries.forEach((s) => { summaryMap[s.node_ref] = s; });
-  } else {
-    Object.entries(rawSummaries).forEach(([ref, s]) => { summaryMap[ref] = s; });
-  }
+  // Keyed on node_ref, the same key space `nodes` (built above) uses.
+  const summaryMap = analytics?.nodes || {};
 
   // Either identifier finds a node: an operator arrives holding whichever one
   // their last conversation used.
