@@ -1,6 +1,6 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useAircraftFeed, useAuth } from "./hooks";
+import { useAircraftFeed, useMapAuth } from "./hooks";
 
 vi.mock("../../utils/domains", () => ({ usesRealOnlyFeed: false }));
 
@@ -158,14 +158,14 @@ describe("the map's view of who is signed in", () => {
     // A null ref is an owned node with no registry row, and the map has
     // nothing to match it against.
     stubAuth(ME, ok([{ node_ref: "mine" }, { node_ref: null }]));
-    const { result } = renderHook(() => useAuth());
+    const { result } = renderHook(() => useMapAuth());
     await settle();
     expect(result.current).toEqual({ user: ME, ownedNodeRefs: ["mine"], loading: false });
   });
 
   it("asks nothing about ownership when nobody is signed in", async () => {
     const fetchMock = stubAuth(null);
-    const { result } = renderHook(() => useAuth());
+    const { result } = renderHook(() => useMapAuth());
     await settle();
     expect(result.current).toEqual({ user: null, ownedNodeRefs: [], loading: false });
     expect(fetchMock).not.toHaveBeenCalled();
@@ -176,7 +176,7 @@ describe("the map's view of who is signed in", () => {
     // the owner their panel with an ownership count that is still zero.
     const nodes = deferred<unknown>();
     stubAuth(ME, nodes.promise);
-    const { result } = renderHook(() => useAuth());
+    const { result } = renderHook(() => useMapAuth());
     await settle();
     expect(result.current.loading).toBe(true);
     await act(async () => { nodes.resolve(ok([{ node_ref: "mine" }])); });
@@ -187,7 +187,7 @@ describe("the map's view of who is signed in", () => {
     // Ownership left null reads as unsettled, which holds the owner panel in
     // its loading state for the rest of the session.
     stubAuth(ME, { ok: false, status: 500, json: async () => ({ detail: "boom" }) });
-    const { result } = renderHook(() => useAuth());
+    const { result } = renderHook(() => useMapAuth());
     await settle();
     expect(result.current).toEqual({ user: ME, ownedNodeRefs: [], loading: false });
   });
