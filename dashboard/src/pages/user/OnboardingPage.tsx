@@ -4,6 +4,8 @@ import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { StatCard } from "../../components/StatCard";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
 import { useFetch } from "../../hooks/usePolling";
+import { StatusBadge } from "../../components/StatusBadge";
+import { isOnline } from "../../utils/nodes";
 import type { LocationPrivacySource } from "../../types";
 
 type OwnedNode = {
@@ -54,7 +56,7 @@ export default function OnboardingPage() {
         <StatCard label="Owned Nodes" value={nodes.length} tone="accent" />
         <StatCard
           label="Online Now"
-          value={nodes.filter((n) => n.status && n.status !== "disconnected" && n.status !== "never_connected").length}
+          value={nodes.filter((n) => isOnline(n.status)).length}
         />
       </div>
 
@@ -72,30 +74,25 @@ export default function OnboardingPage() {
               headers={["Node ID", "Node ref", "Status", "Frequency", "Location", "Last heartbeat"]}
               count={nodes.length}
             >
-              {nodes.map((n) => {
-                const online = n.status && n.status !== "disconnected" && n.status !== "never_connected";
-                return (
-                  <tr key={n.node_id}>
-                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{n.node_id}</td>
-                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>
-                      {n.node_ref ?? "—"}{" "}
-                      <LocationPrivacyBadge isPrivate={n.location_private} />
-                    </td>
-                    <td>
-                      <span className={`badge ${online ? "online" : "offline"}`}>
-                        {online ? "Online" : n.status === "never_connected" ? "Never connected" : "Offline"}
-                      </span>
-                    </td>
-                    <td>{n.frequency ? `${(n.frequency / 1e6).toFixed(2)} MHz` : "—"}</td>
-                    <td>
-                      {n.rx_lat != null && n.rx_lon != null
-                        ? `${n.rx_lat.toFixed(3)}, ${n.rx_lon.toFixed(3)}`
-                        : "—"}
-                    </td>
-                    <td>{n.last_heartbeat ? new Date(n.last_heartbeat).toLocaleString() : "—"}</td>
-                  </tr>
-                );
-              })}
+              {nodes.map((n) => (
+                <tr key={n.node_id}>
+                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>{n.node_id}</td>
+                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>
+                    {n.node_ref ?? "—"}{" "}
+                    <LocationPrivacyBadge isPrivate={n.location_private} />
+                  </td>
+                  <td>
+                    <StatusBadge status={n.status} />
+                  </td>
+                  <td>{n.frequency ? `${(n.frequency / 1e6).toFixed(2)} MHz` : "—"}</td>
+                  <td>
+                    {n.rx_lat != null && n.rx_lon != null
+                      ? `${n.rx_lat.toFixed(3)}, ${n.rx_lon.toFixed(3)}`
+                      : "—"}
+                  </td>
+                  <td>{n.last_heartbeat ? new Date(n.last_heartbeat).toLocaleString() : "—"}</td>
+                </tr>
+              ))}
             </DataTable>
           )}
         </div>
