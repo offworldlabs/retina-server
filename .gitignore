@@ -39,6 +39,9 @@ backend/data/users.db-shm
 backend/data/users.db-wal
 .vscode/*
 .claude/*
+# Project skills are shared; everything else under .claude/ (worktrees, local
+# settings) is per-machine.
+!.claude/skills/
 skills-lock.json
 # Whole directory, not just .last-run.json: a failing run also drops
 # error-context.md, traces and screenshots here. Unanchored, because Playwright

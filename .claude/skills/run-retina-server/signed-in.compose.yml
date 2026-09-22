@@ -1,0 +1,19 @@
+# Third overlay on the laptop stack: magic-link sign-in instead of the
+# anonymous admin. See SKILL.md beside this file; up.sh passes it.
+
+services:
+  server:
+    environment:
+      # With the bypass on, every caller is the anonymous admin and a
+      # signed-in session is ignored. Off, admin.localhost answers 401.
+      - AUTH_ALLOW_ANONYMOUS_ADMIN=0
+      # Logged sign-in links print as http:// (still without the :8080).
+      - FORCE_HTTPS=false
+      # Unset, routes/radar.py warns at import on the root logger, which pins
+      # it at WARNING and drops the INFO line that carries a logged link. Set,
+      # it also gates the /api/test, custody and adsb-report writes.
+      - RADAR_API_KEY=local-signed-in
+  fleet:
+    environment:
+      # The fleet sends this as X-API-Key, so it must match the server's.
+      - RADAR_API_KEY=local-signed-in
