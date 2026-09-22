@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../../api/client";
+import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
 import { Pager } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
@@ -12,7 +13,8 @@ export default function CustodyPage() {
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
   const idsByRef = useNodeIds();
-  const { data: custody, loading } = useFetch(() => api.custody());
+  const polled = useFetch(() => api.custody());
+  const { data: custody, loading } = polled;
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
@@ -26,12 +28,25 @@ export default function CustodyPage() {
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
   const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
+  const header = (
+    <div className="page-header">
+      <h1>Chain of Custody</h1>
+      <p>Cryptographic verification and data integrity audit trail</p>
+    </div>
+  );
+  if (nothingLoaded(polled)) {
+    return (
+      <>
+        {header}
+        <FetchNotice polled={polled} what="custody records" />
+      </>
+    );
+  }
+
   return (
     <>
-      <div className="page-header">
-        <h1>Chain of Custody</h1>
-        <p>Cryptographic verification and data integrity audit trail</p>
-      </div>
+      {header}
+      <FetchNotice polled={polled} what="custody records" />
 
       <div className="stats-grid">
         <StatCard label="Registered Nodes" value={custody?.registered_nodes ?? refs.length} tone="accent" />

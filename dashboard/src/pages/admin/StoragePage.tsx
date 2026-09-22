@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { api } from "../../api/client";
 import { DataTable } from "../../components/DataTable";
+import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
 import { formatBytes } from "../../utils/format";
@@ -9,7 +10,8 @@ const PAGE_SIZE = 50;
 
 export default function StoragePage() {
   const [page, setPage] = useState(0);
-  const { data: storage, refresh: rescan } = useFetch(() => api.adminStorage());
+  const storageFetch = useFetch(() => api.adminStorage());
+  const { data: storage, refresh: rescan } = storageFetch;
   // If the background scan hasn't completed yet, ask again in 10 s.
   useEffect(() => {
     if (storage?.status !== "initializing") return;
@@ -17,14 +19,21 @@ export default function StoragePage() {
     return () => clearTimeout(timer);
   }, [storage, rescan]);
   // Keyed on the page, so turning it fetches again and shows the busy row
-  // until the new page lands.
-  const { data: archive, pending: loading } = useFetch(() => api.archive(PAGE_SIZE, page * PAGE_SIZE), page);
+  // until the new page lands. Each answer carries the page it lists: a turn
+  // that fails leaves the previous page's rows in the hook, and they are not
+  // this page's to show.
+  const archiveFetch = useFetch(
+    () => api.archive(PAGE_SIZE, page * PAGE_SIZE).then((listing) => ({ page, listing })),
+    page,
+  );
+  const { pending: loading } = archiveFetch;
+  const archive = archiveFetch.data?.listing;
+  const pageFetch = archiveFetch.data?.page === page ? archiveFetch : { ...archiveFetch, updatedAt: null };
 
   const archives = archive?.files || [];
   const total = archive?.total ?? archive?.count ?? 0;
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const perNode: [string, any][] = Object.entries(storage?.per_node ?? {});
 
   return (
     <>
@@ -33,6 +42,76 @@ export default function StoragePage() {
         <p>Storage usage and data management</p>
       </div>
 
+      <FetchNotice polled={storageFetch} what="storage figures" />
+      {storageFetch.loading ? (
+        <div className="empty-state">Loading…</div>
+      ) : (
+        !nothingLoaded(storageFetch) && <StorageSummary storage={storage} />
+      )}
+
+      <FetchNotice polled={pageFetch} what="the archive listing" />
+      {!nothingLoaded(archiveFetch) && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <div className="card-header">
+            <h3>Recent Archives</h3>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button
+                className="btn btn-secondary"
+                disabled={page === 0 || loading}
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+              >
+                ← Prev
+              </button>
+              <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
+                {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of {total.toLocaleString()}
+              </span>
+              <button
+                className="btn btn-secondary"
+                disabled={page >= totalPages - 1 || loading}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                Next →
+              </button>
+            </div>
+          </div>
+          {/* The pager stays, so a page that failed can be left. */}
+          {!nothingLoaded(pageFetch) && (
+            <DataTable
+              headers={["Filename", "Node", "Size", "Date"]}
+              count={archives.length}
+              empty="No archives"
+              loading={loading}
+            >
+              {archives.map((file, i) => {
+                const key = typeof file === "string" ? file : (file.key || "");
+                const parts = key.split("/");
+                const name = parts[parts.length - 1] || key;
+                const node = parts.length >= 4 ? parts[3] : "—";
+                const size = file.size_bytes != null ? formatBytes(file.size_bytes) : "—";
+                const date = file.modified ? new Date(file.modified).toLocaleString() : "—";
+                return (
+                  <tr key={i}>
+                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{name}</td>
+                    <td style={{ fontFamily: "monospace", fontSize: 12 }}>{node}</td>
+                    <td>{size}</td>
+                    <td style={{ fontSize: 12 }}>{date}</td>
+                  </tr>
+                );
+              })}
+            </DataTable>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** What the storage scan reports: totals, disk, write rate and the per-node
+ *  split. */
+function StorageSummary({ storage }) {
+  const perNode: [string, any][] = Object.entries(storage?.per_node ?? {});
+  return (
+    <>
       <div className="stats-grid">
         <StatCard
           label="Archive Files"
@@ -186,54 +265,6 @@ export default function StoragePage() {
           </DataTable>
         </div>
       )}
-
-      <div className="card" style={{ marginTop: 16 }}>
-        <div className="card-header">
-          <h3>Recent Archives</h3>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <button
-              className="btn btn-secondary"
-              disabled={page === 0 || loading}
-              onClick={() => setPage((p) => Math.max(0, p - 1))}
-            >
-              ← Prev
-            </button>
-            <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
-              {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of {total.toLocaleString()}
-            </span>
-            <button
-              className="btn btn-secondary"
-              disabled={page >= totalPages - 1 || loading}
-              onClick={() => setPage((p) => p + 1)}
-            >
-              Next →
-            </button>
-          </div>
-        </div>
-        <DataTable
-          headers={["Filename", "Node", "Size", "Date"]}
-          count={archives.length}
-          empty="No archives"
-          loading={loading}
-        >
-          {archives.map((file, i) => {
-            const key = typeof file === "string" ? file : (file.key || "");
-            const parts = key.split("/");
-            const name = parts[parts.length - 1] || key;
-            const node = parts.length >= 4 ? parts[3] : "—";
-            const size = file.size_bytes != null ? formatBytes(file.size_bytes) : "—";
-            const date = file.modified ? new Date(file.modified).toLocaleString() : "—";
-            return (
-              <tr key={i}>
-                <td style={{ fontFamily: "monospace", fontSize: 12 }}>{name}</td>
-                <td style={{ fontFamily: "monospace", fontSize: 12 }}>{node}</td>
-                <td>{size}</td>
-                <td style={{ fontSize: 12 }}>{date}</td>
-              </tr>
-            );
-          })}
-        </DataTable>
-      </div>
     </>
   );
 }

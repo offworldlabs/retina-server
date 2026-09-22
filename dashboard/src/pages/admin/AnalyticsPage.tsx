@@ -4,6 +4,7 @@ import {
   PieChart, Pie, Cell, LineChart, Line, Legend,
 } from "recharts";
 import { api } from "../../api/client";
+import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
 import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
@@ -18,7 +19,7 @@ export default function AnalyticsPage() {
   const [trend, setTrend] = useState([]);
   const [overlapPage, setOverlapPage] = useState(0);
 
-  const { data, loading } = usePolling(async () => {
+  const polled = usePolling(async () => {
     const [a, o] = await Promise.all([api.analytics(), api.overlaps()]);
     return { analytics: a, overlaps: Array.isArray(o) ? o : o.overlaps || [] };
   }, 10000, "", (snapshot) => {
@@ -34,6 +35,7 @@ export default function AnalyticsPage() {
       },
     ].slice(-30));
   });
+  const { data, loading } = polled;
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
@@ -73,12 +75,25 @@ export default function AnalyticsPage() {
   const currentOverlapPage = clampPage(overlapPage, overlapPages);
   const pagedOverlaps = overlaps.slice(currentOverlapPage * PAGE_SIZE, (currentOverlapPage + 1) * PAGE_SIZE);
 
+  const header = (
+    <div className="page-header">
+      <h1>Network Analytics</h1>
+      <p>Aggregate performance metrics and analysis</p>
+    </div>
+  );
+  if (nothingLoaded(polled)) {
+    return (
+      <>
+        {header}
+        <FetchNotice polled={polled} what="analytics" />
+      </>
+    );
+  }
+
   return (
     <>
-      <div className="page-header">
-        <h1>Network Analytics</h1>
-        <p>Aggregate performance metrics and analysis</p>
-      </div>
+      {header}
+      <FetchNotice polled={polled} what="analytics" />
 
       <div className="stats-grid">
         <StatCard label="Total Detections" value={totalDetections.toLocaleString()} tone="accent" />

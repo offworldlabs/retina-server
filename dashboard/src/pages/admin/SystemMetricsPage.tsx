@@ -1,5 +1,6 @@
 import { api } from "../../api/client";
 import { DataTable } from "../../components/DataTable";
+import { FetchNotice } from "../../components/Notice";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { fmt } from "../../utils/format";
@@ -33,21 +34,34 @@ function QueueBar({ depth, max, label }: { depth: number; max: number; label: st
 }
 
 export default function SystemMetricsPage() {
-  const { data: m, loading, error } = usePolling(() => api.adminMetrics(), REFRESH_MS);
+  const polled = usePolling(() => api.adminMetrics(), REFRESH_MS);
+  const { data: m, loading } = polled;
 
   if (loading) return <div className="empty-state">Loading…</div>;
-  if (error) return <div className="empty-state" style={{ color: "var(--error)" }}>Error: {error.message}</div>;
-  if (!m) return null;
+
+  const header = (
+    <div className="page-header">
+      <h1>System Metrics</h1>
+      <p>Live operational telemetry — auto-refreshes every 5 s</p>
+    </div>
+  );
+  // Nothing loaded: the first request failed, and the notice says so.
+  if (!m) {
+    return (
+      <>
+        {header}
+        <FetchNotice polled={polled} what="system metrics" />
+      </>
+    );
+  }
 
   const taskNames = Object.keys({ ...m.task_last_success, ...m.task_error_counts });
   const staleSet = new Set<string>(m.stale_tasks ?? []);
 
   return (
     <>
-      <div className="page-header">
-        <h1>System Metrics</h1>
-        <p>Live operational telemetry — auto-refreshes every 5 s</p>
-      </div>
+      {header}
+      <FetchNotice polled={polled} what="system metrics" />
 
       {/* Top stats */}
       <div className="stats-grid">

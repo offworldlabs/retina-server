@@ -3,6 +3,7 @@ import {
 } from "recharts";
 import { api } from "../../api/client";
 import { DataTable } from "../../components/DataTable";
+import { FetchNotice } from "../../components/Notice";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme } from "../../utils/chartTheme";
@@ -90,14 +91,26 @@ function formatDateTime(iso: string) {
 export default function AnomalyPage() {
   const chart = useChartTheme();
   const theme = useResolvedTheme();
-  const { data, loading, error, updatedAt: lastUpdated } = usePolling<AnomalyData>(
-    () => api.anomalies(),
-    10000,
-  );
-  const stale = error !== null;
+  const polled = usePolling<AnomalyData>(() => api.anomalies(), 10000);
+  const { data, loading, updatedAt: lastUpdated } = polled;
 
   if (loading) return <div className="empty-state">Loading…</div>;
-  if (!data) return <div className="empty-state">Failed to load anomaly data</div>;
+
+  const header = (
+    <div className="page-header">
+      <h1>Anomaly Monitor</h1>
+      <p>Real-time anomaly detection metrics and event log</p>
+    </div>
+  );
+  const notice = <FetchNotice polled={polled} what="anomaly data" />;
+  if (!data) {
+    return (
+      <>
+        {header}
+        {notice}
+      </>
+    );
+  }
 
   const { summary, by_type, timeline, geographic_clusters, recent_events } = data;
 
@@ -107,10 +120,8 @@ export default function AnomalyPage() {
 
   return (
     <>
-      <div className="page-header">
-        <h1>Anomaly Monitor</h1>
-        <p>Real-time anomaly detection metrics and event log</p>
-      </div>
+      {header}
+      {notice}
 
       {/* ── Stats Grid ──────────────────────────────────────── */}
       <div className="stats-grid">
@@ -245,7 +256,8 @@ export default function AnomalyPage() {
         <div className="card-header">
           <h3>Recent Anomaly Events</h3>
           <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
-            {stale && <span style={{ color: "var(--warning)", marginRight: 8 }}>⚠ Stale data</span>}
+            {/* The page's notice is a long scroll above this table. */}
+            {polled.error && <span className="badge warning" style={{ marginRight: 8 }}>stale</span>}
             {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : "Auto-refreshes every 10s"}
           </span>
         </div>

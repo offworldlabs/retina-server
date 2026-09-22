@@ -1,13 +1,15 @@
 import { api } from "../../api/client";
+import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 
 export default function AlertsPage() {
-  const { data, loading } = usePolling(
+  const polled = usePolling(
     () => api.alerts().then((d) => (Array.isArray(d) ? d : [])),
     15000,
   );
+  const { data, loading } = polled;
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
@@ -16,12 +18,25 @@ export default function AlertsPage() {
   const warnings = alerts.filter((e) => e.severity === "warning");
   const errors = alerts.filter((e) => e.severity === "error" || e.severity === "critical");
 
+  const header = (
+    <div className="page-header">
+      <h1>Alerts & Notifications</h1>
+      <p>Stay informed about your nodes and network events</p>
+    </div>
+  );
+  if (nothingLoaded(polled)) {
+    return (
+      <>
+        {header}
+        <FetchNotice polled={polled} what="alerts" />
+      </>
+    );
+  }
+
   return (
     <>
-      <div className="page-header">
-        <h1>Alerts & Notifications</h1>
-        <p>Stay informed about your nodes and network events</p>
-      </div>
+      {header}
+      <FetchNotice polled={polled} what="alerts" />
 
       <div className="stats-grid">
         <StatCard label="Total Alerts" value={alerts.length} tone="accent" />

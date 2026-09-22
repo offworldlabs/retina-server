@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../../api/client";
+import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
 import { Pager } from "../../components/Pager";
 import { useFetch } from "../../hooks/usePolling";
@@ -10,18 +11,32 @@ const PAGE_SIZE = 25;
 export default function TunnelLinkPage() {
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
-  const { data, loading } = useFetch(() => api.myNodes().then((n) => (Array.isArray(n) ? n : [])));
+  const polled = useFetch(() => api.myNodes().then((n) => (Array.isArray(n) ? n : [])));
+  const { data, loading } = polled;
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
   const nodes = data ?? [];
 
+  const header = (
+    <div className="page-header">
+      <h1>Tunnel & Local Display</h1>
+      <p>Access your node&apos;s local radar display remotely</p>
+    </div>
+  );
+  if (nothingLoaded(polled)) {
+    return (
+      <>
+        {header}
+        <FetchNotice polled={polled} what="your nodes" />
+      </>
+    );
+  }
+
   return (
     <>
-      <div className="page-header">
-        <h1>Tunnel & Local Display</h1>
-        <p>Access your node&apos;s local radar display remotely</p>
-      </div>
+      {header}
+      <FetchNotice polled={polled} what="your nodes" />
 
       <div className="card" style={{ marginBottom: 16 }}>
         <div className="card-header"><h3>How It Works</h3></div>
