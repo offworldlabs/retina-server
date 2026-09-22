@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
-import { PUBLIC_ROUTES } from "../utils/publicRoutes";
+import { PUBLIC_PATHS } from "../utils/publicRoutes";
 
 const state = vi.hoisted(() => ({
   auth: {
@@ -44,10 +44,8 @@ describe("the map is a page, not a link out", () => {
     expect(map).not.toHaveAttribute("target");
   });
 
-  it("is listed as open, and no longer as another bundle's", () => {
-    const entry = PUBLIC_ROUTES.find((r) => r.path === "/map");
-    expect(entry).toBeDefined();
-    expect(entry).not.toHaveProperty("external");
+  it("is listed as open", () => {
+    expect(PUBLIC_PATHS).toContain("/map");
   });
 
   it("is absent from the admin console", () => {

@@ -362,6 +362,13 @@ a:hover {
   color: var(--accent);
 }
 
+/* An entry that needs a session, shown to a caller without one. It still
+   takes the hover background, since clicking it leads to sign-in. */
+.nav-item.locked,
+.nav-item.locked:hover {
+  color: var(--text-muted);
+}
+
 .nav-item svg {
   width: 18px;
   height: 18px;
