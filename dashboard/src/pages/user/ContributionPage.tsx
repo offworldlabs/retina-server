@@ -9,6 +9,7 @@ import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme } from "../../utils/chartTheme";
+import { detectionCount } from "../../utils/nodes";
 
 const PAGE_SIZE = 25;
 
@@ -42,12 +43,12 @@ export default function ContributionPage() {
   // Build contribution chart — top 20 by detections
   const chartDataAll = nodeEntries.map(([ref, n]) => ({
     name: (ref || n.name || "").slice(-8),
-    detections: n.metrics?.total_detections || n.detection_area?.n_detections || 0,
+    detections: detectionCount(n),
     trust: Math.round((n.trust?.trust_score || 0) * 100),
   })).sort((a, b) => b.detections - a.detections);
   const chartData = chartDataAll.slice(0, 20);
 
-  const totalDetections = summaries.reduce((s, n) => s + (n.metrics?.total_detections || n.detection_area?.n_detections || 0), 0);
+  const totalDetections = summaries.reduce((s, n) => s + detectionCount(n), 0);
   const avgTrust = summaries.length
     ? summaries.reduce((s, n) => s + (n.trust?.trust_score || 0), 0) / summaries.length
     : 0;

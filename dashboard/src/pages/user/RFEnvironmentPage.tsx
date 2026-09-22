@@ -8,6 +8,7 @@ import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme } from "../../utils/chartTheme";
+import { detectionCount } from "../../utils/nodes";
 
 export default function RFEnvironmentPage() {
   const chart = useChartTheme();
@@ -45,6 +46,7 @@ export default function RFEnvironmentPage() {
   const nodes = data?.nodes ?? [];
   const selected = nodes.find((n) => n.node_id === selectedNode) || nodes[0];
   const metrics = selected?._analytics?.metrics || {};
+  const detections = detectionCount(selected?._analytics);
   const freq = selected?.frequency || selected?._analytics?.detection_area?.center_freq;
   const location = selected?.location || {};
 
@@ -104,7 +106,7 @@ export default function RFEnvironmentPage() {
         <StatCard label="Total Frames" value={(metrics.total_frames || 0).toLocaleString()} />
         <StatCard
           label="Detections"
-          value={(metrics.total_detections || 0).toLocaleString()}
+          value={detections.toLocaleString()}
           tone="warning"
         />
       </div>
@@ -160,7 +162,7 @@ export default function RFEnvironmentPage() {
               <tr><td>Frequency</td><td>{freq ? `${(freq / 1e6).toFixed(3)} MHz` : "Not configured"}</td></tr>
               <tr><td>Average SNR</td><td>{(metrics.avg_snr || 0).toFixed(2)} dB</td></tr>
               <tr><td>Total Frames Processed</td><td>{(metrics.total_frames || 0).toLocaleString()}</td></tr>
-              <tr><td>Detection Rate</td><td>{metrics.total_frames ? ((metrics.total_detections / metrics.total_frames) * 100).toFixed(1) + "%" : "—"}</td></tr>
+              <tr><td>Detection Rate</td><td>{metrics.total_frames ? ((detections / metrics.total_frames) * 100).toFixed(1) + "%" : "—"}</td></tr>
               <tr><td>RX Location</td><td>{location.rx_lat != null && location.rx_lon != null ? `${location.rx_lat.toFixed(4)}, ${location.rx_lon.toFixed(4)}` : "—"}</td></tr>
               <tr><td>TX Location</td><td>{location.tx_lat != null && location.tx_lon != null ? `${location.tx_lat.toFixed(4)}, ${location.tx_lon.toFixed(4)}` : "—"}</td></tr>
             </tbody>
