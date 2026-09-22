@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import App from "../App";
-import MapFrontDoor from "../components/MapFrontDoor";
+import Forward from "../components/Forward";
 import { ThemeProvider } from "../context/ThemeContext";
 
 const state = vi.hoisted(() => ({
@@ -44,7 +44,7 @@ function at(entry: string) {
   return render(
     <MemoryRouter initialEntries={[entry]}>
       <Routes>
-        <Route index element={<MapFrontDoor />} />
+        <Route index element={<Forward to="/map" />} />
         <Route path="map" element={<Where />} />
       </Routes>
     </MemoryRouter>,

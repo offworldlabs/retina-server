@@ -5,8 +5,7 @@ import AuthLinkPage from "./pages/AuthLinkPage";
 import ClaimPage from "./pages/ClaimPage";
 import DashboardLayout from "./components/DashboardLayout";
 import RequireAuth from "./components/RequireAuth";
-import MapFrontDoor from "./components/MapFrontDoor";
-import PhysicsRedirect from "./components/PhysicsRedirect";
+import Forward from "./components/Forward";
 import { resolveSurface, warnIfModeIgnored } from "./utils/surface";
 import { useAuth } from "./context/AuthContext";
 
@@ -95,7 +94,8 @@ export default function App() {
                     </>
                   ) : (
                     <>
-                      <Route index element={<MapFrontDoor />} />
+                      {/* The map is the front page, at its own address. */}
+                      <Route index element={<Forward to="/map" />} />
                       <Route path="overview" element={<OverviewPage />} />
                       <Route path="nodes/:nodeId" element={<NodeDetailPage />} />
                       <Route path="map" element={<MapPage />} />
@@ -116,7 +116,9 @@ export default function App() {
                       {syntheticFleet && (
                         <Route path="sim/physics" element={<PhysicsPage />} />
                       )}
-                      <Route path="physics" element={<PhysicsRedirect />} />
+                      {/* The physics page's address from before the simulator
+                          had one of its own; it is in bookmarks and notes. */}
+                      <Route path="physics" element={<Forward to="/sim/physics" />} />
                       {TestRadar && <Route path="test-radar" element={<TestRadar />} />}
                       <Route path="detections" element={<DetectionsPage />} />
                       <Route path="rf" element={<RFEnvironmentPage />} />
