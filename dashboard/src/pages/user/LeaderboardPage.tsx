@@ -109,7 +109,7 @@ export default function LeaderboardPage() {
       )}
 
       {/* Sort control */}
-      <div style={{ marginBottom: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      <div className="toolbar">
         <span className="card-note">Sort by:</span>
         {["detections", "uptime", "trust", "snr", ...(showsMisses ? ["miss_rate"] : [])].map((key) => (
           <button
@@ -125,16 +125,8 @@ export default function LeaderboardPage() {
           placeholder="Search…"
           value={search}
           onChange={(e) => { setSearch(e.target.value); setPage(0); }}
-          style={{
-            marginLeft: "auto",
-            padding: "4px 10px",
-            borderRadius: 6,
-            border: "1px solid var(--border)",
-            background: "var(--bg-input)",
-            color: "var(--text-primary)",
-            fontSize: 12,
-            width: 160,
-          }}
+          className="input input-sm"
+          style={{ marginLeft: "auto" }}
         />
       </div>
 
