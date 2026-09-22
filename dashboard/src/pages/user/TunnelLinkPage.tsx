@@ -5,6 +5,8 @@ import { DataTable } from "../../components/DataTable";
 import { Pager } from "../../components/Pager";
 import { useFetch } from "../../hooks/usePolling";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
+import { StatusBadge } from "../../components/StatusBadge";
+import { isOnline } from "../../utils/nodes";
 
 const PAGE_SIZE = 25;
 
@@ -87,7 +89,7 @@ export default function TunnelLinkPage() {
               >
                 {paged.map((node) => {
                   const id = node.node_id;
-                  const online = node.status !== "disconnected" && node.status != null;
+                  const online = isOnline(node.status);
                   return (
                     <tr key={id}>
                       <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
@@ -95,9 +97,7 @@ export default function TunnelLinkPage() {
                         <LocationPrivacyBadge isPrivate={node.location_private} />
                       </td>
                       <td>
-                        <span className={`badge ${online ? "online" : "offline"}`}>
-                          {online ? "Online" : "Offline"}
-                        </span>
+                        <StatusBadge status={node.status} />
                       </td>
                       <td style={{ fontSize: 12, color: "var(--text-muted)" }}>
                         {online ? "http://[node-ip]:8080" : "—"}
