@@ -18,7 +18,7 @@ export default function EventsPage() {
   if (loading) return <div className="empty-state">Loading…</div>;
 
   const events = data ?? [];
-  const severityClass = { info: "online", warning: "warning", error: "offline", critical: "offline" };
+  const severityClass = { info: "info", warning: "warning", error: "offline", critical: "offline" };
   const totalPages = Math.ceil(events.length / PAGE_SIZE);
   const paged = events.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
@@ -74,7 +74,7 @@ export default function EventsPage() {
                 {ev.ts ? new Date(ev.ts * 1000).toLocaleString() : "—"}
               </td>
               <td>
-                <span className={`badge ${severityClass[ev.severity] || "online"}`}>
+                <span className={`badge ${severityClass[ev.severity] || "info"}`}>
                   {ev.severity}
                 </span>
               </td>
