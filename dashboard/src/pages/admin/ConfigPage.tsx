@@ -1,38 +1,72 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { api } from "../../api/client";
 import { DataTable } from "../../components/DataTable";
+import { FetchNotice, Notice, nothingLoaded } from "../../components/Notice";
 import { Pager } from "../../components/Pager";
+import { useFetch } from "../../hooks/usePolling";
 
 const PAGE_SIZE = 25;
 
+/** Why a save did not land: the editor's text would not parse, so nothing
+ *  was sent, or it was sent and the request failed. */
+type SaveError = { kind: "parse" | "request"; message: string };
+
 export default function ConfigPage() {
-  const [nodeConfig, setNodeConfig] = useState(null);
-  const [towerConfig, setTowerConfig] = useState(null);
+  const configFetch = useFetch(() => Promise.all([api.adminNodeConfig(), api.adminTowerConfig()]));
+  // Its own fetch, so a failure here leaves the configuration on screen and
+  // is reported in the history card rather than read as "no history".
+  const historyFetch = useFetch(() =>
+    api.adminConfigHistory().then((h) => (Array.isArray(h) ? h : h?.versions || [])),
+  );
   const [activeTab, setActiveTab] = useState("nodes");
-  const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [editText, setEditText] = useState("");
   const [saving, setSaving] = useState(false);
-  const [history, setHistory] = useState([]);
+  const [saveError, setSaveError] = useState<SaveError | null>(null);
   const [page, setPage] = useState(0);
   const [search, setSearch] = useState("");
 
-  useEffect(() => {
-    Promise.all([
-      api.adminNodeConfig(),
-      api.adminTowerConfig(),
-      api.adminConfigHistory().catch(() => []),
-    ])
-      .then(([nc, tc, h]) => {
-        setNodeConfig(nc);
-        setTowerConfig(tc);
-        setHistory(Array.isArray(h) ? h : h.versions || []);
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
+  if (configFetch.loading) return <div className="empty-state">Loading…</div>;
 
-  if (loading) return <div className="empty-state">Loading…</div>;
+  const header = (
+    <div className="page-header">
+      <h1>Configuration</h1>
+      <p>View and manage node and tower configurations</p>
+    </div>
+  );
+  if (nothingLoaded(configFetch)) {
+    return (
+      <>
+        {header}
+        <FetchNotice polled={configFetch} what="the configuration" />
+      </>
+    );
+  }
+
+  const [nodeConfig, towerConfig] = configFetch.data ?? [null, null];
+  const history = historyFetch.data ?? [];
+
+  const save = async () => {
+    setSaveError(null);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(editText);
+    } catch (err) {
+      setSaveError({ kind: "parse", message: (err as Error).message });
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.adminUpdateNodeConfig(parsed);
+      setEditing(false);
+      configFetch.refresh();
+      historyFetch.refresh();
+    } catch (err) {
+      setSaveError({ kind: "request", message: (err as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const isLiveNodes = nodeConfig?._source === "live" && nodeConfig?.nodes;
   const isLiveTowers = towerConfig?._source === "live" && towerConfig?.towers;
@@ -57,25 +91,21 @@ export default function ConfigPage() {
 
   const showLiveTable = (activeTab === "nodes" && isLiveNodes && !editing) || (activeTab === "towers" && isLiveTowers && !editing);
 
-  if (loading) return <div className="empty-state">Loading…</div>;
-
   return (
     <>
-      <div className="page-header">
-        <h1>Configuration</h1>
-        <p>View and manage node and tower configurations</p>
-      </div>
+      {header}
+      <FetchNotice polled={configFetch} what="the configuration" />
 
       <div className="tabs">
         <button
           className={`tab ${activeTab === "nodes" ? "active" : ""}`}
-          onClick={() => { setActiveTab("nodes"); setPage(0); setSearch(""); setEditing(false); }}
+          onClick={() => { setActiveTab("nodes"); setPage(0); setSearch(""); setEditing(false); setSaveError(null); }}
         >
           Node Config
         </button>
         <button
           className={`tab ${activeTab === "towers" ? "active" : ""}`}
-          onClick={() => { setActiveTab("towers"); setPage(0); setSearch(""); setEditing(false); }}
+          onClick={() => { setActiveTab("towers"); setPage(0); setSearch(""); setEditing(false); setSaveError(null); }}
         >
           Tower Config
         </button>
@@ -99,26 +129,16 @@ export default function ConfigPage() {
             <div style={{ display: "flex", gap: 8 }}>
               {editing ? (
                 <>
-                  <button
-                    className="btn btn-primary btn-sm"
-                    disabled={saving}
-                    onClick={async () => {
-                      try {
-                        const parsed = JSON.parse(editText);
-                        setSaving(true);
-                        await api.adminUpdateNodeConfig(parsed);
-                        setNodeConfig(parsed);
-                        setEditing(false);
-                      } catch (err) {
-                        alert("Invalid JSON: " + err.message);
-                      } finally {
-                        setSaving(false);
-                      }
-                    }}
-                  >
+                  <button className="btn btn-primary btn-sm" disabled={saving} onClick={save}>
                     {saving ? "Saving…" : "Save"}
                   </button>
-                  <button className="btn btn-secondary btn-sm" onClick={() => setEditing(false)}>
+                  <button
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => {
+                      setEditing(false);
+                      setSaveError(null);
+                    }}
+                  >
                     Cancel
                   </button>
                 </>
@@ -138,22 +158,30 @@ export default function ConfigPage() {
         </div>
         <div className="card-body">
           {editing ? (
-            <textarea
-              value={editText}
-              onChange={(e) => setEditText(e.target.value)}
-              style={{
-                width: "100%",
-                minHeight: 400,
-                fontFamily: "monospace",
-                fontSize: 12,
-                background: "var(--bg-input)",
-                color: "var(--text-primary)",
-                border: "1px solid var(--border)",
-                borderRadius: 6,
-                padding: 12,
-                resize: "vertical",
-              }}
-            />
+            <>
+              {saveError?.kind === "parse" && (
+                <Notice>Not saved: the text is not valid JSON ({saveError.message}).</Notice>
+              )}
+              {saveError?.kind === "request" && (
+                <Notice onRetry={saving ? undefined : save}>Could not save the node config: {saveError.message}</Notice>
+              )}
+              <textarea
+                value={editText}
+                onChange={(e) => setEditText(e.target.value)}
+                style={{
+                  width: "100%",
+                  minHeight: 400,
+                  fontFamily: "monospace",
+                  fontSize: 12,
+                  background: "var(--bg-input)",
+                  color: "var(--text-primary)",
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  padding: 12,
+                  resize: "vertical",
+                }}
+              />
+            </>
           ) : showLiveTable ? (
             <>
               <div style={{ marginBottom: 12 }}>
@@ -171,6 +199,7 @@ export default function ConfigPage() {
                   <DataTable
                     headers={["Node ID", "Status", "RX Lat", "RX Lon", "TX Lat", "TX Lon", "Frequency"]}
                     count={pagedNodes.length}
+                    empty={search ? `No nodes match "${search}"` : "No nodes configured"}
                   >
                     {pagedNodes.map(([id, n]: [string, any]) => (
                       <tr key={id}>
@@ -188,7 +217,11 @@ export default function ConfigPage() {
                 </>
               ) : (
                 <>
-                  <DataTable headers={["Location", "Lat", "Lon", "Frequency", "Nodes Using"]} count={pagedTowers.length}>
+                  <DataTable
+                    headers={["Location", "Lat", "Lon", "Frequency", "Nodes Using"]}
+                    count={pagedTowers.length}
+                    empty={search ? `No towers match "${search}"` : "No towers reported"}
+                  >
                     {pagedTowers.map(([key, t]: [string, any]) => (
                       <tr key={key}>
                         <td style={{ fontFamily: "monospace", fontSize: 12 }}>{key}</td>
@@ -219,7 +252,16 @@ export default function ConfigPage() {
         <div className="card-header">
           <h3>Version History</h3>
         </div>
-        {history.length === 0 ? (
+        {historyFetch.error && (
+          <div className="card-body">
+            <FetchNotice polled={historyFetch} what="the version history" />
+          </div>
+        )}
+        {historyFetch.loading ? (
+          <div className="card-body">
+            <div className="empty-state">Loading…</div>
+          </div>
+        ) : nothingLoaded(historyFetch) ? null : history.length === 0 ? (
           <div className="card-body">
             <div className="empty-state">
               <p>No config changes recorded yet.</p>
