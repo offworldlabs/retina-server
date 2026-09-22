@@ -100,7 +100,7 @@ export default function AnalyticsPage() {
       </div>
 
       {trend.length > 1 && (
-        <div className="card" style={{ marginBottom: 24 }}>
+        <div className="card">
           <div className="card-header">
             <h3>Detection Trend</h3>
             <span className="card-note">

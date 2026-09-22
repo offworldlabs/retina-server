@@ -41,7 +41,7 @@ export default function TunnelLinkPage() {
       {header}
       <FetchNotice polled={polled} what="your nodes" />
 
-      <div className="card" style={{ marginBottom: 16 }}>
+      <div className="card">
         <div className="card-header"><h3>How It Works</h3></div>
         <div className="card-body">
           <p style={{ color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.8 }}>
@@ -123,10 +123,10 @@ export default function TunnelLinkPage() {
         })()}
       </div>
 
-      <div className="card" style={{ marginTop: 16 }}>
+      <div className="card">
         <div className="card-header"><h3>Coming Soon</h3></div>
         <div className="card-body">
-          <ul style={{ color: "var(--text-secondary)", fontSize: 13, paddingLeft: 20, lineHeight: 2 }}>
+          <ul style={{ color: "var(--text-secondary)", fontSize: 13, lineHeight: 2 }}>
             <li>One-click tunnel activation for each node</li>
             <li>Public share link generation (view-only)</li>
             <li>Embedded iframe preview in this dashboard</li>

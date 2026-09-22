@@ -69,7 +69,7 @@ function Spark({ series, colour, theme }: { series: Point[]; colour: string; the
 function Series({ label, series, colour, theme }: { label: string; series: Point[]; colour: string; theme: ChartTheme }) {
   return (
     <>
-      <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", margin: "8px 0 2px" }}>{label}</div>
+      <div className="reading-label" style={{ marginTop: 8 }}>{label}</div>
       <Spark series={series} colour={colour} theme={theme} />
     </>
   );
@@ -80,14 +80,14 @@ function CheckCard({ check }: { check: Check }) {
     <div className="card">
       <div className="card-header">
         <h3>{check.name}</h3>
-        <span style={{ display: "flex", gap: 6 }}>
+        <span className="card-aside">
           {/* A disabled check reports nothing, so its status is stale rather than good. */}
           {!check.enabled && <span className="badge warning">disabled</span>}
           <span className={`badge ${badgeClass(check.status)}`}>{check.status}</span>
         </span>
       </div>
-      <div style={{ padding: "0 20px 16px", fontSize: 13 }}>
-        <div style={{ color: "var(--text-muted)", marginBottom: 8, wordBreak: "break-all" }}>{check.target}</div>
+      <div className="card-body" style={{ fontSize: 13 }}>
+        <div className="muted" style={{ marginBottom: 8, wordBreak: "break-all" }}>{check.target}</div>
         <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
           <span>30-day uptime</span>
           <span style={{ fontWeight: 600 }}>{formatPercent(check.uptime_30d, 2)}</span>
@@ -117,7 +117,7 @@ function DropletCard({ droplet, colour, theme }: { droplet: Droplet; colour: str
     <div className="card">
       <div className="card-header">
         <h3>{droplet.name}</h3>
-        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span className="card-aside">
           <span className="card-note">
             {droplet.vcpus} vCPU · {Math.round(droplet.memory_mb / 1024)} GB · {droplet.disk_gb} GB disk
           </span>
@@ -125,7 +125,7 @@ function DropletCard({ droplet, colour, theme }: { droplet: Droplet; colour: str
           <span className={`badge ${droplet.status === "active" ? "online" : "offline"}`}>{droplet.status}</span>
         </span>
       </div>
-      <div style={{ padding: "0 20px 16px" }}>
+      <div className="card-body">
         <UsageBar label="CPU" value={formatPercent(droplet.cpu_pct)} pct={droplet.cpu_pct} />
         <UsageBar label="Memory" value={formatPercent(droplet.memory_pct)} pct={droplet.memory_pct} />
         <UsageBar label="Disk" value={formatPercent(droplet.disk_pct)} pct={droplet.disk_pct} />
@@ -198,11 +198,11 @@ export default function InfrastructurePage() {
             />
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16, marginBottom: 16 }}>
+          <div className="card-grid">
             {snap.checks.map((c) => <CheckCard key={c.id} check={c} />)}
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 16, marginBottom: 16 }}>
+          <div className="card-grid">
             {snap.droplets.map((d, i) => (
               <DropletCard key={d.id} droplet={d} colour={seriesColour(theme, i)} theme={theme} />
             ))}
@@ -211,9 +211,11 @@ export default function InfrastructurePage() {
           {snap.errors.length > 0 && (
             <div className="card">
               <div className="card-header"><h3>Degraded</h3></div>
-              <ul style={{ padding: "0 20px 16px 36px", fontSize: 13, color: "var(--text-muted)" }}>
-                {snap.errors.map((e) => <li key={e}>{e}</li>)}
-              </ul>
+              <div className="card-body muted" style={{ fontSize: 13 }}>
+                <ul>
+                  {snap.errors.map((e) => <li key={e}>{e}</li>)}
+                </ul>
+              </div>
             </div>
           )}
         </>
