@@ -101,7 +101,7 @@ export default function TunnelLinkPage() {
                         <span className="badge warning">Not Yet Available</span>
                       </td>
                       <td>
-                        <button className="btn btn-outline btn-sm" disabled title="Coming soon">
+                        <button className="btn btn-secondary btn-sm" disabled title="Coming soon">
                           Enable Tunnel
                         </button>
                       </td>
