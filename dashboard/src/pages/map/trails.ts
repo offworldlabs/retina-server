@@ -1,4 +1,4 @@
-import { distanceKm } from "./distance";
+import { distanceKm } from "../../utils/geo";
 
 export const MAX_TRAIL_POINTS = 400;
 
