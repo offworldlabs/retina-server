@@ -523,6 +523,12 @@ tr:hover td {
   background: var(--bg-card-hover);
 }
 
+/* A headerless table of labels against readings, which DataTable does not
+   fit: the label column is muted, as a header would be. */
+.kv-table td:first-child {
+  color: var(--text-muted);
+}
+
 /* The one row a listing shows when it has none: busy, or empty. */
 td.table-note {
   text-align: center;
