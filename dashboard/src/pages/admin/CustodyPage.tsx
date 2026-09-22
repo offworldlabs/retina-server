@@ -5,7 +5,7 @@ import { DataTable } from "../../components/DataTable";
 import { Pager } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
-import { useNodeIds } from "../../components/useNodeIds";
+import { useNodeIds } from "../../hooks/useNodeIds";
 
 const PAGE_SIZE = 25;
 

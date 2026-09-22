@@ -1,5 +1,5 @@
 import { api } from "../api/client";
-import { useFetch } from "../hooks/usePolling";
+import { useFetch } from "./usePolling";
 
 /** `{node_ref: node_id}` for the fleet, or `null` until the answer is in.
  *
