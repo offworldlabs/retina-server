@@ -72,6 +72,7 @@ import { IconScaleSync, iconZoomScale, useIconZoomScale } from "./iconScale";
 import ScaledCircleMarker from "./ScaledCircleMarker";
 
 import { api } from "../../api/client";
+import { usePolling } from "../../hooks/usePolling";
 import { defaultFeedMode, type FeedMode } from "./feedMode";
 import { withCartoKey } from "./utils/basemap";
 import { TILES } from "./utils/tiles";
@@ -1900,39 +1901,20 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
     : null;
 
   // Per-solve history for the selected MLAT track (debug): fetched once per
-  // selection, then polled every MLAT_HISTORY_REFRESH_MS.  Tagged with the hex
-  // it was fetched for so a selection change never shows the previous track's
-  // solves while the new fetch is in flight.
+  // selection, then polled every MLAT_HISTORY_REFRESH_MS; no selection, no
+  // request. Read through the hex it was fetched for so a selection change
+  // never shows the previous track's solves while the new fetch is in flight.
+  // A failed load leaves the previous history on screen.
   const selectedMnHex =
     selectedAc?.position_source === "multinode_solve" ? selectedAc.hex : null;
   const selectedMnSeen = selectedMnHex ? selectedAc?.seen ?? null : null;
-  const [mlatHistory, setMlatHistory] = useState(null);
-  // The poll's loader, published for the `seen` watcher below to call. A ref
-  // rather than a dependency so a refetch never restarts the interval.
-  const reloadMlatHistoryRef = useRef(null);
-  useEffect(() => {
-    if (!selectedMnHex) {
-      setMlatHistory(null);
-      return;
-    }
-    let cancelled = false;
-    const load = () => {
-      api.mlatHistory(selectedMnHex)
-        .then((d) => {
-          if (!cancelled && d && d.hex === selectedMnHex) setMlatHistory(d);
-        })
-        // A failed load leaves the previous history on screen; the next tick asks again.
-        .catch(() => {});
-    };
-    reloadMlatHistoryRef.current = load;
-    load();
-    const interval = setInterval(load, MLAT_HISTORY_REFRESH_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-      reloadMlatHistoryRef.current = null;
-    };
-  }, [selectedMnHex]);
+  const { data: polledMlatHistory, refresh: reloadMlatHistory } = usePolling(
+    () => (selectedMnHex ? api.mlatHistory(selectedMnHex) : Promise.resolve(null)),
+    selectedMnHex ? MLAT_HISTORY_REFRESH_MS : 0,
+    selectedMnHex ?? "",
+  );
+  const mlatHistory =
+    selectedMnHex && polledMlatHistory?.hex === selectedMnHex ? polledMlatHistory : null;
 
   // A fall in `seen` is the feed announcing a fresh solve for this track — the
   // one event worth a fetch off the poll's schedule (see newSolveArrived).
@@ -1943,8 +1925,8 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
     const prev = prevMnSeenRef.current;
     const next = { hex: selectedMnHex, seen: selectedMnSeen };
     prevMnSeenRef.current = next;
-    if (newSolveArrived(prev, next)) reloadMlatHistoryRef.current?.();
-  }, [selectedMnHex, selectedMnSeen]);
+    if (newSolveArrived(prev, next)) reloadMlatHistory();
+  }, [selectedMnHex, selectedMnSeen, reloadMlatHistory]);
 
   // Nodes with a live detection of the selected simulated object — read from
   // the detection-presence oracle (per-aircraft signals ∪ the detecting_nodes
