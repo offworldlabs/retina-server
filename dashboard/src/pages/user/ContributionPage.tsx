@@ -9,7 +9,7 @@ import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme } from "../../utils/chartTheme";
-import { detectionCount } from "../../utils/nodes";
+import { detectionCount, shortRef } from "../../utils/nodes";
 
 const PAGE_SIZE = 25;
 
@@ -42,7 +42,7 @@ export default function ContributionPage() {
 
   // Build contribution chart — top 20 by detections
   const chartDataAll = nodeEntries.map(([ref, n]) => ({
-    name: (ref || n.name || "").slice(-8),
+    name: shortRef(ref) || n.name || "",
     detections: detectionCount(n),
     trust: Math.round((n.trust?.trust_score || 0) * 100),
   })).sort((a, b) => b.detections - a.detections);
@@ -119,8 +119,8 @@ export default function ContributionPage() {
                 <DataTable headers={["Node A", "Node B", "Jaccard Index", "Shared Bins"]} count={paged.length}>
                   {paged.map((o, i) => (
                     <tr key={current * PAGE_SIZE + i}>
-                      <td style={{ fontFamily: "monospace" }}>{(o.node_a || "").slice(-8)}</td>
-                      <td style={{ fontFamily: "monospace" }}>{(o.node_b || "").slice(-8)}</td>
+                      <td style={{ fontFamily: "monospace" }}>{shortRef(o.node_a)}</td>
+                      <td style={{ fontFamily: "monospace" }}>{shortRef(o.node_b)}</td>
                       <td>{(o.jaccard || o.overlap || 0).toFixed(3)}</td>
                       <td>{o.shared_bins || o.shared || "—"}</td>
                     </tr>
@@ -142,7 +142,7 @@ export default function ContributionPage() {
             {leaderboard.slice(0, 10).map((entry, i) => (
               <tr key={entry.node_ref || i}>
                 <td style={{ fontWeight: 600, color: i < 3 ? "var(--accent)" : "var(--text-muted)" }}>{i + 1}</td>
-                <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(entry.node_ref || "").slice(-12)}</td>
+                <td style={{ fontFamily: "monospace", fontSize: 12 }}>{shortRef(entry.node_ref)}</td>
                 <td>{(entry.detections || 0).toLocaleString()}</td>
                 <td>{((entry.trust || 0) * 100).toFixed(0)}%</td>
               </tr>

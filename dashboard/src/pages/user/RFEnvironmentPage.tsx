@@ -9,7 +9,7 @@ import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme } from "../../utils/chartTheme";
 import { formatMHz } from "../../utils/format";
-import { detectionCount } from "../../utils/nodes";
+import { detectionCount, shortRef } from "../../utils/nodes";
 
 export default function RFEnvironmentPage() {
   const chart = useChartTheme();
@@ -22,12 +22,13 @@ export default function RFEnvironmentPage() {
     const [n, a] = await Promise.all([api.nodes(), api.analytics()]);
     const nodeMap = n.nodes || {};
     const analyticsMap = a?.nodes || {};
-    const nodeList = Object.entries(nodeMap).map(([id, info]: [string, any]) => ({
-      node_id: id,
+    // Both are keyed on node_ref, the only identity these public feeds carry.
+    const nodeList = Object.entries(nodeMap).map(([ref, info]: [string, any]) => ({
       ...info,
-      _analytics: analyticsMap[id] || {},
+      node_ref: ref,
+      _analytics: analyticsMap[ref] || {},
     }));
-    const sel = selectedNode || (nodeList[0]?.node_id);
+    const sel = selectedNode || (nodeList[0]?.node_ref);
     const snr = analyticsMap[sel]?.metrics?.avg_snr || 0;
     return {
       nodes: nodeList,
@@ -37,7 +38,7 @@ export default function RFEnvironmentPage() {
       } : null,
     };
   }, 5000, selectedNode, (snapshot) => {
-    if (!selectedNode && snapshot.nodes.length > 0) setSelectedNode(snapshot.nodes[0].node_id);
+    if (!selectedNode && snapshot.nodes.length > 0) setSelectedNode(snapshot.nodes[0].node_ref);
     if (snapshot.sample) setSnrHistory((prev) => [...prev.slice(-30), snapshot.sample]);
   });
   const { data, loading } = polled;
@@ -45,7 +46,7 @@ export default function RFEnvironmentPage() {
   if (loading) return <div className="empty-state">Loading…</div>;
 
   const nodes = data?.nodes ?? [];
-  const selected = nodes.find((n) => n.node_id === selectedNode) || nodes[0];
+  const selected = nodes.find((n) => n.node_ref === selectedNode) || nodes[0];
   const metrics = selected?._analytics?.metrics || {};
   const detections = detectionCount(selected?._analytics);
   const freq = selected?.frequency || selected?._analytics?.detection_area?.center_freq;
@@ -53,7 +54,7 @@ export default function RFEnvironmentPage() {
 
   // Build frequency utilization chart from top 20 nodes by SNR
   const freqData = nodes.map((n) => ({
-    name: (n.name || n.node_id || "").slice(-10),
+    name: n.name || shortRef(n.node_ref),
     frequency: (n.frequency || n._analytics?.detection_area?.center_freq || 0) / 1e6,
     snr: n._analytics?.metrics?.avg_snr || 0,
   })).sort((a, b) => b.snr - a.snr).slice(0, 20);
@@ -93,8 +94,8 @@ export default function RFEnvironmentPage() {
           }}
         >
           {nodes.map((n) => (
-            <option key={n.node_id} value={n.node_id}>
-              {(n.name || n.node_id || "").slice(-16)}
+            <option key={n.node_ref} value={n.node_ref}>
+              {n.name || shortRef(n.node_ref)}
             </option>
           ))}
         </select>
@@ -159,7 +160,7 @@ export default function RFEnvironmentPage() {
         <div className="card-body">
           <table className="kv-table">
             <tbody>
-              <tr><td>Node ID</td><td style={{ fontFamily: "monospace" }}>{selected?.node_id}</td></tr>
+              <tr><td>Node ref</td><td style={{ fontFamily: "monospace" }}>{selected?.node_ref}</td></tr>
               <tr><td>Frequency</td><td>{formatMHz(freq)}</td></tr>
               <tr><td>Average SNR</td><td>{(metrics.avg_snr || 0).toFixed(2)} dB</td></tr>
               <tr><td>Total Frames Processed</td><td>{(metrics.total_frames || 0).toLocaleString()}</td></tr>

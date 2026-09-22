@@ -8,8 +8,16 @@ import { StatusBadge } from "../../components/StatusBadge";
 import { usePolling } from "../../hooks/usePolling";
 import { useAuth } from "../../context/AuthContext";
 import { formatUptime } from "../../utils/format";
+import { shortRef } from "../../utils/nodes";
 
 const PAGE_SIZE = 25;
+
+/** What a row calls itself. The route falls back to the whole ref when a node
+ *  carries no name of its own, and a ref reads as its short form everywhere
+ *  else in the console. */
+function rowName(entry: { name?: string | null; node_ref: string }): string {
+  return entry.name && entry.name !== entry.node_ref ? entry.name : shortRef(entry.node_ref);
+}
 
 export default function LeaderboardPage() {
   const [sortBy, setSortBy] = useState("detections");
@@ -90,7 +98,7 @@ export default function LeaderboardPage() {
                   #{i + 1}
                 </div>
                 <div style={{ fontSize: 12, fontFamily: "monospace", color: "var(--accent)", marginBottom: 4 }}>
-                  {(entry.name || entry.node_ref).slice(-12)}
+                  {rowName(entry)}
                 </div>
                 <div style={{ fontSize: 20, fontWeight: 700 }}>{entry.detections.toLocaleString()}</div>
                 <div style={{ fontSize: 11, color: "var(--text-muted)" }}>detections</div>
@@ -161,7 +169,7 @@ export default function LeaderboardPage() {
                   <tr key={entry.node_ref}>
                     <td style={{ fontWeight: 600, color: "var(--text-primary)" }}>{offset + i + 1}</td>
                     <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
-                      {(entry.name || entry.node_ref).slice(-12)}
+                      {rowName(entry)}
                     </td>
                     <td>
                       <StatusBadge online={entry.online} />
