@@ -399,40 +399,18 @@
   position: relative;
 }
 
-.connection-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 10px;
-  border-radius: 12px;
+/* The shared badge in its online and warning tones, set in the micro-label's
+   caps, since it reads LIVE, PAUSED or POLL rather than a sentence. */
+.app.map-surface .badge.connection-badge {
   font-weight: 600;
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
-.connection-badge::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-.connection-badge.connected {
-  background: var(--success-light);
-  color: var(--success);
-}
-
-/* Only the live dot pulses. The old rule pulsed the whole badge, which made
-   the text itself flicker. */
-.connection-badge.connected::before {
+/* Only the live dot pulses, never the text. */
+.app.map-surface .badge.connection-badge.online::before {
   animation: pulse-live 2s infinite;
-}
-
-.connection-badge.disconnected {
-  background: var(--warning-light);
-  color: var(--warning);
 }
 
 @keyframes pulse-live {
