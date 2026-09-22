@@ -1,7 +1,7 @@
 import { altitudeLegend } from "./icons";
 import { truthLegend } from "./truthColor";
 import { usePalette } from "./useMapTheme";
-import { usePersistedState } from "./usePersistedState";
+import { useMapPreference } from "./useMapPreference";
 
 const NO_TRUTH_CLASSES: ReadonlySet<string> = new Set();
 
@@ -16,7 +16,7 @@ const NO_TRUTH_CLASSES: ReadonlySet<string> = new Set();
 export default function MapLegend({ colorByAlt, showGroundTruth, truthClasses = NO_TRUTH_CLASSES, showIlluminators, hasPlayback }) {
   const palette = usePalette();
   const { ILLUMINATOR, LANE_MN_ADSB, LANE_MN_DARK, LANE_SOLVER_SEED, NODE } = palette;
-  const [open, setOpen] = usePersistedState("tf.legendOpen", true);
+  const [open, setOpen] = useMapPreference("legendOpen", true);
 
   return (
     <div className={`map-legend${hasPlayback ? " with-playback" : ""}`}>
