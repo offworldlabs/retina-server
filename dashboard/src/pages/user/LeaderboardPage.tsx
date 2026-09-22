@@ -4,6 +4,7 @@ import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
 import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
+import { StatusBadge } from "../../components/StatusBadge";
 import { usePolling } from "../../hooks/usePolling";
 import { useAuth } from "../../context/AuthContext";
 import { formatUptime } from "../../utils/format";
@@ -163,9 +164,7 @@ export default function LeaderboardPage() {
                       {(entry.name || entry.node_ref).slice(-12)}
                     </td>
                     <td>
-                      <span className={`badge ${entry.online ? "online" : "offline"}`}>
-                        {entry.online ? "Online" : "Offline"}
-                      </span>
+                      <StatusBadge online={entry.online} />
                     </td>
                     <td>{entry.detections.toLocaleString()}</td>
                     <td>{entry.tracks}</td>

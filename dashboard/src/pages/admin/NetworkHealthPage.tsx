@@ -12,7 +12,9 @@ import { usePolling } from "../../hooks/usePolling";
 import { formatRelativeTime, formatUptime } from "../../utils/format";
 import { useChartTheme } from "../../utils/chartTheme";
 import { RetnodeLink } from "../../components/RetnodeLink";
+import { StatusBadge } from "../../components/StatusBadge";
 import { useNodeIds } from "../../components/useNodeIds";
+import { detectionCount, isOnline, statusLabel } from "../../utils/nodes";
 
 const PAGE_SIZE = 25;
 
@@ -63,7 +65,7 @@ export default function NetworkHealthPage() {
   const dashNodes = dashboard?.nodes || {}; // {total, active, synthetic, real}
   const tracks = dashboard?.pipeline || {};
   const coc = dashboard?.chain_of_custody || {};
-  const onlineNodes = nodes.filter((n) => n.status !== "disconnected" && n.status !== undefined);
+  const onlineNodes = nodes.filter((n) => isOnline(n.status));
 
   const header = (
     <div className="page-header">
@@ -148,7 +150,7 @@ export default function NetworkHealthPage() {
                 />
                 {geoNodes.map((node) => {
                   const ref = node.node_ref;
-                  const online = node.status !== "disconnected" && node.status != null;
+                  const online = isOnline(node.status);
                   return (
                     <CircleMarker
                       key={ref}
@@ -166,7 +168,7 @@ export default function NetworkHealthPage() {
                         <strong>{node.name || ref}</strong><br />
                         Ref: {ref}<br />
                         Node ID: {idsByRef?.[ref] ?? "—"}<br />
-                        Status: {online ? "Online" : "Offline"}<br />
+                        Status: {statusLabel(node.status)}<br />
                         {node.frequency ? `Freq: ${(node.frequency / 1e6).toFixed(1)} MHz` : ""}
                       </Popup>
                     </CircleMarker>
@@ -222,7 +224,6 @@ export default function NetworkHealthPage() {
                   // The node's own site is named after the private id, so
                   // the ref is the label and the id is the destination.
                   const nodeId = idsByRef?.[ref] ?? null;
-                  const online = node.status !== "disconnected" && node.status != null;
                   return (
                     <tr key={ref}>
                       <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
@@ -234,14 +235,12 @@ export default function NetworkHealthPage() {
                         {nodeId ?? "—"}
                       </td>
                       <td>
-                        <span className={`badge ${online ? "online" : "offline"}`}>
-                          {online ? "Online" : "Offline"}
-                        </span>
+                        <StatusBadge status={node.status} />
                       </td>
                       <td style={{ fontSize: 12, color: "var(--text-muted)" }}>
                         {formatRelativeTime(node.last_heartbeat)}
                       </td>
-                      <td>{(node._analytics?.metrics?.total_detections || node._analytics?.detection_area?.n_detections || 0).toLocaleString()}</td>
+                      <td>{detectionCount(node._analytics).toLocaleString()}</td>
                       <td>{(node._analytics?.metrics?.avg_snr || 0).toFixed(1)} dB</td>
                       <td>{((node._analytics?.trust?.trust_score || 0) * 100).toFixed(0)}%</td>
                       <td>{((node._analytics?.reputation?.reputation || 0) * 100).toFixed(0)}%</td>

@@ -10,6 +10,7 @@ import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
 import { formatUptime } from "../../utils/format";
 import { useChartTheme } from "../../utils/chartTheme";
+import { detectionCount } from "../../utils/nodes";
 import { RetnodeLink } from "../../components/RetnodeLink";
 import { POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
 import {
@@ -172,7 +173,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
         <StatCard label="Total Frames" value={(metrics.total_frames || 0).toLocaleString()} tone="accent" />
         <StatCard
           label="Total Detections"
-          value={(metrics.total_detections || 0).toLocaleString()}
+          value={detectionCount(data).toLocaleString()}
           tone="success"
         />
         <StatCard label="Total Tracks" value={metrics.total_tracks || 0} />

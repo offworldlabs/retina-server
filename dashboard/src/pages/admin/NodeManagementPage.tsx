@@ -12,7 +12,9 @@ import {
   LocationPrivacyControl,
 } from "../../components/LocationPrivacyControl";
 import { RetnodeLink } from "../../components/RetnodeLink";
+import { StatusBadge } from "../../components/StatusBadge";
 import { useNodeIds } from "../../components/useNodeIds";
+import { detectionCount, isOnline } from "../../utils/nodes";
 import type { LocationPrivacyState } from "../../types";
 
 const PAGE_SIZE = 25;
@@ -81,6 +83,7 @@ export default function NodeManagementPage() {
   const filtered = search ? nodes.filter(matches) : nodes;
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
   const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const onlineCount = nodes.filter((n) => isOnline(n.status)).length;
 
   const header = (
     <div className="page-header">
@@ -106,12 +109,12 @@ export default function NodeManagementPage() {
         <StatCard label="Total Nodes" value={nodes.length} tone="accent" />
         <StatCard
           label="Online"
-          value={nodes.filter((n) => n.status !== "disconnected" && n.status != null).length}
+          value={onlineCount}
           tone="success"
         />
         <StatCard
           label="Offline"
-          value={nodes.filter((n) => n.status === "disconnected" || n.status == null).length}
+          value={nodes.length - onlineCount}
           tone="error"
         />
       </div>
@@ -137,7 +140,6 @@ export default function NodeManagementPage() {
           // its privacy override are all named after it; nothing here may fall
           // back to the ref, which names none of them.
           const nodeId = idsByRef?.[ref] ?? null;
-          const online = node.status !== "disconnected" && node.status != null;
           const summary = summaryMap[ref] || {};
           const contact = nodeId ? contacts[nodeId] : undefined;
           const contactText = contactLabel(contact);
@@ -150,9 +152,7 @@ export default function NodeManagementPage() {
             // per-node analytics route behind it is.
             <div className="node-card" key={ref} onClick={() => navigate(`/nodes/${ref}`)}>
               <div className="node-name">
-                <span className={`badge ${online ? "online" : "offline"}`}>
-                  {online ? "Online" : "Offline"}
-                </span>
+                <StatusBadge status={node.status} />
                 <PositionStatusBadge status={node.position_status} />
                 <RetnodeLink nodeId={nodeId} synthetic={node.is_synthetic}>
                   {node.name || ref}
@@ -166,7 +166,7 @@ export default function NodeManagementPage() {
                 <span className="meta-label">Frequency</span>
                 <span>{node.frequency ? `${(node.frequency / 1e6).toFixed(2)} MHz` : "—"}</span>
                 <span className="meta-label">Detections</span>
-                <span>{(summary.metrics?.total_detections || summary.detection_area?.n_detections || 0).toLocaleString()}</span>
+                <span>{detectionCount(summary).toLocaleString()}</span>
                 <span className="meta-label">Frames</span>
                 <span>{(summary.metrics?.total_frames || 0).toLocaleString()}</span>
                 <span className="meta-label">Trust</span>

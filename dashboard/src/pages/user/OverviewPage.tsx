@@ -11,6 +11,8 @@ import { formatRelativeTime, formatUptime } from "../../utils/format";
 import { useChartTheme } from "../../utils/chartTheme";
 import { PositionStatusBadge, POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
+import { StatusBadge } from "../../components/StatusBadge";
+import { detectionCount, isOnline } from "../../utils/nodes";
 
 export default function OverviewPage() {
   const chart = useChartTheme();
@@ -43,7 +45,7 @@ export default function OverviewPage() {
   const nodeList = data?.nodes ?? [];
   const myNodes = data?.myNodes ?? [];
   const aircraftCount = data?.aircraftCount ?? 0;
-  const onlineCount = nodeList.filter((n) => n.status !== "disconnected" && n.status != null).length;
+  const onlineCount = nodeList.filter((n) => isOnline(n.status)).length;
   // Merged with the owner's own nodes, because /api/radar/nodes drops private
   // ones: a private node with no position would otherwise appear nowhere its
   // owner looks, and this list is the only place they are told.
@@ -67,16 +69,12 @@ export default function OverviewPage() {
   const privateByKey = new Map<string, boolean>(
     myNodes.map((n) => [keyOf(n), !!n.location_private]),
   );
-  // detection_area.n_detections is the most reliably populated counter
-  const totalFrameDetections = nodeList.reduce(
-    (s, n) => s + (n._analytics?.metrics?.total_detections || n._analytics?.detection_area?.n_detections || 0),
-    0,
-  );
+  const totalFrameDetections = nodeList.reduce((s, n) => s + detectionCount(n._analytics), 0);
 
   // Build a simple detection-over-index chart from node data
   const chartData = nodeList.map((n, i) => ({
     name: n.name || n.node_ref || `Node ${i + 1}`,
-    detections: n._analytics?.metrics?.total_detections || n._analytics?.detection_area?.n_detections || 0,
+    detections: detectionCount(n._analytics),
     tracks: n._analytics?.metrics?.total_tracks || 0,
   }));
 
@@ -180,7 +178,6 @@ export default function OverviewPage() {
             // place its owner is told about it — but it is not a link to a 404.
             const ref = node.node_ref;
             const id = keyOf(node);
-            const online = node.status !== "disconnected" && node.status != null;
             return (
               <div
                 className="node-card"
@@ -189,15 +186,13 @@ export default function OverviewPage() {
                 onClick={ref ? () => navigate(`/nodes/${ref}`) : undefined}
               >
                 <div className="node-name">
-                  <span className={`badge ${online ? "online" : "offline"}`}>
-                    {online ? "Online" : "Offline"}
-                  </span>
+                  <StatusBadge status={node.status} />
                   <LocationPrivacyBadge isPrivate={privateByKey.get(id)} />
                   {node.name || id}
                 </div>
                 <div className="node-meta">
                   <span className="meta-label">Detections</span>
-                  <span>{(node._analytics?.metrics?.total_detections || node._analytics?.detection_area?.n_detections || 0).toLocaleString()}</span>
+                  <span>{detectionCount(node._analytics).toLocaleString()}</span>
                   <span className="meta-label">Tracks</span>
                   <span>{node._analytics?.metrics?.total_tracks || 0}</span>
                   <span className="meta-label">Uptime</span>
