@@ -70,6 +70,19 @@ class TestRequestMagicLink:
         assert to == "owner@example.com"
         assert "/auth/link/" in body
 
+    def test_the_mail_reads_as_written(self, client, sent):
+        client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
+        _, subject, body = sent[0]
+        token = body.split("/auth/link/")[1].split()[0]
+        assert subject == "Sign in to RETINA"
+        assert body == (
+            "A request has been made to sign in to RETINA with this email address.\n\n"
+            "Click this link to log in:\n"
+            f"https://app.retina.fm/auth/link/{token}\n\n"
+            "The link works once and expires in 15 minutes.\n\n"
+            "If this wasn't you, you may safely ignore this email."
+        )
+
     def test_the_mailed_link_carries_the_token_and_nothing_else_does(self, client, sent):
         client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
         _, _, body = sent[0]
