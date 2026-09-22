@@ -374,52 +374,6 @@
   cursor: not-allowed;
 }
 
-.ps-count-inputs {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 6px;
-}
-
-.ps-count-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  align-items: center;
-}
-
-.ps-count-field-lbl {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.ps-count-sep {
-  color: var(--text-muted);
-  font-size: 1rem;
-  padding-top: 1rem;
-}
-
-.ps-number-input {
-  width: 72px;
-  background: var(--bg-input);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-primary);
-  padding: 6px 8px;
-  font: inherit;
-  font-size: 14px;
-  text-align: center;
-  transition: border-color 0.15s;
-}
-
-.ps-number-input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
 /* ── Apply ───────────────────────────────────────────────────
    Flat solid accent, as dash's primary button is. The old gradient-and-lift
    treatment belongs to the marketing surfaces, not a console. */
