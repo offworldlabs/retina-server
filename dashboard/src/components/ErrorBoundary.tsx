@@ -25,15 +25,19 @@ export default class ErrorBoundary extends Component<Props, State> {
   render() {
     if (this.state.hasError) {
       return (
-        <div style={{ padding: "2rem", textAlign: "center", color: "var(--text-muted)" }}>
+        <div className="empty-state error-fallback" role="alert">
           <h2>Something went wrong</h2>
           <p>Please refresh the page. If the problem persists, contact support.</p>
-          <button
-            onClick={() => this.setState({ hasError: false })}
-            style={{ marginTop: "1rem", padding: "0.5rem 1rem", cursor: "pointer" }}
-          >
-            Try again
-          </button>
+          <div className="error-fallback-actions">
+            <button type="button" className="btn btn-primary" onClick={() => this.setState({ hasError: false })}>
+              Try again
+            </button>
+            {/* A lazy page whose chunk failed to load throws the same error on
+                every retry, until the document itself is reloaded. */}
+            <button type="button" className="btn btn-outline" onClick={() => window.location.reload()}>
+              Reload page
+            </button>
+          </div>
         </div>
       );
     }
