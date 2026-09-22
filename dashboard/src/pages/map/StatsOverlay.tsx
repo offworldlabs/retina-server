@@ -90,7 +90,7 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
   }, [aircraft, truth]);
 
   return (
-    <div className={`stats-panel${visible ? "" : " collapsed"}`} role="region" aria-label="Live stats">
+    <div className={`card stats-panel${visible ? "" : " collapsed"}`} role="region" aria-label="Live stats">
       <button
         className="stats-panel-header"
         onClick={onToggle}
