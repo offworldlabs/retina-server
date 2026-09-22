@@ -10,6 +10,7 @@ import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme, seriesColour } from "../../utils/chartTheme";
+import { detectionCount } from "../../utils/nodes";
 
 const TOP_N_CHART = 15;
 const PAGE_SIZE = 25;
@@ -25,7 +26,7 @@ export default function AnalyticsPage() {
   }, 10000, "", (snapshot) => {
     const rawNodes = snapshot.analytics?.nodes || {};
     const summaries = Array.isArray(rawNodes) ? rawNodes : Object.values(rawNodes);
-    const totalDet = summaries.reduce((s, n) => s + (n.metrics?.total_detections || n.detection_area?.n_detections || 0), 0);
+    const totalDet = summaries.reduce((s, n) => s + detectionCount(n), 0);
     setTrend((prev) => [
       ...prev,
       {
@@ -59,7 +60,7 @@ export default function AnalyticsPage() {
   // Detection share — top 10 + "Others" bucket
   const allDetections = nodeEntries.map(([ref, n]) => ({
     name: (ref || "").slice(-8),
-    value: n.metrics?.total_detections || n.detection_area?.n_detections || 0,
+    value: detectionCount(n),
   })).sort((a, b) => b.value - a.value);
   const topDet = allDetections.slice(0, 10);
   const othersValue = allDetections.slice(10).reduce((s, d) => s + d.value, 0);
@@ -68,7 +69,7 @@ export default function AnalyticsPage() {
     ...(othersValue > 0 ? [{ name: `Others (${allDetections.length - 10})`, value: othersValue, fill: chart.others }] : []),
   ];
 
-  const totalDetections = summaries.reduce((s, n) => s + (n.metrics?.total_detections || n.detection_area?.n_detections || 0), 0);
+  const totalDetections = summaries.reduce((s, n) => s + detectionCount(n), 0);
   const totalFrames = summaries.reduce((s, n) => s + (n.metrics?.total_frames || 0), 0);
 
   const overlapPages = Math.ceil(overlaps.length / PAGE_SIZE);

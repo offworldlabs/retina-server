@@ -19,6 +19,7 @@ import {
   claimModeLabel,
 } from "./physics/solverReport";
 import { request } from "@retina/shared";
+import { isOnline } from "../../utils/nodes";
 
 const API = "/api";
 
@@ -386,7 +387,7 @@ export default function PhysicsSettings() {
       if (abortRef.current?.signal.aborted) return;
       const entries = Object.entries(data.nodes || {});
       const connectedSynthetic = entries.filter(
-        ([, n]: any) => n.is_synthetic && n.status !== "disconnected",
+        ([, n]: any) => n.is_synthetic && isOnline(n.status),
       );
       const dualSites = Math.floor(
         connectedSynthetic.filter(([id]) => /-DUAL-\d{4}[ab]$/.test(id)).length / 2,
