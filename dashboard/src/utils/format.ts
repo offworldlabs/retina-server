@@ -23,14 +23,36 @@ export function formatUptime(seconds: number | null | undefined): string {
   return `${h}h ${m}m`;
 }
 
-/** How long ago an ISO timestamp was, in the coarsest unit that is not zero. */
-export function formatRelativeTime(iso: string | null | undefined): string {
-  if (!iso) return DASH;
-  const diffS = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
-  if (diffS < 5) return "just now";
-  if (diffS < 60) return `${diffS}s ago`;
-  if (diffS < 3600) return `${Math.floor(diffS / 60)}m ago`;
-  return `${Math.floor(diffS / 3600)}h ago`;
+/** How long ago a moment was, in the coarsest unit that is not zero. Takes an
+ *  ISO timestamp or epoch seconds, the two forms the backend sends; one that
+ *  does not parse is as missing as an absent one. */
+export function formatRelativeTime(at: string | number | null | undefined): string {
+  if (!at) return DASH;
+  const ms = typeof at === "number" ? at * 1000 : Date.parse(at);
+  if (Number.isNaN(ms)) return DASH;
+  const s = Math.round((Date.now() - ms) / 1000);
+  if (s < 5) return "just now";
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+/** A span of seconds: whole seconds under a minute, whole minutes under an
+ *  hour, tenths of an hour past that. */
+export function formatDuration(seconds: number | null | undefined): string {
+  if (seconds === undefined || seconds === null || Number.isNaN(seconds)) return DASH;
+  const s = Math.round(seconds);
+  if (s < 60) return `${s}s`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m`;
+  return `${(s / 3600).toFixed(1)}h`;
+}
+
+/** A percentage to fixed decimals, or a dash for a missing one. */
+export function formatPercent(n: number | null | undefined, decimals = 1): string {
+  const value = fmt(n, decimals);
+  return value === DASH ? DASH : `${value}%`;
 }
 
 /** A byte count in B, KB, MB or GB. A day of archive across the fleet passes

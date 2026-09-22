@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { fmt, formatBytes, formatRelativeTime, formatUptime } from "../utils/format";
+import {
+  fmt,
+  formatBytes,
+  formatDuration,
+  formatPercent,
+  formatRelativeTime,
+  formatUptime,
+} from "../utils/format";
 
 describe("fmt", () => {
   it("rounds to two decimals by default", () => {
@@ -56,8 +63,13 @@ describe("formatRelativeTime", () => {
 
   const secondsAgo = (s: number) => new Date(now.getTime() - s * 1000).toISOString();
 
-  it.each([undefined, null, ""])("renders %s as a dash", (v) => {
+  it.each([undefined, null, "", 0])("renders %s as a dash", (v) => {
     expect(formatRelativeTime(v)).toBe("—");
+  });
+
+  // Rather than as "NaNh ago".
+  it("renders a timestamp that does not parse as a dash", () => {
+    expect(formatRelativeTime("not-a-date")).toBe("—");
   });
 
   it("calls anything under five seconds just now", () => {
@@ -65,13 +77,52 @@ describe("formatRelativeTime", () => {
     expect(formatRelativeTime(secondsAgo(4))).toBe("just now");
   });
 
-  it("counts seconds, then minutes, then hours", () => {
+  it("counts seconds, then minutes, then hours, then days", () => {
     expect(formatRelativeTime(secondsAgo(5))).toBe("5s ago");
     expect(formatRelativeTime(secondsAgo(59))).toBe("59s ago");
     expect(formatRelativeTime(secondsAgo(60))).toBe("1m ago");
     expect(formatRelativeTime(secondsAgo(59 * 60 + 59))).toBe("59m ago");
     expect(formatRelativeTime(secondsAgo(3600))).toBe("1h ago");
-    expect(formatRelativeTime(secondsAgo(3 * 86400))).toBe("72h ago");
+    expect(formatRelativeTime(secondsAgo(86400 - 1))).toBe("23h ago");
+    expect(formatRelativeTime(secondsAgo(86400))).toBe("1d ago");
+    expect(formatRelativeTime(secondsAgo(3 * 86400))).toBe("3d ago");
+  });
+
+  it("reads a number as epoch seconds", () => {
+    expect(formatRelativeTime(now.getTime() / 1000 - 90)).toBe("1m ago");
+  });
+});
+
+describe("formatDuration", () => {
+  it.each([undefined, null, NaN])("renders %s as a dash", (v) => {
+    expect(formatDuration(v)).toBe("—");
+  });
+
+  it("counts whole seconds, then whole minutes, then tenths of an hour", () => {
+    expect(formatDuration(0)).toBe("0s");
+    expect(formatDuration(45)).toBe("45s");
+    expect(formatDuration(120)).toBe("2m");
+    expect(formatDuration(5400)).toBe("1.5h");
+  });
+
+  // Rounding up to the hour must not print "60m".
+  it("moves to hours rather than showing sixty minutes", () => {
+    expect(formatDuration(3590)).toBe("1.0h");
+  });
+});
+
+describe("formatPercent", () => {
+  it("rounds to one decimal by default", () => {
+    expect(formatPercent(31.24)).toBe("31.2%");
+    expect(formatPercent(0)).toBe("0.0%");
+  });
+
+  it("takes an explicit number of decimals", () => {
+    expect(formatPercent(99.974, 2)).toBe("99.97%");
+  });
+
+  it.each([undefined, null, NaN])("renders %s as a dash, with no percent sign", (v) => {
+    expect(formatPercent(v)).toBe("—");
   });
 });
 
