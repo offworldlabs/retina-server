@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { Routes, Route } from "react-router-dom";
+import { Navigate, Routes, Route } from "react-router-dom";
 import LoginPage from "./pages/LoginPage";
 import AuthLinkPage from "./pages/AuthLinkPage";
 import ClaimPage from "./pages/ClaimPage";
@@ -16,7 +16,6 @@ const NodeDetailPage = lazy(() => import("./pages/user/NodeDetailPage"));
 const DetectionsPage = lazy(() => import("./pages/user/DetectionsPage"));
 const ContributionPage = lazy(() => import("./pages/user/ContributionPage"));
 const DataExplorerPage = lazy(() => import("./pages/user/DataExplorerPage"));
-const SettingsPage = lazy(() => import("./pages/user/SettingsPage"));
 const RFEnvironmentPage = lazy(() => import("./pages/user/RFEnvironmentPage"));
 const AlertsPage = lazy(() => import("./pages/user/AlertsPage"));
 const LeaderboardPage = lazy(() => import("./pages/user/LeaderboardPage"));
@@ -129,7 +128,9 @@ export default function App() {
                       <Route path="knowledge" element={<KnowledgeBasePage />} />
                       <Route path="tunnel" element={<TunnelLinkPage />} />
                       <Route path="onboarding" element={<OnboardingPage />} />
-                      <Route path="settings" element={<SettingsPage />} />
+                      {/* The old Settings page's address. My Nodes holds what it
+                          listed, and reads no query or hash to carry across. */}
+                      <Route path="settings" element={<Navigate to="/onboarding" replace />} />
                     </>
                   )}
                 </Routes>

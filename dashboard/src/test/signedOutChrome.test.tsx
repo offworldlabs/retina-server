@@ -118,7 +118,7 @@ describe("the sidebar shown to a caller with no session", () => {
 
   // Nothing on screen leads to a wall: an entry that only answers to a session
   // is a link whose whole behaviour is to bounce the caller to a login card.
-  it.each(["Overview", "Detections", "My Nodes", "Settings", "Alerts"])(
+  it.each(["Overview", "Detections", "My Nodes", "Alerts"])(
     "withholds %s",
     (label) => {
       renderSidebar();
@@ -129,7 +129,7 @@ describe("the sidebar shown to a caller with no session", () => {
   it("offers the whole dashboard once there is a session", () => {
     state.auth = { ...state.auth, user: signedIn };
     renderSidebar();
-    expect(screen.getByText("Settings")).toBeInTheDocument();
+    expect(screen.getByText("My Nodes")).toBeInTheDocument();
     expect(screen.getByText("Leaderboard")).toBeInTheDocument();
   });
 });
