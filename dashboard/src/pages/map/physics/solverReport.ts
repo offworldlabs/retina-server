@@ -5,6 +5,8 @@
  * GET /api/test/solver-stats payloads into render-ready shapes.
  */
 
+import { DASH, fmt } from "../../../utils/format";
+
 export interface SolverStats {
   window_minutes: number;
   /** How much of window_minutes the backend's solve-history stores actually
@@ -101,14 +103,19 @@ export interface SolverStats {
   };
 }
 
-/** "0.42 km" / "—" for null (no published solves inside the error gate). */
-export function formatKm(v: number | null | undefined): string {
-  return v != null ? `${v.toFixed(2)} km` : "—";
+/** The unit goes with a number, never with the dash that stands in for one. */
+function withUnit(n: string, unit: string): string {
+  return n === DASH ? DASH : `${n}${unit}`;
 }
 
-/** "91.7%" / "—" for null. */
+/** "0.42 km", or a dash for null (no published solves inside the error gate). */
+export function formatKm(v: number | null | undefined): string {
+  return withUnit(fmt(v, 2), " km");
+}
+
+/** "91.7%", or a dash for null. */
 export function formatPct(v: number | null | undefined, digits = 1): string {
-  return v != null ? `${v.toFixed(digits)}%` : "—";
+  return withUnit(fmt(v, digits), "%");
 }
 
 export interface FunnelSegment {
