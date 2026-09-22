@@ -116,6 +116,7 @@ export default function AnalyticsPage() {
                   <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
                   <Tooltip
                     contentStyle={chart.tooltip}
+                    cursor={chart.cursor}
                   />
                   <Line type="monotone" dataKey="detections" stroke={chart.series[0]} strokeWidth={2} dot={false} name="Detections" />
                 </LineChart>
@@ -141,6 +142,7 @@ export default function AnalyticsPage() {
                   <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} domain={[0, 100]} />
                   <Tooltip
                     contentStyle={chart.tooltip}
+                    cursor={chart.cursor}
                   />
                   <Legend />
                   <Bar dataKey="trust" fill={chart.series[0]} name="Trust %" radius={[4, 4, 0, 0]} />
@@ -176,6 +178,7 @@ export default function AnalyticsPage() {
                   </Pie>
                   <Tooltip
                     contentStyle={chart.tooltip}
+                    cursor={chart.cursor}
                     formatter={(value, name) => [value.toLocaleString(), name]}
                   />
                   <Legend
