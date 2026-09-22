@@ -5,6 +5,7 @@ import { classifyHex } from "./hexInfo";
 import { usePalette } from "./useMapTheme";
 import { truthClass, truthFill } from "./truthColor";
 import { distanceKm } from "../../utils/geo";
+import { DASH } from "../../utils/format";
 import { M_PER_FT } from "./units";
 
 // Fixed row height must match .al-row CSS (height: 40px, box-sizing: border-box).
@@ -204,8 +205,8 @@ export default function AircraftListPanel({
                     ? `FL${Math.round(ac.alt_baro / 100)}`
                     : ac.alt_m != null
                       ? `FL${Math.round(ac.alt_m / M_PER_FT / 100)}`
-                      : "—";
-                  const spd = ac.gs != null ? `${Math.round(ac.gs)}kt` : "—";
+                      : DASH;
+                  const spd = ac.gs != null ? `${Math.round(ac.gs)}kt` : DASH;
                   const hdg = ac.track != null ? `${Math.round(ac.track)}°` : "";
                   const isSelected = ac.hex === selectedHex;
                   const sourceLabel = !isSolved
