@@ -5,6 +5,7 @@ import { DataTable } from "../../components/DataTable";
 import { Pager } from "../../components/Pager";
 import { useFetch } from "../../hooks/usePolling";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
+import { RetnodeLink } from "../../components/RetnodeLink";
 import { StatusBadge } from "../../components/StatusBadge";
 import { isOnline } from "../../utils/nodes";
 
@@ -93,7 +94,9 @@ export default function TunnelLinkPage() {
                   return (
                     <tr key={id}>
                       <td style={{ fontFamily: "monospace", fontSize: 12, color: "var(--accent)" }}>
-                        {node.name || id}{" "}
+                        <RetnodeLink nodeId={id} synthetic={node.is_synthetic}>
+                          {node.name || id}
+                        </RetnodeLink>{" "}
                         <LocationPrivacyBadge isPrivate={node.location_private} />
                       </td>
                       <td>
