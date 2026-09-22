@@ -63,6 +63,9 @@ services:
       # The only host-naming part of the CSP. wss://*.retina.fm already covers
       # both environments, so only the two explicit origins vary.
       - CSP_CONNECT_SRC=https://api.retina.fm https://admin.retina.fm wss://*.retina.fm
+      # A registered stock-blah2 radar must be polled by one server only, and
+      # this is it. Staging and test are fed polled data by mirroring instead.
+      - POLLED_RADAR_POLLING_ENABLED=1
     deploy:
       resources:
         limits:

@@ -40,7 +40,9 @@ All of them are one SPA, the console (`dashboard/`), served at the root; the old
 ## Data flow
 
 ```
-receiver nodes ──TCP frames──▶ tcp_handler ──▶ frame_queue
+legacy TCP nodes ──▶ tcp_handler ──┐
+v1 nodes (POST) ───▶ node_stream ──┼─────────▶ frame_queue
+stock blah2 ◀─GET── blah2_poller ──┘
                                                    │
                                           frame_processor (N workers)
                                                    │
