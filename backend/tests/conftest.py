@@ -110,7 +110,16 @@ def _clean_db():
     """
     from sqlalchemy import delete
 
-    from core.nodes import Node, NodeClaim, NodeClaimChallenge, NodeConfig, NodeLocationPrivacy, NodeToken
+    from core.nodes import (
+        Node,
+        NodeClaim,
+        NodeClaimChallenge,
+        NodeConfig,
+        NodeLocationPrivacy,
+        NodeToken,
+        PolledRadar,
+        PolledRadarEndpointHistory,
+    )
     from core.users import (
         MagicLink,
         User,
@@ -130,10 +139,13 @@ def _clean_db():
             # No foreign key to nodes, by design (core/nodes.py), so its order
             # here is free — it sits with the other keyed-by-node-id tables.
             await session.execute(delete(NodeLocationPrivacy))
-            # Children before parent: node_configs, node_tokens, node_claims and
-            # node_claim_challenges all carry a foreign key to nodes, and
+            # Children before parent: polled_radars, node_configs, node_tokens,
+            # node_claims and node_claim_challenges all carry a foreign key to
+            # nodes (and polled_radar_endpoint_history one to polled_radars), and
             # PRAGMA foreign_keys=ON (core/users.py) enforces it on every
             # connection.
+            await session.execute(delete(PolledRadarEndpointHistory))
+            await session.execute(delete(PolledRadar))
             await session.execute(delete(NodeConfig))
             await session.execute(delete(NodeToken))
             await session.execute(delete(NodeClaimChallenge))
@@ -189,6 +201,7 @@ def _reset_module_state():
         known_claiming,
         node_bias,
         node_refs,
+        probation,
         publication,
         tcp_handler,
         track_gates,
@@ -210,6 +223,7 @@ def _reset_module_state():
         dark_follow,
         node_bias,
         node_refs,
+        probation,
         publication,
         infrastructure,
         periodic,

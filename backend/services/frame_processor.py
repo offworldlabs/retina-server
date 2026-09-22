@@ -23,6 +23,7 @@ from config.constants import (
 )
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
+from services import probation
 from services.geo import (
     valid_latlon,
 )
@@ -466,6 +467,10 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     state.node_analytics.record_detection_frame(node_id, frame)
     _d_analytics = time.thread_time() - _t1
 
+    # A node on probation feeds its own analytics and tracker and nothing else:
+    # no claiming, association, solver input, shared ADS-B cache or archive.
+    _probation = probation.in_probation(node_id)
+
     # The node's own tracker runs first now.  Association used to see the raw
     # detection frame, which at n=2 is untestable — two nodes give 4
     # measurements against 6 unknowns, so a cross pairing between two real
@@ -487,7 +492,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # stage — it claims what the ADS-B paths leave, so it cannot run without
     # them, which is why it is gated on KNOWN_LANE_MODE too.
     _pframe = frame
-    if state.KNOWN_LANE_MODE != "off" and frame.get("delay"):
+    if not _probation and state.KNOWN_LANE_MODE != "off" and frame.get("delay"):
         # Fail open: the known lane is an overlay on the dark lane, and in
         # shadow mode especially it must be unable to cost a frame.  Before
         # this guard, one ADS-B record with alt_baro="ground" threw here and
@@ -572,6 +577,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             (v["track_id"] for v in _track_views),
             list(pipeline.geolocated_tracks.keys()),
         )
+    if pipeline is not None and not _probation:
         round_ = state.node_associator.submit_tracks_round(
             node_id,
             _track_views,
@@ -593,6 +599,10 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             node_cfgs = get_node_configs(set().union(*(_solver_input_node_ids(s) for s in solver_inputs)))
             for s_in in solver_inputs:
                 if s_in["n_nodes"] < 2:
+                    continue
+                # A node sent back to probation can leave tracks in the
+                # associator that another node's round still pairs with.
+                if any(probation.in_probation(nid) for nid in _solver_input_node_ids(s_in)):
                     continue
                 try:
                     state.solver_queue.put_nowait((s_in, configs_for_solver_input(node_cfgs, s_in), time.time()))
@@ -617,7 +627,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # carry no list at all.  _apply_synthetic_adsb has already read it for its
     # own purposes without consuming it, so these positions are stored again
     # here, where the verification and accuracy pipelines can reference them.
-    _adsb_list = frame.get("adsb")
+    _adsb_list = None if _probation else frame.get("adsb")
     if _adsb_list:
         _recv_s = time.time()
         _ts_ms = adsb_capture_ts_ms(frame, _recv_s)
@@ -659,11 +669,12 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # hits disk.  This timer used to wrap an empty region (its body had moved
     # to analytics_refresh_task) and printed save=0.0 forever.
     _t4 = time.thread_time()
-    with _archive_buffer_lock:
-        _archive_buffer[node_id].append(frame)
-        _should_flush = len(_archive_buffer[node_id]) >= _ARCHIVE_BATCH_MAX
-    if _should_flush:
-        _flush_archive_node(node_id)
+    if not _probation:
+        with _archive_buffer_lock:
+            _archive_buffer[node_id].append(frame)
+            _should_flush = len(_archive_buffer[node_id]) >= _ARCHIVE_BATCH_MAX
+        if _should_flush:
+            _flush_archive_node(node_id)
     _d_archive = time.thread_time() - _t4
 
     _dt_cpu = time.thread_time() - _t0_cpu
