@@ -62,7 +62,7 @@ export default function DetectionsPage() {
       <div className="card">
         <div className="card-header">
           <h3>Detection Feed</h3>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div className="card-aside">
             <select
               value={filterNode}
               onChange={(e) => { setFilterNode(e.target.value); setPage(0); }}
