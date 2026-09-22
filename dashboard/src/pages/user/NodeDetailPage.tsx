@@ -197,7 +197,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
                 </BarChart>
               </ResponsiveContainer>
             </div>
-            <table>
+            <table className="kv-table">
               <tbody>
                 <tr><td>Trust Score</td><td>{((trust.trust_score || 0) * 100).toFixed(1)}%</td></tr>
                 <tr><td>ADS-B Matches</td><td>{trust.adsb_matches || 0}</td></tr>
@@ -214,7 +214,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
         <div className="card">
           <div className="card-header"><h3>Timing & Gaps</h3></div>
           <div className="card-body">
-            <table>
+            <table className="kv-table">
               <tbody>
                 <tr><td>Uptime</td><td>{formatUptime(metrics.uptime_s || 0)}</td></tr>
                 <tr><td>Average Gap</td><td>{(gapStats.avg_gap || 0).toFixed(2)}s</td></tr>
@@ -290,7 +290,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
         <div className="card" style={{ marginBottom: 24 }}>
           <div className="card-header"><h3>Detection Area</h3></div>
           <div className="card-body">
-            <table>
+            <table className="kv-table">
               <tbody>
                 <tr><td>Estimated Range</td><td>{(data.detection_area.estimated_range_km || 0).toFixed(1)} km</td></tr>
                 <tr><td>Beam Width</td><td>{(data.detection_area.beam_width_deg || 0).toFixed(1)}°</td></tr>
@@ -325,7 +325,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
         <div className="card" style={{ marginBottom: 24 }}>
           <div className="card-header"><h3>RF Configuration</h3></div>
           <div className="card-body">
-            <table>
+            <table className="kv-table">
               <tbody>
                 <tr>
                   <td>Center Frequency</td>

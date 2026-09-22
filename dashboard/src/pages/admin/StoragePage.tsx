@@ -131,18 +131,18 @@ function StorageSummary({ storage }) {
                   value={<>{storage.disk.used_pct?.toFixed(1)}%</>}
                   pct={storage.disk.used_pct ?? null}
                 />
-                <table>
+                <table className="kv-table">
                   <tbody>
                     <tr>
-                      <td style={{ color: "var(--text-muted)" }}>Total</td>
+                      <td>Total</td>
                       <td>{storage.disk.total_gb?.toFixed(2)} GB</td>
                     </tr>
                     <tr>
-                      <td style={{ color: "var(--text-muted)" }}>Used</td>
+                      <td>Used</td>
                       <td>{storage.disk.used_gb?.toFixed(2)} GB</td>
                     </tr>
                     <tr>
-                      <td style={{ color: "var(--text-muted)" }}>Free</td>
+                      <td>Free</td>
                       <td>{storage.disk.free_gb?.toFixed(2)} GB</td>
                     </tr>
                   </tbody>
@@ -160,14 +160,14 @@ function StorageSummary({ storage }) {
           <div className="card-header"><h3>Write Rate</h3></div>
           <div className="card-body">
             {storage?.write_rate ? (
-              <table>
+              <table className="kv-table">
                 <tbody>
                   <tr>
-                    <td style={{ color: "var(--text-muted)" }}>Total Write Rate</td>
+                    <td>Total Write Rate</td>
                     <td>{storage.write_rate.total_mb_per_day?.toFixed(2)} MB/day</td>
                   </tr>
                   <tr>
-                    <td style={{ color: "var(--text-muted)" }}>Est. Days Until Full</td>
+                    <td>Est. Days Until Full</td>
                     <td style={{
                       fontWeight: 600,
                       color: (storage.write_rate.days_until_full || 0) < 30 ? "var(--error)"
@@ -195,18 +195,18 @@ function StorageSummary({ storage }) {
         <div className="card">
           <div className="card-header"><h3>Local Storage</h3></div>
           <div className="card-body">
-            <table>
+            <table className="kv-table">
               <tbody>
                 <tr>
-                  <td style={{ color: "var(--text-muted)" }}>Archive Files</td>
+                  <td>Archive Files</td>
                   <td>{storage?.archive_files?.toLocaleString() ?? "—"}</td>
                 </tr>
                 <tr>
-                  <td style={{ color: "var(--text-muted)" }}>Total Size</td>
+                  <td>Total Size</td>
                   <td>{storage?.archive_mb?.toFixed(2) ?? "0"} MB</td>
                 </tr>
                 <tr>
-                  <td style={{ color: "var(--text-muted)" }}>Raw Bytes</td>
+                  <td>Raw Bytes</td>
                   <td>{(storage?.archive_bytes || 0).toLocaleString()}</td>
                 </tr>
               </tbody>
