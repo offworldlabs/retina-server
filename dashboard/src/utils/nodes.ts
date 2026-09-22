@@ -29,3 +29,16 @@ export function statusLabel(status: string | null | undefined): string {
 export function detectionCount(summary): number {
   return summary?.metrics?.total_detections || summary?.detection_area?.n_detections || 0;
 }
+
+// A node_ref: a three-letter prefix, then twelve random characters. The
+// backend validates the same shape (NodeRef in routes/node_schemas.py).
+const NODE_REF = /^(?:nde|sim)([0-9a-z]{12})$/;
+
+/** A node_ref cut to the twelve random characters that tell it apart, for
+ *  where the whole of it does not fit. An identifier of any other shape (a
+ *  synthetic node publishes as its own id) comes back whole, since a fixed
+ *  cut would land mid-word. Never for a name, which is not a ref. */
+export function shortRef(ref: string | null | undefined): string {
+  if (!ref) return "";
+  return NODE_REF.exec(ref)?.[1] ?? ref;
+}
