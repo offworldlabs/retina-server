@@ -10,6 +10,7 @@ import {
   nodeIcon,
 } from "./index";
 import { withCartoKey } from "./utils/basemap";
+import { TILES } from "./utils/tiles";
 
 // An invented site. Nothing here needs a real one, and a real one in a
 // public repo is a receiver position the API is built to withhold.
@@ -398,7 +399,7 @@ export default function TestRadar() {
           style={{ height: "100%", width: "100%" }}
         >
           <TileLayer
-            url={withCartoKey("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png")}
+            url={withCartoKey(TILES.cartoLight)}
             attribution=""
           />
 
