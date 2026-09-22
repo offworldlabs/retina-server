@@ -1,7 +1,7 @@
 /* ── Physics object layer ─────────────────────────────────────────────────
-   The map surface's sibling tab, on the same dash tokens defined in
-   map-surface.css. App always sets `.app.map-surface`, so the var() calls
-   always resolve.
+   The map surface's sibling tab, on the shared palette in tokens.css and the
+   map chrome tokens in map-surface.css. PhysicsPage renders inside MapSurface,
+   which sets `.app.map-surface`, so the var() calls always resolve.
 
    Object-class colours are NOT set here: they come from mapPalette.ts via the
    component, so this legend and the map cannot drift apart. */
