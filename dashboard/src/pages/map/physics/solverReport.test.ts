@@ -51,7 +51,7 @@ describe("funnelSegments", () => {
     expect(segs[0].pct).toBeCloseTo(55, 6);
     expect(segs[1].pct).toBeCloseTo(25, 6);
     expect(segs[2].pct).toBeCloseTo(20, 6);
-    expect(segs.map((s) => s.color)).toEqual(["#38bdf8", "#a78bfa", "#f43f5e"]);
+    expect(segs.map((s) => s.color)).toEqual(["var(--accent)", "var(--violet)", "var(--error)"]);
   });
 
   it("returns 0 percentages (not NaN) when there are no attempts at all", () => {
