@@ -8,23 +8,13 @@
   overflow: visible;
 }
 
-/* Ids, keys and coordinates are unreadable in a proportional face. `.mono`
-   gets its face only inside the explorer's containers below: no shared
-   stylesheet defines it, so it does nothing on any other page. */
+/* The shared `.mono` face, for the explorer's own rules that set one. */
 .de-card,
 .de-timeline,
 .de-tree,
 .de-basket,
 .de-drawer {
   --de-mono: "SF Mono", "Fira Code", ui-monospace, Menlo, Consolas, monospace;
-}
-
-.de-card .mono,
-.de-tree .mono,
-.de-basket .mono,
-.de-drawer .mono {
-  font-family: var(--de-mono);
-  font-size: 12px;
 }
 
 /* The dashboard styles its form fields per page; the explorer has two dozen

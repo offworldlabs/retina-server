@@ -43,7 +43,7 @@ function Spark({ series, colour, theme }: { series: Point[]; colour: string; the
   // as an empty series; a blank chart would read as zero usage.
   if (data.length === 0) {
     return (
-      <div style={{ height: 72, display: "flex", alignItems: "center", fontSize: 12, color: "var(--text-muted)" }}>
+      <div className="card-note" style={{ height: 72, display: "flex", alignItems: "center" }}>
         no data
       </div>
     );
@@ -102,7 +102,7 @@ function CheckCard({ check }: { check: Check }) {
             );
           })}
         </div>
-        <div style={{ color: "var(--text-muted)" }}>
+        <div className="muted">
           {check.last_outage
             ? `Last outage: ${formatDuration(check.last_outage.duration_seconds)}, ${formatRelativeTime(check.last_outage.ended_at)} (${check.last_outage.region})`
             : "No outage recorded"}
@@ -118,7 +118,7 @@ function DropletCard({ droplet, colour, theme }: { droplet: Droplet; colour: str
       <div className="card-header">
         <h3>{droplet.name}</h3>
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          <span className="card-note">
             {droplet.vcpus} vCPU · {Math.round(droplet.memory_mb / 1024)} GB · {droplet.disk_gb} GB disk
           </span>
           {/* Only `active` is running; every other power state reads as offline. */}
@@ -150,12 +150,14 @@ export default function InfrastructurePage() {
       <p>Uptime checks and droplet health from DigitalOcean. A view only: the alerts email whether or not this page loads.</p>
       {/* The backend caches for a minute, so the reading can lag the refresh. */}
       {snap && (
-        <p style={{ fontSize: 12, color: "var(--text-muted)" }}>
-          as of {new Date(snap.fetched_at * 1000).toLocaleTimeString()}{" "}
-          {/* The route serves the previous build when a refresh overruns its deadline. */}
-          {snap.stale && (
-            <span className="badge warning" title="The last refresh timed out; showing the previous snapshot">stale</span>
-          )}
+        <p>
+          <span className="card-note">
+            as of {new Date(snap.fetched_at * 1000).toLocaleTimeString()}{" "}
+            {/* The route serves the previous build when a refresh overruns its deadline. */}
+            {snap.stale && (
+              <span className="badge warning" title="The last refresh timed out; showing the previous snapshot">stale</span>
+            )}
+          </span>
         </p>
       )}
     </div>
