@@ -164,13 +164,13 @@ it("moves its default basemap with the console's theme", () => {
     </ThemeProvider>,
   );
   fireEvent.click(screen.getByText("flip"));
-  expect(window.localStorage.getItem("tf.tile.theme")).toBe(JSON.stringify("voyager"));
+  expect(window.localStorage.getItem("retina.map.tile.theme")).toBe(JSON.stringify("voyager"));
 });
 
-function mountUnderStoredTheme(theme: string, tile: string, chosenBy: string) {
+function mountUnderStoredTheme(theme: string, tile: string, chosenBy: string, prefix = "retina.map.") {
   localStorage.setItem("retina.theme", theme);
-  localStorage.setItem("tf.tile.theme", JSON.stringify(tile));
-  localStorage.setItem("tf.tile.chosenBy", JSON.stringify(chosenBy));
+  localStorage.setItem(`${prefix}tile.theme`, JSON.stringify(tile));
+  localStorage.setItem(`${prefix}tile.chosenBy`, JSON.stringify(chosenBy));
   vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({
     matches: false,
     media: "(prefers-color-scheme: dark)",
@@ -187,19 +187,25 @@ function mountUnderStoredTheme(theme: string, tile: string, chosenBy: string) {
 it("mounts onto its own theme's basemap when the theme that chose it has since changed", () => {
   // Dark chose Voyager; the console went light while the map was not mounted.
   mountUnderStoredTheme("light", "voyager", "dark");
-  expect(window.localStorage.getItem("tf.tile.theme")).toBe(JSON.stringify("positron"));
+  expect(window.localStorage.getItem("retina.map.tile.theme")).toBe(JSON.stringify("positron"));
 });
 
 it("keeps a hand-picked basemap when it mounts", () => {
   mountUnderStoredTheme("light", "osm", "hand");
-  expect(window.localStorage.getItem("tf.tile.theme")).toBe(JSON.stringify("osm"));
+  expect(window.localStorage.getItem("retina.map.tile.theme")).toBe(JSON.stringify("osm"));
 });
 
 it("keeps a hand-picked basemap that happens to be the other theme's default", () => {
   // Voyager is dark's default and also a stop on the cycle control; picked by
   // hand under a light console, it is the user's choice, not dark's.
   mountUnderStoredTheme("light", "voyager", "hand");
-  expect(window.localStorage.getItem("tf.tile.theme")).toBe(JSON.stringify("voyager"));
+  expect(window.localStorage.getItem("retina.map.tile.theme")).toBe(JSON.stringify("voyager"));
+});
+
+it("keeps a basemap picked under the standalone map's storage keys", () => {
+  mountUnderStoredTheme("light", "osm", "hand", "tf.");
+  expect(window.localStorage.getItem("retina.map.tile.theme")).toBe(JSON.stringify("osm"));
+  expect(window.localStorage.getItem("retina.map.tile.chosenBy")).toBe(JSON.stringify("hand"));
 });
 
 /** One simulated spawn with a transponder, as the fleet's truth snapshot carries it. */

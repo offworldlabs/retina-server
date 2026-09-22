@@ -3,19 +3,14 @@ import { matchPath, useLocation } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import Header from "./Header";
 import ErrorBoundary from "./ErrorBoundary";
+import { readStored, writeStored } from "../utils/storage";
 
 const SIDEBAR_KEY = "retina.sidebarCollapsed";
 
-/** The stored choice, or null when the user has never made one. Storage throws
- *  in private mode, and a console that will not render is worse than one whose
- *  sidebar forgets. */
+/** The stored choice, or null when the user has never made one. */
 function storedCollapsed(): boolean | null {
-  try {
-    const raw = window.localStorage.getItem(SIDEBAR_KEY);
-    return raw === null ? null : raw === "true";
-  } catch {
-    return null;
-  }
+  const raw = readStored(SIDEBAR_KEY);
+  return raw === null ? null : raw === "true";
 }
 
 export const pageTitles: Record<string, { user?: string; admin?: string }> = {
@@ -87,11 +82,7 @@ export default function DashboardLayout({ isAdmin, children }) {
   const toggle = () => {
     const next = !collapsed;
     setStored(next);
-    try {
-      window.localStorage.setItem(SIDEBAR_KEY, String(next));
-    } catch {
-      /* private mode: the choice still holds for this tab */
-    }
+    writeStored(SIDEBAR_KEY, String(next));
   };
 
   return (
