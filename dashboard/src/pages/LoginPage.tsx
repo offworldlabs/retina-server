@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../api/client";
 import LoginBack from "../components/LoginBack";
+import { signInNext } from "../utils/signInNext";
 
 /** The only two failures this page repeats back. Both describe the request or
  *  the deployment; neither says anything about the address. */
@@ -12,13 +13,19 @@ const MAIL_UNAVAILABLE = "Sign-in by email is unavailable";
 export default function LoginPage({ message = null, isAdmin = false }) {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+  const [searchParams] = useSearchParams();
+  // The page the visitor was on their way to: handed over by whatever sent them
+  // here, or, when a dead link renders this card, carried in that link's URL.
+  // None on the admin console, whose routes the mailed link cannot open.
+  const next = isAdmin ? null : signInNext(location.state?.next ?? searchParams.get("next"));
   const [email, setEmail] = useState("");
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState(null);
 
   if (user) {
-    navigate("/", { replace: true });
+    navigate(next ?? "/", { replace: true });
     return null;
   }
 
@@ -27,7 +34,7 @@ export default function LoginPage({ message = null, isAdmin = false }) {
     setError(null);
     setSending(true);
     try {
-      await api.requestMagicLink(email);
+      await api.requestMagicLink(email, next);
     } catch (err) {
       const status = err?.status;
       if (status === 422 || status === 503) {

@@ -309,12 +309,13 @@ export default function Sidebar({ isAdmin, collapsed, onToggle }) {
                 </a>
               ) : locked(item) ? (
                 // Straight to the sign-in card rather than to a page that would
-                // only bounce there. Marked like the header's Sign in link, so
-                // the card's Back returns to the open page the visitor was on.
+                // only bounce there, carrying the page so signing in ends on it.
+                // Marked like the header's Sign in link, so the card's Back
+                // returns to the open page the visitor was on.
                 <Link
                   key={item.to}
                   to="/login"
-                  state={{ fromOpenPage: true }}
+                  state={{ fromOpenPage: true, next: item.to }}
                   className="nav-item locked"
                   title={`${item.label} is only available when signed in`}
                 >
