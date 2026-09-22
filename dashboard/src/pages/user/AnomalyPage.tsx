@@ -224,7 +224,7 @@ export default function AnomalyPage() {
         <div className="card" style={{ marginBottom: 16 }}>
           <div className="card-header">
             <h3>Geographic Hotspots</h3>
-            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Grouped by 0.1° grid</span>
+            <span className="card-note">Grouped by 0.1° grid</span>
           </div>
           <DataTable
             headers={["Rank", "Location", "Events", "Dominant Type"]}
@@ -233,7 +233,7 @@ export default function AnomalyPage() {
             {geographic_clusters.slice(0, 20).map((c: any, i: number) => (
               <tr key={i}>
                 <td>#{i + 1}</td>
-                <td style={{ fontFamily: "monospace", fontSize: 12 }}>
+                <td className="mono">
                   {c.lat.toFixed(1)}, {c.lon.toFixed(1)}
                 </td>
                 <td><strong>{c.count}</strong></td>
@@ -255,7 +255,7 @@ export default function AnomalyPage() {
       <div className="card">
         <div className="card-header">
           <h3>Recent Anomaly Events</h3>
-          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          <span className="card-note">
             {/* The page's notice is a long scroll above this table. */}
             {polled.error && <span className="badge warning" style={{ marginRight: 8 }}>stale</span>}
             {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : "Auto-refreshes every 10s"}
@@ -268,10 +268,10 @@ export default function AnomalyPage() {
         >
           {[...(recent_events || [])].reverse().map((ev: AnomalyEvent, i: number) => (
             <tr key={`${ev.hex}-${ev.flagged_at ?? i}`}>
-              <td style={{ fontFamily: "monospace", fontSize: 12, whiteSpace: "nowrap" }}>
+              <td className="mono" style={{ whiteSpace: "nowrap" }}>
                 {ev.flagged_at ? formatDateTime(ev.flagged_at) : "—"}
               </td>
-              <td style={{ fontFamily: "monospace", fontWeight: 600 }}>{ev.hex}</td>
+              <td className="mono" style={{ fontWeight: 600 }}>{ev.hex}</td>
               <td>
                 <span
                   className="badge"
@@ -280,8 +280,8 @@ export default function AnomalyPage() {
                   {(ev.reason || "unknown").replace(/_/g, " ")}
                 </span>
               </td>
-              <td style={{ fontFamily: "monospace", fontSize: 12 }}>{ev.lat?.toFixed(4)}</td>
-              <td style={{ fontFamily: "monospace", fontSize: 12 }}>{ev.lon?.toFixed(4)}</td>
+              <td className="mono">{ev.lat?.toFixed(4)}</td>
+              <td className="mono">{ev.lon?.toFixed(4)}</td>
               <td>{ev.object_type || "—"}</td>
             </tr>
           ))}
