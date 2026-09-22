@@ -27,21 +27,6 @@
   font-size: 12px;
 }
 
-/* The cold-storage banner. A panel rather than a line of prose, because it
-   qualifies everything in the listing below it. */
-.de-notice {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  background: var(--warning-light);
-  border: 1px solid var(--warning);
-  border-radius: var(--radius);
-  padding: 11px 14px;
-  font-size: 13px;
-  color: var(--text-secondary);
-  margin-bottom: 24px;
-}
-
 /* The dashboard styles its form fields per page; the explorer has two dozen
    of them, so they are styled once here rather than at each call site. */
 .de-card input,
