@@ -4,17 +4,9 @@ import { FetchNotice } from "../../components/Notice";
 import { StatCard } from "../../components/StatCard";
 import { UsageBar } from "../../components/UsageBar";
 import { usePolling } from "../../hooks/usePolling";
-import { fmt } from "../../utils/format";
+import { fmt, formatRelativeTime } from "../../utils/format";
 
 const REFRESH_MS = 5000;
-
-function ago(epoch: number | undefined): string {
-  if (!epoch) return "never";
-  const s = Math.floor(Date.now() / 1000 - epoch);
-  if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  return `${Math.floor(s / 3600)}h ago`;
-}
 
 function QueueBar({ depth, max, label }: { depth: number; max: number; label: string }) {
   const pct = max > 0 ? Math.min(100, (depth / max) * 100) : 0;
@@ -168,7 +160,7 @@ export default function SystemMetricsPage() {
                   </span>
                 </td>
                 <td style={{ color: "var(--text-muted)", fontSize: 13 }}>
-                  {ago(m.task_last_success?.[name])}
+                  {formatRelativeTime(m.task_last_success?.[name])}
                 </td>
                 <td>
                   <span style={{ color: errors > 0 ? "var(--error)" : "var(--text-muted)", fontWeight: errors > 0 ? 600 : 400 }}>
