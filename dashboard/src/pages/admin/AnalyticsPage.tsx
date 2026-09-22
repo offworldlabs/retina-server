@@ -103,7 +103,7 @@ export default function AnalyticsPage() {
         <div className="card" style={{ marginBottom: 24 }}>
           <div className="card-header">
             <h3>Detection Trend</h3>
-            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            <span className="card-note">
               Updates every 10s
             </span>
           </div>
@@ -130,7 +130,7 @@ export default function AnalyticsPage() {
         <div className="card">
           <div className="card-header">
             <h3>Trust & Reputation — Top {TOP_N_CHART}</h3>
-            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{summaries.length} total nodes</span>
+            <span className="card-note">{summaries.length} total nodes</span>
           </div>
           <div className="card-body">
             <div className="chart-container">
@@ -155,7 +155,7 @@ export default function AnalyticsPage() {
         <div className="card">
           <div className="card-header">
             <h3>Detection Share — Top 10</h3>
-            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{totalDetections.toLocaleString()} total</span>
+            <span className="card-note">{totalDetections.toLocaleString()} total</span>
           </div>
           <div className="card-body">
             <div className="chart-container">
@@ -197,7 +197,7 @@ export default function AnalyticsPage() {
         <div className="card">
           <div className="card-header">
             <h3>Cross-Node Overlap Analysis</h3>
-            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+            <span className="card-note">
               {overlaps.length} pairs
             </span>
           </div>
@@ -209,8 +209,8 @@ export default function AnalyticsPage() {
               const j = o.jaccard || o.overlap || 0;
               return (
                 <tr key={currentOverlapPage * PAGE_SIZE + i}>
-                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>{shortRef(o.node_a)}</td>
-                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>{shortRef(o.node_b)}</td>
+                  <td className="mono">{shortRef(o.node_a)}</td>
+                  <td className="mono">{shortRef(o.node_b)}</td>
                   <td>{j.toFixed(3)}</td>
                   <td>{o.shared_bins || o.shared || "—"}</td>
                   <td>
