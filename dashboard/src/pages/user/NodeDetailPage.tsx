@@ -93,7 +93,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
   const bareHeader = (
     <div className="page-header">
       <h1 style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <button className="btn btn-outline btn-sm" onClick={() => navigate(-1)}>← Back</button>
+        <button className="btn btn-secondary btn-sm" onClick={() => navigate(-1)}>← Back</button>
         {nodeId}
       </h1>
     </div>
@@ -161,7 +161,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
     <>
       <div className="page-header">
         <h1 style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <button className="btn btn-outline btn-sm" onClick={() => navigate(-1)}>← Back</button>
+          <button className="btn btn-secondary btn-sm" onClick={() => navigate(-1)}>← Back</button>
           <RetnodeLink nodeId={ownId} synthetic={nodeInfo?.is_synthetic}>
             {nodeRef}
           </RetnodeLink>
@@ -272,13 +272,13 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
                   <button className="btn btn-danger" onClick={release} disabled={releasing}>
                     {releasing ? "Releasing…" : "Yes, release it"}
                   </button>
-                  <button className="btn btn-outline" onClick={() => setConfirmingRelease(false)} disabled={releasing}>
+                  <button className="btn btn-secondary" onClick={() => setConfirmingRelease(false)} disabled={releasing}>
                     Keep it
                   </button>
                 </div>
               </>
             ) : (
-              <button className="btn btn-outline" onClick={() => setConfirmingRelease(true)}>
+              <button className="btn btn-secondary" onClick={() => setConfirmingRelease(true)}>
                 Release this node
               </button>
             )}

@@ -57,7 +57,7 @@ describe("the error fallback", () => {
     render(<ErrorBoundary><Boom /></ErrorBoundary>);
     expect(screen.getByRole("alert")).toHaveTextContent("Something went wrong");
     expect(screen.getByRole("button", { name: "Try again" })).toHaveClass("btn", "btn-primary");
-    expect(screen.getByRole("button", { name: "Reload page" })).toHaveClass("btn", "btn-outline");
+    expect(screen.getByRole("button", { name: "Reload page" })).toHaveClass("btn", "btn-secondary");
   });
 
   it("draws the children again on a retry", () => {
