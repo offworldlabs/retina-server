@@ -151,6 +151,7 @@ export default function OverviewPage() {
                   <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
                   <Tooltip
                     contentStyle={chart.tooltip}
+                    cursor={chart.cursor}
                   />
                   <Area
                     type="monotone"
