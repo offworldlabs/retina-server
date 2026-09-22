@@ -172,6 +172,62 @@ class TestRequestMagicLink:
         assert "auth_token" not in r.cookies
 
 
+class TestSignInDestination:
+    """The page the console opens once the link is redeemed.
+
+    Anyone can ask for a link to anyone's address, so `next` is attacker-chosen
+    text in a genuine mail from us. It is only ever a plain path on HOST_APP."""
+
+    @staticmethod
+    def _link(sent):
+        _, _, body = sent[0]
+        return next(line for line in body.splitlines() if "/auth/link/" in line)
+
+    @pytest.mark.parametrize("path", ["/settings", "/nodes/ret-0042", "/sim/physics", "/data/2026/09/17"])
+    def test_the_link_carries_it(self, client, sent, path):
+        r = client.post("/api/auth/magic-link", json={"email": "owner@example.com", "next": path})
+        assert r.status_code == 202
+        link = self._link(sent)
+        token = link.split("/auth/link/")[1].split("?")[0]
+        assert link == f"https://app.retina.fm/auth/link/{token}?next={path}"
+
+    def test_without_one_the_link_is_bare(self, client, sent):
+        client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
+        assert "?" not in self._link(sent)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "//evil.example.com",
+            "//evil.example.com/settings",
+            "/\\evil.example.com",
+            "https://evil.example.com/",
+            "javascript:alert(1)",
+            "settings",
+            "/settings?tab=security",
+            "/settings#danger",
+            "/set tings",
+            "/%2F%2Fevil.example.com",
+            "/" + "a" * 300,
+            "",
+        ],
+    )
+    def test_anything_but_a_plain_path_is_dropped_and_the_link_still_sent(self, client, sent, path):
+        """Dropped rather than refused: a bad destination costs the visitor the
+        page they wanted, not the sign-in."""
+        r = client.post("/api/auth/magic-link", json={"email": "owner@example.com", "next": path})
+        assert r.status_code == 202
+        assert len(sent) == 1
+        assert "?" not in self._link(sent)
+
+    def test_it_does_not_change_the_answer(self, client):
+        """The response still says nothing about the address or the request."""
+        with_next = client.post("/api/auth/magic-link", json={"email": "owner@example.com", "next": "/settings"})
+        without = client.post("/api/auth/magic-link", json={"email": "someone@example.com"})
+        assert with_next.status_code == without.status_code == 202
+        assert with_next.json() == without.json()
+
+
 class TestSourceQuota:
     def test_beyond_the_quota_nothing_is_mailed(self, client, sent):
         for _ in range(_auth._MAX_MAGIC_LINK_REQUESTS_PER_SOURCE):
