@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { api } from "../../api/client";
 import { DataTable } from "../../components/DataTable";
 import { FetchNotice, nothingLoaded } from "../../components/Notice";
+import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { UsageBar } from "../../components/UsageBar";
 import { useFetch } from "../../hooks/usePolling";
@@ -34,7 +35,11 @@ export default function StoragePage() {
   const archives = archive?.files || [];
   const total = archive?.total ?? archive?.count ?? 0;
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+  const current = clampPage(page, totalPages);
+  // The archive can shrink under the pager; a page past its end asks for the
+  // last one instead, set during render so the stale page never paints.
+  if (archive && !loading && current !== page) setPage(current);
 
   return (
     <>
@@ -53,29 +58,8 @@ export default function StoragePage() {
       <FetchNotice polled={pageFetch} what="the archive listing" />
       {!nothingLoaded(archiveFetch) && (
         <div className="card" style={{ marginTop: 16 }}>
-          <div className="card-header">
-            <h3>Recent Archives</h3>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <button
-                className="btn btn-secondary"
-                disabled={page === 0 || loading}
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
-              >
-                ← Prev
-              </button>
-              <span style={{ fontSize: 13, color: "var(--text-muted)" }}>
-                {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} of {total.toLocaleString()}
-              </span>
-              <button
-                className="btn btn-secondary"
-                disabled={page >= totalPages - 1 || loading}
-                onClick={() => setPage((p) => p + 1)}
-              >
-                Next →
-              </button>
-            </div>
-          </div>
-          {/* The pager stays, so a page that failed can be left. */}
+          <div className="card-header"><h3>Recent Archives</h3></div>
+          {/* Withheld when this page failed; the pager stays, so it can be left. */}
           {!nothingLoaded(pageFetch) && (
             <DataTable
               headers={["Filename", "Node", "Size", "Date"]}
@@ -101,6 +85,7 @@ export default function StoragePage() {
               })}
             </DataTable>
           )}
+          <Pager page={current} totalPages={totalPages} onPage={setPage} note={`${total.toLocaleString()} archives`} />
         </div>
       )}
     </>
