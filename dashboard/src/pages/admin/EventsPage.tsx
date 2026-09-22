@@ -5,6 +5,7 @@ import { DataTable } from "../../components/DataTable";
 import { Pager } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
+import { severityTone } from "../../utils/severity";
 
 const PAGE_SIZE = 25;
 
@@ -18,7 +19,6 @@ export default function EventsPage() {
   if (loading) return <div className="empty-state">Loading…</div>;
 
   const events = data ?? [];
-  const severityClass = { info: "info", warning: "warning", error: "offline", critical: "offline" };
   const totalPages = Math.ceil(events.length / PAGE_SIZE);
   const paged = events.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
@@ -74,7 +74,7 @@ export default function EventsPage() {
                 {ev.ts ? new Date(ev.ts * 1000).toLocaleString() : "—"}
               </td>
               <td>
-                <span className={`badge ${severityClass[ev.severity] || "info"}`}>
+                <span className={`badge ${severityTone(ev.severity)}`}>
                   {ev.severity}
                 </span>
               </td>
