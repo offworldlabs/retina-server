@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { smoothTrailPositions, stitchPredecessorTrail, type SolveTrailPoint } from "./trails";
-import { distanceKm } from "./distance";
+import { distanceKm } from "../../utils/geo";
 
 const M_PER_DEG_LAT = 111_320;
 

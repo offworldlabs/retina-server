@@ -82,7 +82,7 @@ import { useKeyboardShortcuts } from "./useKeyboardShortcuts";
 import { trailToCsv, trailsToBulkCsv, downloadCsv } from "./trailExport";
 import { toast, copyToClipboard } from "./toast";
 import { checkEmergencySquawks, resetEmergencyAlertCache } from "./emergencyAudio";
-import { distanceKm } from "./distance";
+import { distanceKm } from "../../utils/geo";
 import { validLatLon } from "./geo";
 import { arcNearestPoint } from "./arcErrors";
 import { detectingNodeRefsFor } from "./detections";

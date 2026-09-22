@@ -19,8 +19,8 @@
  * certain than a single node's, which is the opposite of the truth.
  */
 
-import { haversineDistanceKm } from "./geo";
 import type { RadarNode } from "./types";
+import { distanceKm } from "../../utils/geo";
 
 /** A receive site: one published coordinate, one or more nodes at it. */
 export interface NodeSite {
@@ -109,7 +109,7 @@ export function polygonMaxReachKm(
   if (!Array.isArray(polygon) || polygon.length === 0) return null;
   let max = 0;
   for (const [lat, lon] of polygon) {
-    const d = haversineDistanceKm(rxLat, rxLon, lat, lon);
+    const d = distanceKm(rxLat, rxLon, lat, lon);
     if (d > max) max = d;
   }
   return Math.round(max);
