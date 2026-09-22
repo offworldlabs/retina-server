@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { writeClipboard } from "../../../utils/clipboard";
 
 /** How long a copy's outcome stays on its button before the label returns. */
 export const COPY_FEEDBACK_MS = 1200;
@@ -18,14 +19,7 @@ export function useCopy(): [string | null, (text: string) => Promise<void>] {
   );
 
   const copy = async (text: string) => {
-    let result: string;
-    try {
-      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
-      await navigator.clipboard.writeText(text);
-      result = "Copied";
-    } catch {
-      result = "Copy failed";
-    }
+    const result = (await writeClipboard(text)) ? "Copied" : "Copy failed";
     setOutcome(result);
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => setOutcome(null), COPY_FEEDBACK_MS);
