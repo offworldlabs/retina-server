@@ -149,20 +149,25 @@ jobs:
       # recover the same lines, and sysmon does it at a fraction of that
       # setting's cost. ONBOARDING, "Running tests", covers what this means for a
       # local figure that does not match this one.
-      # -n 2 matches the runner's two vCPUs. `worksteal` rather than the default
-      # `load` scheduler, and this is the whole difference between the change
-      # being worth making and not: `load` deals the tests out up front, and
-      # this suite is uneven enough that one worker finished while the other
-      # still had two thirds of the run left, for a gain in the low tens of
-      # seconds. `worksteal` rebalances as workers free up and roughly halves
-      # the suite. Anyone benchmarking `-n 2` on its own will measure the
-      # disappointing number and conclude xdist does not suit this suite.
+      # One worker per logical CPU, so the count follows the runner. GitHub gives
+      # public repositories four (two cores, two threads each), and on those
+      # runners four workers took about a quarter off two and beat three: the
+      # second thread per core pays. `logical` rather than `auto`, which counts
+      # physical cores once psutil is installed and would fall back to two.
+      #
+      # `worksteal` rather than the default `load` scheduler matters more than
+      # the count: `load` deals the tests out up front, and this suite is uneven
+      # enough that at two workers one finished while the other still had two
+      # thirds of the run left. `worksteal` rebalances as workers free up, and
+      # at two workers roughly halved the suite. Anyone benchmarking a bare `-n`
+      # will measure the disappointing number and conclude xdist does not suit
+      # this suite.
       #
       # On the command line rather than in pyproject's addopts, so a local
       # `pytest` stays serial: -x stops at a different place under xdist and
       # --pdb cannot attach to a worker, and both are wanted more often when
       # debugging than the speed is.
-      - run: pytest tests/ -v --tb=short -m "not external" -n 2 --dist worksteal
+      - run: pytest tests/ -v --tb=short -m "not external" -n logical --dist worksteal
 
   web-build:
     name: Web (${{ matrix.workspace }})
