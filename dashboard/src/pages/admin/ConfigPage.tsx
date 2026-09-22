@@ -4,6 +4,7 @@ import { DataTable } from "../../components/DataTable";
 import { FetchNotice, Notice, nothingLoaded } from "../../components/Notice";
 import { Pager } from "../../components/Pager";
 import { useFetch } from "../../hooks/usePolling";
+import { StatusBadge } from "../../components/StatusBadge";
 
 const PAGE_SIZE = 25;
 
@@ -204,7 +205,7 @@ export default function ConfigPage() {
                     {pagedNodes.map(([id, n]: [string, any]) => (
                       <tr key={id}>
                         <td style={{ fontFamily: "monospace", fontSize: 12 }}>{id}</td>
-                        <td><span className={`badge ${n.status === "active" ? "online" : "offline"}`}>{n.status || "—"}</span></td>
+                        <td><StatusBadge status={n.status} /></td>
                         <td>{n.rx_lat != null ? n.rx_lat.toFixed(4) : "—"}</td>
                         <td>{n.rx_lon != null ? n.rx_lon.toFixed(4) : "—"}</td>
                         <td>{n.tx_lat != null ? n.tx_lat.toFixed(4) : "—"}</td>
