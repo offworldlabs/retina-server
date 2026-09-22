@@ -103,6 +103,9 @@ ALLOWED_DIVERGENCE = (
     # run none and leave the flag unset, so on this key they already agree; the
     # entry is what lets test differ from the reference.
     r"^services\.server\.environment\.SYNTHETIC_FLEET_ENABLED$",
+    # A registered radar must be polled by exactly one server, so production
+    # alone polls (services/blah2_poller.py) and the others leave the flag unset.
+    r"^services\.server\.environment\.POLLED_RADAR_POLLING_ENABLED$",
     # AUTH_ALLOW_ANONYMOUS_ADMIN is deliberately absent from this list, so a
     # difference between environments is drift rather than a decision. It is
     # set in none, and keeping it off this list is what fails CI if it is ever

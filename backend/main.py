@@ -58,7 +58,7 @@ from routes.sim_ingest import synthetic_fleet_enabled
 from routes.stats import router as stats_router
 from routes.streaming import router as streaming_router
 from routes.test import router as test_router
-from services import detection_mirror, publication
+from services import blah2_poller, detection_mirror, publication
 from services.alerting import log_destination
 from services.runtime_coverage import start as _start_coverage
 from services.runtime_coverage import stop as _stop_coverage
@@ -259,6 +259,8 @@ async def lifespan(app: FastAPI):
                 coverage_constraints_task,
                 storage_refresh_task,
                 detection_mirror.mirror_task,
+                # Returns at once unless POLLED_RADAR_POLLING_ENABLED=1.
+                blah2_poller.poller_task,
                 health_monitor_task,
                 heartbeat_task,
                 _snapshot_loop,
