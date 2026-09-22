@@ -43,6 +43,8 @@
   --map-chip-ink: #ffffff;
   --violet: #a78bfa;
   --violet-hover: #c4b5fd;
+  /* What --accent-ink is to the accent: white on this violet is 2.7:1. */
+  --violet-ink: #2e1065;
 }
 
 /* Carto Positron tiles under the consoles' #f1f5f9 chrome. */
@@ -58,6 +60,7 @@
   --map-chip-ink: #0f172a;
   --violet: #7c3aed;
   --violet-hover: #6d28d9;
+  --violet-ink: #ffffff;
 }
 
 /* A flex item of `.content.flush` (a row), so it stretches to the pane's
