@@ -150,10 +150,11 @@ class MagicLinkConsume(BaseModel):
 
 def _sign_in_body(link: str) -> str:
     return (
-        "Someone asked to sign in to RETINA with this address.\n\n"
+        "A request has been made to sign in to RETINA with this email address.\n\n"
+        "Click this link to log in:\n"
         f"{link}\n\n"
         "The link works once and expires in 15 minutes.\n\n"
-        "If this wasn't you, nothing has happened and you can ignore this message."
+        "If this wasn't you, you may safely ignore this email."
     )
 
 
