@@ -77,8 +77,8 @@ export default function OnboardingPage() {
             >
               {nodes.map((n) => (
                 <tr key={n.node_id}>
-                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>{n.node_id}</td>
-                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>
+                  <td className="mono">{n.node_id}</td>
+                  <td className="mono">
                     {n.node_ref ?? "—"}{" "}
                     <LocationPrivacyBadge isPrivate={n.location_private} />
                   </td>
