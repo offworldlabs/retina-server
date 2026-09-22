@@ -569,15 +569,12 @@
 }
 
 /* ── Stats panel ─────────────────────────────────────────────────────────
-   Label/value pairs on a two-column grid, the same shape dash gives a fact
-   list. Collapsed it is just its header, so it never covers a target. */
+   A .card of label/value pairs on a two-column grid, the same shape dash
+   gives a fact list. Collapsed it is just its header, so it never covers a
+   target. */
 
 .stats-panel {
   margin: 8px 10px 0;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
   font-size: 12px;
 }
 
@@ -636,14 +633,11 @@
 
 /* ── Node-owner control ──────────────────────────────────────────────────
    Sits above the stats panel in the aircraft list's header, so it is the
-   same card with the same hairline. */
+   same .card with the same hairline. */
 
 .owner-panel {
   margin: 8px 10px 0;
   padding: 10px 12px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
   font-size: 12px;
   color: var(--text-secondary);
 }
