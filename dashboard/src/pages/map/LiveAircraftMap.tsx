@@ -76,6 +76,7 @@ import ScaledCircleMarker from "./ScaledCircleMarker";
 import { api } from "../../api/client";
 import { defaultFeedMode, type FeedMode } from "./feedMode";
 import { withCartoKey } from "./utils/basemap";
+import { TILES } from "./utils/tiles";
 import { usePersistedState } from "./usePersistedState";
 import { parseHash, useHashWriter, encodeLayers, decodeLayers } from "./useUrlHashState";
 import { useKeyboardShortcuts } from "./useKeyboardShortcuts";
@@ -2279,10 +2280,10 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
               key={tileTheme}
               url={withCartoKey(
                 tileTheme === "positron"
-                  ? "https://{s}.basemaps.cartocdn.com/rastertiles/light_all/{z}/{x}/{y}{r}.png"
+                  ? TILES.cartoPositron
                   : tileTheme === "osm"
-                    ? "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
-                    : "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
+                    ? TILES.osm
+                    : TILES.cartoVoyager,
               )}
             />
 
