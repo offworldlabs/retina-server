@@ -23,8 +23,8 @@ vi.mock("../context/AuthContext", () => ({ useAuth: () => state.auth }));
 // A getter, so each render reads the case's surface rather than the one the
 // module saw at load. The hostname chooses the map's feed; it must not decide
 // whether Physics is offered.
-vi.mock("../pages/map/utils/domains", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../pages/map/utils/domains")>()),
+vi.mock("../utils/domains", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../utils/domains")>()),
   get usesRealOnlyFeed() {
     return flags.realOnly;
   },
