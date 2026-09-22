@@ -115,14 +115,14 @@ export default function Toolbar({
         <div className="toolbar-spacer" />
 
         <div className="toolbar-actions" ref={actionsRef}>
-          <button className="btn btn-outline toggle-btn" aria-pressed={paused} onClick={onTogglePause}>
+          <button className="btn btn-secondary toggle-btn" aria-pressed={paused} onClick={onTogglePause}>
             {paused ? "▶ Resume" : "⏸ Pause"}
           </button>
-          <button className="btn btn-outline toggle-btn" onClick={onFit} title="Fit the view to everything on the map">
+          <button className="btn btn-secondary toggle-btn" onClick={onFit} title="Fit the view to everything on the map">
             ◎ Fit
           </button>
           <button
-            className="btn btn-outline toggle-btn"
+            className="btn btn-secondary toggle-btn"
             onClick={() => setMenuOpen((v) => !v)}
             aria-expanded={menuOpen}
             aria-haspopup="menu"
@@ -170,11 +170,11 @@ export default function Toolbar({
       <div className="toolbar-row-layers">
         <div className="toolbar-group">
           <span className="toolbar-group-label">Overlays</span>
-          <button className="btn btn-outline toggle-btn" aria-pressed={showCoverage} onClick={onToggleCoverage}>
+          <button className="btn btn-secondary toggle-btn" aria-pressed={showCoverage} onClick={onToggleCoverage}>
             Coverage
           </button>
           <button
-            className="btn btn-outline toggle-btn"
+            className="btn btn-secondary toggle-btn"
             aria-pressed={showArcs}
             onClick={onToggleArcs}
             title="Show / hide bistatic detection arcs (d)"
@@ -182,16 +182,16 @@ export default function Toolbar({
             Arcs
           </button>
           <button
-            className="btn btn-outline toggle-btn"
+            className="btn btn-secondary toggle-btn"
             aria-pressed={showIlluminators}
             onClick={onToggleIlluminators}
           >
             Illuminators
           </button>
-          <button className="btn btn-outline toggle-btn" aria-pressed={showTrails} onClick={onToggleTrails}>
+          <button className="btn btn-secondary toggle-btn" aria-pressed={showTrails} onClick={onToggleTrails}>
             Trails
           </button>
-          <button className="btn btn-outline toggle-btn" aria-pressed={showLabels} onClick={onToggleLabels}>
+          <button className="btn btn-secondary toggle-btn" aria-pressed={showLabels} onClick={onToggleLabels}>
             Labels
           </button>
         </div>
@@ -202,7 +202,7 @@ export default function Toolbar({
           <span className="toolbar-group-label">Analysis</span>
           {truthAvailable && (
             <button
-              className="btn btn-outline toggle-btn"
+              className="btn btn-secondary toggle-btn"
               aria-pressed={showGroundTruth}
               onClick={onToggleGroundTruth}
               title="Overlay the ADS-B positions the solver is being measured against"
@@ -211,7 +211,7 @@ export default function Toolbar({
             </button>
           )}
           <button
-            className="btn btn-outline toggle-btn alert"
+            className="btn btn-secondary toggle-btn alert"
             aria-pressed={showAnomaliesOnly}
             onClick={onToggleAnomaliesOnly}
             title="Show only tracks flagged as anomalous"
@@ -219,7 +219,7 @@ export default function Toolbar({
             ⚠ Anomalies{anomalyCount > 0 ? ` (${anomalyCount})` : ""}
           </button>
           <button
-            className="btn btn-outline toggle-btn"
+            className="btn btn-secondary toggle-btn"
             aria-pressed={showInBeamDiag}
             onClick={onToggleInBeamDiag}
             title="Show red lines from a node to aircraft inside its measured coverage that it is NOT currently detecting (coverage gaps)"
@@ -227,7 +227,7 @@ export default function Toolbar({
             Coverage gaps
           </button>
           <button
-            className="btn btn-outline toggle-btn"
+            className="btn btn-secondary toggle-btn"
             aria-pressed={showUncertainty}
             onClick={onToggleUncertainty}
             title="Show the 68% position-uncertainty disc around multi-node solves (the panel also quotes 95%)"
@@ -235,14 +235,14 @@ export default function Toolbar({
             σ Uncert.
           </button>
           <button
-            className="btn btn-outline toggle-btn"
+            className="btn btn-secondary toggle-btn"
             aria-pressed={showRangeRings}
             onClick={onToggleRangeRings}
             title="Show 5/10/20 km range rings around the selected aircraft"
           >
             Range rings
           </button>
-          <button className="btn btn-outline toggle-btn" aria-pressed={colorByAlt} onClick={onToggleColorByAlt}>
+          <button className="btn btn-secondary toggle-btn" aria-pressed={colorByAlt} onClick={onToggleColorByAlt}>
             Alt colour
           </button>
         </div>
@@ -251,12 +251,12 @@ export default function Toolbar({
 
         <div className="toolbar-group">
           <span className="toolbar-group-label">View</span>
-          <button className="btn btn-outline toggle-btn" aria-pressed={followSelected} onClick={onToggleFollow}>
+          <button className="btn btn-secondary toggle-btn" aria-pressed={followSelected} onClick={onToggleFollow}>
             Follow
           </button>
           <div className="toolbar-filters-anchor" ref={filtersRef}>
             <button
-              className="btn btn-outline toggle-btn"
+              className="btn btn-secondary toggle-btn"
               onClick={onToggleFilters}
               aria-expanded={showFilters}
             >
@@ -271,7 +271,7 @@ export default function Toolbar({
             )}
           </div>
           <button
-            className="btn btn-outline toggle-btn"
+            className="btn btn-secondary toggle-btn"
             aria-pressed={showStats}
             onClick={onToggleStats}
             title="Show / hide the live stats panel (s)"

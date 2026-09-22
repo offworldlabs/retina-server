@@ -260,7 +260,7 @@ export function ResultsTree({
                           <span className="de-acts">
                             <button
                               type="button"
-                              className="btn btn-outline btn-sm"
+                              className="btn btn-secondary btn-sm"
                               aria-label={`Preview ${f.name}`}
                               onClick={(e) => {
                                 stop(e);
@@ -270,7 +270,7 @@ export function ResultsTree({
                               Preview
                             </button>
                             <a
-                              className="btn btn-outline btn-sm"
+                              className="btn btn-secondary btn-sm"
                               href={`/api/data/archive/${f.key}`}
                               target="_blank"
                               rel="noreferrer"
