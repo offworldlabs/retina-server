@@ -1,7 +1,7 @@
-import { NavLink } from "react-router-dom";
+import { Link, NavLink } from "react-router-dom";
 import { towerFinderUrl } from "../utils/siblings";
 import { useAuth } from "../context/AuthContext";
-import { advertisedPublicRoutes } from "../utils/publicRoutes";
+import { isPublicRoute } from "../utils/publicRoutes";
 import { externalLinkIcon } from "./RetnodeLink";
 
 type NavItem = {
@@ -64,26 +64,6 @@ const userNav = (syntheticFleet: boolean): NavSection[] => [
     items: [
       { to: "/onboarding", label: "My Nodes", icon: "server" },
     ],
-  },
-];
-
-// What a caller with no session is offered: the open routes and nothing else,
-// read off the same list the guard reads, so neither can be changed alone.
-// One section rather than scattered through the four the signed-in nav has,
-// since sections exist to group and one entry apiece groups nothing.
-//
-// `syntheticFleet` is the one thing that narrows it. /sim is open on every
-// deployment, but only worth pointing at where a fleet is behind it, and a
-// visitor has no /api/auth/me to learn that from — see publicRoutes.ts.
-const publicNav = (syntheticFleet: boolean): NavSection[] => [
-  {
-    title: "Explore",
-    items: advertisedPublicRoutes(syntheticFleet).map(({ path, label, icon, end }) => ({
-      to: path,
-      label,
-      icon,
-      end,
-    })),
   },
 ];
 
@@ -283,13 +263,12 @@ const icons = {
 
 export default function Sidebar({ isAdmin, collapsed, onToggle }) {
   const { user, syntheticFleet } = useAuth();
-  // The console is never reached without a session, so its nav does not have a
-  // signed-out form to choose between.
-  const nav = isAdmin
-    ? adminNav
-    : user
-      ? userNav(Boolean(syntheticFleet))
-      : publicNav(Boolean(syntheticFleet));
+  const nav = isAdmin ? adminNav : userNav(Boolean(syntheticFleet));
+  // A visitor is shown every entry, so the nav says what signing in opens;
+  // those behind a session are greyed out and lead to sign-in. Read off the list
+  // the route guard reads, so an entry is live exactly where its page is open.
+  const locked = (item: NavItem) =>
+    !user && item.to !== undefined && !isPublicRoute(item.to, isAdmin);
 
   return (
     <aside className="sidebar" id="console-sidebar">
@@ -328,6 +307,20 @@ export default function Sidebar({ isAdmin, collapsed, onToggle }) {
                   <span className="nav-label">{item.label}</span>
                   <span className="nav-external">{icons.externalLink}</span>
                 </a>
+              ) : locked(item) ? (
+                // Straight to the sign-in card rather than to a page that would
+                // only bounce there. Marked like the header's Sign in link, so
+                // the card's Back returns to the open page the visitor was on.
+                <Link
+                  key={item.to}
+                  to="/login"
+                  state={{ fromOpenPage: true }}
+                  className="nav-item locked"
+                  title={`${item.label} is only available when signed in`}
+                >
+                  {icons[item.icon]}
+                  <span className="nav-label">{item.label}</span>
+                </Link>
               ) : (
                 <NavLink
                   key={item.to}

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { PUBLIC_PATHS, advertisedPublicRoutes, isPublicRoute } from "../utils/publicRoutes";
+import { PUBLIC_PATHS, isPublicRoute } from "../utils/publicRoutes";
 
 describe("the routes a visitor reaches without signing in", () => {
   it.each(PUBLIC_PATHS)("admits %s on the user surface", (path) => {
@@ -68,41 +68,5 @@ describe("the simulation surface", () => {
 
   it("refuses a route that merely starts like it", () => {
     expect(isPublicRoute("/simulation", false)).toBe(false);
-  });
-});
-
-describe("what a visitor is pointed at", () => {
-  const labels = (fleet: boolean) => advertisedPublicRoutes(fleet).map((r) => r.label);
-
-  it("leaves the simulation out where the server runs no fleet", () => {
-    expect(labels(false)).not.toContain("Simulation");
-  });
-
-  it("offers it where one is running", () => {
-    expect(labels(true)).toContain("Simulation");
-  });
-
-  // Right after the simulator, as its setting.
-  it("offers the physics page beside it, and only there", () => {
-    expect(labels(true).indexOf("Physics Layer")).toBe(labels(true).indexOf("Simulation") + 1);
-    expect(labels(false)).not.toContain("Physics Layer");
-  });
-
-  // NavLink would otherwise mark /sim current on /sim/physics as well.
-  it("ends the simulation entry at its own path", () => {
-    const sim = advertisedPublicRoutes(true).find((r) => r.path === "/sim");
-    expect(sim?.end).toBe(true);
-  });
-
-  // Advertisement is the only thing the flag moves; the route stays reachable
-  // by link everywhere, because one bundle serves every environment.
-  it("does not close the route it declines to advertise", () => {
-    expect(isPublicRoute("/sim", false)).toBe(true);
-  });
-
-  it("offers every other open route either way", () => {
-    for (const fleet of [false, true]) {
-      expect(labels(fleet)).toEqual(expect.arrayContaining(["Map", "Data Explorer", "Leaderboard"]));
-    }
   });
 });

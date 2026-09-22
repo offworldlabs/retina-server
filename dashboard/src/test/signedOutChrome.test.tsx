@@ -6,7 +6,7 @@ import Sidebar from "../components/Sidebar";
 import Header from "../components/Header";
 import LoginPage from "../pages/LoginPage";
 import { ThemeProvider } from "../context/ThemeContext";
-import { advertisedPublicRoutes } from "../utils/publicRoutes";
+import { PUBLIC_PATHS, isPublicRoute } from "../utils/publicRoutes";
 
 const state = vi.hoisted(() => ({
   auth: {
@@ -65,72 +65,109 @@ describe("the sidebar shown to a caller with no session", () => {
     );
   }
 
-  /** What is on screen, in order. */
+  /** Every entry on screen, live or not, in order. */
   const shownLabels = () =>
     screen
       .getAllByRole("link")
       .map((a) => a.textContent?.trim())
       .filter(Boolean);
 
-  // Drawn from the allowlist rather than repeating it, so opening a route and
-  // advertising it are the same edit: an entry in PUBLIC_ROUTES that the nav
-  // did not pick up fails here rather than going unmentioned.
-  it("offers every route open everywhere, and only those", () => {
+  const lockedLabels = () =>
+    screen
+      .getAllByRole("link")
+      .filter((a) => a.classList.contains("locked"))
+      .map((a) => a.textContent?.trim());
+
+  // So a visitor can see what signing in would open, rather than a nav that
+  // changes shape underneath them when they do.
+  it.each([false, true])("lists what the signed-in nav lists (fleet: %s)", (fleet) => {
+    state.auth = { ...state.auth, syntheticFleet: fleet, user: signedIn };
+    const { unmount } = render(
+      <MemoryRouter>
+        <Sidebar isAdmin={false} collapsed={false} onToggle={() => {}} />
+      </MemoryRouter>
+    );
+    const signedInLabels = shownLabels();
+    unmount();
+
+    state.auth = { ...state.auth, user: null };
     renderSidebar();
-    expect(shownLabels()).toEqual(advertisedPublicRoutes(false).map((r) => r.label));
+    expect(shownLabels()).toEqual(signedInLabels);
   });
 
-  it("points each internal entry at its own route", () => {
+  // To the sign-in card rather than the page, which would only bounce there.
+  it.each(["Overview", "My Nodes"])("greys out %s, which needs a session, and leads to sign-in", (label) => {
     renderSidebar();
-    for (const { path, label } of advertisedPublicRoutes(false)) {
-      expect(screen.getByRole("link", { name: label })).toHaveAttribute("href", path);
+    const entry = screen.getByRole("link", { name: label });
+    expect(entry).toHaveClass("locked");
+    expect(entry).toHaveAttribute("href", "/login");
+    expect(entry).toHaveAttribute("title", `${label} is only available when signed in`);
+  });
+
+  // Read off the guard's own list, so opening a route and making its entry
+  // live are the same edit.
+  it("leaves every open route live, pointing at its own page", () => {
+    state.auth = { ...state.auth, syntheticFleet: true };
+    renderSidebar();
+    const hrefs = screen.getAllByRole("link").map((a) => a.getAttribute("href"));
+    for (const path of PUBLIC_PATHS) expect(hrefs).toContain(path);
+    for (const label of ["Map", "Simulation", "Physics Layer", "Data Explorer", "Leaderboard", "Knowledge Base"]) {
+      expect(screen.getByRole("link", { name: label })).not.toHaveClass("locked");
     }
   });
 
-  // /sim is open on every deployment — one bundle serves all three, and a
-  // path that existed on one hostname and not another is what this change
-  // removed. What varies is whether it is worth pointing at: production runs
-  // no simulator, so the entry there would lead to a map that stays empty.
-  it("withholds the simulation where the server runs no fleet", () => {
+  it("leaves Tower Finder live, as another site with its own access", () => {
+    renderSidebar();
+    const entry = screen.getByRole("link", { name: /Tower Finder/ });
+    expect(entry).not.toHaveClass("locked");
+    expect(entry).toHaveAttribute("target", "_blank");
+  });
+
+  // Every entry, read off the signed-in nav rather than listed here, so a
+  // page added to or taken out of the nav needs no edit to this test.
+  it("greys out exactly the entries whose page needs a session", () => {
+    state.auth = { ...state.auth, syntheticFleet: true, user: signedIn };
+    const { unmount } = render(
+      <MemoryRouter>
+        <Sidebar isAdmin={false} collapsed={false} onToggle={() => {}} />
+      </MemoryRouter>
+    );
+    const needsSession = screen
+      .getAllByRole("link")
+      .filter((a) => {
+        const href = a.getAttribute("href") ?? "";
+        return href.startsWith("/") && !isPublicRoute(href, false);
+      })
+      .map((a) => a.textContent?.trim());
+    unmount();
+
+    state.auth = { ...state.auth, user: null };
+    renderSidebar();
+    expect(needsSession).toContain("Overview");
+    expect(lockedLabels()).toEqual(needsSession);
+  });
+
+  // /sim is open on every deployment — one bundle serves all three. What
+  // varies is whether it is worth pointing at: production runs no simulator,
+  // so the entry there would lead to a map that stays empty.
+  it("withholds the simulation and its physics page where the server runs no fleet", () => {
     renderSidebar();
     expect(screen.queryByText("Simulation")).not.toBeInTheDocument();
-  });
-
-  it("offers it where one is running", () => {
-    state.auth = { ...state.auth, syntheticFleet: true };
-    renderSidebar();
-    expect(screen.getByRole("link", { name: "Simulation" })).toHaveAttribute("href", "/sim");
-    expect(shownLabels()).toEqual(advertisedPublicRoutes(true).map((r) => r.label));
-  });
-
-  // The page that configures the fleet. Its save is open like the rest of
-  // the simulator, so a visitor is pointed at it wherever there is a fleet.
-  it("offers the physics page beside the simulation where one is running", () => {
-    state.auth = { ...state.auth, syntheticFleet: true };
-    renderSidebar();
-    expect(screen.getByRole("link", { name: "Physics Layer" })).toHaveAttribute("href", "/sim/physics");
-  });
-
-  it("withholds the physics page with the simulation where there is no fleet", () => {
-    renderSidebar();
     expect(screen.queryByText("Physics Layer")).not.toBeInTheDocument();
   });
 
-  // Nothing on screen leads to a wall: an entry that only answers to a session
-  // is a link whose whole behaviour is to bounce the caller to a login card.
-  it.each(["Overview", "Detections", "My Nodes", "Alerts"])(
-    "withholds %s",
-    (label) => {
-      renderSidebar();
-      expect(screen.queryByText(label)).not.toBeInTheDocument();
-    }
-  );
-
-  it("offers the whole dashboard once there is a session", () => {
-    state.auth = { ...state.auth, user: signedIn };
+  it("offers both where one is running", () => {
+    state.auth = { ...state.auth, syntheticFleet: true };
     renderSidebar();
-    expect(screen.getByText("My Nodes")).toBeInTheDocument();
-    expect(screen.getByText("Leaderboard")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Simulation" })).toHaveAttribute("href", "/sim");
+    expect(screen.getByRole("link", { name: "Physics Layer" })).toHaveAttribute("href", "/sim/physics");
+  });
+
+  it("greys out nothing once there is a session", () => {
+    state.auth = { ...state.auth, user: signedIn, syntheticFleet: true };
+    renderSidebar();
+    expect(lockedLabels()).toEqual([]);
+    expect(screen.getByRole("link", { name: "My Nodes" })).toHaveAttribute("href", "/onboarding");
   });
 });
 
@@ -198,6 +235,30 @@ describe("signing in from an open page and changing one's mind", () => {
 
     // A pop rather than a fresh visit, so the browser's own Back does not
     // then lead to the login card again.
+    expect(screen.getByLabelText("location")).toHaveTextContent("POP /leaderboard?page=2");
+  });
+
+  it("returns there from a greyed-out nav entry too", () => {
+    stubBrowser();
+    render(
+      <MemoryRouter initialEntries={["/leaderboard?page=2"]}>
+        <ThemeProvider>
+          <Routes>
+            <Route
+              path="/leaderboard"
+              element={<Sidebar isAdmin={false} collapsed={false} onToggle={() => {}} />}
+            />
+            <Route path="/login" element={<LoginPage />} />
+          </Routes>
+          <Where />
+        </ThemeProvider>
+      </MemoryRouter>
+    );
+
+    fireEvent.click(screen.getByRole("link", { name: "My Nodes" }));
+    expect(screen.getByLabelText("location")).toHaveTextContent("PUSH /login");
+
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
     expect(screen.getByLabelText("location")).toHaveTextContent("POP /leaderboard?page=2");
   });
 });
