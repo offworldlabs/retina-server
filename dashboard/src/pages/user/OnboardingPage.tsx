@@ -5,6 +5,7 @@ import { StatCard } from "../../components/StatCard";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
 import { useFetch } from "../../hooks/usePolling";
 import { StatusBadge } from "../../components/StatusBadge";
+import { formatMHz } from "../../utils/format";
 import { isOnline } from "../../utils/nodes";
 import type { LocationPrivacySource } from "../../types";
 
@@ -84,7 +85,7 @@ export default function OnboardingPage() {
                   <td>
                     <StatusBadge status={n.status} />
                   </td>
-                  <td>{n.frequency ? `${(n.frequency / 1e6).toFixed(2)} MHz` : "—"}</td>
+                  <td>{formatMHz(n.frequency)}</td>
                   <td>
                     {n.rx_lat != null && n.rx_lon != null
                       ? `${n.rx_lat.toFixed(3)}, ${n.rx_lon.toFixed(3)}`

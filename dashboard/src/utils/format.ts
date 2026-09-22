@@ -55,6 +55,14 @@ export function formatPercent(n: number | null | undefined, decimals = 1): strin
   return value === DASH ? DASH : `${value}%`;
 }
 
+/** A frequency in hertz as megahertz, or a dash for a missing one. Three
+ *  places, because DAB block centres are set to the kilohertz (5A is
+ *  174.928 MHz). */
+export function formatMHz(hz: number | null | undefined): string {
+  if (!hz || !Number.isFinite(hz)) return DASH;
+  return `${(hz / 1e6).toFixed(3)} MHz`;
+}
+
 /** A byte count in B, KB, MB or GB. A day of archive across the fleet passes
  *  a gigabyte, so the largest step earns its place. */
 export function formatBytes(bytes: number): string {
