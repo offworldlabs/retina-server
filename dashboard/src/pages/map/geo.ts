@@ -1,5 +1,6 @@
 import { VIEWPORT_PAD_DEG } from "./constants";
 import { wrapLonNear } from "./worldWrap";
+import { distanceKm } from "../../utils/geo";
 
 export function getAircraftAnchorPoint(ac) {
   if (ac?.lat != null && ac?.lon != null) {
@@ -150,7 +151,7 @@ export function yagiSectorPositions(
   // so the radius is recomputed per step instead of held constant.
   const useBistatic = maxBistaticRangeKm != null && Number.isFinite(maxBistaticRangeKm);
   const baselineKm = useBistatic
-    ? haversineDistanceKm(rxLat, rxLon, txLat, txLon)
+    ? distanceKm(rxLat, rxLon, txLat, txLon)
     : 0;
   const bearingToTx = useBistatic ? bearingDeg(rxLat, rxLon, txLat, txLon) : 0;
 
@@ -172,17 +173,6 @@ export function yagiSectorPositions(
 }
 
 
-const EARTH_RADIUS_KM = 6371;
-
-export function haversineDistanceKm(lat1, lon1, lat2, lon2) {
-  const phi1 = lat1 * Math.PI / 180;
-  const phi2 = lat2 * Math.PI / 180;
-  const dPhi = (lat2 - lat1) * Math.PI / 180;
-  const dLambda = (lon2 - lon1) * Math.PI / 180;
-  const a = Math.sin(dPhi / 2) ** 2 + Math.cos(phi1) * Math.cos(phi2) * Math.sin(dLambda / 2) ** 2;
-  return EARTH_RADIUS_KM * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
 export function bearingDeg(fromLat, fromLon, toLat, toLon) {
   const phi1 = fromLat * Math.PI / 180;
   const phi2 = toLat * Math.PI / 180;
@@ -193,7 +183,7 @@ export function bearingDeg(fromLat, fromLon, toLat, toLon) {
 }
 
 export function isInBeam(rxLat, rxLon, azimuthDeg, beamWidthDeg, maxRangeKm, acLat, acLon) {
-  if (haversineDistanceKm(rxLat, rxLon, acLat, acLon) > maxRangeKm) return false;
+  if (distanceKm(rxLat, rxLon, acLat, acLon) > maxRangeKm) return false;
   const bearing = bearingDeg(rxLat, rxLon, acLat, acLon);
   // +540 (= 360 + 180) keeps the operand to % positive — JS's % returns the
   // sign of the dividend, so (bearing - azimuth + 180) % 360 - 180 breaks
@@ -245,7 +235,7 @@ export function nearestPointOnPolyline(
   return {
     lat: best[0],
     lon: best[1],
-    distKm: haversineDistanceKm(lat, lon, best[0], best[1]),
+    distKm: distanceKm(lat, lon, best[0], best[1]),
   };
 }
 

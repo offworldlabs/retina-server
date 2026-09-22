@@ -4,7 +4,7 @@ import { POSITION_SOURCE_ARC_ONLY, POSITION_SOURCE_ADSB_SINGLE } from "./constan
 import { classifyHex } from "./hexInfo";
 import { usePalette } from "./useMapTheme";
 import { truthClass, truthFill } from "./truthColor";
-import { distanceKm } from "./distance";
+import { distanceKm } from "../../utils/geo";
 import { M_PER_FT } from "./units";
 
 // Fixed row height must match .al-row CSS (height: 40px, box-sizing: border-box).

@@ -21,7 +21,8 @@ import {
   VIEWPORT,
   type MapMode,
 } from "./mapProjection";
-import { distanceKm, type RegistryNode } from "./nodes";
+import { distanceKm } from "../../../utils/geo";
+import type { RegistryNode } from "./nodes";
 import type { ExplorerFilters } from "./urlState";
 
 /** Below this the ring is a dot and says nothing about where its edge is. */
