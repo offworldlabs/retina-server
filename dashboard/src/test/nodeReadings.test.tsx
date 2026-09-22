@@ -81,6 +81,16 @@ describe("a node's detection count", () => {
   });
 });
 
+describe("a node's labels", () => {
+  // The listing behind the page is keyed on the ref and carries no node_id.
+  it("calls the ref on RF Environment a node ref", async () => {
+    serve();
+    render(<RFEnvironmentPage />);
+    expect(await valueBeside("Node ref")).toHaveTextContent(REF);
+    expect(screen.queryByText("Node ID")).toBeNull();
+  });
+});
+
 describe("a node's liveness", () => {
   it("counts a node with no status as offline in the stat card and the row alike", async () => {
     serve(null);

@@ -86,6 +86,32 @@ describe("the leaderboard shown to a caller with no session", () => {
   });
 });
 
+describe("a node's name on the leaderboard", () => {
+  it("is shown whole rather than cut like a ref", async () => {
+    serve({ ...publicRow, name: "Ada's rooftop receiver" });
+    render(
+      <MemoryRouter>
+        <LeaderboardPage />
+      </MemoryRouter>
+    );
+    // Named twice on the page: once on the podium card, once in the table row.
+    await waitFor(() => expect(screen.getAllByText("Ada's rooftop receiver")).toHaveLength(2));
+  });
+
+  // The route answers with the whole ref as the name when a node carries none
+  // of its own, which would otherwise read as a very long name.
+  it("falls back to the short ref when the node has no name of its own", async () => {
+    serve({ ...publicRow, node_ref: "nde4f2k9xq7m3b8", name: "nde4f2k9xq7m3b8" });
+    render(
+      <MemoryRouter>
+        <LeaderboardPage />
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(screen.getAllByText("4f2k9xq7m3b8")).toHaveLength(2));
+    expect(screen.queryByText("nde4f2k9xq7m3b8")).not.toBeInTheDocument();
+  });
+});
+
 describe("the leaderboard shown to a caller with a session", () => {
   beforeEach(() => {
     state.auth = { user: { name: "Ada" }, loading: false };
