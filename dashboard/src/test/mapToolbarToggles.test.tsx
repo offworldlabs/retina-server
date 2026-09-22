@@ -37,7 +37,7 @@ describe("the map toolbar's toggles", () => {
     const toggles = [...container.querySelectorAll(".toggle-btn")];
     expect(toggles.length).toBeGreaterThan(10);
     for (const el of toggles) {
-      expect(el).toHaveClass("btn", "btn-outline");
+      expect(el).toHaveClass("btn", "btn-secondary");
       expect(el).not.toHaveClass("active");
     }
   });
