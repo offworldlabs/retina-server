@@ -2,7 +2,8 @@
 import { memo, useEffect, useRef } from "react";
 import { useMap } from "react-leaflet";
 import L from "leaflet";
-import { pointInPolygon, haversineDistanceKm } from "./geo";
+import { pointInPolygon } from "./geo";
+import { distanceKm } from "../../utils/geo";
 import { groundTruthKey } from "./constants";
 import { usePalette } from "./useMapTheme";
 
@@ -66,7 +67,7 @@ const InBeamDiagnostic = memo(function InBeamDiagnostic({ detectionsRef, groundT
         if (!Array.isArray(polygon) || polygon.length < 3) continue;
         let reachKm = 0;
         for (const [vLat, vLon] of polygon) {
-          const d = haversineDistanceKm(rxLat, rxLon, vLat, vLon);
+          const d = distanceKm(rxLat, rxLon, vLat, vLon);
           if (d > reachKm) reachKm = d;
         }
         nodeList.push({
