@@ -2,6 +2,7 @@ import { api } from "../../api/client";
 import { DataTable } from "../../components/DataTable";
 import { FetchNotice } from "../../components/Notice";
 import { StatCard } from "../../components/StatCard";
+import { UsageBar } from "../../components/UsageBar";
 import { usePolling } from "../../hooks/usePolling";
 import { fmt } from "../../utils/format";
 
@@ -17,20 +18,7 @@ function ago(epoch: number | undefined): string {
 
 function QueueBar({ depth, max, label }: { depth: number; max: number; label: string }) {
   const pct = max > 0 ? Math.min(100, (depth / max) * 100) : 0;
-  const color = pct > 80 ? "var(--error)" : pct > 50 ? "var(--warning)" : "var(--success)";
-  return (
-    <div style={{ marginBottom: 12 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
-        <span>{label}</span>
-        <span style={{ color: "var(--text-muted)" }}>
-          {depth} / {max} ({fmt(pct, 1)}%)
-        </span>
-      </div>
-      <div style={{ height: 8, background: "var(--bg-secondary)", borderRadius: 4, overflow: "hidden" }}>
-        <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 4, transition: "width 0.3s" }} />
-      </div>
-    </div>
-  );
+  return <UsageBar label={label} value={<>{depth} / {max} ({fmt(pct, 1)}%)</>} pct={pct} />;
 }
 
 export default function SystemMetricsPage() {
@@ -122,18 +110,13 @@ export default function SystemMetricsPage() {
               const total = m.disk_total_gb ?? 1;
               const used = m.disk_used_gb ?? 0;
               const pct = (used / total) * 100;
-              const color = pct > 90 ? "var(--error)" : pct > 70 ? "var(--warning)" : "var(--success)";
               return (
-                <>
-                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
-                    <span>Used: {fmt(used, 1)} GB</span>
-                    <span style={{ color: "var(--text-muted)" }}>Free: {fmt(m.disk_free_gb, 1)} GB / {fmt(total, 0)} GB</span>
-                  </div>
-                  <div style={{ height: 8, background: "var(--bg-secondary)", borderRadius: 4, overflow: "hidden" }}>
-                    <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 4 }} />
-                  </div>
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>{fmt(pct, 1)}% used</div>
-                </>
+                <UsageBar
+                  label={<>Used: {fmt(used, 1)} GB</>}
+                  value={<>Free: {fmt(m.disk_free_gb, 1)} GB / {fmt(total, 0)} GB</>}
+                  pct={pct}
+                  note={<>{fmt(pct, 1)}% used</>}
+                />
               );
             })()}
           </div>
