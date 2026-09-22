@@ -101,31 +101,11 @@
   gap: 4px;
 }
 
-.de-chip {
+/* The shared outline .btn, pressed by aria-pressed, drawn as a pill. */
+.btn.de-chip {
   padding: 5px 10px;
-  border: 1px solid var(--border-light);
   border-radius: 999px;
-  background: transparent;
-  color: var(--text-secondary);
-  font-family: inherit;
   font-size: 12px;
-  cursor: pointer;
-}
-
-.de-chip:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--text-primary);
-}
-
-.de-chip.on {
-  background: var(--accent-light);
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.de-chip:disabled {
-  opacity: 0.5;
-  cursor: default;
 }
 
 /* The node picker's own control, which looks like a select and is a button

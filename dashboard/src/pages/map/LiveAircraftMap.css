@@ -430,40 +430,18 @@
   white-space: nowrap;
 }
 
-/* Toggle buttons */
-.toggle-btn {
-  display: flex;
-  align-items: center;
+/* Toggle buttons: the shared outline .btn, pressed by aria-pressed (or
+   aria-expanded, for the two that open something), at the toolbar's density. */
+.app.map-surface .btn.toggle-btn {
   gap: 4px;
-  border: 1px solid var(--border);
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
   padding: 3px 9px;
-  border-radius: var(--radius-sm);
-  font: inherit;
   font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s;
   user-select: none;
-  white-space: nowrap;
-}
-
-.toggle-btn:hover {
-  background: var(--bg-card-hover);
-  border-color: var(--border-light);
-  color: var(--text-primary);
-}
-
-.toggle-btn.active {
-  background: var(--accent-light);
-  border-color: var(--accent);
-  color: var(--accent-hover);
 }
 
 /* The anomalies toggle is the one control that reports a condition as well as
    a state, so it takes the error colour when it is filtering. */
-.toggle-btn.alert.active {
+.app.map-surface .btn.toggle-btn.alert[aria-pressed="true"] {
   background: var(--error-light);
   border-color: var(--error);
   color: var(--error);
