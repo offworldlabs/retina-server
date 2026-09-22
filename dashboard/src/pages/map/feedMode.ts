@@ -11,7 +11,7 @@
  * `synthetic`, so one console serves both fleets at two addresses. No hostname
  * defaults to `synthetic` any more — /sim is the only way to ask for it.
  */
-import { usesRealOnlyFeed } from "./utils/domains";
+import { usesRealOnlyFeed } from "../../utils/domains";
 
 export type FeedMode = "real" | "synthetic" | "all";
 

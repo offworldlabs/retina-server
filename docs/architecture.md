@@ -14,7 +14,7 @@ All of them are one SPA, the console (`dashboard/`), served at the root; the old
 
 - **map** (`/map`, where `/` opens) — the live map, the console's front page.
   Every deployed environment shows real nodes only here (the default is
-  resolved client-side in `dashboard/src/pages/map/utils/domains.ts`; the
+  resolved client-side in `dashboard/src/utils/domains.ts`; the
   laptop keeps both fleets). The synthetic simulation fleet has its own page,
   `/sim`, which is populated only where a fleet runs: the test droplet, and a
   local stack. Production and staging run none.
