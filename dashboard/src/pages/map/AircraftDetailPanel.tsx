@@ -1,6 +1,6 @@
-import { useState, useEffect } from "react";
 import { api } from "../../api/client";
 import { DASH } from "../../utils/format";
+import { usePolling } from "../../hooks/usePolling";
 import { POSITION_SOURCE_ARC_ONLY, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
 import { classifyHex, emergencySquawkLabel } from "./hexInfo";
 import { trailToCsv, downloadCsv } from "./trailExport";
@@ -418,25 +418,10 @@ function Field({ label, value }) {
 
 function MlatVerificationSection({ solverHex }) {
   const { MLAT } = usePalette();
-  const [data, setData] = useState(null);
-  const [accuracy, setAccuracy] = useState(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = () => {
-      // Two requests, each settling on its own: one endpoint failing leaves the
-      // other's figure updating, and the failed one keeps what it last showed.
-      api.mlatVerification()
-        .then((verification) => { if (!cancelled && verification) setData(verification); })
-        .catch(() => {});
-      api.mlatAccuracy()
-        .then((rolling) => { if (!cancelled && rolling) setAccuracy(rolling); })
-        .catch(() => {});
-    };
-    load();
-    const interval = setInterval(load, 30000);
-    return () => { cancelled = true; clearInterval(interval); };
-  }, []);
+  // Two polls, each settling on its own: one endpoint failing leaves the
+  // other's figure updating, and the failed one keeps what it last showed.
+  const { data } = usePolling(api.mlatVerification, 30_000);
+  const { data: accuracy } = usePolling(api.mlatAccuracy, 30_000);
 
   if (!data || !data.n_matched) return null;
 
