@@ -10,6 +10,7 @@ import { usePalette } from "./useMapTheme";
 import { activePalette, activeTheme } from "./mapPalette";
 import { truthClass, truthFill, truthLegend } from "./truthColor";
 import { withCartoKey } from "./utils/basemap";
+import { TILES } from "./utils/tiles";
 import {
   formatKm,
   formatPct,
@@ -908,8 +909,8 @@ export default function PhysicsSettings() {
                   key={theme}
                   url={withCartoKey(
                     theme === "light"
-                      ? "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png"
-                      : "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+                      ? TILES.cartoLight
+                      : TILES.cartoDark,
                   )}
                 />
                 {ac.map(a => (
