@@ -6,6 +6,8 @@
  * Usage: `toast("Copied")`, `toast("Failed", { tone: "error" })`.
  */
 
+import { writeClipboard } from "../../utils/clipboard";
+
 type Tone = "info" | "success" | "error" | "warn";
 
 interface ToastEntry {
@@ -87,24 +89,7 @@ export function toast(text: string, opts: { tone?: Tone; durationMs?: number } =
 
 /** Copy a string to the clipboard, with a built-in success/failure toast. */
 export async function copyToClipboard(text: string, label = "Copied"): Promise<boolean> {
-  try {
-    if (navigator?.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-    } else {
-      // Fallback for non-secure contexts
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-    }
-    toast(label, { tone: "success" });
-    return true;
-  } catch {
-    toast("Copy failed", { tone: "error" });
-    return false;
-  }
+  const ok = await writeClipboard(text);
+  toast(ok ? label : "Copy failed", { tone: ok ? "success" : "error" });
+  return ok;
 }
