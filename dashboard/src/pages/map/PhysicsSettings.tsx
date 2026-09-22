@@ -431,9 +431,9 @@ export default function PhysicsSettings() {
     <div className="ps-container">
 
       {/* ── Header ──────────────────────────────────────────────────── */}
-      <div className="ps-header">
-        <h2>Physics Object Layer</h2>
-        <p className="ps-subtitle">
+      <div className="page-header">
+        <h1>Physics Object Layer</h1>
+        <p>
           Adjust the mix of synthetic aircraft types spawned by the fleet simulator.
           Changes apply to newly-spawned objects (next spawn cycle ~40 s).
         </p>
@@ -471,25 +471,25 @@ export default function PhysicsSettings() {
 
       {/* ── Live Count Grid ──────────────────────────────────────────── */}
       <div className="ps-count-grid">
-        <div className="ps-count-card" style={{ "--class-color": SIM_ANOMALOUS }}>
+        <div className="stat-card ps-count-card" style={{ "--class-color": SIM_ANOMALOUS }}>
           <AnomalousIcon size={28} />
-          <span className="ps-count-num">{counts.anomalous ?? 0}</span>
-          <span className="ps-count-lbl">Anomalous</span>
+          <span className="stat-value">{counts.anomalous ?? 0}</span>
+          <span className="stat-label">Anomalous</span>
         </div>
-        <div className="ps-count-card" style={{ "--class-color": SIM_DRONE }}>
+        <div className="stat-card ps-count-card" style={{ "--class-color": SIM_DRONE }}>
           <DroneIcon size={28} />
-          <span className="ps-count-num">{counts.drone ?? 0}</span>
-          <span className="ps-count-lbl">Drones</span>
+          <span className="stat-value">{counts.drone ?? 0}</span>
+          <span className="stat-label">Drones</span>
         </div>
-        <div className="ps-count-card" style={{ "--class-color": SIM_DARK }}>
+        <div className="stat-card ps-count-card" style={{ "--class-color": SIM_DARK }}>
           <PlaneIcon color={SIM_DARK} size={28} />
-          <span className="ps-count-num">{counts.aircraft ?? 0}</span>
-          <span className="ps-count-lbl">Aircraft</span>
+          <span className="stat-value">{counts.aircraft ?? 0}</span>
+          <span className="stat-label">Aircraft</span>
         </div>
-        <div className="ps-count-card ps-count-total" style={{ "--class-color": SIM_COMMERCIAL }}>
+        <div className="stat-card ps-count-card" style={{ "--class-color": SIM_COMMERCIAL }}>
           <PlaneIcon color={SIM_COMMERCIAL} size={28} />
-          <span className="ps-count-num">{totalGt}</span>
-          <span className="ps-count-lbl">Total Live</span>
+          <span className="stat-value">{totalGt}</span>
+          <span className="stat-label">Total Live</span>
         </div>
       </div>
 
@@ -523,7 +523,7 @@ export default function PhysicsSettings() {
         {types.map(({ key, label, countKey, color, Icon, description, mapNote, maxPct }) => {
           const fillPct = (pct(draft[key]) / maxPct) * 100;
           return (
-            <div key={key} className="ps-type-card" style={{ "--class-color": color }}>
+            <div key={key} className="card ps-type-card" style={{ "--class-color": color }}>
               <div className="ps-type-header">
                 <div className="ps-type-icon-wrap">
                   <Icon size={24} />
@@ -558,7 +558,7 @@ export default function PhysicsSettings() {
         })}
 
         {/* Commercial — derived, read-only */}
-        <div className="ps-type-card ps-commercial" style={{ "--class-color": SIM_COMMERCIAL }}>
+        <div className="card ps-type-card ps-commercial" style={{ "--class-color": SIM_COMMERCIAL }}>
           <div className="ps-type-header">
             <div className="ps-type-icon-wrap">
               <PlaneIcon color={SIM_COMMERCIAL} size={24} />
@@ -597,7 +597,7 @@ export default function PhysicsSettings() {
 
       {/* ── Settings ────────────────────────────────────────────────── */}
       <div className="ps-settings-grid">
-        <div className="ps-settings-card">
+        <div className="card ps-settings-card">
           <div className="ps-settings-label">
             Total objects target
             <span className="ps-settings-sublabel"> (spawns {draft.min_aircraft}–{draft.max_aircraft})</span>
@@ -635,7 +635,7 @@ export default function PhysicsSettings() {
             Deliberately its own card, not a segment of the composition bar:
             the feed sets the live headcount, so it is not a share of the
             synthetic mix and must not be summed with it. */}
-        <div className="ps-settings-card ps-live-card" style={{ "--class-color": TRUTH_LIVE_DARK }}>
+        <div className="card ps-settings-card ps-live-card" style={{ "--class-color": TRUTH_LIVE_DARK }}>
           <div className="ps-settings-label">
             Live ADS-B traffic
             <span className="ps-settings-sublabel"> (real aircraft from adsb.retina.fm, echoed by the synthetic nodes)</span>
@@ -716,7 +716,7 @@ export default function PhysicsSettings() {
             </p>
 
             <div className="ps-settings-grid">
-              <div className="ps-settings-card">
+              <div className="card ps-settings-card">
                 <div className="ps-settings-label">Node count</div>
                 <div className="ps-slider-row">
                   <input
@@ -741,7 +741,7 @@ export default function PhysicsSettings() {
                 </div>
               </div>
 
-              <div className="ps-settings-card">
+              <div className="card ps-settings-card">
                 <div className="ps-settings-label">
                   Dual-node fraction
                   <span className="ps-settings-sublabel">
@@ -771,7 +771,7 @@ export default function PhysicsSettings() {
                 </div>
               </div>
 
-              <div className="ps-settings-card">
+              <div className="card ps-settings-card">
                 <div className="ps-settings-label">Max detection range</div>
                 <div className="ps-slider-row">
                   <input
@@ -902,12 +902,12 @@ export default function PhysicsSettings() {
         <div className="ps-perf-section">
           <div className="ps-perf-title">Solver Report</div>
           <div className="ps-perf-grid">
-            <div className="ps-perf-card ps-perf-rate">
-              <span className="ps-perf-val">{gtData.performance.detection_rate_pct}%</span>
-              <span className="ps-perf-lbl">Detection Rate</span>
+            <div className="stat-card ps-perf-card ps-perf-rate">
+              <span className="stat-value">{gtData.performance.detection_rate_pct}%</span>
+              <span className="stat-label">Detection Rate</span>
             </div>
             <div
-              className="ps-perf-card"
+              className="stat-card ps-perf-card"
               title={
                 "Dark-lane published solves this window that landed more than " +
                 `${solverStats?.ghosts.gate_km ?? 5} km from every ground-truth trail at the solve epoch. ` +
@@ -915,10 +915,10 @@ export default function PhysicsSettings() {
                 `Live now: ${solverStats?.ghosts.live.ghost_tracks ?? "—"} ghost of ${solverStats?.ghosts.live.dark_tracks ?? "—"} dark tracks on the map.`
               }
             >
-              <span className="ps-perf-val">
+              <span className="stat-value">
                 {solverStats ? solverStats.ghosts.ghosts : "—"}
               </span>
-              <span className="ps-perf-lbl">
+              <span className="stat-label">
                 Ghost Solves
                 {solverStats && (
                   <span className="ps-perf-sublbl">
@@ -928,21 +928,21 @@ export default function PhysicsSettings() {
                 )}
               </span>
             </div>
-            <div className="ps-perf-card" title="Dark-lane published solves vs ground truth, this window">
-              <span className="ps-perf-val">
+            <div className="stat-card ps-perf-card" title="Dark-lane published solves vs ground truth, this window">
+              <span className="stat-value">
                 {solverStats ? formatKm(solverStats.position_error_km.median) : "—"}
               </span>
-              <span className="ps-perf-lbl">Median Error</span>
+              <span className="stat-label">Median Error</span>
             </div>
-            <div className="ps-perf-card" title="Dark-lane published solves vs ground truth, this window">
-              <span className="ps-perf-val">
+            <div className="stat-card ps-perf-card" title="Dark-lane published solves vs ground truth, this window">
+              <span className="stat-value">
                 {solverStats ? formatKm(solverStats.position_error_km.p90) : "—"}
               </span>
-              <span className="ps-perf-lbl">p90 Error</span>
+              <span className="stat-label">p90 Error</span>
             </div>
-            <div className="ps-perf-card">
-              <span className="ps-perf-val">{gtData.performance.multinode_tracks}</span>
-              <span className="ps-perf-lbl">Multinode Tracks</span>
+            <div className="stat-card ps-perf-card">
+              <span className="stat-value">{gtData.performance.multinode_tracks}</span>
+              <span className="stat-label">Multinode Tracks</span>
             </div>
           </div>
 
@@ -1041,7 +1041,7 @@ export default function PhysicsSettings() {
       )}
 
       {/* ── Doppler Arc Guide ───────────────────────────────────────── */}
-      <div className="ps-doppler-guide">
+      <div className="card ps-doppler-guide">
         <div className="ps-doppler-title">
           <svg width="14" height="14" viewBox="0 0 24 24" style={{ display:"inline-block", verticalAlign:"middle", marginRight:6 }}>
             <path d="M12 2 Q20 12 12 22 Q4 12 12 2Z" fill="none" stroke={ACCENT_STRONG} strokeWidth="1.5" />
