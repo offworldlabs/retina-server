@@ -5,6 +5,7 @@ import { DataTable } from "../../components/DataTable";
 import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { useFetch, usePolling } from "../../hooks/usePolling";
+import { shortRef } from "../../utils/nodes";
 
 const PAGE_SIZE = 25;
 
@@ -76,7 +77,7 @@ export default function DetectionsPage() {
             >
               <option value="">All Nodes</option>
               {nodes.map((nid) => (
-                <option key={nid} value={nid}>{nid.slice(-12)}</option>
+                <option key={nid} value={nid}>{shortRef(nid)}</option>
               ))}
             </select>
             <span style={{ fontSize: 12, color: "var(--text-muted)" }}>

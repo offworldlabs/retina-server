@@ -10,7 +10,7 @@ import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
 import { useChartTheme, seriesColour } from "../../utils/chartTheme";
-import { detectionCount } from "../../utils/nodes";
+import { detectionCount, shortRef } from "../../utils/nodes";
 
 const TOP_N_CHART = 15;
 const PAGE_SIZE = 25;
@@ -51,7 +51,7 @@ export default function AnalyticsPage() {
 
   // Trust distribution — show top N by trust, sorted descending
   const allTrust = nodeEntries.map(([ref, n]) => ({
-    name: (ref || "").slice(-8),
+    name: shortRef(ref),
     trust: Math.round((n.trust?.trust_score || 0) * 100),
     reputation: Math.round((n.reputation?.reputation || 0) * 100),
   })).sort((a, b) => b.trust - a.trust);
@@ -59,7 +59,7 @@ export default function AnalyticsPage() {
 
   // Detection share — top 10 + "Others" bucket
   const allDetections = nodeEntries.map(([ref, n]) => ({
-    name: (ref || "").slice(-8),
+    name: shortRef(ref),
     value: detectionCount(n),
   })).sort((a, b) => b.value - a.value);
   const topDet = allDetections.slice(0, 10);
@@ -213,8 +213,8 @@ export default function AnalyticsPage() {
               const j = o.jaccard || o.overlap || 0;
               return (
                 <tr key={currentOverlapPage * PAGE_SIZE + i}>
-                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(o.node_a || "").slice(-8)}</td>
-                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(o.node_b || "").slice(-8)}</td>
+                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>{shortRef(o.node_a)}</td>
+                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>{shortRef(o.node_b)}</td>
                   <td>{j.toFixed(3)}</td>
                   <td>{o.shared_bins || o.shared || "—"}</td>
                   <td>
