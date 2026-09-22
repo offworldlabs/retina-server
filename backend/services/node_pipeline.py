@@ -73,7 +73,8 @@ def pipeline_frame(frame: "DetectionFrame") -> dict:
     `adsb_hex` travels under its own key rather than `adsb`, which
     frame_processor reads as position reports. The contract's hex array is an
     association and carries no lat/lon, so filing it there would be filing an
-    empty position for every detection.
+    empty position for every detection.  It is always a full-length list here,
+    whichever column the node sent the hexes in, or neither.
 
     The contract's `adsb` tags DO carry a position, so those are filed under
     `adsb` in the shape the TCP ingest has always produced (`alt_baro`, not
@@ -93,7 +94,7 @@ def pipeline_frame(frame: "DetectionFrame") -> dict:
         "delay": list(frame.delay),
         "doppler": list(frame.doppler),
         "snr": list(frame.snr),
-        "adsb_hex": list(frame.adsb_hex),
+        "adsb_hex": _hexes(frame),
         "seq": frame.seq,
         "boot_id": frame.boot_id,
         "config_version": frame.config_version,
@@ -101,6 +102,15 @@ def pipeline_frame(frame: "DetectionFrame") -> dict:
     if frame.adsb is not None:
         out["adsb"] = [_tag_record(tag) if tag is not None else None for tag in frame.adsb]
     return out
+
+
+def _hexes(frame: "DetectionFrame") -> list[str | None]:
+    """The frame's association as one hex or None per detection."""
+    if frame.adsb_hex is not None:
+        return list(frame.adsb_hex)
+    if frame.adsb is not None:
+        return [tag.hex if tag is not None else None for tag in frame.adsb]
+    return [None] * len(frame.delay)
 
 
 def _tag_record(tag) -> dict:

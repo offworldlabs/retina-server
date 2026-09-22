@@ -140,6 +140,19 @@ async def test_a_frame_is_accepted_whole_and_reaches_the_queue(registered_node, 
     assert frame["adsb_hex"] == ["4ca1f2", None]
 
 
+async def test_a_frame_without_adsb_hex_is_accepted(registered_node, node_client):
+    """`adsb_hex` is optional since 1.5.0: `adsb` carries the same hex."""
+    token, _ = registered_node
+    frame = _frame(adsb=[{"hex": "4ca1f2", "lat": 33.87, "lon": -84.68}, None])
+    del frame["adsb_hex"]
+
+    response = node_client.post(DETECTION, headers=_auth(token), json=frame)
+
+    assert response.status_code == 202
+    ((_, queued),) = _queued()
+    assert queued["adsb_hex"] == ["4ca1f2", None]
+
+
 async def test_the_queued_frame_is_attributed_from_the_token(registered_node, node_client):
     """The body names no node, so `_node_id` can only have come from the bearer.
 

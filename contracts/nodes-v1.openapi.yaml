@@ -601,8 +601,10 @@ paths:
       - streaming
       summary: Send one detection frame.
       description: |-
-        One frame per request. `delay`, `doppler`, `snr` and `adsb_hex` are parallel and must be the
-        same length. An empty frame is valid and worth sending.
+        One frame per request. `delay`, `doppler` and `snr` are parallel and must be the same length,
+        as must `adsb` and `adsb_hex` when sent. `adsb` is the node's ADS-B correlation, one entry per
+        detection. `adsb_hex` is the same correlation as bare hexes and is deprecated; a frame that
+        sends both must have them agree. An empty frame is valid and worth sending.
 
         ## Sending behaviour
 
@@ -906,13 +908,13 @@ components:
       description: |-
         The node's own ADS-B correlation for one detection, position included.
 
-        `adsb_hex` says which aircraft the node matched; this says where that
-        aircraft was, from the node's own receiver, at the frame instant.  The
-        server files the position into its aircraft cache under the node's world,
-        so the known lane can claim the detection and record a coverage
-        calibration point without a position source of its own.  That matters
-        most where the server only ever sees a node second-hand — the detection
-        mirror — since a hex alone cannot be placed there.
+        Which aircraft the node matched, and where that aircraft was, from the
+        node's own receiver, at the frame instant.  The server files the position
+        into its aircraft cache under the node's world, so the known lane can
+        claim the detection and record a coverage calibration point without a
+        position source of its own.  That matters most where the server only ever
+        sees a node second-hand — the detection mirror — since a hex alone cannot
+        be placed there.
 
         `alt` is barometric feet, `gs` knots and `track` degrees true, the units
         the node's enrichment reports and the TCP ingest already stores.  The
@@ -1057,14 +1059,17 @@ components:
           maxItems: 512
           title: Snr
         adsb_hex:
-          items:
-            anyOf:
-            - type: string
-              pattern: ^[0-9a-f]{6}$
-            - type: 'null'
-          type: array
-          maxItems: 512
+          anyOf:
+          - items:
+              anyOf:
+              - type: string
+                pattern: ^[0-9a-f]{6}$
+              - type: 'null'
+            type: array
+            maxItems: 512
+          - type: 'null'
           title: Adsb Hex
+          deprecated: true
         adsb:
           anyOf:
           - items:
@@ -1085,7 +1090,6 @@ components:
       - delay
       - doppler
       - snr
-      - adsb_hex
       title: DetectionFrame
       description: |-
         One CPI's worth of detections. Carries no node identifier: the bearer

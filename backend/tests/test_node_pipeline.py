@@ -459,6 +459,29 @@ def test_pipeline_frame_files_position_tags_the_way_the_tcp_ingest_does():
     ]
 
 
+def test_pipeline_frame_takes_the_hexes_from_the_tags_when_adsb_hex_is_absent():
+    """The queue's `adsb_hex` is a full-length list whichever column the node
+    sent the hexes in, so nothing downstream sees the contract's option."""
+    from routes.node_schemas import DetectionFrame
+    from services.node_pipeline import pipeline_frame
+
+    base = {
+        "t": 1753900000.123,
+        "seq": 1,
+        "boot_id": "k3n8v2qp71ab",
+        "config_version": 1,
+        "delay": [12.4, 30.1],
+        "doppler": [-118.0, 44.5],
+        "snr": [14.2, 9.8],
+    }
+    tagged = pipeline_frame(DetectionFrame(**base, adsb=[{"hex": "4ca1f2", "lat": 1.0, "lon": 2.0}, None]))
+    bare = pipeline_frame(DetectionFrame(**base))
+
+    assert tagged["adsb_hex"] == ["4ca1f2", None]
+    assert bare["adsb_hex"] == [None, None]
+    assert "adsb" not in bare
+
+
 def test_pipeline_frame_omits_the_tag_fields_the_node_left_null():
     """The geolocator branches on `"gs" in adsb`, so a null must be an absent key."""
     from routes.node_schemas import DetectionFrame

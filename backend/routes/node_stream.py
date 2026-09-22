@@ -167,8 +167,10 @@ def _file_frame(node_id: str, frame: DetectionFrame) -> int:
 # talk about queue registries and hot paths, which says nothing a client can act
 # on.
 _DETECTION_DESCRIPTION = """\
-One frame per request. `delay`, `doppler`, `snr` and `adsb_hex` are parallel and must be the
-same length. An empty frame is valid and worth sending.
+One frame per request. `delay`, `doppler` and `snr` are parallel and must be the same length,
+as must `adsb` and `adsb_hex` when sent. `adsb` is the node's ADS-B correlation, one entry per
+detection. `adsb_hex` is the same correlation as bare hexes and is deprecated; a frame that
+sends both must have them agree. An empty frame is valid and worth sending.
 
 ## Sending behaviour
 

@@ -289,7 +289,7 @@ def test_a_malformed_boot_id_is_rejected(boot_id):
         DetectionFrame(**(FRAME | {"boot_id": boot_id}))
 
 
-@pytest.mark.parametrize("field", ["t", "seq", "boot_id", "config_version", "delay", "doppler", "snr", "adsb_hex"])
+@pytest.mark.parametrize("field", ["t", "seq", "boot_id", "config_version", "delay", "doppler", "snr"])
 def test_every_frame_field_is_required(field):
     with pytest.raises(ValidationError):
         DetectionFrame(**{k: v for k, v in FRAME.items() if k != field})
@@ -547,3 +547,32 @@ class TestAdsbTags:
     def test_malformed_tag_values_are_refused(self, field, value):
         with pytest.raises(ValidationError):
             DetectionFrame(**(FRAME | {"adsb": [TAG | {field: value}, None]}))
+
+
+class TestAdsbHexIsOptional:
+    """`adsb` carries the hex, so a node sending tags need not say it again in
+    `adsb_hex`, and a node that correlates nothing sends neither."""
+
+    WITHOUT_HEX = {k: v for k, v in FRAME.items() if k != "adsb_hex"}
+
+    def test_a_frame_without_either_column_is_valid(self):
+        frame = DetectionFrame(**self.WITHOUT_HEX)
+        assert frame.adsb_hex is None and frame.adsb is None
+
+    def test_tags_alone_carry_the_association(self):
+        frame = DetectionFrame(**(self.WITHOUT_HEX | {"adsb": [TAG, None]}))
+        assert frame.adsb_hex is None
+        assert frame.adsb[0].hex == "4ca1f2"
+
+    def test_tags_alone_must_still_be_parallel(self):
+        with pytest.raises(ValidationError, match="adsb must be the same length as delay"):
+            DetectionFrame(**(self.WITHOUT_HEX | {"adsb": [TAG]}))
+
+    def test_a_hex_only_frame_is_still_accepted(self):
+        """Nodes on 1.4.0 telemetry send `adsb_hex` alone and must keep working."""
+        assert DetectionFrame(**FRAME).adsb_hex == ["4ca1f2", None]
+
+    def test_the_contract_marks_it_deprecated(self):
+        schema = DetectionFrame.model_json_schema()
+        assert schema["properties"]["adsb_hex"]["deprecated"] is True
+        assert "adsb_hex" not in schema["required"]
