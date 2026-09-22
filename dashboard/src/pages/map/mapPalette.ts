@@ -92,20 +92,24 @@ export interface MapPalette {
   MLAT: string;
   MLAT_VECTOR: string;
 
-  /* Neutrals for map-drawn text and inert geometry. These match the chrome's
-     ink ramp so a label drawn onto the map reads as the same system as a label
-     drawn in a panel — which means they invert with the theme. */
+  /* Copies of the chrome's tokens, for what a `var()` cannot reach: Leaflet's
+     path options, and SVG presentation attributes (`var()` resolves in CSS,
+     not in a bare `stroke="…"`). mapPalette.test.ts holds each to tokens.css
+     in both themes. */
+  /** `--text-secondary`. */
   INK_MUTED: string;
+  /** `--text-muted`. */
   INK_SUBTLE: string;
-  /** The surface accent, for SVG drawn inline. Mirrors `--accent-hover`, which
-   *  a presentation attribute cannot read: `var()` resolves in CSS, not in a
-   *  bare `stroke="…"`. */
+  /** `--accent-hover`. */
   ACCENT_STRONG: string;
 
-  /* Quality scale: position error, solver confidence, detection age. */
+  /* Quality scale for marks drawn onto the map: the solve-history dots, and
+     WARN's trails, transmitters and baselines. Measured against the basemap
+     like the rest, which is why light sits a step darker than `--success`
+     and `--warning`: those are 2.4:1 and 2.1:1 on Positron's land. Panel
+     text reads the tokens. */
   GOOD: string;
   WARN: string;
-  BAD: string;
 
   /* Simulation object classes — the Physics tab's legend, its ground-truth
      preview map, and the truth dots the fleet spawns.
@@ -171,9 +175,8 @@ const LIGHT: MapPalette = {
   INK_SUBTLE: "#94a3b8",
   ACCENT_STRONG: "#2563eb",
 
-  GOOD: "#059669", // emerald-600
-  WARN: "#d97706", // amber-600
-  BAD: "#e11d48", // rose-600
+  GOOD: "#059669", // emerald-600, 3.6:1
+  WARN: "#d97706", // amber-600, 3.1:1
 
   SIM_COMMERCIAL: "#1e293b", // = TRUTH
   SIM_DARK: "#64748b", // = TRUTH_DARK
@@ -235,7 +238,6 @@ const DARK: MapPalette = {
 
   GOOD: "#4ade80",
   WARN: "#fbbf24",
-  BAD: "#f43f5e",
 
   SIM_COMMERCIAL: "#f8fafc", // = TRUTH
   SIM_DARK: "#94a3b8", // = TRUTH_DARK
