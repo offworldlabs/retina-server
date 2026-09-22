@@ -189,6 +189,35 @@ class RegisterResponse(BaseModel):
     server_time: ServerTime
 
 
+class AdsbTag(_RequestModel):
+    """The node's own ADS-B correlation for one detection, position included.
+
+    Which aircraft the node matched, and where that aircraft was, from the
+    node's own receiver, at the frame instant.  The server files the position
+    into its aircraft cache under the node's world, so the known lane can
+    claim the detection and record a coverage calibration point without a
+    position source of its own.  That matters most where the server only ever
+    sees a node second-hand — the detection mirror — since a hex alone cannot
+    be placed there.
+
+    `alt` is barometric feet, `gs` knots and `track` degrees true, the units
+    the node's enrichment reports and the TCP ingest already stores.  The
+    expected/residual pair is the node's own prediction check, carried for
+    the record; the server recomputes its own.
+    """
+
+    hex: Annotated[str, Field(pattern=r"^[0-9a-f]{6}$")]
+    lat: Number = Field(ge=-90, le=90)
+    lon: Number = Field(ge=-180, le=180)
+    alt: Number | None = None
+    gs: Number | None = None
+    track: Number | None = None
+    expected_delay: Number | None = None
+    expected_doppler: Number | None = None
+    delay_residual: Number | None = None
+    doppler_residual: Number | None = None
+
+
 class DetectionFrame(_RequestModel):
     """One CPI's worth of detections. Carries no node identifier: the bearer
     token resolves to a node, and the frame is stamped server side.
@@ -209,13 +238,38 @@ class DetectionFrame(_RequestModel):
     delay: list[Number] = Field(max_length=MAX_DETECTIONS)
     doppler: list[Number] = Field(max_length=MAX_DETECTIONS)
     snr: list[Number] = Field(max_length=MAX_DETECTIONS)
-    adsb_hex: list[AdsbHex] = Field(max_length=MAX_DETECTIONS)
+    # The correlation as bare hexes, the form it took before `adsb` carried the
+    # position.  Optional and deprecated since 1.5.0: `adsb` says the same hex,
+    # and neither column sent means the node correlated nothing.
+    adsb_hex: list[AdsbHex] | None = Field(
+        default=None, max_length=MAX_DETECTIONS, json_schema_extra={"deprecated": True}
+    )
+    # The node's ADS-B correlation, one entry per detection, null where a
+    # detection matched no aircraft.  See AdsbTag.
+    adsb: list[AdsbTag | None] | None = Field(default=None, max_length=MAX_DETECTIONS)
 
     @model_validator(mode="after")
     def _arrays_are_parallel(self) -> "DetectionFrame":
-        """The four arrays are one table on its side, so a mismatch is a 422."""
-        if len({len(self.delay), len(self.doppler), len(self.snr), len(self.adsb_hex)}) > 1:
-            raise ValueError("delay, doppler, snr and adsb_hex must be the same length")
+        """The arrays are one table on its side, so a mismatch is a 422.
+
+        `adsb_hex` and `adsb` are optional columns of that table.  A node that
+        sends both says one correlation twice, so a tag's hex must match the hex
+        beside it rather than become a second correlation.  A hex beside a null
+        tag is one correlation without a position: the node matched the aircraft
+        but had no usable fix for it.
+        """
+        n = len(self.delay)
+        if len(self.doppler) != n or len(self.snr) != n:
+            raise ValueError("delay, doppler and snr must be the same length")
+        if self.adsb_hex is not None and len(self.adsb_hex) != n:
+            raise ValueError("adsb_hex must be the same length as delay")
+        if self.adsb is not None:
+            if len(self.adsb) != n:
+                raise ValueError("adsb must be the same length as delay")
+            if self.adsb_hex is not None:
+                for i, tag in enumerate(self.adsb):
+                    if tag is not None and tag.hex != self.adsb_hex[i]:
+                        raise ValueError(f"adsb[{i}].hex must equal adsb_hex[{i}]")
         return self
 
 

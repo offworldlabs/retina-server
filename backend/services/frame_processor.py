@@ -622,11 +622,13 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
                         )
     _d_assoc = time.thread_time() - _t2
 
-    # ADS-B extraction.  Only TCP frames still reach here carrying an `adsb`
-    # list: v1 files its association under `adsb_hex` and the legacy radar routes
-    # carry no list at all.  _apply_synthetic_adsb has already read it for its
-    # own purposes without consuming it, so these positions are stored again
-    # here, where the verification and accuracy pipelines can reference them.
+    # ADS-B extraction.  TCP frames carry an `adsb` list, and since contract
+    # 1.5.0 so does a v1 frame from a node that sends its correlation with the
+    # position (node_pipeline.pipeline_frame files the tags in this same shape);
+    # a hex-only v1 frame and the legacy radar routes carry no list at all.
+    # _apply_synthetic_adsb has already read it for its own purposes without
+    # consuming it, so these positions are stored again here, where the
+    # verification and accuracy pipelines can reference them.
     _adsb_list = None if _probation else frame.get("adsb")
     if _adsb_list:
         _recv_s = time.time()

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RETINA node ingest
-  version: 1.4.0
+  version: 1.5.0
   description: |
     The RETINA server's HTTP API. The paths under `/v1/nodes` are the RETINA node
     ingest contract, generated from the server and versioned as a unit; everything
@@ -601,8 +601,10 @@ paths:
       - streaming
       summary: Send one detection frame.
       description: |-
-        One frame per request. `delay`, `doppler`, `snr` and `adsb_hex` are parallel and must be the
-        same length. An empty frame is valid and worth sending.
+        One frame per request. `delay`, `doppler` and `snr` are parallel and must be the same length,
+        as must `adsb` and `adsb_hex` when sent. `adsb` is the node's ADS-B correlation, one entry per
+        detection. `adsb_hex` is the same correlation as bare hexes and is deprecated; a frame that
+        sends both must have them agree. An empty frame is valid and worth sending.
 
         ## Sending behaviour
 
@@ -845,6 +847,79 @@ components:
       - accepted_at
       title: AcceptanceRecord
       description: One versioned thing the owner accepted, and when.
+    AdsbTag:
+      properties:
+        hex:
+          type: string
+          pattern: ^[0-9a-f]{6}$
+          title: Hex
+        lat:
+          type: number
+          maximum: 90.0
+          minimum: -90.0
+          title: Lat
+        lon:
+          type: number
+          maximum: 180.0
+          minimum: -180.0
+          title: Lon
+        alt:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Alt
+        gs:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Gs
+        track:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Track
+        expected_delay:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Expected Delay
+        expected_doppler:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Expected Doppler
+        delay_residual:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Delay Residual
+        doppler_residual:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Doppler Residual
+      additionalProperties: false
+      type: object
+      required:
+      - hex
+      - lat
+      - lon
+      title: AdsbTag
+      description: |-
+        The node's own ADS-B correlation for one detection, position included.
+
+        Which aircraft the node matched, and where that aircraft was, from the
+        node's own receiver, at the frame instant.  The server files the position
+        into its aircraft cache under the node's world, so the known lane can
+        claim the detection and record a coverage calibration point without a
+        position source of its own.  That matters most where the server only ever
+        sees a node second-hand — the detection mirror — since a hex alone cannot
+        be placed there.
+
+        `alt` is barometric feet, `gs` knots and `track` degrees true, the units
+        the node's enrichment reports and the TCP ingest already stores.  The
+        expected/residual pair is the node's own prediction check, carried for
+        the record; the server recomputes its own.
     Agreements:
       properties:
         licence:
@@ -984,14 +1059,27 @@ components:
           maxItems: 512
           title: Snr
         adsb_hex:
-          items:
-            anyOf:
-            - type: string
-              pattern: ^[0-9a-f]{6}$
-            - type: 'null'
-          type: array
-          maxItems: 512
+          anyOf:
+          - items:
+              anyOf:
+              - type: string
+                pattern: ^[0-9a-f]{6}$
+              - type: 'null'
+            type: array
+            maxItems: 512
+          - type: 'null'
           title: Adsb Hex
+          deprecated: true
+        adsb:
+          anyOf:
+          - items:
+              anyOf:
+              - $ref: '#/components/schemas/AdsbTag'
+              - type: 'null'
+            type: array
+            maxItems: 512
+          - type: 'null'
+          title: Adsb
       additionalProperties: false
       type: object
       required:
@@ -1002,7 +1090,6 @@ components:
       - delay
       - doppler
       - snr
-      - adsb_hex
       title: DetectionFrame
       description: |-
         One CPI's worth of detections. Carries no node identifier: the bearer

@@ -408,6 +408,133 @@ def test_pipeline_frame_converts_the_wire_shape():
     assert (out["seq"], out["boot_id"], out["config_version"]) == (918273, "k3n8v2qp71ab", 1)
 
 
+def test_pipeline_frame_files_position_tags_the_way_the_tcp_ingest_does():
+    """A wire AdsbTag becomes the `adsb[i]` record frame_processor stores and
+    path 1 claims against: `alt` under `alt_baro`, an untagged detection None,
+    and the frame's hex array untouched."""
+    from routes.node_schemas import DetectionFrame
+    from services.node_pipeline import pipeline_frame
+
+    tag = {
+        "hex": "4ca1f2",
+        "lat": 33.868698,
+        "lon": -84.676732,
+        "alt": 15375,
+        "gs": 189,
+        "track": 238.4,
+        "expected_delay": 7.9,
+        "expected_doppler": -82.06,
+        "delay_residual": 0.18,
+        "doppler_residual": -0.26,
+    }
+    out = pipeline_frame(
+        DetectionFrame(
+            t=1753900000.123,
+            seq=1,
+            boot_id="k3n8v2qp71ab",
+            config_version=1,
+            delay=[12.4, 30.1],
+            doppler=[-118.0, 44.5],
+            snr=[14.2, 9.8],
+            adsb_hex=["4ca1f2", None],
+            adsb=[tag, None],
+        )
+    )
+
+    assert out["adsb_hex"] == ["4ca1f2", None]
+    assert out["adsb"] == [
+        {
+            "hex": "4ca1f2",
+            "lat": 33.868698,
+            "lon": -84.676732,
+            "alt_baro": 15375,
+            "gs": 189,
+            "track": 238.4,
+            "expected_delay": 7.9,
+            "expected_doppler": -82.06,
+            "delay_residual": 0.18,
+            "doppler_residual": -0.26,
+        },
+        None,
+    ]
+
+
+def test_pipeline_frame_takes_the_hexes_from_the_tags_when_adsb_hex_is_absent():
+    """The queue's `adsb_hex` is a full-length list whichever column the node
+    sent the hexes in, so nothing downstream sees the contract's option."""
+    from routes.node_schemas import DetectionFrame
+    from services.node_pipeline import pipeline_frame
+
+    base = {
+        "t": 1753900000.123,
+        "seq": 1,
+        "boot_id": "k3n8v2qp71ab",
+        "config_version": 1,
+        "delay": [12.4, 30.1],
+        "doppler": [-118.0, 44.5],
+        "snr": [14.2, 9.8],
+    }
+    tagged = pipeline_frame(DetectionFrame(**base, adsb=[{"hex": "4ca1f2", "lat": 1.0, "lon": 2.0}, None]))
+    bare = pipeline_frame(DetectionFrame(**base))
+
+    assert tagged["adsb_hex"] == ["4ca1f2", None]
+    assert bare["adsb_hex"] == [None, None]
+    assert "adsb" not in bare
+
+
+def test_pipeline_frame_omits_the_tag_fields_the_node_left_null():
+    """The geolocator branches on `"gs" in adsb`, so a null must be an absent key."""
+    from routes.node_schemas import DetectionFrame
+    from services.node_pipeline import pipeline_frame
+
+    out = pipeline_frame(
+        DetectionFrame(
+            t=1753900000.123,
+            seq=1,
+            boot_id="k3n8v2qp71ab",
+            config_version=1,
+            delay=[12.4],
+            doppler=[-118.0],
+            snr=[14.2],
+            adsb_hex=["4ca1f2"],
+            adsb=[{"hex": "4ca1f2", "lat": 1.0, "lon": 2.0}],
+        )
+    )
+
+    assert out["adsb"] == [{"hex": "4ca1f2", "lat": 1.0, "lon": 2.0}]
+
+
+def test_a_wire_tag_is_a_path_1_claim():
+    """End to end: the record pipeline_frame files is what the known lane's
+    node-tag path reads, so a v1 node with positions claims through path 1
+    exactly as a TCP node does — no aircraft cache involved."""
+    import time
+
+    from core import state
+    from routes.node_schemas import DetectionFrame
+    from services import known_claiming as kc
+    from services.node_pipeline import pipeline_frame
+    from tests.test_known_claiming import _ALT_BARO_FT, _LAT, _LON, _NODE_ID, _register
+
+    _register()
+    frame = pipeline_frame(
+        DetectionFrame(
+            t=time.time(),
+            seq=1,
+            boot_id="k3n8v2qp71ab",
+            config_version=1,
+            delay=[50.0],
+            doppler=[10.0],
+            snr=[20.0],
+            adsb_hex=["4ca1f2"],
+            adsb=[{"hex": "4ca1f2", "lat": _LAT, "lon": _LON, "alt": _ALT_BARO_FT, "gs": 0, "track": 0}],
+        )
+    )
+
+    assert kc.claim_known_targets(_NODE_ID, frame) == {0}
+    assert "4ca1f2" in state.known_claims
+
+
 def test_the_route_uses_the_shared_conversion():
     """One conversion, not two that can drift apart."""
     from routes import node_stream
