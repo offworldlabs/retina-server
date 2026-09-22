@@ -209,9 +209,7 @@ function NodeLocationPrivacy({ nodeId, unresolved }: { nodeId: string | null; un
       onClick={(e) => e.stopPropagation()}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-        <span style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--text-muted)" }}>
-          Location privacy
-        </span>
+        <span className="reading-label">Location privacy</span>
         <LocationPrivacyBadge isPrivate={state?.location_private} />
       </div>
       {unresolved && <div className="privacy-source">No node id for this ref; the override is keyed on one.</div>}
