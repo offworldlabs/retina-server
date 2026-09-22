@@ -48,4 +48,12 @@ describe("the map toolbar's toggles", () => {
     expect(filters).toHaveAttribute("aria-expanded", "false");
     expect(filters).not.toHaveAttribute("aria-pressed");
   });
+
+  it("open Filters as a card around its header and body", () => {
+    const { container } = renderToolbar({ showFilters: true });
+    const popover = container.querySelector(".filters-popover");
+    expect(popover).toHaveClass("card");
+    expect(popover?.querySelector(":scope > .card-header")).not.toBeNull();
+    expect(popover?.querySelector(":scope > .card-body")).not.toBeNull();
+  });
 });
