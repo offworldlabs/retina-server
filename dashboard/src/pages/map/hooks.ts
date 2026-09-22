@@ -13,7 +13,7 @@ import {
   syntheticDetectingNodes,
 } from "./syntheticOnly";
 import { request } from "@retina/shared";
-import { api } from "../../api/client";
+import { usePolling } from "../../hooks/usePolling";
 import { useAuth as useConsoleAuth } from "../../context/AuthContext";
 
 /**
@@ -358,105 +358,89 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
  * aircraft feed's: the node listing has to agree with the tracks drawn over it,
  * so both take the mode from the page and the poll re-runs when it changes.
  */
-export function useNodes(mode: FeedMode = defaultFeedMode()) {
-  const [nodes, setNodes] = useState<RadarNode[]>([]);
+export function useNodes(mode: FeedMode = defaultFeedMode()): RadarNode[] {
+  // A failed poll keeps the last listing on the map; the next one asks again.
+  const { data } = usePolling(() => loadNodes(mode), 30_000, mode);
+  return data ?? NO_NODES;
+}
 
-  useEffect(() => {
-    // Cancelled on unmount: this poll had no guard at all, so an in-flight
-    // response resolved into setNodes on an unmounted component.
-    const controller = new AbortController();
-    async function loadNodes() {
-      try {
-        // A real-fleet page asks the backend for the real nodes only — avoids
-        // relying on a client-side filter to drop 900+ synthetic markers.
-        const url = mode === "real"
-          ? `${API_BASE}/radar/analytics?real_only=true`
-          : `${API_BASE}/radar/analytics`;
-        const data = await request(url, { signal: controller.signal });
-        if (controller.signal.aborted) return;
-        const nodeList: RadarNode[] = [];
-        // The analytics nodes map is keyed on node_ref; the values carry no
-        // identifier of their own.
-        for (const [ref, info] of Object.entries(data.nodes || {})) {
-          // The backend already strips synthetic nodes from real_only feeds;
-          // this is defence in depth against a leftover leak, decided from
-          // the server's own is_synthetic flag rather than parsed from the
-          // identifier. See src/utils/nodeKind.ts.
-          if (mode === "real" && isSyntheticNode(info as { is_synthetic?: boolean }, ref)) continue;
-          // The mirror, and the only filter standing between a real node and a
-          // synthetic page: this listing has no real_only-style parameter for
-          // "synthetic only", so the page has to drop them itself.
-          if (mode === "synthetic" && !isSyntheticNode(info as { is_synthetic?: boolean }, ref)) continue;
-          const da = (info as any).detection_area;
-          const ec = (info as any).empirical_coverage;
-          if (da) {
-            // Defence in depth, not the primary guard: the analytics library
-            // only builds a detection_area when has_full_geometry(config) is
-            // true, and that already rejects the exact rx=(0,0) sentinel, so
-            // a null-island node should never reach here with one. Kept in
-            // case some other path ever hands us a detection_area without
-            // going through that check. Use a small epsilon so we still allow
-            // a real node legitimately near the equator/prime meridian, but
-            // dismiss the exact-zero sentinel that would otherwise render as
-            // a stray marker in the Gulf of Guinea.
-            const rxLat = da.rx.lat;
-            const rxLon = da.rx.lon;
-            if (Math.abs(rxLat) < 1e-6 && Math.abs(rxLon) < 1e-6) continue;
-            nodeList.push({
-              // The map's key for this node: the analytics listing is keyed
-              // on the public ref and the values carry no id of their own, so
-              // the ref is both the join key and the label helper's input.
-              node_ref: ref,
-              // Already privacy-fuzzed by the backend; used as served. The
-              // backend builds its published arcs around this same anchor, so
-              // a client-side rebuild lands on the backend's curve.
-              rx_lat: rxLat,
-              rx_lon: rxLon,
-              // The backend's own declaration of how far it displaced the
-              // receiver. Absent when fuzzing is off, which resolves to 0 and
-              // suppresses the uncertainty disc rather than drawing one of
-              // zero radius.
-              location_uncertainty_km: da.rx.location_uncertainty_km ?? 0,
-              tx_lat: da.tx.lat,
-              tx_lon: da.tx.lon,
-              // Node altitudes (m ASL) for the altitude-corrected arc
-              // rebuild.  The analytics detection_area payload currently
-              // emits rx/tx as {lat, lon} only (no alt field), so these
-              // resolve to null and buildBistaticArc falls back to
-              // h_rx = h_tx = 0.  Read defensively so the values are picked
-              // up automatically if the backend starts emitting them.
-              rx_alt_m: da.rx.alt ?? null,
-              tx_alt_m: da.tx.alt ?? null,
-              beam_azimuth_deg: da.beam_azimuth_deg,
-              beam_width_deg: da.beam_width_deg,
-              max_range_km: da.max_range_km,
-              // Null for a node that declares no differential limit, which
-              // keeps the legacy circular sector.
-              max_bistatic_range_km: da.max_bistatic_range_km ?? null,
-              empirical_polygon: ec?.polygon ?? null,
-              empirical_n_points: ec?.n_points ?? 0,
-              // Absent on a payload from a server older than the declared
-              // wedge: evidence-only is what every node published then, and
-              // is the conservative reading either way.
-              empirical_polygon_source: ec?.polygon_source ?? "evidence",
-              is_synthetic: isSyntheticNode(info as { is_synthetic?: boolean }, ref),
-            });
-          }
-        }
-        setNodes(nodeList);
-      } catch {
-        /* ignore */
-      }
+async function loadNodes(mode: FeedMode): Promise<RadarNode[]> {
+  // A real-fleet page asks the backend for the real nodes only — avoids
+  // relying on a client-side filter to drop 900+ synthetic markers.
+  const url = mode === "real"
+    ? `${API_BASE}/radar/analytics?real_only=true`
+    : `${API_BASE}/radar/analytics`;
+  const data = await request(url);
+  const nodeList: RadarNode[] = [];
+  // The analytics nodes map is keyed on node_ref; the values carry no
+  // identifier of their own.
+  for (const [ref, info] of Object.entries(data.nodes || {})) {
+    // The backend already strips synthetic nodes from real_only feeds;
+    // this is defence in depth against a leftover leak, decided from
+    // the server's own is_synthetic flag rather than parsed from the
+    // identifier. See src/utils/nodeKind.ts.
+    if (mode === "real" && isSyntheticNode(info as { is_synthetic?: boolean }, ref)) continue;
+    // The mirror, and the only filter standing between a real node and a
+    // synthetic page: this listing has no real_only-style parameter for
+    // "synthetic only", so the page has to drop them itself.
+    if (mode === "synthetic" && !isSyntheticNode(info as { is_synthetic?: boolean }, ref)) continue;
+    const da = (info as any).detection_area;
+    const ec = (info as any).empirical_coverage;
+    if (da) {
+      // Defence in depth, not the primary guard: the analytics library
+      // only builds a detection_area when has_full_geometry(config) is
+      // true, and that already rejects the exact rx=(0,0) sentinel, so
+      // a null-island node should never reach here with one. Kept in
+      // case some other path ever hands us a detection_area without
+      // going through that check. Use a small epsilon so we still allow
+      // a real node legitimately near the equator/prime meridian, but
+      // dismiss the exact-zero sentinel that would otherwise render as
+      // a stray marker in the Gulf of Guinea.
+      const rxLat = da.rx.lat;
+      const rxLon = da.rx.lon;
+      if (Math.abs(rxLat) < 1e-6 && Math.abs(rxLon) < 1e-6) continue;
+      nodeList.push({
+        // The map's key for this node: the analytics listing is keyed
+        // on the public ref and the values carry no id of their own, so
+        // the ref is both the join key and the label helper's input.
+        node_ref: ref,
+        // Already privacy-fuzzed by the backend; used as served. The
+        // backend builds its published arcs around this same anchor, so
+        // a client-side rebuild lands on the backend's curve.
+        rx_lat: rxLat,
+        rx_lon: rxLon,
+        // The backend's own declaration of how far it displaced the
+        // receiver. Absent when fuzzing is off, which resolves to 0 and
+        // suppresses the uncertainty disc rather than drawing one of
+        // zero radius.
+        location_uncertainty_km: da.rx.location_uncertainty_km ?? 0,
+        tx_lat: da.tx.lat,
+        tx_lon: da.tx.lon,
+        // Node altitudes (m ASL) for the altitude-corrected arc
+        // rebuild.  The analytics detection_area payload currently
+        // emits rx/tx as {lat, lon} only (no alt field), so these
+        // resolve to null and buildBistaticArc falls back to
+        // h_rx = h_tx = 0.  Read defensively so the values are picked
+        // up automatically if the backend starts emitting them.
+        rx_alt_m: da.rx.alt ?? null,
+        tx_alt_m: da.tx.alt ?? null,
+        beam_azimuth_deg: da.beam_azimuth_deg,
+        beam_width_deg: da.beam_width_deg,
+        max_range_km: da.max_range_km,
+        // Null for a node that declares no differential limit, which
+        // keeps the legacy circular sector.
+        max_bistatic_range_km: da.max_bistatic_range_km ?? null,
+        empirical_polygon: ec?.polygon ?? null,
+        empirical_n_points: ec?.n_points ?? 0,
+        // Absent on a payload from a server older than the declared
+        // wedge: evidence-only is what every node published then, and
+        // is the conservative reading either way.
+        empirical_polygon_source: ec?.polygon_source ?? "evidence",
+        is_synthetic: isSyntheticNode(info as { is_synthetic?: boolean }, ref),
+      });
     }
-    loadNodes();
-    const interval = setInterval(loadNodes, 30000);
-    return () => {
-      controller.abort();
-      clearInterval(interval);
-    };
-  }, [mode]);
-
-  return nodes;
+  }
+  return nodeList;
 }
 
 /** Shared across renders so a caller memoising on this list is not woken by a
@@ -480,7 +464,7 @@ export function useMapAuth() {
     (async () => {
       let myNodes = [];
       try {
-        myNodes = await api.myNodes();
+        myNodes = await request(`${API_BASE}/auth/me/nodes`);
       } catch {
         // Unanswered ownership is owning nothing, not unsettled: null would
         // hold the owner panel in its loading state for the session.
