@@ -1,6 +1,6 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useAircraftFeed, useMapAuth } from "./hooks";
+import { useAircraftFeed, useMapAuth, useNodes } from "./hooks";
 
 vi.mock("../../utils/domains", () => ({ usesRealOnlyFeed: false }));
 
@@ -42,6 +42,7 @@ afterEach(() => {
   cleanup();
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("aircraft feed scope", () => {
@@ -190,5 +191,50 @@ describe("the map's view of who is signed in", () => {
     const { result } = renderHook(() => useMapAuth());
     await settle();
     expect(result.current).toEqual({ user: ME, ownedNodeRefs: [], loading: false });
+  });
+});
+
+describe("the node listing", () => {
+  const listing = {
+    nodes: {
+      "node-a": {
+        detection_area: {
+          rx: { lat: 51, lon: -1 },
+          tx: { lat: 51.2, lon: -1.1 },
+          beam_azimuth_deg: 90,
+          beam_width_deg: 40,
+          max_range_km: 60,
+        },
+      },
+    },
+  };
+  const analyticsCalls = () =>
+    vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("/radar/analytics"));
+
+  it("refreshes every 30 s and keeps the last list when a refresh fails", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce({ ok: true, json: async () => listing } as Response)
+      .mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) } as Response);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const { result } = renderHook(() => useNodes("real"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(result.current.map((n) => n.node_ref)).toEqual(["node-a"]);
+    expect(analyticsCalls()).toHaveLength(1);
+    expect(String(analyticsCalls()[0][0])).toContain("real_only=true");
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(29_999); });
+    expect(analyticsCalls()).toHaveLength(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(analyticsCalls()).toHaveLength(2);
+    expect(result.current.map((n) => n.node_ref)).toEqual(["node-a"]);
+  });
+
+  it("stops asking once unmounted", async () => {
+    vi.mocked(fetch).mockResolvedValue({ ok: true, json: async () => listing } as Response);
+    const { unmount } = renderHook(() => useNodes("real"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+    expect(analyticsCalls()).toHaveLength(1);
   });
 });
