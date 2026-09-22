@@ -41,13 +41,13 @@ describe("the route guard", () => {
   });
 
   it("sends a caller with no session away from a page that needs one", () => {
-    renderAt("/settings");
+    renderAt("/onboarding");
     expect(screen.getByText("login card")).toBeInTheDocument();
   });
 
   it("renders a page that needs a session to a caller who has one", () => {
     state.auth = { user: { role: "user" }, loading: false };
-    renderAt("/settings");
+    renderAt("/onboarding");
     expect(screen.getByText("the page")).toBeInTheDocument();
   });
 

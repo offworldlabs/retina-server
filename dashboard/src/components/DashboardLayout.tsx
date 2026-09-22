@@ -39,7 +39,8 @@ const pageTitles = {
   "/knowledge": { user: "Knowledge Base" },
   "/tunnel": { user: "Tunnel & Local Display" },
   "/onboarding": { user: "My Nodes" },
-  "/settings": { user: "Settings" },
+  // Forwards to /onboarding; named for the same reason as /physics above.
+  "/settings": { user: "My Nodes" },
   "/nodes": { admin: "Node Management" },
   "/analytics": { admin: "Analytics" },
   "/events": { admin: "Events & Alerts" },

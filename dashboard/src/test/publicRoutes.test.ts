@@ -22,7 +22,7 @@ describe("the routes a visitor reaches without signing in", () => {
   });
 
   it("refuses a route that is not on the list", () => {
-    expect(isPublicRoute("/settings", false)).toBe(false);
+    expect(isPublicRoute("/onboarding", false)).toBe(false);
   });
 
   it("admits the index, which only forwards to the map", () => {
