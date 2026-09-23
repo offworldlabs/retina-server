@@ -152,7 +152,11 @@ NODE_PATH_PREFIX = "/v1/nodes"
 # `errors` kept across beats, for operators to read. Prose only, and a patch as
 # 1.1.4 was for the same kind of change: nothing on the wire moves, but a node
 # author is owed the fact that what the node sends is retained.
-NODE_API_VERSION = "1.5.1"
+#
+# 1.5.2 corrects `AdsbTag.alt`, which it called barometric.  A node sends the
+# geometric altitude where its receiver reports one and the barometric one
+# otherwise, and always has; only the prose moves.
+NODE_API_VERSION = "1.5.2"
 
 # No tag here: each sub-router carries the contract's own grouping, since those
 # are what a generated client is built around.

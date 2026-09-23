@@ -80,7 +80,8 @@ def pipeline_frame(frame: "DetectionFrame") -> dict:
 
     The contract's `adsb` tags DO carry a position, so those are filed under
     `adsb` in the shape the TCP ingest has always produced (`alt_baro`, not
-    `alt`): frame_processor stores each one in the aircraft cache, the known
+    `alt`, though it holds the geometric altitude wherever the node had one;
+    see AdsbTag): frame_processor stores each one in the aircraft cache, the known
     lane claims against them (path 1), and the tracker reads them per
     detection.  Keys the node left null are omitted rather than sent as None —
     the geolocator branches on `"gs" in adsb`, and a None there would be read
