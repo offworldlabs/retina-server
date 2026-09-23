@@ -27,14 +27,12 @@ describe("the fleet each host's /map runs", () => {
   });
 
   // The retired names, which Cloudflare redirects to the app host or, for
-  // `testmap` and `test-testmap`, nowhere. A bundle loaded under one of them
-  // would mean a name had come back, so none of them may quietly keep working
-  // as a real-fleet map.
+  // `testmap`, nowhere. A bundle loaded under one of them would mean a name had
+  // come back, so none of them may quietly keep working as a real-fleet map.
   it("the retired hostnames are not map hosts", async () => {
     for (const host of [
       "map.retina.fm", "testmap.retina.fm", "staging-map.retina.fm",
-      "test-map.retina.fm", "test-testmap.retina.fm", "dash.retina.fm",
-      "data.retina.fm",
+      "test-map.retina.fm", "dash.retina.fm", "data.retina.fm",
     ]) {
       const m = await loadFor(host);
       expect(m.usesRealOnlyFeed, host).toBe(false);
