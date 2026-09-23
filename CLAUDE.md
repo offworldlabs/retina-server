@@ -12,15 +12,15 @@ FastAPI backend and React front-ends for the RETINA passive-radar network.
 
 ## Working in this repo
 
-- **Verify with the gate, not by hand.** `backend/.venv/bin/pre-commit run --all-files`
-  before pushing, and `git add` new files first so the hooks can see them. See
-  ONBOARDING, "Before you push", for what it runs and where it lies to you.
+- **Verify with the gate, not by hand.** `just check` before pushing, and
+  `git add` new files first so the lint hooks can see them. See ONBOARDING,
+  "Before you push", for what it runs and where it lies to you.
 - **Every PR runs the full matrix**, whatever it is based on. Branches opened
   before #187 predate that and ran nothing unless they targeted `main`.
 - **The node API contract is generated.** Change a route under `/v1/nodes`, one of
   its models, or a configuration bound in `backend/services/node_config.py`, and
-  `contracts/nodes-v1.openapi.yaml` moves with it; regenerate it in the same commit
-  or CI fails. See ONBOARDING, "Before you push".
+  `contracts/nodes-v1.openapi.yaml` moves with it; regenerate it (`just contract`)
+  in the same commit or CI fails. See ONBOARDING, "Before you push".
 - **`backend/uv.lock` moves with its inputs.** Change a dependency in
   `backend/pyproject.toml`, or bump a submodule whose lib changed its own
   dependencies, and relock in the same commit, or CI fails at
