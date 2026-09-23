@@ -551,6 +551,11 @@ tr:hover td {
   background: var(--bg-card-hover);
 }
 
+/* The row whose detail the page has open. */
+tr.selected td {
+  background: var(--accent-light);
+}
+
 /* A headerless table of labels against readings, which DataTable does not
    fit: the label column is muted, as a header would be. */
 .kv-table td:first-child {
