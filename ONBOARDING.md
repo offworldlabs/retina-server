@@ -317,7 +317,8 @@ CI runs on every PR, on push to `main`, and on demand through
    they fail after it; the runbook's Environments section has the shape.
 
 So merging to `main` deploys to production automatically. Work on a feature
-branch, open a PR, get it green, then merge.
+branch, open a PR, get it green, then merge. Once the deploy has run,
+`just verify-deploy <env>` asks that environment whether it worked.
 
 ## Things that will bite you
 
