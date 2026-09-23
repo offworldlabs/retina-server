@@ -472,6 +472,17 @@ async def test_the_heartbeat_stamps_last_seen_and_the_node_list(registered_node,
     assert state.connected_nodes[node_id]["last_heartbeat"] != ""
 
 
+async def test_a_heartbeat_brings_a_node_marked_offline_back_online(registered_node, node_client):
+    """The offline sweep marks a silent node disconnected and leaves its entry,
+    so the beat that ends the silence is what has to undo it."""
+    token, node_id = registered_node
+    state.connected_nodes[node_id]["status"] = "disconnected"
+
+    node_client.post(HEARTBEAT, headers=_auth(token), json=_beat())
+
+    assert state.connected_nodes[node_id]["status"] == "active"
+
+
 async def test_a_heartbeat_recovers_a_node_missing_from_the_pipeline(registered_node, node_client):
     """The state of a fresh worker process: registries empty, token still valid.
 
