@@ -861,14 +861,15 @@ Params (nodes/interval/mode/aircraft) live in the `fleet` service block in
 **Staging runs no fleet either.** Its `fleet` service sits behind the same
 unenabled `sim` profile as production's, and its server leaves
 `SYNTHETIC_FLEET_ENABLED` unset, so the ingest path is not mounted and the
-console hides `/sim`. Its `/map` is the real network, like every environment's.
-The bounce command above is therefore not inert on staging any more than on
-prod: naming `fleet` auto-enables the profile, and the server would then also
-need the flag before it accepted a frame. The deploy removes a leftover
-`retina-staging-fleet` container on every run.
+admin console has no `/sim`. Its `/map` is the real network, like every
+environment's. The bounce command above is therefore not inert on staging any
+more than on prod: naming `fleet` auto-enables the profile, and the server
+would then also need the flag before it accepted a frame. The deploy removes a
+leftover `retina-staging-fleet` container on every run.
 
-**The test droplet is where the simulator lives.** `test-app.retina.fm/sim` is
-fed by its fleet, so bouncing that one blanks the sim map for a minute or so.
+**The test droplet is where the simulator lives.** `test-admin.retina.fm/sim`
+(behind Cloudflare Access) is fed by its fleet, so bouncing that one blanks the
+sim map for a minute or so.
 The tuning there is deliberate: 50 nodes @ 1.0s, which saturates the solver
 (45–52 s per solve), so that map is denser but laggier than production.
 

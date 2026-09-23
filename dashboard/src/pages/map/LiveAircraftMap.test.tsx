@@ -90,6 +90,15 @@ it("drops paused playback and old history when the owner feed is selected", asyn
   expect(Socket.instances[Socket.instances.length - 1].url).toContain("/ws/aircraft/owner");
 });
 
+it("offers a signed-in owner no toggle where the page withholds the owner view", async () => {
+  render(<MapThemeProvider><LiveAircraftMap feed="synthetic" ownerView={false} /></MapThemeProvider>);
+  await screen.findByRole("button", { name: /Pause/ });
+  // Long enough for the ownership answer the stub gives at once to land.
+  await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  expect(screen.queryByRole("checkbox", { name: "My nodes only" })).not.toBeInTheDocument();
+  expect(Socket.instances.map((s) => s.url)).not.toContainEqual(expect.stringContaining("/owner"));
+});
+
 it("returns to the public feed when the owner signs out on the map", async () => {
   const { rerender } = render(<MapThemeProvider><LiveAircraftMap /></MapThemeProvider>);
   fireEvent.click(await screen.findByRole("checkbox", { name: "My nodes only" }));

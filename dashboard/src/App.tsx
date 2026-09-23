@@ -80,6 +80,17 @@ export default function App() {
                       <Route path="nodes/:nodeId" element={<NodeDetailPage />} />
                       <Route path="analytics" element={<AnalyticsPage />} />
                       <Route path="mlat" element={<MlatVerificationPage />} />
+                      {/* The synthetic fleet and the page that tunes it, only
+                          where the server runs one. No owner view: the Access
+                          identity carries no session cookie, which
+                          /ws/aircraft/owner authenticates with, so its toggle
+                          would blank the map. */}
+                      {syntheticFleet && (
+                        <>
+                          <Route path="sim" element={<MapPage feed="synthetic" ownerView={false} />} />
+                          <Route path="sim/physics" element={<PhysicsPage />} />
+                        </>
+                      )}
                       <Route path="anomalies" element={<AnomalyPage />} />
                       <Route path="events" element={<EventsPage />} />
                       <Route path="storage" element={<StoragePage />} />
@@ -97,19 +108,6 @@ export default function App() {
                       <Route path="overview" element={<OverviewPage />} />
                       <Route path="nodes/:nodeId" element={<NodeDetailPage />} />
                       <Route path="map" element={<MapPage />} />
-                      {/* The simulator is a path, not a hostname. /map keeps
-                          whatever feed its hostname implies — real nodes on
-                          app and test-app — while /sim asks for the synthetic
-                          fleet by name, so one console serves both and neither
-                          depends on what the browser's address bar says. */}
-                      <Route path="sim" element={<MapPage feed="synthetic" />} />
-                      {/* Open like /sim, session or not: the page draws the
-                          fleet's solver internals and saves its configuration,
-                          and both ends of that are public on a server that
-                          has a fleet. Absent where there is none. */}
-                      {syntheticFleet && (
-                        <Route path="sim/physics" element={<PhysicsPage />} />
-                      )}
                       {TestRadar && <Route path="test-radar" element={<TestRadar />} />}
                       <Route path="detections" element={<DetectionsPage />} />
                       <Route path="rf" element={<RFEnvironmentPage />} />

@@ -1,155 +1,151 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
-import { MemoryRouter, useLocation } from "react-router-dom";
-import App from "../App";
+import { render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
-import { ThemeProvider } from "../context/ThemeContext";
 
-type User = { name: string; email: string; synthetic_fleet?: boolean };
+type User = { name: string; email: string; role: string; synthetic_fleet?: boolean };
 
-// AuthProvider answers `syntheticFleet` from /api/auth/me for a session and
-// from /api/health for a visitor; the mock hands the cases the folded answer.
+// AuthProvider answers `syntheticFleet` from /api/auth/me; the mock hands the
+// cases that answer directly.
 const state = vi.hoisted(() => ({
   auth: {
-    user: { name: "Ada", email: "ada@example.com" } as User | null,
+    user: null as User | null,
     loading: false,
     syntheticFleet: false,
     logout: async () => ({ redirected: false }),
   },
+  admin: false,
 }));
-const flags = vi.hoisted(() => ({ realOnly: false }));
 
 vi.mock("../context/AuthContext", () => ({ useAuth: () => state.auth }));
-// A getter, so each render reads the case's surface rather than the one the
-// module saw at load. The hostname chooses the map's feed; it must not decide
-// whether Physics is offered.
-vi.mock("../utils/domains", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../utils/domains")>()),
-  get usesRealOnlyFeed() {
-    return flags.realOnly;
-  },
+// App resolves its surface once, at module scope, so each visit below loads a
+// fresh copy of it under the surface the case names.
+vi.mock("../utils/surface", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../utils/surface")>()),
+  resolveSurface: () => ({ isAdmin: state.admin, modeParamIgnored: false }),
 }));
 
-// The page itself is Leaflet and a canvas; the route is what is under test.
+// The pages themselves are Leaflet and a canvas; the routes are what is under
+// test, and the map reports the props it was mounted with.
 vi.mock("../pages/map/PhysicsPage", () => ({ default: () => <div>physics page</div> }));
-// Likewise for the map, which /sim mounts: a redirect landing on it must not
-// drag Leaflet into this suite.
-vi.mock("../pages/map/MapPage", () => ({ default: () => <div>map page</div> }));
+vi.mock("../pages/map/MapPage", () => ({
+  default: ({ feed, ownerView = true }: { feed?: string; ownerView?: boolean }) => (
+    <div>{`map page, ${feed ?? "default"} feed, owner view ${ownerView ? "on" : "off"}`}</div>
+  ),
+}));
 
-/** Reports where the router ended up, so a redirect can be asserted on its
- *  destination rather than only on what rendered. */
-function Where() {
-  const { pathname, search, hash } = useLocation();
-  return <output aria-label="location">{`${pathname}${search}${hash}`}</output>;
+function signIn({ admin, fleet, signedIn = true }: { admin: boolean; fleet: boolean; signedIn?: boolean }) {
+  state.admin = admin;
+  state.auth.syntheticFleet = fleet;
+  state.auth.user = signedIn
+    ? { name: "Ada", email: "ada@example.com", role: admin ? "admin" : "user", synthetic_fleet: fleet }
+    : null;
 }
 
-function renderSidebar({
-  fleet,
-  realOnly,
-  signedIn = true,
-}: {
-  fleet: boolean;
-  realOnly: boolean;
-  signedIn?: boolean;
-}) {
-  state.auth.user = signedIn ? { name: "Ada", email: "ada@example.com", synthetic_fleet: fleet } : null;
-  state.auth.syntheticFleet = fleet;
-  flags.realOnly = realOnly;
+function renderSidebar(opts: { admin: boolean; fleet: boolean }, at = "/") {
+  signIn(opts);
   return render(
-    <MemoryRouter>
-      <Sidebar isAdmin={false} collapsed={false} onToggle={() => {}} />
+    <MemoryRouter initialEntries={[at]}>
+      <Sidebar isAdmin={opts.admin} collapsed={false} onToggle={() => {}} />
     </MemoryRouter>,
   );
 }
 
-describe("the Physics Layer route", () => {
-  it("is offered where the server runs a fleet, under the simulation", () => {
-    const { container } = renderSidebar({ fleet: true, realOnly: false });
-    expect(container.querySelector('a[href="/sim/physics"]')).toHaveTextContent("Physics Layer");
-  });
-
-  it("is offered on a real-radar hostname when its server runs a fleet", () => {
-    const { container } = renderSidebar({ fleet: true, realOnly: true });
-    expect(container.querySelector('a[href="/sim/physics"]')).toHaveTextContent("Physics Layer");
-  });
-
-  it("is absent where the server runs no fleet, whatever the hostname", () => {
-    const { container } = renderSidebar({ fleet: false, realOnly: false });
-    expect(container.querySelector('a[href="/sim/physics"]')).toBeNull();
-  });
-
-  // The save behind it is open, so there is no session to wait for.
-  it("is offered to a visitor with no session", () => {
-    const { container } = renderSidebar({ fleet: true, realOnly: false, signedIn: false });
-    expect(container.querySelector('a[href="/sim/physics"]')).toHaveTextContent("Physics Layer");
-  });
-});
-
-describe("the Simulation route", () => {
-  it("is offered beside the map where the server runs a fleet", () => {
-    const { container } = renderSidebar({ fleet: true, realOnly: false });
-    expect(container.querySelector('a[href="/sim"]')).toHaveTextContent("Simulation");
+describe("the admin console's Simulation section", () => {
+  it("holds the fleet map and then the page that tunes it, where the server runs a fleet", () => {
+    const { container } = renderSidebar({ admin: true, fleet: true });
+    const section = screen.getByText("Simulation", { selector: ".nav-section-title" }).parentElement!;
+    const links = [...section.querySelectorAll("a")].map((a) => [a.getAttribute("href"), a.textContent]);
+    expect(links).toEqual([
+      ["/sim", "Simulation Map"],
+      ["/sim/physics", "Physics Layer"],
+    ]);
+    expect(container.querySelectorAll('a[href^="/sim"]')).toHaveLength(2);
   });
 
   it("is absent where the server runs none", () => {
-    const { container } = renderSidebar({ fleet: false, realOnly: false });
-    expect(container.querySelector('a[href="/sim"]')).toBeNull();
+    const { container } = renderSidebar({ admin: true, fleet: false });
+    expect(screen.queryByText("Simulation", { selector: ".nav-section-title" })).toBeNull();
+    expect(container.querySelector('a[href^="/sim"]')).toBeNull();
   });
 
   // Otherwise NavLink lights both entries up at once on /sim/physics, since a
   // link without `end` is current for its whole subtree.
-  it("is not current while the physics page under it is", () => {
-    for (const signedIn of [true, false]) {
-      state.auth.user = signedIn ? { name: "Ada", email: "ada@example.com", synthetic_fleet: true } : null;
-      state.auth.syntheticFleet = true;
-      flags.realOnly = false;
-      const { container, unmount } = render(
-        <MemoryRouter initialEntries={["/sim/physics"]}>
-          <Sidebar isAdmin={false} collapsed={false} onToggle={() => {}} />
-        </MemoryRouter>,
-      );
-      expect(container.querySelector('a[href="/sim"]')).not.toHaveClass("active");
-      expect(container.querySelector('a[href="/sim/physics"]')).toHaveClass("active");
-      unmount();
-    }
+  it("does not mark the map current while the physics page under it is", () => {
+    const { container } = renderSidebar({ admin: true, fleet: true }, "/sim/physics");
+    expect(container.querySelector('a[href="/sim"]')).not.toHaveClass("active");
+    expect(container.querySelector('a[href="/sim/physics"]')).toHaveClass("active");
   });
 });
 
-describe("the /sim/physics address", () => {
-  function visit(fleet: boolean, at = "/sim/physics", { signedIn = true } = {}) {
-    state.auth.user = signedIn ? { name: "Ada", email: "ada@example.com", synthetic_fleet: fleet } : null;
-    state.auth.syntheticFleet = fleet;
+describe("the app's sidebar", () => {
+  it("offers neither page, even where the server runs a fleet", () => {
+    const { container } = renderSidebar({ admin: false, fleet: true });
+    expect(container.querySelector('a[href^="/sim"]')).toBeNull();
+  });
+});
+
+describe("the /sim addresses", () => {
+  async function visit(at: string, opts: { admin: boolean; fleet: boolean; signedIn?: boolean }) {
+    signIn(opts);
     window.matchMedia = vi.fn().mockReturnValue({
       matches: false,
       addEventListener: () => {},
       removeEventListener: () => {},
     }) as unknown as typeof window.matchMedia;
+    vi.resetModules();
+    // All three from the one fresh registry, so App's router and theme
+    // contexts are the ones these providers supply.
+    const [{ default: App }, { ThemeProvider }, router] = await Promise.all([
+      import("../App"),
+      import("../context/ThemeContext"),
+      import("react-router-dom"),
+    ]);
+    function Where() {
+      const { pathname } = router.useLocation();
+      return <output aria-label="location">{pathname}</output>;
+    }
     return render(
       <ThemeProvider>
-        <MemoryRouter initialEntries={[at]}>
+        <router.MemoryRouter initialEntries={[at]}>
           <App />
           <Where />
-        </MemoryRouter>
+        </router.MemoryRouter>
       </ThemeProvider>,
     );
   }
 
-  it("opens the page where the server runs a fleet", async () => {
-    visit(true);
+  /** Gives a lazy route the chance to resolve before asserting it never did. */
+  const settle = () => new Promise((r) => setTimeout(r, 50));
+
+  it("opens the synthetic fleet's map on the admin console, with no owner view", async () => {
+    await visit("/sim", { admin: true, fleet: true });
+    expect(await screen.findByText("map page, synthetic feed, owner view off")).toBeInTheDocument();
+  });
+
+  it("opens the physics page on the admin console", async () => {
+    await visit("/sim/physics", { admin: true, fleet: true });
     expect(await screen.findByText("physics page")).toBeInTheDocument();
   });
 
-  // No login card on the way: the route is open like /sim above it.
-  it("opens the page to a visitor with no session", async () => {
-    visit(true, "/sim/physics", { signedIn: false });
-    expect(await screen.findByText("physics page")).toBeInTheDocument();
-    expect(screen.getByLabelText("location")).toHaveTextContent("/sim/physics");
+  it.each(["/sim", "/sim/physics"])("makes %s no page on the admin console where there is no fleet", async (at) => {
+    await visit(at, { admin: true, fleet: false });
+    await settle();
+    expect(screen.queryByText(/map page|physics page/)).toBeNull();
   });
 
-  it("is no page at all where it runs none", async () => {
-    visit(false);
-    // Give the lazy route a chance to resolve before asserting it never did.
-    await new Promise((r) => setTimeout(r, 50));
-    expect(screen.queryByText("physics page")).toBeNull();
+  it.each(["/sim", "/sim/physics"])("makes %s no page on the app, even beside a fleet", async (at) => {
+    await visit(at, { admin: false, fleet: true });
+    await settle();
+    expect(screen.queryByText(/map page|physics page/)).toBeNull();
+    expect(screen.getByLabelText("location")).toHaveTextContent(at);
+  });
+
+  // Not open to a visitor either, so the guard sends them where it sends
+  // them for any page that is not.
+  it.each(["/sim", "/sim/physics"])("sends a visitor to %s on the app to sign in", async (at) => {
+    await visit(at, { admin: false, fleet: true, signedIn: false });
+    await waitFor(() => expect(screen.getByLabelText("location")).toHaveTextContent("/login"));
+    expect(screen.queryByText(/map page|physics page/)).toBeNull();
   });
 });

@@ -12,10 +12,6 @@ const state = vi.hoisted(() => ({
   auth: {
     user: null as { name: string; email: string } | null,
     loading: false,
-    // What /api/health told AuthProvider at boot. A visitor has no
-    // /api/auth/me, so this is the only thing that can say whether pointing
-    // them at the simulator would be honest.
-    syntheticFleet: false,
     logout: async () => ({ redirected: false }),
   },
 }));
@@ -51,7 +47,6 @@ beforeEach(() => {
   state.auth = {
     user: null,
     loading: false,
-    syntheticFleet: false,
     logout: async () => ({ redirected: false }),
   };
 });
@@ -80,8 +75,8 @@ describe("the sidebar shown to a caller with no session", () => {
 
   // So a visitor can see what signing in would open, rather than a nav that
   // changes shape underneath them when they do.
-  it.each([false, true])("lists what the signed-in nav lists (fleet: %s)", (fleet) => {
-    state.auth = { ...state.auth, syntheticFleet: fleet, user: signedIn };
+  it("lists what the signed-in nav lists", () => {
+    state.auth = { ...state.auth, user: signedIn };
     const { unmount } = render(
       <MemoryRouter>
         <Sidebar isAdmin={false} collapsed={false} onToggle={() => {}} />
@@ -107,11 +102,10 @@ describe("the sidebar shown to a caller with no session", () => {
   // Read off the guard's own list, so opening a route and making its entry
   // live are the same edit.
   it("leaves every open route live, pointing at its own page", () => {
-    state.auth = { ...state.auth, syntheticFleet: true };
     renderSidebar();
     const hrefs = screen.getAllByRole("link").map((a) => a.getAttribute("href"));
     for (const path of PUBLIC_PATHS) expect(hrefs).toContain(path);
-    for (const label of ["Map", "Simulation", "Physics Layer", "Data Explorer", "Leaderboard", "Knowledge Base"]) {
+    for (const label of ["Map", "Data Explorer", "Leaderboard", "Knowledge Base"]) {
       expect(screen.getByRole("link", { name: label })).not.toHaveClass("locked");
     }
   });
@@ -126,7 +120,7 @@ describe("the sidebar shown to a caller with no session", () => {
   // Every entry, read off the signed-in nav rather than listed here, so a
   // page added to or taken out of the nav needs no edit to this test.
   it("greys out exactly the entries whose page needs a session", () => {
-    state.auth = { ...state.auth, syntheticFleet: true, user: signedIn };
+    state.auth = { ...state.auth, user: signedIn };
     const { unmount } = render(
       <MemoryRouter>
         <Sidebar isAdmin={false} collapsed={false} onToggle={() => {}} />
@@ -147,24 +141,8 @@ describe("the sidebar shown to a caller with no session", () => {
     expect(lockedLabels()).toEqual(needsSession);
   });
 
-  // /sim is open on every deployment — one bundle serves all three. What
-  // varies is whether it is worth pointing at: production runs no simulator,
-  // so the entry there would lead to a map that stays empty.
-  it("withholds the simulation and its physics page where the server runs no fleet", () => {
-    renderSidebar();
-    expect(screen.queryByText("Simulation")).not.toBeInTheDocument();
-    expect(screen.queryByText("Physics Layer")).not.toBeInTheDocument();
-  });
-
-  it("offers both where one is running", () => {
-    state.auth = { ...state.auth, syntheticFleet: true };
-    renderSidebar();
-    expect(screen.getByRole("link", { name: "Simulation" })).toHaveAttribute("href", "/sim");
-    expect(screen.getByRole("link", { name: "Physics Layer" })).toHaveAttribute("href", "/sim/physics");
-  });
-
   it("greys out nothing once there is a session", () => {
-    state.auth = { ...state.auth, user: signedIn, syntheticFleet: true };
+    state.auth = { ...state.auth, user: signedIn };
     renderSidebar();
     expect(lockedLabels()).toEqual([]);
     expect(screen.getByRole("link", { name: "My Nodes" })).toHaveAttribute("href", "/onboarding");

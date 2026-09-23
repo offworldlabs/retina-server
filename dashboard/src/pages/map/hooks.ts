@@ -27,11 +27,12 @@ import { useAuth as useConsoleAuth } from "../../context/AuthContext";
  * would leak other nodes' data.
  *
  * `mode` names which fleet the caller shows (see feedMode.ts). It arrives as an
- * argument rather than being read from the hostname here, because it is now a
- * property of the page: /map takes the hostname's answer, /sim asks for the
- * synthetic fleet on every host. It is therefore in every dependency list
- * below — a different mode is a different feed, and the socket has to be
- * reopened onto it rather than left streaming the one the page opened with.
+ * argument rather than being read from the hostname here, because it is a
+ * property of the page: /map takes the hostname's answer, and the admin
+ * console's /sim asks for the synthetic fleet whatever the host. It is in
+ * every dependency list below — a different mode is a different feed, and the
+ * socket has to be reopened onto it rather than left streaming the one the
+ * page opened with.
  */
 export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedMode()) {
   const [aircraft, setAircraft] = useState([]);
@@ -449,11 +450,13 @@ const NO_NODES = [];
 
 /**
  * The console's identity plus the node refs that user owns. `user` is null
- * when nobody is signed in. Gates the map's node-owner view, and passes on
- * whether the server runs a synthetic fleet, which gates ground truth.
+ * when nobody is signed in, and also where `ownerView` is off, so the owner
+ * view is never offered and ownership is never asked. Passes on whether the
+ * server runs a synthetic fleet, which gates ground truth.
  */
-export function useMapAuth() {
-  const { user, loading, syntheticFleet } = useConsoleAuth();
+export function useMapAuth(ownerView = true) {
+  const { user: signedIn, loading, syntheticFleet } = useConsoleAuth();
+  const user = ownerView ? signedIn : null;
   // null while ownership is unsettled, which the map must not read as owning
   // nothing: the owner panel would render mid-flight with a count of zero.
   const [ownedNodeRefs, setOwnedNodeRefs] = useState(null);
