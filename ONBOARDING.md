@@ -134,6 +134,14 @@ docker run --rm -v "$PWD":/w -w /w --user "$(id -u):$(id -g)" -e npm_config_cach
 npm ci
 ```
 
+Dependabot proposes weekly updates to this lockfile, `backend/uv.lock`, the
+pre-commit hooks and the pinned actions (`.github/dependabot.yml`); the Python,
+Node and uv versions move by hand. Two front-end bundles are vendored outside
+npm, so it never sees them:
+`dashboard/vendor/edsc-timeline/` and
+`dashboard/public/vendor/scalar-api-reference-<version>/`. Each `NOTICE.md` says
+which release it is and how to upgrade it by hand.
+
 The console is at `http://localhost:5174` (or `http://app.localhost:5174/`) and
 opens on the live map; `/api` and `/ws` are proxied to the backend on `:8000`,
 and `?mode=admin` selects the admin console. The hostname selects `/map`'s

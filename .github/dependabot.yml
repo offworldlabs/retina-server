@@ -18,3 +18,70 @@ updates:
       github-actions:
         patterns: ["*"]
         update-types: [minor, patch]
+
+  # The entries below take the same cooldown for the same reason.
+
+  # backend/uv.lock. The five libs are path dependencies into submodules, which
+  # Dependabot leaves alone; a submodule bump relocks by hand.
+  - package-ecosystem: uv
+    directory: /backend
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    ignore:
+      # Pinned again as the pre-commit hook's rev, and the two move together
+      # (test_ruff_pins_agree.py), so the pre-commit entry proposes it.
+      - dependency-name: ruff
+    groups:
+      backend:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # One workspace and one lockfile at the root, so one PR covers every front end.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      npm:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # Dockerfile and Dockerfile.fleet. The Python and Node versions are held in
+  # step with CI, the lock and the engines, so they move by hand across all of
+  # them rather than here. uv moves by hand with the lock, which has to be
+  # written by the uv the Dockerfile names.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: python
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: node
+        update-types: [version-update:semver-major]
+      - dependency-name: ghcr.io/astral-sh/uv
+    groups:
+      docker:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  # .pre-commit-config.yaml's hook revisions.
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      pre-commit:
+        patterns: ["*"]
+        update-types: [minor, patch]
+        # ruff comes in a PR of its own, which also has to move the backend's
+        # pin and relock, so it cannot hold the other hooks back.
+        exclude-patterns: ["*ruff-pre-commit"]
