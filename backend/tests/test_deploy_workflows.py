@@ -64,6 +64,10 @@ def test_the_stack_stays_up_until_the_new_image_exists(workflow, job):
 # until they trip the disk pre-flight, which refuses to deploy under 2GB free.
 
 PRUNE = r"^docker image prune\b"
+BUILDER_PRUNE = r"^docker builder prune\b"
+# Every command that can prune images, wherever it sits on a line, up to the
+# next separator or trailing comment. `system prune` takes images too.
+IMAGE_PRUNES = re.compile(r"\bdocker\s+(?:image|system)\s+prune\b[^;&|#]*")
 # Any spelling that switches the prune from "dangling" to "unreferenced by a
 # container": -a, --all, and clusters like -af.
 PRUNE_ALL = re.compile(r"\s(?:--all\b|-[a-z]*a[a-z]*\b)")
@@ -75,13 +79,16 @@ def test_orphaned_images_are_pruned_every_deploy(workflow, job):
 
 
 @pytest.mark.parametrize(("workflow", "job"), DEPLOYS)
-def test_the_image_prune_takes_only_what_nothing_names(workflow, job):
+def test_no_prune_takes_an_image_something_names(workflow, job):
     # Dangling-only. `-a` prunes whatever no container references, and the
     # saved rollback image is exactly that, so it would delete the way back.
     # These boxes also carry images for other stacks (tower-finder-service).
-    for line in _commands(_script(workflow, job)):
-        if re.search(PRUNE, line):
-            assert not PRUNE_ALL.search(line), line
+    # Comments out before continuations are joined: bash does not continue a
+    # comment that ends in a backslash.
+    script = "\n".join(_commands(_script(workflow, job))).replace("\\\n", " ")
+    prunes = [m.group() for line in script.splitlines() for m in IMAGE_PRUNES.finditer(line)]
+    assert prunes
+    assert not [prune for prune in prunes if PRUNE_ALL.search(prune)]
 
 
 # ── The deploy-failure rollback's marker ─────────────────────────────────────
@@ -164,6 +171,16 @@ def test_the_image_prune_runs_after_the_rollback_point_is_saved(workflow, deploy
     # and that image is still untagged, so the prune takes the rollback point.
     lines = _script(workflow, deploy)
     assert _index(lines, SNAPSHOT) < _index(lines, PRUNE)
+
+
+@pytest.mark.parametrize(("workflow", "deploy"), MARKED_DEPLOYS)
+def test_the_build_cache_is_trimmed_after_the_images_that_pin_it(workflow, deploy):
+    # A cached layer an image still holds is not the cache's to free. Trim the
+    # cache first and the outgoing images keep it; their prune then releases
+    # it with nothing left in the deploy to sweep it up. Both ahead of the
+    # build, which is what needs the room.
+    lines = _script(workflow, deploy)
+    assert _index(lines, SNAPSHOT) < _index(lines, PRUNE) < _index(lines, BUILDER_PRUNE) < _index(lines, SWAP)
 
 
 @pytest.mark.parametrize(("workflow", "deploy"), MARKED_DEPLOYS)
