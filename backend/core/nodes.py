@@ -8,7 +8,7 @@ is here for.
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from core.users import Base
@@ -229,6 +229,35 @@ class NodeToken(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class NodeReport(Base):
+    """What a node last said about itself on its heartbeat, one row per node.
+
+    Diagnostic and untrusted: nothing decides whether a node is working from
+    it, since `blah2: "up"` reads the same on a wedged node as a working one.
+    It is here so an operator can read a node's own account without reaching
+    the board. `errors` carries node-internal detail, so this is shown to
+    administrators only.
+    """
+
+    __tablename__ = "node_reports"
+
+    node_id: Mapped[str] = mapped_column(String(32), ForeignKey("nodes.node_id"), primary_key=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    boot_id: Mapped[str] = mapped_column(String(32))
+    state: Mapped[str] = mapped_column(String(16))
+    # When `state` last changed, or the node last restarted: how long a node
+    # has said `starting` is the signal, not that it says it.
+    state_since: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    uptime_s: Mapped[int] = mapped_column(Integer)
+    config_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    health: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    versions: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The most recent errors across beats, oldest first, each {"at", "message"}.
+    # A node clears its list once a beat is acknowledged, so the last beat's
+    # list alone would lose an error a minute after it was reported.
+    errors: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
 
 
 class PolledRadar(Base):

@@ -43,6 +43,7 @@ from core.users import (
 from services import publication
 from services.node_claim_store import set_owner
 from services.node_refs import id_for_ref, public_identity, public_name, ref_to_id_map
+from services.node_report_store import all_reports
 from services.tasks import multinode_identity
 
 logger = logging.getLogger(__name__)
@@ -173,6 +174,21 @@ async def admin_list_node_owners(
             "name": u.name if u else None,
         }
     return result
+
+
+@router.get("/node-reports")
+async def admin_node_reports(
+    request: Request,
+    session: AsyncSession = Depends(get_async_session),
+    _admin=Depends(require_admin),
+):
+    """Each v1 node's own account of itself, from its last heartbeat.
+
+    Administrators only: it is keyed by node_id, and `errors` carries
+    node-internal detail. Untrusted, and read by nothing that judges whether a
+    node is working.
+    """
+    return await all_reports(session)
 
 
 @router.put("/nodes/{node_id}/owner")
