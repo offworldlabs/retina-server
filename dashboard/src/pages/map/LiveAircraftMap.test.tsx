@@ -50,7 +50,6 @@ class Socket {
 beforeEach(() => {
   owner.user = SIGNED_IN;
   owner.syntheticFleet = false;
-  localStorage.clear();
   window.history.replaceState(null, "", "/");
   Socket.instances = [];
   vi.stubGlobal("WebSocket", Socket);

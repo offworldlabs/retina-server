@@ -5,22 +5,10 @@ import { MapThemeProvider, usePalette } from "../pages/map/useMapTheme";
 import MapSurface from "../pages/map/MapSurface";
 import { PALETTES } from "../pages/map/mapPalette";
 
-/** Stubbed rather than borrowed, as in theme.test.tsx. The media query keeps
+/** Seeds storage and stubs matchMedia, which jsdom lacks. The media query keeps
  *  its listeners, so the returned function can flip the OS preference. */
 function stubBrowser(seed: Record<string, string>, prefersDark: boolean) {
-  const store = new Map(Object.entries(seed));
-  Object.defineProperty(window, "localStorage", {
-    configurable: true,
-    writable: true,
-    value: {
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => void store.set(k, String(v)),
-      removeItem: (k: string) => void store.delete(k),
-      clear: () => store.clear(),
-      key: (i: number) => [...store.keys()][i] ?? null,
-      get length() { return store.size; },
-    },
-  });
+  for (const [k, v] of Object.entries(seed)) window.localStorage.setItem(k, v);
   const listeners = new Set<(e: MediaQueryListEvent) => void>();
   const mql = {
     matches: prefersDark,
