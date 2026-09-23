@@ -844,6 +844,11 @@ jobs:
             # cause, so a full wipe is redundant and only forced slow from-scratch
             # rebuilds. 10GB leaves ample headroom on both droplets (>60GB free).
             docker builder prune -f --keep-storage 10GB
+            # Each build orphans the image it replaces and nothing else on the
+            # box removes them, so they accumulate until the pre-flight above
+            # refuses the deploy. Dangling only: `-a` goes by what no container
+            # references, which is exactly the rollback point tagged above.
+            docker image prune -f
             # Deploy the app FIRST, on its own. Building only `server`
             # here means a broken Dockerfile.fleet can't abort the production
             # app deploy. Production runs no fleet simulator (see the `sim`
