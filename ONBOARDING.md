@@ -210,6 +210,24 @@ This is also what lets CI run the suite under `pytest-xdist`; see the comment on
 the pytest step in `.github/workflows/ci.yml` for why it passes
 `--dist worksteal` and why the flags are not in `addopts`.
 
+CI splits the suite across three runners on top of that, with `pytest-split`
+cutting the collected tests into contiguous chunks of equal recorded duration.
+A shard measures only its own third, so each overrides the 55% gate away and
+uploads its coverage data; the `backend-coverage` job combines the three and
+applies the threshold once. A local `pytest` is untouched by all of this and
+still enforces the gate itself.
+
+`backend/.test_durations` only decides where the two boundaries fall, so a stale
+one costs balance and never correctness. Regenerate it when the shards drift
+apart, from a serial run:
+
+```bash
+cd backend && pytest tests/ -m "not external" --no-cov --store-durations
+```
+
+Not under `-n`: each xdist worker records only the tests that landed on it, and
+the file it writes covers a fraction of the suite.
+
 `COVERAGE_CORE=sysmon` above is not decoration, and CI sets it too. Without it,
 coverage measures through `sys.settrace`, which is per execution context, so
 every line after an `await session.…` in a greenlet-backed path counts as unrun:
@@ -272,7 +290,8 @@ Two traps in that command:
 CI runs on every PR, on push to `main`, and on demand through
 `workflow_dispatch` (`.github/workflows/ci.yml`):
 
-1. Any PR, whatever its base: `backend-tests`, `lint`, `web-build` (once per
+1. Any PR, whatever its base: `backend-tests` (three shards) and
+   `backend-coverage` behind them, `lint`, `web-build` (once per
    workspace), `docker-build`, `env-parity`, plus an automated review.
 2. Merge to `main` → deploy to **staging** → staging smoke + Playwright E2E → deploy to **production** → prod smoke + Playwright E2E.
    A merge that changes nothing the droplets serve skips that chain, which means

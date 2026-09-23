@@ -50,6 +50,17 @@ jobs:
     # `edited` covers title and body edits as well as the base change we want,
     # and `changes.base` is populated only for the latter.
     if: github.event.action != 'edited' || github.event.changes.base
+    # Three shards, because the serial combine job below costs ~18s whatever the
+    # count: two leave the backend path at ~98s, and past three the other gate
+    # jobs set the run's floor instead. Public runners are free.
+    #
+    # fail-fast off so one shard's failure does not cancel the other two. A red
+    # shard tells you nothing about whether the rest of the suite passes, and
+    # that is the first thing you want to know.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     defaults:
       run:
         working-directory: backend
@@ -59,6 +70,10 @@ jobs:
     # Steps that never invoke coverage are indifferent to it.
     env:
       COVERAGE_CORE: sysmon
+      # One data file per shard, named so `coverage combine` in backend-coverage
+      # recognises them as parallel fragments of one run rather than three
+      # separate ones it should overwrite.
+      COVERAGE_FILE: .coverage.${{ matrix.shard }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -149,7 +164,72 @@ jobs:
       # `pytest` stays serial: -x stops at a different place under xdist and
       # --pdb cannot attach to a worker, and both are wanted more often when
       # debugging than the speed is.
-      - run: pytest tests/ -v --tb=short -m "not external" -n logical --dist worksteal
+      #
+      # `--splits/--group` cuts the collected tests into three contiguous chunks
+      # of equal recorded duration, from `.test_durations`. Contiguous rather
+      # than pytest-split's `least_duration` bin-packing, which interleaves:
+      # this suite has tests that pass or fail on what shares their process
+      # (core/frame_queue.py's shards bind to the first event loop that waits on
+      # them), so keeping each file's tests together and in collection order is
+      # the split that least disturbs what runs beside what. A stale durations
+      # file costs balance, not correctness; it only moves the two boundaries.
+      #
+      # `--cov-fail-under=0` overrides the 55 in pyproject's addopts for the
+      # shards alone. A shard measures a third of the suite, so its own figure
+      # is meaningless; backend-coverage applies the real threshold to the three
+      # combined. Overriding here rather than editing addopts keeps a local
+      # `pytest` enforcing the threshold exactly as it does today.
+      - run: pytest tests/ -v --tb=short -m "not external" -n logical --dist worksteal --splits 3 --group ${{ matrix.shard }} --cov-fail-under=0
+      # include-hidden-files, because `.coverage.N` is a dotfile and v4 drops
+      # those silently: without it the combine below fails on an empty download
+      # rather than on anything that names this step.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.shard }}
+          path: backend/.coverage.${{ matrix.shard }}
+          include-hidden-files: true
+          retention-days: 1
+
+  # The threshold the shards above cannot each apply to themselves. Serial after
+  # all three by construction, so it is kept to a bare checkout and a single
+  # dependency: no submodules, no requirements-dev, no libs.
+  backend-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: backend-tests
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      # Pinned to the same version as requirements-dev, which pytest-cov drives
+      # in the shards: a data file's format is tied to the coverage that wrote
+      # it, and a newer reader is not guaranteed to accept an older fragment.
+      - run: uv pip install --system coverage==7.8.0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+          path: backend
+      # `combine` deletes the fragments as it consumes them, so the count has to
+      # be taken first. Asserting it catches the failure this job is most likely
+      # to have: a download that matched fewer shards than ran, which would
+      # otherwise report a plausible-looking figure over part of the suite.
+      - name: All three shards reported
+        run: |
+          shopt -s nullglob
+          fragments=(.coverage.*)
+          if [ "${#fragments[@]}" -ne 3 ]; then
+            printf 'expected 3 coverage fragments, found %d: %s\n' \
+              "${#fragments[@]}" "${fragments[*]}" >&2
+            exit 1
+          fi
+      - run: coverage combine
+      - run: coverage report --fail-under=55
 
   # Its own job so that backend-tests, which gates every deploy, does not wait
   # on it: pre-commit builds its hook environments from scratch on every run,
@@ -587,7 +667,7 @@ jobs:
     # `playwright-image` joins the deploy's own prerequisites so an unpublished
     # image fails the run before the droplet is touched, rather than after a
     # deploy and a smoke suite have already landed on it.
-    needs: [changes, backend-tests, lint, web-build, docker-build, env-parity, tower-service-contract, playwright-image]
+    needs: [changes, backend-tests, backend-coverage, lint, web-build, docker-build, env-parity, tower-service-contract, playwright-image]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.changes.outputs.code == 'true'
     concurrency:
       group: staging-deploy
