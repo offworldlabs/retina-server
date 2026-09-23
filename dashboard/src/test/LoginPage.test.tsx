@@ -142,8 +142,8 @@ describe("the page a sign-in ends on", () => {
 
   // A dead mailed link renders this card at its own URL, which carries the page.
   it("keeps the page a dead link was carrying", async () => {
-    const body = await requestedBody("/auth/link/dead?next=/alerts");
-    expect(body).toEqual({ email: "pilot@example.com", next: "/alerts" });
+    const body = await requestedBody("/auth/link/dead?next=/detections");
+    expect(body).toEqual({ email: "pilot@example.com", next: "/detections" });
   });
 
   it("asks for nothing it would not open", async () => {

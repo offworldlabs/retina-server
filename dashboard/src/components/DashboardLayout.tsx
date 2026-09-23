@@ -28,7 +28,6 @@ export const pageTitles: Record<string, { user?: string; admin?: string }> = {
   "/rf": { user: "RF Environment" },
   "/contribution": { user: "Network Contribution" },
   "/data": { user: "Data Explorer" },
-  "/alerts": { user: "Alerts & Notifications" },
   "/anomalies": { user: "Anomaly Monitor", admin: "Anomaly Monitor" },
   "/leaderboard": { user: "Leaderboard" },
   "/knowledge": { user: "Knowledge Base" },

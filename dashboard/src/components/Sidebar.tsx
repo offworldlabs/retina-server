@@ -29,7 +29,6 @@ const userNav = (syntheticFleet: boolean): NavSection[] => [
       { to: "/detections", label: "Detections", icon: "radar" },
       { to: "/rf", label: "RF Environment", icon: "activity" },
       { to: "/contribution", label: "Network", icon: "globe" },
-      { to: "/alerts", label: "Alerts", icon: "bell" },
       { to: "/anomalies", label: "Anomalies", icon: "alertTriangle" },
       { to: "/map", label: "Map", icon: "map" },
       // The simulator and the page that tunes it, together and in that order,

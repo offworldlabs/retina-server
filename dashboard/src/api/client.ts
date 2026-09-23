@@ -156,9 +156,8 @@ export const api = {
   // Test dashboard (fleet overview)
   fleetDashboard: () => request("/api/test/dashboard"),
 
-  // Leaderboard & alerts (user-facing)
+  // Leaderboard (user-facing)
   leaderboard: () => request("/api/admin/leaderboard"),
-  alerts: () => request("/api/admin/alerts"),
 
   // Admin
   adminUsers: () => request("/api/admin/users"),
