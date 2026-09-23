@@ -48,6 +48,8 @@ def _value(expression: str, event: dict, cancelled: bool = False):
         ("github.event.changes.base", {"ref": {"from": "main"}} if event["retarget"] else None),
         ("github.event.action", event["action"]),
         ("github.event_name", event["name"]),
+        ("github.workflow", "CI"),
+        ("github.run_id", 12345),
         ("github.ref", event["ref"]),
         ("always()", True),
         ("success()", not cancelled),
@@ -153,3 +155,14 @@ def test_the_gates_are_judged_wherever_ci_ok_is_a_verdict(jobs, event, cancelled
         assert ran == ["Every gate passed"]
     else:
         assert "Every gate passed" not in ran
+
+
+@pytest.mark.parametrize("event", [e for e, v in EVENTS.items() if v["name"] == "pull_request"])
+def test_a_title_or_body_edit_cannot_cancel_or_displace_a_run_that_judges(workflow, event):
+    """A group holds one run in progress and one pending, and a newcomer
+    cancels or replaces them. An edit sharing the PR's group would cancel a
+    run in progress, or replace a push or retarget waiting to start."""
+    group = _value(workflow["concurrency"]["group"], EVENTS[event])
+    pull_request_group = _value(workflow["concurrency"]["group"], EVENTS["synchronize"])
+    assert (group == pull_request_group) is (event in DECIDING), group
+    assert _evaluate(workflow["concurrency"]["cancel-in-progress"], EVENTS[event])
