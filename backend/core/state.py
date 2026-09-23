@@ -159,6 +159,16 @@ DARK_FOLLOW_MODE = os.getenv("DARK_FOLLOW_MODE", "shadow").lower()
 if DARK_FOLLOW_MODE not in ("off", "shadow", "binding"):
     DARK_FOLLOW_MODE = "shadow"
 
+# Node-side tracking (services/node_tracks.py).  "off": a node's tracks are
+# filed and its pipeline keeps the in-process tracker.  "live": the first frame
+# a node sends with tracks replaces its pipeline's tracker with the node's own.
+# Off by default so that an environment opts in, which is what lets one run
+# node tracks while another, fed the same frames through the mirror, keeps the
+# in-process tracker to compare against.  An unrecognised value is "off".
+NODE_TRACKS_MODE = os.getenv("NODE_TRACKS_MODE", "off").lower()
+if NODE_TRACKS_MODE not in ("off", "live"):
+    NODE_TRACKS_MODE = "off"
+
 node_analytics = NodeAnalyticsManager(storage_dir=COVERAGE_STORAGE_DIR, fov_mode=FOV_MODE)
 
 # Every reputation penalty in retina-analytics is multiplied by this, and the
