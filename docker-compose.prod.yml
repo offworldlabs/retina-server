@@ -65,6 +65,15 @@ services:
       # A registered stock-blah2 radar must be polled by one server only, and
       # this is it. Staging and test are fed polled data by mirroring instead.
       - POLLED_RADAR_POLLING_ENABLED=1
+      # Claim candidates from adsb-service for real nodes that send no ADS-B of
+      # their own (services/tasks/adsb_fallback.py), in shadow: the known lane
+      # claims, calibrates and solves, but strips nothing from the dark lane and
+      # publishes nothing, so coverage learns while the map is unchanged. The
+      # mode is lane-wide, so a node's own ADS-B tags are shadowed too until
+      # binding returns. Staging runs the same; the test droplet does not, since
+      # its fleet already relays that traffic (ClickUp 123zgec4kbh).
+      - ADSB_FALLBACK_ENABLED=1
+      - KNOWN_LANE_MODE=shadow
     deploy:
       resources:
         limits:

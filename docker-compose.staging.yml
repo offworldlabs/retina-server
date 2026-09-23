@@ -54,14 +54,8 @@ services:
       # console has no /sim page, exactly as on production. The test droplet is
       # the one environment that sets it (docker-compose.test.yml).
       #
-      # Claim candidates from adsb-service for real nodes that send no ADS-B of
-      # their own (services/tasks/adsb_fallback.py), in shadow: the known lane
-      # claims, calibrates and solves, but strips nothing from the dark lane and
-      # publishes nothing. The mode is lane-wide, so a node's own ADS-B tags are
-      # shadowed here too until binding returns. Binding waits on
-      # known_lane.position_error_km and the claim rejects in
-      # /api/test/solver-stats; production waits on adsb-service admitting the
-      # server as a client (ClickUp 123zgec4kbh).
+      # The adsb-service claim fallback, in shadow, exactly as production runs
+      # it; see docker-compose.prod.yml.
       - ADSB_FALLBACK_ENABLED=1
       - KNOWN_LANE_MODE=shadow
       # Labels alerts, and a variable of its own rather than a reading of
