@@ -52,8 +52,8 @@ const { isAdmin: isAdminSite, modeParamIgnored } = resolveSurface(
   window.location.search
 );
 
-// `?mode=admin` used to work on any host, so say why it stopped rather than
-// quietly rendering the wrong surface to someone following an old link.
+// Old links and habits still carry `?mode=admin`, which selects nothing, so say
+// why rather than quietly rendering the other surface.
 warnIfModeIgnored(modeParamIgnored);
 
 export default function App() {

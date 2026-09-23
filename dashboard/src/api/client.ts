@@ -2,7 +2,7 @@ import { UnauthorizedError, request as sharedRequest, type RequestOptions } from
 
 import { isPublicRoute } from "../utils/publicRoutes";
 import { signInNext } from "../utils/signInNext";
-import { resolveSurface } from "../utils/surface";
+import { isAdminHost } from "../utils/surface";
 
 /** Must match the route in App.tsx. */
 const LOGIN_PATH = "/login";
@@ -14,26 +14,19 @@ function onLoginPage() {
   return window.location.pathname.replace(/\/+$/, "") === LOGIN_PATH;
 }
 
-/** On a route open to a caller with no session. Read afresh each time: the
- *  surface and the path are both read off window.location, and a single-page
- *  app changes the second without reloading.
- *
- *  App.tsx freezes its own surface at module load instead, and the two can
- *  disagree only on a development host, where `?mode=admin` names the surface
- *  and a router navigation can drop it. Everywhere else resolveSurface reads
- *  the hostname alone, which no navigation changes. The cost of the
- *  disagreement is whether a 401 redirects on a laptop. */
+/** On a route open to a caller with no session. The path is read afresh each
+ *  time, since a single-page app changes it without reloading. */
 function onPublicPage() {
-  const { hostname, pathname, search } = window.location;
-  return isPublicRoute(pathname, resolveSurface(hostname, search).isAdmin);
+  const { hostname, pathname } = window.location;
+  return isPublicRoute(pathname, isAdminHost(hostname));
 }
 
 /** The login page, carrying the page the session ran out on so that signing in
  *  again returns there. Not from the admin console: the mailed link opens on
  *  the app host, which has none of its routes. */
 function loginUrl() {
-  const { hostname, pathname, search } = window.location;
-  const next = resolveSurface(hostname, search).isAdmin ? null : signInNext(pathname);
+  const { hostname, pathname } = window.location;
+  const next = isAdminHost(hostname) ? null : signInNext(pathname);
   return next ? `${LOGIN_PATH}?${new URLSearchParams({ next })}` : LOGIN_PATH;
 }
 

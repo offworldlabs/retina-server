@@ -135,8 +135,13 @@ npm ci
 ```
 
 The console is at `http://localhost:5174` (or `http://app.localhost:5174/`) and
-opens on the live map; `/api` and `/ws` are proxied to the backend on `:8000`,
-and `?mode=admin` selects the admin console. The hostname selects `/map`'s
+opens on the live map; `/api` and `/ws` are proxied to the backend on `:8000`.
+The admin console is at `http://admin.localhost:5174/`, chosen by hostname as
+on every deployed environment. Chrome and Firefox resolve `*.localhost`
+themselves; macOS's own resolver does not, so any other client needs
+`127.0.0.1 admin.localhost` in `/etc/hosts`. A second device reaching the dev
+server by address or by `.local` name gets the app console only. The hostname
+also selects `/map`'s
 default feed (see `dashboard/src/utils/domains.ts`); a local hostname shows
 both real and synthetic nodes.
 
@@ -345,12 +350,12 @@ branch, open a PR, get it green, then merge.
   tunes it at `/sim/physics`, whose save needs an administrator. Both routes
   exist only where the server sets `SYNTHETIC_FLEET_ENABLED` (the test droplet
   and the laptop; staging and production run no simulator), as `/api/auth/me`
-  reports. On the dev server that is `/sim?mode=admin`. `map`, `staging-map`
-  and the other retired names are Cloudflare redirects into the app consoles;
-  `testmap` and `test-testmap` are retired outright, with no redirect. `/map`
-  still takes its feed from the hostname: every deployed environment (`app`,
-  `staging-app`, `test-app`) is real-only there, and a local hostname retains
-  both kinds of node. Tower search has its own SPA in
+  reports. On the dev server that is `admin.localhost:5174/sim`. `map`,
+  `staging-map` and the other retired names are Cloudflare redirects into the
+  app consoles; `testmap` and `test-testmap` are retired outright, with no
+  redirect. `/map` still takes its feed from the hostname: every deployed
+  environment (`app`, `staging-app`, `test-app`) is real-only there, and a
+  local hostname retains both kinds of node. Tower search has its own SPA in
   tower-finder-service; the laptop overlay sets `TOWER_FINDER_ENABLED=false`,
   and this backend no longer implements `/api/towers`.
 - **Config vs runtime config.** `backend/config/` is image-only (baked into the

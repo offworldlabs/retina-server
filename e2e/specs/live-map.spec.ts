@@ -2,9 +2,9 @@
  * Live Aircraft Map E2E tests, on the simulation surface.
  *
  * This suite visits the admin console's /sim on whichever host `hosts.testmap`
- * names: the local dev server, where `?mode=admin` selects that console. It
- * verifies the map page loads, WebSocket connects, aircraft appear, and key
- * interactive elements work correctly.
+ * names: the local dev server's admin.localhost. It verifies the map page
+ * loads, WebSocket connects, aircraft appear, and key interactive elements work
+ * correctly.
  *
  * NOTE: These tests require the synthetic fleet to be running on the target
  * environment, and a backend started with SYNTHETIC_FLEET_ENABLED=1 and
@@ -32,7 +32,7 @@ test.skip(
 // test.skip aborts the tests, not this module — every top-level statement still
 // runs during collection — so nothing here may call a method on TESTMAP where it
 // is null. Interpolating it is safe.
-const BASE = `${TESTMAP}/sim?mode=admin`;
+const BASE = `${TESTMAP}/sim`;
 
 // Helper: wait for the connection badge to show "LIVE"
 async function waitForLive(page: Page, timeoutMs = 15_000) {

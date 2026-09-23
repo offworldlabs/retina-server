@@ -7,8 +7,8 @@
 #   docker compose -f docker-compose.yml -f docker-compose.local.yml down
 #
 # Endpoints (nginx is rendered from deploy/nginx/nginx.conf.template, same as
-# every other environment; *.localhost resolves to 127.0.0.1 without a hosts entry
-# on macOS and most Linux):
+# every other environment; Chrome, Firefox and most Linux resolvers answer
+# *.localhost with 127.0.0.1, while macOS's own resolver needs a hosts entry):
 #   http://app.localhost:8080      → the console, opening on the live map of the
 #                                    synthetic fleet; the data explorer at /data
 #   http://towers.localhost:8080   → tower search SPA (also plain localhost:8080).
