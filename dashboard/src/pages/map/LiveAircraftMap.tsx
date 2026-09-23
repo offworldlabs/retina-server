@@ -27,7 +27,6 @@ import {
   ARC_TOTAL_LIFE_MS,
   groundTruthKey,
 } from "./constants";
-import { MLAT_HISTORY_REFRESH_MS, newSolveArrived } from "./mlatHistory";
 import {
   applyGroundTruthFixes,
   pruneGroundTruthFixes,
@@ -72,7 +71,6 @@ import { IconScaleSync, iconZoomScale, useIconZoomScale } from "./iconScale";
 import ScaledCircleMarker from "./ScaledCircleMarker";
 
 import { api } from "../../api/client";
-import { usePolling } from "../../hooks/usePolling";
 import { defaultFeedMode, type FeedMode } from "./feedMode";
 import { withCartoKey } from "./utils/basemap";
 import { TILES } from "./utils/tiles";
@@ -533,40 +531,6 @@ const MlatVerificationLayer = memo(function MlatVerificationLayer({ groundTruthR
   }, [map, groundTruthRef, smoothRef, MLAT, MLAT_VECTOR]);
 
   return null;
-});
-
-/* ── MlatSolveHistoryLayer: raw per-solve positions behind the selected MLAT
-      marker (from /api/test/mlat-history), so "solve trail vs GT trail vs
-      displayed marker" is visually decomposable.  Dots only, no interaction —
-      the detail panel's solve-history table is the lookup surface.  Bounded
-      (≤60 dots for one selected track), so React CircleMarkers are fine —
-      ScaledCircleMarkers, so the trail shrinks with the marker it sits under. ── */
-const MlatSolveHistoryLayer = memo(function MlatSolveHistoryLayer({ solves }) {
-  const { ANOMALY, GOOD, INK_SUBTLE, WARN } = usePalette();
-  const errColor = (e) =>
-    e == null ? INK_SUBTLE : e < 3 ? GOOD : e < 8 ? WARN : ANOMALY;
-  return (
-    <>
-      {solves.slice(0, 60).map((s, i) =>
-        validLatLon(s.raw_lat, s.raw_lon) ? (
-          <ScaledCircleMarker
-            key={`${s.ts_ms}-${i}`}
-            center={[s.raw_lat, s.raw_lon]}
-            radius={3}
-            interactive={false}
-            pathOptions={{
-              color: errColor(s.gt_error_km),
-              weight: 1,
-              opacity: 0.9,
-              fillColor: errColor(s.gt_error_km),
-              // Newest first in the payload — older solves fade out.
-              fillOpacity: Math.max(0.15, 0.75 - i * 0.02),
-            }}
-          />
-        ) : null,
-      )}
-    </>
-  );
 });
 
 /* ── AircraftMarker: memoized with custom comparator — only re-renders on visual changes
@@ -1901,34 +1865,6 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
     ? radarAircraft.find((ac) => ac.hex === selectedHex) || truthOnlyAircraft.find((ac) => ac.hex === selectedHex)
     : null;
 
-  // Per-solve history for the selected MLAT track (debug): fetched once per
-  // selection, then polled every MLAT_HISTORY_REFRESH_MS; no selection, no
-  // request. Read through the hex it was fetched for so a selection change
-  // never shows the previous track's solves while the new fetch is in flight.
-  // A failed load leaves the previous history on screen.
-  const selectedMnHex =
-    selectedAc?.position_source === "multinode_solve" ? selectedAc.hex : null;
-  const selectedMnSeen = selectedMnHex ? selectedAc?.seen ?? null : null;
-  const { data: polledMlatHistory, refresh: reloadMlatHistory } = usePolling(
-    () => (selectedMnHex ? api.mlatHistory(selectedMnHex) : Promise.resolve(null)),
-    selectedMnHex ? MLAT_HISTORY_REFRESH_MS : 0,
-    selectedMnHex ?? "",
-  );
-  const mlatHistory =
-    selectedMnHex && polledMlatHistory?.hex === selectedMnHex ? polledMlatHistory : null;
-
-  // A fall in `seen` is the feed announcing a fresh solve for this track — the
-  // one event worth a fetch off the poll's schedule (see newSolveArrived).
-  // Dark solves arrive every 1-3 s while a track is held, faster than the
-  // poll, and the dots are the surface someone selected the aircraft to read.
-  const prevMnSeenRef = useRef({ hex: null, seen: null });
-  useEffect(() => {
-    const prev = prevMnSeenRef.current;
-    const next = { hex: selectedMnHex, seen: selectedMnSeen };
-    prevMnSeenRef.current = next;
-    if (newSolveArrived(prev, next)) reloadMlatHistory();
-  }, [selectedMnHex, selectedMnSeen, reloadMlatHistory]);
-
   // Nodes with a live detection of the selected simulated object — read from
   // the detection-presence oracle (per-aircraft signals ∪ the detecting_nodes
   // feed key).  trailTick advances on every ingest, so this refreshes at the
@@ -2661,20 +2597,15 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
             )}
 
             {/* MLAT (multinode) solver verification — magenta truth dots + pink error lines */}
-            {/* Gated like the node range layer: this polls /api/test/
-                mlat-verification and draws truth-vs-solver error lines, which
-                is meaningless (and a wasted poll) when ground truth is off —
-                as it is by default on the production map domains. */}
+            {/* Gated on ground truth, like the node range layer: this polls
+                /api/test/mlat-verification and draws truth-vs-solver error
+                lines, which mean nothing without truth. Truth exists only on a
+                synthetic feed, so the public /map never makes the request. */}
             {showGroundTruth && (
               <MlatVerificationLayer
                 groundTruthRef={groundTruthRef}
                 smoothRef={smoothRef}
               />
-            )}
-
-            {/* Raw solve positions behind the selected MLAT marker */}
-            {mlatHistory?.solves?.length > 0 && (
-              <MlatSolveHistoryLayer solves={mlatHistory.solves} />
             )}
           </MapContainer>
 
@@ -2698,7 +2629,6 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
             trails={trailsRef.current}
             computeError={computeError}
             detectingNodes={selectedTruthDetectingNodes}
-            solveHistory={mlatHistory}
             nodeLabelFor={nodeLabelFor}
           />
         )}

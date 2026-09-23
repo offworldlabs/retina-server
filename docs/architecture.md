@@ -17,7 +17,7 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   laptop keeps both fleets). The synthetic simulation fleet is on the admin
   console at `/sim`, which exists only where a fleet runs: the test droplet,
   and a local stack. Production and staging run none.
-- **console pages** — node ownership, the node claim page, MLAT verification, metrics.
+- **console pages** — node ownership, the node claim page, metrics.
   A session is required for all of it bar the routes listed in
   `dashboard/src/utils/publicRoutes.ts`, which render to anyone and are backed
   only by endpoints that already publish. A caller with no session gets a nav

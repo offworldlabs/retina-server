@@ -1,11 +1,52 @@
+import { useEffect, useRef } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../../api/client";
 import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
-import { fmt } from "../../utils/format";
+import { DASH, fmt, formatRelativeTime } from "../../utils/format";
+import { MlatSolveHistory, positionErrorColour, type MlatTrack } from "./MlatSolveHistory";
 
 const REFRESH_MS = 5000;
+
+/**
+ * The matched aircraft in the latest snapshot, worst position error first.
+ * Each links to its own solve history, by address so a selection can be sent
+ * to someone.
+ */
+function TracksTable({ tracks, selected }: { tracks: MlatTrack[]; selected: string | null }) {
+  const rows = [...tracks].sort((a, b) => b.position_error_km - a.position_error_km);
+  return (
+    <DataTable
+      headers={["Aircraft", "Truth", "Position error", "Velocity error", "Altitude error", "Nodes",
+                "RMS delay", "RMS Doppler", "Bistatic angle", "Type", "Solved"]}
+      count={rows.length}
+      empty="No aircraft matched to truth in the latest snapshot."
+    >
+      {rows.map((t) => (
+        <tr key={t.solver_hex} className={t.solver_hex === selected ? "selected" : undefined}>
+          <td>
+            <Link to={`?hex=${encodeURIComponent(t.solver_hex)}`}
+                  aria-current={t.solver_hex === selected ? "true" : undefined}>
+              {t.solver_hex}
+            </Link>
+          </td>
+          <td style={{ whiteSpace: "nowrap" }}>{t.truth_hex ?? DASH}</td>
+          <td style={{ color: positionErrorColour(t.position_error_km) }}>{fmt(t.position_error_km, 2)} km</td>
+          <td>{fmt(t.velocity_error_ms, 1)} m/s</td>
+          <td>{fmt(t.altitude_error_m, 0)} m</td>
+          <td>{t.n_nodes}</td>
+          <td>{t.rms_delay} µs</td>
+          <td>{t.rms_doppler} Hz</td>
+          <td>{t.max_bistatic_angle_deg != null ? `${t.max_bistatic_angle_deg}°` : DASH}</td>
+          <td>{t.is_anomalous ? `${t.object_type ?? "aircraft"}, anomalous` : t.object_type ?? "aircraft"}</td>
+          <td style={{ whiteSpace: "nowrap" }}>{formatRelativeTime(t.timestamp_ms / 1000)}</td>
+        </tr>
+      ))}
+    </DataTable>
+  );
+}
 
 function ErrorRow({ label, stats, unit, decimals = 2 }: {
   label: string;
@@ -58,6 +99,17 @@ export default function MlatVerificationPage() {
     REFRESH_MS,
   );
   const { data, loading } = polled;
+  const [searchParams] = useSearchParams();
+  // Lower case, as the solver mints it and mlat-history echoes it.
+  const selected = searchParams.get("hex")?.toLowerCase() ?? null;
+
+  // The history sits above the table, so a row chosen far down it is followed
+  // up to what it opened. Also once the page loads, for a link that arrives
+  // with an aircraft already chosen.
+  const historyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (selected && !loading) historyRef.current?.scrollIntoView?.({ block: "start" });
+  }, [selected, loading]);
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
@@ -92,12 +144,33 @@ export default function MlatVerificationPage() {
         <StatCard label="Solves"          value={(v.n_solves ?? 0).toLocaleString()} />
         <StatCard label="Matched to truth" value={(v.n_matched ?? 0).toLocaleString()}
                   sub={matchThresh ? `≤ ${matchThresh} km from ground truth` : undefined} />
-        <StatCard label="Match rate"      value={fmt(v.match_rate_pct, 1)} unit="%" />
+        {/* Against the distinct aircraft behind the solves, which is the rate's
+            own denominator: several solver cycles for one aircraft count once. */}
+        <StatCard label="Match rate"      value={fmt(v.match_rate_pct, 1)} unit="%"
+                  sub={v.n_unique_aircraft != null ? `${v.n_matched ?? 0} of ${v.n_unique_aircraft} aircraft` : undefined} />
       </div>
 
       {v.position && <ErrorRow label="Position error" stats={v.position} unit="km" />}
       {v.velocity && <ErrorRow label="Velocity error" stats={v.velocity} unit="ms" />}
       {v.altitude && <ErrorRow label="Altitude error" stats={v.altitude} unit="m" decimals={0} />}
+
+      {/* ── Per aircraft ──────────────────────────────────────────── */}
+      <h2 className="section-title">
+        Matched aircraft
+        <span className="card-note">choose one for its solve history</span>
+      </h2>
+      {selected && (
+        <div ref={historyRef}>
+          <MlatSolveHistory
+            hex={selected}
+            track={(v.tracks ?? []).find((t: MlatTrack) => t.solver_hex === selected)}
+            every={REFRESH_MS}
+          />
+        </div>
+      )}
+      <div className="card">
+        <TracksTable tracks={v.tracks ?? []} selected={selected} />
+      </div>
 
       {/* ── Rolling accuracy ──────────────────────────────────────── */}
       <h2 className="section-title">
