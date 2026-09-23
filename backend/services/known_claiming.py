@@ -771,7 +771,7 @@ def _fresh_fix_prediction(
     re-deriving it at the recording site would be a second offset_latlon_m
     that could silently disagree with the one the prediction was built from.
     """
-    st = state._adsb_for_seeding().get(hexn)
+    st = state._adsb_for_seeding((geo.rx_lat, geo.rx_lon)).get(hexn)
     if st is None:
         return None
     cand_world = st.get("world")
@@ -830,7 +830,7 @@ def _follow_fix_record(hexn: str, lat: float, lon: float, alt_m: float, ve: floa
     }
 
 
-def _follow_states(frame_ts_s: float, claimed_hexes: set[str]) -> dict[str, dict]:
+def _follow_states(frame_ts_s: float, claimed_hexes: set[str], rx: tuple[float, float]) -> dict[str, dict]:
     """Synthetic path-2 candidates built from the known lane's own published
     entries, for hexes whose transponder has gone stale or silent.
 
@@ -847,7 +847,7 @@ def _follow_states(frame_ts_s: float, claimed_hexes: set[str]) -> dict[str, dict
     """
     if KNOWN_FOLLOW_MAX_AGE_S <= 0:
         return {}
-    cache = state._adsb_for_seeding()
+    cache = state._adsb_for_seeding(rx)
     out: dict[str, dict] = {}
     for key, rec in list(state.multinode_tracks.items()):
         if not key.startswith("mn-adsb-") or not isinstance(rec, dict):
@@ -1165,8 +1165,9 @@ def claim_known_targets(node_id: str, frame: dict, follow_claimed: set[int] | No
     # a second loop so each hex appears exactly once in the assignment;
     # the snapshot _adsb_for_seeding returns is freshly built per call, so
     # writing into it cannot touch the cache.
-    cand_states = state._adsb_for_seeding()
-    cand_states.update(_follow_states(frame_ts_s, claimed_hexes))
+    rx = (geo.rx_lat, geo.rx_lon)
+    cand_states = state._adsb_for_seeding(rx)
+    cand_states.update(_follow_states(frame_ts_s, claimed_hexes, rx))
     for hexn, st in cand_states.items():
         # No claimed_hexes skip here — it moved to the column build below,
         # so an already-claimed hex stays visible to the exclusivity test
