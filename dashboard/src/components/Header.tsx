@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
 import { useTheme, type ThemePreference } from "../context/ThemeContext";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { isPublicRoute } from "../utils/publicRoutes";
 
 /* Feather's sun, monitor and moon, inlined in the same house style as the
    sidebar's set: 24-unit box, no fill, 2-unit round-capped stroke in
@@ -46,7 +47,7 @@ const APPEARANCE: readonly { value: ThemePreference; label: string; icon: React.
   },
 ];
 
-export default function Header({ title }) {
+export default function Header({ title, isAdmin = false }) {
   const { user, logout } = useAuth();
   const { preference, setPreference } = useTheme();
   const [open, setOpen] = useState(false);
@@ -63,9 +64,21 @@ export default function Header({ title }) {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
+  // Read when the session ends, not at the click: the caller may have moved
+  // on while the sign-out request was in flight.
+  const currentPath = useRef(pathname);
+  useEffect(() => {
+    currentPath.current = pathname;
+  }, [pathname]);
+
+  // An open page stays put and redraws signed out. Any other would bounce to
+  // the sign-in card, so it gives way to the map, replaced in history because
+  // it is no longer there to go back to. The admin console has no open pages
+  // and no map, so RequireAuth's bounce stands there.
   const handleLogout = async () => {
-    const { redirected } = await logout();
-    if (!redirected) navigate("/login");
+    await logout(() => {
+      if (!isAdmin && !isPublicRoute(currentPath.current, isAdmin)) navigate("/map", { replace: true });
+    });
   };
 
   /**

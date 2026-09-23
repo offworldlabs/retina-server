@@ -24,9 +24,11 @@ vi.mock("react-leaflet", async (importOriginal) => {
   };
 });
 
-// The map reads identity from the console's AuthProvider; every case is signed in.
+// The map reads identity from the console's AuthProvider; every case starts
+// signed in.
+const SIGNED_IN = { email: "owner@example.invalid", name: "Owner" };
 const owner = vi.hoisted(() => ({
-  user: { email: "owner@example.invalid", name: "Owner" },
+  user: null as { email: string; name: string } | null,
   loading: false,
   syntheticFleet: false,
 }));
@@ -47,6 +49,7 @@ class Socket {
 }
 
 beforeEach(() => {
+  owner.user = SIGNED_IN;
   owner.syntheticFleet = false;
   localStorage.clear();
   window.history.replaceState(null, "", "/");
@@ -85,6 +88,26 @@ it("drops paused playback and old history when the owner feed is selected", asyn
   expect(screen.getByRole("button", { name: /Pause/ })).toBeInTheDocument();
   expect(document.querySelector(".playback-bar")).not.toBeInTheDocument();
   expect(Socket.instances[Socket.instances.length - 1].url).toContain("/ws/aircraft/owner");
+});
+
+it("returns to the public feed when the owner signs out on the map", async () => {
+  const { rerender } = render(<MapThemeProvider><LiveAircraftMap /></MapThemeProvider>);
+  fireEvent.click(await screen.findByRole("checkbox", { name: "My nodes only" }));
+  const ownerFeed = Socket.instances[Socket.instances.length - 1];
+  expect(ownerFeed.url).toContain("/ws/aircraft/owner");
+
+  owner.user = null;
+  rerender(<MapThemeProvider><LiveAircraftMap /></MapThemeProvider>);
+
+  expect(screen.queryByRole("checkbox", { name: "My nodes only" })).not.toBeInTheDocument();
+  expect(ownerFeed.readyState).toBe(3);
+  expect(Socket.instances[Socket.instances.length - 1].url).not.toContain("/owner");
+
+  // Signing in again offers the filter without applying it.
+  owner.user = SIGNED_IN;
+  rerender(<MapThemeProvider><LiveAircraftMap /></MapThemeProvider>);
+  expect(await screen.findByRole("checkbox", { name: "My nodes only" })).not.toBeChecked();
+  expect(Socket.instances[Socket.instances.length - 1].url).not.toContain("/owner");
 });
 
 it("forgets rendered tracks in both directions even before the new feed responds", async () => {

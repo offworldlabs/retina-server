@@ -84,7 +84,7 @@ export default function DashboardLayout({ isAdmin, children }) {
     <div className={`dashboard${collapsed ? " sidebar-collapsed" : ""}`}>
       <Sidebar isAdmin={isAdmin} collapsed={collapsed} onToggle={toggle} />
       <div className="main-area">
-        <Header title={title} />
+        <Header title={title} isAdmin={isAdmin} />
         <div className={`content${flush ? " flush" : ""}`}>
           {/* Keyed on the path, which names the page: the query string and hash
               are state within it. */}
