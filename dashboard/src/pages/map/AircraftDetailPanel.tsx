@@ -1,6 +1,4 @@
-import { api } from "../../api/client";
 import { DASH } from "../../utils/format";
-import { usePolling } from "../../hooks/usePolling";
 import { POSITION_SOURCE_ARC_ONLY, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
 import { classifyHex, emergencySquawkLabel } from "./hexInfo";
 import { trailToCsv, downloadCsv } from "./trailExport";
@@ -16,7 +14,7 @@ import { usePalette } from "./useMapTheme";
  * default keeps the panel usable on its own (in a test, say) and names an
  * unknown node rather than echoing an identifier it cannot resolve.
  */
-export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError, detectingNodes = [], solveHistory = null, nodeLabelFor = (_nodeRef) => "unlisted node" }) {
+export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError, detectingNodes = [], nodeLabelFor = (_nodeRef) => "unlisted node" }) {
   const { ANOMALY, DRONE, LANE_MN_ADSB } = usePalette();
   if (!ac) return null;
 
@@ -300,17 +298,6 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
           </div>
         )}
 
-        {/* MLAT solver verification — show when this is a multinode solve */}
-        {ac.position_source === "multinode_solve" && (
-          <MlatVerificationSection solverHex={ac.hex} />
-        )}
-
-        {/* Per-solve history behind this marker (fetched by LiveAircraftMap,
-            which also draws the raw solve dots on the map) */}
-        {ac.position_source === "multinode_solve" && solveHistory?.hex === ac.hex && (
-          <MlatSolveHistorySection history={solveHistory} />
-        )}
-
         {/* Accuracy */}
         <div className="detail-section">
           <div className="detail-section-title">Accuracy</div>
@@ -412,134 +399,6 @@ function Field({ label, value }) {
     <div className="detail-field">
       <span className="detail-label">{label}</span>
       <span className="detail-value">{value}</span>
-    </div>
-  );
-}
-
-function MlatVerificationSection({ solverHex }) {
-  const { MLAT } = usePalette();
-  // Two polls, each settling on its own: one endpoint failing leaves the
-  // other's figure updating, and the failed one keeps what it last showed.
-  const { data } = usePolling(api.mlatVerification, 30_000);
-  const { data: accuracy } = usePolling(api.mlatAccuracy, 30_000);
-
-  if (!data || !data.n_matched) return null;
-
-  // Match by synthetic solver hex — same hash the backend uses to generate the map hex.
-  // More reliable than proximity matching against dead-reckoned frontend positions.
-  const match = (data.tracks || []).find((t) => t.solver_hex === solverHex);
-  const nodeStats = match && accuracy?.by_node_count
-    ? accuracy.by_node_count[String(match.n_nodes)]
-    : null;
-
-  return (
-    <div className="detail-section">
-      <div className="detail-section-title" style={{ color: MLAT }}>
-        MLAT Verification
-      </div>
-      {match && (
-        <>
-          <Field label="Pos Error" value={
-            <span className={match.position_error_km < 3 ? "good" : match.position_error_km < 8 ? "warn" : "bad"}>
-              {match.position_error_km.toFixed(1)} km
-            </span>
-          } />
-          <Field label="Vel Error" value={`${match.velocity_error_ms.toFixed(1)} m/s`} />
-          <Field label="Alt Error" value={`${match.altitude_error_m} m`} />
-          <Field label="Nodes" value={match.n_nodes} />
-        </>
-      )}
-      {/* The pct is n_matched / n_unique_aircraft (duplicate solver cycles for
-          one aircraft collapse), so render the same denominator — showing
-          n_solves here made "2/5 (50%)" look like a math error. Falls back to
-          n_solves for payloads predating n_unique_aircraft. */}
-      <Field label="Match rate" value={`${data.n_matched}/${data.n_unique_aircraft ?? data.n_solves} (${data.match_rate_pct}%)`} />
-      {data.position && <Field label="Median Pos" value={`${data.position.median_km} km`} />}
-      {data.position && <Field label="P95 Pos" value={`${data.position.p95_km} km`} />}
-      {accuracy?.n_samples > 0 && <Field label="Rolling N" value={accuracy.n_samples} />}
-      {accuracy?.n_samples > 0 && <Field label="Rolling P95" value={`${accuracy.p95_km} km`} />}
-      {nodeStats && <Field label={`Nodes=${match.n_nodes} P95`} value={`${nodeStats.p95_km} km`} />}
-    </div>
-  );
-}
-
-function MlatSolveHistorySection({ history }) {
-  const { MLAT } = usePalette();
-  // Per-solve records behind this marker over the last ~30 min, newest first
-  // (GET /api/test/mlat-history?hex=...).  gt_error_km is frozen at solve
-  // time against the nearest GT trail point — independent of the display's
-  // dead-reckoning and of the feed's per-frame ground_truth_hex re-binding —
-  // so a hex change down the gt column is a visible GT re-bind.
-  const solves = history?.solves || [];
-  const rejects = history?.rejects_nearby;
-  if (!solves.length && !rejects?.n) return null;
-
-  const errClass = (e) => (e == null ? "" : e < 3 ? "good" : e < 8 ? "warn" : "bad");
-  // The same scale over direction error, in degrees rather than km.
-  // heading_err_deg is None whenever truth is near-hover or the solve has no
-  // meaningful velocity.
-  const hdgErrClass = (e) => (e == null ? "" : e < 15 ? "good" : e < 45 ? "warn" : "bad");
-  const ago = (ts) => {
-    const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
-    return s < 60 ? `-${s}s` : `-${Math.round(s / 60)}m`;
-  };
-  const cell = { padding: "2px 6px", whiteSpace: "nowrap" };
-
-  return (
-    <div className="detail-section">
-      <div className="detail-section-title" style={{ color: MLAT }}>
-        Solve History ({solves.length} in {history.window_minutes} min)
-      </div>
-      {solves.length > 0 && (
-        <div style={{ maxHeight: 180, overflowY: "auto", fontSize: 11 }}>
-          <table style={{ borderCollapse: "collapse", width: "100%" }}>
-            <thead>
-              <tr style={{ color: "var(--text-secondary)", textAlign: "left" }}>
-                <th style={cell}>t</th>
-                <th style={cell}>N</th>
-                <th style={cell}>GT err</th>
-                <th style={cell}>Δhdg</th>
-                <th style={cell}>rmsD</th>
-                <th style={cell}>rmsF</th>
-                <th style={cell}>truth</th>
-              </tr>
-            </thead>
-            <tbody>
-              {solves.map((s, i) => (
-                <tr key={`${s.ts_ms}-${i}`} style={{ borderTop: "1px solid var(--border)" }}>
-                  <td style={{ ...cell, color: "var(--text-muted)" }}>{ago(s.ts_ms)}</td>
-                  <td style={cell}>{s.n_nodes}</td>
-                  <td style={cell}>
-                    <span className={errClass(s.gt_error_km)}>
-                      {s.gt_error_km != null ? `${s.gt_error_km.toFixed(2)} km` : DASH}
-                    </span>
-                  </td>
-                  <td style={cell}>
-                    <span className={hdgErrClass(s.heading_err_deg)}>
-                      {s.heading_err_deg != null ? `${s.heading_err_deg}°` : DASH}
-                    </span>
-                  </td>
-                  <td style={cell}>{s.rms_delay}</td>
-                  <td style={cell}>{s.rms_doppler}</td>
-                  <td style={{ ...cell, color: "var(--text-muted)" }}>{s.gt_hex || DASH}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {rejects?.n > 0 && (
-        <Field
-          label="Rejects nearby"
-          value={
-            <span className="warn" title="Gate-rejected solves within 10 km of the latest published solve">
-              {Object.entries(rejects.by_outcome || {})
-                .map(([k, v]) => `${k.replace(/^rejected_|^n2_/, "")}:${v}`)
-                .join("  ") || rejects.n}
-            </span>
-          }
-        />
-      )}
     </div>
   );
 }
