@@ -636,7 +636,7 @@ git log -3 --format='%h %ad %s' --date=short -- libs/retina-tracker  # when it l
 
 ### `frame_starvation:<node_id>`
 
-**Trigger:** A real node that is online (heard from within the offline threshold) has filed no frame for `FRAME_STARVATION_S` (default 15 min), measured from its last frame or from the server starting, whichever is later. One alert per node.  
+**Trigger:** A real node that is online (heard from within the offline threshold) has filed fewer than a frame a minute across `FRAME_STARVATION_S`, capped at 15 (15 frames in the default 15 min). A node is judged only once the server has seen it online for a whole window, so a deploy, a new registration or a return from offline never fires it at once. A working node files one or two a second; a board that cannot reach its own radar still slips out the odd frame, which is why the line is not zero. One alert per node.  
 **What it means:** The node's heartbeat is arriving but its radar is not producing, so every other surface shows it as healthy. A quiet sky is not the cause: blah2 emits a frame per CPI with or without aircraft.
 
 **Read what the node says about itself:** the alert quotes its last reported `state` and how long it has held it. For its health and recent errors, open `/api/admin/node-reports` at `admin.retina.fm` in a signed-in browser (there is no shell route to `/api/admin/*`).
@@ -644,9 +644,10 @@ git log -3 --format='%h %ad %s' --date=short -- libs/retina-tracker  # when it l
 **Common causes, from the node's own report:**
 1. `starting` for a long time: blah2 never came up, or setup was never finished on the board.
 2. `stalled` or `error`: blah2 was running and stopped. A board left in retina-gui's spectrum mode reads this way.
-3. `streaming` with no frames arriving: the node believes it is sending. Suspect the network path, then the server's refusals (`frames_dropped`).
+3. `streaming` while its errors say `detection poll failed` against `127.0.0.1:3000`: the node cannot reach its own blah2 API, so it has next to nothing to send. The state is wrong and the errors are right; read both.
+4. `streaming` with clean errors and still no frames: the node believes it is sending. Suspect the network path, then the server's refusals (`frames_dropped`).
 
-The fix is on the board, so the owner is usually the one to act. `resolved:frame_starvation:<node_id>` follows once a frame arrives.
+The fix is on the board, so the owner is usually the one to act. `resolved:frame_starvation:<node_id>` follows once frames arrive at the rate again.
 
 ---
 

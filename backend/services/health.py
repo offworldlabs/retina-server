@@ -20,6 +20,7 @@ import time
 
 import orjson
 
+from config.constants import FRAME_STARVATION_MIN_FRAMES
 from core import state
 
 CRITICAL = "critical"
@@ -115,10 +116,11 @@ _DEFAULT_COVERAGE_BACKLOG_MAX_WAIT_S = 1200.0
 _DEFAULT_SOLVER_QUEUE_DROP_WINDOW_S = 300.0
 
 
-# How long (s) a node the server hears from may go without filing a frame.
-# An idle sky still gives a frame per CPI, so any gap this long is the node's
-# radar not running, not a quiet sky. Well clear of a restart: frames resume on
-# the first POST after one, unlike the solver's slower first publish.
+# The window (s) in which a node the server hears from must file
+# FRAME_STARVATION_MIN_FRAMES frames. An idle sky still gives a frame per CPI,
+# so a shortfall this long is the node's radar not running, not a quiet sky.
+# Well clear of a restart: frames resume on the first POST after one, unlike
+# the solver's slower first publish.
 _DEFAULT_FRAME_STARVATION_S = 900.0
 
 
@@ -128,7 +130,7 @@ def _duration(seconds: float) -> str:
 
 
 def _frame_starvation(now: float, add) -> None:
-    """A node that is heard from and files nothing, one issue per node.
+    """A node that is heard from and files next to nothing, one issue per node.
 
     The heartbeat keeps such a node online on every surface, so without this it
     is indistinguishable from a working one. Its own report is quoted, not
@@ -142,11 +144,24 @@ def _frame_starvation(now: float, add) -> None:
             for node_id, info in state.connected_nodes.items()
             if info.get("status") != "disconnected" and not info.get("is_synthetic", False)
         ]
+    for node_id in set(state.node_heard_since) - set(heard):
+        del state.node_heard_since[node_id]
+    recent = state.recent_node_frames()
+    # One frame a minute of window, so a shortened window does not flag working
+    # nodes. Capped at what the record holds, so a window longer than 15 minutes
+    # asks for 15 frames, not one a minute.
+    floor = min(FRAME_STARVATION_MIN_FRAMES, max(1, int(starvation_s // 60)))
     for node_id in heard:
-        quiet_since = max(state.node_last_frame_at.get(node_id, 0.0), state.frames_watched_since)
-        if now - quiet_since <= starvation_s:
+        heard_since = state.node_heard_since.setdefault(node_id, now)
+        frames = recent.get(node_id, ())
+        filed = sum(1 for t in frames if now - t <= starvation_s)
+        if filed >= floor or now - heard_since <= starvation_s:
             continue
-        message = f"Node {node_id} is heard from but has filed no frame for {_duration(now - quiet_since)}"
+        message = f"Node {node_id} is heard from but has filed {filed} frame(s) in the last {_duration(starvation_s)}"
+        if frames:
+            message += f", the latest {_duration(now - frames[-1])} ago"
+        else:
+            message += f" and none in {_duration(now - heard_since)} online"
         reported = state.node_reported_state.get(node_id)
         if reported is not None:
             reported_state, since = reported

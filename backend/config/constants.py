@@ -584,6 +584,11 @@ EXTERNAL_TRUTH_MAX_AGE_S = 120.0
 # ── Admin / ops ──────────────────────────────────────────────────────────────
 EVENT_LOG_MAX = 2000  # Event log buffer capacity
 NODE_OFFLINE_THRESHOLD_S = 120  # Heartbeat timeout → offline (s)
+# A node heard from that files fewer than one frame a minute across the
+# starvation window, capped at this many, is starved: 15 over the default 15
+# minutes. A working node files one or two a second, and a node that cannot
+# reach its radar still slips out the odd frame, so zero is the wrong line.
+FRAME_STARVATION_MIN_FRAMES = 15
 NODE_HEALTH_CHECK_INTERVAL_S = 30  # How often to check node liveness (s)
 STORAGE_CACHE_TTL_S = 300.0  # Archive storage stats cache TTL (s)
 CONFIG_LIVE_CACHE_TTL_S = 60.0  # Live node/tower config cache TTL (s)

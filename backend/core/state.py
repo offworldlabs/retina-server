@@ -25,6 +25,7 @@ from config.constants import (
     ASSOC_MAX_NEIGHBORS,
     ASSOC_MAX_PAIRS_PER_ROUND,
     ASSOC_MIN_INTERVAL_S,
+    FRAME_STARVATION_MIN_FRAMES,
     FT_TO_M,
     GROUND_TRUTH_MAX,  # noqa: F401 — re-exported, used via state.GROUND_TRUTH_MAX
     N2_CONFIRM_MIN_EPOCHS,
@@ -48,11 +49,16 @@ connected_nodes: dict[str, dict] = {}
 # peer drops, but a heartbeat overwrites it with whatever the node reported, so
 # it is not a closed set — do not branch on it as if it were.
 
-# When each node's latest frame reached the frame workers (time.time()), and
-# when this process began watching. Neither survives a restart, so a node with
-# no frame yet is measured from the start rather than read as starved.
-node_last_frame_at: dict[str, float] = {}
-frames_watched_since: float = time.time()
+# The times (time.time()) of each node's latest FRAME_STARVATION_MIN_FRAMES
+# frames at the frame workers. Written from worker threads, so only through
+# record_node_frame and read through recent_node_frames.
+node_recent_frames: dict[str, deque] = {}
+node_recent_frames_lock = threading.Lock()
+# When the frame-starvation check first saw each node online, dropped when it
+# goes offline. Touched only on the event loop. Neither this nor the frame
+# record survives a restart, so a node is judged a full window after the check
+# first sees it: after a deploy, a registration or a return from offline alike.
+node_heard_since: dict[str, float] = {}
 # The state each node last reported on its heartbeat, and since when (epoch
 # seconds): a copy of node_reports for the health check, which cannot await the
 # database. Diagnostic only; see services/node_report_store.
@@ -1218,6 +1224,27 @@ def bump_counter(name: str, n: int = 1) -> None:
         globals()[name] += n
 
 
+def record_node_frame(node_id: str, at: float) -> None:
+    """Record one frame reaching the frame workers, for the starvation check."""
+    with node_recent_frames_lock:
+        recent = node_recent_frames.get(node_id)
+        if recent is None:
+            recent = node_recent_frames[node_id] = deque(maxlen=FRAME_STARVATION_MIN_FRAMES)
+        recent.append(at)
+
+
+def recent_node_frames() -> dict[str, tuple[float, ...]]:
+    """A snapshot of every node's recent frame times, safe to read off-thread."""
+    with node_recent_frames_lock:
+        return {node_id: tuple(frames) for node_id, frames in node_recent_frames.items()}
+
+
+def forget_node_frames(node_id: str) -> None:
+    with node_recent_frames_lock:
+        node_recent_frames.pop(node_id, None)
+    node_heard_since.pop(node_id, None)
+
+
 def record_solver_queue_drop() -> None:
     """Count one refused solver candidate and stamp when it happened.
 
@@ -1316,7 +1343,6 @@ def _reset_for_tests() -> None:
     global latest_accuracy_bytes
     global latest_mlat_accuracy_bytes, latest_mlat_verification_bytes
     global latest_storage_bytes, simulation_config
-    global frames_watched_since
 
     for store in (
         connected_nodes,
@@ -1346,7 +1372,8 @@ def _reset_for_tests() -> None:
         task_error_counts,
         rate_buckets,
         latest_missed_detections,
-        node_last_frame_at,
+        node_recent_frames,
+        node_heard_since,
         node_reported_state,
     ):
         store.clear()
@@ -1385,7 +1412,6 @@ def _reset_for_tests() -> None:
     latest_mlat_verification_bytes = b"{}"
     latest_storage_bytes = b"{}"
     simulation_config = dict(_SIMULATION_CONFIG_DEFAULTS)
-    frames_watched_since = time.time()
 
     with counters_lock:
         globals().update(_COUNTER_ZEROS)
