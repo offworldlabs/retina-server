@@ -14,7 +14,7 @@ from config.constants import ANALYTICS_REFRESH_INTERVAL_S, FT_TO_M, is_num
 from core import state
 from core.task_registry import get_stale_tasks
 from core.users import require_admin
-from services import known_claiming
+from services import known_claiming, node_tracks
 from services.frame_processor import resolve_ground_truth_hex
 from services.geo import haversine_km
 from services.id_utils import normalize_hex_key
@@ -144,6 +144,10 @@ def _build_dashboard_data() -> bytes:
                 "node_pipelines": len(state.node_pipelines),
                 "aircraft_on_map": n_aircraft,
             },
+            # Tracks the nodes' own trackers sent (contract 1.6.0), as the store
+            # holds them: how many nodes send them, how full their windows are,
+            # and how many frames' tracks could not be filed.
+            "node_tracks": node_tracks.store.summary() | {"errors": state.node_tracks_errors},
             "analytics": {
                 "nodes_with_analytics": analytics_nodes,
                 "average_trust_score": round(avg_trust, 4),
