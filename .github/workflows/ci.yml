@@ -476,6 +476,11 @@ jobs:
     # Deliberately NOT restricted to main. This gate exists to stop the change
     # landing before the service can serve it, and a job that only runs after
     # the merge reports that too late to prevent one.
+    #
+    # Title and body edits are discarded as every other gate discards them: the
+    # probe reaches production's instance, so an outage there would otherwise
+    # redden a PR whose code nobody touched.
+    if: github.event.action != 'edited' || github.event.changes.base
     steps:
       - uses: actions/checkout@v4
       # Production's instance answers on a name with public DNS, so it can be
