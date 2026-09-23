@@ -3,7 +3,7 @@
 # single implementation of that assertion. Sourced by staging-smoke-test.sh and
 # by CI's production smoke tests.
 #
-# `map`, `testmap`, `dash` and `data` no longer have a vhost. Nothing in this
+# `map`, `dash` and `data` no longer have a vhost. Nothing in this
 # repo answers on them: they are Cloudflare redirect rules onto the equivalent
 # page on their environment's `app` host, and if a rule is removed or misedited
 # the name reaches the origin, where the catch-all refuses it with a 421. No

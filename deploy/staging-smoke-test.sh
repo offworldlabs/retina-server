@@ -19,8 +19,8 @@ API_URL="https://staging-api.retina.fm"
 # the admin console.
 ADMIN_URL="https://staging-admin.retina.fm"
 # The public surface: the console at /, opening on its map. `staging-map`,
-# `staging-dash`, `staging-data` and the public `testmap` are Cloudflare
-# redirects onto it and reach no origin, so only their redirects are probed.
+# `staging-dash` and `staging-data` are Cloudflare redirects onto it and reach
+# no origin, so only their redirects are probed.
 APP_URL="https://staging-app.retina.fm"
 # TOWER_CONTRACT_QUERY / TOWER_CONTRACT_ECHO: what a backend must echo back.
 # shellcheck source=deploy/tower-contract.sh
@@ -337,11 +337,8 @@ check_page_asset    "app deep link loads it too"   "${APP_URL}/nodes/ret-smoke"
 echo ""
 echo "── Retired hostnames reach the app surface ──"
 # No vhost claims these; Cloudflare redirects them onto the pages above, and
-# the origin would refuse them with a 421. `testmap` is the one people outside
-# the project have, from when staging's map was the simulator demo; it lands on
-# the real network now, like every other name here.
+# the origin would refuse them with a 421.
 check_legacy_redirect "staging-map.retina.fm"  /               "${APP_URL}/map"
-check_legacy_redirect "testmap.retina.fm"      /               "${APP_URL}/map"
 check_legacy_redirect "staging-dash.retina.fm" /smoke-redirect "${APP_URL}/smoke-redirect"
 check_legacy_redirect "staging-data.retina.fm" /               "${APP_URL}/data"
 
