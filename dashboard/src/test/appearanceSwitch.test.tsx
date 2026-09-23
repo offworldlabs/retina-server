@@ -10,21 +10,8 @@ vi.mock("../context/AuthContext", () => ({
   useAuth: () => ({ user: state.user, loading: false, logout: vi.fn(async () => ({ redirected: false })) }),
 }));
 
-/** As in theme.test.tsx: stubbed rather than borrowed, because jsdom has no
- *  matchMedia and Node 20 and 26 disagree about window.localStorage. */
-function stubBrowser() {
-  const store = new Map<string, string>();
-  Object.defineProperty(window, "localStorage", {
-    configurable: true,
-    value: {
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => void store.set(k, String(v)),
-      removeItem: (k: string) => void store.delete(k),
-      clear: () => store.clear(),
-      key: () => null,
-      length: 0,
-    },
-  });
+/** jsdom has no matchMedia. */
+function stubMatchMedia() {
   window.matchMedia = vi.fn().mockReturnValue({
     matches: false,
     media: "(prefers-color-scheme: dark)",
@@ -51,7 +38,7 @@ const CALLERS = [
 ];
 
 beforeEach(() => {
-  stubBrowser();
+  stubMatchMedia();
   document.documentElement.removeAttribute("data-theme");
 });
 

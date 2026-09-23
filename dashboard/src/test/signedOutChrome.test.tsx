@@ -18,21 +18,8 @@ const state = vi.hoisted(() => ({
 
 vi.mock("../context/AuthContext", () => ({ useAuth: () => state.auth }));
 
-/** As in theme.test.tsx: stubbed rather than borrowed, because jsdom has no
- *  matchMedia and Node 20 and 26 disagree about window.localStorage. */
-function stubBrowser() {
-  const store = new Map<string, string>();
-  Object.defineProperty(window, "localStorage", {
-    configurable: true,
-    value: {
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => void store.set(k, String(v)),
-      removeItem: (k: string) => void store.delete(k),
-      clear: () => store.clear(),
-      key: () => null,
-      length: 0,
-    },
-  });
+/** jsdom has no matchMedia. */
+function stubMatchMedia() {
   window.matchMedia = vi.fn().mockReturnValue({
     matches: false,
     media: "(prefers-color-scheme: dark)",
@@ -151,7 +138,7 @@ describe("the sidebar shown to a caller with no session", () => {
 
 describe("the header shown to a caller with no session", () => {
   beforeEach(() => {
-    stubBrowser();
+    stubMatchMedia();
     document.documentElement.removeAttribute("data-theme");
   });
 
@@ -195,7 +182,7 @@ describe("signing in from an open page and changing one's mind", () => {
   }
 
   it("returns to the page the sign-in link was on, as it was left", () => {
-    stubBrowser();
+    stubMatchMedia();
     render(
       <MemoryRouter initialEntries={["/leaderboard?page=2"]}>
         <ThemeProvider>
@@ -217,7 +204,7 @@ describe("signing in from an open page and changing one's mind", () => {
   });
 
   it("returns there from a greyed-out nav entry too", () => {
-    stubBrowser();
+    stubMatchMedia();
     render(
       <MemoryRouter initialEntries={["/leaderboard?page=2"]}>
         <ThemeProvider>
@@ -249,7 +236,7 @@ describe("signing in from an open page and going through with it", () => {
   /** Open `/leaderboard` drawing `chrome`, click `link`, and ask for a sign-in
    *  link; returns what the request asked the server to mail. */
   async function requestFrom(chrome: React.ReactNode, link: string) {
-    stubBrowser();
+    stubMatchMedia();
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => new Response(JSON.stringify({ status: "accepted" }), { status: 202 }))

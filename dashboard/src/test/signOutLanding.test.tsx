@@ -16,21 +16,8 @@ import { ThemeProvider } from "../context/ThemeContext";
  * the question is how the cleared identity and the route change meet the guard.
  */
 
-/** As in signedOutChrome.test.tsx: jsdom has no matchMedia, and Node 20 and 26
- *  disagree about window.localStorage. */
-function stubBrowser() {
-  const store = new Map<string, string>();
-  Object.defineProperty(window, "localStorage", {
-    configurable: true,
-    value: {
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => void store.set(k, String(v)),
-      removeItem: (k: string) => void store.delete(k),
-      clear: () => store.clear(),
-      key: () => null,
-      length: 0,
-    },
-  });
+/** jsdom has no matchMedia. */
+function stubMatchMedia() {
   window.matchMedia = vi.fn().mockReturnValue({
     matches: false,
     media: "(prefers-color-scheme: dark)",
@@ -101,7 +88,7 @@ async function signOut() {
 
 describe("signing out", () => {
   beforeEach(() => {
-    stubBrowser();
+    stubMatchMedia();
     stubServer();
     signInCard.mockClear();
   });

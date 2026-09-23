@@ -20,7 +20,7 @@ export default defineConfig({
     // So `App.css?raw` reaches the theme tests as its text. Vitest stubs every
     // CSS import with an empty string by default, the raw query included.
     css: true,
-    setupFiles: ["@testing-library/jest-dom/vitest"],
+    setupFiles: ["@testing-library/jest-dom/vitest", "./src/test/setupStorage.ts"],
     alias: {
       "@edsc/timeline": fileURLToPath(new URL("./src/test/stubs/edscTimeline.tsx", import.meta.url)),
     },
