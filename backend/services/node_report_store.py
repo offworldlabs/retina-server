@@ -1,7 +1,8 @@
 """A node's own account of itself, as its heartbeat last gave it.
 
-Read by administrators and by nothing that decides whether a node is working:
-the server judges that from its own record of frame arrivals.
+Read by administrators, and quoted in the frame-starvation alert, but by nothing
+that decides whether a node is working: the server judges that from its own
+record of frame arrivals.
 """
 
 from datetime import UTC, datetime
@@ -10,6 +11,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core import state
 from core.nodes import Node, NodeReport
 
 if TYPE_CHECKING:
@@ -34,6 +36,7 @@ async def record_report(session: AsyncSession, node_id: str, beat: "HeartbeatReq
         session.add(row)
     if row.state != beat.state or row.boot_id != beat.boot_id:
         row.state_since = now
+    state.node_reported_state[node_id] = (beat.state, _aware(row.state_since).timestamp())
     row.received_at = now
     row.boot_id = beat.boot_id
     row.state = beat.state
