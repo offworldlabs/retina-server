@@ -91,10 +91,14 @@ TYPESCRIPT_RECOMMENTED = """// two
 export const x = 1;
 """
 
-REQUIREMENTS = "fastapi"
+LOCK = """[[package]]
+name = "starlette"
+version = "0.36.3"
+"""
 
-REQUIREMENTS_EXTENDED = """fastapi
-vulture
+LOCK_BUMPED = """[[package]]
+name = "starlette"
+version = "0.36.4"
 """
 
 
@@ -320,11 +324,11 @@ def test_a_submodule_bump_deploys(repo: Path) -> None:
     assert _verdict(repo, before) == DEPLOY
 
 
-def test_a_requirements_change_deploys(repo: Path) -> None:
+def test_a_lockfile_change_deploys(repo: Path) -> None:
     before, _ = _history(
         repo,
-        {"backend/requirements.txt": REQUIREMENTS},
-        {"backend/requirements.txt": REQUIREMENTS_EXTENDED},
+        {"backend/uv.lock": LOCK},
+        {"backend/uv.lock": LOCK_BUMPED},
     )
     assert _verdict(repo, before) == DEPLOY
 

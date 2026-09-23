@@ -23,14 +23,7 @@ setup:
     git -C "{{root}}" submodule update --init --recursive
     echo "→ backend venv + deps (uv)"
     cd "{{be}}"
-    uv venv .venv   # interpreter pinned by backend/.python-version (3.12, matches Dockerfile)
-    uv pip install --python "{{py}}" -r requirements.txt -r requirements-dev.txt
-    # The fleet (retina-simulation) depends on the other four libs — install all five
-    # editable together or imports fail.
-    uv pip install --python "{{py}}" \
-        -e ../libs/retina-geolocator -e ../libs/retina-tracker \
-        -e ../libs/retina-custody -e ../libs/retina-analytics \
-        -e ../libs/retina-simulation
+    uv sync --locked   # interpreter pinned by backend/.python-version (3.12, matches Dockerfile)
     [ -f .env ] || cp .env.example .env   # Maprad key not needed for the testmap
     just --justfile "{{justfile()}}" migrate
     echo "→ web deps"

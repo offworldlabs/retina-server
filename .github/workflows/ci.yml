@@ -81,19 +81,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      # Matches retina-geolocator, retina-custody and the rest of the org's
-      # Python CI: setup-python owns the interpreter, uv does the installing,
-      # `--system` puts packages in that interpreter so pytest and pre-commit
-      # stay on PATH exactly as before. setup-python's own `cache: pip` is gone
-      # with the last pip invocation that it served.
+      # setup-python owns the interpreter and uv syncs backend/.venv from the
+      # lock. --locked fails the job when pyproject.toml has moved without
+      # uv.lock, including a submodule bump that changed a lib's dependencies.
+      # The venv goes on PATH so every later step finds pytest, pre-commit and
+      # python there without `uv run`.
       #
       # No uv cache on purpose. It was tried: cold and warm both install in 2s
       # and 3s, because uv is fast enough that there is nothing left for a cache
       # to save, while the save and restore steps cost a few seconds of their
       # own. Caching here would be ceremony.
       - uses: astral-sh/setup-uv@v5
-      - run: uv pip install --system -r requirements-dev.txt
-      - run: uv pip install --system ../libs/retina-geolocator ../libs/retina-tracker ../libs/retina-custody ../libs/retina-simulation ../libs/retina-analytics
+      - run: uv sync --locked && echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       # When coverage cannot honour COVERAGE_CORE it warns and uses the C tracer
       # anyway, and one warning is invisible among the hundreds pytest prints, so
       # both the speed and the greenlet fix below could regress with nothing
@@ -206,9 +205,9 @@ jobs:
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v5
-      # Pinned to the same version as requirements-dev, which pytest-cov drives
-      # in the shards: a data file's format is tied to the coverage that wrote
-      # it, and a newer reader is not guaranteed to accept an older fragment.
+      # Pinned to the version uv.lock gives the shards, where pytest-cov drives
+      # it: a data file's format is tied to the coverage that wrote it, and a
+      # newer reader is not guaranteed to accept an older fragment.
       - run: uv pip install --system coverage==7.8.0
       - uses: actions/download-artifact@v4
         with:
@@ -254,8 +253,7 @@ jobs:
         with:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v5
-      - run: uv pip install --system -r requirements-dev.txt
-      - run: uv pip install --system ../libs/retina-geolocator ../libs/retina-tracker ../libs/retina-custody ../libs/retina-simulation ../libs/retina-analytics
+      - run: uv sync --locked && echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       # working-directory overrides the job default of `backend`: pre-commit
       # reads .pre-commit-config.yaml from the repo root. args: [backend] in
       # that config is what scopes both ops hooks.

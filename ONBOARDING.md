@@ -76,10 +76,7 @@ git submodule update --init --recursive
 
 ```bash
 cd backend
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt -r requirements-dev.txt
-pip install -e ../libs/retina-geolocator -e ../libs/retina-tracker \
-  -e ../libs/retina-custody -e ../libs/retina-simulation -e ../libs/retina-analytics
+uv sync && source .venv/bin/activate   # the lock, dev tools and all five libs, editable
 pre-commit install --install-hooks   # the lint gate on every commit; see "Before you push"
 cp .env.example .env          # fill in what you need (see below)
 RETINA_ENV=dev AUTH_ALLOW_ANONYMOUS_ADMIN=1 SYNTHETIC_FLEET_ENABLED=1 uvicorn main:app --reload
@@ -98,6 +95,13 @@ local run needs no real `JWT_SECRET`; a deployed environment requires one.
 
 All three go on the command line rather than in `.env`, because `main.py` loads
 the dotenv file after the modules that read them. `just up` passes them for you.
+
+Dependencies are declared in `backend/pyproject.toml` and pinned, transitive ones
+included, by `backend/uv.lock`, which the image and CI both install from. Change
+one with `uv add` or `uv remove`, or edit `pyproject.toml` and run `uv lock`, and
+commit the two together. A submodule bump that changes a lib's own dependencies
+needs `uv lock` as well. CI syncs with `--locked`, so a lock left behind fails
+the run. After a pull that moves the lock, `uv sync` again.
 
 ### The console
 
@@ -163,18 +167,13 @@ that shows one. To drive a local backend with synthetic frames, see
 
 A fresh worktree has empty `libs/` directories, no `node_modules` and no venv of
 its own. Build them the way CI does, or pytest fails at conftest import on a
-missing `sqlalchemy`.
-
-`uv venv` first is not optional: `uv pip install` does not create an environment,
-it refuses with `No virtual environment found` and installs nothing.
+missing `sqlalchemy`. The submodules come first: `uv sync` builds the libs from
+them.
 
 ```bash
 git submodule update --init
 npm ci
-cd backend && uv venv --python 3.12 .venv
-uv pip install -r requirements-dev.txt
-uv pip install ../libs/retina-geolocator ../libs/retina-tracker \
-  ../libs/retina-custody ../libs/retina-simulation ../libs/retina-analytics
+cd backend && uv sync
 ```
 
 ## Running tests
@@ -190,8 +189,8 @@ npm run test --workspaces --if-present && npm run typecheck --workspaces && npm 
 npm run test:e2e:staging -w e2e
 ```
 
-Backend coverage gate is 55%. Async tests need `pytest-asyncio` (in
-`requirements-dev.txt`) — without it they silently skip.
+Backend coverage gate is 55%. Async tests need `pytest-asyncio` (in the
+`dev` group, which `uv sync` installs) — without it they silently skip.
 
 Trust pytest's **exit status**, not the tail of its output. The warnings block
 and the coverage footer both print after the summary line, so piping the run

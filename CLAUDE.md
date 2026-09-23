@@ -21,6 +21,10 @@ FastAPI backend and React front-ends for the RETINA passive-radar network.
   its models, or a configuration bound in `backend/services/node_config.py`, and
   `contracts/nodes-v1.openapi.yaml` moves with it; regenerate it in the same commit
   or CI fails. See ONBOARDING, "Before you push".
+- **`backend/uv.lock` moves with its inputs.** Change a dependency in
+  `backend/pyproject.toml`, or bump a submodule whose lib changed its own
+  dependencies, and run `uv lock` in the same commit, or CI fails at
+  `uv sync --locked`. See ONBOARDING, "Backend".
 - **This repo is public.** Refer to hosts by SSH alias, never by address, as
   `justfile` already does. No credentials, no droplet addresses, no personal
   accounts in anything committed here.
