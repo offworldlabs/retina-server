@@ -226,8 +226,8 @@ jobs:
       - run: coverage report --fail-under=55
 
   # Its own job so that backend-tests, which gates every deploy, does not wait
-  # on it: pre-commit builds its hook environments from scratch on every run,
-  # actionlint's alone taking ~16s to compile.
+  # on it: on a cache miss pre-commit builds every hook environment, actionlint's
+  # alone taking ~16s to compile.
   lint:
     name: Lint and node API contract
     runs-on: ubuntu-latest
@@ -249,6 +249,14 @@ jobs:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
       - run: uv sync --locked && echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      # The hook environments. A rev bump changes the config and so the key; the
+      # interpreter is in it too, since the Python hooks are built against it.
+      # No restore-keys: a restored store keeps every earlier rev's environment,
+      # so it would grow with each bump. A bump costs one cold build instead.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('.pre-commit-config.yaml') }}
       # working-directory overrides the job default of `backend`: pre-commit
       # reads .pre-commit-config.yaml from the repo root. args: [backend] in
       # that config is what scopes both ops hooks.
