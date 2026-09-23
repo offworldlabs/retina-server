@@ -55,31 +55,45 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         nginx tini libcap2-bin && \
     rm -rf /var/lib/apt/lists/*
 
-# Python deps, installed with the same uv command CI uses. The version behind it
-# is not the same: CI takes whatever astral-sh/setup-uv gives it, this pins. That
-# is tolerable because every package in requirements.txt is pinned with ==, so
-# the resolver has nothing to decide.
+# Python deps, synced from backend/uv.lock as CI syncs them. The uv version is
+# not the same: CI takes whatever astral-sh/setup-uv gives it, this pins. That is
+# tolerable because the lock fixes every version, so the resolver has nothing to
+# decide.
 #
 # uv is bind-mounted for the duration of the RUN rather than copied in, so its
 # 54 MiB never lands in a layer of the shipped image, which has no use for uv at
 # runtime.
 #
-# --no-cache is pip's --no-cache-dir. --compile-bytecode keeps pip's default of
-# shipping .pyc alongside the sources: site-packages is root-owned and the app
+# Into a venv rather than the system site-packages, because `uv sync` makes its
+# environment match the lock exactly and would remove the base image's own pip.
+# UV_PYTHON_DOWNLOADS=never holds the venv to this image's interpreter.
+#
+# --no-editable because the libs are editable only for local work. --compile-
+# bytecode ships .pyc alongside the sources: the venv is root-owned and the app
 # runs as appuser, so whatever is left uncompiled here can never be written at
 # runtime and is recompiled on every boot.
-COPY backend/requirements.txt ./
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_PYTHON_DOWNLOADS=never \
+    PATH=/opt/venv/bin:$PATH
+WORKDIR /app/backend
+COPY backend/pyproject.toml backend/uv.lock backend/.python-version ./
+# Everything but the libs first, so a submodule bump leaves this layer cached.
+# --frozen because the libs are not here yet for uv to check the lock against;
+# the second sync below does that.
 RUN --mount=from=uv,source=/uv,target=/bin/uv \
-    uv pip install --system --no-cache --compile-bytecode -r requirements.txt
+    uv sync --frozen --no-dev --no-editable --no-cache --compile-bytecode \
+        --no-install-package retina-geolocator --no-install-package retina-tracker \
+        --no-install-package retina-custody --no-install-package retina-simulation \
+        --no-install-package retina-analytics
 
-# Submodule packages (retina_geolocator + retina_tracker)
-COPY libs/retina-geolocator/ ./libs/retina-geolocator/
-COPY libs/retina-tracker/ ./libs/retina-tracker/
-COPY libs/retina-custody/ ./libs/retina-custody/
-COPY libs/retina-simulation/ ./libs/retina-simulation/
-COPY libs/retina-analytics/ ./libs/retina-analytics/
+COPY libs/retina-geolocator/ ../libs/retina-geolocator/
+COPY libs/retina-tracker/ ../libs/retina-tracker/
+COPY libs/retina-custody/ ../libs/retina-custody/
+COPY libs/retina-simulation/ ../libs/retina-simulation/
+COPY libs/retina-analytics/ ../libs/retina-analytics/
 RUN --mount=from=uv,source=/uv,target=/bin/uv \
-    uv pip install --system --no-cache --compile-bytecode ./libs/retina-geolocator ./libs/retina-tracker ./libs/retina-custody ./libs/retina-simulation ./libs/retina-analytics
+    uv sync --locked --no-dev --no-editable --no-cache --compile-bytecode
+WORKDIR /app
 
 # Backend code
 COPY backend/ ./backend/

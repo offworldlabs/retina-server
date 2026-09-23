@@ -5,6 +5,8 @@
 **/*.test.tsx
 __pycache__
 *.pyc
+# A local build would otherwise copy the developer's venv in with `COPY backend/`.
+**/.venv
 .env
 **/.env
 .git

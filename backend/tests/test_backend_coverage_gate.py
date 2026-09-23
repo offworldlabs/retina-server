@@ -84,13 +84,13 @@ def test_a_deploy_waits_on_the_threshold_and_not_only_on_the_tests(jobs):
 
 def test_the_combine_job_reads_with_the_coverage_the_shards_wrote_with(jobs):
     """A data file's format belongs to the version that wrote it, and the two
-    pins live in different files: the shards get theirs from requirements-dev
-    through pytest-cov, the combine job installs its own."""
+    pins live in different files: the shards get theirs from uv.lock through
+    pytest-cov, the combine job installs its own."""
     installs = [step["run"] for step in jobs["backend-coverage"]["steps"] if "coverage==" in step.get("run", "")]
     assert len(installs) == 1, f"backend-coverage installs coverage {len(installs)} times"
     reader = re.search(r"coverage==(\S+)", installs[0]).group(1)
-    requirements = (BACKEND / "requirements-dev.txt").read_text().splitlines()
-    writer = [line.split("==")[1] for line in requirements if line.startswith("coverage==")]
+    lock = tomllib.loads((BACKEND / "uv.lock").read_text())["package"]
+    writer = [package["version"] for package in lock if package["name"] == "coverage"]
     assert writer == [reader], f"combine job reads with coverage {reader}, shards write with {writer}"
 
 

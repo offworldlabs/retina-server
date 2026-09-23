@@ -1,3 +1,62 @@
+[project]
+name = "retina-server"
+version = "0.0.0"
+# The interpreter the image and CI run, so the lock is solved for it alone.
+requires-python = "==3.12.*"
+dependencies = [
+    "fastapi==0.109.2",
+    "uvicorn[standard]==0.27.1",
+    "httpx==0.27.0",
+    "orjson==3.11.8",
+    "python-dotenv==1.0.1",
+    "numpy==2.4.4",
+    "scipy==1.17.1",
+    "pyyaml==6.0.3",
+    "cryptography==46.0.6",
+    "boto3==1.42.89",
+    "fastapi-users[sqlalchemy]==13.0.0",
+    # Direct since core/access_identity.py imports it to verify Cloudflare Access
+    # assertions; it had arrived only as a transitive of fastapi-users, which pins
+    # this exact version, so it is not a free choice. [crypto] for RS256.
+    "pyjwt[crypto]==2.8.0",
+    "aiosqlite==0.20.0",
+    "alembic==1.13.2",
+    "pyarrow==16.1.0",
+    # All five, because retina-simulation imports the other four.
+    "retina-geolocator",
+    "retina-tracker",
+    "retina-custody",
+    "retina-simulation",
+    "retina-analytics",
+]
+
+[dependency-groups]
+dev = [
+    "coverage==7.8.0",
+    "pytest==8.3.5",
+    "pytest-cov==6.1.0",
+    "pytest-asyncio==0.23.8",
+    "pytest-timeout==2.4.0",
+    "pytest-split==0.11.0",
+    "pytest-xdist==3.6.1",
+    "moto[s3]==5.1.4",
+    "ruff==0.16.2",
+    "vulture==2.14",
+    "pre-commit==4.6.2",
+]
+
+# An application run from this directory, not a distribution: uv installs its
+# dependencies and never the backend itself.
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+retina-geolocator = { path = "../libs/retina-geolocator", editable = true }
+retina-tracker = { path = "../libs/retina-tracker", editable = true }
+retina-custody = { path = "../libs/retina-custody", editable = true }
+retina-simulation = { path = "../libs/retina-simulation", editable = true }
+retina-analytics = { path = "../libs/retina-analytics", editable = true }
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
