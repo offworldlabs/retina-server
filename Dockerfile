@@ -6,6 +6,8 @@
 # Hub is already a build-time dependency through the base images, so this adds
 # no new one.
 
+# Also the uv CI runs and backend/uv.lock is written with. .github/actions/setup-uv
+# reads this line, so it stays a bare x.y.z.
 ARG UV_VERSION=0.12.5
 
 # ── Stage 1: Web dependencies ───────────────────────────────────────────────
@@ -55,10 +57,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         nginx tini libcap2-bin && \
     rm -rf /var/lib/apt/lists/*
 
-# Python deps, synced from backend/uv.lock as CI syncs them. The uv version is
-# not the same: CI takes whatever astral-sh/setup-uv gives it, this pins. That is
-# tolerable because the lock fixes every version, so the resolver has nothing to
-# decide.
+# Python deps, synced from backend/uv.lock as CI syncs them, with the same uv.
 #
 # uv is bind-mounted for the duration of the RUN rather than copied in, so its
 # 54 MiB never lands in a layer of the shipped image, which has no use for uv at
