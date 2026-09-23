@@ -23,6 +23,7 @@ from core.nodes import Node, PolledRadar
 from core.users import async_session_maker
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from services import detection_mirror, frame_processor, node_auth, node_refs, probation, publication
+from services.blah2_poller import CUSTODY_CLASS
 from services.frame_processor import process_one_frame
 from services.publication import is_private, private_node_ids, public_aircraft_payload, public_summaries
 from services.tasks import frame_loop
@@ -410,6 +411,15 @@ class TestFrameGate(_FrameFence):
         self._process(_GRADUATED, adsb=_ADSB)
         self._assert_flowed(_GRADUATED)
         assert "abc123" in state.adsb_aircraft
+
+    def test_a_graduated_polled_frame_reaches_the_archive_with_its_custody_class_and_epoch(self):
+        _seed_polled(**{_GRADUATED: "graduated"})
+        try:
+            self._process(_GRADUATED, signing_mode=CUSTODY_CLASS, epoch=4)
+            archived = frame_processor._archive_buffer[_GRADUATED][-1]
+            assert (archived["signing_mode"], archived["epoch"]) == (CUSTODY_CLASS, 4)
+        finally:
+            frame_processor._archive_buffer.pop(_GRADUATED, None)
 
     def test_a_fleet_frame_is_untouched_and_never_reads_the_trust_table(self, monkeypatch):
         calls = []

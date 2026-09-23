@@ -62,6 +62,9 @@ SCHEMA = pa.schema(
         ("tx_alt_ft", pa.float64()),
         ("fc_hz", pa.float64()),
         ("fs_hz", pa.float64()),
+        # A polled radar's epoch (core/nodes.py PolledRadar.epoch): which box
+        # the node id stood for when the frame was taken. Null for the fleet.
+        ("epoch", pa.int32()),
     ]
 )
 
@@ -157,6 +160,7 @@ def _flatten(
             sig_valid = frame.get("signature_valid")
         payload_hash = frame.get("payload_hash") or None
         signature = frame.get("signature") or None
+        epoch = _get_int(frame, "epoch")
         # Per-frame geometry override: if the node ever sends rx/tx in the
         # frame itself (e.g. mobile receivers in the future), use that value
         # in preference to the static node config snapshot.
@@ -214,6 +218,7 @@ def _flatten(
             cols["tx_alt_ft"].append(tx_alt)
             cols["fc_hz"].append(fc_hz)
             cols["fs_hz"].append(fs_hz)
+            cols["epoch"].append(epoch)
     return cols
 
 
