@@ -157,9 +157,10 @@ ALLOWED_DIVERGENCE = (
     # the one that matters. Staging keeps `cloudflare` deliberately: a transport only
     # production exercises is one nobody has tested.
     ("test", r"^services\.server\.environment\.MAIL_TRANSPORT$"),
-    # Staging trials the adsb-service claim fallback, in shadow, ahead of
-    # production; see docker-compose.staging.yml.
-    ("staging", r"^services\.server\.environment\.(ADSB_FALLBACK_ENABLED|KNOWN_LANE_MODE)$"),
+    # The test droplet alone leaves the adsb-service claim fallback off and the
+    # known lane at its binding default: its fleet already relays that traffic
+    # and polls the service from the same address. See docker-compose.prod.yml.
+    ("test", r"^services\.server\.environment\.(ADSB_FALLBACK_ENABLED|KNOWN_LANE_MODE)$"),
     # Compose records the file list it was assembled from.
     r"^name$",
     r"^services\.[^.]+\.(build|image)\.?.*labels.*$",

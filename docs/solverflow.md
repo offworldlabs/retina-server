@@ -1027,8 +1027,8 @@ reached a solve.
   lane's coarse pairing step is defined but the grid gate is delay-only in
   practice (`association.compute_overlap_zone`'s `doppler_gate_hz`).
 - **Production runs with every mode flag off** except `KNOWN_LANE_MODE`, which
-  is `binding` everywhere by code default and is set in no environment's
-  `.env`. The in-repo statement of what each environment sets is
-  [`architecture.md`](architecture.md#feature-gates); the actual
-  values live in the gitignored `backend/.env` on each host, not in this
-  repo.
+  it and staging set to `shadow` in their compose overlays while the
+  adsb-service claim fallback is measured; the code default, `binding`, is what
+  the test droplet runs. The in-repo statement of what each environment sets is
+  [`architecture.md`](architecture.md#feature-gates); the other values live in
+  the gitignored `backend/.env` on each host, not in this repo.
