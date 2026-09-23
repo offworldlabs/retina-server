@@ -39,6 +39,16 @@ omit = [
 ]
 
 [tool.coverage.report]
+# Fixtures a test wrote into its own tmp_path. pytest-cov exports
+# COVERAGE_PROCESS_START, so a subprocess a test spawns measures under this
+# config too, and `source = ["."]` then resolves against that subprocess's cwd:
+# tests/test_deploy_scope.py runs deploy-scope.py inside a throwaway git repo,
+# and that repo's app.py lands in the data as an unrun file. Harmless while the
+# report runs beside the tests that made it, fatal to backend-coverage, which
+# reports on a runner where the path never existed and stops at "No source for
+# code". Here rather than in [run] omit, which filters what is measured and so
+# never sees a file the source walk adds back at report time.
+omit = ["*/pytest-of-*/*"]
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",
