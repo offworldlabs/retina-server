@@ -62,11 +62,17 @@ def test_the_combine_job_enforces_the_same_threshold_addopts_names(jobs):
 
 
 def test_every_shard_that_runs_is_a_shard_the_combine_job_waits_for(jobs, pytest_step):
-    shards = jobs["backend-tests"]["strategy"]["matrix"]["shard"]
-    assert _threshold("--splits", pytest_step) == len(shards)
+    matrix = jobs["backend-tests"]["strategy"]["matrix"]
+    # strategy.job-total counts every combination, so a second axis would
+    # multiply --splits while --group still only spans the shards.
+    assert set(matrix) == {"shard"}, f"backend-tests' matrix has axes {sorted(matrix)}"
+    shards = matrix["shard"]
+    assert shards == list(range(1, len(shards) + 1)), f"--group takes 1..N, the matrix has {shards}"
+    assert re.search(r"--splits \$\{\{ strategy\.job-total \}\}", pytest_step), "--splits is not the matrix size"
+    assert re.search(r"--group \$\{\{ matrix\.shard \}\}", pytest_step), "--group is not the shard"
     counted = [step["run"] for step in jobs["backend-coverage"]["steps"] if "fragments" in step.get("run", "")]
     assert len(counted) == 1, f"backend-coverage has {len(counted)} fragment counts"
-    assert f"-ne {len(shards)} " in counted[0]
+    assert _threshold("-ne", counted[0]) == len(shards)
 
 
 def test_a_shards_data_file_survives_the_artifact_round_trip(jobs):
@@ -101,5 +107,11 @@ def test_a_tmp_path_fixture_is_omitted_from_the_report():
     from coverage.files import GlobMatcher
 
     omit = tomllib.loads((BACKEND / "pyproject.toml").read_text())["tool"]["coverage"]["report"]["omit"]
-    fixture = "/tmp/pytest-of-runner/pytest-0/test_a_comment_beside_a_change0/app.py"
-    assert GlobMatcher(omit, "omit").match(fixture), f"{omit} does not omit {fixture}"
+    fixtures = [
+        # test_deploy_scope.py: a throwaway repo's top-level app.py, run serially.
+        "/tmp/pytest-of-runner/pytest-0/test_a_comment_beside_a_change0/app.py",
+        # test_migrations.py: a copied core/ two levels down, under an xdist worker.
+        "/tmp/pytest-of-runner/pytest-0/popen-gw2/test_rollback_ahead_sentinel_m0/old_image/core/nodes.py",
+    ]
+    for fixture in fixtures:
+        assert GlobMatcher(omit, "omit").match(fixture), f"{omit} does not omit {fixture}"

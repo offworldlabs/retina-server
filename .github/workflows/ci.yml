@@ -178,7 +178,7 @@ jobs:
       # is meaningless; backend-coverage applies the real threshold to the three
       # combined. Overriding here rather than editing addopts keeps a local
       # `pytest` enforcing the threshold exactly as it does today.
-      - run: pytest tests/ -v --tb=short -m "not external" -n logical --dist worksteal --splits 3 --group ${{ matrix.shard }} --cov-fail-under=0
+      - run: pytest tests/ -v --tb=short -m "not external" -n logical --dist worksteal --splits ${{ strategy.job-total }} --group ${{ matrix.shard }} --cov-fail-under=0
       # include-hidden-files, because `.coverage.N` is a dotfile and v4 drops
       # those silently: without it the combine below fails on an empty download
       # rather than on anything that names this step.
@@ -275,7 +275,7 @@ jobs:
         run: python -m scripts.generate_openapi --check
 
   web-build:
-    name: Web (${{ matrix.workspace }})
+    name: Web (${{ matrix.label || matrix.workspace }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # `edited` covers title and body edits as well as the base change we want,
@@ -283,11 +283,18 @@ jobs:
     if: github.event.action != 'edited' || github.event.changes.base
     strategy:
       # The workspaces are independent; a failure in one should still report
-      # the others rather than cancel them. One entry per workspace, beside the
-      # list in package.json.
+      # the others rather than cancel them. Every workspace in package.json has
+      # an entry, and each of its lint, typecheck, test and build scripts runs
+      # in exactly one (backend/tests/test_web_build_matrix.py).
       fail-fast: false
       matrix:
-        workspace: [dashboard, packages/shared, e2e]
+        # The dashboard's tests outlast its lint, typecheck and build together,
+        # so they run in an entry of their own rather than after them.
+        include:
+          - { workspace: dashboard, part: checks, label: dashboard checks }
+          - { workspace: dashboard, part: tests, label: dashboard tests }
+          - { workspace: packages/shared }
+          - { workspace: e2e }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -301,13 +308,17 @@ jobs:
       # The browser suite has no lint or unit tests of its own, hence
       # --if-present on those two.
       - run: npm run lint -w ${{ matrix.workspace }} --if-present
+        if: matrix.part != 'tests'
       # The same command ONBOARDING gives, so the two cannot drift. For e2e it
       # typechecks the specs and the Playwright config, which nothing else
       # checks before a deploy depends on them.
       - run: npm run typecheck -w ${{ matrix.workspace }}
+        if: matrix.part != 'tests'
       - run: npm test -w ${{ matrix.workspace }} --if-present
+        if: matrix.part != 'checks'
       # Only the console has a build.
       - run: npm run build -w ${{ matrix.workspace }} --if-present
+        if: matrix.part != 'tests'
 
   docker-build:
     runs-on: ubuntu-latest
