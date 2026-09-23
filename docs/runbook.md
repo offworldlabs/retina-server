@@ -43,7 +43,10 @@ fails its suites stays there, blocking production, until the next merge.
 The two image stores cannot see each other's images, and read differently in
 `docker system df` and `docker image inspect`. `deploy/setup-server.sh` keeps the
 store a box's daemon is already on and gives a fresh box containerd, so a rebuilt
-prod would come up on containerd.
+prod would come up on containerd. It installs buildx on the containerd store only:
+on overlay2, Compose's buildx (Bake) build tags the new image but leaves the old
+container running, so a deploy passes with nothing swapped. Keep buildx off prod
+until it moves stores.
 
 ### The test droplet has two deploy paths
 

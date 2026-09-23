@@ -2,7 +2,9 @@
 
 Docker's two stores cannot see each other's images, so the store has to be
 settled before anything is built, and a re-run on a live box must leave it where
-it is. Nothing in CI or the deploys runs this script, so these run its Docker
+it is. buildx goes only where the store is containerd, since on overlay2 its
+Bake build leaves the old container running. Nothing in CI or the deploys runs
+this script, so these run its Docker
 section against stubbed `docker`, `apt-get` and `systemctl`, and read the whole
 script for the ordering.
 """
@@ -53,6 +55,14 @@ apt-get() {
     echo "$*" >> "$STATE/apt.log"
     if [ -f "$ETC/daemon.json" ]; then echo "daemon.json present" >> "$STATE/apt.log"; fi
     case " $* " in *" docker.io "*) [ -f "$STATE/store" ] || stub_dockerd ;; esac
+    case "$* " in
+        "install "*" docker-buildx "*) touch "$STATE/buildx" ;;
+        "remove "*" docker-buildx "*) rm -f "$STATE/buildx" ;;
+    esac
+}
+dpkg-query() {
+    [ -f "$STATE/buildx" ] || return 1
+    echo "install ok installed"
 }
 systemctl() {
     echo "$*" >> "$STATE/systemctl.log"
@@ -73,7 +83,7 @@ def _docker_section() -> str:
 class Box:
     """A droplet reduced to what the Docker section touches."""
 
-    def __init__(self, root: Path, store: str | None = None, docker_data: bool = False):
+    def __init__(self, root: Path, store: str | None = None, docker_data: bool = False, buildx: bool = False):
         self.state = root / "state"
         self.etc = root / "etc-docker"
         self.lib = root / "var-lib-docker"
@@ -82,6 +92,8 @@ class Box:
             (self.state / "store").write_text(store + "\n")
         if store or docker_data:
             self.lib.mkdir()
+        if buildx:
+            (self.state / "buildx").touch()
 
     def run(self, **env) -> subprocess.CompletedProcess:
         section = _docker_section()
@@ -105,6 +117,10 @@ class Box:
     @property
     def store(self) -> str:
         return (self.state / "store").read_text().strip()
+
+    @property
+    def has_buildx(self) -> bool:
+        return (self.state / "buildx").exists()
 
 
 def test_a_fresh_box_gets_the_containerd_store(tmp_path):
@@ -168,11 +184,23 @@ def test_the_log_options_are_kept(tmp_path):
     assert {key: config[key] for key in LOG_OPTIONS} == LOG_OPTIONS
 
 
-def test_buildx_is_installed_from_ubuntus_package(tmp_path):
-    box = Box(tmp_path)
+@pytest.mark.parametrize("store", [None, "containerd"], ids=["fresh", "containerd"])
+def test_buildx_is_installed_from_ubuntus_package_on_the_containerd_store(tmp_path, store):
+    box = Box(tmp_path, store=store)
     assert box.run().returncode == 0
-    installs = [line.split() for line in box.log("apt") if "install" in line.split()]
-    assert any("docker.io" in words and "docker-buildx" in words for words in installs)
+    installs = [line.split() for line in box.log("apt") if line.split()[:1] == ["install"]]
+    assert any("docker-buildx" in words for words in installs)
+    assert box.has_buildx
+
+
+@pytest.mark.parametrize("buildx", [False, True], ids=["absent", "present"])
+def test_an_overlay2_box_is_left_without_buildx(tmp_path, buildx):
+    # There `up --build` tags the new image but keeps the old container running,
+    # so a deploy passes on stale code.
+    box = Box(tmp_path, store="overlay2", buildx=buildx)
+    assert box.run().returncode == 0
+    assert not box.has_buildx
+    assert not [line for line in box.log("apt") if line.split()[:1] == ["install"] and "docker-buildx" in line]
 
 
 # Anything that puts an image in the store, and anything that can change which
