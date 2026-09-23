@@ -13,7 +13,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
@@ -92,6 +92,7 @@ async def nodes(node_session):
 
 
 async def test_a_registered_node_appears_in_connected_nodes(node_session, node):
+    node.last_seen_at = datetime.now(UTC)
     await register_with_pipeline(node_session, node)
 
     entry = state.connected_nodes[NODE_ID]
@@ -347,6 +348,72 @@ async def test_startup_priming_loads_the_fleet_from_the_app_session(tmp_path, no
         assert NODE_ID in state.connected_nodes
     finally:
         await engine.dispose()
+
+
+async def test_a_node_last_heard_before_the_threshold_is_primed_offline(node_session, node):
+    """A board that died before the deploy never beats again, so priming is the
+    only chance to say so. Read back through SQLite, which returns the column
+    naive."""
+    seen = datetime.now(UTC) - timedelta(hours=6)
+    node.last_seen_at = seen
+    await node_session.commit()
+    node_session.expire_all()
+    state.connected_nodes.clear()
+
+    await prime_pipeline(node_session)
+
+    entry = state.connected_nodes[NODE_ID]
+    assert entry["status"] == "disconnected"
+    assert datetime.fromisoformat(entry["last_heartbeat"]) == seen
+
+
+async def test_a_node_heard_within_the_threshold_is_primed_online(node_session, node):
+    seen = datetime.now(UTC) - timedelta(seconds=30)
+    node.last_seen_at = seen
+    await node_session.commit()
+    node_session.expire_all()
+    state.connected_nodes.clear()
+
+    await prime_pipeline(node_session)
+
+    entry = state.connected_nodes[NODE_ID]
+    assert entry["status"] == "active"
+    assert datetime.fromisoformat(entry["last_heartbeat"]) == seen
+
+
+async def test_a_node_never_heard_from_is_primed_offline_with_no_heartbeat(node_session, node):
+    """No time is invented for a beat that never happened. Registration stamps
+    `last_seen_at`, so this is a node that registered and has not been heard
+    from since."""
+    await register_with_pipeline(node_session, node)
+
+    entry = state.connected_nodes[NODE_ID]
+    assert entry["status"] == "disconnected"
+    assert entry["last_heartbeat"] == ""
+
+
+async def test_a_primed_offline_node_is_not_counted_as_active(node_session, node):
+    from routes.test import _build_dashboard_data
+
+    node.last_seen_at = datetime.now(UTC) - timedelta(hours=6)
+    state.connected_nodes.clear()
+    await prime_pipeline(node_session)
+
+    assert json.loads(_build_dashboard_data())["nodes"]["active"] == 0
+
+
+async def test_the_offline_sweep_ages_a_primed_node(node_session, node, monkeypatch):
+    import routes.admin
+
+    node.last_seen_at = datetime.now(UTC) - timedelta(seconds=30)
+    state.connected_nodes.clear()
+    await prime_pipeline(node_session)
+    monkeypatch.setattr(routes.admin, "_OFFLINE_THRESHOLD_S", 10)
+    monkeypatch.setattr(routes.admin, "_last_health_check", 0.0)
+
+    routes.admin.check_node_health()
+
+    assert state.connected_nodes[NODE_ID]["status"] == "disconnected"
 
 
 async def test_startup_priming_survives_a_database_failure(monkeypatch):

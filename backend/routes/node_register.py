@@ -251,9 +251,9 @@ async def register_node(
     if reissue:
         send_alert("registration_held", f"{request.node_id} re-registered; previous token revoked")
     # Active nodes only, matching prime_pipeline: the pipeline entry is what puts
-    # a node on the map, and it is written with status "active" whatever the row
-    # says, so handing it a blocked board would undo the block everywhere except
-    # the one place that reads node.status.
+    # a node on the map, and its status says whether the node is live, never what
+    # the row says, so handing it a blocked board would undo the block everywhere
+    # except the one place that reads node.status.
     if node.status == "active":
         await register_with_pipeline(session, node)
     return RegisterResponse(
@@ -305,6 +305,9 @@ async def _write_registration(
         await delete_contact(session, request.node_id)
 
     _apply_agreements(node, request.agreements)
+    # Registering is hearing from the node, and priming reads this to decide
+    # whether it is online.
+    node.last_seen_at = datetime.now(UTC)
     # The version the server holds, which is 1 only for a node it has not seen.
     # Telling a returning board 1 when the server holds 4 gives it a 409 on every
     # frame afterwards.

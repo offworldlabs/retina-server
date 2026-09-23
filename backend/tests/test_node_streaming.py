@@ -9,7 +9,7 @@ minimised, so a bound tightening fails a test instead of passing one that never
 sent a realistic frame.
 """
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -281,6 +281,7 @@ async def test_the_frame_carries_no_node_identifier(registered_node, node_client
 async def test_the_detection_path_writes_nothing_to_the_database(registered_node, node_client, node_session):
     """Twenty-four writes a second at the fleet's ceiling, for data nothing reads."""
     token, node_id = registered_node
+    seeded_seen = await node_session.scalar(select(Node.last_seen_at).where(Node.node_id == node_id))
 
     for _ in range(3):
         assert node_client.post(DETECTION, headers=_auth(token), json=_frame()).status_code == 202
@@ -288,7 +289,7 @@ async def test_the_detection_path_writes_nothing_to_the_database(registered_node
     # Every mutable column the path could plausibly touch, rather than the one
     # it is most likely to: `last_used_at` on the token is the tempting second
     # write, and checking only `nodes` would let it back in unnoticed.
-    assert await node_session.scalar(select(Node.last_seen_at).where(Node.node_id == node_id)) is None
+    assert await node_session.scalar(select(Node.last_seen_at).where(Node.node_id == node_id)) == seeded_seen
     assert await node_session.scalar(select(Node.active_config_version).where(Node.node_id == node_id)) == 1
     assert await node_session.scalar(select(NodeToken.last_used_at).where(NodeToken.node_id == node_id)) is None
     assert await node_session.scalar(select(func.count()).select_from(NodeConfig)) == 1
@@ -499,15 +500,23 @@ async def test_a_heartbeat_recovers_a_node_missing_from_the_pipeline(registered_
     assert state.connected_nodes[node_id]["config"]["rx_lat"] == pytest.approx(51.42)
 
 
-async def test_a_recovered_node_is_stamped_on_the_same_beat_that_recovered_it(registered_node, node_client):
-    """`register_with_pipeline` seeds an empty `last_heartbeat`, so a beat that
-    recovers a node and leaves that empty would read as one that never beat."""
+async def test_a_recovered_node_is_online_on_the_same_beat_that_recovered_it(
+    registered_node, node_client, node_session
+):
+    """Recovery primes the entry from the row's `last_seen_at`, which for a node
+    back from a long silence is long past. The beat that recovered it has to
+    count as hearing from it."""
     token, node_id = registered_node
+    node = await node_session.get(Node, node_id)
+    node.last_seen_at = datetime.now(UTC) - timedelta(hours=6)
+    await node_session.commit()
     state.connected_nodes.clear()
 
     node_client.post(HEARTBEAT, headers=_auth(token), json=_beat())
 
-    assert state.connected_nodes[node_id]["last_heartbeat"] != ""
+    entry = state.connected_nodes[node_id]
+    assert entry["status"] == "active"
+    assert datetime.now(UTC) - datetime.fromisoformat(entry["last_heartbeat"]) < timedelta(seconds=5)
 
 
 async def test_a_node_with_no_active_configuration_still_gets_its_beat_answered(
