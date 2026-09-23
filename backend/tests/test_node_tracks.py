@@ -60,7 +60,7 @@ class TestFiling:
     def test_a_frame_without_a_tracker_leaves_the_store_empty(self):
         store = NodeTrackStore()
         store.ingest("n1", _frame(run=None))
-        assert store.summary() == {"nodes_sending": 0, "open": 0, "closed": 0, "points": 0}
+        assert store.summary() == {"nodes_sending": 0, "open": 0, "closed": 0, "claimed": 0, "points": 0}
 
     def test_an_active_track_gains_the_detection_it_hit(self):
         store = NodeTrackStore()
@@ -237,7 +237,16 @@ class TestAging:
         store = NodeTrackStore()
         store.ingest("n1", _frame(tracks=[_track(), _track(id="260923-00001B", state="deleted", hit=None)]))
         store.ingest("n2", _frame(tracks=None))
-        assert store.summary() == {"nodes_sending": 2, "open": 1, "closed": 1, "points": 1}
+        assert store.summary() == {"nodes_sending": 2, "open": 1, "closed": 1, "claimed": 0, "points": 1}
+
+    def test_the_summary_counts_the_open_tracks_whose_newest_hit_was_claimed(self):
+        store = NodeTrackStore()
+        store.ingest(
+            "n1",
+            _frame(tracks=[_track(), _track(id="260923-00001B", hit=1), _track(id="260923-00001C", hit=None)]),
+            claimed={0},
+        )
+        assert store.summary()["claimed"] == 1
 
 
 def test_the_wire_shape_files_through_pipeline_frame():
@@ -282,9 +291,10 @@ class TestFrameProcessor:
     def _fresh_store(self, monkeypatch):
         monkeypatch.setattr(node_tracks, "store", NodeTrackStore())
 
-    def test_the_tracks_are_filed_before_the_known_lane_renumbers_the_frame(self, monkeypatch):
+    def test_the_tracks_are_filed_from_the_frame_the_known_lane_did_not_renumber(self, monkeypatch):
         """In binding mode a claimed detection is stripped and the rest shift
-        down, so a hit read after the strip would name the wrong detection."""
+        down, so a hit read from the stripped frame would name the wrong
+        detection."""
         import services.frame_processor as fp
 
         monkeypatch.setattr(state, "KNOWN_LANE_MODE", "binding")

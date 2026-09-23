@@ -15,6 +15,12 @@ its node has named it for STALE_TRACK_S of frame time.
 NodeTracker is how the readers get at it: once a node's pipeline is cut over
 (NODE_TRACKS_MODE), it stands where the pipeline's in-process tracker stood and
 presents the node's open tracks in the shape that tracker's readers take.
+
+Those readers are the dark lane, and in binding mode a detection the known lane
+or dark following claims never reaches the in-process tracker.  A node's tracker
+keeps it, so each track is presented only from the hits after the newest one a
+binding lane claimed, and not at all until there is one: to the dark lane, a
+claim is a break in the track.
 """
 
 import threading
@@ -24,6 +30,7 @@ from dataclasses import dataclass, field
 from retina_tracker.track import TrackState
 
 from config.constants import DISPLAY_STALE_TRACK_S, N2_TRACK_HISTORY_MAX, STALE_TRACK_S
+from services.id_utils import normalize_hex_key
 
 _FORGET_MS = STALE_TRACK_S * 1000.0
 # How long a track no frame has named stays among its node's tracks, as a
@@ -55,6 +62,11 @@ class NodeTrack:
     # Oldest first, as the in-process tracker's get_recent_detections returns
     # them: {timestamp, delay, doppler, snr, adsb}.
     window: deque = field(default_factory=lambda: deque(maxlen=N2_TRACK_HISTORY_MAX))
+    # Hits filed since the newest one a binding lane claimed: the newest this
+    # many points of the window are the dark lane's.
+    unclaimed: int = 0
+    # Hexes those hits were tagged with, which outlive the window.
+    unclaimed_tags: set[str] = field(default_factory=set)
     # Frame time, ms, of the last frame that named the track.
     last_named_ms: int = 0
 
@@ -76,11 +88,12 @@ class NodeTrackStore:
         self._lock = threading.Lock()
         self._nodes: dict[str, _Node] = {}
 
-    def ingest(self, node_id: str, frame: dict) -> int:
+    def ingest(self, node_id: str, frame: dict, claimed: set[int] = frozenset()) -> int:
         """File one queue frame's tracks, and return how many it refused.
 
         `frame` must be the frame as the node sent it: a track's `hit` indexes
-        its arrays, and the known lane's strip renumbers them.  A frame with no
+        its arrays, and the known lane's strip renumbers them.  `claimed` holds
+        the indices of the detections a binding lane took from it.  A frame with no
         `tracker` is a node that sends no tracks, and leaves the store as it
         was; so does one whose `tracks` is absent, which is a tracker with no
         output for that frame.  A malformed track, possible only on a frame that
@@ -106,13 +119,14 @@ class NodeTrackStore:
                 except (KeyError, IndexError, TypeError, ValueError):
                     refused += 1
                     continue
-                self._file(node, run, update, point, now_ms)
+                self._file(node, run, update, point, wire.get("hit") in claimed, now_ms)
             self._forget(node, now_ms)
         return refused
 
     def views(self, node_id: str, now_ms: int) -> list["NodeTrackView"]:
         """The node's open tracks that a frame has named within
-        DISPLAY_STALE_TRACK_S of `now_ms`, snapshotted under the lock."""
+        DISPLAY_STALE_TRACK_S of `now_ms` and that hold a hit no binding lane
+        claimed after it, snapshotted under the lock."""
         with self._lock:
             node = self._nodes.get(node_id)
             if node is None:
@@ -120,7 +134,7 @@ class NodeTrackStore:
             return [
                 NodeTrackView(node_id, track)
                 for track in node.tracks.values()
-                if track.closed is None and now_ms - track.last_named_ms <= _SHOWN_MS
+                if track.closed is None and track.unclaimed and now_ms - track.last_named_ms <= _SHOWN_MS
             ]
 
     def summary(self) -> dict:
@@ -131,11 +145,12 @@ class NodeTrackStore:
                 "nodes_sending": sum(1 for node in self._nodes.values() if node.run is not None),
                 "open": sum(1 for t in tracks if t.closed is None),
                 "closed": sum(1 for t in tracks if t.closed is not None),
+                "claimed": sum(1 for t in tracks if t.closed is None and t.window and not t.unclaimed),
                 "points": sum(len(t.window) for t in tracks),
             }
 
     @staticmethod
-    def _file(node: _Node, run: str, update: dict, point: dict | None, now_ms: int) -> None:
+    def _file(node: _Node, run: str, update: dict, point: dict | None, claimed: bool, now_ms: int) -> None:
         key = (run, update["id"])
         track = node.tracks.get(key)
         if track is not None and track.closed is not None:
@@ -156,6 +171,14 @@ class NodeTrackStore:
         track.last_named_ms = now_ms
         if point is not None:
             track.window.append(point)
+            if claimed:
+                track.unclaimed = 0
+                track.unclaimed_tags.clear()
+            else:
+                track.unclaimed += 1
+                tag_hex = normalize_hex_key(point["adsb"].get("hex")) if isinstance(point["adsb"], dict) else ""
+                if tag_hex:
+                    track.unclaimed_tags.add(tag_hex)
         if track.state == "deleted":
             track.closed = "deleted"
 
@@ -216,13 +239,18 @@ class NodeTrackView:
         # keys on it: the solver's claims, identity links, the map's `pr` hex.
         self.id = f"{node_id}:{track.run}:{track.id}"
         self.state_status = _TRACKER_STATE[track.state]
-        self.adsb_hex = track.adsb_hex
         self.n_associated = track.n_associated
         self.n_missed = track.n_missed
         self.is_anomalous = track.is_anomalous
         self.anomaly_types = list(track.anomaly_types)
         self.max_velocity_ms = track.max_velocity_ms
-        self._points = list(track.window)
+        points = list(track.window)
+        self._points = points[max(0, len(points) - track.unclaimed) :]
+        # The tracker keeps a hex after its track swaps onto an untagged
+        # target, so the hex stands only where a hit since the newest claim
+        # was tagged with it.
+        hexn = normalize_hex_key(track.adsb_hex)
+        self.adsb_hex = hexn if hexn in track.unclaimed_tags else None
         # The feed's arcs take the newest measurement from here.
         self.history = {"measurements": self._points}
 
@@ -266,7 +294,7 @@ class NodeTracker:
             self.event_writer.write_event_lazy(
                 view.id,
                 now_ms,
-                min(view.n_associated, N2_TRACK_HISTORY_MAX),
+                len(view.get_recent_detections()),
                 view,
                 adsb_hex=view.adsb_hex,
                 # The pipeline sets its own when it injects a fresh ADS-B fix.
