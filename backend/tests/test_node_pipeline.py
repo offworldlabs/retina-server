@@ -549,9 +549,9 @@ def test_pipeline_frame_takes_the_hexes_from_the_tags_when_adsb_hex_is_absent():
     assert "adsb" not in bare
 
 
-def test_a_tracked_frame_files_what_the_untracked_frame_would():
-    """Nothing reading the queue uses a node's tracks yet, so the conversion
-    drops them, and the frame the pipeline and the mirror see is unchanged."""
+def test_a_tracked_frame_carries_its_tracks_beside_an_unchanged_frame():
+    """The tracks travel under their own keys for the node-track store; every
+    other key is what the untracked frame carries, so nothing else sees them."""
     from routes.node_schemas import DetectionFrame
     from services.node_pipeline import pipeline_frame
 
@@ -575,9 +575,38 @@ def test_a_tracked_frame_files_what_the_untracked_frame_would():
         "anomaly_types": [],
         "max_velocity_ms": 231.4,
     }
-    tracked = DetectionFrame(**base, tracker={"run": "k3n8v2qp71ab9x0c"}, tracks=[track])
+    tracked = pipeline_frame(DetectionFrame(**base, tracker={"run": "k3n8v2qp71ab9x0c"}, tracks=[track]))
+    bare = pipeline_frame(DetectionFrame(**base))
 
-    assert pipeline_frame(tracked) == pipeline_frame(DetectionFrame(**base))
+    assert tracked["tracker"] == {"run": "k3n8v2qp71ab9x0c"}
+    assert tracked["tracks"] == [
+        track | {"born_t": None, "avg_snr": None, "shadow_fraction": None, "interference_fraction": None}
+    ]
+    assert {k: v for k, v in tracked.items() if k not in ("tracker", "tracks")} == bare
+    assert "tracker" not in bare and "tracks" not in bare
+
+
+def test_a_tracker_with_no_output_carries_its_run_and_no_tracks():
+    """`tracks: null` beside a tracker: the store learns the run, which closes a
+    restarted tracker's old tracks, and files nothing."""
+    from routes.node_schemas import DetectionFrame
+    from services.node_pipeline import pipeline_frame
+
+    out = pipeline_frame(
+        DetectionFrame(
+            t=1753900000.123,
+            seq=1,
+            boot_id="k3n8v2qp71ab",
+            config_version=1,
+            delay=[],
+            doppler=[],
+            snr=[],
+            tracker={"run": "k3n8v2qp71ab9x0c"},
+        )
+    )
+
+    assert out["tracker"] == {"run": "k3n8v2qp71ab9x0c"}
+    assert "tracks" not in out
 
 
 def test_pipeline_frame_omits_the_tag_fields_the_node_left_null():
