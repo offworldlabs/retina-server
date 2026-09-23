@@ -111,13 +111,23 @@ deleted track, it's linked rather than spawning a new hypothesis.
 
 **Node tracks.** A node running its own tracker sends its confirmed tracks on
 the detection frame (node API 1.6.0), each naming the detection it took by
-index. `services/node_tracks.py` files them into a per-node store before the
-known lane renumbers the frame, building a 20-point window per track. With
-`NODE_TRACKS_MODE=live`, a node's first tracked frame replaces its pipeline's
-`Tracker` with a `NodeTracker`: `tracker.tracks` becomes the node's open tracks,
-with ids namespaced `node:run:id`, and a track that took a detection emits the
-same event this tracker would. Everything downstream reads the node's tracks
-unchanged. With the default `off`, the tracks are filed and nothing reads them.
+index. `services/node_tracks.py` files them into a per-node store, building a
+20-point window per track from the frame as the node sent it rather than the
+known lane's renumbered copy. With `NODE_TRACKS_MODE=live`, a node's first
+tracked frame replaces its pipeline's `Tracker` with a `NodeTracker`:
+`tracker.tracks` becomes the node's open tracks, with ids namespaced
+`node:run:id`, and a track that took a detection emits the same event this
+tracker would. Everything downstream reads the node's tracks unchanged. With the
+default `off`, the tracks are filed and nothing reads them.
+
+A node's tracker also keeps the detections that the known lane and dark
+following claim, which in binding mode never reach this tracker. A `NodeTracker`
+therefore presents each track only from the hits after its newest claimed one,
+and leaves it out until it has one: to the dark lane, a claim breaks the track.
+A hit that no lane claims reaches the dark lane whatever hex its track carries.
+The track's `adsb_hex` goes with it only where a hit since the newest claim was
+tagged with that hex, because a tracker keeps its hex after a track swaps onto
+an untagged target.
 
 ---
 
