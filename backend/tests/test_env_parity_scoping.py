@@ -110,3 +110,24 @@ class TestMailTransport:
         thing staging rehearsed."""
         for env in ("test", "staging"):
             assert not parity.allowed("services.server.environment.MAIL_FROM", env)
+
+
+class TestAdsbClaimFallbackTrial:
+    """Staging alone trials the adsb-service claim fallback, in shadow.
+
+    The test droplet's fleet already relays the same traffic and shares the
+    service's per-address budget, so it must not switch the fallback on, and it
+    keeps the lane's binding default like production.
+    """
+
+    @pytest.mark.parametrize("key", ["ADSB_FALLBACK_ENABLED", "KNOWN_LANE_MODE"])
+    def test_staging_may_diverge(self, parity, key):
+        assert parity.allowed(f"services.server.environment.{key}", "staging")
+
+    @pytest.mark.parametrize("key", ["ADSB_FALLBACK_ENABLED", "KNOWN_LANE_MODE"])
+    def test_the_test_droplet_may_not(self, parity, key):
+        assert not parity.allowed(f"services.server.environment.{key}", "test")
+
+    def test_neighbouring_keys_stay_compared(self, parity):
+        for key in ("ADSB_SEED_MODE", "KNOWN_LANE_MODE_X", "DARK_FOLLOW_MODE"):
+            assert not parity.allowed(f"services.server.environment.{key}", "staging")
