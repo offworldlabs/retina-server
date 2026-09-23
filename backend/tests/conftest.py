@@ -522,6 +522,8 @@ async def registered_node(node_session):
     Committed rather than flushed, unlike seeded_node above: a handler that
     rolls back its own transaction would otherwise take the seed with it.
     """
+    from datetime import UTC, datetime
+
     from core.nodes import Node, NodeConfig
     from services import node_auth, node_config, node_pipeline
 
@@ -532,6 +534,8 @@ async def registered_node(node_session):
         board_model="raspberrypi5-4gb",
         status="active",
         active_config_version=1,
+        # Stamped as registration stamps it, so the node is primed online.
+        last_seen_at=datetime.now(UTC),
     )
     node_session.add(node)
     node_session.add(NodeConfig(node_id=_NODE_ID, version=1, **config))

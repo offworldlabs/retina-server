@@ -8,12 +8,13 @@ does those three, so nothing downstream needs to know where the node came from.
 import hashlib
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from config.constants import NODE_OFFLINE_THRESHOLD_S
 from core import state
 from core.nodes import Node, NodeConfig
 from services import node_registration
@@ -137,6 +138,18 @@ def config_hash(config: dict) -> str:
     return hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()[:16]
 
 
+def _last_heard(node: Node) -> datetime | None:
+    """When the server last heard from `node`, or None if it never has.
+
+    SQLite returns `last_seen_at` naive, and every write to it is UTC, so the
+    zone is restated rather than converted.
+    """
+    seen = node.last_seen_at
+    if seen is None or seen.tzinfo is not None:
+        return seen
+    return seen.replace(tzinfo=UTC)
+
+
 async def register_with_pipeline(session: AsyncSession, node: Node) -> None:
     config = await _pipeline_config(session, node.node_id)
     # Hashed before canonicalisation, and it must stay that way: the TCP
@@ -145,12 +158,18 @@ async def register_with_pipeline(session: AsyncSession, node: Node) -> None:
     # deploy that introduced it.
     declared_hash = config_hash(config)
     config = canonical_config(config)
+    # Judged as the offline sweep judges it, rather than left to its next pass,
+    # so a node that died before a deploy reads offline from the first node list
+    # published after it. One never heard from is offline with no heartbeat,
+    # which the sweep leaves alone and its first beat undoes.
+    heard = _last_heard(node)
+    online = heard is not None and datetime.now(UTC) - heard <= timedelta(seconds=NODE_OFFLINE_THRESHOLD_S)
     with state.connected_nodes_lock:
         state.connected_nodes[node.node_id] = {
             "config_hash": declared_hash,
             "config": config,
-            "status": "active",
-            "last_heartbeat": "",
+            "status": "active" if online else "disconnected",
+            "last_heartbeat": heard.isoformat() if heard is not None else "",
             "peer": "v1",
             "is_synthetic": False,
             "capabilities": {"adsb_report": True},
