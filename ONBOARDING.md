@@ -366,6 +366,11 @@ branch, open a PR, get it green, then merge.
   matches nothing and reads as a clean "no errors in the logs". Run `docker compose ps
   --services` first and trust it over a remembered name.
 - **A new per-environment key needs an `env-parity` entry** or CI fails.
+- **Actions are pinned by commit, not tag.** Write a new `uses:` as
+  `owner/repo@<40-character SHA> # vX.Y.Z`, or `backend/tests/test_workflow_pins.py`
+  fails. Dependabot moves the pins weekly. A PR that edits
+  `.github/workflows/claude-code-review.yml` gets no automated review, because
+  the action refuses to run on a copy that differs from `main`'s.
 
 ## Where to go next
 
