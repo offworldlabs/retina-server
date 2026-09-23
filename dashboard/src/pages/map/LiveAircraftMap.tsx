@@ -1233,6 +1233,11 @@ export default function LiveAircraftMap({ feed }: { feed?: FeedMode }) {
   // the layer defaults below cannot disagree about which fleet this page is.
   const mode = feed ?? defaultFeedMode();
   const [scope, setScope] = useState({ ownerOnly: false, initial: true });
+  // Cleared, not just hidden, when the session ends on this page: the owner
+  // feed authenticates with the cookie that went with it, and a later sign-in
+  // should not bring the filter back unasked.
+  if (scope.ownerOnly && !auth.user) setScope({ ownerOnly: false, initial: false });
+  const ownerOnly = scope.ownerOnly && Boolean(auth.user);
   // The feed, animation stores, Leaflet layers and playback all belong to one
   // scope. Remount them together so a newly filtered feed cannot inherit old
   // positions or optional channels. Persisted display preferences survive.
@@ -1245,9 +1250,9 @@ export default function LiveAircraftMap({ feed }: { feed?: FeedMode }) {
   // between the two.
   return (
     <AircraftMapScope
-      key={`${mode}:${scope.ownerOnly}`}
+      key={`${mode}:${ownerOnly}`}
       mode={mode}
-      ownerOnly={scope.ownerOnly}
+      ownerOnly={ownerOnly}
       restoreSelection={scope.initial}
       auth={auth}
       onOwnerChange={(ownerOnly) => setScope({ ownerOnly, initial: false })}

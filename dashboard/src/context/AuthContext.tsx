@@ -49,8 +49,10 @@ export function AuthProvider({ children }) {
   const syntheticFleet = Boolean(user?.synthetic_fleet ?? healthFleet);
 
   // Resolves { redirected } so a caller knows not to route over a navigation
-  // that is still in flight.
-  const logout = async () => {
+  // that is still in flight. `leave` runs in the same tick the identity is
+  // dropped, so a route change it makes renders together with the signed-out
+  // state and RequireAuth never judges the old page without a session.
+  const logout = async (leave?: () => void) => {
     const result = await api.logout();
     const target = result?.redirect;
     // Only a top-level navigation reaches the edge, and only the edge can end
@@ -64,6 +66,7 @@ export function AuthProvider({ children }) {
       window.location.assign(target);
       return { redirected: true };
     }
+    leave?.();
     setUser(null);
     return { redirected: false };
   };
