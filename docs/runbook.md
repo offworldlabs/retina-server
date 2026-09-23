@@ -38,15 +38,18 @@ fails its suites stays there, blocking production, until the next merge.
 | **RAM / swap** | 7941 MB / 4 GB | 7941 MB / none | 7941 MB / 2 GB |
 | **Fleet** | none (see below) | 50 @ 1.0s (50 fps) | 50 @ 1.0s (50 fps) |
 | **TCP 3012** | published (real nodes) | closed | closed |
-| **Docker image store** | overlay2 | containerd | containerd |
+| **Docker image store** | containerd | containerd | containerd |
 
-The two image stores cannot see each other's images, and read differently in
-`docker system df` and `docker image inspect`. `deploy/setup-server.sh` keeps the
-store a box's daemon is already on and gives a fresh box containerd, so a rebuilt
-prod would come up on containerd. It installs buildx on the containerd store only:
-on overlay2, Compose's buildx (Bake) build tags the new image but leaves the old
-container running, so a deploy passes with nothing swapped. Keep buildx off prod
-until it moves stores.
+`deploy/setup-server.sh` keeps the store a box's daemon is already on and gives a
+fresh box containerd. Switching a running box to the other store hides every image
+it holds, `:rollback` included, until they are loaded into the new one.
+
+buildx needs Docker Compose 2.39 or later. Older releases build through buildx's
+Bake but look the result up under the wrong name, so `up --build` keeps the old
+container and the deploy passes on stale code: the deploy log reads ` server  Built`
+then `Container ... Running`. Ubuntu's newer Compose is in `noble-updates`, which
+unattended-upgrades does not take, so check `docker compose version` on a box
+before installing buildx there.
 
 ### The test droplet has two deploy paths
 
