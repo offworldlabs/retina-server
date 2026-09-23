@@ -64,6 +64,7 @@ def test_the_stack_stays_up_until_the_new_image_exists(workflow, job):
 # until they trip the disk pre-flight, which refuses to deploy under 2GB free.
 
 PRUNE = r"^docker image prune\b"
+BUILDER_PRUNE = r"^docker builder prune\b"
 # Any spelling that switches the prune from "dangling" to "unreferenced by a
 # container": -a, --all, and clusters like -af.
 PRUNE_ALL = re.compile(r"\s(?:--all\b|-[a-z]*a[a-z]*\b)")
@@ -164,6 +165,16 @@ def test_the_image_prune_runs_after_the_rollback_point_is_saved(workflow, deploy
     # and that image is still untagged, so the prune takes the rollback point.
     lines = _script(workflow, deploy)
     assert _index(lines, SNAPSHOT) < _index(lines, PRUNE)
+
+
+@pytest.mark.parametrize(("workflow", "deploy"), MARKED_DEPLOYS)
+def test_the_build_cache_is_trimmed_after_the_images_that_pin_it(workflow, deploy):
+    # A cached layer an image still holds is not the cache's to free. Trim the
+    # cache first and the outgoing images keep it; their prune then releases
+    # it with nothing left in the deploy to sweep it up. Both ahead of the
+    # build, which is what needs the room.
+    lines = _script(workflow, deploy)
+    assert _index(lines, SNAPSHOT) < _index(lines, PRUNE) < _index(lines, BUILDER_PRUNE) < _index(lines, SWAP)
 
 
 @pytest.mark.parametrize(("workflow", "deploy"), MARKED_DEPLOYS)

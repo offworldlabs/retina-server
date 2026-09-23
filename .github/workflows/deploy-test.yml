@@ -202,12 +202,13 @@ jobs:
 
             pip3 install -e libs/retina-custody/ --break-system-packages --ignore-installed -q
             pip3 install -e libs/retina-simulation/ --break-system-packages -q
-            docker builder prune -f --keep-storage 10GB
             # Each build orphans the image it replaces and nothing else on the
             # box removes them, so they accumulate until the pre-flight above
             # refuses the deploy. Dangling only: `-a` goes by what no container
             # references, which is exactly the rollback point tagged above.
+            # Before the builder prune, which cannot free a layer an image holds.
             docker image prune -f
+            docker builder prune -f --keep-storage 10GB
             # --remove-orphans because this deploy renamed the compose
             # service. container_name is pinned, so the container kept by the
             # old service key is an orphan holding the exact name the new one
