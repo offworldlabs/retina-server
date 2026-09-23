@@ -345,11 +345,12 @@ branch, open a PR, get it green, then merge.
   tunes it at `/sim/physics`, whose save needs an administrator. Both routes
   exist only where the server sets `SYNTHETIC_FLEET_ENABLED` (the test droplet
   and the laptop; staging and production run no simulator), as `/api/auth/me`
-  reports. On the dev server that is `/sim?mode=admin`. `map`, `testmap`,
-  `test-testmap`, `staging-map` and the other retired names are Cloudflare
-  redirects into the app consoles. `/map` still takes its feed from the
-  hostname: every deployed environment (`app`, `staging-app`, `test-app`) is
-  real-only there, and a local hostname retains both kinds of node. Tower search has its own SPA in
+  reports. On the dev server that is `/sim?mode=admin`. `map`, `staging-map`
+  and the other retired names are Cloudflare redirects into the app consoles;
+  `testmap` and `test-testmap` are retired outright, with no redirect. `/map`
+  still takes its feed from the hostname: every deployed environment (`app`,
+  `staging-app`, `test-app`) is real-only there, and a local hostname retains
+  both kinds of node. Tower search has its own SPA in
   tower-finder-service; the laptop overlay sets `TOWER_FINDER_ENABLED=false`,
   and this backend no longer implements `/api/towers`.
 - **Config vs runtime config.** `backend/config/` is image-only (baked into the
