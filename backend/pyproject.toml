@@ -66,6 +66,9 @@ addopts = [
     "--cov-report=html:htmlcov",
     "--cov-fail-under=55",
     "-q",
+    # An unregistered mark, a typo or one no plugin defines, fails collection
+    # rather than warning and doing nothing.
+    "--strict-markers",
 ]
 # A per-test ceiling, so a runaway test fails in seconds and names itself
 # instead of consuming the CI job's whole 20 minute budget in silence. The cap
@@ -77,10 +80,6 @@ timeout_method = "thread"
 
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-markers = [
-    "external: requires external API (open-meteo.com)",
-    "asyncio: mark test as async (requires pytest-asyncio)",
-]
 
 [tool.coverage.run]
 source = ["."]

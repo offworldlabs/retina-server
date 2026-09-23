@@ -173,7 +173,7 @@ jobs:
       # is meaningless; backend-coverage applies the real threshold to the three
       # combined. Overriding here rather than editing addopts keeps a local
       # `pytest` enforcing the threshold exactly as it does today.
-      - run: pytest tests/ -v --tb=short -m "not external" -n logical --dist worksteal --splits ${{ strategy.job-total }} --group ${{ matrix.shard }} --cov-fail-under=0
+      - run: pytest tests/ -v --tb=short -n logical --dist worksteal --splits ${{ strategy.job-total }} --group ${{ matrix.shard }} --cov-fail-under=0
       # include-hidden-files, because `.coverage.N` is a dotfile and v4 drops
       # those silently: without it the combine below fails on an empty download
       # rather than on anything that names this step.

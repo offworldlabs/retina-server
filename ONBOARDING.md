@@ -224,7 +224,7 @@ one costs balance and never correctness. Regenerate it when the shards drift
 apart, from a serial run:
 
 ```bash
-cd backend && pytest tests/ -m "not external" --no-cov --store-durations
+cd backend && pytest tests/ --no-cov --store-durations
 ```
 
 Not under `-n`: each xdist worker records only the tests that landed on it, and
