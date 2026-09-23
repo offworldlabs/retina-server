@@ -421,6 +421,22 @@ adsb_aircraft: dict[str, dict] = {}
 # staleness rule that orders writes. last_seen_ms is the node's clock and
 # recv_ms is ours, so the two are not interchangeable.
 
+# ── ADS-B claim candidates polled from adsb-service (ADSB_FALLBACK_ENABLED) ───
+# Lattice cell -> hex -> record, one entry per query region (see
+# services/adsb_regions.py), keyed by the cell its nodes share.  A region covers
+# each member plus its detection range, so a node's own cell holds every
+# aircraft it can see and no other needs asking.  Records have adsb_aircraft's
+# shape, world "real", and are written only by services/tasks/adsb_fallback.py.
+# Kept apart from adsb_aircraft so the feed and every reader of a node's own
+# ADS-B never see them.  Replaced whole each cycle, never edited, so an unlocked
+# reader holds one cycle's view: read it as state.adsb_fallback at the point of
+# use, not through an imported name.
+adsb_fallback: dict[tuple[int, int], dict[str, dict]] = {}
+# Cycles that left regions unasked (a 429, or the interval ran out), and single
+# region fetches that failed.
+adsb_fallback_truncated_cycles: int = 0
+adsb_fallback_region_errors: int = 0
+
 # ── Known-target claims registry (KNOWN_LANE_MODE) ────────────────────────────
 # Written by services/known_claiming.py once per frame; the interface between
 # the claiming stage, the known-lane solver, and the per-node trust residuals.
@@ -1243,6 +1259,7 @@ def _reset_for_tests() -> None:
         active_geo_aircraft,
         multinode_tracks,
         adsb_aircraft,
+        adsb_fallback,
         known_claims,
         known_track_holds,
         track_histories,

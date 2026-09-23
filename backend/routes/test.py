@@ -158,6 +158,14 @@ def _build_dashboard_data() -> bytes:
                 "websocket_clients": ws_clients,
                 "external_adsb_cached": ext_adsb,
             },
+            # Claim candidates from adsb-service (ADSB_FALLBACK_ENABLED); empty
+            # where it is off.  truncated_cycles counts cycles that left
+            # regions unasked, each named in the log.
+            "adsb_fallback": {
+                "cached": len({h for cell in list(state.adsb_fallback.values()) for h in cell}),
+                "truncated_cycles": state.adsb_fallback_truncated_cycles,
+                "region_errors": state.adsb_fallback_region_errors,
+            },
             "server_health": {
                 "frame_queue_depth": state.frame_queue.qsize(),
                 "frame_queue_max": state.frame_queue.maxsize,
