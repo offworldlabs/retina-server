@@ -25,14 +25,14 @@ on:
 # one: they are never cancelled, and (unlike a group shared with other runs on
 # the same ref) they never queue behind an earlier run either. The deploy jobs'
 # own job-level concurrency groups are what serialise deploys.
+#
+# A title or body edit gets a group of its own as well, on the condition the
+# gates carry. It runs no gate, and in the PR's group it would cancel a run in
+# progress or displace a push or retarget still waiting to start, leaving that
+# commit or base untested.
 concurrency:
-  group: ${{ github.event_name == 'pull_request' && format('ci-{0}-pull_request-{1}', github.workflow, github.ref) || format('ci-{0}-{1}-{2}', github.workflow, github.event_name, github.run_id) }}
-  # Same condition the jobs carry, and for a sharper reason. Cancellation happens
-  # when the new run is created, before any job-level `if:` is evaluated, so a
-  # title edit would otherwise cancel a real run mid-flight and then skip every
-  # job in the run that replaced it, leaving the PR with no signal at all. A
-  # no-op edit queues instead, and skips quickly once it starts.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base != null) }}
+  group: ${{ github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base) && format('ci-{0}-pull_request-{1}', github.workflow, github.ref) || format('ci-{0}-{1}-{2}', github.workflow, github.event_name, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # Single definition of the deploy directory. The ssh-action script blocks

@@ -51,6 +51,8 @@ def _value(expression: str, event: dict, cancelled: bool = False):
         ("github.event.changes.base", {"ref": {"from": "main"}} if event["retarget"] else None),
         ("github.event.action", event["action"]),
         ("github.event_name", event["name"]),
+        ("github.workflow", "CI"),
+        ("github.run_id", 12345),
         ("github.ref", event["ref"]),
         ("always()", True),
         ("success()", not cancelled),
@@ -156,3 +158,17 @@ def test_the_gates_are_judged_wherever_ci_ok_is_a_verdict(jobs, event, cancelled
         assert ran == ["Every gate passed"]
     else:
         assert "Every gate passed" not in ran
+
+
+@pytest.mark.parametrize("event", EVENTS)
+def test_only_the_runs_that_judge_a_pull_request_share_its_group(workflow, event):
+    """A group holds one run in progress and one pending, and a newcomer
+    cancels or replaces them. An edit sharing the PR's group would cancel a
+    run in progress, or replace a push or retarget waiting to start; a push to
+    main sharing any group could be cancelled mid-deploy."""
+    group = _value(workflow["concurrency"]["group"], EVENTS[event])
+    assert (group == _value(workflow["concurrency"]["group"], EVENTS["synchronize"])) is (event in DECIDING), group
+    assert ("12345" in group) is (event not in DECIDING), group
+    cancels = _evaluate(workflow["concurrency"]["cancel-in-progress"], EVENTS[event])
+    if EVENTS[event] is not TITLE_EDIT:  # alone in its group, so either way
+        assert cancels is (event in DECIDING)
