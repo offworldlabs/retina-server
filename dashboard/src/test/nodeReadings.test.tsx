@@ -22,6 +22,7 @@ vi.mock("../api/client", () => ({
     adminNodeRefs: vi.fn(),
     adminNodeContacts: vi.fn(),
     adminNodeLocationPrivacy: vi.fn(),
+    adminPolledRadars: vi.fn(),
   },
 }));
 vi.mock("recharts", async (importOriginal) => ({
@@ -47,6 +48,7 @@ function serve(status: string | null = "active") {
   vi.mocked(api.fleetDashboard).mockResolvedValue({});
   vi.mocked(api.adminNodeRefs).mockResolvedValue({});
   vi.mocked(api.adminNodeContacts).mockResolvedValue({});
+  vi.mocked(api.adminPolledRadars).mockResolvedValue({ probation_enabled: true, radars: [] });
 }
 
 const valueBeside = async (label: string) => (await screen.findByText(label)).nextElementSibling;

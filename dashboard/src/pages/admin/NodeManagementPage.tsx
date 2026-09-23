@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
 import { FetchNotice, nothingLoaded } from "../../components/Notice";
@@ -7,6 +7,7 @@ import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
 import { formatMHz, formatUptime } from "../../utils/format";
 import { PositionStatusBadge } from "../../components/PositionStatusBadge";
+import { PolledRadars } from "./PolledRadars";
 import {
   LocationPrivacyBadge,
   LocationPrivacyControl,
@@ -55,8 +56,6 @@ export default function NodeManagementPage() {
   });
   const { data, loading } = polled;
 
-  if (loading) return <div className="empty-state">Loading…</div>;
-
   const nodes = data?.nodes ?? [];
   const analytics = data?.analytics;
   const contacts = data?.contacts ?? {};
@@ -80,11 +79,98 @@ export default function NodeManagementPage() {
       <p>View and manage all nodes in the network</p>
     </div>
   );
-  if (nothingLoaded(polled)) {
-    return (
+  let nodeList: ReactNode;
+  if (loading) {
+    nodeList = <div className="empty-state">Loading…</div>;
+  } else if (nothingLoaded(polled)) {
+    nodeList = <FetchNotice polled={polled} what="the node list" />;
+  } else {
+    nodeList = (
       <>
-        {header}
         <FetchNotice polled={polled} what="the node list" />
+
+        <div className="stats-grid">
+          <StatCard label="Total Nodes" value={nodes.length} tone="accent" />
+          <StatCard
+            label="Online"
+            value={onlineCount}
+            tone="success"
+          />
+          <StatCard
+            label="Offline"
+            value={nodes.length - onlineCount}
+            tone="error"
+          />
+        </div>
+
+        <div className="toolbar">
+          <input
+            type="text"
+            placeholder="Search nodes…"
+            value={search}
+            onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+            className="input"
+          />
+          <span className="card-note">
+            Showing {paged.length} of {filtered.length} nodes
+          </span>
+        </div>
+
+        <div className="node-grid">
+          {paged.map((node) => {
+            const ref = node.node_ref;
+            // The private id, or null while the map is in flight and for a ref
+            // that resolves to nothing. The node's own site, its contact row and
+            // its privacy override are all named after it; nothing here may fall
+            // back to the ref, which names none of them.
+            const nodeId = idsByRef?.[ref] ?? null;
+            const summary = summaryMap[ref] || {};
+            const contact = nodeId ? contacts[nodeId] : undefined;
+            const contactText = contactLabel(contact);
+            // The label is the name when there is one, so the address is worth a
+            // tooltip only then; otherwise it is already what the cell shows.
+            const named = Boolean(contact?.first_name || contact?.last_name);
+            const contactTitle = named ? contact.email || undefined : undefined;
+            return (
+              // The node page is addressed by the public identity, since the
+              // per-node analytics route behind it is.
+              <div className="node-card" key={ref} onClick={() => navigate(`/nodes/${ref}`)}>
+                <div className="node-name">
+                  <StatusBadge status={node.status} />
+                  <PositionStatusBadge status={node.position_status} />
+                  <RetnodeLink nodeId={nodeId} synthetic={node.is_synthetic}>
+                    {node.name || ref}
+                  </RetnodeLink>
+                </div>
+                <div className="node-meta">
+                  <span className="meta-label">Node ref</span>
+                  <span className="mono">{ref}</span>
+                  <span className="meta-label">Node ID</span>
+                  <span className="mono">{nodeId ?? "—"}</span>
+                  <span className="meta-label">Frequency</span>
+                  <span>{formatMHz(node.frequency)}</span>
+                  <span className="meta-label">Detections</span>
+                  <span>{detectionCount(summary).toLocaleString()}</span>
+                  <span className="meta-label">Frames</span>
+                  <span>{(summary.metrics?.total_frames || 0).toLocaleString()}</span>
+                  <span className="meta-label">Trust</span>
+                  <span>{((summary.trust?.trust_score || 0) * 100).toFixed(0)}%</span>
+                  <span className="meta-label">Reputation</span>
+                  <span>{((summary.reputation?.reputation || 0) * 100).toFixed(0)}%</span>
+                  <span className="meta-label">Avg SNR</span>
+                  <span>{(summary.metrics?.avg_snr || 0).toFixed(1)} dB</span>
+                  <span className="meta-label">Uptime</span>
+                  <span>{formatUptime(summary.metrics?.uptime_s || 0)}</span>
+                  <span className="meta-label">Contact</span>
+                  <span title={contactTitle}>{contactText}</span>
+                </div>
+                <NodeLocationPrivacy nodeId={nodeId} unresolved={idsByRef !== null && !nodeId} />
+              </div>
+            );
+          })}
+        </div>
+
+        <Pager page={page} totalPages={totalPages} onPage={setPage} />
       </>
     );
   }
@@ -92,90 +178,9 @@ export default function NodeManagementPage() {
   return (
     <>
       {header}
-      <FetchNotice polled={polled} what="the node list" />
-
-      <div className="stats-grid">
-        <StatCard label="Total Nodes" value={nodes.length} tone="accent" />
-        <StatCard
-          label="Online"
-          value={onlineCount}
-          tone="success"
-        />
-        <StatCard
-          label="Offline"
-          value={nodes.length - onlineCount}
-          tone="error"
-        />
-      </div>
-
-      <div className="toolbar">
-        <input
-          type="text"
-          placeholder="Search nodes…"
-          value={search}
-          onChange={(e) => { setSearch(e.target.value); setPage(0); }}
-          className="input"
-        />
-        <span className="card-note">
-          Showing {paged.length} of {filtered.length} nodes
-        </span>
-      </div>
-
-      <div className="node-grid">
-        {paged.map((node) => {
-          const ref = node.node_ref;
-          // The private id, or null while the map is in flight and for a ref
-          // that resolves to nothing. The node's own site, its contact row and
-          // its privacy override are all named after it; nothing here may fall
-          // back to the ref, which names none of them.
-          const nodeId = idsByRef?.[ref] ?? null;
-          const summary = summaryMap[ref] || {};
-          const contact = nodeId ? contacts[nodeId] : undefined;
-          const contactText = contactLabel(contact);
-          // The label is the name when there is one, so the address is worth a
-          // tooltip only then; otherwise it is already what the cell shows.
-          const named = Boolean(contact?.first_name || contact?.last_name);
-          const contactTitle = named ? contact.email || undefined : undefined;
-          return (
-            // The node page is addressed by the public identity, since the
-            // per-node analytics route behind it is.
-            <div className="node-card" key={ref} onClick={() => navigate(`/nodes/${ref}`)}>
-              <div className="node-name">
-                <StatusBadge status={node.status} />
-                <PositionStatusBadge status={node.position_status} />
-                <RetnodeLink nodeId={nodeId} synthetic={node.is_synthetic}>
-                  {node.name || ref}
-                </RetnodeLink>
-              </div>
-              <div className="node-meta">
-                <span className="meta-label">Node ref</span>
-                <span className="mono">{ref}</span>
-                <span className="meta-label">Node ID</span>
-                <span className="mono">{nodeId ?? "—"}</span>
-                <span className="meta-label">Frequency</span>
-                <span>{formatMHz(node.frequency)}</span>
-                <span className="meta-label">Detections</span>
-                <span>{detectionCount(summary).toLocaleString()}</span>
-                <span className="meta-label">Frames</span>
-                <span>{(summary.metrics?.total_frames || 0).toLocaleString()}</span>
-                <span className="meta-label">Trust</span>
-                <span>{((summary.trust?.trust_score || 0) * 100).toFixed(0)}%</span>
-                <span className="meta-label">Reputation</span>
-                <span>{((summary.reputation?.reputation || 0) * 100).toFixed(0)}%</span>
-                <span className="meta-label">Avg SNR</span>
-                <span>{(summary.metrics?.avg_snr || 0).toFixed(1)} dB</span>
-                <span className="meta-label">Uptime</span>
-                <span>{formatUptime(summary.metrics?.uptime_s || 0)}</span>
-                <span className="meta-label">Contact</span>
-                <span title={contactTitle}>{contactText}</span>
-              </div>
-              <NodeLocationPrivacy nodeId={nodeId} unresolved={idsByRef !== null && !nodeId} />
-            </div>
-          );
-        })}
-      </div>
-
-      <Pager page={page} totalPages={totalPages} onPage={setPage} />
+      {nodeList}
+      {/* Fetched for itself: a radar on probation is missing from the list above in every state. */}
+      <PolledRadars />
     </>
   );
 }
