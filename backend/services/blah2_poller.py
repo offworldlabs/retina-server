@@ -109,6 +109,12 @@ TOO_MANY_DETECTIONS = "too_many_detections"
 INVALID_CONFIG = "invalid_config"
 NO_CONFIGURATION = "no_configuration"
 
+# The custody class of every polled frame, in the archive's signing_mode column.
+# It says only that the poller fetched the frame from whatever answered at the
+# registered address. A stock box signs nothing, and the frame is left unsigned:
+# a key this server held would vouch only for the server.
+CUSTODY_CLASS = "polled"
+
 # An address has moved when it leaves the network of this prefix length around
 # the one before, by IP version.
 _NETWORK_PREFIX = {4: 16, 6: 32}
@@ -530,7 +536,9 @@ class RadarPoller:
     async def _file(self, frame: Blah2Frame) -> None:
         """Queue one frame and offer it to the mirror, as a v1 node's frame is.
 
-        An empty frame is filed too: it is what ages out a coasting track.
+        An empty frame is filed too: it is what ages out a coasting track. The
+        queued frame carries its custody class and epoch for the archive; the
+        mirror gets the plain wire frame.
         """
         node_id = self.target.node_id
         wire = wire_frame(frame, seq=self.seq, boot_id=self.boot_id, config_version=self.target.config_version)
@@ -542,7 +550,8 @@ class RadarPoller:
         if not await self._in_pipeline():
             state.bump_counter("frames_dropped")
             return
-        if not submit_frame(node_id, pipeline_frame(wire)):
+        queued = pipeline_frame(wire) | {"signing_mode": CUSTODY_CLASS, "epoch": self.target.epoch}
+        if not submit_frame(node_id, queued):
             return
         detection_mirror.offer(node_id, wire)
         self._since = time.monotonic()

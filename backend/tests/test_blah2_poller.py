@@ -18,6 +18,7 @@ import time
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 
+import pyarrow.parquet as pq
 import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import delete, select, update
@@ -44,6 +45,7 @@ from services.blah2_poller import (
 )
 from services.blah2_probe import CONFIG_PATH, DETECTION_PATH, Blah2Refusal, config_fingerprint
 from services.blah2_probe import DetectionFrame as Blah2Frame
+from services.parquet_writer import write_detections_parquet
 from services.polled_endpoint import EndpointRefused, PinnedClient, PolledEndpoint, Refusal
 from services.polled_radars import RadarGeometry, create_polled_radar
 from tests.radar_stub import STOCK_CONFIG, StubServer, only_loopback, resolve_to_loopback
@@ -295,6 +297,22 @@ async def test_new_frames_are_queued_under_the_node_and_mirrored(node_session, m
     assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
     assert offered and offered[0][0] == node_id
     assert set(stub.paths) == {CONFIG_PATH, DETECTION_PATH}
+
+
+async def test_a_filed_frame_is_archived_as_polled_under_its_epoch(node_session, maker, queue, tmp_path):
+    """Nothing signs a stock blah2 frame, so the archive says it was polled and which box the id stood for."""
+    async with StubServer(_radar(_live())) as stub:
+        node_id = await _register(node_session, stub.port)
+        await node_session.execute(update(PolledRadar).where(PolledRadar.node_id == node_id).values(epoch=2))
+        await node_session.commit()
+        async with _Running(_poller(_target(stub.port, node_id, epoch=2), maker).run()):
+            await _eventually(lambda: queue.qsize() >= 1)
+
+    _, frame = _drain(queue)[0]
+    key = write_detections_parquet(node_id=node_id, frames=[frame], base_dir=tmp_path)
+    rows = pq.read_table(tmp_path / key, partitioning=None).to_pylist()
+    assert {(r["signing_mode"], r["epoch"]) for r in rows} == {("polled", 2)}
+    assert {(r["payload_hash"], r["signature"], r["signature_valid"]) for r in rows} == {(None, None, None)}
 
 
 async def test_empty_frames_are_filed(node_session, maker, queue):
