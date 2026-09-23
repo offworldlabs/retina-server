@@ -264,10 +264,11 @@ made with `--no-verify` or from somewhere without the hook skipped it:
 backend/.venv/bin/pre-commit run --all-files
 ```
 
-It runs `ruff-check`, `ruff-format`, actionlint over the workflows, a dead-code
-check (vulture) and `ruff-config` twice, once per copy of the shared standard in
-this repo. A change can pass `ruff check` and `ruff format` by hand and still
-fail CI on dead code.
+It runs `ruff-check`, `ruff-format`, actionlint over the workflows, shellcheck
+over the shell scripts (warnings and errors), a dead-code check (vulture) and
+`ruff-config` twice, once per copy of the shared standard in this repo. A
+change can pass `ruff check` and `ruff format` by hand and still fail CI on
+dead code.
 
 Touching a node route or one of its models also moves the node API's wire
 contract, which is generated rather than written. So does changing a
