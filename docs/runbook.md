@@ -617,8 +617,10 @@ curl -sk https://localhost/api/test/dashboard | python3 -c \
 
 **Immediate mitigation:** None without code change. If tracker library was recently updated, rollback:
 ```bash
-# On server:
-cd /opt/retina-server && pip show retina-tracker  # check installed version
+# On server: the image builds the tracker from the submodule checkout, so the
+# pointer is the deployed version.
+cd /opt/retina-server && git submodule status libs/retina-tracker
+git log -3 --format='%h %ad %s' --date=short -- libs/retina-tracker  # when it last moved
 ```
 
 ---
