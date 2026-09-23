@@ -280,14 +280,17 @@ jobs:
       # The workspaces are independent; a failure in one should still report
       # the others rather than cancel them. Every workspace in package.json has
       # an entry, and each of its lint, typecheck, test and build scripts runs
-      # in exactly one (backend/tests/test_web_build_matrix.py).
+      # in exactly one, or once per shard (backend/tests/test_web_build_matrix.py).
       fail-fast: false
       matrix:
         # The dashboard's tests outlast its lint, typecheck and build together,
-        # so they run in an entry of their own rather than after them.
+        # so they run in entries of their own rather than after them. Unlike
+        # pytest's, a vitest shard loads only its own files, so splitting them
+        # divides nearly all of their time.
         include:
           - { workspace: dashboard, part: checks, label: dashboard checks }
-          - { workspace: dashboard, part: tests, label: dashboard tests }
+          - { workspace: dashboard, part: tests, shard: 1/2, label: dashboard tests 1/2 }
+          - { workspace: dashboard, part: tests, shard: 2/2, label: dashboard tests 2/2 }
           - { workspace: packages/shared }
           - { workspace: e2e }
     steps:
@@ -309,7 +312,7 @@ jobs:
       # checks before a deploy depends on them.
       - run: npm run typecheck -w ${{ matrix.workspace }}
         if: matrix.part != 'tests'
-      - run: npm test -w ${{ matrix.workspace }} --if-present
+      - run: npm test -w ${{ matrix.workspace }} --if-present ${{ matrix.shard && format('-- --shard={0}', matrix.shard) || '' }}
         if: matrix.part != 'checks'
       # Only the console has a build.
       - run: npm run build -w ${{ matrix.workspace }} --if-present
