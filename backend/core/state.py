@@ -47,6 +47,16 @@ connected_nodes: dict[str, dict] = {}
 # peer drops, but a heartbeat overwrites it with whatever the node reported, so
 # it is not a closed set — do not branch on it as if it were.
 
+# When each node's latest frame reached the frame workers (time.time()), and
+# when this process began watching. Neither survives a restart, so a node with
+# no frame yet is measured from the start rather than read as starved.
+node_last_frame_at: dict[str, float] = {}
+frames_watched_since: float = time.time()
+# The state each node last reported on its heartbeat, and since when (epoch
+# seconds): a copy of node_reports for the health check, which cannot await the
+# database. Diagnostic only; see services/node_report_store.
+node_reported_state: dict[str, tuple[str, float]] = {}
+
 # Empirical FOV (see retina_analytics.empirical_coverage / manager /
 # association).  off/shadow/active, ASSOC_CLAIM_MODE precedent — an
 # unrecognised value falls back to "off" rather than raising.  Read here
@@ -1236,6 +1246,7 @@ def _reset_for_tests() -> None:
     global latest_accuracy_bytes
     global latest_mlat_accuracy_bytes, latest_mlat_verification_bytes
     global latest_storage_bytes, simulation_config
+    global frames_watched_since
 
     for store in (
         connected_nodes,
@@ -1264,6 +1275,8 @@ def _reset_for_tests() -> None:
         task_error_counts,
         rate_buckets,
         latest_missed_detections,
+        node_last_frame_at,
+        node_reported_state,
     ):
         store.clear()
     anomaly_log.clear()
@@ -1301,6 +1314,7 @@ def _reset_for_tests() -> None:
     latest_mlat_verification_bytes = b"{}"
     latest_storage_bytes = b"{}"
     simulation_config = dict(_SIMULATION_CONFIG_DEFAULTS)
+    frames_watched_since = time.time()
 
     with counters_lock:
         globals().update(_COUNTER_ZEROS)

@@ -115,6 +115,45 @@ _DEFAULT_COVERAGE_BACKLOG_MAX_WAIT_S = 1200.0
 _DEFAULT_SOLVER_QUEUE_DROP_WINDOW_S = 300.0
 
 
+# How long (s) a node the server hears from may go without filing a frame.
+# An idle sky still gives a frame per CPI, so any gap this long is the node's
+# radar not running, not a quiet sky. Well clear of a restart: frames resume on
+# the first POST after one, unlike the solver's slower first publish.
+_DEFAULT_FRAME_STARVATION_S = 900.0
+
+
+def _duration(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    return f"{minutes} min" if minutes < 120 else f"{minutes // 60} h {minutes % 60} min"
+
+
+def _frame_starvation(now: float, add) -> None:
+    """A node that is heard from and files nothing, one issue per node.
+
+    The heartbeat keeps such a node online on every surface, so without this it
+    is indistinguishable from a working one. Its own report is quoted, not
+    trusted: a node stuck in `starting` is caught here because it files no
+    frames, and the report says why.
+    """
+    starvation_s = _threshold("FRAME_STARVATION_S", _DEFAULT_FRAME_STARVATION_S)
+    with state.connected_nodes_lock:
+        heard = [
+            node_id
+            for node_id, info in state.connected_nodes.items()
+            if info.get("status") != "disconnected" and not info.get("is_synthetic", False)
+        ]
+    for node_id in heard:
+        quiet_since = max(state.node_last_frame_at.get(node_id, 0.0), state.frames_watched_since)
+        if now - quiet_since <= starvation_s:
+            continue
+        message = f"Node {node_id} is heard from but has filed no frame for {_duration(now - quiet_since)}"
+        reported = state.node_reported_state.get(node_id)
+        if reported is not None:
+            reported_state, since = reported
+            message += f"; it has reported `{reported_state}` for {_duration(now - since)}"
+        add(f"frame_starvation:{node_id}", WARNING, message + " (see /api/admin/node-reports)")
+
+
 def compute_health_issues() -> list[dict]:
     """Evaluate all health conditions against current state. Empty list == healthy."""
     issues: list[dict] = []
@@ -193,6 +232,8 @@ def compute_health_issues() -> list[dict]:
     node_dropout_threshold = _threshold("NODE_DROPOUT_THRESHOLD", _DEFAULT_NODE_DROPOUT_THRESHOLD)
     if state.peak_connected_nodes > 10 and active_nodes < state.peak_connected_nodes * node_dropout_threshold:
         add("node_dropout", CRITICAL, f"Node dropout: {active_nodes}/{state.peak_connected_nodes} active")
+
+    _frame_starvation(now, add)
 
     # Zero tracks after warmup (pipeline failure)
     if state.frames_processed > 500 and len(state.adsb_aircraft) == 0 and len(state.multinode_tracks) == 0:

@@ -634,6 +634,22 @@ git log -3 --format='%h %ad %s' --date=short -- libs/retina-tracker  # when it l
 
 ---
 
+### `frame_starvation:<node_id>`
+
+**Trigger:** A real node that is online (heard from within the offline threshold) has filed no frame for `FRAME_STARVATION_S` (default 15 min), measured from its last frame or from the server starting, whichever is later. One alert per node.  
+**What it means:** The node's heartbeat is arriving but its radar is not producing, so every other surface shows it as healthy. A quiet sky is not the cause: blah2 emits a frame per CPI with or without aircraft.
+
+**Read what the node says about itself:** the alert quotes its last reported `state` and how long it has held it. For its health and recent errors, open `/api/admin/node-reports` at `admin.retina.fm` in a signed-in browser (there is no shell route to `/api/admin/*`).
+
+**Common causes, from the node's own report:**
+1. `starting` for a long time: blah2 never came up, or setup was never finished on the board.
+2. `stalled` or `error`: blah2 was running and stopped. A board left in retina-gui's spectrum mode reads this way.
+3. `streaming` with no frames arriving: the node believes it is sending. Suspect the network path, then the server's refusals (`frames_dropped`).
+
+The fix is on the board, so the owner is usually the one to act. `resolved:frame_starvation:<node_id>` follows once a frame arrives.
+
+---
+
 ### `solver_accuracy_degraded`
 
 **Trigger:** Mean haversine error between solver output and ADS-B ground truth > 10 km (requires >20 samples).  
