@@ -162,11 +162,6 @@ export const api = {
 
   // Admin
   adminUsers: () => request("/api/admin/users"),
-  adminSetRole: (uid, role) =>
-    request(`/api/admin/users/${uid}/role`, {
-      method: "PUT",
-      body: JSON.stringify({ role }),
-    }),
   adminEvents: (limit = 200) => request(`/api/admin/events?limit=${limit}`),
   adminNodeConfig: () => request("/api/admin/config/nodes"),
   adminTowerConfig: () => request("/api/admin/config/towers"),

@@ -3,17 +3,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import ui from "@retina/shared/css/ui.css?raw";
 
 vi.mock("../api/client", () => ({
-  api: { adminEvents: vi.fn(), alerts: vi.fn(), adminUsers: vi.fn(), adminNodeOwners: vi.fn() },
+  api: { adminEvents: vi.fn(), alerts: vi.fn() },
 }));
 
 import { api } from "../api/client";
 import EventsPage from "../pages/admin/EventsPage";
-import UserManagementPage from "../pages/admin/UserManagementPage";
 import AlertsPage from "../pages/user/AlertsPage";
 
 /* A badge's tone says how things stand: green is healthy, amber wants a look,
-   red is in trouble. Severity and role are not health, so neither borrows a
-   health tone it does not mean. */
+   red is in trouble. Severity is not health, so it does not borrow a health
+   tone it does not mean. */
 
 const events = [
   { ts: 1, severity: "info", category: "node", message: "node connected" },
@@ -43,20 +42,5 @@ describe("badge tones", () => {
     expect(badge("info")).not.toHaveClass("online");
     expect(badge("warning")).toHaveClass("warning");
     expect(badge("critical")).toHaveClass("offline");
-  });
-
-  it("shows a role as a tag, with admin in no warning tone", async () => {
-    vi.mocked(api.adminUsers).mockResolvedValue([
-      { id: "1", name: "Ada", email: "ada@example.com", provider: "email", role: "admin" },
-      { id: "2", name: "Bob", email: "bob@example.com", provider: "email", role: "user" },
-    ]);
-    vi.mocked(api.adminNodeOwners).mockResolvedValue({});
-    render(<UserManagementPage />);
-    await screen.findByText("Ada");
-    for (const role of ["admin", "user"]) {
-      expect(badge(role)).toHaveClass("badge", "plain");
-      expect(badge(role)).not.toHaveClass("warning");
-      expect(badge(role)).not.toHaveClass("online");
-    }
   });
 });

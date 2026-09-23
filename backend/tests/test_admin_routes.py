@@ -44,13 +44,9 @@ class TestUsers:
         r = client.get("/api/admin/users")
         assert r.status_code == 200
 
-    def test_set_role_invalid_user(self, client):
-        r = client.put(
-            "/api/admin/users/nonexistent-user-id/role",
-            json={"role": "admin"},
-        )
-        # 404 because user doesn't exist
-        assert r.status_code == 404
+    def test_no_route_changes_a_role(self):
+        """Administrators are Access identities, never rows; see list_users."""
+        assert [r.path for r in app.routes if getattr(r, "path", "").endswith("/role")] == []
 
 
 # ── Node location privacy ─────────────────────────────────────────────────────

@@ -137,36 +137,14 @@ async def list_users(
     session: AsyncSession = Depends(get_async_session),
     _admin=Depends(require_admin),
 ):
+    """The accounts opened by emailed links, read-only.
+
+    Nothing here sets is_superuser: an administrator is a Cloudflare Access
+    identity with no row, and a flagged row may not sign in by link at all
+    (core.users.get_or_create_magic_link_user).
+    """
     result = await session.execute(select(User))
     return [user_to_dict(u) for u in result.scalars().all()]
-
-
-class RoleUpdate(BaseModel):
-    role: str
-
-
-@router.put("/users/{user_id}/role")
-async def set_user_role(
-    user_id: str,
-    body: RoleUpdate,
-    request: Request,
-    session: AsyncSession = Depends(get_async_session),
-    _admin=Depends(require_admin),
-):
-    if body.role not in ("user", "admin"):
-        raise HTTPException(400, "Invalid role — must be 'user' or 'admin'")
-    try:
-        uid = uuid.UUID(user_id)
-    except ValueError as e:
-        raise HTTPException(404, "User not found") from e
-    user = await session.get(User, uid)
-    if not user:
-        raise HTTPException(404, "User not found")
-    user.is_superuser = body.role == "admin"
-    await session.commit()
-    await session.refresh(user)
-    log_event("user", f"Role changed to {body.role} for {user.email}", "warning")
-    return user_to_dict(user)
 
 
 # ── Node ownership (admin override) ──────────────────────────────────────────
