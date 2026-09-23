@@ -1,6 +1,9 @@
 #!/bin/bash
-# Does the page render, or merely answer? The single implementation of that
-# assertion. Sourced by staging-smoke-test.sh and by CI's production smoke tests.
+# Does the page render, or merely answer? The smoke suites' implementation of
+# that assertion, sourced by staging-smoke-test.sh and by CI's production smoke
+# tests. deploy/verify-deploy.py makes the same one in Python for every asset the
+# page reaches; backend/tests/test_verify_deploy.py pins the script content types
+# the two accept together.
 #
 # A status check cannot see the failure this exists for. A bundle built for one
 # mount point and served at another returns its index.html intact, with a 200 and

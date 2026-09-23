@@ -1,6 +1,7 @@
 #!/bin/bash
-# Which origin answered, and the single implementation of that assertion.
-# Sourced by staging-smoke-test.sh and by CI's production smoke tests.
+# Which origin answered, and the smoke suites' implementation of that assertion.
+# Sourced by staging-smoke-test.sh and by CI's production smoke tests;
+# deploy/verify-deploy.py reads the two values below and checks them in Python.
 #
 # A probe proves a hostname responded, not that THIS service responded. Both
 # origins behind retina.fm answer /api/health with 200 and the same CSP, HSTS,
