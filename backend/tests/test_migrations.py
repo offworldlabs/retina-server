@@ -400,3 +400,25 @@ def test_0016_downgrade_drops_both_polled_radar_tables(tmp_path):
     down = _alembic("downgrade", "0015", db_path=db)
     assert down.returncode == 0, down.stdout + down.stderr
     assert _query(db, tables) == []
+
+
+# ── 0017: the record of a polled radar's network moves ───────────────────────
+
+
+def test_0017_downgrade_drops_the_network_move_columns(tmp_path):
+    db = tmp_path / "moves.db"
+    up = _alembic("upgrade", "0017", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    columns = "SELECT name FROM pragma_table_info('polled_radars') WHERE name LIKE '%network_move%' ORDER BY name"
+    assert _query(db, columns) == [("last_network_move_at",), ("network_moves",)]
+
+    down = _alembic("downgrade", "0016", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, columns) == []
+    # SQLite rewrites the table to drop a column, so the rest of it has to
+    # come back: the endpoint's unique index above all, which is what stops
+    # one radar being registered twice.
+    assert ("epoch",) in _query(db, "SELECT name FROM pragma_table_info('polled_radars')")
+    indexes = "SELECT name, \"unique\" FROM pragma_index_list('polled_radars') ORDER BY name"
+    assert ("ix_polled_radars_endpoint_key", 1) in _query(db, indexes)
+    assert _query(db, "SELECT \"table\" FROM pragma_foreign_key_list('polled_radars')") == [("nodes",)]

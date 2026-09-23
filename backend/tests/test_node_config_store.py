@@ -15,7 +15,7 @@ from sqlalchemy import inspect, select
 from core.nodes import Node, NodeConfig
 from services.node_auth import mint_node_ref
 from services.node_config import validate_config
-from services.node_config_store import _CONFIG_FIELDS, upsert_config
+from services.node_config_store import _CONFIG_FIELDS, active_config, config_fields, upsert_config
 
 NODE_ID = "ret1a2b3c4d"
 
@@ -284,3 +284,14 @@ async def test_a_null_callsign_round_trips(node_session):
     assert (version, named) == (1, 2)
     rows = await _rows(node_session, "test-null-sign")
     assert [row.tx_callsign for row in rows] == [None, "Wrotham"]
+
+
+async def test_the_active_version_reads_back_as_the_configuration_written(node_session, node):
+    assert await active_config(node_session, NODE_ID) is None
+    await upsert_config(node_session, NODE_ID, _config())
+    await upsert_config(node_session, NODE_ID, _config(**CHANGES))
+
+    active = await active_config(node_session, NODE_ID)
+
+    assert active.version == 2
+    assert config_fields(active) == _config(**CHANGES)

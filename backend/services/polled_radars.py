@@ -9,9 +9,12 @@ The endpoint arrives already split into parts by the caller's normaliser; this
 module stores them and does not parse URLs.
 """
 
+import math
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,7 +22,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core import secrets
 from core.node_ids import POLLED_BLAH2, add_with_minted_id
 from core.nodes import Node, NodeClaim, NodeConfig, PolledRadar, PolledRadarEndpointHistory
+from services.blah2_probe import Blah2Config
 from services.node_auth import mint_node_ref
+from services.node_config import validate_config
 
 FEET_PER_METRE = 1 / 0.3048
 
@@ -58,6 +63,39 @@ def _feet(metres: float | None) -> float | None:
 
 def _without_userinfo(raw: str) -> str:
     return _USERINFO.sub(lambda match: match.group(1) or "", raw.strip(), count=1)
+
+
+def _same(held: Any, declared: float) -> bool:
+    # Relative, so feet converted from the same metres by another path still match.
+    return isinstance(held, int | float) and math.isclose(held, declared, rel_tol=1e-9)
+
+
+def probed_config(config: Blah2Config, base: Mapping[str, Any]) -> dict[str, Any]:
+    """A configuration version holding what the radar declares, laid over `base`.
+
+    `base` is a whole configuration in validate_config's shape. blah2 declares
+    its two sites and fc, and fs and CPI where its config has them; the rest,
+    fs or CPI it leaves out included, is carried over from `base`. A declared
+    value within float noise of `base`'s keeps `base`'s, so an unchanged radar
+    reads back equal and upsert_config writes nothing. Raises ConfigInvalid as
+    validate_config does.
+    """
+    declared = {
+        "rx_lat": config.rx.latitude,
+        "rx_lon": config.rx.longitude,
+        "rx_alt_ft": _feet(config.rx.altitude_m),
+        "tx_lat": config.tx.latitude,
+        "tx_lon": config.tx.longitude,
+        "tx_alt_ft": _feet(config.tx.altitude_m),
+        "fc_hz": config.fc_hz,
+        "fs_hz": config.fs_hz,
+        "cpi_s": config.cpi_s,
+    }
+    merged = dict(base)
+    for field, value in declared.items():
+        if value is not None and not _same(base.get(field), value):
+            merged[field] = value
+    return validate_config(merged)
 
 
 async def create_polled_radar(

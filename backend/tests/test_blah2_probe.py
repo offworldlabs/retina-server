@@ -20,23 +20,11 @@ from services.blah2_probe import (
     parse_config,
     parse_detection,
     probe_blah2,
+    read_config,
 )
 from services.polled_endpoint import EndpointRefused, Refusal, parse_endpoint
+from tests.radar_stub import STOCK_CONFIG as STOCK
 from tests.radar_stub import StubServer, only_loopback, resolve_to_loopback
-
-# /api/config as stock blah2 serves it: the whole YAML, rendered by js-yaml.
-# The sites are invented and sit in open ocean.
-STOCK = {
-    "capture": {"fs": 2000000, "fc": 204640000, "device": {"type": "RspDuo", "agcSetPoint": -20}},
-    "process": {"data": {"cpi": 0.75, "buffer": 2, "overlap": 0}},
-    "network": {"ip": "0.0.0.0", "ports": {"api": 3000, "detection": 3002}},
-    "truth": {"adsb": {"enabled": True, "tar1090": "adsb.example.net", "adsb2dd": "adsb2dd.example.net"}},
-    "location": {
-        "rx": {"latitude": 10.5, "longitude": -30.25, "altitude": 12, "name": "Receiver"},
-        "tx": {"latitude": 10.75, "longitude": -30.5, "altitude": 300, "name": "Transmitter"},
-    },
-    "save": {"iq": True, "path": "/blah2/save/"},
-}
 
 ADELAIDE = {
     "rx": {"latitude": -34.9286, "longitude": 138.5999, "altitude": 50, "name": "Adelaide"},
@@ -222,6 +210,16 @@ def test_the_fingerprint_refuses_a_config_that_is_not_blah2():
     assert _refusal_of(config_fingerprint, {"hello": "world"}).code == Blah2Refusal.NOT_BLAH2
 
 
+def test_a_parsed_config_carries_its_fingerprint():
+    assert parse_config(STOCK).fingerprint == config_fingerprint(STOCK)
+
+
+def test_a_raw_config_body_is_read_as_parse_config_reads_it():
+    assert read_config(json.dumps(STOCK).encode()) == parse_config(STOCK)
+    assert _refusal_of(read_config, b"<html></html>").code == Blah2Refusal.NOT_BLAH2
+    assert _refusal_of(read_config, b'{"truth": {"adsb": {"enabled": true}}}').code == Blah2Refusal.BLAH2_ARM
+
+
 # ── /api/detection ────────────────────────────────────────────────────────────
 
 
@@ -319,6 +317,7 @@ async def test_a_live_stock_blah2_passes():
     assert result.tx == Site(10.75, -30.5, 300.0, "Transmitter")
     assert (result.fc_hz, result.fs_hz, result.cpi_s) == (204640000.0, 2000000.0, 0.75)
     assert result.config_fingerprint == config_fingerprint(STOCK)
+    assert result.config == parse_config(STOCK)
     assert result.address == "127.0.0.1"
     assert abs(result.clock_offset_s) < 2
 

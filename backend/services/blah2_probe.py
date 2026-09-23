@@ -81,6 +81,11 @@ class Blah2Config:
     fs_hz: float | None
     cpi_s: float | None
 
+    @property
+    def fingerprint(self) -> str:
+        """config_fingerprint of the body this was parsed from."""
+        return _fingerprint(self)
+
 
 @dataclass(frozen=True)
 class DetectionFrame:
@@ -104,6 +109,11 @@ class Blah2Probe:
     address: str
     # Radar clock minus server clock at the latest frame, the frame's age included.
     clock_offset_s: float
+
+    @property
+    def config(self) -> Blah2Config:
+        """What the radar declared, as parse_config gave it."""
+        return Blah2Config(self.rx, self.tx, self.fc_hz, self.fs_hz, self.cpi_s)
 
 
 def _not_blah2(path: str, reason: str) -> EndpointRefused:
@@ -205,6 +215,11 @@ def parse_config(payload: object) -> Blah2Config:
     return Blah2Config(rx, tx, fc, fs, cpi)
 
 
+def read_config(body: bytes) -> Blah2Config:
+    """One /api/config body, judged as parse_config judges its decoded form."""
+    return parse_config(_json(body, CONFIG_PATH))
+
+
 def _fingerprint(config: Blah2Config) -> str:
     def site(s: Site) -> dict:
         # Adding 0.0 turns -0.0 into 0.0; floats make 50 and 50.0 one value.
@@ -290,7 +305,7 @@ async def probe_blah2(
     try:
         async with asyncio.timeout(PROBE_DEADLINE_S):
             async with pinned_client(endpoint, resolver=resolver, policy=policy, transport=transport) as client:
-                config = parse_config(_json(await client.get(CONFIG_PATH, max_bytes=CONFIG_MAX_BYTES), CONFIG_PATH))
+                config = read_config(await client.get(CONFIG_PATH, max_bytes=CONFIG_MAX_BYTES))
                 first = parse_detection(await client.get(DETECTION_PATH, max_bytes=DETECTION_MAX_BYTES))
                 gap_s = freshness_gap_s(config.cpi_s)
                 await asyncio.sleep(gap_s)
@@ -321,7 +336,7 @@ async def probe_blah2(
         fc_hz=config.fc_hz,
         fs_hz=config.fs_hz,
         cpi_s=config.cpi_s,
-        config_fingerprint=_fingerprint(config),
+        config_fingerprint=config.fingerprint,
         address=address,
         clock_offset_s=round(offset_s, 3),
     )
