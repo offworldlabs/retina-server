@@ -164,6 +164,11 @@ jobs:
             # cache reused); the disk pre-flight now catches that root cause, so a
             # full wipe is redundant and only forced slow from-scratch rebuilds.
             docker builder prune -f --keep-storage 10GB
+            # Each build orphans the image it replaces and nothing else on the
+            # box removes them, so they accumulate until the pre-flight above
+            # refuses the deploy. Dangling only: `-a` goes by what no container
+            # references, which is exactly the rollback point tagged above.
+            docker image prune -f
             # Only `server`: staging runs no fleet simulator (docker-compose.
             # staging.yml keeps it behind the same unenabled `sim` profile as
             # production), so `server` is the whole of the staging deploy, as it

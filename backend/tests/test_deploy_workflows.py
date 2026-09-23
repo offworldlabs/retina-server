@@ -58,6 +58,32 @@ def test_the_stack_stays_up_until_the_new_image_exists(workflow, job):
     assert not [line for line in commands[: swaps[0]] if STOPS.search(line)]
 
 
+# ── Housekeeping ─────────────────────────────────────────────────────────────
+# Every build orphans the image it replaces, and nothing on the boxes removes
+# them: no prune cron, no timer. Left alone they accumulate one per deploy
+# until they trip the disk pre-flight, which refuses to deploy under 2GB free.
+
+PRUNE = r"^docker image prune\b"
+# Any spelling that switches the prune from "dangling" to "unreferenced by a
+# container": -a, --all, and clusters like -af.
+PRUNE_ALL = re.compile(r"\s(?:--all\b|-[a-z]*a[a-z]*\b)")
+
+
+@pytest.mark.parametrize(("workflow", "job"), DEPLOYS)
+def test_orphaned_images_are_pruned_every_deploy(workflow, job):
+    assert [line for line in _commands(_script(workflow, job)) if re.search(PRUNE, line)]
+
+
+@pytest.mark.parametrize(("workflow", "job"), DEPLOYS)
+def test_the_image_prune_takes_only_what_nothing_names(workflow, job):
+    # Dangling-only. `-a` prunes whatever no container references, and the
+    # saved rollback image is exactly that, so it would delete the way back.
+    # These boxes also carry images for other stacks (tower-finder-service).
+    for line in _commands(_script(workflow, job)):
+        if re.search(PRUNE, line):
+            assert not PRUNE_ALL.search(line), line
+
+
 # ── The deploy-failure rollback's marker ─────────────────────────────────────
 # The rollback job keys on `.deploy-in-progress`, and its decisions are only
 # right if the deploy writes the marker after pre-deploy.sh has taken the
@@ -130,6 +156,14 @@ def test_a_stale_marker_refuses_the_deploy_before_the_rollback_point_is_taken(wo
     identity = _index(lines, re.escape(f'"$(hostname)" != "{host}"'))
     refusal = _index(lines, "^" + re.escape("if [ -f .deploy-in-progress ]; then") + "$")
     assert identity < refusal < _index(lines, SNAPSHOT)
+
+
+@pytest.mark.parametrize(("workflow", "deploy"), MARKED_DEPLOYS)
+def test_the_image_prune_runs_after_the_rollback_point_is_saved(workflow, deploy):
+    # pre-deploy.sh is what puts a tag on the outgoing image. Prune ahead of it
+    # and that image is still untagged, so the prune takes the rollback point.
+    lines = _script(workflow, deploy)
+    assert _index(lines, SNAPSHOT) < _index(lines, PRUNE)
 
 
 @pytest.mark.parametrize(("workflow", "deploy"), MARKED_DEPLOYS)
