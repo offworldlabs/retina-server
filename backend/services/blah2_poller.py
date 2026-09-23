@@ -64,7 +64,7 @@ from services.blah2_probe import (
 from services.blah2_probe import DetectionFrame as Blah2Frame
 from services.node_config import ConfigInvalid
 from services.node_config_store import active_config, config_fields, upsert_config
-from services.node_pipeline import pipeline_frame, register_with_pipeline, submit_frame
+from services.node_pipeline import mark_heard, pipeline_frame, register_with_pipeline, submit_frame
 from services.polled_endpoint import (
     AddressPolicy,
     EndpointRefused,
@@ -503,10 +503,7 @@ class RadarPoller:
         """Record that the radar answered: its heartbeat, and an end to its failures."""
         self.failures = 0
         self._answered_at = datetime.now(UTC)
-        with state.connected_nodes_lock:
-            entry = state.connected_nodes.get(self.target.node_id)
-            if entry is not None:
-                entry["last_heartbeat"] = self._answered_at.isoformat()
+        mark_heard(self.target.node_id, self._answered_at)
 
     def _answered(self, body: bytes) -> Blah2Frame | None:
         """The frame in an answer, if it is new and on time."""

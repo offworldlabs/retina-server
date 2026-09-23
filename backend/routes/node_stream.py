@@ -47,7 +47,7 @@ from routes.node_schemas import (
 from services import detection_mirror
 from services.node_auth import bearer_node, node_bearer_scheme
 from services.node_claim_store import claim_status
-from services.node_pipeline import pipeline_frame, register_with_pipeline, submit_frame
+from services.node_pipeline import mark_heard, pipeline_frame, register_with_pipeline, submit_frame
 from services.node_rate_limits import Refusal, token_rate_limiter
 
 logger = logging.getLogger(__name__)
@@ -354,13 +354,11 @@ async def post_heartbeat(
             # is the one that cannot PUT its way out on its own.
             logger.warning("node_api: %s has no active configuration, not recovered into the pipeline", node_id)
 
-    # Taken after the recovery above rather than around it: the lock is a plain
-    # threading lock and register_with_pipeline awaits, so holding it across that
-    # call would block the loop's other tasks on a database read.
-    with state.connected_nodes_lock:
-        entry = state.connected_nodes.get(node_id)
-        if entry is not None:
-            entry["last_heartbeat"] = now.isoformat()
+    # Stamped after the recovery above rather than under one lock with it: the
+    # lock is a plain threading lock and register_with_pipeline awaits, so
+    # holding it across that call would block the loop's other tasks on a
+    # database read.
+    mark_heard(node_id, now)
 
     # Read before the commit, so the claim this answers with is the one that
     # held while the beat was being served rather than one read afterwards. It
