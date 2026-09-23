@@ -155,9 +155,17 @@ cat > /etc/docker/daemon.json << EOF
 }
 EOF
 
-# docker-buildx is Ubuntu's package (docker-buildx-plugin is docker-ce's).
-# Without it the CLI builds and prunes through the deprecated legacy builder.
-apt-get install -y -qq docker.io docker-compose-v2 docker-buildx
+apt-get install -y -qq docker.io docker-compose-v2
+# buildx on the containerd store only. With it, Compose builds through Bake, and
+# on overlay2 `up --build` then tags the new image but leaves the old container
+# running, so every deploy passes on stale code. overlay2 boxes build and prune
+# through the deprecated legacy builder instead. docker-buildx is Ubuntu's
+# package (docker-buildx-plugin is docker-ce's).
+if [ "$DOCKER_STORE" = containerd ]; then
+    apt-get install -y -qq docker-buildx
+elif [ "$(dpkg-query -W -f='${Status}' docker-buildx 2>/dev/null)" = "install ok installed" ]; then
+    apt-get remove -y -qq docker-buildx
+fi
 systemctl enable docker
 # restart, not `enable --now`: a daemon that was already running would keep the
 # daemon.json it started with.
