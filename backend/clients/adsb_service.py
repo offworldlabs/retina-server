@@ -59,7 +59,8 @@ def parse_point_response(body: dict, recv_s: float) -> list[dict]:
             continue
         hexn = normalize_hex_key(ac.get("hex"))
         lat, lon, seen_pos = ac.get("lat"), ac.get("lon"), ac.get("seen_pos")
-        if not is_transponder_hex(hexn) or not is_num(seen_pos):
+        # bool is an int to is_num, and a true seen_pos is not an age.
+        if not is_transponder_hex(hexn) or isinstance(seen_pos, bool) or not is_num(seen_pos):
             continue
         if not is_usable(lat, lon) or is_position_absent(lat, lon):
             continue

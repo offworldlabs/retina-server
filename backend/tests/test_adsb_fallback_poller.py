@@ -59,6 +59,11 @@ def _row(hexn, captured_s, lat=34.0, lon=-84.0):
     }
 
 
+def _placed(lat, lon):
+    """A config placing both ends of the pair, the way claiming needs a node."""
+    return {"rx_lat": lat, "rx_lon": lon, "tx_lat": lat + 0.1, "tx_lon": lon}
+
+
 def _regions(*lats):
     # Nodes a lattice cell apart, so each lands in its own region.
     return regions_for_nodes([(lat, -84.0) for lat in lats])
@@ -123,7 +128,7 @@ async def test_the_running_task_waits_out_the_interval_plus_any_retry_after(monk
     state.connected_nodes["real-a"] = {
         "status": "active",
         "is_synthetic": False,
-        "config": {"rx_lat": 34.0, "rx_lon": -84.0},
+        "config": _placed(34.0, -84.0),
     }
     client = _ClosingClient({34.0: RateLimited(7.0)})
     waits = _run_one_loop(monkeypatch, client)
@@ -147,10 +152,12 @@ async def test_with_no_real_node_placed_the_store_empties_and_the_task_still_rep
 def test_regions_cover_connected_real_positioned_nodes_only():
     state.connected_nodes.update(
         {
-            "real-a": {"status": "active", "is_synthetic": False, "config": {"rx_lat": 34.0, "rx_lon": -84.0}},
-            "synth-b": {"status": "active", "is_synthetic": True, "config": {"rx_lat": 40.0, "rx_lon": -74.0}},
-            "gone-c": {"status": "disconnected", "is_synthetic": False, "config": {"rx_lat": 47.0, "rx_lon": -122.0}},
+            "real-a": {"status": "active", "is_synthetic": False, "config": _placed(34.0, -84.0)},
+            "synth-b": {"status": "active", "is_synthetic": True, "config": _placed(40.0, -74.0)},
+            "gone-c": {"status": "disconnected", "is_synthetic": False, "config": _placed(47.0, -122.0)},
             "unplaced-d": {"status": "active", "is_synthetic": False, "config": {"node_id": "unplaced-d"}},
+            # Claiming refuses a node with no transmitter, so it earns no query.
+            "no-tx-e": {"status": "active", "is_synthetic": False, "config": {"rx_lat": 40.0, "rx_lon": -100.0}},
         }
     )
     regions = adsb_fallback.real_node_regions()
