@@ -65,9 +65,6 @@ def seed_nodes():
                 await session.commit()
 
         asyncio.run(_go())
-        # asyncio.run() clears the loop on exit (3.12); conftest's _clean_db
-        # restores one for the same reason.
-        asyncio.set_event_loop(asyncio.new_event_loop())
         publication._reset_for_tests()
         # Both caches sit in front of the same rows and both have a TTL, so a
         # previous test's map would otherwise answer for these ones.
@@ -95,7 +92,6 @@ def seed_override():
                 await session.commit()
 
         asyncio.run(_go())
-        asyncio.set_event_loop(asyncio.new_event_loop())
         publication._reset_for_tests()
 
     return _seed
@@ -273,7 +269,6 @@ class TestPrecedenceOverTheFleet:
         assert not is_private(_PRIV)
 
         asyncio.run(publication.clear_location_privacy(_PRIV))
-        asyncio.set_event_loop(asyncio.new_event_loop())
         publication.invalidate()
         assert is_private(_PRIV)
 
@@ -282,7 +277,6 @@ class TestPrecedenceOverTheFleet:
         assert is_private("never-registered")
 
         asyncio.run(publication.clear_location_privacy("never-registered"))
-        asyncio.set_event_loop(asyncio.new_event_loop())
         publication.invalidate()
         assert not is_private("never-registered")
 
@@ -319,7 +313,6 @@ class TestLocationPrivacyStorage:
 
     def _state(self, node_id):
         out = asyncio.run(publication.location_privacy(node_id))
-        asyncio.set_event_loop(asyncio.new_event_loop())
         return out
 
     def test_an_unknown_node_reports_the_default_with_no_rows(self):
@@ -353,14 +346,12 @@ class TestLocationPrivacyStorage:
     def test_setting_twice_corrects_the_row_rather_than_adding_one(self):
         asyncio.run(publication.set_location_privacy(_PUB, True, set_by="user-a"))
         asyncio.run(publication.set_location_privacy(_PUB, False, set_by="user-b"))
-        asyncio.set_event_loop(asyncio.new_event_loop())
         override = self._state(_PUB)["override"]
         assert override["private"] is False
         assert override["set_by"] == "user-b"
 
     def test_clearing_a_node_with_no_override_is_not_an_error(self):
         asyncio.run(publication.clear_location_privacy("never-heard-of-it"))
-        asyncio.set_event_loop(asyncio.new_event_loop())
         assert self._state("never-heard-of-it")["override"] is None
 
 
@@ -466,7 +457,6 @@ class TestPublicOwnerSplit:
         from services.tasks.aircraft_flush import broadcast_aircraft
 
         asyncio.run(broadcast_aircraft(_payload()))
-        asyncio.set_event_loop(asyncio.new_event_loop())
 
     def test_the_public_bytes_have_no_private_entry(self):
         self._broadcast()
@@ -1045,7 +1035,6 @@ class TestOwnerSeesTheirOwnPrivateNodeInAnalytics:
         from core.auth import set_node_owner
 
         asyncio.run(set_node_owner(node_id, user_id))
-        asyncio.set_event_loop(asyncio.new_event_loop())
 
     def test_an_unauthenticated_caller_gets_the_cached_bytes_verbatim(
         self, client, seed_nodes, analytics_node, monkeypatch

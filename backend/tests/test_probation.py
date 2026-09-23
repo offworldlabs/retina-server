@@ -60,13 +60,6 @@ def fence_off(monkeypatch):
     monkeypatch.setenv(_FLAG, "0")
 
 
-def _run(coro) -> None:
-    asyncio.run(coro)
-    # asyncio.run() clears the loop on exit (3.12); conftest's _clean_db
-    # restores one for the same reason.
-    asyncio.set_event_loop(asyncio.new_event_loop())
-
-
 def _seed_polled(publication_choice: str = "public", **trust: str) -> None:
     """A nodes row and a polled_radars row per node id, in the given trust state."""
 
@@ -99,7 +92,7 @@ def _seed_polled(publication_choice: str = "public", **trust: str) -> None:
                 )
             await session.commit()
 
-    _run(_go())
+    asyncio.run(_go())
     probation.invalidate()
     publication.invalidate()
     node_refs._reset_for_tests()
@@ -115,7 +108,7 @@ def _set_trust(node_id: str, trust_state: str) -> None:
             )
             await session.commit()
 
-    _run(_go())
+    asyncio.run(_go())
 
 
 def _failing_query(calls: list):

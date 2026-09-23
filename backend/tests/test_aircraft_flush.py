@@ -76,10 +76,10 @@ class TestRealOnlyDict:
 
 
 class TestBroadcastAircraft:
-    def test_updates_state_bytes(self):
+    async def test_updates_state_bytes(self):
         data = {"now": 123, "aircraft": [], "detection_arcs": [], "ground_truth": {}}
 
-        asyncio.get_event_loop().run_until_complete(broadcast_aircraft(data))
+        await broadcast_aircraft(data)
 
         # The frame kept on state is the unredacted one the owner filter reads;
         # the bytes are always rebuilt, because substitution allocates.

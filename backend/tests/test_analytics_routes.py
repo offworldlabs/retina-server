@@ -268,9 +268,6 @@ class TestPerNodeAnalyticsRoute:
                 await session.commit()
 
         asyncio.run(_go())
-        # asyncio.run() clears the loop on exit (3.12); conftest's _clean_db
-        # restores one for the same reason.
-        asyncio.set_event_loop(asyncio.new_event_loop())
         node_refs._reset_for_tests()
         state.node_analytics.register_node(self._ID, {"rx_lat": 34.85, "rx_lon": -82.40, "max_range_km": 50})
         yield

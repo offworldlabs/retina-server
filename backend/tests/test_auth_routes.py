@@ -232,7 +232,6 @@ class TestMyNodeLocationPrivacy:
         # Startup has already primed the cache; mirror the registration route's
         # invalidation after this fixture writes directly to the database.
         publication.invalidate()
-        asyncio.set_event_loop(asyncio.new_event_loop())
 
     def test_setting_privacy_on_a_node_you_do_not_own_is_404(self, client):
         """404 rather than 403: the two answers differ only in confirming the id
@@ -432,7 +431,6 @@ class TestClaimRoutes:
             return challenge.token
 
         token = asyncio.run(_seed())
-        asyncio.set_event_loop(asyncio.new_event_loop())
         return token
 
     def test_the_preview_names_the_node_without_spending_the_link(self, client):
@@ -480,7 +478,6 @@ class TestClaimRoutes:
 
         token = self._mailed()
         asyncio.run(set_node_owner("ret1a2b3c4d", "11111111-1111-1111-1111-111111111111"))
-        asyncio.set_event_loop(asyncio.new_event_loop())
 
         r = client.post("/api/auth/claim/consume", json={"token": token})
 
@@ -512,7 +509,6 @@ class TestClaimRoutes:
                 return await read_claim(session, "ret1a2b3c4d"), await read_challenge(session, "ret1a2b3c4d")
 
         claim, challenge = asyncio.run(_read())
-        asyncio.set_event_loop(asyncio.new_event_loop())
         assert claim is None
         assert challenge is None
 
@@ -526,7 +522,6 @@ class TestClaimRoutes:
                 return await read_claim(session, node_id)
 
         claim = asyncio.run(_read())
-        asyncio.set_event_loop(asyncio.new_event_loop())
         return claim
 
     def test_an_admin_reassigning_a_node_clears_the_claim_that_bound_it(self, client):
@@ -538,7 +533,6 @@ class TestClaimRoutes:
         token = self._mailed()
         client.post("/api/auth/claim/consume", json={"token": token})
         bob = asyncio.run(get_or_create_magic_link_user("bob@example.com"))
-        asyncio.set_event_loop(asyncio.new_event_loop())
 
         r = client.put("/api/admin/nodes/ret1a2b3c4d/owner", json={"user_id": str(bob.id)})
 
@@ -572,7 +566,6 @@ class TestClaimRoutes:
                         await mark_verified(session, node_id, "ada@example.com")
 
         asyncio.run(_own())
-        asyncio.set_event_loop(asyncio.new_event_loop())
 
     def test_the_owner_list_names_the_address_a_node_was_claimed_with(self, client):
         self._mailed()

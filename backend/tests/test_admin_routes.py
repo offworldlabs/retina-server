@@ -77,7 +77,6 @@ class TestAdminNodeLocationPrivacy:
                 await session.commit()
 
         asyncio.run(_go())
-        asyncio.set_event_loop(asyncio.new_event_loop())
 
     def test_get_answers_for_a_node_nothing_has_ever_heard_of(self, client):
         """Not a 404: "no registration, no override, public by default" is the
@@ -536,9 +535,6 @@ class TestLeaderboard:
                 await session.commit()
 
         asyncio.run(_seed())
-        # asyncio.run() clears the loop on exit (3.12); conftest's _clean_db
-        # restores one for the same reason.
-        asyncio.set_event_loop(asyncio.new_event_loop())
         node_refs._reset_for_tests()
         return ref
 
@@ -887,7 +883,6 @@ class TestNodeRefs:
                 await session.commit()
 
         asyncio.run(_go())
-        asyncio.set_event_loop(asyncio.new_event_loop())
 
     def teardown_method(self):
         with state.connected_nodes_lock:

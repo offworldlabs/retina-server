@@ -102,11 +102,8 @@ os.environ.setdefault("RETINA_SCHEMA_SOURCE", "create_all")
 def _clean_db():
     """Truncate auth and node tables before each test.
 
-    Uses asyncio.run() for the setup, then immediately restores a fresh event
-    loop. asyncio.run() calls set_event_loop(None) on exit (Python 3.12), which
-    would make asyncio.get_event_loop() raise RuntimeError in the subsequent
-    async test — pytest-asyncio 0.23.x calls get_event_loop() directly before
-    handing control to each async test function.
+    asyncio.run() leaves no current event loop behind, so a sync test cannot
+    call asyncio.get_event_loop(). Async tests get theirs from pytest-asyncio.
     """
     from sqlalchemy import delete
 
@@ -154,7 +151,6 @@ def _clean_db():
             await session.commit()
 
     asyncio.run(_setup())
-    asyncio.set_event_loop(asyncio.new_event_loop())
     yield
 
 
