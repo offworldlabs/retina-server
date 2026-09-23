@@ -147,7 +147,12 @@ NODE_PATH_PREFIX = "/v1/nodes"
 # a node pays for the change is the one `adsb` already imposes: a server below
 # 1.5.0 refuses both a frame carrying `adsb` and one without `adsb_hex`.  A
 # node that sends both columns must have them agree entry for entry.
-NODE_API_VERSION = "1.5.0"
+#
+# 1.5.1 says on the heartbeat that its diagnostic fields are stored, with
+# `errors` kept across beats, for operators to read. Prose only, and a patch as
+# 1.1.4 was for the same kind of change: nothing on the wire moves, but a node
+# author is owed the fact that what the node sends is retained.
+NODE_API_VERSION = "1.5.1"
 
 # No tag here: each sub-router carries the contract's own grouping, since those
 # are what a generated client is built around.
