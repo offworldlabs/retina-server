@@ -202,12 +202,13 @@ class TestArc:
 
 
 class TestDownstream:
-    def test_the_builder_publishes_the_entry_and_leaves_detection_arcs_alone(self):
+    def test_the_builder_publishes_the_entry_and_leaves_detection_arcs_alone(self, monkeypatch):
         """The arc rides on the aircraft entry.  detection_arcs[] is the
         afterglow-trail channel — an entry there would be faded by the
         frontend's arc buffer instead of living and dying with the claim."""
         from services.aircraft_feed import build_combined_aircraft_json
 
+        monkeypatch.setattr(state, "KNOWN_LANE_MODE", "binding")
         _register_node()
         _seed(_claim())
 
@@ -217,6 +218,21 @@ class TestDownstream:
         assert entry["hex"] == _HEX
         assert entry["ambiguity_arc"] is not None
         assert result["detection_arcs"] == []
+
+    @pytest.mark.parametrize("mode", ["shadow", "off"])
+    def test_outside_binding_the_builder_publishes_no_claimed_entry(self, monkeypatch, mode):
+        """Shadow claims and measures but must leave the live feed as it was:
+        the claimed detection is still in the dark pool, so drawing its fix as
+        well puts on the map what binding alone is meant to."""
+        from services.aircraft_feed import build_combined_aircraft_json
+
+        monkeypatch.setattr(state, "KNOWN_LANE_MODE", mode)
+        _register_node()
+        _seed(_claim())
+
+        result = build_combined_aircraft_json(types.SimpleNamespace(geolocated_tracks={}, config={}))
+
+        assert [ac for ac in result["aircraft"] if ac["position_source"] == "adsb_single_node"] == []
 
     def test_dedup_prefers_the_adsb_fix_over_a_solver_estimate(self):
         """In binding mode a partially-claimed aircraft can still carry a
