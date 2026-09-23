@@ -318,9 +318,9 @@ jobs:
   e2e:
     name: Playwright E2E (staging)
     runs-on: ubuntu-latest
-    # Only the setup steps sit outside the test step's own cap. See the
-    # production job for why the job cap is a backstop rather than the primary
-    # bound.
+    # A backstop above the steps' own caps (tests 20, upload 2), with room for
+    # the setup steps. See the production job for why the job cap is a
+    # backstop rather than the primary bound.
     timeout-minutes: 30
     needs: [smoke-tests]
     # The browser is the runner image's Google Chrome, not one installed here;
@@ -355,3 +355,15 @@ jobs:
           # login page as the app. Empty secrets render empty and send nothing.
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+      # Screenshots alone, bounded and allowed to fail; see the step of the same
+      # name in production-deploy-verify.yml.
+      - name: Keep the failed tests' screenshots
+        if: failure()
+        timeout-minutes: 2
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-staging-screenshots-${{ github.run_attempt }}
+          path: e2e/test-results/**/*.png
+          retention-days: 7
+          if-no-files-found: ignore

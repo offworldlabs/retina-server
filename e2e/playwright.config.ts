@@ -117,6 +117,9 @@ export default defineConfig({
   timeout: 30_000,
   expect: { timeout: 10_000 },
   fullyParallel: true,
+  // A committed test.only would quietly shrink the suite that decides whether
+  // production rolls back, so in CI it fails the run instead.
+  forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? "github" : "list",
   use: {
@@ -125,7 +128,9 @@ export default defineConfig({
     // names its host explicitly, so this only resolves a relative URL.
     baseURL: hosts.map,
     extraHTTPHeaders: accessHeaders,
-    trace: "on-first-retry",
+    // Never in CI, whose artifacts are public: a trace records every request's
+    // headers, keys included.
+    trace: process.env.CI ? "off" : "on-first-retry",
     screenshot: "only-on-failure",
     headless: true,
   },
