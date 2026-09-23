@@ -399,6 +399,14 @@ async def test_an_answer_refreshes_the_nodes_heartbeat(node_session, maker, queu
     assert datetime.now(UTC) - stamped < timedelta(seconds=5)
 
 
+async def test_an_answer_brings_a_radar_marked_offline_back_online(node_session, maker, queue):
+    async with StubServer(_radar()) as stub:
+        node_id = await _register(node_session, stub.port)
+        state.connected_nodes[node_id] = {"last_heartbeat": "", "status": "disconnected", "config": {}}
+        async with _Running(_poller(_target(stub.port, node_id), maker).run()):
+            await _eventually(lambda: state.connected_nodes[node_id]["status"] == "active")
+
+
 # ── Liveness ──────────────────────────────────────────────────────────────────
 
 

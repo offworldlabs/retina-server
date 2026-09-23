@@ -8,6 +8,7 @@ does those three, so nothing downstream needs to know where the node came from.
 import hashlib
 import json
 import logging
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -162,6 +163,20 @@ async def register_with_pipeline(session: AsyncSession, node: Node) -> None:
     node_registration.evict_pipeline(node.node_id)
     await node_registration.register_node(node.node_id, config)
     logger.info("node_api: registered %s with the pipeline", node.node_id)
+
+
+def mark_heard(node_id: str, at: datetime) -> None:
+    """Stamp a registered node as heard from at `at`, and so online again.
+
+    The offline sweep (routes.admin.check_node_health) marks a silent node
+    disconnected and leaves it registered, so hearing from it is what undoes
+    that. A node that is not registered is left alone.
+    """
+    with state.connected_nodes_lock:
+        entry = state.connected_nodes.get(node_id)
+        if entry is not None:
+            entry["last_heartbeat"] = at.isoformat()
+            entry["status"] = "active"
 
 
 async def prime_pipeline(session: AsyncSession) -> int:
