@@ -43,6 +43,11 @@ env:
   # back a tree nothing is served from.
   APP_DIR: /opt/retina-server
 
+# Every job reads the repository and nothing more; a job that needs another
+# scope declares its own.
+permissions:
+  contents: read
+
 jobs:
   backend-tests:
     runs-on: ubuntu-latest
@@ -525,6 +530,8 @@ jobs:
           envs: QUERY_B64,ECHO_B64,CFGKEYS_B64,GEOBODY_B64
           script: |
             set -e
+            # By digest: this runs as root on staging, so it pulls one fixed image.
+            CURL_IMAGE=curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
             QUERY=$(printf '%s' "$QUERY_B64" | base64 -d)
             WANT=$(printf '%s' "$ECHO_B64" | base64 -d)
             CFGKEYS=$(printf '%s' "$CFGKEYS_B64" | base64 -d)
@@ -533,7 +540,7 @@ jobs:
               echo "::error::retina-edge does not exist on $(hostname), so nginx cannot reach tower-finder-service and every proxied /api/towers would 502. Bring that stack up before routing a vhost to it."
               exit 1
             fi
-            BODY=$(docker run --rm --network retina-edge curlimages/curl:latest \
+            BODY=$(docker run --rm --network retina-edge "$CURL_IMAGE" \
               -s -m 45 "http://tower-finder-service:8000/api/towers?${QUERY}") || {
               echo "::error::tower-finder-service did not answer on retina-edge from $(hostname)."
               exit 1
@@ -545,7 +552,7 @@ jobs:
             fi
 
             # /api/config, forwarded by the same include on every vhost.
-            CFG=$(docker run --rm --network retina-edge curlimages/curl:latest \
+            CFG=$(docker run --rm --network retina-edge "$CURL_IMAGE" \
               -s -m 45 "http://tower-finder-service:8000/api/config") || {
               echo "::error::tower-finder-service did not answer /api/config on retina-edge from $(hostname)."
               exit 1
@@ -563,7 +570,7 @@ jobs:
             # either geocoder upstream is asked; anything else means the
             # instance behind this deploy does not carry the route yet, and
             # every vhost would 404 the address lookup once it is pointed here.
-            GEO=$(docker run --rm --network retina-edge curlimages/curl:latest \
+            GEO=$(docker run --rm --network retina-edge "$CURL_IMAGE" \
               -s -m 45 -o /dev/null -w '%{http_code}' -X POST \
               -H 'Content-Type: application/json' -d "$GEOBODY" \
               "http://tower-finder-service:8000/api/geocode") || {

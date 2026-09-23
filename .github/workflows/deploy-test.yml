@@ -46,6 +46,11 @@ env:
   # back a tree nothing is served from.
   APP_DIR: /opt/retina-server
 
+# Every job reads the repository and nothing more; a job that needs another
+# scope declares its own.
+permissions:
+  contents: read
+
 jobs:
   # A separate job rather than a first step of the deploy, so a missing secret
   # produces exactly one legible error. As a step, the deploy would FAIL, which

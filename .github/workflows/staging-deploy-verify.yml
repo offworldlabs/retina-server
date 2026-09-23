@@ -48,6 +48,11 @@ on:
       CF_ACCESS_CLIENT_SECRET:
         required: false
 
+# Every job reads the repository and nothing more; a job that needs another
+# scope declares its own.
+permissions:
+  contents: read
+
 jobs:
   deploy:
     name: Deploy to staging
