@@ -78,6 +78,27 @@ class TestStaleDetection:
         finally:
             state.chain_entries.pop("custody-only", None)
 
+    def test_a_frame_record_outliving_the_registry_is_held(self, fleet):
+        state.node_last_frame_at["pruned-synth"] = 1.0
+
+        assert "pruned-synth" in node_retirement.stale_node_ids()
+
+    def test_a_node_reporting_from_outside_the_registry_is_not(self, fleet):
+        """A blocked node still heartbeats; calling it stale would retire
+        something that is back within the minute."""
+        state.node_reported_state["blocked-node"] = ("paused", 1.0)
+
+        assert "blocked-node" not in node_retirement.stale_node_ids()
+
+    def test_retiring_a_node_drops_its_frame_and_report_records(self, fleet):
+        state.node_last_frame_at["departed"] = 1.0
+        state.node_reported_state["departed"] = ("stalled", 1.0)
+
+        node_retirement.retire_node("departed")
+
+        assert "departed" not in state.node_last_frame_at
+        assert "departed" not in state.node_reported_state
+
 
 class TestRetireNode:
     def test_it_clears_analytics_and_custody(self, fleet):

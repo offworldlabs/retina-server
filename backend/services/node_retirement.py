@@ -95,6 +95,10 @@ def stale_node_ids() -> list[str]:
     held |= set(state.node_identities)
     held |= set(state.chain_entries)
     held |= set(state.iq_commitments)
+    held |= set(state.node_last_frame_at)
+    # node_reported_state is left out: a node heartbeating from outside the
+    # registry (blocked, or with no configuration) reports on every beat, so it
+    # would read as stale and be back within the minute.
     return sorted(held - live)
 
 
@@ -155,6 +159,9 @@ def retire_node(node_id: str, *, force: bool = False) -> dict:
     # services.tasks.analytics_refresh, which would leave a retired node holding a
     # cached pipeline built from config that no longer exists anywhere else.
     report["pipeline_evicted"] = state.node_pipelines.pop(node_id, None) is not None
+    # The frame-starvation check's records, which nothing else drops.
+    state.node_last_frame_at.pop(node_id, None)
+    state.node_reported_state.pop(node_id, None)
 
     try:
         analytics = getattr(state, "node_analytics", None)
