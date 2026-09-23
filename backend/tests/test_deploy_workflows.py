@@ -1,17 +1,19 @@
-"""The deploy scripts live inline in three workflows (production in ci.yml,
-staging in staging-deploy-verify.yml, the test droplet in deploy-test.yml) and
-nothing but review keeps them in step. These read the scripts as they stand
-and pin what must hold in every copy.
+"""The deploy scripts live inline in three workflows (production in
+production-deploy-verify.yml, staging in staging-deploy-verify.yml, the test
+droplet in deploy-test.yml) and nothing but review keeps them in step. These
+read the scripts as they stand and pin what must hold in every copy.
 """
 
 import functools
 import re
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
 import yaml
 
 WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+PRODUCTION = "production-deploy-verify.yml"
 
 
 @functools.cache
@@ -20,7 +22,7 @@ def _workflow(workflow: str) -> dict:
 
 
 DEPLOYS = [
-    pytest.param("ci.yml", "deploy-production", id="production"),
+    pytest.param(PRODUCTION, "deploy-production", id="production"),
     pytest.param("staging-deploy-verify.yml", "deploy", id="staging"),
     pytest.param("deploy-test.yml", "deploy-test", id="test"),
 ]
@@ -106,7 +108,7 @@ def test_no_prune_takes_an_image_something_names(workflow, job):
 
 ROLLBACKS = [
     pytest.param(
-        "ci.yml",
+        PRODUCTION,
         "deploy-production",
         "rollback-production-on-deploy-failure",
         "retina-prod",
@@ -238,7 +240,7 @@ def test_production_rollback_requires_a_failed_or_cancelled_main_push(ref, event
     # Cancelling the run does not stop it: a cancel mid-deploy leaves the box
     # as half-deployed as a crash does.
     allowed = _allowed(
-        "ci.yml",
+        PRODUCTION,
         "rollback-production-on-deploy-failure",
         {"github.ref": ref, "github.event_name": event, "needs.deploy-production.result": result},
         cancelled=cancelled,
@@ -265,12 +267,13 @@ THIRD_PARTY_CODE = re.compile(
 # The actions a key-holding job may use: the checkout, and the ssh transport the
 # key is for. Any other action counts as third-party code.
 KEY_JOB_ACTIONS = ("actions/checkout@", "appleboy/ssh-action@")
-# The droplet keys are all named *SSH*KEY. A dynamic lookup, the whole secrets
-# object, or `secrets: inherit` could be any of them. Case-blind, as Actions
-# expressions are.
+# Any spelling that hands a job every secret at once: a dynamic lookup, the
+# whole secrets object, or `secrets: inherit`.
+EVERY_SECRET = r"\bsecrets(?:\[\s*(?!['\"])|:\s*inherit\b)|\btoJSON\(\s*secrets\s*\)"
+# The droplet keys are all named *SSH*KEY, and every secret at once could be any
+# of them. Case-blind, as Actions expressions are.
 SSH_KEY = re.compile(
-    r"\bsecrets(?:\.\w*SSH\w*KEY\w*\b|\[\s*['\"]\w*SSH\w*KEY\w*['\"]\s*\]|\[\s*(?!['\"])|:\s*inherit\b)"
-    r"|\btoJSON\(\s*secrets\s*\)",
+    r"\bsecrets(?:\.\w*SSH\w*KEY\w*\b|\[\s*['\"]\w*SSH\w*KEY\w*['\"]\s*\])|" + EVERY_SECRET,
     re.IGNORECASE,
 )
 
@@ -304,7 +307,7 @@ def test_the_guard_recognises_what_the_jobs_run():
     assert _runs_third_party_code(_job("ci.yml", "web-build"))
     assert _runs_third_party_code(_job("ci.yml", "backend-tests"))
     assert _runs_third_party_code(_job("ci.yml", "lint"))
-    assert _runs_third_party_code(_job("ci.yml", "e2e-prod"))
+    assert _runs_third_party_code(_job(PRODUCTION, "e2e-prod"))
     assert _runs_third_party_code({"services": {"db": {"image": "postgres"}}, "steps": []})
     assert _runs_third_party_code({"steps": [{"uses": "docker://alpine:3"}]})
     assert _runs_third_party_code({"steps": [{"uses": "./.github/actions/setup-uv"}]})
@@ -314,9 +317,9 @@ def test_the_guard_recognises_what_the_jobs_run():
     assert _runs_third_party_code({"steps": [{"run": "sudo apt-get -y install jq"}]})
     assert _runs_third_party_code({"uses": "someorg/repo/.github/workflows/x.yml@main"})
     assert not _runs_third_party_code(_job("ci.yml", "staging"))
-    assert not _runs_third_party_code(_job("ci.yml", "deploy-production"))
-    assert not _runs_third_party_code(_job("ci.yml", "production-smoke-tests"))
-    assert SSH_KEY.search(yaml.safe_dump(_job("ci.yml", "deploy-production")))
+    assert not _runs_third_party_code(_job(PRODUCTION, "deploy-production"))
+    assert not _runs_third_party_code(_job(PRODUCTION, "production-smoke-tests"))
+    assert SSH_KEY.search(yaml.safe_dump(_job(PRODUCTION, "deploy-production")))
     assert SSH_KEY.search("key: ${{ secrets['STAGING_SSH_KEY'] }}")
     assert SSH_KEY.search("key: ${{ secrets[format('{0}_SSH_KEY', inputs.env)] }}")
     assert SSH_KEY.search("ALL: ${{ toJson(secrets) }}")
@@ -344,7 +347,7 @@ def test_no_droplet_key_is_handed_to_every_job(path):
 def test_the_e2e_rollback_acts_on_the_test_step_alone():
     # A failed pull, checkout or npm ci fails e2e-prod as well, and says
     # nothing about production. Only the test step's own verdict may count.
-    e2e = _job("ci.yml", "e2e-prod")
+    e2e = _job(PRODUCTION, "e2e-prod")
     assert [step for step in e2e["steps"] if step.get("id") == "e2e" and "test:e2e:prod" in step["run"]]
     assert e2e["outputs"]["tests"] == "${{ steps.e2e.outcome }}"
 
@@ -392,12 +395,11 @@ def test_the_timeout_check_sees_every_deploys_rollback():
     assert not _runs_rollback("# See deploy/rollback.sh.")
 
 
-def test_the_e2e_rollback_holds_the_production_lock_on_the_runner():
-    rollback = _job("ci.yml", "rollback-production-on-e2e-failure")
+def test_the_e2e_rollback_runs_on_the_runner():
+    rollback = _job(PRODUCTION, "rollback-production-on-e2e-failure")
     assert "container" not in rollback
     assert rollback["needs"] == ["e2e-prod"]
-    assert rollback["concurrency"] == {"group": "production-deploy", "cancel-in-progress": False}
-    script = _script("ci.yml", "rollback-production-on-e2e-failure")
+    script = _script(PRODUCTION, "rollback-production-on-e2e-failure")
     identity = _index(script, re.escape('[ "$(hostname)" = "retina-prod" ]'))
     assert identity < _index(script, r"\bbash deploy/rollback\.sh$")
 
@@ -411,9 +413,116 @@ def test_the_e2e_rollback_requires_failed_tests_on_a_main_push(ref, event, tests
     # or was skipped outright. Cancelling the run stops it: an operator cancels
     # to keep a known flake from reverting a healthy production.
     allowed = _allowed(
-        "ci.yml",
+        PRODUCTION,
         "rollback-production-on-e2e-failure",
         {"github.ref": ref, "github.event_name": event, "needs.e2e-prod.outputs.tests": tests},
         cancelled=cancelled,
     )
     assert allowed is (ref == "refs/heads/main" and event == "push" and tests == "failure" and not cancelled)
+
+
+# ── One lock per environment, held across its whole chain ───────────────────
+# Concurrency is taken and released per job, so a group on each job still lets
+# a following run's deploy land between this run's deploy and its checks, and
+# a rollback then acts on that deploy. Each environment's deploy, checks and
+# rollbacks are one called workflow, called from one job holding the group, and
+# a calling job is not complete until every job it called has finished.
+
+
+class Chain(NamedTuple):
+    workflow: str
+    group: str
+    key: str  # the droplet key's secret
+    outside: frozenset[str] = frozenset()  # ci.yml jobs that hold the key outside the chain
+
+
+# Keyed by the ci.yml job that calls each chain.
+CHAINS = {
+    "staging": Chain(
+        "staging-deploy-verify.yml",
+        "staging-deploy",
+        "STAGING_SSH_KEY",
+        # Reads tower-finder-service over retina-edge; deploys and rolls back nothing.
+        outside=frozenset({"tower-service-contract"}),
+    ),
+    "production": Chain(PRODUCTION, "production-deploy", "SERVER_SSH_KEY"),
+}
+
+
+@pytest.mark.parametrize("caller", CHAINS)
+def test_one_calling_job_holds_the_environment_lock(caller):
+    chain = CHAINS[caller]
+    job = _job("ci.yml", caller)
+    assert job["uses"] == f"./.github/workflows/{chain.workflow}"
+    assert job["concurrency"] == {"group": chain.group, "cancel-in-progress": False}
+
+
+@pytest.mark.parametrize("caller", CHAINS)
+def test_a_chain_runs_only_when_called(caller):
+    # Any trigger of its own would run the deploy without the caller's lock.
+    # PyYAML reads the bare key `on` as True.
+    workflow = _workflow(CHAINS[caller].workflow)
+    assert list(workflow.get("on", workflow.get(True))) == ["workflow_call"]
+
+
+@pytest.mark.parametrize("caller", CHAINS)
+def test_no_job_in_a_chain_takes_a_lock_of_its_own(caller):
+    # The caller already holds it for them; a job, or the called workflow as a
+    # whole, waiting on that group would be waiting on its own caller.
+    workflow = _workflow(CHAINS[caller].workflow)
+    assert "concurrency" not in workflow
+    assert not [name for name, job in workflow["jobs"].items() if "concurrency" in job]
+
+
+@pytest.mark.parametrize("caller", CHAINS)
+def test_the_droplet_key_is_used_only_under_the_lock(caller):
+    # Any workflow but the chain itself: by name, in any case, as Actions reads
+    # it, or by any spelling that hands over every secret at once.
+    chain = CHAINS[caller]
+    reaches = re.compile(f"{chain.key}|{EVERY_SECRET}", re.IGNORECASE)
+    reach = {
+        (path.name, name)
+        for path in _workflow_files()
+        if path.name != chain.workflow
+        for name, job in _workflow(path.name)["jobs"].items()
+        if reaches.search(yaml.safe_dump(job))
+    }
+    assert reach == {("ci.yml", name) for name in {caller, *chain.outside}}
+
+
+def test_production_is_reached_only_from_a_main_push():
+    # The caller's gate, repeated on the deploy and the E2E as on the rollbacks,
+    # so that nothing in the chain runs on an event its rollbacks would not.
+    gate = "github.ref == 'refs/heads/main' && github.event_name == 'push'"
+    assert _job("ci.yml", "production")["if"] == gate
+    for name in ("deploy-production", "production-smoke-tests", "e2e-prod"):
+        assert _job(PRODUCTION, name)["if"] == gate, name
+
+
+def test_the_production_chain_holds_every_step_that_touches_production():
+    # Deploy, both suites, and all three rollbacks: the smoke job carries its
+    # own, the other two are jobs.
+    jobs = _workflow(PRODUCTION)["jobs"]
+    assert set(jobs) == {
+        "deploy-production",
+        "rollback-production-on-deploy-failure",
+        "production-smoke-tests",
+        "e2e-prod",
+        "rollback-production-on-e2e-failure",
+    }
+    (smoke_rollback,) = [
+        step
+        for step in jobs["production-smoke-tests"]["steps"]
+        if step.get("if") == "failure() && steps.smoke.outcome == 'failure'"
+    ]
+    assert "bash deploy/rollback.sh" in smoke_rollback["with"]["script"]
+
+
+def test_a_following_runs_staging_does_not_wait_for_this_runs_production():
+    # Only production-to-production is serialised. A push run's own group is
+    # unique to the run, and the two environments hold different groups, so a
+    # following run's staging chain runs while this run verifies production.
+    pull_request, _, push = _workflow("ci.yml")["concurrency"]["group"].partition(" || ")
+    assert "github.event_name == 'pull_request' &&" in pull_request
+    assert "github.run_id" in push and "github.run_id" not in pull_request
+    assert _job("ci.yml", "staging")["concurrency"]["group"] != _job("ci.yml", "production")["concurrency"]["group"]
