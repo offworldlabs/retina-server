@@ -10,6 +10,7 @@ disconnected; retirement is the only path that clears every store.
 
 import asyncio
 import contextlib
+from collections import deque
 from datetime import datetime, timezone
 
 import pytest
@@ -79,7 +80,7 @@ class TestStaleDetection:
             state.chain_entries.pop("custody-only", None)
 
     def test_a_frame_record_outliving_the_registry_is_held(self, fleet):
-        state.node_last_frame_at["pruned-synth"] = 1.0
+        state.node_recent_frames["pruned-synth"] = deque([1.0])
 
         assert "pruned-synth" in node_retirement.stale_node_ids()
 
@@ -91,12 +92,12 @@ class TestStaleDetection:
         assert "blocked-node" not in node_retirement.stale_node_ids()
 
     def test_retiring_a_node_drops_its_frame_and_report_records(self, fleet):
-        state.node_last_frame_at["departed"] = 1.0
+        state.node_recent_frames["departed"] = deque([1.0])
         state.node_reported_state["departed"] = ("stalled", 1.0)
 
         node_retirement.retire_node("departed")
 
-        assert "departed" not in state.node_last_frame_at
+        assert "departed" not in state.node_recent_frames
         assert "departed" not in state.node_reported_state
 
 

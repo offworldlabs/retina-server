@@ -131,8 +131,9 @@ right value depends on the box: `NODE_DROPOUT_THRESHOLD` (default 0.8),
 (default 300, how recent a solver-queue drop must be to count),
 `COVERAGE_BACKLOG_MAX_WAIT_S` (default 1200, the longest a grid rebuild may
 wait behind the per-cycle budget; must clear the post-deploy warm-up, see the
-runbook) and `FRAME_STARVATION_S` (default 900, how long a node that is heard
-from may go without filing a frame). All are read per call and fall back to their default on a value that
+runbook) and `FRAME_STARVATION_S` (default 900, the window in which a node
+that is heard from must file a frame a minute, 15 at the default; a working
+node files one or two a second). All are read per call and fall back to their default on a value that
 does not parse, so a stray entry degrades one check rather than stopping the
 server booting.
 
@@ -193,7 +194,7 @@ they're in the logs and the webhook payloads.
 | `HEALTH_MONITOR_INTERVAL_S` | `30` | — | Health evaluation period |
 | `NODE_DROPOUT_THRESHOLD` | `0.8` | — | Active/peak node ratio below which dropout fires |
 | `HIGH_MISS_RATE_THRESHOLD` | `0.98` | — | Fleet-average miss rate above which `high_miss_rate` fires |
-| `FRAME_STARVATION_S` | `900` | — | Seconds a heard-from node may file no frame before `frame_starvation:<node_id>` fires |
+| `FRAME_STARVATION_S` | `900` | — | Window in which a heard-from node must file a frame a minute (at most 15), or `frame_starvation:<node_id>` fires |
 
 Every deployed environment currently holds `ALERT_COOLDOWN_S` at `3600` rather
 than the `300` default. Alerts post with a personal ClickUp token whose rate
