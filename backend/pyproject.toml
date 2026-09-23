@@ -60,12 +60,9 @@ retina-analytics = { path = "../libs/retina-analytics", editable = true }
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# No coverage here, or a run of one file measures the whole backend and fails
+# the threshold however its tests went: `just test-ci` and CI ask for it.
 addopts = [
-    "--cov=.",
-    "--cov-report=term-missing:skip-covered",
-    "--cov-report=html:htmlcov",
-    "--cov-fail-under=55",
-    "-q",
     # An unregistered mark, a typo or one no plugin defines, fails collection
     # rather than warning and doing nothing.
     "--strict-markers",
@@ -108,6 +105,9 @@ omit = [
 # code". Here rather than in [run] omit, which filters what is measured and so
 # never sees a file the source walk adds back at report time.
 omit = ["*/pytest-of-*/*"]
+# The one threshold. pytest-cov applies it to a run that measures (`just
+# test-ci`), and `coverage report` to CI's combined shards.
+fail_under = 55
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",
