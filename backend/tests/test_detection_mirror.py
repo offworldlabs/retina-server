@@ -217,6 +217,44 @@ def test_batch_carries_position_tags_in_the_pipeline_shape(_connected):
     assert "adsb" not in entry["frames"][0]
 
 
+def test_batch_carries_a_nodes_tracks(_connected):
+    """The receiving environment files a mirrored node's tracks into its own
+    store, so they cross beside the detections they name."""
+    from routes.node_schemas import DetectionFrame
+
+    detection_mirror.configure_from_env(ARMED)
+    track = {
+        "id": "260923-00001A",
+        "state": "active",
+        "hit": 1,
+        "n_associated": 5,
+        "n_missed": 0,
+        "adsb_hex": None,
+        "is_anomalous": False,
+        "anomaly_types": [],
+        "max_velocity_ms": 210.0,
+    }
+    detection_mirror.offer(
+        "mirror-node-a",
+        DetectionFrame(
+            t=1753900000.123,
+            seq=1,
+            boot_id="k3n8v2qp71ab",
+            config_version=1,
+            delay=[12.4, 30.1],
+            doppler=[-118.0, 44.5],
+            snr=[14.2, 9.8],
+            tracker={"run": "k3n8v2qp71ab9x0c"},
+            tracks=[track],
+        ),
+    )
+
+    (entry,) = detection_mirror.build_batch(detection_mirror.drain())
+
+    assert entry["frames"][0]["tracker"] == {"run": "k3n8v2qp71ab9x0c"}
+    assert entry["frames"][0]["tracks"][0]["hit"] == 1
+
+
 def test_batch_skips_a_node_whose_config_left_the_registry(_connected):
     """A `config: None` entry would replace the node's last-known geometry on
     the receiver, not read as an unconfigured node: the receiving endpoint
