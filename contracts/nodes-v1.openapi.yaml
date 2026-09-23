@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RETINA node ingest
-  version: 1.5.0
+  version: 1.5.1
   description: |
     The RETINA server's HTTP API. The paths under `/v1/nodes` are the RETINA node
     ingest contract, generated from the server and versioned as a unit; everything
@@ -749,6 +749,8 @@ paths:
         `health`, `versions` and `errors` are accepted and diagnostic. The server does not decide
         whether a node is working from them: `blah2: "up"` reads identically on a wedged node and a
         working one, and what settles the question is the server's own record of frame arrivals.
+        They are stored with `state`, and `errors` is kept across beats, for the network's operators
+        to read when a node needs diagnosing. Nothing sent here is published.
       operationId: postHeartbeat
       requestBody:
         content:

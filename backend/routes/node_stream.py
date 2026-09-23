@@ -49,6 +49,7 @@ from services.node_auth import bearer_node, node_bearer_scheme
 from services.node_claim_store import claim_status
 from services.node_pipeline import mark_heard, pipeline_frame, register_with_pipeline, submit_frame
 from services.node_rate_limits import Refusal, token_rate_limiter
+from services.node_report_store import record_report
 
 logger = logging.getLogger(__name__)
 
@@ -221,6 +222,8 @@ are repeated here so that a paused node still learns when it may resume.
 `health`, `versions` and `errors` are accepted and diagnostic. The server does not decide
 whether a node is working from them: `blah2: "up"` reads identically on a wedged node and a
 working one, and what settles the question is the server's own record of frame arrivals.
+They are stored with `state`, and `errors` is kept across beats, for the network's operators
+to read when a node needs diagnosing. Nothing sent here is published.
 """
 
 
@@ -324,8 +327,9 @@ async def post_heartbeat(
 
     Every field is restated on every beat rather than sent on change, because a
     paused node makes no detection requests and this response is the only thing
-    it still hears. `health`, `versions` and `errors` are accepted and not read:
-    the server decides whether a node is working from its own record of frame
+    it still hears. `state`, `health`, `versions` and `errors` are stored for an
+    administrator to read (services/node_report_store) and never consulted: the
+    server decides whether a node is working from its own record of frame
     arrivals, since `blah2: "up"` reads the same on a wedged node as a working
     one.
     """
@@ -359,6 +363,16 @@ async def post_heartbeat(
     # holding it across that call would block the loop's other tasks on a
     # database read.
     mark_heard(node_id, now)
+
+    # Diagnostic, so it must never cost the node its beat. Flushed first so a
+    # fault in last_seen_at raises as itself; the savepoint then confines a
+    # failure (two overlapping first beats racing to insert, say) to the report.
+    await session.flush()
+    try:
+        async with session.begin_nested():
+            await record_report(session, node_id, beat, now)
+    except Exception:
+        logger.exception("node_api: could not store %s's self-report", node_id)
 
     # Read before the commit, so the claim this answers with is the one that
     # held while the beat was being served rather than one read afterwards. It
