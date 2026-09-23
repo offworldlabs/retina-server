@@ -9,13 +9,14 @@ import base64
 import hashlib
 import json
 import re
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from main import app
 from routes.openapi_documents import node_contract, public_document
-from routes.reference import CSP, DOCUMENTS, SCALAR_INTEGRITY, SCALAR_URL
+from routes.reference import CSP, DOCUMENTS, FAVICON, SCALAR_INTEGRITY, SCALAR_URL, SHELL_CSS, THEME_CSS
 from tests.nginx_helpers import VALUES, locations, render
 
 PUBLIC_OPERATIONS = {
@@ -159,15 +160,78 @@ def test_the_policy_admits_the_inline_script_by_its_hash(client):
     assert "'unsafe-inline'" not in CSP.split("script-src", 1)[1].split(";", 1)[0]
 
 
-def test_the_page_renders_each_document_with_scalars_uploads_off(client):
+def _configs(client) -> list[dict]:
     script = _inline_script(client.get("/").text)
-    configs = json.loads(script[script.index("[") : script.rindex("]") + 1])
+    return json.loads(re.search(r"^  var documents = (.*);$", script, re.M).group(1))
+
+
+def test_the_page_renders_each_document_with_scalars_uploads_off(client):
+    configs = _configs(client)
     assert [config["url"] for config in configs] == [document["url"] for document in DOCUMENTS]
     assert configs[0]["url"] == "/openapi.json"
     for config in configs:
         assert config["agent"] == {"disabled": True}
         assert config["mcp"] == {"disabled": True}
         assert config["withDefaultFonts"] is False
+
+
+def test_the_palette_is_the_pages_before_it_is_scalars(client):
+    """In the page's own stylesheet, and the theme script ahead of the bundle,
+    so the first paint is already in the reader's mode, header included."""
+    page = client.get("/").text
+    style = re.search(r"<style>(.*?)</style>", page, re.S).group(1)
+    assert THEME_CSS in style and SHELL_CSS in style
+    assert not any("customCss" in config for config in _configs(client))
+    assert page.index("<script>") < page.index(f'<script src="{SCALAR_URL}"')
+
+
+def test_the_headers_switch_stands_in_for_scalars_toggle(client):
+    page = client.get("/").text
+    assert re.findall(r'data-theme="(\w+)"', page) == ["light", "system", "dark"]
+    assert all(config["hideDarkModeToggle"] is True for config in _configs(client))
+
+
+def test_the_header_links_to_this_environments_console(client, monkeypatch):
+    monkeypatch.setenv("HOST_APP", "staging-app.retina.fm")
+    monkeypatch.setenv("FORCE_HTTPS", "true")
+    page = client.get("/").text
+    assert '<a class="retina-mark" href="https://staging-app.retina.fm/"' in page
+    assert '<a class="retina-open" href="https://staging-app.retina.fm/">Open app</a>' in page
+
+
+def test_without_host_app_the_header_links_nowhere(client, monkeypatch):
+    monkeypatch.delenv("HOST_APP", raising=False)
+    page = client.get("/").text
+    assert '<span class="retina-mark"' in page
+    assert "retina-open" not in page.split("</style>", 1)[1]
+
+
+def test_the_policy_admits_the_favicon(client):
+    img_src = next(d for d in CSP.split("; ") if d.startswith("img-src ")).split()[1:]
+    assert FAVICON.startswith("data:") and "data:" in img_src
+    assert f'<link rel="icon" href="{FAVICON}">' in client.get("/").text
+
+
+@pytest.fixture(scope="module")
+def vendored_scalar() -> str:
+    version = re.search(r"@scalar/api-reference@([\d.]+)/", SCALAR_URL).group(1)
+    root = Path(__file__).resolve().parents[2]
+    return (root / f"dashboard/public/vendor/scalar-api-reference-{version}/standalone.js").read_text()
+
+
+def test_the_pinned_scalar_still_has_what_the_shell_names(vendored_scalar):
+    """SHELL_CSS reaches into Scalar's markup, which a new version is free to
+    rename without an error; the pin moving is what this catches."""
+    classes = re.findall(r"(?<!\d)\.([a-z](?:[\w-]|\\/)*)", SHELL_CSS)
+    assert classes
+    missing = [
+        name
+        for name in {c.replace("\\/", "/") for c in classes}
+        if not re.search(rf"[\s`'\"]{re.escape(name)}[\s`'\"]", vendored_scalar)
+    ]
+    unread = [name for name in re.findall(r"(--scalar-[\w-]+):", SHELL_CSS) if f"var({name}" not in vendored_scalar]
+    options = [name for name in ("forceDarkModeState", "hideDarkModeToggle") if name not in vendored_scalar]
+    assert (missing, unread, options) == ([], [], [])
 
 
 def _api_location(rendered: str, header: str) -> str | None:
