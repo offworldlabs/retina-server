@@ -872,16 +872,13 @@ describeUnlessProd("Node registration — main integration suite", () => {
 });
 
 // =============================================================================
-// Teardown: retire every node this worker registered.
+// Teardown: retire every node this worker registered, on the local stack.
 //
-// A background sweep (prune_synthetic_nodes) does evict old synth-/e2e-/test-
-// prefixed entries from the fleet registry on its own, but only that one
-// store, only after 7 days disconnected, on a 6-hourly cadence. It leaves the
-// associator's overlap geometry in place, which is what the O(n²)
-// registration cost is measured against, and its timescale is far longer
-// than a deploy cycle. Without this hook, each run leaves its ids in the
-// fleet registry and the overlap graph for the life of the container, and
-// the registration cost climbs for every run after it (86cb5nxvw).
+// Without it each run leaves its ids in the fleet registry, analytics and the
+// overlap graph, and the registration cost climbs for every run after it
+// (86cb5nxvw). The route is admin-only, and the local stack is the one place
+// this suite is an administrator. Staging retires these ids itself once they
+// fall quiet (NODE_FORCE_RETIRE_PREFIXES, backend/services/node_retirement.py).
 //
 // fullyParallel gives each worker its own module instance and so its own
 // RUN_ID, and Playwright runs a file-scope afterAll once per worker after that
@@ -889,12 +886,10 @@ describeUnlessProd("Node registration — main integration suite", () => {
 // minted, and cannot race a sibling worker's assertions.
 //
 // force=true because a registered node counts as live until something evicts
-// it. Staging confines force to the e2e- and synth-e2e- prefixes
-// (NODE_FORCE_RETIRE_PREFIXES), so this cannot reach a real board.
+// it.
 //
-// Best-effort by construction: a failure here must never fail the run, since a
-// red suite rolls the deploy back (86cb5jnnf). The cost of a failed teardown is
-// the leak that exists today, which the next successful run clears.
+// Best-effort by construction: the tests have already answered, and a failure
+// here costs only the leftover ids, so it must never fail the run.
 // =============================================================================
 test.afterAll(async () => {
   // A hook timeout is raised by the test runner itself, not by any call this
@@ -903,7 +898,7 @@ test.afterAll(async () => {
   // enough that those guards, not the runner's default 30 s hook timeout, are
   // what actually handle a wedged request.
   test.setTimeout(120_000);
-  if (env === "prod" || !API_KEY) return;
+  if (env !== "local" || !API_KEY) return;
 
   let ctx: Ctx;
   try {
