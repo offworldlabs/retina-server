@@ -295,7 +295,10 @@ CI runs on every PR, on push to `main`, and on demand through
 1. Any PR, whatever its base: `backend-tests` (three shards) and
    `backend-coverage` behind them, `lint`, `web-build` (once per
    workspace, with the dashboard's tests apart from its other checks),
-   `docker-build`, `env-parity`, plus an automated review.
+   `docker-build`, `env-parity`, `tower-service-contract` (a probe of
+   production's tower-finder-service) and `playwright-image`, plus an
+   automated review. `ci-ok` needs every one of those jobs bar the review and
+   fails unless all of them passed, so it alone says whether a PR passed CI.
 2. Merge to `main` → deploy to **staging** → staging smoke + Playwright E2E → deploy to **production** → prod smoke + Playwright E2E.
    A merge that changes nothing the droplets serve skips that chain, which means
    markdown, and Python whose syntax tree has not moved: a reworded comment or a
@@ -366,6 +369,11 @@ branch, open a PR, get it green, then merge.
   matches nothing and reads as a clean "no errors in the logs". Run `docker compose ps
   --services` first and trust it over a remembered name.
 - **A new per-environment key needs an `env-parity` entry** or CI fails.
+- **Editing a PR's title or body starts a CI run that skips every gate**, and
+  `gh pr checks` then lists those skips beside the real results or in place
+  of them. Read the check named exactly `ci-ok` instead. The edit's run
+  reports as `ci-ok (title or body edit)`, which is never a verdict, so the
+  `ci-ok` the last push or retarget left still stands.
 
 ## Where to go next
 
