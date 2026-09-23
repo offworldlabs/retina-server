@@ -511,8 +511,12 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     # partially-claimed aircraft can still carry a tracker track keyed by the
     # same hex, and the ADS-B fix is the better of the two positions, so the
     # collision is left for dedup to settle by source rank rather than decided
-    # here by append order.
-    aircraft.extend(_claimed_single_node_entries(now))
+    # here by append order.  Binding only: in shadow the claimed detection is
+    # still in the dark pool and the known lane must leave the live feed as it
+    # was (services/tasks/known_lane.py), so drawing its fix would publish what
+    # only binding may.
+    if state.KNOWN_LANE_MODE == "binding":
+        aircraft.extend(_claimed_single_node_entries(now))
 
     # 4/4b. Stale-store GC no longer runs here — it is on its own 5 s timer
     # (services.tasks.feed_gc_task).  A feed build happens only when the flush
