@@ -11,8 +11,8 @@ on:
   # is the action a base-branch change arrives as. Without it, a PR retargeted
   # when its parent merges keeps the tick it earned against the old base and is
   # never validated against the new one, which is the second half of the trap
-  # the base filter opened. The jobs below discard the title and body edits that
-  # come with it.
+  # the base filter opened. The gates below discard the title and body edits
+  # that come with it, and ci-ok reports under another name for them.
   pull_request:
     types: [opened, synchronize, reopened, edited]
   # So a branch can be run on demand, which was otherwise impossible.
@@ -580,6 +580,46 @@ jobs:
               exit 1
             fi
             echo "staging's tower-finder-service honours the contract."
+
+  # The one check that says whether a commit passed the gates, and so the one
+  # for branch protection to require. Requiring the gates by name would let a
+  # renamed or re-sharded job drop out of protection silently.
+  # backend/tests/test_ci_ok.py holds `needs` to every job a pull request runs.
+  ci-ok:
+    # `ci-ok` only for a pull request's push or retarget, the runs whose
+    # verdict protection should read. A title or body edit runs no gate, and a
+    # skipped check counts as passed, so under this name an edit could clear a
+    # red PR; under another it leaves the last verdict standing. A dispatch
+    # tests the branch rather than the merge, so its pass must not stand for one.
+    name: >-
+      ${{ github.event_name != 'pull_request' && format('ci-ok ({0})', github.event_name)
+      || github.event.action == 'edited' && !github.event.changes.base && 'ci-ok (title or body edit)'
+      || 'ci-ok' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [backend-tests, backend-coverage, lint, web-build, docker-build, env-parity, playwright-image, tower-service-contract]
+    # Never skipped, since a skipped ci-ok would pass. always() also runs it in
+    # a cancelled run, where it fails; !cancelled() would skip it there.
+    if: always()
+    steps:
+      # Anything short of success fails, skipped included: every gate runs
+      # whenever this step does, so a skipped one means something upstream
+      # broke. always() here too, so a run cancelled before this job started
+      # still judges its cancelled gates rather than skipping to a pass.
+      - name: Every gate passed
+        if: always() && (github.event.action != 'edited' || github.event.changes.base)
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          failed=$(jq -r 'to_entries[] | select(.value.result != "success") | "\(.key): \(.value.result)"' <<< "$NEEDS")
+          if [ -n "$failed" ]; then
+            while IFS= read -r line; do echo "::error::${line}"; done <<< "$failed"
+            exit 1
+          fi
+          echo "All $(jq length <<< "$NEEDS") gates passed."
+      - name: A title or body edit decides nothing
+        if: github.event.action == 'edited' && !github.event.changes.base
+        run: echo "No gate ran. The ci-ok check that the last push or retarget left on this commit stands."
 
   # Does this push touch anything the droplets serve? A merge that only reworks
   # comments would otherwise redeploy staging AND production and run both
