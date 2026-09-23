@@ -114,8 +114,60 @@ EOF
 # ── 3. Install Docker ────────────────────────────────────────────────────────
 echo ""
 echo "→ Installing Docker..."
-apt-get install -y -qq docker.io docker-compose-v2
-systemctl enable --now docker
+# Docker keeps images in one of two stores, classic overlay2 or containerd's,
+# and neither can see the other's images. Unstated, Docker stays on overlay2
+# wherever /var/lib/docker already holds overlay2 data and otherwise uses
+# containerd, which leaves the choice to each box's history, so it is stated
+# here. A box that already has a daemon keeps the store it is on:
+# switching would hide every image, :rollback included, until rebuilt. A fresh
+# box gets containerd, Docker's default and what staging and test run.
+# Fails when no daemon answers.
+_running_store() {
+    docker info >/dev/null 2>&1 || return 1
+    case "$(docker info --format '{{json .DriverStatus}}')" in
+        *io.containerd.snapshotter*) echo containerd ;;
+        *) echo overlay2 ;;
+    esac
+}
+if ! DOCKER_STORE=$(_running_store); then
+    if [ -e /var/lib/docker ]; then
+        echo "  ✗ /var/lib/docker exists but no Docker daemon is answering, so there is" >&2
+        echo "    no telling which store its images are in. Start Docker and re-run." >&2
+        exit 1
+    fi
+    DOCKER_STORE=containerd
+fi
+echo "  Image store: ${DOCKER_STORE}"
+
+# Written before the install so a fresh daemon first starts on the stated store,
+# and nothing is ever built in the other one.
+mkdir -p /etc/docker
+cat > /etc/docker/daemon.json << EOF
+{
+  "features": {
+    "containerd-snapshotter": $([ "$DOCKER_STORE" = containerd ] && echo true || echo false)
+  },
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+EOF
+
+# docker-buildx is Ubuntu's package (docker-buildx-plugin is docker-ce's).
+# Without it the CLI builds and prunes through the deprecated legacy builder.
+apt-get install -y -qq docker.io docker-compose-v2 docker-buildx
+systemctl enable docker
+# restart, not `enable --now`: a daemon that was already running would keep the
+# daemon.json it started with.
+systemctl restart docker
+RUNNING_STORE=$(_running_store) || RUNNING_STORE="no answer"
+if [ "$RUNNING_STORE" != "$DOCKER_STORE" ]; then
+    echo "  ✗ daemon.json pins the ${DOCKER_STORE} store but after the restart Docker" >&2
+    echo "    reports: ${RUNNING_STORE}. Stopping before anything is built." >&2
+    exit 1
+fi
 
 # ── 4. Deploy application ────────────────────────────────────────────────────
 echo ""
@@ -326,23 +378,6 @@ for i in $(seq 1 12); do
     fi
     sleep 5
 done
-
-# ── 5. Setup log rotation for Docker ─────────────────────────────────────────
-echo ""
-echo "→ Configuring Docker log rotation..."
-cat > /etc/docker/daemon.json << 'EOF'
-{
-  "log-driver": "json-file",
-  "log-opts": {
-    "max-size": "10m",
-    "max-file": "3"
-  }
-}
-EOF
-systemctl restart docker
-# Restart app after Docker restart
-cd "$APP_DIR"
-docker compose up -d
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""

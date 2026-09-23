@@ -38,6 +38,12 @@ fails its suites stays there, blocking production, until the next merge.
 | **RAM / swap** | 7941 MB / 4 GB | 7941 MB / none | 7941 MB / 2 GB |
 | **Fleet** | none (see below) | 50 @ 1.0s (50 fps) | 50 @ 1.0s (50 fps) |
 | **TCP 3012** | published (real nodes) | closed | closed |
+| **Docker image store** | overlay2 | containerd | containerd |
+
+The two image stores cannot see each other's images, and read differently in
+`docker system df` and `docker image inspect`. `deploy/setup-server.sh` keeps the
+store a box's daemon is already on and gives a fresh box containerd, so a rebuilt
+prod would come up on containerd.
 
 ### The test droplet has two deploy paths
 
