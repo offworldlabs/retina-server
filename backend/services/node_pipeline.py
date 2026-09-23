@@ -91,6 +91,10 @@ def pipeline_frame(frame: "DetectionFrame") -> dict:
     `seq` and `boot_id` are carried rather than dropped at the boundary: they are
     the pair the server counts loss against, and only meaningful together, since
     `seq` restarts from zero with the process.
+
+    `tracker` and `tracks` are validated at the route and not carried: nothing
+    that reads the queue uses a node's tracks, so a tracked frame files exactly
+    what the same frame without them would.
     """
     out = {
         "timestamp": int(frame.t * 1000),

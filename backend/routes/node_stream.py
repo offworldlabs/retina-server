@@ -173,6 +173,21 @@ as must `adsb` and `adsb_hex` when sent. `adsb` is the node's ADS-B correlation,
 detection. `adsb_hex` is the same correlation as bare hexes and is deprecated; a frame that
 sends both must have them agree. An empty frame is valid and worth sending.
 
+## Tracks
+
+A node running a tracker sends `tracker` and `tracks` with every frame. `tracks` holds
+every confirmed track alive after this frame, coasting ones included, and a track that ends
+is sent once more with `state: "deleted"`. Each track names the detection it took this frame
+by its index in the frame's arrays (`hit`), so a detection is sent once however many tracks
+there are. `hit` is required for an `active` track and null otherwise; no two tracks may
+share a hit, and ids are unique within the frame.
+
+`tracks: null` means the tracker produced nothing for this frame, and says nothing about
+its tracks. `[]` means it ran and holds no confirmed track. `tracker.run` identifies the
+tracker process: its ids repeat after a restart, so a new run starts a new namespace. A
+frame whose tracks do not add up is refused whole, since the frame and its tracks are one
+unit.
+
 ## Sending behaviour
 
 **One POST per frame blah2 produces, and never otherwise.** There is no timer and no

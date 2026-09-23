@@ -27,6 +27,7 @@ from pydantic import (
     GetJsonSchemaHandler,
     PlainSerializer,
     SerializerFunctionWrapHandler,
+    StrictBool,
     WithJsonSchema,
     model_serializer,
     model_validator,
@@ -105,6 +106,22 @@ DiskFreeMb = Annotated[int, Field(ge=0), BeforeValidator(_reject_non_number)]
 MAX_DETECTIONS = 512
 
 AdsbHex = Annotated[str, Field(pattern=r"^[0-9a-f]{6}$")] | None
+
+# A node's tracker confirms a handful of tracks at a time; the bound keeps a
+# frame's track list at about 5 KB inside the 64 KiB body cap.
+MAX_TRACKS = 32
+# The tracker's run and track identifiers are opaque to the server, which keys
+# on them and echoes them, so they are bounded to what a key and a log line hold.
+TrackerToken = Annotated[str, Field(pattern=r"^[0-9A-Za-z._-]{1,64}$")]
+# The tracker's anomaly names are lower snake case, `instant_direction_change`
+# the longest today.
+AnomalyType = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,47}$")]
+DetectionIndex = Annotated[int, Field(ge=0), BeforeValidator(_reject_non_number)]
+Associations = Annotated[int, Field(ge=1), BeforeValidator(_reject_non_number)]
+Misses = Annotated[int, Field(ge=0), BeforeValidator(_reject_non_number)]
+Speed = Annotated[float, Field(ge=0, allow_inf_nan=False), BeforeValidator(_reject_non_number)]
+EpochSeconds = Annotated[float, Field(ge=0, allow_inf_nan=False), BeforeValidator(_reject_non_number)]
+Fraction = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False), BeforeValidator(_reject_non_number)]
 
 # Six values as of contract 1.1.0. `stalled` is a healthy node whose radar has
 # stopped, which the server cannot tell from a network fault on its own.
@@ -220,6 +237,50 @@ class AdsbTag(_RequestModel):
     doppler_residual: Number | None = None
 
 
+class TrackerRun(_RequestModel):
+    """The tracker process whose ids a frame's tracks carry.
+
+    The tracker's ids repeat after a same-day restart, so the server keys a
+    track on (node, run, id), and a run it has not seen before starts a new
+    namespace.
+    """
+
+    run: TrackerToken
+
+
+class Track(_RequestModel):
+    """One confirmed track, sent on every frame it is alive.
+
+    The track names the detection it took this frame by index into the frame's
+    arrays, so every detection is sent once, however many tracks there are.
+    Tentative tracks are not sent. `deleted` is sent once, on the track's last
+    frame.
+    """
+
+    id: TrackerToken
+    state: Literal["active", "coasting", "deleted"]
+    # Required and nullable: an active track took a detection this frame, and a
+    # coasting or deleted one took none.
+    hit: DetectionIndex | None
+    n_associated: Associations
+    # Consecutive frames without a detection.
+    n_missed: Misses
+    # The hex the tracker bound to the track; the per-detection `adsb` tags are
+    # what the node's correlator said each frame.
+    adsb_hex: AdsbHex
+    # Strict so that `"true"` or `1` is refused rather than coerced, as
+    # `_reject_non_number` does for numbers.
+    is_anomalous: StrictBool
+    anomaly_types: list[AnomalyType] = Field(max_length=16)
+    max_velocity_ms: Speed
+    # Unix epoch seconds of the first associated detection.
+    born_t: EpochSeconds | None = None
+    # dB, mean over every detection the track has associated.
+    avg_snr: Number | None = None
+    shadow_fraction: Fraction | None = None
+    interference_fraction: Fraction | None = None
+
+
 class DetectionFrame(_RequestModel):
     """One CPI's worth of detections. Carries no node identifier: the bearer
     token resolves to a node, and the frame is stamped server side.
@@ -249,6 +310,12 @@ class DetectionFrame(_RequestModel):
     # The node's ADS-B correlation, one entry per detection, null where a
     # detection matched no aircraft.  See AdsbTag.
     adsb: list[AdsbTag | None] | None = Field(default=None, max_length=MAX_DETECTIONS)
+    # The node's own tracker.  Neither field sent is a node that sends no
+    # tracks.  `tracks: null` beside a `tracker` is a tracker with no output for
+    # this frame, which says nothing about its tracks; `[]` is one that ran and
+    # holds no confirmed track.
+    tracker: TrackerRun | None = None
+    tracks: list[Track] | None = Field(default=None, max_length=MAX_TRACKS)
 
     @model_validator(mode="after")
     def _arrays_are_parallel(self) -> "DetectionFrame":
@@ -272,6 +339,41 @@ class DetectionFrame(_RequestModel):
                 for i, tag in enumerate(self.adsb):
                     if tag is not None and tag.hex != self.adsb_hex[i]:
                         raise ValueError(f"adsb[{i}].hex must equal adsb_hex[{i}]")
+        return self
+
+    @model_validator(mode="after")
+    def _tracks_name_this_frames_detections(self) -> "DetectionFrame":
+        """A track's `hit` is an index into this frame's arrays, and the frame
+        and its tracks are one unit, so any track that does not add up refuses
+        the whole frame.
+
+        Hits are unique because the tracker associates a detection with at most
+        one track, and one detection filed under two tracks would be one
+        aircraft solved twice.
+        """
+        if self.tracks is None:
+            return self
+        if self.tracker is None:
+            raise ValueError("tracks need a tracker: a track id is scoped by the run that minted it")
+        n = len(self.delay)
+        ids: set[str] = set()
+        hits: set[int] = set()
+        for i, track in enumerate(self.tracks):
+            if track.id in ids:
+                raise ValueError(f"tracks[{i}].id repeats an earlier track's id")
+            ids.add(track.id)
+            if track.state == "active":
+                if track.hit is None:
+                    raise ValueError(f"tracks[{i}] is active and must name its hit")
+            elif track.hit is not None:
+                raise ValueError(f"tracks[{i}] is {track.state} and must not name a hit")
+            if track.hit is None:
+                continue
+            if track.hit >= n:
+                raise ValueError(f"tracks[{i}].hit is outside this frame's {n} detections")
+            if track.hit in hits:
+                raise ValueError(f"tracks[{i}].hit is already another track's hit")
+            hits.add(track.hit)
         return self
 
 
@@ -307,6 +409,8 @@ class NodeVersions(_RequestModel):
     owl_os: Annotated[str, Field(max_length=64)] | None = None
     retina_node: Annotated[str, Field(max_length=64)] | None = None
     blah2_image: Annotated[str, Field(max_length=64)] | None = None
+    # The release of the tracker whose tracks the node sends.
+    retina_tracker: Annotated[str, Field(max_length=64)] | None = None
 
 
 class HeartbeatRequest(_RequestModel):

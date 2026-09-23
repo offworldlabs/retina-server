@@ -549,6 +549,37 @@ def test_pipeline_frame_takes_the_hexes_from_the_tags_when_adsb_hex_is_absent():
     assert "adsb" not in bare
 
 
+def test_a_tracked_frame_files_what_the_untracked_frame_would():
+    """Nothing reading the queue uses a node's tracks yet, so the conversion
+    drops them, and the frame the pipeline and the mirror see is unchanged."""
+    from routes.node_schemas import DetectionFrame
+    from services.node_pipeline import pipeline_frame
+
+    base = {
+        "t": 1753900000.123,
+        "seq": 1,
+        "boot_id": "k3n8v2qp71ab",
+        "config_version": 1,
+        "delay": [12.4, 30.1],
+        "doppler": [-118.0, 44.5],
+        "snr": [14.2, 9.8],
+    }
+    track = {
+        "id": "260923-00001A",
+        "state": "active",
+        "hit": 0,
+        "n_associated": 14,
+        "n_missed": 0,
+        "adsb_hex": None,
+        "is_anomalous": False,
+        "anomaly_types": [],
+        "max_velocity_ms": 231.4,
+    }
+    tracked = DetectionFrame(**base, tracker={"run": "k3n8v2qp71ab9x0c"}, tracks=[track])
+
+    assert pipeline_frame(tracked) == pipeline_frame(DetectionFrame(**base))
+
+
 def test_pipeline_frame_omits_the_tag_fields_the_node_left_null():
     """The geolocator branches on `"gs" in adsb`, so a null must be an absent key."""
     from routes.node_schemas import DetectionFrame
