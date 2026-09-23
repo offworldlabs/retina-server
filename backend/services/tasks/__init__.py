@@ -8,6 +8,7 @@ without knowing which sub-module each lives in::
 Anything else a sub-module exposes is imported from that sub-module directly.
 """
 
+from services.tasks.adsb_fallback import adsb_fallback_task
 from services.tasks.aircraft_flush import aircraft_flush_task
 from services.tasks.analytics_refresh import analytics_refresh_task, coverage_constraints_task
 from services.tasks.feed_gc import feed_gc_task
@@ -44,6 +45,7 @@ __all__ = [
     "prune_synthetic_nodes",
     "retire_disposable_nodes_task",
     "adsb_truth_fetcher",
+    "adsb_fallback_task",
     "track_flush_task",
     "users_backup_task",
 ]

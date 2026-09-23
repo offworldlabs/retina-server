@@ -64,6 +64,7 @@ from services.runtime_coverage import start as _start_coverage
 from services.runtime_coverage import stop as _stop_coverage
 from services.state_snapshot import SAVE_INTERVAL_S, restore_snapshot, save_snapshot
 from services.tasks import (
+    adsb_fallback_task,
     adsb_truth_fetcher,
     aircraft_flush_task,
     analytics_refresh_task,
@@ -252,6 +253,8 @@ async def lifespan(app: FastAPI):
                 prune_synthetic_nodes,
                 retire_disposable_nodes_task,
                 adsb_truth_fetcher,
+                # Returns at once unless ADSB_FALLBACK_ENABLED=1.
+                adsb_fallback_task,
                 feed_gc_task,
                 archive_flush_task,
                 track_flush_task,

@@ -30,6 +30,10 @@ TASK_EXPECTED_INTERVAL_S: dict[str, int] = {
     # larger, 8 x 18 = 144 s.  So 60 + 35 + 144 = 239 s of fetch, 659 s all
     # told.  Alerting at 2x leaves room above that.
     "adsb_truth_fetcher": 400,
+    # Every 5 s where ADSB_FALLBACK_ENABLED=1, or up to 65 s when the next cycle
+    # waits out a 429's Retry-After (capped at 60 s), so stale at 2x only once
+    # a longer outage has emptied the store.
+    "adsb_fallback": 60,
     "solver": 120,
     "storage_refresh": 720,  # expected every 300 s; alert if >2× late
     "track_archive_flush": 180,  # flush every 60 s; alert if >3× late

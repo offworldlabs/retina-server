@@ -478,6 +478,10 @@ GT_REFRESH_S = 5.0  # Ground-truth snapshot refresh cadence (s)
 REPUTATION_INTERVAL_S = 60  # Reputation evaluator sleep (s)
 ADSB_TRUTH_INTERVAL_S = 120  # ADS-B truth fetcher sleep (s)
 ADSB_BACKOFF_S = 300  # Rate-limit backoff (s)
+# adsb-service poll for claim candidates (services/tasks/adsb_fallback.py): every
+# region once per cycle.  A fix waits on average half this long before a frame
+# claims against it, and calibration refuses one older than CAL_MAX_ADSB_AGE_S.
+ADSB_FALLBACK_INTERVAL_S = 5.0
 
 # ── Node reputation penalties ────────────────────────────────────────────────
 # Multiplier applied to EVERY reputation penalty in retina-analytics
