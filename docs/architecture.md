@@ -14,9 +14,9 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
 - **map** (`/map`, where `/` opens) — the live map, the console's front page.
   Every deployed environment shows real nodes only here (the default is
   resolved client-side in `dashboard/src/utils/domains.ts`; the
-  laptop keeps both fleets). The synthetic simulation fleet has its own page,
-  `/sim`, which is populated only where a fleet runs: the test droplet, and a
-  local stack. Production and staging run none.
+  laptop keeps both fleets). The synthetic simulation fleet is on the admin
+  console at `/sim`, which exists only where a fleet runs: the test droplet,
+  and a local stack. Production and staging run none.
 - **console pages** — node ownership, the node claim page, MLAT verification, metrics.
   A session is required for all of it bar the routes listed in
   `dashboard/src/utils/publicRoutes.ts`, which render to anyone and are backed
@@ -109,11 +109,12 @@ The math lives in separate repos under `libs/` so it can be versioned and reused
   produces an ellipse arc (a locus, not a point); multi-node (n≥2) runs an LM
   least-squares solve for a position, with an altitude sweep for n≥3.
 - **retina-tracker** — Kalman multi-target tracker + anomaly detection.
-- **retina-simulation** — synthetic fleet generator (powers the console's
-  `/sim` surface + CI), on the deployments that set `SYNTHETIC_FLEET_ENABLED`.
-  Runtime-tunable via `PUT /api/simulation/config` (target-class fractions,
-  aircraft counts), which the fleet polls every 5 s; fleet scale itself comes
-  from the deployment env (`FLEET_*` in the compose files).
+- **retina-simulation** — synthetic fleet generator (powers the admin
+  console's `/sim` map + CI), on the deployments that set
+  `SYNTHETIC_FLEET_ENABLED`. Runtime-tunable via `PUT /api/simulation/config`,
+  admin only (target-class fractions, aircraft counts), which the fleet polls
+  every 5 s; fleet scale itself comes from the deployment env (`FLEET_*` in the
+  compose files).
 - **retina-custody** — custody protocol.
 - **retina-analytics** — node trust/reputation, inter-node track association
   (pairing + top-down claiming), and per-node empirical coverage / learned

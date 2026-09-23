@@ -83,9 +83,9 @@ services:
     # even cut over. A profile no environment enables is what keeps a bare
     # `docker compose up -d` on the droplet from quietly bringing it back.
     #
-    # The demo this fleet used to feed lives on the test droplet's /sim now —
-    # the only environment still running a simulator — so starting this one
-    # would populate nothing anyone looks at.
+    # The simulator is watched on the test droplet's admin console, the only
+    # environment running one, so starting this fleet would populate nothing
+    # anyone looks at.
     #
     # The sizing below is kept, not deleted, so the fleet can be brought back for
     # an afternoon without a PR:

@@ -21,7 +21,7 @@ type NavSection = { title: string; items: NavItem[] };
 // Built per render rather than at module scope. The links below read
 // window.location, and an import-time read that threw would take down every
 // module that transitively imports this one, not just the sidebar.
-const userNav = (syntheticFleet: boolean): NavSection[] => [
+const userNav = (): NavSection[] => [
   {
     title: "Dashboard",
     items: [
@@ -31,16 +31,6 @@ const userNav = (syntheticFleet: boolean): NavSection[] => [
       { to: "/contribution", label: "Network", icon: "globe" },
       { to: "/anomalies", label: "Anomalies", icon: "alertTriangle" },
       { to: "/map", label: "Map", icon: "map" },
-      // The simulator and the page that tunes it, together and in that order,
-      // because the second is a setting of the first. Both exist only where
-      // the server runs a fleet; on a fleetless deployment /sim would be an
-      // empty map and the physics form would have nothing to configure.
-      ...(syntheticFleet
-        ? [
-            { to: "/sim", label: "Simulation", icon: "target", end: true },
-            { to: "/sim/physics", label: "Physics Layer", icon: "layers" },
-          ]
-        : []),
       { href: towerFinderUrl(location.host, location.protocol), label: "Tower Finder", icon: "radio", external: true },
     ],
   },
@@ -66,7 +56,7 @@ const userNav = (syntheticFleet: boolean): NavSection[] => [
   },
 ];
 
-const adminNav: NavSection[] = [
+const adminNav = (syntheticFleet: boolean): NavSection[] => [
   {
     title: "Monitoring",
     items: [
@@ -77,6 +67,20 @@ const adminNav: NavSection[] = [
       { to: "/anomalies", label: "Anomalies", icon: "alertTriangle" },
     ],
   },
+  // The simulator and the page that tunes it, in that order because the second
+  // is a setting of the first. Only where the server runs a fleet: without one
+  // /sim is an empty map and the physics form has nothing to configure.
+  ...(syntheticFleet
+    ? [
+        {
+          title: "Simulation",
+          items: [
+            { to: "/sim", label: "Simulation Map", icon: "target", end: true },
+            { to: "/sim/physics", label: "Physics Layer", icon: "layers" },
+          ],
+        },
+      ]
+    : []),
   {
     title: "Operations",
     items: [
@@ -262,7 +266,7 @@ const icons = {
 
 export default function Sidebar({ isAdmin, collapsed, onToggle }) {
   const { user, syntheticFleet } = useAuth();
-  const nav = isAdmin ? adminNav : userNav(Boolean(syntheticFleet));
+  const nav = isAdmin ? adminNav(Boolean(syntheticFleet)) : userNav();
   // A visitor is shown every entry, so the nav says what signing in opens;
   // those behind a session are greyed out and lead to sign-in. Read off the list
   // the route guard reads, so an entry is live exactly where its page is open.

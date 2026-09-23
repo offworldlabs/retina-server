@@ -6,10 +6,10 @@
  * hostname to pick the console.
  *
  * Only a default, and only /map's. Which fleet a map page shows is a property
- * of the page (pages/map/feedMode.ts): /sim asks for the synthetic fleet on
- * every host. So this belongs behind defaultFeedMode() and not at a render
- * site, where it would answer for the hostname after the page had answered for
- * itself.
+ * of the page (pages/map/feedMode.ts): the admin console's /sim asks for the
+ * synthetic fleet whatever the host. So this belongs behind defaultFeedMode()
+ * and not at a render site, where it would answer for the hostname after the
+ * page had answered for itself.
  *
  * The hostname is read once, at module load.
  */

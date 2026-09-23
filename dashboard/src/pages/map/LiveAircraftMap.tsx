@@ -1225,10 +1225,11 @@ const HashSync = memo(function HashSync({ onMove, showRangeRings, selectedHex, s
 
 /**
  * `feed` is the page's fleet. Unset, the hostname decides, which is what /map
- * does; /sim passes "synthetic" so one console serves both fleets (feedMode.ts).
+ * does; the admin console's /sim passes "synthetic" (feedMode.ts). `ownerView`
+ * off withholds the node-owner toggle whoever is signed in.
  */
-export default function LiveAircraftMap({ feed }: { feed?: FeedMode }) {
-  const auth = useMapAuth();
+export default function LiveAircraftMap({ feed, ownerView = true }: { feed?: FeedMode; ownerView?: boolean }) {
+  const auth = useMapAuth(ownerView);
   // Resolved here rather than in each hook, so the feed, the node listing and
   // the layer defaults below cannot disagree about which fleet this page is.
   const mode = feed ?? defaultFeedMode();
@@ -1241,16 +1242,11 @@ export default function LiveAircraftMap({ feed }: { feed?: FeedMode }) {
   // The feed, animation stores, Leaflet layers and playback all belong to one
   // scope. Remount them together so a newly filtered feed cannot inherit old
   // positions or optional channels. Persisted display preferences survive.
-  //
-  // The mode is part of the key for the same reason the owner toggle is: a
-  // route change from /map to /sim reuses this component, and a scope carried
-  // across it would keep the old fleet's positions, and would keep the
-  // persisted-state keys it read at mount (useMapPreference reads storage
-  // once, on mount) — including the ground-truth default below, which differs
-  // between the two.
+  // The owner toggle alone keys it: a mounted map never changes fleet, because
+  // /map and /sim are on different consoles.
   return (
     <AircraftMapScope
-      key={`${mode}:${ownerOnly}`}
+      key={String(ownerOnly)}
       mode={mode}
       ownerOnly={ownerOnly}
       restoreSelection={scope.initial}

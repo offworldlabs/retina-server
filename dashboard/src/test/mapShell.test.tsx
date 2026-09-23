@@ -61,7 +61,7 @@ describe("the map's content pane", () => {
   });
 
   it("is flush on the simulation map", () => {
-    const { container } = renderAt("/sim");
+    const { container } = renderAt("/sim", true);
     expect(container.querySelector(".content.flush")).not.toBeNull();
   });
 
@@ -69,7 +69,7 @@ describe("the map's content pane", () => {
   // the case that would quietly regress if that rule were narrowed to /sim
   // exactly.
   it("is flush on the physics page under it", () => {
-    const { container } = renderAt("/sim/physics");
+    const { container } = renderAt("/sim/physics", true);
     expect(container.querySelector(".content.flush")).not.toBeNull();
   });
 
@@ -88,13 +88,13 @@ describe("the header's name for a page", () => {
   // simulator rather than being a view of it, so the table is consulted with
   // the whole path first.
   it("names the simulation map", () => {
-    const { container } = renderAt("/sim");
+    const { container } = renderAt("/sim", true);
     expect(container.querySelector(".content")).not.toBeNull();
     expect(container.textContent).toContain("Simulation Map");
   });
 
   it("names the physics page nested under it, not its parent", () => {
-    const { container } = renderAt("/sim/physics");
+    const { container } = renderAt("/sim/physics", true);
     expect(container.textContent).toContain("Physics Layer");
     expect(container.textContent).not.toContain("Simulation Map");
   });
@@ -122,7 +122,7 @@ describe("the header's name for a page", () => {
   });
 
   it("names a page that owns its subtree by its first segment", () => {
-    expect(renderAt("/sim/anything").container.textContent).toContain("Simulation Map");
+    expect(renderAt("/sim/anything", true).container.textContent).toContain("Simulation Map");
   });
 });
 

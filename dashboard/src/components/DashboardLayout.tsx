@@ -18,10 +18,10 @@ export const pageTitles: Record<string, { user?: string; admin?: string }> = {
   "/": { user: "Live Map", admin: "Network Health" },
   "/overview": { user: "Overview" },
   "/map": { user: "Live Map" },
-  "/sim": { user: "Simulation Map" },
+  "/sim": { admin: "Simulation Map" },
   // Two segments, so this table is looked up by the whole path before it falls
   // back to the first one: /sim/physics is its own page, not a view of /sim.
-  "/sim/physics": { user: "Physics Layer" },
+  "/sim/physics": { admin: "Physics Layer" },
   // Dev builds only.
   "/test-radar": { user: "Test Radar" },
   "/detections": { user: "Detections" },
@@ -70,7 +70,7 @@ export default function DashboardLayout({ isAdmin, children }) {
   // The map and the physics layer draw to the edges and scroll nothing: their
   // own panels own their overflow, and a scrollbar on the pane would move the
   // canvas under them. `/sim` by first segment covers both the sim map and the
-  // physics page now living under it.
+  // physics page under it.
   const flush = basePath === "/map" || basePath === "/sim";
 
   const toggle = () => {

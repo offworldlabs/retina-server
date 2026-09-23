@@ -6,10 +6,9 @@
  *              nodes taken off client-side (see syntheticOnly.ts).
  *   all:       everything the unfiltered feed carries (the laptop).
  *
- * The mode used to be a property of the hostname alone. It is now a property
- * of the page: /map takes the hostname's default below, /sim is always
- * `synthetic`, so one console serves both fleets at two addresses. No hostname
- * defaults to `synthetic` any more — /sim is the only way to ask for it.
+ * The mode is a property of the page: the app's /map takes the hostname's
+ * default below, and the admin console's /sim is always `synthetic`. No
+ * hostname defaults to `synthetic`; /sim is the only way to ask for it.
  */
 import { usesRealOnlyFeed } from "../../utils/domains";
 

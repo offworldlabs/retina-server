@@ -172,6 +172,14 @@ describe("the map's view of who is signed in", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("offers no owner, and asks nothing, where the page withholds the owner view", async () => {
+    const fetchMock = stubAuth(ME, ok([{ node_ref: "mine" }]));
+    const { result } = renderHook(() => useMapAuth(false));
+    await settle();
+    expect(result.current).toEqual({ user: null, ownedNodeRefs: [], loading: false });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("stays loading until the owned nodes arrive", async () => {
     // NodeOwnerControl renders nothing while loading. Releasing it early shows
     // the owner their panel with an ownership count that is still zero.

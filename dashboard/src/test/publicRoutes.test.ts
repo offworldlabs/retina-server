@@ -44,29 +44,8 @@ describe("the routes a visitor reaches without signing in", () => {
 });
 
 describe("the simulation surface", () => {
-  // The public demo the retired *testmap hostnames used to be. It is a path on
-  // the one console now, so it has to be open the way /map is rather than by
-  // being served from a name nobody signs in on.
-  it("admits the sim map", () => {
-    expect(isPublicRoute("/sim", false)).toBe(true);
-  });
-
-  // The page that writes the fleet's configuration. It used to be refused
-  // here because the PUT behind it was admin-only; the save is open now, so
-  // the page travels with its parent like every other nested route.
-  it("admits the physics page nested under it", () => {
-    expect(isPublicRoute("/sim/physics", false)).toBe(true);
-  });
-
-  it("admits the rest of the subtree, as the other open routes do", () => {
-    expect(isPublicRoute("/sim/anything", false)).toBe(true);
-  });
-
-  it("still admits it spelled with a trailing slash", () => {
-    expect(isPublicRoute("/sim/", false)).toBe(true);
-  });
-
-  it("refuses a route that merely starts like it", () => {
-    expect(isPublicRoute("/simulation", false)).toBe(false);
+  // It is on the admin console, which has no open routes.
+  it.each(["/sim", "/sim/physics"])("refuses %s on the user surface", (path) => {
+    expect(isPublicRoute(path, false)).toBe(false);
   });
 });

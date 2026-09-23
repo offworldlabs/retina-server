@@ -2,8 +2,8 @@
 
 The fleet simulator (`libs/retina-simulation`) runs synthetic radar nodes and
 injects real or simulated aircraft traffic to exercise the full server
-pipeline. It powers the test droplet's `/sim` surface, local development and
-CI; production and staging run no fleet.
+pipeline. It powers the `/sim` map on the test droplet's admin console, local
+development and CI; production and staging run no fleet.
 
 ---
 

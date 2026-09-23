@@ -19,17 +19,15 @@ import { defineConfig, devices } from "@playwright/test";
  * there: a test against one asserts another service's markup, and on prod a
  * failed E2E rolls production back.
  *
- * `testmap` names the environment whose console has a simulator behind its
- * /sim page — the surface is a path on the one console now, not a hostname of
- * its own, so this entry differs from `map` only in which origin is worth
- * asking. It is null on prod AND on staging, and that is load-bearing rather
- * than tidiness: neither runs a simulator (only the test droplet does), so
- * /sim on either is an empty map. Pointing a deployed suite at another
- * environment's simulator would mean that suite exercising a box it does not
- * deploy, and because a failed production E2E auto-rolls-back production
- * (ci.yml), a wobble elsewhere would revert a good production build. The one
- * suite that needs the surface skips itself instead, and runs against the
- * dev server locally.
+ * `testmap` names the origin whose admin console has a simulator at /sim. It
+ * is null on prod AND on staging, and that is load-bearing rather than
+ * tidiness: neither runs a simulator (only the test droplet does), so neither
+ * has a /sim at all. Pointing a deployed suite at another environment's
+ * simulator would mean that suite exercising a box it does not deploy, and
+ * because a failed production E2E auto-rolls-back production (ci.yml), a
+ * wobble elsewhere would revert a good production build. The one suite that
+ * needs the surface skips itself instead, and runs against the dev server
+ * locally, where `?mode=admin` selects the admin console.
  */
 
 const ENV = (process.env.E2E_ENV ?? "staging") as "staging" | "prod" | "local";
@@ -39,10 +37,10 @@ const HOSTS = {
     api:       "https://staging-api.retina.fm",
     // The consolidated surface, whose root opens on the live map.
     map:       "https://staging-app.retina.fm",
-    // The console whose /sim page has a fleet behind it, which is what the
-    // live-map suite needs. Staging runs none any more — its fleet sits behind
-    // the same unenabled `sim` profile as production's, and its /map is the
-    // real network — so the suite skips here as it does on prod.
+    // The origin whose admin console has a /sim page, which is what the
+    // live-map suite needs. Staging runs no fleet (its `fleet` service sits
+    // behind the same unenabled `sim` profile as production's), so the suite
+    // skips here as it does on prod.
     testmap:   null,
     // The dashboard's origin.
     dash:      "https://staging-app.retina.fm",

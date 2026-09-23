@@ -101,8 +101,8 @@ def test_the_smoke_job_no_longer_waits_for_a_fleet():
 
 def test_the_smoke_suite_asserts_the_simulator_is_absent():
     # Two probes, because the flag and the mount are set in different places:
-    # the health body carries the flag the console's nav follows, and the ingest
-    # route must 404 (a mounted POST route answers a GET with 405).
+    # the health body carries the flag, and the ingest route must 404 (a
+    # mounted POST route answers a GET with 405).
     smoke = _SMOKE.read_text()
     assert "'\"synthetic_fleet\":false'" in smoke, "the smoke suite does not assert /api/health reports no fleet"
     probe = re.search(r'check_status\s+"[^"]*"\s+"\$\{API_URL\}(/api/sim/[^"?]+)\??[^"]*"\s+"404"', smoke)

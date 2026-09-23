@@ -216,21 +216,34 @@ class TestSimulationConfig:
         assert cfg["live_adsb_enabled"] is True
         assert cfg["frac_live_dark"] == 0.15
 
-    def test_config_put_needs_no_session(self, client, monkeypatch):
+    def test_config_put_needs_an_admin_and_the_get_does_not(self, client, monkeypatch):
         # The suite reaches admin routes through the anonymous-admin bypass,
-        # which would mask an auth gate on this one. Off, an unsigned PUT is
-        # still accepted here while the admin PUT beside it goes on refusing.
+        # which would mask the gate. Off, an unsigned PUT is refused and
+        # changes nothing, while the GET the fleet polls with no credentials
+        # goes on answering.
         import core.users as users
 
         monkeypatch.setattr(users, "AUTH_BYPASS", False)
-        try:
-            r = client.put("/api/simulation/config", json={"frac_live_dark": 0.2})
-            assert r.status_code == 200
-            assert r.json()["config"]["frac_live_dark"] == 0.2
-            assert client.put("/api/test/known-hold", json={}).status_code == 401
-        finally:
-            monkeypatch.undo()
-            client.put("/api/simulation/config", json={"frac_live_dark": 0.15})
+        before = client.get("/api/simulation/config").json()["frac_live_dark"]
+        assert client.put("/api/simulation/config", json={"frac_live_dark": 0.2}).status_code == 401
+        after = client.get("/api/simulation/config")
+        assert after.status_code == 200
+        assert after.json()["frac_live_dark"] == before
+
+    def test_the_known_hold_put_beside_it_needs_an_admin_too(self, client, monkeypatch):
+        import core.users as users
+
+        monkeypatch.setattr(users, "AUTH_BYPASS", False)
+        # A valid body, so the refusal can only be the gate's.
+        assert client.put("/api/test/known-hold", json={"max_gap_s": 8}).status_code == 401
+
+    @pytest.mark.parametrize("path", ["/api/simulation/ground-truth", "/api/test/solver-stats"])
+    def test_the_physics_page_reads_need_an_admin(self, client, monkeypatch, path):
+        import core.users as users
+
+        assert client.get(path).status_code == 200
+        monkeypatch.setattr(users, "AUTH_BYPASS", False)
+        assert client.get(path).status_code == 401
 
     def test_live_knobs_accepted_and_echoed(self, client):
         r = client.put("/api/simulation/config", json={"frac_live_dark": 0.6, "live_adsb_enabled": False})

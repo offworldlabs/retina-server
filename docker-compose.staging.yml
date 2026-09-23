@@ -50,9 +50,9 @@ services:
       - NODE_FORCE_RETIRE_PREFIXES=e2e-,synth-e2e-
       # No SYNTHETIC_FLEET_ENABLED here, deliberately: staging runs no fleet
       # (see the `sim` profile on the service below), so the simulation ingest
-      # write path main.py gates on that flag stays unmounted and the console
-      # hides its /sim page, exactly as on production. The test droplet is the
-      # one environment that sets it (docker-compose.test.yml).
+      # write path main.py gates on that flag stays unmounted and the admin
+      # console has no /sim page, exactly as on production. The test droplet is
+      # the one environment that sets it (docker-compose.test.yml).
       # Labels alerts, and a variable of its own rather than a reading of
       # RETINA_ENV above: this box names itself `staging` in an alert while still
       # running the `test` guards. See services/alerting.py.
@@ -72,12 +72,10 @@ services:
       # the parity check assert the rendered configs are identical.
       - HOST_MAIN=staging-towers.retina.fm
       - HOST_API=staging-api.retina.fm
-      # The public surface, and the whole console: real nodes at /map, and no
-      # /sim in the nav, since this environment leaves SYNTHETIC_FLEET_ENABLED
-      # unset (see above). `testmap.retina.fm` — the name people already have
-      # from when staging's map was the simulator demo — is a Cloudflare
-      # redirect onto this one's /map, and so onto the real network;
-      # `staging-map`, `staging-dash` and `staging-data` are the same.
+      # The public surface: real nodes at /map. `testmap.retina.fm` — the name
+      # people already have from when staging's map was the simulator demo —
+      # is a Cloudflare redirect onto this one's /map, and so onto the real
+      # network; `staging-map`, `staging-dash` and `staging-data` are the same.
       - HOST_APP=staging-app.retina.fm
       - HOST_ADMIN=staging-admin.retina.fm
       # The only host-naming part of the CSP. wss://*.retina.fm already covers

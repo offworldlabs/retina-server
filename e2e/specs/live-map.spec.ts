@@ -1,18 +1,20 @@
 /**
  * Live Aircraft Map E2E tests, on the simulation surface.
  *
- * This suite visits the console's /sim on whichever host `hosts.testmap` names
- * — the local dev server, today. /sim asks for the synthetic fleet by name,
- * which is why this suite no longer has to be pointed at a hostname that
- * happened to serve it: it verifies the map page loads, WebSocket connects,
- * aircraft appear, and key interactive elements work correctly.
+ * This suite visits the admin console's /sim on whichever host `hosts.testmap`
+ * names: the local dev server, where `?mode=admin` selects that console. It
+ * verifies the map page loads, WebSocket connects, aircraft appear, and key
+ * interactive elements work correctly.
  *
  * NOTE: These tests require the synthetic fleet to be running on the target
- * environment. They use generous timeouts to account for warm-up time.
+ * environment, and a backend started with SYNTHETIC_FLEET_ENABLED=1 and
+ * AUTH_ALLOW_ANONYMOUS_ADMIN=1: /sim is an admin page, and exists only where
+ * the server reports a fleet. They use generous timeouts to account for
+ * warm-up time.
  *
  * Neither production nor staging runs a simulator (only the test droplet
- * does), so /sim on either is an empty map and the whole file skips there
- * rather than reaching across environments. See the note in
+ * does), so neither has a /sim and the whole file skips there rather than
+ * reaching across environments. See the note in
  * playwright.config.ts: a failed production E2E auto-rolls-back production, so
  * a suite that silently tested another box could revert a good production
  * build.
@@ -30,7 +32,7 @@ test.skip(
 // test.skip aborts the tests, not this module — every top-level statement still
 // runs during collection — so nothing here may call a method on TESTMAP where it
 // is null. Interpolating it is safe.
-const BASE = `${TESTMAP}/sim`;
+const BASE = `${TESTMAP}/sim?mode=admin`;
 
 // Helper: wait for the connection badge to show "LIVE"
 async function waitForLive(page: Page, timeoutMs = 15_000) {

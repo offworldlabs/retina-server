@@ -20,7 +20,7 @@ session cookie is host-only and a login has to cover all of them:
 
 | Surface | What it is |
 | --- | --- |
-| **map** (`/map`, where `/` opens) | Live aircraft map, the console's front page. Every deployed environment shows real radar nodes only here; the synthetic fleet, where one runs, has its own page at `/sim`. The `/map` default is chosen by hostname in `dashboard/src/utils/domains.ts`, and only the laptop keeps both fleets on it. |
+| **map** (`/map`, where `/` opens) | Live aircraft map, the console's front page. Every deployed environment shows real radar nodes only here; the synthetic fleet, where one runs, is on the admin console at `/sim`. The `/map` default is chosen by hostname in `dashboard/src/utils/domains.ts`, and only the laptop keeps both fleets on it. |
 | **console** (the rest of `/`) | Node ownership, the node claim page, MLAT verification, metrics. Auth required, bar the public pages such as the map and the detection archive browser at `/data`. |
 | **admin** (`admin.retina.fm`) | The same dashboard bundle with the admin route table, on a hostname of its own so a Cloudflare Access application can gate it. |
 
@@ -53,7 +53,7 @@ the algorithms can be reused and versioned independently:
 | --- | --- |
 | `retina-geolocator` | Bistatic delay/Doppler position solver (single- and multi-node, LM least-squares). |
 | `retina-tracker` | Multi-target Kalman tracker + anomaly detection. |
-| `retina-simulation` | Fleet simulator that generates synthetic radar frames for the console's `/sim` surface and CI. |
+| `retina-simulation` | Fleet simulator that generates synthetic radar frames for the admin console's `/sim` map and CI. |
 | `retina-custody` | Custody-protocol library. |
 | `retina-analytics` | Node trust/reputation analysis. |
 
@@ -158,10 +158,10 @@ image, so a plain `up` silently reuses the previous build.
 
 ### See real data without running the pipeline
 
-The simulation fleet (`retina-simulation`) feeds the `/sim` map. Production
-and staging run no fleet, so `test-app.retina.fm/sim` is the deployed surface
-that shows one. To drive a local backend with synthetic frames, see
-[`docs/simulation.md`](docs/simulation.md).
+The simulation fleet (`retina-simulation`) feeds the admin console's `/sim`
+map. Production and staging run no fleet, so `test-admin.retina.fm/sim`, behind
+Cloudflare Access, is the deployed surface that shows one. To drive a local
+backend with synthetic frames, see [`docs/simulation.md`](docs/simulation.md).
 
 ### Working in a git worktree
 
@@ -334,19 +334,17 @@ branch, open a PR, get it green, then merge.
   assume persistence.
 - **Submodules.** After pulling, run `git submodule update --init --recursive`
   if `libs/` looks stale or imports fail.
-- **The map opens on localhost too.** There is one console per environment —
-  `app`, `staging-app`, `test-app` — and the surface is chosen by path, not by
-  hostname: `/map` is the real network, `/sim` the simulated fleet, and
-  `/sim/physics` the page that tunes it. Both are open without signing in,
-  and so is the save behind the physics page — there is no identity provider
-  to sign an operator in with yet, and the fleet is synthetic. `/sim` exists
-  everywhere but is only worth opening where the server sets
-  `SYNTHETIC_FLEET_ENABLED` (the test droplet and the laptop — not staging or
-  production, which run no simulator),
-  which is what `/api/health` and `/api/auth/me` both report so the nav and
-  the physics route can follow it. `map`, `testmap`,
+- **The map opens on localhost too.** Each environment has two consoles, and
+  the hostname chooses between them. The app (`app`, `staging-app`,
+  `test-app`) is the public view of the network, with the real nodes at
+  `/map`. The admin console (`admin`, `staging-admin`, `test-admin`, behind
+  Cloudflare Access) holds the simulated fleet at `/sim` and the page that
+  tunes it at `/sim/physics`, whose save needs an administrator. Both routes
+  exist only where the server sets `SYNTHETIC_FLEET_ENABLED` (the test droplet
+  and the laptop; staging and production run no simulator), as `/api/auth/me`
+  reports. On the dev server that is `/sim?mode=admin`. `map`, `testmap`,
   `test-testmap`, `staging-map` and the other retired names are Cloudflare
-  redirects into those consoles. `/map` still takes its feed from the
+  redirects into the app consoles. `/map` still takes its feed from the
   hostname: every deployed environment (`app`, `staging-app`, `test-app`) is
   real-only there, and a local hostname retains both kinds of node. Tower search has its own SPA in
   tower-finder-service; the laptop overlay sets `TOWER_FINDER_ENABLED=false`,

@@ -11,9 +11,6 @@
  */
 export const PUBLIC_PATHS: readonly string[] = [
   "/map",
-  // Opens /sim/physics with it, the page that tunes the fleet: the console has
-  // no identity provider to sign an operator in with, so its save is open too.
-  "/sim",
   "/data",
   "/leaderboard",
   "/knowledge",
@@ -31,9 +28,8 @@ export function isPublicRoute(pathname: string, isAdmin: boolean): boolean {
   // The index renders nothing of its own: it forwards to the map.
   if (pathname === "/") return true;
   // First segment only, so a nested route travels with its parent: /data/
-  // 2026/09/17 is the archive listing's own deep link, and /sim/physics is a
-  // setting of the simulator. Split rather than a prefix test: "/datasets"
-  // starts with "/data" and is a different page.
+  // 2026/09/17 is the archive listing's own deep link. Split rather than a
+  // prefix test: "/datasets" starts with "/data" and is a different page.
   const first = `/${pathname.split("/").filter(Boolean)[0] ?? ""}`;
   return PUBLIC_PATHS.includes(first);
 }
