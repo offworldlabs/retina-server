@@ -260,6 +260,28 @@ class NodeReport(Base):
     errors: Mapped[list] = mapped_column(JSON, default=list, server_default="[]")
 
 
+class NodeEvent(Base):
+    """A human decision about a node, oldest first and never rewritten.
+
+    Keyed to `nodes` without a cascade, so the record of who released a
+    radar's data outlives its registration. `actor` follows
+    NodeLocationPrivacy.set_by: `admin:<email>` for an administrator.
+    """
+
+    __tablename__ = "node_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    node_id: Mapped[str] = mapped_column(String(32), ForeignKey("nodes.node_id"), index=True)
+    kind: Mapped[str] = mapped_column(String(32))
+    # The polled radar's epoch the decision applied to.
+    epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    actor: Mapped[str] = mapped_column(String(255))
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    def __repr__(self) -> str:
+        return f"NodeEvent(id={self.id!r}, node_id={self.node_id!r}, kind={self.kind!r})"
+
+
 class PolledRadar(Base):
     """What polling a stock blah2 radar adds to its node.
 

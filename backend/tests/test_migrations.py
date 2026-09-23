@@ -422,3 +422,20 @@ def test_0017_downgrade_drops_the_network_move_columns(tmp_path):
     indexes = "SELECT name, \"unique\" FROM pragma_index_list('polled_radars') ORDER BY name"
     assert ("ix_polled_radars_endpoint_key", 1) in _query(db, indexes)
     assert _query(db, "SELECT \"table\" FROM pragma_foreign_key_list('polled_radars')") == [("nodes",)]
+
+
+# ── 0019: node_events ────────────────────────────────────────────────────────
+
+
+def test_0019_downgrade_drops_node_events(tmp_path):
+    db = tmp_path / "events.db"
+    up = _alembic("upgrade", "0019", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    tables = "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'node_events'"
+    assert _query(db, tables) == [("node_events",)]
+    # Keyed to nodes, not to polled_radars: the record outlives a registration.
+    assert _query(db, "SELECT \"table\" FROM pragma_foreign_key_list('node_events')") == [("nodes",)]
+
+    down = _alembic("downgrade", "0018", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, tables) == []
