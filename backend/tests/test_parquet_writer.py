@@ -229,6 +229,17 @@ def test_custody_columns_default_null_when_absent(tmp_path: Path):
     assert all(isinstance(r["ingest_ts_ms"], int) for r in rows)
 
 
+def test_a_frame_s_epoch_is_archived_and_null_where_it_has_none(tmp_path: Path):
+    """A polled radar's frames say which epoch of the node they came from; a fleet node's say nothing."""
+    polled = dict(_frame(timestamp_ms=1700000000000, n_dets=2), epoch=3)
+    fleet = _frame(timestamp_ms=1700000001000, n_dets=1)
+
+    key = pw.write_detections_parquet(node_id="node-A", frames=[polled, fleet], base_dir=tmp_path)
+
+    rows = pq.read_table(tmp_path / key, partitioning=None).to_pylist()
+    assert [r["epoch"] for r in rows] == [3, 3, None]
+
+
 def test_round_trip_via_storage_module(tmp_path: Path, monkeypatch):
     """archive_detections + read_archived_file round-trips back to legacy JSON shape."""
     monkeypatch.setattr("services.storage._LOCAL_ARCHIVE_DIR", str(tmp_path))
@@ -248,6 +259,17 @@ def test_round_trip_via_storage_module(tmp_path: Path, monkeypatch):
     assert fr0["delay"] == [10.0, 11.0]
     assert fr0["adsb"][0]["hex"] == "abcdef"
     assert fr0["adsb"][1] is None
+
+
+def test_an_archived_frame_s_epoch_is_read_back(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("services.storage._LOCAL_ARCHIVE_DIR", str(tmp_path))
+
+    from services.storage import archive_detections, read_archived_file
+
+    polled = dict(_frame(timestamp_ms=1700000000000, n_dets=1), epoch=2)
+    fleet = _frame(timestamp_ms=1700000001000, n_dets=1)
+    decoded = read_archived_file(archive_detections("node-X", [polled, fleet]))
+    assert [fr["epoch"] for fr in decoded["detections"]] == [2, None]
 
 
 def test_schema_includes_geometry_and_rf_columns(tmp_path: Path):

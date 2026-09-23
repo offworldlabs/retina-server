@@ -256,6 +256,7 @@ def _read_parquet_as_legacy_json(path: str) -> dict:
                 "adsb": [],
                 "_signing_mode": r.get("signing_mode"),
                 "_signature_valid": r.get("signature_valid"),
+                "epoch": r.get("epoch"),
                 # Geometry/RF snapshot is per-frame (constant within a frame).
                 "rx_lat": r.get("rx_lat"),
                 "rx_lon": r.get("rx_lon"),
