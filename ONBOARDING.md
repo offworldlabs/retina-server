@@ -97,11 +97,14 @@ All three go on the command line rather than in `.env`, because `main.py` loads
 the dotenv file after the modules that read them. `just up` passes them for you.
 
 Dependencies are declared in `backend/pyproject.toml` and pinned, transitive ones
-included, by `backend/uv.lock`, which the image and CI both install from. Change
-one with `uv add` or `uv remove`, or edit `pyproject.toml` and run `uv lock`, and
-commit the two together. A submodule bump that changes a lib's own dependencies
-needs `uv lock` as well. CI syncs with `--locked`, so a lock left behind fails
-the run. After a pull that moves the lock, `uv sync` again.
+included, by `backend/uv.lock`. The images and CI install from it with the uv
+the `Dockerfile` pins as `UV_VERSION`, and the lock is written with that uv too:
+`uv tool run uv@<UV_VERSION>` runs it beside your own. From `backend/`, change a
+dependency with `uv tool run uv@<UV_VERSION> add` (or `remove`), or edit
+`pyproject.toml` and run `uv tool run uv@<UV_VERSION> lock`, and commit the two
+together. A submodule bump that changes a lib's own dependencies needs the lock
+as well. CI syncs with `--locked`, so a lock left behind fails the run. After a
+pull that moves the lock, `uv sync` again.
 
 ### The console
 

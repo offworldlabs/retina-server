@@ -1,0 +1,21 @@
+name: Set up uv
+description: Install the uv the images build with, the Dockerfile's UV_VERSION.
+runs:
+  using: composite
+  steps:
+    # setup-uv reads an empty version as "latest", so a version that cannot be
+    # read fails here rather than quietly unpinning CI.
+    - id: uv
+      shell: bash
+      run: |
+        version="$(sed -n 's/^ARG UV_VERSION=//p' "$GITHUB_WORKSPACE/Dockerfile")"
+        [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+          echo "::error::Expected one UV_VERSION in the Dockerfile, found: '$version'"; exit 1; }
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+    - uses: astral-sh/setup-uv@v5
+      with:
+        version: ${{ steps.uv.outputs.version }}
+        # uv installs the tree in 2-3s cold or warm, so a cache saves nothing
+        # while its restore and prune add seconds of their own. setup-uv
+        # caches on GitHub-hosted runners unless told not to.
+        enable-cache: false
