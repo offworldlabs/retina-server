@@ -146,8 +146,13 @@ def _build_dashboard_data() -> bytes:
             },
             # Tracks the nodes' own trackers sent (contract 1.6.0), as the store
             # holds them: how many nodes send them, how full their windows are,
-            # and how many frames' tracks could not be filed.
-            "node_tracks": node_tracks.store.summary() | {"errors": state.node_tracks_errors},
+            # how many tracks could not be filed, and how many pipelines track
+            # on them in place of the in-process tracker.
+            "node_tracks": node_tracks.store.summary()
+            | {
+                "errors": state.node_tracks_errors,
+                "cut_over": sum(isinstance(p.tracker, node_tracks.NodeTracker) for p in _pipelines_snapshot),
+            },
             "analytics": {
                 "nodes_with_analytics": analytics_nodes,
                 "average_trust_score": round(avg_trust, 4),
