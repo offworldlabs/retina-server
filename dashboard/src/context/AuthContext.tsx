@@ -1,52 +1,16 @@
-import { createContext, useContext, useEffect, useState } from "react";
-import { request, useCurrentUser } from "@retina/shared";
+import { createContext, useContext } from "react";
+import { useCurrentUser } from "@retina/shared";
 import { api } from "../api/client";
 
 const AuthContext = createContext(null);
 
-/** Whether this server runs a synthetic fleet, for a caller who has no session
- *  to read it off.
- *
- *  A signed-in user gets the same fact as `synthetic_fleet` on /api/auth/me.
- *  A visitor does not, and the console has to decide whether to point at
- *  /sim and mount the physics page under it: test and staging run a fleet,
- *  production does not, and one bundle serves all three. /api/health is the
- *  only thing the server tells everyone, so the flag is answered there, and
- *  AuthProvider folds the two sources into the one `syntheticFleet` it hands
- *  out.
- *
- *  Asked once at boot, beside the /me fetch, and never again — it is a
- *  property of the deployment, which does not change under a running tab. A
- *  failure is swallowed and leaves it false: this decides whether one nav
- *  entry is drawn, and a console that will not render because a liveness probe
- *  timed out would be a far worse trade. */
-function useSyntheticFleet(): boolean {
-  const [syntheticFleet, setSyntheticFleet] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    request<{ synthetic_fleet?: boolean }>("/api/health")
-      .then((h) => {
-        if (!cancelled) setSyntheticFleet(Boolean(h?.synthetic_fleet));
-      })
-      .catch(() => {
-        /* unadvertised is the safe answer; see above */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  return syntheticFleet;
-}
-
 export function AuthProvider({ children }) {
   const { user, loading, setUser } = useCurrentUser();
-  const healthFleet = useSyntheticFleet();
-  // /me's word first: it arrives under the loading gate, so a signed-in
-  // caller's pages mount on the first settled render rather than a health
-  // round trip later.
-  const syntheticFleet = Boolean(user?.synthetic_fleet ?? healthFleet);
+  // Whether this server runs a synthetic fleet, as /api/auth/me tells a
+  // session. A visitor reads false, which costs nothing deployed: the
+  // simulator is on the admin console, which has no visitors, and every
+  // deployed /map is real-only, where ground truth is never offered.
+  const syntheticFleet = Boolean(user?.synthetic_fleet);
 
   // Resolves { redirected } so a caller knows not to route over a navigation
   // that is still in flight. `leave` runs in the same tick the identity is

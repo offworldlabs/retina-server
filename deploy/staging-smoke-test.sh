@@ -504,8 +504,8 @@ echo "── No simulator here ──"
 # rehearsal (docker-compose.staging.yml keeps the fleet behind an unenabled
 # `sim` profile and leaves SYNTHETIC_FLEET_ENABLED unset). Two probes, because
 # the flag and the mount are set in different places and could disagree:
-# /api/health reports the flag the console's nav follows, and the ingest route
-# main.py gates on it must be absent — 404, not the 405 a mounted POST route
+# /api/health reports the flag (the console reads it off /api/auth/me), and the
+# ingest route main.py gates on it must be absent — 404, not the 405 a mounted POST route
 # answers a GET with. Only the test droplet may answer these the other way.
 check "server reports no synthetic fleet" "${API_URL}/api/health?${BUST}" '"synthetic_fleet":false'
 check_status "sim ingest route is not mounted" "${API_URL}/api/sim/adsb/push?${BUST}" "404"

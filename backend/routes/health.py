@@ -27,16 +27,12 @@ async def health(strict: bool = Query(False)):
     external uptime monitor. Alerting is owned by the health-monitor task, not
     this endpoint, so health stays observable even when nothing polls it.
 
-    The body also carries ``synthetic_fleet``, which is not health at all. The
-    console's /sim surface exists only where the server runs a fleet, and a
-    caller with a session learns that from /api/auth/me while a visitor without
-    one has no such answer — so the signed-out nav would either advertise an
-    empty map on production or hide a working one on test. This is the only
-    thing the server tells everyone, so the flag rides along here rather than
-    growing a second public endpoint that says one boolean. It is a deployment
-    fact, not a secret: the compose file setting SYNTHETIC_FLEET_ENABLED is in
-    this public repo, and the sim routes themselves are already unauthenticated
-    reads wherever they are mounted.
+    The body also carries ``synthetic_fleet``, which is not health at all. It
+    says whether this deployment runs a fleet to a caller with no credentials,
+    which is how the staging smoke test asserts that staging runs none; the
+    console learns the same from /api/auth/me. It is a deployment fact, not a
+    secret: the compose file setting SYNTHETIC_FLEET_ENABLED is in this public
+    repo.
 
     ``polled_radar_probation`` rides along on the same terms: it says whether
     this deployment holds unvetted polled radars back from the solve, the

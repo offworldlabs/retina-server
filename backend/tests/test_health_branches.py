@@ -402,16 +402,12 @@ class TestCoverageRebuildBacklogStaleness:
 
 
 class TestSyntheticFleetAdvertisement:
-    """/api/health is where a caller with no session learns that this
-    deployment runs a simulator.
+    """/api/health is where a caller with no credentials learns whether this
+    deployment runs a simulator, which is how the staging smoke test asserts
+    that staging runs none.
 
-    The console's /sim surface is open to everyone, but it is only worth
-    advertising where there is a fleet behind it: production runs none, and a
-    "Simulation" entry in the signed-out nav there would lead to a map that is
-    permanently empty. A signed-in user gets the same fact from /api/auth/me,
-    which is where it has always lived; this is the unauthenticated twin of
-    that field, so the two are read off the same `synthetic_fleet_enabled` and
-    cannot drift.
+    A signed-in user gets the same fact from /api/auth/me. The two are read
+    off the same `synthetic_fleet_enabled`, so they cannot drift.
     """
 
     def test_a_healthy_server_with_a_fleet_says_so(self, client, monkeypatch):
@@ -420,9 +416,8 @@ class TestSyntheticFleetAdvertisement:
         assert body["synthetic_fleet"] is True
 
     def test_a_healthy_server_without_one_says_so_too(self, client, monkeypatch):
-        """Present and false rather than absent: the console defaults the flag
-        off, so an omitted field and a fleetless server would look alike and a
-        dropped field would go unnoticed."""
+        """Present and false rather than absent: the staging smoke test
+        matches the literal false."""
         monkeypatch.delenv("SYNTHETIC_FLEET_ENABLED", raising=False)
         body = client.get("/api/health").json()
         assert body["synthetic_fleet"] is False
@@ -430,8 +425,8 @@ class TestSyntheticFleetAdvertisement:
     def test_a_degraded_server_still_answers_the_question(self, client, monkeypatch):
         """Degradation is about the radar pipeline; whether a fleet is
         configured is a deployment fact that does not stop being true. Were it
-        dropped here, a console booting during a solver stall would quietly
-        stop offering the surface.
+        dropped here, the staging smoke test would fail on any degraded run for
+        a reason that has nothing to do with the fleet.
         """
         monkeypatch.setenv("SYNTHETIC_FLEET_ENABLED", "1")
         monkeypatch.setattr(state, "solver_last_latency_s", 45.0)
