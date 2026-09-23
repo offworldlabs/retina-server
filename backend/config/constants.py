@@ -591,9 +591,14 @@ RATE_BUCKETS_MAX_IPS = 10_000  # Max unique IPs in rate limiter
 # imposes no restriction, which is what production wants: a decommissioned
 # receiver stays in connected_nodes until something retires it, so retiring a
 # real node needs force=true too, and a prefix test would refuse the operator
-# case the endpoint exists for.  Staging sets the test prefixes, because that
-# is where the E2E suite force-retires its own nodes and where a mistaken sweep
-# would cost something.
+# case the endpoint exists for.  Staging sets the E2E suite's prefixes, because
+# a mistaken sweep would cost something there.
+#
+# The same list names those ids disposable: the server retires them itself once
+# quiet (services.node_retirement.retire_disposable_nodes), and unset it retires
+# nothing.  It must never match a node that comes back, such as a fleet's
+# synth- ids, or that node loses its coverage whenever it is away.
+DISPOSABLE_SWEEP_INTERVAL_S = 600
 
 
 def force_retire_prefixes() -> tuple[str, ...]:

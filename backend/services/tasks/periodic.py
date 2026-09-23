@@ -13,6 +13,7 @@ from config.constants import (
     ADSB_TRUTH_INTERVAL_S,
     ARCHIVE_FLUSH_INTERVAL_S,
     ARCHIVE_LIFECYCLE_INTERVAL_S,
+    DISPOSABLE_SWEEP_INTERVAL_S,
     EXTERNAL_ADSB_MAX_AGE_S,
     FT_TO_M,
     KNOTS_TO_MS,
@@ -142,6 +143,25 @@ async def prune_synthetic_nodes():
         except Exception:
             state.bump_task_error("prune_synthetic_nodes")
             logging.exception("Node pruning failed")
+
+
+async def retire_disposable_nodes_task():
+    """Retire quiet test nodes wherever NODE_FORCE_RETIRE_PREFIXES names them.
+
+    Short enough to run between staging deploys, which restart the server
+    several times a day.
+    """
+    from services import node_retirement
+
+    async with task_executor("disposable-nodes") as run:
+        while True:
+            await asyncio.sleep(DISPOSABLE_SWEEP_INTERVAL_S)
+            try:
+                await run(node_retirement.retire_disposable_nodes)
+                state.task_last_success["retire_disposable_nodes"] = time.time()
+            except Exception:
+                state.bump_task_error("retire_disposable_nodes")
+                logging.exception("Disposable-node sweep failed")
 
 
 def _reset_for_tests() -> None:

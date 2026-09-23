@@ -43,11 +43,10 @@ services:
       - RETINA_ENV=test
       # This environment's Access application, on staging-admin.retina.fm.
       - CF_ACCESS_AUD=e81258e72360b51069e64c82ca9762b52556898d8096b20873833ff50f7eb66e
-      # The E2E suite retires the nodes it registers, which needs force because
-      # a registered node is live until something evicts it. Confining force to
-      # the suite's own prefixes means a bug in the teardown cannot reach a real
-      # board. Production leaves this unset, and so unrestricted, because a
-      # decommissioned receiver needs force too.
+      # The E2E suite's node ids. The server retires them once quiet, and force
+      # is confined to them, so neither that sweep nor an admin retire can reach
+      # a real board by mistake. Production leaves this unset: nothing is swept,
+      # and force stays unrestricted because a decommissioned receiver needs it.
       - NODE_FORCE_RETIRE_PREFIXES=e2e-,synth-e2e-
       # No SYNTHETIC_FLEET_ENABLED here, deliberately: staging runs no fleet
       # (see the `sim` profile on the service below), so the simulation ingest
