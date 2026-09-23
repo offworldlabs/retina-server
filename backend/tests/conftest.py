@@ -261,28 +261,17 @@ async def node_session(tmp_path, _node_schema_template):
     """
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+    from core.users import _set_sqlite_pragmas
+
     db_path = tmp_path / "nodes.db"
     shutil.copyfile(_node_schema_template, db_path)
 
     engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
-
-    @event.listens_for(engine.sync_engine, "connect")
-    def _pragmas(dbapi_conn, _record):
-        # test_a_config_for_an_unknown_node_is_rejected depends on this. SQLite
-        # does not enforce foreign keys unless asked, per connection.
-        #
-        # This deliberately stops short of core.users.engine's full pragma set.
-        # WAL and synchronous=NORMAL exist there to survive a hard kill mid-write
-        # and to let readers proceed alongside a writer; this fixture's database
-        # is a fresh per-test temporary file with one connection and no
-        # concurrent access, deleted with the tmp_path at test end, so neither
-        # property has anything to buy. busy_timeout exists there to tolerate
-        # contention from other processes, which a private per-test file never
-        # has. Only the foreign-key enforcement this fixture exists to test is
-        # worth reproducing.
-        cur = dbapi_conn.cursor()
-        cur.execute("PRAGMA foreign_keys=ON")
-        cur.close()
+    # Production's pragmas in full. Tests that run the poller open more
+    # connections through this engine, and only WAL lets their reads overlap the
+    # test's commits as they do on the droplets. The foreign keys among them are
+    # what test_a_config_for_an_unknown_node_is_rejected depends on.
+    event.listen(engine.sync_engine, "connect", _set_sqlite_pragmas)
 
     maker = async_sessionmaker(engine, expire_on_commit=False)
     async with maker() as session:
