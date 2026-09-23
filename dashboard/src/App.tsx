@@ -15,7 +15,6 @@ const DetectionsPage = lazy(() => import("./pages/user/DetectionsPage"));
 const ContributionPage = lazy(() => import("./pages/user/ContributionPage"));
 const DataExplorerPage = lazy(() => import("./pages/user/DataExplorerPage"));
 const RFEnvironmentPage = lazy(() => import("./pages/user/RFEnvironmentPage"));
-const AlertsPage = lazy(() => import("./pages/user/AlertsPage"));
 const LeaderboardPage = lazy(() => import("./pages/user/LeaderboardPage"));
 const KnowledgeBasePage = lazy(() => import("./pages/user/KnowledgeBasePage"));
 const TunnelLinkPage = lazy(() => import("./pages/user/TunnelLinkPage"));
@@ -116,7 +115,6 @@ export default function App() {
                       <Route path="rf" element={<RFEnvironmentPage />} />
                       <Route path="contribution" element={<ContributionPage />} />
                       <Route path="data" element={<DataExplorerPage />} />
-                      <Route path="alerts" element={<AlertsPage />} />
                       <Route path="anomalies" element={<AnomalyPage />} />
                       <Route path="leaderboard" element={<LeaderboardPage />} />
                       <Route path="knowledge" element={<KnowledgeBasePage />} />

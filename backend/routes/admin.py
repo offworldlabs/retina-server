@@ -36,7 +36,6 @@ from core.task_registry import get_stale_tasks
 from core.users import (
     User,
     get_async_session,
-    get_current_user,
     get_optional_user,
     require_admin,
     user_to_dict,
@@ -746,20 +745,6 @@ async def leaderboard(caller=Depends(get_optional_user)):
         entries.append(row)
     row_class = PublicLeaderboardRow if caller is None else SignedInLeaderboardRow
     return Leaderboard[row_class](leaderboard=entries, total=len(entries))
-
-
-# ── User alerts (public, non-admin) ─────────────────────────────────────────
-
-
-@router.get("/alerts")
-async def user_alerts(_user=Depends(get_current_user)):
-    """Return recent events visible to logged-in users."""
-    visible = [
-        e
-        for e in _events
-        if e.get("severity") in ("warning", "error", "critical") or e.get("category") in ("node", "config", "system")
-    ]
-    return visible[:100]
 
 
 @router.get("/metrics")

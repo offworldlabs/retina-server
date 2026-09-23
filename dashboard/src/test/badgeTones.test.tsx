@@ -3,12 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import ui from "@retina/shared/css/ui.css?raw";
 
 vi.mock("../api/client", () => ({
-  api: { adminEvents: vi.fn(), alerts: vi.fn() },
+  api: { adminEvents: vi.fn() },
 }));
 
 import { api } from "../api/client";
 import EventsPage from "../pages/admin/EventsPage";
-import AlertsPage from "../pages/user/AlertsPage";
 
 /* A badge's tone says how things stand: green is healthy, amber wants a look,
    red is in trouble. Severity is not health, so it does not borrow a health
@@ -31,12 +30,9 @@ describe("badge tones", () => {
     expect(ui).toMatch(/\.badge\.info\s*\{/);
   });
 
-  it.each([
-    ["Events", EventsPage, "adminEvents"],
-    ["Alerts", AlertsPage, "alerts"],
-  ] as const)("shows %s info severity in the info tone, not the healthy one", async (_name, Page, call) => {
-    vi.mocked(api[call]).mockResolvedValue(events);
-    render(<Page />);
+  it("shows info severity in the info tone, not the healthy one", async () => {
+    vi.mocked(api.adminEvents).mockResolvedValue(events);
+    render(<EventsPage />);
     await screen.findByText("node connected");
     expect(badge("info")).toHaveClass("badge", "info");
     expect(badge("info")).not.toHaveClass("online");

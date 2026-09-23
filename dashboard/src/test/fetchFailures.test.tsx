@@ -50,7 +50,6 @@ const PAGES: [string, Page, string][] = [
   ["Storage archive", () => import("../pages/admin/StoragePage"), "the archive listing"],
   ["System Metrics", () => import("../pages/admin/SystemMetricsPage"), "system metrics"],
   ["User Management", () => import("../pages/admin/UserManagementPage"), "the user list"],
-  ["Alerts", () => import("../pages/user/AlertsPage"), "alerts"],
   ["Anomaly", () => import("../pages/user/AnomalyPage"), "anomaly data"],
   ["Contribution", () => import("../pages/user/ContributionPage"), "network contribution"],
   ["Detections", () => import("../pages/user/DetectionsPage"), "detections"],
@@ -83,10 +82,10 @@ describe("a console page whose first fetch fails", () => {
   });
 
   it("names the page above the notice", async () => {
-    await renderPage(() => import("../pages/user/AlertsPage"));
+    await renderPage(() => import("../pages/admin/EventsPage"));
     await screen.findByRole("alert");
-    expect(screen.getByRole("heading", { name: "Alerts & Notifications" })).toBeInTheDocument();
-    expect(screen.queryByText(/No alerts/)).toBeNull();
+    expect(screen.getByRole("heading", { name: "Events & Alerts" })).toBeInTheDocument();
+    expect(screen.queryByText(/No events/)).toBeNull();
   });
 
   it("tells a missing node apart from a failed fetch", async () => {
@@ -118,7 +117,7 @@ describe("a console page whose refresh fails", () => {
   const alert = { ts: 1790000000, severity: "warning", category: "node", message: "ret-abc went quiet" };
 
   it.each([
-    ["Alerts", () => import("../pages/user/AlertsPage"), "alerts", "/api/admin/alerts", [alert], "ret-abc went quiet"],
+    ["Events", () => import("../pages/admin/EventsPage"), "events", "/api/admin/events", [alert], "ret-abc went quiet"],
     [
       "System Metrics",
       () => import("../pages/admin/SystemMetricsPage"),

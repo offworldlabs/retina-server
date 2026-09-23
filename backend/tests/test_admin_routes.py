@@ -646,31 +646,6 @@ class TestLeaderboard:
         assert other not in body
 
 
-# ── Alerts ───────────────────────────────────────────────────────────────────
-
-
-class TestAlerts:
-    def test_alerts_returns_list(self, client):
-        r = client.get("/api/admin/alerts")
-        assert r.status_code == 200
-        assert isinstance(r.json(), list)
-
-    def test_alerts_filters_severity(self, client):
-        from routes.admin import log_event
-
-        log_event("test", "info-only", "info")
-        log_event("node", "warning-event", "warning")
-        r = client.get("/api/admin/alerts")
-        events = r.json()
-        # warning/error/critical + node/config/system categories pass through
-        for e in events:
-            assert e.get("severity") in ("warning", "error", "critical") or e.get("category") in (
-                "node",
-                "config",
-                "system",
-            )
-
-
 # ── Metrics ──────────────────────────────────────────────────────────────────
 
 
