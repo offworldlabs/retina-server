@@ -26,12 +26,13 @@ describe("App wires the surface warning up", () => {
       // `host` as well as `hostname`: the sidebar derives its sibling-surface
       // links from the port too, and a double missing a field the real object
       // always has fails as a TypeError rather than as what it is.
+      // The dev server, where the parameter is most often still typed.
       value: {
-        hostname: "app.retina.fm",
-        host: "app.retina.fm",
-        protocol: "https:",
+        hostname: "localhost",
+        host: "localhost:5174",
+        protocol: "http:",
         search: "?mode=admin",
-        href: "https://app.retina.fm/?mode=admin",
+        href: "http://localhost:5174/?mode=admin",
       },
     });
     warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -44,7 +45,7 @@ describe("App wires the surface warning up", () => {
     vi.restoreAllMocks();
   });
 
-  it("warns on a vhost that does not honour ?mode=admin", async () => {
+  it("warns when ?mode=admin selects nothing", async () => {
     await import("../App");
     // Filtered rather than counted: anything in App's import graph may warn.
     const ours = warn.mock.calls.filter((args) => args[0] === MODE_IGNORED_WARNING);

@@ -115,8 +115,8 @@ the backend. To run it on its own:
 npm run dev -w dashboard
 ```
 
-Opens at `http://localhost:5174` on the live map; `?mode=admin` selects the admin
-console. API calls are proxied to the backend during development.
+Opens at `http://localhost:5174` on the live map; the admin console is at
+`http://admin.localhost:5174`. API calls are proxied to the backend during development.
 
 ## API
 

@@ -7,6 +7,7 @@ import { defineConfig, devices } from "@playwright/test";
  *   staging  → staging-api / staging-app / staging-admin (default)
  *   prod     → api / app (no synthetic map, no admin)
  *   local    → localhost:8000 (api) / localhost:5174 (the console, map included)
+ *              / admin.localhost:5174
  *
  * The entries below are roles, not hostnames, which is why several of them hold
  * the same origin on a deployed environment: one hostname serves the console,
@@ -26,8 +27,8 @@ import { defineConfig, devices } from "@playwright/test";
  * simulator would mean that suite exercising a box it does not deploy, and
  * because a failed production E2E auto-rolls-back production (ci.yml), a
  * wobble elsewhere would revert a good production build. The one suite that
- * needs the surface skips itself instead, and runs against the dev server
- * locally, where `?mode=admin` selects the admin console.
+ * needs the surface skips itself instead, and runs locally against the dev
+ * server's admin console.
  */
 
 const ENV = (process.env.E2E_ENV ?? "staging") as "staging" | "prod" | "local";
@@ -71,13 +72,13 @@ const HOSTS = {
     api:       "http://localhost:8000",
     // The console's dev server, map included.
     map:       "http://localhost:5174",
-    testmap:   "http://localhost:5174",
+    // The dev server answers on every `*.localhost` name, and this one selects
+    // the admin console, which holds /sim.
+    testmap:   "http://admin.localhost:5174",
     dash:      "http://localhost:5174",
-    // Null for a different reason than prod: the dev server answers on one
-    // origin, so no hostname there selects the admin surface. Every value here
-    // is a bare origin that call sites append paths to, and `?mode=admin` is a
-    // query rather than an origin, so it cannot live in this table.
-    admin:     null,
+    // Chromium resolves it itself; Node on macOS does not, so the admin-surface
+    // tests, which check it from Node first, skip there.
+    admin:     "http://admin.localhost:5174",
     // Null because the redirects that suite asserts are nginx's, not Vite's.
     app:       null,
   },

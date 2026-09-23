@@ -182,7 +182,7 @@ up profile="local":
 
     echo
     echo "✓ up [{{profile}}].  Open →  http://app.localhost:5174/"
-    echo "  (add ?mode=admin for the admin console; the backend's anonymous admin signs you in to either)"
+    echo "  admin console →  http://admin.localhost:5174/  (the backend's anonymous admin signs you in to either)"
     echo "  fleet [{{profile}}]: ${FLEET_NODES} nodes @ ${FLEET_INTERVAL}s/node.  Profiles: local | test (50 fps) | prod (12.5 fps)"
     echo "  logs: just logs    status: just status    stop: just down"
 
