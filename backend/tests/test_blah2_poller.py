@@ -21,7 +21,7 @@ from datetime import UTC, datetime, timedelta
 import pyarrow.parquet as pq
 import pytest
 from cryptography.fernet import Fernet
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from config.constants import C_KM_US
@@ -1038,6 +1038,43 @@ async def test_the_poller_follows_the_registry(node_session, maker, queue):
             _drain(queue)
             await asyncio.sleep(0.1)
             assert queue.empty()
+
+
+async def test_a_radar_stopped_mid_query_leaves_the_registry_writable(node_session, maker, monkeypatch):
+    """A cancel that lands while aiosqlite steps a SELECT leaves its cursor open until a collection frees it."""
+    holding, release = threading.Event(), threading.Event()
+
+    def hold() -> int:
+        holding.set()
+        release.wait(5)
+        return 1
+
+    real_active_config = blah2_poller.active_config
+
+    async def held(session, node_id):
+        connection = await (await session.connection()).get_raw_connection()
+        await connection.driver_connection.create_function("hold", 0, hold)
+        # Reading a table, as the poller's own queries do, is what takes the lock on the file.
+        await session.execute(select(Node.node_id, func.hold()).where(Node.node_id == node_id))
+        return await real_active_config(session, node_id)
+
+    monkeypatch.setattr(blah2_poller, "active_config", held)
+    async with StubServer(_radar()) as stub:
+        node_id = await _register(node_session, stub.port)
+        # Held across the commit. The cursor lives as long as the task does, which in the poller is until
+        # the collector next runs.
+        task = asyncio.create_task(_poller(_target(stub.port, node_id), maker).run())
+        try:
+            assert await asyncio.to_thread(holding.wait, 5)
+        finally:
+            task.cancel()
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+        await node_session.execute(update(Node).where(Node.node_id == node_id).values(status="blocked"))
+        await node_session.commit()
+
+    assert task.cancelled()
 
 
 async def test_the_registry_is_re_read_without_being_asked(node_session, maker, queue):
