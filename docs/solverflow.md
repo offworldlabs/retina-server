@@ -208,7 +208,7 @@ flowchart TD
     entry -->|"yes, but exception"| failopen["known_claims_errors<br/>FAIL OPEN to dark lane"]:::inert
     entry -->|"yes"| path1["Path 1: node-tagged<br/>frame['adsb'] index-aligned"]
     entry --> pathH["Path H: Hungarian over<br/>this node's HELD tracks<br/>(state.known_track_holds)"]
-    entry --> path2["Path 2: Hungarian over<br/>cached ADS-B (state._adsb_for_seeding)"]
+    entry --> path2["Path 2: Hungarian over<br/>cached ADS-B (state._adsb_for_seeding:<br/>node-sent, over adsb-service fallback)"]
 
     path1 --> gP1{"dict, normalizable hex,<br/>hex unclaimed, finite lat/lon"}
     gP1 -->|"no"| skip1["skipped"]:::inert

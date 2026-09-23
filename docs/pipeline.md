@@ -225,6 +225,23 @@ and are therefore tens of seconds old by construction, so the tighter gates
 refuse them, calibration's 10 s among them. Consumers scoring solves against
 them apply `EXTERNAL_TRUTH_MAX_AGE_S` instead, which is tighter again.
 
+A real node that sends no ADS-B of its own gets claim candidates from
+adsb-service instead, where `ADSB_FALLBACK_ENABLED=1`.
+`services/tasks/adsb_fallback.py` polls its ADSBHub traffic at adsb.retina.fm
+every `ADSB_FALLBACK_INTERVAL_S` over the regions the connected real nodes
+occupy, into `state.adsb_fallback`, world `real`, each region's answer under
+its lattice cell. Each row is dated from its `seen_pos` against the answer's own
+`now`, never from the poll, so calibration's 10 s limit judges its real age.
+Requests are spaced to the service's 2 per second, and a cycle cut short by the
+interval or a 429 logs the regions it left unasked, and the next cycle starts
+with them. Claiming reads the store through `state._adsb_for_seeding(rx)`,
+which offers a node its own region's answer alone (the region covers the node's
+detection range, so no other holds an aircraft it can see) and lets a node's own
+fix for a hex stand unless the polled one is more than
+`ADSB_NODE_FIX_PRECEDENCE_S` newer. The associator's seed round and the frame
+processor's auto-tagging read every region's through the same snapshot where
+`ADSB_SEED_MODE` switches them on. The feed and `fresh_adsb` never see it.
+
 ---
 
 ## 6. Aircraft JSON Builder (`build_combined_aircraft_json`)

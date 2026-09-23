@@ -482,6 +482,11 @@ ADSB_BACKOFF_S = 300  # Rate-limit backoff (s)
 # region once per cycle.  A fix waits on average half this long before a frame
 # claims against it, and calibration refuses one older than CAL_MAX_ADSB_AGE_S.
 ADSB_FALLBACK_INTERVAL_S = 5.0
+# How much newer an adsb-service fix must be than a node's own for the same hex
+# before claiming takes it instead.  Past this the node's fix can never pass
+# calibration's age limit where the fallback's still can; inside it the node's
+# own evidence is kept.
+ADSB_NODE_FIX_PRECEDENCE_S = CAL_MAX_ADSB_AGE_S
 
 # ── Node reputation penalties ────────────────────────────────────────────────
 # Multiplier applied to EVERY reputation penalty in retina-analytics

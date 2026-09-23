@@ -18,6 +18,7 @@ from retina_custody.crypto_backend import SignatureVerifier
 from retina_custody.models import NodeIdentity
 
 from config.constants import (
+    ADSB_NODE_FIX_PRECEDENCE_S,
     ANOMALY_LOG_MAX,  # noqa: F401 — re-exported, used via state.ANOMALY_LOG_MAX
     ASSOC_ALT_LAYERS_KM,
     ASSOC_GRID_STEP_KM,
@@ -290,7 +291,32 @@ def node_world(node_id: str) -> str:
     return "sim" if is_synthetic_node(node_id) else "real"
 
 
-def _adsb_for_seeding() -> dict[str, dict]:
+def _polled_candidates(rx: tuple[float, float] | None) -> dict[str, dict]:
+    """adsb_fallback's records as one hex-keyed dict, a new one per call.
+
+    With a node's rx, its own cell's answer alone: that region covers the node
+    and its detection range, so no other cell holds an aircraft it can see.
+    Without, every cell's, the newest where two regions answered one hex.
+    """
+    # Function-local, as in node_world: core.state is imported before services.
+    from services.adsb_regions import cell_of, is_position_absent, is_usable
+
+    cells = adsb_fallback
+    if rx is not None:
+        # The same order regions_for_nodes applies: (0, 0) passes is_usable.
+        if is_position_absent(*rx) or not is_usable(*rx):
+            return {}
+        return dict(cells.get(cell_of(*rx), {}))
+    out: dict[str, dict] = {}
+    for cell in list(cells.values()):
+        for hexn, rec in cell.items():
+            held = out.get(hexn)
+            if held is None or rec["last_seen_ms"] > held["last_seen_ms"]:
+                out[hexn] = rec
+    return out
+
+
+def _adsb_for_seeding(rx: tuple[float, float] | None = None) -> dict[str, dict]:
     """Unlocked snapshot of currently-live ADS-B fixes, in the seeding
     provider contract InterNodeAssociator documents on adsb_provider.
 
@@ -304,12 +330,25 @@ def _adsb_for_seeding() -> dict[str, dict]:
     consumer of this provider treats as read-only.  The derived fields are
     already on them (see adsb_derived_fields), so the only per-call work is
     dropping records with an unusable position.
+
+    adsb_fallback's candidates lie beneath, scoped to the node at ``rx`` when
+    one is given (see _polled_candidates).  A node's own fix for a hex stands
+    unless the polled one is more than ADSB_NODE_FIX_PRECEDENCE_S newer, so
+    each hex is offered once.  That comparison is made on our clock, the node
+    record's recv_ms where it has one: its last_seen_ms is the node's clock,
+    and a node running slow would otherwise lose every tag it sends.  The poller validates and derives its records
+    before publishing them.
     """
-    out = {}
+    out = _polled_candidates(rx)
     for hexn, rec in list(adsb_aircraft.items()):
         lat, lon = rec.get("lat"), rec.get("lon")
         if lat is None or lon is None or not (math.isfinite(lat) and math.isfinite(lon)):
             continue
+        polled = out.get(hexn)
+        if polled is not None:
+            node_ms = rec.get("recv_ms", rec.get("last_seen_ms", 0))
+            if polled["last_seen_ms"] - node_ms > ADSB_NODE_FIX_PRECEDENCE_S * 1000:
+                continue
         if "alt_m" in rec:
             out[hexn] = rec
             continue
