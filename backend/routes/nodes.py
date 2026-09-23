@@ -156,7 +156,14 @@ NODE_PATH_PREFIX = "/v1/nodes"
 # 1.5.2 corrects `AdsbTag.alt`, which it called barometric.  A node sends the
 # geometric altitude where its receiver reports one and the barometric one
 # otherwise, and always has; only the prose moves.
-NODE_API_VERSION = "1.5.2"
+#
+# 1.6.0 adds the node's own tracker to `DetectionFrame`: `tracker` names the
+# tracker process, and `tracks` lists its confirmed tracks, each naming the
+# detection it took this frame by index into the frame's arrays.  The server
+# keys a track on (node, run, id).  It also adds `retina_tracker` to the
+# heartbeat's `versions`.  A minor because every addition is optional: a 1.4.0
+# or 1.5.x node stays conformant and simply sends no tracks.
+NODE_API_VERSION = "1.6.0"
 
 # No tag here: each sub-router carries the contract's own grouping, since those
 # are what a generated client is built around.

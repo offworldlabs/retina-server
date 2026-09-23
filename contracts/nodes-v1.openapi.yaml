@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RETINA node ingest
-  version: 1.5.2
+  version: 1.6.0
   description: |
     The RETINA server's HTTP API. The paths under `/v1/nodes` are the RETINA node
     ingest contract, generated from the server and versioned as a unit; everything
@@ -606,6 +606,21 @@ paths:
         detection. `adsb_hex` is the same correlation as bare hexes and is deprecated; a frame that
         sends both must have them agree. An empty frame is valid and worth sending.
 
+        ## Tracks
+
+        A node running a tracker sends `tracker` and `tracks` with every frame. `tracks` holds
+        every confirmed track alive after this frame, coasting ones included, and a track that ends
+        is sent once more with `state: "deleted"`. Each track names the detection it took this frame
+        by its index in the frame's arrays (`hit`), so a detection is sent once however many tracks
+        there are. `hit` is required for an `active` track and null otherwise; no two tracks may
+        share a hit, and ids are unique within the frame.
+
+        `tracks: null` means the tracker produced nothing for this frame, and says nothing about
+        its tracks. `[]` means it ran and holds no confirmed track. `tracker.run` identifies the
+        tracker process: its ids repeat after a restart, so a new run starts a new namespace. A
+        frame whose tracks do not add up is refused whole, since the frame and its tracks are one
+        unit.
+
         ## Sending behaviour
 
         **One POST per frame blah2 produces, and never otherwise.** There is no timer and no
@@ -1084,6 +1099,18 @@ components:
             maxItems: 512
           - type: 'null'
           title: Adsb
+        tracker:
+          anyOf:
+          - $ref: '#/components/schemas/TrackerRun'
+          - type: 'null'
+        tracks:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/Track'
+            type: array
+            maxItems: 32
+          - type: 'null'
+          title: Tracks
       additionalProperties: false
       type: object
       required:
@@ -1472,6 +1499,12 @@ components:
             maxLength: 64
           - type: 'null'
           title: Blah2 Image
+        retina_tracker:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Retina Tracker
       additionalProperties: false
       type: object
       title: NodeVersions
@@ -1566,6 +1599,115 @@ components:
       - config_version
       - server_time
       title: RegisterResponse
+    Track:
+      properties:
+        id:
+          type: string
+          pattern: ^[0-9A-Za-z._-]{1,64}$
+          title: Id
+        state:
+          type: string
+          enum:
+          - active
+          - coasting
+          - deleted
+          title: State
+        hit:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Hit
+        n_associated:
+          type: integer
+          minimum: 1.0
+          title: N Associated
+        n_missed:
+          type: integer
+          minimum: 0.0
+          title: N Missed
+        adsb_hex:
+          anyOf:
+          - type: string
+            pattern: ^[0-9a-f]{6}$
+          - type: 'null'
+          title: Adsb Hex
+        is_anomalous:
+          type: boolean
+          title: Is Anomalous
+        anomaly_types:
+          items:
+            type: string
+            pattern: ^[a-z][a-z0-9_]{0,47}$
+          type: array
+          maxItems: 16
+          title: Anomaly Types
+        max_velocity_ms:
+          type: number
+          minimum: 0.0
+          title: Max Velocity Ms
+        born_t:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Born T
+        avg_snr:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Avg Snr
+        shadow_fraction:
+          anyOf:
+          - type: number
+            maximum: 1.0
+            minimum: 0.0
+          - type: 'null'
+          title: Shadow Fraction
+        interference_fraction:
+          anyOf:
+          - type: number
+            maximum: 1.0
+            minimum: 0.0
+          - type: 'null'
+          title: Interference Fraction
+      additionalProperties: false
+      type: object
+      required:
+      - id
+      - state
+      - hit
+      - n_associated
+      - n_missed
+      - adsb_hex
+      - is_anomalous
+      - anomaly_types
+      - max_velocity_ms
+      title: Track
+      description: |-
+        One confirmed track, sent on every frame it is alive.
+
+        The track names the detection it took this frame by index into the frame's
+        arrays, so every detection is sent once, however many tracks there are.
+        Tentative tracks are not sent. `deleted` is sent once, on the track's last
+        frame.
+    TrackerRun:
+      properties:
+        run:
+          type: string
+          pattern: ^[0-9A-Za-z._-]{1,64}$
+          title: Run
+      additionalProperties: false
+      type: object
+      required:
+      - run
+      title: TrackerRun
+      description: |-
+        The tracker process whose ids a frame's tracks carry.
+
+        The tracker's ids repeat after a same-day restart, so the server keys a
+        track on (node, run, id), and a run it has not seen before starts a new
+        namespace.
   securitySchemes:
     bearerAuth:
       type: http

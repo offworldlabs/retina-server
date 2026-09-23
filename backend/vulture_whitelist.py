@@ -117,9 +117,13 @@ retina_node
 blah2_image
 uptime_s
 detail
-# The two model hooks are called by Pydantic during validation and
-# serialisation, through the decorator rather than from a call site.
+# Track fields a 1.6.0 node sends and nothing on the server reads yet.
+n_associated
+interference_fraction
+# The model hooks are called by Pydantic during validation and serialisation,
+# through the decorator rather than from a call site.
 _arrays_are_parallel
+_tracks_name_this_frames_detections
 _omit_absent_detail
 
 # ── routes/admin.py ─────────────────────────────────────────────────────────

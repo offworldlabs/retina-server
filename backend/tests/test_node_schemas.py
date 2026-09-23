@@ -200,8 +200,9 @@ FRAME = {
 
 def test_the_documented_frame_round_trips():
     frame = DetectionFrame(**FRAME)
-    # `adsb` is the one optional column (1.5.0); a hex-only frame dumps it as None.
-    assert frame.model_dump(mode="json") == FRAME | {"adsb": None}
+    # The optional fields a hex-only frame leaves out dump as None: `adsb`
+    # (1.5.0) and the tracker's pair (1.6.0).
+    assert frame.model_dump(mode="json") == FRAME | {"adsb": None, "tracker": None, "tracks": None}
 
 
 def test_an_empty_frame_is_valid():
@@ -310,7 +311,7 @@ HEARTBEAT = {
     "boot_id": "k3n8v2qp71ab",
     "config_version": 7,
     "health": {"cpu_pct": 31, "disk_free_mb": 9100, "temp_c": 58, "blah2": "up", "adsb": "up"},
-    "versions": {"owl_os": "1.4.0", "retina_node": "2.2.1", "blah2_image": "sha-9f21c4e"},
+    "versions": {"owl_os": "1.4.0", "retina_node": "2.2.1", "blah2_image": "sha-9f21c4e", "retina_tracker": "0.3.0"},
     "errors": [],
 }
 
@@ -583,3 +584,178 @@ class TestAdsbHexIsOptional:
         schema = DetectionFrame.model_json_schema()
         assert schema["properties"]["adsb_hex"]["deprecated"] is True
         assert "adsb_hex" not in schema["required"]
+
+
+def test_a_heartbeat_without_the_tracker_release_is_still_valid():
+    """Nodes before 1.6.0 send no `retina_tracker`, and a node without a tracker never will."""
+    versions = {"owl_os": "1.4.0", "retina_node": "2.2.1", "blah2_image": "sha-9f21c4e"}
+    assert HeartbeatRequest(**(HEARTBEAT | {"versions": versions})).versions.retina_tracker is None
+
+
+def test_a_tracker_release_over_64_characters_is_rejected():
+    with pytest.raises(ValidationError):
+        HeartbeatRequest(**(HEARTBEAT | {"versions": {"retina_tracker": "x" * 65}}))
+
+
+# A confirmed track as the node's tracker reports it: active, and holding the
+# frame's first detection.
+TRACK = {
+    "id": "260923-00001A",
+    "state": "active",
+    "hit": 0,
+    "n_associated": 14,
+    "n_missed": 0,
+    "adsb_hex": "4ca1f2",
+    "is_anomalous": False,
+    "anomaly_types": [],
+    "max_velocity_ms": 231.4,
+    "born_t": 1753899990.5,
+    "avg_snr": 13.1,
+    "shadow_fraction": 0.0,
+    "interference_fraction": 0.0,
+}
+TRACKED = FRAME | {"tracker": {"run": "k3n8v2qp71ab9x0c"}}
+
+
+def _coasting(**overrides) -> dict:
+    return TRACK | {"id": "260923-00001B", "state": "coasting", "hit": None, "n_missed": 2} | overrides
+
+
+class TestTracks:
+    """`tracker` and `tracks` travel with the detections they name, and the
+    frame is refused whole when they do not add up."""
+
+    def test_a_tracked_frame_round_trips(self):
+        body = TRACKED | {"tracks": [TRACK, _coasting()]}
+        assert DetectionFrame(**body).model_dump(mode="json") == body | {"adsb": None}
+
+    def test_a_frame_without_either_field_is_valid(self):
+        frame = DetectionFrame(**FRAME)
+        assert frame.tracker is None and frame.tracks is None
+
+    def test_a_tracker_with_no_output_this_frame_sends_null_tracks(self):
+        assert DetectionFrame(**(TRACKED | {"tracks": None})).tracks is None
+
+    def test_a_tracker_with_no_confirmed_track_sends_an_empty_list(self):
+        assert DetectionFrame(**(TRACKED | {"tracks": []})).tracks == []
+
+    def test_a_track_needs_only_the_required_fields(self):
+        optional = {"born_t", "avg_snr", "shadow_fraction", "interference_fraction"}
+        minimal = {k: v for k, v in TRACK.items() if k not in optional}
+        (track,) = DetectionFrame(**(TRACKED | {"tracks": [minimal]})).tracks
+        assert track.born_t is None and track.shadow_fraction is None
+
+    @pytest.mark.parametrize(
+        "field",
+        [
+            "id",
+            "state",
+            "hit",
+            "n_associated",
+            "n_missed",
+            "adsb_hex",
+            "is_anomalous",
+            "anomaly_types",
+            "max_velocity_ms",
+        ],
+    )
+    def test_every_required_track_field_is_required(self, field):
+        with pytest.raises(ValidationError):
+            DetectionFrame(**(TRACKED | {"tracks": [{k: v for k, v in TRACK.items() if k != field}]}))
+
+    def test_tracks_without_a_tracker_are_refused(self):
+        """A track id means nothing without the run that minted it."""
+        with pytest.raises(ValidationError, match="tracks need a tracker"):
+            DetectionFrame(**(FRAME | {"tracks": [TRACK]}))
+
+    def test_a_repeated_id_is_refused(self):
+        with pytest.raises(ValidationError, match=r"tracks\[1\].id repeats"):
+            DetectionFrame(**(TRACKED | {"tracks": [TRACK, _coasting(id=TRACK["id"])]}))
+
+    def test_an_active_track_must_name_its_hit(self):
+        with pytest.raises(ValidationError, match=r"tracks\[0\] is active and must name its hit"):
+            DetectionFrame(**(TRACKED | {"tracks": [TRACK | {"hit": None}]}))
+
+    @pytest.mark.parametrize("state", ["coasting", "deleted"])
+    def test_a_track_that_took_nothing_names_no_hit(self, state):
+        assert DetectionFrame(**(TRACKED | {"tracks": [_coasting(state=state)]})).tracks[0].state == state
+
+    @pytest.mark.parametrize("state", ["coasting", "deleted"])
+    def test_a_track_that_took_nothing_is_refused_a_hit(self, state):
+        with pytest.raises(ValidationError, match=rf"tracks\[0\] is {state} and must not name a hit"):
+            DetectionFrame(**(TRACKED | {"tracks": [_coasting(state=state, hit=1)]}))
+
+    def test_a_hit_outside_the_frame_is_refused(self):
+        """FRAME has two detections, so index 2 names nothing."""
+        with pytest.raises(ValidationError, match="outside this frame's 2 detections"):
+            DetectionFrame(**(TRACKED | {"tracks": [TRACK | {"hit": 2}]}))
+
+    def test_a_hit_on_an_empty_frame_is_refused(self):
+        empty = TRACKED | {"delay": [], "doppler": [], "snr": [], "adsb_hex": []}
+        with pytest.raises(ValidationError, match="outside this frame's 0 detections"):
+            DetectionFrame(**(empty | {"tracks": [TRACK]}))
+
+    def test_two_tracks_sharing_a_hit_are_refused(self):
+        """One detection under two tracks would be one aircraft solved twice."""
+        with pytest.raises(ValidationError, match=r"tracks\[1\].hit is already another track's hit"):
+            DetectionFrame(**(TRACKED | {"tracks": [TRACK, TRACK | {"id": "260923-00001C"}]}))
+
+    def test_32_tracks_are_accepted_and_33_refused(self):
+        tracks = [_coasting(id=f"260923-{i:06X}") for i in range(33)]
+        assert len(DetectionFrame(**(TRACKED | {"tracks": tracks[:32]})).tracks) == 32
+        with pytest.raises(ValidationError):
+            DetectionFrame(**(TRACKED | {"tracks": tracks}))
+
+    def test_unknown_keys_in_a_track_are_refused(self):
+        with pytest.raises(ValidationError):
+            DetectionFrame(**(TRACKED | {"tracks": [TRACK | {"covariance": [1.0]}]}))
+
+    def test_unknown_keys_in_the_tracker_are_refused(self):
+        with pytest.raises(ValidationError):
+            DetectionFrame(**(FRAME | {"tracker": {"run": "k3n8v2qp71ab9x0c", "version": "0.3.0"}}))
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("state", "tentative"),
+            ("hit", -1),
+            ("hit", "0"),
+            ("n_associated", 0),
+            ("n_missed", -1),
+            ("adsb_hex", "4CA1F2"),
+            ("is_anomalous", "true"),
+            ("is_anomalous", 1),
+            ("anomaly_types", ["Supersonic"]),
+            ("anomaly_types", ["supersonic"] * 17),
+            ("max_velocity_ms", -1.0),
+            ("max_velocity_ms", float("inf")),
+            ("avg_snr", float("nan")),
+            ("born_t", -1.0),
+            ("shadow_fraction", 1.5),
+            ("interference_fraction", -0.1),
+            ("id", ""),
+            ("id", "has space"),
+            ("id", "x" * 65),
+        ],
+    )
+    def test_malformed_track_values_are_refused(self, field, value):
+        with pytest.raises(ValidationError):
+            DetectionFrame(**(TRACKED | {"tracks": [TRACK | {field: value}]}))
+
+    @pytest.mark.parametrize("run", ["", "has space", "x" * 65])
+    def test_a_malformed_run_is_refused(self, run):
+        with pytest.raises(ValidationError):
+            DetectionFrame(**(FRAME | {"tracker": {"run": run}}))
+
+    def test_the_trackers_anomaly_names_are_accepted(self):
+        names = ["supersonic", "sustained_orbit", "instant_direction_change", "identity_swap", "long_hover"]
+        (track,) = DetectionFrame(**(TRACKED | {"tracks": [TRACK | {"anomaly_types": names}]})).tracks
+        assert track.anomaly_types == names
+
+    def test_the_contract_publishes_the_bounds(self):
+        """A bound declared behind its validator publishes as `ge`, which is not
+        JSON Schema, and a client generated from the contract drops it."""
+        track = DetectionFrame.model_json_schema()["$defs"]["Track"]["properties"]
+        assert {"type": "integer", "minimum": 0} in track["hit"]["anyOf"]
+        assert track["n_associated"]["minimum"] == 1
+        assert {"type": "number", "minimum": 0, "maximum": 1} in track["shadow_fraction"]["anyOf"]
