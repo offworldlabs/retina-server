@@ -40,11 +40,5 @@ async def own_registered_node(node_id: str, user_id: str) -> str:
 
 
 def own(node_id: str, user_id: str) -> str:
-    """own_registered_node for a synchronous test.
-
-    asyncio.run() clears the event loop on exit (3.12), and the async test that
-    follows expects one, as conftest's _clean_db also restores.
-    """
-    ref = asyncio.run(own_registered_node(node_id, user_id))
-    asyncio.set_event_loop(asyncio.new_event_loop())
-    return ref
+    """own_registered_node for a synchronous test."""
+    return asyncio.run(own_registered_node(node_id, user_id))

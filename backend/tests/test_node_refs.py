@@ -22,7 +22,6 @@ def seed():
                 await session.commit()
 
         asyncio.run(_go())
-        asyncio.set_event_loop(asyncio.new_event_loop())
         node_refs._reset_for_tests()
 
     return _seed

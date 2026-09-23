@@ -117,7 +117,6 @@ class TestSolverAircraft:
                 await session.commit()
 
         asyncio.run(_seed())
-        asyncio.set_event_loop(asyncio.new_event_loop())
         node_refs._reset_for_tests()
 
         state.connected_nodes["ret1a2b3c4d"] = {"is_synthetic": False, "status": "active"}
