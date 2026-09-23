@@ -891,7 +891,9 @@ the Feature gates table in [`architecture.md`](architecture.md). To flip one:
 edit `backend/.env`, then `docker compose up -d` (env-only, no `--build`).
 Standard rollout is `shadow` first: shadow counters accumulate in
 `/api/test/solver-stats` (`fov`, `claiming`, `consensus` blocks) without the
-stage binding; flip to `active` only after the shadow soak looks sane.
+stage binding; flip to `active` only after the shadow soak looks sane. That
+endpoint answers administrators only, so read it on the admin host, where
+Cloudflare Access signs you in (`admin.retina.fm/api/test/solver-stats`).
 Instant rollbacks: any mode flag back to `shadow`/`off`, and
 `TRACK_SMOOTHER=ewma` for display smoothing.
 

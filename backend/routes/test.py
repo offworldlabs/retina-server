@@ -440,12 +440,12 @@ async def get_simulation_config():
 
 
 @router.put("/api/simulation/config")
-async def put_simulation_config(body: dict = Body(...)):
+async def put_simulation_config(body: dict = Body(...), _admin=Depends(require_admin)):
     """Update simulation physics fractions.
 
-    Open to anyone, like the GET beside it and the page that calls both: the
-    simulator is a public demo, the console has no identity provider yet, and
-    the fleet it reconfigures is synthetic. Nothing here touches a real node.
+    Admin only, like the physics page on the admin console that calls it. The
+    GET beside it stays open because the fleet polls it with no credentials
+    (retina_simulation.orchestrator, deploy/fleet-entrypoint.sh).
 
     Accepted keys: frac_anomalous, frac_drone, frac_dark (0.0–1.0 each).
     Sum of the three must not exceed 1.0 — the remainder is commercial aircraft.
@@ -525,9 +525,11 @@ async def put_simulation_config(body: dict = Body(...)):
 
 
 @router.get("/api/simulation/ground-truth")
-async def get_simulation_ground_truth():
+async def get_simulation_ground_truth(_admin=Depends(require_admin)):
     """Return current ground truth aircraft positions (last known fix, max 30 s old)
     plus a lightweight solver-performance summary computed from server state.
+
+    Admin only: the physics page on the admin console is its one reader.
     """
     now = time.time()
     gt_aircraft = []
@@ -813,10 +815,11 @@ async def mlat_history(
 
 
 @router.get("/api/test/solver-stats")
-async def solver_stats(minutes: float = 10.0):
+async def solver_stats(minutes: float = 10.0, _admin=Depends(require_admin)):
     """Full solver picture for the Solver Report panel: publication funnel
     (n=2 vs n>=3), reject-reason breakdown, position-error percentiles,
-    ghost/false-track precision, and consensus/since-boot counters.
+    ghost/false-track precision, and consensus/since-boot counters. Admin
+    only, like the physics page that panel sits on.
 
     The funnel, the error percentiles, the fragmentation block and the ghost
     precision are all the DARK lane — ``lane_split`` gives the per-lane record
