@@ -153,6 +153,56 @@ async def test_a_frame_without_adsb_hex_is_accepted(registered_node, node_client
     assert queued["adsb_hex"] == ["4ca1f2", None]
 
 
+_TRACK = {
+    "id": "260923-00001A",
+    "state": "active",
+    "hit": 0,
+    "n_associated": 14,
+    "n_missed": 0,
+    "adsb_hex": "4ca1f2",
+    "is_anomalous": False,
+    "anomaly_types": [],
+    "max_velocity_ms": 231.4,
+}
+
+
+async def test_a_frame_carrying_tracks_is_accepted_and_filed_without_them(registered_node, node_client):
+    """1.6.0: the tracks are validated and then dropped, so the queue sees what
+    an untracked frame would put there."""
+    token, _ = registered_node
+
+    response = node_client.post(
+        DETECTION, headers=_auth(token), json=_frame(tracker={"run": "k3n8v2qp71ab9x0c"}, tracks=[_TRACK])
+    )
+
+    assert response.status_code == 202
+    assert response.json()["accepted"] == 2
+    ((_, queued),) = _queued()
+    assert "tracks" not in queued and "tracker" not in queued
+    assert queued["delay"] == [12.4, 30.1]
+
+
+@pytest.mark.parametrize(
+    "tracks",
+    [
+        pytest.param([_TRACK | {"hit": 2}], id="hit-outside-the-frame"),
+        pytest.param([_TRACK, _TRACK | {"id": "260923-00001B"}], id="shared-hit"),
+        pytest.param([_TRACK | {"hit": None}], id="active-without-hit"),
+    ],
+)
+async def test_a_frame_whose_tracks_do_not_add_up_is_refused_whole(registered_node, node_client, tracks):
+    """The frame and its tracks are one unit, so the detections are refused with them."""
+    token, _ = registered_node
+
+    response = node_client.post(
+        DETECTION, headers=_auth(token), json=_frame(tracker={"run": "k3n8v2qp71ab9x0c"}, tracks=tracks)
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"] == "invalid_body"
+    assert _queued() == []
+
+
 async def test_the_queued_frame_is_attributed_from_the_token(registered_node, node_client):
     """The body names no node, so `_node_id` can only have come from the bearer.
 
@@ -417,6 +467,16 @@ async def test_the_route_binds_the_shared_limiter():
 
 
 # ── heartbeat ────────────────────────────────────────────────────────────────
+
+
+async def test_a_heartbeat_naming_its_tracker_release_is_accepted(registered_node, node_client):
+    token, _ = registered_node
+
+    response = node_client.post(
+        HEARTBEAT, headers=_auth(token), json=_beat(versions={"retina_node": "2.2.1", "retina_tracker": "0.3.0"})
+    )
+
+    assert response.status_code == 200
 
 
 async def test_a_heartbeat_returns_the_whole_downlink(registered_node, node_client, node_session):
