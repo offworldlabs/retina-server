@@ -29,7 +29,7 @@ def sent(monkeypatch):
 
 
 async def test_the_link_lands_on_the_consoles_claim_page(sent):
-    """HOST_APP serves the console at `/`; the old /dash/ mount only redirects."""
+    """HOST_APP serves the console at `/`, and it has no page under /dash/."""
     assert await claim_links.deliver("ada@example.com", NODE_REF, "a-token") is True
 
     [(to, subject, body)] = sent

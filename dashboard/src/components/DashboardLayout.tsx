@@ -22,9 +22,6 @@ export const pageTitles: Record<string, { user?: string; admin?: string }> = {
   // Two segments, so this table is looked up by the whole path before it falls
   // back to the first one: /sim/physics is its own page, not a view of /sim.
   "/sim/physics": { user: "Physics Layer" },
-  // The old address, which only forwards to /sim/physics. Kept so the hop does
-  // not flash a header that says "Dashboard" on its way there.
-  "/physics": { user: "Physics Layer" },
   // Dev builds only.
   "/test-radar": { user: "Test Radar" },
   "/detections": { user: "Detections" },
@@ -37,8 +34,6 @@ export const pageTitles: Record<string, { user?: string; admin?: string }> = {
   "/knowledge": { user: "Knowledge Base" },
   "/tunnel": { user: "Tunnel & Local Display" },
   "/onboarding": { user: "My Nodes" },
-  // Forwards to /onboarding; named for the same reason as /physics above.
-  "/settings": { user: "My Nodes" },
   "/nodes": { admin: "Node Management" },
   // A pattern, because the first segment alone would name the admin list.
   "/nodes/:nodeId": { user: "Node Detail", admin: "Node Detail" },
@@ -77,7 +72,7 @@ export default function DashboardLayout({ isAdmin, children }) {
   // own panels own their overflow, and a scrollbar on the pane would move the
   // canvas under them. `/sim` by first segment covers both the sim map and the
   // physics page now living under it.
-  const flush = basePath === "/map" || basePath === "/sim" || basePath === "/physics";
+  const flush = basePath === "/map" || basePath === "/sim";
 
   const toggle = () => {
     const next = !collapsed;

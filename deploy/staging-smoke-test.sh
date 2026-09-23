@@ -18,10 +18,9 @@ API_URL="https://staging-api.retina.fm"
 # (dashboard/src/utils/surface.ts), so this is the only name here that renders
 # the admin console.
 ADMIN_URL="https://staging-admin.retina.fm"
-# The public surface: the console at /, opening on its map, with the old /dash/
-# and /data/ addresses redirecting into it. `staging-map`, `staging-dash`,
-# `staging-data` and the public `testmap` are Cloudflare redirects into it and
-# reach no origin, so nothing below probes them.
+# The public surface: the console at /, opening on its map. `staging-map`,
+# `staging-dash`, `staging-data` and the public `testmap` are Cloudflare
+# redirects onto it and reach no origin, so only their redirects are probed.
 APP_URL="https://staging-app.retina.fm"
 # TOWER_CONTRACT_QUERY / TOWER_CONTRACT_ECHO: what a backend must echo back.
 # shellcheck source=deploy/tower-contract.sh
@@ -183,24 +182,6 @@ check_header_value() {
     fi
 }
 
-# A 301 to exactly the given URL. The status alone cannot tell a redirect that
-# keeps the query string from one that drops it.
-check_redirect() {
-    local name="$1" url="$2" want="$3" result code loc
-    printf "  %-40s " "$name"
-    result=$($CURL -o /dev/null -w '%{http_code} %{redirect_url}' "$url" 2>/dev/null) || { echo "FAIL (connection error)"; FAIL=$((FAIL+1)); return; }
-    code="${result%% *}"
-    loc="${result#* }"
-
-    if [ "$code" = "301" ] && [ "$loc" = "$want" ]; then
-        echo "OK ($code)"
-        PASS=$((PASS+1))
-    else
-        echo "FAIL (got ${code} → ${loc:-no Location}, expected 301 → ${want})"
-        FAIL=$((FAIL+1))
-    fi
-}
-
 # assert_page_asset in this suite's reporting. Shared with CI's production
 # smoke tests so the two cannot drift, as with assert_origin_marker below.
 check_page_asset() {
@@ -220,9 +201,9 @@ check_page_asset() {
 # rule is Cloudflare's, so no deploy can have broken it and no rollback can fix
 # it, and a red staging smoke skips deploy-production.
 check_legacy_redirect() {
-    local host="$1" prefix="$2" out
+    local host="$1" path="$2" target="$3" out
     printf "  %-40s " "$host"
-    if out=$(assert_legacy_redirect "$host" "$prefix"); then
+    if out=$(assert_legacy_redirect "$host" "$path" "$target"); then
         echo "OK"
         PASS=$((PASS+1))
     else
@@ -230,7 +211,7 @@ check_legacy_redirect() {
         printf '    %s\n' "$out"
         WARN=$((WARN+1))
         if [ -n "${GITHUB_ACTIONS:-}" ]; then
-            echo "::warning::${host} no longer redirects to ${prefix}. It is a retired hostname with no vhost, so it is now refused at the origin. Restore the Cloudflare redirect rule."
+            echo "::warning::${host} no longer redirects to ${target}. It is a retired hostname with no vhost, so it is now refused at the origin. Restore the Cloudflare redirect rule."
         fi
     fi
 }
@@ -344,18 +325,8 @@ check_status "app GET /map"                 "${APP_URL}/map"                "200
 # A deep link the SPA owns and nginx does not: proves the try_files fallback
 # reaches the bundle's index.html.
 check_status "app deep link"                "${APP_URL}/nodes"              "200"
-# The console's old mount. Its links are in circulation, sign-in mail among
-# them, so every path lands on its root twin with the query intact. The
-# slashless form needs its own match, which is why it is probed separately.
-check_redirect "app /dash/ path redirects"  "${APP_URL}/dash/nodes/ret-smoke?x=1" "${APP_URL}/nodes/ret-smoke?x=1"
-check_redirect "app /dash redirects"        "${APP_URL}/dash?x=1"           "${APP_URL}/?x=1"
-# /data is the console's own page; an exact-match redirect there would bounce
-# it. The standalone explorer's old paths still redirect, filters intact. The
-# asset path is the one spa.conf's regexes would take, and a 301 on a .js name
-# is one the edge keeps, hence BUST.
-check_status   "app GET /data"              "${APP_URL}/data"               "200"
-check_redirect "app /data/ redirects"       "${APP_URL}/data/?node=ret-smoke&from=2026-09-01" "${APP_URL}/data?node=ret-smoke&from=2026-09-01"
-check_redirect "app /data/ asset redirects" "${APP_URL}/data/app.js?${BUST}" "${APP_URL}/data?${BUST}"
+# The console's own page; an exact-match location there would bounce it.
+check_status "app GET /data"                "${APP_URL}/data"               "200"
 # The bundle resolves its own assets. A page can pass every status check above
 # while rendering nothing, which is what these are here for. Two segments deep
 # as well as one: a relative base resolves `./assets/...` against the document
@@ -365,14 +336,14 @@ check_page_asset    "app deep link loads it too"   "${APP_URL}/nodes/ret-smoke"
 
 echo ""
 echo "── Retired hostnames reach the app surface ──"
-# No vhost claims these; Cloudflare redirects them into the paths above, and
+# No vhost claims these; Cloudflare redirects them onto the pages above, and
 # the origin would refuse them with a 421. `testmap` is the one people outside
 # the project have, from when staging's map was the simulator demo; it lands on
 # the real network now, like every other name here.
-check_legacy_redirect "staging-map.retina.fm"  "${APP_URL}"
-check_legacy_redirect "testmap.retina.fm"      "${APP_URL}"
-check_legacy_redirect "staging-dash.retina.fm" "${APP_URL}/dash"
-check_legacy_redirect "staging-data.retina.fm" "${APP_URL}/data"
+check_legacy_redirect "staging-map.retina.fm"  /               "${APP_URL}/map"
+check_legacy_redirect "testmap.retina.fm"      /               "${APP_URL}/map"
+check_legacy_redirect "staging-dash.retina.fm" /smoke-redirect "${APP_URL}/smoke-redirect"
+check_legacy_redirect "staging-data.retina.fm" /               "${APP_URL}/data"
 
 echo ""
 echo "── Shared nginx config (must match production) ──"

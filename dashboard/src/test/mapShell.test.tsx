@@ -60,11 +60,6 @@ describe("the map's content pane", () => {
     expect(container.querySelector(".content.flush")).not.toBeNull();
   });
 
-  it("is flush on the physics route", () => {
-    const { container } = renderAt("/physics");
-    expect(container.querySelector(".content.flush")).not.toBeNull();
-  });
-
   it("is flush on the simulation map", () => {
     const { container } = renderAt("/sim");
     expect(container.querySelector(".content.flush")).not.toBeNull();

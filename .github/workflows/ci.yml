@@ -1235,16 +1235,17 @@ jobs:
 
           echo ""
           echo "── Do the retired hostnames still reach it ──"
-          # No vhost claims these; Cloudflare redirects them into the app host,
+          # No vhost claims these; Cloudflare redirects them onto the app host,
           # and this origin would refuse them with a 421. Warned rather
           # than failed: the rules are the edge's, so no deploy here can have
           # broken one and rolling this release back cannot fix one.
-          for pair in "map.retina.fm|https://app.retina.fm" \
-                      "dash.retina.fm|https://app.retina.fm/dash" \
-                      "data.retina.fm|https://app.retina.fm/data"; do
-            LEGACY_HOST="${pair%%|*}"
+          # Host, path probed, and where it must land.
+          for rule in "map.retina.fm|/|https://app.retina.fm/map" \
+                      "dash.retina.fm|/smoke-redirect|https://app.retina.fm/smoke-redirect" \
+                      "data.retina.fm|/|https://app.retina.fm/data"; do
+            IFS='|' read -r LEGACY_HOST LEGACY_PATH LEGACY_TARGET <<< "$rule"
             printf "  %-40s " "$LEGACY_HOST"
-            if REASON=$(assert_legacy_redirect "$LEGACY_HOST" "${pair#*|}"); then
+            if REASON=$(assert_legacy_redirect "$LEGACY_HOST" "$LEGACY_PATH" "$LEGACY_TARGET"); then
               echo "OK"; PASS=$((PASS+1))
             else
               echo "WARN"; printf '    %s\n' "$REASON"; WARN=$((WARN+1))
