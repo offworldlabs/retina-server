@@ -29,6 +29,7 @@ from config.constants import ADSB_FALLBACK_INTERVAL_S
 from core import state
 from services.adsb_regions import Region, regions_for_nodes
 from services.known_claiming import KNOWN_CLAIM_MAX_FIX_AGE_S
+from services.node_config import position_status
 
 log = logging.getLogger(__name__)
 
@@ -56,8 +57,10 @@ _regions: list[Region] = []
 def real_node_regions() -> list[Region]:
     """Query regions over every connected, positioned hardware node.
 
-    Synthetic nodes are left out: their echoes are of simulated aircraft, which
-    claiming's world gate keeps apart from these.  Recomputed only when the
+    Positioned as claiming judges it, both ends of the pair placed: a node it
+    would refuse earns no share of the request budget.  Synthetic nodes are left
+    out: their echoes are of simulated aircraft, which claiming's world gate
+    keeps apart from these.  Recomputed only when the
     positions change, so regions_for_nodes's cap warning is not repeated every
     cycle.
     """
@@ -67,9 +70,8 @@ def real_node_regions() -> list[Region]:
         if info.get("status") == "disconnected" or info.get("is_synthetic", False):
             continue
         cfg = info.get("config") or {}
-        lat, lon = cfg.get("rx_lat"), cfg.get("rx_lon")
-        if lat is not None and lon is not None:
-            positions.append((lat, lon))
+        if position_status(cfg) == "positioned":
+            positions.append((cfg["rx_lat"], cfg["rx_lon"]))
     key = tuple(sorted(positions))
     if key != _regions_key:
         _regions_key, _regions = key, regions_for_nodes(positions)

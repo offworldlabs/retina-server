@@ -46,6 +46,7 @@ def test_a_row_without_seen_pos_is_dropped_rather_than_dated_from_the_poll():
         {"hex": "obj-001"},
         {"hex": ""},
         {"seen_pos": "stale"},
+        {"seen_pos": True},
     ],
 )
 def test_unusable_rows_are_dropped(bad):
