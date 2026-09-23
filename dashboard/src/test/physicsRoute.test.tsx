@@ -83,14 +83,6 @@ describe("the Physics Layer route", () => {
     const { container } = renderSidebar({ fleet: true, realOnly: false, signedIn: false });
     expect(container.querySelector('a[href="/sim/physics"]')).toHaveTextContent("Physics Layer");
   });
-
-  // The old address is gone from the nav entirely: it survives only as a
-  // forward for links already in circulation, and an entry pointing at a
-  // redirect is one hop the caller need never take.
-  it("is no longer offered at its old address", () => {
-    const { container } = renderSidebar({ fleet: true, realOnly: false });
-    expect(container.querySelector('a[href="/physics"]')).toBeNull();
-  });
 });
 
 describe("the Simulation route", () => {
@@ -159,21 +151,5 @@ describe("the /sim/physics address", () => {
     // Give the lazy route a chance to resolve before asserting it never did.
     await new Promise((r) => setTimeout(r, 50));
     expect(screen.queryByText("physics page")).toBeNull();
-  });
-
-  // Bookmarks, and the notes of every fleet-tuning session on the test
-  // droplet, hold the old address.
-  it("is where the old /physics address lands", async () => {
-    visit(true, "/physics");
-    expect(await screen.findByText("physics page")).toBeInTheDocument();
-    expect(screen.getByLabelText("location")).toHaveTextContent("/sim/physics");
-  });
-
-  it("carries the query and hash across the hop", async () => {
-    visit(true, "/physics?tab=solver#doppler");
-    expect(await screen.findByText("physics page")).toBeInTheDocument();
-    expect(screen.getByLabelText("location")).toHaveTextContent(
-      "/sim/physics?tab=solver#doppler",
-    );
   });
 });

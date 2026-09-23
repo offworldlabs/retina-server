@@ -5,7 +5,6 @@ import AuthLinkPage from "./pages/AuthLinkPage";
 import ClaimPage from "./pages/ClaimPage";
 import DashboardLayout from "./components/DashboardLayout";
 import RequireAuth from "./components/RequireAuth";
-import Forward from "./components/Forward";
 import { resolveSurface, warnIfModeIgnored } from "./utils/surface";
 import { useAuth } from "./context/AuthContext";
 
@@ -95,7 +94,7 @@ export default function App() {
                   ) : (
                     <>
                       {/* The map is the front page, at its own address. */}
-                      <Route index element={<Forward to="/map" />} />
+                      <Route index element={<Navigate to="/map" replace />} />
                       <Route path="overview" element={<OverviewPage />} />
                       <Route path="nodes/:nodeId" element={<NodeDetailPage />} />
                       <Route path="map" element={<MapPage />} />
@@ -108,17 +107,10 @@ export default function App() {
                       {/* Open like /sim, session or not: the page draws the
                           fleet's solver internals and saves its configuration,
                           and both ends of that are public on a server that
-                          has a fleet. Absent where there is none. The old
-                          address below forwards whether or not this route
-                          exists, so a stale link lands on the new one and then
-                          renders nothing where there is no fleet — exactly
-                          what /physics did on such a deployment already. */}
+                          has a fleet. Absent where there is none. */}
                       {syntheticFleet && (
                         <Route path="sim/physics" element={<PhysicsPage />} />
                       )}
-                      {/* The physics page's address from before the simulator
-                          had one of its own; it is in bookmarks and notes. */}
-                      <Route path="physics" element={<Forward to="/sim/physics" />} />
                       {TestRadar && <Route path="test-radar" element={<TestRadar />} />}
                       <Route path="detections" element={<DetectionsPage />} />
                       <Route path="rf" element={<RFEnvironmentPage />} />
@@ -130,9 +122,6 @@ export default function App() {
                       <Route path="knowledge" element={<KnowledgeBasePage />} />
                       <Route path="tunnel" element={<TunnelLinkPage />} />
                       <Route path="onboarding" element={<OnboardingPage />} />
-                      {/* The old Settings page's address. My Nodes holds what it
-                          listed, and reads no query or hash to carry across. */}
-                      <Route path="settings" element={<Navigate to="/onboarding" replace />} />
                     </>
                   )}
                 </Routes>

@@ -9,8 +9,7 @@ A single FastAPI app (`backend/`) serves every user-facing surface. The public
 ones share one hostname, `app.retina.fm` (`staging-app`, `test-app`), because
 the session cookie is host-only and a login has to cover all of them:
 
-All of them are one SPA, the console (`dashboard/`), served at the root; the old
-`/dash/…` and `/data/…` addresses redirect into it with their query strings.
+All of them are one SPA, the console (`dashboard/`), served at the root.
 
 - **map** (`/map`, where `/` opens) — the live map, the console's front page.
   Every deployed environment shows real nodes only here (the default is

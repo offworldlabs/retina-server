@@ -218,29 +218,6 @@ server {
     # RETINA_INCLUDE snippets/towers-proxy.conf
     # RETINA_ENDIF
 
-    # The console's old mount. Its links are in circulation, mailed sign-in
-    # links among them, so each lands on the same page at the root. `/dash`
-    # needs its own exact match: it does not contain `/dash/`, and the SPA has
-    # no route of that name.
-    location = /dash {
-        # $is_args$args: a `return` drops the query string, a rewrite keeps it.
-        return 301 /$is_args$args;
-    }
-
-    # `^~` so spa.conf's regex locations below never answer /dash/*.js
-    # themselves: a regex beats a prefix whatever their lengths.
-    location ^~ /dash/ {
-        rewrite ^/dash/(.*)$ /$1 permanent;
-    }
-
-    # The standalone data explorer's old paths, still in circulation as links.
-    # /data itself is the console's page, and the query is its filters
-    # (dataExplorer/urlState.ts), so it survives the hop. `^~` for the reason
-    # above: /data/app.js would otherwise be a regex match.
-    location ^~ /data/ {
-        return 301 /data$is_args$args;
-    }
-
     # RETINA_INCLUDE snippets/spa.conf
 }
 

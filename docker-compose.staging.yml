@@ -77,8 +77,8 @@ services:
       # /sim in the nav, since this environment leaves SYNTHETIC_FLEET_ENABLED
       # unset (see above). `testmap.retina.fm` — the name people already have
       # from when staging's map was the simulator demo — is a Cloudflare
-      # redirect into this one, landing on the console root and so on the real
-      # network; `staging-map`, `staging-dash` and `staging-data` are the same.
+      # redirect onto this one's /map, and so onto the real network;
+      # `staging-map`, `staging-dash` and `staging-data` are the same.
       - HOST_APP=staging-app.retina.fm
       - HOST_ADMIN=staging-admin.retina.fm
       # The only host-naming part of the CSP. wss://*.retina.fm already covers

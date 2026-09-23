@@ -1,12 +1,10 @@
 /**
  * The consolidated surface: the console at the root of the app hostname,
- * opening on its map, and the old addresses that redirect into it.
+ * opening on its map.
  *
  * What a browser adds over the smoke tests is that the bundle executes and the
  * router lands where it should. The arrival at /map is react-router's own
- * redirect, so it needs the JavaScript to have loaded and run; the old /dash/
- * and /data/ addresses are nginx's redirects, followed through to a page that
- * renders.
+ * redirect, so it needs the JavaScript to have loaded and run.
  *
  * Skipped where hosts.app is null — see the table in playwright.config.ts for
  * why production and the dev server are.
@@ -36,28 +34,16 @@ test.describe("the consolidated app surface", () => {
     await expect(page.locator(".connection-badge")).toBeVisible({ timeout: 30_000 });
   });
 
-  test("keeps an old map link's view, which lives in the hash", async ({ page }) => {
-    // Not the map's default view, so arriving there cannot pass by accident.
-    await page.goto(`${BASE}/#lat=51.5000&lon=-0.1200&z=6`, { waitUntil: "domcontentloaded" });
-    await expect(page).toHaveURL(new RegExp(`^${originPattern()}/map#.*lat=51\\.5`));
-  });
-
   test("sends a private page to the login card", async ({ page }) => {
     await page.goto(`${BASE}/overview`, { waitUntil: "domcontentloaded" });
     await expect(page.locator(".login-card")).toBeVisible({ timeout: 30_000 });
     await expect(page).toHaveURL(new RegExp(`^${originPattern()}/login/?$`));
   });
 
-  test("sends the old /dash/ mount to the same page at the root", async ({ page }) => {
-    await page.goto(`${BASE}/dash/leaderboard?x=1`, { waitUntil: "domcontentloaded" });
-    await expect(page).toHaveURL(new RegExp(`^${originPattern()}/leaderboard\\?x=1$`));
-  });
-
-  test("sends an old /data/ link to the explorer, filters intact", async ({ page }) => {
-    await page.goto(`${BASE}/data/?from=2026-09-01&to=2026-09-03`, { waitUntil: "domcontentloaded" });
-    await expect(page).toHaveURL(new RegExp(`^${originPattern()}/data\\?`));
+  test("opens the explorer on the filters its link carries", async ({ page }) => {
+    await page.goto(`${BASE}/data?from=2026-09-01&to=2026-09-03`, { waitUntil: "domcontentloaded" });
     // The page renders its shareable link from the filters it read, so this
-    // needs the bundle to have run and the query to have survived the redirect.
+    // needs the bundle to have run.
     await expect(page.getByTestId("de-share")).toContainText("from=2026-09-01&to=2026-09-03", {
       timeout: 30_000,
     });

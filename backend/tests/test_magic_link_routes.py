@@ -110,8 +110,7 @@ class TestRequestMagicLink:
         assert "evil.example.com" not in body
 
     def test_the_link_lands_at_the_consoles_root(self, client, sent, monkeypatch):
-        """HOST_APP serves the console at /; the old /dash/ mount only redirects,
-        so a link through it costs the reader a hop and depends on it staying."""
+        """HOST_APP serves the console at /, and it has no page under /dash/."""
         monkeypatch.setenv("HOST_APP", "app.retina.fm")
         client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
         _, _, body = sent[0]
