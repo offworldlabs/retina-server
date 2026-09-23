@@ -23,7 +23,7 @@ from config.constants import (
 )
 from core import state
 from pipeline.passive_radar import PassiveRadarPipeline
-from services import probation
+from services import node_tracks, probation
 from services.geo import (
     valid_latlon,
 )
@@ -41,6 +41,7 @@ _archive_buffer_lock = threading.Lock()
 # frame workers can rebind it without a global statement); failures are
 # counted per-occurrence in known_claims_errors but logged at most 1/min.
 _last_claim_error_log = [0.0]
+_last_node_tracks_error_log = [0.0]
 _ARCHIVE_FLUSH_INTERVAL = ARCHIVE_FLUSH_INTERVAL_S
 _ARCHIVE_BATCH_MAX = ARCHIVE_BATCH_MAX
 # Hard cap on buffer growth when writes fail repeatedly. Beyond this we drop
@@ -467,6 +468,22 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     _t1 = time.thread_time()
     state.node_analytics.record_detection_frame(node_id, frame)
     _d_analytics = time.thread_time() - _t1
+
+    # The node's own tracks, filed from the frame as the node sent it: a hit
+    # indexes these arrays, and the known lane below renumbers them.  A frame
+    # without tracks goes too, so a node whose tracker stops ages out of the
+    # store.  Fail open, as the known lane does: a mirrored frame reaches here
+    # untyped, and a malformed track must not cost the frame its detections.
+    try:
+        refused = node_tracks.store.ingest(node_id, frame)
+    except Exception:
+        refused = 1
+        now = time.time()
+        if now - _last_node_tracks_error_log[0] > 60:
+            _last_node_tracks_error_log[0] = now
+            logging.exception("node tracks: could not file the tracks of a frame from %s", node_id)
+    if refused:
+        state.bump_counter("node_tracks_errors", refused)
 
     # A node on probation feeds its own analytics and tracker and nothing else:
     # no claiming, association, solver input, shared ADS-B cache or archive.

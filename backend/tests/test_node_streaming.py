@@ -166,9 +166,9 @@ _TRACK = {
 }
 
 
-async def test_a_frame_carrying_tracks_is_accepted_and_filed_without_them(registered_node, node_client):
-    """1.6.0: the tracks are validated and then dropped, so the queue sees what
-    an untracked frame would put there."""
+async def test_a_frame_carrying_tracks_is_queued_with_them(registered_node, node_client):
+    """1.6.0: the tracks reach the queue beside the detections they name, for
+    the node-track store."""
     token, _ = registered_node
 
     response = node_client.post(
@@ -178,7 +178,8 @@ async def test_a_frame_carrying_tracks_is_accepted_and_filed_without_them(regist
     assert response.status_code == 202
     assert response.json()["accepted"] == 2
     ((_, queued),) = _queued()
-    assert "tracks" not in queued and "tracker" not in queued
+    assert queued["tracker"] == {"run": "k3n8v2qp71ab9x0c"}
+    assert [t["id"] for t in queued["tracks"]] == ["260923-00001A"]
     assert queued["delay"] == [12.4, 30.1]
 
 

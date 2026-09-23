@@ -701,6 +701,11 @@ known_claims_world_rejects: int = 0
 # Claiming-stage exceptions absorbed by frame_processor's fail-open guard.
 # Nonzero means the known lane is broken and silently contributing nothing.
 known_claims_errors: int = 0
+# Node tracks services.node_tracks refused as malformed: one per track, or one
+# for a frame whose tracks could not be read at all.  The route validates every
+# v1 frame, so nonzero means a malformed frame arrived another way, such as the
+# mirror.
+node_tracks_errors: int = 0
 # Known-track hold (see known_track_holds above and services/known_claiming.py).
 # claims counts detections claimed by the hold path — the ones that would have
 # fallen into the dark pool as the tags stopped; expired counts hold entries

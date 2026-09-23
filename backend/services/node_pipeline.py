@@ -92,9 +92,10 @@ def pipeline_frame(frame: "DetectionFrame") -> dict:
     the pair the server counts loss against, and only meaningful together, since
     `seq` restarts from zero with the process.
 
-    `tracker` and `tracks` are validated at the route and not carried: nothing
-    that reads the queue uses a node's tracks, so a tracked frame files exactly
-    what the same frame without them would.
+    `tracker` and `tracks` travel under their own keys, for services.node_tracks,
+    and only when the node sent them, so an untracked frame is byte-identical to
+    what it was.  A track's `hit` indexes the arrays above as the node sent
+    them.
     """
     out = {
         "timestamp": int(frame.t * 1000),
@@ -108,6 +109,10 @@ def pipeline_frame(frame: "DetectionFrame") -> dict:
     }
     if frame.adsb is not None:
         out["adsb"] = [_tag_record(tag) if tag is not None else None for tag in frame.adsb]
+    if frame.tracker is not None:
+        out["tracker"] = {"run": frame.tracker.run}
+        if frame.tracks is not None:
+            out["tracks"] = [track.model_dump() for track in frame.tracks]
     return out
 
 
