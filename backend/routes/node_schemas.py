@@ -200,10 +200,12 @@ class AdsbTag(_RequestModel):
     sees a node second-hand — the detection mirror — since a hex alone cannot
     be placed there.
 
-    `alt` is barometric feet, `gs` knots and `track` degrees true, the units
-    the node's enrichment reports and the TCP ingest already stores.  The
-    expected/residual pair is the node's own prediction check, carried for
-    the record; the server recomputes its own.
+    `alt` is feet: the receiver's geometric altitude (`alt_geom`) where it
+    reports one, and its barometric altitude (`alt_baro`) where it does not.
+    `gs` is knots and `track` degrees true, the units the node's enrichment
+    reports and the TCP ingest already stores.  The expected/residual pair is
+    the node's own prediction check, carried for the record; the server
+    recomputes its own.
     """
 
     hex: Annotated[str, Field(pattern=r"^[0-9a-f]{6}$")]
