@@ -75,10 +75,10 @@ jobs:
       # separate ones it should overwrite.
       COVERAGE_FILE: .coverage.${{ matrix.shard }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       # setup-python owns the interpreter, and uv, at the version the images
@@ -177,7 +177,7 @@ jobs:
       # include-hidden-files, because `.coverage.N` is a dotfile and v4 drops
       # those silently: without it the combine below fails on an empty download
       # rather than on anything that names this step.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-${{ matrix.shard }}
           path: backend/.coverage.${{ matrix.shard }}
@@ -195,8 +195,8 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -204,7 +204,7 @@ jobs:
       # it: a data file's format is tied to the coverage that wrote it, and a
       # newer reader is not guaranteed to accept an older fragment.
       - run: uv pip install --system coverage==7.8.0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: coverage-*
           merge-multiple: true
@@ -241,10 +241,10 @@ jobs:
     steps:
       # Installed as backend-tests installs them: the contract check imports the
       # app, and with it every lib.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -291,8 +291,8 @@ jobs:
           - { workspace: packages/shared }
           - { workspace: e2e }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           cache: npm
@@ -322,7 +322,7 @@ jobs:
     # and `changes.base` is populated only for the latter.
     if: github.event.action != 'edited' || github.event.changes.base
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
       - run: docker build -t retina-server:ci .
@@ -335,8 +335,8 @@ jobs:
     # and `changes.base` is populated only for the latter.
     if: github.event.action != 'edited' || github.event.changes.base
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       # Both services declare `env_file: backend/.env`, which holds per-host
@@ -362,7 +362,7 @@ jobs:
     outputs:
       image: ${{ steps.resolve.outputs.image }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # The tag is DERIVED from the lockfile rather than written out here, so
       # the browsers baked into the container cannot disagree with the client
       # that drives them. Bumping Playwright is an npm operation and nothing
@@ -419,9 +419,9 @@ jobs:
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # See the staging job for why setup-node is kept inside the container.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
           cache: npm
@@ -451,7 +451,7 @@ jobs:
       # failed roll production back.
       - name: Rollback production on E2E failure
         if: failure() && steps.e2e.outcome == 'failure'
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: root
@@ -477,7 +477,7 @@ jobs:
     # landing before the service can serve it, and a job that only runs after
     # the merge reports that too late to prevent one.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Production's instance answers on a name with public DNS, so it can be
       # checked from anywhere, including on a pull request.
       - name: Production's instance
@@ -511,7 +511,7 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: Assert staging's instance
         if: github.event_name == 'push'
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         env:
           QUERY_B64: ${{ env.QUERY_B64 }}
           ECHO_B64: ${{ env.ECHO_B64 }}
@@ -625,7 +625,7 @@ jobs:
             exit 1
           fi
           echo "app_dir=${APP_DIR}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # The push's whole range has to be diffable and `before` can be
           # several commits back. No submodules: the filter reads paths, file
@@ -714,7 +714,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Deploy to production via SSH
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: root
@@ -1006,7 +1006,7 @@ jobs:
       )
     steps:
       - name: Roll back, but only if the deploy actually mutated the box
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: root
@@ -1099,7 +1099,7 @@ jobs:
     env:
       BASE_URL: https://api.retina.fm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Wait for production to answer through the edge
         timeout-minutes: 5
         run: |
@@ -1359,7 +1359,7 @@ jobs:
       # triggering an automatic rollback.
       - name: Rollback production on smoke-test failure
         if: failure() && steps.smoke.outcome == 'failure'
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: root

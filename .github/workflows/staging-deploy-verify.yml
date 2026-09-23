@@ -60,7 +60,7 @@ jobs:
       APP_DIR: ${{ inputs.app_dir }}
     steps:
       - name: Deploy to staging via SSH
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ secrets.STAGING_HOST }}
           username: root
@@ -233,7 +233,7 @@ jobs:
       APP_DIR: ${{ inputs.app_dir }}
     steps:
       - name: Roll back, but only if the deploy actually mutated the box
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ secrets.STAGING_HOST }}
           username: root
@@ -305,7 +305,7 @@ jobs:
     timeout-minutes: 35
     needs: [deploy]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Run smoke tests against staging
         # No fleet gate ahead of this any more: staging runs no simulator, so
         # there is nothing to wait for between the deploy and the suite, and the
@@ -342,12 +342,12 @@ jobs:
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Kept despite the image shipping its own Node: this pins the version the
       # tests run under to the same 20 as every other job, rather than letting
       # it drift with whatever the Playwright image happens to carry, and keeps
       # the npm cache. Only browser provisioning changes here.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
           cache: npm

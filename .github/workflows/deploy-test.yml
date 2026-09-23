@@ -81,7 +81,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Deploy to test via SSH
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         env:
           FAIL_AT: ${{ inputs.fail_at }}
           DEPLOY_REF: ${{ inputs.ref }}
@@ -264,7 +264,7 @@ jobs:
       )
     steps:
       - name: Roll back, but only if the deploy actually mutated the box
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         env:
           RUN_ID: ${{ github.run_id }}
         with:
