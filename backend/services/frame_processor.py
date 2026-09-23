@@ -469,22 +469,6 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     state.node_analytics.record_detection_frame(node_id, frame)
     _d_analytics = time.thread_time() - _t1
 
-    # The node's own tracks, filed from the frame as the node sent it: a hit
-    # indexes these arrays, and the known lane below renumbers them.  A frame
-    # without tracks goes too, so a node whose tracker stops ages out of the
-    # store.  Fail open, as the known lane does: a mirrored frame reaches here
-    # untyped, and a malformed track must not cost the frame its detections.
-    try:
-        refused = node_tracks.store.ingest(node_id, frame)
-    except Exception:
-        refused = 1
-        now = time.time()
-        if now - _last_node_tracks_error_log[0] > 60:
-            _last_node_tracks_error_log[0] = now
-            logging.exception("node tracks: could not file the tracks of a frame from %s", node_id)
-    if refused:
-        state.bump_counter("node_tracks_errors", refused)
-
     # A node on probation feeds its own analytics and tracker and nothing else:
     # no claiming, association, solver input, shared ADS-B cache or archive.
     _probation = probation.in_probation(node_id)
@@ -510,6 +494,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # stage — it claims what the ADS-B paths leave, so it cannot run without
     # them, which is why it is gated on KNOWN_LANE_MODE too.
     _pframe = frame
+    _strip: set[int] = set()
     if not _probation and state.KNOWN_LANE_MODE != "off" and frame.get("delay"):
         # Fail open: the known lane is an overlay on the dark lane, and in
         # shadow mode especially it must be unable to cost a frame.  Before
@@ -522,14 +507,17 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
             # against the first's output would delete the wrong detections.
             _followed: set[int] = set()
             _claimed = claim_known_targets(node_id, frame, follow_claimed=_followed)
-            _strip: set[int] = set()
+            _bound: set[int] = set()
             if _claimed and state.KNOWN_LANE_MODE == "binding":
-                _strip |= _claimed
+                _bound |= _claimed
                 state.bump_counter("known_claims_bound", len(_claimed))
             if _followed and state.DARK_FOLLOW_MODE == "binding":
-                _strip |= _followed
-            if _strip:
-                _pframe = strip_claimed_detections(frame, _strip)
+                _bound |= _followed
+            if _bound:
+                _pframe = strip_claimed_detections(frame, _bound)
+            # Only once the strip has happened: a failure above leaves the dark
+            # lane the whole frame, and the node's tracks with it.
+            _strip = _bound
         except Exception:
             state.bump_counter("known_claims_errors")
             now = time.time()
@@ -541,6 +529,23 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # attributed it to the tracker.  Subtracted from _d_pipeline below so the
     # two stay disjoint.
     _d_known = time.thread_time() - _t3
+    # The node's own tracks, filed from the frame as the node sent it: a hit
+    # indexes these arrays, which the strip above renumbered in _pframe and the
+    # seeding below can tag.  The strip set tells the store which hits the dark
+    # lane must not see.  A frame without tracks goes too, so a node whose
+    # tracker stops ages out of the store.  Fail open, as the known lane does: a
+    # mirrored frame reaches here untyped, and a malformed track must not cost
+    # the frame its detections.
+    try:
+        refused = node_tracks.store.ingest(node_id, frame, claimed=_strip)
+    except Exception:
+        refused = 1
+        now = time.time()
+        if now - _last_node_tracks_error_log[0] > 60:
+            _last_node_tracks_error_log[0] = now
+            logging.exception("node tracks: could not file the tracks of a frame from %s", node_id)
+    if refused:
+        state.bump_counter("node_tracks_errors", refused)
     # Predictive ADS-B tagging for a node with no receiver of its own.
     # Never overwrites a node-provided list — the node's own correlation is
     # authoritative, and an absent list is the only case where the backend
