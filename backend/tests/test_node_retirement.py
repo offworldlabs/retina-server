@@ -8,11 +8,18 @@ removes stale test-prefixed nodes from the fleet registry only after 7 days
 disconnected; retirement is the only path that clears every store.
 """
 
+import asyncio
+import contextlib
+from datetime import datetime, timezone
+
 import pytest
 
+from config.constants import DISPOSABLE_SWEEP_INTERVAL_S
 from core import state
 from core.env_parsing import parse_comma_list
+from core.task_registry import TASK_EXPECTED_INTERVAL_S
 from services import node_retirement
+from services.tasks import periodic
 
 _CFG = dict(rx_lat=34.85, rx_lon=-82.40, tx_lat=34.90, tx_lon=-82.30, max_range_km=50, max_bistatic_range_km=50)
 
@@ -339,9 +346,8 @@ class TestForceRetireAllowlist:
         assert "departed" not in state.node_analytics.trust_scores
 
     def test_the_route_permits_a_force_retire_inside_the_allowlist(self, client, fleet, monkeypatch):
-        """The combination the staging teardown depends on: a configured
-        allowlist plus a force-retire made through the admin route rather
-        than by calling retire_node directly."""
+        """A configured allowlist plus a force-retire made through the admin
+        route rather than by calling retire_node directly."""
         monkeypatch.setenv("NODE_FORCE_RETIRE_PREFIXES", "e2e-")
         state.connected_nodes["e2e-bulk-a-abc"] = {"status": "active"}
 
@@ -349,6 +355,182 @@ class TestForceRetireAllowlist:
 
         assert r.status_code == 200
         assert "e2e-bulk-a-abc" not in state.connected_nodes
+
+
+def _heard(seconds_ago: float, now: float) -> str:
+    return datetime.fromtimestamp(now - seconds_ago, timezone.utc).isoformat()
+
+
+class TestDisposableSweep:
+    """Staging names its E2E ids disposable; the server retires them itself
+    once they go quiet, since the suite holds no admin identity to do it."""
+
+    NOW = 1_800_000_000.0
+    QUIET = node_retirement.DISPOSABLE_QUIET_S
+
+    @pytest.fixture()
+    def disposable(self, fleet, monkeypatch):
+        monkeypatch.setenv("NODE_FORCE_RETIRE_PREFIXES", "e2e-,synth-e2e-")
+        monkeypatch.setattr(node_retirement, "_stale_last_pass", set())
+        ids = ("e2e-bulk-a-old", "synth-e2e-old", "e2e-real-now")
+        for nid in ids:
+            state.node_analytics.register_node(nid, dict(_CFG))
+        yield
+        for nid in ids:
+            state.node_analytics.retire_node(nid)
+
+    def sweep(self):
+        return node_retirement.retire_disposable_nodes(now=self.NOW)
+
+    def test_nothing_is_swept_where_no_prefixes_are_configured(self, disposable, monkeypatch):
+        """Production and the test droplet: an unset allowlist names nothing
+        disposable, whereas for force it means no restriction at all."""
+        monkeypatch.delenv("NODE_FORCE_RETIRE_PREFIXES")
+        assert self.sweep()["count"] == 0
+        assert "e2e-bulk-a-old" in state.node_analytics.trust_scores
+
+    def test_a_stale_disposable_node_is_retired_on_its_second_stale_pass(self, disposable):
+        assert self.sweep()["count"] == 0
+        result = self.sweep()
+
+        assert {"e2e-bulk-a-old", "synth-e2e-old"} <= {r["node_id"] for r in result["retired"]}
+        assert "e2e-bulk-a-old" not in state.node_analytics.trust_scores
+
+    def test_a_stale_id_that_registers_between_passes_is_spared(self, disposable):
+        """Custody can arrive before registration, so stale is not proof that
+        nothing is using an id."""
+        self.sweep()
+        state.connected_nodes["e2e-real-now"] = {"status": "active", "last_heartbeat": _heard(5, self.NOW)}
+        self.sweep()
+        assert "e2e-real-now" in state.node_analytics.trust_scores
+
+    def test_a_stale_node_outside_the_prefixes_is_left(self, disposable):
+        """A real receiver's history is only discarded by an explicit retire."""
+        self.sweep()
+        assert "departed" in state.node_analytics.trust_scores
+
+    def test_a_held_disposable_node_is_retired_once_quiet(self, disposable):
+        state.connected_nodes["e2e-bulk-a-old"] = {
+            "status": "disconnected",
+            "last_heartbeat": _heard(self.QUIET + 1, self.NOW),
+        }
+        self.sweep()
+        assert "e2e-bulk-a-old" not in state.connected_nodes
+        assert "e2e-bulk-a-old" not in state.node_analytics.trust_scores
+
+    def test_a_disposable_node_heard_recently_is_left_to_its_run(self, disposable):
+        """A run still asserting on its node must not lose it mid-test."""
+        state.connected_nodes["e2e-real-now"] = {
+            "status": "active",
+            "last_heartbeat": _heard(self.QUIET - 60, self.NOW),
+        }
+        self.sweep()
+        assert "e2e-real-now" in state.connected_nodes
+        assert "e2e-real-now" in state.node_analytics.trust_scores
+
+    def test_a_quiet_node_outside_the_prefixes_is_left(self, disposable):
+        state.connected_nodes["dark-node"] = {
+            "status": "disconnected",
+            "last_heartbeat": _heard(30 * 86400, self.NOW),
+        }
+        self.sweep()
+        assert "dark-node" in state.connected_nodes
+
+    @pytest.mark.parametrize("stamp", ["disconnected_ts", "first_seen_ts"])
+    def test_a_node_without_a_heartbeat_is_aged_by_its_other_stamps(self, disposable, stamp):
+        state.connected_nodes["e2e-bulk-a-old"] = {"status": "disconnected", stamp: self.NOW - self.QUIET - 1}
+        self.sweep()
+        assert "e2e-bulk-a-old" not in state.connected_nodes
+
+    def test_a_held_node_that_cannot_be_aged_is_left(self, disposable):
+        state.connected_nodes["e2e-bulk-a-old"] = {"status": "disconnected", "last_heartbeat": "not a time"}
+        self.sweep()
+        assert "e2e-bulk-a-old" in state.connected_nodes
+
+    def test_a_heartbeat_stamp_that_is_not_a_string_leaves_the_node_and_spares_the_sweep(self, disposable):
+        """A TCP heartbeat stores the node's own timestamp as sent, which may
+        be a number; one such node must not abort the pass for the rest."""
+        state.connected_nodes["e2e-bulk-a-old"] = {"status": "active", "last_heartbeat": 1_800_000_000_000}
+        self.sweep()
+        result = self.sweep()
+
+        assert "e2e-bulk-a-old" in state.connected_nodes
+        assert "synth-e2e-old" in [r["node_id"] for r in result["retired"]]
+
+    def test_a_connected_node_without_a_heartbeat_is_not_aged_by_when_it_was_first_seen(self, disposable):
+        state.connected_nodes["e2e-real-now"] = {"status": "active", "first_seen_ts": self.NOW - 30 * 86400}
+        self.sweep()
+        assert "e2e-real-now" in state.connected_nodes
+
+    def test_a_heartbeat_without_an_offset_is_read_as_utc(self):
+        """Left naive, it would be read as the host's local time, which a UTC
+        host could not tell apart, so the offset itself is what is checked."""
+        naive = datetime.fromtimestamp(self.NOW, timezone.utc).replace(tzinfo=None).isoformat()
+        heard = node_retirement._parse_heartbeat(naive)
+        assert heard.tzinfo == timezone.utc
+        assert heard.timestamp() == self.NOW
+
+    def test_a_held_node_heard_again_before_its_turn_is_spared(self, disposable, monkeypatch):
+        """The pass can spend a while on stale ids before it reaches the held
+        ones, so quietness is judged again at the node's own turn."""
+        monkeypatch.setattr(node_retirement, "_stale_last_pass", {"synth-e2e-old"})
+        state.connected_nodes["e2e-bulk-a-old"] = {
+            "status": "disconnected",
+            "last_heartbeat": _heard(self.QUIET + 1, self.NOW),
+        }
+        real_retire = node_retirement.retire_node
+
+        def beat_while_busy(node_id, **kwargs):
+            if node_id == "synth-e2e-old":
+                state.connected_nodes["e2e-bulk-a-old"]["last_heartbeat"] = _heard(0, self.NOW)
+            return real_retire(node_id, **kwargs)
+
+        monkeypatch.setattr(node_retirement, "retire_node", beat_while_busy)
+        self.sweep()
+        assert "e2e-bulk-a-old" in state.connected_nodes
+
+    def test_a_failure_is_reported_and_the_rest_still_go(self, disposable, monkeypatch):
+        real_retire = node_retirement.retire_node
+
+        def fail_on_one(node_id, **kwargs):
+            if node_id == "synth-e2e-old":
+                raise OSError("coverage file is not writable")
+            return real_retire(node_id, **kwargs)
+
+        monkeypatch.setattr(node_retirement, "retire_node", fail_on_one)
+        self.sweep()
+        result = self.sweep()
+
+        assert [r["node_id"] for r in result["failed"]] == ["synth-e2e-old"]
+        assert "e2e-bulk-a-old" in [r["node_id"] for r in result["retired"]]
+
+
+class TestDisposableSweepTask:
+    @pytest.fixture(autouse=True)
+    def _no_recorded_success(self):
+        state.task_last_success.pop("retire_disposable_nodes", None)
+        yield
+        state.task_last_success.pop("retire_disposable_nodes", None)
+
+    def test_the_loop_reports_success_to_the_task_registry(self, monkeypatch):
+        monkeypatch.setattr(periodic, "DISPOSABLE_SWEEP_INTERVAL_S", 0.0)
+
+        async def _until_first_pass():
+            task = asyncio.create_task(periodic.retire_disposable_nodes_task())
+            for _ in range(500):
+                await asyncio.sleep(0.01)
+                if "retire_disposable_nodes" in state.task_last_success:
+                    break
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        asyncio.run(_until_first_pass())
+
+        assert "retire_disposable_nodes" in state.task_last_success
+
+    def test_it_is_in_the_staleness_registry(self):
+        assert TASK_EXPECTED_INTERVAL_S["retire_disposable_nodes"] == DISPOSABLE_SWEEP_INTERVAL_S
 
 
 class TestParseCommaList:

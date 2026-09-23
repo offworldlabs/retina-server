@@ -28,6 +28,7 @@ async def test_cleanup_awaits_tasks_before_final_writes(monkeypatch, exceptional
     for name in (
         "reputation_evaluator",
         "prune_synthetic_nodes",
+        "retire_disposable_nodes_task",
         "adsb_truth_fetcher",
         "aircraft_flush_task",
         "feed_gc_task",

@@ -18,6 +18,7 @@ TASK_EXPECTED_INTERVAL_S: dict[str, int] = {
     "archive_lifecycle": 3600,
     "reputation_evaluator": 120,
     "prune_synthetic_nodes": 21600,  # Every 6 hours
+    "retire_disposable_nodes": 600,  # DISPOSABLE_SWEEP_INTERVAL_S
     # A cycle is 120 s of sleep, plus 300 s more after an OpenSky 429 that cost
     # a region its coverage (86cb9m6wc), plus the fetch itself.  OpenSky is
     # asked once per box and a region straddling the antimeridian is two boxes,

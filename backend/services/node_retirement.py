@@ -19,6 +19,9 @@ for a week is still a real receiver whose accumulated coverage we want back
 when it returns; only a decision that the node is *gone* should discard it.
 ``retire_node`` is that decision, and it is irreversible — the coverage
 polygon in particular represents observation time that cannot be recreated.
+The one standing decision is ``retire_disposable_nodes``: an environment that
+names its test-node prefixes has decided in advance that those ids are gone
+once they fall quiet.
 
 Retiring a node still held in the fleet registry is refused: it would be undone
 by the next registration anyway, and it would strip the custody chain of a live
@@ -27,11 +30,20 @@ so a receiver marked disconnected is still refused.
 """
 
 import logging
+import time
+from datetime import datetime, timezone
 
 from config import constants
 from core import state
 
 log = logging.getLogger(__name__)
+
+#: How long a disposable node must go unheard before the sweep retires it.
+#: Far longer than an E2E run, so an id this quiet belongs to a finished one.
+DISPOSABLE_QUIET_S = 15 * 60
+
+# The disposable ids found stale on the previous sweep.
+_stale_last_pass: set[str] = set()
 
 
 class NodeStillConnected(Exception):
@@ -217,3 +229,79 @@ def retire_stale_nodes() -> dict:
         "skipped": skipped,
         "failed": failed,
     }
+
+
+def _parse_heartbeat(hb: object) -> datetime | None:
+    """An ISO heartbeat stamp as an aware datetime, or None if it is not one."""
+    if not isinstance(hb, str):
+        return None
+    try:
+        heard = datetime.fromisoformat(hb.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    # Left naive, .timestamp() would read it as the host's local time.
+    return heard if heard.tzinfo else heard.replace(tzinfo=timezone.utc)
+
+
+def _last_heard(info: dict) -> float | None:
+    """When a registry entry last showed signs of life, or None if unknowable.
+
+    A TCP heartbeat stores the node's own timestamp as sent, so the field may
+    hold something other than an ISO string; that entry is left unaged.
+    """
+    hb = info.get("last_heartbeat")
+    if hb:
+        heard = _parse_heartbeat(hb)
+        return heard.timestamp() if heard else None
+    # first_seen_ts says nothing about a node that is still connected.
+    if info.get("status") != "disconnected":
+        return None
+    return info.get("disconnected_ts") or info.get("first_seen_ts")
+
+
+def _is_quiet(info: dict, now: float) -> bool:
+    heard = _last_heard(info)
+    return heard is not None and now - heard > DISPOSABLE_QUIET_S
+
+
+def retire_disposable_nodes(now: float | None = None) -> dict:
+    """Retire every node whose id the environment names disposable, once quiet.
+
+    The names are ``NODE_FORCE_RETIRE_PREFIXES``; unset, nothing is disposable.
+    A held id goes after ``DISPOSABLE_QUIET_S`` unheard, and one that cannot be
+    aged stays.  A stale id goes once it has been stale on two passes running,
+    since custody can arrive before a node registers.
+    """
+    global _stale_last_pass
+    prefixes = constants.force_retire_prefixes()
+    if not prefixes:
+        _stale_last_pass = set()
+        return {"retired": [], "count": 0, "skipped": [], "failed": []}
+    now = time.time() if now is None else now
+
+    stale = {nid for nid in stale_node_ids() if nid.startswith(prefixes)}
+    targets = [(nid, False) for nid in sorted(stale & _stale_last_pass)]
+    _stale_last_pass = stale
+    with state.connected_nodes_lock:
+        held = list(state.connected_nodes.items())
+    targets += [(nid, True) for nid, info in held if nid.startswith(prefixes) and _is_quiet(info, now)]
+
+    retired, skipped, failed = [], [], []
+    for nid, force in targets:
+        if force:
+            # The stale retirements before this one can take a while.
+            with state.connected_nodes_lock:
+                info = state.connected_nodes.get(nid)
+            if info is not None and not _is_quiet(info, now):
+                skipped.append({"node_id": nid})
+                continue
+        try:
+            retired.append(retire_node(nid, force=force))
+        except NodeStillConnected:
+            skipped.append({"node_id": nid})
+        except Exception as exc:
+            log.error("Retiring disposable node %s failed: %r", nid, exc)
+            failed.append({"node_id": nid, "error": repr(exc)})
+    if retired or failed:
+        log.info("Disposable-node sweep: %d retired, %d skipped, %d failed", len(retired), len(skipped), len(failed))
+    return {"retired": retired, "count": len(retired), "skipped": skipped, "failed": failed}
