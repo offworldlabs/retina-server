@@ -577,6 +577,16 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
     # no geometry to place any of that against.
     pipeline = get_or_create_node_pipeline(node_id, default_pipeline)
     if pipeline is not None:
+        # The node's first frame with tracks cuts its pipeline over: from here
+        # on its own tracks stand where the in-process tracker was.  A pipeline
+        # rebuilt on a configuration change is cut over again by the next one.
+        if (
+            state.NODE_TRACKS_MODE == "live"
+            and node_tracks.tracker_run(frame) is not None
+            and not isinstance(pipeline.tracker, node_tracks.NodeTracker)
+        ):
+            pipeline.tracker = node_tracks.NodeTracker(node_id, pipeline.event_writer)
+            logging.info("node tracks: %s now tracks on its own tracker", node_id)
         pipeline.process_frame(_pframe)
     _d_pipeline = time.thread_time() - _t3 - _d_known
 

@@ -109,6 +109,16 @@ event writer for geolocation.
 `TRACKLET_MAX_DELAY_RESIDUAL` and `TRACKLET_MAX_DOPPLER_RESIDUAL` of a recently
 deleted track, it's linked rather than spawning a new hypothesis.
 
+**Node tracks.** A node running its own tracker sends its confirmed tracks on
+the detection frame (node API 1.6.0), each naming the detection it took by
+index. `services/node_tracks.py` files them into a per-node store before the
+known lane renumbers the frame, building a 20-point window per track. With
+`NODE_TRACKS_MODE=live`, a node's first tracked frame replaces its pipeline's
+`Tracker` with a `NodeTracker`: `tracker.tracks` becomes the node's open tracks,
+with ids namespaced `node:run:id`, and a track that took a detection emits the
+same event this tracker would. Everything downstream reads the node's tracks
+unchanged. With the default `off`, the tracks are filed and nothing reads them.
+
 ---
 
 ## 3. Geolocation (retina-geolocator, LM solver)
