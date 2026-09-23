@@ -463,6 +463,7 @@ def process_one_frame(node_id: str, frame: dict, default_pipeline: PassiveRadarP
         if not sig_valid and det_node_id in state.node_identities:
             logging.warning("Invalid signature on detection from %s", det_node_id)
 
+    state.node_last_frame_at[node_id] = time.time()
     _t1 = time.thread_time()
     state.node_analytics.record_detection_frame(node_id, frame)
     _d_analytics = time.thread_time() - _t1

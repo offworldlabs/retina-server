@@ -161,3 +161,16 @@ async def test_a_report_that_cannot_be_stored_does_not_cost_the_beat(
     seen = await node_session.scalar(select(Node.last_seen_at).where(Node.node_id == node_id))
     # Naive, as SQLite returns it, and UTC.
     assert (datetime.now(UTC).replace(tzinfo=None) - seen).total_seconds() < 5
+
+
+async def test_the_health_check_s_copy_keeps_the_stored_clock_across_a_restart(registered_node, node_client):
+    """The copy is in memory and a deploy empties it; the stored `state_since`
+    is what keeps "starting for three hours" true after one."""
+    token, node_id = registered_node
+    node_client.post(HEARTBEAT, headers=_auth(token), json=_beat(state="starting"))
+    before = state.node_reported_state[node_id]
+    state.node_reported_state.clear()
+
+    node_client.post(HEARTBEAT, headers=_auth(token), json=_beat(state="starting"))
+
+    assert state.node_reported_state[node_id] == pytest.approx(before)
