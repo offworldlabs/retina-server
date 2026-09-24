@@ -47,7 +47,16 @@ const APPEARANCE: readonly { value: ThemePreference; label: string; icon: React.
   },
 ];
 
-export default function Header({ title, isAdmin = false }) {
+type HeaderProps = {
+  title: string;
+  isAdmin?: boolean;
+  /** The narrow screen's way to the sidebar. Without it there is no Menu button. */
+  onMenu?: () => void;
+  menuOpen?: boolean;
+  menuButtonRef?: React.Ref<HTMLButtonElement>;
+};
+
+export default function Header({ title, isAdmin = false, onMenu, menuOpen = false, menuButtonRef }: HeaderProps) {
   const { user, logout } = useAuth();
   const { preference, setPreference } = useTheme();
   const [open, setOpen] = useState(false);
@@ -118,7 +127,35 @@ export default function Header({ title, isAdmin = false }) {
 
   return (
     <header className="header">
-      <div className="header-title">{title}</div>
+      <div className="header-lead">
+        {onMenu && (
+          // Shown only below the breakpoint, where the sidebar leaves the row.
+          <button
+            ref={menuButtonRef}
+            className="header-menu"
+            onClick={onMenu}
+            aria-label="Menu"
+            aria-expanded={menuOpen}
+            aria-controls="console-sidebar"
+            title="Menu"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <line x1="3" y1="6" x2="21" y2="6" />
+              <line x1="3" y1="12" x2="21" y2="12" />
+              <line x1="3" y1="18" x2="21" y2="18" />
+            </svg>
+          </button>
+        )}
+        <div className="header-title">{title}</div>
+      </div>
       <div className="header-actions">
         {/* In the bar rather than the avatar menu, so a caller with no session
             has it too, and finds it in the same place once they have one. */}
