@@ -19,10 +19,11 @@ concurrency:
 
 jobs:
   claude-review:
-    # Dependabot's runs get no Actions secrets and the action refuses bot actors,
-    # so a review here could only fail. Keyed on the actor, not the PR's author:
-    # a person pushing to a Dependabot branch gets the secrets and a review.
-    if: github.actor != 'dependabot[bot]'
+    # Optional: Filter by PR author
+    # if: |
+    #   github.event.pull_request.user.login == 'external-contributor' ||
+    #   github.event.pull_request.user.login == 'new-developer' ||
+    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
 
     runs-on: ubuntu-latest
     # Reviews run to about ten minutes; this is the ceiling for one that hangs
