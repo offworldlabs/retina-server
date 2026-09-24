@@ -127,6 +127,11 @@ RUN chmod +x /app/deploy/start.sh
 RUN mkdir -p /app/deploy/config-image/config && \
     cp /app/backend/config/constants.py /app/deploy/config-image/config/constants.py
 
+# Bytecode for the app's own modules, as --compile-bytecode does for the venv:
+# these trees are root-owned and the app runs as appuser, so without it every
+# Python process start.sh launches recompiles what it imports, on every boot.
+RUN python -m compileall -q -j 0 -x '/tests/' /app/backend /app/deploy
+
 # ── Non-root user ────────────────────────────────────────────────────────────
 RUN useradd -r -s /usr/sbin/nologin appuser && \
     # Allow nginx to bind to privileged ports as non-root

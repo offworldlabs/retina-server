@@ -15,6 +15,21 @@ from pathlib import Path
 
 from tests.migration_helpers import BACKEND, ROLLBACK_AHEAD_SENTINEL, _alembic
 
+MIGRATE_PY = BACKEND.parent / "deploy" / "migrate.py"
+
+
+def _migrate(db_path: Path, *, cwd: Path = BACKEND, argv: list[str] | None = None) -> subprocess.CompletedProcess:
+    """deploy/migrate.py as start.sh runs it, or `argv` in its place."""
+    env = os.environ | {"RETINA_ENV": "test", "RETINA_DB_PATH": str(db_path)}
+    return subprocess.run(  # noqa: S603
+        [sys.executable, *(argv or [str(MIGRATE_PY)])],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
 
 def test_migrations_have_exactly_one_head(tmp_path):
     """Two branches that each add a revision off the same parent will merge
@@ -273,12 +288,13 @@ def test_0015_downgrade_hands_the_owners_back(tmp_path):
 
 
 def test_rollback_ahead_sentinel_matches_alembics_wording(tmp_path):
-    """deploy/start.sh greps a failed `alembic upgrade head`'s output for the
-    literal substring ROLLBACK_AHEAD_SENTINEL to tell a tolerable rollback
-    apart from a genuine migration failure (see the comment above that `elif`).
-    Alembic controls the wording, not us, so this reproduces the actual
-    scenario a rolled-back image sees: a database stamped ahead of the
-    revisions its (older) migrations/versions/ directory knows about.
+    """deploy/start.sh greps a failed deploy/migrate.py's output (Alembic's own
+    `upgrade head`) for the literal substring ROLLBACK_AHEAD_SENTINEL to tell a
+    tolerable rollback apart from a genuine migration failure (see the comment
+    above that `elif`). Alembic controls the wording, not us, so this
+    reproduces the actual scenario a rolled-back image sees: a database stamped
+    ahead of the revisions its (older) migrations/versions/ directory knows
+    about.
 
     A future Alembic release rewording the message fails this test loudly in
     CI, instead of start.sh's grep silently no longer matching in production.
@@ -303,19 +319,36 @@ def test_rollback_ahead_sentinel_matches_alembics_wording(tmp_path):
     versions[-1].unlink()
     shutil.copyfile(BACKEND / "alembic.ini", old_image / "alembic.ini")
 
-    env = os.environ | {"RETINA_ENV": "test", "RETINA_DB_PATH": str(db)}
-    result = subprocess.run(  # noqa: S603
-        [sys.executable, "-m", "alembic", "upgrade", "head"],
-        cwd=old_image,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = _migrate(db, cwd=old_image)
 
     assert result.returncode != 0, result.stdout + result.stderr
     combined = result.stdout + result.stderr
     assert ROLLBACK_AHEAD_SENTINEL in combined, combined
+
+
+def test_migrate_reports_the_revision_it_reached(tmp_path):
+    """start.sh's migration step: the upgrade, then the revision it left behind."""
+    result = _migrate(tmp_path / "fresh.db")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert re.search(r"Database is now at:\n\w+ \(head\)$", result.stdout.strip()), result.stdout
+
+
+def test_migrate_boots_when_the_revision_cannot_be_read(tmp_path):
+    """The revision report is diagnostic: failing to read it is logged, not fatal."""
+    unreadable = (
+        "import runpy\n"
+        "from alembic import command, util\n"
+        "def unreadable(*args, **kwargs):\n"
+        "    raise util.CommandError('database is locked')\n"
+        "command.current = unreadable\n"
+        f"runpy.run_path({str(MIGRATE_PY)!r}, run_name='__main__')\n"
+    )
+    result = _migrate(tmp_path / "fresh.db", argv=["-c", unreadable])
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Could not determine current revision (non-fatal)" in result.stdout
+    assert "database is locked" in result.stdout
 
 
 VALID_ROLLBACK_SAFETY = {"additive", "destructive"}
