@@ -350,7 +350,7 @@ deploy-test:
     # box with no CI, so it was also the one box where a missing ./.env stayed a
     # silent, hand-fixed failure: compose would resolve the base alone, start.sh
     # would abort on the unset RETINA_ENV, and the only symptom would be the
-    # health gate below timing out after 120s saying nothing about the cause.
+    # health gate below timing out.
     # The example file is already on the droplet by now, so just use it.
     echo "→ rebuilding on {{host_test}}"
     # The .env top-up mirrors what CI does on staging and production: the
@@ -360,25 +360,13 @@ deploy-test:
     # droplet that was never given a key builds watermarked tiles rather
     # than failing here.
     ssh "{{host_test}}" "cd {{app_test}} && cp deploy/env.test.example .env && if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; fi && docker compose up -d --build"
-    # Ask uvicorn directly, inside the container, exactly as the compose
-    # healthcheck does. Going through nginx on plain HTTP would only prove the
-    # template's HTTP->HTTPS redirect works: it answers 301, and curl -sf treats a
-    # 301 as success, so a crash-looping app would still have reported healthy.
-    #
-    # The retry loop runs HERE rather than on the far side, so the remote command
-    # stays a single-quoting-level string. A loop sent through ssh would need the
-    # python source escaped through both shells, which is how this went wrong the
-    # first time.
+    # Ask uvicorn directly, inside the container, as the deploys do. Going through
+    # nginx on plain HTTP would only prove the template's HTTP->HTTPS redirect
+    # works: it answers 301, and curl -sf treats a 301 as success, so a
+    # crash-looping app would still have reported healthy.
     echo "→ waiting for health..."
-    healthy=no
-    for _ in $(seq 1 24); do
-        if ssh "{{host_test}}" "cd {{app_test}} && docker compose exec -T server python3 -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/api/health\")'" >/dev/null 2>&1; then
-            healthy=yes; break
-        fi
-        sleep 5
-    done
-    if [ "$healthy" != yes ]; then
-        echo "  ✗ not healthy after 120s — inspect: just deploy-test-logs server"
+    if ! ssh "{{host_test}}" "cd {{app_test}} && bash deploy/wait-for-health.sh"; then
+        echo "  ✗ not healthy — inspect: just deploy-test-logs server"
         exit 1
     fi
     echo "  ✓ healthy"

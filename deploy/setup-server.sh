@@ -372,20 +372,9 @@ docker compose up -d --build
 
 echo ""
 echo "→ Waiting for health check..."
-sleep 5
-for i in $(seq 1 12); do
-    if curl -sf http://localhost/api/health > /dev/null 2>&1; then
-        echo "  ✓ Health check passed!"
-        break
-    fi
-    if [ "$i" -eq 12 ]; then
-        echo "  ✗ Health check failed after 60 seconds"
-        echo "  Checking logs:"
-        docker compose logs --tail 20
-        exit 1
-    fi
-    sleep 5
-done
+# Inside the container, as the deploys wait. nginx on plain HTTP answers with its
+# HTTPS redirect, which `curl -f` counts as success whatever the app is doing.
+bash "${APP_DIR}/deploy/wait-for-health.sh" || exit 1
 
 # ── Summary ───────────────────────────────────────────────────────────────────
 echo ""
