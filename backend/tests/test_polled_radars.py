@@ -134,6 +134,15 @@ async def test_registration_writes_all_five_rows(node_session):
     ]
 
 
+async def test_a_registration_under_no_licence_records_none(node_session):
+    registration = await create_polled_radar(node_session, **_args(licence_version=None))
+    await node_session.commit()
+    node_id = registration.node.node_id
+    node_session.expire_all()
+    node = await node_session.get(Node, node_id)
+    assert (node.licence_version, node.licence_accepted_at) == (None, None)
+
+
 async def test_a_second_registration_of_the_endpoint_is_refused_whole(node_session):
     await create_polled_radar(node_session, **_args())
     await node_session.commit()

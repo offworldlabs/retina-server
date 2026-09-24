@@ -11,7 +11,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
 from routes.sim_ingest import synthetic_fleet_enabled
-from services import blah2_poller, probation
+from services import blah2_poller, polled_registration, probation
 from services.health import compute_health_issues
 
 router = APIRouter(tags=["health"])
@@ -39,7 +39,8 @@ async def health(strict: bool = Query(False)):
     archive and the public map. On by default;
     POLLED_RADAR_PROBATION_ENABLED=0 switches it off. ``polled_radar_polling``
     says whether this deployment polls registered radars at all, which exactly
-    one environment may.
+    one environment may, and ``polled_radar_registration`` whether it takes new
+    ones.
 
     The strict body is left alone. A readiness probe's caller reads the status
     code and nothing else, and an uptime monitor parsing a 503 for a feature
@@ -51,6 +52,7 @@ async def health(strict: bool = Query(False)):
         "synthetic_fleet": synthetic_fleet_enabled(os.environ),
         "polled_radar_probation": probation.enabled(),
         "polled_radar_polling": blah2_poller.enabled(),
+        "polled_radar_registration": polled_registration.enabled(),
     }
     if issues:
         # Details are logged (and alerted on by the monitor), never exposed on

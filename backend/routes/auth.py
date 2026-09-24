@@ -31,7 +31,7 @@ from core.users import (
     user_to_dict,
 )
 from routes.sim_ingest import synthetic_fleet_enabled
-from services import mail, publication
+from services import mail, polled_registration, publication
 from services.node_claim_store import claim_addresses
 from services.node_claiming import (
     ClaimOutcome,
@@ -143,8 +143,14 @@ def _session_user(user_dict: dict) -> dict:
     so everything the console reads off its user has to be here for both.
     `synthetic_fleet` is the rule that mounts the fleet's ingest routes, so the
     physics layer is offered exactly where there is a fleet for it to draw.
+    `polled_radar_registration` offers the radar registration page only where
+    its routes answer.
     """
-    return {**user_dict, "synthetic_fleet": synthetic_fleet_enabled(os.environ)}
+    return {
+        **user_dict,
+        "synthetic_fleet": synthetic_fleet_enabled(os.environ),
+        "polled_radar_registration": polled_registration.enabled(),
+    }
 
 
 class MagicLinkRequest(BaseModel):

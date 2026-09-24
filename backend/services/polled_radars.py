@@ -120,7 +120,7 @@ async def create_polled_radar(
     config_fingerprint: str,
     resolved_ip: str | None,
     publication: str,
-    licence_version: str,
+    licence_version: str | None,
     unprotected: bool,
     now: datetime | None = None,
 ) -> PolledRegistration:
@@ -130,7 +130,8 @@ async def create_polled_radar(
     All or nothing within the caller's transaction: an endpoint another radar
     holds raises EndpointAlreadyRegistered with none of the five rows left
     behind. A secret without a usable key raises SecretKeyUnavailable before
-    anything is written.
+    anything is written. A registration under no licence leaves both licence
+    columns null.
     """
     if publication not in PUBLICATIONS:
         raise ValueError(f"publication must be one of {PUBLICATIONS}, not {publication!r}")
@@ -145,7 +146,7 @@ async def create_polled_radar(
             status="active",
             active_config_version=1,
             licence_version=licence_version,
-            licence_accepted_at=now,
+            licence_accepted_at=now if licence_version is not None else None,
             publication=publication,
             publication_chosen_at=now,
             first_seen_at=now,

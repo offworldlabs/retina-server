@@ -27,6 +27,11 @@ def _fernet() -> Fernet:
         raise SecretKeyUnavailable(f"{ENV_KEY} is not a valid Fernet key") from exc
 
 
+def require_key() -> None:
+    """Raise SecretKeyUnavailable unless a credential could be stored now."""
+    _fernet()
+
+
 def encrypt(plaintext: str) -> str:
     return _fernet().encrypt(plaintext.encode()).decode()
 
