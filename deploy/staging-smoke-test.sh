@@ -307,6 +307,9 @@ check_status "GET /api/radar/nodes"         "${API_URL}/api/radar/nodes"    "200
 check_status "GET /api/radar/analytics"     "${API_URL}/api/radar/analytics" "200"
 check_status "GET /api/test/dashboard"      "${API_URL}/api/test/dashboard" "200" "${RADAR_KEY_HEADER[@]}"
 check_status "GET /api/test/mlat-verification" "${API_URL}/api/test/mlat-verification" "200" "${RADAR_KEY_HEADER[@]}"
+# And without it, on both hosts that route /api/ to this app.
+check_status "anonymous /api/test/ refused (api)" "${API_URL}/api/test/dashboard" "401"
+check_status "anonymous /api/test/ refused (app)" "${APP_URL}/api/test/dashboard" "401"
 # Deliberately no /api/config check on this vhost: the api vhost has no
 # /api/config location, so the request falls through `location /` to the app,
 # which no longer implements the route (the monolith's tower stack went with the
