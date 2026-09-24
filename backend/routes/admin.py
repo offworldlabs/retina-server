@@ -607,7 +607,9 @@ class PublicLeaderboardRow(BaseModel):
     detections: int
     frames: int
     tracks: int
-    uptime_s: float
+    # Share of the last week's minutes the node delivered in; None until a
+    # whole minute has been measured.
+    availability_7d: float | None
     avg_snr: float
     trust_score: float
     reputation: float
@@ -687,7 +689,7 @@ async def _cold_start_summaries() -> dict:
 
 @router.get("/leaderboard")
 async def leaderboard(caller=Depends(get_optional_user)):
-    """Rankings by detections, uptime and trust, open to anyone.
+    """Rankings by detections, availability and trust, open to anyone.
 
     The odd one out under this prefix, which is otherwise the admin API. A
     caller with no session gets PublicLeaderboardRow, which is what lets the
@@ -742,7 +744,7 @@ async def leaderboard(caller=Depends(get_optional_user)):
             detections=m.get("total_detections", 0),
             frames=m.get("total_frames", 0),
             tracks=m.get("total_tracks", 0),
-            uptime_s=m.get("uptime_s", 0),
+            availability_7d=m.get("availability_7d"),
             avg_snr=m.get("avg_snr", 0),
             trust_score=s.get("trust", {}).get("trust_score", 0),
             reputation=s.get("reputation", {}).get("reputation", 0),

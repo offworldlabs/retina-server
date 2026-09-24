@@ -1,4 +1,4 @@
-"""Periodic background tasks: archive flush, archive lifecycle, reputation, ADS-B truth fetch."""
+"""Periodic background tasks: archive flush, archive lifecycle, reputation, server clock, ADS-B truth fetch."""
 
 import asyncio
 import logging
@@ -18,6 +18,8 @@ from config.constants import (
     FT_TO_M,
     KNOTS_TO_MS,
     REPUTATION_INTERVAL_S,
+    SERVER_CLOCK_GRACE_S,
+    SERVER_CLOCK_TICK_S,
     XVAL_MAX_AGE_S,
     as_num,
     is_num,
@@ -101,6 +103,14 @@ async def reputation_evaluator():
             except Exception:
                 state.bump_task_error("reputation_evaluator")
                 logging.exception("Reputation evaluation failed")
+
+
+async def server_clock_task():
+    """Mark each minute this process is up, the denominator of every node's availability."""
+    await asyncio.sleep(SERVER_CLOCK_GRACE_S)
+    while True:
+        state.node_analytics.mark_server_up()
+        await asyncio.sleep(SERVER_CLOCK_TICK_S)
 
 
 async def prune_synthetic_nodes():

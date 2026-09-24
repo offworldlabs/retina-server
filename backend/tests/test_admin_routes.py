@@ -243,6 +243,7 @@ class TestLeaderboard:
     #: What the route publishes to anyone. Widening this set publishes a field,
     #: so it is meant to take an edit here as well as one to the model.
     PUBLIC_FIELDS = {
+        "availability_7d",
         "avg_snr",
         "detections",
         "frames",
@@ -253,7 +254,6 @@ class TestLeaderboard:
         "reputation",
         "tracks",
         "trust_score",
-        "uptime_s",
     }
 
     def test_the_published_row_declares_exactly_the_public_fields(self):
@@ -496,7 +496,7 @@ class TestLeaderboard:
                         "total_detections": 42,
                         "total_frames": 10,
                         "total_tracks": 5,
-                        "uptime_s": 300,
+                        "availability_7d": 0.9731,
                         "avg_snr": 12.0,
                     },
                     "trust": {},
@@ -514,6 +514,7 @@ class TestLeaderboard:
             found = [e for e in entries if e["node_ref"] == "test-lb-1"]
             assert len(found) == 1
             assert found[0]["detections"] == 42
+            assert found[0]["availability_7d"] == 0.9731
             assert found[0]["rank"] >= 1
         finally:
             state.latest_analytics_bytes = orig

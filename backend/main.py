@@ -79,6 +79,7 @@ from services.tasks import (
     prune_synthetic_nodes,
     reputation_evaluator,
     retire_disposable_nodes_task,
+    server_clock_task,
     start_solver_workers,
     stop_solver_workers,
     storage_refresh_task,
@@ -251,6 +252,7 @@ async def lifespan(app: FastAPI):
             for task_fn in (
                 server.serve_forever,
                 reputation_evaluator,
+                server_clock_task,
                 prune_synthetic_nodes,
                 retire_disposable_nodes_task,
                 adsb_truth_fetcher,

@@ -5,7 +5,7 @@ import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { Pager } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
-import { formatMHz, formatUptime } from "../../utils/format";
+import { formatAvailability, formatMHz } from "../../utils/format";
 import { PositionStatusBadge } from "../../components/PositionStatusBadge";
 import { PolledRadars } from "./PolledRadars";
 import {
@@ -166,8 +166,8 @@ export default function NodeManagementPage() {
                   <span>{((summary.reputation?.reputation || 0) * 100).toFixed(0)}%</span>
                   <span className="meta-label">Avg SNR</span>
                   <span>{(summary.metrics?.avg_snr || 0).toFixed(1)} dB</span>
-                  <span className="meta-label">Uptime</span>
-                  <span>{formatUptime(summary.metrics?.uptime_s || 0)}</span>
+                  <span className="meta-label">Availability</span>
+                  <span>{formatAvailability(summary.metrics?.availability_7d)}</span>
                   <span className="meta-label">Owner email</span>
                   <span>{owner?.email || "—"}</span>
                   <span className="meta-label">Site contact</span>

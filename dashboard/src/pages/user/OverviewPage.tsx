@@ -7,7 +7,7 @@ import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
-import { formatRelativeTime, formatUptime } from "../../utils/format";
+import { formatAvailability, formatRelativeTime } from "../../utils/format";
 import { useChartTheme } from "../../utils/chartTheme";
 import { PositionStatusBadge, POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
@@ -196,8 +196,8 @@ export default function OverviewPage() {
                   <span>{detectionCount(node._analytics).toLocaleString()}</span>
                   <span className="meta-label">Tracks</span>
                   <span>{node._analytics?.metrics?.total_tracks || 0}</span>
-                  <span className="meta-label">Uptime</span>
-                  <span>{formatUptime(node._analytics?.metrics?.uptime_s || 0)}</span>
+                  <span className="meta-label">Availability</span>
+                  <span>{formatAvailability(node._analytics?.metrics?.availability_7d)}</span>
                   <span className="meta-label">Avg SNR</span>
                   <span>{(node._analytics?.metrics?.avg_snr || 0).toFixed(1)} dB</span>
                   <span className="meta-label">Heartbeat</span>

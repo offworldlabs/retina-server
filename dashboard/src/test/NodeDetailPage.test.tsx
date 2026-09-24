@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import NodeDetailPage from "../pages/user/NodeDetailPage";
@@ -39,6 +39,27 @@ function renderPage() {
 
 const privateRadio = () => screen.getByRole("radio", { name: /^Private/ });
 const publicRadio = () => screen.getByRole("radio", { name: /^Public/ });
+
+describe("a node's availability", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(api.nodes).mockResolvedValue({ nodes: {} });
+    vi.mocked(api.myNodes).mockResolvedValue([]);
+  });
+
+  it("gives the week, the day and how much of the week it rests on", async () => {
+    vi.mocked(api.nodeAnalytics).mockResolvedValue({
+      node_ref: "a",
+      metrics: { availability_7d: 0.9731, availability_24h: 1, availability_measured_s: 42 * 3600 },
+    });
+    renderPage();
+    const row = (label: string) => screen.getByText(label).closest("tr")!;
+    await screen.findByText("Availability (7 d)");
+    expect(within(row("Availability (7 d)")).getByText("97.3%")).toBeInTheDocument();
+    expect(within(row("Availability (24 h)")).getByText("100.0%")).toBeInTheDocument();
+    expect(within(row("Availability measured over")).getByText("42.0h")).toBeInTheDocument();
+  });
+});
 
 describe("NodeDetailPage route identity", () => {
   beforeEach(() => {

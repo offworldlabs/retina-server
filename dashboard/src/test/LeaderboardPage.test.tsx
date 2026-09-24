@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import LeaderboardPage from "../pages/user/LeaderboardPage";
@@ -18,7 +18,7 @@ const publicRow = {
   detections: 7,
   frames: 3,
   tracks: 2,
-  uptime_s: 300,
+  availability_7d: 0.9731,
   avg_snr: 11,
   trust_score: 0.5,
   reputation: 0.5,
@@ -28,12 +28,13 @@ const publicRow = {
 
 const ownerRow = { ...publicRow, in_range: 20, detected_in_range: 12, missed: 8, miss_rate: 0.4 };
 
-function serve(row: object) {
+function serve(row: object | object[]) {
+  const rows = Array.isArray(row) ? row : [row];
   vi.stubGlobal(
     "fetch",
     vi.fn(
       async () =>
-        new Response(JSON.stringify({ leaderboard: [row], total: 1 }), {
+        new Response(JSON.stringify({ leaderboard: rows, total: rows.length }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
         })
@@ -83,6 +84,51 @@ describe("the leaderboard shown to a caller with no session", () => {
     // Named twice on the page: once on the podium card, once in the table row.
     await waitFor(() => expect(screen.getAllByText("ret-abc").length).toBeGreaterThan(0));
     expect(screen.queryByRole("button", { name: "Miss Rate" })).not.toBeInTheDocument();
+  });
+});
+
+describe("availability on the leaderboard", () => {
+  function tableRow(name: string) {
+    // Named twice on the page: the table row is the second.
+    return screen.getAllByText(name)[1].closest("tr")!;
+  }
+
+  it("reads as the share of the week", async () => {
+    serve(publicRow);
+    render(
+      <MemoryRouter>
+        <LeaderboardPage />
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(screen.getAllByText("ret-abc").length).toBeGreaterThan(0));
+    expect(within(tableRow("ret-abc")).getByText("97.3%")).toBeInTheDocument();
+  });
+
+  it("reads as a dash for a node not yet measured", async () => {
+    serve({ ...publicRow, availability_7d: null });
+    render(
+      <MemoryRouter>
+        <LeaderboardPage />
+      </MemoryRouter>
+    );
+    await waitFor(() => expect(screen.getAllByText("ret-abc").length).toBeGreaterThan(0));
+    expect(within(tableRow("ret-abc")).getByText("—")).toBeInTheDocument();
+  });
+
+  it("sorts the most available first, with a node not yet measured last", async () => {
+    serve([
+      { ...publicRow, node_ref: "ret-a", name: "Low", detections: 30, availability_7d: 0.5 },
+      { ...publicRow, node_ref: "ret-b", name: "Unmeasured", detections: 20, availability_7d: null },
+      { ...publicRow, node_ref: "ret-c", name: "High", detections: 10, availability_7d: 0.99 },
+    ]);
+    render(
+      <MemoryRouter>
+        <LeaderboardPage />
+      </MemoryRouter>
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Availability" }));
+    const rows = screen.getAllByRole("row").slice(1);
+    expect(rows.map((r) => within(r).getAllByRole("cell")[1].textContent)).toEqual(["High", "Low", "Unmeasured"]);
   });
 });
 

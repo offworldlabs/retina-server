@@ -14,13 +14,10 @@ export function fmt(n: number | null | undefined, decimals = 2): string {
   return Number(n).toFixed(decimals);
 }
 
-/** Seconds of uptime as hours and minutes, or days and hours once past a day. */
-export function formatUptime(seconds: number | null | undefined): string {
-  if (!seconds) return DASH;
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  if (h > 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
-  return `${h}h ${m}m`;
+/** A node's availability, a share from 0 to 1, as a percentage to one place.
+ *  Rounded down, so only a node that missed nothing reads 100%. */
+export function formatAvailability(share: number | null | undefined): string {
+  return formatPercent(share == null ? share : Math.floor(share * 1000) / 10);
 }
 
 /** How long ago a moment was, in the coarsest unit that is not zero. Takes an
