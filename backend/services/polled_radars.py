@@ -1,4 +1,4 @@
-"""Registering a polled stock-blah2 radar as a node.
+"""Registering a polled stock-blah2 radar as a node, moving it and removing it.
 
 A polled radar is a `nodes` row, a configuration version, a claim and one
 `polled_radars` row, so the pipeline and the ownership code need nothing of
@@ -16,15 +16,18 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import secrets
 from core.node_ids import POLLED_BLAH2, add_with_minted_id
-from core.nodes import Node, NodeClaim, NodeConfig, PolledRadar, PolledRadarEndpointHistory
-from services.blah2_probe import Blah2Config
+from core.nodes import Node, NodeClaim, NodeConfig, NodeEvent, PolledRadar, PolledRadarEndpointHistory
+from services.blah2_probe import Blah2Config, Blah2Probe
 from services.node_auth import mint_node_ref
+from services.node_claim_store import clear_claim, read_owner
 from services.node_config import validate_config
+from services.node_config_store import active_config, config_fields, upsert_config
 
 FEET_PER_METRE = 1 / 0.3048
 
@@ -37,6 +40,10 @@ _USERINFO = re.compile(r"^((?:[A-Za-z][A-Za-z0-9+.-]*:)?//)?[^/?#]*@")
 
 class EndpointAlreadyRegistered(Exception):
     """Another polled radar already holds this endpoint key."""
+
+
+class EpochChanged(Exception):
+    """The radar is no longer at the epoch the change was made against."""
 
 
 @dataclass(frozen=True)
@@ -228,6 +235,114 @@ async def create_polled_radar(
         )
         await session.flush()
     return PolledRegistration(node=node, radar=radar)
+
+
+async def set_polled_radar_address(
+    session: AsyncSession,
+    radar: PolledRadar,
+    probe: Blah2Probe,
+    *,
+    unprotected: bool,
+    changed_by: str,
+    now: datetime | None = None,
+) -> bool:
+    """Point `radar` at the endpoint `probe` found it at, and flush. The caller
+    commits. Returns whether a new epoch began.
+
+    Another host or port starts one, on probation, holding what the radar
+    declares there: whatever answers may be another box. The same host and port
+    changes only how the radar is reached, and leaves what it declares to the
+    config poll.
+
+    Applied only at the epoch `radar` was read at. EpochChanged when the poller
+    has moved it on since, and EndpointAlreadyRegistered for an endpoint another
+    radar holds, leave every row as it was. A secret without a usable key raises
+    SecretKeyUnavailable before anything is written.
+    """
+    now = now or datetime.now(UTC)
+    endpoint = probe.endpoint
+    # Read before the write, which leaves `radar` as it was read.
+    node_id, epoch, old_key = radar.node_id, radar.epoch, radar.endpoint_key
+    values: dict[str, Any] = {
+        "endpoint_raw": _without_userinfo(endpoint.raw),
+        "scheme": endpoint.scheme,
+        "host": endpoint.host,
+        "port": endpoint.port,
+        "auth_user": endpoint.auth_user,
+        "auth_secret_enc": None if endpoint.auth_secret is None else secrets.encrypt(endpoint.auth_secret),
+        "unprotected": unprotected,
+    }
+    moved = endpoint.endpoint_key != old_key
+    if moved:
+        values |= {
+            "epoch": epoch + 1,
+            "endpoint_key": endpoint.endpoint_key,
+            "trust_state": "probation",
+            "config_fingerprint": probe.config_fingerprint,
+            "probe_passed_at": now,
+            "endpoint_changed_at": now,
+            "last_resolved_ip": probe.address,
+            "resolved_at": now,
+            "last_config_at": now,
+            "liveness": "pending",
+            "consecutive_failures": 0,
+        }
+    async with session.begin_nested():
+        try:
+            written = await session.execute(
+                update(PolledRadar)
+                .where(PolledRadar.node_id == node_id, PolledRadar.epoch == epoch)
+                .values(**values)
+                .execution_options(synchronize_session=False)
+            )
+        except IntegrityError as exc:
+            # `from None` for the reason create_polled_radar gives.
+            if "endpoint_key" in str(exc.orig):
+                raise EndpointAlreadyRegistered("this endpoint is already registered") from None
+            raise
+        if written.rowcount != 1:
+            raise EpochChanged(f"{node_id} is no longer at epoch {epoch}")
+        if moved:
+            active = await active_config(session, node_id)
+            version = await upsert_config(session, node_id, probed_config(probe.config, config_fields(active)))
+            await session.execute(update(Node).where(Node.node_id == node_id).values(active_config_version=version))
+            session.add(
+                PolledRadarEndpointHistory(
+                    node_id=node_id,
+                    old_key=old_key,
+                    new_key=endpoint.endpoint_key,
+                    resolved_ip=probe.address,
+                    changed_by=changed_by,
+                    changed_at=now,
+                )
+            )
+            await session.flush()
+    return moved
+
+
+async def remove_polled_radar(session: AsyncSession, node_id: str, *, user_id: str) -> bool:
+    """Retire `user_id`'s radar and forget where it was, and flush. The caller commits.
+
+    Nothing can claim a polled radar once it is released, and the poller polls
+    every active one, so handing it back would leave it polled with nobody to
+    answer for it. The node stays, retired, with the configurations its archived
+    frames were filed against and the record of decisions about it. Its
+    address, stored password and address history go, so the address registers
+    again as a new radar. False, changing nothing, for a radar `user_id` does
+    not own.
+    """
+    if await read_owner(session, node_id) != user_id:
+        return False
+    radar = await session.get(PolledRadar, node_id)
+    await clear_claim(session, node_id)
+    if radar is not None:
+        await session.delete(radar)
+    await session.execute(update(Node).where(Node.node_id == node_id).values(status="retired"))
+    session.add(
+        NodeEvent(node_id=node_id, kind="removed", epoch=radar.epoch if radar is not None else None, actor=user_id)
+    )
+    await session.flush()
+    return True
 
 
 def poller_credentials(radar: PolledRadar) -> tuple[str, str] | None:

@@ -4,19 +4,24 @@ from datetime import UTC, datetime
 
 import pytest
 from cryptography.fernet import Fernet
-from sqlalchemy import delete, func, select, text
+from sqlalchemy import delete, func, select, text, update
 
 from core.node_ids import node_id_pattern
-from core.nodes import Node, NodeClaim, NodeConfig, PolledRadar, PolledRadarEndpointHistory
+from core.nodes import Node, NodeClaim, NodeConfig, NodeEvent, PolledRadar, PolledRadarEndpointHistory
 from core.secrets import SecretKeyUnavailable
-from services.blah2_probe import parse_config
+from services.blah2_probe import Blah2Probe, parse_config
 from services.node_config import ConfigInvalid
+from services.node_config_store import active_config
+from services.polled_endpoint import PolledEndpoint
 from services.polled_radars import (
     EndpointAlreadyRegistered,
+    EpochChanged,
     RadarGeometry,
     create_polled_radar,
     poller_credentials,
     probed_config,
+    remove_polled_radar,
+    set_polled_radar_address,
 )
 from tests.radar_stub import STOCK_CONFIG
 
@@ -254,6 +259,221 @@ async def test_history_goes_with_the_registration(node_session):
 async def test_an_unknown_publication_is_refused(node_session):
     with pytest.raises(ValueError, match="publication"):
         await create_polled_radar(node_session, **_args(publication="secret"))
+
+
+# ── A new address ────────────────────────────────────────────────────────────
+
+LATER = datetime(2026, 9, 25, 9, 0, tzinfo=UTC)
+STORED_LATER = LATER.replace(tzinfo=None)
+
+
+def _found_at(endpoint_key: str, *, auth: tuple[str, str] | None = None, config: dict = STOCK_CONFIG) -> Blah2Probe:
+    """What a probe of `endpoint_key` reports when a stock radar declaring `config` answers there."""
+    host, port = endpoint_key.rsplit(":", 1)
+    userinfo = f"{auth[0]}:{auth[1]}@" if auth else ""
+    endpoint = PolledEndpoint(
+        scheme="http",
+        host=host,
+        port=int(port),
+        endpoint_key=endpoint_key,
+        auth_user=auth[0] if auth else None,
+        auth_secret=auth[1] if auth else None,
+        raw=f"http://{userinfo}{endpoint_key}",
+    )
+    declared = parse_config(config)
+    return Blah2Probe(
+        endpoint=endpoint,
+        rx=declared.rx,
+        tx=declared.tx,
+        fc_hz=declared.fc_hz,
+        fs_hz=declared.fs_hz,
+        cpi_s=declared.cpi_s,
+        config_fingerprint=declared.fingerprint,
+        address="192.0.2.20",
+        clock_offset_s=0.0,
+    )
+
+
+async def _registered(session, **overrides) -> PolledRadar:
+    """A radar registered and since graduated, streaming, with a failure or two behind it."""
+    registration = await create_polled_radar(session, **_args(**overrides))
+    registration.radar.trust_state = "graduated"
+    registration.radar.liveness = "streaming"
+    registration.radar.consecutive_failures = 2
+    await session.commit()
+    return registration.radar
+
+
+async def _moved(session, radar, probe: Blah2Probe, *, unprotected: bool = True) -> bool:
+    return await set_polled_radar_address(
+        session, radar, probe, unprotected=unprotected, changed_by="user-a", now=LATER
+    )
+
+
+async def test_a_new_address_starts_an_epoch_on_probation(node_session):
+    radar = await _registered(node_session)
+    node_id = radar.node_id
+
+    began = await _moved(node_session, radar, _found_at("other.example.com:4000"))
+    await node_session.commit()
+    node_session.expire_all()
+
+    assert began is True
+    row = await node_session.get(PolledRadar, node_id)
+    assert (row.epoch, row.trust_state, row.liveness, row.consecutive_failures) == (2, "probation", "pending", 0)
+    assert (row.endpoint_key, row.host, row.port) == ("other.example.com:4000", "other.example.com", 4000)
+    assert row.endpoint_raw == "http://other.example.com:4000"
+    assert (row.config_fingerprint, row.last_resolved_ip) == (parse_config(STOCK_CONFIG).fingerprint, "192.0.2.20")
+    # Probed at the moment it moved, so the poller takes it up at once.
+    assert row.endpoint_changed_at == row.probe_passed_at == row.resolved_at == row.last_config_at == STORED_LATER
+    history = (
+        await node_session.execute(select(PolledRadarEndpointHistory).order_by(PolledRadarEndpointHistory.id))
+    ).scalars()
+    assert [(h.old_key, h.new_key, h.resolved_ip, h.changed_by) for h in history] == [
+        (None, "radar.example.com:3000", "192.0.2.10", "user-a"),
+        ("radar.example.com:3000", "other.example.com:4000", "192.0.2.20", "user-a"),
+    ]
+
+
+async def test_what_the_radar_declares_at_its_new_address_is_its_configuration(node_session):
+    radar = await _registered(node_session)
+    node_id = radar.node_id
+
+    await _moved(node_session, radar, _found_at("other.example.com:4000"))
+    await node_session.commit()
+
+    active = await active_config(node_session, node_id)
+    assert (await node_session.get(Node, node_id)).active_config_version == active.version == 2
+    assert (active.rx_lat, active.tx_lon, active.fc_hz, active.cpi_s) == (10.5, -30.5, 204_640_000.0, 0.75)
+    # Nothing blah2 declares, so held from the version before.
+    assert active.max_range_km == 150.0
+
+
+async def test_the_same_address_with_a_new_password_keeps_its_epoch(node_session, secret_key):
+    radar = await _registered(node_session)
+    node_id = radar.node_id
+
+    # The radar declares STOCK_CONFIG, not what its epoch holds: that is the
+    # config poll's to find, not the owner's password change.
+    began = await _moved(
+        node_session, radar, _found_at("radar.example.com:3000", auth=("owner", "hunter2")), unprotected=False
+    )
+    await node_session.commit()
+    node_session.expire_all()
+
+    assert began is False
+    row = await node_session.get(PolledRadar, node_id)
+    assert (row.epoch, row.trust_state, row.unprotected, row.config_fingerprint) == (1, "graduated", False, FINGERPRINT)
+    assert poller_credentials(row) == ("owner", "hunter2")
+    assert "hunter2" not in row.endpoint_raw
+    assert (row.endpoint_changed_at, row.probe_passed_at) == (STORED_NOW, STORED_NOW)
+    assert (await node_session.get(Node, node_id)).active_config_version == 1
+    assert await _count(node_session, PolledRadarEndpointHistory) == 1
+
+
+async def test_a_password_left_out_of_the_new_address_is_forgotten(node_session, secret_key):
+    radar = await _registered(node_session, auth_user="owner", auth_secret="hunter2", unprotected=False)
+    node_id = radar.node_id
+
+    await _moved(node_session, radar, _found_at("radar.example.com:3000"))
+    await node_session.commit()
+    node_session.expire_all()
+
+    row = await node_session.get(PolledRadar, node_id)
+    assert (row.auth_user, row.auth_secret_enc, row.unprotected) == (None, None, True)
+
+
+async def test_an_address_another_radar_holds_is_refused_whole(node_session):
+    radar = await _registered(node_session)
+    node_id = radar.node_id
+    await create_polled_radar(
+        node_session,
+        **_args(
+            owner_user_id="user-b",
+            owner_email="bob@example.com",
+            endpoint_key="other.example.com:4000",
+            host="other.example.com",
+        ),
+    )
+    await node_session.commit()
+
+    with pytest.raises(EndpointAlreadyRegistered):
+        await _moved(node_session, radar, _found_at("other.example.com:4000"))
+    await node_session.commit()
+    node_session.expire_all()
+
+    row = await node_session.get(PolledRadar, node_id)
+    assert (row.epoch, row.endpoint_key, row.trust_state) == (1, "radar.example.com:3000", "graduated")
+    assert await _count(node_session, NodeConfig) == 2
+    assert await _count(node_session, PolledRadarEndpointHistory) == 2
+
+
+async def test_an_epoch_the_poller_has_moved_on_is_left_as_it_is(node_session):
+    radar = await _registered(node_session)
+    node_id = radar.node_id
+    # The poller starts epoch 2 in a session of its own while the owner's probe runs.
+    await node_session.execute(
+        update(PolledRadar).where(PolledRadar.node_id == node_id).values(epoch=2),
+        execution_options={"synchronize_session": False},
+    )
+    await node_session.commit()
+
+    with pytest.raises(EpochChanged):
+        await _moved(node_session, radar, _found_at("other.example.com:4000"))
+    await node_session.commit()
+    node_session.expire_all()
+
+    row = await node_session.get(PolledRadar, node_id)
+    assert (row.epoch, row.endpoint_key) == (2, "radar.example.com:3000")
+    assert await _count(node_session, NodeConfig) == 1
+    assert await _count(node_session, PolledRadarEndpointHistory) == 1
+
+
+# ── Removing a radar ─────────────────────────────────────────────────────────
+
+
+async def test_removing_a_radar_retires_it_and_forgets_where_it_was(node_session, secret_key):
+    radar = await _registered(node_session, auth_user="owner", auth_secret="hunter2")
+    node_id = radar.node_id
+
+    assert await remove_polled_radar(node_session, node_id, user_id="user-a") is True
+    await node_session.commit()
+    node_session.expire_all()
+
+    assert (await node_session.get(Node, node_id)).status == "retired"
+    for model in (PolledRadar, PolledRadarEndpointHistory, NodeClaim):
+        assert await _count(node_session, model) == 0, model.__tablename__
+    # The geometry its archived frames were filed against stays readable.
+    assert await _count(node_session, NodeConfig) == 1
+    [event] = (await node_session.execute(select(NodeEvent))).scalars()
+    assert (event.node_id, event.kind, event.epoch, event.actor) == (node_id, "removed", 1, "user-a")
+
+
+async def test_only_its_owner_removes_a_radar(node_session):
+    radar = await _registered(node_session)
+    node_id = radar.node_id
+
+    assert await remove_polled_radar(node_session, node_id, user_id="user-b") is False
+    await node_session.commit()
+    node_session.expire_all()
+
+    assert (await node_session.get(Node, node_id)).status == "active"
+    for model in (PolledRadar, NodeClaim):
+        assert await _count(node_session, model) == 1, model.__tablename__
+    assert await _count(node_session, NodeEvent) == 0
+
+
+async def test_a_removed_radars_address_registers_again_as_a_new_radar(node_session):
+    radar = await _registered(node_session)
+    node_id = radar.node_id
+    await remove_polled_radar(node_session, node_id, user_id="user-a")
+    await node_session.commit()
+
+    again = await create_polled_radar(node_session, **_args(now=LATER))
+    await node_session.commit()
+
+    assert again.node.node_id != node_id
+    assert (again.radar.epoch, again.radar.trust_state) == (1, "probation")
 
 
 # ── A configuration from what the radar declares ──────────────────────────────

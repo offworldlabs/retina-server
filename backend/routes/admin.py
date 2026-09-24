@@ -30,6 +30,7 @@ from config.constants import (
 )
 from core import state
 from core.auth import list_node_owners
+from core.node_ids import POLLED_BLAH2, system_of
 from core.nodes import Node
 from core.runtime_config import runtime_path, write_runtime_file
 from core.task_registry import get_stale_tasks
@@ -206,8 +207,13 @@ async def admin_set_node_owner(
     require_admin, whose caller can already list every node, so the answer
     tells them nothing new.
     """
-    if await session.get(Node, node_id) is None:
+    node = await session.get(Node, node_id)
+    if node is None:
         raise HTTPException(404, "Node not found")
+    if body.user_id is None and system_of(node_id) == POLLED_BLAH2 and node.status == "active":
+        # Nothing can claim a polled radar afterwards, and the poller would
+        # carry on polling it with nobody to answer for it.
+        raise HTTPException(409, f"{node_id} is a polled radar: reassign it, or have its owner remove it")
     if body.user_id is not None:
         try:
             uid = uuid.UUID(body.user_id)

@@ -1,4 +1,5 @@
-"""An owner registering a stock blah2 radar: probe it, then register it.
+"""An owner registering a stock blah2 radar: probe it, then register it. Moving
+one to a new address is the same two steps.
 
 Absent (404) wherever POLLED_RADAR_REGISTRATION_ENABLED is not exactly `1`, as
 though unmounted, so a deployment that takes no registrations offers nothing to
@@ -13,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.users import get_async_session, get_current_user
-from services import blah2_poller, polled_registration, publication
+from services import blah2_poller, polled_registration, probation, publication
 from services.polled_registration import RegistrationRefused
 
 
@@ -22,9 +23,12 @@ class PolledRadarProbeRequest(BaseModel):
     address: str = Field(max_length=2048)
 
 
-class PolledRadarRegisterRequest(PolledRadarProbeRequest):
+class PolledRadarAddressRequest(PolledRadarProbeRequest):
     # The declaration the owner confirmed, as the probe reported it.
     fingerprint: str = Field(min_length=64, max_length=64)
+
+
+class PolledRadarRegisterRequest(PolledRadarAddressRequest):
     publication: Literal["public", "private"]
 
 
@@ -76,3 +80,36 @@ async def register_polled_radar(
     publication.invalidate()
     blah2_poller.refresh()
     return {"node_id": registration.node.node_id, "epoch": registration.radar.epoch, "trust_state": "probation"}
+
+
+@router.post("/{node_id}/probe")
+async def probe_polled_radar_address(
+    node_id: str, body: PolledRadarProbeRequest, request: Request, session: AsyncSession = Depends(get_async_session)
+):
+    """What the owner's radar declares at a new address, for them to confirm. Saves nothing."""
+    user = await get_current_user(request)
+    try:
+        probed = await polled_registration.probe_new_address(session, node_id, body.address, user["id"])
+    except RegistrationRefused as exc:
+        return _refused(exc)
+    return probed.public()
+
+
+@router.put("/{node_id}/address")
+async def move_polled_radar(
+    node_id: str, body: PolledRadarAddressRequest, request: Request, session: AsyncSession = Depends(get_async_session)
+):
+    """Move the owner's radar to a new address, if it still declares what they confirmed there."""
+    user = await get_current_user(request)
+    try:
+        radar = await polled_registration.change_address(
+            session, node_id, raw=body.address, fingerprint=body.fingerprint, user=user
+        )
+    except RegistrationRefused as exc:
+        return _refused(exc)
+    await session.commit()
+    # After the commit, as above: a radar moved to another host is back on probation.
+    probation.invalidate()
+    publication.invalidate()
+    blah2_poller.refresh()
+    return {"node_id": radar.node_id, "epoch": radar.epoch, "trust_state": radar.trust_state}

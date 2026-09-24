@@ -7,6 +7,7 @@ confirmed, and every probe is bounded per account and across the server, since
 each one is a request our server sends to a host of the caller's choosing.
 """
 
+import asyncio
 import base64
 import copy
 import json
@@ -18,13 +19,23 @@ import pytest
 from cryptography.fernet import Fernet
 from sqlalchemy import func, select
 
+from core import state
 from core.node_ids import node_id_pattern
 from core.nodes import Node, NodeClaim, NodeConfig, PolledRadar
-from core.users import ANONYMOUS_USER
-from services import blah2_poller, blah2_probe, polled_radars, polled_registration, publication
+from core.users import ANONYMOUS_USER, async_session_maker
+from services import (
+    blah2_poller,
+    blah2_probe,
+    node_retirement,
+    polled_radars,
+    polled_registration,
+    probation,
+    publication,
+)
 from services.blah2_probe import CONFIG_PATH, DETECTION_PATH, Blah2Probe, Site, config_fingerprint
 from services.node_rate_limits import polled_probe_limiter
 from services.polled_radars import EndpointAlreadyRegistered, create_polled_radar
+from tests.ownership_helpers import own
 from tests.radar_stub import STOCK_CONFIG, StubServer, only_loopback, resolve_to_loopback
 from tests.test_polled_radars import _args as _row_args
 
@@ -366,6 +377,123 @@ async def test_the_eleventh_radar_on_an_account_is_refused_before_any_request(no
     assert stub.requests == []
 
 
+# ── A new address ────────────────────────────────────────────────────────────
+
+
+async def _registered(session, stub: StubServer) -> str:
+    registration = await _register(session, f"radar.example.com:{stub.port}")
+    await session.commit()
+    return registration.node.node_id
+
+
+async def _move(session, node_id: str, address: str, *, fingerprint: str = STOCK_FINGERPRINT, user: dict = OWNER):
+    return await polled_registration.change_address(session, node_id, raw=address, fingerprint=fingerprint, user=user)
+
+
+async def _move_refused(session, node_id: str, address: str, **kwargs) -> polled_registration.RegistrationRefused:
+    with pytest.raises(polled_registration.RegistrationRefused) as info:
+        await _move(session, node_id, address, **kwargs)
+    return info.value
+
+
+async def test_an_owner_moves_their_radar_after_seeing_what_it_declares_there(node_session):
+    async with _radar() as old, _radar() as new:
+        node_id = await _registered(node_session, old)
+        address = f"other.example.com:{new.port}"
+        probed = await polled_registration.probe_new_address(node_session, node_id, address, "user-a")
+        radar = await _move(node_session, node_id, address, fingerprint=probed.public()["fingerprint"])
+        await node_session.commit()
+
+    assert (radar.node_id, radar.epoch, radar.trust_state) == (node_id, 2, "probation")
+    assert radar.endpoint_key == f"other.example.com:{new.port}"
+
+
+async def test_a_radars_own_address_is_not_taken_from_it(node_session, secret_key):
+    async with _radar() as stub:
+        node_id = await _registered(node_session, stub)
+        address = f"http://owner:hunter2@radar.example.com:{stub.port}"
+        await polled_registration.probe_new_address(node_session, node_id, address, "user-a")
+        radar = await _move(node_session, node_id, address)
+        await node_session.commit()
+
+    assert radar.epoch == 1
+    assert polled_radars.poller_credentials(radar) == ("owner", "hunter2")
+
+
+async def test_a_radar_that_is_not_the_callers_is_not_found_and_costs_them_nothing(node_session):
+    async with _radar() as stub:
+        node_id = await _registered(node_session, stub)
+        sent = len(stub.requests)
+        stranger = {"id": "user-b", "email": "bob@example.com"}
+        for target in (node_id, "bla00000000"):
+            with pytest.raises(polled_registration.RegistrationRefused) as info:
+                await polled_registration.probe_new_address(
+                    node_session, target, f"radar.example.com:{stub.port}", "user-b"
+                )
+            assert (info.value.status, info.value.code) == (404, "not_found")
+            refusal = await _move_refused(node_session, target, f"radar.example.com:{stub.port}", user=stranger)
+            assert (refusal.status, refusal.code) == (404, "not_found")
+
+        assert len(stub.requests) == sent
+    assert _quota_left("user-b") == 10
+
+
+async def test_a_radar_changed_since_the_owner_looked_is_shown_again_not_moved(node_session):
+    async with _radar() as old, _radar(_declaring(**{"location.rx.latitude": 10.625})) as new:
+        node_id = await _registered(node_session, old)
+        refusal = await _move_refused(node_session, node_id, f"other.example.com:{new.port}")
+    node_session.expire_all()
+
+    assert (refusal.status, refusal.code) == (409, "config_changed")
+    assert refusal.probe.public()["rx"]["latitude"] == 10.625
+    radar = await node_session.get(PolledRadar, node_id)
+    assert (radar.epoch, radar.endpoint_key) == (1, f"radar.example.com:{old.port}")
+
+
+async def test_an_address_another_radar_holds_is_refused_before_any_request(node_session):
+    async with _radar() as mine, _radar() as theirs:
+        node_id = await _registered(node_session, mine)
+        await create_polled_radar(
+            node_session,
+            **_row_args(
+                owner_user_id="user-b",
+                owner_email="bob@example.com",
+                endpoint_key=f"other.example.com:{theirs.port}",
+                host="other.example.com",
+                port=theirs.port,
+            ),
+        )
+        await node_session.commit()
+        refusal = await _move_refused(node_session, node_id, f"other.example.com:{theirs.port}")
+
+    assert (refusal.status, refusal.code) == (409, "endpoint_registered")
+    assert theirs.requests == []
+
+
+async def test_the_poller_moving_on_meanwhile_sends_the_owner_back_to_look_again(node_session, monkeypatch):
+    async def moved_on(*args, **kwargs):
+        raise polled_radars.EpochChanged("moved on")
+
+    monkeypatch.setattr(polled_registration, "set_polled_radar_address", moved_on)
+    async with _radar() as old, _radar() as new:
+        node_id = await _registered(node_session, old)
+        refusal = await _move_refused(node_session, node_id, f"other.example.com:{new.port}")
+
+    assert (refusal.status, refusal.code) == (409, "config_changed")
+    assert refusal.probe.public()["fingerprint"] == STOCK_FINGERPRINT
+
+
+async def test_moving_a_radar_draws_on_the_same_allowance_as_registering_one(node_session):
+    async with _radar() as stub:
+        node_id = await _registered(node_session, stub)
+        while polled_probe_limiter.admit("user-a") is None:
+            pass
+        with pytest.raises(polled_registration.RegistrationRefused) as info:
+            await polled_registration.probe_new_address(node_session, node_id, "other.example.com:4000", "user-a")
+
+    assert (info.value.status, info.value.code) == (429, "rate_limited")
+
+
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 PROBE = "/api/auth/me/polled-radars/probe"
@@ -477,3 +605,132 @@ def test_a_changed_radar_answers_with_what_it_declares_now(client, registration_
 
 def test_a_publication_other_than_public_or_private_is_refused(client, registration_open, canned_radar):
     assert client.post(REGISTER, json=SUBMIT | {"publication": "fuzzed"}).status_code == 422
+
+
+OTHER = "other.example.com:3000"
+
+
+def _registered_by_route(client) -> str:
+    return client.post(REGISTER, json=SUBMIT).json()["node_id"]
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("post", f"{REGISTER}/bla00000000/probe", {"address": OTHER}),
+        ("put", f"{REGISTER}/bla00000000/address", {"address": OTHER, "fingerprint": STOCK_FINGERPRINT}),
+    ],
+)
+def test_moving_a_radar_needs_a_session(client, registration_open, canned_radar, method, path, body):
+    with patch("core.users.AUTH_BYPASS", False):
+        assert client.request(method, path, json=body).status_code == 401
+
+
+def test_a_radar_cannot_be_moved_while_registration_is_closed(
+    client, registration_open, canned_radar, poller_wakes, monkeypatch
+):
+    node_id = _registered_by_route(client)
+    monkeypatch.delenv(polled_registration.ENABLED_ENV)
+
+    for r in (
+        client.post(f"{REGISTER}/{node_id}/probe", json={"address": OTHER}),
+        client.put(f"{REGISTER}/{node_id}/address", json={"address": OTHER, "fingerprint": STOCK_FINGERPRINT}),
+    ):
+        # The switch's answer, not the one for a radar that is not the caller's.
+        assert (r.status_code, r.json()) == (404, {"detail": "Not Found"})
+
+
+def test_a_probe_of_a_new_address_answers_what_the_radar_declares_there(
+    client, registration_open, canned_radar, poller_wakes
+):
+    node_id = _registered_by_route(client)
+
+    r = client.post(f"{REGISTER}/{node_id}/probe", json={"address": OTHER})
+
+    assert r.status_code == 200
+    assert (r.json()["address"], r.json()["fingerprint"]) == (f"http://{OTHER}", STOCK_FINGERPRINT)
+
+
+def test_a_moved_radar_is_back_on_probation_at_once_and_the_poller_woken(
+    client, registration_open, canned_radar, poller_wakes
+):
+    node_id = _registered_by_route(client)
+    graduated = client.put(f"/api/admin/polled-radars/{node_id}/trust", json={"trust_state": "graduated", "epoch": 1})
+    assert graduated.status_code == 200
+    # Read once, so the fence's cache holds the radar as graduated.
+    assert probation.in_probation(node_id) is False
+
+    r = client.put(f"{REGISTER}/{node_id}/address", json={"address": OTHER, "fingerprint": STOCK_FINGERPRINT})
+
+    assert r.status_code == 200
+    assert r.json() == {"node_id": node_id, "epoch": 2, "trust_state": "probation"}
+    assert probation.in_probation(node_id) is True
+    assert poller_wakes == [True, True]
+
+
+def test_a_radar_that_is_not_the_callers_answers_as_one_that_does_not_exist(client, registration_open, canned_radar):
+    for r in (
+        client.post(f"{REGISTER}/bla00000000/probe", json={"address": OTHER}),
+        client.put(f"{REGISTER}/bla00000000/address", json={"address": OTHER, "fingerprint": STOCK_FINGERPRINT}),
+    ):
+        assert (r.status_code, r.json()["code"]) == (404, "not_found")
+
+
+# ── Removing a radar ─────────────────────────────────────────────────────────
+
+
+def test_releasing_a_polled_radar_removes_it_whatever_the_switch(
+    client, registration_open, canned_radar, poller_wakes, monkeypatch
+):
+    node_id = _registered_by_route(client)
+    with state.connected_nodes_lock:
+        state.connected_nodes[node_id] = {"status": "active", "config": {}}
+    monkeypatch.delenv(polled_registration.ENABLED_ENV)
+
+    r = client.delete(f"/api/auth/me/nodes/{node_id}/claim")
+
+    assert r.status_code == 200
+    assert node_id not in {n["node_id"] for n in client.get("/api/auth/me/nodes").json()}
+    assert node_id not in state.connected_nodes
+    assert poller_wakes == [True, True]
+
+    async def status():
+        async with async_session_maker() as session:
+            return (await session.get(Node, node_id)).status
+
+    assert asyncio.run(status()) == "retired"
+
+
+def test_releasing_a_fleet_node_leaves_it_connected_for_its_next_owner(client, poller_wakes):
+    own("ret1a2b3c4d", ANONYMOUS_USER["id"])
+    with state.connected_nodes_lock:
+        state.connected_nodes["ret1a2b3c4d"] = {"status": "active", "config": {}}
+
+    assert client.delete("/api/auth/me/nodes/ret1a2b3c4d/claim").status_code == 200
+    assert "ret1a2b3c4d" in state.connected_nodes
+    assert poller_wakes == []
+
+
+def test_a_removal_the_memory_cannot_all_be_cleared_from_still_answers_ok(
+    client, registration_open, canned_radar, poller_wakes, monkeypatch
+):
+    node_id = _registered_by_route(client)
+
+    def half_retired(node_id):
+        raise OSError("coverage file")
+
+    monkeypatch.setattr(node_retirement, "forget_node", half_retired)
+
+    assert client.delete(f"/api/auth/me/nodes/{node_id}/claim").status_code == 200
+    assert poller_wakes == [True, True]
+
+
+def test_an_administrator_cannot_leave_a_polled_radar_without_an_owner(
+    client, registration_open, canned_radar, poller_wakes
+):
+    node_id = _registered_by_route(client)
+
+    r = client.put(f"/api/admin/nodes/{node_id}/owner", json={"user_id": None})
+
+    assert r.status_code == 409
+    assert node_id in {n["node_id"] for n in client.get("/api/auth/me/nodes").json()}
