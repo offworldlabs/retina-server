@@ -112,6 +112,17 @@ class TestRetireNode:
         assert report["custody"]["chain_entries"] == 2
         assert report["custody"]["iq_commitments"] == 1
 
+    def test_a_node_whose_registration_is_retired_is_forgotten_connected_or_not(self, fleet, monkeypatch):
+        """Nothing can register it again to undo this, so neither the refusal
+        nor force's allowlist has anything to guard."""
+        monkeypatch.setenv("NODE_FORCE_RETIRE_PREFIXES", "synth-")
+
+        report = node_retirement.forget_node("live-node")
+
+        assert report["was_connected"] is True
+        assert "live-node" not in state.connected_nodes
+        assert "live-node" not in state.node_analytics.trust_scores
+
     def test_it_refuses_a_connected_node(self, fleet):
         """The next registration would undo it, and it would strip the custody
         chain of a live source mid-session."""
