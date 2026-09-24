@@ -472,6 +472,15 @@ class TestNodeRefInPublicPayloads:
         node = orjson.loads(state.latest_nodes_bytes)["nodes"][self.NODE]
         assert node["node_ref"] == public_identity(self.NODE)
 
+    @pytest.mark.parametrize("key", ["fc_hz", "FC"])
+    def test_the_nodes_payload_carries_the_frequency_under_either_key(self, key):
+        from core import state
+
+        state.connected_nodes[self.NODE]["config"][key] = 5.7e8
+        self._refresh()
+        node = orjson.loads(state.latest_nodes_bytes)["nodes"][self.NODE]
+        assert node["frequency"] == 5.7e8
+
     def test_the_handle_is_the_key_it_is_published_under(self):
         from core import state
 

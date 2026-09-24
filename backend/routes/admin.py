@@ -43,6 +43,7 @@ from core.users import (
 )
 from services import publication
 from services.node_claim_store import set_owner
+from services.node_config import carrier_hz
 from services.node_refs import id_for_ref, public_identity, public_name, ref_to_id_map
 from services.node_report_store import all_reports
 from services.tasks import multinode_identity
@@ -477,7 +478,7 @@ async def get_node_config(_admin=Depends(require_admin)):
         cfg = info.get("config", {})
         nodes_cfg[nid] = {
             "name": cfg.get("name", nid),
-            "frequency": cfg.get("FC", cfg.get("frequency")),
+            "frequency": carrier_hz(cfg),
             "rx_lat": cfg.get("rx_lat"),
             "rx_lon": cfg.get("rx_lon"),
             "tx_lat": cfg.get("tx_lat"),
@@ -522,7 +523,7 @@ async def get_tower_config(_admin=Depends(require_admin)):
                 towers[key] = {
                     "lat": tx_lat,
                     "lon": tx_lon,
-                    "frequency": cfg.get("FC", cfg.get("frequency")),
+                    "frequency": carrier_hz(cfg),
                     "nodes_using": [],
                 }
             towers[key]["nodes_using"].append(nid)

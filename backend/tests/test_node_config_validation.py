@@ -5,6 +5,7 @@ import pytest
 from services.node_config import (
     ConfigInvalid,
     canonical_config,
+    carrier_hz,
     config_json_schema,
     numeric_branch,
     position_status,
@@ -457,6 +458,24 @@ def test_an_out_of_range_coordinate_is_reported_before_a_missing_pair():
         validate_config(dict(VALID, rx_lat=91.0, rx_lon=None))
     assert excinfo.value.field == "rx_lat"
     assert excinfo.value.reason == "out of range"
+
+
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        ({"fc_hz": 5.7e8}, 5.7e8),
+        ({"FC": 195_000_000}, 195_000_000),
+        ({"frequency": 98.1e6}, 98.1e6),
+        ({"fc_hz": 5.7e8, "FC": 195_000_000}, 5.7e8),
+        ({"fc_hz": None, "FC": 195_000_000}, 195_000_000),
+        ({}, None),
+    ],
+    ids=["v1-and-polled", "tcp-fleet", "older-record", "fc-hz-first", "null-falls-through", "none"],
+)
+def test_carrier_hz_reads_whichever_key_the_config_spells_it(config, expected):
+    """A v1 node or polled radar says fc_hz and the TCP fleet says FC, so a
+    reader of only one of them shows no frequency for the other."""
+    assert carrier_hz(config) == expected
 
 
 @pytest.mark.parametrize(

@@ -42,7 +42,7 @@ from services.node_claiming import (
     preview_claim,
     release_node,
 )
-from services.node_config import position_status
+from services.node_config import carrier_hz, position_status
 from services.node_refs import owner_identity, public_name
 from services.polled_radars import remove_polled_radar
 
@@ -431,7 +431,7 @@ async def my_nodes(request: Request):
                 "rx_lat": cfg.get("rx_lat"),
                 "rx_lon": cfg.get("rx_lon"),
                 "position_status": position_status(cfg),
-                "frequency": cfg.get("FC", cfg.get("frequency")),
+                "frequency": carrier_hz(cfg),
                 "location_private": private,
                 "location_privacy_source": source,
                 "claimed_with": claimed_with.get(nid),

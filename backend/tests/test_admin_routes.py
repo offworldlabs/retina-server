@@ -194,6 +194,35 @@ class TestConfig:
         assert body["_source"] == "live"
         assert "towers" in body
 
+    def test_node_config_reports_the_frequency_a_v1_config_declares(self, client, monkeypatch, tmp_path):
+        """A v1 node or polled radar carries fc_hz, not the TCP fleet's FC."""
+        import routes.admin as admin_mod
+        from core import state
+
+        # No nodes_config.json there, so the live view answers.
+        monkeypatch.setattr(admin_mod, "runtime_path", lambda name: tmp_path / name)
+        monkeypatch.setattr(admin_mod, "_nodes_config_cache", None)
+        monkeypatch.setitem(state.connected_nodes, "fc-hz-node", {"status": "active", "config": {"fc_hz": 5.7e8}})
+
+        body = client.get("/api/admin/config/nodes").json()
+
+        assert body["nodes"]["fc-hz-node"]["frequency"] == 5.7e8
+
+    def test_tower_config_reports_the_frequency_a_v1_config_declares(self, client, monkeypatch):
+        import routes.admin as admin_mod
+        from core import state
+
+        monkeypatch.setattr(admin_mod, "_towers_config_cache", None)
+        monkeypatch.setitem(
+            state.connected_nodes,
+            "fc-hz-node",
+            {"status": "active", "config": {"tx_lat": 51.37, "tx_lon": -0.88, "fc_hz": 5.7e8}},
+        )
+
+        towers = client.get("/api/admin/config/towers").json()["towers"]
+
+        assert towers["51.3700,-0.8800"]["frequency"] == 5.7e8
+
     def test_config_history_returns_list(self, client):
         r = client.get("/api/admin/config/history")
         assert r.status_code == 200

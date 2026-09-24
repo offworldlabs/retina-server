@@ -418,3 +418,16 @@ def position_status(config: dict[str, Any]) -> PositionStatus:
     if has_tx:
         return "missing_rx"
     return "missing_both"
+
+
+# fc_hz is the v1 wire's and a polled radar's, FC the TCP fleet's, and
+# frequency older records'.
+_CARRIER_KEYS = ("fc_hz", "FC", "frequency")
+
+
+def carrier_hz(config: dict[str, Any]) -> Any:
+    """A node's carrier frequency in Hz, under whichever key its config spells it, or None."""
+    for key in _CARRIER_KEYS:
+        if config.get(key) is not None:
+            return config[key]
+    return None

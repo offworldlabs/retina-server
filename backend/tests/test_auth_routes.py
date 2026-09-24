@@ -232,6 +232,22 @@ class TestMyNodes:
         finally:
             asyncio.run(set_node_owner(node_id, None))
 
+    def test_my_nodes_reports_the_frequency_a_v1_config_declares(self, client, monkeypatch):
+        """A v1 node or polled radar carries fc_hz, not the TCP fleet's FC."""
+        from core import state
+        from core.auth import set_node_owner
+        from core.users import ANONYMOUS_USER
+
+        node_id = "fc-hz-node"
+        own(node_id, ANONYMOUS_USER["id"])
+        monkeypatch.setitem(state.connected_nodes, node_id, {"status": "active", "config": {"fc_hz": 5.7e8}})
+        try:
+            nodes = client.get("/api/auth/me/nodes").json()
+            node = next(n for n in nodes if n["node_id"] == node_id)
+            assert node["frequency"] == 5.7e8
+        finally:
+            asyncio.run(set_node_owner(node_id, None))
+
 
 # ── /api/auth/me/nodes/{id}/location-privacy ─────────────────────────────────
 

@@ -23,7 +23,7 @@ from core import state
 from services.geo import bearing_deg, bistatic_delay_us, haversine_km, node_beam_params, point_in_beam
 from services.geo import valid_latlon as _valid_latlon
 from services.id_utils import multinode_hex_from_key
-from services.node_config import position_status
+from services.node_config import carrier_hz, position_status
 from services.node_refs import public_analytics, public_identity, public_name
 from services.node_sites import log_colocation_audit
 from services.public_geometry import without_receiver_geometry
@@ -445,11 +445,7 @@ def _refresh_analytics_and_nodes():
                 "peer": info.get("peer"),
                 "is_synthetic": info.get("is_synthetic", is_synthetic_node(nid)),
                 "capabilities": info.get("capabilities", {}),
-                "frequency": (
-                    info.get("config", {}).get("FC")
-                    or info.get("config", {}).get("fc_hz")
-                    or info.get("config", {}).get("frequency")
-                ),
+                "frequency": carrier_hz(info.get("config", {})),
                 "sample_rate": (info.get("config", {}).get("Fs") or info.get("config", {}).get("fs_hz")),
                 # node_id, never ref: the fuzz offset is HMAC-keyed on it, so
                 # re-keying moves every receiver in the fleet to a new
