@@ -1,5 +1,4 @@
 import { describe, it, expect } from "vitest";
-import rawReference from "../../../backend/routes/reference.py?raw";
 import bundle from "../../public/vendor/scalar-api-reference-1.69.0/standalone.js?raw";
 import { SCALAR_THEME_CSS } from "../utils/scalarTheme";
 import { TOKENS, declarations } from "./paletteTokens";
@@ -46,18 +45,8 @@ const TOKEN_FOR: Record<string, string> = {
   "--scalar-sidebar-search-color": "--text-secondary",
 };
 
-/** The public reference's copy, out of the Python string that holds it. */
-const publicCss = rawReference.match(/THEME_CSS = """([\s\S]*?)"""/)?.[1].trim();
-
-describe("the public reference's stylesheet", () => {
-  // Compared whole, so a rule added to one copy alone cannot hide.
-  it("is the console's, character for character", () => {
-    expect(publicCss).toBe(SCALAR_THEME_CSS);
-  });
-});
-
 describe.each(["light", "dark"] as const)("Scalar's %s palette", (theme) => {
-  // Scalar cannot read the console's tokens (see scalarTheme.ts), so a token
+  // Scalar cannot read the console's tokens (see scalar-theme.css), so a token
   // that changes reaches it only through this.
   it("is the console's, token for token", () => {
     const expected = Object.fromEntries(Object.entries(TOKEN_FOR).map(([name, token]) => [name, TOKENS[theme](token)]));

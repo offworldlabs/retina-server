@@ -97,6 +97,10 @@ WORKDIR /app
 # Backend code
 COPY backend/ ./backend/
 
+# The API reference's Scalar palette, which the console's build reads too.
+# backend/routes/reference.py opens it at this path from the root.
+COPY packages/shared/css/scalar-theme.css ./packages/shared/css/
+
 # The built console
 COPY --from=dashboard-build /app/dashboard/dist /app/dashboard/dist
 
