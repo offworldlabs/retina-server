@@ -29,6 +29,13 @@ services:
         # CARTO's watermarked tiles.
         # Declared in the base file so every environment builds the same way.
         VITE_CARTO_API_KEY: ${CARTO_API_KEY:-}
+      # No provenance attestation. On the containerd image store BuildKit
+      # attaches one by default, stamped with the build's time and commit, and
+      # it is part of the image ID, so every build gets a new ID even when every
+      # layer is cached, and `up --build` replaces a container whose image has
+      # not changed. Compose's Bake path drops `provenance: false`; this
+      # spelling reaches it.
+      provenance: "disabled=true"
     # Pin an explicit image name so it is stable and independent of the Compose
     # project (directory) name. deploy/pre-deploy.sh + deploy/rollback.sh key the
     # rollback on `retina-server:latest`; without this, Compose builds an
@@ -141,6 +148,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.fleet
+      # As the server's, so an unchanged fleet image keeps its ID.
+      provenance: "disabled=true"
     # Pin an explicit image name (mirrors the app's `image: retina-server:latest`)
     # so pre-deploy/rollback can save + retag a stable fleet image. Without this
     # Compose auto-names it `<dir>-fleet` and a rollback would leave the fleet on

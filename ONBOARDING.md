@@ -152,7 +152,9 @@ carry it.
 ### Full stack in Docker
 
 To run the built image exactly as the droplets do (nginx rendered from the
-shared template, plain HTTP), overlay the laptop compose file on the base:
+shared template, plain HTTP), overlay the laptop compose file on the base. This
+needs Docker Compose 2.39 or later, the first to accept the base file's build
+keys:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.local.yml up -d --build
