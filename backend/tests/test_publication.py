@@ -1264,6 +1264,21 @@ class TestArchiveRoutes:
         assert called == [self.stored(_PUB)]
         assert response.json() == {"node_ref": _seed_ref(_PUB), "count": 0, "detections": []}
 
+    def test_a_mirrored_nodes_file_lists_filters_and_downloads_under_its_ref(self, client, monkeypatch):
+        """A node mirrored from another environment has no row here; its ref
+        rides on its connected entry, in both directions."""
+        mirrored, ref = "ret0badcafe", "ndemirrored001"
+        monkeypatch.setitem(state.connected_nodes, mirrored, {"status": "active", "node_ref": ref})
+        node_refs._reset_for_tests()
+        stored = self.stored(mirrored)
+        published = stored.replace(f"node_id={mirrored}", f"node_ref={ref}")
+        self.listing(monkeypatch, stored)
+        called = self.reads(monkeypatch, {"node_id": mirrored, "detections": []})
+        assert [f["key"] for f in client.get("/api/data/archive").json()["files"]] == [published]
+        assert client.get("/api/data/archive", params={"node_ref": ref}).json()["count"] == 1
+        assert client.get(f"/api/data/archive/{published}").json() == {"node_ref": ref, "detections": []}
+        assert called == [stored]
+
     def test_a_file_with_no_node_in_its_key_is_withheld_if_its_body_names_a_private_node(
         self, client, seed_nodes, monkeypatch
     ):

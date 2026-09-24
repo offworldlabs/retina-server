@@ -131,16 +131,17 @@ def id_for_identity(identity: str | None) -> str | None:
     """The node behind a published identity, or None if nothing publishes as it.
 
     The inverse of `public_identity`, and what every public path parameter
-    resolves through. It is `id_for_ref` plus the synthetic passthrough that
+    resolves through. It is `id_for_ref` plus the two fallbacks
     `public_identity` applies on the way out: a synthetic node is published
-    under its own id, so that id is its handle and must keep resolving. A real
-    node is reachable only by the ref its registry row carries.
+    under its own id, so that id is its handle and must keep resolving, and a
+    mirrored node under the ref its sending environment resolved. A real node
+    is reachable only by the ref it is published under.
     """
     if not identity:
         return None
     if is_synthetic_node(identity):
         return identity
-    return id_for_ref(identity)
+    return id_for_ref(identity) or _mirrored_id(identity)
 
 
 def ref_to_id_map(node_ids: Iterable[str] = ()) -> dict[str, str]:
@@ -205,6 +206,22 @@ def _mirrored_ref(node_id: str) -> str | None:
     known = state.connected_nodes.get(node_id)
     ref = known.get("node_ref") if known else None
     return ref if isinstance(ref, str) and ref else None
+
+
+def _mirrored_id(node_ref: str) -> str | None:
+    """The mirrored node published under `node_ref`, the inverse of `_mirrored_ref`.
+
+    A scan of the connected nodes, which is where a mirrored ref lives; there
+    are tens of them. A candidate counts only if `owner_identity` names it by
+    this ref, so a registry row that outranks its mirrored ref on the way out
+    outranks it here too.
+    """
+    with state.connected_nodes_lock:
+        snapshot = list(state.connected_nodes.items())
+    for node_id, known in snapshot:
+        if known.get("node_ref") == node_ref and owner_identity(node_id) == node_ref:
+            return node_id
+    return None
 
 
 def owner_identity(node_id: str | None) -> str | None:
