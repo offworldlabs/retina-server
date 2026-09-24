@@ -329,6 +329,12 @@ class TestMirroredRef:
         with state.connected_nodes_lock:
             state.connected_nodes[_MIRRORED] = {"is_synthetic": False, "status": "active", **entry}
 
+    def teardown_method(self):
+        from core import state
+
+        with state.connected_nodes_lock:
+            state.connected_nodes.pop(_MIRRORED, None)
+
     def test_a_mirrored_ref_is_published_when_the_registry_has_none(self, seed):
         seed(ret1a2b3c4d="nde1a2b3c4d00")
         self._connected(node_ref="ndemirrored001")
@@ -344,6 +350,18 @@ class TestMirroredRef:
         seed(**{_MIRRORED: "ndelocalrow001"})
         self._connected(node_ref="ndemirrored001")
         assert node_refs.public_identity(_MIRRORED) == "ndelocalrow001"
+
+    def test_a_mirrored_ref_resolves_back_to_its_node(self, seed):
+        """Public path parameters take the ref a node is published under."""
+        seed(ret1a2b3c4d="nde1a2b3c4d00")
+        self._connected(node_ref="ndemirrored001")
+        assert node_refs.id_for_identity("ndemirrored001") == _MIRRORED
+
+    def test_a_mirrored_ref_the_registry_outranks_resolves_to_nothing(self, seed):
+        seed(**{_MIRRORED: "ndelocalrow001"})
+        self._connected(node_ref="ndemirrored001")
+        assert node_refs.id_for_identity("ndemirrored001") is None
+        assert node_refs.id_for_identity("ndelocalrow001") == _MIRRORED
 
     def test_a_mirrored_node_reaches_the_published_feed(self, seed):
         seed(ret1a2b3c4d="nde1a2b3c4d00")
