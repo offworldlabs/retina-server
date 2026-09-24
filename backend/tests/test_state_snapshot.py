@@ -93,6 +93,38 @@ class TestSnapshotRoundTrip:
 
         state.node_analytics.reputations.pop("node-7", None)
 
+    def test_node_metrics_and_the_server_clock_survive_round_trip(self, tmp_path):
+        from retina_analytics.availability import MinuteRing
+        from retina_analytics.metrics import NodeMetrics
+
+        from core import state
+
+        now = time.time()
+        metrics = NodeMetrics(node_id="node-9", first_seen=now - 7200)
+        up = MinuteRing()
+        for ago in range(1, 61):
+            up.mark(int((now - ago * 60) // 60))
+            if ago <= 45:
+                metrics.record_frame({"delay": [1.0, 2.0], "snr": [9.0, 11.0]}, now=now - ago * 60)
+        expected = metrics.summary(up, now=now)
+        assert (expected["availability_7d"], expected["total_detections"]) == (0.75, 90)
+
+        saved_up = state.node_analytics.server_minutes
+        state.node_analytics.metrics["node-9"] = metrics
+        state.node_analytics.server_minutes = up
+        snap_path = str(tmp_path / "snap.json")
+        try:
+            with patch("services.state_snapshot._SNAPSHOT_PATH", snap_path):
+                save_snapshot()
+                state.node_analytics.metrics.pop("node-9")
+                state.node_analytics.server_minutes = MinuteRing()
+                restore_snapshot()
+            restored = state.node_analytics.metrics["node-9"]
+            assert restored.summary(state.node_analytics.server_minutes, now=now) == expected
+        finally:
+            state.node_analytics.metrics.pop("node-9", None)
+            state.node_analytics.server_minutes = saved_up
+
     def test_accuracy_samples_survive_round_trip(self, tmp_path):
         from core import state
 

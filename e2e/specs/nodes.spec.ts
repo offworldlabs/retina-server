@@ -561,7 +561,8 @@ describeUnlessProd("Node registration — main integration suite", () => {
       const m = analyticsBody.metrics as Record<string, unknown>;
       expect(m).toBeDefined();
       for (const k of [
-        "uptime_s", "total_frames", "total_detections",
+        "availability_7d", "availability_24h", "availability_measured_s",
+        "total_frames", "total_detections",
         "avg_detections_per_frame", "avg_snr", "max_snr",
         "total_tracks", "geolocated_tracks", "track_quality",
       ]) {
@@ -572,10 +573,12 @@ describeUnlessProd("Node registration — main integration suite", () => {
       expect(m).not.toHaveProperty("node_id");
     });
 
-    test("metrics.uptime_s is a non-negative number", () => {
+    test("metrics.availability_7d is a share, or null until a whole minute is measured", () => {
       const m = analyticsBody.metrics as Record<string, unknown>;
-      expect(typeof m.uptime_s).toBe("number");
-      expect(m.uptime_s as number).toBeGreaterThanOrEqual(0);
+      const share = m.availability_7d;
+      const valid = share === null || (typeof share === "number" && share >= 0 && share <= 1);
+      expect(valid, `availability_7d: ${share}`).toBe(true);
+      expect(m.availability_measured_s as number).toBeGreaterThanOrEqual(0);
     });
 
     test("metrics.total_frames is a non-negative integer", () => {

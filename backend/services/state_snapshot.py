@@ -1,8 +1,9 @@
 """Lightweight state snapshot: save/restore high-value in-memory state across restarts.
 
 Saved every SAVE_INTERVAL_S (60 s) by a background task.  Restored once at startup.
-Persists: trust_scores, reputations, accuracy_samples, chain_entries,
-node_identities, iq_commitments, anomaly_log, simulation_config.
+Persists: trust_scores, reputations, node_metrics, server_minutes,
+accuracy_samples, chain_entries, node_identities, iq_commitments, anomaly_log,
+simulation_config.
 """
 
 import hashlib
@@ -38,6 +39,10 @@ def save_snapshot() -> None:
     for nid, rep in state.node_analytics.reputations.items():
         reps[nid] = asdict(rep)
 
+    # Node availability and the leaderboard's counts.  The server's own
+    # minutes go with them, as they are what availability is measured against.
+    node_metrics = {nid: m.to_state() for nid, m in list(state.node_analytics.metrics.items())}
+
     identities = {}
     for nid, ident in state.node_identities.items():
         identities[nid] = ident.to_dict()
@@ -46,6 +51,8 @@ def save_snapshot() -> None:
         "saved_at": time.time(),
         "trust_scores": trust,
         "reputations": reps,
+        "node_metrics": node_metrics,
+        "server_minutes": state.node_analytics.server_minutes.to_state(),
         "accuracy_samples": list(state.accuracy_samples),
         "chain_entries": dict(state.chain_entries),
         "node_identities": identities,
@@ -170,6 +177,8 @@ def _restore_simulation_config(snap: dict) -> None:
 
 def restore_snapshot() -> bool:
     """Load state from disk snapshot. Returns True if restored, False if no snapshot found."""
+    from retina_analytics.availability import MinuteRing
+    from retina_analytics.metrics import NodeMetrics
     from retina_analytics.reputation import NodeReputation
     from retina_analytics.trust import AdsReportEntry, TrustScoreState
     from retina_custody.models import NodeIdentity
@@ -265,6 +274,13 @@ def restore_snapshot() -> bool:
     # Reputations
     for nid, rep_data in snap.get("reputations", {}).items():
         state.node_analytics.reputations[nid] = NodeReputation(**rep_data)
+
+    # Node metrics and the server clock they are measured against.  These
+    # replace what startup priming registered, which has counted nothing yet.
+    for nid, metrics_data in snap.get("node_metrics", {}).items():
+        state.node_analytics.metrics[nid] = NodeMetrics.from_state(metrics_data)
+    if "server_minutes" in snap:
+        state.node_analytics.server_minutes = MinuteRing.from_state(snap["server_minutes"])
 
     # Accuracy samples
     samples_list = snap.get("accuracy_samples", [])

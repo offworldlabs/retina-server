@@ -130,6 +130,7 @@ _omit_absent_detail
 
 # Leaderboard response fields, set by keyword and read only by Pydantic's
 # serialisation. Each is a key the route publishes; see PublicLeaderboardRow.
+availability_7d
 avg_snr
 trust_score
 online

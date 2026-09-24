@@ -476,6 +476,12 @@ GT_REFRESH_S = 5.0  # Ground-truth snapshot refresh cadence (s)
 
 # ── Periodic task intervals ──────────────────────────────────────────────────
 REPUTATION_INTERVAL_S = 60  # Reputation evaluator sleep (s)
+# The server clock behind node availability: the minutes this process could
+# take frames.  Ticked well inside a minute so none is missed.  It starts only
+# after a grace, as nodes take a while to reconnect after a restart and those
+# minutes are the server's, not theirs.
+SERVER_CLOCK_TICK_S = 20
+SERVER_CLOCK_GRACE_S = 300
 ADSB_TRUTH_INTERVAL_S = 120  # ADS-B truth fetcher sleep (s)
 ADSB_BACKOFF_S = 300  # Rate-limit backoff (s)
 # adsb-service poll for claim candidates (services/tasks/adsb_fallback.py): every

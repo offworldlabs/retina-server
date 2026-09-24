@@ -22,6 +22,7 @@ from services.tasks.periodic import (
     prune_synthetic_nodes,
     reputation_evaluator,
     retire_disposable_nodes_task,
+    server_clock_task,
 )
 from services.tasks.solver import start_solver_workers, stop_solver_workers
 from services.tasks.storage_refresh import storage_refresh_task
@@ -42,6 +43,7 @@ __all__ = [
     "archive_flush_task",
     "archive_lifecycle_task",
     "reputation_evaluator",
+    "server_clock_task",
     "prune_synthetic_nodes",
     "retire_disposable_nodes_task",
     "adsb_truth_fetcher",

@@ -1108,11 +1108,8 @@ class TestOwnerSeesTheirOwnPrivateNodeInAnalytics:
             )
         )
         # The public handle rides on top of the fuzzed frame; everything under
-        # it must be exactly what the public would get.  uptime_s is the one
-        # field that legitimately differs between two summaries taken a few
-        # milliseconds apart (rounded to 0.1 s), so it is compared separately.
+        # it must be exactly what the public would get.
         got = {k: v for k, v in body["nodes"][_seed_ref(_PRIV)].items() if k != "node_ref"}
-        assert abs(got["metrics"].pop("uptime_s") - expected["metrics"].pop("uptime_s")) < 5.0
         assert got == expected
         rx = body["nodes"][_seed_ref(_PRIV)]["detection_area"]["rx"]
         assert rx["lat"] != self.RX["rx_lat"]
