@@ -9,8 +9,8 @@
 # becoming drift.
 #
 # The ruff hooks are unrestricted: every tracked .py in this repo now resolves
-# to the same standard. libs/ is not covered because submodule contents are
-# gitlinks, so pre-commit never passes them to a hook.
+# to the same standard. libs/ is not covered: pre-commit passes a submodule only
+# as its gitlink path, never the files inside it.
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.16.2
@@ -47,3 +47,20 @@ repos:
         alias: ruff-config-root
         name: ruff config matches the shared standard (root)
         args: ["."]
+
+  # The generated node API contract, checked at commit as well as in CI. `files`
+  # is everything it can be built from (backend code bar tests and migrations,
+  # the lock, a submodule's gitlink, the contract), not a list of modules.
+  # Deleted paths are never passed, so a deletion alone is left to CI. Runs in
+  # the committing checkout's backend/.venv, so the libs are as checked out.
+  - repo: local
+    hooks:
+      - id: node-api-contract
+        name: node API contract is current
+        language: system
+        entry: >-
+          bash -c 'cd backend && { [ -x .venv/bin/python ] || { echo "no backend/.venv in this checkout, so the contract cannot be checked: just setup"; exit 1; }; } && RETINA_ENV=dev exec .venv/bin/python -m scripts.generate_openapi --check'
+        pass_filenames: false
+        files: ^(backend/(?!tests/|migrations/).+\.py|backend/(uv\.lock|pyproject\.toml)|contracts/.+|libs/[^/]+)$
+        types: []
+        types_or: [file, directory]

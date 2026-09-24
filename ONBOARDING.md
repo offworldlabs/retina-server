@@ -280,16 +280,16 @@ CI runs it over every file, as `just lint` does, since a commit made with
 `--no-verify` or from somewhere without the hook skipped it.
 
 It runs `ruff-check`, `ruff-format`, actionlint over the workflows, a dead-code
-check (vulture) and `ruff-config` twice, once per copy of the shared standard in
-this repo. A change can pass `ruff check` and `ruff format` by hand and still
-fail CI on dead code.
+check (vulture), `ruff-config` twice, once per copy of the shared standard in
+this repo, and the node API contract check below. A change can pass
+`ruff check` and `ruff format` by hand and still fail CI on dead code.
 
 Touching a node route or one of its models also moves the node API's wire
 contract, which is generated rather than written. So does changing a
 configuration bound: the schema published for `config` is built from the
 validator's own tables, so `backend/services/node_config.py` moves the contract
-with no route touched. Regenerate it in the same commit, or CI fails on a file
-you never edited:
+with no route touched. Regenerate it in the same commit: the hook refuses the
+commit otherwise, and CI fails on a file you never edited if it got past:
 
 ```bash
 just contract

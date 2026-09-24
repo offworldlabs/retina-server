@@ -105,7 +105,7 @@ def test_the_committed_contract_is_what_the_routes_generate(document):
     contract had and the reason it was retired.
     """
     assert CONTRACT_PATH.read_text() == render(document), (
-        f"{CONTRACT_PATH} is stale. Regenerate it in this commit: cd backend && python -m scripts.generate_openapi"
+        f"{CONTRACT_PATH} is stale. Regenerate it in this commit: just contract"
     )
 
 
