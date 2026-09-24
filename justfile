@@ -35,12 +35,11 @@ migrate:
     #!/usr/bin/env bash
     set -euo pipefail
     [ -x "{{py}}" ] || { echo "no backend venv — run: just setup"; exit 1; }
-    # RETINA_ENV is passed explicitly because migrations/env.py does not load
-    # .env (only main.py does). create_all is guarded off outside tests, so this
-    # is the only thing that ever builds the dev schema: without it a fresh clone
-    # boots against an empty file, and a tree that has just pulled a new revision
-    # boots against a stale one — both failing later, on the first query to touch
-    # the missing table or column, instead of here where the cause is obvious.
+    # create_all is guarded off outside tests, so this is the only thing that ever
+    # builds the dev schema: without it a fresh clone boots against an empty file,
+    # and a tree that has just pulled a new revision boots against a stale one —
+    # both failing later, on the first query to touch the missing table or
+    # column, instead of here where the cause is obvious.
     # That is why `up` runs it on every start rather than `setup` running it
     # once, and it is the same reasoning that has deploy/start.sh migrate on
     # every container boot.
@@ -67,12 +66,14 @@ migrate:
     # very failure this block exists to inspect.
     echo "→ database schema (alembic)"
     cd "{{be}}"
-    if out=$(RETINA_ENV=dev "{{py}}" -m alembic upgrade head 2>&1); then
+    if out=$("{{py}}" -m alembic upgrade head 2>&1); then
         # alembic.ini pins the root logger to WARN, so a successful upgrade says
         # nothing at all; print whatever it does say and leave it at that.
         if [ -n "$out" ]; then printf '%s\n' "$out"; fi
     elif printf '%s\n' "$out" | grep -q "Can't locate revision"; then
         printf '%s\n' "$out"
+        # check_schema imports the models, which want a JWT_SECRET outside dev,
+        # and nothing here loads .env (only main.py does).
         if gaps=$(RETINA_ENV=dev "{{py}}" -m scripts.check_schema 2>&1); then
             echo "⚠ that revision is not in this tree, but the schema has everything"
             echo "  this tree expects (rolled back to an older branch?) — continuing"

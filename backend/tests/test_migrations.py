@@ -31,6 +31,18 @@ def _migrate(db_path: Path, *, cwd: Path = BACKEND, argv: list[str] | None = Non
     )
 
 
+def _alembic_tree(dest: Path) -> Path:
+    """A copy of what Alembic reads from backend/: alembic.ini, migrations/, and
+    core/ for env.py's database path and, for the commands that compare, the
+    models. core/__init__.py imports none of its siblings, and the modules env.py
+    reaches import nothing from outside core/.
+    """
+    shutil.copytree(BACKEND / "core", dest / "core", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(BACKEND / "migrations", dest / "migrations", ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copyfile(BACKEND / "alembic.ini", dest / "alembic.ini")
+    return dest
+
+
 def test_migrations_have_exactly_one_head(tmp_path):
     """Two branches that each add a revision off the same parent will merge
     without a textual conflict: different files, nothing overlapping, nothing a
@@ -303,13 +315,8 @@ def test_rollback_ahead_sentinel_matches_alembics_wording(tmp_path):
     up = _alembic("upgrade", "head", db_path=db)
     assert up.returncode == 0, up.stderr
 
-    # An "older image": the same backend tree minus the newest revision. Only
-    # core/ (env.py imports core.users and core.nodes to build target_metadata)
-    # and migrations/ are needed; core/__init__.py does not import its sibling
-    # modules eagerly, so copying the two files env.py touches is enough.
-    old_image = tmp_path / "old_image"
-    shutil.copytree(BACKEND / "core", old_image / "core", ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.copytree(BACKEND / "migrations", old_image / "migrations", ignore=shutil.ignore_patterns("__pycache__"))
+    # An "older image": the same backend tree minus the newest revision.
+    old_image = _alembic_tree(tmp_path / "old_image")
     # The newest revision, found rather than named: revisions are numbered
     # 000N_*.py so the last by filename is the head. Naming one here meant that
     # adding a revision on top of it left the older one's removal orphaning every
@@ -317,7 +324,6 @@ def test_rollback_ahead_sentinel_matches_alembics_wording(tmp_path):
     # down_revision instead of the message this test exists to pin.
     versions = sorted((old_image / "migrations" / "versions").glob("[0-9]*.py"))
     versions[-1].unlink()
-    shutil.copyfile(BACKEND / "alembic.ini", old_image / "alembic.ini")
 
     result = _migrate(db, cwd=old_image)
 
@@ -349,6 +355,61 @@ def test_migrate_boots_when_the_revision_cannot_be_read(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Could not determine current revision (non-fatal)" in result.stdout
     assert "database is locked" in result.stdout
+
+
+_APP_STACK = ("fastapi", "fastapi_users", "fastapi_users_db_sqlalchemy", "pydantic", "starlette")
+
+
+def test_migrate_imports_nothing_of_the_app(tmp_path):
+    """Alembic loads env.py and every revision for each command. Neither the
+    upgrade nor the revision report needs the app's models, and with the web
+    stack under them they would be most of what start.sh's migration step costs
+    on every boot. A fresh database runs every revision's upgrade() as well.
+    """
+    probe = (
+        "import runpy, sys\n"
+        f"runpy.run_path({str(MIGRATE_PY)!r}, run_name='__main__')\n"
+        f"print(sorted(m for m in sys.modules if m.split('.')[0] in {_APP_STACK!r}\n"
+        "             or m.startswith('core.') and m != 'core.database'))\n"
+    )
+    result = _migrate(tmp_path / "fresh.db", argv=["-c", probe])
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    loaded = result.stdout.strip().splitlines()[-1]
+    assert loaded == "[]", f"env.py or a revision imports the app: {loaded}"
+
+
+def test_the_commands_that_compare_with_the_models_still_load_them(tmp_path):
+    """env.py imports the models for `check` and `revision --autogenerate` alone
+    (its _target_metadata). Given none, both fail on Alembic's own error.
+
+    `check` also fails on drift between the models and the revisions, which
+    test_migrations_produce_the_schema_create_all_produces reports as well:
+    read its output before assuming the models went missing.
+    """
+    db = tmp_path / "compare.db"
+    up = _alembic("upgrade", "head", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+
+    check = _alembic("check", db_path=db)
+    assert check.returncode == 0, check.stdout + check.stderr
+
+    # A copy, because autogenerate writes its revision into migrations/versions/.
+    tree = _alembic_tree(tmp_path / "tree")
+    revision = _alembic("revision", "--autogenerate", "-m", "probe", db_path=db, cwd=tree)
+    assert revision.returncode == 0, revision.stdout + revision.stderr
+
+
+def test_the_models_name_constraints_as_an_upgrade_does():
+    """An upgrade runs without the models, so Alembic's operations fall back to
+    SQLAlchemy's default naming convention. A convention set on Base alone would
+    name an unnamed constraint one way in create_all and another in a migration,
+    so env.py's upgrade path needs it too."""
+    from sqlalchemy import MetaData
+
+    from core.users import Base
+
+    assert Base.metadata.naming_convention == MetaData().naming_convention
 
 
 VALID_ROLLBACK_SAFETY = {"additive", "destructive"}

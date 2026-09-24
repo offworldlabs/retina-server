@@ -41,6 +41,14 @@ fi
 : "${RETINA_ENV:?not set — the compose overlay is missing. On the host: cp deploy/env.<prod|staging>.example .env}"
 : "${HOST_MAIN:?not set — the compose overlay is missing (see deploy/env.*.example)}"
 
+# core/users.py refuses to import without JWT_SECRET outside dev and test, and
+# the migration step below does not import it. Checked here as well, so a box
+# that cannot serve refuses before it moves the schema rather than after.
+case "$(printf '%s' "$RETINA_ENV" | tr '[:upper:]' '[:lower:]')" in
+  dev|test) ;;
+  *) : "${JWT_SECRET:?not set, and the app will not start without it. Restore backend/.env on the host, or generate one as backend/.env.example shows}" ;;
+esac
+
 # ── Alerting guard ──────────────────────────────────────────────────────────
 # ALERT_WEBHOOK_URL and ALERT_WEBHOOK_AUTH carry a channel id and a credential,
 # so unlike the settings beside ALERT_ENVIRONMENT in the compose overlays they

@@ -1,8 +1,11 @@
-"""deploy/start.sh refuses to boot production without an alert destination.
+"""deploy/start.sh refuses to boot production without an alert destination or
+a JWT secret.
 
-The guard is the only thing standing between a restored box and a production
-stack that runs unalerting while reading as healthy, so these extract the block
-from the script as it stands and run it, rather than asserting on its text.
+The alert guard is the only thing standing between a restored box and a
+production stack that runs unalerting while reading as healthy. The JWT_SECRET
+check stops a box that cannot serve before it migrates. So these extract each
+block from the script as it stands and run it, rather than asserting on its
+text.
 """
 
 import re
@@ -26,20 +29,20 @@ _SET = {"ALERT_WEBHOOK_URL": "https://example.invalid/messages", "ALERT_WEBHOOK_
 _BLANK = "   "
 
 
-def _guard() -> str:
+def _guard(section: str = "Alerting guard") -> str:
     text = START_SH.read_text()
     starts = [m.start() for m in _SECTION.finditer(text)]
-    banners = [i for i in starts if text[i:].startswith("# ── Alerting guard")]
-    assert len(banners) == 1, "deploy/start.sh has no single Alerting guard section"
+    banners = [i for i in starts if text[i:].startswith(f"# ── {section}")]
+    assert len(banners) == 1, f"deploy/start.sh has no single {section} section"
     begin = banners[0]
     after = [i for i in starts if i > begin]
     return text[begin : after[0] if after else len(text)]
 
 
-def _run(**env) -> subprocess.CompletedProcess:
+def _run(section: str = "Alerting guard", **env) -> subprocess.CompletedProcess:
     """The guard alone, under the same shell options the real script sets."""
     return subprocess.run(
-        ["bash", "-c", "set -e\n" + _guard()],
+        ["bash", "-c", "set -e\n" + _guard(section)],
         env={"PATH": "/usr/bin:/bin", **env},
         capture_output=True,
         text=True,
@@ -110,3 +113,33 @@ def test_a_missing_digitalocean_token_never_refuses_a_boot(env_name):
     result = _run(RETINA_ENV=env_name, **_SET)
     assert result.returncode == 0, result.stderr
     assert "DIGITALOCEAN_READ_TOKEN is not set" in result.stderr
+
+
+# ── JWT_SECRET ───────────────────────────────────────────────────────────────
+
+
+def _environment(**env) -> subprocess.CompletedProcess:
+    return _run("Environment guard", HOST_MAIN="app.example.invalid", **env)
+
+
+@pytest.mark.parametrize("value", [None, ""])
+@pytest.mark.parametrize("env_name", ["production", "Production"])
+def test_production_refuses_to_boot_without_a_jwt_secret(env_name, value):
+    # core/users.py lowercases RETINA_ENV and takes an empty value as none.
+    env = {"RETINA_ENV": env_name} | ({} if value is None else {"JWT_SECRET": value})
+    result = _environment(**env)
+    assert result.returncode != 0
+    assert "JWT_SECRET" in result.stderr
+    assert "backend/.env.example" in result.stderr
+
+
+def test_production_boots_with_a_jwt_secret():
+    result = _environment(RETINA_ENV="production", JWT_SECRET="s3cret")
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("env_name", ["dev", "test", "TEST"])
+def test_dev_and_test_boot_without_a_jwt_secret(env_name):
+    # core/users.py falls back to a development secret there.
+    result = _environment(RETINA_ENV=env_name)
+    assert result.returncode == 0, result.stderr

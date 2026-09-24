@@ -1,7 +1,8 @@
 """Upgrade the database to head, then report the revision it is at.
 
-Run by deploy/start.sh from /app/backend. One interpreter for both, because
-each Alembic command loads migrations/env.py and with it the app's models.
+Run by deploy/start.sh from /app/backend. One interpreter for both, so Alembic
+and SQLAlchemy are imported once. Neither command needs the app's models, and
+test_migrations.py keeps them out of this process.
 
 The upgrade goes through Alembic's own command line, so it fails as
 `alembic upgrade head` does, with the message start.sh greps for a rollback.
