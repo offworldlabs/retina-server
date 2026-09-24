@@ -271,6 +271,32 @@ jobs:
           RETINA_ENV: dev
         run: python -m scripts.generate_openapi --check
 
+  # pyright over the backend's server packages. It fails on an error in a package
+  # scripts/typecheck.py holds clean, or on a run it cannot trust (see there), and
+  # writes every package's error count to the run summary as the burn-down. A
+  # deploy waits on it like the other gate jobs: errors elsewhere never fail it.
+  typecheck:
+    name: Type check (backend)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # `edited` covers title and body edits as well as the base change we want,
+    # and `changes.base` is populated only for the latter.
+    if: github.event.action != 'edited' || github.event.changes.base
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      # With the submodules, which pyright reads to type the libs' imports.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - uses: ./.github/actions/setup-uv
+      - run: uv sync --locked && echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      - run: python -m scripts.typecheck
+
   web-build:
     name: Web (${{ matrix.label || matrix.workspace }})
     runs-on: ubuntu-latest
@@ -673,7 +699,7 @@ jobs:
     # `playwright-image` joins the deploy's own prerequisites so an unpublished
     # image fails the run before the droplet is touched, rather than after a
     # deploy and a smoke suite have already landed on it.
-    needs: [changes, backend-tests, backend-coverage, lint, web-build, docker-build, env-parity, tower-service-contract, playwright-image]
+    needs: [changes, backend-tests, backend-coverage, lint, typecheck, web-build, docker-build, env-parity, tower-service-contract, playwright-image]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.changes.outputs.code == 'true'
     concurrency:
       group: staging-deploy

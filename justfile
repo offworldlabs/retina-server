@@ -304,6 +304,10 @@ lint:
 contract *args:
     cd "{{be}}" && RETINA_ENV=dev "{{py}}" -m scripts.generate_openapi "$@"
 
+# Type-check the backend with pyright: fails on the packages held clean, counts the rest
+typecheck:
+    cd "{{be}}" && "{{py}}" -m scripts.typecheck
+
 # Every front-end workspace's lint, typecheck, unit tests and build, as CI's web-build matrix runs them
 web:
     npm run lint --workspaces --if-present
@@ -311,8 +315,8 @@ web:
     npm test --workspaces --if-present
     npm run build --workspaces --if-present
 
-# The PR gate's lint, contract, backend and front-end jobs, stopping at the first that fails
-check: locked lint (contract "--check") test-ci web
+# The PR gate's lint (with the contract), type check, backend and front-end jobs, stopping at the first that fails
+check: locked lint (contract "--check") typecheck test-ci web
 
 # ── retina-test droplet ──────────────────────────────────────────────────────
 # `deploy-test` deploys by rsync from the working tree, not by git. That is

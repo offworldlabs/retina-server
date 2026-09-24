@@ -256,9 +256,9 @@ ten times slower than sysmon and there is no longer a reason to reach for it.
 
 ### Before you push
 
-Run `just check`. It runs what the PR's lint, contract, backend and front-end
-jobs run, in this order, and stops at the first that fails, where CI's separate
-jobs report every failure at once:
+Run `just check`. It runs what the PR's lint (with the node API contract), type
+check, backend and front-end jobs run, in this order, and stops at the first
+that fails, where CI's separate jobs report every failure at once:
 
 - `just locked` installs the backend venv and `node_modules` exactly from
   `uv.lock` and `package-lock.json`, with the uv CI uses and `npm ci`, and is
@@ -267,7 +267,11 @@ jobs report every failure at once:
   submodule differs from what the branch pins. `npm ci` replaces
   `node_modules` wholesale, so stop `just up` first. `just web` on its own runs
   against whatever `node_modules` holds.
-- `just lint`, `just contract --check`, `just test-ci` and `just web`.
+- `just lint`, `just contract --check`, `just typecheck`, `just test-ci` and
+  `just web`. `just typecheck` runs pyright over the server's packages (not
+  `tests/` or `scripts/`), failing on those `backend/scripts/typecheck.py` holds
+  clean and counting errors in the rest; a package joins that list once it
+  reads 0.
 
 The Docker build and the compose parity check are left to CI.
 
@@ -321,9 +325,10 @@ CI runs on every PR, on push to `main`, and on demand through
 `workflow_dispatch` (`.github/workflows/ci.yml`):
 
 1. Any PR, whatever its base: `backend-tests` (three shards) and
-   `backend-coverage` behind them, `lint`, `web-build` (once per
-   workspace, with the dashboard's tests apart from its other checks),
-   `docker-build`, `env-parity`, plus an automated review.
+   `backend-coverage` behind them, `lint` (with the node API contract),
+   `typecheck`, `web-build` (once per workspace, with the dashboard's tests
+   apart from its other checks), `docker-build`, `env-parity`, plus an
+   automated review.
 2. Merge to `main` → deploy to **staging** → staging smoke + Playwright E2E → deploy to **production** → prod smoke + Playwright E2E.
    A merge that changes nothing the droplets serve skips that chain, which means
    markdown, and Python whose syntax tree has not moved: a reworded comment or a
