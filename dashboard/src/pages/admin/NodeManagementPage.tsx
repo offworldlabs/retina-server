@@ -20,13 +20,19 @@ import type { LocationPrivacyState } from "../../types";
 
 const PAGE_SIZE = 25;
 
-// Every field is independently optional server side, so a contact can be a
-// phone number and nothing else; falling through to it is what keeps such a
-// node from reading as "nobody reported anything".
-export function contactLabel(contact) {
-  if (!contact) return "—";
-  const name = [contact.first_name, contact.last_name].filter(Boolean).join(" ");
-  return name || contact.email || contact.phone || "—";
+// The site contact is whom the node itself names, unverified; the owner is the
+// account that claimed it. Every contact field is independently optional
+// server side, so each has a row of its own and a dash of its own.
+export function contactName(contact) {
+  const name = [contact?.first_name, contact?.last_name].filter(Boolean).join(" ");
+  return name || "—";
+}
+
+// The number as typed, beside the country that makes a national number
+// dialable. A country with no number has nothing to resolve.
+export function contactPhone(contact) {
+  if (!contact?.phone) return "—";
+  return contact.country ? `${contact.phone} (${contact.country})` : contact.phone;
 }
 
 export default function NodeManagementPage() {
@@ -36,15 +42,19 @@ export default function NodeManagementPage() {
   const navigate = useNavigate();
 
   const polled = useFetch(async () => {
-    // Contacts are caught on their own so a failure there costs the contact
-    // cells rather than the node list. Logged before the fallback: an empty
-    // object is also what "nobody has reported one" looks like, and the two
-    // should not be indistinguishable in the console.
+    // Contacts and owners are each caught on their own so a failure there
+    // costs their cells rather than the node list. Logged before the
+    // fallback: an empty object is also what "none on file" looks like, and
+    // the two should not be indistinguishable in the console.
     const contactsOrNone = api.adminNodeContacts().catch((e) => {
       console.error("contacts unavailable", e);
       return {};
     });
-    const [n, a, c] = await Promise.all([api.nodes(), api.analytics(), contactsOrNone]);
+    const ownersOrNone = api.adminNodeOwners().catch((e) => {
+      console.error("owners unavailable", e);
+      return {};
+    });
+    const [n, a, c, o] = await Promise.all([api.nodes(), api.analytics(), contactsOrNone, ownersOrNone]);
     const nodeMap = n.nodes || {};
     // Keyed on node_ref: the listing is a public feed and carries no
     // node_id. What needs one joins through useNodeIds below.
@@ -52,13 +62,14 @@ export default function NodeManagementPage() {
       ...info,
       node_ref: ref,
     }));
-    return { nodes, analytics: a, contacts: c };
+    return { nodes, analytics: a, contacts: c, owners: o };
   });
   const { data, loading } = polled;
 
   const nodes = data?.nodes ?? [];
   const analytics = data?.analytics;
   const contacts = data?.contacts ?? {};
+  const owners = data?.owners ?? {};
 
   // Keyed on node_ref, the same key space `nodes` (built above) uses.
   const summaryMap = analytics?.nodes || {};
@@ -126,11 +137,7 @@ export default function NodeManagementPage() {
             const nodeId = idsByRef?.[ref] ?? null;
             const summary = summaryMap[ref] || {};
             const contact = nodeId ? contacts[nodeId] : undefined;
-            const contactText = contactLabel(contact);
-            // The label is the name when there is one, so the address is worth a
-            // tooltip only then; otherwise it is already what the cell shows.
-            const named = Boolean(contact?.first_name || contact?.last_name);
-            const contactTitle = named ? contact.email || undefined : undefined;
+            const owner = nodeId ? owners[nodeId] : undefined;
             return (
               // The node page is addressed by the public identity, since the
               // per-node analytics route behind it is.
@@ -161,8 +168,14 @@ export default function NodeManagementPage() {
                   <span>{(summary.metrics?.avg_snr || 0).toFixed(1)} dB</span>
                   <span className="meta-label">Uptime</span>
                   <span>{formatUptime(summary.metrics?.uptime_s || 0)}</span>
-                  <span className="meta-label">Contact</span>
-                  <span title={contactTitle}>{contactText}</span>
+                  <span className="meta-label">Owner email</span>
+                  <span>{owner?.email || "—"}</span>
+                  <span className="meta-label">Site contact</span>
+                  <span>{contactName(contact)}</span>
+                  <span className="meta-label">Site contact email</span>
+                  <span>{contact?.email || "—"}</span>
+                  <span className="meta-label">Site contact phone</span>
+                  <span>{contactPhone(contact)}</span>
                 </div>
                 <NodeLocationPrivacy nodeId={nodeId} unresolved={idsByRef !== null && !nodeId} />
               </div>

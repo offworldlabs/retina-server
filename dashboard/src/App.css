@@ -869,6 +869,12 @@ td.table-note {
   color: var(--text-muted);
 }
 
+/* An email address has no break opportunity of its own, and an unbroken value
+   would widen its column past the card. */
+.node-card .node-meta > * {
+  overflow-wrap: anywhere;
+}
+
 /* ── Scrollbar ───────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar {
   width: 6px;
