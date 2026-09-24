@@ -1,6 +1,6 @@
 /**
  * Archive keys and what can be read off one. Keys are Hive-partitioned
- * (`year=/month=/day=/node_id=/part-*.parquet`) with older ones carrying bare
+ * (`year=/month=/day=/node_ref=/part-*.parquet`) with older ones carrying bare
  * directory names, so every segment is read through `value()`.
  */
 
@@ -25,8 +25,8 @@ export interface ArchiveFile {
   endMs: number;
 }
 
-/** A partition segment's value: `node_id=ret-abc` and `ret-abc` both give
- *  `ret-abc`. Everything after the first `=`, which is the derivation the
+/** A partition segment's value: `node_ref=ndeabc` and `ndeabc` both give
+ *  `ndeabc`. Everything after the first `=`, which is the derivation the
  *  archive route itself uses, so the page and the route never disagree about
  *  which node a key belongs to. */
 const value = (segment: string): string => {

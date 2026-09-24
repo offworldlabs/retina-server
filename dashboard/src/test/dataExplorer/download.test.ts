@@ -13,7 +13,7 @@ import type { ArchiveFile } from "../../pages/user/dataExplorer/keys";
 const ORIGIN = "https://app.retina.fm";
 
 const file = (node: string, name: string, endHour: number): ArchiveFile => ({
-  key: `year=2026/month=09/day=17/node_id=${node}/${name}`,
+  key: `year=2026/month=09/day=17/node_ref=${node}/${name}`,
   name,
   node,
   day: "2026-09-17",
@@ -25,13 +25,13 @@ const file = (node: string, name: string, endHour: number): ArchiveFile => ({
 describe("downloadUrl", () => {
   it("is absolute, on the download route, with the key unencoded", () => {
     expect(downloadUrl(file("ret-a", "part-000001.parquet", 6), ORIGIN)).toBe(
-      "https://app.retina.fm/api/data/archive/year=2026/month=09/day=17/node_id=ret-a/part-000001.parquet",
+      "https://app.retina.fm/api/data/archive/year=2026/month=09/day=17/node_ref=ret-a/part-000001.parquet",
     );
   });
 
   it("defaults to the page's own origin", () => {
     expect(downloadUrl(file("ret-a", "a.parquet", 6))).toBe(
-      `${window.location.origin}/api/data/archive/year=2026/month=09/day=17/node_id=ret-a/a.parquet`,
+      `${window.location.origin}/api/data/archive/year=2026/month=09/day=17/node_ref=ret-a/a.parquet`,
     );
   });
 });
@@ -41,7 +41,7 @@ describe("curlLine", () => {
     // Byte-significant: the route sets no Content-Disposition, so the explicit
     // -o is what stops a JSON body being written as part-000001.parquet.
     expect(curlLine(file("ret-a", "part-000001.parquet", 6), ORIGIN)).toBe(
-      'curl -sS -o ret-a-part-000001.json "https://app.retina.fm/api/data/archive/year=2026/month=09/day=17/node_id=ret-a/part-000001.parquet"',
+      'curl -sS -o ret-a-part-000001.json "https://app.retina.fm/api/data/archive/year=2026/month=09/day=17/node_ref=ret-a/part-000001.parquet"',
     );
   });
 

@@ -59,30 +59,30 @@ export function useArchiveScan(days: string[], nodeSel: Set<string> | null): Sca
   }, []);
 
   const start = useCallback(
-    (day: string, nodeId: string | null) => {
-      const key = cacheKey(day, nodeId);
+    (day: string, nodeRef: string | null) => {
+      const key = cacheKey(day, nodeRef);
       // Written before the task runs, so the next pass over `days` sees this
       // day as claimed rather than queueing it again.
-      setEntries((prev) => new Map(prev).set(key, { day, nodeId, status: "loading", files: [] }));
+      setEntries((prev) => new Map(prev).set(key, { day, nodeRef, status: "loading", files: [] }));
 
       queue.current.push(async () => {
         const controller = new AbortController();
         aborts.current.add(controller);
         try {
-          const files = await fetchDayListing(day, nodeId, controller.signal);
+          const files = await fetchDayListing(day, nodeRef, controller.signal);
           for (const f of files) filesRef.current.set(f.key, f);
           setNodeIds((prev) => {
             const next = new Set(prev);
             for (const f of files) next.add(f.node);
             return next.size === prev.size ? prev : next;
           });
-          setEntries((prev) => new Map(prev).set(key, { day, nodeId, status: "done", files }));
+          setEntries((prev) => new Map(prev).set(key, { day, nodeRef, status: "done", files }));
         } catch (e) {
           if (controller.signal.aborted) return;
           setEntries((prev) =>
             new Map(prev).set(key, {
               day,
-              nodeId,
+              nodeRef,
               status: "error",
               files: [],
               error: e instanceof Error ? e.message : String(e),

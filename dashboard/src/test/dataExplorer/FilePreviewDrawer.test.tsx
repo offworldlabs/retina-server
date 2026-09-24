@@ -13,7 +13,7 @@ const { requestMock } = vi.hoisted(() => ({ requestMock: vi.fn() }));
 vi.mock("@retina/shared", () => ({ request: requestMock }));
 
 const FILE: ArchiveFile = {
-  key: "year=2026/month=09/day=17/node_id=ret-a/part-000001.parquet",
+  key: "year=2026/month=09/day=17/node_ref=ret-a/part-000001.parquet",
   name: "part-000001.parquet",
   node: "ret-a",
   day: "2026-09-17",
@@ -66,7 +66,7 @@ function setup(over: Partial<Parameters<typeof FilePreviewDrawer>[0]> = {}) {
 
 beforeEach(() => {
   requestMock.mockReset();
-  requestMock.mockResolvedValue({ node_id: "ret-a", detections: [frame(0), frame(60)] });
+  requestMock.mockResolvedValue({ node_ref: "ret-a", detections: [frame(0), frame(60)] });
 });
 
 describe("FilePreviewDrawer", () => {
@@ -123,7 +123,7 @@ describe("FilePreviewDrawer", () => {
 
   it("says how many signatures verified when not all of them did", async () => {
     requestMock.mockResolvedValue({
-      node_id: "ret-a",
+      node_ref: "ret-a",
       detections: [frame(0), { ...frame(60), _signature_valid: false }],
     });
     setup();
@@ -144,7 +144,7 @@ describe("FilePreviewDrawer", () => {
   });
 
   it("says when a file decoded to nothing", async () => {
-    requestMock.mockResolvedValue({ node_id: "ret-a", detections: [] });
+    requestMock.mockResolvedValue({ node_ref: "ret-a", detections: [] });
     setup();
     fireEvent.click(screen.getByRole("button", { name: /Load preview/ }));
     await waitFor(() => expect(screen.getByText(/decoded to zero frames/)).toBeInTheDocument());

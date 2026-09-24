@@ -5,6 +5,7 @@ import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { UsageBar } from "../../components/UsageBar";
+import { useNodeIds } from "../../hooks/useNodeIds";
 import { useFetch } from "../../hooks/usePolling";
 import { formatBytes } from "../../utils/format";
 
@@ -28,6 +29,9 @@ export default function StoragePage() {
     () => api.archive(PAGE_SIZE, page * PAGE_SIZE).then((listing) => ({ page, listing })),
     page,
   );
+  // The listing is the public route's, which names each file by its node_ref;
+  // the scan above is keyed on node_id, so a file's node is shown as that too.
+  const nodeIds = useNodeIds();
   const { pending: loading } = archiveFetch;
   const archive = archiveFetch.data?.listing;
   const pageFetch = archiveFetch.data?.page === page ? archiveFetch : { ...archiveFetch, updatedAt: null };
@@ -71,7 +75,8 @@ export default function StoragePage() {
                 const key = typeof file === "string" ? file : (file.key || "");
                 const parts = key.split("/");
                 const name = parts[parts.length - 1] || key;
-                const node = parts.length >= 4 ? parts[3] : "—";
+                const ref = parts.length >= 4 ? parts[3].slice(parts[3].indexOf("=") + 1) : "";
+                const node = ref ? (nodeIds?.[ref] ?? ref) : "—";
                 const size = file.size_bytes != null ? formatBytes(file.size_bytes) : "—";
                 const date = file.modified ? new Date(file.modified).toLocaleString() : "—";
                 return (

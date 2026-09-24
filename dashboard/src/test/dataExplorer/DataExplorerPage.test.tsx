@@ -11,7 +11,7 @@ vi.mock("@retina/shared", () => ({ request: requestMock }));
  *  requested: the page buckets a file by the day in its own key, so a fixture
  *  that always names one day puts every response in one bucket. */
 const row = (day: string, node: string, part: string) => ({
-  key: `year=${day.slice(0, 4)}/month=${day.slice(5, 7)}/day=${day.slice(8, 10)}/node_id=${node}/${part}.parquet`,
+  key: `year=${day.slice(0, 4)}/month=${day.slice(5, 7)}/day=${day.slice(8, 10)}/node_ref=${node}/${part}.parquet`,
   size_bytes: 2 * 1024 * 1024 * 1024,
   modified: `${day}T06:00:00Z`,
 });
@@ -82,7 +82,7 @@ describe("DataExplorerPage", () => {
   it("scopes the listing to a single node named in the query string", async () => {
     renderAt("?node=ret-a&from=2026-09-17&to=2026-09-17");
     await waitFor(() => expect(archiveCalls().length).toBeGreaterThan(0));
-    expect(archiveCalls()[0]).toContain("node_id=ret-a");
+    expect(archiveCalls()[0]).toContain("node_ref=ret-a");
   });
 
   it("writes a filter change back to the query string", async () => {
@@ -147,7 +147,7 @@ describe("DataExplorerPage", () => {
     expect(screen.getByTestId("de-basket-count")).toHaveTextContent("1 file selected");
     fireEvent.click(screen.getByRole("button", { name: "Show manifest" }));
     expect(screen.getByRole("textbox", { name: /manifest/i })).toHaveValue(
-      `${window.location.origin}/api/data/archive/year=2026/month=09/day=10/node_id=ret-a/part-0.parquet`,
+      `${window.location.origin}/api/data/archive/year=2026/month=09/day=10/node_ref=ret-a/part-0.parquet`,
     );
   });
 
@@ -166,7 +166,7 @@ describe("DataExplorerPage", () => {
     renderAt("?from=2026-09-17&to=2026-09-17");
     fireEvent.click(await screen.findByRole("button", { name: "Preview part-0.parquet" }));
     const dialog = screen.getByRole("dialog", { name: "part-0.parquet" });
-    expect(dialog).toHaveTextContent("node_id=ret-a");
+    expect(dialog).toHaveTextContent("node_ref=ret-a");
     fireEvent.click(screen.getByRole("button", { name: "Add to basket" }));
     expect(screen.getByTestId("de-basket-count")).toHaveTextContent("1 file selected");
     // The manifest opens with the addition, so it is seen to land.

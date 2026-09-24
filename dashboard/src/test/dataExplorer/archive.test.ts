@@ -17,14 +17,14 @@ const MODIFIED = "2026-09-17T14:00:00Z";
 /** `n` listing rows for one day, all on one node. */
 const rows = (n: number, node = "ret-a") =>
   Array.from({ length: n }, (_, i) => ({
-    key: `year=2026/month=09/day=17/node_id=${node}/part-${i}.parquet`,
+    key: `year=2026/month=09/day=17/node_ref=${node}/part-${i}.parquet`,
     size_bytes: 100,
     modified: MODIFIED,
   }));
 
 const entry = (over: Partial<DayEntry>): DayEntry => ({
   day: "2026-09-17",
-  nodeId: null,
+  nodeRef: null,
   status: "done",
   files: [],
   ...over,
@@ -54,13 +54,13 @@ describe("fetchDayListing", () => {
   it("scopes to one node when given one", async () => {
     requestMock.mockResolvedValue({ files: [], total: 0 });
     await fetchDayListing("2026-09-17", "ret-a");
-    expect(requestMock.mock.calls[0][0]).toContain("node_id=ret-a");
+    expect(requestMock.mock.calls[0][0]).toContain("node_ref=ret-a");
   });
 
-  it("omits node_id when listing the whole day", async () => {
+  it("omits node_ref when listing the whole day", async () => {
     requestMock.mockResolvedValue({ files: [], total: 0 });
     await fetchDayListing("2026-09-17", null);
-    expect(requestMock.mock.calls[0][0]).not.toContain("node_id");
+    expect(requestMock.mock.calls[0][0]).not.toContain("node_ref");
   });
 
   it("keeps paging while `total` says there is more, even after a short page", async () => {
@@ -103,7 +103,7 @@ describe("entryForScope", () => {
 
   it("answers from a node-scoped listing only when that node is the whole selection", () => {
     const cache = new Map([
-      [cacheKey("2026-09-17", "ret-a"), entry({ nodeId: "ret-a" })],
+      [cacheKey("2026-09-17", "ret-a"), entry({ nodeRef: "ret-a" })],
     ]);
     expect(entryForScope(cache, "2026-09-17", new Set(["ret-a"]))).not.toBeNull();
     expect(entryForScope(cache, "2026-09-17", new Set(["ret-a", "ret-b"]))).toBeNull();

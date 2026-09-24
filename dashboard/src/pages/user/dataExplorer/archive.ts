@@ -21,19 +21,19 @@ export type DayStatus = "loading" | "done" | "error";
 export interface DayEntry {
   day: string;
   /** The node this listing was scoped to, or null for the whole day. */
-  nodeId: string | null;
+  nodeRef: string | null;
   status: DayStatus;
   files: ArchiveFile[];
   error?: string;
 }
 
-export function cacheKey(day: string, nodeId: string | null): string {
-  return `${day}|${nodeId || "*"}`;
+export function cacheKey(day: string, nodeRef: string | null): string {
+  return `${day}|${nodeRef || "*"}`;
 }
 
 export async function fetchDayListing(
   day: string,
-  nodeId: string | null,
+  nodeRef: string | null,
   signal?: AbortSignal,
 ): Promise<ArchiveFile[]> {
   const files: ArchiveFile[] = [];
@@ -43,7 +43,7 @@ export async function fetchDayListing(
       limit: String(PAGE),
       offset: String(offset),
     });
-    if (nodeId) params.set("node_id", nodeId);
+    if (nodeRef) params.set("node_ref", nodeRef);
 
     const page = await request<{ files?: unknown[]; total?: number }>(
       `/api/data/archive?${params}`,
