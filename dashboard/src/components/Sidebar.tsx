@@ -264,7 +264,7 @@ const icons = {
   ),
 };
 
-export default function Sidebar({ isAdmin, collapsed, onToggle }) {
+export default function Sidebar({ isAdmin, collapsed, onToggle, onNavigate = () => {} }) {
   const { user, syntheticFleet } = useAuth();
   const nav = isAdmin ? adminNav(Boolean(syntheticFleet)) : userNav();
   // A visitor is shown every entry, so the nav says what signing in opens;
@@ -292,7 +292,12 @@ export default function Sidebar({ isAdmin, collapsed, onToggle }) {
           {icons.chevronLeft}
         </button>
       </div>
-      <nav className="sidebar-nav">
+      {/* Any entry closes the narrow screen's drawer, the page already open
+          included, though its path does not change. */}
+      <nav
+        className="sidebar-nav"
+        onClick={(e) => (e.target as Element).closest("a") && onNavigate()}
+      >
         {nav.map((section) => (
           <div className="nav-section" key={section.title}>
             <div className="nav-section-title">{section.title}</div>

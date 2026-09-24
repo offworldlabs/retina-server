@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { matchPath, useLocation } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import Header from "./Header";
@@ -80,12 +80,58 @@ export default function DashboardLayout({ isAdmin, children }) {
     writeStored(SIDEBAR_KEY, String(next));
   };
 
+  // On a narrow screen the sidebar is a drawer over the page, and only the
+  // stylesheet knows the screen is narrow: on a wide one this state is inert.
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuButton = useRef<HTMLButtonElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+
+  useEffect(() => setMenuOpen(false), [pathname]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    // The drawer precedes the header in the DOM, so Tab from the button would
+    // never reach it.
+    document.querySelector<HTMLElement>("#console-sidebar .sidebar-nav a")?.focus();
+    // Set as a property: React 18 has no boolean `inert` attribute.
+    const page = content.current;
+    if (page) page.inert = true;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setMenuOpen(false);
+      menuButton.current?.focus();
+    };
+    document.addEventListener("keydown", onKey);
+    // Widened past the breakpoint, the drawer is gone but the page would stay
+    // inert. Must match the stylesheet's narrow query.
+    const narrow = window.matchMedia("(max-width: 768px)");
+    const onResize = () => narrow.matches || setMenuOpen(false);
+    narrow.addEventListener("change", onResize);
+    return () => {
+      if (page) page.inert = false;
+      document.removeEventListener("keydown", onKey);
+      narrow.removeEventListener("change", onResize);
+    };
+  }, [menuOpen]);
+
   return (
-    <div className={`dashboard${collapsed ? " sidebar-collapsed" : ""}`}>
-      <Sidebar isAdmin={isAdmin} collapsed={collapsed} onToggle={toggle} />
+    <div className={`dashboard${collapsed ? " sidebar-collapsed" : ""}${menuOpen ? " menu-open" : ""}`}>
+      <Sidebar
+        isAdmin={isAdmin}
+        collapsed={collapsed}
+        onToggle={toggle}
+        onNavigate={() => setMenuOpen(false)}
+      />
+      {menuOpen && <div className="sidebar-scrim" onClick={() => setMenuOpen(false)} />}
       <div className="main-area">
-        <Header title={title} isAdmin={isAdmin} />
-        <div className={`content${flush ? " flush" : ""}`}>
+        <Header
+          title={title}
+          isAdmin={isAdmin}
+          menuOpen={menuOpen}
+          onMenu={() => setMenuOpen(!menuOpen)}
+          menuButtonRef={menuButton}
+        />
+        <div ref={content} className={`content${flush ? " flush" : ""}`}>
           {/* Keyed on the path, which names the page: the query string and hash
               are state within it. */}
           <ErrorBoundary

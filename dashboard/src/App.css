@@ -262,39 +262,6 @@ a:hover {
   overflow-y: auto;
 }
 
-/* Collapsed, the sidebar keeps its icons and drops everything that needs a
-   line of text. Width only: the nav is the same tree either way, so nothing
-   remounts and no scroll position is lost. */
-.dashboard.sidebar-collapsed .sidebar {
-  width: 64px;
-}
-
-.dashboard.sidebar-collapsed .brand-labels,
-.dashboard.sidebar-collapsed .nav-section-title,
-.dashboard.sidebar-collapsed .nav-label,
-.dashboard.sidebar-collapsed .nav-external {
-  display: none;
-}
-
-.dashboard.sidebar-collapsed .nav-item {
-  justify-content: center;
-  padding-left: 0;
-  padding-right: 0;
-}
-
-/* 64px cannot hold the brand icon and the toggle side by side, so the rail
-   stacks them. */
-.dashboard.sidebar-collapsed .sidebar-brand {
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 8px;
-}
-
-.dashboard.sidebar-collapsed .sidebar-toggle {
-  margin-left: 0;
-}
-
 .sidebar-toggle {
   margin-left: auto;
   background: none;
@@ -318,8 +285,68 @@ a:hover {
   display: block;
 }
 
-.dashboard.sidebar-collapsed .sidebar-toggle svg {
-  transform: rotate(180deg);
+/* Collapsed, the sidebar keeps its icons and drops everything that needs a
+   line of text. Width only: the nav is the same tree either way, so nothing
+   remounts and no scroll position is lost. A wide screen's shape only: the
+   narrow screen's drawer always carries its labels. */
+@media (min-width: 769px) {
+  .dashboard.sidebar-collapsed .sidebar {
+    width: 64px;
+  }
+
+  .dashboard.sidebar-collapsed .brand-labels,
+  .dashboard.sidebar-collapsed .nav-section-title,
+  .dashboard.sidebar-collapsed .nav-label,
+  .dashboard.sidebar-collapsed .nav-external {
+    display: none;
+  }
+
+  .dashboard.sidebar-collapsed .nav-item {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  /* 64px cannot hold the brand icon and the toggle side by side, so the rail
+     stacks them. */
+  .dashboard.sidebar-collapsed .sidebar-brand {
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 8px;
+  }
+
+  .dashboard.sidebar-collapsed .sidebar-toggle {
+    margin-left: 0;
+  }
+
+  .dashboard.sidebar-collapsed .sidebar-toggle svg {
+    transform: rotate(180deg);
+  }
+}
+
+/* The wash over the page while the narrow screen's drawer is open, which a tap
+   on closes. The palette has no wash, so it is declared here. */
+.sidebar-scrim {
+  --nav-scrim: rgba(15, 23, 42, 0.35);
+  display: none;
+  position: fixed;
+  top: var(--header-height);
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 19;
+  background: var(--nav-scrim);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .sidebar-scrim {
+    --nav-scrim: rgba(2, 6, 23, 0.55);
+  }
+}
+
+:root[data-theme="dark"] .sidebar-scrim {
+  --nav-scrim: rgba(2, 6, 23, 0.55);
 }
 
 .sidebar-brand {
@@ -384,7 +411,9 @@ a:hover {
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s;
+  /* Named, never `all`: the drawer's visibility is inherited, and a link
+     whose visibility transitions from hidden cannot take focus as it opens. */
+  transition: background 0.15s, color 0.15s;
   text-decoration: none;
 }
 
@@ -444,9 +473,39 @@ a:hover {
   flex-shrink: 0;
 }
 
+.header-lead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .header-title {
   font-size: 16px;
   font-weight: 600;
+}
+
+/* Shown only where the sidebar is a drawer; see Responsive. */
+.header-menu {
+  display: none;
+  margin-left: -8px;
+  padding: 8px;
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  border-radius: var(--radius, 8px);
+}
+
+.header-menu:hover {
+  color: var(--text-primary);
+  background: var(--bg-card-hover);
+}
+
+.header-menu svg {
+  width: 20px;
+  height: 20px;
+  display: block;
 }
 
 .header-actions {
@@ -908,7 +967,31 @@ td.table-note {
 
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 768px) {
+  /* The sidebar leaves the row and waits off-canvas below the header, whose
+     Menu button brings it over the page. Hidden as well as moved, so Tab does
+     not walk through links nobody can see. */
   .sidebar {
+    position: fixed;
+    top: var(--header-height);
+    bottom: 0;
+    left: 0;
+    z-index: 20;
+    width: min(var(--sidebar-width), 85vw);
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition: transform 0.2s ease, visibility 0s linear 0.2s;
+  }
+  .dashboard.menu-open .sidebar {
+    transform: none;
+    visibility: visible;
+    transition: transform 0.2s ease;
+  }
+  .sidebar-scrim,
+  .header-menu {
+    display: block;
+  }
+  /* It sets the rail, which this screen never draws. */
+  .sidebar-toggle {
     display: none;
   }
   .grid-2,
@@ -922,6 +1005,13 @@ td.table-note {
      to open the menu, which carries the email. */
   .header-user .user-name {
     display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar,
+  .dashboard.menu-open .sidebar {
+    transition: none;
   }
 }
 

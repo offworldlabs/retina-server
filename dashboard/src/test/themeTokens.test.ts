@@ -16,6 +16,8 @@ const TOKEN_DECLARATIONS: Record<string, RegExp> = {
   "../pages/map/map-surface.css": /--[\w-]+\s*:[^;]*;/g,
   // The Data Explorer's scrim.
   "../pages/user/dataExplorer/dataExplorer.css": /--de-scrim\s*:[^;]*;/g,
+  // The scrim behind the narrow screen's navigation drawer.
+  "../App.css": /--nav-scrim\s*:[^;]*;/g,
 };
 
 /* The surface stylesheet exists to lay the map's deltas over the palette, so
