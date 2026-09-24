@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 
 import OnboardingPage from "../pages/user/OnboardingPage";
 import { api } from "../api/client";
@@ -9,6 +10,17 @@ import { api } from "../api/client";
 vi.mock("../api/client", () => ({
   api: { myNodes: vi.fn() },
 }));
+
+const state = vi.hoisted(() => ({ auth: { polledRadarRegistration: false } }));
+vi.mock("../context/AuthContext", () => ({ useAuth: () => state.auth }));
+
+function renderPage() {
+  render(
+    <MemoryRouter>
+      <OnboardingPage />
+    </MemoryRouter>,
+  );
+}
 
 const NODE = {
   node_id: "ret1a2b3c4d",
@@ -35,11 +47,12 @@ async function refCell(nodeId: string) {
 describe("OnboardingPage", () => {
   beforeEach(() => {
     vi.mocked(api.myNodes).mockReset();
+    state.auth = { polledRadarRegistration: false };
   });
 
   it("lists the nodes the caller owns", async () => {
     vi.mocked(api.myNodes).mockResolvedValue([NODE]);
-    render(<OnboardingPage />);
+    renderPage();
 
     expect(await screen.findByText("ret1a2b3c4d")).toBeInTheDocument();
     expect(screen.getByText("195.000 MHz")).toBeInTheDocument();
@@ -47,7 +60,7 @@ describe("OnboardingPage", () => {
 
   it("shows each node under its node_ref, not its name", async () => {
     vi.mocked(api.myNodes).mockResolvedValue([NODE]);
-    render(<OnboardingPage />);
+    renderPage();
 
     expect(await screen.findByText("nde0123456789")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Node ref" })).toBeInTheDocument();
@@ -57,22 +70,38 @@ describe("OnboardingPage", () => {
 
   it("marks a node with no published handle rather than leaving the cell blank", async () => {
     vi.mocked(api.myNodes).mockResolvedValue([{ ...NODE, node_ref: null }]);
-    render(<OnboardingPage />);
+    renderPage();
 
     expect(await refCell("ret1a2b3c4d")).toHaveTextContent(/^—/);
   });
 
   it("keeps the location privacy badge beside the node_ref", async () => {
     vi.mocked(api.myNodes).mockResolvedValue([{ ...NODE, location_private: true }]);
-    render(<OnboardingPage />);
+    renderPage();
 
     expect(await refCell("ret1a2b3c4d")).toHaveTextContent("nde0123456789 Private");
   });
 
   it("tells an owner of nothing how a node joins their account", async () => {
     vi.mocked(api.myNodes).mockResolvedValue([]);
-    render(<OnboardingPage />);
+    renderPage();
 
     expect(await screen.findByText(/click the link we mail you/)).toBeInTheDocument();
+  });
+
+  it("offers to add a stock blah2 radar where registration is open", async () => {
+    state.auth = { polledRadarRegistration: true };
+    vi.mocked(api.myNodes).mockResolvedValue([]);
+    renderPage();
+
+    expect(await screen.findByRole("link", { name: "Add a stock blah2 radar" })).toHaveAttribute("href", "/radars/new");
+  });
+
+  it("offers nothing of the kind where it is not", async () => {
+    vi.mocked(api.myNodes).mockResolvedValue([]);
+    renderPage();
+
+    await screen.findByText(/click the link we mail you/);
+    expect(screen.queryByRole("link", { name: "Add a stock blah2 radar" })).toBeNull();
   });
 });

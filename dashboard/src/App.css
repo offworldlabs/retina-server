@@ -757,6 +757,22 @@ td.table-note {
   gap: 12px;
 }
 
+/* A card body whose parts stand one above another, evenly spaced. */
+.card-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.card-stack > label {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.card-stack > .input {
+  max-width: 520px;
+}
+
 .reading-label {
   font-size: 11px;
   text-transform: uppercase;

@@ -3,10 +3,13 @@ import { UnauthorizedError, request as sharedRequest, type RequestOptions } from
 import { isPublicRoute } from "../utils/publicRoutes";
 import { signInNext } from "../utils/signInNext";
 import { isAdminHost } from "../utils/surface";
-import type { PolledRadarListing, PolledRadarTrust } from "../types";
+import type { PolledRadarListing, PolledRadarProbe, PolledRadarTrust, Publication } from "../types";
 
 /** Must match the route in App.tsx. */
 const LOGIN_PATH = "/login";
+
+/** nginx's read timeout for /api/auth/me, which a probe must finish inside. */
+const RADAR_PROBE_TIMEOUT_MS = 30_000;
 
 /** Trailing slashes trimmed: the router matches `/login/` to the same route, so
  *  comparing the raw pathname would send a caller who arrived that way through
@@ -78,6 +81,27 @@ export const api = {
 
   // Self-service node ownership
   myNodes: () => request("/api/auth/me/nodes"),
+
+  // Registering a stock blah2 radar. Each call probes the radar, which can take
+  // a radar's worth of seconds, so both outwait the default timeout. A refusal
+  // is an HttpError whose body carries a `code`, and for `config_changed` the
+  // radar's new `probe`.
+  probePolledRadar: (address: string): Promise<PolledRadarProbe> =>
+    request("/api/auth/me/polled-radars/probe", {
+      method: "POST",
+      body: JSON.stringify({ address }),
+      timeoutMs: RADAR_PROBE_TIMEOUT_MS,
+    }),
+  registerPolledRadar: (registration: {
+    address: string;
+    fingerprint: string;
+    publication: Publication;
+  }): Promise<{ node_id: string; epoch: number; trust_state: PolledRadarTrust }> =>
+    request("/api/auth/me/polled-radars", {
+      method: "POST",
+      body: JSON.stringify(registration),
+      timeoutMs: RADAR_PROBE_TIMEOUT_MS,
+    }),
 
   // Claiming a node. The first three take no session: whoever clicked the link
   // in their mail may have no account yet, which is the point. They go through

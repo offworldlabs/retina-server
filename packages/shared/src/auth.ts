@@ -17,6 +17,8 @@ export interface CurrentUser {
   auth_enabled?: boolean;
   /** Whether this server runs a synthetic fleet. */
   synthetic_fleet?: boolean;
+  /** Whether this server takes registrations of stock blah2 radars. */
+  polled_radar_registration?: boolean;
 }
 
 /** The first ask waits on a server that may still be opening its database, so
