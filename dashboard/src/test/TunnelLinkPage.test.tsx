@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
@@ -8,7 +8,13 @@ vi.mock("../api/client", () => ({ api: { myNodes: vi.fn() } }));
 
 // The owner's own list, which is the one feed that carries node_id: the id
 // the node's site is named after.
-const NODE = { node_id: "ret1a2b3c4d", name: "Rooftop", status: "active", is_synthetic: false };
+const NODE = {
+  node_id: "ret1a2b3c4d",
+  node_ref: "nde0123456789",
+  name: "Rooftop",
+  status: "active",
+  is_synthetic: false,
+};
 
 describe("TunnelLinkPage", () => {
   beforeEach(() => {
@@ -29,5 +35,21 @@ describe("TunnelLinkPage", () => {
     render(<TunnelLinkPage />);
     expect(await screen.findByText("Rooftop")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Rooftop/ })).toBeNull();
+  });
+
+  it("labels a node with no name by its node_ref, never the id its site is named after", async () => {
+    vi.mocked(api.myNodes).mockResolvedValue([{ ...NODE, name: null }]);
+    render(<TunnelLinkPage />);
+    const link = await screen.findByRole("link", { name: /nde0123456789/ });
+    expect(link).toHaveAttribute("href", "https://ret1a2b3c4d.retnode.com");
+    expect(screen.queryByText("ret1a2b3c4d")).not.toBeInTheDocument();
+  });
+
+  it("finds a node by its node_ref", async () => {
+    vi.mocked(api.myNodes).mockResolvedValue([NODE, { ...NODE, node_id: "ret9f8e7d6c", node_ref: "nde9876543210", name: "Barn" }]);
+    render(<TunnelLinkPage />);
+    fireEvent.change(await screen.findByPlaceholderText("Search nodes…"), { target: { value: "nde98" } });
+    expect(screen.getByText("Barn")).toBeInTheDocument();
+    expect(screen.queryByText("Rooftop")).not.toBeInTheDocument();
   });
 });

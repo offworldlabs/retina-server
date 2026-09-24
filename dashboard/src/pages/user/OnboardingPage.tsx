@@ -15,7 +15,7 @@ import type { LocationPrivacySource } from "../../types";
 type OwnedNode = {
   node_id: string;
   node_ref: string | null;
-  name: string;
+  name: string | null;
   status: string;
   last_heartbeat: string | null;
   is_synthetic: boolean;
@@ -81,12 +81,11 @@ export default function OnboardingPage() {
             </div>
           ) : (
             <DataTable
-              headers={["Node ID", "Node ref", "Status", "Frequency", "Location", "Last heartbeat"]}
+              headers={["Node ref", "Status", "Frequency", "Location", "Last heartbeat"]}
               count={nodes.length}
             >
               {nodes.map((n) => (
                 <tr key={n.node_id}>
-                  <td className="mono">{n.node_id}</td>
                   <td className="mono">
                     {n.node_ref ?? "—"}{" "}
                     <LocationPrivacyBadge isPrivate={n.location_private} />

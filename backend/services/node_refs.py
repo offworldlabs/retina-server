@@ -178,7 +178,7 @@ def _names_a_node(value: str, known_ids: Iterable[str]) -> bool:
     return value in _forward or value in known_ids
 
 
-def public_name(name, fallback: str, known_ids: Iterable[str] = ()) -> str:
+def public_name(name, fallback: str | None, known_ids: Iterable[str] = ()) -> str | None:
     """A node-supplied display name, or `fallback` when it names a node.
 
     Nodes fill this field in themselves and nothing validates it, so a name
