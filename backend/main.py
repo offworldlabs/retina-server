@@ -42,6 +42,7 @@ from core.env_parsing import parse_comma_list
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
 from routes.admin import router as admin_router
 from routes.admin_infrastructure import router as admin_infrastructure_router
+from routes.admin_polled_radars import router as admin_polled_radars_router
 from routes.analytics import router as analytics_router
 from routes.archive import router as archive_router
 from routes.auth import router as auth_router
@@ -454,6 +455,7 @@ for router in (
     auth_router,
     admin_router,
     admin_infrastructure_router,
+    admin_polled_radars_router,
     output_router,
     nodes_router,
     reference_router,
