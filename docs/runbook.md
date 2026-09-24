@@ -44,12 +44,22 @@ fails its suites stays there, blocking production, until the next merge.
 fresh box containerd. Switching a running box to the other store hides every image
 it holds, `:rollback` included, until they are loaded into the new one.
 
-buildx needs Docker Compose 2.39 or later. Older releases build through buildx's
-Bake but look the result up under the wrong name, so `up --build` keeps the old
-container and the deploy passes on stale code: the deploy log reads ` server  Built`
-then `Container ... Running`. Ubuntu's newer Compose is in `noble-updates`, which
+Every box needs Docker Compose 2.39 or later. Older releases reject the
+`provenance` key in `docker-compose.yml`'s build sections, so every compose
+command there fails. With buildx they also build through Bake but look the result
+up under the wrong name, so `up --build` keeps the old container and the deploy
+passes on stale code: the deploy log reads ` server  Built` then
+`Container ... Running`. Ubuntu's newer Compose is in `noble-updates`, which
 unattended-upgrades does not take, so check `docker compose version` on a box
-before installing buildx there.
+before deploying to it. CI's parity check renders the compose files with the
+droplets' release, pinned as `COMPOSE_VERSION` in `ci.yml`, so move that pin
+when the droplets' Compose moves.
+
+A deploy whose image and compose config match what is running leaves the server
+container running (the build keeps its image ID; see `docker-compose.yml`). Files
+the server reads only at boot, such as the origin certificate under
+`/etc/ssl/cloudflare`, are therefore not reloaded by every deploy: after replacing
+one, `docker compose restart server`.
 
 ### The test droplet has two deploy paths
 

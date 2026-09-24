@@ -217,9 +217,10 @@ jobs:
             docker compose up -d --build --remove-orphans server
 
             # ── Injection point 3 ─────────────────────────────────────────────
-            # The containers have been replaced. This is the case auto-rollback
-            # exists for, and the only one where a rollback changes what is
-            # running rather than restoring it to itself.
+            # The containers have been replaced, given a ref whose image differs
+            # from the one running (see the after-build option above). This is
+            # the case auto-rollback exists for, and the only one where a
+            # rollback changes what is running rather than restoring it to itself.
             #
             # The new build is healthy rather than genuinely broken — this fails
             # the deploy at the point a broken build would, without needing to
