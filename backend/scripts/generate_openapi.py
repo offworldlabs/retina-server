@@ -15,10 +15,11 @@ document carrying seventy-odd internal map and dashboard routes would bury the
 four that matter under diffs from work that cannot affect them.
 
 The document itself is built by `node_contract` in routes/openapi_documents.py;
-this file renders it and holds the CI gate.
+this file renders it and holds the gate that CI and the pre-commit hook run.
+`just contract` runs it, and `just contract --check` compares; by hand,
+RETINA_ENV=dev is what lets the app import without production's secrets:
 
     cd backend && RETINA_ENV=dev .venv/bin/python -m scripts.generate_openapi
-    cd backend && RETINA_ENV=dev .venv/bin/python -m scripts.generate_openapi --check
 """
 
 import argparse
@@ -95,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
         f"{CONTRACT_PATH} is not what the routes generate.\n"
         "The contract is generated, not authored: regenerate it in the same commit as the change "
         "that moved it.\n\n"
-        "    cd backend && python -m scripts.generate_openapi\n",
+        "    just contract && git add :/contracts/nodes-v1.openapi.yaml\n",
         file=sys.stderr,
     )
     return 1
