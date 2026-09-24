@@ -3,9 +3,13 @@
 # Run against the staging server to verify deployment health before
 # promoting to production.
 #
-# Usage: bash deploy/staging-smoke-test.sh
+# Usage: RADAR_API_KEY=<the staging radar key> bash deploy/staging-smoke-test.sh
 # Exit code: 0 = all checks passed, 1 = failure
 set -euo pipefail
+
+# The test router's reads are for operators, and these checks read them as one.
+: "${RADAR_API_KEY:?set RADAR_API_KEY to the staging radar key, which the /api/test/ checks send}"
+RADAR_KEY_HEADER=(-H "X-API-Key: ${RADAR_API_KEY}")
 
 # Served by tower-finder-service, NOT by this repo. A Cloudflare Origin Rule
 # in the http_request_origin phase routes this hostname to origin port 8443
@@ -68,10 +72,12 @@ check() {
     fi
 }
 
+# Anything after the expected code is passed to curl as it stands.
 check_status() {
     local name="$1" url="$2" expected_code="$3"
+    shift 3
     printf "  %-40s " "$name"
-    CODE=$($CURL -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) || { echo "FAIL (connection error)"; FAIL=$((FAIL+1)); return; }
+    CODE=$($CURL "$@" -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) || { echo "FAIL (connection error)"; FAIL=$((FAIL+1)); return; }
 
     if [ "$CODE" = "$expected_code" ]; then
         echo "OK ($CODE)"
@@ -299,8 +305,8 @@ echo "── Health & API endpoints (staging-api.retina.fm) ──"
 check_status "GET /api/health"              "${API_URL}/api/health"         "200"
 check_status "GET /api/radar/nodes"         "${API_URL}/api/radar/nodes"    "200"
 check_status "GET /api/radar/analytics"     "${API_URL}/api/radar/analytics" "200"
-check_status "GET /api/test/dashboard"      "${API_URL}/api/test/dashboard" "200"
-check_status "GET /api/test/mlat-verification" "${API_URL}/api/test/mlat-verification" "200"
+check_status "GET /api/test/dashboard"      "${API_URL}/api/test/dashboard" "200" "${RADAR_KEY_HEADER[@]}"
+check_status "GET /api/test/mlat-verification" "${API_URL}/api/test/mlat-verification" "200" "${RADAR_KEY_HEADER[@]}"
 # Deliberately no /api/config check on this vhost: the api vhost has no
 # /api/config location, so the request falls through `location /` to the app,
 # which no longer implements the route (the monolith's tower stack went with the
