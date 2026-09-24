@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -343,6 +343,26 @@ async def remove_polled_radar(session: AsyncSession, node_id: str, *, user_id: s
     )
     await session.flush()
     return True
+
+
+async def owner_views(session: AsyncSession, node_ids: list[str]) -> dict[str, dict]:
+    """What an owner is shown of each of these that is a polled radar, keyed by node.
+
+    The address as they gave it, which only they and administrators see, less
+    the password, which nobody does.
+    """
+    if not node_ids:
+        return {}
+    radars = await session.scalars(select(PolledRadar).where(PolledRadar.node_id.in_(node_ids)))
+    return {
+        radar.node_id: {
+            "address": radar.endpoint_raw,
+            "unprotected": radar.unprotected,
+            "liveness": radar.liveness,
+            "trust_state": radar.trust_state,
+        }
+        for radar in radars
+    }
 
 
 def poller_credentials(radar: PolledRadar) -> tuple[str, str] | None:
