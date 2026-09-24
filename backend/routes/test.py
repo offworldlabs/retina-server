@@ -1,5 +1,6 @@
 """Test network dashboard, ground-truth validation endpoints."""
 
+import hmac
 import logging
 import math
 import os
@@ -7,7 +8,7 @@ import time
 from datetime import datetime, timezone
 
 import orjson
-from fastapi import APIRouter, Body, Depends, Header, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request
 from fastapi.responses import Response
 
 from config.constants import ANALYTICS_REFRESH_INTERVAL_S, FT_TO_M, is_num
@@ -65,6 +66,22 @@ def _verify_sim_key(x_api_key: str = Header(default="", alias="X-API-Key")):
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
 
+async def require_admin_or_radar_key(request: Request, x_api_key: str = Header(default="", alias="X-API-Key")):
+    """For the reads: an administrator, or a caller holding the radar key.
+
+    The deploy checks and scripted soak checks hold the key rather than an
+    Access session. Unlike _verify_sim_key this fails closed: a box with no key
+    admits no one by it.
+
+    What the reads serve stays inside the publication boundary all the same,
+    because the key is also held by CI and the simulator, neither of which
+    needs a node's identity or position.
+    """
+    if _RADAR_API_KEY and hmac.compare_digest(x_api_key.encode(), _RADAR_API_KEY.encode()):
+        return
+    await require_admin(request)
+
+
 # Module-level reference set from main.py at startup
 _default_pipeline = None
 
@@ -75,7 +92,7 @@ def init(pipeline):
 
 
 @router.get("/api/test/dashboard")
-async def test_network_dashboard():
+async def test_network_dashboard(_operator=Depends(require_admin_or_radar_key)):
     body = _build_dashboard_data()
     return Response(content=body, media_type="application/json")
 
@@ -335,7 +352,7 @@ async def validate_ground_truth(body: dict = Body(...), _key=Depends(_verify_sim
 
 
 @router.get("/api/test/ground-truth/{hex_code}")
-async def get_ground_truth_trail(hex_code: str):
+async def get_ground_truth_trail(hex_code: str, _operator=Depends(require_admin_or_radar_key)):
     norm_hex = normalize_hex_key(hex_code)
     solved_trail = list(state.track_histories.get(hex_code, [])) or list(state.track_histories.get(norm_hex, []))
     matched_hex = norm_hex
@@ -382,7 +399,7 @@ async def get_ground_truth_trail(hex_code: str):
 
 
 @router.get("/api/test/known-hold")
-async def get_known_hold():
+async def get_known_hold(_operator=Depends(require_admin_or_radar_key)):
     """Current hold window, in seconds of frame time (0 = feature off)."""
     return {"max_gap_s": known_claiming.KNOWN_HOLD_MAX_GAP_S}
 
@@ -664,12 +681,12 @@ def _mlat_verification_summary() -> dict:
 
 
 @router.get("/api/test/node/{node_ref}/verification")
-async def node_verification(node_ref: str):
+async def node_verification(node_ref: str, _operator=Depends(require_admin_or_radar_key)):
     """Return pre-computed solver-vs-ADS-B verification stats for one node.
 
-    Unauthenticated, so it is addressed and answered in published identities: a
-    ref that resolves to nothing gets the empty body an unknown node already
-    gets, and the payload names the node by the ref rather than by the id the
+    Addressed and answered in published identities (see
+    require_admin_or_radar_key): a ref that resolves to nothing gets the empty
+    body an unknown node already gets, and the payload names the node by the ref rather than by the id the
     refresh task keyed it under.
 
     Everything in a track entry is measured from this one node's true receiver,
@@ -687,7 +704,7 @@ async def node_verification(node_ref: str):
 
 
 @router.get("/api/test/mlat-verification")
-async def mlat_verification():
+async def mlat_verification(_operator=Depends(require_admin_or_radar_key)):
     """Return pre-computed multinode (MLAT) solver-vs-ground-truth verification stats."""
     return Response(
         content=state.latest_mlat_verification_bytes,
@@ -703,6 +720,7 @@ async def mlat_history(
     lane: str = "all",
     limit: int = 1000,
     kind: str = "solves",
+    _operator=Depends(require_admin_or_radar_key),
 ):
     """Per-solve MLAT history from the last ~30 minutes.
 
@@ -730,8 +748,8 @@ async def mlat_history(
     ``window_effective_minutes`` is how much of the requested window the
     stores actually hold — below ``window_minutes`` the answer is truncated.
 
-    Unauthenticated, so every record list below is served in published
-    identities and without the receiver-relative geometry; the counts beside
+    Every record list below is served in published identities and without the
+    receiver-relative geometry (see require_admin_or_radar_key); the counts beside
     them are taken from the stores and so are unaffected by a record dropped
     for naming a node with no handle.  See _published_records.
     """
@@ -832,11 +850,11 @@ async def mlat_history(
 
 
 @router.get("/api/test/solver-stats")
-async def solver_stats(minutes: float = 10.0, _admin=Depends(require_admin)):
+async def solver_stats(minutes: float = 10.0, _operator=Depends(require_admin_or_radar_key)):
     """Full solver picture for the Solver Report panel: publication funnel
     (n=2 vs n>=3), reject-reason breakdown, position-error percentiles,
-    ghost/false-track precision, and consensus/since-boot counters. Admin
-    only, like the physics page that panel sits on.
+    ghost/false-track precision, and consensus/since-boot counters. Gated
+    like the other reads, so a scripted soak check can read it with the key.
 
     The funnel, the error percentiles, the fragmentation block and the ghost
     precision are all the DARK lane — ``lane_split`` gives the per-lane record
@@ -866,7 +884,7 @@ async def solver_stats(minutes: float = 10.0, _admin=Depends(require_admin)):
 
 
 @router.get("/api/test/mlat-accuracy")
-async def mlat_accuracy():
+async def mlat_accuracy(_operator=Depends(require_admin_or_radar_key)):
     """Rolling MLAT solver accuracy stats aggregated from the last 5 000 matched tracks.
 
     Mirrors GET /api/radar/accuracy (single-node) but broken down by node count
@@ -880,11 +898,11 @@ async def mlat_accuracy():
 
 
 @router.get("/api/test/node/{node_ref}/detection-range")
-async def node_detection_range(node_ref: str):
+async def node_detection_range(node_ref: str, _operator=Depends(require_admin_or_radar_key)):
     """Return one node's empirical detection range and coverage polygon.
 
-    Unauthenticated, so both the identity and the geometry are the published
-    ones: the node is addressed and named by its ref, an unresolvable ref gets
+    Both the identity and the geometry are the published ones (see
+    require_admin_or_radar_key): the node is addressed and named by its ref, an unresolvable ref gets
     the same answer as an unregistered node, ``rx`` is the fuzzed coordinate
     and the polygon is translated rigidly by the same offset, exactly as on
     /api/radar/analytics.

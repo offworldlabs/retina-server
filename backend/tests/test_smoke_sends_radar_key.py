@@ -1,9 +1,11 @@
 """Every deploy check that reads the test router sends the radar key.
 
-The router's reads are for operators rather than the public, and a check that
-reads them anonymously is one refusal away from failing, which on production
-rolls the deploy back. So each request to /api/test/ in the smoke suites and the
-E2E specs carries the key, and each suite is handed its own environment's key.
+The router's reads answer only an administrator or that key, and a check that
+reads them anonymously fails, which on production rolls the deploy back. So each
+request to /api/test/ in the smoke suites and the E2E specs carries the key, and
+each suite is handed its own environment's key. The one deliberate exception is
+the check that an anonymous read is refused, which each suite makes on both
+hosts that route /api/ to the app.
 """
 
 import os
@@ -20,9 +22,13 @@ _CI = _REPO / ".github" / "workflows" / "ci.yml"
 _STAGING_WORKFLOW = _REPO / ".github" / "workflows" / "staging-deploy-verify.yml"
 _E2E_SPECS = sorted((_REPO / "e2e" / "specs").glob("*.spec.ts"))
 
-# A request's URL is built from a host variable (`${API_URL}`, `$API_URL`,
-# `${hosts.api}`); a path named in a label or a message is not a request.
-_TEST_ROUTER_URL = re.compile(r"\$\{?[\w.]+\}?/api/test/")
+# A request's URL starts at a host, as a variable (`${API_URL}`, `$API_URL`,
+# `${hosts.api}`) or written out; a path named in a label or a message is not a
+# request.
+_TEST_ROUTER_URL = re.compile(r"(?:\$\{?[\w.]+\}?|https?://[\w.-]+)/api/test/")
+
+# check_status's expected code closes the command.
+_EXPECTS_REFUSAL = re.compile(r'"401"\s*$')
 
 
 def _production_smoke_step() -> dict:
@@ -53,10 +59,33 @@ _SHELL_SUITES = {
 
 @pytest.mark.parametrize("name", sorted(_SHELL_SUITES))
 def test_every_test_router_request_in_a_smoke_suite_sends_the_key(name: str) -> None:
-    requests = [c for c in _shell_commands(_SHELL_SUITES[name]()) if _TEST_ROUTER_URL.search(c)]
+    script = _SHELL_SUITES[name]()
+    requests = [c for c in _shell_commands(script) if _TEST_ROUTER_URL.search(c)]
     assert requests, f"{name} no longer reads the test router, so this check guards nothing"
-    anonymous = [c.strip() for c in requests if "RADAR_KEY_HEADER" not in c]
+    # The production suite wraps its keyed reads in check_keyed, which counts
+    # only while its own body sends the key.
+    helper = re.search(r"check_keyed\(\) \{(.*?)\n\s*\}\n", script, re.S)
+    helper_sends_key = bool(helper) and "RADAR_KEY_HEADER" in helper.group(1)
+
+    def sends_key(command: str) -> bool:
+        return "RADAR_KEY_HEADER" in command or (command.lstrip().startswith("check_keyed ") and helper_sends_key)
+
+    anonymous = [c.strip() for c in requests if not sends_key(c) and not _EXPECTS_REFUSAL.search(c)]
     assert not anonymous, f"{name} reads the test router without the radar key: {anonymous}"
+
+
+@pytest.mark.parametrize("name", sorted(_SHELL_SUITES))
+def test_each_smoke_suite_asserts_an_anonymous_read_is_refused_on_both_hosts(name: str) -> None:
+    refusals = [
+        c
+        for c in _shell_commands(_SHELL_SUITES[name]())
+        if c.lstrip().startswith("check_status ")
+        and "/api/test/dashboard" in c
+        and _EXPECTS_REFUSAL.search(c)
+        and "RADAR_KEY_HEADER" not in c
+    ]
+    hosts = {("app" if re.search(r"APP_URL|app\.retina\.fm", c) else "api") for c in refusals}
+    assert hosts == {"api", "app"}, f"{name} asserts the anonymous refusal on {sorted(hosts) or 'no host'}"
 
 
 @pytest.mark.parametrize("spec", _E2E_SPECS, ids=lambda p: p.name)
@@ -73,6 +102,39 @@ def test_every_test_router_request_in_an_e2e_spec_sends_the_key(spec: Path) -> N
 )
 def test_each_smoke_suite_is_given_its_own_environments_key(step, secret: str) -> None:
     assert step().get("env", {}).get("RADAR_API_KEY") == f"${{{{ secrets.{secret} }}}}"
+
+
+def _staging_key_preflight() -> str:
+    """The deploy's radar-key check, which must sit with the other pre-flights."""
+    steps = yaml.safe_load(_STAGING_WORKFLOW.read_text())["jobs"]["deploy"]["steps"]
+    (script,) = [s["with"]["script"] for s in steps if "script" in s.get("with", {})]
+    start = script.index("# Pre-flight: the radar key.")
+    end = script.index("# Pre-flights go above this line.")
+    assert start < end, "the radar-key check runs after the box is already mid-deploy"
+    return script[start:end]
+
+
+@pytest.mark.parametrize(
+    ("env_text", "refused"),
+    [
+        (None, True),
+        ("", True),
+        ("RADAR_API_KEY=\n", True),
+        # compose passes the last occurrence on
+        ("RADAR_API_KEY=abc\nRADAR_API_KEY=\n", True),
+        ("RADAR_API_KEY=\nRADAR_API_KEY=abc\n", False),
+        ("RADAR_API_KEY=abc\n", False),
+    ],
+    ids=["no .env", "no line", "empty", "emptied last", "set last", "set"],
+)
+def test_the_staging_deploy_refuses_a_box_without_a_radar_key(tmp_path, env_text, refused) -> None:
+    (tmp_path / "backend").mkdir()
+    if env_text is not None:
+        (tmp_path / "backend" / ".env").write_text(env_text)
+    result = subprocess.run(
+        ["/bin/bash", "-c", _staging_key_preflight()], cwd=tmp_path, capture_output=True, text=True, timeout=30
+    )
+    assert (result.returncode != 0) == refused, result.stdout
 
 
 def test_the_staging_suite_refuses_to_run_without_a_key() -> None:

@@ -237,13 +237,14 @@ class TestSimulationConfig:
         # A valid body, so the refusal can only be the gate's.
         assert client.put("/api/test/known-hold", json={"max_gap_s": 8}).status_code == 401
 
-    @pytest.mark.parametrize("path", ["/api/simulation/ground-truth", "/api/test/solver-stats"])
-    def test_the_physics_page_reads_need_an_admin(self, client, monkeypatch, path):
+    def test_the_physics_page_ground_truth_read_needs_an_admin(self, client, monkeypatch):
+        # Its other read, /api/test/solver-stats, takes the radar key as well
+        # (test_test_router_gate.py).
         import core.users as users
 
-        assert client.get(path).status_code == 200
+        assert client.get("/api/simulation/ground-truth").status_code == 200
         monkeypatch.setattr(users, "AUTH_BYPASS", False)
-        assert client.get(path).status_code == 401
+        assert client.get("/api/simulation/ground-truth").status_code == 401
 
     def test_live_knobs_accepted_and_echoed(self, client):
         r = client.put("/api/simulation/config", json={"frac_live_dark": 0.6, "live_adsb_enabled": False})
