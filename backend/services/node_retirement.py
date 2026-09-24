@@ -114,8 +114,6 @@ def retire_node(node_id: str, *, force: bool = False) -> dict:
     disconnected still qualifies; neither exception applies to a node already
     absent from the registry, which retires without ``force`` mattering.
     """
-    report: dict = {"node_id": node_id}
-
     # The registry is cleared before analytics and the associator, not after.
     # Retirement is not atomic across the stores, so a frame arriving mid-call
     # re-registers the node into whichever store has already been cleared.  We
@@ -154,7 +152,25 @@ def retire_node(node_id: str, *, force: bool = False) -> dict:
             if allowed and not node_id.startswith(allowed):
                 raise ForceRetireNotAllowed(node_id, allowed)
         state.connected_nodes.pop(node_id, None)
-    report["was_connected"] = in_registry
+    return _clear(node_id, in_registry)
+
+
+def forget_node(node_id: str) -> dict:
+    """Retire a node whose registration is itself retired, held in the fleet
+    registry or not, and whatever NODE_FORCE_RETIRE_PREFIXES names.
+
+    Nothing can register it again, so there is no next registration to undo
+    this and no live source to strip: neither guard of retire_node has anything
+    to protect. Returns retire_node's report.
+    """
+    with state.connected_nodes_lock:
+        in_registry = state.connected_nodes.pop(node_id, None) is not None
+    return _clear(node_id, in_registry)
+
+
+def _clear(node_id: str, was_connected: bool) -> dict:
+    """Every store after the registry, in retire_node's order."""
+    report: dict = {"node_id": node_id, "was_connected": was_connected}
     # Otherwise this waits on the 2 h disconnect sweep in
     # services.tasks.analytics_refresh, which would leave a retired node holding a
     # cached pipeline built from config that no longer exists anywhere else.

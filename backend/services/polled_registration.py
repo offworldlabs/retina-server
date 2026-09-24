@@ -1,4 +1,5 @@
-"""An owner registering a stock blah2 radar from a signed-in session.
+"""An owner registering a stock blah2 radar from a signed-in session, or moving
+one to a new address.
 
 Whether a registration may happen, and what it records: the probe of what the
 owner typed, the check that the radar still declares what the owner confirmed,
@@ -8,7 +9,9 @@ choosing. services/polled_radars.py writes the rows.
 Nothing is held between the owner's probe and their submit. The submit probes
 again, so the rows hold what the radar declared at the moment they were written,
 and a radar whose declaration moved in between is shown to the owner again
-rather than registered on a look it no longer matches.
+rather than registered on a look it no longer matches. A move to a new address
+is the same probe, submit and limits, since it too sends our server to a host
+of the caller's choosing.
 """
 
 import dataclasses
@@ -23,6 +26,7 @@ from config.constants import YAGI_MAX_RANGE_KM
 from core import secrets
 from core.nodes import NodeClaim, PolledRadar
 from services.blah2_probe import CONFIG_MAX_BYTES, CONFIG_PATH, Blah2Probe, Site, probe_blah2
+from services.node_claim_store import read_owner
 from services.node_config import ConfigInvalid
 from services.node_rate_limits import polled_probe_limiter
 from services.polled_endpoint import (
@@ -36,10 +40,12 @@ from services.polled_endpoint import (
 )
 from services.polled_radars import (
     EndpointAlreadyRegistered,
+    EpochChanged,
     PolledRegistration,
     RadarGeometry,
     create_polled_radar,
     probed_config,
+    set_polled_radar_address,
 )
 
 ENABLED_ENV = "POLLED_RADAR_REGISTRATION_ENABLED"
@@ -128,6 +134,19 @@ def _unprocessable(exc: EndpointRefused) -> RegistrationRefused:
     return RegistrationRefused(422, str(exc.code), exc.message)
 
 
+def _registered() -> RegistrationRefused:
+    return RegistrationRefused(409, "endpoint_registered", "This radar is already registered.")
+
+
+def _changed(probed: "Probed") -> RegistrationRefused:
+    return RegistrationRefused(
+        409,
+        "config_changed",
+        "The radar's configuration has changed since you checked it. Confirm what it declares now.",
+        probe=probed,
+    )
+
+
 async def _answers_without_credentials(endpoint: PolledEndpoint) -> bool:
     bare = dataclasses.replace(endpoint, auth_user=None, auth_secret=None)
     try:
@@ -139,12 +158,13 @@ async def _answers_without_credentials(endpoint: PolledEndpoint) -> bool:
     return True
 
 
-async def probe(session: AsyncSession, raw: str, user_id: str) -> Probed:
+async def probe(session: AsyncSession, raw: str, user_id: str, *, replacing: str | None = None) -> Probed:
     """Probe what the owner typed and report what the radar declares, or raise
     RegistrationRefused. Saves nothing.
 
     Every refusal that needs no request is made before one is sent, and all but
-    the registered-address check before the owner's allowance is spent.
+    the registered-address check before the owner's allowance is spent. The
+    address of the radar `replacing` names is not taken from it.
     """
     global _in_flight
     try:
@@ -177,11 +197,11 @@ async def probe(session: AsyncSession, raw: str, user_id: str) -> Probed:
             )
         # After the allowance is spent: the answer says whether an address is a
         # registered radar, so asking is metered like a probe.
-        taken = await session.scalar(
-            select(PolledRadar.node_id).where(PolledRadar.endpoint_key == endpoint.endpoint_key)
-        )
-        if taken is not None:
-            raise RegistrationRefused(409, "endpoint_registered", "This radar is already registered.")
+        taken = select(PolledRadar.node_id).where(PolledRadar.endpoint_key == endpoint.endpoint_key)
+        if replacing is not None:
+            taken = taken.where(PolledRadar.node_id != replacing)
+        if await session.scalar(taken) is not None:
+            raise _registered()
         radar = await probe_blah2(endpoint, resolver=resolver, policy=policy)
         protected = endpoint.auth_user is not None and not await _answers_without_credentials(endpoint)
     except EndpointRefused as exc:
@@ -224,12 +244,7 @@ async def register(
     probed = await probe(session, raw, user["id"])
     radar, endpoint, config = probed.radar, probed.endpoint, probed.config
     if radar.config_fingerprint != fingerprint:
-        raise RegistrationRefused(
-            409,
-            "config_changed",
-            "The radar's configuration has changed since you checked it. Confirm what it declares now.",
-            probe=probed,
-        )
+        raise _changed(probed)
     try:
         return await create_polled_radar(
             session,
@@ -263,4 +278,45 @@ async def register(
             unprotected=not probed.protected,
         )
     except EndpointAlreadyRegistered:
-        raise RegistrationRefused(409, "endpoint_registered", "This radar is already registered.") from None
+        raise _registered() from None
+
+
+async def _owned(session: AsyncSession, node_id: str, user_id: str) -> PolledRadar:
+    """The caller's polled radar. Somebody else's answers as one that does not
+    exist: an id that resolves is already a hint about where a radar is."""
+    radar = await session.get(PolledRadar, node_id) if await read_owner(session, node_id) == user_id else None
+    if radar is None:
+        raise RegistrationRefused(404, "not_found", "Radar not found.")
+    return radar
+
+
+async def probe_new_address(session: AsyncSession, node_id: str, raw: str, user_id: str) -> Probed:
+    """What the owner's radar declares at a new address, for them to confirm. Saves nothing."""
+    await _owned(session, node_id, user_id)
+    return await probe(session, raw, user_id, replacing=node_id)
+
+
+async def change_address(session: AsyncSession, node_id: str, *, raw: str, fingerprint: str, user: dict) -> PolledRadar:
+    """Probe the owner's radar at `raw` again and move it there, or raise
+    RegistrationRefused. The caller commits.
+
+    A radar declaring anything but `fingerprint` is refused as register refuses
+    it. Another host or port starts a new epoch on probation; see
+    set_polled_radar_address.
+    """
+    radar = await _owned(session, node_id, user["id"])
+    probed = await probe(session, raw, user["id"], replacing=node_id)
+    if probed.radar.config_fingerprint != fingerprint:
+        raise _changed(probed)
+    try:
+        await set_polled_radar_address(
+            session, radar, probed.radar, unprotected=not probed.protected, changed_by=user["id"]
+        )
+    except EndpointAlreadyRegistered:
+        raise _registered() from None
+    except EpochChanged:
+        # The config poll started an epoch while the probe ran, so what the
+        # owner confirmed was checked against a declaration no longer held.
+        raise _changed(probed) from None
+    await session.refresh(radar)
+    return radar

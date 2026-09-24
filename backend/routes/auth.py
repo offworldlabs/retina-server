@@ -19,11 +19,13 @@ from pydantic import BaseModel, EmailStr
 
 from core import state
 from core.auth import consume_magic_link, create_magic_link, get_user_nodes
+from core.node_ids import POLLED_BLAH2, system_of
 from core.users import (
     ACCESS_LOGOUT_PATH,
     ANONYMOUS_USER,
     JWT_LIFETIME_SECONDS,
     MagicLinkRefused,
+    async_session_maker,
     get_current_user,
     get_jwt_strategy,
     get_or_create_magic_link_user,
@@ -31,7 +33,7 @@ from core.users import (
     user_to_dict,
 )
 from routes.sim_ingest import synthetic_fleet_enabled
-from services import mail, polled_registration, publication
+from services import blah2_poller, mail, node_retirement, polled_registration, publication
 from services.node_claim_store import claim_addresses
 from services.node_claiming import (
     ClaimOutcome,
@@ -42,6 +44,7 @@ from services.node_claiming import (
 )
 from services.node_config import position_status
 from services.node_refs import owner_identity
+from services.polled_radars import remove_polled_radar
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -291,18 +294,41 @@ async def decline_claim_link(body: ClaimToken):
 
 @router.delete("/me/nodes/{node_id}/claim")
 async def release_my_node(node_id: str, request: Request):
-    """Hand a node back, so its next owner can claim it.
+    """Hand a node back, so its next owner can claim it, or remove a polled radar.
 
     Guarded the same way every owner-scoped route here is, so a node somebody
-    else owns answers exactly as one that does not exist.
+    else owns answers exactly as one that does not exist. A polled radar is
+    removed rather than handed back, since nothing can claim one afterwards
+    (services/polled_radars.py, remove_polled_radar).
     """
     user = await _owned_node(request, node_id)
-    if not await release_node(node_id, user["id"]):
+    if system_of(node_id) == POLLED_BLAH2:
+        released = await _remove_polled_radar(node_id, user["id"])
+    else:
+        released = await release_node(node_id, user["id"])
+    if not released:
         # Owned a moment ago and not now: a release that raced another release,
         # or an administrator reassigning it. Either way it is gone, which is
         # what was asked for.
         raise HTTPException(status_code=404, detail="Node not found")
     return {"ok": True}
+
+
+async def _remove_polled_radar(node_id: str, user_id: str) -> bool:
+    async with async_session_maker() as session:
+        async with session.begin():
+            if not await remove_polled_radar(session, node_id, user_id=user_id):
+                return False
+    # After the commit, so the poller's rejoin finds the node retired and files
+    # nothing more under it.
+    try:
+        node_retirement.forget_node(node_id)
+    except Exception:
+        # Retired all the same: what forget_node left is in stale_node_ids()
+        # for a retire-stale pass, and it has logged what that is.
+        pass
+    blah2_poller.refresh()
+    return True
 
 
 # ── Session endpoints ─────────────────────────────────────────────────────────
