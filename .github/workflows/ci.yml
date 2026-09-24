@@ -397,11 +397,17 @@ jobs:
     name: Playwright E2E (production)
     runs-on: ubuntu-latest
     # A backstop above the test step's own cap, not the primary bound: a job
-    # timeout is a cancellation and would skip the rollback below, whereas the
-    # step cap marks the step failed and keeps it reachable.
+    # timeout cancels the test step, and a cancelled step is not a verdict the
+    # rollback job acts on, whereas the step cap marks it failed.
     timeout-minutes: 30
     needs: [production-smoke-tests, playwright-image]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    # The test step's own outcome, for rollback-production-on-e2e-failure. Not
+    # the job's result: a failed container pull, checkout or npm ci fails the
+    # job too, and none of them says anything about whether production is
+    # healthy. Only tests that ran and failed roll production back.
+    outputs:
+      tests: ${{ steps.e2e.outcome }}
     # The browsers and their shared libraries ship in the image, so there is no
     # install step at all. That step was the single worst source of red runs
     # here: `npx playwright install --with-deps` fetches the browsers from
@@ -428,9 +434,9 @@ jobs:
           cache-dependency-path: package-lock.json
       - run: npm ci
       # Bounded at the step rather than relying on the job cap: a step timeout
-      # marks the step failed, which still trips the rollback below, whereas a
-      # job timeout is a cancellation and would skip it. A production wedged
-      # badly enough to hang Playwright is exactly when the rollback is wanted.
+      # marks the step failed, which still trips the rollback job, whereas a
+      # job timeout cancels it and would not. A production wedged badly enough
+      # to hang Playwright is exactly when the rollback is wanted.
       - name: Run E2E tests (production)
         id: e2e
         # See the staging job: the step cap has to clear nodes.spec.ts's retried
@@ -440,18 +446,30 @@ jobs:
         env:
           CI: "true"
           RADAR_API_KEY: ${{ secrets.RADAR_API_KEY }}
-      # Scoped to the test step's own outcome, as the production smoke job is.
-      # A bare failure() also fires when the container fails to pull, or when
-      # checkout or npm ci fails, none of which say anything about whether
-      # production is healthy. The browser install that made this urgent is
-      # gone, but the reasoning outlives it: anything that breaks before the
-      # tests run is a statement about the runner, not about production. An
-      # infrastructure failure now leaves the job red for a human to read,
-      # and only tests that ran and
-      # failed roll production back.
-      - name: Rollback production on E2E failure
-        if: failure() && steps.e2e.outcome == 'failure'
-        uses: appleboy/ssh-action@v1
+
+  # A job of its own, on the runner, so that production's root key is never
+  # handed to a job that has just run npm's install scripts inside a third-party
+  # image. backend/tests/test_deploy_workflows.py holds every workflow to that.
+  rollback-production-on-e2e-failure:
+    name: Roll back production if its E2E tests failed
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [e2e-prod]
+    # See rollback-production-on-deploy-failure: a following push's deploy must
+    # not be inside the deploy directory while rollback.sh is.
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    # !cancelled() rather than always(): e2e-prod failing is when this has to
+    # run, but an operator cancelling the run, say over a known flake, must
+    # still be able to stop it. The main-push gate is repeated so no other event
+    # can open production SSH.
+    if: >-
+      !cancelled() && github.ref == 'refs/heads/main' && github.event_name == 'push' &&
+      needs.e2e-prod.outputs.tests == 'failure'
+    steps:
+      - name: Roll back production
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: root
@@ -965,7 +983,8 @@ jobs:
             # Reached only by the loop's `break`, i.e. the app answered
             # /api/health. The box is no longer mid-deploy, so drop the marker;
             # any failure after this point is a smoke/E2E failure, which the
-            # rollback steps on those jobs already cover.
+            # smoke job's rollback step and rollback-production-on-e2e-failure
+            # already cover.
             rm -f ${{ env.APP_DIR }}/.deploy-in-progress
 
   rollback-production-on-deploy-failure:
@@ -989,9 +1008,9 @@ jobs:
     # would then SSH into production to consider rolling back a deploy that
     # never ran. Keyed to the deploy job's own result, it cannot.
     #
-    # This is the gap the two existing rollbacks do not cover. Both hang off
-    # jobs DOWNSTREAM of the deploy (production-smoke-tests, e2e-prod), and a
-    # failed deploy skips those jobs and their rollback steps with them.
+    # This is the gap the two other rollbacks do not cover. Both hang off jobs
+    # DOWNSTREAM of the deploy (production-smoke-tests, e2e-prod), and a failed
+    # deploy skips those jobs, and so the rollbacks keyed to them.
     # 'cancelled' as well as 'failure'. Cancelling mid-deploy leaves production
     # exactly as half-deployed as a crash does, and deploy-production sets
     # cancel-in-progress: false, so this can only be a human pressing cancel —
@@ -1351,7 +1370,7 @@ jobs:
           echo ""
           smoke_summary
           [ "$FAIL" -eq 0 ] || exit 1
-      # Auto-rollback on smoke failure, mirroring the prod E2E job. A failed
+      # Auto-rollback on smoke failure, as on an E2E failure. A failed
       # smoke test means a bad build is live serving prod; revert to
       # last-known-good rather than leaving it up for a human to catch. The
       # condition is scoped to the smoke step's own outcome, so a failure in the
@@ -1366,7 +1385,7 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           envs: APP_DIR
           script: |
-            # See the identical assertion in e2e-prod's rollback step.
+            # See the identical assertion in rollback-production-on-e2e-failure.
             [ "$(hostname)" = "retina-prod" ] || { echo "::error::Refusing to roll back on '$(hostname)' — expected retina-prod."; exit 1; }
             echo "Production smoke tests failed — rolling back production..."
             cd ${{ env.APP_DIR }} && bash deploy/rollback.sh
