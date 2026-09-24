@@ -370,10 +370,6 @@ async def logout(request: Request):
 # ── Node ownership self-service ───────────────────────────────────────────────
 
 
-class LocationPrivacyUpdate(BaseModel):
-    private: bool
-
-
 async def _owned_node(request: Request, node_id: str) -> dict:
     """The caller, having established they own `node_id`.  404 if they do not.
 
@@ -407,21 +403,16 @@ async def my_nodes(request: Request):
     out = []
     with state.connected_nodes_lock:
         snapshot = {nid: dict(state.connected_nodes.get(nid, {})) for nid in node_ids}
-    # One pair of queries for the whole list rather than a lookup per node, and
-    # read here rather than from services.publication's 30 s cache: this is the
-    # page an owner has just changed the setting on, and showing them a stale
-    # answer for up to half a minute is how a working switch reads as broken.
-    privacy = await publication.location_privacy_map(node_ids)
-    # One query for the list rather than a lookup per node, matching the privacy
-    # map above. The address is what the owner was mailed to claim the node
-    # with, so it is theirs to see; it is not published anywhere else.
+    private = await publication.registered_private(node_ids)
+    # One query for the list rather than a lookup per node. The address is what
+    # the owner was mailed to claim the node with, so it is theirs to see; it is
+    # not published anywhere else.
     claimed_with = await claim_addresses(node_ids)
     async with async_session_maker() as session:
         polled = await owner_views(session, [nid for nid in node_ids if system_of(nid) == POLLED_BLAH2])
     for nid in node_ids:
         info = snapshot.get(nid) or {}
         cfg = info.get("config", {}) or {}
-        private, source = privacy.get(nid, (False, publication.SOURCE_DEFAULT))
         ref = owner_identity(nid)
         radar = polled.get(nid)
         status = info.get("status", "never_connected")
@@ -446,52 +437,9 @@ async def my_nodes(request: Request):
                 "rx_lon": cfg.get("rx_lon"),
                 "position_status": position_status(cfg),
                 "frequency": carrier_hz(cfg),
-                "location_private": private,
-                "location_privacy_source": source,
+                "location_private": nid in private,
                 "claimed_with": claimed_with.get(nid),
                 "polled": radar,
             }
         )
     return out
-
-
-@router.put("/me/nodes/{node_id}/location-privacy")
-async def set_my_node_location_privacy(node_id: str, body: LocationPrivacyUpdate, request: Request):
-    """Set this node's location privacy, overriding whatever registration said.
-
-    The answer is always `override` as the source: writing the row is what this
-    route does, and it outranks the registration choice whichever way the two
-    happen to agree.  An owner who wants the registration choice back sends the
-    DELETE below rather than a PUT that matches it, so that a later reflash
-    changing the registration choice still reaches them.
-    """
-    user = await _owned_node(request, node_id)
-    await publication.set_location_privacy(node_id, body.private, set_by=user["id"])
-    # After the commit, so the next refresh cannot read the pre-write state and
-    # cache it for another _TTL_S.
-    publication.invalidate()
-    return {
-        "node_id": node_id,
-        "location_private": body.private,
-        "location_privacy_source": publication.SOURCE_OVERRIDE,
-    }
-
-
-@router.delete("/me/nodes/{node_id}/location-privacy")
-async def clear_my_node_location_privacy(node_id: str, request: Request):
-    """Drop the override and return the node to its registration choice.
-
-    Returns the effective state rather than an `{"ok": true}`: what the node
-    falls back to is the whole point of the call and the caller has no way to
-    work it out, since a node that never registered and one registered public
-    are both published and only the source tells them apart.
-    """
-    await _owned_node(request, node_id)
-    await publication.clear_location_privacy(node_id)
-    publication.invalidate()
-    state_after = await publication.location_privacy(node_id)
-    return {
-        "node_id": node_id,
-        "location_private": state_after["location_private"],
-        "location_privacy_source": state_after["location_privacy_source"],
-    }

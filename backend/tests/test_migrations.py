@@ -472,3 +472,38 @@ def test_0019_downgrade_drops_node_events(tmp_path):
     down = _alembic("downgrade", "0018", db_path=db)
     assert down.returncode == 0, down.stdout + down.stderr
     assert _query(db, tables) == []
+
+
+# ── 0020: dropping node_location_privacy ─────────────────────────────────────
+
+
+def test_0020_logs_each_override_it_drops(tmp_path):
+    """The table is the only record of which nodes an owner or admin hid or
+    unhid, so the upgrade leaves each row in the boot log on its way out."""
+    import sqlite3
+
+    db = tmp_path / "privacy.db"
+    up = _alembic("upgrade", "0019", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO node_location_privacy (node_id, private) VALUES ('rethidden', 1), ('retshown', 0)")
+    con.commit()
+    con.close()
+
+    up = _alembic("upgrade", "0020", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    assert _query(db, "SELECT name FROM sqlite_master WHERE name = 'node_location_privacy'") == []
+    assert "override for 'rethidden' (private=True)" in up.stdout
+    assert "override for 'retshown' (private=False)" in up.stdout
+
+
+def test_0020_downgrade_recreates_the_table_empty(tmp_path):
+    db = tmp_path / "privacy.db"
+    up = _alembic("upgrade", "0020", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+
+    down = _alembic("downgrade", "0019", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    columns = "SELECT name FROM pragma_table_info('node_location_privacy') ORDER BY cid"
+    assert _query(db, columns) == [("node_id",), ("private",), ("set_by",), ("set_at",)]
+    assert _query(db, "SELECT COUNT(*) FROM node_location_privacy") == [(0,)]
