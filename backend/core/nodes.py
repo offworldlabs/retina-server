@@ -39,44 +39,6 @@ class Node(Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class NodeLocationPrivacy(Base):
-    """An owner's or an admin's answer to "publish this node's location", set
-    outside registration and outranking what registration recorded.
-
-    `Node.publication` above is written once, by a board coming through the v1
-    registration handshake, and is rewritten by a reflash. Neither is a place an
-    owner can change their mind from, and most of what the server carries never
-    registered at all: a legacy TCP node, the synthetic fleet, a node mirrored
-    onto the test droplet. This table is the choice made from the dashboard, for
-    any node id the system knows by string.
-
-    So no foreign key to `nodes`, deliberately, and `String(255)` rather than
-    the `String(32)` of `Node.node_id`. A row here for an id nothing has ever
-    heard of is inert rather than an error, which is the behaviour a
-    pre-registration override needs. Ownership (`node_claims`) is narrower: only
-    a registered node can have an owner, so the owner's own route only ever
-    reaches the registered subset of this key space.
-
-    A row wins over the registration choice and deleting it hands the node back
-    to that choice, so a reflash rewriting `Node.publication` cannot quietly
-    republish a node its owner hid; `services/publication.effective_privacy`
-    states the rule and is the only place it is stated.
-
-    `set_by` and `set_at` are provenance, not an audit log: the dashboard shows
-    the owner when and by whom the current state was set, and an admin change is
-    additionally recorded through `log_event`. `set_by` is a user id for an
-    owner and `admin:<email>` for an admin, the two being distinguishable
-    without a second column because a uuid cannot contain a colon.
-    """
-
-    __tablename__ = "node_location_privacy"
-
-    node_id: Mapped[str] = mapped_column(String(255), primary_key=True)
-    private: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    set_by: Mapped[str] = mapped_column(String(255), default="", server_default="")
-    set_at: Mapped[float] = mapped_column(Float, default=0.0, server_default="0")
-
-
 class NodeConfig(Base):
     """One row per configuration version, append-only.
 
@@ -264,8 +226,8 @@ class NodeEvent(Base):
     """A human decision about a node, oldest first and never rewritten.
 
     Keyed to `nodes` without a cascade, so the record of who released a
-    radar's data outlives its registration. `actor` follows
-    NodeLocationPrivacy.set_by: `admin:<email>` for an administrator.
+    radar's data outlives its registration. `actor` is `admin:<email>` for an
+    administrator.
     """
 
     __tablename__ = "node_events"
@@ -340,9 +302,9 @@ class PolledRadarEndpointHistory(Base):
     """Each endpoint a polled radar has had, oldest first.
 
     Deleted with the registration by the database's cascade, which needs
-    `PRAGMA foreign_keys=ON` (core/users.py). `changed_by` follows
-    NodeLocationPrivacy.set_by: a user id for an owner, `admin:<email>` for an
-    administrator.
+    `PRAGMA foreign_keys=ON` (core/users.py). `changed_by` is a user id for an
+    owner and `admin:<email>` for an administrator, the two being
+    distinguishable because a uuid cannot contain a colon.
     """
 
     __tablename__ = "polled_radar_endpoint_history"

@@ -113,7 +113,6 @@ def _clean_db():
         NodeClaimChallenge,
         NodeConfig,
         NodeEvent,
-        NodeLocationPrivacy,
         NodeToken,
         PolledRadar,
         PolledRadarEndpointHistory,
@@ -134,9 +133,6 @@ def _clean_db():
             # is refused for a superuser, so one test promoting an account
             # silently changes what every later test in the session sees.
             await session.execute(delete(User))
-            # No foreign key to nodes, by design (core/nodes.py), so its order
-            # here is free — it sits with the other keyed-by-node-id tables.
-            await session.execute(delete(NodeLocationPrivacy))
             # Children before parent: node_events, polled_radars, node_configs,
             # node_tokens, node_claims and node_claim_challenges all carry a
             # foreign key to nodes (and polled_radar_endpoint_history one to

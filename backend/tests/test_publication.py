@@ -22,14 +22,13 @@ from retina_custody.models import NodeIdentity
 from retina_custody.packet_signer import canonicalize
 
 from core import state
-from core.nodes import Node, NodeLocationPrivacy
+from core.nodes import Node
 from core.users import async_session_maker
 from main import app
 from services import node_auth, node_refs, publication
 from services.public_geometry import without_receiver_geometry
 from services.public_location import public_node_summary
 from services.publication import (
-    effective_privacy,
     is_private,
     private_node_ids,
     public_aircraft_payload,
@@ -69,30 +68,6 @@ def seed_nodes():
         # Both caches sit in front of the same rows and both have a TTL, so a
         # previous test's map would otherwise answer for these ones.
         node_refs._reset_for_tests()
-
-    return _seed
-
-
-@pytest.fixture()
-def seed_override():
-    """seed_override(node_id=True|False, …) — write override rows, drop the cache.
-
-    Writes the row directly rather than going through the route, so the
-    precedence tests below fail on the precedence rule rather than on anything
-    the routes do around it.
-    """
-
-    def _seed(**overrides: bool) -> None:
-        async def _go():
-            async with async_session_maker() as session:
-                for nid, private in overrides.items():
-                    session.add(
-                        NodeLocationPrivacy(node_id=nid, private=private, set_by="test", set_at=1_700_000_000.0)
-                    )
-                await session.commit()
-
-        asyncio.run(_go())
-        publication._reset_for_tests()
 
     return _seed
 
@@ -206,85 +181,10 @@ class TestPrivateNodeIds:
         assert not is_private(_PUB)
 
 
-# ── The override and the precedence rule ─────────────────────────────────────
-
-
-class TestEffectivePrivacy:
-    """The rule itself, on its own, before anything reads a database.
-
-    Four inputs, and the pair that looks redundant is the one worth pinning: a
-    node registered public and a node that never registered are both published,
-    and only the source distinguishes them.  The dashboard's wording depends on
-    that difference — "set at onboarding" is a lie about a node that never
-    onboarded.
-    """
-
-    def test_an_override_wins_over_the_registration_choice(self):
-        assert effective_privacy("private", False) == (False, "override")
-        assert effective_privacy("public", True) == (True, "override")
-
-    def test_without_an_override_the_registration_choice_stands(self):
-        assert effective_privacy("private", None) == (True, "registration")
-        assert effective_privacy("public", None) == (False, "registration")
-
-    def test_with_neither_the_node_is_public_by_default(self):
-        assert effective_privacy(None, None) == (False, "default")
-
-    def test_an_override_alone_needs_no_registration(self):
-        assert effective_privacy(None, True) == (True, "override")
-
-
-class TestPrecedenceOverTheFleet:
-    """The same rule composed by _query over both tables."""
-
-    def test_a_private_registration_with_no_override_is_private(self, seed_nodes):
-        seed_nodes(**{_PRIV: "private"})
-        assert is_private(_PRIV)
-
-    def test_a_public_override_unhides_a_private_registration(self, seed_nodes, seed_override):
-        """The owner changed their mind after onboarding."""
-        seed_nodes(**{_PRIV: "private"})
-        seed_override(**{_PRIV: False})
-        assert not is_private(_PRIV)
-
-    def test_a_private_override_hides_a_node_that_never_registered(self, seed_override):
-        """The synthetic fleet and every mirrored node: no row in `nodes` at all.
-
-        This is the case the table exists for — on the test droplet it is the
-        only way to make anything private.
-        """
-        seed_override(**{"never-registered": True})
-        assert is_private("never-registered")
-
-    def test_a_private_override_hides_a_publicly_registered_node(self, seed_nodes, seed_override):
-        seed_nodes(**{_PUB: "public"})
-        seed_override(**{_PUB: True})
-        assert is_private(_PUB)
-
-    def test_deleting_the_override_returns_the_registration_choice(self, seed_nodes, seed_override):
-        """A reflash rewrites Node.publication and does not touch the override,
-        so the fallback has to still be there when the override goes."""
-        seed_nodes(**{_PRIV: "private"})
-        seed_override(**{_PRIV: False})
-        assert not is_private(_PRIV)
-
-        asyncio.run(publication.clear_location_privacy(_PRIV))
-        publication.invalidate()
-        assert is_private(_PRIV)
-
-    def test_deleting_an_override_on_an_unregistered_node_leaves_it_public(self, seed_override):
-        seed_override(**{"never-registered": True})
-        assert is_private("never-registered")
-
-        asyncio.run(publication.clear_location_privacy("never-registered"))
-        publication.invalidate()
-        assert not is_private("never-registered")
-
-
 class TestInvalidate:
     def test_invalidate_makes_the_next_call_re_query(self, seed_nodes, monkeypatch):
-        """Without this a dashboard change is honoured somewhere in the next
-        30 s, which on a switch that hides a node reads as nothing happening."""
+        """Without this a node registered private is published for up to the
+        next 30 s."""
         seed_nodes(**{_PRIV: "private"})
         assert private_node_ids() == frozenset({_PRIV})
         monkeypatch.setattr(publication, "_query", lambda: frozenset({"someone-else"}))
@@ -308,51 +208,23 @@ class TestInvalidate:
         assert private_node_ids() == frozenset({_PRIV})
 
 
-class TestLocationPrivacyStorage:
-    """The async accessors the routes are built on."""
+class TestRegisteredPrivate:
+    """The owner node list's read: the registration choice and nothing else."""
 
-    def _state(self, node_id):
-        out = asyncio.run(publication.location_privacy(node_id))
-        return out
+    def test_only_nodes_registered_private_are_listed(self, seed_nodes):
+        seed_nodes(**{_PRIV: "private", _PUB: "public"})
+        assert asyncio.run(publication.registered_private([_PRIV, _PUB, "never-registered"])) == {_PRIV}
 
-    def test_an_unknown_node_reports_the_default_with_no_rows(self):
-        assert self._state("never-heard-of-it") == {
-            "node_id": "never-heard-of-it",
-            "location_private": False,
-            "location_privacy_source": "default",
-            "registration_choice": None,
-            "override": None,
-        }
+    def test_an_empty_list_reads_nothing(self):
+        assert asyncio.run(publication.registered_private([])) == frozenset()
 
-    def test_the_registration_choice_is_reported_raw_beside_the_effective_state(self, seed_nodes):
-        seed_nodes(**{_PRIV: "private"})
-        assert self._state(_PRIV) == {
-            "node_id": _PRIV,
-            "location_private": True,
-            "location_privacy_source": "registration",
-            "registration_choice": "private",
-            "override": None,
-        }
-
-    def test_an_override_is_reported_with_its_provenance(self, seed_nodes, seed_override):
-        seed_nodes(**{_PRIV: "private"})
-        seed_override(**{_PRIV: False})
-        state_now = self._state(_PRIV)
-        assert state_now["location_private"] is False
-        assert state_now["location_privacy_source"] == "override"
-        assert state_now["registration_choice"] == "private"
-        assert state_now["override"] == {"private": False, "set_by": "test", "set_at": 1_700_000_000.0}
-
-    def test_setting_twice_corrects_the_row_rather_than_adding_one(self):
-        asyncio.run(publication.set_location_privacy(_PUB, True, set_by="user-a"))
-        asyncio.run(publication.set_location_privacy(_PUB, False, set_by="user-b"))
-        override = self._state(_PUB)["override"]
-        assert override["private"] is False
-        assert override["set_by"] == "user-b"
-
-    def test_clearing_a_node_with_no_override_is_not_an_error(self):
-        asyncio.run(publication.clear_location_privacy("never-heard-of-it"))
-        assert self._state("never-heard-of-it")["override"] is None
+    def test_probation_does_not_count(self, seed_nodes, monkeypatch):
+        """A polled radar on probation is withheld from the public map, but its
+        owner chose public, and their own list says what they chose."""
+        seed_nodes(**{_PUB: "public"})
+        monkeypatch.setattr(publication.probation, "in_probation", lambda nid: nid == _PUB)
+        assert is_private(_PUB)
+        assert asyncio.run(publication.registered_private([_PUB])) == frozenset()
 
 
 # ── The aircraft feed ────────────────────────────────────────────────────────
