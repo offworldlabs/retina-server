@@ -1,4 +1,4 @@
-import { useState, useEffect, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../../api/client";
 import { FetchNotice, nothingLoaded } from "../../components/Notice";
@@ -8,15 +8,10 @@ import { useFetch } from "../../hooks/usePolling";
 import { formatAvailability, formatMHz } from "../../utils/format";
 import { PositionStatusBadge } from "../../components/PositionStatusBadge";
 import { PolledRadars } from "./PolledRadars";
-import {
-  LocationPrivacyBadge,
-  LocationPrivacyControl,
-} from "../../components/LocationPrivacyControl";
 import { RetnodeLink } from "../../components/RetnodeLink";
 import { StatusBadge } from "../../components/StatusBadge";
 import { useNodeIds } from "../../hooks/useNodeIds";
 import { detectionCount, isOnline } from "../../utils/nodes";
-import type { LocationPrivacyState } from "../../types";
 
 const PAGE_SIZE = 25;
 
@@ -148,8 +143,8 @@ export default function NodeManagementPage() {
             const ref = node.node_ref;
             // The private id, or null while the map is in flight and for a ref
             // that resolves to nothing. The node's own site, its contact row and
-            // its privacy override are all named after it; nothing here may fall
-            // back to the ref, which names none of them.
+            // its owner are all named after it; nothing here may fall back to
+            // the ref, which names none of them.
             const nodeId = idsByRef?.[ref] ?? null;
             const summary = summaryMap[ref] || {};
             const contact = nodeId ? contacts[nodeId] : undefined;
@@ -198,7 +193,6 @@ export default function NodeManagementPage() {
                   <span className="meta-label">Site contact phone</span>
                   <span>{contactPhone(contact)}</span>
                 </div>
-                <NodeLocationPrivacy nodeId={nodeId} unresolved={idsByRef !== null && !nodeId} />
               </div>
             );
           })}
@@ -216,56 +210,5 @@ export default function NodeManagementPage() {
       {/* Fetched for itself: a radar on probation is missing from the list above in every state. */}
       <PolledRadars />
     </>
-  );
-}
-
-/** Per-node location privacy for the admin list. The admin API answers one
- *  node at a time, so each card asks for its own — which keeps the requests to
- *  the page of cards actually on screen instead of the whole fleet. Clicks are
- *  stopped here: the card around it navigates to the node page.
- *
- *  Addressed by node_id, which is the key the override is stored under. The
- *  route accepts any string, so a ref passed here would be written happily and
- *  then never consulted — hence `unresolved`, which says the id is missing
- *  rather than late and leaves the control unrendered. */
-function NodeLocationPrivacy({ nodeId, unresolved }: { nodeId: string | null; unresolved: boolean }) {
-  const [state, setState] = useState<LocationPrivacyState | null>(null);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    if (!nodeId) return;
-    let cancelled = false;
-    api
-      .adminNodeLocationPrivacy(nodeId)
-      .then((s) => { if (!cancelled) setState(s); })
-      .catch(() => { if (!cancelled) setFailed(true); });
-    return () => { cancelled = true; };
-  }, [nodeId]);
-
-  return (
-    <div
-      style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}
-      onClick={(e) => e.stopPropagation()}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-        <span className="reading-label">Location privacy</span>
-        <LocationPrivacyBadge isPrivate={state?.location_private} />
-      </div>
-      {unresolved && <div className="privacy-source">No node id for this ref; the override is keyed on one.</div>}
-      {!unresolved && failed && <div className="privacy-source">Could not load location privacy.</div>}
-      {!unresolved && !failed && !state && <div className="privacy-source">Loading…</div>}
-      {state && nodeId && (
-        <LocationPrivacyControl
-          compact
-          nodeId={nodeId}
-          isPrivate={state.location_private}
-          source={state.location_privacy_source}
-          setAt={state.override?.set_at ?? null}
-          onSave={(next) => api.setAdminNodeLocationPrivacy(nodeId, next)}
-          onReset={() => api.clearAdminNodeLocationPrivacy(nodeId)}
-          onApplied={setState}
-        />
-      )}
-    </div>
   );
 }

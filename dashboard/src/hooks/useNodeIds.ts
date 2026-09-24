@@ -6,7 +6,7 @@ import { useFetch } from "./usePolling";
  *  The admin pages are built on the public feeds, which are keyed on node_ref
  *  and carry no node_id at all, so this is what puts the private identifier in
  *  front of an admin: the node's own site is named after it, and the contact
- *  and location-privacy routes are keyed on it.
+ *  and owner routes are keyed on it.
  *
  *  Fetched once per mount and soft-failing to an empty map, so a page that
  *  lists the fleet is not lost with the ids it would have carried. A node that

@@ -4,13 +4,12 @@ import { api } from "../../api/client";
 import { DataTable } from "../../components/DataTable";
 import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { StatCard } from "../../components/StatCard";
-import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
+import { LocationPrivacyBadge } from "../../components/LocationPrivacy";
 import { useAuth } from "../../context/AuthContext";
 import { useFetch } from "../../hooks/usePolling";
 import { StatusBadge } from "../../components/StatusBadge";
 import { formatMHz } from "../../utils/format";
 import { isOnline } from "../../utils/nodes";
-import type { LocationPrivacySource } from "../../types";
 
 type OwnedNode = {
   node_id: string;
@@ -23,7 +22,6 @@ type OwnedNode = {
   rx_lon: number | null;
   frequency: number | null;
   location_private: boolean;
-  location_privacy_source: LocationPrivacySource;
 };
 
 export default function OnboardingPage() {

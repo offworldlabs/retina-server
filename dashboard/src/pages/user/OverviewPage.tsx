@@ -10,7 +10,7 @@ import { usePolling } from "../../hooks/usePolling";
 import { formatAvailability, formatRelativeTime } from "../../utils/format";
 import { useChartTheme } from "../../utils/chartTheme";
 import { PositionStatusBadge, POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
-import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
+import { LocationPrivacyBadge } from "../../components/LocationPrivacy";
 import { StatusBadge } from "../../components/StatusBadge";
 import { detectionCount, isOnline } from "../../utils/nodes";
 
