@@ -43,6 +43,7 @@ dev = [
     "ruff==0.16.2",
     "vulture==2.14",
     "pre-commit==4.6.2",
+    "pyright==1.1.414",
 ]
 
 # An application run from this directory, not a distribution: uv installs its
@@ -165,3 +166,18 @@ ignore = [
 "tests/*" = ["S", "B"]
 "scripts/*" = ["S", "E"]
 "simulation/*" = ["S"]
+
+[tool.pyright]
+include = ["analysis", "clients", "config", "core", "migrations", "pipeline", "routes", "services", "main.py"]
+typeCheckingMode = "basic"
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+# Four of the libs install editable through an import hook pyright cannot
+# follow, so it is pointed at their sources; retina-analytics resolves as is.
+extraPaths = [
+    "../libs/retina-custody",
+    "../libs/retina-geolocator",
+    "../libs/retina-simulation",
+    "../libs/retina-tracker",
+]
