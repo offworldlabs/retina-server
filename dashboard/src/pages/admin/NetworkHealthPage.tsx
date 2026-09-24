@@ -10,7 +10,7 @@ import { DataTable } from "../../components/DataTable";
 import { Pager, clampPage } from "../../components/Pager";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
-import { formatMHz, formatRelativeTime, formatUptime } from "../../utils/format";
+import { formatAvailability, formatMHz, formatRelativeTime } from "../../utils/format";
 import { useChartTheme } from "../../utils/chartTheme";
 import { RetnodeLink } from "../../components/RetnodeLink";
 import { StatusBadge } from "../../components/StatusBadge";
@@ -209,7 +209,7 @@ export default function NetworkHealthPage() {
           return (
             <>
               <DataTable
-                headers={["Node ref", "Node ID", "Status", "Last Heartbeat", "Detections", "Avg SNR", "Trust", "Reputation", "Uptime"]}
+                headers={["Node ref", "Node ID", "Status", "Last Heartbeat", "Detections", "Avg SNR", "Trust", "Reputation", "Availability"]}
                 count={paged.length}
                 empty="No nodes found"
               >
@@ -238,7 +238,7 @@ export default function NetworkHealthPage() {
                       <td>{(node._analytics?.metrics?.avg_snr || 0).toFixed(1)} dB</td>
                       <td>{((node._analytics?.trust?.trust_score || 0) * 100).toFixed(0)}%</td>
                       <td>{((node._analytics?.reputation?.reputation || 0) * 100).toFixed(0)}%</td>
-                      <td>{formatUptime(node._analytics?.metrics?.uptime_s || 0)}</td>
+                      <td>{formatAvailability(node._analytics?.metrics?.availability_7d)}</td>
                     </tr>
                   );
                 })}

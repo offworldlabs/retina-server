@@ -7,7 +7,7 @@ import { StatCard } from "../../components/StatCard";
 import { StatusBadge } from "../../components/StatusBadge";
 import { usePolling } from "../../hooks/usePolling";
 import { useAuth } from "../../context/AuthContext";
-import { formatUptime } from "../../utils/format";
+import { formatAvailability } from "../../utils/format";
 import { shortRef } from "../../utils/nodes";
 
 const PAGE_SIZE = 25;
@@ -38,7 +38,7 @@ export default function LeaderboardPage() {
   // Re-sort locally based on selection
   const sorted = [...entries].sort((a, b) => {
     if (sortBy === "detections") return b.detections - a.detections;
-    if (sortBy === "uptime") return b.uptime_s - a.uptime_s;
+    if (sortBy === "availability") return (b.availability_7d ?? -1) - (a.availability_7d ?? -1);
     if (sortBy === "trust") return b.trust_score - a.trust_score;
     if (sortBy === "snr") return b.avg_snr - a.avg_snr;
     if (sortBy === "miss_rate") return (a.miss_rate || 0) - (b.miss_rate || 0);
@@ -111,7 +111,7 @@ export default function LeaderboardPage() {
       {/* Sort control */}
       <div className="toolbar">
         <span className="card-note">Sort by:</span>
-        {["detections", "uptime", "trust", "snr", ...(showsMisses ? ["miss_rate"] : [])].map((key) => (
+        {["detections", "availability", "trust", "snr", ...(showsMisses ? ["miss_rate"] : [])].map((key) => (
           <button
             key={key}
             className={`btn ${sortBy === key ? "btn-primary" : "btn-secondary"} btn-sm`}
@@ -150,7 +150,7 @@ export default function LeaderboardPage() {
                   "Detections",
                   "Tracks",
                   ...(showsMisses ? ["In Range", "Missed", "Miss Rate"] : []),
-                  "Uptime",
+                  "Availability",
                   "Avg SNR",
                   "Trust",
                 ]}
@@ -183,7 +183,9 @@ export default function LeaderboardPage() {
                         </td>
                       </>
                     )}
-                    <td>{formatUptime(entry.uptime_s)}</td>
+                    <td title="Share of the last 7 days' minutes it delivered in">
+                      {formatAvailability(entry.availability_7d)}
+                    </td>
                     <td>{entry.avg_snr.toFixed(1)} dB</td>
                     <td>{(entry.trust_score * 100).toFixed(0)}%</td>
                   </tr>

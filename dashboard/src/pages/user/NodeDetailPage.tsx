@@ -8,7 +8,7 @@ import { api } from "../../api/client";
 import { FetchNotice, Notice } from "../../components/Notice";
 import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
-import { formatMHz, formatUptime } from "../../utils/format";
+import { formatAvailability, formatDuration, formatMHz } from "../../utils/format";
 import { useChartTheme } from "../../utils/chartTheme";
 import { detectionCount } from "../../utils/nodes";
 import { RetnodeLink } from "../../components/RetnodeLink";
@@ -218,7 +218,9 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
           <div className="card-body">
             <table className="kv-table">
               <tbody>
-                <tr><td>Uptime</td><td>{formatUptime(metrics.uptime_s || 0)}</td></tr>
+                <tr><td>Availability (7 d)</td><td>{formatAvailability(metrics.availability_7d)}</td></tr>
+                <tr><td>Availability (24 h)</td><td>{formatAvailability(metrics.availability_24h)}</td></tr>
+                <tr><td>Availability measured over</td><td>{formatDuration(metrics.availability_measured_s)}</td></tr>
                 <tr><td>Average Gap</td><td>{(gapStats.avg_gap || 0).toFixed(2)}s</td></tr>
                 <tr><td>Max Gap</td><td>{(gapStats.max_gap || 0).toFixed(2)}s</td></tr>
                 <tr><td>Gap Std Dev</td><td>{(gapStats.std_gap || 0).toFixed(3)}s</td></tr>

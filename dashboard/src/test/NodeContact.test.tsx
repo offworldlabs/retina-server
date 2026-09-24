@@ -76,7 +76,7 @@ const BOB_OWNS_ADAS_NODE = { ret1a2b3c4d: { user_id: "7", email: "bob@example.co
 /** One row's value on one card, found through the row's own label.
  *
  *  Asserting on the card as a whole cannot see a single row: Frequency and
- *  Uptime render the same dash for a node with neither, so a card-wide
+ *  Availability render the same dash for a node with neither, so a card-wide
  *  assertion holds whatever the row does. */
 function cell(nodeName: string, label: string) {
   const card = screen.getByText(nodeName).closest(".node-card") as HTMLElement;

@@ -38,7 +38,8 @@ export default function KnowledgeBasePage() {
       description: "What the dashboard numbers mean.",
       items: [
         { q: "Trust Score", a: "Measures how well your node's detections match known ADS-B aircraft positions. Higher is better (0–100%)." },
-        { q: "Reputation", a: "Long-term reliability score based on uptime, data quality, and consistency. Drops with outages or bad data." },
+        { q: "Availability", a: "The share of the last 7 days' minutes in which your node delivered data, counting only minutes the server was up to receive it. The node's own page also gives the last 24 hours." },
+        { q: "Reputation", a: "Long-term reliability score, judged on the node's heartbeat, how well its detections agree with ADS-B and with trusted neighbours, and whether its detection rate is plausible." },
         { q: "SNR (Signal-to-Noise Ratio)", a: "The strength of the radar signal relative to background noise. 10+ dB is good, 20+ dB is excellent." },
         { q: "Coverage Overlap", a: "How much your detection area intersects with nearby nodes. Higher overlap enables better triangulation." },
       ],

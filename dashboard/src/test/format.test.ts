@@ -2,12 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   fmt,
+  formatAvailability,
   formatBytes,
   formatDuration,
   formatMHz,
   formatPercent,
   formatRelativeTime,
-  formatUptime,
 } from "../utils/format";
 
 describe("fmt", () => {
@@ -27,26 +27,21 @@ describe("fmt", () => {
   });
 });
 
-describe("formatUptime", () => {
-  it.each([0, undefined, null])("renders %s as a dash", (v) => {
-    expect(formatUptime(v)).toBe("—");
+describe("formatAvailability", () => {
+  it.each([undefined, null])("renders %s as a dash", (v) => {
+    expect(formatAvailability(v)).toBe("—");
   });
 
-  it("counts hours and minutes under a day", () => {
-    expect(formatUptime(59)).toBe("0h 0m");
-    expect(formatUptime(3661)).toBe("1h 1m");
-    expect(formatUptime(23 * 3600 + 59 * 60)).toBe("23h 59m");
+  it("reads a share as a percentage to one place", () => {
+    expect(formatAvailability(0)).toBe("0.0%");
+    expect(formatAvailability(0.9731)).toBe("97.3%");
+    expect(formatAvailability(1)).toBe("100.0%");
   });
 
-  it("switches to days and hours past a full day", () => {
-    expect(formatUptime(25 * 3600)).toBe("1d 1h");
-    expect(formatUptime(3 * 86400 + 5 * 3600 + 30 * 60)).toBe("3d 5h");
-  });
-
-  // The threshold is strictly more than 24 hours: a node up for exactly a day
-  // still reads in hours.
-  it("keeps exactly 24 hours in hours", () => {
-    expect(formatUptime(86400)).toBe("24h 0m");
+  // One minute missed in a week is 99.99%, which rounded would claim a
+  // perfect week.
+  it("rounds down, so only a perfect week reads 100%", () => {
+    expect(formatAvailability(0.9999)).toBe("99.9%");
   });
 });
 
