@@ -63,24 +63,29 @@ reports no checks at all; verify it from this repo's suite instead.
 
 ## Local setup
 
-Clone with submodules, then set up backend and front-ends.
-
 ```bash
-git clone --recursive https://github.com/offworldlabs/retina-server.git
+git clone https://github.com/offworldlabs/retina-server.git
 cd retina-server
-# already cloned without --recursive?
-git submodule update --init --recursive
+just setup
 ```
+
+`just setup` checks out the submodules, installs the backend venv and
+`node_modules` from their lockfiles (`just locked`), copies
+`backend/.env.example` to `backend/.env` if there is none, brings the dev
+database to head, and installs pre-commit and the git hook (`just hooks`).
+Running it again updates the submodules to the branch's pins, resyncs the
+backend venv, reinstalls `node_modules` (so stop `just up` first) and installs
+the hook's tools at this checkout's versions (see "Before you push"). The
+sections below cover what it sets up.
 
 ### Backend
 
 ```bash
-cd backend
-uv sync && source .venv/bin/activate   # the lock, dev tools and all five libs, editable
-pre-commit install --install-hooks   # the lint gate on every commit; see "Before you push"
-cp .env.example .env          # fill in what you need (see below)
+cd backend && source .venv/bin/activate   # the lock, dev tools and all five libs, editable
 RETINA_ENV=dev AUTH_ALLOW_ANONYMOUS_ADMIN=1 SYNTHETIC_FLEET_ENABLED=1 uvicorn main:app --reload
 ```
+
+Fill in `backend/.env` with what you need (see below).
 
 API at `http://localhost:8000`, and its reference at `/`. That page and
 `/openapi.json` list only the public routes; with the bypass below, the whole
@@ -169,15 +174,9 @@ backend with synthetic frames, see [`docs/simulation.md`](docs/simulation.md).
 ### Working in a git worktree
 
 A fresh worktree has empty `libs/` directories, no `node_modules` and no venv of
-its own. Build them the way CI does, or pytest fails at conftest import on a
-missing `sqlalchemy`. The submodules come first: `uv sync` builds the libs from
-them.
-
-```bash
-git submodule update --init
-npm ci
-cd backend && uv sync
-```
+its own, so pytest fails at conftest import on a missing `sqlalchemy` until
+`just setup` has run in it. Never point one at another checkout's venv: its
+libs are editable installs of that checkout's submodules.
 
 ## Running tests
 
@@ -272,24 +271,31 @@ jobs report every failure at once:
 
 The Docker build and the compose parity check are left to CI.
 
-The lint gate is pre-commit, not the two ruff commands. Once installed (see
-Local setup) it runs on the staged files at every commit, in every worktree:
-hooks live in the clone's shared `.git/hooks`. The hook records the absolute
-path of the venv it was installed from, so reinstall it if that venv moves.
-CI runs it over every file, as `just lint` does, since a commit made with
-`--no-verify` or from somewhere without the hook skipped it.
+The lint gate is pre-commit, not the two ruff commands. `just hooks` (part of
+`just setup`) installs it as the clone's git hook, in the shared `.git/hooks`,
+and it then runs on the staged files at every commit, in every worktree. The
+hook runs through a pre-commit installed as a uv tool, outside every checkout,
+so removing or moving a worktree leaves it working in the others. The dead-code
+check calls vulture, which `just hooks` installs beside it, by name, so
+`uv tool dir --bin` must be on PATH; the ruff-config check needs a `python3` of
+3.11 or later. The tools are machine-wide, so they sit at the versions in the
+venv of whichever checkout ran `just hooks` last, which are `uv.lock`'s once
+`just locked` has run there. The contract check alone runs in the committing
+checkout's `backend/.venv`, because it imports the app. CI runs the hooks over
+every file, as `just lint` does, since a commit made with `--no-verify` or from
+somewhere without the hook skipped it.
 
 It runs `ruff-check`, `ruff-format`, actionlint over the workflows, a dead-code
-check (vulture) and `ruff-config` twice, once per copy of the shared standard in
-this repo. A change can pass `ruff check` and `ruff format` by hand and still
-fail CI on dead code.
+check (vulture), `ruff-config` twice, once per copy of the shared standard in
+this repo, and the node API contract check below. A change can pass
+`ruff check` and `ruff format` by hand and still fail CI on dead code.
 
 Touching a node route or one of its models also moves the node API's wire
 contract, which is generated rather than written. So does changing a
 configuration bound: the schema published for `config` is built from the
 validator's own tables, so `backend/services/node_config.py` moves the contract
-with no route touched. Regenerate it in the same commit, or CI fails on a file
-you never edited:
+with no route touched. Regenerate it in the same commit: the hook refuses the
+commit otherwise, and CI fails on a file you never edited if it got past:
 
 ```bash
 just contract
