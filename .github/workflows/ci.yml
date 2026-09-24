@@ -342,6 +342,20 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # The runner image's Compose lags the droplets', and a Compose older than
+      # the one that deploys the files can reject keys the droplets accept, so
+      # the check renders them with the droplets' release.
+      - name: Install the droplets' Docker Compose
+        env:
+          COMPOSE_VERSION: v2.40.3
+          COMPOSE_SHA256: dba9d98e1ba5bfe11d88c99b9bd32fc4a0624a30fafe68eea34d61a3e42fd372
+        run: |
+          mkdir -p ~/.docker/cli-plugins
+          curl -fsSL -o ~/.docker/cli-plugins/docker-compose \
+            "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-linux-x86_64"
+          echo "${COMPOSE_SHA256}  ${HOME}/.docker/cli-plugins/docker-compose" | sha256sum -c -
+          chmod +x ~/.docker/cli-plugins/docker-compose
+          docker compose version
       # Both services declare `env_file: backend/.env`, which holds per-host
       # secrets and so is never committed. `docker compose config` refuses to
       # resolve without it, so stand in an empty one — the check compares the
