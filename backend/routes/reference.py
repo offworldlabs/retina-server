@@ -15,6 +15,7 @@ import base64
 import hashlib
 import html
 import json
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -31,94 +32,9 @@ router = APIRouter(include_in_schema=False)
 SCALAR_URL = "https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.69.0/dist/browser/standalone.js"
 SCALAR_INTEGRITY = "sha384-UL+pt9bcR3hCuzEybA1bAyu6yv9qkzJuYCP5N+HZPOo9ZkUXcMflxqBjC1vfDzfe"
 
-# RETINA's palette (packages/shared/css/tokens.css) in Scalar's own variable
-# names. The admin console's viewer carries the same stylesheet in
-# dashboard/src/utils/scalarTheme.ts, and dashboard/src/test/scalarTheme.test.ts
-# fails if the two copies differ or either leaves the tokens. theme:"none" leaves
-# Scalar its plain base palette, which these override; layout, spacing and any
-# colour not named here stay Scalar's.
-THEME_CSS = """
-.dark-mode {
-  --scalar-background-1: #0d1b2a;
-  --scalar-background-2: #132240;
-  --scalar-background-3: #1a2b4d;
-  --scalar-background-card: #132240;
-  --scalar-background-accent: rgba(56, 189, 248, 0.16);
-  --scalar-background-alert: rgba(251, 191, 36, 0.15);
-  --scalar-background-danger: rgba(244, 63, 94, 0.15);
-  --scalar-border-color: rgba(100, 180, 255, 0.14);
-  --scalar-color-1: #e2e8f0;
-  --scalar-color-2: #94a3b8;
-  --scalar-color-3: #64748b;
-  --scalar-color-accent: #38bdf8;
-  --scalar-color-green: #4ade80;
-  --scalar-color-red: #f43f5e;
-  --scalar-color-orange: #fbbf24;
-  --scalar-color-blue: #38bdf8;
-  --scalar-link-color: #38bdf8;
-  --scalar-link-color-hover: #7dd3fc;
-  --scalar-button-1: #38bdf8;
-  --scalar-button-1-color: #082f49;
-  --scalar-button-1-hover: #7dd3fc;
-  --scalar-header-background-1: #0d1b2a;
-  --scalar-header-background-2: #132240;
-  --scalar-header-color-1: #e2e8f0;
-  --scalar-header-color-2: #94a3b8;
-  --scalar-header-border-color: rgba(100, 180, 255, 0.14);
-  --scalar-header-call-to-action-color: #38bdf8;
-  --scalar-sidebar-background-1: #132240;
-  --scalar-sidebar-border-color: rgba(100, 180, 255, 0.14);
-  --scalar-sidebar-color-1: #e2e8f0;
-  --scalar-sidebar-color-2: #94a3b8;
-  --scalar-sidebar-color-active: #38bdf8;
-  --scalar-sidebar-item-hover-background: rgba(56, 189, 248, 0.07);
-  --scalar-sidebar-item-hover-color: #e2e8f0;
-  --scalar-sidebar-item-active-background: rgba(56, 189, 248, 0.16);
-  --scalar-sidebar-search-background: rgba(15, 30, 55, 0.9);
-  --scalar-sidebar-search-border-color: rgba(100, 180, 255, 0.14);
-  --scalar-sidebar-search-color: #94a3b8;
-}
-.light-mode {
-  --scalar-background-1: #f1f5f9;
-  --scalar-background-2: #ffffff;
-  --scalar-background-3: #f8fafc;
-  --scalar-background-card: #ffffff;
-  --scalar-background-accent: rgba(59, 130, 246, 0.10);
-  --scalar-background-alert: rgba(245, 158, 11, 0.10);
-  --scalar-background-danger: rgba(239, 68, 68, 0.10);
-  --scalar-border-color: #e2e8f0;
-  --scalar-color-1: #0f172a;
-  --scalar-color-2: #475569;
-  --scalar-color-3: #94a3b8;
-  --scalar-color-accent: #3b82f6;
-  --scalar-color-green: #10b981;
-  --scalar-color-red: #ef4444;
-  --scalar-color-orange: #f59e0b;
-  --scalar-color-blue: #3b82f6;
-  --scalar-link-color: #3b82f6;
-  --scalar-link-color-hover: #2563eb;
-  --scalar-button-1: #3b82f6;
-  --scalar-button-1-color: #ffffff;
-  --scalar-button-1-hover: #2563eb;
-  --scalar-header-background-1: #f1f5f9;
-  --scalar-header-background-2: #ffffff;
-  --scalar-header-color-1: #0f172a;
-  --scalar-header-color-2: #475569;
-  --scalar-header-border-color: #e2e8f0;
-  --scalar-header-call-to-action-color: #3b82f6;
-  --scalar-sidebar-background-1: #ffffff;
-  --scalar-sidebar-border-color: #e2e8f0;
-  --scalar-sidebar-color-1: #0f172a;
-  --scalar-sidebar-color-2: #475569;
-  --scalar-sidebar-color-active: #3b82f6;
-  --scalar-sidebar-item-hover-background: rgba(59, 130, 246, 0.05);
-  --scalar-sidebar-item-hover-color: #0f172a;
-  --scalar-sidebar-item-active-background: rgba(59, 130, 246, 0.10);
-  --scalar-sidebar-search-background: #f8fafc;
-  --scalar-sidebar-search-border-color: #e2e8f0;
-  --scalar-sidebar-search-color: #475569;
-}
-""".strip()
+# RETINA's palette in Scalar's own variable names, shared with the admin
+# console's viewer. The Dockerfile ships it beside backend/, as in the repo.
+THEME_CSS = (Path(__file__).resolve().parents[2] / "packages/shared/css/scalar-theme.css").read_text("utf-8").strip()
 
 # The console's font stack and radii (dashboard/src/App.css, tokens.css), and
 # room for the header. This page's alone: the admin viewer sits inside the
