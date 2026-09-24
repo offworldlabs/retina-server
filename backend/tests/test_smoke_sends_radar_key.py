@@ -104,6 +104,39 @@ def test_each_smoke_suite_is_given_its_own_environments_key(step, secret: str) -
     assert step().get("env", {}).get("RADAR_API_KEY") == f"${{{{ secrets.{secret} }}}}"
 
 
+def _staging_key_preflight() -> str:
+    """The deploy's radar-key check, which must sit with the other pre-flights."""
+    steps = yaml.safe_load(_STAGING_WORKFLOW.read_text())["jobs"]["deploy"]["steps"]
+    (script,) = [s["with"]["script"] for s in steps if "script" in s.get("with", {})]
+    start = script.index("# Pre-flight: the radar key.")
+    end = script.index("# Pre-flights go above this line.")
+    assert start < end, "the radar-key check runs after the box is already mid-deploy"
+    return script[start:end]
+
+
+@pytest.mark.parametrize(
+    ("env_text", "refused"),
+    [
+        (None, True),
+        ("", True),
+        ("RADAR_API_KEY=\n", True),
+        # compose passes the last occurrence on
+        ("RADAR_API_KEY=abc\nRADAR_API_KEY=\n", True),
+        ("RADAR_API_KEY=\nRADAR_API_KEY=abc\n", False),
+        ("RADAR_API_KEY=abc\n", False),
+    ],
+    ids=["no .env", "no line", "empty", "emptied last", "set last", "set"],
+)
+def test_the_staging_deploy_refuses_a_box_without_a_radar_key(tmp_path, env_text, refused) -> None:
+    (tmp_path / "backend").mkdir()
+    if env_text is not None:
+        (tmp_path / "backend" / ".env").write_text(env_text)
+    result = subprocess.run(
+        ["/bin/bash", "-c", _staging_key_preflight()], cwd=tmp_path, capture_output=True, text=True, timeout=30
+    )
+    assert (result.returncode != 0) == refused, result.stdout
+
+
 def test_the_staging_suite_refuses_to_run_without_a_key() -> None:
     # An empty PATH, so a suite that ran on regardless fails at its first
     # external command rather than probing staging from a unit test.

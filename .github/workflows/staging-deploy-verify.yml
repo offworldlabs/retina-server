@@ -132,6 +132,16 @@ jobs:
               exit 1
             fi
 
+            # Pre-flight: the radar key. The test router's reads admit the smoke
+            # suite by it and fail closed without one (backend/routes/test.py),
+            # so a box with none fails every smoke run and holds production
+            # back. The last line is read because it is the one compose passes
+            # on (see the same check in ci.yml's deploy-production).
+            if ! grep -E '^RADAR_API_KEY=' backend/.env 2>/dev/null | tail -1 | grep -qE '^RADAR_API_KEY=.+$'; then
+              echo "::error::backend/.env on $(hostname) has no effective RADAR_API_KEY. The test router's reads admit the smoke suite only by that key, so the smoke run would fail. Set it to the STAGING_RADAR_API_KEY secret's value and re-run. Refusing to deploy; the running stack is untouched."
+              exit 1
+            fi
+
             # Pre-flights go above this line. From here the box is mid-deploy
             # and a failure below is the rollback job's to undo, keyed on the
             # marker's run id. NOT `|| true`: no rollback point, no deploy.
