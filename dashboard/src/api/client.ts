@@ -3,6 +3,7 @@ import { UnauthorizedError, request as sharedRequest, type RequestOptions } from
 import { isPublicRoute } from "../utils/publicRoutes";
 import { signInNext } from "../utils/signInNext";
 import { isAdminHost } from "../utils/surface";
+import type { PolledRadarListing, PolledRadarTrust } from "../types";
 
 /** Must match the route in App.tsx. */
 const LOGIN_PATH = "/login";
@@ -176,5 +177,14 @@ export const api = {
   clearAdminNodeLocationPrivacy: (nodeId) =>
     request(`/api/admin/nodes/${encodeURIComponent(nodeId)}/location-privacy`, {
       method: "DELETE",
+    }),
+
+  // Admin: polled radars and the trust decision on each. The epoch is the one
+  // the page showed; the server refuses it with a 409 once the radar has moved on.
+  adminPolledRadars: (): Promise<PolledRadarListing> => request("/api/admin/polled-radars"),
+  setAdminPolledRadarTrust: (nodeId: string, trustState: PolledRadarTrust, epoch: number) =>
+    request(`/api/admin/polled-radars/${encodeURIComponent(nodeId)}/trust`, {
+      method: "PUT",
+      body: JSON.stringify({ trust_state: trustState, epoch }),
     }),
 };

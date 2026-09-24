@@ -24,6 +24,8 @@ vi.mock("../api/client", () => ({
     }),
     setAdminNodeLocationPrivacy: vi.fn(),
     clearAdminNodeLocationPrivacy: vi.fn(),
+    adminPolledRadars: vi.fn().mockResolvedValue({ probation_enabled: true, radars: [] }),
+    setAdminPolledRadarTrust: vi.fn(),
   },
 }));
 

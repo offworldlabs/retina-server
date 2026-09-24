@@ -28,3 +28,40 @@ export interface LocationPrivacyState {
   /** Convenience mirror of override.set_at for the control's source line. */
   set_at?: number | null;
 }
+
+/* ---- Polled radars ---- */
+
+/** Whether a polled radar's data reaches the solve, the archive and the public
+ *  map ("graduated") or only its own analytics and tracker ("probation"). */
+export type PolledRadarTrust = "probation" | "graduated";
+
+/** One human decision about a node, from node_events. */
+export interface NodeEvent {
+  kind: "graduated" | "returned_to_probation";
+  /** The radar's epoch the decision applied to. */
+  epoch: number | null;
+  /** `admin:<email>` for an administrator. */
+  actor: string;
+  at: string;
+}
+
+/** A stock blah2 radar the server polls, as administrators see it. */
+export interface PolledRadar {
+  node_id: string;
+  node_ref: string;
+  /** `host:port`: the operator's address, shown only to admins and the owner. */
+  endpoint: string;
+  liveness: "pending" | "streaming" | "stalled" | "unreachable";
+  last_frame_at: string | null;
+  /** Moves, back on probation, whenever what the radar declares may have come
+   *  from another box. A decision applies to one epoch. */
+  epoch: number;
+  trust_state: PolledRadarTrust;
+  /** Newest first. */
+  events: NodeEvent[];
+}
+
+export interface PolledRadarListing {
+  probation_enabled: boolean;
+  radars: PolledRadar[];
+}
