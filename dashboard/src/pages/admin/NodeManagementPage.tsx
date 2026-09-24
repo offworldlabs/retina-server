@@ -42,9 +42,9 @@ export default function NodeManagementPage() {
   const navigate = useNavigate();
 
   const polled = useFetch(async () => {
-    // Contacts and owners are each caught on their own so a failure there
-    // costs their cells rather than the node list. Logged before the
-    // fallback: an empty object is also what "none on file" looks like, and
+    // Contacts, owners and reports are each caught on their own so a failure
+    // there costs their cells rather than the node list. Logged before the
+    // fallback: an empty result is also what "none on file" looks like, and
     // the two should not be indistinguishable in the console.
     const contactsOrNone = api.adminNodeContacts().catch((e) => {
       console.error("contacts unavailable", e);
@@ -54,7 +54,22 @@ export default function NodeManagementPage() {
       console.error("owners unavailable", e);
       return {};
     });
-    const [n, a, c, o] = await Promise.all([api.nodes(), api.analytics(), contactsOrNone, ownersOrNone]);
+    // Keyed by node_id inside the chain, so a body it cannot read is caught
+    // with the rest.
+    const reportsOrNone = api
+      .adminNodeReports()
+      .then((rows) => Object.fromEntries(rows.map((report) => [report.node_id, report])))
+      .catch((e) => {
+        console.error("node reports unavailable", e);
+        return {};
+      });
+    const [n, a, c, o, reports] = await Promise.all([
+      api.nodes(),
+      api.analytics(),
+      contactsOrNone,
+      ownersOrNone,
+      reportsOrNone,
+    ]);
     const nodeMap = n.nodes || {};
     // Keyed on node_ref: the listing is a public feed and carries no
     // node_id. What needs one joins through useNodeIds below.
@@ -62,7 +77,7 @@ export default function NodeManagementPage() {
       ...info,
       node_ref: ref,
     }));
-    return { nodes, analytics: a, contacts: c, owners: o };
+    return { nodes, analytics: a, contacts: c, owners: o, reports };
   });
   const { data, loading } = polled;
 
@@ -70,6 +85,7 @@ export default function NodeManagementPage() {
   const analytics = data?.analytics;
   const contacts = data?.contacts ?? {};
   const owners = data?.owners ?? {};
+  const reports = data?.reports ?? {};
 
   // Keyed on node_ref, the same key space `nodes` (built above) uses.
   const summaryMap = analytics?.nodes || {};
@@ -138,6 +154,9 @@ export default function NodeManagementPage() {
             const summary = summaryMap[ref] || {};
             const contact = nodeId ? contacts[nodeId] : undefined;
             const owner = nodeId ? owners[nodeId] : undefined;
+            // As of the node's last heartbeat, which names it on contract 1.6.0
+            // and later.
+            const trackerRelease = nodeId ? reports[nodeId]?.versions?.retina_tracker : undefined;
             return (
               // The node page is addressed by the public identity, since the
               // per-node analytics route behind it is.
@@ -168,6 +187,8 @@ export default function NodeManagementPage() {
                   <span>{(summary.metrics?.avg_snr || 0).toFixed(1)} dB</span>
                   <span className="meta-label">Availability</span>
                   <span>{formatAvailability(summary.metrics?.availability_7d)}</span>
+                  <span className="meta-label">Tracker release</span>
+                  <span className="mono">{trackerRelease || "—"}</span>
                   <span className="meta-label">Owner email</span>
                   <span>{owner?.email || "—"}</span>
                   <span className="meta-label">Site contact</span>

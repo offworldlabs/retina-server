@@ -36,7 +36,7 @@ def _beat(**overrides) -> dict:
         "boot_id": "k3n8v2qp71ab",
         "config_version": 1,
         "health": {"cpu_pct": 41.5, "disk_free_mb": 20480, "temp_c": 58.0, "blah2": "up", "adsb": "down"},
-        "versions": {"owl_os": "1.4.0", "retina_node": "0.9.2", "blah2_image": "0.4.3"},
+        "versions": {"owl_os": "1.4.0", "retina_node": "0.9.2", "blah2_image": "0.4.3", "retina_tracker": "0.3.0"},
     }
     beat.update(overrides)
     return beat
@@ -59,6 +59,7 @@ async def test_the_heartbeat_s_self_report_is_stored(registered_node, node_clien
     assert report["health"]["blah2"] == "up"
     assert report["health"]["adsb"] == "down"
     assert report["versions"]["blah2_image"] == "0.4.3"
+    assert report["versions"]["retina_tracker"] == "0.3.0"
     assert [e["message"] for e in report["errors"]] == ["blah2-api stopped answering"]
     assert report["node_ref"]
 
