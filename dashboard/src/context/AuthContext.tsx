@@ -11,6 +11,8 @@ export function AuthProvider({ children }) {
   // simulator is on the admin console, which has no visitors, and every
   // deployed /map is real-only, where ground truth is never offered.
   const syntheticFleet = Boolean(user?.synthetic_fleet);
+  // Whether the radar registration page's routes answer here.
+  const polledRadarRegistration = Boolean(user?.polled_radar_registration);
 
   // Resolves { redirected } so a caller knows not to route over a navigation
   // that is still in flight. `leave` runs in the same tick the identity is
@@ -41,7 +43,7 @@ export function AuthProvider({ children }) {
   // until /api/auth/me was asked again. Passed bare so it stays referentially
   // stable, which callers may depend on in an effect.
   return (
-    <AuthContext.Provider value={{ user, loading, logout, signIn: setUser, syntheticFleet }}>
+    <AuthContext.Provider value={{ user, loading, logout, signIn: setUser, syntheticFleet, polledRadarRegistration }}>
       {children}
     </AuthContext.Provider>
   );

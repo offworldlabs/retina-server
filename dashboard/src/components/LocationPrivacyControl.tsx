@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { LocationPrivacySource, LocationPrivacyState } from "../types";
+import type { LocationPrivacySource, LocationPrivacyState, Publication } from "../types";
 
 /** The two answers, in the words the dashboard is contracted to use.
  *  `services/publication.py` is what actually enforces them; keep this copy in
@@ -31,6 +31,61 @@ export function LocationPrivacyBadge({ isPrivate }: { isPrivate?: boolean | null
     <span className="badge private" title={PRIVATE_DESCRIPTION}>
       Private
     </span>
+  );
+}
+
+interface PublicationOptionsProps {
+  /** The radio group's name, distinct for each group on a page. */
+  name: string;
+  /** null while nothing is chosen. */
+  value: Publication | null;
+  disabled?: boolean;
+  publicDesc?: string;
+  /** Drops the per-option prose (kept as a tooltip) for dense lists. */
+  compact?: boolean;
+  onChange: (choice: Publication) => void;
+}
+
+/** The two answers as a radio group, in the contracted words. */
+export function PublicationOptions({
+  name,
+  value,
+  disabled = false,
+  publicDesc = publicDescription(),
+  compact = false,
+  onChange,
+}: PublicationOptionsProps) {
+  return (
+    <div className="privacy-options">
+      <label className="privacy-option" title={compact ? publicDesc : undefined}>
+        <input
+          type="radio"
+          name={name}
+          value="public"
+          checked={value === "public"}
+          disabled={disabled}
+          onChange={() => onChange("public")}
+        />
+        <span>
+          <span className="privacy-option-title">Public</span>
+          {!compact && <span className="privacy-option-desc">{publicDesc}</span>}
+        </span>
+      </label>
+      <label className="privacy-option" title={compact ? PRIVATE_DESCRIPTION : undefined}>
+        <input
+          type="radio"
+          name={name}
+          value="private"
+          checked={value === "private"}
+          disabled={disabled}
+          onChange={() => onChange("private")}
+        />
+        <span>
+          <span className="privacy-option-title">Private</span>
+          {!compact && <span className="privacy-option-desc">{PRIVATE_DESCRIPTION}</span>}
+        </span>
+      </label>
+    </div>
   );
 }
 
@@ -125,36 +180,14 @@ export function LocationPrivacyControl({
 
   return (
     <div className="privacy-control">
-      <div className="privacy-options">
-        <label className="privacy-option" title={compact ? publicDesc : undefined}>
-          <input
-            type="radio"
-            name={name}
-            value="public"
-            checked={!shownPrivate}
-            disabled={saving}
-            onChange={() => choose(false)}
-          />
-          <span>
-            <span className="privacy-option-title">Public</span>
-            {!compact && <span className="privacy-option-desc">{publicDesc}</span>}
-          </span>
-        </label>
-        <label className="privacy-option" title={compact ? PRIVATE_DESCRIPTION : undefined}>
-          <input
-            type="radio"
-            name={name}
-            value="private"
-            checked={shownPrivate}
-            disabled={saving}
-            onChange={() => choose(true)}
-          />
-          <span>
-            <span className="privacy-option-title">Private</span>
-            {!compact && <span className="privacy-option-desc">{PRIVATE_DESCRIPTION}</span>}
-          </span>
-        </label>
-      </div>
+      <PublicationOptions
+        name={name}
+        value={shownPrivate ? "private" : "public"}
+        disabled={saving}
+        publicDesc={publicDesc}
+        compact={compact}
+        onChange={(choice) => choose(choice === "private")}
+      />
 
       <div className="privacy-source">
         <span>{sourceLine(shownSource, shownSetAt)}</span>

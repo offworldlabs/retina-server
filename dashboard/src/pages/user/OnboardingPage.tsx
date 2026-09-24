@@ -1,8 +1,11 @@
+import { Link } from "react-router-dom";
+
 import { api } from "../../api/client";
 import { DataTable } from "../../components/DataTable";
 import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { StatCard } from "../../components/StatCard";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
+import { useAuth } from "../../context/AuthContext";
 import { useFetch } from "../../hooks/usePolling";
 import { StatusBadge } from "../../components/StatusBadge";
 import { formatMHz } from "../../utils/format";
@@ -24,6 +27,7 @@ type OwnedNode = {
 };
 
 export default function OnboardingPage() {
+  const { polledRadarRegistration } = useAuth();
   const polled = useFetch(() => api.myNodes().then((n): OwnedNode[] => (Array.isArray(n) ? n : [])));
   const { loading } = polled;
 
@@ -36,6 +40,11 @@ export default function OnboardingPage() {
         Enter your email address in your node&rsquo;s setup and we will send you a link. Click it and the
         node joins your account.
       </p>
+      {polledRadarRegistration && (
+        <p>
+          Running stock 30hours/blah2? <Link to="/radars/new">Add a stock blah2 radar</Link> by its address.
+        </p>
+      )}
     </div>
   );
   if (nothingLoaded(polled)) {

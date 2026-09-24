@@ -65,3 +65,29 @@ export interface PolledRadarListing {
   probation_enabled: boolean;
   radars: PolledRadar[];
 }
+
+/** One of a radar's two sites as its own blah2 config declares it. */
+export interface RadarSite {
+  latitude: number;
+  longitude: number;
+  altitude_m: number;
+  name: string | null;
+}
+
+/** What a probe found at the address an owner typed. `fs_hz` and `cpi_s` are
+ *  as they will be registered: the radar's own, or the defaults where it gave
+ *  none. `fingerprint` is what the owner confirms by registering. */
+export interface PolledRadarProbe {
+  /** Without any credentials the owner typed. */
+  address: string;
+  rx: RadarSite;
+  tx: RadarSite;
+  fc_hz: number;
+  fs_hz: number;
+  cpi_s: number;
+  fingerprint: string;
+  /** A password was given and the radar refused a read without it. */
+  protected: boolean;
+}
+
+export type Publication = "public" | "private";
