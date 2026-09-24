@@ -16,7 +16,7 @@ const file = (day: string, node: string, name: string, over: Partial<ArchiveFile
   ...over,
 });
 
-const done = (day: string): DayEntry => ({ day, nodeId: null, status: "done", files: [] });
+const done = (day: string): DayEntry => ({ day, nodeRef: null, status: "done", files: [] });
 
 type Props = Parameters<typeof ResultsTree>[0];
 
@@ -77,7 +77,7 @@ describe("ResultsTree", () => {
     const { onRetry } = setup({
       days: ["2026-09-17"],
       byDay: new Map(),
-      entryFor: (day) => ({ day, nodeId: null, status: "error", files: [], error: "HTTP 503" }),
+      entryFor: (day) => ({ day, nodeRef: null, status: "error", files: [], error: "HTTP 503" }),
     });
     expect(screen.getByText(/HTTP 503/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));

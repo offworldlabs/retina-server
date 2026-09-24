@@ -264,13 +264,15 @@ class TestArchiveAPI:
 
         import services.storage as _storage
 
+        # A synthetic node publishes under its own id, so its key on disk is
+        # also the one the route answers to.
         archive_dir = tmp_path / "archive"
-        node_dir = archive_dir / "2025" / "06" / "21" / "node-A"
+        node_dir = archive_dir / "2025" / "06" / "21" / "test-node-A"
         node_dir.mkdir(parents=True)
         payload = {"aircraft": [], "now": 1234567890}
         (node_dir / "detections_120000.json").write_text(json.dumps(payload))
         monkeypatch.setattr(_storage, "_LOCAL_ARCHIVE_DIR", str(archive_dir))
 
-        r = client.get("/api/data/archive/2025/06/21/node-A/detections_120000.json")
+        r = client.get("/api/data/archive/2025/06/21/test-node-A/detections_120000.json")
         assert r.status_code == 200
         assert r.json()["now"] == 1234567890

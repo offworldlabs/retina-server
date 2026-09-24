@@ -7,7 +7,7 @@ const MODIFIED = "2026-09-17T14:00:00Z";
 describe("parseKey", () => {
   it("reads a Hive-partitioned key", () => {
     const f = parseKey(
-      "year=2026/month=09/day=17/node_id=ret-abc/part-000.parquet",
+      "year=2026/month=09/day=17/node_ref=ret-abc/part-000.parquet",
       2048,
       MODIFIED,
     );
@@ -55,7 +55,7 @@ describe("parseKey", () => {
     // Six segments, so the fourth is no longer the node. The archive route
     // reads the second-to-last and this has to match it.
     const f = parseKey(
-      "year=2026/month=09/day=17/node_id=ret-abc/extra/part-000.parquet",
+      "year=2026/month=09/day=17/node_ref=ret-abc/extra/part-000.parquet",
       1,
       MODIFIED,
     );
@@ -63,7 +63,7 @@ describe("parseKey", () => {
   });
 
   it("keeps everything after the first equals, as the route does", () => {
-    const f = parseKey("2026/09/17/node_id=ret=abc/a.json", 1, MODIFIED);
+    const f = parseKey("2026/09/17/node_ref=ret=abc/a.json", 1, MODIFIED);
     expect(f.node).toBe("ret=abc");
   });
 });

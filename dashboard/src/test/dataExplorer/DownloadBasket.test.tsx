@@ -7,7 +7,7 @@ import type { ArchiveFile } from "../../pages/user/dataExplorer/keys";
 import { COPY_FEEDBACK_MS } from "../../pages/user/dataExplorer/useCopy";
 
 const file = (node: string, name: string, size = 1024): ArchiveFile => ({
-  key: `year=2026/month=09/day=17/node_id=${node}/${name}`,
+  key: `year=2026/month=09/day=17/node_ref=${node}/${name}`,
   name,
   node,
   day: "2026-09-17",

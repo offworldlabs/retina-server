@@ -138,9 +138,9 @@ export const api = {
   anomalies: () => request("/api/radar/anomalies"),
 
   // Archive
-  archive: (limit = 50, offset = 0, nodeId = null) => {
+  archive: (limit = 50, offset = 0, nodeRef = null) => {
     const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-    if (nodeId) params.set("node_id", nodeId);
+    if (nodeRef) params.set("node_ref", nodeRef);
     return request(`/api/data/archive?${params}`);
   },
 

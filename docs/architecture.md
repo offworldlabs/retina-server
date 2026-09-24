@@ -24,10 +24,11 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   holding those routes alone, so nothing on screen leads to the login card.
 - **data explorer** (`/data`) — the public detection archive browser, one of the
   console's public routes. Old links to the standalone page it replaced keep
-  their filters through the redirect. It reads `/api/data/archive`, which is unauthenticated
-  and drops private nodes for every caller, so a signed-in owner sees their own
-  private nodes' files only once an authenticated listing exists; the public
-  route must not grow one.
+  their filters through the redirect. It reads `/api/data/archive`, which is
+  unauthenticated, names each file by its node's `node_ref` (the store is keyed
+  on `node_id` and the route translates both ways) and drops private nodes for
+  every caller, so a signed-in owner sees their own private nodes' files only
+  once an authenticated listing exists; the public route must not grow one.
 - **admin** (`admin.retina.fm`) — the dashboard bundle again, built at a root and
   serving the admin route table, which `dashboard/src/utils/surface.ts` selects
   from the hostname. It keeps a name of its own because a Cloudflare Access

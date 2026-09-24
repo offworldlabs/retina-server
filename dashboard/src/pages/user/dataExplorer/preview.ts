@@ -98,7 +98,7 @@ export function summarisePreview(data: unknown): PreviewSummary | null {
   const placed = frames.find((f) => num(f.rx_lat) !== null) ?? frames[0];
 
   return {
-    reportedNode: typeof data.node_id === "string" && data.node_id ? data.node_id : null,
+    reportedNode: typeof data.node_ref === "string" && data.node_ref ? data.node_ref : null,
     spanStartMs,
     spanEndMs,
     frames: frames.length,

@@ -6,7 +6,7 @@ import rules from "../App.css?raw";
 vi.mock("../api/client", () => ({
   api: {
     nodeAnalytics: vi.fn(), nodes: vi.fn(), myNodes: vi.fn(),
-    adminStorage: vi.fn(), archive: vi.fn(),
+    adminStorage: vi.fn(), archive: vi.fn(), adminNodeRefs: vi.fn(),
   },
 }));
 vi.mock("recharts", async (importOriginal) => ({
@@ -77,6 +77,7 @@ describe("key/value tables", () => {
       write_rate: { total_mb_per_day: 1, days_until_full: 400 },
     });
     vi.mocked(api.archive).mockResolvedValue({ files: [], total: 0 });
+    vi.mocked(api.adminNodeRefs).mockResolvedValue({});
     const { container } = render(<StoragePage />);
     await screen.findByText("Total Write Rate");
     const tables = kvTables(container);

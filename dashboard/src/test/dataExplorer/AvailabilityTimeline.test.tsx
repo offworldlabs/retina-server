@@ -11,7 +11,7 @@ const at = (iso: string) => Date.parse(iso);
 
 const FILES: ArchiveFile[] = [
   {
-    key: "year=2026/month=09/day=16/node_id=ret-a/part-0.parquet",
+    key: "year=2026/month=09/day=16/node_ref=ret-a/part-0.parquet",
     name: "part-0.parquet",
     node: "ret-a",
     day: "2026-09-16",
