@@ -13,6 +13,7 @@ vi.mock("../api/client", () => ({
     analytics: vi.fn(),
     adminNodeContacts: vi.fn(),
     adminNodeOwners: vi.fn(),
+    adminNodeReports: vi.fn(),
     adminNodeRefs: vi.fn(),
     adminNodeLocationPrivacy: vi.fn().mockResolvedValue({ location_private: false, location_privacy_source: "default" }),
     setAdminNodeLocationPrivacy: vi.fn(),
@@ -98,6 +99,7 @@ describe("NodeManagementPage contact rendering", () => {
     (api.adminNodeRefs as any).mockResolvedValue(NODE_IDS);
     (api.adminNodeContacts as any).mockResolvedValue(ADA_CONTACT);
     (api.adminNodeOwners as any).mockResolvedValue(BOB_OWNS_ADAS_NODE);
+    (api.adminNodeReports as any).mockResolvedValue([]);
   });
 
   it("gives each site contact field and the owner a row of its own", async () => {

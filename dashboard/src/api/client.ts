@@ -156,6 +156,10 @@ export const api = {
   // that crosses the publication boundary, which is why it is admin-only.
   adminNodeRefs: () => request("/api/admin/node-refs"),
 
+  // Admin: each node's last heartbeat self-report, a list of rows that each
+  // carry their node_id.
+  adminNodeReports: () => request("/api/admin/node-reports"),
+
   // Admin: node ownership
   adminNodeOwners: () => request("/api/admin/node-owners"),
   adminNodeContacts: () => request("/api/admin/node-contacts"),

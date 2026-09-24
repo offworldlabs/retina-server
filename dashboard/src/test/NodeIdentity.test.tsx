@@ -17,6 +17,7 @@ vi.mock("../api/client", () => ({
     fleetDashboard: vi.fn().mockResolvedValue({}),
     adminNodeContacts: vi.fn().mockResolvedValue({}),
     adminNodeOwners: vi.fn().mockResolvedValue({}),
+    adminNodeReports: vi.fn().mockResolvedValue([]),
     adminNodeRefs: vi.fn(),
     custody: vi.fn(),
     adminNodeLocationPrivacy: vi.fn().mockResolvedValue({
