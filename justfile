@@ -90,6 +90,23 @@ migrate:
         exit 1
     fi
 
+# Autogenerate a migration, numbered past main and every open PR: just new-migration "what changed" additive|destructive
+[positional-arguments]
+new-migration message rollback_safety:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$2" in
+        additive|destructive) ;;
+        *) echo "✗ rollback safety is additive or destructive, not '$2': see docs/runbook.md"; exit 1 ;;
+    esac
+    cd "{{be}}"
+    rev=$("{{py}}" -m scripts.next_revision)
+    # Autogenerate diffs the models against the dev database, and refuses one not at head.
+    just --justfile "{{justfile()}}" migrate
+    RETINA_ENV=dev "{{py}}" -m alembic -x "rollback_safety=$2" revision --autogenerate --rev-id "$rev" -m "$1"
+    # Committed revisions are ruff-formatted, and alembic writes single quotes.
+    "{{venv}}/bin/ruff" format migrations/versions/"$rev"_*.py
+
 # Bring up backend + synthetic fleet + console (background). Open http://app.localhost:5174/
 # Fleet profile: `just up` (local, dense) · `just up test` (50 fps) · `just up prod` (12.5 fps).
 # test/prod read their fleet params LIVE from the real deploy configs so they can't drift.

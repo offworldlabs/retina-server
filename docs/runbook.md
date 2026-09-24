@@ -267,6 +267,7 @@ renamed table or column, a narrowed type, a `NOT NULL` added without a default,
 a tightened constraint. The test is whether the previous revision's code can run
 its queries unchanged against this schema.
 
+`just new-migration` takes it as an argument and writes it in.
 `backend/tests/test_migrations.py` fails if a revision does not declare one, and
 a revision that reaches a droplet undeclared is graded destructive.
 
