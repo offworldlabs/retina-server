@@ -121,6 +121,8 @@ MARKER_WRITE = re.escape("> ${{ env.APP_DIR }}/.deploy-in-progress") + "$"
 MARKER_CLEAR = "^" + re.escape("rm -f ${{ env.APP_DIR }}/.deploy-in-progress") + "$"
 TREE_MOVE = r"^git reset --hard\b"
 SWAP = r"^docker compose up -d --build\b.* server$"
+# deploy/wait-for-health.sh, which exits 1 once its budget is spent.
+WAIT = "^" + re.escape("bash deploy/wait-for-health.sh || exit 1") + "$"
 
 
 def _index(lines: list[str], pattern: str) -> int:
@@ -186,7 +188,7 @@ def test_the_build_cache_is_trimmed_after_the_images_that_pin_it(workflow, deplo
 @pytest.mark.parametrize(("workflow", "deploy"), MARKED_DEPLOYS)
 def test_marker_is_cleared_only_once_the_app_answers(workflow, deploy):
     lines = _script(workflow, deploy)
-    assert _index(lines, MARKER_CLEAR) > _index(lines, r"(?i)health check failed after")
+    assert _index(lines, SWAP) < _index(lines, WAIT) < _index(lines, MARKER_CLEAR)
 
 
 @pytest.mark.parametrize(("workflow", "deploy", "rollback", "host", "run_id"), ROLLBACKS)

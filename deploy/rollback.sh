@@ -37,6 +37,12 @@ on_exit() {
 }
 trap on_exit EXIT
 
+# The deploys' own health probe and wait. Sourced now rather than when needed:
+# every restore path below moves the tree, and the tree it lands on may predate
+# the file.
+# shellcheck source=deploy/wait-for-health.sh
+source "$(dirname "${BASH_SOURCE[0]}")/wait-for-health.sh"
+
 APP_DIR="${APP_DIR:-/opt/retina-server}"
 IMAGE_NAME="retina-server"
 COMPOSE_SERVICE="server"
@@ -68,8 +74,7 @@ container_predates_and_answers() {
     created_ts=${created//[-:T]/}; created_ts=${created_ts:0:14}
     tag_ts=${tag#deploy-}; tag_ts=${tag_ts//-/}
     [[ "$created_ts" < "$tag_ts" ]] || return 1
-    docker compose exec -T "$COMPOSE_SERVICE" \
-        python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" >/dev/null 2>&1
+    health_probe
 }
 
 # ── Keep ./.env consistent with the tree we roll back to ─────────────────────
@@ -263,34 +268,29 @@ fi
 ROLLBACK_RESTORED=1
 
 # ── Wait for health ──────────────────────────────────────────────────────────
-# 18 x 5 s, the window the deploys give a boot and the healthcheck's
-# start_period; a shorter one here reports a boot the deploy would have
-# accepted as a failed rollback, with the marker left in place.
+# The same window the deploys give a boot; a shorter one here reports a boot
+# the deploy would have accepted as a failed rollback, with the marker left in
+# place.
 echo "Waiting for server to become healthy..."
-for i in $(seq 1 18); do
-    if docker compose exec -T "$COMPOSE_SERVICE" \
-        python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
-        if [ "$DB_NEEDS_DOWNGRADE" = 1 ]; then
-            echo "Service back after ~$((i*5))s, but a database downgrade is outstanding."
-        else
-            echo "Rollback successful, healthy after ~$((i*5))s"
-        fi
-        echo "Current commit: $(git log --oneline -1)"
-        report_db_gap
-        if [ "$DB_NEEDS_DOWNGRADE" = 1 ]; then
-            # Distinct from the 1 below: the service is back, so this is not a
-            # failed rollback, but it is not a finished one either until
-            # someone moves the database. A red step is how that reaches the
-            # person watching the run.
-            exit 2
-        fi
-        exit 0
+if wait_for_health; then
+    if [ "$DB_NEEDS_DOWNGRADE" = 1 ]; then
+        echo "Service back, but a database downgrade is outstanding."
+    else
+        echo "Rollback successful"
     fi
-    echo "  Waiting... attempt $i/18"
-    sleep 5
-done
+    echo "Current commit: $(git log --oneline -1)"
+    report_db_gap
+    if [ "$DB_NEEDS_DOWNGRADE" = 1 ]; then
+        # Distinct from the 1 below: the service is back, so this is not a
+        # failed rollback, but it is not a finished one either until
+        # someone moves the database. A red step is how that reaches the
+        # person watching the run.
+        exit 2
+    fi
+    exit 0
+fi
 
-echo "WARNING: Health check failed after 90s. Check logs:"
+echo "WARNING: the restored service never answered. Check logs:"
 echo "  docker compose logs --tail=50"
 report_db_gap
 exit 1

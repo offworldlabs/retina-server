@@ -186,24 +186,10 @@ jobs:
             # Verified on retina-test before this landed. It stays afterwards
             # as the general guard for a removed or renamed service.
             docker compose up -d --build --remove-orphans server
-            # Wait for server to become healthy (up to 90s)
-            for i in $(seq 1 18); do
-              if docker compose exec -T server \
-                python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
-                echo "Staging server healthy after ~$((i*5))s"
-                break
-              fi
-              echo "Waiting for health check... attempt $i/18"
-              sleep 5
-              if [ "$i" = "18" ]; then
-                echo "Staging health check failed after 90s"
-                docker compose logs --tail=50
-                exit 1
-              fi
-            done
+            bash deploy/wait-for-health.sh || exit 1
 
-            # Reached only by the loop's `break`: the app answered /api/health,
-            # so the box is no longer mid-deploy.
+            # Reached only once the app answered /api/health, so the box is no
+            # longer mid-deploy.
             rm -f ${{ env.APP_DIR }}/.deploy-in-progress
 
             # The fleet container from before the simulator left staging. A

@@ -949,26 +949,12 @@ jobs:
             # as the general guard for a removed or renamed service.
             docker compose up -d --build --remove-orphans server
 
-            # Wait for backend to become healthy (up to 90s — matches staging
-            # and the healthcheck start_period; a cold boot can need >60s).
-            for i in $(seq 1 18); do
-              if docker compose exec -T server python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
-                echo "Deploy successful (healthy after ~$((i*5))s)"
-                break
-              fi
-              echo "Waiting for health check... attempt $i/18"
-              sleep 5
-              if [ "$i" = "18" ]; then
-                echo "Health check failed after 90s"
-                docker compose logs --tail=50
-                exit 1
-              fi
-            done
+            bash deploy/wait-for-health.sh || exit 1
 
-            # Reached only by the loop's `break`, i.e. the app answered
-            # /api/health. The box is no longer mid-deploy, so drop the marker;
-            # any failure after this point is a smoke/E2E failure, which the
-            # rollback steps on those jobs already cover.
+            # Reached only once the app answered /api/health. The box is no
+            # longer mid-deploy, so drop the marker; any failure after this
+            # point is a smoke/E2E failure, which the rollback steps on those
+            # jobs already cover.
             rm -f ${{ env.APP_DIR }}/.deploy-in-progress
 
   rollback-production-on-deploy-failure:

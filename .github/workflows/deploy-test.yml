@@ -231,19 +231,7 @@ jobs:
               exit 1
             fi
 
-            for i in $(seq 1 18); do
-              if docker compose exec -T server python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')" 2>/dev/null; then
-                echo "Deploy successful (healthy after ~$((i*5))s)"
-                break
-              fi
-              echo "Waiting for health check... attempt $i/18"
-              sleep 5
-              if [ "$i" = "18" ]; then
-                echo "Health check failed after 90s"
-                docker compose logs --tail=50
-                exit 1
-              fi
-            done
+            bash deploy/wait-for-health.sh || exit 1
 
             rm -f ${{ env.APP_DIR }}/.deploy-in-progress
 

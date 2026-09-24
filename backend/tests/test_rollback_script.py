@@ -21,6 +21,7 @@ from pathlib import Path
 from tests.migration_helpers import BACKEND
 
 ROLLBACK_SH = BACKEND.parent / "deploy" / "rollback.sh"
+WAIT_SH = BACKEND.parent / "deploy" / "wait-for-health.sh"
 
 # A pipe buffer is 64 KiB on Linux and smaller on macOS. At ~23 bytes a line
 # this is several times either, so a reader taking one line cannot drain it and
@@ -166,13 +167,15 @@ def _function_text(name: str) -> str:
 
 # Shadows the docker binary for the three calls the predicate makes; values
 # arrive through the environment. `exit` inside `$(...)` only ends that
-# substitution, which is how the real CLI's failures reach the script too.
+# substitution, which is how the real CLI's failures reach the script too. The
+# probe must be the bounded one from wait-for-health.sh: unbounded, a wedged
+# server that accepts and never answers would hang the rollback right here.
 STUB_DOCKER = """
 docker() {
   case "$*" in
     "compose ps -q --status running server") printf '%s\\n' "$CID" ;;
     "inspect --format {{.Created}} "*) printf '%s\\n' "$CREATED" ;;
-    "compose exec -T server python3 -c "*) [ "$HEALTHY" = 1 ] ;;
+    "compose exec -T server python3 -c "*"timeout=5)") [ "$HEALTHY" = 1 ] ;;
     *) echo "unexpected docker call: $*" >&2; exit 2 ;;
   esac
 }
@@ -181,7 +184,7 @@ docker() {
 
 def _predates_and_answers(tag: str, *, cid: str, created: str, healthy: bool) -> bool:
     script = (
-        f"{_preamble()}\n{_assignment('COMPOSE_SERVICE')}\n{STUB_DOCKER}"
+        f"{_preamble()}\nsource {WAIT_SH}\n{_assignment('COMPOSE_SERVICE')}\n{STUB_DOCKER}"
         f"{_function_text('container_predates_and_answers')}"
         f"if container_predates_and_answers {tag!r}; then echo yes; else echo no; fi\n"
     )
@@ -221,24 +224,16 @@ def test_no_running_container_means_the_full_restart():
     assert not _predates_and_answers(TAG, cid="", created=BEFORE, healthy=True)
 
 
-# ── The health window is the deploys' ────────────────────────────────────────
-
-WORKFLOWS = BACKEND.parent / ".github" / "workflows"
-COMPOSE = BACKEND.parent / "docker-compose.yml"
+# ── The health wait is the deploys' ──────────────────────────────────────────
 
 
-def _health_probes(text: str) -> list[int]:
-    """The N of every `seq 1 N` loop whose next line probes /api/health."""
-    return [int(n) for n in re.findall(r"for i in \$\(seq 1 (\d+)\); do\n\s*if docker compose exec -T", text)]
-
-
-def test_health_wait_matches_the_deploys():
-    # A shorter wait here reports a boot the deploy would have accepted as a
-    # failed rollback, with the marker left in place and the next deploy
-    # refused on it.
-    (rollback,) = _health_probes(ROLLBACK_SH.read_text())
-    for workflow in ("ci.yml", "staging-deploy-verify.yml", "deploy-test.yml"):
-        probes = _health_probes((WORKFLOWS / workflow).read_text())
-        assert probes and all(n == rollback for n in probes), (workflow, probes, rollback)
-    start_period = re.search(r"start_period: (\d+)s", COMPOSE.read_text())
-    assert start_period and rollback * 5 >= int(start_period.group(1))
+def test_the_health_wait_is_sourced_before_the_tree_moves():
+    # The deploys wait with deploy/wait-for-health.sh, so a rollback that
+    # waited differently could fail a boot the deploy would have accepted. Every
+    # restore path moves the tree, possibly to a commit without that file, so it
+    # has to be loaded before the first move rather than run at the wait.
+    commands = [ln.strip() for ln in ROLLBACK_SH.read_text().splitlines() if not ln.lstrip().startswith("#")]
+    source = commands.index('source "$(dirname "${BASH_SOURCE[0]}")/wait-for-health.sh"')
+    moves = [i for i, ln in enumerate(commands) if re.match(r"git (?:reset --hard|checkout)\b", ln)]
+    assert moves and source < min(moves)
+    assert "if wait_for_health; then" in commands
