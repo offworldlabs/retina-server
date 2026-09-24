@@ -20,7 +20,7 @@ const at = (iso: string) => Date.parse(iso);
 function file(node: string, endIso: string): ArchiveFile {
   const endMs = at(endIso);
   return {
-    key: `year=2026/month=09/day=17/node_id=${node}/${endIso}.parquet`,
+    key: `year=2026/month=09/day=17/node_ref=${node}/${endIso}.parquet`,
     name: `${endIso}.parquet`,
     node,
     day: endIso.slice(0, 10),

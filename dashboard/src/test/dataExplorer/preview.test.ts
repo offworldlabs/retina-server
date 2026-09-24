@@ -28,7 +28,7 @@ const frame = (offsetS: number, over: Record<string, unknown> = {}) => ({
 describe("summarisePreview", () => {
   it("reads the span, the counts and the geometry off the frames", () => {
     const summary = summarisePreview({
-      node_id: "ret-a",
+      node_ref: "ret-a",
       detections: [frame(0), frame(60), frame(120)],
     });
     expect(summary).toMatchObject({
@@ -49,8 +49,8 @@ describe("summarisePreview", () => {
   });
 
   it("is null for a file that decoded to no frames", () => {
-    expect(summarisePreview({ node_id: "ret-a", detections: [] })).toBeNull();
-    expect(summarisePreview({ node_id: "ret-a" })).toBeNull();
+    expect(summarisePreview({ node_ref: "ret-a", detections: [] })).toBeNull();
+    expect(summarisePreview({ node_ref: "ret-a" })).toBeNull();
     expect(summarisePreview(null)).toBeNull();
     expect(summarisePreview("nope")).toBeNull();
   });

@@ -82,8 +82,8 @@ export function NodePicker({ filters, nodes, discovered, fileCountFor, onChange 
           <input
             id="de-node-search"
             type="search"
-            placeholder="Search node id…"
-            aria-label="Search node id"
+            placeholder="Search node ref…"
+            aria-label="Search node ref"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -104,7 +104,7 @@ export function NodePicker({ filters, nodes, discovered, fileCountFor, onChange 
             ))}
             {visible.length === 0 && (
               <li className="de-node-empty">
-                {ids.length ? "No node id matches that." : "No nodes yet."}
+                {ids.length ? "No node ref matches that." : "No nodes yet."}
               </li>
             )}
           </ul>

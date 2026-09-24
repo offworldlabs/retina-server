@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../api/client", () => ({ api: { adminStorage: vi.fn(), archive: vi.fn() } }));
+vi.mock("../api/client", () => ({ api: { adminStorage: vi.fn(), archive: vi.fn(), adminNodeRefs: vi.fn() } }));
 
 import { api } from "../api/client";
 import StoragePage from "../pages/admin/StoragePage";
@@ -19,6 +19,18 @@ describe("StoragePage", () => {
       archive_files: 120, archive_mb: 1, archive_bytes: 1048576,
       disk: { total_gb: 100, used_gb: 80, free_gb: 20, used_pct: 80 },
     });
+    vi.mocked(api.adminNodeRefs).mockResolvedValue({});
+  });
+
+  it("names a listed file's node by the id the per-node table uses", async () => {
+    vi.mocked(api.adminNodeRefs).mockResolvedValue({ nde0123456789: "ret1a2b3c4d" });
+    vi.mocked(api.archive).mockResolvedValue({
+      files: [{ key: "archive/year=2026/month=09/day=24/node_ref=nde0123456789/part-0.parquet", size_bytes: 1, modified: null }],
+      total: 1,
+    });
+    render(<StoragePage />);
+    expect(await screen.findByText("ret1a2b3c4d")).toBeInTheDocument();
+    expect(screen.queryByText(/node_ref=/)).not.toBeInTheDocument();
   });
 
   it("pages the archive listing with the shared pager", async () => {

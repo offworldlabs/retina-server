@@ -1180,43 +1180,130 @@ class TestArchiveKeyParsing:
 
 
 class TestArchiveRoutes:
-    KEY = f"year=2026/month=08/day=27/node_id={_PRIV}/part-120000.parquet"
+    """The store is keyed on node_id; everything the route hands out, node_ref."""
 
-    def test_a_private_nodes_file_is_not_listed(self, client, seed_nodes, monkeypatch):
+    @staticmethod
+    def stored(node_id: str) -> str:
+        return f"year=2026/month=08/day=27/node_id={node_id}/part-120000.parquet"
+
+    @staticmethod
+    def published(node_id: str) -> str:
+        return f"year=2026/month=08/day=27/node_ref={_seed_ref(node_id)}/part-120000.parquet"
+
+    @staticmethod
+    def listing(monkeypatch, *keys: str) -> list[dict]:
         import routes.archive as ar
 
-        seed_nodes(**{_PRIV: "private"})
-        pub_key = self.KEY.replace(_PRIV, _PUB)
-        monkeypatch.setattr(
-            ar,
-            "list_archived_files",
-            lambda **kw: {
-                "files": [{"key": self.KEY, "size_bytes": 1}, {"key": pub_key, "size_bytes": 1}],
-                "count": 2,
-                "total": 2,
-            },
-        )
+        calls = []
+
+        def _list(**kw):
+            calls.append(kw)
+            return {"files": [{"key": k, "size_bytes": 1} for k in keys], "count": len(keys), "total": len(keys)}
+
+        monkeypatch.setattr(ar, "list_archived_files", _list)
+        return calls
+
+    @staticmethod
+    def reads(monkeypatch, body: dict) -> list[str]:
+        import routes.archive as ar
+
+        called = []
+        monkeypatch.setattr(ar, "read_archived_file", lambda key: called.append(key) or body)
+        return called
+
+    def test_a_public_nodes_file_is_listed_under_its_ref(self, client, seed_nodes, monkeypatch):
+        seed_nodes(**{_PUB: "public"})
+        self.listing(monkeypatch, self.stored(_PUB))
+        response = client.get("/api/data/archive")
+        assert [f["key"] for f in response.json()["files"]] == [self.published(_PUB)]
+        assert _PUB not in response.text
+
+    def test_a_private_nodes_file_is_not_listed(self, client, seed_nodes, monkeypatch):
+        seed_nodes(**{_PRIV: "private", _PUB: "public"})
+        self.listing(monkeypatch, self.stored(_PRIV), self.stored(_PUB))
         body = client.get("/api/data/archive").json()
-        assert [f["key"] for f in body["files"]] == [pub_key]
+        assert [f["key"] for f in body["files"]] == [self.published(_PUB)]
         assert body["count"] == 1
+
+    def test_a_node_with_no_ref_is_not_listed(self, client, seed_nodes, monkeypatch):
+        seed_nodes(**{_PUB: "public"})
+        self.listing(monkeypatch, self.stored("unregistered01"), self.stored(_PUB))
+        response = client.get("/api/data/archive")
+        assert [f["key"] for f in response.json()["files"]] == [self.published(_PUB)]
+        assert "unregistered01" not in response.text
+
+    def test_the_legacy_layout_is_published_under_the_ref_too(self, client, seed_nodes, monkeypatch):
+        seed_nodes(**{_PUB: "public"})
+        self.listing(monkeypatch, f"2025/06/21/{_PUB}/detections_120000.json")
+        keys = [f["key"] for f in client.get("/api/data/archive").json()["files"]]
+        assert keys == [f"2025/06/21/{_seed_ref(_PUB)}/detections_120000.json"]
+
+    def test_the_filter_takes_a_ref_and_scans_the_node_behind_it(self, client, seed_nodes, monkeypatch):
+        seed_nodes(**{_PUB: "public"})
+        calls = self.listing(monkeypatch, self.stored(_PUB))
+        body = client.get("/api/data/archive", params={"node_ref": _seed_ref(_PUB)}).json()
+        assert calls[0]["node_id"] == _PUB
+        assert [f["key"] for f in body["files"]] == [self.published(_PUB)]
+
+    @pytest.mark.parametrize("asked", ["private", "node id", "unknown"])
+    def test_the_filter_answers_nothing_but_a_published_ref(self, asked, client, seed_nodes, monkeypatch):
+        """A private node's ref, a private id and a ref nobody holds read the
+        same, and none of them reaches the store."""
+        seed_nodes(**{_PRIV: "private", _PUB: "public"})
+        calls = self.listing(monkeypatch, self.stored(_PUB))
+        value = {"private": _seed_ref(_PRIV), "node id": _PUB, "unknown": node_auth.mint_node_ref()}[asked]
+        body = client.get("/api/data/archive", params={"node_ref": value}).json()
+        assert body == {"files": [], "count": 0, "total": 0}
+        assert calls == []
+
+    def test_a_published_key_downloads_under_the_ref(self, client, seed_nodes, monkeypatch):
+        seed_nodes(**{_PUB: "public"})
+        called = self.reads(monkeypatch, {"node_id": _PUB, "count": 0, "detections": []})
+        response = client.get(f"/api/data/archive/{self.published(_PUB)}")
+        assert response.status_code == 200
+        assert called == [self.stored(_PUB)]
+        assert response.json() == {"node_ref": _seed_ref(_PUB), "count": 0, "detections": []}
+
+    def test_a_file_with_no_node_in_its_key_is_withheld_if_its_body_names_a_private_node(
+        self, client, seed_nodes, monkeypatch
+    ):
+        seed_nodes(**{_PRIV: "private", _PUB: "public"})
+        self.reads(monkeypatch, {"node_id": _PRIV, "detections": []})
+        assert client.get("/api/data/archive/detections_120000.json").status_code == 404
+        self.reads(monkeypatch, {"node_id": _PUB, "detections": []})
+        response = client.get("/api/data/archive/detections_120000.json")
+        assert response.json() == {"node_ref": _seed_ref(_PUB), "detections": []}
+
+    def test_an_empty_file_is_named_by_its_key(self, client, seed_nodes, monkeypatch):
+        """A zero-row Parquet reads back with node_id "", but its key names the node."""
+        seed_nodes(**{_PUB: "public"})
+        self.reads(monkeypatch, {"node_id": "", "count": 0, "detections": []})
+        response = client.get(f"/api/data/archive/{self.published(_PUB)}")
+        assert response.json() == {"node_ref": _seed_ref(_PUB), "count": 0, "detections": []}
+
+    def test_a_legacy_key_resolves_to_its_bare_directory(self, client, seed_nodes, monkeypatch):
+        seed_nodes(**{_PUB: "public"})
+        called = self.reads(monkeypatch, {"frames": []})
+        response = client.get(f"/api/data/archive/2025/06/21/{_seed_ref(_PUB)}/detections_120000.json")
+        assert response.status_code == 200
+        assert called == [f"2025/06/21/{_PUB}/detections_120000.json"]
+
+    def test_a_stored_key_does_not_download(self, client, seed_nodes, monkeypatch):
+        """The key on disk names the private id, so it is not an address this
+        route answers to, public node or not."""
+        seed_nodes(**{_PUB: "public"})
+        called = self.reads(monkeypatch, {"frames": []})
+        assert client.get(f"/api/data/archive/{self.stored(_PUB)}").status_code == 404
+        assert client.get(f"/api/data/archive/2025/06/21/{_PUB}/detections_120000.json").status_code == 404
+        assert called == []
 
     def test_a_private_nodes_file_does_not_download(self, client, seed_nodes, monkeypatch):
         """Same answer as a key that does not exist, so it cannot enumerate."""
-        import routes.archive as ar
-
         seed_nodes(**{_PRIV: "private"})
-        called = []
-        monkeypatch.setattr(ar, "read_archived_file", lambda key: called.append(key) or {"frames": []})
-        assert client.get(f"/api/data/archive/{self.KEY}").status_code == 404
+        called = self.reads(monkeypatch, {"frames": []})
+        assert client.get(f"/api/data/archive/{self.published(_PRIV)}").status_code == 404
         # 404 decided before the read, not by discarding what came back.
         assert called == []
-
-    def test_a_public_nodes_file_still_downloads(self, client, seed_nodes, monkeypatch):
-        import routes.archive as ar
-
-        seed_nodes(**{_PRIV: "private"})
-        monkeypatch.setattr(ar, "read_archived_file", lambda key: {"frames": []})
-        assert client.get(f"/api/data/archive/{self.KEY.replace(_PRIV, _PUB)}").status_code == 200
 
 
 # ── The single-node documents ────────────────────────────────────────────────

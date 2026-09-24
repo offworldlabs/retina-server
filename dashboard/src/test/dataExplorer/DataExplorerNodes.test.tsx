@@ -11,7 +11,7 @@ vi.mock("@retina/shared", () => ({ request: requestMock }));
 const isArchive = (url: string) => url.startsWith("/api/data/archive");
 
 const row = (day: string, node: string) => ({
-  key: `year=${day.slice(0, 4)}/month=${day.slice(5, 7)}/day=${day.slice(8, 10)}/node_id=${node}/part-0.parquet`,
+  key: `year=${day.slice(0, 4)}/month=${day.slice(5, 7)}/day=${day.slice(8, 10)}/node_ref=${node}/part-0.parquet`,
   size_bytes: 1024,
   modified: `${day}T06:00:00Z`,
 });
