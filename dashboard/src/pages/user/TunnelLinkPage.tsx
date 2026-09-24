@@ -69,7 +69,7 @@ export default function TunnelLinkPage() {
         </div>
         {(() => {
           const filtered = search
-            ? nodes.filter((n) => ((n.name || n.node_id || "")).toLowerCase().includes(search.toLowerCase()))
+            ? nodes.filter((n) => `${n.name || ""} ${n.node_ref || ""}`.toLowerCase().includes(search.toLowerCase()))
             : nodes;
           const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
           const paged = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -87,7 +87,7 @@ export default function TunnelLinkPage() {
                     <tr key={id}>
                       <td className="mono" style={{ color: "var(--accent)" }}>
                         <RetnodeLink nodeId={id} synthetic={node.is_synthetic}>
-                          {node.name || id}
+                          {node.name || node.node_ref || "—"}
                         </RetnodeLink>{" "}
                         <LocationPrivacyBadge isPrivate={node.location_private} />
                       </td>
