@@ -135,7 +135,7 @@ let CACHE_TIMEOUT_MS = cacheWindowMs(FALLBACK_REFRESH_INTERVAL_S);
 async function resolveCacheTimeout(ctx: Ctx): Promise<number> {
   let intervalS = FALLBACK_REFRESH_INTERVAL_S;
   try {
-    const res = await ctx.get(`${API}/api/test/dashboard`);
+    const res = await ctx.get(`${API}/api/test/dashboard`, { headers: { "X-API-Key": API_KEY } });
     if (res.ok()) {
       const reported = (await res.json())?.cadence?.analytics_refresh_interval_s;
       if (typeof reported === "number" && Number.isFinite(reported) && reported > 0) {

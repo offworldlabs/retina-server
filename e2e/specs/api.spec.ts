@@ -6,6 +6,8 @@ import { test, expect, request } from "@playwright/test";
 import { hosts } from "../playwright.config";
 
 const API = hosts.api;
+// The test router's reads are for operators, and this suite reads them as one.
+const API_KEY = process.env.RADAR_API_KEY ?? "";
 const LATENCY_WARN_MS = 3000; // fail if any endpoint exceeds this
 
 test.describe("API health", () => {
@@ -109,7 +111,7 @@ test.describe("API radar endpoints", () => {
   });
 
   test("GET /api/test/dashboard returns node + server_health + pipeline", async () => {
-    const res = await ctx.get(`${API}/api/test/dashboard`);
+    const res = await ctx.get(`${API}/api/test/dashboard`, { headers: { "X-API-Key": API_KEY } });
     expect(res.status()).toBe(200);
 
     const body = await res.json();

@@ -1131,8 +1131,12 @@ jobs:
         env:
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          RADAR_API_KEY: ${{ secrets.RADAR_API_KEY }}
         run: |
           CURL="curl -s --connect-timeout 10 --max-time 60"
+          # The test router's reads are for operators, and these checks read
+          # them as one.
+          RADAR_KEY_HEADER=(-H "X-API-Key: ${RADAR_API_KEY}")
           # PASS/FAIL/WARN and smoke_summary, shared with deploy/staging-smoke-test.sh.
           # Absolute: a working-directory default on this job would otherwise
           # break the source, and this step failing rolls production back.
@@ -1167,13 +1171,15 @@ jobs:
             fi
           }
 
+          # Anything after the expected code is passed to curl as it stands.
           check_status() {
             local name="$1" url="$2" expected="$3"
+            shift 3
             printf "  %-40s " "$name"
             # Retry once on connection error (transient load spikes just after
             # the app restarts)
-            CODE=$($CURL -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) \
-              || CODE=$($CURL -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) \
+            CODE=$($CURL "$@" -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) \
+              || CODE=$($CURL "$@" -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) \
               || { echo "FAIL (connection)"; FAIL=$((FAIL+1)); return; }
             if [ "$CODE" = "$expected" ]; then echo "OK ($CODE)"; PASS=$((PASS+1)); else echo "FAIL ($CODE != $expected)"; FAIL=$((FAIL+1)); fi
           }
@@ -1182,8 +1188,25 @@ jobs:
           check_status "GET /api/health"          "${BASE_URL}/api/health"            "200"
           check_status "GET /api/radar/nodes"     "${BASE_URL}/api/radar/nodes"       "200"
           check_status "GET /api/radar/analytics" "${BASE_URL}/api/radar/analytics"   "200"
-          check_status "GET /api/test/dashboard"  "${BASE_URL}/api/test/dashboard"    "200"
-          check_status "GET /api/test/mlat-verification" "${BASE_URL}/api/test/mlat-verification" "200"
+          check_status "GET /api/test/dashboard"  "${BASE_URL}/api/test/dashboard"    "200" "${RADAR_KEY_HEADER[@]}"
+          check_status "GET /api/test/mlat-verification" "${BASE_URL}/api/test/mlat-verification" "200" "${RADAR_KEY_HEADER[@]}"
+          # The reads above answer whoever asks, so their 200 says nothing about
+          # the key. /api/test/validate checks it before it looks at the body, so
+          # an empty body is refused with 400 for the right key and 401 for any
+          # other. Warned rather than failed: a wrong key is a fault in this
+          # job's secret, and rolling the build back would not mend it.
+          printf "  %-40s " "Radar key accepted"
+          CODE=$($CURL "${RADAR_KEY_HEADER[@]}" -X POST -H "Content-Type: application/json" -d '{}' \
+            -o /dev/null -w "%{http_code}" "${BASE_URL}/api/test/validate" 2>/dev/null) || CODE="000"
+          if [ "$CODE" = "400" ]; then
+            echo "OK"; PASS=$((PASS+1))
+          elif [ "$CODE" = "401" ]; then
+            echo "WARN ($CODE)"; WARN=$((WARN+1))
+            echo "::warning::Production refused the RADAR_API_KEY secret. It should match RADAR_API_KEY in production's backend/.env."
+          else
+            echo "WARN ($CODE)"; WARN=$((WARN+1))
+            echo "::warning::The RADAR_API_KEY secret went unchecked: /api/test/validate answered HTTP ${CODE}."
+          fi
           # No /api/config check on BASE_URL (api.retina.fm): that vhost defines
           # no /api/config location, so the request falls through `location /`
           # to the app — which no longer implements the route. The monolith's
@@ -1321,9 +1344,15 @@ jobs:
             fi
           done
 
+          # The dashboard's figures for the two checks below, read once and
+          # retried as check_status is.
+          DASHBOARD=$($CURL "${RADAR_KEY_HEADER[@]}" "${BASE_URL}/api/test/dashboard" 2>/dev/null) \
+            || DASHBOARD=$($CURL "${RADAR_KEY_HEADER[@]}" "${BASE_URL}/api/test/dashboard" 2>/dev/null) \
+            || DASHBOARD=""
+
           # Check aircraft data is flowing
-          AIRCRAFT=$(curl -sk "${BASE_URL}/api/test/dashboard" \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['pipeline']['aircraft_on_map'])" 2>/dev/null) || AIRCRAFT=0
+          AIRCRAFT=$(python3 -c "import sys,json; print(json.load(sys.stdin)['pipeline']['aircraft_on_map'])" \
+            <<<"$DASHBOARD" 2>/dev/null) || AIRCRAFT=0
           printf "  %-40s " "Aircraft on map > 0"
           if [ "${AIRCRAFT:-0}" -gt 0 ]; then echo "OK ($AIRCRAFT)"; PASS=$((PASS+1)); else echo "WARN ($AIRCRAFT: real nodes may be quiet or still connecting)"; WARN=$((WARN+1)); fi
 
@@ -1331,11 +1360,13 @@ jobs:
           # so anything near this ceiling means either a `--profile sim` fleet was
           # left running or the analytics manager is not evicting (ClickUp
           # 86caxcbc3). Kept at 220 rather than retightened to the real headcount
-          # so a node cutover cannot fail a deploy.
-          NODES=$(curl -sk "${BASE_URL}/api/test/dashboard" \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['nodes']['active'])" 2>/dev/null) || NODES=0
+          # so a node cutover cannot fail a deploy. A count it cannot read fails
+          # rather than passing as zero, since zero is always under the ceiling.
           printf "  %-40s " "Active nodes ≤ 220"
-          if [ "${NODES:-0}" -le 220 ]; then echo "OK ($NODES)"; PASS=$((PASS+1)); else echo "FAIL ($NODES > 220 — a simulator fleet may be running, or nodes are not being evicted)"; FAIL=$((FAIL+1)); fi
+          if ! NODES=$(python3 -c "import sys,json; print(int(json.load(sys.stdin)['nodes']['active']))" \
+              <<<"$DASHBOARD" 2>/dev/null); then
+            echo "FAIL (no active-node count in /api/test/dashboard)"; FAIL=$((FAIL+1))
+          elif [ "$NODES" -le 220 ]; then echo "OK ($NODES)"; PASS=$((PASS+1)); else echo "FAIL ($NODES > 220 — a simulator fleet may be running, or nodes are not being evicted)"; FAIL=$((FAIL+1)); fi
 
           echo ""
           smoke_summary

@@ -303,6 +303,7 @@ jobs:
         env:
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+          RADAR_API_KEY: ${{ secrets.STAGING_RADAR_API_KEY }}
         run: bash deploy/staging-smoke-test.sh
   e2e:
     name: Playwright E2E (staging)
