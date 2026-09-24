@@ -127,7 +127,7 @@ export default function OverviewPage() {
                   onClick={ref ? () => navigate(`/nodes/${ref}`) : undefined}
                 >
                   <td style={{ color: ref ? "var(--accent)" : undefined }}>
-                    {node.name || ref || node.node_id || node.id}
+                    {node.name || ref || "—"}
                   </td>
                   <td><PositionStatusBadge status={node.position_status} /></td>
                 </tr>
@@ -189,7 +189,7 @@ export default function OverviewPage() {
                 <div className="node-name">
                   <StatusBadge status={node.status} />
                   <LocationPrivacyBadge isPrivate={privateByKey.get(id)} />
-                  {node.name || id}
+                  {node.name || ref || "—"}
                 </div>
                 <div className="node-meta">
                   <span className="meta-label">Detections</span>

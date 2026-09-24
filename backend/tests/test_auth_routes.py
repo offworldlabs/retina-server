@@ -174,6 +174,43 @@ class TestMyNodes:
         finally:
             asyncio.run(set_node_owner(node_id, None))
 
+    @pytest.mark.parametrize("configured", [None, "ref-name-node"])
+    def test_a_node_without_a_name_of_its_own_is_called_by_its_ref(self, configured, client):
+        """An unnamed node, and one whose name is its own id, read as the ref:
+        the console never shows the node_id."""
+        from core import state
+        from core.auth import set_node_owner
+        from core.users import ANONYMOUS_USER
+
+        node_id = "ref-name-node"
+        ref = own(node_id, ANONYMOUS_USER["id"])
+        with state.connected_nodes_lock:
+            state.connected_nodes[node_id] = {"status": "active", "config": {"name": configured}}
+        try:
+            node = next(n for n in client.get("/api/auth/me/nodes").json() if n["node_id"] == node_id)
+            assert node["name"] == ref
+        finally:
+            with state.connected_nodes_lock:
+                state.connected_nodes.pop(node_id, None)
+            asyncio.run(set_node_owner(node_id, None))
+
+    def test_a_node_keeps_the_name_it_was_given(self, client):
+        from core import state
+        from core.auth import set_node_owner
+        from core.users import ANONYMOUS_USER
+
+        node_id = "named-node"
+        own(node_id, ANONYMOUS_USER["id"])
+        with state.connected_nodes_lock:
+            state.connected_nodes[node_id] = {"status": "active", "config": {"name": "Roof dish"}}
+        try:
+            node = next(n for n in client.get("/api/auth/me/nodes").json() if n["node_id"] == node_id)
+            assert node["name"] == "Roof dish"
+        finally:
+            with state.connected_nodes_lock:
+                state.connected_nodes.pop(node_id, None)
+            asyncio.run(set_node_owner(node_id, None))
+
     def test_my_nodes_entry_carries_position_status_for_a_private_node(self, client):
         """A private node is filtered out of /api/radar/nodes entirely, so
         its owner has nowhere else to learn it needs a position."""

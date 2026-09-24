@@ -36,10 +36,11 @@ const NODE = {
   location_privacy_source: "registration",
 };
 
-// The Node ref cell of the row for `nodeId`, found by its header so the
-// assertion follows the column if the table is reordered.
-async function refCell(nodeId: string) {
-  const row = (await screen.findByText(nodeId)).closest("tr")!;
+// The Node ref cell of the node's row, found by its header so the assertion
+// follows the column if the table is reordered. The row is found by its
+// frequency, the one cell every fixture here fills the same way.
+async function refCell() {
+  const row = (await screen.findByText("195.000 MHz")).closest("tr")!;
   const column = screen.getAllByRole("columnheader").findIndex((h) => h.textContent === "Node ref");
   return row.children[column];
 }
@@ -54,8 +55,17 @@ describe("OnboardingPage", () => {
     vi.mocked(api.myNodes).mockResolvedValue([NODE]);
     renderPage();
 
-    expect(await screen.findByText("ret1a2b3c4d")).toBeInTheDocument();
+    expect(await screen.findByText("nde0123456789")).toBeInTheDocument();
     expect(screen.getByText("195.000 MHz")).toBeInTheDocument();
+  });
+
+  it("never shows the node_id, which the route carries only for the owner's own calls", async () => {
+    vi.mocked(api.myNodes).mockResolvedValue([NODE]);
+    renderPage();
+
+    await screen.findByText("nde0123456789");
+    expect(screen.queryByText("ret1a2b3c4d")).not.toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "Node ID" })).not.toBeInTheDocument();
   });
 
   it("shows each node under its node_ref, not its name", async () => {
@@ -72,14 +82,14 @@ describe("OnboardingPage", () => {
     vi.mocked(api.myNodes).mockResolvedValue([{ ...NODE, node_ref: null }]);
     renderPage();
 
-    expect(await refCell("ret1a2b3c4d")).toHaveTextContent(/^—/);
+    expect(await refCell()).toHaveTextContent(/^—/);
   });
 
   it("keeps the location privacy badge beside the node_ref", async () => {
     vi.mocked(api.myNodes).mockResolvedValue([{ ...NODE, location_private: true }]);
     renderPage();
 
-    expect(await refCell("ret1a2b3c4d")).toHaveTextContent("nde0123456789 Private");
+    expect(await refCell()).toHaveTextContent("nde0123456789 Private");
   });
 
   it("tells an owner of nothing how a node joins their account", async () => {
