@@ -15,7 +15,7 @@ run  := root / ".testmap-run"
 default:
     @just --list
 
-# One-time setup: submodules, backend venv + editable libs (uv), web deps, .env
+# Setup, for a clone or a fresh worktree: submodules, backend venv + editable libs (uv), web deps, .env, git hook
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -26,7 +26,35 @@ setup:
     cd "{{be}}"
     [ -f .env ] || cp .env.example .env   # Maprad key not needed for the testmap
     just --justfile "{{justfile()}}" migrate
+    echo "→ pre-commit and the git hook"
+    just --justfile "{{justfile()}}" hooks
     echo "✓ setup complete — now: just up"
+
+# pre-commit and vulture as uv tools at the backend venv's versions (uv.lock's, after `just locked`), and the git hook
+hooks:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ -x "{{py}}" ] || { echo "no backend venv — run: just locked"; exit 1; }
+    python=$(cat "{{be}}/.python-version")
+    # vulture too, since the dead-code hook calls it by name.
+    for tool in pre-commit vulture; do
+        version=$("{{py}}" -c 'import importlib.metadata, sys; print(importlib.metadata.version(sys.argv[1]))' "$tool")
+        if ! uv tool install --python "$python" "${tool}==${version}"; then
+            echo "✗ uv could not install ${tool}; its error is above. If the executable already exists,"
+            echo "  another install (pipx, pip --user) owns it: remove that, then rerun just hooks."
+            exit 1
+        fi
+    done
+    bin=$(uv tool dir --bin)
+    # The shared hook records this pre-commit's interpreter, which no worktree owns.
+    "$bin/pre-commit" install --install-hooks
+    # Both, since an activated venv can supply the right vulture here while a
+    # commit from a plain shell finds none.
+    found=$(vulture --version 2>/dev/null || true)
+    if [[ ":$PATH:" != *":$bin:"* || "$found" != "vulture ${version}" ]]; then
+        echo "⚠ put $bin first on PATH (uv tool update-shell): the dead-code hook calls the"
+        echo "  vulture ${version} there by name, and PATH now finds '${found:-none}'"
+    fi
 
 # Bring the dev database to head. Idempotent, and run by both setup and up.
 migrate:
