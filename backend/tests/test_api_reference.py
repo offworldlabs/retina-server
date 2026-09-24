@@ -175,6 +175,17 @@ def test_the_page_renders_each_document_with_scalars_uploads_off(client):
         assert config["withDefaultFonts"] is False
 
 
+def test_blah2_arms_document_is_the_one_committed_in_blah2_arm(client):
+    config = next(c for c in _configs(client) if c["slug"] == "blah2-arm")
+    assert config["url"] == "https://cdn.jsdelivr.net/gh/offworldlabs/blah2-arm@main/api/openapi.json"
+    assert config["hideTestRequestButton"] is True
+
+
+def test_the_policy_admits_blah2_arms_document_and_no_wider_source(client):
+    connect = client.get("/").headers["content-security-policy"].split("connect-src ", 1)[1].split(";", 1)[0]
+    assert connect.split() == ["'self'", "https://cdn.jsdelivr.net/gh/offworldlabs/blah2-arm@main/api/openapi.json"]
+
+
 def test_the_palette_is_the_pages_before_it_is_scalars(client):
     """In the page's own stylesheet, and the theme script ahead of the bundle,
     so the first paint is already in the reader's mode, header included."""

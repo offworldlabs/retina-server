@@ -160,6 +160,8 @@ _SHARED = {
     "hideDarkModeToggle": True,
 }
 
+BLAH2_ARM_URL = "https://cdn.jsdelivr.net/gh/offworldlabs/blah2-arm@main/api/openapi.json"
+
 DOCUMENTS = [
     {"title": "retina-server", "slug": "retina-server", "url": "/openapi.json"},
     {
@@ -169,6 +171,16 @@ DOCUMENTS = [
         "slug": "tower-finder",
         "url": "/openapi/tower-finder.json",
         "servers": [{"url": "https://towers.retina.fm"}],
+        "hideTestRequestButton": True,
+    },
+    {
+        # blah2-api runs on each node, so there is no live instance to fetch
+        # from: the document is the one committed in blah2-arm, read through
+        # jsDelivr (CORS-open, public repo). Its server is on the node's LAN,
+        # which this https page cannot reach, so no test request.
+        "title": "blah2-arm (on each node)",
+        "slug": "blah2-arm",
+        "url": BLAH2_ARM_URL,
         "hideTestRequestButton": True,
     },
 ]
@@ -219,7 +231,7 @@ CSP = "; ".join(
         "style-src 'unsafe-inline'",
         "img-src 'self' data:",
         "font-src data:",
-        "connect-src 'self'",
+        f"connect-src 'self' {BLAH2_ARM_URL}",
         "base-uri 'none'",
         "form-action 'none'",
         "frame-ancestors 'none'",
