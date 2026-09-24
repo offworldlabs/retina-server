@@ -1,13 +1,15 @@
-"""In-process fixed-window rate limits for the node API.
+"""In-process fixed-window rate limits for the node API, and for probing a
+polled radar.
 
-Three limiters, because three things need bounding and they are not the same
+Four limiters, because four things need bounding and they are not the same
 thing. The authenticated paths are limited per (node_id, endpoint) and refuse
 with a 429: the caller already holds a token, so telling it that it is going too
 fast leaks nothing it does not know. Registration has no token, so it is limited
 on the node_id in the request body and refuses with the shared 403 rather than a
 429. Claiming is authenticated but is bounded on the address as well as the
 node, because what it spends is somebody else's mailbox rather than this
-server's time.
+server's time. Probing a polled radar is limited per account, because each probe
+is a request this server sends to a host the caller chose.
 
 Detections are held to 8 a second, sized against the 2 Hz contract ceiling
 rather than the roughly 1.1 Hz measured cadence of D45. A node cannot exceed one
@@ -331,3 +333,37 @@ class RegistrationRateLimiter:
 # that made it worth having. Only registration is limited by node_id, so this is
 # process-wide state a second uvicorn worker would double; phase 1 runs one.
 registration_limiter = RegistrationRateLimiter()
+
+
+# (requests admitted, window in seconds) per account. A submit probes again, so
+# it spends one too.
+POLLED_PROBE_LIMITS: tuple[tuple[int, int], ...] = ((10, 3600),)
+
+# Keys are account ids, and an account costs no more than a mailbox, so the bound
+# is enforced as registration's is.
+MAX_POLLED_PROBE_KEYS = 10_000
+
+
+class PolledProbeRateLimiter:
+    """Per account, for the owner routes that probe a radar at an address the
+    caller typed."""
+
+    def __init__(self, clock: Clock = time.monotonic, max_tracked: int = MAX_POLLED_PROBE_KEYS) -> None:
+        self._counters = _FixedWindowCounters(clock, max_tracked, refuse_when_full=True)
+
+    def reset(self) -> None:
+        """Clear every tracked counter. For test fixtures only."""
+        self._counters.reset()
+
+    def admit(self, user_id: str) -> Refusal | None:
+        """Spend one probe for this account, or refuse with the wait in seconds."""
+        specs = [
+            ((user_id, ("polled_probe", i)), limit, window_s) for i, (limit, window_s) in enumerate(POLLED_PROBE_LIMITS)
+        ]
+        wait_s = self._counters.admit(specs)
+        if wait_s is None:
+            return None
+        return Refusal(429, dict(RATE_LIMITED_BODY), max(1, math.ceil(wait_s)))
+
+
+polled_probe_limiter = PolledProbeRateLimiter()

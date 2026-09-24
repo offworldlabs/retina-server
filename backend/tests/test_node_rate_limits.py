@@ -12,8 +12,10 @@ from services.node_rate_limits import (
     CLAIM_LIMITS,
     ENDPOINT_LIMITS,
     OVERFLOW_LOG_INTERVAL_S,
+    POLLED_PROBE_LIMITS,
     REGISTRATION_LIMITS,
     ClaimRateLimiter,
+    PolledProbeRateLimiter,
     RegistrationRateLimiter,
     TokenRateLimiter,
 )
@@ -483,3 +485,48 @@ def test_the_claim_retry_after_is_never_zero():
 
     refusal = limiter.admit("ret1a2b3c4d", "ada@example.com")
     assert refusal.retry_after_s >= 1
+
+
+# ── Polled radar probes ──────────────────────────────────────────────────────
+
+
+def _probe_limiter(clock: FakeClock, max_tracked: int = 64) -> PolledProbeRateLimiter:
+    return PolledProbeRateLimiter(clock=clock, max_tracked=max_tracked)
+
+
+def test_ten_probes_an_hour_per_account():
+    assert POLLED_PROBE_LIMITS == ((10, 3600),)
+
+
+def test_the_eleventh_probe_in_an_hour_is_refused_until_the_hour_turns():
+    clock = FakeClock(3600.0)
+    limiter = _probe_limiter(clock)
+    for _ in range(10):
+        assert limiter.admit("user-a") is None
+
+    clock.advance(600)
+    refusal = limiter.admit("user-a")
+    assert (refusal.status_code, refusal.retry_after_s) == (429, 3000)
+
+    clock.advance(3000)
+    assert limiter.admit("user-a") is None
+
+
+def test_one_account_probing_leaves_another_its_own_allowance():
+    clock = FakeClock()
+    limiter = _probe_limiter(clock)
+    for _ in range(10):
+        limiter.admit("user-a")
+
+    assert limiter.admit("user-a") is not None
+    assert limiter.admit("user-b") is None
+
+
+def test_a_full_probe_map_refuses_an_account_it_does_not_already_track():
+    """Accounts cost a mailbox each, so the bound is enforced as registration's is."""
+    clock = FakeClock()
+    limiter = _probe_limiter(clock, max_tracked=1)
+    assert limiter.admit("user-a") is None
+
+    assert limiter.admit("user-b") is not None
+    assert limiter.admit("user-a") is None
