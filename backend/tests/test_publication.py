@@ -1444,12 +1444,15 @@ class TestPublicPathParameters:
 
 
 class TestMlatHistoryPayload:
-    """/api/test/mlat-history is unauthenticated and dumps solver records whole.
+    """/api/test/mlat-history dumps solver records whole.
 
-    Two things ride out on them. Every record carries ``adsb_hex``, which the
+    It answers an administrator or the radar key, and still publishes inside
+    the boundary (see routes.test.require_admin_or_radar_key).
+
+    Two things ride out on the records. Every record carries ``adsb_hex``, which the
     aircraft feed publishes beside ``contributing_node_refs``, so one record
     naming its nodes by node_id hands over the mapping for the whole fleet in
-    two anonymous requests. And a beam entry measures a range and a bearing
+    two requests. And a beam entry measures a range and a bearing
     from the node's true receiver to an aircraft the same record locates, which
     is a position fix whatever identifier it is filed under.
     """
@@ -1696,7 +1699,8 @@ class TestFurthestDetectionsClassification:
 
 
 class TestNodeVerificationPayload:
-    """/api/test/node/{node_ref}/verification is unauthenticated and per node.
+    """/api/test/node/{node_ref}/verification is per node, and publishes inside
+    the boundary for the same reason as /api/test/mlat-history.
 
     Everything in a track entry is measured from that one node's true receiver.
     The delays are bistatic ranges to a position the same entry publishes, so

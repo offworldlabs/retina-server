@@ -35,5 +35,7 @@ FastAPI backend and React front-ends for the RETINA passive-radar network.
   compose/env/frontend seams, so confirm the change against the environment
   itself before calling a deploy done: `aircraft_on_map` in
   `/api/test/dashboard`, the node set in `/api/radar/analytics`, and
-  `/api/radar/data/aircraft.json` for the data path. Scripted requests need a
-  browser User-Agent or Cloudflare answers `403 1010`.
+  `/api/radar/data/aircraft.json` for the data path. `/api/test/*` reads answer
+  only an administrator or the radar key, which stays on the droplet: read them
+  there with the runbook's `tst`. Scripted requests need a browser User-Agent or
+  Cloudflare answers `403 1010`.

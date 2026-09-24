@@ -578,7 +578,7 @@ class TestArchiveRows:
 
 
 class TestGroundTruthTrailRoute:
-    """GET /api/test/ground-truth/{hex} — unauthenticated, any hex.
+    """GET /api/test/ground-truth/{hex}, for any hex.
 
     The endpoint exists to score solves against simulation ground truth, but it
     served ``state.track_histories`` for whatever hex it was handed, and for a

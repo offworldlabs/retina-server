@@ -158,7 +158,7 @@ advertised. Get them from the DigitalOcean console or your own `~/.ssh/config`.
 | **Rebuild and restart** | `docker compose up -d --build` (wait ~5 s before testing) |
 | **Health endpoint** | `curl -sk https://localhost/api/health` |
 | **Metrics endpoint** | `adm /api/admin/metrics` (defined below) |
-| **Dashboard** | `curl -sk https://localhost/api/test/dashboard` |
+| **Dashboard** | `tst /api/test/dashboard` (defined below) |
 
 `/api/admin/*` requires an administrator, and a request to localhost arrives
 below Cloudflare with no assertion for the origin to verify, so a bare `curl`
@@ -175,6 +175,16 @@ adm() { curl -sk -H "Cf-Access-Jwt-Assertion: ${CF_ASSERTION}" "https://localhos
 It expires with the Access session and carries the email of whoever signed in, so
 anything you reach with it is attributed to that person in `/api/admin/events`.
 Every `adm` below assumes it.
+
+`/api/test/*` reads answer an administrator or the radar key, and the droplet holds
+the key, so `tst` reads it there without it passing through your shell history. It goes
+through the public hostname, because nginx refuses a request to localhost, which
+carries no Cloudflare client certificate:
+
+```bash
+API_HOST=api.retina.fm  # staging-api.retina.fm on staging, test-api.retina.fm on retina-test
+tst() { curl -s -H "X-API-Key: $(sed -n 's/^RADAR_API_KEY=//p' /opt/retina-server/backend/.env | tail -1)" "https://${API_HOST}$1"; }
+```
 
 All state is **in-memory**. A container restart loses all connected nodes, active tracks, and in-flight frame data. State is snapshotted to disk every 60 s and restored on next startup (trust scores, reputations, accuracy samples, node identities).
 
@@ -455,7 +465,7 @@ curl -sk https://localhost/api/radar/nodes | jq '.nodes | keys'
 ```
 
 ```bash
-NODE_REF=nde0123abcdef; curl -sk "https://localhost/api/test/node/$NODE_REF/verification" | jq '{n_tracks, n_matched, position}'
+NODE_REF=nde0123abcdef; tst "/api/test/node/$NODE_REF/verification" | jq '{n_tracks, n_matched, position}'
 ```
 
 Public routes address a node by its `node_ref`, which is the key the first command prints; the private `node_id` does not resolve on them.
@@ -623,7 +633,7 @@ If aircraft exist but `multinode_tracks == 0`: check node count — multinode tr
 
 **Check current anomaly state:**
 ```bash
-curl -sk https://localhost/api/test/dashboard | python3 -c \
+tst /api/test/dashboard | python3 -c \
   "import sys,json; d=json.load(sys.stdin); p=d['pipeline']; print('aircraft:', p['aircraft_on_map'], 'anomalies:', p.get('anomaly_count', '?'))"
 ```
 
@@ -903,7 +913,7 @@ aircraft. Compose is the only supported way to run it.
 
 ### Quick fleet health snapshot
 ```bash
-curl -sk https://localhost/api/test/dashboard | python3 -c \
+tst /api/test/dashboard | python3 -c \
   "import sys,json; d=json.load(sys.stdin); n=d['nodes']; h=d['server_health']; p=d['pipeline']; \
   print(f\"nodes={n['active']}/200  queue={h['frame_queue_utilization_pct']}%  drops={h['frames_dropped']}  on_map={p['aircraft_on_map']}\")"
 ```
@@ -915,9 +925,10 @@ the Feature gates table in [`architecture.md`](architecture.md). To flip one:
 edit `backend/.env`, then `docker compose up -d` (env-only, no `--build`).
 Standard rollout is `shadow` first: shadow counters accumulate in
 `/api/test/solver-stats` (`fov`, `claiming`, `consensus` blocks) without the
-stage binding; flip to `active` only after the shadow soak looks sane. That
-endpoint answers administrators only, so read it on the admin host, where
-Cloudflare Access signs you in (`admin.retina.fm/api/test/solver-stats`).
+stage binding; flip to `active` only after the shadow soak looks sane. Read it
+on the admin host, where Cloudflare Access signs you in
+(`admin.retina.fm/api/test/solver-stats`), or on the droplet with
+`tst /api/test/solver-stats`.
 Instant rollbacks: any mode flag back to `shadow`/`off`, and
 `TRACK_SMOOTHER=ewma` for display smoothing.
 

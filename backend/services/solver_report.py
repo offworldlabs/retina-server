@@ -110,8 +110,7 @@ def _cap_per_lane(records: list[dict], limit: int) -> list[dict]:
 
 
 def _published_records(records) -> list[dict]:
-    """Solve records as the unauthenticated /api/test/mlat-history route
-    serves them.
+    """Solve records as the /api/test/mlat-history route serves them.
 
     Withhold the geometry, then republish the identities, in that order: the
     withheld fields sit beside the node id they were measured for, and one of
