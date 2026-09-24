@@ -1,12 +1,12 @@
 """`web-build` runs each workspace's npm scripts from a matrix, and which entry
 runs which script is decided by step conditions. A mistake there fails nothing:
-a script that runs in no entry goes unchecked, and one that runs in two quietly
-lengthens the run. These pin the assignment.
+a script that runs in no entry goes unchecked, one that runs in two quietly
+lengthens the run, and a shard missing from the list drops its tests unseen.
+These pin the assignment.
 """
 
 import json
 import re
-from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -38,6 +38,15 @@ def _runs(step: dict, entry: dict) -> bool:
     return (entry.get("part") == value) == (op == "==")
 
 
+def _shard(entry) -> tuple[int, int] | None:
+    shard = entry.get("shard")
+    if shard is None:
+        return None
+    found = re.fullmatch(r"(\d+)/(\d+)", str(shard))
+    assert found, f"{entry['workspace']}'s shard {shard!r} is not k/N"
+    return int(found.group(1)), int(found.group(2))
+
+
 def _scripts_run(job, entry) -> list[str]:
     scripts = []
     for step in job["steps"]:
@@ -53,19 +62,32 @@ def test_every_workspace_has_an_entry(job):
 
 
 @pytest.mark.parametrize("workspace", WORKSPACES)
-def test_each_script_a_workspace_defines_runs_in_exactly_one_entry(job, workspace):
+def test_each_script_a_workspace_defines_runs_once_or_once_per_shard(job, workspace):
     defined = json.loads((ROOT / workspace / "package.json").read_text())["scripts"]
-    ran = Counter(
-        script for entry in _entries(job) if entry["workspace"] == workspace for script in _scripts_run(job, entry)
-    )
     for script in ("lint", "typecheck", "test", "build"):
-        if script in defined:
-            assert ran[script] == 1, f"{workspace}'s {script} runs in {ran[script]} entries"
+        if script not in defined:
+            continue
+        shards = [_shard(e) for e in _entries(job) if e["workspace"] == workspace and script in _scripts_run(job, e)]
+        assert shards, f"{workspace}'s {script} runs in no entry"
+        if shards == [None]:
+            continue
+        assert None not in shards, f"{workspace}'s {script} runs in {len(shards)} entries, not all of them shards"
+        assert sorted(shards) == [(k, len(shards)) for k in range(1, len(shards) + 1)], (
+            f"{workspace}'s {script} runs as shards {sorted(shards)}, not 1..N of N once each"
+        )
+
+
+def test_the_test_step_hands_each_entry_its_shard(job):
+    """Without it, every shard entry runs the whole suite. So it does without the
+    `--`, because npm keeps an option before that separator as its own config."""
+    step = next((s for s in job["steps"] if re.match(r"npm (?:run )?test -w ", s.get("run", ""))), None)
+    assert step, "no step runs the test script"
+    assert re.search(r"format\('-- --shard=\{0\}', matrix\.shard\)", step["run"]), step["run"]
 
 
 def test_the_dashboard_is_split_into_its_tests_and_its_checks(job):
-    parts = sorted(e.get("part") for e in _entries(job) if e["workspace"] == "dashboard")
-    assert parts == ["checks", "tests"]
+    parts = {e.get("part") for e in _entries(job) if e["workspace"] == "dashboard"}
+    assert parts == {"checks", "tests"}
 
 
 def test_each_half_of_a_split_runs_only_its_own_scripts(job):
@@ -80,7 +102,8 @@ def test_each_half_of_a_split_runs_only_its_own_scripts(job):
 
 
 def test_a_split_entry_is_named_for_its_part(job):
-    """The label is the job's name in the checks list, so it must say which half ran."""
+    """The label is the job's name in the checks list, so it must say which half, and which shard, ran."""
     for entry in _entries(job):
         if "part" in entry:
-            assert entry.get("label") == f"{entry['workspace']} {entry['part']}"
+            expected = " ".join(str(x) for x in (entry["workspace"], entry["part"], entry.get("shard")) if x)
+            assert entry.get("label") == expected

@@ -299,7 +299,8 @@ CI runs on every PR, on push to `main`, and on demand through
 
 1. Any PR, whatever its base: `backend-tests` (three shards) and
    `backend-coverage` behind them, `lint`, `web-build` (once per
-   workspace, with the dashboard's tests apart from its other checks),
+   workspace, with the dashboard's tests in two shards apart from its
+   other checks),
    `docker-build`, `env-parity`, plus an automated review.
 2. Merge to `main` → deploy to **staging** → staging smoke + Playwright E2E → deploy to **production** → prod smoke + Playwright E2E.
    A merge that changes nothing the droplets serve skips that chain, which means
