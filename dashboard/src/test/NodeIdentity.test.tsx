@@ -20,12 +20,6 @@ vi.mock("../api/client", () => ({
     adminNodeReports: vi.fn().mockResolvedValue([]),
     adminNodeRefs: vi.fn(),
     custody: vi.fn(),
-    adminNodeLocationPrivacy: vi.fn().mockResolvedValue({
-      location_private: false,
-      location_privacy_source: "default",
-    }),
-    setAdminNodeLocationPrivacy: vi.fn(),
-    clearAdminNodeLocationPrivacy: vi.fn(),
     adminPolledRadars: vi.fn().mockResolvedValue({ probation_enabled: true, radars: [] }),
     setAdminPolledRadarTrust: vi.fn(),
   },
@@ -89,24 +83,6 @@ describe("Node Management: both identifiers", () => {
     renderPage(NodeManagementPage);
 
     expect(await screen.findByText("Ada Lovelace")).toBeInTheDocument();
-  });
-
-  it("asks for location privacy by node_id, which the override is keyed on", async () => {
-    setup();
-
-    renderPage(NodeManagementPage);
-
-    await waitFor(() => expect(api.adminNodeLocationPrivacy).toHaveBeenCalledWith(NODE_ID));
-  });
-
-  it("does not ask for location privacy under a ref", async () => {
-    setup({ refs: {} });
-
-    renderPage(NodeManagementPage);
-
-    expect(await screen.findByText("Ada's Node")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText(/no node id/i)).toBeInTheDocument());
-    expect(api.adminNodeLocationPrivacy).not.toHaveBeenCalledWith(REF);
   });
 });
 

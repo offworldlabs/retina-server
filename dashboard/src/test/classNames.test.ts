@@ -22,7 +22,6 @@ const sheets = {
 const UNSTYLED = new Map([
   ["node-marker-synthetic", "a handle for the E2E suite"],
   ["de-map-centre", "groups the centre marker's SVG for a reader"],
-  ["privacy-control", "names the control's wrapper for a reader"],
 ]);
 
 const CLASS = /^-?[_a-zA-Z][\w-]*$/;

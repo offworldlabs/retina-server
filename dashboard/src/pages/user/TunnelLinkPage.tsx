@@ -4,7 +4,7 @@ import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
 import { Pager } from "../../components/Pager";
 import { useFetch } from "../../hooks/usePolling";
-import { LocationPrivacyBadge } from "../../components/LocationPrivacyControl";
+import { LocationPrivacyBadge } from "../../components/LocationPrivacy";
 import { RetnodeLink } from "../../components/RetnodeLink";
 import { StatusBadge } from "../../components/StatusBadge";
 import { isOnline } from "../../utils/nodes";

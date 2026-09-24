@@ -23,7 +23,6 @@ vi.mock("../api/client", () => ({
     adminNodeContacts: vi.fn(),
     adminNodeOwners: vi.fn(),
     adminNodeReports: vi.fn(),
-    adminNodeLocationPrivacy: vi.fn(),
     adminPolledRadars: vi.fn(),
   },
 }));

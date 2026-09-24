@@ -7,8 +7,7 @@ import { api } from "../api/client";
 
 vi.mock("../api/client", () => ({
   api: {
-    nodeAnalytics: vi.fn(), nodes: vi.fn(), myNodes: vi.fn(),
-    myNodeLocationPrivacy: vi.fn(), clearMyNodeLocationPrivacy: vi.fn(), releaseNode: vi.fn(),
+    nodeAnalytics: vi.fn(), nodes: vi.fn(), myNodes: vi.fn(), releaseNode: vi.fn(),
   },
 }));
 vi.mock("recharts", async (importOriginal) => ({
@@ -36,9 +35,6 @@ function renderPage() {
     </MemoryRouter>,
   );
 }
-
-const privateRadio = () => screen.getByRole("radio", { name: /^Private/ });
-const publicRadio = () => screen.getByRole("radio", { name: /^Public/ });
 
 describe("a node's availability", () => {
   beforeEach(() => {
@@ -72,53 +68,56 @@ describe("NodeDetailPage route identity", () => {
     vi.mocked(api.nodeAnalytics).mockImplementation(async (nodeId) => ({ node_ref: nodeId }));
   });
 
-  it("removes A's details and privacy actions while B is loading, including a failed B fetch", async () => {
+  it("removes A's details and owner actions while B is loading, including a failed B fetch", async () => {
     const next = deferred<object>();
     vi.mocked(api.nodeAnalytics).mockResolvedValueOnce({ node_ref: "a" }).mockReturnValueOnce(next.promise);
     renderPage();
-    await screen.findByRole("radio", { name: /^Public/ });
+    await screen.findByRole("button", { name: /release this node/i });
     fireEvent.click(screen.getByText("Go to B"));
-    expect(screen.queryAllByRole("radio")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: /release this node/i })).not.toBeInTheDocument();
     expect(screen.getByText("Loading…")).toBeInTheDocument();
     const errorLog = vi.spyOn(console, "error").mockImplementation(() => {});
     await act(async () => next.reject(new HttpError(404, "Not Found", null)));
     expect(screen.getByText("Node not found")).toBeInTheDocument();
-    expect(screen.queryAllByRole("radio")).toHaveLength(0);
+    expect(screen.queryByRole("button", { name: /release this node/i })).not.toBeInTheDocument();
     errorLog.mockRestore();
-  });
-
-  it("does not carry A's saved privacy setting into B", async () => {
-    vi.mocked(api.myNodeLocationPrivacy).mockResolvedValue({
-      node_id: "ret-a", location_private: true, location_privacy_source: "override",
-    });
-    renderPage();
-    await screen.findByRole("radio", { name: /^Private/ });
-    fireEvent.click(privateRadio());
-    await waitFor(() => expect(privateRadio()).not.toBeDisabled());
-    expect(privateRadio()).toBeChecked();
-    fireEvent.click(screen.getByText("Go to B"));
-    await screen.findByRole("link", { name: "b" });
-    expect(publicRadio()).toBeChecked();
-    fireEvent.click(privateRadio());
-    expect(api.myNodeLocationPrivacy).toHaveBeenLastCalledWith("ret-b", true);
-  });
-
-  it("ignores an A save that completes after moving to B", async () => {
-    const save = deferred<any>();
-    vi.mocked(api.myNodeLocationPrivacy).mockReturnValueOnce(save.promise);
-    renderPage();
-    await screen.findByRole("radio", { name: /^Private/ });
-    fireEvent.click(privateRadio());
-    fireEvent.click(screen.getByText("Go to B"));
-    await screen.findByRole("link", { name: "b" });
-    await act(async () => save.resolve({
-      node_id: "ret-a", location_private: true, location_privacy_source: "override",
-    }));
-    expect(publicRadio()).toBeChecked();
-    expect(publicRadio()).not.toBeDisabled();
   });
 });
 
+describe("NodeDetailPage location privacy", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.mocked(api.nodes).mockResolvedValue({ nodes: {} });
+    vi.mocked(api.nodeAnalytics).mockImplementation(async (nodeId) => ({ node_ref: nodeId }));
+  });
+
+  it("marks the owner's private node as private", async () => {
+    vi.mocked(api.myNodes).mockResolvedValue([{ node_ref: "a", node_id: "ret-a", location_private: true }]);
+
+    renderPage();
+
+    const heading = await screen.findByRole("heading", { level: 1 });
+    await waitFor(() => expect(within(heading).getByText("Private")).toBeInTheDocument());
+  });
+
+  it("marks nothing on a public node", async () => {
+    vi.mocked(api.myNodes).mockResolvedValue([{ node_ref: "a", node_id: "ret-a", location_private: false }]);
+
+    renderPage();
+
+    await screen.findByRole("button", { name: /release this node/i });
+    expect(screen.queryByText("Private")).not.toBeInTheDocument();
+  });
+
+  it("offers no setting to change it", async () => {
+    vi.mocked(api.myNodes).mockResolvedValue([{ node_ref: "a", node_id: "ret-a", location_private: true }]);
+
+    renderPage();
+
+    await screen.findByRole("button", { name: /release this node/i });
+    expect(screen.queryAllByRole("radio")).toHaveLength(0);
+  });
+});
 
 describe("NodeDetailPage ownership", () => {
   beforeEach(() => {
@@ -177,12 +176,9 @@ describe("NodeDetailPage ownership", () => {
     vi.mocked(api.releaseNode).mockResolvedValue({ ok: true });
     renderPage();
     fireEvent.click(await screen.findByRole("button", { name: /release this node/i }));
-    expect(screen.getByText(/Location privacy/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /yes, release it/i }));
 
     await waitFor(() => expect(screen.queryByText(/Release this node/i)).not.toBeInTheDocument());
-    // The privacy routes answer 404 to an ex-owner, so the card goes too.
-    expect(screen.queryByText(/Location privacy/)).not.toBeInTheDocument();
   });
 
   it("keeps the node when the release fails, and says why", async () => {

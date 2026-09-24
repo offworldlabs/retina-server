@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { HttpError } from "@retina/shared";
 
 import { api } from "../../api/client";
-import { PublicationOptions } from "../../components/LocationPrivacyControl";
+import { PublicationOptions } from "../../components/LocationPrivacy";
 import { Notice } from "../../components/Notice";
 import { useAuth } from "../../context/AuthContext";
 import type { PolledRadarProbe, Publication, RadarSite } from "../../types";

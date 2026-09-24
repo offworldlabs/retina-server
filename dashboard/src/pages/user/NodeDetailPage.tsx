@@ -13,11 +13,8 @@ import { useChartTheme } from "../../utils/chartTheme";
 import { detectionCount } from "../../utils/nodes";
 import { RetnodeLink } from "../../components/RetnodeLink";
 import { POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
-import {
-  LocationPrivacyBadge,
-  LocationPrivacyControl,
-} from "../../components/LocationPrivacyControl";
-import type { LocationPrivacyState, PositionStatus } from "../../types";
+import { LocationPrivacyBadge } from "../../components/LocationPrivacy";
+import type { PositionStatus } from "../../types";
 
 const POSITION_FIX_HINT: Record<Exclude<PositionStatus, "positioned">, string> = {
   missing_rx: "Add its receiver position in the node configuration.",
@@ -27,8 +24,8 @@ const POSITION_FIX_HINT: Record<Exclude<PositionStatus, "positioned">, string> =
 
 export default function NodeDetailPage() {
   const { nodeId } = useParams();
-  // A route change is a new identity, including pending reads, optimistic
-  // privacy controls and saves still completing for the previous node.
+  // A route change is a new identity, including pending reads and a release
+  // still completing for the previous node.
   return <NodeDetail key={nodeId} nodeId={nodeId} />;
 }
 
@@ -56,32 +53,26 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
     return {
       analytics,
       nodeInfo: (nodeData?.nodes || {})[nodeId] || null,
-      // Ownership, not presence in the node list, is what earns the privacy
-      // card — the node the card matters most for is the one missing there.
-      privacy: owned
+      // Ownership, not presence in the node list, is the gate: this is the
+      // owner's own view of their own node, and a private node is the one
+      // missing from that list. `claimed_with` is null for a node nobody
+      // claimed by email, which is every node an administrator assigned.
+      ownership: owned
         ? {
             node_id: owned.node_id,
+            claimed_with: owned.claimed_with || null,
             location_private: !!owned.location_private,
-            location_privacy_source: owned.location_privacy_source || "default",
           }
         : null,
-      // Same gate as the privacy card, and for the same reason: this is the
-      // owner's own view of their own node. Null for a node nobody claimed by
-      // email, which is every node an administrator assigned.
-      ownership: owned ? { node_id: owned.node_id, claimed_with: owned.claimed_with || null } : null,
     };
   }, nodeId ?? "");
   const { data: page, loading, error } = polled;
-  // What the privacy control last saved. It outranks the fetched answer for
-  // the node it was saved on, and lapses when the route moves to another.
-  const [applied, setApplied] = useState<{ nodeId: string; privacy: LocationPrivacyState } | null>(null);
   // Every hook stays above the early returns below: a render that takes the
   // loading or not-found path must call exactly as many as one that does not.
   //
   // `released` is the node handed back in this session. It outranks the fetched
-  // answer for that node, because the ownership and privacy cards both gate on
-  // ownership and leaving them up would offer controls the server now answers
-  // 404 for.
+  // answer for that node, because the ownership card gates on ownership and
+  // leaving it up would offer a control the server now answers 404 for.
   const [released, setReleased] = useState<string | null>(null);
   const [confirmingRelease, setConfirmingRelease] = useState(false);
   const [releasing, setReleasing] = useState(false);
@@ -119,8 +110,6 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
   }
 
   const nodeInfo = page?.nodeInfo ?? null;
-  const privacy: LocationPrivacyState | null =
-    released === nodeId ? null : applied?.nodeId === nodeId ? applied.privacy : (page?.privacy ?? null);
   const ownership = released === nodeId ? null : (page?.ownership ?? null);
 
   async function release() {
@@ -144,7 +133,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
   // be offered to someone who already holds that id — its owner, via the
   // owner-scoped node list. For everyone else RetnodeLink has nothing to open
   // and renders the label as plain text, which is the whole point of the ref.
-  const ownId = privacy?.node_id || "";
+  const ownId = ownership?.node_id || "";
   const metrics = data.metrics || data;
   const trust = data.trust || {};
   const reputation = data.reputation || {};
@@ -165,6 +154,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
           <RetnodeLink nodeId={ownId} synthetic={nodeInfo?.is_synthetic}>
             {nodeRef}
           </RetnodeLink>
+          <LocationPrivacyBadge isPrivate={ownership?.location_private} />
         </h1>
         <p>Detailed metrics and trust analysis</p>
       </div>
@@ -230,27 +220,6 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
           </div>
         </div>
       </div>
-
-      {/* Location privacy — owners only; the control writes the /me routes. */}
-      {privacy && (
-        <div className="card">
-          <div className="card-header">
-            <h3>Location privacy</h3>
-            <LocationPrivacyBadge isPrivate={privacy.location_private} />
-          </div>
-          <div className="card-body">
-            <LocationPrivacyControl
-              nodeId={privacy.node_id}
-              isPrivate={privacy.location_private}
-              source={privacy.location_privacy_source}
-              uncertaintyKm={data.detection_area?.rx?.location_uncertainty_km}
-              onSave={(next) => api.myNodeLocationPrivacy(privacy.node_id, next)}
-              onReset={() => api.clearMyNodeLocationPrivacy(privacy.node_id)}
-              onApplied={(next) => setApplied({ nodeId, privacy: next })}
-            />
-          </div>
-        </div>
-      )}
 
       {/* Ownership — owners only. Releasing is here rather than on a list page
           because it wants the node named in front of it. */}

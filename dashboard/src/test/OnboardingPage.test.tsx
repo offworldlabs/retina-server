@@ -33,7 +33,6 @@ const NODE = {
   rx_lon: -0.12,
   frequency: 195_000_000,
   location_private: false,
-  location_privacy_source: "registration",
 };
 
 // The Node ref cell of the node's row, found by its header so the assertion
