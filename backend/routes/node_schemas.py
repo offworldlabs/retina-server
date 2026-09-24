@@ -161,9 +161,7 @@ class PublicationChoice(_RequestModel):
     membership lists they carry.
 
     `choice` is required, with no default: a node must send an explicit value.
-    The choice can also be set later from the dashboard, by the node's owner or
-    an admin, and that later answer outranks this one — so what is sent here is
-    the answer at onboarding rather than the last word.
+    It stands until the node registers again, which replaces it.
     """
 
     version: str = Field(max_length=32)

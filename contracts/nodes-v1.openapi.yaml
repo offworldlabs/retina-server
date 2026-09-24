@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: RETINA node ingest
-  version: 1.6.0
+  version: 1.6.1
   description: |
     The RETINA server's HTTP API. The paths under `/v1/nodes` are the RETINA node
     ingest contract, generated from the server and versioned as a unit; everything
@@ -1548,9 +1548,7 @@ components:
         membership lists they carry.
 
         `choice` is required, with no default: a node must send an explicit value.
-        The choice can also be set later from the dashboard, by the node's owner or
-        an admin, and that later answer outranks this one — so what is sent here is
-        the answer at onboarding rather than the last word.
+        It stands until the node registers again, which replaces it.
     RegisterRequest:
       properties:
         node_id:

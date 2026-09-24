@@ -163,7 +163,11 @@ NODE_PATH_PREFIX = "/v1/nodes"
 # keys a track on (node, run, id).  It also adds `retina_tracker` to the
 # heartbeat's `versions`.  A minor because every addition is optional: a 1.4.0
 # or 1.5.x node stays conformant and simply sends no tracks.
-NODE_API_VERSION = "1.6.0"
+#
+# 1.6.1 stops `PublicationChoice` promising that an owner or admin can override
+# the choice from the dashboard, which the server no longer offers: what a node
+# sends stands until it registers again. Prose only, a patch as 1.5.1 was.
+NODE_API_VERSION = "1.6.1"
 
 # No tag here: each sub-router carries the contract's own grouping, since those
 # are what a generated client is built around.
