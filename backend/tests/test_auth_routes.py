@@ -232,6 +232,17 @@ class TestMyNodes:
         finally:
             asyncio.run(set_node_owner(node_id, None))
 
+    def test_a_node_that_is_not_a_polled_radar_has_none_in_its_row(self, client):
+        from core.auth import set_node_owner
+        from core.users import ANONYMOUS_USER
+
+        own("fleet-row-node", ANONYMOUS_USER["id"])
+        try:
+            nodes = client.get("/api/auth/me/nodes").json()
+            assert next(n for n in nodes if n["node_id"] == "fleet-row-node")["polled"] is None
+        finally:
+            asyncio.run(set_node_owner("fleet-row-node", None))
+
     def test_my_nodes_reports_the_frequency_a_v1_config_declares(self, client, monkeypatch):
         """A v1 node or polled radar carries fc_hz, not the TCP fleet's FC."""
         from core import state

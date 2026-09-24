@@ -558,8 +558,8 @@ class RadarPoller:
     async def _in_pipeline(self) -> bool:
         """Whether the node is in the pipeline registries, rejoining them if it can.
 
-        Startup priming registers every active node, and a radar registered
-        since is added here on its first frame.
+        Startup priming registers every active node, and registration each new
+        radar; one that neither could is added here on its first frame.
         """
         node_id = self.target.node_id
         with state.connected_nodes_lock:

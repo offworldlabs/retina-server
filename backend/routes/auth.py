@@ -44,7 +44,7 @@ from services.node_claiming import (
 )
 from services.node_config import carrier_hz, position_status
 from services.node_refs import owner_identity, public_name
-from services.polled_radars import remove_polled_radar
+from services.polled_radars import owner_views, remove_polled_radar
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -398,6 +398,9 @@ async def my_nodes(request: Request):
     a consumer merging this list with one of those needs one key space rather
     than the same node twice under two. It is null for a node with no published
     handle, which is a node that appears on no public surface either.
+
+    `polled` is null but for a polled radar, whose address it carries: the
+    owner's to see, as claimed_with is.
     """
     user = await get_current_user(request)
     node_ids = await get_user_nodes(user["id"])
@@ -413,11 +416,22 @@ async def my_nodes(request: Request):
     # map above. The address is what the owner was mailed to claim the node
     # with, so it is theirs to see; it is not published anywhere else.
     claimed_with = await claim_addresses(node_ids)
+    async with async_session_maker() as session:
+        polled = await owner_views(session, [nid for nid in node_ids if system_of(nid) == POLLED_BLAH2])
     for nid in node_ids:
         info = snapshot.get(nid) or {}
         cfg = info.get("config", {}) or {}
         private, source = privacy.get(nid, (False, publication.SOURCE_DEFAULT))
         ref = owner_identity(nid)
+        radar = polled.get(nid)
+        status = info.get("status", "never_connected")
+        # The poller knows within a few polls, where the offline sweep waits out
+        # its threshold. Here rather than in connected_nodes, since the sweep
+        # logs a node going offline only when it is the one to mark it so.
+        # Liveness never says online on its own: it is the last the poller
+        # wrote, and stands still where nothing polls.
+        if radar is not None and radar["liveness"] == blah2_poller.UNREACHABLE:
+            status = "disconnected"
         out.append(
             {
                 "node_id": nid,
@@ -425,7 +439,7 @@ async def my_nodes(request: Request):
                 # The console names a node by its ref, so an unnamed node, or
                 # one whose name is a node id, is called by that instead.
                 "name": public_name(cfg.get("name"), ref, node_ids),
-                "status": info.get("status", "never_connected"),
+                "status": status,
                 "last_heartbeat": info.get("last_heartbeat"),
                 "is_synthetic": info.get("is_synthetic", False),
                 "rx_lat": cfg.get("rx_lat"),
@@ -435,6 +449,7 @@ async def my_nodes(request: Request):
                 "location_private": private,
                 "location_privacy_source": source,
                 "claimed_with": claimed_with.get(nid),
+                "polled": radar,
             }
         )
     return out

@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 from cryptography.fernet import Fernet
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from core import state
 from core.node_ids import node_id_pattern
@@ -26,6 +26,7 @@ from core.users import ANONYMOUS_USER, async_session_maker
 from services import (
     blah2_poller,
     blah2_probe,
+    node_pipeline,
     node_retirement,
     polled_radars,
     polled_registration,
@@ -56,6 +57,17 @@ def _radars_on_loopback(monkeypatch):
     polled_probe_limiter.reset()
     yield
     polled_probe_limiter.reset()
+
+
+@pytest.fixture(autouse=True)
+def _registries_left_as_found():
+    # A registration hands the radar to the in-process registries, which outlive a test.
+    before = set(state.connected_nodes)
+    # Taken now: a test may replace it.
+    forget = node_retirement.forget_node
+    yield
+    for node_id in set(state.connected_nodes) - before:
+        forget(node_id)
 
 
 @pytest.fixture()
@@ -734,3 +746,98 @@ def test_an_administrator_cannot_leave_a_polled_radar_without_an_owner(
 
     assert r.status_code == 409
     assert node_id in {n["node_id"] for n in client.get("/api/auth/me/nodes").json()}
+
+
+# ── The owner's row ──────────────────────────────────────────────────────────
+
+
+def _my_row(client, node_id: str) -> dict:
+    return next(n for n in client.get("/api/auth/me/nodes").json() if n["node_id"] == node_id)
+
+
+def test_a_registered_radar_is_on_its_owners_list_and_map_before_its_first_frame(
+    client, registration_open, canned_radar, poller_wakes
+):
+    node_id = _registered_by_route(client)
+
+    # The owner's map draws what the analytics registry holds.
+    assert "detection_area" in state.node_analytics.get_node_summary(node_id)
+    row = _my_row(client, node_id)
+    assert (row["status"], row["rx_lat"], row["frequency"]) == ("disconnected", 10.5, 204640000.0)
+    assert row["polled"] == {"address": ADDRESS, "unprotected": True, "liveness": "pending", "trust_state": "probation"}
+
+
+def test_a_radar_the_pipeline_cannot_take_yet_is_registered_all_the_same(
+    client, registration_open, canned_radar, poller_wakes, monkeypatch, caplog
+):
+    async def refused(session, node):
+        raise ValueError(f"{node.node_id} has no active configuration")
+
+    monkeypatch.setattr(node_pipeline, "register_with_pipeline", refused)
+
+    r = client.post(REGISTER, json=SUBMIT)
+
+    assert r.status_code == 201
+    assert poller_wakes == [True]
+    assert _my_row(client, r.json()["node_id"])["status"] == "never_connected"
+    assert "could not hand it to the pipeline" in caplog.text
+
+
+def test_the_owner_sees_the_address_they_gave_without_its_password(
+    client, registration_open, canned_radar, poller_wakes, secret_key, monkeypatch
+):
+    async def demands_it(endpoint):
+        return False
+
+    monkeypatch.setattr(polled_registration, "_answers_without_credentials", demands_it)
+    node_id = client.post(REGISTER, json=SUBMIT | {"address": "https://ada:s3cret-pass@radar.example.com"}).json()[
+        "node_id"
+    ]
+
+    listing = client.get("/api/auth/me/nodes")
+
+    [row] = [n for n in listing.json() if n["node_id"] == node_id]
+    assert (row["polled"]["address"], row["polled"]["unprotected"]) == ("https://radar.example.com", False)
+    assert "s3cret-pass" not in listing.text
+
+
+def test_the_owner_sees_when_their_radar_has_been_reviewed(client, registration_open, canned_radar, poller_wakes):
+    node_id = _registered_by_route(client)
+
+    client.put(f"/api/admin/polled-radars/{node_id}/trust", json={"trust_state": "graduated", "epoch": 1})
+
+    assert _my_row(client, node_id)["polled"]["trust_state"] == "graduated"
+
+
+def _liveness(node_id: str, liveness: str) -> None:
+    async def write():
+        async with async_session_maker() as session:
+            await session.execute(update(PolledRadar).where(PolledRadar.node_id == node_id).values(liveness=liveness))
+            await session.commit()
+
+    asyncio.run(write())
+
+
+@pytest.mark.parametrize(
+    ("liveness", "heard", "status"),
+    [
+        # Known within a few polls, where the offline sweep would wait out its threshold.
+        ("unreachable", "active", "disconnected"),
+        ("streaming", "active", "active"),
+        # Answering with no new frame is still answering.
+        ("stalled", "active", "active"),
+        # The last the poller wrote, standing still where nothing polls now.
+        ("streaming", "disconnected", "disconnected"),
+    ],
+)
+def test_a_radars_status_is_offline_as_soon_as_the_poller_finds_it_unreachable(
+    client, registration_open, canned_radar, poller_wakes, liveness, heard, status
+):
+    node_id = _registered_by_route(client)
+    _liveness(node_id, liveness)
+    with state.connected_nodes_lock:
+        state.connected_nodes[node_id]["status"] = heard
+
+    row = _my_row(client, node_id)
+
+    assert (row["status"], row["polled"]["liveness"]) == (status, liveness)
