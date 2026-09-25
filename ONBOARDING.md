@@ -134,6 +134,14 @@ docker run --rm -v "$PWD":/w -w /w --user "$(id -u):$(id -g)" -e npm_config_cach
 npm ci
 ```
 
+Dependabot proposes weekly updates to this lockfile, `backend/uv.lock`, the
+pre-commit hooks and the pinned actions (`.github/dependabot.yml`); the Python,
+Node and uv versions move by hand. Two front-end bundles are vendored outside
+npm, so it never sees them:
+`dashboard/vendor/edsc-timeline/` and
+`dashboard/public/vendor/scalar-api-reference-<version>/`. Each `NOTICE.md` says
+which release it is and how to upgrade it by hand.
+
 The console is at `http://localhost:5174` (or `http://app.localhost:5174/`) and
 opens on the live map; `/api` and `/ws` are proxied to the backend on `:8000`.
 The admin console is at `http://admin.localhost:5174/`, chosen by hostname as
@@ -374,6 +382,11 @@ branch, open a PR, get it green, then merge.
   matches nothing and reads as a clean "no errors in the logs". Run `docker compose ps
   --services` first and trust it over a remembered name.
 - **A new per-environment key needs an `env-parity` entry** or CI fails.
+- **Actions are pinned by commit, not tag.** Write a new `uses:` as
+  `owner/repo@<40-character SHA> # vX.Y.Z`, or `backend/tests/test_workflow_pins.py`
+  fails. Dependabot moves the pins weekly. A PR that edits
+  `.github/workflows/claude-code-review.yml` gets no automated review, because
+  the action refuses to run on a copy that differs from `main`'s.
 
 ## Where to go next
 
