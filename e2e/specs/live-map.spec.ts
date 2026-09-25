@@ -1,8 +1,8 @@
 /**
  * Live Aircraft Map E2E tests, on the simulation surface.
  *
- * This suite visits the admin console's /sim on whichever host `hosts.testmap`
- * names: the local dev server's admin.localhost. It verifies the map page
+ * This suite visits the admin console's /sim on whichever host the `testmap`
+ * role names: the local dev server's admin.localhost. It verifies the map page
  * loads, WebSocket connects, aircraft appear, and key interactive elements work
  * correctly.
  *
@@ -20,19 +20,12 @@
  * build.
  */
 import { test, expect, Page } from "@playwright/test";
-import { hosts } from "../playwright.config";
+import { hosts, hostOrSkip } from "../playwright.config";
 
-const TESTMAP = hosts.testmap;
-
-test.skip(
-  TESTMAP === null,
+const SIM = `${hostOrSkip(
+  "testmap",
   "no synthetic map surface in this environment (only the test droplet runs a fleet)",
-);
-
-// test.skip aborts the tests, not this module — every top-level statement still
-// runs during collection — so nothing here may call a method on TESTMAP where it
-// is null. Interpolating it is safe.
-const BASE = `${TESTMAP}/sim`;
+)}/sim`;
 
 // Helper: wait for the connection badge to show "LIVE"
 async function waitForLive(page: Page, timeoutMs = 15_000) {
@@ -107,7 +100,7 @@ async function rowsOrSkip(page: Page) {
 
 test.describe("Live Map — page identity", () => {
   test("the console names the page Simulation Map", async ({ page }) => {
-    await page.goto(BASE);
+    await page.goto(SIM);
     // The header's title rather than the HTML <title>, which is static across
     // every page of the console. "Simulation Map", not "Live Map": this suite
     // visits /sim, and DashboardLayout's page-title table names that page for
@@ -117,7 +110,7 @@ test.describe("Live Map — page identity", () => {
   });
 
   test("the console's brand is RETINA, not Tower Finder", async ({ page }) => {
-    await page.goto(BASE);
+    await page.goto(SIM);
     // Text content, not visibility: the map opens with the sidebar collapsed to
     // its icon rail, which hides the brand's labels.
     await expect(page.locator(".brand-text")).toHaveText(/RETINA/i);
@@ -127,7 +120,7 @@ test.describe("Live Map — page identity", () => {
   test("no JavaScript errors on page load", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (err) => errors.push(err.message));
-    await page.goto(BASE);
+    await page.goto(SIM);
     await page.waitForLoadState("networkidle");
     expect(errors).toHaveLength(0);
   });
@@ -135,18 +128,18 @@ test.describe("Live Map — page identity", () => {
 
 test.describe("Live Map — map rendering", () => {
   test("Leaflet map container is present", async ({ page }) => {
-    await page.goto(BASE);
+    await page.goto(SIM);
     await expect(page.locator(".leaflet-container")).toBeVisible({ timeout: 10_000 });
   });
 
   test("toolbar is rendered with connection badge", async ({ page }) => {
-    await page.goto(BASE);
+    await page.goto(SIM);
     await expect(page.locator(".live-map-toolbar")).toBeVisible({ timeout: 10_000 });
     await expect(page.locator(".connection-badge")).toBeVisible();
   });
 
   test("toolbar shows Coverage / Labels / Trails toggle buttons", async ({ page }) => {
-    await page.goto(BASE);
+    await page.goto(SIM);
     await expect(page.locator(".live-map-toolbar")).toBeVisible({ timeout: 10_000 });
     // "Coverage gaps" also matches a loose /Coverage/, so this must stay exact.
     await expect(page.getByRole("button", { name: "Coverage", exact: true })).toBeVisible();
@@ -155,7 +148,7 @@ test.describe("Live Map — map rendering", () => {
   });
 
   test("Debug Truth toggle is present on the simulation surface", async ({ page }) => {
-    await page.goto(BASE);
+    await page.goto(SIM);
     await expect(page.locator(".live-map-toolbar")).toBeVisible({ timeout: 10_000 });
     await expect(page.getByRole("button", { name: /Debug Truth/i })).toBeVisible();
   });
@@ -163,19 +156,19 @@ test.describe("Live Map — map rendering", () => {
 
 test.describe("Live Map — WebSocket connectivity", { tag: "@live" }, () => {
   test("connection badge transitions to LIVE within 15s", async ({ page }) => {
-    await page.goto(BASE);
+    await page.goto(SIM);
     await waitForLive(page);
     await expect(page.locator(".connection-badge")).toHaveClass(/connected/);
   });
 
   test("aircraft count is non-empty once connected", async ({ page }) => {
-    await page.goto(BASE);
+    await page.goto(SIM);
     await waitForLive(page);
     await expect(page.locator(".aircraft-count")).toBeVisible();
   });
 
   test("Pause button toggles to Resume and back", async ({ page }) => {
-    await page.goto(BASE);
+    await page.goto(SIM);
     await waitForLive(page);
 
     const pauseBtn = page.getByRole("button", { name: /Pause/i });
@@ -192,7 +185,7 @@ test.describe("Live Map — WebSocket connectivity", { tag: "@live" }, () => {
 
 test.describe("Live Map — aircraft list panel", { tag: "@live" }, () => {
   test("aircraft list panel renders within 20s of connection", async ({ page }) => {
-    await page.goto(BASE);
+    await page.goto(SIM);
     await waitForLive(page);
 
     // Panel should exist after aircraft start arriving
@@ -200,7 +193,7 @@ test.describe("Live Map — aircraft list panel", { tag: "@live" }, () => {
   });
 
   test("aircraft list shows rows once data arrives", async ({ page }) => {
-    await page.goto(BASE);
+    await page.goto(SIM);
     await waitForLive(page);
 
     const rows = await rowsOrSkip(page);
@@ -208,7 +201,7 @@ test.describe("Live Map — aircraft list panel", { tag: "@live" }, () => {
   });
 
   test("clicking an aircraft row opens the detail panel", async ({ page }) => {
-    await page.goto(BASE);
+    await page.goto(SIM);
     await waitForLive(page);
 
     const row = (await rowsOrSkip(page)).first();
@@ -230,7 +223,7 @@ const SYNTHETIC_IDENTITY = /^(?:synth|e2e|test|realnode)-\S+$/;
 
 test.describe("Live Map — node markers", { tag: "@live" }, () => {
   test("every node marker is a synthetic one", async ({ page }) => {
-    await page.goto(BASE);
+    await page.goto(SIM);
     await waitForLive(page);
 
     // `.node-marker` is the divIcon NodeMarkersLayer gives a NON-synthetic
@@ -242,7 +235,7 @@ test.describe("Live Map — node markers", { tag: "@live" }, () => {
   });
 
   test("node popup names a synthetic fleet id, not a real node's ref", async ({ page }) => {
-    await page.goto(BASE);
+    await page.goto(SIM);
     await waitForLive(page);
 
     const marker = page.locator(".node-marker-synthetic").first();
@@ -260,7 +253,7 @@ test.describe("Live Map — node markers", { tag: "@live" }, () => {
 
 test.describe("Live Map — toolbar toggles", () => {
   test("Coverage toggle adds/removes active class", async ({ page }) => {
-    await page.goto(BASE);
+    await page.goto(SIM);
     await expect(page.locator(".live-map-toolbar")).toBeVisible({ timeout: 10_000 });
 
     const btn = page.getByRole("button", { name: "Coverage", exact: true });
@@ -272,7 +265,7 @@ test.describe("Live Map — toolbar toggles", () => {
   });
 
   test("Arcs toggle adds/removes active class", async ({ page }) => {
-    await page.goto(BASE);
+    await page.goto(SIM);
     await expect(page.locator(".live-map-toolbar")).toBeVisible({ timeout: 10_000 });
 
     const btn = page.getByRole("button", { name: /Arcs/i });
@@ -284,7 +277,7 @@ test.describe("Live Map — toolbar toggles", () => {
   });
 
   test("Labels toggle adds/removes active class", async ({ page }) => {
-    await page.goto(BASE);
+    await page.goto(SIM);
     await expect(page.locator(".live-map-toolbar")).toBeVisible({ timeout: 10_000 });
 
     const btn = page.getByRole("button", { name: /Labels/i });
@@ -298,7 +291,7 @@ test.describe("Live Map — toolbar toggles", () => {
     const errors: string[] = [];
     page.on("pageerror", (err) => errors.push(err.message));
 
-    await page.goto(BASE);
+    await page.goto(SIM);
     await expect(page.locator(".live-map-toolbar")).toBeVisible({ timeout: 10_000 });
 
     const fitBtn = page.getByRole("button", { name: /Fit/i });

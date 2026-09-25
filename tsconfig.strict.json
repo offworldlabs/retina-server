@@ -1,0 +1,14 @@
+{
+  // The base with strict type-checking, for a workspace to extend. Each flag is
+  // named because the base turns the last two off outright, which `strict`
+  // alone does not override. strict-probe.ts fails to compile in any workspace
+  // where one of them stops applying, as long as that workspace declares no
+  // `files` of its own, which would replace this list.
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true
+  },
+  "files": ["./strict-probe.ts"]
+}

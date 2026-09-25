@@ -1,4 +1,4 @@
-import { defineConfig, devices } from "@playwright/test";
+import { defineConfig, devices, test } from "@playwright/test";
 
 /**
  * Playwright E2E test configuration.
@@ -30,8 +30,6 @@ import { defineConfig, devices } from "@playwright/test";
  * needs the surface skips itself instead, and runs locally against the dev
  * server's admin console.
  */
-
-const ENV = (process.env.E2E_ENV ?? "staging") as "staging" | "prod" | "local";
 
 const HOSTS = {
   staging: {
@@ -84,8 +82,31 @@ const HOSTS = {
   },
 } as const;
 
+const isEnv = (name: string): name is keyof typeof HOSTS => Object.keys(HOSTS).includes(name);
+const ENV = process.env.E2E_ENV ?? "staging";
+if (!isEnv(ENV)) throw new Error(`E2E_ENV=${ENV} is none of ${Object.keys(HOSTS).join(", ")}`);
+const TABLE = HOSTS[ENV];
+
 export const env = ENV;
-export const hosts = HOSTS[ENV];
+// The roles every environment has. The rest are reached through hostOrSkip.
+export const hosts: Record<"api" | "map" | "dash", string> = {
+  api: TABLE.api,
+  map: TABLE.map,
+  dash: TABLE.dash,
+};
+
+/**
+ * The host for a role that is null on some environment, skipping where it is:
+ * the file at a spec's top level, the group in a describe or beforeAll, the test
+ * in a test or beforeEach. Call it from the spec itself: a shared module runs
+ * once, so only the first spec to import it would skip. Where it skips it
+ * returns an unroutable stand-in, so top-level code that parses it cannot throw.
+ */
+export function hostOrSkip(role: Exclude<keyof typeof TABLE, keyof typeof hosts>, reason: string): string {
+  const host = TABLE[role];
+  test.skip(host === null, reason);
+  return host ?? `https://${role}.skipped.invalid`;
+}
 
 /**
  * Cloudflare Access service-token headers, empty unless CI supplies both.
