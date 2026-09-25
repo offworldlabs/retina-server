@@ -206,6 +206,28 @@ else
     cd "$APP_DIR"
 fi
 
+# The deploy gate, the one command a CI deploy key is authorised to run (see the
+# head of deploy/gate.sh). Every deploy of main refreshes it; this puts it on a
+# new box before the first. Always main's copy, whatever the tree here holds,
+# and only for /opt/retina-server, the one directory it serves.
+echo ""
+if [ "$APP_DIR" != /opt/retina-server ]; then
+    echo "  ! Not installing the deploy gate: it serves /opt/retina-server, not ${APP_DIR}."
+elif [ ! -d "${APP_DIR}/.git" ]; then
+    echo "  ! Not installing the deploy gate: ${APP_DIR} is not a git clone, so it cannot deploy here."
+else
+    echo "→ Installing the deploy gate from main..."
+    # Warned, not fatal: provisioning carries on to the origin boundary below,
+    # and the gate can be installed again at any time.
+    GATE_NEW=$(mktemp)
+    # origin/main is current: the clone or pull above has just fetched it.
+    if ! { git -C "$APP_DIR" show origin/main:deploy/gate.sh >"$GATE_NEW" &&
+        bash "$GATE_NEW" --install; }; then
+        echo "  ! The deploy gate was not installed. Re-run this script, or install it by hand from main's deploy/gate.sh (--install)."
+    fi
+    rm -f "$GATE_NEW"
+fi
+
 # The origin boundary. Applied here rather than beside the ufw rules because it
 # needs the scripts this repo carries, which only reached disk a few lines above.
 echo ""

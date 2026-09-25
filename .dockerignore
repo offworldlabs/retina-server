@@ -34,3 +34,10 @@ backend/coverage_data/
 # of whichever machine last wrote it. Not needed at build time; the Dockerfile
 # creates the directory unconditionally.
 backend/tar1090_data/
+
+# The deploy gate's state on the droplets. Its log is written throughout the
+# build this context feeds, so it must not be read as part of it.
+.deploy-in-progress
+.last-deploy
+.deploy-gate.lock
+.deploy-gate.log*
