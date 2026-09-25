@@ -10,19 +10,7 @@ import { useFetch } from "../../hooks/usePolling";
 import { StatusBadge } from "../../components/StatusBadge";
 import { formatMHz } from "../../utils/format";
 import { isOnline } from "../../utils/nodes";
-
-type OwnedNode = {
-  node_id: string;
-  node_ref: string | null;
-  name: string | null;
-  status: string;
-  last_heartbeat: string | null;
-  is_synthetic: boolean;
-  rx_lat: number | null;
-  rx_lon: number | null;
-  frequency: number | null;
-  location_private: boolean;
-};
+import type { OwnedNode } from "../../types";
 
 export default function OnboardingPage() {
   const { polledRadarRegistration } = useAuth();
@@ -85,7 +73,9 @@ export default function OnboardingPage() {
               {nodes.map((n) => (
                 <tr key={n.node_id}>
                   <td className="mono">
-                    {n.node_ref ?? "—"}{" "}
+                    {/* A polled radar's page is the one that manages it; the
+                        detail page has nothing until its first frame. */}
+                    {n.node_ref ? <Link to={`/${n.polled ? "radars" : "nodes"}/${n.node_ref}`}>{n.node_ref}</Link> : "—"}{" "}
                     <LocationPrivacyBadge isPrivate={n.location_private} />
                   </td>
                   <td>

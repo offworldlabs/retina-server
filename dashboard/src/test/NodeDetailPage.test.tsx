@@ -191,4 +191,21 @@ describe("NodeDetailPage ownership", () => {
     expect(await screen.findByText(/Node not found/)).toBeInTheDocument();
     expect(screen.getByText(/ada@example.com/)).toBeInTheDocument();
   });
+
+  it("sends the owner of a polled radar to its radar page rather than offering a release", async () => {
+    vi.mocked(api.myNodes).mockResolvedValue([
+      {
+        node_ref: "a",
+        node_id: "bla-a",
+        location_private: true,
+        claimed_with: null,
+        polled: { address: "radar.example.com:3000", unprotected: false, liveness: "streaming", trust_state: "probation" },
+      },
+    ]);
+    renderPage();
+
+    expect(await screen.findByRole("link", { name: /its radar page/i })).toHaveAttribute("href", "/radars/a");
+    expect(screen.queryByRole("button", { name: /release this node/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/assigned to you rather than claimed/i)).not.toBeInTheDocument();
+  });
 });

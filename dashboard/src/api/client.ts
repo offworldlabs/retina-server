@@ -83,7 +83,7 @@ export const api = {
   myNodes: () => request("/api/auth/me/nodes"),
 
   // Registering a stock blah2 radar. Each call probes the radar, which can take
-  // a radar's worth of seconds, so both outwait the default timeout. A refusal
+  // a radar's worth of seconds, so each outwaits the default timeout. A refusal
   // is an HttpError whose body carries a `code`, and for `config_changed` the
   // radar's new `probe`.
   probePolledRadar: (address: string): Promise<PolledRadarProbe> =>
@@ -100,6 +100,23 @@ export const api = {
     request("/api/auth/me/polled-radars", {
       method: "POST",
       body: JSON.stringify(registration),
+      timeoutMs: RADAR_PROBE_TIMEOUT_MS,
+    }),
+  // Moving an owner's radar is the same two steps, addressed by its node_id.
+  // Removing one is releaseNode, which retires a polled radar.
+  probePolledRadarAddress: (nodeId: string, address: string): Promise<PolledRadarProbe> =>
+    request(`/api/auth/me/polled-radars/${encodeURIComponent(nodeId)}/probe`, {
+      method: "POST",
+      body: JSON.stringify({ address }),
+      timeoutMs: RADAR_PROBE_TIMEOUT_MS,
+    }),
+  movePolledRadar: (
+    nodeId: string,
+    move: { address: string; fingerprint: string },
+  ): Promise<{ node_id: string; epoch: number; trust_state: PolledRadarTrust }> =>
+    request(`/api/auth/me/polled-radars/${encodeURIComponent(nodeId)}/address`, {
+      method: "PUT",
+      body: JSON.stringify(move),
       timeoutMs: RADAR_PROBE_TIMEOUT_MS,
     }),
 
