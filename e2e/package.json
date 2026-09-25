@@ -4,7 +4,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && npm run collect",
+    "collect": "for env in staging prod local; do echo \"collecting for $env\"; E2E_ENV=$env playwright test --list > /dev/null || exit 1; done",
     "test:e2e": "playwright test",
     "test:e2e:local": "E2E_ENV=local playwright test",
     "test:e2e:staging": "E2E_ENV=staging playwright test",
