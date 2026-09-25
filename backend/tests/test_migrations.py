@@ -45,7 +45,8 @@ def test_migrations_have_exactly_one_head(tmp_path):
     `returncode == 0` with Alembic's reason left on the subprocess's stdout,
     where the assertion message does not carry it. This test sits first so it
     is the first failure of the run, and it prints the colliding revisions. The
-    fix is to renumber the later one onto the other's head, or `alembic merge`.
+    fix is to point the later one's down_revision at the other and renumber it
+    past it, which keeps the chain one line in filename order.
     """
     # `heads` is answered from migrations/versions/ through the ScriptDirectory
     # alone and never imports env.py, so nothing is created at this path.
@@ -392,6 +393,21 @@ def test_every_migration_is_numbered_for_chain_order():
             f"{path.name} is not named NNNN_<slug>.py, so deploy/classify-migration-gap.py "
             "cannot derive chain order from the filename sort"
         )
+
+
+def test_filename_order_is_chain_order():
+    """The numbering test above checks each name's form, and this one that the
+    numbers follow the chain. Two branches can each add a revision off the same
+    head; the one landing second rechains onto the other, and a number that then
+    sorts before its new parent would have the classifier report the wrong head.
+    """
+    from alembic.script import ScriptDirectory
+
+    chain = [Path(script.path).name for script in ScriptDirectory(str(BACKEND / "migrations")).walk_revisions()]
+    chain.reverse()
+    assert chain == [path.name for path in _graded_revisions()], (
+        "migrations/versions/ does not sort in chain order; renumber the revision that is out of place"
+    )
 
 
 def test_every_migration_declares_rollback_safety():

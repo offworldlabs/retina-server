@@ -96,6 +96,10 @@ omit = [
     "routes/auth.py",
     # Simulation/test-only endpoints — not production code paths:
     "routes/test.py",
+    # The module Mako compiles a template to when a test renders one (the
+    # migration template, in test_new_migration.py). Its name has no file behind
+    # it, so a report that measured it would stop at "No source for code".
+    "*_mako",
 ]
 
 [tool.coverage.report]

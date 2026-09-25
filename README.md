@@ -94,17 +94,34 @@ migrations are applied on every start, by `just up` locally (`just migrate` runs
 it on its own) and by `deploy/start.sh` on every container boot. Pulling a branch
 that adds a revision therefore needs nothing extra.
 
-To change the schema, edit the models, then from `backend/`:
+To change the schema, edit the models, then:
 
 ```bash
-uv run alembic revision --autogenerate -m "what changed"
-uv run alembic upgrade head
+just new-migration "what changed" additive   # or destructive
+just migrate
 ```
 
-Review the generated file before committing. Anything other than `create_table`
-must go through `op.batch_alter_table`, because SQLite cannot `ALTER`.
-`RETINA_DB_PATH` points Alembic at a scratch file if you want to try a
-migration without touching `backend/data/users.db`.
+`new-migration` numbers the revision one past the highest on this tree,
+`origin/main` and every other open pull request, since a number is taken once
+an open pull request adds it, not when it merges: open yours early, or another
+branch cannot see your number. Its own pull request is left out, so a revision
+regenerated after `alembic downgrade -1` and deleting the file keeps its number
+where it can. It needs `gh` signed in for the pull requests, and refuses on a
+tree missing any of `origin/main`'s revisions. It then runs `just migrate` and
+autogenerates the revision against the dev database, which Alembic refuses
+unless it is at this tree's head. The second argument is the revision's
+rollback safety (see `docs/runbook.md`, "Declaring a revision's rollback
+safety"), which it writes into the file; a bare `alembic revision` leaves a
+placeholder that `tests/test_migrations.py` refuses. Review the generated file
+before committing. Anything other than `create_table` must go through
+`op.batch_alter_table`, because SQLite cannot `ALTER`. `RETINA_DB_PATH` points
+Alembic at a scratch file if you want to try a migration without touching
+`backend/data/users.db`.
+
+A distinct number does not stop two open branches chaining from the same head.
+Whichever lands second has to rebase, point its `down_revision` at the other's,
+and renumber if its number now sorts first; `tests/test_migrations.py` fails
+until it does, but only once both are in one tree.
 
 ### The console
 
