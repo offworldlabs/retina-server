@@ -34,6 +34,7 @@ export const pageTitles: Record<string, { user?: string; admin?: string }> = {
   "/tunnel": { user: "Tunnel & Local Display" },
   "/onboarding": { user: "My Nodes" },
   "/radars/new": { user: "Add a Radar" },
+  "/radars/:nodeRef": { user: "Your Radar" },
   "/nodes": { admin: "Node Management" },
   // A pattern, because the first segment alone would name the admin list.
   "/nodes/:nodeId": { user: "Node Detail", admin: "Node Detail" },

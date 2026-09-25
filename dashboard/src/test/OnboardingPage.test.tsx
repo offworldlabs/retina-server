@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import OnboardingPage from "../pages/user/OnboardingPage";
@@ -33,6 +33,7 @@ const NODE = {
   rx_lon: -0.12,
   frequency: 195_000_000,
   location_private: false,
+  polled: null,
 };
 
 // The Node ref cell of the node's row, found by its header so the assertion
@@ -41,7 +42,7 @@ const NODE = {
 async function refCell() {
   const row = (await screen.findByText("195.000 MHz")).closest("tr")!;
   const column = screen.getAllByRole("columnheader").findIndex((h) => h.textContent === "Node ref");
-  return row.children[column];
+  return row.children[column] as HTMLElement;
 }
 
 describe("OnboardingPage", () => {
@@ -82,6 +83,31 @@ describe("OnboardingPage", () => {
     renderPage();
 
     expect(await refCell()).toHaveTextContent(/^—/);
+  });
+
+  it("links each node to its own page by its node_ref", async () => {
+    vi.mocked(api.myNodes).mockResolvedValue([NODE]);
+    renderPage();
+
+    expect(within(await refCell()).getByRole("link", { name: "nde0123456789" })).toHaveAttribute(
+      "href",
+      "/nodes/nde0123456789",
+    );
+  });
+
+  it("links a polled radar to the page that manages it", async () => {
+    vi.mocked(api.myNodes).mockResolvedValue([
+      {
+        ...NODE,
+        polled: { address: "radar.example.com:3000", unprotected: false, liveness: "streaming", trust_state: "probation" },
+      },
+    ]);
+    renderPage();
+
+    expect(within(await refCell()).getByRole("link", { name: "nde0123456789" })).toHaveAttribute(
+      "href",
+      "/radars/nde0123456789",
+    );
   });
 
   it("keeps the location privacy badge beside the node_ref", async () => {

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { Link, useParams, useNavigate } from "react-router-dom";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
@@ -62,6 +62,7 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
             node_id: owned.node_id,
             claimed_with: owned.claimed_with || null,
             location_private: !!owned.location_private,
+            polled: !!owned.polled,
           }
         : null,
     };
@@ -223,7 +224,20 @@ function NodeDetail({ nodeId }: { nodeId: string | undefined }) {
 
       {/* Ownership — owners only. Releasing is here rather than on a list page
           because it wants the node named in front of it. */}
-      {ownership && (
+      {ownership?.polled && (
+        // Removing a polled radar retires it rather than handing it back, and
+        // its own page says so.
+        <div className="card">
+          <div className="card-header"><h3>Ownership</h3></div>
+          <div className="card-body stack">
+            <p>
+              You registered this stock blah2 radar by its address. Change the address or remove it
+              on <Link to={`/radars/${nodeRef}`}>its radar page</Link>.
+            </p>
+          </div>
+        </div>
+      )}
+      {ownership && !ownership.polled && (
         <div className="card">
           <div className="card-header"><h3>Ownership</h3></div>
           <div className="card-body stack">

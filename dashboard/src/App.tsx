@@ -21,6 +21,7 @@ const TunnelLinkPage = lazy(() => import("./pages/user/TunnelLinkPage"));
 const AnomalyPage = lazy(() => import("./pages/user/AnomalyPage"));
 const OnboardingPage = lazy(() => import("./pages/user/OnboardingPage"));
 const RegisterRadarPage = lazy(() => import("./pages/user/RegisterRadarPage"));
+const RadarPage = lazy(() => import("./pages/user/RadarPage"));
 // Leaflet and the map tree are ~400 KB, so they load when the map is first
 // opened rather than on every console page.
 const MapPage = lazy(() => import("./pages/map/MapPage"));
@@ -120,6 +121,7 @@ export default function App() {
                       <Route path="tunnel" element={<TunnelLinkPage />} />
                       <Route path="onboarding" element={<OnboardingPage />} />
                       <Route path="radars/new" element={<RegisterRadarPage />} />
+                      <Route path="radars/:nodeRef" element={<RadarPage />} />
                     </>
                   )}
                 </Routes>
