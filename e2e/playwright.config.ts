@@ -82,6 +82,7 @@ const HOSTS = {
   },
 } as const;
 
+// e2e's collect script lists these environments by name; a new one goes there too.
 const isEnv = (name: string): name is keyof typeof HOSTS => Object.keys(HOSTS).includes(name);
 const ENV = process.env.E2E_ENV ?? "staging";
 if (!isEnv(ENV)) throw new Error(`E2E_ENV=${ENV} is none of ${Object.keys(HOSTS).join(", ")}`);
