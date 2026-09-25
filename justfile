@@ -392,3 +392,11 @@ deploy-test-status:
 # Tail retina-test's container logs (Ctrl-C to stop; the stack keeps running)
 deploy-test-logs service="":
     ssh "{{host_test}}" "cd {{app_test}} && docker compose logs -f --tail 100 {{service}}"
+
+# ── deployed environments ────────────────────────────────────────────────────
+
+# Did the deploy work? Asks prod | staging | test over its public hostnames (--help for options)
+[positional-arguments]
+verify-deploy env *args:
+    @[ -x "{{py}}" ] || { echo "no backend venv, whose certifi verifies TLS: run just setup"; exit 1; }
+    @"{{py}}" "{{root}}/deploy/verify-deploy.py" "$@"
