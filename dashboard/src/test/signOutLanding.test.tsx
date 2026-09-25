@@ -6,6 +6,7 @@ import Header from "../components/Header";
 import RequireAuth from "../components/RequireAuth";
 import { AuthProvider } from "../context/AuthContext";
 import { ThemeProvider } from "../context/ThemeContext";
+import { stubMatchMedia } from "./matchMedia";
 
 /**
  * Where signing out leaves a caller.
@@ -15,16 +16,6 @@ import { ThemeProvider } from "../context/ThemeContext";
  * not to sign in again. The real AuthProvider and RequireAuth are used, since
  * the question is how the cleared identity and the route change meet the guard.
  */
-
-/** jsdom has no matchMedia. */
-function stubMatchMedia() {
-  window.matchMedia = vi.fn().mockReturnValue({
-    matches: false,
-    media: "(prefers-color-scheme: dark)",
-    addEventListener: () => {},
-    removeEventListener: () => {},
-  }) as unknown as typeof window.matchMedia;
-}
 
 /** `signOutAnswered` holds the sign-out response back until it settles. */
 function stubServer(signOutAnswered: Promise<void> = Promise.resolve()) {

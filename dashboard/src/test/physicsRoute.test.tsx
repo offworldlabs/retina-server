@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import Sidebar from "../components/Sidebar";
+import { stubMatchMedia } from "./matchMedia";
 
 type User = { name: string; email: string; role: string; synthetic_fleet?: boolean };
 
@@ -88,11 +89,7 @@ describe("the app's sidebar", () => {
 describe("the /sim addresses", () => {
   async function visit(at: string, opts: { admin: boolean; fleet: boolean; signedIn?: boolean }) {
     signIn(opts);
-    window.matchMedia = vi.fn().mockReturnValue({
-      matches: false,
-      addEventListener: () => {},
-      removeEventListener: () => {},
-    }) as unknown as typeof window.matchMedia;
+    stubMatchMedia();
     vi.resetModules();
     // All three from the one fresh registry, so App's router and theme
     // contexts are the ones these providers supply.

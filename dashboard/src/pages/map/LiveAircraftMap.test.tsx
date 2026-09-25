@@ -4,6 +4,7 @@ import { Children, isValidElement, type ReactElement } from "react";
 import LiveAircraftMap from "./LiveAircraftMap";
 import { MapThemeProvider } from "./useMapTheme";
 import { ThemeProvider, useTheme } from "../../context/ThemeContext";
+import { stubMatchMedia } from "../../test/matchMedia";
 
 // Leaflet layers need a browser layout. Keep the real map controller, toolbar,
 // playback and feed lifecycle; geometry and layer helpers have their own tests.
@@ -203,12 +204,7 @@ it("draws its live stats in the aircraft list, not floating over the map", () =>
 it("moves its default basemap with the console's theme", () => {
   // Console starts light, so the default basemap is Positron.
   localStorage.setItem("retina.theme", "light");
-  vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({
-    matches: false,
-    media: "(prefers-color-scheme: dark)",
-    addEventListener: () => {},
-    removeEventListener: () => {},
-  }));
+  stubMatchMedia();
   function Flip() {
     const { setPreference } = useTheme();
     return <button onClick={() => setPreference("dark")}>flip</button>;
@@ -227,12 +223,7 @@ function mountUnderStoredTheme(theme: string, tile: string, chosenBy: string, pr
   localStorage.setItem("retina.theme", theme);
   localStorage.setItem(`${prefix}tile.theme`, JSON.stringify(tile));
   localStorage.setItem(`${prefix}tile.chosenBy`, JSON.stringify(chosenBy));
-  vi.stubGlobal("matchMedia", vi.fn().mockReturnValue({
-    matches: false,
-    media: "(prefers-color-scheme: dark)",
-    addEventListener: () => {},
-    removeEventListener: () => {},
-  }));
+  stubMatchMedia();
   render(
     <ThemeProvider>
       <MapThemeProvider><LiveAircraftMap /></MapThemeProvider>

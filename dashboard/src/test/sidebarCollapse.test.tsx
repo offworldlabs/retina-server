@@ -4,6 +4,7 @@ import { MemoryRouter, useNavigate } from "react-router-dom";
 import DashboardLayout from "../components/DashboardLayout";
 import { ThemeProvider } from "../context/ThemeContext";
 import rules from "../App.css?raw";
+import { stubMatchMedia } from "./matchMedia";
 
 // Comments name selectors in prose, and the sweeps below would read them.
 const sheet = rules.replace(/\/\*[\s\S]*?\*\//g, "");
@@ -19,16 +20,6 @@ const state = vi.hoisted(() => ({
 // Sidebar and Header both call useAuth, which throws outside AuthProvider; the
 // house pattern (signedOutChrome.test.tsx) mocks it rather than mounting one.
 vi.mock("../context/AuthContext", () => ({ useAuth: () => state.auth }));
-
-/** jsdom has no matchMedia. */
-function stubMatchMedia() {
-  window.matchMedia = vi.fn().mockReturnValue({
-    matches: false,
-    media: "(prefers-color-scheme: dark)",
-    addEventListener: () => {},
-    removeEventListener: () => {},
-  }) as unknown as typeof window.matchMedia;
-}
 
 function renderAt(path: string, page: React.ReactNode = <div>page</div>) {
   // ThemeProvider because DashboardLayout renders Header, which calls useTheme.

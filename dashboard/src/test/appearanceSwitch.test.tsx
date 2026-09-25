@@ -3,22 +3,13 @@ import { render, screen, act, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import Header from "../components/Header";
 import { ThemeProvider } from "../context/ThemeContext";
+import { stubMatchMedia } from "./matchMedia";
 
 const state = vi.hoisted(() => ({ user: null as { name: string; email: string } | null }));
 
 vi.mock("../context/AuthContext", () => ({
   useAuth: () => ({ user: state.user, loading: false, logout: vi.fn(async () => ({ redirected: false })) }),
 }));
-
-/** jsdom has no matchMedia. */
-function stubMatchMedia() {
-  window.matchMedia = vi.fn().mockReturnValue({
-    matches: false,
-    media: "(prefers-color-scheme: dark)",
-    addEventListener: () => {},
-    removeEventListener: () => {},
-  }) as unknown as typeof window.matchMedia;
-}
 
 function renderHeader() {
   render(
