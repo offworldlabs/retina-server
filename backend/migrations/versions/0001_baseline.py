@@ -18,7 +18,6 @@ schema as migrated).
 
 import sqlalchemy as sa
 from alembic import op
-from fastapi_users_db_sqlalchemy.generics import GUID
 
 revision = "0001"
 down_revision = None
@@ -64,7 +63,10 @@ def upgrade() -> None:
         sa.Column("avatar", sa.String(length=512), server_default="", nullable=False),
         sa.Column("provider", sa.String(length=50), server_default="", nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("id", GUID(), nullable=False),
+        # CHAR(36) is what fastapi_users' GUID renders on SQLite. Not the type
+        # itself: Alembic loads every revision on every command, and importing
+        # it loads fastapi_users and pydantic into each boot's migration.
+        sa.Column("id", sa.CHAR(36), nullable=False),
         sa.Column("email", sa.String(length=320), nullable=False),
         sa.Column("hashed_password", sa.String(length=1024), nullable=False),
         sa.Column("is_active", sa.Boolean(), nullable=False),

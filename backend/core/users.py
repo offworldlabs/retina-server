@@ -11,7 +11,6 @@ import secrets
 import uuid
 from collections.abc import AsyncGenerator, Mapping
 from datetime import datetime
-from pathlib import Path
 
 from fastapi import Depends, HTTPException, Request
 from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin, schemas
@@ -23,11 +22,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from core.access_identity import AccessIdentity
+from core.database import DATABASE_URL
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
 _RETINA_ENV = os.getenv("RETINA_ENV", "").lower()
 _jwt_from_env = os.getenv("JWT_SECRET", "")
+# deploy/start.sh applies the same rule before the migration step: change both.
 if not _jwt_from_env and _RETINA_ENV not in ("dev", "test"):
     raise RuntimeError(
         "JWT_SECRET environment variable is required in production "
@@ -91,18 +92,6 @@ access_identity = AccessIdentity(
     team_domain=os.getenv("CF_ACCESS_TEAM_DOMAIN", ""),
     audience=os.getenv("CF_ACCESS_AUD", ""),
 )
-
-_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-_DATA_DIR.mkdir(parents=True, exist_ok=True)
-# RETINA_DB_PATH exists so tests and one-off migrations can point at a scratch
-# file. It is unset in every deployed environment, where the path derives from
-# this module's own location and lands inside the backend-data volume.
-# A relative override is resolved against the current working directory, which
-# is not the same for every caller: alembic runs with cwd backend/, while the
-# application may not. Resolving here makes the same override mean the same
-# file regardless of caller.
-_DB_PATH = Path(os.getenv("RETINA_DB_PATH") or _DATA_DIR / "users.db").resolve()
-DATABASE_URL = f"sqlite+aiosqlite:///{_DB_PATH}"
 
 # ── SQLAlchemy setup ─────────────────────────────────────────────────────────
 

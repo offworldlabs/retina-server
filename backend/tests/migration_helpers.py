@@ -29,11 +29,11 @@ BACKEND = Path(__file__).resolve().parent.parent
 ROLLBACK_AHEAD_SENTINEL = "Can't locate revision"
 
 
-def _alembic(*args: str, db_path: Path) -> subprocess.CompletedProcess:
+def _alembic(*args: str, db_path: Path, cwd: Path = BACKEND) -> subprocess.CompletedProcess:
     env = os.environ | {"RETINA_ENV": "test", "RETINA_DB_PATH": str(db_path)}
     return subprocess.run(  # noqa: S603
         [sys.executable, "-m", "alembic", *args],
-        cwd=BACKEND,
+        cwd=cwd,
         env=env,
         capture_output=True,
         text=True,
