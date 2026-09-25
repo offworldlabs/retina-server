@@ -7,6 +7,7 @@ import Header from "../components/Header";
 import LoginPage from "../pages/LoginPage";
 import { ThemeProvider } from "../context/ThemeContext";
 import { PUBLIC_PATHS, isPublicRoute } from "../utils/publicRoutes";
+import { stubMatchMedia } from "./matchMedia";
 
 const state = vi.hoisted(() => ({
   auth: {
@@ -17,16 +18,6 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("../context/AuthContext", () => ({ useAuth: () => state.auth }));
-
-/** jsdom has no matchMedia. */
-function stubMatchMedia() {
-  window.matchMedia = vi.fn().mockReturnValue({
-    matches: false,
-    media: "(prefers-color-scheme: dark)",
-    addEventListener: () => {},
-    removeEventListener: () => {},
-  }) as unknown as typeof window.matchMedia;
-}
 
 const signedIn = { name: "Ada", email: "ada@example.com" };
 

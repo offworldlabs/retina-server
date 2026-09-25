@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import appSource from "../App.tsx?raw";
 import DashboardLayout, { pageTitles } from "../components/DashboardLayout";
 import { ThemeProvider } from "../context/ThemeContext";
+import { stubMatchMedia } from "./matchMedia";
 
 const state = vi.hoisted(() => ({
   auth: {
@@ -16,16 +17,6 @@ const state = vi.hoisted(() => ({
 // Sidebar and Header both call useAuth, which throws outside AuthProvider; the
 // house pattern (signedOutChrome.test.tsx) mocks it rather than mounting one.
 vi.mock("../context/AuthContext", () => ({ useAuth: () => state.auth }));
-
-/** jsdom has no matchMedia. */
-function stubMatchMedia() {
-  window.matchMedia = vi.fn().mockReturnValue({
-    matches: false,
-    media: "(prefers-color-scheme: dark)",
-    addEventListener: () => {},
-    removeEventListener: () => {},
-  }) as unknown as typeof window.matchMedia;
-}
 
 function renderAt(path: string, isAdmin = false) {
   return render(

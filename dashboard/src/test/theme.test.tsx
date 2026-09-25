@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import { ThemeProvider, useTheme, THEME_KEY } from "../context/ThemeContext";
 import themeBoot from "../../public/theme-boot.js?raw";
+import { stubMatchMedia } from "./matchMedia";
 
 /** Replace localStorage with one that throws on every access, as private
  *  browsing and a full quota both do. */
@@ -14,29 +15,6 @@ function stubBrokenStorage() {
     configurable: true,
     writable: true,
   });
-}
-
-/** jsdom has no matchMedia. Install one whose match state the test controls,
- *  keeping the listeners so a test can fire an OS-level theme change. */
-function stubMatchMedia(prefersDark: boolean) {
-  const listeners = new Set<(e: MediaQueryListEvent) => void>();
-  const mql = {
-    matches: prefersDark,
-    media: "(prefers-color-scheme: dark)",
-    addEventListener: (_: string, fn: (e: MediaQueryListEvent) => void) => listeners.add(fn),
-    removeEventListener: (_: string, fn: (e: MediaQueryListEvent) => void) => listeners.delete(fn),
-  };
-  window.matchMedia = vi.fn().mockReturnValue(mql) as unknown as typeof window.matchMedia;
-  return {
-    /** Flip the OS preference the way a real media query would. */
-    set(matches: boolean) {
-      mql.matches = matches;
-      act(() => {
-        for (const fn of listeners) fn({ matches } as MediaQueryListEvent);
-      });
-    },
-    listenerCount: () => listeners.size,
-  };
 }
 
 function Probe() {
