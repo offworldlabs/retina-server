@@ -192,8 +192,12 @@ cd backend && uv sync
 # backend
 cd backend && RETINA_ENV=test COVERAGE_CORE=sysmon pytest
 
-# every workspace; -w dashboard (or -w packages/shared, -w e2e) for one
-npm run test --workspaces --if-present && npm run typecheck --workspaces && npm run lint --workspaces --if-present
+# every workspace's lint, typecheck, unit tests and build, from the repo root
+npm run check
+# the unit tests alone, each workspace's under its own config
+npm test
+# one workspace's own script, as CI runs it
+npm run typecheck -w e2e
 
 # the browser suite, against staging (local and prod are the other two targets)
 npm run test:e2e:staging -w e2e

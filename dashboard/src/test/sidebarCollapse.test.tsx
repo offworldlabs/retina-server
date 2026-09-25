@@ -4,6 +4,7 @@ import { MemoryRouter, useNavigate } from "react-router-dom";
 import DashboardLayout from "../components/DashboardLayout";
 import { ThemeProvider } from "../context/ThemeContext";
 import rules from "../App.css?raw";
+import { stubMatchMedia } from "./matchMedia";
 
 // Comments name selectors in prose, and the sweeps below would read them.
 const sheet = rules.replace(/\/\*[\s\S]*?\*\//g, "");
@@ -20,31 +21,6 @@ const state = vi.hoisted(() => ({
 // house pattern (signedOutChrome.test.tsx) mocks it rather than mounting one.
 vi.mock("../context/AuthContext", () => ({ useAuth: () => state.auth }));
 
-/** Stubbed rather than borrowed, as in theme.test.tsx: jsdom has no matchMedia,
- *  and Node 20 and 26 disagree about whose window.localStorage is reached. */
-function stubBrowser(seed: Record<string, string> = {}) {
-  const store = new Map(Object.entries(seed));
-  Object.defineProperty(window, "localStorage", {
-    configurable: true,
-    writable: true,
-    value: {
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => void store.set(k, String(v)),
-      removeItem: (k: string) => void store.delete(k),
-      clear: () => store.clear(),
-      key: (i: number) => [...store.keys()][i] ?? null,
-      get length() { return store.size; },
-    },
-  });
-  window.matchMedia = vi.fn().mockReturnValue({
-    matches: false,
-    media: "(prefers-color-scheme: dark)",
-    addEventListener: () => {},
-    removeEventListener: () => {},
-  }) as unknown as typeof window.matchMedia;
-  return store;
-}
-
 function renderAt(path: string, page: React.ReactNode = <div>page</div>) {
   // ThemeProvider because DashboardLayout renders Header, which calls useTheme.
   return render(
@@ -57,7 +33,7 @@ function renderAt(path: string, page: React.ReactNode = <div>page</div>) {
 }
 
 describe("sidebar collapse", () => {
-  beforeEach(() => stubBrowser());
+  beforeEach(() => stubMatchMedia());
 
   it("starts expanded on an ordinary page", () => {
     const { container } = renderAt("/");
@@ -70,21 +46,19 @@ describe("sidebar collapse", () => {
   });
 
   it("toggles and remembers the choice", () => {
-    const store = stubBrowser();
     const { container } = renderAt("/");
     fireEvent.click(screen.getByRole("button", { name: /collapse sidebar/i }));
     expect(container.querySelector(".dashboard.sidebar-collapsed")).not.toBeNull();
-    expect(store.get("retina.sidebarCollapsed")).toBe("true");
+    expect(window.localStorage.getItem("retina.sidebarCollapsed")).toBe("true");
   });
 
   it("an explicit choice beats the map route's default", () => {
-    stubBrowser({ "retina.sidebarCollapsed": "false" });
+    window.localStorage.setItem("retina.sidebarCollapsed", "false");
     const { container } = renderAt("/map");
     expect(container.querySelector(".dashboard.sidebar-collapsed")).toBeNull();
   });
 
   it("survives storage that throws", () => {
-    stubBrowser();
     const boom = () => { throw new Error("storage unavailable"); };
     Object.defineProperty(window, "localStorage", {
       value: { getItem: boom, setItem: boom, removeItem: boom, clear: boom, key: boom, length: 0 },
@@ -99,7 +73,7 @@ describe("sidebar collapse", () => {
  *  the header's Menu button brings it over the page. jsdom applies no media
  *  query, so what is asserted here is the state the stylesheet keys off. */
 describe("the sidebar as a drawer on a narrow screen", () => {
-  beforeEach(() => stubBrowser());
+  beforeEach(() => stubMatchMedia());
 
   const menuButton = () => screen.getByRole("button", { name: "Menu" });
   const isOpen = (container: HTMLElement) =>
