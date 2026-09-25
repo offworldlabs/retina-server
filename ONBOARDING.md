@@ -189,8 +189,9 @@ cd backend && uv sync
 ## Running tests
 
 ```bash
-# backend
-cd backend && RETINA_ENV=test COVERAGE_CORE=sysmon pytest
+# backend: in parallel without coverage, then as CI runs it, threshold included
+just test                   # or one file: just test tests/test_health_routes.py
+just test-ci
 
 # every workspace; -w dashboard (or -w packages/shared, -w e2e) for one
 npm run test --workspaces --if-present && npm run typecheck --workspaces && npm run lint --workspaces --if-present
@@ -199,12 +200,22 @@ npm run test --workspaces --if-present && npm run typecheck --workspaces && npm 
 npm run test:e2e:staging -w e2e
 ```
 
-Backend coverage gate is 55%. Async tests need `pytest-asyncio` (in the
-`dev` group, which `uv sync` installs) — without it they silently skip.
+`just test` passes its arguments to pytest, and takes paths relative to
+`backend/` or, from the repo root, starting `backend/`; `-n0` runs serially,
+which `-x` wants (`--pdb` gets it anyway). It measures no coverage, and neither
+does a bare `pytest`, so a run of one file exits on its tests alone. The 55%
+gate is `fail_under` in `backend/pyproject.toml` and applies only to a run that
+measures, which `just test-ci` does. That makes `just test-ci` a whole-suite
+run: `-k`, or a path relative to `backend/`, narrows it as it would any pytest
+run, and the narrowed run then fails the threshold, so narrow with `just test`
+instead.
+`just test-ci --cov-report=html` writes the report to `backend/htmlcov/` instead
+of the terminal. Async tests need `pytest-asyncio`, which `uv sync` installs
+with the `dev` group.
 
-Trust pytest's **exit status**, not the tail of its output. The warnings block
-and the coverage footer both print after the summary line, so piping the run
-into `tail` loses the `N passed` and a passing-looking tail proves nothing.
+Trust pytest's **exit status**, not its summary line. A run that misses the
+coverage threshold prints its failure above a summary that still reads
+`N passed`, and exits 1.
 
 Two suites can now run at once, from two worktrees, without interfering. They
 could not before: `backend/main.py` binds `RADAR_TCP_PORT` (default `3012`) in
@@ -223,23 +234,24 @@ CI splits the suite across three runners on top of that, with `pytest-split`
 cutting the collected tests into contiguous chunks of equal recorded duration.
 A shard measures only its own third, so each overrides the 55% gate away and
 uploads its coverage data; the `backend-coverage` job combines the three and
-applies the threshold once. A local `pytest` is untouched by all of this and
-still enforces the gate itself.
+applies the threshold once. `just test-ci` runs the shards' command over the
+whole suite and applies the threshold itself.
 
 `backend/.test_durations` only decides where the two boundaries fall, so a stale
 one costs balance and never correctness. Regenerate it when the shards drift
 apart, from a serial run:
 
 ```bash
-cd backend && pytest tests/ -m "not external" --no-cov --store-durations
+cd backend && pytest tests/ --store-durations
 ```
 
 Not under `-n`: each xdist worker records only the tests that landed on it, and
 the file it writes covers a fraction of the suite.
 
-`COVERAGE_CORE=sysmon` above is not decoration, and CI sets it too. Without it,
-coverage measures through `sys.settrace`, which is per execution context, so
-every line after an `await session.…` in a greenlet-backed path counts as unrun:
+`just test-ci` sets `COVERAGE_CORE=sysmon`, as CI does, and it is not
+decoration. Without it, coverage measures through `sys.settrace`, which is per
+execution context, so every line after an `await session.…` in a
+greenlet-backed path counts as unrun:
 `[tool.coverage.run]` in `backend/pyproject.toml` sets no `concurrency` to
 compensate. The async route modules are what this hits. sysmon measures through
 the PEP 669 interpreter-wide hooks instead, has no such blind spot, and is more
@@ -252,17 +264,27 @@ ten times slower than sysmon and there is no longer a reason to reach for it.
 
 ### Before you push
 
+Run `just check`. It runs what the PR's lint, contract, backend and front-end
+jobs run, in this order, and stops at the first that fails, where CI's separate
+jobs report every failure at once:
+
+- `just locked` installs the backend venv and `node_modules` exactly from
+  `uv.lock` and `package-lock.json`, with the uv CI uses and `npm ci`, and is
+  what `just setup` installs with too. It fails when either lock has fallen
+  behind its manifest, removes anything installed by hand, and warns when a
+  submodule differs from what the branch pins. `npm ci` replaces
+  `node_modules` wholesale, so stop `just up` first. `just web` on its own runs
+  against whatever `node_modules` holds.
+- `just lint`, `just contract --check`, `just test-ci` and `just web`.
+
+The Docker build and the compose parity check are left to CI.
+
 The lint gate is pre-commit, not the two ruff commands. Once installed (see
 Local setup) it runs on the staged files at every commit, in every worktree:
 hooks live in the clone's shared `.git/hooks`. The hook records the absolute
 path of the venv it was installed from, so reinstall it if that venv moves.
-
-CI runs it over every file, and so should you before pushing, since a commit
-made with `--no-verify` or from somewhere without the hook skipped it:
-
-```bash
-backend/.venv/bin/pre-commit run --all-files
-```
+CI runs it over every file, as `just lint` does, since a commit made with
+`--no-verify` or from somewhere without the hook skipped it.
 
 It runs `ruff-check`, `ruff-format`, actionlint over the workflows, a dead-code
 check (vulture) and `ruff-config` twice, once per copy of the shared standard in
@@ -277,14 +299,14 @@ with no route touched. Regenerate it in the same commit, or CI fails on a file
 you never edited:
 
 ```bash
-cd backend && RETINA_ENV=dev .venv/bin/python -m scripts.generate_openapi
+just contract
 ```
 
 That gate is what makes the generated contract trustworthy: the committed file
 cannot be edited by hand to match a change, because the next run regenerates it
 and notices.
 
-Two traps in that command:
+Two traps in the lint run:
 
 - **`--all-files` does not mean all files.** pre-commit enumerates through
   `git ls-files`, so untracked files are skipped silently. `git add` new modules

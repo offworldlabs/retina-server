@@ -154,10 +154,11 @@ jobs:
       # will measure the disappointing number and conclude xdist does not suit
       # this suite.
       #
-      # On the command line rather than in pyproject's addopts, so a local
-      # `pytest` stays serial: -x stops at a different place under xdist and
-      # --pdb cannot attach to a worker, and both are wanted more often when
-      # debugging than the speed is.
+      # On the command line rather than in pyproject's addopts, so a bare
+      # `pytest` stays serial: -x stops at a different place under xdist, and
+      # is wanted more often when debugging than the speed is. `just test-ci`
+      # is this command without the sharding or the threshold override below,
+      # and backend/tests/test_just_recipes.py keeps the two the same.
       #
       # `--splits/--group` cuts the collected tests into three contiguous chunks
       # of equal recorded duration, from `.test_durations`. Contiguous rather
@@ -168,12 +169,11 @@ jobs:
       # the split that least disturbs what runs beside what. A stale durations
       # file costs balance, not correctness; it only moves the two boundaries.
       #
-      # `--cov-fail-under=0` overrides the 55 in pyproject's addopts for the
-      # shards alone. A shard measures a third of the suite, so its own figure
-      # is meaningless; backend-coverage applies the real threshold to the three
-      # combined. Overriding here rather than editing addopts keeps a local
-      # `pytest` enforcing the threshold exactly as it does today.
-      - run: pytest tests/ -v --tb=short -m "not external" -n logical --dist worksteal --splits ${{ strategy.job-total }} --group ${{ matrix.shard }} --cov-fail-under=0
+      # `--cov-fail-under=0` overrides pyproject's `fail_under` for the shards
+      # alone. A shard measures a third of the suite, so its own figure is
+      # meaningless; backend-coverage applies the real threshold to the three
+      # combined.
+      - run: pytest tests/ --tb=short -n logical --dist worksteal --cov=. --splits ${{ strategy.job-total }} --group ${{ matrix.shard }} --cov-fail-under=0
       # include-hidden-files, because `.coverage.N` is a dotfile and v4 drops
       # those silently: without it the combine below fails on an empty download
       # rather than on anything that names this step.
@@ -223,7 +223,9 @@ jobs:
             exit 1
           fi
       - run: coverage combine
-      - run: coverage report --fail-under=55
+      # The threshold is `fail_under` in backend/pyproject.toml, which coverage
+      # reads from this directory.
+      - run: coverage report
 
   # Its own job so that backend-tests, which gates every deploy, does not wait
   # on it: pre-commit builds its hook environments from scratch on every run,

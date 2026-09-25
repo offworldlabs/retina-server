@@ -15,19 +15,17 @@ run  := root / ".testmap-run"
 default:
     @just --list
 
-# One-time setup: submodules, backend venv + editable libs (uv), .env, web deps
+# One-time setup: submodules, backend venv + editable libs (uv), web deps, .env
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "→ submodules"
     git -C "{{root}}" submodule update --init --recursive
-    echo "→ backend venv + deps (uv)"
+    echo "→ backend venv and web deps, from their lockfiles"
+    just --justfile "{{justfile()}}" locked
     cd "{{be}}"
-    uv sync --locked   # interpreter pinned by backend/.python-version (3.12, matches Dockerfile)
     [ -f .env ] || cp .env.example .env   # Maprad key not needed for the testmap
     just --justfile "{{justfile()}}" migrate
-    echo "→ web deps"
-    cd "{{root}}" && npm ci
     echo "✓ setup complete — now: just up"
 
 # Bring the dev database to head. Idempotent, and run by both setup and up.
@@ -228,6 +226,65 @@ status:
 # Tail all three logs (Ctrl-C to stop tailing; services keep running)
 logs:
     tail -n +1 -f "{{run}}/backend.log" "{{run}}/fleet.log" "{{run}}/console.log"
+
+# ── Checks ───────────────────────────────────────────────────────────────────
+# What the PR's gate jobs run, runnable here. A recipe that takes arguments passes
+# them to the tool underneath, so `just test tests/test_health_monitor.py -k degraded` works.
+
+# Backend tests in parallel, without coverage. Paths relative to backend/, or from the root as backend/…; -n0 for -x
+[positional-arguments]
+test *args:
+    cd "{{be}}" && "{{py}}" -m pytest -n logical --dist worksteal "${@/#backend\//}"
+
+# The whole backend suite as CI's shards run it, unsharded, so the coverage threshold applies
+[positional-arguments]
+test-ci *args:
+    cd "{{be}}" && COVERAGE_CORE=sysmon "{{py}}" -m pytest tests/ --tb=short -n logical --dist worksteal --cov=. "$@"
+
+# The backend venv and node_modules installed exactly from uv.lock and package-lock.json
+locked:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # The same lookup .github/actions/setup-uv makes, and the same refusal.
+    version=$(sed -n 's/^ARG UV_VERSION=//p' "{{root}}/Dockerfile")
+    [[ "$version" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]] || { echo "✗ expected one UV_VERSION in the Dockerfile, found: '$version'"; exit 1; }
+    submodules=$(git -C "{{root}}" submodule status)
+    if grep -q '^-' <<<"$submodules"; then
+        echo "✗ a submodule is not checked out: git submodule update --init --recursive"; exit 1
+    fi
+    # The libs build from the submodules' working trees, so a pointer moved off
+    # the commit this branch pins, or an edit or new file inside one, tests code
+    # CI never sees.
+    moved=$(git -C "{{root}}" status --porcelain --ignore-submodules=none -- libs)
+    if [ -n "$moved" ]; then
+        echo "⚠ these submodules differ from what this branch pins, so this is not what CI tests:"
+        printf '%s\n' "$moved"
+    fi
+    # The interpreter is pinned by backend/.python-version, matching the Dockerfile.
+    cd "{{be}}" && uv tool run "uv@${version}" sync --locked
+    # Also fails when a workspace's package.json has moved without the lock.
+    cd "{{root}}" && npm ci
+
+# The venv goes on PATH, as the lint job puts it: the ops hooks call vulture,
+# and a python3 new enough for tomllib, by name.
+# pre-commit over every tracked file, as CI's lint job runs it (git add new files first)
+lint:
+    PATH="{{venv}}/bin:$PATH" "{{venv}}/bin/pre-commit" run --all-files --show-diff-on-failure
+
+# Regenerate the node API contract; `just contract --check` only compares
+[positional-arguments]
+contract *args:
+    cd "{{be}}" && RETINA_ENV=dev "{{py}}" -m scripts.generate_openapi "$@"
+
+# Every front-end workspace's lint, typecheck, unit tests and build, as CI's web-build matrix runs them
+web:
+    npm run lint --workspaces --if-present
+    npm run typecheck --workspaces
+    npm test --workspaces --if-present
+    npm run build --workspaces --if-present
+
+# The PR gate's lint, contract, backend and front-end jobs, stopping at the first that fails
+check: locked lint (contract "--check") test-ci web
 
 # ── retina-test droplet ──────────────────────────────────────────────────────
 # `deploy-test` deploys by rsync from the working tree, not by git. That is

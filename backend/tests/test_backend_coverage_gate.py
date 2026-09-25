@@ -3,9 +3,15 @@ measured: the shards of `backend-tests` each override it away, and the separate
 `backend-coverage` job applies it to the three combined. That split is invisible
 in either half on its own, and a mistake in it does not fail anything — it just
 reports a figure over part of the suite, or over none. These pin the seams.
+
+The threshold itself is `fail_under` in pyproject's [tool.coverage.report], the
+one place the combine job and `just test-ci` read it from.
 """
 
+import os
 import re
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -38,27 +44,45 @@ def test_the_shards_do_not_apply_the_threshold_to_their_own_third(pytest_step):
     assert _threshold("--cov-fail-under", pytest_step) == 0
 
 
-def _declared_threshold() -> int:
-    """The number addopts names, which every other check here is measured
-    against. Zero is not a lower threshold but no threshold at all: pytest-cov
-    skips the check when the value is not above zero, so a 0 here and a 0 in the
-    combine job would agree with each other and enforce nothing."""
+def test_coverage_run_from_backend_reads_a_threshold():
+    """Found the way `coverage report` and pytest-cov find it, from backend/, so
+    a key in the wrong table or a config file that takes precedence over
+    pyproject.toml is read as they would read it. In a child process, because
+    discovery follows the working directory and this one's is shared with
+    whatever threads earlier tests left running. Zero is not a lower threshold
+    but no threshold at all: both skip the check when it is not above zero."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("COVERAGE_", "COV_CORE_"))}
+    found = subprocess.run(
+        [sys.executable, "-c", "import coverage; print(coverage.Coverage().get_option('report:fail_under'))"],
+        cwd=BACKEND,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    declared = float(found.stdout)
+    assert declared > 0, "coverage finds no fail_under from backend/, so nothing enforces a threshold"
+
+
+def test_a_run_that_does_not_ask_for_coverage_measures_nothing():
+    """Coverage in addopts would measure the whole backend on a run of one file
+    and fail the threshold however its tests went."""
     addopts = tomllib.loads((BACKEND / "pyproject.toml").read_text())["tool"]["pytest"]["ini_options"]["addopts"]
-    declared = [_threshold("--cov-fail-under", opt) for opt in addopts if opt.startswith("--cov-fail-under=")]
-    assert len(declared) == 1, f"addopts names {len(declared)} coverage thresholds"
-    assert declared[0] > 0, "addopts sets --cov-fail-under=0, which enforces nothing"
-    return declared[0]
+    assert not [opt for opt in addopts if opt.startswith("--cov")], f"addopts asks for coverage: {addopts}"
 
 
-def test_addopts_still_enforces_the_threshold_for_a_local_run():
-    assert _declared_threshold() > 0
-
-
-def test_the_combine_job_enforces_the_same_threshold_addopts_names(jobs):
-    declared = _declared_threshold()
-    reports = [step["run"] for step in jobs["backend-coverage"]["steps"] if "coverage report" in step.get("run", "")]
+def test_the_combine_job_reads_the_threshold_from_backend(jobs):
+    """Where the test above found it, and with no --fail-under of its own to
+    override it."""
+    job = jobs["backend-coverage"]
+    assert job["defaults"]["run"]["working-directory"] == "backend"
+    assert "COVERAGE_RCFILE" not in job.get("env", {}), "the job points coverage at another config"
+    reports = [step for step in job["steps"] if "coverage report" in step.get("run", "")]
     assert len(reports) == 1, f"backend-coverage has {len(reports)} report steps"
-    assert _threshold("--fail-under", reports[0]) == declared
+    assert "working-directory" not in reports[0], "the report step reads its config from somewhere else"
+    assert "COVERAGE_RCFILE" not in reports[0].get("env", {}), "the report step reads its config from somewhere else"
+    assert "rcfile" not in reports[0]["run"], "the report step reads its config from somewhere else"
+    assert "fail-under" not in reports[0]["run"], "the report step overrides the declared threshold"
 
 
 def test_every_shard_that_runs_is_a_shard_the_combine_job_waits_for(jobs, pytest_step):
