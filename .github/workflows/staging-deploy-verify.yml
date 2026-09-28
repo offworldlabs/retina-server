@@ -26,13 +26,6 @@ on:
           thing to forget when the directory moves.
         required: true
         type: string
-      playwright_image:
-        description: >-
-          Playwright container image for the E2E job, derived from the lockfile
-          by ci.yml's `playwright-image` job so the browsers cannot disagree
-          with the client that drives them.
-        required: true
-        type: string
     secrets:
       STAGING_HOST:
         required: true
@@ -323,38 +316,26 @@ jobs:
   e2e:
     name: Playwright E2E (staging)
     runs-on: ubuntu-latest
-    # Only the pull and npm ci sit outside the test step's own cap now, and an
-    # image pull is minutes at worst. See the production job for why the job
-    # cap is a backstop rather than the primary bound.
+    # Only the setup steps sit outside the test step's own cap. See the
+    # production job for why the job cap is a backstop rather than the primary
+    # bound.
     timeout-minutes: 30
     needs: [smoke-tests]
-    # The browsers and their shared libraries ship in the image, so there is no
-    # install step and neither apt nor Playwright's CDN is in this path. Both
-    # broke repeatedly on 2026-08-18 and 2026-08-19; see the production job.
-    container:
-      image: ${{ inputs.playwright_image }}
-    # `npm ci` runs @playwright/test's postinstall, which fetches browsers. The
-    # image sets PLAYWRIGHT_BROWSERS_PATH=/ms-playwright and the tag is derived
-    # to match the lockfile, so it finds the right revision already there and
-    # does nothing. This makes that a guarantee rather than an expectation: if
-    # the browsers were ever NOT found, the postinstall would quietly download
-    # them from the CDN this job exists to avoid, and the only symptom would be
-    # a slow green run. With this set it fails loudly at the browser instead,
-    # pointing at the cause. See microsoft/playwright#4283.
-    env:
-      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+    # The browser is the runner image's Google Chrome, not one installed here;
+    # see the production job.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # Kept despite the image shipping its own Node: this pins the version the
-      # tests run under to the same 20 as every other job, rather than letting
-      # it drift with whatever the Playwright image happens to carry, and keeps
-      # the npm cache. Only browser provisioning changes here.
+      # Pins the tests to the same Node 20 as every other job, rather than the
+      # runner's own, and keeps the npm cache.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
+      # The runner image sets this version, not the lockfile.
+      - name: Report the runner's Chrome
+        run: node e2e/report-chrome.js
       - name: Run E2E tests (staging)
         # Has to stay above what nodes.spec.ts's two retried beforeAll hooks can
         # reach, so a node that never propagates fails an assertion rather than

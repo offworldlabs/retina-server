@@ -325,6 +325,10 @@ jobs:
       # checks before a deploy depends on them.
       - run: npm run typecheck -w ${{ matrix.workspace }}
         if: matrix.part != 'tests'
+      # The E2E suites run only after a merge, so a Playwright that cannot
+      # launch the runner's Chrome is caught here, on the pull request.
+      - run: node e2e/report-chrome.js
+        if: matrix.workspace == 'e2e'
       - run: npm test -w ${{ matrix.workspace }} --if-present ${{ matrix.shard && format('-- --shard={0}', matrix.shard) || '' }}
         if: matrix.part != 'checks'
       # Only the console has a build.
@@ -382,47 +386,6 @@ jobs:
       - name: Check compose + nginx parity
         run: python3 deploy/check-env-parity.py
 
-  playwright-image:
-    name: Resolve the Playwright image
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    # `edited` covers title and body edits as well as the base change we want,
-    # and `changes.base` is populated only for the latter.
-    if: github.event.action != 'edited' || github.event.changes.base
-    outputs:
-      image: ${{ steps.resolve.outputs.image }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # The tag is DERIVED from the lockfile rather than written out here, so
-      # the browsers baked into the container cannot disagree with the client
-      # that drives them. Bumping Playwright is an npm operation and nothing
-      # else; there is deliberately no version string in this file to forget.
-      #
-      # The lockfile, not package.json: the latter carries a range (^1.59.1)
-      # and `npm ci` installs whatever the lock resolved. Only the lock states
-      # what will actually run.
-      #
-      # This job has no `if:` gate on push-to-main, unlike the two E2E jobs
-      # that consume it. That is the point of the verify below — see there.
-      - name: Resolve and verify
-        id: resolve
-        run: |
-          set -euo pipefail
-          VERSION=$(node -p "require('./package-lock.json').packages['node_modules/@playwright/test'].version")
-          IMAGE="mcr.microsoft.com/playwright:v${VERSION}-noble"
-          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
-          # A derived tag cannot be stale, but it can name an image that was
-          # never published — Microsoft does not necessarily ship one for every
-          # patch release. Checked HERE, on the pull request, because the jobs
-          # that pull it only run on push to main: without this, an unpublished
-          # version surfaces as a container-pull failure after the merge, with
-          # nothing pointing at the lockfile bump that caused it.
-          if ! docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
-            echo "::error::${IMAGE} does not exist in the registry. package-lock.json resolves @playwright/test to ${VERSION}, and no Playwright container image was published for it. Pin the lockfile to a release that has one."
-            exit 1
-          fi
-          echo "Resolved and verified ${IMAGE}"
-
   e2e-prod:
     name: Playwright E2E (production)
     runs-on: ubuntu-latest
@@ -430,33 +393,27 @@ jobs:
     # timeout is a cancellation and would skip the rollback below, whereas the
     # step cap marks the step failed and keeps it reachable.
     timeout-minutes: 30
-    needs: [production-smoke-tests, playwright-image]
+    needs: [production-smoke-tests]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    # The browsers and their shared libraries ship in the image, so there is no
-    # install step at all. That step was the single worst source of red runs
-    # here: `npx playwright install --with-deps` fetches the browsers from
-    # Playwright's CDN, which stalled twice on 2026-08-18, and before that runs
-    # an apt update, which hung for 14m34s against the runner's dead
-    # azure.archive.ubuntu.com mirror on both 2026-08-18 and 2026-08-19.
+    # The browser is the Google Chrome the runner image ships
+    # (e2e/playwright.config.ts) rather than one installed here: `npx
+    # playwright install --with-deps` puts an apt update and Playwright's CDN in
+    # the path, and both hang for minutes when their servers do.
     #
-    # It also mattered more here than anywhere else: under the old gating an
-    # install that exited non-zero satisfied `failure()` and rolled a healthy
-    # production back. Removing the step removes that class of event rather
-    # than only declining to act on it.
-    container:
-      image: ${{ needs.playwright-image.outputs.image }}
-    # See the staging job: makes the postinstall's no-op a guarantee.
-    env:
-      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+    # Chrome's version therefore follows the runner image, not the lockfile, and
+    # can change with no commit here. Each run reports the one it tested with,
+    # and `web-build` launches it on every pull request.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # See the staging job for why setup-node is kept inside the container.
+      # See the staging job.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
+      - name: Report the runner's Chrome
+        run: node e2e/report-chrome.js
       # Bounded at the step rather than relying on the job cap: a step timeout
       # marks the step failed, which still trips the rollback below, whereas a
       # job timeout is a cancellation and would skip it. A production wedged
@@ -471,14 +428,10 @@ jobs:
           CI: "true"
           RADAR_API_KEY: ${{ secrets.RADAR_API_KEY }}
       # Scoped to the test step's own outcome, as the production smoke job is.
-      # A bare failure() also fires when the container fails to pull, or when
-      # checkout or npm ci fails, none of which say anything about whether
-      # production is healthy. The browser install that made this urgent is
-      # gone, but the reasoning outlives it: anything that breaks before the
-      # tests run is a statement about the runner, not about production. An
-      # infrastructure failure now leaves the job red for a human to read,
-      # and only tests that ran and
-      # failed roll production back.
+      # A bare failure() also fires when checkout, npm ci or the Chrome report
+      # fails, and anything that breaks before the tests run is a statement
+      # about the runner, not about production. Those leave the job red for a
+      # human to read; only tests that ran and failed roll production back.
       - name: Rollback production on E2E failure
         if: failure() && steps.e2e.outcome == 'failure'
         uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
@@ -700,10 +653,7 @@ jobs:
   # tests and its E2E. See the called workflow.
   staging:
     name: Staging
-    # `playwright-image` joins the deploy's own prerequisites so an unpublished
-    # image fails the run before the droplet is touched, rather than after a
-    # deploy and a smoke suite have already landed on it.
-    needs: [changes, backend-tests, backend-coverage, lint, web-build, docker-build, env-parity, tower-service-contract, playwright-image]
+    needs: [changes, backend-tests, backend-coverage, lint, web-build, docker-build, env-parity, tower-service-contract]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.changes.outputs.code == 'true'
     concurrency:
       group: staging-deploy
@@ -721,7 +671,6 @@ jobs:
     uses: ./.github/workflows/staging-deploy-verify.yml
     with:
       app_dir: ${{ needs.changes.outputs.app_dir }}
-      playwright_image: ${{ needs.playwright-image.outputs.image }}
     secrets:
       STAGING_HOST: ${{ secrets.STAGING_HOST }}
       STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}

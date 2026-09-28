@@ -132,7 +132,9 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      // Google Chrome as installed rather than a browser Playwright downloads:
+      // CI uses the one its runner image ships, and needs no install step.
+      use: { ...devices["Desktop Chrome"], channel: "chrome" },
     },
   ],
 });
