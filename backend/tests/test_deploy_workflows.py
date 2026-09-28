@@ -349,6 +349,49 @@ def test_the_e2e_rollback_acts_on_the_test_step_alone():
     assert e2e["outputs"]["tests"] == "${{ steps.e2e.outcome }}"
 
 
+def _runs_rollback(script: str) -> bool:
+    """Whether a script runs rollback.sh, rather than naming it in a message."""
+    return any(
+        re.search(r"\bdeploy/rollback\.sh\b", line) and not re.match(r"\s*(?:#|echo\b)", line)
+        for line in script.splitlines()
+    )
+
+
+def _rollback_steps() -> list:
+    """Every ssh-action step, in any workflow, that runs rollback.sh."""
+    return [
+        pytest.param(path.name, name, index, id=f"{path.name}:{name}:{step.get('name', index)}")
+        for path in _workflow_files()
+        for name, job in _workflow(path.name)["jobs"].items()
+        for index, step in enumerate(job.get("steps", []))
+        if step.get("uses", "").startswith("appleboy/ssh-action@")
+        and _runs_rollback(step.get("with", {}).get("script", ""))
+    ]
+
+
+@pytest.mark.parametrize(("workflow", "job", "index"), _rollback_steps())
+def test_every_rollback_outlasts_a_rebuild(workflow, job, index):
+    # rollback.sh can rebuild the image, and the action's 10-minute default
+    # would cut it off part way. The job's own cap has to leave it that long
+    # too, after the capped steps ahead of it.
+    steps = _job(workflow, job)["steps"]
+    timeout = str(steps[index]["with"].get("command_timeout", "10m"))
+    assert re.fullmatch(r"\d+m", timeout), timeout
+    assert int(timeout[:-1]) >= 15
+    ahead = sum(int(step.get("timeout-minutes", 0)) for step in steps[:index])
+    assert ahead + int(timeout[:-1]) <= _job(workflow, job)["timeout-minutes"]
+
+
+def test_the_timeout_check_sees_every_deploys_rollback():
+    # A rollback written in a form the check does not recognise would drop out
+    # of it silently, so each deploying workflow must still show one.
+    assert {p.values[0] for p in DEPLOYS} <= {p.values[0] for p in _rollback_steps()}
+    assert _runs_rollback("if ! bash deploy/rollback.sh; then")
+    assert _runs_rollback('cd "$APP_DIR"; ./deploy/rollback.sh || rc=$?')
+    assert not _runs_rollback('echo "::error::recover it (bash deploy/rollback.sh, or fix forward)"')
+    assert not _runs_rollback("# See deploy/rollback.sh.")
+
+
 def test_the_e2e_rollback_holds_the_production_lock_on_the_runner():
     rollback = _job("ci.yml", "rollback-production-on-e2e-failure")
     assert "container" not in rollback

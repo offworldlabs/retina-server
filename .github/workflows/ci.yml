@@ -464,6 +464,8 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: root
           key: ${{ secrets.SERVER_SSH_KEY }}
+          # See the smoke job's rollback step.
+          command_timeout: 15m
           envs: APP_DIR
           script: |
             # Same identity assertion the deploy carries, and for a stronger
@@ -1403,6 +1405,9 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: root
           key: ${{ secrets.SERVER_SSH_KEY }}
+          # As the deploy-failure rollback allows: rollback.sh can rebuild,
+          # and the action's 10m default would cut it off mid-rollback.
+          command_timeout: 15m
           envs: APP_DIR
           script: |
             # See the identical assertion in rollback-production-on-e2e-failure.
