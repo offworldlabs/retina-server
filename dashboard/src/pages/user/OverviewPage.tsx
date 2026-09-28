@@ -1,6 +1,6 @@
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { api } from "../../api/client";
 import { FetchNotice, nothingLoaded } from "../../components/Notice";
@@ -12,70 +12,40 @@ import { useChartTheme } from "../../utils/chartTheme";
 import { PositionStatusBadge, POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacy";
 import { StatusBadge } from "../../components/StatusBadge";
-import { detectionCount, isOnline } from "../../utils/nodes";
+import { detectionCount, isOnline, ownedNodePage } from "../../utils/nodes";
+import type { OwnedNode } from "../../types";
 
 export default function OverviewPage() {
   const chart = useChartTheme();
   const navigate = useNavigate();
   const polled = usePolling(async () => {
-    // myNodes fails soft: it is only needed for the needs-attention list, and
-    // an unauthenticated view of this page must still render the rest.
-    const [n, a, ac, mine] = await Promise.all([
-      api.nodes(), api.analytics(), api.aircraft(), api.myNodes().catch(() => []),
+    const [mine, analytics, aircraft] = await Promise.all([
+      api.myNodes(), api.analytics(), api.myAircraft(),
     ]);
-    // Both are dicts keyed on node_ref, and the values carry no identifier of
-    // their own, so the key is the identity.
-    const nodeMap = n.nodes || {};
-    const analyticsMap = a?.nodes || {};
-    const nodes = Object.entries(nodeMap).map(([ref, info]: [string, any]) => ({
-      node_ref: ref,
-      ...info,
-      _analytics: analyticsMap[ref] || {},
+    // The owner's list is the page's scope. The analytics map is keyed on
+    // node_ref, and the route adds a private node back to it for its owner.
+    const analyticsByRef = analytics?.nodes || {};
+    const nodes = (Array.isArray(mine) ? mine : []).map((node: OwnedNode) => ({
+      ...node,
+      _analytics: (node.node_ref && analyticsByRef[node.node_ref]) || {},
     }));
-    return {
-      nodes,
-      myNodes: Array.isArray(mine) ? mine : [],
-      aircraftCount: (ac.aircraft || []).length,
-    };
+    return { nodes, aircraftCount: (aircraft?.aircraft || []).length };
   }, 15000);
   const { data, loading } = polled;
 
   if (loading) return <div className="empty-state">Loading…</div>;
 
-  const nodeList = data?.nodes ?? [];
-  const myNodes = data?.myNodes ?? [];
+  const nodes = data?.nodes ?? [];
   const aircraftCount = data?.aircraftCount ?? 0;
-  const onlineCount = nodeList.filter((n) => isOnline(n.status)).length;
-  // Merged with the owner's own nodes, because /api/radar/nodes drops private
-  // ones: a private node with no position would otherwise appear nowhere its
-  // owner looks, and this list is the only place they are told.
-  // Joined on node_ref, the one key space both sides share: /api/auth/me/nodes
-  // also carries node_id, and keying on that would list every node twice.
-  // A node with no ref is on no public surface, so its node_id cannot collide.
-  const keyOf = (n: any) => n.node_ref || n.node_id || n.id;
-  const byRef = new Map<string, any>(nodeList.map((n) => [keyOf(n), n]));
-  for (const n of myNodes) {
-    const key = keyOf(n);
-    if (!byRef.has(key)) byRef.set(key, n);
-  }
-  const needsAttention = [...byRef.values()].filter((n) => n.position_status && n.position_status !== "positioned");
-  // Same reason the merge exists at all: a private node is dropped from
-  // /api/radar/nodes, so its owner would otherwise not find it in the grid
-  // below — the one place they are told it is private.
-  const myNodeCards = [...byRef.values()];
-  // Keyed the same way the merge above is, not on node_id: a public node
-  // reaches the grid from the ref-keyed listing and only its owner's copy
-  // carries the flag, so the two have to meet in one key space.
-  const privateByKey = new Map<string, boolean>(
-    myNodes.map((n) => [keyOf(n), !!n.location_private]),
-  );
-  const totalFrameDetections = nodeList.reduce((s, n) => s + detectionCount(n._analytics), 0);
+  const onlineCount = nodes.filter((n) => isOnline(n.status)).length;
+  const needsAttention = nodes.filter((n) => n.position_status && n.position_status !== "positioned");
+  const totalDetections = nodes.reduce((s, n) => s + detectionCount(n._analytics), 0);
+  const totalTracks = nodes.reduce((s, n) => s + (n._analytics?.metrics?.total_tracks || 0), 0);
 
-  // Build a simple detection-over-index chart from node data
-  const chartData = nodeList.map((n, i) => ({
+  // A dash would label two unnamed nodes' bars alike.
+  const chartData = nodes.map((n, i) => ({
     name: n.name || n.node_ref || `Node ${i + 1}`,
     detections: detectionCount(n._analytics),
-    tracks: n._analytics?.metrics?.total_tracks || 0,
   }));
 
   const header = (
@@ -99,10 +69,10 @@ export default function OverviewPage() {
       <FetchNotice polled={polled} what="your nodes" />
 
       <div className="stats-grid">
-        <StatCard label="Nodes Online" value={<>{onlineCount} / {nodeList.length}</>} tone="accent" />
+        <StatCard label="Nodes Online" value={<>{onlineCount} / {nodes.length}</>} tone="accent" />
         <StatCard label="Live Aircraft" value={aircraftCount.toLocaleString()} tone="success" />
-        <StatCard label="Frame Detections" value={totalFrameDetections.toLocaleString()} />
-        <StatCard label="Network Nodes" value={nodeList.length} tone="warning" />
+        <StatCard label="Frame Detections" value={totalDetections.toLocaleString()} />
+        <StatCard label="Tracks" value={totalTracks.toLocaleString()} />
       </div>
 
       {needsAttention.length > 0 && (
@@ -115,19 +85,17 @@ export default function OverviewPage() {
           </div>
           <DataTable headers={["Node", "Position"]} count={needsAttention.length}>
             {needsAttention.map((node) => {
-              // The detail page addresses the node on public routes, which
-              // take the ref.  A node with no ref is on no public surface,
-              // so its row is still listed (this is the only place its
-              // owner is told) but it is not a link to a 404.
-              const ref = node.node_ref;
+              // Listed even with no page to link to: this is the only place
+              // its owner is told.
+              const page = ownedNodePage(node);
               return (
                 <tr
-                  key={ref || node.node_id || node.id}
-                  style={ref ? { cursor: "pointer" } : undefined}
-                  onClick={ref ? () => navigate(`/nodes/${ref}`) : undefined}
+                  key={node.node_id}
+                  style={page ? { cursor: "pointer" } : undefined}
+                  onClick={page ? () => navigate(page) : undefined}
                 >
-                  <td style={{ color: ref ? "var(--accent)" : undefined }}>
-                    {node.name || ref || "—"}
+                  <td style={{ color: page ? "var(--accent)" : undefined }}>
+                    {node.name || node.node_ref || "—"}
                   </td>
                   <td><PositionStatusBadge status={node.position_status} /></td>
                 </tr>
@@ -137,7 +105,8 @@ export default function OverviewPage() {
         </div>
       )}
 
-      {chartData.length > 0 && (
+      {/* One node's bar would only repeat its card. */}
+      {chartData.length > 1 && (
         <div className="card">
           <div className="card-header">
             <h3>Detections by Node</h3>
@@ -145,7 +114,7 @@ export default function OverviewPage() {
           <div className="card-body">
             <div className="chart-container">
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData}>
+                <BarChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke={chart.grid} />
                   <XAxis dataKey="name" stroke={chart.axis} tick={{ fontSize: 11 }} />
                   <YAxis stroke={chart.axis} tick={{ fontSize: 11 }} />
@@ -153,14 +122,8 @@ export default function OverviewPage() {
                     contentStyle={chart.tooltip}
                     cursor={chart.cursor}
                   />
-                  <Area
-                    type="monotone"
-                    dataKey="detections"
-                    stroke={chart.series[0]}
-                    fill={chart.series[0]}
-                    fillOpacity={0.15}
-                  />
-                </AreaChart>
+                  <Bar dataKey="detections" fill={chart.series[0]} radius={[4, 4, 0, 0]} />
+                </BarChart>
               </ResponsiveContainer>
             </div>
           </div>
@@ -172,24 +135,19 @@ export default function OverviewPage() {
           <h3>My Nodes</h3>
         </div>
         <div className="node-grid" style={{ padding: 16 }}>
-          {myNodeCards.map((node) => {
-            // The card links to the detail page, which addresses a node on the
-            // public routes and so takes the ref.  A node with no ref is on no
-            // public surface: its card is still shown — this list is the only
-            // place its owner is told about it — but it is not a link to a 404.
-            const ref = node.node_ref;
-            const id = keyOf(node);
+          {nodes.map((node) => {
+            const page = ownedNodePage(node);
             return (
               <div
                 className="node-card"
-                key={id}
-                style={ref ? undefined : { cursor: "default" }}
-                onClick={ref ? () => navigate(`/nodes/${ref}`) : undefined}
+                key={node.node_id}
+                style={page ? undefined : { cursor: "default" }}
+                onClick={page ? () => navigate(page) : undefined}
               >
                 <div className="node-name">
                   <StatusBadge status={node.status} />
-                  <LocationPrivacyBadge isPrivate={privateByKey.get(id)} />
-                  {node.name || ref || "—"}
+                  <LocationPrivacyBadge isPrivate={node.location_private} />
+                  {node.name || node.node_ref || "—"}
                 </div>
                 <div className="node-meta">
                   <span className="meta-label">Detections</span>
@@ -208,8 +166,10 @@ export default function OverviewPage() {
               </div>
             );
           })}
-          {myNodeCards.length === 0 && (
-            <div className="empty-state">No nodes connected yet</div>
+          {nodes.length === 0 && (
+            <div className="empty-state">
+              No nodes yet. <Link to="/onboarding">Connect your node</Link> to see it here.
+            </div>
           )}
         </div>
       </div>
