@@ -9,7 +9,7 @@ import { useAuth } from "../../context/AuthContext";
 import { useFetch } from "../../hooks/usePolling";
 import { StatusBadge } from "../../components/StatusBadge";
 import { formatMHz } from "../../utils/format";
-import { isOnline } from "../../utils/nodes";
+import { isOnline, ownedNodePage } from "../../utils/nodes";
 import type { OwnedNode } from "../../types";
 
 export default function OnboardingPage() {
@@ -73,9 +73,7 @@ export default function OnboardingPage() {
               {nodes.map((n) => (
                 <tr key={n.node_id}>
                   <td className="mono">
-                    {/* A polled radar's page is the one that manages it; the
-                        detail page has nothing until its first frame. */}
-                    {n.node_ref ? <Link to={`/${n.polled ? "radars" : "nodes"}/${n.node_ref}`}>{n.node_ref}</Link> : "—"}{" "}
+                    {n.node_ref ? <Link to={ownedNodePage(n)!}>{n.node_ref}</Link> : "—"}{" "}
                     <LocationPrivacyBadge isPrivate={n.location_private} />
                   </td>
                   <td>
