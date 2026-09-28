@@ -11,7 +11,7 @@ from config.constants import AIRCRAFT_FLUSH_INTERVAL_S
 from core import state
 from services import node_refs
 from services.frame_processor import build_combined_aircraft_json
-from services.publication import public_aircraft_payload
+from services.publication import public_aircraft_payload, without_others_private_nodes
 from services.tasks.executor import task_executor
 
 _TAR1090_DATA_DIR = os.path.join(
@@ -59,6 +59,15 @@ def filter_payload_to_nodes(aircraft_data: dict, node_ids: set[str]) -> dict:
         "ground_truth_meta": {},
         "anomaly_hexes": [],
     }
+
+
+def owner_bytes(aircraft_data: dict, owned: set[str]) -> bytes:
+    """The owner feed for one caller: `owned`'s aircraft and arcs, published.
+
+    `aircraft_data` is the unredacted frame; the solves the caller joined are
+    cut back to what they may see of other owners' nodes before publication.
+    """
+    return published_bytes(without_others_private_nodes(filter_payload_to_nodes(aircraft_data, owned), owned))
 
 
 def _real_only_dict(aircraft_data: dict) -> dict:
@@ -172,7 +181,7 @@ async def broadcast_aircraft(aircraft_data: dict):
         stale_owner = set()
         for ws, owned in list(state.ws_owner_clients.items()):
             try:
-                owner_pairs.append((ws, published_bytes(filter_payload_to_nodes(aircraft_data, owned)).decode()))
+                owner_pairs.append((ws, owner_bytes(aircraft_data, owned).decode()))
             except Exception:
                 stale_owner.add(ws)
         stale_owner |= await _fan_out_sends(owner_pairs)
