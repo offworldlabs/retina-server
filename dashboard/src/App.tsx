@@ -19,7 +19,6 @@ const LeaderboardPage = lazy(() => import("./pages/user/LeaderboardPage"));
 const KnowledgeBasePage = lazy(() => import("./pages/user/KnowledgeBasePage"));
 const TunnelLinkPage = lazy(() => import("./pages/user/TunnelLinkPage"));
 const AnomalyPage = lazy(() => import("./pages/user/AnomalyPage"));
-const OnboardingPage = lazy(() => import("./pages/user/OnboardingPage"));
 const RegisterRadarPage = lazy(() => import("./pages/user/RegisterRadarPage"));
 const RadarPage = lazy(() => import("./pages/user/RadarPage"));
 // Leaflet and the map tree are ~400 KB, so they load when the map is first
@@ -119,7 +118,8 @@ export default function App() {
                       <Route path="leaderboard" element={<LeaderboardPage />} />
                       <Route path="knowledge" element={<KnowledgeBasePage />} />
                       <Route path="tunnel" element={<TunnelLinkPage />} />
-                      <Route path="onboarding" element={<OnboardingPage />} />
+                      {/* Still in bookmarks, and in sign-in links already mailed. */}
+                      <Route path="onboarding" element={<Navigate to="/overview" replace />} />
                       <Route path="radars/new" element={<RegisterRadarPage />} />
                       <Route path="radars/:nodeRef" element={<RadarPage />} />
                     </>

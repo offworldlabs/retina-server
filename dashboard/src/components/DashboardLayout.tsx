@@ -16,7 +16,7 @@ function storedCollapsed(): boolean | null {
 export const pageTitles: Record<string, { user?: string; admin?: string }> = {
   // The user surface's index only forwards to the map, so it borrows its title.
   "/": { user: "Live Map", admin: "Network Health" },
-  "/overview": { user: "Overview" },
+  "/overview": { user: "My Nodes" },
   "/map": { user: "Live Map" },
   "/sim": { admin: "Simulation Map" },
   // Two segments, so this table is looked up by the whole path before it falls
@@ -32,6 +32,7 @@ export const pageTitles: Record<string, { user?: string; admin?: string }> = {
   "/leaderboard": { user: "Leaderboard" },
   "/knowledge": { user: "Knowledge Base" },
   "/tunnel": { user: "Tunnel & Local Display" },
+  // Forwards to /overview, so it borrows that page's title.
   "/onboarding": { user: "My Nodes" },
   "/radars/new": { user: "Add a Radar" },
   "/radars/:nodeRef": { user: "Your Radar" },
