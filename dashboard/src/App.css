@@ -107,6 +107,9 @@ a:hover {
 .login-card .subtitle {
   color: var(--text-secondary);
   margin-bottom: 32px;
+  /* An email address has no break point of its own and is wider than a phone's
+     card. Not `anywhere`, which the build's Safari floor predates. */
+  overflow-wrap: break-word;
 }
 
 /* Inside the card's 48px top padding, so it never collides with the logo. */
