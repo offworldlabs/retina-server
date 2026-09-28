@@ -14,7 +14,7 @@ from time import monotonic
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, EmailStr
 
 from core import state
@@ -46,6 +46,7 @@ from services.node_claiming import (
 from services.node_config import carrier_hz, position_status
 from services.node_refs import owner_identity, public_name
 from services.polled_radars import owner_views, remove_polled_radar
+from services.tasks.aircraft_flush import owner_bytes
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -458,3 +459,17 @@ async def my_nodes(request: Request):
             }
         )
     return out
+
+
+@router.get("/me/aircraft")
+async def my_aircraft(request: Request):
+    """The owner feed's current frame: aircraft and arcs from the caller's nodes.
+
+    The snapshot /ws/aircraft/owner sends on connect, for a page that polls.
+    Filtered from the unredacted frame, because the public feed drops a private
+    node's single-node tracks, and a polled radar on probation counts as
+    private, so its owner would find nothing of their own there.
+    """
+    user = await get_current_user(request)
+    owned = set(await get_user_nodes(user["id"]))
+    return Response(content=owner_bytes(state.latest_aircraft_json, owned), media_type="application/json")
