@@ -157,6 +157,39 @@ class TestJWT:
             assert asyncio.run(strategy.read_token(bad, None)) is None
 
 
+# ── The user as the API serialises it ─────────────────────────────────────────
+
+
+class TestUserToDict:
+    @pytest.fixture
+    def _host_behind_utc(self):
+        """A host zone five hours west of UTC, as a POSIX rule so no tz database is needed."""
+        if not hasattr(time, "tzset"):
+            pytest.skip("this interpreter cannot change its zone: it has no time.tzset")
+        previous = os.environ.get("TZ")
+        os.environ["TZ"] = "EST5"
+        time.tzset()
+        yield
+        if previous is None:
+            del os.environ["TZ"]
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
+
+    @pytest.mark.usefixtures("_host_behind_utc")
+    def test_a_stored_time_reads_as_utc_whatever_the_host_zone(self):
+        """SQLite hands a DateTime column back naive, and every write to it is UTC."""
+        from datetime import UTC, datetime
+
+        from core.users import User, user_to_dict
+
+        stored = datetime(2026, 9, 28, 12, 0)
+        as_dict = user_to_dict(User(id=uuid.uuid4(), email="a@example.com", created_at=stored, last_seen_at=stored))
+
+        expected = stored.replace(tzinfo=UTC).timestamp()
+        assert (as_dict["created_at"], as_dict["last_seen_at"]) == (expected, expected)
+
+
 # ── AUTH_ENABLED / AUTH_BYPASS derivation ─────────────────────────────────────
 
 

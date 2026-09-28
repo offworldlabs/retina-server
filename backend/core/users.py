@@ -10,14 +10,14 @@ import os
 import secrets
 import uuid
 from collections.abc import AsyncGenerator, Mapping
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import Depends, HTTPException, Request
 from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin, schemas
 from fastapi_users.authentication import AuthenticationBackend, CookieTransport, JWTStrategy
 from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
 from fastapi_users.exceptions import UserAlreadyExists, UserNotExists
-from sqlalchemy import DateTime, Float, String, event, func, select
+from sqlalchemy import DateTime, Float, String, event, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -111,6 +111,7 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
         server_default=func.now(),
         nullable=False,
     )
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class MagicLink(Base):
@@ -278,6 +279,11 @@ ANONYMOUS_USER: dict = {
 }
 
 
+def _utc(when: datetime) -> datetime:
+    """SQLite hands back a naive datetime, and everything stored here is UTC."""
+    return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
+
+
 def user_to_dict(user: User) -> dict:
     return {
         "id": str(user.id),
@@ -287,7 +293,8 @@ def user_to_dict(user: User) -> dict:
         "provider": user.provider,
         "role": "admin" if user.is_superuser else "user",
         "is_superuser": user.is_superuser,
-        "created_at": user.created_at.timestamp() if user.created_at else 0,
+        "created_at": _utc(user.created_at).timestamp() if user.created_at else 0,
+        "last_seen_at": _utc(user.last_seen_at).timestamp() if user.last_seen_at else None,
     }
 
 
@@ -297,12 +304,41 @@ def user_to_dict(user: User) -> dict:
 
 _SENTINEL = object()
 
+# How stale last_seen_at may be. A page that polls uses its session on every
+# poll, so the stamp is written once per window rather than on each request.
+_VISIT_RESOLUTION = timedelta(minutes=5)
+
+
+async def record_visit(user: User) -> None:
+    """Stamp an active account's `last_seen_at` with now, on the row and on the instance in hand.
+
+    A failed write is logged and dropped: the request it rides on must not fail
+    for a bookkeeping column.
+    """
+    now = datetime.now(UTC)
+    if user.last_seen_at is not None and now - _utc(user.last_seen_at) < _VISIT_RESOLUTION:
+        return
+    try:
+        async with async_session_maker() as session:
+            # Active is checked in the write, not on the instance: that is the
+            # caller's snapshot, and the row may have been deactivated since.
+            stamped = await session.execute(
+                update(User).where(User.id == user.id, User.is_active.is_(True)).values(last_seen_at=now)
+            )
+            await session.commit()
+    except Exception:
+        logging.warning("Could not record a visit", exc_info=True)
+        return
+    if stamped.rowcount:
+        user.last_seen_at = now
+
 
 async def read_user_from_token(token: str | None) -> User | None:
     """Validate a raw auth_token JWT and return the User, or None if invalid.
 
     Usable outside the request/response cycle (e.g. WebSocket handshakes, where
-    the cookie is read off ws.cookies rather than a Request).
+    the cookie is read off ws.cookies rather than a Request). Every use of a
+    session resolves it here, so this is where a visit is recorded.
     """
     if not token:
         return None
@@ -311,9 +347,12 @@ async def read_user_from_token(token: str | None) -> User | None:
         user_db = SQLAlchemyUserDatabase(session, User)
         user_manager = UserManager(user_db)
         try:
-            return await strategy.read_token(token, user_manager)
+            user = await strategy.read_token(token, user_manager)
         except Exception:
             return None
+    if user is not None:
+        await record_visit(user)
+    return user
 
 
 async def _read_user_from_request(request: Request) -> User | None:

@@ -7,13 +7,18 @@ covers the token store underneath.
 """
 
 import time
+import uuid
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 import routes.auth as _auth
+from core import users
 from core.auth import create_magic_link
 from main import app
 from services.claim_links import INTENT_CLAIM
@@ -439,6 +444,16 @@ class TestConsumeMagicLink:
         r = client.post("/api/auth/magic-link/consume", json={"token": token})
         assert r.json()["user"]["provider"] == "magic-link"
 
+    async def test_the_sign_in_is_the_last_visit_the_users_page_lists(self, client):
+        before = time.time()
+        token = await create_magic_link("owner@example.com")
+        signed_in = client.post("/api/auth/magic-link/consume", json={"token": token}).json()["user"]
+
+        (listed,) = client.get("/api/admin/users").json()
+        assert before <= listed["last_seen_at"] <= time.time()
+        # The sign-in page adopts the user it is handed, so it must carry what the row holds.
+        assert signed_in["last_seen_at"] == listed["last_seen_at"]
+
     async def test_an_existing_superuser_cannot_sign_in_by_link(self, client):
         """Administrator identity is Cloudflare Access. If a superuser row
         exists for the address, reading that mailbox must not be a way to hold
@@ -515,3 +530,117 @@ class TestConsumeMagicLink:
         token = await create_magic_link("owner@example.com")
         assert client.get(f"/api/auth/magic-link/consume?token={token}").status_code in (404, 405)
         assert client.post("/api/auth/magic-link/consume", json={"token": token}).status_code == 200
+
+
+# ── Visits ────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+class TestVisits:
+    """Every use of a session is a visit, written at most once per window."""
+
+    @staticmethod
+    async def _signed_in(client) -> str:
+        token = await create_magic_link("owner@example.com")
+        return client.post("/api/auth/magic-link/consume", json={"token": token}).cookies["auth_token"]
+
+    @staticmethod
+    async def _set_account(**values) -> None:
+        async with users.async_session_maker() as session:
+            user = (await session.execute(select(users.User))).scalars().one()
+            for name, value in values.items():
+                setattr(user, name, value)
+            await session.commit()
+
+    @staticmethod
+    async def _last_visit() -> datetime | None:
+        async with users.async_session_maker() as session:
+            seen = (await session.execute(select(users.User))).scalars().one().last_seen_at
+        return seen.replace(tzinfo=UTC) if seen else None
+
+    async def test_a_request_carrying_the_session_records_a_visit(self, client, monkeypatch):
+        """Through /me rather than the token reader, so the path a page load
+        takes is the one tested. The bypass is off so the cookie is read at all."""
+        cookie = await self._signed_in(client)
+        await self._set_account(last_seen_at=datetime.now(UTC) - timedelta(hours=1))
+        before = datetime.now(UTC)
+        monkeypatch.setattr(users, "AUTH_BYPASS", False)
+
+        # By header: the cookie is Secure and the test client speaks plain HTTP.
+        r = client.get("/api/auth/me", headers={"Cookie": f"auth_token={cookie}"})
+
+        assert r.json()["email"] == "owner@example.com"
+        assert await self._last_visit() >= before
+
+    async def test_a_session_used_again_within_the_window_is_not_written_again(self, client):
+        cookie = await self._signed_in(client)
+        recent = datetime.now(UTC) - timedelta(minutes=1)
+        await self._set_account(last_seen_at=recent)
+
+        await users.read_user_from_token(cookie)
+
+        assert await self._last_visit() == recent
+
+    async def test_a_deactivated_account_records_no_visit(self, client):
+        cookie = await self._signed_in(client)
+        earlier = datetime.now(UTC) - timedelta(hours=1)
+        await self._set_account(last_seen_at=earlier, is_active=False)
+
+        await users.read_user_from_token(cookie)
+
+        assert await self._last_visit() == earlier
+
+    async def test_a_deactivated_account_signing_in_records_no_visit(self, client):
+        await users.get_or_create_magic_link_user("owner@example.com")
+        await self._set_account(is_active=False)
+
+        token = await create_magic_link("owner@example.com")
+        client.post("/api/auth/magic-link/consume", json={"token": token})
+
+        assert await self._last_visit() is None
+
+    async def test_an_account_deactivated_under_a_request_records_no_visit(self, client):
+        """The instance a request holds is its own snapshot of the row."""
+        snapshot = await users.get_or_create_magic_link_user("owner@example.com")
+        await self._set_account(is_active=False)
+
+        await users.record_visit(snapshot)
+
+        assert await self._last_visit() is None
+        assert snapshot.last_seen_at is None
+
+    async def test_a_sign_in_that_cannot_mint_its_session_records_no_visit(self, client, monkeypatch):
+        class Unsigned:
+            async def write_token(self, user):
+                raise RuntimeError("no signing key")
+
+        monkeypatch.setattr(_auth, "get_jwt_strategy", Unsigned)
+        token = await create_magic_link("owner@example.com")
+
+        r = client.post("/api/auth/magic-link/consume", json={"token": token})
+
+        assert r.status_code == 500
+        assert await self._last_visit() is None
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            OperationalError("UPDATE user", {}, Exception("database is locked")),
+            # aiosqlite's own error for a connection closed under it, which
+            # SQLAlchemy does not wrap.
+            ValueError("no active connection"),
+        ],
+    )
+    async def test_a_failed_write_is_logged_rather_than_failing_the_request(self, monkeypatch, caplog, failure):
+        stale = datetime.now(UTC) - timedelta(hours=1)
+        user = users.User(id=uuid.uuid4(), email="owner@example.com", is_active=True, last_seen_at=stale)
+
+        def failing():
+            raise failure
+
+        monkeypatch.setattr(users, "async_session_maker", failing)
+
+        await users.record_visit(user)
+
+        assert user.last_seen_at == stale
+        assert "Could not record a visit" in caplog.text

@@ -568,3 +568,35 @@ def test_0020_downgrade_recreates_the_table_empty(tmp_path):
     columns = "SELECT name FROM pragma_table_info('node_location_privacy') ORDER BY cid"
     assert _query(db, columns) == [("node_id",), ("private",), ("set_by",), ("set_at",)]
     assert _query(db, "SELECT COUNT(*) FROM node_location_privacy") == [(0,)]
+
+
+# ── 0021: users.last_seen_at ─────────────────────────────────────────────────
+
+
+def test_0021_round_trips_an_existing_account(tmp_path):
+    """An account from before the column reads as never seen, and a
+    downgrade gives it back without the column."""
+    import sqlite3
+
+    db = tmp_path / "users.db"
+    up = _alembic("upgrade", "0020", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    con = sqlite3.connect(db)
+    con.execute(
+        'INSERT INTO "user" (id, email, hashed_password, is_active, is_superuser, is_verified) '
+        "VALUES ('u1', 'ada@example.com', 'x', 1, 0, 1)"
+    )
+    con.commit()
+    con.close()
+
+    up = _alembic("upgrade", "0021", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    assert _query(db, 'SELECT email, last_seen_at FROM "user"') == [("ada@example.com", None)]
+
+    down = _alembic("downgrade", "0020", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, "SELECT name FROM pragma_table_info('user') WHERE name = 'last_seen_at'") == []
+    assert _query(db, 'SELECT email FROM "user"') == [("ada@example.com",)]
+    # SQLite rewrites the table to drop a column, so the unique index that
+    # keeps one account per address has to come back with it.
+    assert ("ix_user_email", 1) in _query(db, "SELECT name, \"unique\" FROM pragma_index_list('user')")

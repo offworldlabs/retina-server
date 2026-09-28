@@ -8,6 +8,7 @@ Covers:
 """
 
 import asyncio
+import time
 import uuid
 from http.cookies import SimpleCookie
 
@@ -404,6 +405,13 @@ class TestClaimRoutes:
         assert r.json()["node_ref"] == "nde1a2b3c4d00"
         assert r.json()["user"]["email"] == "ada@example.com"
         assert "auth_token" in SimpleCookie(r.headers.get("set-cookie", ""))
+
+    def test_the_click_is_the_last_visit_the_users_page_lists(self, client):
+        before = time.time()
+        client.post("/api/auth/claim/consume", json={"token": self._mailed()})
+
+        listed = {u["email"]: u for u in client.get("/api/admin/users").json()}
+        assert before <= listed["ada@example.com"]["last_seen_at"] <= time.time()
 
     def test_the_signed_in_user_carries_the_fleet_flag(self, client, monkeypatch):
         """ClaimPage adopts this user without asking /me."""

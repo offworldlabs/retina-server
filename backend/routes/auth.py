@@ -13,7 +13,7 @@ from ipaddress import IPv6Address, ip_address, ip_network
 from time import monotonic
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr
 
@@ -30,6 +30,7 @@ from core.users import (
     get_jwt_strategy,
     get_or_create_magic_link_user,
     has_access_session,
+    record_visit,
     user_to_dict,
 )
 from routes.sim_ingest import synthetic_fleet_enabled
@@ -72,10 +73,16 @@ def _client_source(request: Request) -> str:
     return str(address)
 
 
-async def _set_auth_cookie(response: Response, user) -> None:
-    """Write the fastapi-users JWT into the auth_token cookie."""
+async def _open_session(user, **extra) -> JSONResponse:
+    """Answer with the signed-in user, and the fastapi-users JWT in the auth_token cookie.
+
+    Opening a session is itself a visit, and the answer carries it. Recorded
+    once the token exists, so a sign-in that fails leaves no visit behind.
+    """
     strategy = get_jwt_strategy()
     token = await strategy.write_token(user)
+    await record_visit(user)
+    response = JSONResponse({"user": _session_user(user_to_dict(user)), **extra})
     response.set_cookie(
         "auth_token",
         token,
@@ -85,6 +92,7 @@ async def _set_auth_cookie(response: Response, user) -> None:
         samesite="lax",
         path="/",
     )
+    return response
 
 
 # ── Magic links ───────────────────────────────────────────────────────────────
@@ -250,9 +258,7 @@ async def consume_magic_link_route(body: MagicLinkConsume, request: Request):
         # which addresses are privileged, and the link is spent either way.
         raise HTTPException(status_code=400, detail=_DEAD_LINK) from None
 
-    response = JSONResponse({"user": _session_user(user_to_dict(user))})
-    await _set_auth_cookie(response, user)
-    return response
+    return await _open_session(user)
 
 
 # ── Claiming a node ───────────────────────────────────────────────────────────
@@ -293,9 +299,7 @@ async def consume_claim_link(body: ClaimToken):
         # links cannot be used to learn which ones were ever real.
         raise HTTPException(status_code=400, detail="That link is no longer valid")
 
-    response = JSONResponse({"user": _session_user(user_to_dict(user)), "node_ref": node_ref})
-    await _set_auth_cookie(response, user)
-    return response
+    return await _open_session(user, node_ref=node_ref)
 
 
 @router.post("/claim/decline")
