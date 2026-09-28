@@ -325,8 +325,9 @@ jobs:
       # checks before a deploy depends on them.
       - run: npm run typecheck -w ${{ matrix.workspace }}
         if: matrix.part != 'tests'
-      # The E2E suites run only after a merge, so a Playwright that cannot
-      # launch the runner's Chrome is caught here, on the pull request.
+      # The E2E suites run only after a merge, and staging's only reads Chrome's
+      # version, so a Playwright that cannot launch the runner's Chrome is caught
+      # here: on the pull request, and on main ahead of staging.
       - run: node e2e/report-chrome.js
         if: matrix.workspace == 'e2e'
       - run: npm test -w ${{ matrix.workspace }} --if-present ${{ matrix.shard && format('-- --shard={0}', matrix.shard) || '' }}
@@ -412,6 +413,8 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
+      # A launch, not just the version: a Chrome that Playwright cannot start
+      # fails here rather than in the tests, where it would roll production back.
       - name: Report the runner's Chrome
         run: node e2e/report-chrome.js
       # Bounded at the step rather than relying on the job cap: a step timeout

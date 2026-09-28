@@ -333,9 +333,11 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
-      # The runner image sets this version, not the lockfile.
+      # The runner image sets this version, not the lockfile. Only read, not
+      # launched: the production job launches Chrome to keep one Playwright
+      # cannot start out of its rollback, and this job has no rollback.
       - name: Report the runner's Chrome
-        run: node e2e/report-chrome.js
+        run: google-chrome --version
       - name: Run E2E tests (staging)
         # Has to stay above what nodes.spec.ts's two retried beforeAll hooks can
         # reach, so a node that never propagates fails an assertion rather than
