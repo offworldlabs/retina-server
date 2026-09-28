@@ -33,7 +33,7 @@ from core.users import (
     user_to_dict,
 )
 from routes.sim_ingest import synthetic_fleet_enabled
-from services import blah2_poller, mail, node_retirement, polled_registration, publication
+from services import blah2_poller, mail, polled_registration, publication
 from services.node_claim_store import claim_addresses
 from services.node_claiming import (
     ClaimOutcome,
@@ -319,15 +319,7 @@ async def _remove_polled_radar(node_id: str, user_id: str) -> bool:
         async with session.begin():
             if not await remove_polled_radar(session, node_id, user_id=user_id):
                 return False
-    # After the commit, so the poller's rejoin finds the node retired and files
-    # nothing more under it.
-    try:
-        node_retirement.forget_node(node_id)
-    except Exception:
-        # Retired all the same: what forget_node left is in stale_node_ids()
-        # for a retire-stale pass, and it has logged what that is.
-        pass
-    blah2_poller.refresh()
+    polled_registration.let_go(node_id)
     return True
 
 

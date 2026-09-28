@@ -15,6 +15,7 @@ of the caller's choosing.
 """
 
 import dataclasses
+import logging
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -24,7 +25,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.constants import YAGI_MAX_RANGE_KM
 from core import secrets
-from core.nodes import NodeClaim, PolledRadar
+from core.nodes import Node, NodeClaim, PolledRadar
+from services import blah2_poller, node_pipeline, node_retirement, publication
 from services.blah2_probe import CONFIG_MAX_BYTES, CONFIG_PATH, Blah2Probe, Site, probe_blah2
 from services.node_claim_store import read_owner
 from services.node_config import ConfigInvalid
@@ -47,6 +49,8 @@ from services.polled_radars import (
     probed_config,
     set_polled_radar_address,
 )
+
+logger = logging.getLogger(__name__)
 
 ENABLED_ENV = "POLLED_RADAR_REGISTRATION_ENABLED"
 
@@ -320,3 +324,35 @@ async def change_address(session: AsyncSession, node_id: str, *, raw: str, finge
         raise _changed(probed) from None
     await session.refresh(radar)
     return radar
+
+
+async def hand_over(session: AsyncSession, node: Node) -> None:
+    """Once a registration commits: put the radar where a restart's priming would,
+    and wake the poller.
+
+    Primed at once so its owner's list and map show it before its first frame,
+    which a stalled or unreachable radar never sends.
+    """
+    # After the commit, so a reader in between cannot cache the state before it.
+    publication.invalidate()
+    try:
+        await node_pipeline.register_with_pipeline(session, node)
+    except Exception:
+        # Registered all the same: the poller hands it over on its first frame.
+        logger.exception("polled radar %s: could not hand it to the pipeline", node.node_id)
+    blah2_poller.refresh()
+
+
+def let_go(node_id: str) -> None:
+    """Once a removal commits: forget the radar in memory, and wake the poller.
+
+    After the commit, so the poller's rejoin finds the node retired and files
+    nothing more under it.
+    """
+    try:
+        node_retirement.forget_node(node_id)
+    except Exception:
+        # Retired all the same: what forget_node left is in stale_node_ids()
+        # for a retire-stale pass, and it has logged what that is.
+        pass
+    blah2_poller.refresh()
