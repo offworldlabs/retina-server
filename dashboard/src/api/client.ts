@@ -3,7 +3,7 @@ import { UnauthorizedError, request as sharedRequest, type RequestOptions } from
 import { isPublicRoute } from "../utils/publicRoutes";
 import { signInNext } from "../utils/signInNext";
 import { isAdminHost } from "../utils/surface";
-import type { PolledRadarListing, PolledRadarProbe, PolledRadarTrust, Publication } from "../types";
+import type { ConnectionCheck, PolledRadarListing, PolledRadarProbe, PolledRadarTrust, Publication } from "../types";
 
 /** Must match the route in App.tsx. */
 const LOGIN_PATH = "/login";
@@ -205,4 +205,24 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ trust_state: trustState, epoch }),
     }),
+  // Connecting a radar to an operator's address: the owner's two steps, with the address.
+  adminCheckConnection: (address: string, email: string): Promise<ConnectionCheck> =>
+    request("/api/admin/polled-radars/probe", {
+      method: "POST",
+      body: JSON.stringify({ address, email }),
+      timeoutMs: RADAR_PROBE_TIMEOUT_MS,
+    }),
+  adminConnectPolledRadar: (connection: {
+    address: string;
+    fingerprint: string;
+    publication: Publication;
+    email: string;
+  }): Promise<{ node_id: string; epoch: number; trust_state: PolledRadarTrust; owner: { email: string; created: boolean } }> =>
+    request("/api/admin/polled-radars", {
+      method: "POST",
+      body: JSON.stringify(connection),
+      timeoutMs: RADAR_PROBE_TIMEOUT_MS,
+    }),
+  adminWithdrawPolledRadar: (nodeId: string) =>
+    request(`/api/admin/polled-radars/${encodeURIComponent(nodeId)}`, { method: "DELETE" }),
 };
