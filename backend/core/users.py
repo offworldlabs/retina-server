@@ -17,7 +17,7 @@ from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin, schemas
 from fastapi_users.authentication import AuthenticationBackend, CookieTransport, JWTStrategy
 from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
 from fastapi_users.exceptions import UserAlreadyExists, UserNotExists
-from sqlalchemy import DateTime, Float, String, event, func
+from sqlalchemy import DateTime, Float, String, event, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -433,7 +433,12 @@ async def get_or_create_magic_link_user(email: str) -> User:
     superuser. Administrator identity is Cloudflare Access and only Cloudflare
     Access; an address that can receive mail is not a claim to the console. The
     account grants nothing by itself either way — node ownership comes from the
-    node claiming it by email (services/node_claiming.py).
+    node claiming it by email (services/node_claiming.py), or from an
+    administrator connecting a polled radar to the address.
+
+    An account an administrator made for its address (get_or_create_admin_account)
+    is found like any other, and marked verified here: the redeemed link is the
+    first proof of the address.
 
     Raises MagicLinkRefused for an account that is already a superuser. The
     invariant has to hold for a row that exists, not only for one created here,
@@ -442,7 +447,7 @@ async def get_or_create_magic_link_user(email: str) -> User:
     exactly why the guard is worth having: it is the thing that keeps being
     true if something later does.
     """
-    email = email.lower().strip()
+    email = normalise_email(email)
 
     def _guard(user: User) -> User:
         if user.is_superuser:
@@ -455,7 +460,10 @@ async def get_or_create_magic_link_user(email: str) -> User:
         user_manager = UserManager(user_db)
 
         try:
-            return _guard(await user_manager.get_by_email(email))
+            user = _guard(await user_manager.get_by_email(email))
+            if not user.is_verified:
+                user = await user_db.update(user, {"is_verified": True})
+            return user
         except UserNotExists:
             user_create = UserCreate(
                 email=email,
@@ -476,3 +484,59 @@ async def get_or_create_magic_link_user(email: str) -> User:
                 # and create. Through the same guard, since what that other
                 # request created is not this one's to assume.
                 return _guard(await user_manager.get_by_email(email))
+
+
+# How an account an administrator made for its address is marked, until and
+# after its first sign-in.
+ADMIN_MADE = "admin"
+
+
+def normalise_email(email: str) -> str:
+    """An address as accounts and links are keyed on it."""
+    return email.strip().lower()
+
+
+async def get_or_create_admin_account(email: str) -> tuple[User, bool]:
+    """The account at `email` for an administrator to connect a radar to, and
+    whether it was made now.
+
+    A made account is unverified: nobody has proved the address yet, so it
+    grants nothing until a sign-in link sent there is redeemed.
+    """
+    email = normalise_email(email)
+    async with async_session_maker() as session:
+        user_manager = UserManager(SQLAlchemyUserDatabase(session, User))
+        try:
+            return await user_manager.get_by_email(email), False
+        except UserNotExists:
+            user_create = UserCreate(
+                email=email,
+                # Never used, as for an account made at sign-in.
+                password=secrets.token_urlsafe(32),
+                name=email.split("@")[0],
+                avatar="",
+                provider=ADMIN_MADE,
+                is_verified=False,
+                is_superuser=False,
+            )
+            try:
+                return await user_manager.create(user_create), True
+            except UserAlreadyExists:
+                return await user_manager.get_by_email(email), False
+
+
+async def accounts_by_id(session: AsyncSession, user_ids: list[str]) -> dict[str, User]:
+    """The accounts behind these owner ids, keyed as node_claims holds them.
+
+    An id that names no account is left out.
+    """
+    ids = set()
+    for user_id in user_ids:
+        try:
+            ids.add(uuid.UUID(user_id))
+        except ValueError:
+            continue
+    if not ids:
+        return {}
+    users = await session.scalars(select(User).where(User.id.in_(ids)))
+    return {str(user.id): user for user in users}

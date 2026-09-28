@@ -17,7 +17,8 @@ from typing import Literal
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.nodes import Node, NodeEvent, PolledRadar
+from core.nodes import Node, NodeClaim, NodeEvent, PolledRadar
+from core.users import User, accounts_by_id
 from services import probation
 
 TrustState = Literal["probation", "graduated"]
@@ -97,6 +98,13 @@ async def listing(session: AsyncSession) -> list[dict]:
         events[event.node_id].append(
             {"kind": event.kind, "epoch": event.epoch, "actor": event.actor, "at": _iso(event.occurred_at)}
         )
+    claims = {
+        claim.node_id: claim
+        for claim in await session.scalars(
+            select(NodeClaim).where(NodeClaim.node_id.in_([radar.node_id for radar, _ in radars]))
+        )
+    }
+    accounts = await accounts_by_id(session, [claim.user_id for claim in claims.values() if claim.user_id])
     return [
         {
             "node_id": radar.node_id,
@@ -107,6 +115,24 @@ async def listing(session: AsyncSession) -> list[dict]:
             "epoch": radar.epoch,
             "trust_state": radar.trust_state,
             "events": events[radar.node_id],
+            "owner": _owner(claims.get(radar.node_id), accounts),
         }
         for radar, node_ref in radars
     ]
+
+
+def _owner(claim: NodeClaim | None, accounts: dict[str, User]) -> dict | None:
+    """Whose radar it is, and whether they have signed in.
+
+    An account an administrator made reads not signed in until its first link
+    is redeemed. An owner with no account row is an administrator's own Access
+    identity, signed in by definition.
+    """
+    if claim is None:
+        return None
+    account = accounts.get(claim.user_id)
+    # The account's address, since an administrator's reassignment leaves the claim none.
+    return {
+        "email": account.email if account is not None else claim.email,
+        "signed_in": account is None or account.is_verified,
+    }

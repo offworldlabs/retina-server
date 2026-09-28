@@ -1,5 +1,6 @@
 """An owner registering a stock blah2 radar from a signed-in session, or moving
-one to a new address.
+one to a new address; an administrator connecting one to an email address, or
+taking that back; and what follows once any of them commits.
 
 Whether a registration may happen, and what it records: the probe of what the
 owner typed, the check that the radar still declares what the owner confirmed,
@@ -25,7 +26,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.constants import YAGI_MAX_RANGE_KM
 from core import secrets
-from core.nodes import Node, NodeClaim, PolledRadar
+from core.nodes import Node, NodeClaim, NodeEvent, PolledRadar
+from core.users import User, accounts_by_id, get_or_create_admin_account, normalise_email
 from services import blah2_poller, node_pipeline, node_retirement, publication
 from services.blah2_probe import CONFIG_MAX_BYTES, CONFIG_PATH, Blah2Probe, Site, probe_blah2
 from services.node_claim_store import read_owner
@@ -47,6 +49,7 @@ from services.polled_radars import (
     RadarGeometry,
     create_polled_radar,
     probed_config,
+    retire_polled_radar,
     set_polled_radar_address,
 )
 
@@ -246,14 +249,37 @@ async def register(
             403, "radar_limit", f"An account can register at most {MAX_RADARS_PER_ACCOUNT} radars."
         )
     probed = await probe(session, raw, user["id"])
-    radar, endpoint, config = probed.radar, probed.endpoint, probed.config
-    if radar.config_fingerprint != fingerprint:
+    if probed.radar.config_fingerprint != fingerprint:
         raise _changed(probed)
+    return await _write(
+        session,
+        probed,
+        owner_id=user["id"],
+        owner_email=user["email"],
+        publication=publication,
+        claim_verified=True,
+        actor=user["id"],
+    )
+
+
+async def _write(
+    session: AsyncSession,
+    probed: Probed,
+    *,
+    owner_id: str,
+    owner_email: str,
+    publication: str,
+    claim_verified: bool,
+    actor: str,
+) -> PolledRegistration:
+    """Write the radar's rows as `probed` found it, under its owner, and record
+    who registered it. The caller commits."""
+    radar, endpoint, config = probed.radar, probed.endpoint, probed.config
     try:
-        return await create_polled_radar(
+        registration = await create_polled_radar(
             session,
-            owner_user_id=user["id"],
-            owner_email=user["email"],
+            owner_user_id=owner_id,
+            owner_email=owner_email,
             endpoint_raw=endpoint.raw,
             scheme=endpoint.scheme,
             host=endpoint.host,
@@ -280,9 +306,13 @@ async def register(
             publication=publication,
             licence_version=None,
             unprotected=not probed.protected,
+            claim_verified=claim_verified,
         )
     except EndpointAlreadyRegistered:
         raise _registered() from None
+    session.add(NodeEvent(node_id=registration.node.node_id, kind="registered", epoch=1, actor=actor))
+    await session.flush()
+    return registration
 
 
 async def _owned(session: AsyncSession, node_id: str, user_id: str) -> PolledRadar:
@@ -324,6 +354,96 @@ async def change_address(session: AsyncSession, node_id: str, *, raw: str, finge
         raise _changed(probed) from None
     await session.refresh(radar)
     return radar
+
+
+# ── An administrator connecting a radar ──────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Connection:
+    registration: PolledRegistration
+    # The address the account is keyed on, and whether the account was made for it.
+    email: str
+    created: bool
+
+
+def _polling() -> None:
+    if not blah2_poller.enabled():
+        raise RegistrationRefused(
+            409, "polling_off", "This server does not poll radars, so one connected here would never be heard."
+        )
+
+
+def _actor(admin: dict) -> str:
+    return f"admin:{admin['email']}"
+
+
+async def check_connection(session: AsyncSession, raw: str, email: str, admin: dict) -> tuple[Probed, dict]:
+    """What the radar at `raw` declares, and whether `email` has an account yet,
+    for the administrator to confirm by eye. Saves nothing.
+
+    The probe draws on the administrator's own allowance: the account they name
+    has not asked for anything.
+    """
+    _polling()
+    email = normalise_email(email)
+    # Matched as sign-in matches it, whatever case an older account was stored in.
+    account = await session.scalar(select(User.id).where(func.lower(User.email) == email))
+    probed = await probe(session, raw, admin["id"])
+    return probed, {"email": email, "exists": account is not None}
+
+
+async def connect(
+    session: AsyncSession, *, raw: str, fingerprint: str, publication: str, email: str, admin: dict
+) -> Connection:
+    """Probe again and write the radar's rows under the account at `email`,
+    made for it if there is none, or raise RegistrationRefused. The caller commits.
+
+    Refused as register refuses, before any account is made. An account holds
+    as many radars as administrators connect to it: the cap on registrations
+    bounds what an owner can make our server poll, not what staff can.
+    """
+    _polling()
+    probed = await probe(session, raw, admin["id"])
+    if probed.radar.config_fingerprint != fingerprint:
+        raise _changed(probed)
+    # Its own session, committed before this one writes. An address taken in the
+    # moment between leaves the account behind holding nothing, as an abandoned
+    # sign-in would.
+    account, created = await get_or_create_admin_account(email)
+    registration = await _write(
+        session,
+        probed,
+        owner_id=str(account.id),
+        owner_email=account.email,
+        publication=publication,
+        claim_verified=False,
+        actor=_actor(admin),
+    )
+    return Connection(registration=registration, email=account.email, created=created)
+
+
+async def withdraw(session: AsyncSession, node_id: str, *, admin: dict) -> None:
+    """Take back a radar connected to an address nobody has signed in with yet,
+    and the account made for it if it now holds nothing, or raise
+    RegistrationRefused. The caller commits.
+
+    Once the owner has signed in the radar is theirs, to remove from their own
+    page.
+    """
+    if await session.get(PolledRadar, node_id) is None:
+        raise RegistrationRefused(404, "not_found", "Radar not found.")
+    owner_id = await read_owner(session, node_id)
+    account = (await accounts_by_id(session, [owner_id])).get(owner_id) if owner_id else None
+    # An owner with no account row is an administrator's own Access identity.
+    if account is None or account.is_verified:
+        raise RegistrationRefused(409, "signed_in", "Its owner has signed in, so the radar is theirs to remove.")
+    await retire_polled_radar(session, node_id, actor=_actor(admin))
+    # Unverified, so made for a connection: nobody has used it.
+    holds = await session.scalar(select(func.count()).select_from(NodeClaim).where(NodeClaim.user_id == owner_id))
+    if holds == 0:
+        await session.delete(account)
+        await session.flush()
 
 
 async def hand_over(session: AsyncSession, node: Node) -> None:

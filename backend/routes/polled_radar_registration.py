@@ -32,7 +32,7 @@ class PolledRadarRegisterRequest(PolledRadarAddressRequest):
     publication: Literal["public", "private"]
 
 
-def _refused(exc: RegistrationRefused) -> JSONResponse:
+def refused_response(exc: RegistrationRefused) -> JSONResponse:
     body: dict = {"detail": exc.message, "code": exc.code}
     if exc.probe is not None:
         body["probe"] = exc.probe.public()
@@ -59,7 +59,7 @@ async def probe_polled_radar(
     try:
         probed = await polled_registration.probe(session, body.address, user["id"])
     except RegistrationRefused as exc:
-        return _refused(exc)
+        return refused_response(exc)
     return probed.public()
 
 
@@ -74,7 +74,7 @@ async def register_polled_radar(
             session, raw=body.address, fingerprint=body.fingerprint, publication=body.publication, user=user
         )
     except RegistrationRefused as exc:
-        return _refused(exc)
+        return refused_response(exc)
     await session.commit()
     await polled_registration.hand_over(session, registration.node)
     return {"node_id": registration.node.node_id, "epoch": registration.radar.epoch, "trust_state": "probation"}
@@ -89,7 +89,7 @@ async def probe_polled_radar_address(
     try:
         probed = await polled_registration.probe_new_address(session, node_id, body.address, user["id"])
     except RegistrationRefused as exc:
-        return _refused(exc)
+        return refused_response(exc)
     return probed.public()
 
 
@@ -104,7 +104,7 @@ async def move_polled_radar(
             session, node_id, raw=body.address, fingerprint=body.fingerprint, user=user
         )
     except RegistrationRefused as exc:
-        return _refused(exc)
+        return refused_response(exc)
     await session.commit()
     # After the commit, as above: a radar moved to another host is back on probation.
     probation.invalidate()
