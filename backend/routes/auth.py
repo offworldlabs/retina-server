@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr
 
 from core import state
-from core.auth import consume_magic_link, create_magic_link, get_user_nodes
+from core.auth import INTENT_SIGNIN, consume_magic_link, create_magic_link, get_user_nodes, peek_magic_link
 from core.node_ids import POLLED_BLAH2, system_of
 from core.users import (
     ACCESS_LOGOUT_PATH,
@@ -138,6 +138,10 @@ _SIGN_IN_PATH = "/auth/link/"
 #: plain path characters only, and never `//`, which a browser reads as a host.
 _NEXT_PATH = re.compile(r"/(?!/)[A-Za-z0-9/_.-]{0,200}")
 
+#: The one answer for a sign-in link that is unknown, expired or spent, from the
+#: preview and the redemption alike. The console shows it verbatim.
+_DEAD_LINK = "That sign-in link is no longer valid"
+
 
 def _session_user(user_dict: dict) -> dict:
     """The user as the console holds it, from /me or straight from a sign-in.
@@ -210,6 +214,21 @@ async def request_magic_link(body: MagicLinkRequest, request: Request):
     return {"status": "accepted"}
 
 
+@router.get("/magic-link/{token}")
+async def preview_magic_link(token: str):
+    """Which address a sign-in link is for, without spending it.
+
+    The landing page names the address and waits for a press before it
+    redeems, so a scanner that renders the page and runs its script leaves the
+    link alive. Reading it needs the same secret redeeming does, so it tells
+    the holder nothing they could not learn by signing in.
+    """
+    link = await peek_magic_link(token, intent=INTENT_SIGNIN)
+    if link is None:
+        raise HTTPException(status_code=404, detail=_DEAD_LINK)
+    return {"email": link.email}
+
+
 @router.post("/magic-link/consume")
 async def consume_magic_link_route(body: MagicLinkConsume, request: Request):
     """Redeem a link and open a session.
@@ -222,14 +241,14 @@ async def consume_magic_link_route(body: MagicLinkConsume, request: Request):
     if email is None:
         # One answer for unknown, expired and already-redeemed. Telling them
         # apart says which guesses were once real.
-        raise HTTPException(status_code=400, detail="That sign-in link is no longer valid")
+        raise HTTPException(status_code=400, detail=_DEAD_LINK)
 
     try:
         user = await get_or_create_magic_link_user(email)
     except MagicLinkRefused:
         # Same answer as a token that never existed. A distinct one would say
         # which addresses are privileged, and the link is spent either way.
-        raise HTTPException(status_code=400, detail="That sign-in link is no longer valid") from None
+        raise HTTPException(status_code=400, detail=_DEAD_LINK) from None
 
     response = JSONResponse({"user": _session_user(user_to_dict(user))})
     await _set_auth_cookie(response, user)

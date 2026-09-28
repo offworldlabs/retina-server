@@ -6,6 +6,7 @@ so it cannot be used to find out which addresses do. tests/test_magic_links.py
 covers the token store underneath.
 """
 
+import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -15,6 +16,7 @@ from fastapi.testclient import TestClient
 import routes.auth as _auth
 from core.auth import create_magic_link
 from main import app
+from services.claim_links import INTENT_CLAIM
 
 
 @pytest.fixture()
@@ -333,6 +335,50 @@ class TestSourceDerivation:
             assert not self._mailed(caller, sent)
         with _peer(router_app, other) as caller:
             assert self._mailed(caller, sent)
+
+
+# ── Previewing a link ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+class TestPreviewMagicLink:
+    """The page names the address and waits for a press before it spends the
+    token, so a scanner that renders the page leaves the link alive."""
+
+    async def test_it_names_the_address_without_spending_the_link(self, client):
+        token = await create_magic_link("Owner@Example.com")
+        first = client.get(f"/api/auth/magic-link/{token}")
+        second = client.get(f"/api/auth/magic-link/{token}")
+        assert first.status_code == second.status_code == 200
+        assert first.json() == {"email": "owner@example.com"}
+        assert client.post("/api/auth/magic-link/consume", json={"token": token}).status_code == 200
+
+    async def test_it_opens_no_session(self, client):
+        token = await create_magic_link("owner@example.com")
+        assert "auth_token" not in client.get(f"/api/auth/magic-link/{token}").cookies
+
+    async def test_a_spent_link_reads_as_one_never_issued(self, client):
+        token = await create_magic_link("owner@example.com")
+        client.post("/api/auth/magic-link/consume", json={"token": token})
+        spent = client.get(f"/api/auth/magic-link/{token}")
+        never = client.get("/api/auth/magic-link/never-issued")
+        assert spent.status_code == never.status_code == 404
+        assert spent.json() == never.json()
+
+    async def test_an_expired_link_is_refused(self, client):
+        token = await create_magic_link("owner@example.com", now=time.time() - 3600)
+        assert client.get(f"/api/auth/magic-link/{token}").status_code == 404
+
+    async def test_a_claim_link_reads_as_one_never_issued(self, client):
+        """Sign-in and claim tokens share one table. A claim link's preview is
+        the claim route's to give, and naming its address here would let a
+        forwarded claim link pass for a sign-in."""
+        token = await create_magic_link("owner@example.com", intent=INTENT_CLAIM, node_id="ret-0001")
+        assert client.get(f"/api/auth/magic-link/{token}").status_code == 404
+
+    @pytest.mark.parametrize("token", ["never-issued", "   ", "a" * 200, "%00"])
+    async def test_a_bad_token_is_refused_the_same_way(self, client, token):
+        assert client.get(f"/api/auth/magic-link/{token}").status_code == 404
 
 
 # ── Redeeming a link ──────────────────────────────────────────────────────────
