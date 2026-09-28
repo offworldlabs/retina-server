@@ -448,6 +448,8 @@ async def my_nodes(request: Request):
                 "name": public_name(cfg.get("name"), ref, node_ids),
                 "status": status,
                 "last_heartbeat": info.get("last_heartbeat"),
+                # Here as well as on /api/radar/nodes, which leaves private nodes out.
+                "config_hash": info.get("config_hash"),
                 "is_synthetic": info.get("is_synthetic", False),
                 "rx_lat": cfg.get("rx_lat"),
                 "rx_lon": cfg.get("rx_lon"),

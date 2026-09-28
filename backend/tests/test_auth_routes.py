@@ -232,6 +232,22 @@ class TestMyNodes:
         finally:
             asyncio.run(set_node_owner(node_id, None))
 
+    def test_a_private_node_carries_its_config_hash(self, client, monkeypatch):
+        """The public listing is the other place it is read, and it leaves private nodes out."""
+        from core import state
+        from core.auth import set_node_owner
+        from core.users import ANONYMOUS_USER
+
+        node_id = "config-hash-node"
+        own(node_id, ANONYMOUS_USER["id"])
+        asyncio.run(register_node_row(node_id, "private"))
+        monkeypatch.setitem(state.connected_nodes, node_id, {"status": "active", "config_hash": "0123456789abcdef"})
+        try:
+            node = next(n for n in client.get("/api/auth/me/nodes").json() if n["node_id"] == node_id)
+            assert node["config_hash"] == "0123456789abcdef"
+        finally:
+            asyncio.run(set_node_owner(node_id, None))
+
     def test_a_node_that_is_not_a_polled_radar_has_none_in_its_row(self, client):
         from core.auth import set_node_owner
         from core.users import ANONYMOUS_USER
