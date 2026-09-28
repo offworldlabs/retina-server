@@ -7,15 +7,26 @@ import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { DataTable } from "../../components/DataTable";
 import { StatCard } from "../../components/StatCard";
 import { usePolling } from "../../hooks/usePolling";
-import { formatAvailability, formatRelativeTime } from "../../utils/format";
+import { formatAvailability, formatMHz, formatRelativeTime } from "../../utils/format";
 import { useChartTheme } from "../../utils/chartTheme";
 import { PositionStatusBadge, POSITION_STATUS_EXPLANATION } from "../../components/PositionStatusBadge";
 import { LocationPrivacyBadge } from "../../components/LocationPrivacy";
 import { StatusBadge } from "../../components/StatusBadge";
+import { useAuth } from "../../context/AuthContext";
 import { detectionCount, isOnline, ownedNodePage } from "../../utils/nodes";
 import type { OwnedNode } from "../../types";
 
+/** A node's name, linked to its page where it has one. Its row or card is
+ *  clickable too, but only the link is reachable from the keyboard. */
+function NodeName({ node, page }: { node: OwnedNode; page: string | null }) {
+  const name = node.name || node.node_ref || "—";
+  if (!page) return <>{name}</>;
+  // Stopped here, or the row or card would navigate a second time.
+  return <Link to={page} onClick={(e) => e.stopPropagation()}>{name}</Link>;
+}
+
 export default function OverviewPage() {
+  const { polledRadarRegistration } = useAuth();
   const chart = useChartTheme();
   const navigate = useNavigate();
   const polled = usePolling(async () => {
@@ -50,8 +61,16 @@ export default function OverviewPage() {
 
   const header = (
     <div className="page-header">
-      <h1>My Nodes Overview</h1>
-      <p>Monitor your passive radar nodes in real time</p>
+      <h1>My Nodes</h1>
+      <p>
+        To connect a node, enter your email address in its setup and we will send you a link. Click it
+        and the node joins your account.
+      </p>
+      {polledRadarRegistration && (
+        <p>
+          Running stock 30hours/blah2? <Link to="/radars/new">Add a stock blah2 radar</Link> by its address.
+        </p>
+      )}
     </div>
   );
   if (nothingLoaded(polled)) {
@@ -94,9 +113,7 @@ export default function OverviewPage() {
                   style={page ? { cursor: "pointer" } : undefined}
                   onClick={page ? () => navigate(page) : undefined}
                 >
-                  <td style={{ color: page ? "var(--accent)" : undefined }}>
-                    {node.name || node.node_ref || "—"}
-                  </td>
+                  <td><NodeName node={node} page={page} /></td>
                   <td><PositionStatusBadge status={node.position_status} /></td>
                 </tr>
               );
@@ -132,7 +149,7 @@ export default function OverviewPage() {
 
       <div className="card">
         <div className="card-header">
-          <h3>My Nodes</h3>
+          <h3>Nodes</h3>
         </div>
         <div className="node-grid" style={{ padding: 16 }}>
           {nodes.map((node) => {
@@ -147,9 +164,24 @@ export default function OverviewPage() {
                 <div className="node-name">
                   <StatusBadge status={node.status} />
                   <LocationPrivacyBadge isPrivate={node.location_private} />
-                  {node.name || node.node_ref || "—"}
+                  <NodeName node={node} page={page} />
                 </div>
                 <div className="node-meta">
+                  {/* The handle the map and leaderboard know it by, where its name is its own. */}
+                  {node.node_ref && node.name && node.name !== node.node_ref && (
+                    <>
+                      <span className="meta-label">Ref</span>
+                      <span className="mono">{node.node_ref}</span>
+                    </>
+                  )}
+                  <span className="meta-label">Frequency</span>
+                  <span>{formatMHz(node.frequency)}</span>
+                  <span className="meta-label">Location</span>
+                  <span>
+                    {node.rx_lat != null && node.rx_lon != null
+                      ? `${node.rx_lat.toFixed(3)}, ${node.rx_lon.toFixed(3)}`
+                      : "—"}
+                  </span>
                   <span className="meta-label">Detections</span>
                   <span>{detectionCount(node._analytics).toLocaleString()}</span>
                   <span className="meta-label">Tracks</span>
@@ -168,7 +200,7 @@ export default function OverviewPage() {
           })}
           {nodes.length === 0 && (
             <div className="empty-state">
-              No nodes yet. <Link to="/onboarding">Connect your node</Link> to see it here.
+              No nodes yet. A node appears here once you click the link we mail you when you set it up.
             </div>
           )}
         </div>

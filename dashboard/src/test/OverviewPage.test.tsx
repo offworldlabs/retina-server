@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useNavigate, useParams } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
@@ -14,6 +14,9 @@ vi.mock("recharts", async (importOriginal) => ({
   ...(await importOriginal<typeof import("recharts")>()),
   ResponsiveContainer: () => null,
 }));
+
+const state = vi.hoisted(() => ({ auth: { polledRadarRegistration: false } }));
+vi.mock("../context/AuthContext", () => ({ useAuth: () => state.auth }));
 
 // A private node is on no public listing, so the owner's own copy is the only
 // one the page has, and it carries the node_id the page must not show.
@@ -66,8 +69,16 @@ function renderWith(
 }
 
 function Landed({ kind }: { kind: string }) {
-  return <div>{`${kind} ${useParams().ref}`}</div>;
+  const navigate = useNavigate();
+  return (
+    <div>
+      {`${kind} ${useParams().ref}`}
+      <button type="button" onClick={() => navigate(-1)}>Back</button>
+    </div>
+  );
 }
+
+const labels = (card: HTMLElement) => [...card.querySelectorAll(".meta-label")].map((el) => el.textContent);
 
 // By the tile's label, since the cards below reuse some of the same words.
 const stat = (label: string) =>
@@ -79,7 +90,10 @@ async function ownedCard(): Promise<HTMLElement> {
 }
 
 describe("OverviewPage", () => {
-  beforeEach(() => vi.resetAllMocks());
+  beforeEach(() => {
+    vi.resetAllMocks();
+    state.auth = { polledRadarRegistration: false };
+  });
 
   it("names an owned node by its node_ref", async () => {
     renderWith([OWNED]);
@@ -158,8 +172,79 @@ describe("OverviewPage", () => {
     expect(await screen.findByText("Detections by Node")).toBeInTheDocument();
   });
 
-  it("points an owner of nothing at how to connect a node", async () => {
+  it("gives each node's frequency and location on its card", async () => {
+    renderWith([{ ...OWNED, frequency: 195_000_000, rx_lat: 51.5, rx_lon: -0.12 }]);
+    const card = await ownedCard();
+    expect(card).toHaveTextContent("Frequency195.000 MHz");
+    expect(card).toHaveTextContent("Location51.500, -0.120");
+  });
+
+  it("gives a named node's ref, the handle the map knows it by", async () => {
+    renderWith([{ ...OWNED, name: "Rooftop" }]);
+    const card = (await screen.findByText("nde0123456789")).closest<HTMLElement>(".node-card")!;
+    expect(card).toHaveTextContent("Rooftop");
+    expect(labels(card)).toContain("Ref");
+    expect(card).toHaveTextContent("Refnde0123456789");
+  });
+
+  it.each([
+    ["named by it", { name: OWNED.node_ref }],
+    ["with no name at all", { name: null }],
+  ])("gives no ref for a node %s, which its card is already titled with", async (_, fields) => {
+    renderWith([{ ...OWNED, ...fields }]);
+    expect(labels(await ownedCard())).not.toContain("Ref");
+  });
+
+  // The rows and cards are clickable as well, but a keyboard reaches only links.
+  it("links each node's name to its page, in its card and its Needs Attention row", async () => {
+    renderWith([OWNED]);
+    const links = await screen.findAllByRole("link", { name: "nde0123456789" });
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(["/nodes/nde0123456789", "/nodes/nde0123456789"]);
+  });
+
+  it("links a polled radar's name to the page that manages it", async () => {
+    renderWith([{ ...OWNED, polled: { liveness: "streaming" } }]);
+    const links = await screen.findAllByRole("link", { name: "nde0123456789" });
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(["/radars/nde0123456789", "/radars/nde0123456789"]);
+  });
+
+  // Navigating twice would leave Back on the node's page.
+  it.each([
+    ["Needs Attention row", 0],
+    ["card", 1],
+  ])("follows a name's link once, not again for the %s around it", async (_, index) => {
+    renderWith([OWNED]);
+    const links = await screen.findAllByRole("link", { name: "nde0123456789" });
+    fireEvent.click(links[index]);
+    await screen.findByText("detail nde0123456789");
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByRole("heading", { name: "My Nodes" })).toBeInTheDocument();
+  });
+
+  it("marks a private node on its card", async () => {
+    renderWith([OWNED]);
+    expect((await ownedCard()).querySelector(".node-name")).toHaveTextContent("Private");
+  });
+
+  it("tells an owner how a node joins their account", async () => {
+    renderWith([OWNED]);
+    expect(await screen.findByText(/enter your email address in its setup/)).toBeInTheDocument();
+  });
+
+  it("tells an owner of nothing where their nodes will appear", async () => {
     renderWith([]);
-    expect(await screen.findByRole("link", { name: "Connect your node" })).toHaveAttribute("href", "/onboarding");
+    expect(await screen.findByText(/click the link we mail you/)).toBeInTheDocument();
+  });
+
+  it("offers to add a stock blah2 radar where registration is open", async () => {
+    state.auth = { polledRadarRegistration: true };
+    renderWith([]);
+    expect(await screen.findByRole("link", { name: "Add a stock blah2 radar" })).toHaveAttribute("href", "/radars/new");
+  });
+
+  it("offers nothing of the kind where it is not", async () => {
+    renderWith([]);
+    await screen.findByText(/click the link we mail you/);
+    expect(screen.queryByRole("link", { name: "Add a stock blah2 radar" })).toBeNull();
   });
 });
