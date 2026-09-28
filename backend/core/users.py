@@ -17,12 +17,13 @@ from fastapi_users import BaseUserManager, FastAPIUsers, UUIDIDMixin, schemas
 from fastapi_users.authentication import AuthenticationBackend, CookieTransport, JWTStrategy
 from fastapi_users.db import SQLAlchemyBaseUserTableUUID, SQLAlchemyUserDatabase
 from fastapi_users.exceptions import UserAlreadyExists, UserNotExists
-from sqlalchemy import DateTime, Float, String, event, func, select, update
+from sqlalchemy import Float, String, event, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from core.access_identity import AccessIdentity
 from core.database import DATABASE_URL
+from core.timestamps import UTCDateTime
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -107,11 +108,11 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
     avatar: Mapped[str] = mapped_column(String(512), default="", server_default="")
     provider: Mapped[str] = mapped_column(String(50), default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
+        UTCDateTime(),
         server_default=func.now(),
         nullable=False,
     )
-    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class MagicLink(Base):
@@ -279,11 +280,6 @@ ANONYMOUS_USER: dict = {
 }
 
 
-def _utc(when: datetime) -> datetime:
-    """SQLite hands back a naive datetime, and everything stored here is UTC."""
-    return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
-
-
 def user_to_dict(user: User) -> dict:
     return {
         "id": str(user.id),
@@ -293,8 +289,8 @@ def user_to_dict(user: User) -> dict:
         "provider": user.provider,
         "role": "admin" if user.is_superuser else "user",
         "is_superuser": user.is_superuser,
-        "created_at": _utc(user.created_at).timestamp() if user.created_at else 0,
-        "last_seen_at": _utc(user.last_seen_at).timestamp() if user.last_seen_at else None,
+        "created_at": user.created_at.timestamp() if user.created_at else 0,
+        "last_seen_at": user.last_seen_at.timestamp() if user.last_seen_at else None,
     }
 
 
@@ -316,7 +312,7 @@ async def record_visit(user: User) -> None:
     for a bookkeeping column.
     """
     now = datetime.now(UTC)
-    if user.last_seen_at is not None and now - _utc(user.last_seen_at) < _VISIT_RESOLUTION:
+    if user.last_seen_at is not None and now - user.last_seen_at < _VISIT_RESOLUTION:
         return
     try:
         async with async_session_maker() as session:
