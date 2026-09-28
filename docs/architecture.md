@@ -134,13 +134,14 @@ gitignored `backend/.env`; unset = the safe default):
 | `ADSB_SEED_MODE` | `off/shadow/active` | `off` | `active` | ADS-B-seeded detection assignment: verified lit tracklets leave dark pairing, re-emitted as `mn-adsb-*` seeded solves |
 | `KNOWN_LANE_MODE` | `off/shadow/binding` | `binding` | `shadow` | identity-first known-target claiming: per-frame detections bound to live ADS-B hexes (`state.known_claims`) leave the dark pool before the tracker/association ever see them |
 | `ADSB_FALLBACK_ENABLED` | unset/`1` | unset | `1` | adsb-service polled for claim candidates where real nodes send no ADS-B of their own (`services/tasks/adsb_fallback.py`) |
+| `NODE_TRACKS_MODE` | `off/live` | `off` | `live` | a node that sends its own tracks (node API 1.6.0) is tracked on them in place of the server's tracker; set in `docker-compose.yml`, so every environment runs `live` |
 | `TRACK_SMOOTHER` | `kf/ewma/off` | `kf` | `kf` | display smoothing for multinode tracks (`ewma` is the rollback) |
 | `REPUTATION_PENALTY_SCALE` | float ≥ 0 | `0` | `0` | multiplier on every node-reputation penalty; `0` means no node can be blocked, `1` is the historical behaviour (temporary — see [`runbook.md`](runbook.md)) |
 
 `shadow` computes and counts a stage's verdicts (exposed in
 `/api/test/solver-stats`) without letting them bind — the standard soak step
-before flipping `active`. Production sets none of the other mode flags
-(all `off`). `KNOWN_LANE_MODE` differs from its siblings on both axes by
+before flipping `active`. Production sets none of the `off/shadow/active`
+flags (all `off`). `KNOWN_LANE_MODE` differs from its siblings on both axes by
 design: its acting value is named `binding` (a claim *binds* a detection to a
 transponder identity), and its code default is that acting value, because
 three consumers depend on the registry it fills (the known-lane solver, the
