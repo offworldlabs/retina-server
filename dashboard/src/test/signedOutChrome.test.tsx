@@ -91,7 +91,7 @@ describe("the sidebar shown to a caller with no session", () => {
   });
 
   // To the sign-in card rather than the page, which would only bounce there.
-  it.each(["Overview", "My Nodes"])("greys out %s, which needs a session, and leads to sign-in", (label) => {
+  it.each(["My Nodes", "Detections"])("greys out %s, which needs a session, and leads to sign-in", (label) => {
     renderSidebar();
     const entry = screen.getByRole("link", { name: label });
     expect(entry).toHaveClass("locked");
@@ -137,7 +137,7 @@ describe("the sidebar shown to a caller with no session", () => {
 
     state.auth = { ...state.auth, user: null };
     renderSidebar();
-    expect(needsSession).toContain("Overview");
+    expect(needsSession).toContain("My Nodes");
     expect(lockedLabels()).toEqual(needsSession);
   });
 
@@ -145,7 +145,7 @@ describe("the sidebar shown to a caller with no session", () => {
     state.auth = { ...state.auth, user: signedIn };
     renderSidebar();
     expect(lockedLabels()).toEqual([]);
-    expect(screen.getByRole("link", { name: "My Nodes" })).toHaveAttribute("href", "/onboarding");
+    expect(screen.getByRole("link", { name: "My Nodes" })).toHaveAttribute("href", "/overview");
   });
 });
 
@@ -273,7 +273,7 @@ describe("signing in from an open page and going through with it", () => {
 
   it("asks for a link to the greyed-out page that was clicked", async () => {
     const body = await requestFrom(<Sidebar isAdmin={false} collapsed={false} onToggle={() => {}} />, "My Nodes");
-    expect(body).toEqual({ email: "ada@example.com", next: "/onboarding" });
+    expect(body).toEqual({ email: "ada@example.com", next: "/overview" });
   });
 
   it("asks for a link back to the page the header's Sign in was on", async () => {
