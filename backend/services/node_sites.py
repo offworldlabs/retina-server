@@ -65,10 +65,19 @@ Their separation was never the interesting fact; publishing it independently
 was what leaked the site.
 
 **What is still only audited.**  Two nodes closer than twice the radius that
-did not merge — because each is nearer another anchor, or because they sit
-just outside it — are reported by ``colocation_report()`` and logged, so the
-residual case surfaces as a warning an operator can fix by aligning the two
-configurations or widening NODE_FUZZ_SITE_KM.
+did not merge are reported by ``colocation_report()`` and logged, so the
+residual case surfaces as a warning an operator can fix.  Each report says
+which of three reasons kept the pair apart, because only one of them is about
+distance:
+
+* ``beyond_radius`` — they sit outside the radius.  Aligning the two
+  configurations or widening NODE_FUZZ_SITE_KM groups them.
+* ``both_exact_sites`` — each is already an exact-equality site, and the first
+  rule's anchors are frozen, so two of them are never merged however close
+  they are.  Widening the radius changes nothing; aligning the configurations
+  does.
+* ``joined_nearer_site`` — one of them was joined to a different anchor,
+  nearer to it, and joins are made to anchors, not to members.
 """
 
 from __future__ import annotations
@@ -105,11 +114,13 @@ _ERROR_RETRY_S = 5.0
 # lands on the identical coordinate.
 _SITE_DECIMALS = 6
 
-# The runtime files that define nodes this deployment did not register: a
-# legacy geometry list and the synthetic fleet's config. Nothing writes
-# blah2_nodes.json any more, but a deployment seeded before the poller was
-# removed still has one, and its nodes still share a roof.
-_NODE_FILES = ("blah2_nodes.json", "nodes_config.json")
+# The runtime files that define nodes this deployment did not register: the
+# synthetic fleet's config.  The blah2 bridge's geometry list used to be read
+# here too, but the bridge is gone (its two receivers now register through the
+# v1 API under their own ids), so a leftover copy on disk only described nodes
+# that no longer exist, and its stale positions sat 16 m from their successors
+# as a permanent near miss.
+_NODE_FILES = ("nodes_config.json",)
 
 _lock = threading.Lock()
 # node_id -> (lat, lon) as configured, last known.  Positions are overwritten,
@@ -169,7 +180,7 @@ def _positions_from_live() -> dict[str, tuple[float, float]]:
 def _positions_from_files() -> dict[str, tuple[float, float]]:
     """Nodes defined by a runtime file rather than by registration.
 
-    These nodes and the synthetic fleet's never reach the database, so a site
+    The synthetic fleet's nodes never reach the database, so a site
     shared between two of them — which is the case this module exists for — is
     invisible without reading the files.
     """
@@ -394,6 +405,28 @@ def shared_sites() -> dict[str, list[str]]:
     return {anchor: sorted(ids) for anchor, ids in grouped.items() if len(ids) > 1}
 
 
+def _near_miss_reason(
+    first: str,
+    second: str,
+    gap_km: float,
+    radius_km: float,
+    positions: dict[str, tuple[float, float]],
+    site_sizes: dict[tuple[float, float], int],
+) -> str:
+    """Why two nodes this close were left at different sites.
+
+    Inside the radius, ``_cluster`` can split a pair two ways only: both are
+    exact-equality sites (pass one places every such group as a frozen anchor,
+    and pass two joins lone nodes only), or one of them was a lone node that
+    joined a different, nearer anchor, so it is no anchor the other could join.
+    """
+    if gap_km > radius_km:
+        return "beyond_radius"
+    if site_sizes.get(_site_key(positions[first]), 0) > 1 and site_sizes.get(_site_key(positions[second]), 0) > 1:
+        return "both_exact_sites"
+    return "joined_nearer_site"
+
+
 def colocation_report() -> dict:
     """Sites being shared, how each member got there, and the pairs still apart.
 
@@ -403,9 +436,11 @@ def colocation_report() -> dict:
 
     ``near_misses`` is the residual audit: two nodes at different sites closer
     than twice NODE_FUZZ_SITE_KM.  Each is fuzzed independently, so if they are
-    one site described twice they are publishing two samples of it.  Aligning
-    the two configurations, or widening the radius, is what fixes it, and this
-    is how anyone finds out there is something to fix.
+    one site described twice they are publishing two samples of it.  Each
+    entry carries a ``reason`` (see the module docstring) because the fix
+    depends on it: widening the radius groups a ``beyond_radius`` pair and does
+    nothing for the other two, which only aligning the configurations fixes.
+    This is how anyone finds out there is something to fix.
     """
     _ensure_fresh()
     with _lock:
@@ -424,6 +459,13 @@ def colocation_report() -> dict:
         key=lambda entry: (entry["km"], entry["node"]),
     )
 
+    # Members of an exact-equality group of two or more: the first rule's
+    # anchors, which the second rule never merges with each other.
+    site_sizes: dict[tuple[float, float], int] = {}
+    for position in positions.values():
+        key = _site_key(position)
+        site_sizes[key] = site_sizes.get(key, 0) + 1
+
     node_ids = sorted(positions)
     near: list[dict] = []
     for i, first in enumerate(node_ids):
@@ -432,7 +474,13 @@ def colocation_report() -> dict:
                 continue
             gap_km = _km_between(positions[first], positions[second])
             if gap_km <= audit_km:
-                near.append({"nodes": [first, second], "km": round(gap_km, 4)})
+                near.append(
+                    {
+                        "nodes": [first, second],
+                        "km": round(gap_km, 4),
+                        "reason": _near_miss_reason(first, second, gap_km, radius_km, positions, site_sizes),
+                    }
+                )
     near.sort(key=lambda entry: entry["km"])
     return {
         "shared_sites": shared,
@@ -475,13 +523,33 @@ def log_colocation_audit() -> dict:
         )
     for entry in report["near_misses"]:
         logger.warning(
-            "node_sites: %s and %s are %.0f m apart at different sites — outside the %.0f m merge radius "
-            "but close enough to be one site described twice — so each is fuzzed independently and the "
-            "pair publishes two samples. Align their configured rx_lat/rx_lon, or widen NODE_FUZZ_SITE_KM, "
-            "to group them.",
+            "node_sites: %s and %s are %.0f m apart at different sites — %s — so each is fuzzed "
+            "independently and the pair publishes two samples. %s",
             entry["nodes"][0],
             entry["nodes"][1],
             entry["km"] * 1000.0,
-            report["merge_radius_km"] * 1000.0,
+            _NEAR_MISS_WHY[entry["reason"]] % (report["merge_radius_km"] * 1000.0),
+            _NEAR_MISS_FIX[entry["reason"]],
         )
     return report
+
+
+# The log's account of each near-miss reason, and what an operator does about
+# it.  Kept apart so a reason cannot be logged with another reason's remedy:
+# widening the radius does nothing for two exact-equality sites.
+_NEAR_MISS_WHY = {
+    "beyond_radius": "outside the %.0f m merge radius but close enough to be one site described twice",
+    "both_exact_sites": (
+        "inside the %.0f m merge radius, but each is already a site of receivers configured at identical "
+        "coordinates, and two such sites are never merged with each other"
+    ),
+    "joined_nearer_site": (
+        "inside the %.0f m merge radius, but one of them already joined a different site whose anchor is "
+        "nearer to it, and a node joins a site's anchor, not its members"
+    ),
+}
+_NEAR_MISS_FIX = {
+    "beyond_radius": "Align their configured rx_lat/rx_lon, or widen NODE_FUZZ_SITE_KM, to group them.",
+    "both_exact_sites": "Align their configured rx_lat/rx_lon to group them; widening NODE_FUZZ_SITE_KM will not.",
+    "joined_nearer_site": "Align their configured rx_lat/rx_lon to group them.",
+}
