@@ -21,7 +21,7 @@ dependencies = [
     "pyjwt[crypto]==2.8.0",
     "aiosqlite==0.20.0",
     "alembic==1.13.2",
-    "pyarrow==16.1.0",
+    "pyarrow==25.0.1",
     # All five, because retina-simulation imports the other four.
     "retina-geolocator",
     "retina-tracker",
