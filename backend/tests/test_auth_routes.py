@@ -232,6 +232,22 @@ class TestMyNodes:
         finally:
             asyncio.run(set_node_owner(node_id, None))
 
+    def test_a_private_node_carries_its_config_hash(self, client, monkeypatch):
+        """The public listing is the other place it is read, and it leaves private nodes out."""
+        from core import state
+        from core.auth import set_node_owner
+        from core.users import ANONYMOUS_USER
+
+        node_id = "config-hash-node"
+        own(node_id, ANONYMOUS_USER["id"])
+        asyncio.run(register_node_row(node_id, "private"))
+        monkeypatch.setitem(state.connected_nodes, node_id, {"status": "active", "config_hash": "0123456789abcdef"})
+        try:
+            node = next(n for n in client.get("/api/auth/me/nodes").json() if n["node_id"] == node_id)
+            assert node["config_hash"] == "0123456789abcdef"
+        finally:
+            asyncio.run(set_node_owner(node_id, None))
+
     def test_a_node_that_is_not_a_polled_radar_has_none_in_its_row(self, client):
         from core.auth import set_node_owner
         from core.users import ANONYMOUS_USER
@@ -288,6 +304,68 @@ class TestMyNodesCarriesLocationPrivacy:
     def test_a_node_registered_private_reads_private(self, client, owned):
         asyncio.run(register_node_row(owned, "private"))
         assert self._entry(client, owned)["location_private"] is True
+
+
+# ── /api/auth/me/aircraft ─────────────────────────────────────────────────────
+
+
+class TestMyAircraft:
+    """The owner feed's frame over HTTP, cut to the caller's nodes."""
+
+    @pytest.fixture()
+    def frame(self, monkeypatch):
+        from core import state
+        from core.auth import set_node_owner
+        from core.users import ANONYMOUS_USER
+
+        mine, theirs = "my-aircraft-node", "their-aircraft-node"
+        mine_ref = own(mine, ANONYMOUS_USER["id"])
+        asyncio.run(register_node_row(theirs))
+        monkeypatch.setattr(
+            state,
+            "latest_aircraft_json",
+            {
+                "now": 1.0,
+                "aircraft": [
+                    {"hex": "aa0001", "node_id": mine, "multinode": False},
+                    {"hex": "aa0002", "node_id": theirs, "multinode": False},
+                    {"hex": "aa0003", "multinode": True, "contributing_node_ids": [theirs, mine]},
+                    {"hex": "aa0004", "multinode": True, "contributing_node_ids": [theirs]},
+                ],
+                "detection_arcs": [{"node_id": mine}, {"node_id": theirs}],
+            },
+        )
+        try:
+            yield mine, mine_ref
+        finally:
+            asyncio.run(set_node_owner(mine, None))
+
+    def test_serves_the_callers_tracks_and_the_solves_they_joined(self, client, frame):
+        body = client.get("/api/auth/me/aircraft").json()
+        assert sorted(ac["hex"] for ac in body["aircraft"]) == ["aa0001", "aa0003"]
+        assert body["messages"] == 2
+
+    def test_names_the_callers_node_by_its_ref(self, client, frame):
+        mine, mine_ref = frame
+        body = client.get("/api/auth/me/aircraft").json()
+        [track] = [ac for ac in body["aircraft"] if ac["hex"] == "aa0001"]
+        assert track["node_ref"] == mine_ref
+        assert "node_id" not in track
+        assert body["detection_arcs"] == [{"node_ref": mine_ref}]
+        assert mine not in client.get("/api/auth/me/aircraft").text
+
+    def test_a_private_nodes_own_tracks_reach_its_owner(self, client, frame):
+        """The public frame drops them, so reading it would show the owner nothing."""
+        mine, _ = frame
+        asyncio.run(register_node_row(mine, "private"))
+        hexes = [ac["hex"] for ac in client.get("/api/auth/me/aircraft").json()["aircraft"]]
+        assert "aa0001" in hexes
+
+    def test_refuses_a_caller_with_no_session(self, client, monkeypatch):
+        from core import users
+
+        monkeypatch.setattr(users, "AUTH_BYPASS", False)
+        assert client.get("/api/auth/me/aircraft").status_code == 401
 
 
 # ── /api/admin/node-owners + /api/admin/nodes/{id}/owner ─────────────────────

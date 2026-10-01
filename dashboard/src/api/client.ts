@@ -84,6 +84,7 @@ export const api = {
 
   // Self-service node ownership
   myNodes: () => request("/api/auth/me/nodes"),
+  myAircraft: () => request("/api/auth/me/aircraft"),
 
   // Registering a stock blah2 radar. Each call probes the radar, which can take
   // a radar's worth of seconds, so each outwaits the default timeout. A refusal

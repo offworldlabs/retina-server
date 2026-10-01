@@ -8,9 +8,10 @@ is here for.
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
+from core.timestamps import UTCDateTime
 from core.users import Base
 
 NODE_STATUSES = ("active", "retired", "blocked")
@@ -29,14 +30,14 @@ class Node(Base):
     status: Mapped[str] = mapped_column(String(16), default="active", server_default="active")
     active_config_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     licence_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    licence_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    licence_accepted_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     remote_management_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    remote_management_accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    remote_management_accepted_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     publication: Mapped[str] = mapped_column(String(8), default="public", server_default="public")
     publication_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    publication_chosen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    publication_chosen_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    first_seen_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
+    last_seen_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class NodeConfig(Base):
@@ -82,8 +83,8 @@ class NodeConfig(Base):
     cpi_s: Mapped[float] = mapped_column(Float)
     delay_tolerance_us: Mapped[float] = mapped_column(Float)
     doppler_tolerance_hz: Mapped[float] = mapped_column(Float)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
+    superseded_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class NodeContact(Base):
@@ -109,7 +110,7 @@ class NodeContact(Base):
     # ISO 3166-1 alpha-2, so the phone number above resolves: a national number
     # says nothing about where it is dialable from.
     country: Mapped[str | None] = mapped_column(String(2), nullable=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
 
 
 class NodeClaim(Base):
@@ -149,7 +150,7 @@ class NodeClaim(Base):
     # normally. The flag only changes what its setup UI says about the address
     # still on file, and refuses a re-send to that one.
     undeliverable: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
 
 
 class NodeClaimChallenge(Base):
@@ -187,10 +188,10 @@ class NodeToken(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     node_id: Mapped[str] = mapped_column(String(32), ForeignKey("nodes.node_id"), index=True)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    issued_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     revoked_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class NodeReport(Base):
@@ -206,12 +207,12 @@ class NodeReport(Base):
     __tablename__ = "node_reports"
 
     node_id: Mapped[str] = mapped_column(String(32), ForeignKey("nodes.node_id"), primary_key=True)
-    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    received_at: Mapped[datetime] = mapped_column(UTCDateTime())
     boot_id: Mapped[str] = mapped_column(String(32))
     state: Mapped[str] = mapped_column(String(16))
     # When `state` last changed, or the node last restarted: how long a node
     # has said `starting` is the signal, not that it says it.
-    state_since: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    state_since: Mapped[datetime] = mapped_column(UTCDateTime())
     uptime_s: Mapped[int] = mapped_column(Integer)
     config_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     health: Mapped[dict | None] = mapped_column(JSON, nullable=True)
@@ -238,7 +239,7 @@ class NodeEvent(Base):
     # The polled radar's epoch the decision applied to.
     epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
     actor: Mapped[str] = mapped_column(String(255))
-    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    occurred_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
 
     def __repr__(self) -> str:
         return f"NodeEvent(id={self.id!r}, node_id={self.node_id!r}, kind={self.kind!r})"
@@ -276,23 +277,23 @@ class PolledRadar(Base):
     auth_secret_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Evidence of where the name pointed, never used to reach the radar.
     last_resolved_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     # How often the name has moved to another network, and when it last did.
     # Evidence for the trust layer to weigh (123zgec4bxx), not a fence.
     network_moves: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    last_network_move_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_network_move_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     config_fingerprint: Mapped[str] = mapped_column(String(128))
-    probe_passed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    endpoint_changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    probe_passed_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    endpoint_changed_at: Mapped[datetime] = mapped_column(UTCDateTime())
     trust_state: Mapped[str] = mapped_column(String(16), default="probation", server_default="probation")
     unprotected: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     # pending, streaming, stalled or unreachable.
     liveness: Mapped[str] = mapped_column(String(16), default="pending", server_default="pending")
-    last_frame_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_frame_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     # When the radar last served the configuration its epoch holds.
-    last_config_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_config_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
 
     def __repr__(self) -> str:
         return f"PolledRadar(node_id={self.node_id!r}, epoch={self.epoch!r}, liveness={self.liveness!r})"
@@ -317,7 +318,7 @@ class PolledRadarEndpointHistory(Base):
     new_key: Mapped[str] = mapped_column(String(320))
     resolved_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
     changed_by: Mapped[str] = mapped_column(String(255))
-    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    changed_at: Mapped[datetime] = mapped_column(UTCDateTime(), server_default=func.now())
 
     def __repr__(self) -> str:
         return f"PolledRadarEndpointHistory(id={self.id!r}, node_id={self.node_id!r})"

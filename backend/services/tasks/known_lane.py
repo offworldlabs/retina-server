@@ -41,9 +41,13 @@ Modes (state.KNOWN_LANE_MODE; an absent or unrecognised value means "off"):
             are, superseding the regular pipeline's output for that hex.
             Ghosts are recorded but never published: a displaced solve under a
             real hex is a wrong map marker, the same reason the regular
-            displacement gate exists.  The residual gate protects the MAP
+            displacement gate exists.  Nor is a solve whose claims all come
+            from ONE receive site (see _count_sites): that is not a
+            multilateration fix at any node count, and the aircraft is left
+            to the ADS-B display path.  Both publish gates protect the MAP
             only — the classification, the accuracy sample and the history
-            outcome are identical whether it passes or not, so the free-solve
+            outcome are identical whether they pass or not (bar re-anchoring,
+            which a single-site solve never earns), so the free-solve
             measurement below stays free.
 
 A SECOND PASS lives here too: the dark-follow lane (DARK_FOLLOW_MODE, see
@@ -66,7 +70,7 @@ import time
 
 from config.constants import FT_TO_M
 from core import state
-from services import dark_follow, track_filter
+from services import dark_follow, node_sites, track_filter
 from services.geo import haversine_km, offset_latlon_m
 from services.id_utils import normalize_hex_key
 from services.known_claiming import KNOWN_CLAIM_MAX_FIX_AGE_S
@@ -385,14 +389,47 @@ def _reanchor(hexn: str, raw_lat: float, raw_lon: float, ts_ms: int) -> bool:
     return False
 
 
-def _record_accuracy(hexn: str, err_km: float, label: str, n_nodes: int, ts_s: float) -> None:
+def _count_sites(s_in: dict, node_cfgs: dict) -> int:
+    """How many distinct receive sites the measurements come from.
+
+    Node count overstates what a claim set knows when receivers share a roof.
+    A bistatic delay pins the target to an ellipsoid with foci at the node's
+    transmitter and receiver, and its normal bisects the directions to the
+    two.  Two nodes at one receiver share that receiver term, so their loci
+    cross at HALF the angle their transmitters subtend at the target, where
+    two sites' loci cross at whatever their full geometry gives — shallow
+    wherever the transmitters sit on the same side, as they do at the
+    co-sited pairs on test, and at a pinned altitude the loci may graze or
+    miss each other entirely.  2026-09-30 on test, a271b0 was claimed by a
+    213 MHz and a 201 MHz node whose receivers are 56 m apart: three solves
+    in a row landed 4.95, 2.32 and 1.90 km from the aircraft, the last at an
+    rms_delay of 3.59 µs.  In the same window the dark lane published eleven
+    n=2 solves from another co-sited pair, every one 119-169 km from the
+    nearest aircraft.
+
+    "One site" is the public geometry's rule, not a new one: node_sites'
+    grouping (exact equality, then NODE_FUZZ_SITE_KM, 150 m by default) over
+    the positions this solve is actually run against, so two receivers the
+    map publishes at one point are one site here too.  A node absent from node_cfgs,
+    or with no receiver position, counts as a site of its own — the unknown
+    case must not demote a solve.
+    """
+    positions = {}
+    for m in s_in.get("measurements") or ():
+        nid = m.get("node_id")
+        cfg = node_cfgs.get(nid) if isinstance(node_cfgs, dict) else None
+        positions[nid] = (cfg.get("rx_lat"), cfg.get("rx_lon")) if isinstance(cfg, dict) else None
+    return node_sites.count_sites(positions)
+
+
+def _record_accuracy(hexn: str, err_km: float, label: str, n_nodes: int, ts_s: float, n_sites: int) -> None:
     """Append one known-lane sample to the rolling accuracy store, at most one
     per hex per _ACCURACY_SAMPLE_INTERVAL_S.
 
     Same store and base shape as track_gates._record_accuracy_sample, so
     _refresh_accuracy_stats bins it by position_source with no changes —
     known_lane_truth_match vs known_lane_ghost is the headline comparison —
-    plus label/n_nodes as their own fields so later analysis can bin by
+    plus label/n_nodes/n_sites as their own fields so later analysis can bin by
     GDOP proxy without parsing them back out of the source string.
 
     Every converged outcome is *classified*, ghost included (a ghost's error
@@ -430,6 +467,7 @@ def _record_accuracy(hexn: str, err_km: float, label: str, n_nodes: int, ts_s: f
             "position_source": f"known_lane_{label}",
             "label": label,
             "n_nodes": n_nodes,
+            "n_sites": n_sites,
             "ts": round(ts_s, 1),
         }
     )
@@ -494,6 +532,7 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
     record's displacement_km and the accuracy error are the same number.
     """
     state.bump_counter("known_lane_attempts")
+    n_sites = _count_sites(s_in, node_cfgs)
     # Same correction, same flag, same helper as the regular lane — see
     # solver.align_measurement_epochs.  Applied here rather than in
     # _build_solver_input because the alignment needs the node configs, and
@@ -525,6 +564,7 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
                 "label": "no_converge",
                 "published": False,
                 "seed_source": s_in.get("seed_source", "fix"),
+                "n_sites": n_sites,
                 **epoch_meta,
             },
         )
@@ -537,32 +577,50 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
     # The prior is only a prior — when it is the lane's OWN dead-reckoned
     # solve rather than a transponder fix, a repeated self-consistent
     # disagreement means the prior moved, not the solve.  See _reanchor.
+    # Not for a single-site solve: repeatability is the evidence re-anchoring
+    # rests on, and a degenerate geometry repeats its wrong answer as reliably
+    # as a good one repeats the aircraft's position.
     if (
         label == "ghost"
+        and n_sites >= 2
         and s_in.get("seed_source") == "kf"
         and _reanchor(hexn, raw_lat, raw_lon, int(s_in["timestamp_ms"]))
     ):
         label = "reanchored"
     state.bump_counter(f"known_lane_{label}")
     n_nodes = int(result.get("n_nodes") or s_in.get("n_nodes") or 0)
-    _record_accuracy(hexn, err_km, label, n_nodes, s_in["timestamp_ms"] / 1000.0)
+    _record_accuracy(hexn, err_km, label, n_nodes, s_in["timestamp_ms"] / 1000.0, n_sites)
 
-    # Residual gate on the PUBLISH only (see KNOWN_PUBLISH_MAX_RMS_DELAY_US).
-    # The regular lane's idiom verbatim, including its two silences: a missing
-    # or None rms_delay passes, and an n=2 solve — exactly determined, so it
-    # fits its own two equations perfectly and carries 0.0 — passes too.  The
-    # displacement classifier therefore remains the only check n=2 has, as
-    # today; this gate can only take publishes away from the overdetermined
-    # solves whose residual actually means something.
+    # Residual gate on the PUBLISH only (see KNOWN_PUBLISH_MAX_RMS_DELAY_US),
+    # applied at every n, n=2 included.  A missing or None rms_delay passes,
+    # the regular lane's idiom.  An n=2 solve is exactly determined (two
+    # delays and two Dopplers against lat, lon and two velocity components,
+    # altitude pinned), so it USUALLY fits its own equations and carries a
+    # residual of ~0 — but not always: when the two delay loci do not meet at
+    # the pinned altitude the solver settles on the nearest compromise and
+    # reports what it could not fit.  a271b0 on test, 2026-09-30, published
+    # nothing from a co-sited pair at rms_delay 3.59 µs, and this gate is what
+    # withheld it; a nonzero n=2 residual is as disqualifying as any other.
+    # What the gate cannot do is catch an n=2 solve that fits perfectly and
+    # is wrong — the displacement classifier remains the check for that.
     rms_ok = (result.get("rms_delay") or 0) <= KNOWN_PUBLISH_MAX_RMS_DELAY_US
-    published = mode == "binding" and label in ("truth_match", "reanchored") and rms_ok
+    # Site gate (see _count_sites): measurements from one receive site are not
+    # a multilateration fix, whatever their node count.  Checked first so the
+    # record names the more fundamental reason when both apply.
+    sites_ok = n_sites >= 2
+    publishable = mode == "binding" and label in ("truth_match", "reanchored")
+    published = publishable and sites_ok and rms_ok
     # Named in the record because the counter alone cannot say WHICH solve was
     # withheld, and "published False under a truth_match label in binding" is
-    # otherwise indistinguishable from a publish that threw.  None whenever the
+    # otherwise indistinguishable from a publish that threw.  None whenever a
     # gate was not what stopped it — including in shadow, where nothing was
     # going to publish anyway and a rejection would be a phantom.
-    gated = mode == "binding" and label in ("truth_match", "reanchored") and not rms_ok
-    if gated:
+    publish_gate = None
+    if publishable and not sites_ok:
+        publish_gate = "single_site"
+        state.bump_counter("known_lane_publish_single_site")
+    elif publishable and not rms_ok:
+        publish_gate = "rms_delay"
         state.bump_counter("known_lane_publish_rms_rejected")
     solve_key = None
     if published:
@@ -595,7 +653,8 @@ def _attempt(hexn: str, s_in: dict, node_cfgs: dict, solve_fn, mode: str) -> Non
             "known_lane": True,
             "label": label,
             "published": published,
-            "publish_gate": "rms_delay" if gated else None,
+            "publish_gate": publish_gate,
+            "n_sites": n_sites,
             "seed_source": s_in.get("seed_source", "fix"),
             **epoch_meta,
         },
