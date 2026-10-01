@@ -17,6 +17,7 @@ from retina_tracker.track import TrackState
 from config.constants import (
     ARC_REFRESH_S,
     CLAIMED_DISPLAY_FRESH_S,
+    CLAIMED_DISPLAY_MAX_FIX_AGE_S,
     GT_REFRESH_S,
     MN_DR_CAP_S,
     MN_N2_MIN_SOLVES,
@@ -39,7 +40,6 @@ from services.id_utils import (
     normalize_hex_key,
     passive_track_hex,
 )
-from services.known_claiming import KNOWN_CLAIM_MAX_FIX_AGE_S
 from services.public_location import fuzz_node_cfg
 from services.solve_uncertainty import solve_sigma_m, velocity_sigma_ms
 from services.track_gates import (
@@ -72,6 +72,7 @@ def _reset_for_tests() -> None:
     # silence the next test's.
     _mn_entry_fail_logged_at = 0.0
     _mn_entry_fail_count = 0
+    _claim_history_seen.clear()
 
 
 def multinode_to_aircraft(key: str, r: dict) -> dict:
@@ -272,21 +273,259 @@ def _multinode_entry(key: str, r: dict, now: float) -> dict:
     return ac
 
 
-def _claimed_single_node_entries(now: float) -> list[dict]:
-    """Feed entries for hexes exactly ONE node is currently claiming.
+# Feed decisions a claim-history record carries (state.known_claim_history,
+# served by /api/test/mlat-history?kind=claims).  One per hex per build: what
+# _claimed_adsb_entries did with that hex's claims.
+FEED_ADSB_SINGLE = "adsb_single_node"  # drawn: one fresh claiming node
+FEED_ADSB_MULTI = "adsb_multi_node"  # drawn: >=2 fresh nodes, no solve published
+FEED_SOLVE_PUBLISHED = "solve_published"  # >=2 nodes and the known lane's mn-adsb entry is on the map
+FEED_STALE_FIX = "stale_fix"  # fix older than CLAIMED_DISPLAY_MAX_FIX_AGE_S (or undated)
+FEED_NO_FIX = "no_fix"  # no claim carried a usable fix position
+FEED_STALE_CLAIM = "stale_claim"  # no claim fresher than CLAIMED_DISPLAY_FRESH_S
+FEED_NOT_BINDING = "not_binding"  # shadow/off: the lane may not draw anything
+
+# (hex -> node -> newest claim ts_ms already written to the claim history), so
+# each claim is recorded once however many builds it stays in the registry.
+# Pruned every build to the hexes still in state.known_claims.
+_claim_history_seen: dict[str, dict[str, float]] = {}
+
+
+def _adsb_claims(dq) -> list[tuple[str, float, dict]]:
+    """(node_id, ts_ms, claim) for every well-formed ADS-B claim in one deque.
+
+    Dark-follow claims share the registry under mn-dark-* keys (see
+    known_claiming._claim_dark_follow) and carry no transponder fix, so they
+    are not this section's business whatever key they sit under.  The deque is
+    the claiming stage's, written concurrently, so a malformed entry is
+    skipped rather than trusted.
+    """
+    out = []
+    for c in list(dq):
+        if not isinstance(c, dict) or c.get("dark_follow"):
+            continue
+        try:
+            ts_ms = float(c["ts_ms"])
+            node_id = c["node_id"]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if node_id:
+            out.append((node_id, ts_ms, c))
+    return out
+
+
+def _usable_fix(c: dict) -> dict | None:
+    fix = c.get("adsb_fix")
+    if not isinstance(fix, dict):
+        return None
+    lat, lon = fix.get("lat"), fix.get("lon")
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return None
+    return fix
+
+
+def _claimed_entry(
+    hexn: str, fresh: dict[str, dict], now: float, published_adsb_hexes, draw: bool
+) -> tuple[str, dict | None, float | None]:
+    """(feed decision, entry or None, age of the drawn fix at ``now``) for one
+    hex, from its newest fresh claim per node."""
+    if not fresh:
+        return FEED_STALE_CLAIM, None, None
+    if not draw:
+        return FEED_NOT_BINDING, None, None
+    n_nodes = len(fresh)
+    # Two or more claiming nodes are the known lane's case: when its solve for
+    # this hex is on the map this build, that solve IS the aircraft, and an
+    # ADS-B entry beside it would draw the same aircraft twice.
+    if n_nodes >= 2 and hexn in published_adsb_hexes:
+        return FEED_SOLVE_PUBLISHED, None, None
+
+    # The anchor is the claim carrying the NEWEST fix, not the newest claim:
+    # every claim on a hex describes one transponder, and a hold claim carries
+    # an older fix than a path-2 claim a neighbour made the same second.
+    anchor = None
+    anchor_fix = None
+    for c in fresh.values():
+        fix = _usable_fix(c)
+        if fix is None:
+            continue
+        key = (float(fix.get("fix_ts_ms") or 0), float(c["ts_ms"]))
+        if anchor is None or key > (float(anchor_fix.get("fix_ts_ms") or 0), float(anchor["ts_ms"])):
+            anchor, anchor_fix = c, fix
+    if anchor is None:
+        return FEED_NO_FIX, None, None
+    fix_ts_ms = float(anchor_fix.get("fix_ts_ms") or 0)
+    # Gate on the FIX's age at `now`, not the claim's: see
+    # CLAIMED_DISPLAY_MAX_FIX_AGE_S for how a fresh claim hands the feed a
+    # 45 s-old fix.  An undated fix cannot be bounded, so it is not drawn.
+    fix_age_s = now - fix_ts_ms / 1000.0 if fix_ts_ms > 0 else None
+    if fix_age_s is None or fix_age_s > CLAIMED_DISPLAY_MAX_FIX_AGE_S:
+        return FEED_STALE_FIX, None, fix_age_s
+
+    # Dead-reckon the fix to `now` along its own reported gs/track, the same
+    # derivation (state.adsb_derived_fields) every consumer of the ADS-B cache
+    # uses, so the icon is where the transponder says the aircraft is now
+    # rather than where it was when it last said anything.  Bounded by the gate
+    # above; a fix from the future (clock skew) is drawn as is, not rewound.
+    lat, lon = float(anchor_fix["lat"]), float(anchor_fix["lon"])
+    dt = max(0.0, fix_age_s)
+    if dt > 0.0:
+        vel = state.adsb_derived_fields(anchor_fix)
+        if vel["vel_east"] or vel["vel_north"]:
+            lat, lon = offset_latlon_m(lat, lon, east_m=vel["vel_east"] * dt, north_m=vel["vel_north"] * dt)
+
+    # The claim's own fix carries no callsign (it is copied from the frame's
+    # ADS-B block, which reports position and kinematics only).
+    _ae = state.adsb_aircraft.get(hexn)
+    flight = ((_ae.get("flight") if _ae else "") or "").strip() or None
+    newest_ts_ms = max(float(c["ts_ms"]) for c in fresh.values())
+    entry = {
+        "hex": hexn,
+        "type": "adsb_icao",
+        "flight": flight,
+        "lat": round(lat, 5),
+        "lon": round(lon, 5),
+        "alt_baro": anchor_fix.get("alt_baro"),
+        "gs": anchor_fix.get("gs"),
+        "track": anchor_fix.get("track"),
+        "seen": round(max(0.0, now - newest_ts_ms / 1000.0), 1),
+        "multinode": False,
+        # True when the drawn fix came through a hold (known_claiming path H):
+        # the radar link is live but no transponder has refreshed the fix
+        # since, so the position is coasting rather than reported.  The age
+        # gate above bounds how long that can last on the map.
+        "adsb_stale": bool(anchor.get("hold")),
+        "adsb_fix_age_s": round(max(0.0, fix_age_s), 1),
+        "target_class": "aircraft",
+    }
+    if n_nodes >= 2:
+        # Several nodes are detecting a known transponder, but the known lane
+        # has nothing on the map for it this build (every n=2 solve rejected
+        # by its displacement or residual gates, or not yet confirmed).  Before
+        # this branch such an aircraft was drawn nowhere at all (a271b0,
+        # 2026-09-29).  No node_id and no arc: the position is no one node's,
+        # and contributing_node_ids is what the per-node WS filter, the
+        # private-node redaction and the identity substitution already read
+        # for a many-node entry.
+        entry["position_source"] = FEED_ADSB_MULTI
+        entry["n_nodes"] = n_nodes
+        entry["contributing_node_ids"] = sorted(fresh)
+        return FEED_ADSB_MULTI, entry, fix_age_s
+
+    ((node_id, claim),) = fresh.items()
+    delay_us = float(claim.get("delay_us") or 0.0)
+    # node_cfg is the geometry the arc is solved in; a node that has since
+    # disconnected leaves the entry without one, which is the same icon-only
+    # outcome as the builder declining.
+    pipeline = state.node_pipelines.get(node_id)
+    node_cfg = getattr(pipeline, "config", None)
+    # Built around the PUBLISHED receiver: this arc goes straight onto the
+    # wire, and an ellipse drawn from the true one names the operator's house
+    # at its focus.  Same delay, same real transmitter.
+    arc = _build_single_node_arc(delay_us, fuzz_node_cfg(node_cfg)) if node_cfg else None
+    entry.update(
+        {
+            "position_source": FEED_ADSB_SINGLE,
+            # Mandatory: the live/owner WS feeds drop any entry whose node_id
+            # is not in the connection's node set.
+            "node_id": node_id,
+            "delay_us": round(delay_us, 3),
+            "doppler_hz": round(float(claim.get("doppler_hz") or 0.0), 2),
+            # The FULL locus.  The frontend trims it to a fixed screen length
+            # around the icon; trimming here would bake one zoom level into
+            # the wire format.
+            "ambiguity_arc": arc,
+        }
+    )
+    return FEED_ADSB_SINGLE, entry, fix_age_s
+
+
+def _num_or_none(v) -> float | None:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _record_claim_history(
+    hexn: str,
+    claims: list[tuple[str, float, dict]],
+    decision: str,
+    n_fresh: int,
+    feed_fix_age_s: float | None,
+    now: float,
+) -> None:
+    """Append every claim on ``hexn`` not yet recorded to
+    state.known_claim_history, stamped with this build's decision for the hex.
+
+    Residuals rather than the measurement: a raw delay beside the ADS-B fix
+    it was bound to is a bistatic range from the node's TRUE receiver to a
+    known point, i.e. a ranging circle around the operator — the same reason
+    public_geometry withholds measured_delay_us.  measured-minus-predicted
+    carries the node's error, not its position.
+    """
+    seen = _claim_history_seen.setdefault(hexn, {})
+    newest: dict[str, float] = {}
+    now_ms = int(now * 1000)
+    for node_id, ts_ms, c in claims:
+        if ts_ms <= seen.get(node_id, -math.inf):
+            continue
+        if ts_ms > newest.get(node_id, -math.inf):
+            newest[node_id] = ts_ms
+        d, pd = _num_or_none(c.get("delay_us")), _num_or_none(c.get("pred_delay_us"))
+        f, pf = _num_or_none(c.get("doppler_hz")), _num_or_none(c.get("pred_doppler_hz"))
+        fix = c.get("adsb_fix") if isinstance(c.get("adsb_fix"), dict) else {}
+        fix_ts_ms = _num_or_none(fix.get("fix_ts_ms"))
+        state.known_claim_history.append(
+            {
+                "ts_ms": int(ts_ms),
+                "hex": hexn,
+                "node_id": node_id,
+                "residual_delay_us": round(d - pd, 3) if d is not None and pd is not None else None,
+                "residual_doppler_hz": round(f - pf, 2) if f is not None and pf is not None else None,
+                # Age of THIS claim's fix when the claim was made.
+                "fix_age_s": round((ts_ms - fix_ts_ms) / 1000.0, 1) if fix_ts_ms else None,
+                "hold": bool(c.get("hold")),
+                "follow": bool(c.get("follow")),
+                "contested": bool(c.get("contested")),
+                # The hex's state at the build that first saw this claim.
+                "n_fresh_nodes": n_fresh,
+                "feed": decision,
+                "feed_fix_age_s": round(feed_fix_age_s, 1) if feed_fix_age_s is not None else None,
+                "feed_ts_ms": now_ms,
+            }
+        )
+    seen.update(newest)
+    cutoff_ms = now_ms - state.KNOWN_CLAIM_HISTORY_WINDOW_S * 1000.0
+    hist = state.known_claim_history
+    while hist and hist[0]["feed_ts_ms"] < cutoff_ms:
+        hist.popleft()
+
+
+def _claimed_adsb_entries(now: float, published_adsb_hexes=frozenset(), draw: bool = True) -> list[dict]:
+    """Feed entries for claimed ADS-B targets no radar solve is drawing.
 
     A claim (services/known_claiming.py) pairs a node's raw delay/Doppler
     measurement with the ADS-B fix of the transponder it was bound to, and in
     binding mode that detection leaves the dark pool — so nothing else in the
-    feed ever renders it.  Two or more claiming nodes are the known-lane
-    solver's case: it needs n>=2 and publishes its own ``mn-adsb-<hex>`` entry
-    on convergence, so emitting here as well would double-draw the aircraft.
-    One claiming node reaches nobody, which is what this section exists for.
+    feed ever renders it.  Per hex, from the newest claim per node fresher
+    than CLAIMED_DISPLAY_FRESH_S:
 
-    The position is the ADS-B fix itself, not an estimate — the radar
-    contribution is the identity of the detecting node and the ambiguity arc,
-    which is why ``position_source`` names the anchor rather than a solver and
-    why health.py must not read these as radar solves.
+    * ONE node: an ``adsb_single_node`` entry carrying that node and its full
+      ambiguity arc — nobody else can draw it, the known lane needs n>=2.
+    * TWO OR MORE nodes: the known lane's case.  If its ``mn-adsb-<hex>``
+      entry is on the map this build (``published_adsb_hexes``), nothing is
+      emitted here; otherwise an ``adsb_multi_node`` entry, so an aircraft
+      whose every n=2 solve fails the lane's gates is still drawn.
+
+    Either way the position is the ADS-B fix, dead-reckoned to ``now`` and
+    only while the fix is younger than CLAIMED_DISPLAY_MAX_FIX_AGE_S — not an
+    estimate, which is why ``position_source`` names the anchor rather than a
+    solver and why health.py must not read these as radar solves.
+
+    ``draw`` is False outside binding mode: shadow claims are still in the
+    dark pool, so drawing their fix would publish what only binding may.  The
+    claim history is recorded either way.
 
     The arc is rebuilt rather than memoised through ``_single_node_arc_cache``:
     that cache is keyed (hex, node_id) on the *track's* latest delay, and the
@@ -298,95 +537,25 @@ def _claimed_single_node_entries(now: float) -> list[dict]:
     """
     fresh_cutoff_ms = (now - CLAIMED_DISPLAY_FRESH_S) * 1000.0
     entries: list[dict] = []
+    live_hexes: set[str] = set()
     for hexn, dq in list(state.known_claims.items()):
-        newest: dict | None = None
-        node_ids: set[str] = set()
-        for c in list(dq):
-            if not isinstance(c, dict):
-                continue
-            try:
-                ts_ms = float(c["ts_ms"])
-                node_id = c["node_id"]
-            except (KeyError, TypeError, ValueError):
-                continue
-            if not node_id or ts_ms < fresh_cutoff_ms:
-                continue
-            node_ids.add(node_id)
-            if len(node_ids) > 1:
-                break
-            if newest is None or ts_ms > float(newest["ts_ms"]):
-                newest = c
-        if newest is None or len(node_ids) != 1:
+        claims = _adsb_claims(dq)
+        if not claims:
             continue
-
-        fix = newest.get("adsb_fix") or {}
-        lat, lon = fix.get("lat"), fix.get("lon")
-        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
-            continue
-        # A HELD claim (known_claiming path H) carries the LAST fix the
-        # transponder ever gave, however old — the hold is a radar link, not a
-        # position report.  This section draws the fix itself, so once that fix
-        # is past the claiming path's own freshness cap there is nothing here
-        # worth drawing: the icon would sit where the aircraft was, not where
-        # it is, and grow more wrong the longer the hold succeeds.  Skipped
-        # rather than dead-reckoned — one node's claim gives an arc, not a
-        # position, so there is no honest estimate to put in its place.  Two or
-        # more claiming nodes are unaffected: those are the known lane's, and
-        # it solves them (see known_lane._build_solver_input's stale-fix seed).
-        _fix_age_s = (float(newest["ts_ms"]) - float(fix.get("fix_ts_ms") or 0)) / 1000.0
-        if newest.get("hold") and _fix_age_s > KNOWN_CLAIM_MAX_FIX_AGE_S:
-            continue
-        node_id = newest["node_id"]
-        delay_us = float(newest.get("delay_us") or 0.0)
-
-        # node_cfg is the geometry the arc is solved in; a node that has since
-        # disconnected leaves the entry without one, which is the same
-        # icon-only outcome as the builder declining.
-        pipeline = state.node_pipelines.get(node_id)
-        node_cfg = getattr(pipeline, "config", None)
-        # Built around the PUBLISHED receiver: this arc goes straight onto the
-        # wire, and an ellipse drawn from the true one names the operator's
-        # house at its focus.  Same delay, same real transmitter.
-        arc = _build_single_node_arc(delay_us, fuzz_node_cfg(node_cfg)) if node_cfg else None
-
-        # The claim's own fix carries no callsign (it is copied from the frame's
-        # ADS-B block, which reports position and kinematics only).
-        _ae = state.adsb_aircraft.get(hexn)
-        flight = ((_ae.get("flight") if _ae else "") or "").strip() or None
-
-        fix_ts_ms = fix.get("fix_ts_ms") or 0
-        entries.append(
-            {
-                "hex": hexn,
-                "type": "adsb_icao",
-                "flight": flight,
-                "lat": lat,
-                "lon": lon,
-                "alt_baro": fix.get("alt_baro"),
-                "gs": fix.get("gs"),
-                "track": fix.get("track"),
-                "seen": round(max(0.0, now - float(newest["ts_ms"]) / 1000.0), 1),
-                "multinode": False,
-                "position_source": "adsb_single_node",
-                # True when the drawn fix is no longer being refreshed by a
-                # transponder (a hold still inside the freshness cap, or a
-                # cached fix that has aged during this claim's own lifetime),
-                # so the map can say the position is coasting rather than
-                # measured.  Absent-as-false for every claim made today.
-                "adsb_stale": _fix_age_s > 0.0 and bool(newest.get("hold")),
-                # Mandatory: the live/owner WS feeds drop any entry whose
-                # node_id is not in the connection's node set.
-                "node_id": node_id,
-                "delay_us": round(delay_us, 3),
-                "doppler_hz": round(float(newest.get("doppler_hz") or 0.0), 2),
-                # The FULL locus.  The frontend trims it to a fixed screen
-                # length around the icon; trimming here would bake one zoom
-                # level into the wire format.
-                "ambiguity_arc": arc,
-                "adsb_fix_age_s": (round(max(0.0, now - fix_ts_ms / 1000.0), 1) if fix_ts_ms else None),
-                "target_class": "aircraft",
-            }
-        )
+        live_hexes.add(hexn)
+        fresh: dict[str, dict] = {}
+        for node_id, ts_ms, c in claims:
+            if ts_ms < fresh_cutoff_ms:
+                continue
+            cur = fresh.get(node_id)
+            if cur is None or ts_ms > float(cur["ts_ms"]):
+                fresh[node_id] = c
+        decision, entry, fix_age_s = _claimed_entry(hexn, fresh, now, published_adsb_hexes, draw)
+        if entry is not None:
+            entries.append(entry)
+        _record_claim_history(hexn, claims, decision, len(fresh), fix_age_s, now)
+    for gone in [h for h in _claim_history_seen if h not in live_hexes]:
+        del _claim_history_seen[gone]
     return entries
 
 
@@ -466,6 +635,7 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
     # during iteration" live (2026-09-05).
     with state.multinode_tracks_lock:
         _mn_snapshot = list(state.multinode_tracks.items())
+    published_adsb_hexes: set[str] = set()
     for key, r in _mn_snapshot:
         age_s = now - r.get("timestamp_ms", 0) / 1000
         # Display gates below are NOT staleness — a gated entry stays in
@@ -507,16 +677,20 @@ def build_combined_aircraft_json(default_pipeline: PassiveRadarPipeline) -> dict
             ac["recent_positions"] = list(state.track_histories_public.get(ac["hex"], []))
             ac["ground_truth_hex"] = resolve_ground_truth_hex(ac["hex"], ac["lat"], ac["lon"])
             aircraft.append(ac)
-    # 3b. Singly-claimed ADS-B targets — no seen_hex guard on purpose.  A
-    # partially-claimed aircraft can still carry a tracker track keyed by the
-    # same hex, and the ADS-B fix is the better of the two positions, so the
-    # collision is left for dedup to settle by source rank rather than decided
-    # here by append order.  Binding only: in shadow the claimed detection is
-    # still in the dark pool and the known lane must leave the live feed as it
-    # was (services/tasks/known_lane.py), so drawing its fix would publish what
-    # only binding may.
-    if state.KNOWN_LANE_MODE == "binding":
-        aircraft.extend(_claimed_single_node_entries(now))
+            # The transponders a solve is on the map for THIS build — the
+            # set 3b reads so it never draws a claimed fix beside the solve.
+            if ac.get("adsb_hex"):
+                published_adsb_hexes.add(ac["adsb_hex"])
+    # 3b. Claimed ADS-B targets no solve is drawing — no seen_hex guard on
+    # purpose.  A partially-claimed aircraft can still carry a tracker track
+    # keyed by the same hex, and the ADS-B fix is the better of the two
+    # positions, so the collision is left for dedup to settle by source rank
+    # rather than decided here by append order.  Drawn in binding only: in
+    # shadow the claimed detection is still in the dark pool and the known
+    # lane must leave the live feed as it was (services/tasks/known_lane.py),
+    # so drawing its fix would publish what only binding may.  Called in every
+    # mode all the same, because it also writes the claim history.
+    aircraft.extend(_claimed_adsb_entries(now, published_adsb_hexes, draw=state.KNOWN_LANE_MODE == "binding"))
 
     # 4/4b. Stale-store GC no longer runs here — it is on its own 5 s timer
     # (services.tasks.feed_gc_task).  A feed build happens only when the flush

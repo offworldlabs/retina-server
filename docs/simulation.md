@@ -133,10 +133,10 @@ the source of truth for what the test droplet currently runs:
 | `FLEET_MODE` | `adsb` | Merge the real ADS-B feed |
 | `FLEET_INTERVAL` | 0.5 s | Frame interval per node |
 
-Two real hardware nodes (`radar3*-retnode`, via the blah2 bridge near
-Atlanta) connect alongside the synthetic fleet; their geometry lives in
-`backend/config/blah2_nodes.json` (42° Yagis) with a runtime overlay copy
-under `backend/data/runtime/`.
+Real hardware nodes connect alongside the synthetic fleet through the v1 node
+API under their own registered ids, with their geometry in the node registry.
+(The old per-node blah2 bridge and its `blah2_nodes.json` geometry list were
+removed; a leftover copy under `backend/data/runtime/` is no longer read.)
 
 ---
 

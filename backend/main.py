@@ -3,10 +3,12 @@
 All business logic lives in dedicated packages:
   core/       – shared mutable state
   services/   – TCP handler, frame processor, background tasks, storage
-  clients/    – external API clients (FCC, Maprad, OpenSky)
-  analytics/  – node trust, reputation, coverage, cross-node analysis
+  clients/    – external API clients (adsb.lol, adsb-service, DigitalOcean)
   pipeline/   – passive radar signal processing
   routes/     – FastAPI APIRouter modules
+
+Node trust, reputation, coverage and cross-node analysis come from the
+retina-analytics library in libs/.
 """
 
 import os

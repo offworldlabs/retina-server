@@ -555,8 +555,7 @@ class TestVisits:
     @staticmethod
     async def _last_visit() -> datetime | None:
         async with users.async_session_maker() as session:
-            seen = (await session.execute(select(users.User))).scalars().one().last_seen_at
-        return seen.replace(tzinfo=UTC) if seen else None
+            return (await session.execute(select(users.User))).scalars().one().last_seen_at
 
     async def test_a_request_carrying_the_session_records_a_visit(self, client, monkeypatch):
         """Through /me rather than the token reader, so the path a page load

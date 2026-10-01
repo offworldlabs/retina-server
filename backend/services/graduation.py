@@ -11,7 +11,7 @@ transaction, and expires the probation and publication caches after committing.
 """
 
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Literal
 
 from sqlalchemy import select, update
@@ -69,10 +69,7 @@ async def set_trust(session: AsyncSession, node_id: str, *, trust_state: str, ep
 
 
 def _iso(when: datetime | None) -> str | None:
-    # SQLite hands timezone-aware columns back naive; every value written is UTC.
-    if when is None:
-        return None
-    return (when if when.tzinfo is not None else when.replace(tzinfo=UTC)).isoformat()
+    return None if when is None else when.isoformat()
 
 
 async def listing(session: AsyncSession) -> list[dict]:

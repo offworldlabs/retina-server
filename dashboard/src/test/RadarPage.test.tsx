@@ -44,7 +44,7 @@ function renderPage(ref = "nde0123456789") {
     <MemoryRouter initialEntries={[`/radars/${ref}`]}>
       <Routes>
         <Route path="/radars/:nodeRef" element={<RadarPage />} />
-        <Route path="/onboarding" element={<div>my nodes</div>} />
+        <Route path="/overview" element={<div>my nodes</div>} />
       </Routes>
     </MemoryRouter>,
   );

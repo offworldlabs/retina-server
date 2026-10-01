@@ -119,7 +119,7 @@ describe("the sidebar as a drawer on a narrow screen", () => {
   it("takes focus to its first entry, which comes before the header in the tab order", () => {
     renderAt("/overview");
     fireEvent.click(menuButton());
-    expect(document.activeElement).toBe(screen.getByRole("link", { name: "Overview" }));
+    expect(document.activeElement).toBe(screen.getByRole("link", { name: "My Nodes" }));
   });
 
   // Tab past the header would otherwise walk the page under the scrim.
@@ -172,7 +172,7 @@ describe("the sidebar as a drawer on a narrow screen", () => {
   it("closes on choosing the page already open", () => {
     const { container } = renderAt("/overview");
     fireEvent.click(menuButton());
-    fireEvent.click(screen.getByRole("link", { name: "Overview" }));
+    fireEvent.click(screen.getByRole("link", { name: "My Nodes" }));
     expect(isOpen(container)).toBe(false);
   });
 

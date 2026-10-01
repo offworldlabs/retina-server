@@ -105,6 +105,7 @@ export interface OwnedNode {
   name: string | null;
   status: string;
   last_heartbeat: string | null;
+  config_hash: string | null;
   is_synthetic: boolean;
   rx_lat: number | null;
   rx_lon: number | null;
