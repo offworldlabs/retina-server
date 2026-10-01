@@ -43,6 +43,7 @@ dev = [
     "ruff==0.16.2",
     "vulture==2.14",
     "pre-commit==4.6.2",
+    "pyright==1.1.414",
 ]
 
 # An application run from this directory, not a distribution: uv installs its
@@ -60,12 +61,12 @@ retina-analytics = { path = "../libs/retina-analytics", editable = true }
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# No coverage here, or a run of one file measures the whole backend and fails
+# the threshold however its tests went: `just test-ci` and CI ask for it.
 addopts = [
-    "--cov=.",
-    "--cov-report=term-missing:skip-covered",
-    "--cov-report=html:htmlcov",
-    "--cov-fail-under=55",
-    "-q",
+    # An unregistered mark, a typo or one no plugin defines, fails collection
+    # rather than warning and doing nothing.
+    "--strict-markers",
 ]
 # A per-test ceiling, so a runaway test fails in seconds and names itself
 # instead of consuming the CI job's whole 20 minute budget in silence. The cap
@@ -77,10 +78,6 @@ timeout_method = "thread"
 
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
-markers = [
-    "external: requires external API (open-meteo.com)",
-    "asyncio: mark test as async (requires pytest-asyncio)",
-]
 
 [tool.coverage.run]
 source = ["."]
@@ -96,6 +93,10 @@ omit = [
     "routes/auth.py",
     # Simulation/test-only endpoints — not production code paths:
     "routes/test.py",
+    # The module Mako compiles a template to when a test renders one (the
+    # migration template, in test_new_migration.py). Its name has no file behind
+    # it, so a report that measured it would stop at "No source for code".
+    "*_mako",
 ]
 
 [tool.coverage.report]
@@ -109,6 +110,9 @@ omit = [
 # code". Here rather than in [run] omit, which filters what is measured and so
 # never sees a file the source walk adds back at report time.
 omit = ["*/pytest-of-*/*"]
+# The one threshold. pytest-cov applies it to a run that measures (`just
+# test-ci`), and `coverage report` to CI's combined shards.
+fail_under = 55
 exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",
@@ -166,3 +170,18 @@ ignore = [
 "tests/*" = ["S", "B"]
 "scripts/*" = ["S", "E"]
 "simulation/*" = ["S"]
+
+[tool.pyright]
+include = ["analysis", "clients", "config", "core", "migrations", "pipeline", "routes", "services", "main.py"]
+typeCheckingMode = "basic"
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
+# Four of the libs install editable through an import hook pyright cannot
+# follow, so it is pointed at their sources; retina-analytics resolves as is.
+extraPaths = [
+    "../libs/retina-custody",
+    "../libs/retina-geolocator",
+    "../libs/retina-simulation",
+    "../libs/retina-tracker",
+]

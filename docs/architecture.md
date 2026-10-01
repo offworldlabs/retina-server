@@ -182,8 +182,10 @@ data to a user's own nodes.
 ## Deploy
 
 `.github/workflows/ci.yml`: push to `main` → build/test → deploy staging →
-staging smoke + E2E → deploy production → prod smoke + E2E. The three staging
-steps live in `staging-deploy-verify.yml` and are called as a single job, so one
-run holds the environment until its own verification has finished. Deploy is an
+staging smoke + E2E → deploy production → prod smoke + E2E. Each environment's
+deploy, verification and rollbacks live in a called workflow
+(`staging-deploy-verify.yml`, `production-deploy-verify.yml`) called as a single
+job, so one run holds that environment until its own verification, and any
+rollback it triggers, has finished. Deploy is an
 SSH `git reset --hard origin/main` + `docker compose up -d --build`, gated by a
 free-disk pre-flight. Operational detail is in [`runbook.md`](runbook.md).

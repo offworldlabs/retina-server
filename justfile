@@ -15,20 +15,48 @@ run  := root / ".testmap-run"
 default:
     @just --list
 
-# One-time setup: submodules, backend venv + editable libs (uv), .env, web deps
+# Setup, for a clone or a fresh worktree: submodules, backend venv + editable libs (uv), web deps, .env, git hook
 setup:
     #!/usr/bin/env bash
     set -euo pipefail
     echo "→ submodules"
     git -C "{{root}}" submodule update --init --recursive
-    echo "→ backend venv + deps (uv)"
+    echo "→ backend venv and web deps, from their lockfiles"
+    just --justfile "{{justfile()}}" locked
     cd "{{be}}"
-    uv sync --locked   # interpreter pinned by backend/.python-version (3.12, matches Dockerfile)
     [ -f .env ] || cp .env.example .env   # Maprad key not needed for the testmap
     just --justfile "{{justfile()}}" migrate
-    echo "→ web deps"
-    cd "{{root}}" && npm ci
+    echo "→ pre-commit and the git hook"
+    just --justfile "{{justfile()}}" hooks
     echo "✓ setup complete — now: just up"
+
+# pre-commit and vulture as uv tools at the backend venv's versions (uv.lock's, after `just locked`), and the git hook
+hooks:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [ -x "{{py}}" ] || { echo "no backend venv — run: just locked"; exit 1; }
+    python=$(cat "{{be}}/.python-version")
+    version_of() { "{{py}}" -c 'import importlib.metadata, sys; print(importlib.metadata.version(sys.argv[1]))' "$1"; }
+    # vulture too, since the dead-code hook calls it by name.
+    for tool in pre-commit vulture; do
+        version=$(version_of "$tool")
+        if ! uv tool install --python "$python" "${tool}==${version}"; then
+            echo "✗ uv could not install ${tool}; its error is above. If the executable already exists,"
+            echo "  another install (pipx, pip --user) owns it: remove that, then rerun just hooks."
+            exit 1
+        fi
+    done
+    bin=$(uv tool dir --bin)
+    # The shared hook records this pre-commit's interpreter, which no worktree owns.
+    "$bin/pre-commit" install --install-hooks
+    # Both, since an activated venv can supply the right vulture here while a
+    # commit from a plain shell finds none.
+    vulture=$(version_of vulture)
+    found=$(vulture --version 2>/dev/null || true)
+    if [[ ":$PATH:" != *":$bin:"* || "$found" != "vulture ${vulture}" ]]; then
+        echo "⚠ put $bin first on PATH (uv tool update-shell): the dead-code hook calls the"
+        echo "  vulture ${vulture} there by name, and PATH now finds '${found:-none}'"
+    fi
 
 # Bring the dev database to head. Idempotent, and run by both setup and up.
 migrate:
@@ -90,6 +118,23 @@ migrate:
         printf '%s\n' "$out"
         exit 1
     fi
+
+# Autogenerate a migration, numbered past main and every open PR: just new-migration "what changed" additive|destructive
+[positional-arguments]
+new-migration message rollback_safety:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "$2" in
+        additive|destructive) ;;
+        *) echo "✗ rollback safety is additive or destructive, not '$2': see docs/runbook.md"; exit 1 ;;
+    esac
+    cd "{{be}}"
+    rev=$("{{py}}" -m scripts.next_revision)
+    # Autogenerate diffs the models against the dev database, and refuses one not at head.
+    just --justfile "{{justfile()}}" migrate
+    RETINA_ENV=dev "{{py}}" -m alembic -x "rollback_safety=$2" revision --autogenerate --rev-id "$rev" -m "$1"
+    # Committed revisions are ruff-formatted, and alembic writes single quotes.
+    "{{venv}}/bin/ruff" format migrations/versions/"$rev"_*.py
 
 # Bring up backend + synthetic fleet + console (background). Open http://app.localhost:5174/
 # Fleet profile: `just up` (local, dense) · `just up test` (50 fps) · `just up prod` (12.5 fps).
@@ -229,6 +274,69 @@ status:
 # Tail all three logs (Ctrl-C to stop tailing; services keep running)
 logs:
     tail -n +1 -f "{{run}}/backend.log" "{{run}}/fleet.log" "{{run}}/console.log"
+
+# ── Checks ───────────────────────────────────────────────────────────────────
+# What the PR's gate jobs run, runnable here. A recipe that takes arguments passes
+# them to the tool underneath, so `just test tests/test_health_monitor.py -k degraded` works.
+
+# Backend tests in parallel, without coverage. Paths relative to backend/, or from the root as backend/…; -n0 for -x
+[positional-arguments]
+test *args:
+    cd "{{be}}" && "{{py}}" -m pytest -n logical --dist worksteal "${@/#backend\//}"
+
+# The whole backend suite as CI's shards run it, unsharded, so the coverage threshold applies
+[positional-arguments]
+test-ci *args:
+    cd "{{be}}" && COVERAGE_CORE=sysmon "{{py}}" -m pytest tests/ --tb=short -n logical --dist worksteal --cov=. "$@"
+
+# The backend venv and node_modules installed exactly from uv.lock and package-lock.json
+locked:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # The same lookup .github/actions/setup-uv makes, and the same refusal.
+    version=$(sed -n 's/^ARG UV_VERSION=//p' "{{root}}/Dockerfile")
+    [[ "$version" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]] || { echo "✗ expected one UV_VERSION in the Dockerfile, found: '$version'"; exit 1; }
+    submodules=$(git -C "{{root}}" submodule status)
+    if grep -q '^-' <<<"$submodules"; then
+        echo "✗ a submodule is not checked out: git submodule update --init --recursive"; exit 1
+    fi
+    # The libs build from the submodules' working trees, so a pointer moved off
+    # the commit this branch pins, or an edit or new file inside one, tests code
+    # CI never sees.
+    moved=$(git -C "{{root}}" status --porcelain --ignore-submodules=none -- libs)
+    if [ -n "$moved" ]; then
+        echo "⚠ these submodules differ from what this branch pins, so this is not what CI tests:"
+        printf '%s\n' "$moved"
+    fi
+    # The interpreter is pinned by backend/.python-version, matching the Dockerfile.
+    cd "{{be}}" && uv tool run "uv@${version}" sync --locked
+    # Also fails when a workspace's package.json has moved without the lock.
+    cd "{{root}}" && npm ci
+
+# The venv goes on PATH, as the lint job puts it: the ops hooks call vulture,
+# and a python3 new enough for tomllib, by name.
+# pre-commit over every tracked file, as CI's lint job runs it (git add new files first)
+lint:
+    PATH="{{venv}}/bin:$PATH" "{{venv}}/bin/pre-commit" run --all-files --show-diff-on-failure
+
+# Regenerate the node API contract; `just contract --check` only compares
+[positional-arguments]
+contract *args:
+    cd "{{be}}" && RETINA_ENV=dev "{{py}}" -m scripts.generate_openapi "$@"
+
+# Type-check the backend with pyright: fails on the packages held clean, counts the rest
+typecheck:
+    cd "{{be}}" && "{{py}}" -m scripts.typecheck
+
+# Every front-end workspace's lint, typecheck, unit tests and build, as CI's web-build matrix runs them
+web:
+    npm run lint --workspaces --if-present
+    npm run typecheck --workspaces
+    npm test --workspaces --if-present
+    npm run build --workspaces --if-present
+
+# The PR gate's lint (with the contract), type check, backend and front-end jobs, stopping at the first that fails
+check: locked lint (contract "--check") typecheck test-ci web
 
 # ── retina-test droplet ──────────────────────────────────────────────────────
 # `deploy-test` deploys by rsync from the working tree, not by git. That is
@@ -393,3 +501,11 @@ deploy-test-status:
 # Tail retina-test's container logs (Ctrl-C to stop; the stack keeps running)
 deploy-test-logs service="":
     ssh "{{host_test}}" "cd {{app_test}} && docker compose logs -f --tail 100 {{service}}"
+
+# ── deployed environments ────────────────────────────────────────────────────
+
+# Did the deploy work? Asks prod | staging | test over its public hostnames (--help for options)
+[positional-arguments]
+verify-deploy env *args:
+    @[ -x "{{py}}" ] || { echo "no backend venv, whose certifi verifies TLS: run just setup"; exit 1; }
+    @"{{py}}" "{{root}}/deploy/verify-deploy.py" "$@"

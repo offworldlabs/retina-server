@@ -2,33 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import { ThemeProvider, useTheme, THEME_KEY } from "../context/ThemeContext";
 import themeBoot from "../../public/theme-boot.js?raw";
+import { stubMatchMedia } from "./matchMedia";
 
-/**
- * Both browser APIs under test are stubbed rather than borrowed from the
- * environment. matchMedia because jsdom has none; localStorage because Node 20
- * and Node 26 disagree about whose implementation `window.localStorage` reaches
- * (26 shadows jsdom's with its own, which throws without `--localstorage-file`),
- * and a suite that passes on CI's Node and fails on a developer's is worse than
- * no suite.
- */
-function stubStorage(seed: Record<string, string> = {}) {
-  const store = new Map(Object.entries(seed));
-  const storage = {
-    getItem: (k: string) => store.get(k) ?? null,
-    setItem: (k: string, v: string) => void store.set(k, String(v)),
-    removeItem: (k: string) => void store.delete(k),
-    clear: () => store.clear(),
-    key: (i: number) => [...store.keys()][i] ?? null,
-    get length() {
-      return store.size;
-    },
-  };
-  Object.defineProperty(window, "localStorage", { value: storage, configurable: true, writable: true });
-  return storage;
-}
-
-/** Replace it with one that throws on every access, as private browsing and a
- *  full quota both do. */
+/** Replace localStorage with one that throws on every access, as private
+ *  browsing and a full quota both do. */
 function stubBrokenStorage() {
   const boom = () => {
     throw new Error("storage unavailable");
@@ -38,29 +15,6 @@ function stubBrokenStorage() {
     configurable: true,
     writable: true,
   });
-}
-
-/** Install a matchMedia whose match state the test controls, keeping the
- *  listeners so a test can fire an OS-level theme change. */
-function stubMatchMedia(prefersDark: boolean) {
-  const listeners = new Set<(e: MediaQueryListEvent) => void>();
-  const mql = {
-    matches: prefersDark,
-    media: "(prefers-color-scheme: dark)",
-    addEventListener: (_: string, fn: (e: MediaQueryListEvent) => void) => listeners.add(fn),
-    removeEventListener: (_: string, fn: (e: MediaQueryListEvent) => void) => listeners.delete(fn),
-  };
-  window.matchMedia = vi.fn().mockReturnValue(mql) as unknown as typeof window.matchMedia;
-  return {
-    /** Flip the OS preference the way a real media query would. */
-    set(matches: boolean) {
-      mql.matches = matches;
-      act(() => {
-        for (const fn of listeners) fn({ matches } as MediaQueryListEvent);
-      });
-    },
-    listenerCount: () => listeners.size,
-  };
 }
 
 function Probe() {
@@ -78,10 +32,7 @@ function Probe() {
 const renderProbe = () => render(<ThemeProvider><Probe /></ThemeProvider>);
 const attr = () => document.documentElement.getAttribute("data-theme");
 
-let storage: ReturnType<typeof stubStorage>;
-
 beforeEach(() => {
-  storage = stubStorage();
   document.documentElement.removeAttribute("data-theme");
   stubMatchMedia(false);
 });
@@ -97,7 +48,7 @@ describe("theme preference", () => {
   });
 
   it("restores a stored preference", () => {
-    storage.setItem(THEME_KEY, "dark");
+    window.localStorage.setItem(THEME_KEY, "dark");
     renderProbe();
     expect(screen.getByTestId("preference")).toHaveTextContent("dark");
     expect(screen.getByTestId("resolved")).toHaveTextContent("dark");
@@ -106,13 +57,13 @@ describe("theme preference", () => {
   it("persists a change", () => {
     renderProbe();
     act(() => screen.getByText("dark").click());
-    expect(storage.getItem(THEME_KEY)).toBe("dark");
+    expect(window.localStorage.getItem(THEME_KEY)).toBe("dark");
   });
 
   // A value from a future version, a hand-edited one, or another app sharing
   // the origin must not leave the console rendering a theme that has no tokens.
   it("falls back to system on a value it does not recognise", () => {
-    storage.setItem(THEME_KEY, "solarized");
+    window.localStorage.setItem(THEME_KEY, "solarized");
     renderProbe();
     expect(screen.getByTestId("preference")).toHaveTextContent("system");
   });

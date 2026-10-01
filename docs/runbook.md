@@ -24,8 +24,9 @@ On prod and staging, the deploy takes a rollback point before it moves anything
 `deploy-<timestamp>`) and marks the box mid-deploy with `.deploy-in-progress` until the
 new container answers `/api/health`. A deploy that fails in a pre-flight touches nothing
 and rolls nothing back; one that fails after the marker is written is rolled back by the
-workflow itself (`rollback-production-on-deploy-failure` in `ci.yml`, `rollback` in
-`staging-deploy-verify.yml`) through `deploy/rollback.sh`. A marker left behind blocks
+workflow itself (`rollback-production-on-deploy-failure` in
+`production-deploy-verify.yml`, `rollback` in `staging-deploy-verify.yml`) through
+`deploy/rollback.sh`. A marker left behind blocks
 the next deploy until someone recovers the box and deletes it. Production also rolls back
 when its smoke tests or E2E fail. Staging does not: a build that boots healthy and then
 fails its suites stays there, blocking production, until the next merge.
@@ -287,6 +288,7 @@ renamed table or column, a narrowed type, a `NOT NULL` added without a default,
 a tightened constraint. The test is whether the previous revision's code can run
 its queries unchanged against this schema.
 
+`just new-migration` takes it as an argument and writes it in.
 `backend/tests/test_migrations.py` fails if a revision does not declare one, and
 a revision that reaches a droplet undeclared is graded destructive.
 

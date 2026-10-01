@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import App from "../App";
 import { ThemeProvider } from "../context/ThemeContext";
+import { stubMatchMedia } from "./matchMedia";
 
 const state = vi.hoisted(() => ({
   auth: {
@@ -25,11 +26,7 @@ function Where() {
 
 function visit(path: string, user: { name: string; email: string } | null) {
   state.auth.user = user;
-  window.matchMedia = vi.fn().mockReturnValue({
-    matches: false,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-  }) as unknown as typeof window.matchMedia;
+  stubMatchMedia();
   render(
     <ThemeProvider>
       <MemoryRouter initialEntries={[path]}>

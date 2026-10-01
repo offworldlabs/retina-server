@@ -6,6 +6,7 @@ import Header from "../components/Header";
 import RequireAuth from "../components/RequireAuth";
 import { AuthProvider } from "../context/AuthContext";
 import { ThemeProvider } from "../context/ThemeContext";
+import { stubMatchMedia } from "./matchMedia";
 
 /**
  * Where signing out leaves a caller.
@@ -15,29 +16,6 @@ import { ThemeProvider } from "../context/ThemeContext";
  * not to sign in again. The real AuthProvider and RequireAuth are used, since
  * the question is how the cleared identity and the route change meet the guard.
  */
-
-/** As in signedOutChrome.test.tsx: jsdom has no matchMedia, and Node 20 and 26
- *  disagree about window.localStorage. */
-function stubBrowser() {
-  const store = new Map<string, string>();
-  Object.defineProperty(window, "localStorage", {
-    configurable: true,
-    value: {
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => void store.set(k, String(v)),
-      removeItem: (k: string) => void store.delete(k),
-      clear: () => store.clear(),
-      key: () => null,
-      length: 0,
-    },
-  });
-  window.matchMedia = vi.fn().mockReturnValue({
-    matches: false,
-    media: "(prefers-color-scheme: dark)",
-    addEventListener: () => {},
-    removeEventListener: () => {},
-  }) as unknown as typeof window.matchMedia;
-}
 
 /** `signOutAnswered` holds the sign-out response back until it settles. */
 function stubServer(signOutAnswered: Promise<void> = Promise.resolve()) {
@@ -101,7 +79,7 @@ async function signOut() {
 
 describe("signing out", () => {
   beforeEach(() => {
-    stubBrowser();
+    stubMatchMedia();
     stubServer();
     signInCard.mockClear();
   });

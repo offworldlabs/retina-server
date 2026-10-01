@@ -34,7 +34,8 @@ CURL="curl -s --connect-timeout 10 --max-time 30"
 # already hold. The query string is part of the cache key, so a fresh one is a
 # guaranteed miss, and nginx matches its locations on the path alone.
 BUST="smoke=$(date +%s)$RANDOM"
-# PASS/FAIL/WARN and smoke_summary, shared with the production suite in ci.yml.
+# PASS/FAIL/WARN and smoke_summary, shared with the production suite in
+# production-deploy-verify.yml.
 # shellcheck source=deploy/smoke-tally.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/smoke-tally.sh"
 # assert_origin_marker: proves THIS repo's nginx answered, not merely that the
@@ -128,7 +129,7 @@ check_contract() {
 NO_DNS_EXPECTED=""
 
 # Vhosts whose record exists and is expected to, but whose absence must not
-# fail the run: this runs inside the `staging` job that deploy-production needs
+# fail the run: this runs inside the `staging` job that production waits on
 # (ci.yml calls staging-deploy-verify.yml), so a hard failure here would let a
 # Cloudflare wobble block every release. Reported as WARN and tallied
 # separately, because a deleted record must still be visible: skipping it

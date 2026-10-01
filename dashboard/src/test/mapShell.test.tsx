@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import appSource from "../App.tsx?raw";
 import DashboardLayout, { pageTitles } from "../components/DashboardLayout";
 import { ThemeProvider } from "../context/ThemeContext";
+import { stubMatchMedia } from "./matchMedia";
 
 const state = vi.hoisted(() => ({
   auth: {
@@ -17,31 +18,6 @@ const state = vi.hoisted(() => ({
 // house pattern (signedOutChrome.test.tsx) mocks it rather than mounting one.
 vi.mock("../context/AuthContext", () => ({ useAuth: () => state.auth }));
 
-/** Stubbed rather than borrowed, as in theme.test.tsx: jsdom has no matchMedia,
- *  and Node 20 and 26 disagree about whose window.localStorage is reached. */
-function stubBrowser(seed: Record<string, string> = {}) {
-  const store = new Map(Object.entries(seed));
-  Object.defineProperty(window, "localStorage", {
-    configurable: true,
-    writable: true,
-    value: {
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => void store.set(k, String(v)),
-      removeItem: (k: string) => void store.delete(k),
-      clear: () => store.clear(),
-      key: (i: number) => [...store.keys()][i] ?? null,
-      get length() { return store.size; },
-    },
-  });
-  window.matchMedia = vi.fn().mockReturnValue({
-    matches: false,
-    media: "(prefers-color-scheme: dark)",
-    addEventListener: () => {},
-    removeEventListener: () => {},
-  }) as unknown as typeof window.matchMedia;
-  return store;
-}
-
 function renderAt(path: string, isAdmin = false) {
   return render(
     <ThemeProvider>
@@ -53,7 +29,7 @@ function renderAt(path: string, isAdmin = false) {
 }
 
 describe("the map's content pane", () => {
-  beforeEach(() => stubBrowser());
+  beforeEach(() => stubMatchMedia());
 
   it("is flush on the map route", () => {
     const { container } = renderAt("/map");
@@ -81,7 +57,7 @@ describe("the map's content pane", () => {
 });
 
 describe("the header's name for a page", () => {
-  beforeEach(() => stubBrowser());
+  beforeEach(() => stubMatchMedia());
 
   // Every other page is named by its first path segment and owns whatever
   // nests under it. /sim is the exception: the page beneath it configures the

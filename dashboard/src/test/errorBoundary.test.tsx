@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import App from "../App";
 import ErrorBoundary from "../components/ErrorBoundary";
 import { ThemeProvider } from "../context/ThemeContext";
+import { stubMatchMedia } from "./matchMedia";
 
 const state = vi.hoisted(() => ({
   auth: {
@@ -82,11 +83,7 @@ describe("the error fallback", () => {
 
 /** The whole console at `at`, under an OS that prefers dark or light. */
 function visit(at: string, { prefersDark = false } = {}) {
-  window.matchMedia = vi.fn().mockReturnValue({
-    matches: prefersDark,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-  }) as unknown as typeof window.matchMedia;
+  stubMatchMedia(prefersDark);
   return render(
     <ThemeProvider>
       <MemoryRouter initialEntries={[at]}>

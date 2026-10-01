@@ -63,24 +63,29 @@ reports no checks at all; verify it from this repo's suite instead.
 
 ## Local setup
 
-Clone with submodules, then set up backend and front-ends.
-
 ```bash
-git clone --recursive https://github.com/offworldlabs/retina-server.git
+git clone https://github.com/offworldlabs/retina-server.git
 cd retina-server
-# already cloned without --recursive?
-git submodule update --init --recursive
+just setup
 ```
+
+`just setup` checks out the submodules, installs the backend venv and
+`node_modules` from their lockfiles (`just locked`), copies
+`backend/.env.example` to `backend/.env` if there is none, brings the dev
+database to head, and installs pre-commit and the git hook (`just hooks`).
+Running it again updates the submodules to the branch's pins, resyncs the
+backend venv, reinstalls `node_modules` (so stop `just up` first) and installs
+the hook's tools at this checkout's versions (see "Before you push"). The
+sections below cover what it sets up.
 
 ### Backend
 
 ```bash
-cd backend
-uv sync && source .venv/bin/activate   # the lock, dev tools and all five libs, editable
-pre-commit install --install-hooks   # the lint gate on every commit; see "Before you push"
-cp .env.example .env          # fill in what you need (see below)
+cd backend && source .venv/bin/activate   # the lock, dev tools and all five libs, editable
 RETINA_ENV=dev AUTH_ALLOW_ANONYMOUS_ADMIN=1 SYNTHETIC_FLEET_ENABLED=1 uvicorn main:app --reload
 ```
+
+Fill in `backend/.env` with what you need (see below).
 
 API at `http://localhost:8000`, and its reference at `/`. That page and
 `/openapi.json` list only the public routes; with the bypass below, the whole
@@ -184,24 +189,23 @@ backend with synthetic frames, see [`docs/simulation.md`](docs/simulation.md).
 ### Working in a git worktree
 
 A fresh worktree has empty `libs/` directories, no `node_modules` and no venv of
-its own. Build them the way CI does, or pytest fails at conftest import on a
-missing `sqlalchemy`. The submodules come first: `uv sync` builds the libs from
-them.
-
-```bash
-git submodule update --init
-npm ci
-cd backend && uv sync
-```
+its own, so pytest fails at conftest import on a missing `sqlalchemy` until
+`just setup` has run in it. Never point one at another checkout's venv: its
+libs are editable installs of that checkout's submodules.
 
 ## Running tests
 
 ```bash
-# backend
-cd backend && RETINA_ENV=test COVERAGE_CORE=sysmon pytest
+# backend: in parallel without coverage, then as CI runs it, threshold included
+just test                   # or one file: just test tests/test_health_routes.py
+just test-ci
 
-# every workspace; -w dashboard (or -w packages/shared, -w e2e) for one
-npm run test --workspaces --if-present && npm run typecheck --workspaces && npm run lint --workspaces --if-present
+# every workspace's lint, typecheck, unit tests and build, from the repo root
+npm run check
+# the unit tests alone, each workspace's under its own config
+npm test
+# one workspace's own script, as CI runs it
+npm run typecheck -w e2e
 
 # the browser suite, against staging (local and prod are the other two targets).
 # It drives the installed Google Chrome, as CI drives its runner's; where there
@@ -209,12 +213,22 @@ npm run test --workspaces --if-present && npm run typecheck --workspaces && npm 
 npm run test:e2e:staging -w e2e
 ```
 
-Backend coverage gate is 55%. Async tests need `pytest-asyncio` (in the
-`dev` group, which `uv sync` installs) — without it they silently skip.
+`just test` passes its arguments to pytest, and takes paths relative to
+`backend/` or, from the repo root, starting `backend/`; `-n0` runs serially,
+which `-x` wants (`--pdb` gets it anyway). It measures no coverage, and neither
+does a bare `pytest`, so a run of one file exits on its tests alone. The 55%
+gate is `fail_under` in `backend/pyproject.toml` and applies only to a run that
+measures, which `just test-ci` does. That makes `just test-ci` a whole-suite
+run: `-k`, or a path relative to `backend/`, narrows it as it would any pytest
+run, and the narrowed run then fails the threshold, so narrow with `just test`
+instead.
+`just test-ci --cov-report=html` writes the report to `backend/htmlcov/` instead
+of the terminal. Async tests need `pytest-asyncio`, which `uv sync` installs
+with the `dev` group.
 
-Trust pytest's **exit status**, not the tail of its output. The warnings block
-and the coverage footer both print after the summary line, so piping the run
-into `tail` loses the `N passed` and a passing-looking tail proves nothing.
+Trust pytest's **exit status**, not its summary line. A run that misses the
+coverage threshold prints its failure above a summary that still reads
+`N passed`, and exits 1.
 
 Two suites can now run at once, from two worktrees, without interfering. They
 could not before: `backend/main.py` binds `RADAR_TCP_PORT` (default `3012`) in
@@ -233,23 +247,24 @@ CI splits the suite across three runners on top of that, with `pytest-split`
 cutting the collected tests into contiguous chunks of equal recorded duration.
 A shard measures only its own third, so each overrides the 55% gate away and
 uploads its coverage data; the `backend-coverage` job combines the three and
-applies the threshold once. A local `pytest` is untouched by all of this and
-still enforces the gate itself.
+applies the threshold once. `just test-ci` runs the shards' command over the
+whole suite and applies the threshold itself.
 
 `backend/.test_durations` only decides where the two boundaries fall, so a stale
 one costs balance and never correctness. Regenerate it when the shards drift
 apart, from a serial run:
 
 ```bash
-cd backend && pytest tests/ -m "not external" --no-cov --store-durations
+cd backend && pytest tests/ --store-durations
 ```
 
 Not under `-n`: each xdist worker records only the tests that landed on it, and
 the file it writes covers a fraction of the suite.
 
-`COVERAGE_CORE=sysmon` above is not decoration, and CI sets it too. Without it,
-coverage measures through `sys.settrace`, which is per execution context, so
-every line after an `await session.…` in a greenlet-backed path counts as unrun:
+`just test-ci` sets `COVERAGE_CORE=sysmon`, as CI does, and it is not
+decoration. Without it, coverage measures through `sys.settrace`, which is per
+execution context, so every line after an `await session.…` in a
+greenlet-backed path counts as unrun:
 `[tool.coverage.run]` in `backend/pyproject.toml` sets no `concurrency` to
 compensate. The async route modules are what this hits. sysmon measures through
 the PEP 669 interpreter-wide hooks instead, has no such blind spot, and is more
@@ -262,40 +277,61 @@ ten times slower than sysmon and there is no longer a reason to reach for it.
 
 ### Before you push
 
-The lint gate is pre-commit, not the two ruff commands. Once installed (see
-Local setup) it runs on the staged files at every commit, in every worktree:
-hooks live in the clone's shared `.git/hooks`. The hook records the absolute
-path of the venv it was installed from, so reinstall it if that venv moves.
+Run `just check`. It runs what the PR's lint (with the node API contract), type
+check, backend and front-end jobs run, in this order, and stops at the first
+that fails, where CI's separate jobs report every failure at once:
 
-CI runs it over every file, and so should you before pushing, since a commit
-made with `--no-verify` or from somewhere without the hook skipped it:
+- `just locked` installs the backend venv and `node_modules` exactly from
+  `uv.lock` and `package-lock.json`, with the uv CI uses and `npm ci`, and is
+  what `just setup` installs with too. It fails when either lock has fallen
+  behind its manifest, removes anything installed by hand, and warns when a
+  submodule differs from what the branch pins. `npm ci` replaces
+  `node_modules` wholesale, so stop `just up` first. `just web` on its own runs
+  against whatever `node_modules` holds.
+- `just lint`, `just contract --check`, `just typecheck`, `just test-ci` and
+  `just web`. `just typecheck` runs pyright over the server's packages (not
+  `tests/` or `scripts/`), failing on those `backend/scripts/typecheck.py` holds
+  clean and counting errors in the rest; a package joins that list once it
+  reads 0.
 
-```bash
-backend/.venv/bin/pre-commit run --all-files
-```
+The Docker build and the compose parity check are left to CI.
+
+The lint gate is pre-commit, not the two ruff commands. `just hooks` (part of
+`just setup`) installs it as the clone's git hook, in the shared `.git/hooks`,
+and it then runs on the staged files at every commit, in every worktree. The
+hook runs through a pre-commit installed as a uv tool, outside every checkout,
+so removing or moving a worktree leaves it working in the others. The dead-code
+check calls vulture, which `just hooks` installs beside it, by name, so
+`uv tool dir --bin` must be on PATH; the ruff-config check needs a `python3` of
+3.11 or later. The tools are machine-wide, so they sit at the versions in the
+venv of whichever checkout ran `just hooks` last, which are `uv.lock`'s once
+`just locked` has run there. The contract check alone runs in the committing
+checkout's `backend/.venv`, because it imports the app. CI runs the hooks over
+every file, as `just lint` does, since a commit made with `--no-verify` or from
+somewhere without the hook skipped it.
 
 It runs `ruff-check`, `ruff-format`, actionlint over the workflows, shellcheck
-over the shell scripts (warnings and errors), a dead-code check (vulture) and
-`ruff-config` twice, once per copy of the shared standard in this repo. A
-change can pass `ruff check` and `ruff format` by hand and still fail CI on
-dead code.
+over the shell scripts (warnings and errors), a dead-code check (vulture),
+`ruff-config` twice, once per copy of the shared standard in this repo, and the
+node API contract check below. A change can pass `ruff check` and `ruff format`
+by hand and still fail CI on dead code.
 
 Touching a node route or one of its models also moves the node API's wire
 contract, which is generated rather than written. So does changing a
 configuration bound: the schema published for `config` is built from the
 validator's own tables, so `backend/services/node_config.py` moves the contract
-with no route touched. Regenerate it in the same commit, or CI fails on a file
-you never edited:
+with no route touched. Regenerate it in the same commit: the hook refuses the
+commit otherwise, and CI fails on a file you never edited if it got past:
 
 ```bash
-cd backend && RETINA_ENV=dev .venv/bin/python -m scripts.generate_openapi
+just contract
 ```
 
 That gate is what makes the generated contract trustworthy: the committed file
 cannot be edited by hand to match a change, because the next run regenerates it
 and notices.
 
-Two traps in that command:
+Two traps in the lint run:
 
 - **`--all-files` does not mean all files.** pre-commit enumerates through
   `git ls-files`, so untracked files are skipped silently. `git add` new modules
@@ -311,31 +347,35 @@ CI runs on every PR, on push to `main`, and on demand through
 `workflow_dispatch` (`.github/workflows/ci.yml`):
 
 1. Any PR, whatever its base: `backend-tests` (three shards) and
-   `backend-coverage` behind them, `lint`, `web-build` (once per
-   workspace, with the dashboard's tests in two shards apart from its
-   other checks),
-   `docker-build`, `env-parity`, plus an automated review.
+   `backend-coverage` behind them, `lint` (with the node API contract),
+   `typecheck`, `web-build` (once per workspace, with the dashboard's tests
+   in two shards apart from its other checks), `docker-build`, `env-parity`,
+   plus an automated review.
 2. Merge to `main` → deploy to **staging** → staging smoke + Playwright E2E → deploy to **production** → prod smoke + Playwright E2E.
    A merge that changes nothing the droplets serve skips that chain, which means
    markdown, and Python whose syntax tree has not moved: a reworded comment or a
    `ruff format` pass ships nothing. `deploy/deploy-scope.py` holds the rules and
    the exceptions, and its tests hold the verdicts.
-   The staging third of it is a called workflow,
-   `.github/workflows/staging-deploy-verify.yml`, invoked from one `Staging`
-   job so that job's concurrency group is held across the deploy and both
-   suites. Adding a staging step means editing that file, not `ci.yml`.
+   Each environment's part of it is a called workflow,
+   `.github/workflows/staging-deploy-verify.yml` and
+   `.github/workflows/production-deploy-verify.yml`, invoked from one `Staging`
+   or `Production` job so that job's concurrency group is held across the
+   deploy, both suites and the rollbacks. Adding a deploy or verification step
+   means editing those files, not `ci.yml`.
    Both deploys take a rollback point first and roll themselves back when
    they fail after it; the runbook's Environments section has the shape.
 
 So merging to `main` deploys to production automatically. Work on a feature
-branch, open a PR, get it green, then merge.
+branch, open a PR, get it green, then merge. Once the deploy has run,
+`just verify-deploy <env>` asks that environment whether it worked.
 
 ## Things that will bite you
 
-- **A cancelled `Staging` job on a burst of merges is expected, not a fault.**
-  Only one run may sit pending on the `staging-deploy` group, so when a third
-  merge arrives while one run holds staging and another is queued, the queued
-  one is cancelled. `main` is linear, so the run that replaces it deploys a
+- **A cancelled `Staging` or `Production` job on a burst of merges is expected,
+  not a fault.** Only one run may sit pending on each of the `staging-deploy`
+  and `production-deploy` groups, so when a third merge arrives while one run
+  holds an environment and another is queued for it, the queued one is
+  cancelled. `main` is linear, so the run that replaces it deploys a
   superset of what was dropped. What it does mean is that the cancelled
   commit's own run never reaches production: the following run carries it.
   The last merge in a burst has no successor, so check it landed.
