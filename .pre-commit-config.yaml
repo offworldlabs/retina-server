@@ -36,6 +36,15 @@ repos:
     hooks:
       - id: actionlint
 
+  # Every shell script, deploy/ above all: the gate and the deploy run as root
+  # on the droplets, and nothing else checks them before they do. Warnings and
+  # errors only; the older scripts carry style notes not worth the churn.
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        args: [--severity=warning]
+
   - repo: https://github.com/offworldlabs/ops
     rev: hooks-v1.0
     hooks:

@@ -287,6 +287,64 @@ assert_geocode_contract() {
     done
 }
 
+# assert_tower_contract_over_edge
+# The same contract, asked of the tower-finder-service container on this box
+# over retina-edge, which is the path our vhosts forward on. The public name
+# reaches the same container through the service's own edge instead. Elevation
+# is left to the public probe: it fans out to open-meteo, so it would not say
+# anything deterministic about this container. Runs on a
+# droplet, as the deploy gate's probe-towers verb. Prints ::error:: lines and
+# returns 1 on any breach.
+TOWER_CONTRACT_CURL_IMAGE=curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
+_edge_curl() {
+    docker run --rm --network retina-edge "$TOWER_CONTRACT_CURL_IMAGE" -sS \
+        --connect-timeout 10 --max-time "$TOWER_CONTRACT_MAX_TIME" "$@"
+}
+assert_tower_contract_over_edge() {
+    local base=http://tower-finder-service:8000 body key code
+    if ! docker network inspect retina-edge >/dev/null 2>&1; then
+        echo "::error::retina-edge does not exist on $(hostname), so nginx cannot reach tower-finder-service and every proxied /api/towers would 502. Bring that stack up before routing a vhost to it."
+        return 1
+    fi
+    body=$(_edge_curl "${base}/api/towers?${TOWER_CONTRACT_QUERY}") || {
+        echo "::error::tower-finder-service did not answer on retina-edge from $(hostname), or the probe's curl container (${TOWER_CONTRACT_CURL_IMAGE}) could not start; curl's or docker's own error is above."
+        return 1
+    }
+    # Here-strings and slices, not pipes: the gate runs this under pipefail,
+    # where a reader that stops early fails the pipeline.
+    if ! grep -qF -e "$TOWER_CONTRACT_ECHO" <<<"$body"; then
+        echo "::error::$(hostname)'s tower-finder-service answered without ${TOWER_CONTRACT_ECHO}. Either \`frequencies\` is not implemented there, or it is under another key or JSON shape. First 300 bytes follow."
+        printf '%s\n' "${body:0:300}"
+        return 1
+    fi
+
+    body=$(_edge_curl "${base}/api/config") || {
+        echo "::error::tower-finder-service did not answer /api/config on retina-edge from $(hostname)."
+        return 1
+    }
+    # shellcheck disable=SC2090  # the quotes are data; see TOWER_CONTRACT_CONFIG_KEYS
+    for key in $TOWER_CONTRACT_CONFIG_KEYS; do
+        if ! grep -qF -e "$key" <<<"$body"; then
+            echo "::error::$(hostname)'s tower-finder-service answered /api/config without ${key}, which snippets/towers-proxy.conf forwards on every vhost. First 300 bytes follow."
+            printf '%s\n' "${body:0:300}"
+            return 1
+        fi
+    done
+
+    # The empty query is refused by the service's request model with 422
+    # before any geocoder is asked; anything else means the route is missing.
+    code=$(_edge_curl -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+        -d "$TOWER_CONTRACT_GEOCODE_BODY" "${base}/api/geocode") || {
+        echo "::error::tower-finder-service did not answer /api/geocode on retina-edge from $(hostname)."
+        return 1
+    }
+    if [ "$code" != 422 ]; then
+        echo "::error::$(hostname)'s tower-finder-service answered /api/geocode with HTTP ${code}, not the 422 an empty query gets, so the search form's address field would 404."
+        return 1
+    fi
+    echo "$(hostname)'s tower-finder-service honours the contract over retina-edge."
+}
+
 # Run directly (not sourced) to gate a deploy on the contract. Takes the
 # /api/towers endpoint; the sibling routes are derived from it, so a caller
 # cannot check the search and forget the other two.

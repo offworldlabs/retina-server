@@ -5,9 +5,12 @@ __pycache__/
 *.pyc
 .env
 
-# Written on the deploy target while a production deploy is mid-flight, and
-# read by the rollback job. Host state, never committed.
+# Deploy state on the droplets, never committed: the mid-deploy marker, the
+# record of the last finished deploy, and deploy/gate.sh's lock and log.
 .deploy-in-progress
+.last-deploy
+.deploy-gate.lock
+.deploy-gate.log*
 .venv/
 venv/
 *.egg-info/

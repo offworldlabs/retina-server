@@ -310,10 +310,11 @@ checkout's `backend/.venv`, because it imports the app. CI runs the hooks over
 every file, as `just lint` does, since a commit made with `--no-verify` or from
 somewhere without the hook skipped it.
 
-It runs `ruff-check`, `ruff-format`, actionlint over the workflows, a dead-code
-check (vulture), `ruff-config` twice, once per copy of the shared standard in
-this repo, and the node API contract check below. A change can pass
-`ruff check` and `ruff format` by hand and still fail CI on dead code.
+It runs `ruff-check`, `ruff-format`, actionlint over the workflows, shellcheck
+over the shell scripts (warnings and errors), a dead-code check (vulture),
+`ruff-config` twice, once per copy of the shared standard in this repo, and the
+node API contract check below. A change can pass `ruff check` and `ruff format`
+by hand and still fail CI on dead code.
 
 Touching a node route or one of its models also moves the node API's wire
 contract, which is generated rather than written. So does changing a
