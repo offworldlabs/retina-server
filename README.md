@@ -133,7 +133,7 @@ committed, which is what stops the file being edited to match a change instead o
 the change being noticed. Change a node route, then:
 
 ```bash
-cd backend && RETINA_ENV=dev .venv/bin/python -m scripts.generate_openapi
+just contract
 ```
 
 and commit the result alongside. Behaviour a schema cannot carry (whether a
