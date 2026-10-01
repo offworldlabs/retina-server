@@ -510,3 +510,43 @@ def test_km_between_is_the_real_distance():
     gap = ns._km_between((_SITE_LAT, _SITE_LON), (_SITE_LAT + 0.01, _SITE_LON))
     assert gap == pytest.approx(1.11, abs=0.02)
     assert not math.isnan(gap)
+
+
+class TestCountSites:
+    """count_sites: the grouping above, over just the nodes a caller names."""
+
+    _M = 1.0 / 111_195.0  # degrees of latitude per metre
+
+    def test_receivers_within_the_radius_are_one_site(self):
+        positions = {"a": (_SITE_LAT, _SITE_LON), "b": (_SITE_LAT + 56 * self._M, _SITE_LON)}
+        assert ns.count_sites(positions) == 1
+
+    def test_receivers_beyond_the_radius_are_two(self):
+        positions = {"a": (_SITE_LAT, _SITE_LON), "b": (_SITE_LAT + 200 * self._M, _SITE_LON)}
+        assert ns.count_sites(positions) == 2
+
+    def test_exact_equality_is_one_site(self):
+        positions = {"a": (_SITE_LAT, _SITE_LON), "b": (_SITE_LAT, _SITE_LON), "c": (_SITE_LAT + 0.1, _SITE_LON)}
+        assert ns.count_sites(positions) == 2
+
+    def test_the_radius_follows_the_environment(self, monkeypatch):
+        monkeypatch.setenv("NODE_FUZZ_SITE_KM", "0")
+        positions = {"a": (_SITE_LAT, _SITE_LON), "b": (_SITE_LAT + 56 * self._M, _SITE_LON)}
+        assert ns.count_sites(positions) == 2
+
+    def test_an_unplaced_node_is_a_site_of_its_own(self):
+        """Unknown must never merge: a node with no position, or a partial
+        one, is counted once on its own."""
+        positions = {"a": (_SITE_LAT, _SITE_LON), "b": None, "c": (None, _SITE_LON)}
+        assert ns.count_sites(positions) == 3
+
+    def test_reads_no_snapshot(self, monkeypatch):
+        """Pure: the solver thread calls it per solve, so it must not refresh
+        the module's position snapshot (a database read)."""
+
+        def boom():
+            raise AssertionError("count_sites touched the snapshot")
+
+        monkeypatch.setattr(ns, "_refresh_locked", boom)
+        assert ns.count_sites({"a": (_SITE_LAT, _SITE_LON)}) == 1
+        assert ns.count_sites({}) == 0

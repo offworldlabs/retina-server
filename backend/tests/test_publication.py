@@ -1575,11 +1575,29 @@ class TestMlatHistoryPayload:
                 "guess_lon": -82.0,
             }
         )
+        state.known_claim_history.append(
+            {
+                "ts_ms": now_ms,
+                "hex": "abc123",
+                "node_id": self._A,
+                "residual_delay_us": 0.4,
+                "residual_doppler_hz": -1.5,
+                "fix_age_s": 2.0,
+                "hold": False,
+                "follow": False,
+                "contested": False,
+                "n_fresh_nodes": 2,
+                "feed": "adsb_multi_node",
+                "feed_fix_age_s": 2.5,
+                "feed_ts_ms": now_ms,
+            }
+        )
         try:
             yield
         finally:
             state.mlat_solve_history.clear()
             state.solver_resolve_skips_recent.clear()
+            state.known_claim_history.clear()
 
     @pytest.fixture()
     def bodies(self, client, seeded):
@@ -1588,6 +1606,7 @@ class TestMlatHistoryPayload:
             "all": client.get("/api/test/mlat-history?all=1"),
             "hex": client.get("/api/test/mlat-history?hex=mn0123456789"),
             "skips": client.get("/api/test/mlat-history?kind=resolve_skips"),
+            "claims": client.get("/api/test/mlat-history?kind=claims"),
         }
 
     def test_no_node_id_reaches_the_response(self, bodies):
@@ -1689,6 +1708,15 @@ class TestMlatHistoryPayload:
                 "guess_lon": -82.0,
             }
         ]
+
+    def test_the_claim_history_names_its_node_by_ref(self, bodies):
+        """The claim history is filed by transponder hex, the same hex the
+        feed publishes beside contributing_node_refs, so a raw node id here
+        would hand over the mapping exactly as a solve record would."""
+        (rec,) = bodies["claims"].json()["records"]
+        assert rec["node_ref"] == _seed_ref(self._A)
+        assert rec["hex"] == "abc123"
+        assert rec["feed"] == "adsb_multi_node"
 
 
 class TestFurthestDetectionsClassification:

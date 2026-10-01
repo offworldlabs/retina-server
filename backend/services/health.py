@@ -281,6 +281,7 @@ def compute_health_issues() -> list[dict]:
     # the ADS-B fix verbatim, so it would score a near-zero error against ADS-B
     # truth without any solver having run, and enough of them would hold this
     # mean below the threshold while the real solves degraded.
+    # `adsb_multi_node` is the same ADS-B fix with more claimants.
     # The two `known_lane_*` sources are excluded for that same reason and one
     # of its own: a truth_match error is displacement from the ADS-B fix and is
     # <= the lane's 2 km publish gate BY CONSTRUCTION, so a flood of them pins
@@ -295,6 +296,7 @@ def compute_health_issues() -> list[dict]:
                 "single_node_ellipse_arc",
                 "solver_single_node",
                 "adsb_single_node",
+                "adsb_multi_node",
                 "known_lane_truth_match",
                 "known_lane_ghost",
             }

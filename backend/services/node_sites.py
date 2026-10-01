@@ -427,6 +427,30 @@ def _near_miss_reason(
     return "joined_nearer_site"
 
 
+def count_sites(positions: dict[str, tuple[float, float] | None]) -> int:
+    """How many receive sites these receivers occupy, by this module's two rules.
+
+    The same grouping the public geometry uses (exact equality, then the
+    NODE_FUZZ_SITE_KM proximity join), applied to just the nodes given, so a
+    caller asking "how many independent receivers does this measurement set
+    have?" gets the answer the map already publishes: two receivers on one
+    roof are one site.  Pure — it reads no snapshot and touches no database —
+    so a solver thread can call it per solve.  A node with no usable position
+    is counted as a site of its own: the unknown case must never merge two
+    receivers into one.
+    """
+    placed: dict[str, tuple[float, float]] = {}
+    unplaced = 0
+    for node_id, position in positions.items():
+        site = _site_of(*position) if position is not None else None
+        if site is None:
+            unplaced += 1
+        else:
+            placed[node_id] = site
+    identities, _joined = _cluster(placed, node_fuzz_site_km())
+    return len(set(identities.values())) + unplaced
+
+
 def colocation_report() -> dict:
     """Sites being shared, how each member got there, and the pairs still apart.
 
