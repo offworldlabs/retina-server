@@ -109,6 +109,17 @@ describe("reconcileAdsbPairs", () => {
     expect(s.fixes["abc123"]).toBeDefined();
   });
 
+  it("resolves a multi-node ADS-B claim against its solve the same way", () => {
+    const s: any = stores();
+    // The claim drew while the known lane's n=2 solve was unconfirmed; the
+    // solve has now landed, so the ICAO-keyed icon must not linger beside it.
+    s.fixes["abc123"] = { position_source: "adsb_multi_node", n_nodes: 2, seen: 1, _updatedAt: NOW - 3_000 };
+    s.fixes["mnaaaa"] = mnFix("abc123", 0.5);
+    reconcileAdsbPairs([mnEntry("mnaaaa", "abc123", 0.5)], s, NOW);
+    expect(s.fixes["abc123"]).toBeUndefined();
+    expect(s.fixes["mnaaaa"]).toBeDefined();
+  });
+
   it("leaves dark, arc-only, truth and unpaired entries alone", () => {
     const s: any = stores();
     s.fixes["mndark"] = { position_source: "multinode_solve", seen: 40, _updatedAt: NOW };

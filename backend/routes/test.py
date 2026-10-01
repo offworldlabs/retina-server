@@ -712,6 +712,31 @@ async def mlat_verification(_operator=Depends(require_admin_or_radar_key)):
     )
 
 
+def _claim_history_response(hex_code: str | None, minutes: float, cutoff_ms: int, limit: int) -> Response:
+    """/api/test/mlat-history?kind=claims — see mlat_history."""
+    held = list(state.known_claim_history)
+    effective_minutes = round(min(minutes, (time.time() * 1000 - held[0]["feed_ts_ms"]) / 60_000.0), 1) if held else 0.0
+    norm = normalize_hex_key(hex_code) if hex_code else ""
+    records = [r for r in held if r["ts_ms"] >= cutoff_ms and (not norm or r["hex"] == norm)]
+    # Newest claim first.  Sorted rather than reversed: the store is in
+    # feed-build order, and one build appends a backlog of claims at once.
+    records.sort(key=lambda r: r["ts_ms"], reverse=True)
+    by_feed: dict[str, int] = {}
+    for r in records:
+        by_feed[r["feed"]] = by_feed.get(r["feed"], 0) + 1
+    payload = {
+        "kind": "claims",
+        "hex": norm or None,
+        "window_minutes": minutes,
+        "window_effective_minutes": effective_minutes,
+        # Pre-cap, so a truncated `records` can be read against the window.
+        "n_records": len(records),
+        "by_feed": by_feed,
+        "records": _published_records(records[:limit]),
+    }
+    return Response(content=orjson.dumps(payload), media_type="application/json")
+
+
 @router.get("/api/test/mlat-history")
 async def mlat_history(
     hex: str | None = None,
@@ -745,6 +770,15 @@ async def mlat_history(
     with the claims that blocked it.  Those are not solve outcomes and
     deliberately do not live in the solve-history deques.
 
+    ``?kind=claims`` dumps the known-target claim history
+    (state.known_claim_history, written by services/aircraft_feed.py): one
+    record per claim — ts, node, hex, delay/Doppler residuals, the fix's age,
+    hold/follow/contested flags — stamped with what the feed did with that hex
+    the build it first saw the claim (``feed``: adsb_single_node,
+    adsb_multi_node, solve_published, stale_fix, ...).  It outlives the 120 s
+    known_claims prune, so an icon that froze or vanished can be replayed
+    afterwards.  ``?hex=<icao>`` narrows it to one transponder.
+
     ``window_effective_minutes`` is how much of the requested window the
     stores actually hold — below ``window_minutes`` the answer is truncated.
 
@@ -759,9 +793,9 @@ async def mlat_history(
             media_type="application/json",
             status_code=400,
         )
-    if kind not in ("solves", "resolve_skips"):
+    if kind not in ("solves", "resolve_skips", "claims"):
         return Response(
-            content=orjson.dumps({"error": "kind must be solves or resolve_skips"}),
+            content=orjson.dumps({"error": "kind must be solves, resolve_skips or claims"}),
             media_type="application/json",
             status_code=400,
         )
@@ -785,6 +819,9 @@ async def mlat_history(
             "records": _published_records(skips[:limit]),
         }
         return Response(content=orjson.dumps(payload), media_type="application/json")
+
+    if kind == "claims":
+        return _claim_history_response(hex, minutes, cutoff_ms, limit)
 
     merged = _merged_solve_history()
     effective_minutes = _window_effective_minutes(merged, minutes)

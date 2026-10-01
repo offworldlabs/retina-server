@@ -1,4 +1,4 @@
-import { defineConfig, devices } from "@playwright/test";
+import { defineConfig, devices, test } from "@playwright/test";
 
 /**
  * Playwright E2E test configuration.
@@ -25,13 +25,11 @@ import { defineConfig, devices } from "@playwright/test";
  * tidiness: neither runs a simulator (only the test droplet does), so neither
  * has a /sim at all. Pointing a deployed suite at another environment's
  * simulator would mean that suite exercising a box it does not deploy, and
- * because a failed production E2E auto-rolls-back production (ci.yml), a
- * wobble elsewhere would revert a good production build. The one suite that
- * needs the surface skips itself instead, and runs locally against the dev
- * server's admin console.
+ * because a failed production E2E auto-rolls-back production
+ * (production-deploy-verify.yml), a wobble elsewhere would revert a good
+ * production build. The one suite that needs the surface skips itself
+ * instead, and runs locally against the dev server's admin console.
  */
-
-const ENV = (process.env.E2E_ENV ?? "staging") as "staging" | "prod" | "local";
 
 const HOSTS = {
   staging: {
@@ -84,8 +82,32 @@ const HOSTS = {
   },
 } as const;
 
+// e2e's collect script lists these environments by name; a new one goes there too.
+const isEnv = (name: string): name is keyof typeof HOSTS => Object.keys(HOSTS).includes(name);
+const ENV = process.env.E2E_ENV ?? "staging";
+if (!isEnv(ENV)) throw new Error(`E2E_ENV=${ENV} is none of ${Object.keys(HOSTS).join(", ")}`);
+const TABLE = HOSTS[ENV];
+
 export const env = ENV;
-export const hosts = HOSTS[ENV];
+// The roles every environment has. The rest are reached through hostOrSkip.
+export const hosts: Record<"api" | "map" | "dash", string> = {
+  api: TABLE.api,
+  map: TABLE.map,
+  dash: TABLE.dash,
+};
+
+/**
+ * The host for a role that is null on some environment, skipping where it is:
+ * the file at a spec's top level, the group in a describe or beforeAll, the test
+ * in a test or beforeEach. Call it from the spec itself: a shared module runs
+ * once, so only the first spec to import it would skip. Where it skips it
+ * returns an unroutable stand-in, so top-level code that parses it cannot throw.
+ */
+export function hostOrSkip(role: Exclude<keyof typeof TABLE, keyof typeof hosts>, reason: string): string {
+  const host = TABLE[role];
+  test.skip(host === null, reason);
+  return host ?? `https://${role}.skipped.invalid`;
+}
 
 /**
  * Cloudflare Access service-token headers, empty unless CI supplies both.
@@ -117,6 +139,9 @@ export default defineConfig({
   timeout: 30_000,
   expect: { timeout: 10_000 },
   fullyParallel: true,
+  // A committed test.only would quietly shrink the suite that decides whether
+  // production rolls back, so in CI it fails the run instead.
+  forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   reporter: process.env.CI ? "github" : "list",
   use: {
@@ -125,14 +150,18 @@ export default defineConfig({
     // names its host explicitly, so this only resolves a relative URL.
     baseURL: hosts.map,
     extraHTTPHeaders: accessHeaders,
-    trace: "on-first-retry",
+    // Never in CI, whose artifacts are public: a trace records every request's
+    // headers, keys included.
+    trace: process.env.CI ? "off" : "on-first-retry",
     screenshot: "only-on-failure",
     headless: true,
   },
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      // Google Chrome as installed rather than a browser Playwright downloads:
+      // CI uses the one its runner image ships, and needs no install step.
+      use: { ...devices["Desktop Chrome"], channel: "chrome" },
     },
   ],
 });

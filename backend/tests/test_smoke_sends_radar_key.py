@@ -20,6 +20,7 @@ _REPO = Path(__file__).resolve().parents[2]
 _STAGING_SMOKE = _REPO / "deploy" / "staging-smoke-test.sh"
 _CI = _REPO / ".github" / "workflows" / "ci.yml"
 _STAGING_WORKFLOW = _REPO / ".github" / "workflows" / "staging-deploy-verify.yml"
+_PRODUCTION_WORKFLOW = _REPO / ".github" / "workflows" / "production-deploy-verify.yml"
 _E2E_SPECS = sorted((_REPO / "e2e" / "specs").glob("*.spec.ts"))
 
 # A request's URL starts at a host, as a variable (`${API_URL}`, `$API_URL`,
@@ -32,9 +33,9 @@ _EXPECTS_REFUSAL = re.compile(r'"401"\s*$')
 
 
 def _production_smoke_step() -> dict:
-    steps = yaml.safe_load(_CI.read_text())["jobs"]["production-smoke-tests"]["steps"]
+    steps = yaml.safe_load(_PRODUCTION_WORKFLOW.read_text())["jobs"]["production-smoke-tests"]["steps"]
     step = next((s for s in steps if s.get("id") == "smoke"), None)
-    assert step, "ci.yml's production-smoke-tests job has no step with id `smoke`"
+    assert step, "production-deploy-verify.yml's production-smoke-tests job has no step with id `smoke`"
     return step
 
 
@@ -53,7 +54,7 @@ def _shell_commands(script: str) -> list[str]:
 
 _SHELL_SUITES = {
     "staging-smoke-test.sh": lambda: _STAGING_SMOKE.read_text(),
-    "ci.yml production smoke": lambda: _production_smoke_step()["run"],
+    "production smoke": lambda: _production_smoke_step()["run"],
 }
 
 
@@ -95,13 +96,35 @@ def test_every_test_router_request_in_an_e2e_spec_sends_the_key(spec: Path) -> N
     assert not anonymous, f"{spec.name} reads the test router without the radar key: {anonymous}"
 
 
+def _caller(workflow: Path) -> dict:
+    """The one ci.yml job that calls a workflow."""
+    jobs = yaml.safe_load(_CI.read_text())["jobs"].values()
+    callers = [job for job in jobs if job.get("uses") == f"./.github/workflows/{workflow.name}"]
+    assert len(callers) == 1, f"ci.yml calls {workflow.name} from {len(callers)} jobs, not one"
+    return callers[0]
+
+
 @pytest.mark.parametrize(
-    ("step", "secret"),
-    [(_staging_smoke_step, "STAGING_RADAR_API_KEY"), (_production_smoke_step, "RADAR_API_KEY")],
+    ("step", "secret", "workflow"),
+    [
+        (_staging_smoke_step, "STAGING_RADAR_API_KEY", _STAGING_WORKFLOW),
+        (_production_smoke_step, "RADAR_API_KEY", _PRODUCTION_WORKFLOW),
+    ],
     ids=["staging", "production"],
 )
-def test_each_smoke_suite_is_given_its_own_environments_key(step, secret: str) -> None:
+def test_each_smoke_suite_is_given_its_own_environments_key(step, secret: str, workflow: Path) -> None:
     assert step().get("env", {}).get("RADAR_API_KEY") == f"${{{{ secrets.{secret} }}}}"
+    # A called workflow's secret is whatever ci.yml's calling job passes under
+    # that name, so the name alone proves nothing.
+    assert _caller(workflow)["secrets"].get(secret) == f"${{{{ secrets.{secret} }}}}"
+
+
+def test_production_runs_without_its_radar_key() -> None:
+    # Unset, the production suite warns that its keyed checks are unverified
+    # (KEY_REFUSED). A required secret would refuse the whole chain instead.
+    workflow = yaml.safe_load(_PRODUCTION_WORKFLOW.read_text())
+    secrets = workflow.get("on", workflow.get(True))["workflow_call"]["secrets"]
+    assert secrets["RADAR_API_KEY"]["required"] is False
 
 
 def _staging_key_preflight() -> str:
