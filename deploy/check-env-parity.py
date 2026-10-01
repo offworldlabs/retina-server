@@ -106,6 +106,9 @@ ALLOWED_DIVERGENCE = (
     # A registered radar must be polled by exactly one server, so production
     # alone polls (services/blah2_poller.py) and the others leave the flag unset.
     r"^services\.server\.environment\.POLLED_RADAR_POLLING_ENABLED$",
+    # Registration follows polling: a radar registered where nothing polls it
+    # would never be heard, so the others leave it unset too.
+    r"^services\.server\.environment\.POLLED_RADAR_REGISTRATION_ENABLED$",
     # AUTH_ALLOW_ANONYMOUS_ADMIN is deliberately absent from this list, so a
     # difference between environments is drift rather than a decision. It is
     # set in none, and keeping it off this list is what fails CI if it is ever

@@ -19,6 +19,9 @@ from services.geo import haversine_km
 
 _SALT = "test-salt-for-node-sites"
 
+# The shipped list, before the autouse fixture below empties it.
+_SHIPPED_NODE_FILES = ns._NODE_FILES
+
 # One roof, two receivers, two illuminators. Invented coordinates: the real
 # receive sites are private, and this repo is public.
 _SITE_LAT, _SITE_LON = 34.0, -84.0
@@ -214,6 +217,53 @@ class TestAudit:
         assert ns.site_identity("roof-c") == "roof-a"
         assert ns.colocation_report()["near_misses"] == []
 
+    def test_a_near_miss_says_it_is_beyond_the_radius(self, caplog):
+        _connect("roof-a", _SITE_LAT, _SITE_LON)
+        _connect("roof-b", _SITE_LAT + 0.0018, _SITE_LON)  # ~200 m north
+        with caplog.at_level("WARNING"):
+            report = ns.log_colocation_audit()
+        assert report["near_misses"][0]["reason"] == "beyond_radius"
+        assert "outside the 150 m merge radius" in caplog.text
+
+    def test_two_exact_sites_inside_the_radius_are_not_called_outside_it(self, caplog):
+        """The live case: a pair at one set of coordinates, another pair 16 m away.
+
+        Both pairs are exact-equality sites, whose anchors the proximity rule
+        never merges, so they stay apart however close they are.  The warning
+        used to call 16 m "outside the 150 m merge radius", which sent the
+        operator to widen a radius that could not help.
+        """
+        m = 1.0 / 111_195.0
+        _connect("radar-a", _SITE_LAT, _SITE_LON)
+        _connect("radar-b", _SITE_LAT, _SITE_LON)
+        _connect("radar-c", _SITE_LAT + 16 * m, _SITE_LON)
+        _connect("radar-d", _SITE_LAT + 16 * m, _SITE_LON)
+        with caplog.at_level("WARNING"):
+            report = ns.log_colocation_audit()
+        assert ns.site_identity("radar-c") == "radar-c"
+        assert {entry["reason"] for entry in report["near_misses"]} == {"both_exact_sites"}
+        assert len(report["near_misses"]) == 4
+        assert "outside the" not in caplog.text
+        assert "inside the 150 m merge radius" in caplog.text
+        assert "widening NODE_FUZZ_SITE_KM will not" in caplog.text
+
+    def test_a_node_joined_to_a_nearer_site_says_so(self):
+        """A lone node joins the nearest anchor, never another site's member.
+
+        house-b sits between two sites, nearer house-a's; house-c is a lone
+        node 120 m beyond house-b and 220 m from house-a, so it joins nobody
+        and is 120 m — inside the radius — from a node at a different site.
+        """
+        m = 1.0 / 111_195.0
+        _connect("house-a", _SITE_LAT, _SITE_LON)
+        _connect("house-b", _SITE_LAT + 100 * m, _SITE_LON)
+        _connect("house-c", _SITE_LAT + 220 * m, _SITE_LON)
+        assert ns.site_identity("house-b") == "house-a"
+        assert ns.site_identity("house-c") == "house-c"
+        misses = {tuple(entry["nodes"]): entry["reason"] for entry in ns.colocation_report()["near_misses"]}
+        assert misses[("house-b", "house-c")] == "joined_nearer_site"
+        assert misses[("house-a", "house-c")] == "beyond_radius"
+
     def test_the_audit_logs_once_per_change(self, caplog):
         _connect("roof-a", _SITE_LAT, _SITE_LON)
         _connect("roof-b", _SITE_LAT + 0.00027, _SITE_LON)
@@ -407,8 +457,8 @@ class TestProximityJoin:
 
 class TestSources:
     def test_a_file_defined_node_is_a_site(self, monkeypatch, tmp_path):
-        """The blah2 bridge nodes live in a runtime file, not in the database."""
-        doc = tmp_path / "blah2_nodes.json"
+        """The synthetic fleet's nodes live in a runtime file, not in the database."""
+        doc = tmp_path / "nodes_config.json"
         doc.write_text(
             '{"nodes": ['
             f'{{"node_id": "example-node-a", "rx_lat": {_SITE_LAT}, "rx_lon": {_SITE_LON}}},'
@@ -416,10 +466,27 @@ class TestSources:
             "]}",
             encoding="utf-8",
         )
-        monkeypatch.setattr(ns, "_NODE_FILES", ("blah2_nodes.json",))
+        monkeypatch.setattr(ns, "_NODE_FILES", ("nodes_config.json",))
         monkeypatch.setattr(ns, "runtime_path", lambda name: tmp_path / name)
         ns._reset_for_tests()
         assert ns.site_identity("example-node-b") == "example-node-a"
+
+    def test_the_retired_bridge_geometry_file_is_not_read(self, monkeypatch, tmp_path):
+        """blah2_nodes.json described the deleted per-node bridge's receivers.
+
+        Those radars now register under their own ids, so a leftover copy only
+        adds ghosts of them a few metres from their successors — a near miss
+        that no configuration change could ever clear.
+        """
+        (tmp_path / "blah2_nodes.json").write_text(
+            f'{{"nodes": [{{"node_id": "example-node-a", "rx_lat": {_SITE_LAT}, "rx_lon": {_SITE_LON}}}]}}',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(ns, "_NODE_FILES", _SHIPPED_NODE_FILES)
+        monkeypatch.setattr(ns, "runtime_path", lambda name: tmp_path / name)
+        ns._reset_for_tests()
+        assert "blah2_nodes.json" not in ns._NODE_FILES
+        assert ns._positions_from_files() == {}
 
     def test_a_failing_source_does_not_break_the_others(self, monkeypatch):
         def boom():
@@ -443,3 +510,43 @@ def test_km_between_is_the_real_distance():
     gap = ns._km_between((_SITE_LAT, _SITE_LON), (_SITE_LAT + 0.01, _SITE_LON))
     assert gap == pytest.approx(1.11, abs=0.02)
     assert not math.isnan(gap)
+
+
+class TestCountSites:
+    """count_sites: the grouping above, over just the nodes a caller names."""
+
+    _M = 1.0 / 111_195.0  # degrees of latitude per metre
+
+    def test_receivers_within_the_radius_are_one_site(self):
+        positions = {"a": (_SITE_LAT, _SITE_LON), "b": (_SITE_LAT + 56 * self._M, _SITE_LON)}
+        assert ns.count_sites(positions) == 1
+
+    def test_receivers_beyond_the_radius_are_two(self):
+        positions = {"a": (_SITE_LAT, _SITE_LON), "b": (_SITE_LAT + 200 * self._M, _SITE_LON)}
+        assert ns.count_sites(positions) == 2
+
+    def test_exact_equality_is_one_site(self):
+        positions = {"a": (_SITE_LAT, _SITE_LON), "b": (_SITE_LAT, _SITE_LON), "c": (_SITE_LAT + 0.1, _SITE_LON)}
+        assert ns.count_sites(positions) == 2
+
+    def test_the_radius_follows_the_environment(self, monkeypatch):
+        monkeypatch.setenv("NODE_FUZZ_SITE_KM", "0")
+        positions = {"a": (_SITE_LAT, _SITE_LON), "b": (_SITE_LAT + 56 * self._M, _SITE_LON)}
+        assert ns.count_sites(positions) == 2
+
+    def test_an_unplaced_node_is_a_site_of_its_own(self):
+        """Unknown must never merge: a node with no position, or a partial
+        one, is counted once on its own."""
+        positions = {"a": (_SITE_LAT, _SITE_LON), "b": None, "c": (None, _SITE_LON)}
+        assert ns.count_sites(positions) == 3
+
+    def test_reads_no_snapshot(self, monkeypatch):
+        """Pure: the solver thread calls it per solve, so it must not refresh
+        the module's position snapshot (a database read)."""
+
+        def boom():
+            raise AssertionError("count_sites touched the snapshot")
+
+        monkeypatch.setattr(ns, "_refresh_locked", boom)
+        assert ns.count_sites({"a": (_SITE_LAT, _SITE_LON)}) == 1
+        assert ns.count_sites({}) == 0

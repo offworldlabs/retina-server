@@ -618,6 +618,41 @@ tr.selected td {
   background: var(--accent-light);
 }
 
+/* The caller's own node in a ranking. The edge marks it and the "Yours" tag
+   says so in words; the wash stays at tint strength, since a row at
+   --accent-light takes its cell text below 4.5:1 in the dark theme. */
+tr.mine td {
+  background: var(--accent-tint);
+}
+tr.mine td:first-child {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+/* Where a ranking skips the nodes between two of the caller's. */
+tr.rank-gap td {
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: none;
+}
+
+/* A ranked node's name and the tag beside it. */
+.rank-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.rank-name .mono {
+  color: var(--accent);
+}
+
+/* The tag sits on a washed row or a podium tile, and its own wash over theirs
+   takes its text below 4.5:1 in the light theme. Laid on the card colour, it
+   reads as it would on a bare card wherever it sits. */
+.badge.yours {
+  background: linear-gradient(var(--accent-light), var(--accent-light)), var(--bg-card);
+}
+
 /* A headerless table of labels against readings, which DataTable does not
    fit: the label column is muted, as a header would be. */
 .kv-table td:first-child {

@@ -70,6 +70,28 @@ NODE_CFGS = {
         "tx_alt_ft": 450,
         "fc_hz": 100e6,
     },
+    # Two more receivers beside node_a, each with its OWN transmitter — the
+    # a271b0 shape from test, 2026-09-30: node_a2 is 56 m from node_a, inside
+    # the 150 m co-location radius (one site); node_a3 is ~200 m away,
+    # outside it (a second site, however close).
+    "node_a2": {
+        "rx_lat": 40.7128 + 56.0 / 111_195.0,
+        "rx_lon": -74.0060,
+        "rx_alt_ft": 100,
+        "tx_lat": 40.80,
+        "tx_lon": -74.10,
+        "tx_alt_ft": 480,
+        "fc_hz": 100e6,
+    },
+    "node_a3": {
+        "rx_lat": 40.7128 + 200.0 / 111_195.0,
+        "rx_lon": -74.0060,
+        "rx_alt_ft": 100,
+        "tx_lat": 40.80,
+        "tx_lon": -74.10,
+        "tx_alt_ft": 480,
+        "fc_hz": 100e6,
+    },
 }
 
 # Target inside the node triangle: lat, lon, alt_km.
@@ -516,6 +538,170 @@ class TestPublishResidualGate:
         (rec,) = _known_records()
         assert rec["published"] is True
         assert rec["publish_gate"] is None
+
+    def test_n2_residual_is_gated_like_any_other(self):
+        """The gate applies at n=2 too, and has to: an exactly determined n=2
+        solve usually fits its own equations, but not when its delay loci do
+        not meet at the pinned altitude.  a271b0 on test, 2026-09-30: a
+        truth_match at 1.90 km carrying rms_delay 3.59 µs, withheld."""
+        _install(_mk_claims(["node_a", "node_b"]))
+        _run(_stub_solve(rms_delay=3.59), mode="binding")
+
+        assert state.known_lane_truth_match == 1
+        assert state.known_lane_published == 0
+        assert state.known_lane_publish_rms_rejected == 1
+        (rec,) = _known_records()
+        assert rec["n_nodes"] == 2
+        assert rec["publish_gate"] == "rms_delay"
+
+
+class TestSingleSiteGate:
+    """Claims from receivers at one site are one site's geometry, not a fix.
+
+    Two receivers within the co-location radius (node_sites, NODE_FUZZ_SITE_KM,
+    150 m by default) share the receiver focus of every bistatic ellipse they
+    measure, so their loci cross at half the angle their transmitters subtend —
+    an n=2 from them is not the n=2 two sites give.  a271b0 on test,
+    2026-09-30, claimed by two receivers 56 m apart: solves 4.95, 2.32 and
+    1.90 km off.  Such a solve is still attempted, classified, sampled and
+    recorded; it is never published, and the aircraft is left to the ADS-B
+    display path.
+    """
+
+    def test_cosited_pair_is_measured_but_not_published(self):
+        _install(_mk_claims(["node_a", "node_a2"]))
+        _run(_stub_solve(), mode="binding")
+
+        # The measurement is untouched: classified and sampled as before.
+        assert state.known_lane_truth_match == 1
+        (sample,) = list(state.accuracy_samples)
+        assert sample["position_source"] == "known_lane_truth_match"
+        assert sample["n_nodes"] == 2
+        assert sample["n_sites"] == 1
+
+        # ...and off the map.
+        assert state.known_lane_published == 0
+        assert state.known_lane_publish_single_site == 1
+        assert state.known_lane_publish_rms_rejected == 0
+        assert not state.multinode_tracks
+        (rec,) = _known_records()
+        assert rec["label"] == "truth_match"
+        assert rec["published"] is False
+        assert rec["publish_gate"] == "single_site"
+        assert rec["n_nodes"] == 2
+        assert rec["n_sites"] == 1
+
+    def test_cosited_pair_through_the_real_solver(self):
+        """End to end on real trigonometry: clean claims from the co-sited
+        pair still converge (the gate is not about the solver failing), and
+        the solve still stays off the map."""
+        _install(_mk_claims(["node_a", "node_a2"]))
+        _run(solve_multinode, mode="binding")
+
+        assert state.known_lane_attempts == 1
+        assert state.known_lane_no_converge == 0
+        assert state.known_lane_published == 0
+        assert state.known_lane_publish_single_site == 1
+        assert not state.multinode_tracks
+
+    def test_single_site_is_named_over_a_failing_residual(self):
+        """Both gates fail: the record names the more fundamental one, and
+        exactly one counter is charged, so the two still sum to the withheld
+        publishes."""
+        _install(_mk_claims(["node_a", "node_a2"]))
+        _run(_stub_solve(rms_delay=3.59), mode="binding")
+
+        assert state.known_lane_publish_single_site == 1
+        assert state.known_lane_publish_rms_rejected == 0
+        (rec,) = _known_records()
+        assert rec["publish_gate"] == "single_site"
+
+    def test_a_receiver_just_outside_the_radius_is_a_second_site(self):
+        _install(_mk_claims(["node_a", "node_a3"]))
+        _run(_stub_solve(), mode="binding")
+
+        assert state.known_lane_published == 1
+        assert state.known_lane_publish_single_site == 0
+        (rec,) = _known_records()
+        assert rec["n_sites"] == 2
+        assert rec["publish_gate"] is None
+
+    def test_cosited_pair_plus_a_second_site_publishes(self):
+        """Three nodes at two sites is a multilateration fix: the gate only
+        removes solves with no second site at all."""
+        _install(_mk_claims(["node_a", "node_a2", "node_b"]))
+        _run(_stub_solve(), mode="binding")
+
+        assert state.known_lane_published == 1
+        (rec,) = _known_records()
+        assert rec["n_nodes"] == 3
+        assert rec["n_sites"] == 2
+        assert rec["publish_gate"] is None
+
+    def test_the_radius_is_the_colocation_radius(self, monkeypatch):
+        """Not a constant of this lane's own: NODE_FUZZ_SITE_KM moves it, and
+        at zero only an exact-coordinate match is one site."""
+        monkeypatch.setenv("NODE_FUZZ_SITE_KM", "0")
+        _install(_mk_claims(["node_a", "node_a2"]))
+        _run(_stub_solve(), mode="binding")
+
+        assert state.known_lane_published == 1
+        (rec,) = _known_records()
+        assert rec["n_sites"] == 2
+
+    def test_a_node_without_a_position_is_its_own_site(self):
+        """The unknown case must never demote a solve."""
+        _install(_mk_claims(["node_a", "node_a2"]))
+        cfgs = {"node_a": NODE_CFGS["node_a"]}
+        known_lane.run_known_lane_pass(_stub_solve(), cfgs, mode="binding")
+
+        assert state.known_lane_published == 1
+        (rec,) = _known_records()
+        assert rec["n_sites"] == 2
+
+    def test_shadow_mode_never_counts_a_rejection(self):
+        _install(_mk_claims(["node_a", "node_a2"]))
+        _run(_stub_solve())
+
+        assert state.known_lane_publish_single_site == 0
+        (rec,) = _known_records()
+        assert rec["publish_gate"] is None
+        assert rec["n_sites"] == 1
+
+    def test_no_converge_record_carries_the_site_count(self):
+        _install(_mk_claims(["node_a", "node_a2"]))
+        _run(_stub_solve(success=False), mode="binding")
+
+        (rec,) = _known_records()
+        assert rec["outcome"] == "known_no_converge"
+        assert rec["n_sites"] == 1
+
+    def test_single_site_ghosts_never_reanchor(self, monkeypatch):
+        """Re-anchoring trusts two kf-seeded ghosts that agree with each other.
+        A degenerate geometry repeats its wrong answer as reliably as a good
+        one repeats the truth, so agreement from one site is no evidence."""
+        monkeypatch.setattr(state, "SOLVER_EPOCH_ALIGN", False)
+        t0 = int(time.time() * 1000)
+        for i in range(3):
+            ts = t0 + i * 3000
+            s_in = {
+                "initial_guess": {"lat": TARGET[0], "lon": TARGET[1], "alt_km": TARGET[2]},
+                "seed_source": "kf",
+                "initial_velocity": {"vel_east_ms": 0.0, "vel_north_ms": 0.0},
+                "measurements": [
+                    {"node_id": nid, "delay_us": 100.0, "doppler_hz": 5.0, "snr": 20.0, "t_s": ts / 1000.0}
+                    for nid in ("node_a", "node_a2")
+                ],
+                "n_nodes": 2,
+                "timestamp_ms": ts,
+                "adsb_hex": HEX,
+                "known_lane": True,
+            }
+            known_lane._attempt(HEX, s_in, NODE_CFGS, _stub_solve(lat_off=0.15), "binding")
+
+        assert state.known_lane_reanchored == 0
+        assert state.known_lane_ghost == 3
+        assert not state.multinode_tracks
 
 
 class TestPublishFailureContainment:

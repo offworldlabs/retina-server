@@ -145,7 +145,8 @@ flags (all `off`). `KNOWN_LANE_MODE` differs from its siblings on both axes by
 design: its acting value is named `binding` (a claim *binds* a detection to a
 transponder identity), and its code default is that acting value, because
 three consumers depend on the registry it fills (the known-lane solver, the
-per-node trust residuals, and the feed's `adsb_single_node` display section).
+per-node trust residuals, and the feed's claimed-ADS-B display section,
+`adsb_single_node`/`adsb_multi_node`).
 Production and staging nevertheless run it in `shadow`, set with
 `ADSB_FALLBACK_ENABLED=1` in their compose overlays, while the claims
 adsb-service's traffic makes possible are measured; the test droplet keeps the

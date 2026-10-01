@@ -4,7 +4,7 @@ import {
   DR_ICON_HIDE_DISTANCE_M,
   DR_ICON_MAX_AGE_DARK_S,
   DR_UNKNOWN_GS_KT,
-  POSITION_SOURCE_ADSB_SINGLE,
+  isClaimedAdsb,
 } from "./constants";
 // Same age the uncertainty disc grows on — one definition, so the icon and the
 // disc can never disagree about how old a solve is.
@@ -57,7 +57,7 @@ export function getAircraftColor(ac, colorByAlt = false) {
   // See the palette note in constants.ts for why the lanes are coloured this way.
   if (ac.multinode || ac.position_source === "multinode_solve")
     return ac.adsb_assisted ? LANE_MN_ADSB : LANE_MN_DARK;
-  if (ac.position_source === POSITION_SOURCE_ADSB_SINGLE)
+  if (isClaimedAdsb(ac))
     return activePalette().LANE_ADSB_SINGLE;
   if (ac.position_source === "solver_adsb_seed") return LANE_SOLVER_SEED;
   // Fallback, sharing cyan with the assisted multi-node lane: the only
