@@ -549,6 +549,21 @@ known_claims: dict[str, deque] = {}
 # ever claimed — the same population known_claims is keyed by.
 known_track_holds: dict[str, dict[str, dict]] = {}
 
+# ── Claim history: what each claim was, and what the feed drew for it ────────
+# known_claims is pruned KNOWN_CLAIMS_STALE_S (120 s) after a hex's last
+# claim, which erases exactly the episodes worth replaying ("why did this icon
+# freeze?").  services/aircraft_feed.py appends one record per claim the feed
+# build sees for the first time — ts, node, hex, residuals, fix age, path
+# flags and the feed's decision for that hex — and
+# /api/test/mlat-history?kind=claims dumps it.  Bounded twice: records older
+# than KNOWN_CLAIM_HISTORY_WINDOW_S are dropped on append, and maxlen caps the
+# memory when a synthetic fleet claims faster than the window can age out
+# (~20 000 × ~0.6 kB ≈ 12 MB; the route reports how much of the window it
+# actually holds).
+KNOWN_CLAIM_HISTORY_WINDOW_S = 1800.0
+KNOWN_CLAIM_HISTORY_MAX = 20_000
+known_claim_history: deque = deque(maxlen=KNOWN_CLAIM_HISTORY_MAX)
+
 # ── Track history: rolling position buffer per aircraft hex ───────────────────
 # The TRUE frame.  Everything internal compares against it — the speed gate's
 # reference, the arc-motion log, the jump check, routes/test.py's ground-truth
@@ -1384,6 +1399,7 @@ def _reset_for_tests() -> None:
     mlat_solve_history.clear()
     mlat_solve_history_known.clear()
     solver_resolve_skips_recent.clear()
+    known_claim_history.clear()
     solver_queue_drops_recent.clear()
     accuracy_samples.clear()
     mlat_samples.clear()
