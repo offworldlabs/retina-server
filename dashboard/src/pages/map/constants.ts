@@ -43,6 +43,22 @@ export const POSITION_SOURCE_ARC_ONLY = "single_node_ellipse_arc";
 // this verbatim — keep in sync with the backend constant if it ever moves.
 export const POSITION_SOURCE_ADSB_SINGLE = "adsb_single_node";
 
+// position_source for an aircraft claimed by TWO OR MORE nodes that no
+// multi-node solve is drawing (the known lane's n>=2 solves all failed its
+// gates, or are not yet confirmed).  Same position as the single-node source —
+// the ADS-B fix, dead-reckoned to the feed's now — so it shares that lane's
+// colour; it carries n_nodes and contributing_node_refs instead of one
+// node_ref, and no ambiguity arc.  The backend never emits it beside a
+// published solve for the same transponder.
+export const POSITION_SOURCE_ADSB_MULTI = "adsb_multi_node";
+
+/** True for either claimed-ADS-B source: the position is a transponder fix,
+ *  not a radar solve. */
+export function isClaimedAdsb(ac): boolean {
+  return !!ac && (ac.position_source === POSITION_SOURCE_ADSB_SINGLE
+    || ac.position_source === POSITION_SOURCE_ADSB_MULTI);
+}
+
 // Three lanes, three colours (getAircraftColor, StatsOverlay, the trimmed arc):
 // this blue for a claimed single-node ADS-B target, cyan LANE_MN_ADSB for a
 // multi-node solve that carried a transponder tag (mn-adsb-*, adsb_assisted),

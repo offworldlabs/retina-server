@@ -203,7 +203,9 @@ just test-ci
 # every workspace; -w dashboard (or -w packages/shared, -w e2e) for one
 npm run test --workspaces --if-present && npm run typecheck --workspaces && npm run lint --workspaces --if-present
 
-# the browser suite, against staging (local and prod are the other two targets)
+# the browser suite, against staging (local and prod are the other two targets).
+# It drives the installed Google Chrome, as CI drives its runner's; where there
+# is none, `npx playwright install chrome` adds one.
 npm run test:e2e:staging -w e2e
 ```
 
@@ -349,10 +351,12 @@ CI runs on every PR, on push to `main`, and on demand through
    markdown, and Python whose syntax tree has not moved: a reworded comment or a
    `ruff format` pass ships nothing. `deploy/deploy-scope.py` holds the rules and
    the exceptions, and its tests hold the verdicts.
-   The staging third of it is a called workflow,
-   `.github/workflows/staging-deploy-verify.yml`, invoked from one `Staging`
-   job so that job's concurrency group is held across the deploy and both
-   suites. Adding a staging step means editing that file, not `ci.yml`.
+   Each environment's part of it is a called workflow,
+   `.github/workflows/staging-deploy-verify.yml` and
+   `.github/workflows/production-deploy-verify.yml`, invoked from one `Staging`
+   or `Production` job so that job's concurrency group is held across the
+   deploy, both suites and the rollbacks. Adding a deploy or verification step
+   means editing those files, not `ci.yml`.
    Both deploys take a rollback point first and roll themselves back when
    they fail after it; the runbook's Environments section has the shape.
 
@@ -361,10 +365,11 @@ branch, open a PR, get it green, then merge.
 
 ## Things that will bite you
 
-- **A cancelled `Staging` job on a burst of merges is expected, not a fault.**
-  Only one run may sit pending on the `staging-deploy` group, so when a third
-  merge arrives while one run holds staging and another is queued, the queued
-  one is cancelled. `main` is linear, so the run that replaces it deploys a
+- **A cancelled `Staging` or `Production` job on a burst of merges is expected,
+  not a fault.** Only one run may sit pending on each of the `staging-deploy`
+  and `production-deploy` groups, so when a third merge arrives while one run
+  holds an environment and another is queued for it, the queued one is
+  cancelled. `main` is linear, so the run that replaces it deploys a
   superset of what was dropped. What it does mean is that the cancelled
   commit's own run never reaches production: the following run carries it.
   The last merge in a burst has no successor, so check it landed.

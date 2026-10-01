@@ -20,9 +20,10 @@ goes.  A multinode solve is the network's — no one node's geometry produced it
 and dropping it would delete other operators' contributions along with the
 private one — so the aircraft stays and the private id is struck from the
 membership list it appears in.  An owner still sees their own private node in
-full on the authenticated owner feed; enforcement lives on the public path
-only, which is why services/tasks/aircraft_flush.py redacts a sibling payload
-rather than the one the owner filter reads.
+full on the authenticated owner feed, which is why
+services/tasks/aircraft_flush.py redacts a sibling payload rather than the one
+the owner filter reads; that feed strikes only other owners' private nodes
+(``without_others_private_nodes``).
 
 **Failure.**  The two wrong answers are not symmetric but they are both wrong:
 answer "everything is private" on a dropped connection and the map goes blank
@@ -295,6 +296,33 @@ def public_aircraft_payload(data: dict) -> dict:
     if "messages" in data:
         out["messages"] = len(aircraft)
     return out
+
+
+def without_others_private_nodes(data: dict, owned: set[str]) -> dict:
+    """An owner's feed payload with every other owner's private node struck from its solves.
+
+    The owner feed is cut from the unredacted frame, since the owner's own
+    private nodes are what it exists to show them. That exception covers their
+    own nodes only: a solve they joined keeps its position and loses any other
+    owner's private node from ``contributing_node_ids``, as on the public feed.
+    Until the policy is known, a solve lists only the caller's own nodes.
+    """
+    try:
+        private = private_node_ids()
+    except PublicationUnavailable:
+        private = None
+    if private is not None and not private:
+        return data
+
+    aircraft = []
+    for ac in data.get("aircraft", []):
+        contributors = ac.get("contributing_node_ids")
+        if contributors:
+            kept = [nid for nid in contributors if nid in owned or (private is not None and nid not in private)]
+            if len(kept) != len(contributors):
+                ac = {**ac, "contributing_node_ids": kept}
+        aircraft.append(ac)
+    return {**data, "aircraft": aircraft}
 
 
 def public_summaries(summaries: dict) -> dict:

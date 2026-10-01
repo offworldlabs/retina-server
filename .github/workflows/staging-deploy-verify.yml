@@ -26,13 +26,6 @@ on:
           thing to forget when the directory moves.
         required: true
         type: string
-      playwright_image:
-        description: >-
-          Playwright container image for the E2E job, derived from the lockfile
-          by ci.yml's `playwright-image` job so the browsers cannot disagree
-          with the client that drives them.
-        required: true
-        type: string
     secrets:
       STAGING_HOST:
         required: true
@@ -86,8 +79,8 @@ jobs:
               exit 1
             fi
 
-            # Same check as ci.yml's production deploy, which has the reasoning:
-            # a marker is a box left mid-deploy, and snapshotting over it would
+            # Same check as the production deploy, which has the reasoning: a
+            # marker is a box left mid-deploy, and snapshotting over it would
             # lose the rollback point.
             if [ -f .deploy-in-progress ]; then
               echo "::error::${{ env.APP_DIR }}/.deploy-in-progress is still present on $(hostname) ($(cat .deploy-in-progress)). An earlier deploy was left mid-flight and never confirmed healthy. Inspect the box and recover it (bash deploy/rollback.sh, or fix forward), then delete the marker and re-run. Refusing to deploy; the running stack is untouched."
@@ -141,7 +134,8 @@ jobs:
             # suite by it and fail closed without one (backend/routes/test.py),
             # so a box with none fails every smoke run and holds production
             # back. The last line is read because it is the one compose passes
-            # on (see the same check in ci.yml's deploy-production).
+            # on (see the same check in production-deploy-verify.yml's
+            # deploy-production).
             if ! grep -E '^RADAR_API_KEY=' backend/.env 2>/dev/null | tail -1 | grep -qE '^RADAR_API_KEY=.+$'; then
               echo "::error::backend/.env on $(hostname) has no effective RADAR_API_KEY. The test router's reads admit the smoke suite only by that key, so the smoke run would fail. Set it to the STAGING_RADAR_API_KEY secret's value and re-run. Refusing to deploy; the running stack is untouched."
               exit 1
@@ -218,7 +212,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [deploy]
-    # Keyed the same way as ci.yml's rollback-production-on-deploy-failure;
+    # Keyed the same way as production-deploy-verify.yml's
+    # rollback-production-on-deploy-failure;
     # see there for why. No concurrency group of its own: the calling job
     # holds `staging-deploy` until every job here has finished (see the
     # header), so a following run's deploy cannot enter the directory while
@@ -251,7 +246,7 @@ jobs:
 
             # No marker: the deploy refused in a pre-flight with the stack
             # untouched, or it had already cleared the marker with the app
-            # healthy on the new build. Neither is a rollback case; ci.yml's
+            # healthy on the new build. Neither is a rollback case; the
             # production pair has the reasoning.
             if [ ! -f .deploy-in-progress ]; then
               echo "No .deploy-in-progress marker: the deploy either refused before touching the box or failed after the app was already healthy on the new build. Nothing to roll back."
@@ -262,7 +257,7 @@ jobs:
 
             # Another run's marker: this run touched nothing and cannot tell
             # a deploy still in progress or an unrecovered outage from a box
-            # already fixed by hand, so stop rather than guess (see ci.yml).
+            # already fixed by hand, so stop rather than guess (see production).
             case "$MARKER" in
               "run ${{ github.run_id }} "*) ;;
               *)
@@ -323,38 +318,28 @@ jobs:
   e2e:
     name: Playwright E2E (staging)
     runs-on: ubuntu-latest
-    # Only the pull and npm ci sit outside the test step's own cap now, and an
-    # image pull is minutes at worst. See the production job for why the job
-    # cap is a backstop rather than the primary bound.
+    # A backstop above the steps' own caps (tests 20, upload 2), with room for
+    # the setup steps. See the production job for why the job cap is a
+    # backstop rather than the primary bound.
     timeout-minutes: 30
     needs: [smoke-tests]
-    # The browsers and their shared libraries ship in the image, so there is no
-    # install step and neither apt nor Playwright's CDN is in this path. Both
-    # broke repeatedly on 2026-08-18 and 2026-08-19; see the production job.
-    container:
-      image: ${{ inputs.playwright_image }}
-    # `npm ci` runs @playwright/test's postinstall, which fetches browsers. The
-    # image sets PLAYWRIGHT_BROWSERS_PATH=/ms-playwright and the tag is derived
-    # to match the lockfile, so it finds the right revision already there and
-    # does nothing. This makes that a guarantee rather than an expectation: if
-    # the browsers were ever NOT found, the postinstall would quietly download
-    # them from the CDN this job exists to avoid, and the only symptom would be
-    # a slow green run. With this set it fails loudly at the browser instead,
-    # pointing at the cause. See microsoft/playwright#4283.
-    env:
-      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+    # The browser is the runner image's Google Chrome, not one installed here;
+    # see the production job.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # Kept despite the image shipping its own Node: this pins the version the
-      # tests run under to the same 20 as every other job, rather than letting
-      # it drift with whatever the Playwright image happens to carry, and keeps
-      # the npm cache. Only browser provisioning changes here.
+      # Pins the tests to the same Node 20 as every other job, rather than the
+      # runner's own, and keeps the npm cache.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
+      # The runner image sets this version, not the lockfile. Only read, not
+      # launched: the production job launches Chrome to keep one Playwright
+      # cannot start out of its rollback, and this job has no rollback.
+      - name: Report the runner's Chrome
+        run: google-chrome --version
       - name: Run E2E tests (staging)
         # Has to stay above what nodes.spec.ts's two retried beforeAll hooks can
         # reach, so a node that never propagates fails an assertion rather than
@@ -370,3 +355,15 @@ jobs:
           # login page as the app. Empty secrets render empty and send nothing.
           CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
           CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+      # Screenshots alone, bounded and allowed to fail; see the step of the same
+      # name in production-deploy-verify.yml.
+      - name: Keep the failed tests' screenshots
+        if: failure()
+        timeout-minutes: 2
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-staging-screenshots-${{ github.run_attempt }}
+          path: e2e/test-results/**/*.png
+          retention-days: 7
+          if-no-files-found: ignore

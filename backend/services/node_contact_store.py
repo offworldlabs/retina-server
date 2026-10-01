@@ -22,13 +22,6 @@ from core.nodes import NodeContact
 _CONTACT_FIELDS = ("first_name", "last_name", "email", "phone", "country")
 
 
-def _aware(when: datetime) -> datetime:
-    """SQLite hands back a naive datetime whatever `DateTime(timezone=True)` says,
-    and the response model this feeds is typed `AwareDatetime`. Everything stored
-    here is written in UTC, so the zone is restated rather than converted."""
-    return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
-
-
 async def upsert_contact(session: AsyncSession, node_id: str, contact: dict[str, Any]) -> datetime:
     """Store the contact document and return the row's `updated_at`.
 
@@ -44,21 +37,21 @@ async def upsert_contact(session: AsyncSession, node_id: str, contact: dict[str,
         row = NodeContact(node_id=node_id, updated_at=datetime.now(UTC), **{f: contact[f] for f in _CONTACT_FIELDS})
         session.add(row)
         await session.flush()
-        return _aware(row.updated_at)
+        return row.updated_at
 
     if any(getattr(row, field) != contact[field] for field in _CONTACT_FIELDS):
         for field in _CONTACT_FIELDS:
             setattr(row, field, contact[field])
         row.updated_at = datetime.now(UTC)
         await session.flush()
-    return _aware(row.updated_at)
+    return row.updated_at
 
 
 async def list_contacts(session: AsyncSession) -> dict[str, dict[str, Any]]:
     """Every stored contact, keyed by node. Nodes with no row are absent."""
     rows = (await session.execute(select(NodeContact))).scalars().all()
     return {
-        row.node_id: {**{field: getattr(row, field) for field in _CONTACT_FIELDS}, "updated_at": _aware(row.updated_at)}
+        row.node_id: {**{field: getattr(row, field) for field in _CONTACT_FIELDS}, "updated_at": row.updated_at}
         for row in rows
     }
 

@@ -348,6 +348,61 @@ class TestPublicOwnerSplit:
         assert [ac["hex"] for ac in state.latest_aircraft_json_public["aircraft"]] == ["BBB222", "mnCCC333"]
 
 
+class TestOwnerFeedWithholdsOtherOwnersPrivateNodes:
+    """The owner feed's exception to the redaction covers the owner's own nodes.
+
+    mnCCC333 is solved by _PRIV and _PUB together. Whoever owns _PUB is served
+    it, and must not learn from its membership that _PRIV was listening.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _nodes(self, seed_nodes):
+        seed_nodes(**{_PRIV: "private", _PUB: "public"})
+
+    def _solve(self, owned: set[str]) -> dict:
+        from services.tasks.aircraft_flush import owner_bytes
+
+        served = orjson.loads(owner_bytes(_payload(), owned))
+        return next(ac for ac in served["aircraft"] if ac["hex"] == "mnCCC333")
+
+    def test_a_shared_solve_loses_another_owners_private_node(self):
+        assert self._solve({_PUB})["contributing_node_refs"] == [_seed_ref(_PUB)]
+
+    def test_the_owner_of_the_private_node_still_sees_it_and_its_partners(self):
+        assert self._solve({_PRIV})["contributing_node_refs"] == [_seed_ref(_PRIV), _seed_ref(_PUB)]
+
+    def test_the_solve_keeps_its_position(self):
+        solve = self._solve({_PUB})
+        assert (solve["lat"], solve["lon"]) == (5.0, 6.0)
+
+    def test_before_the_policy_is_known_a_solve_lists_only_the_callers_nodes(self, monkeypatch):
+        def unavailable():
+            raise publication.PublicationUnavailable("cold")
+
+        monkeypatch.setattr(publication, "private_node_ids", unavailable)
+        assert self._solve({_PRIV})["contributing_node_refs"] == [_seed_ref(_PRIV)]
+
+    def test_the_broadcast_serves_owners_the_same_cut(self):
+        from services.tasks.aircraft_flush import broadcast_aircraft
+
+        class _Socket:
+            def __init__(self):
+                self.sent = []
+
+            async def send_text(self, text):
+                self.sent.append(text)
+
+        socket = _Socket()
+        state.ws_owner_clients[socket] = {_PUB}
+        try:
+            asyncio.run(broadcast_aircraft(_payload()))
+        finally:
+            state.ws_owner_clients.pop(socket, None)
+        [frame] = socket.sent
+        solve = next(ac for ac in orjson.loads(frame)["aircraft"] if ac["hex"] == "mnCCC333")
+        assert solve["contributing_node_refs"] == [_seed_ref(_PUB)]
+
+
 # ── Analytics and nodes ──────────────────────────────────────────────────────
 
 
@@ -1520,11 +1575,29 @@ class TestMlatHistoryPayload:
                 "guess_lon": -82.0,
             }
         )
+        state.known_claim_history.append(
+            {
+                "ts_ms": now_ms,
+                "hex": "abc123",
+                "node_id": self._A,
+                "residual_delay_us": 0.4,
+                "residual_doppler_hz": -1.5,
+                "fix_age_s": 2.0,
+                "hold": False,
+                "follow": False,
+                "contested": False,
+                "n_fresh_nodes": 2,
+                "feed": "adsb_multi_node",
+                "feed_fix_age_s": 2.5,
+                "feed_ts_ms": now_ms,
+            }
+        )
         try:
             yield
         finally:
             state.mlat_solve_history.clear()
             state.solver_resolve_skips_recent.clear()
+            state.known_claim_history.clear()
 
     @pytest.fixture()
     def bodies(self, client, seeded):
@@ -1533,6 +1606,7 @@ class TestMlatHistoryPayload:
             "all": client.get("/api/test/mlat-history?all=1"),
             "hex": client.get("/api/test/mlat-history?hex=mn0123456789"),
             "skips": client.get("/api/test/mlat-history?kind=resolve_skips"),
+            "claims": client.get("/api/test/mlat-history?kind=claims"),
         }
 
     def test_no_node_id_reaches_the_response(self, bodies):
@@ -1634,6 +1708,15 @@ class TestMlatHistoryPayload:
                 "guess_lon": -82.0,
             }
         ]
+
+    def test_the_claim_history_names_its_node_by_ref(self, bodies):
+        """The claim history is filed by transponder hex, the same hex the
+        feed publishes beside contributing_node_refs, so a raw node id here
+        would hand over the mapping exactly as a solve record would."""
+        (rec,) = bodies["claims"].json()["records"]
+        assert rec["node_ref"] == _seed_ref(self._A)
+        assert rec["hex"] == "abc123"
+        assert rec["feed"] == "adsb_multi_node"
 
 
 class TestFurthestDetectionsClassification:

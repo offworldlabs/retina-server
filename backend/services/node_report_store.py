@@ -5,7 +5,7 @@ that decides whether a node is working: the server judges that from its own
 record of frame arrivals.
 """
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import select
@@ -23,11 +23,6 @@ if TYPE_CHECKING:
 ERRORS_KEPT = 64
 
 
-def _aware(when: datetime) -> datetime:
-    """SQLite hands back a naive datetime, and everything stored here is UTC."""
-    return when if when.tzinfo is not None else when.replace(tzinfo=UTC)
-
-
 async def record_report(session: AsyncSession, node_id: str, beat: "HeartbeatRequest", now: datetime) -> None:
     """Store this beat's self-report over the last one. The caller commits."""
     row = await session.get(NodeReport, node_id)
@@ -36,7 +31,7 @@ async def record_report(session: AsyncSession, node_id: str, beat: "HeartbeatReq
         session.add(row)
     if row.state != beat.state or row.boot_id != beat.boot_id:
         row.state_since = now
-    state.node_reported_state[node_id] = (beat.state, _aware(row.state_since).timestamp())
+    state.node_reported_state[node_id] = (beat.state, row.state_since.timestamp())
     row.received_at = now
     row.boot_id = beat.boot_id
     row.state = beat.state
@@ -60,10 +55,10 @@ async def all_reports(session: AsyncSession) -> list[dict]:
         {
             "node_id": row.node_id,
             "node_ref": node_ref,
-            "received_at": _aware(row.received_at),
+            "received_at": row.received_at,
             "boot_id": row.boot_id,
             "state": row.state,
-            "state_since": _aware(row.state_since),
+            "state_since": row.state_since,
             "uptime_s": row.uptime_s,
             "config_version": row.config_version,
             "health": row.health,
