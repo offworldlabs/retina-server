@@ -1,6 +1,6 @@
 import { useEffect, useRef, useMemo, useState, useCallback } from "react";
 import { PLANE_PATH, getAircraftColor } from "./icons";
-import { POSITION_SOURCE_ARC_ONLY, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
+import { POSITION_SOURCE_ARC_ONLY, POSITION_SOURCE_ADSB_SINGLE, POSITION_SOURCE_ADSB_MULTI } from "./constants";
 import { classifyHex } from "./hexInfo";
 import { usePalette } from "./useMapTheme";
 import { truthClass, truthFill } from "./truthColor";
@@ -217,6 +217,8 @@ export default function AircraftListPanel({
                         ? "Arc·1N"
                         : ac.position_source === POSITION_SOURCE_ADSB_SINGLE
                           ? "ADS-B·1N"
+                          : ac.position_source === POSITION_SOURCE_ADSB_MULTI
+                            ? `ADS-B·${ac.n_nodes ?? "?"}N`
                           : ac.position_source === "solver_single_node"
                             ? "Solver·1N"
                             : ac.position_source === "solver_adsb_seed"

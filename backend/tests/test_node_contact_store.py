@@ -106,8 +106,7 @@ async def test_upsert_moves_updated_at_when_a_field_changes(node_session):
 
 
 async def test_updated_at_comes_back_aware_on_the_unchanged_path(node_session):
-    """The route's response model is typed AwareDatetime, and SQLite returns a
-    naive datetime whichever way the column is declared."""
+    """The route's response model is typed AwareDatetime."""
     node_id = await _seed_node(node_session)
     await upsert_contact(node_session, node_id, dict(CONTACT))
     node_session.expire_all()

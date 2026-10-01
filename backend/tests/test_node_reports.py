@@ -160,8 +160,7 @@ async def test_a_report_that_cannot_be_stored_does_not_cost_the_beat(
 
     assert response.status_code == 200
     seen = await node_session.scalar(select(Node.last_seen_at).where(Node.node_id == node_id))
-    # Naive, as SQLite returns it, and UTC.
-    assert (datetime.now(UTC).replace(tzinfo=None) - seen).total_seconds() < 5
+    assert (datetime.now(UTC) - seen).total_seconds() < 5
 
 
 async def test_the_health_check_s_copy_keeps_the_stored_clock_across_a_restart(registered_node, node_client):

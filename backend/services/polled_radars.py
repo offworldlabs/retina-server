@@ -129,6 +129,7 @@ async def create_polled_radar(
     publication: str,
     licence_version: str | None,
     unprotected: bool,
+    claim_verified: bool = True,
     now: datetime | None = None,
 ) -> PolledRegistration:
     """Write the node, its first configuration, its claim, the polling row and
@@ -138,7 +139,8 @@ async def create_polled_radar(
     holds raises EndpointAlreadyRegistered with none of the five rows left
     behind. A secret without a usable key raises SecretKeyUnavailable before
     anything is written. A registration under no licence leaves both licence
-    columns null.
+    columns null. `claim_verified` is false for an owner an administrator chose,
+    whose address nobody has confirmed yet.
     """
     if publication not in PUBLICATIONS:
         raise ValueError(f"publication must be one of {PUBLICATIONS}, not {publication!r}")
@@ -182,13 +184,12 @@ async def create_polled_radar(
                 created_at=now,
             )
         )
-        # Registered from a signed-in session, whose address sign-in confirmed.
         session.add(
             NodeClaim(
                 node_id=node.node_id,
                 user_id=owner_user_id,
                 email=owner_email,
-                verified=True,
+                verified=claim_verified,
                 undeliverable=False,
                 updated_at=now,
             )
@@ -321,28 +322,36 @@ async def set_polled_radar_address(
 
 
 async def remove_polled_radar(session: AsyncSession, node_id: str, *, user_id: str) -> bool:
-    """Retire `user_id`'s radar and forget where it was, and flush. The caller commits.
+    """Retire `user_id`'s radar, as retire_polled_radar does. The caller commits.
+
+    False, changing nothing, for a radar `user_id` does not own.
+    """
+    if await read_owner(session, node_id) != user_id:
+        return False
+    await retire_polled_radar(session, node_id, actor=user_id)
+    return True
+
+
+async def retire_polled_radar(session: AsyncSession, node_id: str, *, actor: str) -> None:
+    """Retire the radar and forget where it was, recording `actor`, and flush.
+    The caller commits.
 
     Nothing can claim a polled radar once it is released, and the poller polls
     every active one, so handing it back would leave it polled with nobody to
     answer for it. The node stays, retired, with the configurations its archived
     frames were filed against and the record of decisions about it. Its
     address, stored password and address history go, so the address registers
-    again as a new radar. False, changing nothing, for a radar `user_id` does
-    not own.
+    again as a new radar.
     """
-    if await read_owner(session, node_id) != user_id:
-        return False
     radar = await session.get(PolledRadar, node_id)
     await clear_claim(session, node_id)
     if radar is not None:
         await session.delete(radar)
     await session.execute(update(Node).where(Node.node_id == node_id).values(status="retired"))
     session.add(
-        NodeEvent(node_id=node_id, kind="removed", epoch=radar.epoch if radar is not None else None, actor=user_id)
+        NodeEvent(node_id=node_id, kind="removed", epoch=radar.epoch if radar is not None else None, actor=actor)
     )
     await session.flush()
-    return True
 
 
 async def owner_views(session: AsyncSession, node_ids: list[str]) -> dict[str, dict]:

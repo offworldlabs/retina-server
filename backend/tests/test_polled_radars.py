@@ -26,8 +26,6 @@ from services.polled_radars import (
 from tests.radar_stub import STOCK_CONFIG
 
 NOW = datetime(2026, 9, 22, 12, 0, tzinfo=UTC)
-# SQLite returns a timezone-aware column naive, as UTC wall time.
-STORED_NOW = NOW.replace(tzinfo=None)
 FINGERPRINT = "a" * 64
 
 
@@ -121,9 +119,9 @@ async def test_registration_writes_all_five_rows(node_session):
     assert radar.last_frame_at is None
     assert radar.last_config_at is None
     assert radar.created_at is not None
-    assert radar.resolved_at == STORED_NOW
-    assert radar.probe_passed_at == STORED_NOW
-    assert radar.endpoint_changed_at == STORED_NOW
+    assert radar.resolved_at == NOW
+    assert radar.probe_passed_at == NOW
+    assert radar.endpoint_changed_at == NOW
 
     history = (
         (
@@ -135,7 +133,7 @@ async def test_registration_writes_all_five_rows(node_session):
         .all()
     )
     assert [(h.old_key, h.new_key, h.resolved_ip, h.changed_by, h.changed_at) for h in history] == [
-        (None, "radar.example.com:3000", "192.0.2.10", "user-a", STORED_NOW)
+        (None, "radar.example.com:3000", "192.0.2.10", "user-a", NOW)
     ]
 
 
@@ -264,7 +262,6 @@ async def test_an_unknown_publication_is_refused(node_session):
 # ── A new address ────────────────────────────────────────────────────────────
 
 LATER = datetime(2026, 9, 25, 9, 0, tzinfo=UTC)
-STORED_LATER = LATER.replace(tzinfo=None)
 
 
 def _found_at(endpoint_key: str, *, auth: tuple[str, str] | None = None, config: dict = STOCK_CONFIG) -> Blah2Probe:
@@ -325,7 +322,7 @@ async def test_a_new_address_starts_an_epoch_on_probation(node_session):
     assert row.endpoint_raw == "http://other.example.com:4000"
     assert (row.config_fingerprint, row.last_resolved_ip) == (parse_config(STOCK_CONFIG).fingerprint, "192.0.2.20")
     # Probed at the moment it moved, so the poller takes it up at once.
-    assert row.endpoint_changed_at == row.probe_passed_at == row.resolved_at == row.last_config_at == STORED_LATER
+    assert row.endpoint_changed_at == row.probe_passed_at == row.resolved_at == row.last_config_at == LATER
     history = (
         await node_session.execute(select(PolledRadarEndpointHistory).order_by(PolledRadarEndpointHistory.id))
     ).scalars()
@@ -366,7 +363,7 @@ async def test_the_same_address_with_a_new_password_keeps_its_epoch(node_session
     assert (row.epoch, row.trust_state, row.unprotected, row.config_fingerprint) == (1, "graduated", False, FINGERPRINT)
     assert poller_credentials(row) == ("owner", "hunter2")
     assert "hunter2" not in row.endpoint_raw
-    assert (row.endpoint_changed_at, row.probe_passed_at) == (STORED_NOW, STORED_NOW)
+    assert (row.endpoint_changed_at, row.probe_passed_at) == (NOW, NOW)
     assert (await node_session.get(Node, node_id)).active_config_version == 1
     assert await _count(node_session, PolledRadarEndpointHistory) == 1
 

@@ -44,7 +44,7 @@ export default function RegisterRadarPage() {
       (address, fingerprint) => api.registerPolledRadar({ address, fingerprint, publication }),
       "Could not register the radar. Try again.",
     );
-    if (registered) navigate("/onboarding");
+    if (registered) navigate("/overview");
   }
 
   function changeAddress() {
