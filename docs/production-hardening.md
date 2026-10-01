@@ -236,7 +236,8 @@ response shapes and component expectations still surface at runtime. That
 matters most for the nested structures from `/api/radar/analytics`,
 `/api/radar/nodes` and the aircraft WebSocket, whose variant-heavy shapes are
 largely untyped. It can be tightened incrementally: `strictNullChecks` first,
-then typing the API shapes file by file.
+then typing the API shapes file by file. The e2e suite and `packages/shared`
+already compile strictly, by extending `tsconfig.strict.json`.
 
 **Priority:** medium
 **Effort:** moderate; typing every API shape fully is a longer tail

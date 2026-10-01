@@ -24,9 +24,10 @@ COPY dashboard/package.json dashboard/
 COPY packages/shared/package.json packages/shared/
 COPY e2e/package.json e2e/
 RUN npm ci
-# Vite's TypeScript transform follows the app's tsconfig `extends` chain, so the
-# build needs this even though nothing here runs tsc.
-COPY tsconfig.base.json ./
+# Vite's TypeScript transform follows each workspace's tsconfig `extends` chain
+# (the console's and shared's) to these, so the build needs them even though
+# nothing here runs tsc.
+COPY tsconfig*.json ./
 # The console imports from it, so it belongs to the shared layer beneath.
 COPY packages/ packages/
 

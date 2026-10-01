@@ -214,7 +214,10 @@ class TestListing:
             "epoch",
             "trust_state",
             "events",
+            "owner",
         }
+        # Seeded with no claim, so nobody owns it.
+        assert radar["owner"] is None
         assert radar["node_ref"].startswith("nde")
         assert radar["endpoint"] == f"{_RADAR}.example.com:3000"
         assert (radar["liveness"], radar["epoch"], radar["trust_state"]) == ("streaming", 2, "probation")
@@ -228,7 +231,11 @@ class TestListing:
 
     def test_reports_the_fence_switched_off(self, client, monkeypatch):
         monkeypatch.setenv("POLLED_RADAR_PROBATION_ENABLED", "0")
-        assert client.get("/api/admin/polled-radars").json() == {"probation_enabled": False, "radars": []}
+        assert client.get("/api/admin/polled-radars").json() == {
+            "probation_enabled": False,
+            "polling_enabled": False,
+            "radars": [],
+        }
 
 
 @pytest.mark.parametrize(

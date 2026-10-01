@@ -13,12 +13,12 @@ from ipaddress import IPv6Address, ip_address, ip_network
 from time import monotonic
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, EmailStr
 
 from core import state
-from core.auth import consume_magic_link, create_magic_link, get_user_nodes
+from core.auth import INTENT_SIGNIN, consume_magic_link, create_magic_link, get_user_nodes, peek_magic_link
 from core.node_ids import POLLED_BLAH2, system_of
 from core.users import (
     ACCESS_LOGOUT_PATH,
@@ -30,10 +30,11 @@ from core.users import (
     get_jwt_strategy,
     get_or_create_magic_link_user,
     has_access_session,
+    record_visit,
     user_to_dict,
 )
 from routes.sim_ingest import synthetic_fleet_enabled
-from services import blah2_poller, mail, node_retirement, polled_registration, publication
+from services import blah2_poller, mail, polled_registration, publication
 from services.node_claim_store import claim_addresses
 from services.node_claiming import (
     ClaimOutcome,
@@ -45,6 +46,7 @@ from services.node_claiming import (
 from services.node_config import carrier_hz, position_status
 from services.node_refs import owner_identity, public_name
 from services.polled_radars import owner_views, remove_polled_radar
+from services.tasks.aircraft_flush import owner_bytes
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -72,10 +74,16 @@ def _client_source(request: Request) -> str:
     return str(address)
 
 
-async def _set_auth_cookie(response: Response, user) -> None:
-    """Write the fastapi-users JWT into the auth_token cookie."""
+async def _open_session(user, **extra) -> JSONResponse:
+    """Answer with the signed-in user, and the fastapi-users JWT in the auth_token cookie.
+
+    Opening a session is itself a visit, and the answer carries it. Recorded
+    once the token exists, so a sign-in that fails leaves no visit behind.
+    """
     strategy = get_jwt_strategy()
     token = await strategy.write_token(user)
+    await record_visit(user)
+    response = JSONResponse({"user": _session_user(user_to_dict(user)), **extra})
     response.set_cookie(
         "auth_token",
         token,
@@ -85,6 +93,7 @@ async def _set_auth_cookie(response: Response, user) -> None:
         samesite="lax",
         path="/",
     )
+    return response
 
 
 # ── Magic links ───────────────────────────────────────────────────────────────
@@ -137,6 +146,10 @@ _SIGN_IN_PATH = "/auth/link/"
 #: to anyone's address, so this is a stranger's text in a genuine mail from us:
 #: plain path characters only, and never `//`, which a browser reads as a host.
 _NEXT_PATH = re.compile(r"/(?!/)[A-Za-z0-9/_.-]{0,200}")
+
+#: The one answer for a sign-in link that is unknown, expired or spent, from the
+#: preview and the redemption alike. The console shows it verbatim.
+_DEAD_LINK = "That sign-in link is no longer valid"
 
 
 def _session_user(user_dict: dict) -> dict:
@@ -210,6 +223,21 @@ async def request_magic_link(body: MagicLinkRequest, request: Request):
     return {"status": "accepted"}
 
 
+@router.get("/magic-link/{token}")
+async def preview_magic_link(token: str):
+    """Which address a sign-in link is for, without spending it.
+
+    The landing page names the address and waits for a press before it
+    redeems, so a scanner that renders the page and runs its script leaves the
+    link alive. Reading it needs the same secret redeeming does, so it tells
+    the holder nothing they could not learn by signing in.
+    """
+    link = await peek_magic_link(token, intent=INTENT_SIGNIN)
+    if link is None:
+        raise HTTPException(status_code=404, detail=_DEAD_LINK)
+    return {"email": link.email}
+
+
 @router.post("/magic-link/consume")
 async def consume_magic_link_route(body: MagicLinkConsume, request: Request):
     """Redeem a link and open a session.
@@ -222,18 +250,16 @@ async def consume_magic_link_route(body: MagicLinkConsume, request: Request):
     if email is None:
         # One answer for unknown, expired and already-redeemed. Telling them
         # apart says which guesses were once real.
-        raise HTTPException(status_code=400, detail="That sign-in link is no longer valid")
+        raise HTTPException(status_code=400, detail=_DEAD_LINK)
 
     try:
         user = await get_or_create_magic_link_user(email)
     except MagicLinkRefused:
         # Same answer as a token that never existed. A distinct one would say
         # which addresses are privileged, and the link is spent either way.
-        raise HTTPException(status_code=400, detail="That sign-in link is no longer valid") from None
+        raise HTTPException(status_code=400, detail=_DEAD_LINK) from None
 
-    response = JSONResponse({"user": _session_user(user_to_dict(user))})
-    await _set_auth_cookie(response, user)
-    return response
+    return await _open_session(user)
 
 
 # ── Claiming a node ───────────────────────────────────────────────────────────
@@ -274,9 +300,7 @@ async def consume_claim_link(body: ClaimToken):
         # links cannot be used to learn which ones were ever real.
         raise HTTPException(status_code=400, detail="That link is no longer valid")
 
-    response = JSONResponse({"user": _session_user(user_to_dict(user)), "node_ref": node_ref})
-    await _set_auth_cookie(response, user)
-    return response
+    return await _open_session(user, node_ref=node_ref)
 
 
 @router.post("/claim/decline")
@@ -319,15 +343,7 @@ async def _remove_polled_radar(node_id: str, user_id: str) -> bool:
         async with session.begin():
             if not await remove_polled_radar(session, node_id, user_id=user_id):
                 return False
-    # After the commit, so the poller's rejoin finds the node retired and files
-    # nothing more under it.
-    try:
-        node_retirement.forget_node(node_id)
-    except Exception:
-        # Retired all the same: what forget_node left is in stale_node_ids()
-        # for a retire-stale pass, and it has logged what that is.
-        pass
-    blah2_poller.refresh()
+    polled_registration.let_go(node_id)
     return True
 
 
@@ -432,6 +448,8 @@ async def my_nodes(request: Request):
                 "name": public_name(cfg.get("name"), ref, node_ids),
                 "status": status,
                 "last_heartbeat": info.get("last_heartbeat"),
+                # Here as well as on /api/radar/nodes, which leaves private nodes out.
+                "config_hash": info.get("config_hash"),
                 "is_synthetic": info.get("is_synthetic", False),
                 "rx_lat": cfg.get("rx_lat"),
                 "rx_lon": cfg.get("rx_lon"),
@@ -443,3 +461,17 @@ async def my_nodes(request: Request):
             }
         )
     return out
+
+
+@router.get("/me/aircraft")
+async def my_aircraft(request: Request):
+    """The owner feed's current frame: aircraft and arcs from the caller's nodes.
+
+    The snapshot /ws/aircraft/owner sends on connect, for a page that polls.
+    Filtered from the unredacted frame, because the public feed drops a private
+    node's single-node tracks, and a polled radar on probation counts as
+    private, so its owner would find nothing of their own there.
+    """
+    user = await get_current_user(request)
+    owned = set(await get_user_nodes(user["id"]))
+    return Response(content=owner_bytes(state.latest_aircraft_json, owned), media_type="application/json")

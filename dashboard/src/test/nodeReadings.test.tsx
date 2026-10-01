@@ -50,7 +50,7 @@ function serve(status: string | null = "active") {
   vi.mocked(api.adminNodeRefs).mockResolvedValue({});
   vi.mocked(api.adminNodeContacts).mockResolvedValue({});
   vi.mocked(api.adminNodeOwners).mockResolvedValue({});
-  vi.mocked(api.adminPolledRadars).mockResolvedValue({ probation_enabled: true, radars: [] });
+  vi.mocked(api.adminPolledRadars).mockResolvedValue({ probation_enabled: true, polling_enabled: false, radars: [] });
   vi.mocked(api.adminNodeReports).mockResolvedValue([]);
 }
 

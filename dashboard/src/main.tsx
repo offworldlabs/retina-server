@@ -5,9 +5,12 @@ import App from "./App";
 import { AuthProvider } from "./context/AuthContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import ErrorBoundary from "./components/ErrorBoundary";
+import { reloadOnStaleChunk } from "./utils/staleChunk";
 import "@retina/shared/css/tokens.css";
 import "@retina/shared/css/ui.css";
 import "./App.css";
+
+window.addEventListener("vite:preloadError", reloadOnStaleChunk);
 
 // Outermost, so the theme outlives a crash in the tree below: the boundary's
 // fallback is drawn with the same tokens as the app, and a dark console must

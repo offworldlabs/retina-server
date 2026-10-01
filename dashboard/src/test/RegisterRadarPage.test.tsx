@@ -29,7 +29,7 @@ function renderPage() {
     <MemoryRouter initialEntries={["/radars/new"]}>
       <Routes>
         <Route path="/radars/new" element={<RegisterRadarPage />} />
-        <Route path="/onboarding" element={<div>my nodes</div>} />
+        <Route path="/overview" element={<div>my nodes</div>} />
       </Routes>
     </MemoryRouter>,
   );

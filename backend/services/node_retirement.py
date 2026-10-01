@@ -29,6 +29,7 @@ data source mid-session.  Held is registry presence rather than a live stream,
 so a receiver marked disconnected is still refused.
 """
 
+import contextlib
 import logging
 import time
 from datetime import datetime, timezone
@@ -183,6 +184,7 @@ def _clear(node_id: str, was_connected: bool) -> dict:
         analytics = getattr(state, "node_analytics", None)
         if analytics is not None:
             report["analytics"] = analytics.retire_node(node_id)
+            report["neighbour_flags_removed"] = _forget_as_neighbour(analytics, node_id)
 
         associator = getattr(state, "node_associator", None)
         if associator is not None and hasattr(associator, "unregister_node"):
@@ -205,6 +207,33 @@ def _clear(node_id: str, was_connected: bool) -> dict:
     # the node; nothing needs to rewrite the file here.
     log.info("Retired node %s: %s", node_id, report)
     return report
+
+
+def _forget_as_neighbour(analytics, node_id: str) -> int:
+    """Drop every other node's ``neighbour_inconsistent:<node_id>`` condition.
+
+    Reputation keys its neighbour-disagreement condition on the neighbour's id
+    (retina_analytics.reputation, evaluate_neighbour_consistency), so every
+    node that ever overlapped the retired one carries a flag naming it.
+    ``analytics.retire_node`` drops only the retired node's own reputation, so
+    without this the flags outlive it in memory and in every snapshot, and a
+    node that disagreed with it once would be spared the onset penalty should
+    a new receiver ever register under the same id.  Returns how many flags
+    were removed.  The penalty history is left alone: it is a record of what
+    happened, not state.
+    """
+    key = f"neighbour_inconsistent:{node_id}"
+    removed = 0
+    # The manager's own retire_node and registration hold this lock while
+    # changing the reputation store, so it is the one that keeps the store
+    # from changing size under this loop.
+    lock = getattr(analytics, "_save_lock", None) or contextlib.nullcontext()
+    with lock:
+        for rep in list(analytics.reputations.values()):
+            conditions = getattr(rep, "_condition_active", None)
+            if conditions is not None and conditions.pop(key, None) is not None:
+                removed += 1
+    return removed
 
 
 def retire_stale_nodes() -> dict:

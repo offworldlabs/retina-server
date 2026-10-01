@@ -352,8 +352,7 @@ async def test_startup_priming_loads_the_fleet_from_the_app_session(tmp_path, no
 
 async def test_a_node_last_heard_before_the_threshold_is_primed_offline(node_session, node):
     """A board that died before the deploy never beats again, so priming is the
-    only chance to say so. Read back through SQLite, which returns the column
-    naive."""
+    only chance to say so. Read back from the database, not the instance in hand."""
     seen = datetime.now(UTC) - timedelta(hours=6)
     node.last_seen_at = seen
     await node_session.commit()

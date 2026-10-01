@@ -61,4 +61,11 @@ describe("the console's index", () => {
     visit("/overview", { name: "Ada", email: "ada@example.com" });
     expect(await screen.findByText("overview page")).toBeInTheDocument();
   });
+
+  // Where bookmarks and sign-in links already mailed still lead.
+  it("forwards /onboarding to it", async () => {
+    visit("/onboarding", { name: "Ada", email: "ada@example.com" });
+    expect(await screen.findByText("overview page")).toBeInTheDocument();
+    expect(screen.getByLabelText("location").textContent).toBe("/overview");
+  });
 });
