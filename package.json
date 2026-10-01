@@ -7,6 +7,13 @@
     "packages/shared",
     "e2e"
   ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "npm run typecheck --workspaces",
+    "lint": "npm run lint --workspaces --if-present",
+    "build": "npm run build --workspaces --if-present",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build"
+  },
   "dependencies": {
     "classnames": "^2.5.1",
     "leaflet": "^1.9.4",
