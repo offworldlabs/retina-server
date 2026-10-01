@@ -29,7 +29,7 @@
  * Authenticated flows are covered via API-level assumptions (see api.spec.ts).
  */
 import { test, expect, request as playwrightRequest, type Page } from "@playwright/test";
-import { hosts } from "../playwright.config";
+import { hosts, hostOrSkip } from "../playwright.config";
 
 // The origin the dashboard is served from, at its root.
 const DASH = hosts.dash;
@@ -37,7 +37,6 @@ const DASH_PAGE = DASH;
 const LOGIN_PATH = "/login";
 // A page that needs a session. The index does not: it forwards to the map.
 const PRIVATE_PAGE = `${DASH_PAGE}/overview`;
-const ADMIN = hosts.admin;
 const API = hosts.api;
 
 type AuthMode = "oauth" | "bypass";
@@ -177,18 +176,18 @@ test.describe("Admin surface selection", () => {
   // serves, with a different route table, chosen client-side from the
   // hostname. Null on prod (see playwright.config.ts) so a wobble here cannot
   // roll production back.
-  test.skip(!ADMIN, "no admin surface on this environment");
+  const admin = hostOrSkip("admin", "no admin surface on this environment");
 
   // The mode is a property of the deployment, not of either test. beforeEach
-  // runs per test, so cache it; the skip itself has to stay in beforeEach,
-  // which is where Playwright accepts it. The value is cached rather than the
+  // runs per test, so cache it; the resolution skip stays in beforeEach, since
+  // it has to await a request. The value is cached rather than the
   // promise, so a request that fails leaves the next test free to try again
   // instead of inheriting a rejection.
   let authMode: AuthMode | undefined;
   let adminResolves: boolean | undefined;
   test.beforeEach(async () => {
-    adminResolves ??= await resolves(ADMIN!);
-    test.skip(!adminResolves, `${ADMIN} does not resolve`);
+    adminResolves ??= await resolves(admin);
+    test.skip(!adminResolves, `${admin} does not resolve`);
     authMode ??= await serverAuthMode();
   });
 
@@ -201,8 +200,8 @@ test.describe("Admin surface selection", () => {
   // run can show is that the vhost is reachable and serving this bundle, which
   // is why these stay here once enforced auth puts a login card in the way.
   test("the admin vhost serves the admin console", async ({ page }) => {
-    await page.goto(ADMIN!);
-    await expectSurface(page, ADMIN!, authMode!, "Admin Console");
+    await page.goto(admin);
+    await expectSurface(page, admin, authMode!, "Admin Console");
   });
 
   test("the app host serves the user dashboard", async ({ page }) => {
