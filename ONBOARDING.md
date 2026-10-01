@@ -128,14 +128,15 @@ workspace with its own lint, typecheck and tests. Reach for its
 conventions and the typed errors every surface wants. `useCurrentUser()` sits on
 top of it and resolves who the caller is, retries included.
 
-The lockfile is written by npm 10, the version CI and the image run (Node 20).
-A local npm 11 writes one that npm 10 rejects as incomplete, so after changing a
-dependency regenerate it with the same npm (as your own user, so the file it
-writes stays yours on a Linux host):
+The lockfile is written by npm 11, the version CI and the image run (Node 24)
+and the one Dependabot's lockfiles are shaped by. npm 10 writes a longer one and
+rejects npm 11's as incomplete, so after changing a dependency regenerate it
+with the same npm (as your own user, so the file it writes stays yours on a
+Linux host):
 
 ```bash
 docker run --rm -v "$PWD":/w -w /w --user "$(id -u):$(id -g)" -e npm_config_cache=/tmp/.npm \
-  node:20-alpine npm install --package-lock-only
+  node:24-alpine npm install --package-lock-only
 npm ci
 ```
 

@@ -14,7 +14,7 @@ ARG UV_VERSION=0.12.5
 # One `npm ci`, from the lockfile CI installs, so the bundle that ships is built
 # from the tree CI tested. `npm install` would be free to re-resolve and rewrite
 # the lockfile.
-FROM node:20-alpine AS web-deps
+FROM node:24-alpine AS web-deps
 WORKDIR /app
 # Manifests first, so a source-only change leaves the install layer cached.
 COPY package.json package-lock.json .npmrc ./
