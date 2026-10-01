@@ -301,7 +301,7 @@ jobs:
     timeout-minutes: 35
     needs: [deploy]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run smoke tests against staging
         # No fleet gate ahead of this any more: staging runs no simulator, so
         # there is nothing to wait for between the deploy and the suite, and the
@@ -326,7 +326,7 @@ jobs:
     # The browser is the runner image's Google Chrome, not one installed here;
     # see the production job.
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Pins the tests to the same Node 20 as every other job, rather than the
       # runner's own, and keeps the npm cache.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
