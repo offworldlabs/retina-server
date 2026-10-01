@@ -100,7 +100,7 @@ describe("a page that throws while rendering", () => {
   it("keeps the sidebar, which still navigates to a page that draws", async () => {
     const { container } = visit("/overview");
     expect(await screen.findByRole("alert")).toHaveTextContent("Something went wrong on this page");
-    expect(container.querySelector(".header-title")).toHaveTextContent("Overview");
+    expect(container.querySelector(".header-title")).toHaveTextContent("My Nodes");
     fireEvent.click(screen.getByRole("link", { name: /^leaderboard$/i }));
     expect(await screen.findByText("leaderboard page")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();

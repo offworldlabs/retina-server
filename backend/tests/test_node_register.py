@@ -213,8 +213,7 @@ async def test_an_acceptance_sent_with_an_offset_is_stored_as_the_instant(
     _register(node_client, agreements=AGREEMENTS | {"licence": offset})
 
     node = await node_session.get(Node, NODE_ID)
-    stored = node.licence_accepted_at.replace(tzinfo=UTC)
-    assert stored == datetime(2026, 7, 31, 7, 12, tzinfo=UTC)
+    assert node.licence_accepted_at == datetime(2026, 7, 31, 7, 12, tzinfo=UTC)
 
 
 async def test_a_private_choice_is_recorded_as_private(node_client, accepted_in_mender, node_session):

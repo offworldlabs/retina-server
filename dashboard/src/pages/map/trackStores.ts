@@ -1,3 +1,5 @@
+import { isClaimedAdsb } from "./constants";
+
 /* ── One forget path for the per-object animation stores.
  *
  * LiveAircraftMap keeps nine stores keyed by one string (fixes, smooth,
@@ -68,8 +70,9 @@ export function snapTrack(key: string, s, lat: number, lon: number, track: numbe
  * pair is identifiable without any geometry.  Per frame, after this frame's
  * fixes are written, resolve every such pair down to the FRESHER solve.
  *
- * Restricted strictly to (multinode fix with adsb_hex X) vs (adsb_single_node
- * fix with hex X): arc-only and truth entries are never touched.
+ * Restricted strictly to (multinode fix with adsb_hex X) vs (claimed ADS-B
+ * fix with hex X — adsb_single_node or adsb_multi_node): arc-only and truth
+ * entries are never touched.
  */
 export function reconcileAdsbPairs(aircraft, s, now: number = Date.now()) {
   // Staleness of a stored fix in seconds: its own age-of-solve plus whatever
@@ -101,7 +104,7 @@ export function reconcileAdsbPairs(aircraft, s, now: number = Date.now()) {
   for (const [adsbHex, mnKey] of mnByAdsbHex) {
     const single = s.fixes[adsbHex];
     if (!single || single._isTruth) continue;
-    if (single.position_source !== "adsb_single_node") continue;
+    if (!isClaimedAdsb(single)) continue;
     const mn = s.fixes[mnKey];
     if (!mn) continue;
     // Tie goes to the multinode entry: that is backend dedup's own rank.

@@ -38,11 +38,21 @@ def _target_metadata():
 target_metadata = _target_metadata()
 
 
+def _render_item(type_, obj, _autogen_context):
+    """A revision imports nothing from the app, so UTCDateTime is written as the type it stores."""
+    from core.timestamps import UTCDateTime
+
+    if type_ == "type" and isinstance(obj, UTCDateTime):
+        return f"sa.{obj.impl!r}"
+    return False
+
+
 def _run(connection) -> None:
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
         render_as_batch=True,
+        render_item=_render_item,
     )
     with context.begin_transaction():
         context.run_migrations()

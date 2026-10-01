@@ -16,10 +16,10 @@ import pytest
 _REPO = Path(__file__).resolve().parents[2]
 _TALLY = _REPO / "deploy" / "smoke-tally.sh"
 _STAGING = _REPO / "deploy" / "staging-smoke-test.sh"
-_CI = _REPO / ".github" / "workflows" / "ci.yml"
+_PRODUCTION = _REPO / ".github" / "workflows" / "production-deploy-verify.yml"
 
 # The production suite lives inline in the workflow rather than in its own file.
-_SUITES = {"staging-smoke-test.sh": _STAGING, "ci.yml (production smoke)": _CI}
+_SUITES = {"staging-smoke-test.sh": _STAGING, "production-deploy-verify.yml (production smoke)": _PRODUCTION}
 
 
 @pytest.fixture(scope="module")

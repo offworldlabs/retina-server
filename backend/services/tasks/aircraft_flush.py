@@ -11,7 +11,7 @@ from config.constants import AIRCRAFT_FLUSH_INTERVAL_S
 from core import state
 from services import node_refs
 from services.frame_processor import build_combined_aircraft_json
-from services.publication import public_aircraft_payload
+from services.publication import public_aircraft_payload, without_others_private_nodes
 from services.tasks.executor import task_executor
 
 _TAR1090_DATA_DIR = os.path.join(
@@ -36,7 +36,9 @@ def filter_payload_to_nodes(aircraft_data: dict, node_ids: set[str]) -> dict:
     """Build a slim WS payload containing only aircraft/arcs for `node_ids`.
 
     An aircraft is included if it was detected by one of these nodes directly,
-    or if it's a multinode solution any of whose contributing nodes is ours.
+    or if it's a multinode solution — or a claimed ADS-B target several nodes
+    are detecting (``adsb_multi_node``, which carries no single node_id) — any
+    of whose contributing nodes is ours.
 
     Still keyed by `node_id`; callers publish it through `published_bytes`.
     """
@@ -44,7 +46,10 @@ def filter_payload_to_nodes(aircraft_data: dict, node_ids: set[str]) -> dict:
         ac
         for ac in aircraft_data.get("aircraft", [])
         if ac.get("node_id") in node_ids
-        or (ac.get("multinode") and any(nid in node_ids for nid in ac.get("contributing_node_ids", [])))
+        or (
+            (ac.get("multinode") or ac.get("position_source") == "adsb_multi_node")
+            and any(nid in node_ids for nid in ac.get("contributing_node_ids", []))
+        )
     ]
     matched_arcs = [arc for arc in aircraft_data.get("detection_arcs", []) if arc.get("node_id") in node_ids]
     return {
@@ -59,6 +64,15 @@ def filter_payload_to_nodes(aircraft_data: dict, node_ids: set[str]) -> dict:
         "ground_truth_meta": {},
         "anomaly_hexes": [],
     }
+
+
+def owner_bytes(aircraft_data: dict, owned: set[str]) -> bytes:
+    """The owner feed for one caller: `owned`'s aircraft and arcs, published.
+
+    `aircraft_data` is the unredacted frame; the solves the caller joined are
+    cut back to what they may see of other owners' nodes before publication.
+    """
+    return published_bytes(without_others_private_nodes(filter_payload_to_nodes(aircraft_data, owned), owned))
 
 
 def _real_only_dict(aircraft_data: dict) -> dict:
@@ -172,7 +186,7 @@ async def broadcast_aircraft(aircraft_data: dict):
         stale_owner = set()
         for ws, owned in list(state.ws_owner_clients.items()):
             try:
-                owner_pairs.append((ws, published_bytes(filter_payload_to_nodes(aircraft_data, owned)).decode()))
+                owner_pairs.append((ws, owner_bytes(aircraft_data, owned).decode()))
             except Exception:
                 stale_owner.add(ws)
         stale_owner |= await _fan_out_sends(owner_pairs)
