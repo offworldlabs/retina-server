@@ -54,7 +54,6 @@ const PAGES: [string, Page, string][] = [
   ["Contribution", () => import("../pages/user/ContributionPage"), "network contribution"],
   ["Detections", () => import("../pages/user/DetectionsPage"), "detections"],
   ["Leaderboard", () => import("../pages/user/LeaderboardPage"), "the leaderboard"],
-  ["Onboarding", () => import("../pages/user/OnboardingPage"), "your nodes"],
   ["Overview", () => import("../pages/user/OverviewPage"), "your nodes"],
   ["RF Environment", () => import("../pages/user/RFEnvironmentPage"), "RF environment data"],
   ["Tunnel Link", () => import("../pages/user/TunnelLinkPage"), "your nodes"],

@@ -3,13 +3,14 @@ name: Deploy to test droplet
 # Dispatch-only. This exists so the production auto-rollback path can be
 # exercised end to end without breaking production to do it — CI had no route to
 # retina-test at all before this (no TEST_HOST secret, no job referencing it),
-# and `deploy-production` is gated on `push` to main, so a workflow_dispatch run
-# skips it and the rollback job with it.
+# and the production chain is gated on `push` to main, so a workflow_dispatch
+# run skips it and the rollback job with it.
 #
-# The deploy and rollback logic below MIRRORS ci.yml's deploy-production and
-# rollback-production-on-deploy-failure. ci.yml is the source of truth; this is
-# a copy, and a copy can drift. If you change the marker lifecycle or the
-# rollback decisions there, change them here, or this stops verifying anything.
+# The deploy and rollback logic below MIRRORS production-deploy-verify.yml's
+# deploy-production and rollback-production-on-deploy-failure. That file is the
+# source of truth; this is a copy, and a copy can drift. If you change the
+# marker lifecycle or the rollback decisions there, change them here, or this
+# stops verifying anything.
 # staging-deploy-verify.yml carries the same pair for staging; keep all three
 # in step.
 on:
@@ -104,7 +105,7 @@ jobs:
             set -e
             cd ${{ env.APP_DIR }}
 
-            # Identity first, for the reason ci.yml gives: the only check that
+            # Identity first, for the reason production gives: the only check that
             # does not depend on the state of the box. Exact match — retina-test
             # and nothing else, so a mistyped TEST_HOST cannot land a deliberate
             # failure injection on staging or production.
@@ -132,7 +133,7 @@ jobs:
               exit 1
             fi
 
-            # Mirrors ci.yml's .env pre-flight, and matters more here than
+            # Mirrors production's .env pre-flight, and matters more here than
             # there. pre-deploy.sh reads the running image via `docker compose
             # images`, which resolves through whatever ./.env names, so a .env
             # naming another environment would have it snapshot the wrong
@@ -249,7 +250,7 @@ jobs:
     concurrency:
       group: test-deploy
       cancel-in-progress: false
-    # Mirrors ci.yml: keyed to the deploy job's own result, and covering
+    # Mirrors production: keyed to the deploy job's own result, and covering
     # 'cancelled' as well as 'failure'.
     if: >-
       always() && (

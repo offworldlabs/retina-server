@@ -21,7 +21,7 @@ from sqlalchemy import func, select, update
 
 from core import state
 from core.node_ids import node_id_pattern
-from core.nodes import Node, NodeClaim, NodeConfig, PolledRadar
+from core.nodes import Node, NodeClaim, NodeConfig, NodeEvent, PolledRadar
 from core.users import ANONYMOUS_USER, async_session_maker
 from services import (
     blah2_poller,
@@ -603,6 +603,17 @@ def test_a_registered_radar_is_listed_at_once_and_the_poller_woken(
     mine = {n["node_id"]: n for n in client.get("/api/auth/me/nodes").json()}
     assert mine[node_id]["location_private"] is True
     assert publication.is_private(node_id)
+
+
+def test_a_registration_is_recorded_with_who_made_it(client, registration_open, canned_radar, poller_wakes):
+    node_id = client.post(REGISTER, json=SUBMIT).json()["node_id"]
+
+    async def events():
+        async with async_session_maker() as session:
+            rows = await session.scalars(select(NodeEvent).where(NodeEvent.node_id == node_id))
+            return [(e.kind, e.epoch, e.actor) for e in rows]
+
+    assert asyncio.run(events()) == [("registered", 1, ANONYMOUS_USER["id"])]
 
 
 def test_a_changed_radar_answers_with_what_it_declares_now(client, registration_open, monkeypatch, poller_wakes):

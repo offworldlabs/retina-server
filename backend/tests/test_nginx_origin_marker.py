@@ -24,24 +24,24 @@ _REPO = Path(__file__).resolve().parents[2]
 _SNIPPET = _REPO / "deploy" / "nginx" / "snippets" / "origin-marker.conf"
 _SHARED = _REPO / "deploy" / "origin-marker.sh"
 _STAGING = _REPO / "deploy" / "staging-smoke-test.sh"
-_CI = _REPO / ".github" / "workflows" / "ci.yml"
+_PRODUCTION = _REPO / ".github" / "workflows" / "production-deploy-verify.yml"
 
 
 def _production_smoke() -> str:
-    """The production-smoke-tests job alone, not the whole 1200-line workflow.
+    """The production-smoke-tests job alone, not the whole workflow.
 
     Scoped deliberately. Matching against the entire file would let any of these
     strings survive in an unrelated job, or in a comment, and go on satisfying
     the assertions below after the production job had quietly lost its origin
     check — the silent regression this file exists to prevent, one job over.
     """
-    return yaml.safe_dump(yaml.safe_load(_CI.read_text())["jobs"]["production-smoke-tests"])
+    return yaml.safe_dump(yaml.safe_load(_PRODUCTION.read_text())["jobs"]["production-smoke-tests"])
 
 
 # The production suite lives inline in the workflow rather than in its own file.
 _SUITES = {
     "staging-smoke-test.sh": lambda: _STAGING.read_text(),
-    "ci.yml (production smoke)": _production_smoke,
+    "production-deploy-verify.yml (production smoke)": _production_smoke,
 }
 
 _HEADER = "X-Retina-Origin"
@@ -142,7 +142,7 @@ def test_no_suite_hardcodes_the_marker(name: str) -> None:
     """A literal in a suite keeps passing after the config's value changes.
 
     The header name only. The marker's *value* is this repo's own name, which
-    appears throughout ci.yml for unrelated reasons (paths, image tags), so
+    appears throughout the workflows for unrelated reasons (paths, image tags), so
     matching on it would fire on edits that have nothing to do with the marker.
     """
     own = re.findall(_HEADER, _SUITES[name](), re.I)

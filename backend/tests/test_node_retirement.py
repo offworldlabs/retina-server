@@ -159,6 +159,44 @@ class TestRetireNode:
         finally:
             state.node_analytics.retire_node("dark-node")
 
+    def test_it_removes_the_node_from_other_nodes_neighbour_flags(self, fleet):
+        """Reputation keys neighbour disagreement on the neighbour's id, so a
+        retired node would otherwise live on in every node that overlapped it."""
+        state.node_analytics.register_node("bystander", dict(_CFG))
+        try:
+            for nid in ("live-node", "bystander"):
+                rep = state.node_analytics.reputations[nid]
+                rep.evaluate_neighbour_consistency(0.0, 0.9, neighbour_id="departed")
+                rep.evaluate_neighbour_consistency(0.0, 0.9, neighbour_id="someone-else")
+                assert rep._condition_active["neighbour_inconsistent:departed"] is True
+            # A cleared condition is still a stored reference to the node.
+            state.node_analytics.reputations["bystander"].evaluate_neighbour_consistency(
+                0.5, 0.9, neighbour_id="departed"
+            )
+
+            report = node_retirement.retire_node("departed")
+
+            assert report["neighbour_flags_removed"] == 2
+            for nid in ("live-node", "bystander"):
+                conditions = state.node_analytics.reputations[nid]._condition_active
+                assert "neighbour_inconsistent:departed" not in conditions
+                # Only the retired node's flags go.
+                assert conditions["neighbour_inconsistent:someone-else"] is True
+        finally:
+            state.node_analytics.retire_node("bystander")
+
+    def test_a_node_nobody_flagged_removes_no_neighbour_flags(self, fleet):
+        report = node_retirement.retire_node("departed")
+
+        assert report["neighbour_flags_removed"] == 0
+
+    def test_forget_node_removes_neighbour_flags_too(self, fleet):
+        state.node_analytics.reputations["departed"].evaluate_neighbour_consistency(0.0, 0.9, neighbour_id="live-node")
+        report = node_retirement.forget_node("live-node")
+
+        assert report["neighbour_flags_removed"] == 1
+        assert "neighbour_inconsistent:live-node" not in state.node_analytics.reputations["departed"]._condition_active
+
     def test_it_evicts_the_cached_pipeline(self, fleet):
         state.node_pipelines["departed"] = object()
         report = node_retirement.retire_node("departed")

@@ -15,12 +15,19 @@ export type PolledRadarTrust = "probation" | "graduated";
 
 /** One human decision about a node, from node_events. */
 export interface NodeEvent {
-  kind: "graduated" | "returned_to_probation";
+  kind: "registered" | "graduated" | "returned_to_probation" | "removed";
   /** The radar's epoch the decision applied to. */
   epoch: number | null;
-  /** `admin:<email>` for an administrator. */
+  /** `admin:<email>` for an administrator, or the owner's account id. */
   actor: string;
   at: string;
+}
+
+/** Whose polled radar it is. An account an administrator made for its address
+ *  reads not signed in until its first sign-in. */
+export interface PolledRadarOwner {
+  email: string | null;
+  signed_in: boolean;
 }
 
 /** How the server's polls of a radar are going, as the poller last wrote it. */
@@ -40,10 +47,13 @@ export interface PolledRadar {
   trust_state: PolledRadarTrust;
   /** Newest first. */
   events: NodeEvent[];
+  owner: PolledRadarOwner | null;
 }
 
 export interface PolledRadarListing {
   probation_enabled: boolean;
+  /** Whether this server polls radars, so whether one can be connected here. */
+  polling_enabled: boolean;
   radars: PolledRadar[];
 }
 
@@ -71,6 +81,12 @@ export interface PolledRadarProbe {
   protected: boolean;
 }
 
+/** An administrator's check of a radar and of the address it is for. */
+export interface ConnectionCheck extends PolledRadarProbe {
+  /** The address as accounts are keyed on it, and whether it has one yet. */
+  account: { email: string; exists: boolean };
+}
+
 export type Publication = "public" | "private";
 
 /** A polled radar as its owner sees it, under `polled` in their node list. */
@@ -89,6 +105,7 @@ export interface OwnedNode {
   name: string | null;
   status: string;
   last_heartbeat: string | null;
+  config_hash: string | null;
   is_synthetic: boolean;
   rx_lat: number | null;
   rx_lon: number | null;

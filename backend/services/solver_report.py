@@ -553,6 +553,7 @@ def _counter_snapshot() -> SimpleNamespace:
             known_lane_publish_errors=state.known_lane_publish_errors,
             known_lane_reanchored=state.known_lane_reanchored,
             known_lane_publish_rms_rejected=state.known_lane_publish_rms_rejected,
+            known_lane_publish_single_site=state.known_lane_publish_single_site,
             known_claims_made=state.known_claims_made,
             known_claim_contentions=state.known_claim_contentions,
             known_claims_bound=state.known_claims_bound,
@@ -650,6 +651,12 @@ def _known_lane(snap: SimpleNamespace, known_records: list[dict], minutes: float
         # sampled and still in position_error_km below: the gate protects
         # the map, not the measurement.
         "publish_rms_rejected": snap.known_lane_publish_rms_rejected,
+        # Solves binding WOULD have published, held off the map because every
+        # claim came from one receive site (see known_lane._count_sites):
+        # co-sited receivers are one site's geometry, not a multilateration
+        # fix.  Same accounting as publish_rms_rejected, and charged instead
+        # of it when both apply.
+        "publish_single_site": snap.known_lane_publish_single_site,
         # The one WINDOWED entry in this since-boot block (it carries its
         # own window_minutes so it cannot be misread as cumulative):
         # solver-vs-ADS-B error over this lane's records in the window,

@@ -6,7 +6,7 @@ import { formatMHz } from "../utils/format";
 import { distanceKm } from "../utils/geo";
 
 /* The cards of useRadarCheck's two steps, shared by registering a stock blah2
-   radar and moving one to a new address. */
+   radar, moving one to a new address, and an administrator connecting one. */
 
 type Busy = "checking" | "confirming" | null;
 
@@ -26,6 +26,8 @@ export function AddressCard({
   refusal,
   onChange,
   onCheck,
+  lead,
+  ready = true,
   children,
 }: {
   title: string;
@@ -34,6 +36,10 @@ export function AddressCard({
   refusal: string | null;
   onChange: (address: string) => void;
   onCheck: () => void;
+  /** Fields above the address. */
+  lead?: ReactNode;
+  /** Whether those fields are filled in enough to check. */
+  ready?: boolean;
   /** Beneath the button. */
   children?: ReactNode;
 }) {
@@ -47,6 +53,7 @@ export function AddressCard({
         <h3>{title}</h3>
       </div>
       <form className="card-body card-stack" onSubmit={submit} noValidate>
+        {lead}
         <label htmlFor="radar-address">Radar address</label>
         <input
           id="radar-address"
@@ -64,11 +71,11 @@ export function AddressCard({
         </p>
         {refusal && <Notice>{refusal}</Notice>}
         <div className="btn-row">
-          <button type="submit" className="btn btn-primary" disabled={busy !== null || !address.trim()}>
+          <button type="submit" className="btn btn-primary" disabled={busy !== null || !address.trim() || !ready}>
             {busy === "checking" ? "Checking…" : "Check radar"}
           </button>
         </div>
-        {busy === "checking" && <p className="card-note">Checking your radar. This can take up to 15 seconds.</p>}
+        {busy === "checking" && <p className="card-note">Checking the radar. This can take up to 15 seconds.</p>}
         {children}
       </form>
     </div>
@@ -83,18 +90,20 @@ export function DeclarationCard({
   refusal,
   onCheckAgain,
   onChangeAddress,
+  title = "What your radar declares",
 }: {
   probe: PolledRadarProbe;
   busy: Busy;
   refusal: string | null;
   onCheckAgain: () => void;
   onChangeAddress: () => void;
+  title?: string;
 }) {
   const baselineKm = distanceKm(probe.rx.latitude, probe.rx.longitude, probe.tx.latitude, probe.tx.longitude);
   return (
     <div className="card">
       <div className="card-header">
-        <h3>What your radar declares</h3>
+        <h3>{title}</h3>
       </div>
       <div className="card-body card-stack">
         <table className="kv-table">
