@@ -43,6 +43,11 @@ env:
   # back a tree nothing is served from.
   APP_DIR: /opt/retina-server
 
+# Every job reads the repository and nothing more; a job that needs another
+# scope declares its own.
+permissions:
+  contents: read
+
 jobs:
   backend-tests:
     runs-on: ubuntu-latest
@@ -75,10 +80,10 @@ jobs:
       # separate ones it should overwrite.
       COVERAGE_FILE: .coverage.${{ matrix.shard }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       # setup-python owns the interpreter, and uv, at the version the images
@@ -177,7 +182,7 @@ jobs:
       # include-hidden-files, because `.coverage.N` is a dotfile and v4 drops
       # those silently: without it the combine below fails on an empty download
       # rather than on anything that names this step.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: coverage-${{ matrix.shard }}
           path: backend/.coverage.${{ matrix.shard }}
@@ -195,8 +200,8 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
@@ -204,7 +209,7 @@ jobs:
       # it: a data file's format is tied to the coverage that wrote it, and a
       # newer reader is not guaranteed to accept an older fragment.
       - run: uv pip install --system coverage==7.8.0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: coverage-*
           merge-multiple: true
@@ -226,8 +231,8 @@ jobs:
       - run: coverage report --fail-under=55
 
   # Its own job so that backend-tests, which gates every deploy, does not wait
-  # on it: pre-commit builds its hook environments from scratch on every run,
-  # actionlint's alone taking ~16s to compile.
+  # on it: on a cache miss pre-commit builds every hook environment, actionlint's
+  # alone taking ~16s to compile.
   lint:
     name: Lint and node API contract
     runs-on: ubuntu-latest
@@ -241,14 +246,22 @@ jobs:
     steps:
       # Installed as backend-tests installs them: the contract check imports the
       # app, and with it every lib.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - uses: ./.github/actions/setup-uv
       - run: uv sync --locked && echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+      # The hook environments. A rev bump changes the config and so the key; the
+      # interpreter is in it too, since the Python hooks are built against it.
+      # No restore-keys: a restored store keeps every earlier rev's environment,
+      # so it would grow with each bump. A bump costs one cold build instead.
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ env.pythonLocation }}-${{ hashFiles('.pre-commit-config.yaml') }}
       # working-directory overrides the job default of `backend`: pre-commit
       # reads .pre-commit-config.yaml from the repo root. args: [backend] in
       # that config is what scopes both ops hooks.
@@ -294,8 +307,8 @@ jobs:
           - { workspace: packages/shared }
           - { workspace: e2e }
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           cache: npm
@@ -312,6 +325,11 @@ jobs:
       # checks before a deploy depends on them.
       - run: npm run typecheck -w ${{ matrix.workspace }}
         if: matrix.part != 'tests'
+      # The E2E suites run only after a merge, and staging's only reads Chrome's
+      # version, so a Playwright that cannot launch the runner's Chrome is caught
+      # here: on the pull request, and on main ahead of staging.
+      - run: node e2e/report-chrome.js
+        if: matrix.workspace == 'e2e'
       - run: npm test -w ${{ matrix.workspace }} --if-present ${{ matrix.shard && format('-- --shard={0}', matrix.shard) || '' }}
         if: matrix.part != 'checks'
       # Only the console has a build.
@@ -325,7 +343,7 @@ jobs:
     # and `changes.base` is populated only for the latter.
     if: github.event.action != 'edited' || github.event.changes.base
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: recursive
       - run: docker build -t retina-server:ci .
@@ -338,8 +356,8 @@ jobs:
     # and `changes.base` is populated only for the latter.
     if: github.event.action != 'edited' || github.event.changes.base
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       # The runner image's Compose lags the droplets', and a Compose older than
@@ -369,47 +387,6 @@ jobs:
       - name: Check compose + nginx parity
         run: python3 deploy/check-env-parity.py
 
-  playwright-image:
-    name: Resolve the Playwright image
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    # `edited` covers title and body edits as well as the base change we want,
-    # and `changes.base` is populated only for the latter.
-    if: github.event.action != 'edited' || github.event.changes.base
-    outputs:
-      image: ${{ steps.resolve.outputs.image }}
-    steps:
-      - uses: actions/checkout@v4
-      # The tag is DERIVED from the lockfile rather than written out here, so
-      # the browsers baked into the container cannot disagree with the client
-      # that drives them. Bumping Playwright is an npm operation and nothing
-      # else; there is deliberately no version string in this file to forget.
-      #
-      # The lockfile, not package.json: the latter carries a range (^1.59.1)
-      # and `npm ci` installs whatever the lock resolved. Only the lock states
-      # what will actually run.
-      #
-      # This job has no `if:` gate on push-to-main, unlike the two E2E jobs
-      # that consume it. That is the point of the verify below — see there.
-      - name: Resolve and verify
-        id: resolve
-        run: |
-          set -euo pipefail
-          VERSION=$(node -p "require('./package-lock.json').packages['node_modules/@playwright/test'].version")
-          IMAGE="mcr.microsoft.com/playwright:v${VERSION}-noble"
-          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
-          # A derived tag cannot be stale, but it can name an image that was
-          # never published — Microsoft does not necessarily ship one for every
-          # patch release. Checked HERE, on the pull request, because the jobs
-          # that pull it only run on push to main: without this, an unpublished
-          # version surfaces as a container-pull failure after the merge, with
-          # nothing pointing at the lockfile bump that caused it.
-          if ! docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
-            echo "::error::${IMAGE} does not exist in the registry. package-lock.json resolves @playwright/test to ${VERSION}, and no Playwright container image was published for it. Pin the lockfile to a release that has one."
-            exit 1
-          fi
-          echo "Resolved and verified ${IMAGE}"
-
   e2e-prod:
     name: Playwright E2E (production)
     runs-on: ubuntu-latest
@@ -417,33 +394,29 @@ jobs:
     # timeout is a cancellation and would skip the rollback below, whereas the
     # step cap marks the step failed and keeps it reachable.
     timeout-minutes: 30
-    needs: [production-smoke-tests, playwright-image]
+    needs: [production-smoke-tests]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    # The browsers and their shared libraries ship in the image, so there is no
-    # install step at all. That step was the single worst source of red runs
-    # here: `npx playwright install --with-deps` fetches the browsers from
-    # Playwright's CDN, which stalled twice on 2026-08-18, and before that runs
-    # an apt update, which hung for 14m34s against the runner's dead
-    # azure.archive.ubuntu.com mirror on both 2026-08-18 and 2026-08-19.
+    # The browser is the Google Chrome the runner image ships
+    # (e2e/playwright.config.ts) rather than one installed here: `npx
+    # playwright install --with-deps` puts an apt update and Playwright's CDN in
+    # the path, and both hang for minutes when their servers do.
     #
-    # It also mattered more here than anywhere else: under the old gating an
-    # install that exited non-zero satisfied `failure()` and rolled a healthy
-    # production back. Removing the step removes that class of event rather
-    # than only declining to act on it.
-    container:
-      image: ${{ needs.playwright-image.outputs.image }}
-    # See the staging job: makes the postinstall's no-op a guarantee.
-    env:
-      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 1
+    # Chrome's version therefore follows the runner image, not the lockfile, and
+    # can change with no commit here. Each run reports the one it tested with,
+    # and `web-build` launches it on every pull request.
     steps:
-      - uses: actions/checkout@v4
-      # See the staging job for why setup-node is kept inside the container.
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      # See the staging job.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
+      # A launch, not just the version: a Chrome that Playwright cannot start
+      # fails here rather than in the tests, where it would roll production back.
+      - name: Report the runner's Chrome
+        run: node e2e/report-chrome.js
       # Bounded at the step rather than relying on the job cap: a step timeout
       # marks the step failed, which still trips the rollback below, whereas a
       # job timeout is a cancellation and would skip it. A production wedged
@@ -458,17 +431,13 @@ jobs:
           CI: "true"
           RADAR_API_KEY: ${{ secrets.RADAR_API_KEY }}
       # Scoped to the test step's own outcome, as the production smoke job is.
-      # A bare failure() also fires when the container fails to pull, or when
-      # checkout or npm ci fails, none of which say anything about whether
-      # production is healthy. The browser install that made this urgent is
-      # gone, but the reasoning outlives it: anything that breaks before the
-      # tests run is a statement about the runner, not about production. An
-      # infrastructure failure now leaves the job red for a human to read,
-      # and only tests that ran and
-      # failed roll production back.
+      # A bare failure() also fires when checkout, npm ci or the Chrome report
+      # fails, and anything that breaks before the tests run is a statement
+      # about the runner, not about production. Those leave the job red for a
+      # human to read; only tests that ran and failed roll production back.
       - name: Rollback production on E2E failure
         if: failure() && steps.e2e.outcome == 'failure'
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: root
@@ -494,7 +463,7 @@ jobs:
     # landing before the service can serve it, and a job that only runs after
     # the merge reports that too late to prevent one.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       # Production's instance answers on a name with public DNS, so it can be
       # checked from anywhere, including on a pull request.
       - name: Production's instance
@@ -528,7 +497,7 @@ jobs:
           } >> "$GITHUB_ENV"
       - name: Assert staging's instance
         if: github.event_name == 'push'
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         env:
           QUERY_B64: ${{ env.QUERY_B64 }}
           ECHO_B64: ${{ env.ECHO_B64 }}
@@ -542,6 +511,8 @@ jobs:
           envs: QUERY_B64,ECHO_B64,CFGKEYS_B64,GEOBODY_B64
           script: |
             set -e
+            # By digest: this runs as root on staging, so it pulls one fixed image.
+            CURL_IMAGE=curlimages/curl:8.22.0@sha256:58adaa4e8dca9c988bae2aba4ab3434a0bb2da16bbe3f92dec39ec7785166777
             QUERY=$(printf '%s' "$QUERY_B64" | base64 -d)
             WANT=$(printf '%s' "$ECHO_B64" | base64 -d)
             CFGKEYS=$(printf '%s' "$CFGKEYS_B64" | base64 -d)
@@ -550,7 +521,7 @@ jobs:
               echo "::error::retina-edge does not exist on $(hostname), so nginx cannot reach tower-finder-service and every proxied /api/towers would 502. Bring that stack up before routing a vhost to it."
               exit 1
             fi
-            BODY=$(docker run --rm --network retina-edge curlimages/curl:latest \
+            BODY=$(docker run --rm --network retina-edge "$CURL_IMAGE" \
               -s -m 45 "http://tower-finder-service:8000/api/towers?${QUERY}") || {
               echo "::error::tower-finder-service did not answer on retina-edge from $(hostname)."
               exit 1
@@ -562,7 +533,7 @@ jobs:
             fi
 
             # /api/config, forwarded by the same include on every vhost.
-            CFG=$(docker run --rm --network retina-edge curlimages/curl:latest \
+            CFG=$(docker run --rm --network retina-edge "$CURL_IMAGE" \
               -s -m 45 "http://tower-finder-service:8000/api/config") || {
               echo "::error::tower-finder-service did not answer /api/config on retina-edge from $(hostname)."
               exit 1
@@ -580,7 +551,7 @@ jobs:
             # either geocoder upstream is asked; anything else means the
             # instance behind this deploy does not carry the route yet, and
             # every vhost would 404 the address lookup once it is pointed here.
-            GEO=$(docker run --rm --network retina-edge curlimages/curl:latest \
+            GEO=$(docker run --rm --network retina-edge "$CURL_IMAGE" \
               -s -m 45 -o /dev/null -w '%{http_code}' -X POST \
               -H 'Content-Type: application/json' -d "$GEOBODY" \
               "http://tower-finder-service:8000/api/geocode") || {
@@ -642,7 +613,7 @@ jobs:
             exit 1
           fi
           echo "app_dir=${APP_DIR}" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # The push's whole range has to be diffable and `before` can be
           # several commits back. No submodules: the filter reads paths, file
@@ -685,10 +656,7 @@ jobs:
   # tests and its E2E. See the called workflow.
   staging:
     name: Staging
-    # `playwright-image` joins the deploy's own prerequisites so an unpublished
-    # image fails the run before the droplet is touched, rather than after a
-    # deploy and a smoke suite have already landed on it.
-    needs: [changes, backend-tests, backend-coverage, lint, web-build, docker-build, env-parity, tower-service-contract, playwright-image]
+    needs: [changes, backend-tests, backend-coverage, lint, web-build, docker-build, env-parity, tower-service-contract]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push' && needs.changes.outputs.code == 'true'
     concurrency:
       group: staging-deploy
@@ -706,7 +674,6 @@ jobs:
     uses: ./.github/workflows/staging-deploy-verify.yml
     with:
       app_dir: ${{ needs.changes.outputs.app_dir }}
-      playwright_image: ${{ needs.playwright-image.outputs.image }}
     secrets:
       STAGING_HOST: ${{ secrets.STAGING_HOST }}
       STAGING_SSH_KEY: ${{ secrets.STAGING_SSH_KEY }}
@@ -731,7 +698,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Deploy to production via SSH
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: root
@@ -1009,7 +976,7 @@ jobs:
       )
     steps:
       - name: Roll back, but only if the deploy actually mutated the box
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: root
@@ -1102,7 +1069,7 @@ jobs:
     env:
       BASE_URL: https://api.retina.fm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Wait for production to answer through the edge
         timeout-minutes: 5
         run: |
@@ -1409,7 +1376,7 @@ jobs:
       # triggering an automatic rollback.
       - name: Rollback production on smoke-test failure
         if: failure() && steps.smoke.outcome == 'failure'
-        uses: appleboy/ssh-action@v1
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: root

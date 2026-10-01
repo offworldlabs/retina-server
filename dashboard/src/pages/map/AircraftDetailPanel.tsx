@@ -1,5 +1,5 @@
 import { DASH } from "../../utils/format";
-import { POSITION_SOURCE_ARC_ONLY, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
+import { POSITION_SOURCE_ARC_ONLY, POSITION_SOURCE_ADSB_SINGLE, POSITION_SOURCE_ADSB_MULTI } from "./constants";
 import { classifyHex, emergencySquawkLabel } from "./hexInfo";
 import { trailToCsv, downloadCsv } from "./trailExport";
 import { copyToClipboard, toast } from "./toast";
@@ -68,6 +68,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
   const isSolverOnly = ac.position_source === "solver_single_node";
   const isSolverAdsbSeed = ac.position_source === "solver_adsb_seed";
   const isAdsbSingleNode = ac.position_source === POSITION_SOURCE_ADSB_SINGLE;
+  const isAdsbMultiNode = ac.position_source === POSITION_SOURCE_ADSB_MULTI;
   const isDrone = ac.target_class === "drone";
   // The multi-node label names the LANE, not the node count — the count
   // already has its own Nodes field below, while whether the solve carried a
@@ -78,6 +79,8 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
       ? "Single-node ellipse arc"
       : isAdsbSingleNode
         ? "ADS-B (single node)"
+        : isAdsbMultiNode
+          ? `ADS-B (${ac.n_nodes ?? "?"} nodes, no solve)`
         : isSolverAdsbSeed
           ? "Solver (ADS-B seeded)"
           : isSolverOnly
@@ -85,7 +88,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
             : hasAdsb
               ? "ADS-B"
               : ac.type || "Unknown";
-  const sourceBadge = isMultinode ? "multinode" : isSolverAdsbSeed || isAdsbSingleNode ? "adsb" : hasAdsb ? "adsb" : "other";
+  const sourceBadge = isMultinode ? "multinode" : isSolverAdsbSeed || isAdsbSingleNode || isAdsbMultiNode ? "adsb" : hasAdsb ? "adsb" : "other";
   // Authoritative flag set by applyGroundTruthFixes — the old
   // `!ac.type && !ac.flight` heuristic classified ordinary radar tracks
   // (which usually have neither) as "Ground truth only".
@@ -223,6 +226,28 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
               value={
                 <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
                   Position is the ADS-B fix; the arc is the delay locus from the claiming node
+                </span>
+              }
+            />
+          </div>
+        )}
+
+        {/* Claimed by several nodes, but no multi-node solve on the map for
+            it: the position is the ADS-B fix, and the nodes are listed so the
+            gap between "detected" and "solved" is visible. */}
+        {isAdsbMultiNode && (
+          <div className="detail-section">
+            <div className="detail-section-title">Claimed detection</div>
+            <Field label="Claiming nodes" value={ac.n_nodes ?? DASH} />
+            <Field
+              label="ADS-B fix age"
+              value={ac.adsb_fix_age_s != null ? `${ac.adsb_fix_age_s}s` : DASH}
+            />
+            <Field
+              label="Note"
+              value={
+                <span style={{ color: "var(--text-muted)", fontStyle: "italic" }}>
+                  Position is the ADS-B fix; the claiming nodes have no published solve for it
                 </span>
               }
             />

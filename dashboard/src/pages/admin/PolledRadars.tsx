@@ -4,6 +4,7 @@ import { DataTable } from "../../components/DataTable";
 import { FetchNotice, Notice, nothingLoaded } from "../../components/Notice";
 import { useFetch } from "../../hooks/usePolling";
 import type { PolledRadar, PolledRadarListing, PolledRadarTrust } from "../../types";
+import { ConnectRadar } from "./ConnectRadar";
 
 const TRUST_LABEL: Record<PolledRadarTrust, string> = {
   probation: "On probation",
@@ -11,21 +12,25 @@ const TRUST_LABEL: Record<PolledRadarTrust, string> = {
 };
 
 const DECISION_LABEL: Record<string, string> = {
+  registered: "Registered",
   graduated: "Graduated",
   returned_to_probation: "Returned to probation",
+  removed: "Removed",
 };
 
 function lastDecision(radar: PolledRadar): string {
   const event = radar.events[0];
   if (!event) return "—";
-  const who = event.actor.replace(/^admin:/, "");
+  // Any other actor is the owner's account id.
+  const who = event.actor.startsWith("admin:") ? event.actor.slice("admin:".length) : "its owner";
   const epoch = event.epoch === null ? "" : ` at epoch ${event.epoch}`;
   return `${DECISION_LABEL[event.kind] ?? event.kind} by ${who}${epoch}, ${new Date(event.at).toLocaleString()}`;
 }
 
-/** Polled stock-blah2 radars and the trust decision on each. A radar on
- *  probation never reaches the node list, which reads the public feed, so this
- *  is where an administrator finds one to graduate. */
+/** Polled stock-blah2 radars, the trust decision on each, and connecting one
+ *  to an operator's address. A radar on probation never reaches the node list,
+ *  which reads the public feed, so this is where an administrator finds one to
+ *  graduate. */
 export function PolledRadars() {
   const polled = useFetch<PolledRadarListing>(() => api.adminPolledRadars());
   const [refusal, setRefusal] = useState<string | null>(null);
@@ -51,59 +56,105 @@ export function PolledRadars() {
     }
   }
 
+  async function takeBack(radar: PolledRadar) {
+    const question =
+      `Take back ${radar.node_id}? It stops being polled, and the account made for ` +
+      `${radar.owner?.email ?? "its address"} goes too if it holds nothing else.`;
+    if (!window.confirm(question)) return;
+    setRefusal(null);
+    setDeciding(true);
+    try {
+      await api.adminWithdrawPolledRadar(radar.node_id);
+    } catch (e) {
+      setRefusal((e as Error).message || "Could not take the connection back. Try again.");
+    } finally {
+      setDeciding(false);
+      polled.refresh();
+    }
+  }
+
   const listing = polled.data;
   const radars = listing?.radars ?? [];
   return (
-    <div className="card">
-      <div className="card-header">
-        <h3>Polled radars</h3>
+    <>
+      <div className="card">
+        <div className="card-header">
+          <h3>Polled radars</h3>
+        </div>
+        <FetchNotice polled={polled} what="polled radars" />
+        {refusal && <Notice>{refusal}</Notice>}
+        {listing && !listing.probation_enabled && (
+          <p className="card-note">
+            Probation is switched off, so every polled radar already reaches the solve, the archive and the public map.
+            A decision here takes effect once it is back on.
+          </p>
+        )}
+        {listing && !listing.polling_enabled && (
+          <p className="card-note">This server does not poll radars, so none can be connected here.</p>
+        )}
+        {!nothingLoaded(polled) && (
+          <DataTable
+            headers={["Node ID", "Address", "Owner", "Liveness", "Epoch", "Trust", "Last decision", ""]}
+            count={radars.length}
+            empty="No polled radars are registered"
+            loading={polled.loading}
+          >
+            {radars.map((radar) => {
+              const action = radar.trust_state === "graduated" ? "Return to probation" : "Graduate";
+              const waiting = radar.owner !== null && !radar.owner.signed_in;
+              return (
+                <tr key={radar.node_id}>
+                  <td className="mono">{radar.node_id}</td>
+                  <td className="mono">{radar.endpoint}</td>
+                  <td>
+                    {radar.owner?.email ?? "—"}
+                    {waiting && (
+                      <>
+                        {" "}
+                        <span className="badge info">Not signed in yet</span>
+                      </>
+                    )}
+                  </td>
+                  <td>{radar.liveness}</td>
+                  <td className="mono">{radar.epoch}</td>
+                  <td>
+                    <span className={radar.trust_state === "graduated" ? "badge online" : "badge warning"}>
+                      {TRUST_LABEL[radar.trust_state]}
+                    </span>
+                  </td>
+                  <td>{lastDecision(radar)}</td>
+                  <td>
+                    <div className="btn-row">
+                      <button
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        // Held until the reload lands, so no row offers a decision on what it showed before.
+                        disabled={deciding || polled.pending}
+                        aria-label={`${action} ${radar.node_id}`}
+                        onClick={() => decide(radar)}
+                      >
+                        {action}
+                      </button>
+                      {waiting && (
+                        <button
+                          type="button"
+                          className="btn btn-danger btn-sm"
+                          disabled={deciding || polled.pending}
+                          aria-label={`Take back ${radar.node_id}`}
+                          onClick={() => takeBack(radar)}
+                        >
+                          Take back
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </DataTable>
+        )}
       </div>
-      <FetchNotice polled={polled} what="polled radars" />
-      {refusal && <Notice>{refusal}</Notice>}
-      {listing && !listing.probation_enabled && (
-        <p className="card-note">
-          Probation is switched off, so every polled radar already reaches the solve, the archive and the public map.
-          A decision here takes effect once it is back on.
-        </p>
-      )}
-      {!nothingLoaded(polled) && (
-        <DataTable
-          headers={["Node ID", "Address", "Liveness", "Epoch", "Trust", "Last decision", ""]}
-          count={radars.length}
-          empty="No polled radars are registered"
-          loading={polled.loading}
-        >
-          {radars.map((radar) => {
-            const action = radar.trust_state === "graduated" ? "Return to probation" : "Graduate";
-            return (
-              <tr key={radar.node_id}>
-                <td className="mono">{radar.node_id}</td>
-                <td className="mono">{radar.endpoint}</td>
-                <td>{radar.liveness}</td>
-                <td className="mono">{radar.epoch}</td>
-                <td>
-                  <span className={radar.trust_state === "graduated" ? "badge online" : "badge warning"}>
-                    {TRUST_LABEL[radar.trust_state]}
-                  </span>
-                </td>
-                <td>{lastDecision(radar)}</td>
-                <td>
-                  <button
-                    type="button"
-                    className="btn btn-secondary btn-sm"
-                    // Held until the reload lands, so no row offers a decision on what it showed before.
-                    disabled={deciding || polled.pending}
-                    aria-label={`${action} ${radar.node_id}`}
-                    onClick={() => decide(radar)}
-                  >
-                    {action}
-                  </button>
-                </td>
-              </tr>
-            );
-          })}
-        </DataTable>
-      )}
-    </div>
+      {listing?.polling_enabled && <ConnectRadar onConnected={polled.refresh} />}
+    </>
   );
 }

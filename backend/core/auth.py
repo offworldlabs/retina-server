@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from sqlalchemy import delete, select, update
 
 from core.nodes import NodeClaim
-from core.users import MagicLink, async_session_maker
+from core.users import MagicLink, async_session_maker, normalise_email
 
 logger = logging.getLogger(__name__)
 
@@ -86,10 +86,6 @@ async def get_user_nodes(user_id: str) -> list[str]:
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
-
-
-def normalise_email(email: str) -> str:
-    return email.strip().lower()
 
 
 async def create_magic_link(

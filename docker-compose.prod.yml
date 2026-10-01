@@ -65,6 +65,8 @@ services:
       # A registered stock-blah2 radar must be polled by one server only, and
       # this is it. Staging and test are fed polled data by mirroring instead.
       - POLLED_RADAR_POLLING_ENABLED=1
+      # Owners add their own stock-blah2 radars here, where they will be polled.
+      - POLLED_RADAR_REGISTRATION_ENABLED=1
       # Claim candidates from adsb-service for real nodes that send no ADS-B of
       # their own (services/tasks/adsb_fallback.py), in shadow: the known lane
       # claims, calibrates and solves, but strips nothing from the dark lane and
