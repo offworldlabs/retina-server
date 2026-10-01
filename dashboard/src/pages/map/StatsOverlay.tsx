@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { POSITION_SOURCE_ADSB_SINGLE } from "./constants";
+import { POSITION_SOURCE_ADSB_MULTI, POSITION_SOURCE_ADSB_SINGLE } from "./constants";
 import { drIconState } from "./icons";
 import { usePalette } from "./useMapTheme";
 import { M_PER_FT } from "./units";
@@ -44,6 +44,7 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
     let arcOnly = 0;
     let adsbSeed = 0;
     let adsbSingle = 0;
+    let adsbMulti = 0;
     let solverOnly = 0;
     let drones = 0;
     let altSum = 0;
@@ -64,6 +65,7 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
       else if (ac.position_source === "single_node_ellipse_arc") arcOnly++;
       else if (ac.position_source === "solver_adsb_seed") adsbSeed++;
       else if (ac.position_source === POSITION_SOURCE_ADSB_SINGLE) adsbSingle++;
+      else if (ac.position_source === POSITION_SOURCE_ADSB_MULTI) adsbMulti++;
       else if (ac.position_source === "solver_single_node") solverOnly++;
       if (ac.target_class === "drone") drones++;
       const alt = ac.alt_baro ?? (ac.alt_m ? ac.alt_m / M_PER_FT : null);
@@ -81,6 +83,7 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
       arcOnly,
       adsbSeed,
       adsbSingle,
+      adsbMulti,
       solverOnly,
       drones,
       meanAltFt: altCount ? Math.round(altSum / altCount) : null,
@@ -136,6 +139,17 @@ export default function StatsOverlay({ aircraft, truth, anomalyCount, visible, o
           <Row label="ADS‑B·1N">
             <strong style={{ color: LANE_ADSB_SINGLE }}>{stats.adsbSingle}</strong>
           </Row>
+
+          {stats.adsbMulti > 0 && (
+            <Row label="ADS‑B·2N+">
+              <strong
+                style={{ color: LANE_ADSB_SINGLE }}
+                title="Claimed by two or more nodes with no multi-node solve on the map"
+              >
+                {stats.adsbMulti}
+              </strong>
+            </Row>
+          )}
 
           <Row label="Arc·1N">{stats.arcOnly}</Row>
           <Row label="Solver·1N">{stats.solverOnly}</Row>

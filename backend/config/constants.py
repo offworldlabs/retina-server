@@ -341,6 +341,25 @@ KNOWN_CLAIMS_STALE_S = 120.0
 # instead of one outliving the other.
 CLAIMED_DISPLAY_FRESH_S = 5.0
 
+# Oldest ADS-B fix a claimed-ADS-B feed entry (`adsb_single_node`,
+# `adsb_multi_node`) may still be drawn from, measured at the feed's `now`.
+# The claim's freshness above says nothing about its FIX: path 2 binds against
+# cached fixes up to KNOWN_CLAIM_MAX_FIX_AGE_S (45 s) old and carries the fix
+# as reported, and a hold carries its original fix for as long as it holds, so
+# a claim made a second ago can hand the feed a 45 s-old fix — which, aged a
+# few more seconds to `now`, is the ~49 s-old frozen icon seen live on
+# 2026-09-29 (a271b0).  So the fix age is what gates the icon.
+# 10 s, i.e. CAL_MAX_ADSB_AGE_S: the age past which calibration stops treating
+# a fix as a description of where the aircraft is.  It also sits clear of
+# every live source's refresh period — node tags are stamped at frame time and
+# the adsb.retina.fm poller runs every ADSB_FALLBACK_INTERVAL_S (5 s) — so a
+# transponder that is still reporting never trips it; only a silent one does.
+# Inside it the entry is dead-reckoned from the fix (straight line at the
+# fix's gs/track): 10 s at 250 m/s is 2.5 km of extrapolation, and a
+# standard-rate turn bends away from that line by well under 1 km, inside the
+# map's own 2 km dead-reckoning icon budget (DR_ICON_HIDE_DISTANCE_M).
+CLAIMED_DISPLAY_MAX_FIX_AGE_S = CAL_MAX_ADSB_AGE_S
+
 # ── Default antenna parameters ───────────────────────────────────────────────
 YAGI_BEAM_WIDTH_DEG = 42.0  # Half-power beamwidth (°) of the fleet Yagis
 YAGI_MAX_RANGE_KM = 50.0  # Default Yagi max range (km)

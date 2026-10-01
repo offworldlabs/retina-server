@@ -35,9 +35,13 @@ def _reset_for_tests() -> None:
 # the transponder's own fix rather than any estimate derived from one node's
 # geometry — only a multi-receiver solve, which is independent of ADS-B
 # altogether, outranks it.
+# `adsb_multi_node` (several claiming nodes, no solve published) shares the
+# rank: same position, and the aircraft_feed never emits it beside that hex's
+# own solve.
 _DEDUP_SOURCE_RANK = {
     "multinode_solve": 0,
     "adsb_single_node": 1,
+    "adsb_multi_node": 1,
     "solver_adsb_seed": 2,
     "solver_single_node": 3,
     "single_node_ellipse_arc": 4,

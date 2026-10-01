@@ -36,7 +36,9 @@ def filter_payload_to_nodes(aircraft_data: dict, node_ids: set[str]) -> dict:
     """Build a slim WS payload containing only aircraft/arcs for `node_ids`.
 
     An aircraft is included if it was detected by one of these nodes directly,
-    or if it's a multinode solution any of whose contributing nodes is ours.
+    or if it's a multinode solution — or a claimed ADS-B target several nodes
+    are detecting (``adsb_multi_node``, which carries no single node_id) — any
+    of whose contributing nodes is ours.
 
     Still keyed by `node_id`; callers publish it through `published_bytes`.
     """
@@ -44,7 +46,10 @@ def filter_payload_to_nodes(aircraft_data: dict, node_ids: set[str]) -> dict:
         ac
         for ac in aircraft_data.get("aircraft", [])
         if ac.get("node_id") in node_ids
-        or (ac.get("multinode") and any(nid in node_ids for nid in ac.get("contributing_node_ids", [])))
+        or (
+            (ac.get("multinode") or ac.get("position_source") == "adsb_multi_node")
+            and any(nid in node_ids for nid in ac.get("contributing_node_ids", []))
+        )
     ]
     matched_arcs = [arc for arc in aircraft_data.get("detection_arcs", []) if arc.get("node_id") in node_ids]
     return {
