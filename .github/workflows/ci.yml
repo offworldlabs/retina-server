@@ -23,8 +23,8 @@ on:
 # workflow_dispatch runs) get a group unique to their own run_id instead, since
 # the deploy jobs below hang off them and a half-run deploy is worse than a slow
 # one: they are never cancelled, and (unlike a group shared with other runs on
-# the same ref) they never queue behind an earlier run either. The deploy jobs'
-# own job-level concurrency groups are what serialise deploys.
+# the same ref) they never queue behind an earlier run either. The groups held
+# by the staging and production calling jobs are what serialise deploys.
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('ci-{0}-pull_request-{1}', github.workflow, github.ref) || format('ci-{0}-{1}-{2}', github.workflow, github.event_name, github.run_id) }}
   # Same condition the jobs carry, and for a sharper reason. Cancellation happens
@@ -35,12 +35,13 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base != null) }}
 
 env:
-  # Single definition of the deploy directory. The ssh-action script blocks
-  # below interpolate it, so moving the directory is one edit here. It is also
-  # forwarded to the droplet (`envs: APP_DIR`), because deploy/pre-deploy.sh and
-  # deploy/rollback.sh cd to an APP_DIR of their own and would otherwise fall
-  # back to a default still naming the old directory, snapshotting and rolling
-  # back a tree nothing is served from.
+  # Single definition of the deploy directory. The `changes` job hands it to
+  # both called deploy workflows, whose ssh-action scripts interpolate it, so
+  # moving the directory is one edit here. They also forward it to the droplet
+  # (`envs: APP_DIR`), because deploy/pre-deploy.sh and deploy/rollback.sh cd
+  # to an APP_DIR of their own and would otherwise fall back to a default still
+  # naming the old directory, snapshotting and rolling back a tree nothing is
+  # served from.
   APP_DIR: /opt/retina-server
 
 # Every job reads the repository and nothing more; a job that needs another
@@ -387,96 +388,6 @@ jobs:
       - name: Check compose + nginx parity
         run: python3 deploy/check-env-parity.py
 
-  e2e-prod:
-    name: Playwright E2E (production)
-    runs-on: ubuntu-latest
-    # A backstop above the test step's own cap, not the primary bound: a job
-    # timeout cancels the test step, and a cancelled step is not a verdict the
-    # rollback job acts on, whereas the step cap marks it failed.
-    timeout-minutes: 30
-    needs: [production-smoke-tests]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    # The test step's own outcome, for rollback-production-on-e2e-failure. Not
-    # the job's result: a failed checkout, npm ci or Chrome report fails the job
-    # too, and none of them says anything about whether production is healthy.
-    # Only tests that ran and failed roll production back.
-    outputs:
-      tests: ${{ steps.e2e.outcome }}
-    # The browser is the Google Chrome the runner image ships
-    # (e2e/playwright.config.ts) rather than one installed here: `npx
-    # playwright install --with-deps` puts an apt update and Playwright's CDN in
-    # the path, and both hang for minutes when their servers do.
-    #
-    # Chrome's version therefore follows the runner image, not the lockfile, and
-    # can change with no commit here. Each run reports the one it tested with,
-    # and `web-build` launches it on every pull request.
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      # See the staging job.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: package-lock.json
-      - run: npm ci
-      # A launch, not just the version: a Chrome that Playwright cannot start
-      # fails here rather than in the tests, where it would roll production back.
-      - name: Report the runner's Chrome
-        run: node e2e/report-chrome.js
-      # Bounded at the step rather than relying on the job cap: a step timeout
-      # marks the step failed, which still trips the rollback job, whereas a
-      # job timeout cancels it and would not. A production wedged badly enough
-      # to hang Playwright is exactly when the rollback is wanted.
-      - name: Run E2E tests (production)
-        id: e2e
-        # See the staging job: the step cap has to clear nodes.spec.ts's retried
-        # hooks. It matters more here, where a timed-out step rolls production back.
-        timeout-minutes: 20
-        run: npm run test:e2e:prod -w e2e
-        env:
-          CI: "true"
-          RADAR_API_KEY: ${{ secrets.RADAR_API_KEY }}
-
-  # A job of its own, so that production's root key is never handed to a job
-  # that has just run npm's install scripts. test_deploy_workflows.py holds
-  # every workflow to that.
-  rollback-production-on-e2e-failure:
-    name: Roll back production if its E2E tests failed
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: [e2e-prod]
-    # See rollback-production-on-deploy-failure: a following push's deploy must
-    # not be inside the deploy directory while rollback.sh is.
-    concurrency:
-      group: production-deploy
-      cancel-in-progress: false
-    # !cancelled() rather than always(): e2e-prod failing is when this has to
-    # run, but an operator cancelling the run, say over a known flake, must
-    # still be able to stop it. The main-push gate is repeated so no other event
-    # can open production SSH.
-    if: >-
-      !cancelled() && github.ref == 'refs/heads/main' && github.event_name == 'push' &&
-      needs.e2e-prod.outputs.tests == 'failure'
-    steps:
-      - name: Roll back production
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: root
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: APP_DIR
-          script: |
-            # Same identity assertion the deploy carries, and for a stronger
-            # reason: rollback.sh resets the tree, retags images over :latest and
-            # cycles the stack, so a SERVER_HOST pointed at the wrong droplet
-            # does more damage here than a deploy would. Inline rather than in
-            # rollback.sh itself, so it holds even when the box is checked out at
-            # a tree that predates the script. See deploy-production for why the
-            # match is exact.
-            [ "$(hostname)" = "retina-prod" ] || { echo "::error::Refusing to roll back on '$(hostname)' — expected retina-prod."; exit 1; }
-            echo "E2E tests failed — rolling back production..."
-            cd ${{ env.APP_DIR }} && bash deploy/rollback.sh
-
   tower-service-contract:
     name: tower-finder-service honours what we forward
     runs-on: ubuntu-latest
@@ -594,10 +505,9 @@ jobs:
   # which is what makes it safe to trust.
   #
   # Gating the `staging` job alone is enough: a skipped dependency skips its
-  # dependents whatever their own `if:` says, so the whole called workflow,
-  # deploy-production and everything past it fall out with it. The rollback jobs
-  # are keyed to `result == 'failure'`, and a skipped deploy is not a failed one,
-  # so they stay dormant.
+  # dependents whatever their own `if:` says, so both called workflows and
+  # every job in them fall out with it, the rollbacks included: they sit inside
+  # the called workflows, which never start.
   #
   # Only the deploy chain is gated. The test matrix above still runs on a push
   # this filter clears, deliberately: it is the cheap half, it is what would
@@ -625,13 +535,13 @@ jobs:
         id: deploy_dir
         run: |
           set -euo pipefail
-          # Refuse to hand the staging workflow an empty directory. `cd ""`
+          # Refuse to hand the deploy workflows an empty directory. `cd ""`
           # succeeds into $HOME, and the deploy's own pre-flights all pass there
           # (right hostname, no .env, disk fine) before `git fetch` fails in a
           # directory nothing is served from. Caught here, where the cause is
           # legible, rather than as a confusing abort on the droplet.
           if [ -z "${APP_DIR:-}" ]; then
-            echo "::error::APP_DIR is empty. It is set at the top of this workflow and the staging deploy cds into it; nothing below can run without it."
+            echo "::error::APP_DIR is empty. It is set at the top of this workflow and both deploys cd into it; nothing below can run without it."
             exit 1
           fi
           echo "app_dir=${APP_DIR}" >> "$GITHUB_OUTPUT"
@@ -685,7 +595,7 @@ jobs:
       # Queue deploys instead of cancelling: a cancelled deploy can abort after
       # `git reset --hard` but before `docker compose up -d --build`, leaving the
       # box on fresh code with stale running containers (config/image changes
-      # silently never take effect). Matches deploy-production.
+      # silently never take effect). Matches the production job.
       #
       # At most one run sits pending per group, so a third merge arriving while
       # one run holds staging and another is queued cancels the queued one. That
@@ -703,709 +613,31 @@ jobs:
       CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
       CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
 
-  deploy-production:
-    name: Deploy to production
-    runs-on: ubuntu-latest
-    # Above the ssh-action's own command_timeout below, so a stuck deploy
-    # surfaces as that step's error rather than as a bare job timeout.
-    timeout-minutes: 30
+  # Production's deploy, its rollbacks and both of its verification suites,
+  # called as one job, as staging's are. The group below is then held until the
+  # last of them finishes, so a following run's production deploy cannot land
+  # while this run is still verifying production or rolling it back. See the
+  # called workflow.
+  production:
+    name: Production
     # Gate prod on the whole staging sequence: its deploy, its smoke tests and
     # its ~127-test Playwright suite. The E2E used to run in parallel with the
     # prod deploy and so could not stop a bad build reaching prod. This
     # serialises the pipeline in exchange for real pre-prod coverage.
-    needs: [staging]
+    needs: [changes, staging]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     concurrency:
       group: production-deploy
+      # Queued, never cancelled, for the reason the staging job gives, and a
+      # cancelled `Production` job during a burst of merges is expected for the
+      # same reason: the run that replaces it deploys a superset.
       cancel-in-progress: false
-    steps:
-      - name: Deploy to production via SSH
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: root
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          command_timeout: 20m
-          envs: APP_DIR
-          script: |
-            set -e
-            cd ${{ env.APP_DIR }}
-
-            # Identity pre-flight, and deliberately the first thing of all: it is
-            # the only check here that does not depend on the state of the box.
-            # The .env check below cannot catch a droplet that has never been
-            # deployed to, because such a box has no .env and absence has to be
-            # allowed through (see below) — but it still knows its own name.
-            #
-            # An exact match rather than a pattern, because substring matching on
-            # environment names is a trap: `latest`, `testnet` and `contest` all
-            # contain `test`, so a droplet named retina-prod-latest or sitting
-            # under a *.testnet. domain would be refused as if it were the test
-            # box. setup-server.sh sets this name from RETINA_TARGET_ENV, so a
-            # fully provisioned droplet always satisfies it; anything else is
-            # either the wrong box or a rebuild that never finished, and neither
-            # should take a production deploy.
-            if [ "$(hostname)" != "retina-prod" ]; then
-              echo "::error::Refusing to deploy production onto '$(hostname)' — expected retina-prod. If this droplet was rebuilt, finish provisioning it (hostnamectl set-hostname retina-prod); otherwise this job is pointed at the wrong box."
-              exit 1
-            fi
-
-            # Checked immediately after identity, and for a similar reason: if
-            # this box is still mid-deploy from an earlier run, none of the
-            # questions below it are worth asking.
-            #
-            # The marker is written after pre-deploy.sh and cleared when the app
-            # comes back healthy or a rollback succeeds. This run has not written
-            # one yet, so finding one here means an earlier attempt was left half
-            # deployed and never recovered — its rollback failed, or the run was
-            # cancelled before one could.
-            #
-            # Deploying over that would destroy the only way back. pre-deploy.sh
-            # snapshots the CURRENTLY RUNNING container as the new rollback
-            # point, so it would capture the broken build, discard the good one,
-            # and then the marker write would overwrite the evidence too. The
-            # next rollback would faithfully restore the breakage.
-            #
-            # Deliberately ANY marker rather than one from another run: "Re-run
-            # failed jobs" keeps the same run id, and a retry poisons the
-            # snapshot exactly as a fresh run would.
-            #
-            # The cost is that an incident which leaves a marker behind also
-            # blocks deploys until a human clears it. That is the intended
-            # trade: the box is in an unknown state and its rollback point is
-            # the thing at risk.
-            if [ -f .deploy-in-progress ]; then
-              echo "::error::${{ env.APP_DIR }}/.deploy-in-progress is still present on $(hostname) ($(cat .deploy-in-progress)). An earlier deploy was left mid-flight and never confirmed healthy — its rollback failed, or was cancelled before it ran. Deploying now would snapshot the broken container as the new rollback point and lose the good one. Inspect the box and recover it (bash deploy/rollback.sh, or fix forward), then delete the marker and re-run. Refusing to deploy; the running stack is untouched."
-              exit 1
-            fi
-
-            # Second pre-flight, before anything below mutates the box: a .env
-            # naming the WRONG environment is the one remaining error that has to
-            # be caught before pre-deploy.sh runs. That script
-            # reads the current image through `docker compose images`, so it
-            # resolves through whatever this file says; staging's .env here would
-            # have it snapshot the wrong service and then deploy production onto
-            # staging's hostnames, fleet and container names.
-            #
-            # A MISSING .env is deliberately allowed through. It used to be a hard
-            # refusal, which turned out to be unshippable: production has never had
-            # one, and the file it would name (docker-compose.prod.yml) does not
-            # exist in the tree production is currently checked out at — it arrives
-            # with the git reset below. Refusing here meant the deploy could never
-            # run, and writing the file by hand beforehand was worse: compose would
-            # then resolve against an overlay that is not there yet, pre-deploy.sh
-            # would warn "no running image found" and carry on, and the largest
-            # deploy this box has taken would have gone out with no rollback point.
-            # With no .env at all, compose resolves the base alone, which is
-            # exactly production's current config, so the snapshot is correct.
-            #
-            # The file is then written from the checked-out tree, below.
-            if [ -f .env ] && ! grep -q '^COMPOSE_FILE=.*docker-compose\.prod\.yml' .env; then
-              echo "::error::${{ env.APP_DIR }}/.env exists but does not select the production overlay — it names another environment. Inspect it; do not deploy."
-              exit 1
-            fi
-
-            # Third pre-flight: the two secrets that production cannot boot
-            # without, again before anything mutates the box.
-            # docker-compose.prod.yml names this environment `production`, and
-            # under that name backend/core/users.py and backend/routes/test.py
-            # each raise at import time when their secret is unset. The failure
-            # would be a crash-looping container, and the rollback steps hang off
-            # the smoke and E2E jobs, which are skipped when this job fails — so
-            # an unset secret leaves production down until a human SSHes in. A
-            # refused deploy is the better outcome.
-            #
-            # Both are checked, because both fail the same way: RADAR_API_KEY is
-            # set on the box today, so only JWT_SECRET was at risk on the deploy
-            # that introduced this, but a guard that covers one of a matched pair
-            # invites the other to rot.
-            #
-            # JWT_SECRET carries a length bound as well, to reject the
-            # placeholder in backend/.env.example, which is published in this
-            # repo and would otherwise satisfy a mere presence check.
-            # Both read the LAST matching line rather than any of them, because
-            # that is the one that reaches the container: compose's env_file
-            # takes last-occurrence-wins on a repeated key. The remediation
-            # below tells an operator to append, so a duplicate is the likely
-            # shape of a botched rotation, and checking any line would pass on
-            # the old value while the app booted with the new one.
-            if ! grep -E '^JWT_SECRET=' backend/.env 2>/dev/null | tail -1 | grep -qE '^JWT_SECRET=.{32,}$'; then
-              echo "::error::backend/.env has no effective JWT_SECRET of at least 32 characters, and production refuses to boot without one (backend/core/users.py). On the droplet, replacing any existing line: printf 'JWT_SECRET=%s\n' \"\$(openssl rand -hex 32)\" >> ${{ env.APP_DIR }}/backend/.env"
-              exit 1
-            fi
-            if ! grep -E '^RADAR_API_KEY=' backend/.env 2>/dev/null | tail -1 | grep -qE '^RADAR_API_KEY=.+$'; then
-              echo "::error::backend/.env has no effective RADAR_API_KEY, and production refuses to boot without one (backend/routes/test.py), which would also take /api/test/dashboard with it."
-              exit 1
-            fi
-
-            # Pre-flight: Cloudflare's origin-pull CA, checked BEFORE anything
-            # stops or rebuilds the stack. nginx renders `ssl_verify_client on`
-            # (deploy/nginx/snippets/tls.conf) and start.sh refuses to boot
-            # without the CA, so on a droplet where the human half of this work
-            # is not done — enable Authenticated Origin Pulls for the zone, put
-            # the CA on the box — the rebuild below would fail to start and
-            # leave production DOWN. It would also not roll back: both rollback
-            # paths are gated on the smoke/E2E jobs, and those are skipped when
-            # this job itself fails. Refusing here converts that outage into a
-            # refused deploy; everything above this line only reads the box.
-            #
-            # Staging carries the identical check, but staging passing proves
-            # nothing about this droplet — the CA is per-box state, not
-            # something the pipeline ships.
-            CF_CA=/etc/ssl/cloudflare/origin-pull-ca.pem
-            if [ ! -f "$CF_CA" ]; then
-              echo "::error::${CF_CA} is missing on $(hostname). nginx requires Cloudflare's origin-pull CA and will not start without it. Enable Authenticated Origin Pulls for the zone, then fetch the CA onto this droplet (curl -fsS --create-dirs -o ${CF_CA} https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem) and re-run. Refusing to deploy; the running stack is untouched."
-              exit 1
-            fi
-            if ! openssl x509 -in "$CF_CA" -noout >/dev/null 2>&1; then
-              echo "::error::${CF_CA} exists on $(hostname) but is not a parseable PEM certificate — a truncated download or an error page saved to the path would look exactly like this. nginx would fail to start. Replace it and re-run. Refusing to deploy; the running stack is untouched."
-              exit 1
-            fi
-            echo "Origin-pull CA present and parseable: ${CF_CA}"
-
-            # Pre-flight: refuse to deploy when the disk is near full. Without
-            # this, git fetch silently writes a partial pack ("No space left on
-            # device"), the working tree never advances, and the subsequent
-            # `docker compose --build` reuses every cached layer and "succeeds"
-            # with yesterday's image (run 25923117075 — backend, frontend, and
-            # dashboard were all stale).
-            AVAIL_MB=$(df -m / | awk 'NR==2 {print $4}')
-            if [ "${AVAIL_MB:-0}" -lt 2048 ]; then
-              echo "::error::Production disk only ${AVAIL_MB}MB free (< 2GB threshold). Aborting deploy."
-              df -h /
-              docker system df 2>/dev/null || true
-              exit 1
-            fi
-
-            # Pre-deploy: save rollback image + git tag. NOT `|| true`: if we
-            # cannot capture a rollback point, abort the deploy rather than ship
-            # with no way back. A swallowed failure here previously let a deploy
-            # proceed with a stale/absent rollback image, so a later rollback
-            # silently restored the wrong build.
-            bash deploy/pre-deploy.sh
-
-            # From here on the box is mid-deploy: a rollback point now exists,
-            # and everything below moves the tree or the running containers.
-            # The marker is what lets the rollback job tell "died in a
-            # pre-flight, stack untouched" from "died with production half
-            # deployed" — the two need opposite responses.
-            #
-            # Every check that can refuse the deploy sits ABOVE this line, which
-            # is the property the rollback job depends on. The disk pre-flight
-            # used to sit below it; it refuses without touching anything, so a
-            # full disk would have been read as a half-finished deploy and cost
-            # production a needless down/up cycle. Keep new pre-flights above.
-            #
-            # The run id is not decoration: the rollback job refuses to act on a
-            # marker written by a different run, because that means an earlier
-            # deploy was left mid-flight and never recovered.
-            echo "run ${{ github.run_id }} started $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-              > ${{ env.APP_DIR }}/.deploy-in-progress
-
-            # Hard-reset rather than `git pull`: the latter aborts silently on
-            # divergent branches (deploy run 25481699738 — the server had a
-            # local commit, pull printed a hint and exited 0, the build then
-            # cached every layer because the source hadn't actually changed,
-            # and the new bundle never made it to /app/dashboard/dist).
-            # `set -e` above guarantees a failed fetch/reset aborts the deploy.
-            git fetch origin main
-            git reset --hard origin/main
-            git submodule update --init --recursive
-
-            # Select the production overlay, now that the reset has actually put
-            # docker-compose.prod.yml on disk. This must sit after the reset and
-            # before the first compose command below — the whole chicken-and-egg
-            # is that the file naming the overlay is useless until the overlay
-            # exists. pre-deploy.sh above has already taken its snapshot against
-            # the previous config, which is what a rollback needs to restore.
-            cp deploy/env.prod.example .env
-            # Top up with this host's own CARTO basemap key — see the note in
-            # deploy/env.<env>.example. Guarded rather than chained with &&: a host
-            # with no key must build watermarked tiles, not fail its deploy.
-            if [ -f /root/.secrets/carto.env ]; then cat /root/.secrets/carto.env >> .env; fi
-
-            # Each build orphans the image it replaces and nothing else on the
-            # box removes them, so they accumulate until the pre-flight above
-            # refuses the deploy. Dangling only: `-a` goes by what no container
-            # references, which is exactly the rollback point tagged above.
-            # Before the builder prune, which cannot free a layer an image holds.
-            docker image prune -f
-            # Cap build cache at ~10GB (LRU eviction) rather than wiping it all,
-            # bounding total size so cache growth can't trip the disk pre-flight.
-            # The stale-layer incident this guarded against (commit 01ca7f6) was
-            # rooted in disk-full (partial git pack -> source never advanced ->
-            # cache reused); the disk pre-flight above now catches that root
-            # cause, so a full wipe is redundant and only forced slow from-scratch
-            # rebuilds. 10GB leaves ample headroom on both droplets (>60GB free).
-            docker builder prune -f --keep-storage 10GB
-            # Deploy the app FIRST, on its own. Building only `server`
-            # here means a broken Dockerfile.fleet can't abort the production
-            # app deploy. Production runs no fleet simulator (see the `sim`
-            # profile in docker-compose.prod.yml), so `server` is the
-            # whole of the production deploy; staging is the same now.
-            # --remove-orphans because this deploy renamed the compose
-            # service. container_name is pinned, so the container kept by the
-            # old service key is an orphan holding the exact name the new one
-            # needs, and compose leaves orphans alone by default: the create
-            # then fails with a name conflict and the stack does not come up.
-            # Verified on retina-test before this landed. It stays afterwards
-            # as the general guard for a removed or renamed service.
-            docker compose up -d --build --remove-orphans server
-
-            bash deploy/wait-for-health.sh || exit 1
-
-            # Reached only once the app answered /api/health. The box is no
-            # longer mid-deploy, so drop the marker; any failure after this
-            # point is a smoke/E2E failure, which the smoke job's rollback step
-            # and rollback-production-on-e2e-failure already cover.
-            rm -f ${{ env.APP_DIR }}/.deploy-in-progress
-
-  rollback-production-on-deploy-failure:
-    name: Roll back production if the deploy failed after it began
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: [deploy-production]
-    # Same group as deploy-production. The slot frees the moment that job ends,
-    # so without this a following push's deploy can be inside `git reset --hard`
-    # and `docker compose up --build` in the deploy directory while rollback.sh
-    # is running `git reset --hard` and `docker compose down` in the same
-    # directory. Serialising can delay a rollback behind a queued deploy, which
-    # is the lesser problem: that deploy takes its own snapshot and supersedes
-    # the rollback, whereas two writers in one directory corrupts both.
-    concurrency:
-      group: production-deploy
-      cancel-in-progress: false
-    # `always() && ...result == 'failure'` rather than a bare `failure()`.
-    # failure() is true when ANY ancestor job failed, and deploy-production has
-    # ancestors: a staging failure skips the deploy entirely, and this job
-    # would then SSH into production to consider rolling back a deploy that
-    # never ran. Keyed to the deploy job's own result, it cannot.
-    #
-    # This is the gap the two other rollbacks do not cover. Both hang off jobs
-    # DOWNSTREAM of the deploy (production-smoke-tests, e2e-prod), and a failed
-    # deploy skips those jobs, and so the rollbacks keyed to them.
-    # 'cancelled' as well as 'failure'. Cancelling mid-deploy leaves production
-    # exactly as half-deployed as a crash does, and deploy-production sets
-    # cancel-in-progress: false, so this can only be a human pressing cancel —
-    # never the pipeline cancelling itself. The marker check below still makes
-    # a cancel during the pre-flights a no-op.
-    # A cancelled PR can also mark its skipped deploy as cancelled. Repeat the
-    # deploy's main-push gate so PRs and manual CI runs never open production SSH.
-    if: >-
-      always() && github.ref == 'refs/heads/main' && github.event_name == 'push' && (
-        needs.deploy-production.result == 'failure' ||
-        needs.deploy-production.result == 'cancelled'
-      )
-    steps:
-      - name: Roll back, but only if the deploy actually mutated the box
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: root
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          command_timeout: 15m
-          envs: APP_DIR
-          script: |
-            set -e
-            # The same identity assertion the deploy and the other two rollback
-            # paths carry, inline for the same reason: rollback.sh resets the
-            # tree and retags images over :latest, so a SERVER_HOST pointed at
-            # the wrong droplet does more damage here than a deploy would.
-            [ "$(hostname)" = "retina-prod" ] || { echo "::error::Refusing to roll back on '$(hostname)' — expected retina-prod."; exit 1; }
-            cd ${{ env.APP_DIR }}
-
-            # deploy-production writes this marker immediately after
-            # pre-deploy.sh captures the rollback point, and clears it once the
-            # app answers /api/health. Its absence means the deploy died in its
-            # pre-flights with the running stack untouched.
-            #
-            # Rolling back in that case would be actively harmful rather than
-            # merely pointless: retina-server:rollback and the newest deploy-*
-            # tag still describe the PREVIOUS deploy's snapshot, so rollback.sh
-            # would drag production back past a deploy that succeeded in order
-            # to recover from one that never started.
-            if [ ! -f .deploy-in-progress ]; then
-              echo "No .deploy-in-progress marker — the deploy failed before mutating anything, so what is running is already the last-known-good build. Nothing to roll back."
-              exit 0
-            fi
-
-            MARKER=$(cat .deploy-in-progress)
-
-            # The marker records which run wrote it. One from a DIFFERENT run
-            # means an earlier deploy was left mid-flight and never recovered —
-            # its rollback failed, or someone cancelled and walked away — and
-            # this run then died in its own pre-flights without touching
-            # anything.
-            #
-            # Rolling back on that would be a guess. The box could be an
-            # unrecovered outage, or one a human has already fixed forward by
-            # hand and not tidied up after; rollback.sh would undo the second.
-            # Reporting "nothing to roll back" would be worse still — a green
-            # run over a production box that is genuinely broken. So stop, and
-            # say exactly what is ambiguous.
-            case "$MARKER" in
-              "run ${{ github.run_id }} "*) ;;
-              *)
-                echo "::error::${{ env.APP_DIR }}/.deploy-in-progress was left behind by a different run (${MARKER}). Production was put mid-deploy earlier and never confirmed healthy since. Refusing to roll back automatically, because this run touched nothing and cannot tell an unrecovered outage from a box already fixed by hand. Inspect retina-prod, recover it, then delete the marker."
-                exit 1
-                ;;
-            esac
-
-            echo "Deploy failed after it began mutating the box (${MARKER}). Rolling back..."
-
-            # rollback.sh distinguishes three outcomes and `set -e` would
-            # collapse the last two, so take its status explicitly.
-            set +e
-            bash deploy/rollback.sh
-            rc=$?
-            set -e
-
-            case "$rc" in
-              0)
-                rm -f .deploy-in-progress
-                echo "Rollback complete — production is back on the previous build."
-                ;;
-              2)
-                # Service restored, but the database is left ahead of the code
-                # now running against it. The box is no longer mid-deploy, so
-                # the marker goes; the run stays red so a human sees the report.
-                rm -f .deploy-in-progress
-                echo "::error::Production is back up, but a database downgrade is outstanding — see the report above before trusting this rollback."
-                exit 2
-                ;;
-              *)
-                # Marker deliberately left in place: the box is still
-                # mid-deploy, and that is exactly what the next run must know.
-                echo "::error::Rollback FAILED (exit ${rc}). Production may still be down — SSH to retina-prod and recover by hand, then delete ${{ env.APP_DIR }}/.deploy-in-progress so the next deploy is not blocked by it."
-                exit "$rc"
-                ;;
-            esac
-
-
-  production-smoke-tests:
-    name: Production smoke tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    needs: [deploy-production]
-    # On the job so the wait and the checks cannot disagree about the host.
-    env:
-      BASE_URL: https://api.retina.fm
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - name: Wait for production to answer through the edge
-        timeout-minutes: 5
-        run: |
-          # Waits for the path these tests take. The deploy job confirmed
-          # /api/health inside the container on localhost:8000, which covers
-          # neither the edge nor nginx, and the deploy restarts nginx.
-          # Not a warmup gate: the checks below own their waits, and a 200 here
-          # could not serve as one anyway, as services/health.py skips a task's
-          # staleness check until that task has first succeeded.
-          # Nothing here asserts node counts: fleet health is not a deploy gate.
-          DEADLINE=$((SECONDS + 90))
-          STREAK=0
-          while [ "$SECONDS" -lt "$DEADLINE" ]; do
-            # Liveness mode, not ?strict=1, which 503s on fleet conditions
-            # (node dropout, miss rate) that no deploy causes.
-            BODY=$(curl -s --connect-timeout 5 --max-time 10 "${BASE_URL}/api/health" || true)
-            case "$BODY" in
-              *'"status"'*) STREAK=$((STREAK + 1)) ;;
-              *)            STREAK=0 ;;
-            esac
-            # Three running, so nginx answering from the outgoing container
-            # mid-restart cannot read as the new one.
-            if [ "$STREAK" -ge 3 ]; then
-              echo "Answering through the edge after ~${SECONDS}s: ${BODY}"
-              exit 0
-            fi
-            sleep 2
-          done
-          # Must not fail the job: the smoke tests fail and roll production back,
-          # and failing here would suppress that when production is down.
-          echo "::warning::No answer from ${BASE_URL}/api/health three times running in 90s; letting the smoke tests judge."
-      - name: Run production smoke tests
-        id: smoke
-        timeout-minutes: 15
-        # Passage through Cloudflare Access for the admin vhost. An unset secret
-        # renders empty, and tower-contract.sh sends no headers at all in that
-        # case, so this is inert until the Access application and the service
-        # token both exist. Failing this step rolls production back, so it must
-        # not become the reason a deploy reverts.
-        env:
-          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
-          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
-          RADAR_API_KEY: ${{ secrets.RADAR_API_KEY }}
-        run: |
-          CURL="curl -s --connect-timeout 10 --max-time 60"
-          # The test router's reads are for operators, and these checks read
-          # them as one.
-          RADAR_KEY_HEADER=(-H "X-API-Key: ${RADAR_API_KEY}")
-          # PASS/FAIL/WARN and smoke_summary, shared with deploy/staging-smoke-test.sh.
-          # Absolute: a working-directory default on this job would otherwise
-          # break the source, and this step failing rolls production back.
-          source "$GITHUB_WORKSPACE/deploy/smoke-tally.sh"
-          # assert_origin_marker: proves THIS repo's nginx answered, not merely
-          # that the hostname did. Absolute for the same reason as above.
-          source "$GITHUB_WORKSPACE/deploy/origin-marker.sh"
-          # assert_page_asset: proves a mounted bundle resolves the assets it
-          # names. Shared with the staging suite so the two cannot drift.
-          source "$GITHUB_WORKSPACE/deploy/page-asset.sh"
-          # assert_legacy_redirect: proves a retired hostname still reaches the
-          # surface it was retired into. Shared for the same reason.
-          source "$GITHUB_WORKSPACE/deploy/legacy-redirects.sh"
-
-          check_origin() {
-            local name="$1" url="$2" out
-            printf "  %-40s " "$name"
-            if out=$(assert_origin_marker "$url"); then
-              echo "OK"; PASS=$((PASS+1))
-            else
-              echo "FAIL"; printf '    %s\n' "$out"; FAIL=$((FAIL+1))
-            fi
-          }
-
-          check_page_asset() {
-            local name="$1" page="$2" out
-            printf "  %-40s " "$name"
-            if out=$(assert_page_asset "$page"); then
-              echo "OK"; PASS=$((PASS+1))
-            else
-              echo "FAIL"; printf '    %s\n' "$out"; FAIL=$((FAIL+1))
-            fi
-          }
-
-          # Anything after the expected code is passed to curl as it stands.
-          check_status() {
-            local name="$1" url="$2" expected="$3"
-            shift 3
-            printf "  %-40s " "$name"
-            # Retry once on connection error (transient load spikes just after
-            # the app restarts)
-            CODE=$($CURL "$@" -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) \
-              || CODE=$($CURL "$@" -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) \
-              || { echo "FAIL (connection)"; FAIL=$((FAIL+1)); return; }
-            if [ "$CODE" = "$expected" ]; then echo "OK ($CODE)"; PASS=$((PASS+1)); else echo "FAIL ($CODE != $expected)"; FAIL=$((FAIL+1)); fi
-          }
-
-          # Whether production holds this job's key. /api/test/validate checks it
-          # before it reads the body, so an empty body gets 400 for the right key
-          # and 401 for any other. A refused key is a fault in this job's secret,
-          # and rolling the build back would not mend it, so the checks that
-          # send the key warn instead of failing while it is refused. The
-          # anonymous refusals below still hold the gate itself to account.
-          KEY_CODE=$($CURL "${RADAR_KEY_HEADER[@]}" -X POST -H "Content-Type: application/json" -d '{}' \
-            -o /dev/null -w "%{http_code}" "${BASE_URL}/api/test/validate" 2>/dev/null) || KEY_CODE="000"
-          KEY_REFUSED=""
-          if [ "$KEY_CODE" = "401" ]; then
-            KEY_REFUSED=1
-            echo "::warning::Production refuses the RADAR_API_KEY secret, so the checks that send it are unverified. It should match RADAR_API_KEY in production's backend/.env."
-          fi
-
-          # A read that sends the key, expected to answer 200.
-          check_keyed() {
-            if [ -n "$KEY_REFUSED" ]; then
-              printf "  %-40s WARN (unverified: key refused)\n" "$1"; WARN=$((WARN+1))
-            else
-              check_status "$1" "$2" "200" "${RADAR_KEY_HEADER[@]}"
-            fi
-          }
-
-          echo "── Production Smoke Tests ──"
-          check_status "GET /api/health"          "${BASE_URL}/api/health"            "200"
-          check_status "GET /api/radar/nodes"     "${BASE_URL}/api/radar/nodes"       "200"
-          check_status "GET /api/radar/analytics" "${BASE_URL}/api/radar/analytics"   "200"
-          check_keyed "GET /api/test/dashboard"  "${BASE_URL}/api/test/dashboard"
-          check_keyed "GET /api/test/mlat-verification" "${BASE_URL}/api/test/mlat-verification"
-          # And without it, on both hosts that route /api/ to this app.
-          check_status "anonymous /api/test/ refused (api)" "${BASE_URL}/api/test/dashboard" "401"
-          check_status "anonymous /api/test/ refused (app)" "https://app.retina.fm/api/test/dashboard" "401"
-          # No /api/config check on BASE_URL (api.retina.fm): that vhost defines
-          # no /api/config location, so the request falls through `location /`
-          # to the app — which no longer implements the route. The monolith's
-          # tower stack was deleted once every /api/ vhost was proxied to
-          # tower-finder-service, so this would now be a 404 by design. The
-          # route is checked where it is actually served, on the tower vhosts
-          # below.
-          # On app, not towers: since the 2026-09-14 origin flip Cloudflare sends
-          # towers.retina.fm to tower-finder-service's own edge, so that probe
-          # asserted a different service's frontend while this job rolls THIS
-          # one back on failure. app is the production surface we still serve.
-          check_status "GET / (console)"          "https://app.retina.fm/"            "200"
-          check_status "GET /api/health (api.retina.fm)" "${BASE_URL}/api/health"     "200"
-
-          echo ""
-          echo "── Which origin answered ──"
-          # A status code proves a hostname responded, not that WE responded.
-          # tower-finder-service answers /api/health with the same 200 and the
-          # same security headers, so every check above passes identically
-          # against either origin — which is exactly how the 2026-09-14 flip of
-          # towers.retina.fm went unnoticed while this job rolled production
-          # back on failure. These assert the marker only this repo's nginx
-          # sets. This job has no check_header of its own; assert_origin_marker
-          # is shared with the staging suite so the two cannot drift.
-          # admin is absent because Cloudflare Access answers a browserless
-          # request with a 302 from the edge, carrying no origin headers.
-          check_origin "api vhost is this origin"  "${BASE_URL}/api/health"
-          # /api/health, not a page path: nginx drops every inherited add_header
-          # in a location that declares one of its own, and spa.conf's page
-          # locations declare a Cache-Control, so the marker reaches its API
-          # responses only.
-          check_origin "app vhost is this origin"  "https://app.retina.fm/api/health"
-
-          echo ""
-          echo "── Does the console render ──"
-          # An index.html whose assets miss still answers 200: a blank screen
-          # no status check here can see. This follows the page's own script
-          # URL and requires JavaScript back.
-          check_page_asset "app / loads its bundle" "https://app.retina.fm/"
-
-          echo ""
-          echo "── Do the retired hostnames still reach it ──"
-          # No vhost claims these; Cloudflare redirects them onto the app host,
-          # and this origin would refuse them with a 421. Warned rather
-          # than failed: the rules are the edge's, so no deploy here can have
-          # broken one and rolling this release back cannot fix one.
-          # Host, path probed, and where it must land.
-          for rule in "map.retina.fm|/|https://app.retina.fm/map" \
-                      "dash.retina.fm|/smoke-redirect|https://app.retina.fm/smoke-redirect" \
-                      "data.retina.fm|/|https://app.retina.fm/data"; do
-            IFS='|' read -r LEGACY_HOST LEGACY_PATH LEGACY_TARGET <<< "$rule"
-            printf "  %-40s " "$LEGACY_HOST"
-            if REASON=$(assert_legacy_redirect "$LEGACY_HOST" "$LEGACY_PATH" "$LEGACY_TARGET"); then
-              echo "OK"; PASS=$((PASS+1))
-            else
-              echo "WARN"; printf '    %s\n' "$REASON"; WARN=$((WARN+1))
-              echo "::warning::${LEGACY_HOST} no longer redirects to the app surface. It is a retired hostname with no vhost, so it is now refused at the origin. Restore the Cloudflare redirect rule."
-            fi
-          done
-
-          # The tower-finder seam, on production's OWN vhost names. Same
-          # assertion as the staging suite, from the same file.
-          # towers.retina.fm is deliberately absent, for the reason given above:
-          # every name below is one nginx here actually answers.
-          source "$GITHUB_WORKSPACE/deploy/tower-contract.sh"
-          for endpoint in https://app.retina.fm/api/towers \
-                          https://api.retina.fm/towers \
-                          https://admin.retina.fm/api/towers; do
-            printf "  %-40s " "${endpoint#https://}"
-            # 2 is our nginx having forwarded to a service that did not answer.
-            # Warned, not failed: this job rolls production back, and the service
-            # being down is not grounds for reverting a healthy release here. See
-            # _is_upstream_failure in deploy/tower-contract.sh.
-            if REASON=$(assert_tower_contract "$endpoint"); then
-              TC_RC=0
-            else
-              TC_RC=$?
-            fi
-            if [ "$TC_RC" = 0 ]; then
-              echo "OK"; PASS=$((PASS+1))
-            elif [ "$TC_RC" = 2 ]; then
-              echo "WARN"; printf '    %s\n' "$REASON"; WARN=$((WARN+1))
-              echo "::warning::tower search is unreachable behind ${endpoint#https://}: our nginx forwarded and tower-finder-service did not answer. Not a deploy fault and not rolled back."
-            else
-              echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
-            fi
-          done
-
-          # The sibling routes the same include forwards, on the vhost a human
-          # looks at. app replaces towers here for the reason given above.
-          for endpoint in https://app.retina.fm; do
-            printf "  %-40s " "${endpoint#https://}/api/elevation"
-            # 2 is the service answering that its own upstream is unavailable.
-            # Passed, loudly: this job rolls production back on a failure, and a
-            # third party's rate limiter is not grounds for that. The routing
-            # this probe covers rests on the 404 case, which stays fatal here and
-            # on the two checks alongside; none of the three is strict about a
-            # gateway status any more.
-            if REASON=$(assert_elevation_contract "${endpoint}/api/elevation"); then
-              EL_RC=0
-            else
-              EL_RC=$?
-            fi
-            if [ "$EL_RC" = 0 ]; then
-              echo "OK"; PASS=$((PASS+1))
-            elif [ "$EL_RC" = 2 ]; then
-              echo "WARN"; printf '    %s\n' "$REASON"; WARN=$((WARN+1))
-              echo "::warning::elevation is degraded on ${endpoint#https://}: the service's upstream provider is refusing lookups, so the search form's altitude prefill is down. Not a deploy fault and not rolled back. ClickUp 86cbaxrhp."
-            else
-              echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
-            fi
-            printf "  %-40s " "${endpoint#https://}/api/config"
-            # 2 as above: forwarded, upstream silent. Same reasoning, same verdict.
-            if REASON=$(assert_config_contract "${endpoint}/api/config"); then
-              CFG_RC=0
-            else
-              CFG_RC=$?
-            fi
-            if [ "$CFG_RC" = 0 ]; then
-              echo "OK"; PASS=$((PASS+1))
-            elif [ "$CFG_RC" = 2 ]; then
-              echo "WARN"; printf '    %s\n' "$REASON"; WARN=$((WARN+1))
-              echo "::warning::tower config is unreachable behind ${endpoint#https://}: our nginx forwarded and tower-finder-service did not answer. Not a deploy fault and not rolled back."
-            else
-              echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
-            fi
-            # Strict, like config: the probe stops at the service's own input
-            # validation and never reaches a geocoder, so there is no third
-            # party here whose outage could roll production back.
-            printf "  %-40s " "${endpoint#https://}/api/geocode"
-            if REASON=$(assert_geocode_contract "${endpoint}/api/geocode"); then
-              echo "OK"; PASS=$((PASS+1))
-            else
-              echo "FAIL"; printf '    %s\n' "$REASON"; FAIL=$((FAIL+1))
-            fi
-          done
-
-          # The dashboard's figures for the two checks below, read once and
-          # retried as check_status is.
-          DASHBOARD=$($CURL "${RADAR_KEY_HEADER[@]}" "${BASE_URL}/api/test/dashboard" 2>/dev/null) \
-            || DASHBOARD=$($CURL "${RADAR_KEY_HEADER[@]}" "${BASE_URL}/api/test/dashboard" 2>/dev/null) \
-            || DASHBOARD=""
-
-          # Check aircraft data is flowing
-          AIRCRAFT=$(python3 -c "import sys,json; print(json.load(sys.stdin)['pipeline']['aircraft_on_map'])" \
-            <<<"$DASHBOARD" 2>/dev/null) || AIRCRAFT=0
-          printf "  %-40s " "Aircraft on map > 0"
-          if [ "${AIRCRAFT:-0}" -gt 0 ]; then echo "OK ($AIRCRAFT)"; PASS=$((PASS+1))
-          elif [ -n "$KEY_REFUSED" ]; then echo "WARN (unverified: key refused)"; WARN=$((WARN+1))
-          else echo "WARN ($AIRCRAFT: real nodes may be quiet or still connecting)"; WARN=$((WARN+1)); fi
-
-          # Guard against a runaway population. Production runs no simulator now,
-          # so anything near this ceiling means either a `--profile sim` fleet was
-          # left running or the analytics manager is not evicting (ClickUp
-          # 86caxcbc3). Kept at 220 rather than retightened to the real headcount
-          # so a node cutover cannot fail a deploy. A count it cannot read fails
-          # rather than passing as zero, since zero is always under the ceiling,
-          # unless production refused the key it was read with (KEY_REFUSED).
-          printf "  %-40s " "Active nodes ≤ 220"
-          if ! NODES=$(python3 -c "import sys,json; print(int(json.load(sys.stdin)['nodes']['active']))" \
-              <<<"$DASHBOARD" 2>/dev/null); then
-            if [ -n "$KEY_REFUSED" ]; then
-              echo "WARN (unverified: key refused)"; WARN=$((WARN+1))
-            else
-              echo "FAIL (no active-node count in /api/test/dashboard)"; FAIL=$((FAIL+1))
-            fi
-          elif [ "$NODES" -le 220 ]; then echo "OK ($NODES)"; PASS=$((PASS+1)); else echo "FAIL ($NODES > 220 — a simulator fleet may be running, or nodes are not being evicted)"; FAIL=$((FAIL+1)); fi
-
-          echo ""
-          smoke_summary
-          [ "$FAIL" -eq 0 ] || exit 1
-      # Auto-rollback on smoke failure, as on an E2E failure. A failed
-      # smoke test means a bad build is live serving prod; revert to
-      # last-known-good rather than leaving it up for a human to catch. The
-      # condition is scoped to the smoke step's own outcome, so a failure in the
-      # wait step above fails the job for a human to inspect without
-      # triggering an automatic rollback.
-      - name: Rollback production on smoke-test failure
-        if: failure() && steps.smoke.outcome == 'failure'
-        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: root
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          envs: APP_DIR
-          script: |
-            # See the identical assertion in rollback-production-on-e2e-failure.
-            [ "$(hostname)" = "retina-prod" ] || { echo "::error::Refusing to roll back on '$(hostname)' — expected retina-prod."; exit 1; }
-            echo "Production smoke tests failed — rolling back production..."
-            cd ${{ env.APP_DIR }} && bash deploy/rollback.sh
+    uses: ./.github/workflows/production-deploy-verify.yml
+    with:
+      app_dir: ${{ needs.changes.outputs.app_dir }}
+    secrets:
+      SERVER_HOST: ${{ secrets.SERVER_HOST }}
+      SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+      RADAR_API_KEY: ${{ secrets.RADAR_API_KEY }}
+      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}

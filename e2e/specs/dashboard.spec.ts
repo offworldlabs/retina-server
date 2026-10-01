@@ -21,10 +21,10 @@
  * The login-card tests used to assume the oauth mode on /login and passed in
  * bypass mode only by racing that round trip — reliably from a GitHub runner,
  * 19 times in 20 failing from a client close to the origin. A lost race on
- * production rolls production back (ci.yml, e2e-prod). So: the tests that
- * check the real deployment key off the mode the server reports, and the tests
- * that check the login card's markup hold the auth call open (see
- * holdAuthUnresolved) so the card stays put while it is inspected.
+ * production rolls production back (production-deploy-verify.yml). So: the
+ * tests that check the real deployment key off the mode the server reports,
+ * and the tests that check the login card's markup hold the auth call open
+ * (see holdAuthUnresolved) so the card stays put while it is inspected.
  *
  * Authenticated flows are covered via API-level assumptions (see api.spec.ts).
  */
@@ -138,7 +138,7 @@ test.describe("Dashboard — unauthenticated access (real auth mode)", () => {
 /**
  * Whether a hostname resolves at all, as distinct from what it answers.
  *
- * This suite runs inside the `staging` job that deploy-production needs, exactly
+ * This suite runs inside the `staging` job that production waits on, exactly
  * as the smoke tests do, so it can block a release for the same reason they can.
  * They report an unresolvable name as a warning rather than a failure, because
  * staging-admin.retina.fm's record is young and nothing monitors it; without

@@ -25,10 +25,10 @@ import { defineConfig, devices, test } from "@playwright/test";
  * tidiness: neither runs a simulator (only the test droplet does), so neither
  * has a /sim at all. Pointing a deployed suite at another environment's
  * simulator would mean that suite exercising a box it does not deploy, and
- * because a failed production E2E auto-rolls-back production (ci.yml), a
- * wobble elsewhere would revert a good production build. The one suite that
- * needs the surface skips itself instead, and runs locally against the dev
- * server's admin console.
+ * because a failed production E2E auto-rolls-back production
+ * (production-deploy-verify.yml), a wobble elsewhere would revert a good
+ * production build. The one suite that needs the surface skips itself
+ * instead, and runs locally against the dev server's admin console.
  */
 
 const HOSTS = {

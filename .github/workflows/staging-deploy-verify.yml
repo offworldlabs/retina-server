@@ -79,8 +79,8 @@ jobs:
               exit 1
             fi
 
-            # Same check as ci.yml's production deploy, which has the reasoning:
-            # a marker is a box left mid-deploy, and snapshotting over it would
+            # Same check as the production deploy, which has the reasoning: a
+            # marker is a box left mid-deploy, and snapshotting over it would
             # lose the rollback point.
             if [ -f .deploy-in-progress ]; then
               echo "::error::${{ env.APP_DIR }}/.deploy-in-progress is still present on $(hostname) ($(cat .deploy-in-progress)). An earlier deploy was left mid-flight and never confirmed healthy. Inspect the box and recover it (bash deploy/rollback.sh, or fix forward), then delete the marker and re-run. Refusing to deploy; the running stack is untouched."
@@ -134,7 +134,8 @@ jobs:
             # suite by it and fail closed without one (backend/routes/test.py),
             # so a box with none fails every smoke run and holds production
             # back. The last line is read because it is the one compose passes
-            # on (see the same check in ci.yml's deploy-production).
+            # on (see the same check in production-deploy-verify.yml's
+            # deploy-production).
             if ! grep -E '^RADAR_API_KEY=' backend/.env 2>/dev/null | tail -1 | grep -qE '^RADAR_API_KEY=.+$'; then
               echo "::error::backend/.env on $(hostname) has no effective RADAR_API_KEY. The test router's reads admit the smoke suite only by that key, so the smoke run would fail. Set it to the STAGING_RADAR_API_KEY secret's value and re-run. Refusing to deploy; the running stack is untouched."
               exit 1
@@ -211,7 +212,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [deploy]
-    # Keyed the same way as ci.yml's rollback-production-on-deploy-failure;
+    # Keyed the same way as production-deploy-verify.yml's
+    # rollback-production-on-deploy-failure;
     # see there for why. No concurrency group of its own: the calling job
     # holds `staging-deploy` until every job here has finished (see the
     # header), so a following run's deploy cannot enter the directory while
@@ -244,7 +246,7 @@ jobs:
 
             # No marker: the deploy refused in a pre-flight with the stack
             # untouched, or it had already cleared the marker with the app
-            # healthy on the new build. Neither is a rollback case; ci.yml's
+            # healthy on the new build. Neither is a rollback case; the
             # production pair has the reasoning.
             if [ ! -f .deploy-in-progress ]; then
               echo "No .deploy-in-progress marker: the deploy either refused before touching the box or failed after the app was already healthy on the new build. Nothing to roll back."
@@ -255,7 +257,7 @@ jobs:
 
             # Another run's marker: this run touched nothing and cannot tell
             # a deploy still in progress or an unrecovered outage from a box
-            # already fixed by hand, so stop rather than guess (see ci.yml).
+            # already fixed by hand, so stop rather than guess (see production).
             case "$MARKER" in
               "run ${{ github.run_id }} "*) ;;
               *)
