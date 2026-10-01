@@ -22,6 +22,14 @@ export function statusLabel(status: string | null | undefined): string {
   return status === "never_connected" ? "Never connected" : "Offline";
 }
 
+/** Where an owned node's own page is, or null for a node with no ref, which
+ *  is on no public route. A polled radar's page is the one that manages it;
+ *  the detail page has nothing until its first frame. */
+export function ownedNodePage(node: { node_ref: string | null; polled: unknown }): string | null {
+  if (!node.node_ref) return null;
+  return `/${node.polled ? "radars" : "nodes"}/${node.node_ref}`;
+}
+
 /** How many detections a node's analytics summary has counted. The two
  *  counters live in blocks the analytics service builds independently, so
  *  either can be absent: the frame metrics are read first and the detection

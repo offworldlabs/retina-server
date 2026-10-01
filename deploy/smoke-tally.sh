@@ -1,8 +1,8 @@
 #!/bin/bash
 # The pass/fail/warn bookkeeping both smoke suites share, on the same footing as
 # tower-contract.sh: sourced by deploy/staging-smoke-test.sh and by the
-# production smoke step in .github/workflows/ci.yml, so the two cannot report
-# the same outcome differently.
+# production smoke step in .github/workflows/production-deploy-verify.yml, so
+# the two cannot report the same outcome differently.
 #
 # Only the counters and the summary live here. check_status and the rest are
 # still defined per suite and have drifted (production retries once on a

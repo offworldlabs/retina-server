@@ -58,8 +58,8 @@ export interface Aircraft {
   solve_lat?: number;
   solve_lon?: number;
   /**
-   * Age of the ADS-B fix this entry's lat/lon came from, one decimal.
-   * Present on `adsb_single_node` entries only.
+   * Age of the ADS-B fix this entry's lat/lon was dead-reckoned from, one
+   * decimal. Present on `adsb_single_node` / `adsb_multi_node` entries only.
    */
   adsb_fix_age_s?: number;
   recent_positions?: [number, number, number, number][];

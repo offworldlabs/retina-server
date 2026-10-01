@@ -910,7 +910,8 @@ flowchart TD
 | `solver_adsb_seed` | `track_gates.track_entry` | single-node LM with fresh ADS-B fix |
 | `solver_single_node` | `track_gates.track_entry` | single-node LM, no ADS-B |
 | `single_node_ellipse_arc` | `track_gates.track_entry` | overwrites either when an ambiguity arc exists — displayed point is the arc midpoint |
-| `adsb_single_node` | `aircraft_feed._claimed_single_node_entries` | exactly one node claiming the hex within `CLAIMED_DISPLAY_FRESH_S`; position is the claim's ADS-B fix, the entry carries the node's full ambiguity arc. Two or more claiming nodes emit nothing here — that is the known-lane solver's `mn-adsb-<hex>` |
+| `adsb_single_node` | `aircraft_feed._claimed_adsb_entries` | exactly one node claiming the hex within `CLAIMED_DISPLAY_FRESH_S`; position is the newest claimed ADS-B fix dead-reckoned to the feed's now, dropped once that fix is older than `CLAIMED_DISPLAY_MAX_FIX_AGE_S`; the entry carries the node's full ambiguity arc |
+| `adsb_multi_node` | `aircraft_feed._claimed_adsb_entries` | two or more nodes claiming the hex and no `mn-adsb-<hex>` entry on the map this build (every n=2 known-lane solve gated off); same position rule, `n_nodes` + `contributing_node_ids`, no arc. Never emitted beside that hex's published solve |
 | `known_lane_truth_match` / `known_lane_ghost` | `known_lane._record_accuracy` | accuracy-sample-only, not a feed entry |
 
 One optional field rides alongside them. A dark `multinode_solve` entry whose
@@ -937,8 +938,10 @@ not reach the Parquet archive, which writes a fixed schema.
 | `MN_STALE_COAST_MIN_S` / `MN_STALE_COAST_MAX_S` (candidate solve-age band — below the floor the key is being tracked, not coasted) | 4.0 / 60.0 s | `config/constants.py` |
 | `MN_STALE_COAST_MAX_KM` / `MN_STALE_COAST_VMAX_MS` / `_MN_STALE_COAST_BASE_KM` (raw-to-raw gate, `min(max_km, vmax·dt + base)`) | 10.0 km / 350 m/s / 2.0 km | `config/constants.py`, `services/tasks/multinode_identity.py` |
 | `MN_STALE_COAST_MANOEUVRE` (KF manoeuvre level above which the filter counts as turn evidence) | 0.3 | `config/constants.py` |
-| `_DEDUP_SOURCE_RANK` order | multinode_solve 0 < adsb_single_node 1 < solver_adsb_seed 2 < solver_single_node 3 < single_node_ellipse_arc 4 | `services/feed_helpers.py` |
+| `_DEDUP_SOURCE_RANK` order | multinode_solve 0 < adsb_single_node = adsb_multi_node 1 < solver_adsb_seed 2 < solver_single_node 3 < single_node_ellipse_arc 4 | `services/feed_helpers.py` |
 | `CLAIMED_DISPLAY_FRESH_S` | 5.0 s | `config/constants.py` |
+| `CLAIMED_DISPLAY_MAX_FIX_AGE_S` (= `CAL_MAX_ADSB_AGE_S`) | 10.0 s | `config/constants.py` |
+| Claim history (`state.known_claim_history`, `/api/test/mlat-history?kind=claims`) | 30 min / 20 000 records | `core/state.py` |
 | Dedup proximity / altitude gate | 3.0 km / 2000 ft | `services/feed_helpers.py` (`_DEDUP_PROXIMITY_KM`, `_DEDUP_ALT_GATE_FT`) |
 | `AIRCRAFT_FLUSH_INTERVAL_S` | 1.0 s | `config/constants.py` |
 | `DISPLAY_STALE_TRACK_S` / `GATE_MAX_HOLD_S` | 15 s / 10 s | `config/constants.py` |

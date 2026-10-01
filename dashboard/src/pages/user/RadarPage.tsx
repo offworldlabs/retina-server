@@ -98,7 +98,7 @@ function Radar({ nodeRef }: { nodeRef: string }) {
     setRemovalError(null);
     try {
       await api.releaseNode(nodeId);
-      navigate("/onboarding");
+      navigate("/overview");
     } catch (e) {
       setRemovalError((e as Error).message || "Could not remove the radar. Try again.");
       setRemoving(false);

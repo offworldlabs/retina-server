@@ -70,6 +70,11 @@ services:
       # knob that most directly shapes throughput behaviour.
       - FRAME_WORKERS=6
       - FRAME_QUEUE_SIZE=10000
+      # From the first frame that names its own tracker run (node API 1.6.0), a
+      # node is tracked only on the tracks it sends, until its pipeline is
+      # rebuilt; a node that never names one keeps the server's tracker. Every
+      # environment runs the same, so it is set here.
+      - NODE_TRACKS_MODE=live
       # Simulation scene mix, read at boot by core/state.py. Lives here (not in
       # an overlay) because both environments are meant to run the same mix —
       # fleet *scale* is what legitimately differs, and that is already

@@ -1,5 +1,6 @@
 """Tests for admin API routes — events, users, config, storage, leaderboard, metrics."""
 
+import asyncio
 import time
 
 import pytest
@@ -43,6 +44,15 @@ class TestUsers:
     def test_list_users(self, client):
         r = client.get("/api/admin/users")
         assert r.status_code == 200
+
+    def test_an_account_that_has_never_visited_lists_no_last_visit(self, client):
+        """A claim link can make the account and then fail to bind, opening no session."""
+        from core.users import get_or_create_magic_link_user
+
+        asyncio.run(get_or_create_magic_link_user("never@example.com"))
+
+        listed = {u["email"]: u for u in client.get("/api/admin/users").json()}
+        assert listed["never@example.com"]["last_seen_at"] is None
 
     def test_no_route_changes_a_role(self):
         """Administrators are Access identities, never rows; see list_users."""

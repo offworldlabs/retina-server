@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from core import state
 from core.auth import get_user_nodes
 from core.users import AUTH_BYPASS, read_user_from_token
-from services.tasks.aircraft_flush import filter_payload_to_nodes, published_bytes
+from services.tasks.aircraft_flush import owner_bytes
 
 router = APIRouter(tags=["radar"])
 
@@ -114,9 +114,7 @@ async def websocket_aircraft_owner(ws: WebSocket):
     logging.info("WS owner client connected (%d nodes, %d total)", len(owned), len(state.ws_owner_clients))
     try:
         if state.latest_aircraft_json.get("aircraft"):
-            # Filter the unredacted frame by owned node_id, then publish: the
-            # filter matches ids, so substitution cannot precede it.
-            snapshot = published_bytes(filter_payload_to_nodes(state.latest_aircraft_json, owned))
+            snapshot = owner_bytes(state.latest_aircraft_json, owned)
             await ws.send_text(snapshot.decode())
         while True:
             await ws.receive_text()

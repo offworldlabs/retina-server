@@ -549,6 +549,21 @@ known_claims: dict[str, deque] = {}
 # ever claimed — the same population known_claims is keyed by.
 known_track_holds: dict[str, dict[str, dict]] = {}
 
+# ── Claim history: what each claim was, and what the feed drew for it ────────
+# known_claims is pruned KNOWN_CLAIMS_STALE_S (120 s) after a hex's last
+# claim, which erases exactly the episodes worth replaying ("why did this icon
+# freeze?").  services/aircraft_feed.py appends one record per claim the feed
+# build sees for the first time — ts, node, hex, residuals, fix age, path
+# flags and the feed's decision for that hex — and
+# /api/test/mlat-history?kind=claims dumps it.  Bounded twice: records older
+# than KNOWN_CLAIM_HISTORY_WINDOW_S are dropped on append, and maxlen caps the
+# memory when a synthetic fleet claims faster than the window can age out
+# (~20 000 × ~0.6 kB ≈ 12 MB; the route reports how much of the window it
+# actually holds).
+KNOWN_CLAIM_HISTORY_WINDOW_S = 1800.0
+KNOWN_CLAIM_HISTORY_MAX = 20_000
+known_claim_history: deque = deque(maxlen=KNOWN_CLAIM_HISTORY_MAX)
+
 # ── Track history: rolling position buffer per aircraft hex ───────────────────
 # The TRUE frame.  Everything internal compares against it — the speed gate's
 # reference, the arc-motion log, the jump check, routes/test.py's ground-truth
@@ -745,7 +760,8 @@ known_follow_claims: int = 0
 # name finds only the read sites.  published counts actual publishes (binding
 # only, so it stays zero in shadow), publish_errors the ones that threw, and
 # publish_rms_rejected the solves binding would have published but for the
-# residual gate.  solver_report.py's known_lane block reads them as a funnel.
+# residual gate, publish_single_site those it withheld because every claim came
+# from one receive site.  solver_report.py's known_lane block reads them as a funnel.
 known_lane_attempts: int = 0
 known_lane_truth_match: int = 0
 known_lane_ghost: int = 0
@@ -754,6 +770,7 @@ known_lane_no_converge: int = 0
 known_lane_published: int = 0
 known_lane_publish_errors: int = 0
 known_lane_publish_rms_rejected: int = 0
+known_lane_publish_single_site: int = 0
 # Empirical-coverage calibration from the CLAIM lane (see
 # services/known_claiming._calibration_from_claim and services/calibration.py's
 # fourth rule).  recorded counts the points actually written; the five rejects
@@ -1382,6 +1399,7 @@ def _reset_for_tests() -> None:
     mlat_solve_history.clear()
     mlat_solve_history_known.clear()
     solver_resolve_skips_recent.clear()
+    known_claim_history.clear()
     solver_queue_drops_recent.clear()
     accuracy_samples.clear()
     mlat_samples.clear()
