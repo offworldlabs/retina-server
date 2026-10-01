@@ -45,6 +45,25 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+    ignore:
+      # Each of these majors is a migration across several packages at once
+      # (React 19 with its types, ESLint 10 with @eslint/js, TypeScript 7 with
+      # a typescript-eslint that supports it). Dependabot raises one package of
+      # the set alone, which cannot install, so they move by hand.
+      - dependency-name: react
+        update-types: [version-update:semver-major]
+      - dependency-name: react-dom
+        update-types: [version-update:semver-major]
+      - dependency-name: "@types/react"
+        update-types: [version-update:semver-major]
+      - dependency-name: "@types/react-dom"
+        update-types: [version-update:semver-major]
+      - dependency-name: eslint
+        update-types: [version-update:semver-major]
+      - dependency-name: "@eslint/js"
+        update-types: [version-update:semver-major]
+      - dependency-name: typescript
+        update-types: [version-update:semver-major]
     groups:
       npm:
         patterns: ["*"]
