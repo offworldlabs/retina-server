@@ -750,10 +750,11 @@ jobs:
   e2e-prod:
     name: Playwright E2E (production)
     runs-on: ubuntu-latest
-    # A backstop above the test step's own cap, not the primary bound: a job
-    # timeout cancels the test step, and a cancelled step is not a verdict the
-    # rollback job acts on, whereas the step cap marks it failed.
-    timeout-minutes: 30
+    # A backstop above the steps' own caps (collect 3, tests 20, upload 2), with
+    # ten minutes for the setup steps, not the primary bound: a job timeout
+    # cancels the test step, and a cancelled step is not a verdict the rollback
+    # job acts on, whereas the step cap marks it failed.
+    timeout-minutes: 35
     needs: [production-smoke-tests]
     # The calling job's gate, repeated as on the deploy.
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -784,6 +785,16 @@ jobs:
       # fails here rather than in the tests, where it would roll production back.
       - name: Report the runner's Chrome
         run: node e2e/report-chrome.js
+      # A suite that cannot be collected (a committed test.only under
+      # forbidOnly, a spec that throws at module scope) says nothing about
+      # production, so it fails here, before the step the rollback reads. The
+      # same environment as that step, so it loads the modules the same way.
+      - name: Collect the E2E tests (production)
+        timeout-minutes: 3
+        run: npm run test:e2e:prod -w e2e -- --list
+        env:
+          CI: "true"
+          RADAR_API_KEY: ${{ secrets.RADAR_API_KEY }}
       # Bounded at the step rather than relying on the job cap: a step timeout
       # marks the step failed, which still trips the rollback job, whereas a
       # job timeout cancels it and would not. A production wedged badly enough
@@ -798,6 +809,21 @@ jobs:
         env:
           CI: "true"
           RADAR_API_KEY: ${{ secrets.RADAR_API_KEY }}
+      # Screenshots alone: artifacts are public, and GitHub masks secrets only in
+      # logs, while a trace and error-context.md's call log both list request
+      # headers, keys included. Bounded and allowed to fail, because an upload
+      # stalling into the job's cap would cancel the job before it outputs the
+      # verdict the rollback reads.
+      - name: Keep the failed tests' screenshots
+        if: failure()
+        timeout-minutes: 2
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-production-screenshots-${{ github.run_attempt }}
+          path: e2e/test-results/**/*.png
+          retention-days: 7
+          if-no-files-found: ignore
 
   # A job of its own, so that production's root key is never handed to a job
   # that has just run npm's install scripts. test_deploy_workflows.py holds

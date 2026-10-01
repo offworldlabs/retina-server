@@ -526,3 +526,80 @@ def test_a_following_runs_staging_does_not_wait_for_this_runs_production():
     assert "github.event_name == 'pull_request' &&" in pull_request
     assert "github.run_id" in push and "github.run_id" not in pull_request
     assert _job("ci.yml", "staging")["concurrency"]["group"] != _job("ci.yml", "production")["concurrency"]["group"]
+
+
+# ── What a failed E2E leaves behind ──────────────────────────────────────────
+# This repository's artifacts are public and GitHub masks secrets only in logs.
+# A Playwright trace records every request's headers and error-context.md holds
+# a call log that lists them, keys included, so from test-results only the
+# screenshots are ever published.
+
+
+def _runs_playwright(job: dict) -> bool:
+    return any(
+        re.search(r"\btest:e2e\b|\bplaywright test\b", str(step.get("run", ""))) for step in job.get("steps", [])
+    )
+
+
+def _test_result_uploads() -> list:
+    # Every upload from a job that runs Playwright, whatever its path, since a
+    # broad one (`.`, the workspace) sweeps test-results in with it. Elsewhere,
+    # anything under e2e/ or named for Playwright: its report embeds the same
+    # call logs.
+    return [
+        pytest.param(step, id=f"{path.name}:{name}")
+        for path in _workflow_files()
+        for name, job in _workflow(path.name)["jobs"].items()
+        for step in job.get("steps", [])
+        if str(step.get("uses", "")).startswith("actions/upload-artifact")
+        and (
+            _runs_playwright(job)
+            or re.search(r"\be2e\b|test-results|playwright", str(step.get("with", {}).get("path", "")), re.IGNORECASE)
+        )
+    ]
+
+
+def test_both_e2e_jobs_keep_their_screenshots():
+    assert {param.id for param in _test_result_uploads()} == {
+        "staging-deploy-verify.yml:e2e",
+        f"{PRODUCTION}:e2e-prod",
+    }
+
+
+@pytest.mark.parametrize("upload", _test_result_uploads())
+def test_a_failed_e2e_publishes_its_screenshots_alone(upload):
+    assert upload["with"]["path"] == "e2e/test-results/**/*.png"
+    assert not upload["with"].get("include-hidden-files", False)
+
+
+@pytest.mark.parametrize("upload", _test_result_uploads())
+def test_collecting_them_cannot_cost_the_verdict(upload):
+    # e2e-prod's output decides the rollback. An upload that stalls into the
+    # job's cap would cancel the job before it publishes one.
+    assert upload["if"] == "failure()"
+    assert upload["continue-on-error"] is True
+    assert upload["timeout-minutes"] <= 2
+
+
+@pytest.mark.parametrize(("workflow", "job"), [("staging-deploy-verify.yml", "e2e"), (PRODUCTION, "e2e-prod")])
+def test_an_e2e_jobs_cap_stays_a_backstop(workflow, job):
+    # The steps' own caps, with at least five minutes for the setup steps
+    # (checkout, npm ci, the Chrome report), fit under the job's. A job timeout
+    # cancels the test step, and a cancelled step is no verdict, so a production
+    # wedged enough to hang the suite would never be rolled back.
+    steps = _job(workflow, job)["steps"]
+    assert _runs_playwright(_job(workflow, job))
+    capped = sum(int(step.get("timeout-minutes", 0)) for step in steps)
+    assert capped + 5 <= _job(workflow, job)["timeout-minutes"]
+
+
+def test_a_suite_that_cannot_load_cannot_roll_production_back():
+    # A committed test.only under forbidOnly, or a spec that throws at module
+    # scope, fails the collect step, and the step the rollback reads never runs.
+    steps = _job(PRODUCTION, "e2e-prod")["steps"]
+    collect = [step.get("name") for step in steps].index("Collect the E2E tests (production)")
+    run = [step.get("id") for step in steps].index("e2e")
+    assert collect < run
+    assert steps[collect]["run"] == steps[run]["run"] + " -- --list"
+    assert steps[collect]["env"] == steps[run]["env"]
+    assert steps[collect]["timeout-minutes"] <= 3
