@@ -75,19 +75,6 @@ def _refuse() -> JSONResponse:
     return _render(Refusal(403, dict(REFUSAL_BODY), refusal_retry_after()))
 
 
-def _utc(moment: datetime) -> datetime:
-    """Normalise an aware timestamp to UTC before it reaches a column.
-
-    SQLite stores no offset, so an aware value is written as its own wall clock
-    and read back as the UTC every other timestamp in these tables is: an
-    acceptance sent as 09:12+02:00 would be filed as 09:12 UTC, two hours late,
-    and could end up appearing to postdate the registration it authorised. The
-    models accept an offset because the contract's `date-time` carries one; this
-    is where it stops being one.
-    """
-    return moment.astimezone(UTC)
-
-
 def _apply_agreements(node: Node, agreements: Agreements) -> None:
     """The record of what the owner accepted, written out rather than implied.
 
@@ -97,12 +84,12 @@ def _apply_agreements(node: Node, agreements: Agreements) -> None:
     the old one.
     """
     node.licence_version = agreements.licence.version
-    node.licence_accepted_at = _utc(agreements.licence.accepted_at)
+    node.licence_accepted_at = agreements.licence.accepted_at
     node.remote_management_version = agreements.remote_management.version
-    node.remote_management_accepted_at = _utc(agreements.remote_management.accepted_at)
+    node.remote_management_accepted_at = agreements.remote_management.accepted_at
     node.publication = agreements.publication.choice
     node.publication_version = agreements.publication.version
-    node.publication_chosen_at = _utc(agreements.publication.accepted_at)
+    node.publication_chosen_at = agreements.publication.accepted_at
 
 
 # The published description, written for whoever implements a node against this

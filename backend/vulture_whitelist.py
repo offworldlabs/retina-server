@@ -72,6 +72,15 @@ tag
 # Vulture doesn't follow the decorator's dynamic dispatch.
 _set_sqlite_pragmas
 
+# ── core/timestamps.py ────────────────────────────────────────────────────────
+
+# TypeDecorator's contract: SQLAlchemy reads `impl` and `cache_ok` off the class
+# and calls the two process_* hooks on every bind and every row it reads.
+_.impl
+_.cache_ok
+_.process_bind_param
+_.process_result_value
+
 # ── migrations/env.py ─────────────────────────────────────────────────────────
 
 # The same @event.listens_for dispatch as _set_sqlite_pragmas above, on the

@@ -204,7 +204,9 @@ just test-ci
 # every workspace; -w dashboard (or -w packages/shared, -w e2e) for one
 npm run test --workspaces --if-present && npm run typecheck --workspaces && npm run lint --workspaces --if-present
 
-# the browser suite, against staging (local and prod are the other two targets)
+# the browser suite, against staging (local and prod are the other two targets).
+# It drives the installed Google Chrome, as CI drives its runner's; where there
+# is none, `npx playwright install chrome` adds one.
 npm run test:e2e:staging -w e2e
 ```
 

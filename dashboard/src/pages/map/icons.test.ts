@@ -53,6 +53,11 @@ describe.each<MapTheme>(["light", "dark"])("getAircraftColor lanes (%s)", (theme
     expect(getAircraftColor({ position_source: "adsb_single_node" })).toBe(ADSB_SINGLE_COLOR);
   });
 
+  it("colours a multi-node claim with no solve the same blue", () => {
+    // Same position (the ADS-B fix), same lane colour; the count rides on n_nodes.
+    expect(getAircraftColor({ position_source: "adsb_multi_node", n_nodes: 2 })).toBe(ADSB_SINGLE_COLOR);
+  });
+
   it("keeps the seeded-solver and fallback branches", () => {
     expect(getAircraftColor({ position_source: "solver_adsb_seed" })).toBe(LANE_SOLVER_SEED);
     expect(getAircraftColor({ position_source: "solver_single_node" })).toBe(SKY);

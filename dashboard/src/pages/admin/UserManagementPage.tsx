@@ -49,7 +49,7 @@ export default function UserManagementPage() {
           <h3>Registered Users</h3>
         </div>
         <DataTable
-          headers={["User", "Email", "Provider", "Nodes", "Last Login"]}
+          headers={["User", "Email", "Nodes", "Last Visit"]}
           count={users.length}
           empty="No users registered yet"
         >
@@ -67,13 +67,12 @@ export default function UserManagementPage() {
                 <span style={{ color: "var(--text-primary)" }}>{user.name}</span>
               </td>
               <td>{user.email}</td>
-              <td style={{ textTransform: "capitalize" }}>{user.provider}</td>
               <td className="mono muted">
                 {nodeCount(user.id)}
               </td>
               <td>
-                {user.last_login
-                  ? new Date(user.last_login * 1000).toLocaleString()
+                {user.last_seen_at
+                  ? new Date(user.last_seen_at * 1000).toLocaleString()
                   : "—"}
               </td>
             </tr>

@@ -3,7 +3,7 @@ import { UnauthorizedError, request as sharedRequest, type RequestOptions } from
 import { isPublicRoute } from "../utils/publicRoutes";
 import { signInNext } from "../utils/signInNext";
 import { isAdminHost } from "../utils/surface";
-import type { PolledRadarListing, PolledRadarProbe, PolledRadarTrust, Publication } from "../types";
+import type { ConnectionCheck, PolledRadarListing, PolledRadarProbe, PolledRadarTrust, Publication } from "../types";
 
 /** Must match the route in App.tsx. */
 const LOGIN_PATH = "/login";
@@ -57,7 +57,7 @@ export const api = {
   // RequireAuth routes on it without the full page load this wrapper costs.
   logout: () => request("/api/auth/logout", { method: "POST" }),
 
-  // Magic-link sign-in. Both answer before there is a session to lose, so the
+  // Magic-link sign-in. These answer before there is a session to lose, so the
   // 401 redirect above never fires for them; they go through the wrapper for
   // one client shape rather than for it.
   //
@@ -71,6 +71,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify(next ? { email, next } : { email }),
     }),
+  // Resolves {email} without spending the token; rejects 404 for unknown,
+  // expired and already-redeemed alike.
+  previewMagicLink: (token) => request(`/api/auth/magic-link/${encodeURIComponent(token)}`),
   // Resolves {user} and leaves the session cookie behind it; rejects 400 with
   // one detail for unknown, expired and already-redeemed alike.
   consumeMagicLink: (token) =>
@@ -81,6 +84,7 @@ export const api = {
 
   // Self-service node ownership
   myNodes: () => request("/api/auth/me/nodes"),
+  myAircraft: () => request("/api/auth/me/aircraft"),
 
   // Registering a stock blah2 radar. Each call probes the radar, which can take
   // a radar's worth of seconds, so each outwaits the default timeout. A refusal
@@ -205,4 +209,24 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ trust_state: trustState, epoch }),
     }),
+  // Connecting a radar to an operator's address: the owner's two steps, with the address.
+  adminCheckConnection: (address: string, email: string): Promise<ConnectionCheck> =>
+    request("/api/admin/polled-radars/probe", {
+      method: "POST",
+      body: JSON.stringify({ address, email }),
+      timeoutMs: RADAR_PROBE_TIMEOUT_MS,
+    }),
+  adminConnectPolledRadar: (connection: {
+    address: string;
+    fingerprint: string;
+    publication: Publication;
+    email: string;
+  }): Promise<{ node_id: string; epoch: number; trust_state: PolledRadarTrust; owner: { email: string; created: boolean } }> =>
+    request("/api/admin/polled-radars", {
+      method: "POST",
+      body: JSON.stringify(connection),
+      timeoutMs: RADAR_PROBE_TIMEOUT_MS,
+    }),
+  adminWithdrawPolledRadar: (nodeId: string) =>
+    request(`/api/admin/polled-radars/${encodeURIComponent(nodeId)}`, { method: "DELETE" }),
 };

@@ -6,7 +6,6 @@ though unmounted, so a deployment that takes no registrations offers nothing to
 probe with. services/polled_registration.py decides; this module speaks HTTP.
 """
 
-import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -14,12 +13,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.nodes import Node
 from core.users import get_async_session, get_current_user
-from services import blah2_poller, node_pipeline, polled_registration, probation, publication
+from services import blah2_poller, polled_registration, probation, publication
 from services.polled_registration import RegistrationRefused
-
-logger = logging.getLogger(__name__)
 
 
 class PolledRadarProbeRequest(BaseModel):
@@ -36,7 +32,7 @@ class PolledRadarRegisterRequest(PolledRadarAddressRequest):
     publication: Literal["public", "private"]
 
 
-def _refused(exc: RegistrationRefused) -> JSONResponse:
+def refused_response(exc: RegistrationRefused) -> JSONResponse:
     body: dict = {"detail": exc.message, "code": exc.code}
     if exc.probe is not None:
         body["probe"] = exc.probe.public()
@@ -63,7 +59,7 @@ async def probe_polled_radar(
     try:
         probed = await polled_registration.probe(session, body.address, user["id"])
     except RegistrationRefused as exc:
-        return _refused(exc)
+        return refused_response(exc)
     return probed.public()
 
 
@@ -78,24 +74,10 @@ async def register_polled_radar(
             session, raw=body.address, fingerprint=body.fingerprint, publication=body.publication, user=user
         )
     except RegistrationRefused as exc:
-        return _refused(exc)
+        return refused_response(exc)
     await session.commit()
-    # After the commit, so a reader in between cannot cache the state before it.
-    publication.invalidate()
-    await _join_pipeline(session, registration.node)
-    blah2_poller.refresh()
+    await polled_registration.hand_over(session, registration.node)
     return {"node_id": registration.node.node_id, "epoch": registration.radar.epoch, "trust_state": "probation"}
-
-
-async def _join_pipeline(session: AsyncSession, node: Node) -> None:
-    """Put the radar where a restart's priming would, so its owner's list and map
-    show it before its first frame, which a stalled or unreachable radar never sends.
-    """
-    try:
-        await node_pipeline.register_with_pipeline(session, node)
-    except Exception:
-        # Registered all the same: the poller hands it over on its first frame.
-        logger.exception("polled radar %s: could not hand it to the pipeline", node.node_id)
 
 
 @router.post("/{node_id}/probe")
@@ -107,7 +89,7 @@ async def probe_polled_radar_address(
     try:
         probed = await polled_registration.probe_new_address(session, node_id, body.address, user["id"])
     except RegistrationRefused as exc:
-        return _refused(exc)
+        return refused_response(exc)
     return probed.public()
 
 
@@ -122,7 +104,7 @@ async def move_polled_radar(
             session, node_id, raw=body.address, fingerprint=body.fingerprint, user=user
         )
     except RegistrationRefused as exc:
-        return _refused(exc)
+        return refused_response(exc)
     await session.commit()
     # After the commit, as above: a radar moved to another host is back on probation.
     probation.invalidate()
