@@ -270,7 +270,7 @@ default — a typo should degrade to the inert mode, not the acting one):
 |---|---|---|---|---|
 | `off` | never runs | untouched | returns 0 immediately (`known_lane.run_known_lane_pass`); worker never even calls it (`solver._run_solver_worker`) | none |
 | `shadow` | runs, records claims + residuals + counters | untouched | runs: solves, classifies, records accuracy samples | never |
-| `binding` | runs | `strip_claimed_detections` removes claimed indices (called from `frame_processor.process_one_frame`) | runs | `truth_match` results whose `rms_delay` passes `KNOWN_PUBLISH_MAX_RMS_DELAY_US` publish into `state.multinode_tracks` as `mn-adsb-<hex>`; ghosts never publish |
+| `binding` | runs | `strip_claimed_detections` removes claimed indices (called from `frame_processor.process_one_frame`) | runs | `truth_match` results whose geometry passes `KNOWN_PUBLISH_MAX_DELAY_DOP_KM_PER_US` and whose `rms_delay` passes `KNOWN_PUBLISH_MAX_RMS_DELAY_US` publish into `state.multinode_tracks` as `mn-adsb-<hex>`; ghosts never publish |
 
 `strip_claimed_detections` (`services/known_claiming.py`) returns a copy
 with claimed indices removed from `delay`/`doppler`/`snr`/`adsb`; the
@@ -314,15 +314,36 @@ flowchart TD
     glabel -->|"no"| gh["label = ghost<br/>history known_ghost"]
     tm --> gpub{"mode == binding<br/>AND label == truth_match?"}
     gh --> gpub
-    gpub -->|"yes"| grms{"rms_delay <=<br/>KNOWN_PUBLISH_MAX_RMS_DELAY_US 3.0us?<br/>(missing/None passes; n=2 carries 0.0)"}
+    gpub -->|"yes"| ggeo{"delay DOP at the fix <=<br/>KNOWN_PUBLISH_MAX_DELAY_DOP_KM_PER_US 3.0 km/us?<br/>(unknown geometry passes)"}
+    ggeo -->|"no"| weak["known_lane_publish_weak_geometry<br/>publish_gate='weak_geometry'<br/>accuracy sample STILL recorded"]:::inert
+    ggeo -->|"yes"| grms{"rms_delay <=<br/>KNOWN_PUBLISH_MAX_RMS_DELAY_US 3.0us?<br/>(missing/None passes; n=2 usually carries 0.0)"}
     grms -->|"no"| gated["known_lane_publish_rms_rejected<br/>publish_gate='rms_delay'<br/>accuracy sample STILL recorded"]:::inert
     grms -->|"yes"| publish["_publish: multinode_key_decision<br/>-> mn-adsb-hex, smooth_solve,<br/>supersession, solve_count+=1"]
     gpub -->|"no"| noop["accuracy sample only,<br/>no feed entry"]:::inert
 ```
 
-The residual gate is on the PUBLISH alone: label, accuracy sample and history
-outcome are identical whether it passes or not, so the free-solve measurement
-below keeps measuring the solves it withholds. It exists because a
+Both gates are on the PUBLISH alone: label, accuracy sample and history
+outcome are identical whether they pass or not, so the free-solve measurement
+below keeps measuring the solves they withhold.
+
+The geometry gate asks whether the claim set's delay loci cross sharply enough
+at the aircraft to place it. Each node's delay puts the aircraft on a curve
+whose normal is the sum of the unit vectors from its transmitter and from its
+receiver; `services/solve_geometry.py` turns the spread of those normals into
+a dilution of precision, km of horizontal error per microsecond of delay
+error, evaluated at the transponder's position. It is not a property of the
+receivers. Two on one roof share the receiver term, so their curves cross at
+half the angle their transmitters subtend at the aircraft: a good pair when
+the towers sit either side of it, none when they share a tower farm, and the
+same holds for three or four on that roof. Receivers far apart fail it too
+when the aircraft is distant enough that every focus lies one way. On test
+(2026-10-02) the one real n=2 pair, co-sited with towers 18 km apart, was 3%
+ghosts under 2 km/µs, 8% from 2 to 3, 33% from 3 to 4 and 61% over 8. The
+gate replaced a rule that withheld every solve whose receivers shared a site,
+which threw away that pair's good solves and passed separated receivers'
+bad ones.
+
+The residual gate exists because a
 truth_match displacement was this lane's only publish check — on test and
 staging (2026-09-10/11) the tail of `mn-adsb-a85f17` (N6389R, a PA-28) put
 solves with `rms_delay` 9.9-11.2 µs and a formal `pos_sigma_km` of 1.9e7 on
@@ -353,6 +374,7 @@ LM's SNR weighting maps to a uniform weight of 1.0.
 | `KNOWN_FOLLOW_MAX_AGE_S` / `KNOWN_FOLLOW_MIN_SOLVES` (follow candidates; **0 = off**) | 20.0 s / 3 | `known_claiming.py` |
 | `KNOWN_LANE_REANCHOR_STREAK` (**0 = off**) | 2 | `services/tasks/known_lane.py` |
 | `KNOWN_PUBLISH_MAX_RMS_DELAY_US` (publish gate only) | 3.0 µs (= `SOLVER_RMS_DELAY_MAX_US`) | `services/tasks/known_lane.py` |
+| `KNOWN_PUBLISH_MAX_DELAY_DOP_KM_PER_US` (publish gate only; **0 = off**) | 3.0 km/µs | `services/tasks/known_lane.py` |
 | `_PASS_MIN_INTERVAL_S` | 2.0 s | `services/tasks/known_lane.py` |
 | `_CLAIM_MAX_AGE_S` / `_CLAIM_SPREAD_S` | 45.0 s / 5.0 s | `known_lane.py` |
 | `_ATTEMPT_TTL_S` | 600 s | `known_lane.py` |
