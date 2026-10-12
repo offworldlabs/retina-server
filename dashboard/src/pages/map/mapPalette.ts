@@ -104,12 +104,25 @@ export interface MapPalette {
   ACCENT_STRONG: string;
 
   /* Quality scale for marks drawn onto the map: the solve-history dots, and
-     WARN's trails, transmitters and baselines. Measured against the basemap
-     like the rest, which is why light sits a step darker than `--success`
-     and `--warning`: those are 2.4:1 and 2.1:1 on Positron's land. Panel
-     text reads the tokens. */
+     WARN's transmitters, baselines and the SELECTED track's trail. Measured
+     against the basemap like the rest, which is why light sits a step darker
+     than `--success` and `--warning`: those are 2.4:1 and 2.1:1 on Positron's
+     land. Panel text reads the tokens. */
   GOOD: string;
   WARN: string;
+
+  /** The unselected aircraft trails: thin 50% lines under every icon in view.
+   *  A warm neutral, and deliberately NOT WARN, which these used to share
+   *  with the selected trail. In the altitude colouring the icons the trails
+   *  run under wear the ALT_BANDS, and amber sat on top of two of them: on
+   *  dark the 10–20k band measured CIEDE2000 3.5 from the trail and the 5–10k
+   *  band 26; on light 10.1 and 11.6. A yellow or orange glyph over a mesh of
+   *  amber trails lost its edge, so a low solve looked like trail. The stone
+   *  greys clear every band by ≥ 27 in both themes and the dark truth dot by
+   *  ≥ 13 (slate greys landed on TRUTH_DARK itself), at 6.9:1 and 4.2:1
+   *  against their canvases. The trail is a weaker claim than the icon; a
+   *  neutral line says so. */
+  TRAIL: string;
 
   /* Simulation object classes — the Physics tab's legend, its ground-truth
      preview map, and the truth dots the fleet spawns.
@@ -177,6 +190,7 @@ const LIGHT: MapPalette = {
 
   GOOD: "#059669", // emerald-600, 3.6:1
   WARN: "#d97706", // amber-600, 3.1:1
+  TRAIL: "#78716c", // stone-500, 4.2:1 — ΔE ≥ 27.3 from every altitude band, 14.7 from TRUTH_DARK
 
   SIM_COMMERCIAL: "#1e293b", // = TRUTH
   SIM_DARK: "#64748b", // = TRUTH_DARK
@@ -238,6 +252,7 @@ const DARK: MapPalette = {
 
   GOOD: "#4ade80",
   WARN: "#fbbf24",
+  TRAIL: "#a8a29e", // stone-400, 6.9:1 — ΔE ≥ 27.3 from every altitude band, 12.9 from TRUTH_DARK
 
   SIM_COMMERCIAL: "#f8fafc", // = TRUTH
   SIM_DARK: "#94a3b8", // = TRUTH_DARK

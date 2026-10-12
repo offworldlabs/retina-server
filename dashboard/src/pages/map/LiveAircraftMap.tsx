@@ -645,7 +645,11 @@ function cachedSmoothedTrail(cache, hex: string, buf) {
 // visibleAircraft array identity destroyed and rebuilt every polyline twice a
 // second, and the 500 ms interval below essentially never fired twice.
 const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftRef, frontendTrailsRef, solveTrailsRef, smoothRef, selectedHex }) {
-  const { WARN } = usePalette();
+  // TRAIL, not WARN: these run under every icon in view, and in the altitude
+  // colouring two of the bands are amber's neighbours (mapPalette.ts, TRAIL).
+  // The selected track's trail keeps WARN — one track, drawn heavier, in the
+  // same amber as its selection ring.
+  const { TRAIL } = usePalette();
   const map = useMap();
   const linesRef = useRef(new Map()); // hex → L.polyline (solid body)
   const headsRef = useRef(new Map()); // hex → L.polyline (dashed un-averaged head)
@@ -659,7 +663,7 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftR
     const style = (dashed: boolean) => ({
       renderer: _trailsCanvas,
       interactive: false,
-      color: WARN,
+      color: TRAIL,
       weight: 1.2,
       opacity: dashed ? 0.35 : 0.5,
       lineCap: "round" as const,
@@ -731,7 +735,7 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftR
       heads.clear();
       smoothCache.clear();
     };
-  }, [map, visibleAircraftRef, frontendTrailsRef, solveTrailsRef, smoothRef, selectedHex, WARN]);
+  }, [map, visibleAircraftRef, frontendTrailsRef, solveTrailsRef, smoothRef, selectedHex, TRAIL]);
 
   return null;
 });
