@@ -209,7 +209,7 @@ jobs:
       # Pinned to the version uv.lock gives the shards, where pytest-cov drives
       # it: a data file's format is tied to the coverage that wrote it, and a
       # newer reader is not guaranteed to accept an older fragment.
-      - run: uv pip install --system coverage==7.8.0
+      - run: uv pip install --system coverage==7.16.2
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: coverage-*

@@ -1,8 +1,7 @@
 """Router wiring and per-path body caps for the v1 node API.
 
-No handlers exist yet, so these tests assert on the middleware and the router
-skeleton rather than on any response payload. They are written to survive the
-handlers landing: see the `!= 413` note below before changing an assertion.
+These tests assert on the middleware and the router wiring rather than on any
+response payload: see the `!= 413` note below before changing an assertion.
 """
 
 import pytest
@@ -10,6 +9,7 @@ from fastapi.testclient import TestClient
 
 import main
 from routes.nodes import NODE_BODY_LIMITS
+from tests.route_helpers import served_endpoints
 
 # The lifespan starts background workers this file has no use for, so the client
 # is built without the context-manager form that would run it.
@@ -53,10 +53,9 @@ def test_one_byte_over_the_cap_is_refused(path):
 def test_a_body_at_the_cap_is_not_refused(path):
     """The largest permitted body passes the cap.
 
-    Asserted as `!= 413` rather than a status: with no handlers mounted these
-    paths answer 404, and they will answer 2xx once the handlers land. The point
-    of the test is that the middleware let the request through, so leave the
-    assertion alone rather than tightening it to whatever code you now see.
+    Asserted as `!= 413` rather than a status: the point of the test is that the
+    middleware let the request through, whatever the handler then answers, so
+    leave the assertion alone rather than tightening it to the code you now see.
     """
     r = _send(path, b"x" * NODE_BODY_LIMITS[path])
     assert r.status_code != 413
@@ -134,16 +133,18 @@ def test_a_non_node_path_over_the_global_cap_keeps_the_detail_shape():
 def test_the_node_router_is_mounted_under_v1_nodes():
     """The prefix is right and main mounts that exact router object.
 
-    `include_router` copies routes at call time, so including an empty router
-    leaves no trace in `app.routes`. Until the first handler lands there is
-    nothing structural to assert, and this check is correspondingly weak: it
-    confirms the prefix and that main imported the same object it mounts, not
-    that the mount call ran. Once a handler exists, assert on `app.routes`.
+    The prefix and the identity confirm that main imported the object it mounts,
+    not that the mount call ran. The routes the app serves confirm that: every
+    path in NODE_METHODS must be served under its method. Since FastAPI 0.137.0
+    `app.routes` holds an internal node per included router rather than a copy
+    of its routes, so they are read through tests/route_helpers.py.
     """
     from routes import nodes
 
     assert nodes.router.prefix == "/v1/nodes"
     assert main.nodes_router is nodes.router
+    served = {(path, method) for path, methods in served_endpoints(main.app) for method in methods}
+    assert set(NODE_METHODS.items()) <= served
 
 
 def test_the_skeleton_carries_all_three_endpoint_modules():
@@ -154,7 +155,7 @@ def test_the_skeleton_carries_all_three_endpoint_modules():
     fail a single assertion above. Identity against each module's own router
     is the available guard, and it catches the realistic regression of a
     module being renamed or its import dropped. It does not prove
-    `include_router` ran, so add that assertion with the first handler.
+    `include_router` ran; test_the_node_router_is_mounted_under_v1_nodes does.
     """
     from routes import node_config, node_register, node_stream, nodes
 
