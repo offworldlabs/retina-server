@@ -22,3 +22,18 @@ describe("the account menu over a page", () => {
     expect(z).toBeGreaterThan(0);
   });
 });
+
+/** The sign-out notice is drawn by the auth provider, beside the page rather
+ *  than in it, so the isolation above keeps the map under it as well. It has
+ *  only the console's own chrome to clear, the account menu among it. */
+describe("the sign-out notice over a page", () => {
+  it("stays put over the page as it scrolls", () => {
+    expect(body(".signout-notice")).toMatch(/position:\s*fixed/);
+  });
+
+  it("rises above the account menu", () => {
+    const menu = Number(body(".user-dropdown").match(/z-index:\s*(\d+)/)?.[1]);
+    const notice = Number(body(".signout-notice").match(/z-index:\s*(\d+)/)?.[1]);
+    expect(notice).toBeGreaterThan(menu);
+  });
+});

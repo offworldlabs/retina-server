@@ -6,7 +6,7 @@ import { externalLinkIcon } from "./RetnodeLink";
 
 type NavItem = {
   label: string;
-  icon: string;
+  icon: keyof typeof icons;
   to?: string; // internal route (react-router)
   href?: string; // external URL, opens in a new tab
   external?: boolean;
@@ -28,7 +28,7 @@ const userNav = (): NavSection[] => [
       { to: "/overview", label: "My Nodes", icon: "server" },
       { to: "/detections", label: "Detections", icon: "radar" },
       { to: "/rf", label: "RF Environment", icon: "activity" },
-      { to: "/contribution", label: "Network", icon: "globe" },
+      { to: "/contribution", label: "Contribution", icon: "globe" },
       { to: "/anomalies", label: "Anomalies", icon: "alertTriangle" },
       { to: "/map", label: "Map", icon: "map" },
       { href: towerFinderUrl(location.host, location.protocol), label: "Tower Finder", icon: "radio", external: true },
@@ -65,7 +65,7 @@ const adminNav = (syntheticFleet: boolean): NavSection[] => [
   // is a setting of the first. Only where the server runs a fleet: without one
   // /sim is an empty map and the physics form has nothing to configure.
   ...(syntheticFleet
-    ? [
+    ? ([
         {
           title: "Simulation",
           items: [
@@ -73,7 +73,7 @@ const adminNav = (syntheticFleet: boolean): NavSection[] => [
             { to: "/sim/physics", label: "Physics Layer", icon: "layers" },
           ],
         },
-      ]
+      ] satisfies NavSection[])
     : []),
   {
     title: "Operations",
@@ -252,9 +252,20 @@ const icons = {
   ),
 };
 
-export default function Sidebar({ isAdmin, collapsed, onToggle, onNavigate = () => {} }) {
+type SidebarProps = {
+  isAdmin: boolean;
+  collapsed: boolean;
+  onToggle: () => void;
+  /** Called when an entry is chosen, so the narrow screen's drawer can close. */
+  onNavigate?: () => void;
+  /** False draws the brand and its toggle only, for a caller this surface
+   *  refuses: every entry would lead to the same refusal. */
+  nav?: boolean;
+};
+
+export default function Sidebar({ isAdmin, collapsed, onToggle, onNavigate = () => {}, nav = true }: SidebarProps) {
   const { user, syntheticFleet } = useAuth();
-  const nav = isAdmin ? adminNav(Boolean(syntheticFleet)) : userNav();
+  const sections = isAdmin ? adminNav(Boolean(syntheticFleet)) : userNav();
   // A visitor is shown every entry, so the nav says what signing in opens;
   // those behind a session are greyed out and lead to sign-in. Read off the list
   // the route guard reads, so an entry is live exactly where its page is open.
@@ -282,60 +293,62 @@ export default function Sidebar({ isAdmin, collapsed, onToggle, onNavigate = () 
       </div>
       {/* Any entry closes the narrow screen's drawer, the page already open
           included, though its path does not change. */}
-      <nav
-        className="sidebar-nav"
-        onClick={(e) => (e.target as Element).closest("a") && onNavigate()}
-      >
-        {nav.map((section) => (
-          <div className="nav-section" key={section.title}>
-            <div className="nav-section-title">{section.title}</div>
-            {section.items.map((item) =>
-              item.external ? (
-                <a
-                  key={item.href}
-                  href={item.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="nav-item"
-                  title={item.label}
-                >
-                  {icons[item.icon]}
-                  <span className="nav-label">{item.label}</span>
-                  <span className="nav-external">{icons.externalLink}</span>
-                </a>
-              ) : locked(item) ? (
-                // Straight to the sign-in card rather than to a page that would
-                // only bounce there, carrying the page so signing in ends on it.
-                // Marked like the header's Sign in link, so the card's Back
-                // returns to the open page the visitor was on.
-                <Link
-                  key={item.to}
-                  to="/login"
-                  state={{ fromOpenPage: true, next: item.to }}
-                  className="nav-item locked"
-                  title={`${item.label} is only available when signed in`}
-                >
-                  {icons[item.icon]}
-                  <span className="nav-label">{item.label}</span>
-                </Link>
-              ) : (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  end={item.end ?? item.to === "/"}
-                  className={({ isActive }) =>
-                    `nav-item${isActive ? " active" : ""}`
-                  }
-                  title={item.label}
-                >
-                  {icons[item.icon]}
-                  <span className="nav-label">{item.label}</span>
-                </NavLink>
-              )
-            )}
-          </div>
-        ))}
-      </nav>
+      {nav && (
+        <nav
+          className="sidebar-nav"
+          onClick={(e) => (e.target as Element).closest("a") && onNavigate()}
+        >
+          {sections.map((section) => (
+            <div className="nav-section" key={section.title}>
+              <div className="nav-section-title">{section.title}</div>
+              {section.items.map((item) =>
+                item.external ? (
+                  <a
+                    key={item.href}
+                    href={item.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="nav-item"
+                    title={item.label}
+                  >
+                    {icons[item.icon]}
+                    <span className="nav-label">{item.label}</span>
+                    <span className="nav-external">{icons.externalLink}</span>
+                  </a>
+                ) : locked(item) ? (
+                  // Straight to the sign-in card rather than to a page that would
+                  // only bounce there, carrying the page so signing in ends on it.
+                  // Marked like the header's Sign in link, so the card's Back
+                  // returns to the open page the visitor was on.
+                  <Link
+                    key={item.to}
+                    to="/login"
+                    state={{ fromOpenPage: true, next: item.to }}
+                    className="nav-item locked"
+                    title={`${item.label} is only available when signed in`}
+                  >
+                    {icons[item.icon]}
+                    <span className="nav-label">{item.label}</span>
+                  </Link>
+                ) : (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    end={item.end ?? item.to === "/"}
+                    className={({ isActive }) =>
+                      `nav-item${isActive ? " active" : ""}`
+                    }
+                    title={item.label}
+                  >
+                    {icons[item.icon]}
+                    <span className="nav-label">{item.label}</span>
+                  </NavLink>
+                )
+              )}
+            </div>
+          ))}
+        </nav>
+      )}
     </aside>
   );
 }

@@ -1,12 +1,24 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
+import LoginBack from "../components/LoginBack";
 import { useAuth } from "../context/AuthContext";
+import { describeFailure, type RequestFailure } from "../utils/requestFailure";
 
-/** What the page is showing. `asking` is the only state with buttons: every
- *  other one is terminal and says why. */
-type Stage = "loading" | "asking" | "working" | "bound" | "declined" | "invalid" | "taken";
+/** What the page is showing. `asking` and `failed` are the states with buttons:
+ *  every other one is terminal and says why. */
+type Stage = "loading" | "asking" | "working" | "bound" | "declined" | "invalid" | "taken" | "failed";
+
+/** A request that failed without the server saying anything about the link,
+ *  and which one it was, so that Try again repeats it. */
+interface Trouble {
+  step: "preview" | "consume" | "decline";
+  failure: RequestFailure;
+}
+
+/** How long the new owner reads that the node is theirs before it opens. */
+const BOUND_REDIRECT_MS = 1200;
 
 /** The link a node's owner was mailed, landed on.
  *
@@ -20,28 +32,56 @@ type Stage = "loading" | "asking" | "working" | "bound" | "declined" | "invalid"
 export default function ClaimPage() {
   const { token = "" } = useParams();
   const navigate = useNavigate();
-  const { signIn } = useAuth();
+  const { user, loading: identifying, signIn } = useAuth();
   const [stage, setStage] = useState<Stage>("loading");
   const [nodeRef, setNodeRef] = useState<string | null>(null);
+  const [trouble, setTrouble] = useState<Trouble | null>(null);
+  // Counts the reads Try again has asked for, so each one runs the preview anew.
+  const [reads, setReads] = useState(0);
 
   useEffect(() => {
     let live = true;
     // The preview does not spend the link, so a page reloaded or opened twice
     // still works. Only the buttons below consume anything.
-    api
-      .claimPreview(token)
-      .then((body) => {
+    api.claimPreview(token).then(
+      (body) => {
         if (!live) return;
         setNodeRef(body.node_ref);
         setStage("asking");
-      })
-      .catch(() => {
-        if (live) setStage("invalid");
-      });
+      },
+      (err) => {
+        if (!live) return;
+        const failure = describeFailure(err);
+        // A 404 is the server's word that the link is dead. Anything else (a
+        // 5xx, a 429, a dropped connection) says nothing about it, and calling
+        // it dead would send the owner off to have the node mail them again.
+        if (failure.status === 404) {
+          setStage("invalid");
+        } else {
+          setTrouble({ step: "preview", failure });
+          setStage("failed");
+        }
+      },
+    );
     return () => {
       live = false;
     };
-  }, [token]);
+  }, [token, reads]);
+
+  // Owned by the bound card, so leaving it first (Back, or any other route)
+  // clears the redirect, rather than letting it pull the person off whatever
+  // page they went to instead.
+  useEffect(() => {
+    if (stage !== "bound") return;
+    // To the new owner's own nodes: the index opens on the map instead.
+    const timer = window.setTimeout(() => navigate("/overview", { replace: true }), BOUND_REDIRECT_MS);
+    return () => window.clearTimeout(timer);
+  }, [stage, navigate]);
+
+  function fail(step: Trouble["step"], failure: RequestFailure) {
+    setTrouble({ step, failure });
+    setStage("failed");
+  }
 
   async function confirm() {
     setStage("working");
@@ -52,13 +92,14 @@ export default function ClaimPage() {
       // fresh session as signed out until a reload.
       signIn(user);
       setStage("bound");
-      // To the new owner's own nodes: the index opens on the map instead.
-      window.setTimeout(() => navigate("/overview", { replace: true }), 1200);
     } catch (e) {
+      const failure = describeFailure(e);
       // 409 is the one refusal worth distinguishing: the link was real and the
       // node was claimed by somebody else while it sat in the inbox, which is
-      // not the same as a link that never worked.
-      setStage((e as { status?: number })?.status === 409 ? "taken" : "invalid");
+      // not the same as a link that never worked. A 400 is that link.
+      if (failure.status === 409) setStage("taken");
+      else if (failure.status === 400) setStage("invalid");
+      else fail("consume", failure);
     }
   }
 
@@ -67,20 +108,41 @@ export default function ClaimPage() {
     try {
       await api.declineClaim(token);
       setStage("declined");
-    } catch {
-      setStage("invalid");
+    } catch (e) {
+      const failure = describeFailure(e);
+      if (failure.status === 400) setStage("invalid");
+      else fail("decline", failure);
+    }
+  }
+
+  function retry() {
+    if (trouble?.step === "consume") confirm();
+    else if (trouble?.step === "decline") decline();
+    else {
+      setStage("loading");
+      setReads((n) => n + 1);
     }
   }
 
   return (
     <div className="login-page">
       <div className="login-card">
+        {/* Claim links are mailed for the app host, as sign-in links are, so
+            this card is never on the admin console. */}
+        <LoginBack isAdmin={false} />
         <div className="logo">◉</div>
         <h1>Retina</h1>
 
-        {stage === "loading" && <p className="subtitle">Checking the link…</p>}
+        {/* Confirming opens a session for the account the link was mailed to,
+            in place of any this browser holds, and the preview does not name
+            that account, so the card cannot tell a switch from a stay. What
+            it can say is who is signed in now, so the buttons wait until
+            that is known. */}
+        {(stage === "loading" || (stage === "asking" && identifying)) && (
+          <p className="subtitle">Checking the link…</p>
+        )}
 
-        {stage === "asking" && (
+        {stage === "asking" && !identifying && (
           <>
             <p className="subtitle">
               Someone asked to connect node <strong>{nodeRef}</strong> to this email address.
@@ -88,6 +150,12 @@ export default function ClaimPage() {
             <p className="subtitle">
               If that was you, confirm below. If you do not recognise it, decline and nothing happens.
             </p>
+            {user && (
+              <p className="login-note">
+                You are signed in as <strong>{user.email}</strong>. Confirming signs this browser in to the
+                account this link was sent to.
+              </p>
+            )}
             <button className="login-btn" onClick={confirm}>
               Yes, this is my node
             </button>
@@ -119,15 +187,46 @@ export default function ClaimPage() {
           </p>
         )}
 
+        {stage === "failed" && trouble && (
+          <>
+            <p className="login-error" role="alert">
+              {trouble.failure.message}
+            </p>
+            {trouble.failure.retryable ? (
+              <>
+                {/* Unspent for certain only when nothing that spends it can
+                    have run: the preview reads the link, and nginx's 429
+                    refuses an answer before the app sees it. A confirm or a
+                    decline that failed otherwise may have reached the app,
+                    which spends the token first; if it did, the retry meets
+                    the dead-link answer and says so. */}
+                <p className="login-note">
+                  {trouble.step === "preview" || trouble.failure.kind === "throttled"
+                    ? "Your link has not been used."
+                    : "Your link may still work."}
+                </p>
+                <button className="login-btn" onClick={retry}>
+                  Try again
+                </button>
+              </>
+            ) : (
+              // The same request would meet the same answer.
+              <Link className="login-btn" to="/login">
+                Sign in instead
+              </Link>
+            )}
+          </>
+        )}
+
         {stage === "invalid" && (
           <>
             <p className="login-error">
               That link is no longer valid. Links last fifteen minutes and work once.
             </p>
             <p className="subtitle">Ask the node to send another, then use the newest email.</p>
-            <a className="login-btn" href="/login">
+            <Link className="login-btn" to="/login">
               Sign in instead
-            </a>
+            </Link>
           </>
         )}
       </div>

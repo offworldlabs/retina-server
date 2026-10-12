@@ -1,14 +1,17 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
+import DashboardLayout from "../components/DashboardLayout";
+import { ThemeProvider } from "../context/ThemeContext";
 import LeaderboardPage from "../pages/user/LeaderboardPage";
+import { resetAuth, setAuth } from "./fakeAuth";
+import { stubMatchMedia } from "./matchMedia";
 
-const state = vi.hoisted(() => ({
-  auth: { user: null as { name: string } | null, loading: false },
-}));
+vi.mock("../context/AuthContext", async () => ({ useAuth: (await import("./fakeAuth")).useFakeAuth }));
 
-vi.mock("../context/AuthContext", () => ({ useAuth: () => state.auth }));
+const ADA = { id: "u1", email: "ada@example.com", name: "Ada" };
+const BOB = { id: "u2", email: "bob@example.com", name: "Bob" };
 
 /** A published row. The miss-detection fields are absent, which is the shape
  *  /api/admin/leaderboard sends a caller with no session. */
@@ -72,18 +75,26 @@ function owned(ref: string | null, extra: object = {}) {
   };
 }
 
-/** A fresh element each time: re-rendering the same one lets React skip the
- *  page, so a changed session would never reach it. */
-function page() {
-  return (
+function renderPage() {
+  render(
     <MemoryRouter>
       <LeaderboardPage />
     </MemoryRouter>
   );
 }
 
-function renderPage() {
-  render(page());
+/** The page as the console shows it: inside the layout, which starts it over
+ *  whenever the signed-in identity changes. */
+function renderInConsole() {
+  render(
+    <ThemeProvider>
+      <MemoryRouter initialEntries={["/leaderboard"]}>
+        <DashboardLayout isAdmin={false}>
+          <LeaderboardPage />
+        </DashboardLayout>
+      </MemoryRouter>
+    </ThemeProvider>
+  );
 }
 
 function card(heading: string): HTMLElement {
@@ -100,10 +111,20 @@ function rowOf(within_: HTMLElement, name: string): HTMLElement {
   return within(within_).getByText(name).closest("tr") as HTMLElement;
 }
 
+/** The name in every row marked as the caller's, across the whole page. */
+function markedRows(): string[] {
+  return [...document.querySelectorAll("tr.mine")].map((r) => r.querySelector(".rank-name .mono")!.textContent!);
+}
+
+/** Every path the page asked `fetch` for. */
+function paths(fetch: { mock: { calls: unknown[][] } }): string[] {
+  return fetch.mock.calls.map(([path]) => String(path));
+}
+
 const MISS_COLUMNS = ["In Range", "Missed", "Miss Rate"];
 
 beforeEach(() => {
-  state.auth = { user: null, loading: false };
+  resetAuth();
   vi.unstubAllGlobals();
 });
 
@@ -220,7 +241,7 @@ describe("a node's name on the leaderboard", () => {
 
 describe("the leaderboard shown to a caller with a session", () => {
   beforeEach(() => {
-    state.auth = { user: { name: "Ada" }, loading: false };
+    setAuth({ user: ADA });
     serve(ownerRow);
   });
 
@@ -250,7 +271,7 @@ describe("the leaderboard shown to a caller with a session", () => {
 
 describe("a signed-in owner's nodes on the leaderboard", () => {
   beforeEach(() => {
-    state.auth = { user: { name: "Ada" }, loading: false };
+    setAuth({ user: ADA });
   });
 
   it("ranks each of them among the nodes either side", async () => {
@@ -319,54 +340,6 @@ describe("a signed-in owner's nodes on the leaderboard", () => {
     expect(screen.queryByText("Yours")).not.toBeInTheDocument();
   });
 
-  it("finds them as soon as the session is known", async () => {
-    state.auth = { user: null, loading: true };
-    serve(fleet(10), [owned("ret-6")]);
-    const { rerender } = render(page());
-    await screen.findByRole("heading", { name: "Rankings" });
-    state.auth = { user: { name: "Ada" }, loading: false };
-    rerender(page());
-    // Well inside the owner's refresh period, so only the session's arrival
-    // can have asked.
-    expect(await screen.findByRole("heading", { name: "Your nodes" }, { timeout: 2000 })).toBeInTheDocument();
-  });
-
-  it("asks again for another account's", async () => {
-    state.auth = { user: { id: 1, name: "Ada" } as { name: string }, loading: false };
-    serve(fleet(10), [owned("ret-6")]);
-    const { rerender } = render(page());
-    await screen.findByRole("heading", { name: "Your nodes" });
-    serve(fleet(10), [owned("ret-2")]);
-    state.auth = { user: { id: 2, name: "Bob" } as { name: string }, loading: false };
-    rerender(page());
-    await waitFor(() => expect(rowOf(card("Your nodes"), "Node 2")).toHaveClass("mine"));
-    expect(within(card("Your nodes")).queryByText("Node 6")).not.toBeInTheDocument();
-  });
-
-  // Until the new account's list lands, or for good if asking fails, the last
-  // one answered for somebody else.
-  it.each([
-    ["still in flight", () => new Promise<Response>(() => {})],
-    ["failed", async () => new Response("{}", { status: 500 })],
-  ])("marks nothing as theirs while another account's list is %s", async (_state, answer) => {
-    state.auth = { user: { id: 1, name: "Ada" } as { name: string }, loading: false };
-    serve(fleet(10), [owned("ret-6")]);
-    const { rerender } = render(page());
-    await screen.findByRole("heading", { name: "Your nodes" });
-    const board = { leaderboard: fleet(10), total: 10 };
-    const fetch = vi.fn((path: string) =>
-      path.includes("/api/auth/me/nodes")
-        ? answer()
-        : Promise.resolve(new Response(JSON.stringify(board), { status: 200, headers: { "Content-Type": "application/json" } }))
-    );
-    vi.stubGlobal("fetch", fetch);
-    state.auth = { user: { id: 2, name: "Bob" } as { name: string }, loading: false };
-    rerender(page());
-    await waitFor(() => expect(fetch.mock.calls.map(([path]) => path)).toContainEqual(expect.stringContaining("/api/auth/me/nodes")));
-    await waitFor(() => expect(screen.queryByRole("heading", { name: "Your nodes" })).not.toBeInTheDocument());
-    expect(screen.queryByText("Yours")).not.toBeInTheDocument();
-  });
-
   it("keeps their standing through a failed refresh", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
@@ -392,6 +365,96 @@ describe("a signed-in owner's nodes on the leaderboard", () => {
   });
 });
 
+/* The page holds the owner's list in its own state, fetched once on arrival
+   and then every few minutes. What keeps one session's list from showing to
+   the next is the layout around it, which starts the page over whenever the
+   signed-in identity changes, so these render the two together. */
+describe("the owner's nodes across a change of identity", () => {
+  beforeEach(() => {
+    stubMatchMedia();
+  });
+
+  /** Ada signed in, with her standing on screen: she owns Node 6. */
+  async function adaOnScreen() {
+    setAuth({ user: ADA });
+    serve(fleet(10), [owned("ret-6")]);
+    renderInConsole();
+    await screen.findByRole("heading", { name: "Your nodes" });
+    expect(markedRows()).toEqual(["Node 6", "Node 6"]);
+  }
+
+  it("finds them as soon as the session is known", async () => {
+    setAuth({ loading: true });
+    serve(fleet(10), [owned("ret-6")]);
+    renderInConsole();
+    await screen.findByRole("heading", { name: "Rankings" });
+    act(() => setAuth({ user: ADA, loading: false }));
+    // Well inside the owner's refresh period, so only the session's arrival
+    // can have asked.
+    expect(await screen.findByRole("heading", { name: "Your nodes" }, { timeout: 2000 })).toBeInTheDocument();
+  });
+
+  it("leaves none of them marked once their owner signs out", async () => {
+    await adaOnScreen();
+    const fetch = serve(fleet(10), [owned("ret-6")]);
+    act(() => setAuth({ user: null }));
+    await waitFor(() => expect(paths(fetch)).toContainEqual(expect.stringContaining("/api/admin/leaderboard")));
+    await screen.findByRole("heading", { name: "Rankings" });
+    expect(screen.queryByRole("heading", { name: "Your nodes" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Yours")).not.toBeInTheDocument();
+    expect(markedRows()).toEqual([]);
+    // Nobody's nodes to ask about once the session has gone.
+    expect(paths(fetch)).not.toContainEqual(expect.stringContaining("/api/auth/me/nodes"));
+  });
+
+  it("shows another account its own and none of the last one's", async () => {
+    await adaOnScreen();
+    serve(fleet(10), [owned("ret-2")]);
+    act(() => setAuth({ user: BOB }));
+    await waitFor(() => expect(rowOf(card("Your nodes"), "Node 2")).toHaveClass("mine"));
+    expect(within(card("Your nodes")).queryByText("Node 6")).not.toBeInTheDocument();
+    expect(rowOf(card("Rankings"), "Node 6")).not.toHaveClass("mine");
+    expect(markedRows()).toEqual(["Node 2", "Node 2"]);
+    // Node 2 stands second, so its tag is on the podium too, and on its tile.
+    const tags = within(card("Top Performers")).getAllByText("Yours");
+    expect(tags).toHaveLength(1);
+    expect(tags[0].parentElement).toHaveTextContent("Node 2");
+  });
+
+  // The new page has nothing until the new account's list lands, and nothing
+  // for good if asking fails: no earlier answer is there to fall back on.
+  it.each([
+    ["still in flight", () => new Promise<Response>(() => {})],
+    ["failed", async () => new Response("{}", { status: 500 })],
+  ])("marks none of the last account's while the next one's list is %s", async (_state, answer) => {
+    await adaOnScreen();
+    const board = { leaderboard: fleet(10), total: 10 };
+    const fetch = vi.fn((path: string) =>
+      path.includes("/api/auth/me/nodes")
+        ? answer()
+        : Promise.resolve(new Response(JSON.stringify(board), { status: 200, headers: { "Content-Type": "application/json" } }))
+    );
+    vi.stubGlobal("fetch", fetch);
+    act(() => setAuth({ user: BOB }));
+    await waitFor(() => expect(paths(fetch)).toContainEqual(expect.stringContaining("/api/auth/me/nodes")));
+    await screen.findByRole("heading", { name: "Rankings" });
+    expect(screen.queryByRole("heading", { name: "Your nodes" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Yours")).not.toBeInTheDocument();
+    expect(markedRows()).toEqual([]);
+  });
+
+  // The provider sets the identity afresh whenever /api/auth/me answers. The
+  // same account is not a change, so the standing stays and is not asked for.
+  it("keeps the standing through a fresh copy of the same identity", async () => {
+    await adaOnScreen();
+    const fetch = serve(fleet(10), [owned("ret-6")]);
+    act(() => setAuth({ user: { ...ADA } }));
+    expect(screen.getByRole("heading", { name: "Your nodes" })).toBeInTheDocument();
+    expect(markedRows()).toEqual(["Node 6", "Node 6"]);
+    expect(paths(fetch)).toEqual([]);
+  });
+});
+
 describe("a caller with no session", () => {
   // Nobody's nodes to find, and asking would be a 401 every refresh.
   it("is not asked about nodes of their own", async () => {
@@ -400,6 +463,44 @@ describe("a caller with no session", () => {
     await screen.findByRole("heading", { name: "Rankings" });
     expect(fetch.mock.calls.map(([path]) => path)).not.toContainEqual(expect.stringContaining("/api/auth/me/nodes"));
     expect(screen.queryByRole("heading", { name: "Your nodes" })).not.toBeInTheDocument();
+  });
+});
+
+describe("the podium", () => {
+  it("gives each of the top three a drawn medal, named for its place", async () => {
+    serve(fleet(5));
+    renderPage();
+    await screen.findByRole("heading", { name: "Top Performers" });
+    const podium = card("Top Performers");
+    const medals = within(podium).getAllByRole("img");
+    expect(medals.map((m) => m.getAttribute("aria-label"))).toEqual(["1st place", "2nd place", "3rd place"]);
+    for (const [place, metal, node] of [
+      ["1st place", "gold", "Node 1"],
+      ["2nd place", "silver", "Node 2"],
+      ["3rd place", "bronze", "Node 3"],
+    ]) {
+      const medal = within(podium).getByRole("img", { name: place });
+      expect(medal.tagName.toLowerCase()).toBe("svg");
+      expect(medal).toHaveClass("podium-medal", metal);
+      // On the tile of the node in that place.
+      expect(medal.parentElement).toHaveTextContent(node);
+    }
+  });
+
+  // An emoji is drawn by whatever emoji font the platform has, or not at all.
+  it("draws no emoji", async () => {
+    serve(fleet(5));
+    renderPage();
+    await screen.findByRole("heading", { name: "Top Performers" });
+    expect(card("Top Performers").textContent).not.toMatch(/\p{Extended_Pictographic}/u);
+  });
+
+  it("awards only the places there are", async () => {
+    serve(fleet(2));
+    renderPage();
+    await screen.findByRole("heading", { name: "Top Performers" });
+    const medals = within(card("Top Performers")).getAllByRole("img");
+    expect(medals.map((m) => m.getAttribute("aria-label"))).toEqual(["1st place", "2nd place"]);
   });
 });
 
