@@ -58,8 +58,9 @@ _MOUNT_PROBE = """
 import json
 
 import main
+from tests.route_helpers import served_paths
 
-print("PROBE:" + json.dumps({"paths": sorted({route.path for route in main.app.routes})}))
+print("PROBE:" + json.dumps({"paths": sorted(served_paths(main.app))}))
 """
 
 
