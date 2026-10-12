@@ -44,9 +44,8 @@ a:hover {
   color: var(--accent-hover);
 }
 
-/* ── Loading / Access Denied ──────────────────────────────────────────────── */
-.loading-screen,
-.access-denied {
+/* ── Loading ─────────────────────────────────────────────────────────────── */
+.loading-screen {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -54,6 +53,23 @@ a:hover {
   height: 100vh;
   gap: 12px;
   color: var(--text-secondary);
+}
+
+/* ── Access Denied ───────────────────────────────────────────────────────── */
+/* The admin console's refusal: a sentence and two ways on, held to a reading
+   measure rather than drawn across a wide pane. The sentence names the
+   caller's address, which has no break point of its own and would run past a
+   phone's card, where the card's own overflow cuts it off. */
+.access-denied-card {
+  max-width: 560px;
+  overflow-wrap: break-word;
+}
+
+/* The stack sets its lines at their own width, and a line that cannot break
+   is as wide as its longest word whatever overflow-wrap says. Held to the
+   card, the address breaks. */
+.access-denied-card .card-body > * {
+  max-width: 100%;
 }
 
 /* ── Error fallback ──────────────────────────────────────────────────────── */
@@ -79,23 +95,41 @@ a:hover {
 }
 
 /* ── Login Page ──────────────────────────────────────────────────────────── */
+/* At least the screen's height and free to grow past it, so a card taller
+   than a phone's screen scrolls with the document rather than losing its top.
+   `dvh` follows a phone's toolbars as they come and go; `vh` is for a browser
+   that predates it. */
 .login-page {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100vh;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 24px 16px;
   background: var(--bg-primary);
 }
 
+/* Centred by its auto margins, which share out only the room there is: the
+   card sits in the middle of a tall screen and at the page's padding on a
+   short one. No minimum width of its own, so an address too long for the
+   screen breaks inside the card rather than widening it. */
 .login-card {
   position: relative;
+  margin: auto;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 48px 40px;
-  width: 400px;
-  max-width: 90vw;
+  width: 100%;
+  min-width: 0;
+  max-width: 400px;
   text-align: center;
+}
+
+/* On a phone the sides give their room to the text. The top stays as it is,
+   since the Back control sits inside it. */
+@media (max-width: 480px) {
+  .login-card {
+    padding: 48px 24px;
+  }
 }
 
 .login-card h1 {
@@ -107,8 +141,15 @@ a:hover {
 .login-card .subtitle {
   color: var(--text-secondary);
   margin-bottom: 32px;
-  /* An email address has no break point of its own and is wider than a phone's
-     card. Not `anywhere`, which the build's Safari floor predates. */
+}
+
+/* An email address has no break point of its own and is wider than a phone's
+   card, and any of these can carry one. Not `anywhere`, which the build's
+   Safari floor predates. */
+.login-card .subtitle,
+.login-note,
+.login-error,
+.login-btn {
   overflow-wrap: break-word;
 }
 
@@ -152,32 +193,50 @@ a:hover {
   font-size: 28px;
 }
 
+/* A block rather than a flex row: a flex container's text is an anonymous
+   item that will not shrink below its longest word, so an address on the
+   label would run out of the button instead of wrapping. Drawn as a <button>
+   or as a link, the card can hold one of each, and a button takes the
+   platform's control font where a link takes the page's: the face and the
+   line height are set here so the two match. */
 .login-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
+  display: block;
   width: 100%;
   padding: 12px 20px;
   border: 1px solid var(--border-light);
   border-radius: var(--radius);
   background: var(--bg-secondary);
   color: var(--text-primary);
+  font-family: inherit;
   font-size: 15px;
   font-weight: 500;
+  line-height: 1.25;
+  text-align: center;
   cursor: pointer;
   transition: all 0.15s;
   margin-bottom: 12px;
 }
 
+/* The ink is restated for a link drawn as a button: the global a:hover
+   outranks the class and would turn the label accent. A visited link needs
+   nothing, since no rule gives one an ink of its own. */
 .login-btn:hover {
   background: var(--bg-card-hover);
   border-color: var(--accent);
+  color: var(--text-primary);
 }
 
+.login-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* An icon on a button sits on the label's first line, 12px ahead of it. */
 .login-btn svg {
   width: 20px;
   height: 20px;
+  margin-right: 12px;
+  vertical-align: middle;
 }
 
 .login-btn:disabled {
@@ -517,26 +576,68 @@ a:hover {
   gap: 16px;
 }
 
+/* Places the account menu's popup under its button. */
+.account-menu {
+  position: relative;
+}
+
+/* The account menu's button. Its padding is taken back by a margin, so the
+   hover wash has room around the initial and the name still ends on the
+   bar's edge. */
 .header-user {
   display: flex;
   align-items: center;
   gap: 8px;
+  margin: -4px -8px -4px -4px;
+  padding: 4px 8px 4px 4px;
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  color: inherit;
+  font: inherit;
   cursor: pointer;
-  position: relative;
 }
 
-.header-user img {
+.header-user:hover,
+.header-user[aria-expanded="true"] {
+  background: var(--bg-card-hover);
+}
+
+.header-user:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.user-initial {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 28px;
   height: 28px;
+  flex-shrink: 0;
   border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 13px;
+  font-weight: 600;
 }
 
+/* A long name gives way before the bar does. */
 .header-user .user-name {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 13px;
   color: var(--text-secondary);
 }
 
-/* Takes the slot the avatar holds for a caller who has a session. */
+.header-user:hover .user-name,
+.header-user[aria-expanded="true"] .user-name {
+  color: var(--text-primary);
+}
+
+/* Takes the slot the account menu holds for a caller who has a session. */
 .header-signin {
   padding: 6px 14px;
   border-radius: 6px;
@@ -609,6 +710,12 @@ td {
   color: var(--text-secondary);
 }
 
+/* The cell a row is known by, such as a user's name, in the page's own ink
+   rather than the quieter one of the readings beside it. */
+td.cell-primary {
+  color: var(--text-primary);
+}
+
 tr:hover td {
   background: var(--bg-card-hover);
 }
@@ -651,6 +758,25 @@ tr.rank-gap td {
    reads as it would on a bare card wherever it sits. */
 .badge.yours {
   background: linear-gradient(var(--accent-light), var(--accent-light)), var(--bg-card);
+}
+
+/* The medal over each of the leaderboard's top three, drawn in its place's
+   metal. It takes the footprint of the emoji it replaced, a 42px line and a
+   4px gap, so the tile keeps its height. */
+.podium-medal {
+  display: block;
+  width: 32px;
+  height: 32px;
+  margin: 5px auto 9px;
+}
+.podium-medal.gold {
+  color: var(--medal-gold);
+}
+.podium-medal.silver {
+  color: var(--medal-silver);
+}
+.podium-medal.bronze {
+  color: var(--medal-bronze);
 }
 
 /* A headerless table of labels against readings, which DataTable does not
@@ -1003,7 +1129,7 @@ td.table-note {
   .stats-grid {
     grid-template-columns: 1fr 1fr;
   }
-  /* The bar also holds the appearance switch, and the avatar alone is enough
+  /* The bar also holds the appearance switch, and the initial alone is enough
      to open the menu, which carries the email. */
   .header-user .user-name {
     display: none;
@@ -1017,36 +1143,177 @@ td.table-note {
   }
 }
 
-/* ── User dropdown ───────────────────────────────────────────────────────── */
+/* ── Account menu ────────────────────────────────────────────────────────── */
+/* No display of its own, which would outrank the `hidden` the menu is shut
+   with. */
 .user-dropdown {
   position: absolute;
-  top: 40px;
+  top: calc(100% + 12px);
   right: 0;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 4px;
-  min-width: 160px;
+  min-width: 200px;
+  /* The bar's gutter on either side, so a long address wraps on a phone
+     rather than running the popup off the left edge. */
+  max-width: calc(100vw - 48px);
   z-index: 100;
   box-shadow: 0 4px 16px var(--shadow);
 }
 
-.user-dropdown button {
+.user-dropdown-account {
+  padding: 8px 12px 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.user-dropdown-label {
   display: block;
-  width: 100%;
-  text-align: left;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* An address has no break point of its own. Not `anywhere`, which the build's
+   Safari floor predates. */
+.user-dropdown-email {
+  display: block;
+  color: var(--text-primary);
+  overflow-wrap: break-word;
+}
+
+.user-dropdown-item {
+  display: block;
   padding: 8px 12px;
-  background: none;
-  border: none;
+  border-radius: var(--radius-sm);
   color: var(--text-secondary);
   font-size: 13px;
   cursor: pointer;
-  border-radius: var(--radius-sm);
+  user-select: none;
 }
 
-.user-dropdown button:hover {
+.user-dropdown-item:hover,
+.user-dropdown-item:focus-visible {
   background: var(--bg-card-hover);
   color: var(--text-primary);
+}
+
+/* Inset, so the ring stays inside the popup's padding. */
+.user-dropdown-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Signing out: still readable, plainly not for clicking. Below the hover rule
+   it ties with, so the wash does not come back under the pointer. */
+.user-dropdown-item[aria-disabled="true"] {
+  background: none;
+  color: var(--text-secondary);
+  cursor: progress;
+}
+
+/* ── Sign-out notice ─────────────────────────────────────────────────────── */
+/* Drawn by the auth provider beside the routes rather than inside a page, so
+   it shows on whatever the sign-out landed on, under the bar's right end where
+   the menu that started it was. A page's own layers stay inside .content, the
+   map's 1000-and-up among them, so this only has to clear the console's own
+   chrome: the account menu (100) and the narrow screen's drawer (20). */
+.signout-notice {
+  position: fixed;
+  top: calc(var(--header-height) + 12px);
+  right: 16px;
+  z-index: 200;
+  width: min(400px, calc(100vw - 32px));
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 12px 14px 16px;
+  /* The page notice's warning wash, laid over a solid card: the wash alone is
+     translucent, and the map would show through it. */
+  background: linear-gradient(var(--warning-light), var(--warning-light)), var(--bg-card);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px var(--shadow);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .signout-notice {
+    animation: signout-notice-in 0.18s ease-out;
+  }
+}
+
+@keyframes signout-notice-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+
+.signout-notice-icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--warning-ink);
+}
+
+.signout-notice-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.signout-notice-title {
+  margin-bottom: 2px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* The message can carry the server's own words, which need not break kindly. */
+.signout-notice-text {
+  overflow-wrap: break-word;
+}
+
+.signout-notice-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* At least 24px square, the smallest target a pointer should be asked to hit. */
+.signout-notice-dismiss {
+  display: flex;
+  flex-shrink: 0;
+  margin: -4px -2px 0 0;
+  padding: 4px;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.signout-notice-dismiss svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+/* A neutral wash, which reads on the warning tint where a card's hover would
+   punch a pale hole in it. */
+.signout-notice-dismiss:hover {
+  background: var(--neutral-light);
+  color: var(--text-primary);
+}
+
+.signout-notice .btn:focus-visible,
+.signout-notice-dismiss:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* ── Leaflet ─────────────────────────────────────────────────────────────── */

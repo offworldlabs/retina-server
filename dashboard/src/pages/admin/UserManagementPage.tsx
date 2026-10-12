@@ -4,10 +4,18 @@ import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
 
+/** The fields of a row from GET /api/admin/users that this page reads. */
+interface AdminUser {
+  id: string;
+  name: string;
+  email: string;
+  last_seen_at: number | null;
+}
+
 export default function UserManagementPage() {
   const polled = useFetch(() =>
     Promise.all([api.adminUsers(), api.adminNodeOwners()]).then(([u, o]) => ({
-      users: Array.isArray(u) ? u : [],
+      users: (Array.isArray(u) ? u : []) as AdminUser[],
       owners: (o && typeof o === "object" ? o : {}) as Record<string, { user_id: string }>,
     })),
   );
@@ -55,17 +63,7 @@ export default function UserManagementPage() {
         >
           {users.map((user) => (
             <tr key={user.id}>
-              <td style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {user.avatar ? (
-                  <img
-                    src={user.avatar}
-                    alt=""
-                    style={{ width: 24, height: 24, borderRadius: "50%" }}
-                    referrerPolicy="no-referrer"
-                  />
-                ) : null}
-                <span style={{ color: "var(--text-primary)" }}>{user.name}</span>
-              </td>
+              <td className="cell-primary">{user.name}</td>
               <td>{user.email}</td>
               <td className="mono muted">
                 {nodeCount(user.id)}
