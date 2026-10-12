@@ -278,7 +278,7 @@ ssh retina-prod 'cd /opt/retina-server && docker compose exec server \
 Every revision carries a module global beside `revision` and `down_revision`:
 
 ```python
-rollback_safety = "additive"    # or "destructive"
+rollback_safety = "additive"  # or "destructive"
 ```
 
 `additive` means the schema after this revision is still valid for code written
