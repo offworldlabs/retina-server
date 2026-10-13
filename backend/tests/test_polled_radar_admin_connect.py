@@ -196,7 +196,7 @@ def test_a_radar_connected_to_a_new_address_runs_at_once_on_an_account_made_for_
         "owner": {"email": EMAIL, "created": True},
     }
     account = _account(EMAIL)
-    assert (account.is_verified, account.is_superuser, account.provider) == (False, False, "admin")
+    assert (account.is_verified, account.is_superuser) == (False, False)
     claim = _claim(node_id)
     # An owner an administrator chose: nobody has confirmed the address yet.
     assert (claim.user_id, claim.email, claim.verified) == (str(account.id), EMAIL, False)

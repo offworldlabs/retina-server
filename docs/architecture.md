@@ -99,8 +99,8 @@ are in [`arc-display.md`](arc-display.md).
   snapshots, `health_monitor` + `heartbeat` (see [`alerting.md`](alerting.md)).
 - **`core/state.py`** — the in-memory world: connected nodes, tracks, aircraft,
   arc buffers, WebSocket client sets, latest JSON payloads.
-- **`core/users.py` + `core/auth.py`** — fastapi-users (cookie JWT, sign-in by
-  emailed link) plus domain auth: node ownership and emailed links (SQLite).
+- **`core/users.py` + `core/auth.py`** — sign-in sessions (server-side, in
+  SQLite) and domain auth: node ownership and emailed sign-in links.
 
 ## The algorithm libraries (submodules)
 
@@ -172,9 +172,27 @@ default.
 
 ## Auth model
 
-Cookie-based JWT issued against a sign-in link mailed to the address, shared
-across surfaces on the same origin. Administrators arrive instead through Cloudflare Access: the origin
-verifies the `Cf-Access-Jwt-Assertion` itself against the team's published keys,
+A sign-in link mailed to the address starts a server-side session, shared
+across surfaces on the same origin. The `auth_token` cookie holds a random
+token; `users.db` keeps only its sha256 hash in `user_sessions`, with the user,
+the created, last-used and expiry times, a short user-agent label and a coarse
+network (IPv4 /24, IPv6 /48). A session expires after 7 days without use. Use
+extends it, at most once an hour, and no session lives past 30 days; the cookie
+lasts to that 30-day end and the server enforces the idle limit. Signing out
+deletes the row, so a copied cookie stops working. A signed-in user can list
+their sessions and revoke one or all the others (API only for now), and an
+administrator can deactivate or reactivate an account. Deactivating ends all of
+its sessions, and reactivating brings none back. An open owner feed
+(`/ws/aircraft/owner`) is closed with 1008 as soon as its session ends or its
+account is deactivated, and re-checks its session every 30 s as a backstop.
+
+Cookies signed with `JWT_SECRET` before sessions existed are still read: a valid
+one is exchanged for a session on the console's next load. They lasted 7 days,
+so after a week none is valid and the reader and the secret go. Nothing is
+signed with the secret any more.
+
+Administrators come only from Cloudflare Access, never from a database flag:
+the origin verifies the `Cf-Access-Jwt-Assertion` itself against the team's published keys,
 with `aud` pinned per environment to `CF_ACCESS_AUD`, and the verified email is
 the identity (`backend/core/access_identity.py`). Enforcement is backend-side
 because every vhost proxies `/api/` to the same app, so gating one hostname at
