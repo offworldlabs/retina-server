@@ -3,14 +3,39 @@
 The owner is `node_claims.user_id`, and `node_claims` carries a foreign key to
 `nodes`, so only a node that came through registration can have one. A test
 that owns a bare id fails on the key rather than on what it meant to test.
+
+get_node_owner and set_node_owner read and write the owner outside any
+request, which only a test needs: production writes it as part of a claim
+(services/node_claiming.py) or an administrator's assignment (routes/admin.py).
 """
 
 import asyncio
 
-from core.auth import set_node_owner
-from core.nodes import Node
+from sqlalchemy import select
+
+from core.nodes import Node, NodeClaim
 from core.users import async_session_maker
 from services import node_auth
+from services.node_claim_store import set_owner
+
+
+async def get_node_owner(node_id: str) -> str | None:
+    """The owner recorded for `node_id`, or None."""
+    async with async_session_maker() as session:
+        return (
+            await session.execute(select(NodeClaim.user_id).where(NodeClaim.node_id == node_id))
+        ).scalar_one_or_none()
+
+
+async def set_node_owner(node_id: str, user_id: str | None) -> None:
+    """Assign or clear the owner in a transaction of its own.
+
+    services/node_claim_store.set_owner is the write, and says what a change of
+    owner clears. The node must be registered, or this raises IntegrityError.
+    """
+    async with async_session_maker() as session:
+        async with session.begin():
+            await set_owner(session, node_id, user_id)
 
 
 async def register_node_row(node_id: str, publication: str | None = None) -> str:

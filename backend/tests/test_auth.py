@@ -1,14 +1,21 @@
-"""Tests for auth system: fastapi-users JWT, node ownership, and FastAPI deps."""
+"""Tests for the auth system: the users.db engine, the anonymous-admin flag,
+the FastAPI dependencies, node ownership, and who a sign-in link is issued to."""
 
 import asyncio
 import os
 import time
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+from sqlalchemy import event, select
+from starlette.requests import Request
 
-from tests.ownership_helpers import register_node_row
+from core import sessions
+from core.auth import INTENT_SIGNIN, create_magic_link
+from core.users import MagicLink, User, async_session_maker
+from services.claim_links import INTENT_CLAIM
+from tests.ownership_helpers import get_node_owner, register_node_row, set_node_owner
 from tests.probe_helpers import run_probe
 
 # ── SQLite durability pragmas ─────────────────────────────────────────────────
@@ -39,122 +46,6 @@ class TestSqlitePragmas:
         assert int(sync) == 1, f"synchronous must be NORMAL (1), got {sync!r}"
         assert int(fk) == 1, f"foreign_keys must be ON (1), got {fk!r}"
         assert int(busy) >= 1000, f"busy_timeout must be ≥1000ms, got {busy!r}"
-
-
-# ── JWT via fastapi-users JWTStrategy ─────────────────────────────────────────
-
-
-class TestJWT:
-    """Verify that fastapi-users' JWTStrategy correctly issues and validates tokens."""
-
-    def _make_user(self, *, is_superuser: bool = False) -> MagicMock:
-        user = MagicMock()
-        user.id = uuid.uuid4()
-        user.email = "test@retina.fm"
-        user.is_active = True
-        user.is_superuser = is_superuser
-        return user
-
-    def test_write_and_read_token_roundtrip(self):
-        """A token written by JWTStrategy must be readable back to the same user id."""
-        from core.users import get_jwt_strategy
-
-        strategy = get_jwt_strategy()
-        user = self._make_user()
-
-        token = asyncio.run(strategy.write_token(user))
-        assert isinstance(token, str)
-        assert len(token) > 0
-
-        # read_token looks up the user by id — mock the manager to return our user
-        mock_manager = MagicMock()
-        mock_manager.get = AsyncMock(return_value=user)
-
-        result = asyncio.run(strategy.read_token(token, mock_manager))
-        assert result is not None
-        assert result.id == user.id
-
-    def test_token_contains_subject(self):
-        """The JWT sub claim must equal the user's id."""
-        import jwt as pyjwt
-
-        from core.users import JWT_SECRET, get_jwt_strategy
-
-        strategy = get_jwt_strategy()
-        user = self._make_user()
-        token = asyncio.run(strategy.write_token(user))
-
-        # fastapi-users sets aud=["fastapi-users:auth"] — pass it when decoding
-        payload = pyjwt.decode(
-            token,
-            JWT_SECRET,
-            algorithms=["HS256"],
-            audience=["fastapi-users:auth"],
-        )
-        assert payload["sub"] == str(user.id)
-
-    def test_token_has_expiry(self):
-        """Token must include an exp claim set in the future."""
-        import jwt as pyjwt
-
-        from core.users import JWT_LIFETIME_SECONDS, JWT_SECRET, get_jwt_strategy
-
-        strategy = get_jwt_strategy()
-        user = self._make_user()
-        token = asyncio.run(strategy.write_token(user))
-
-        payload = pyjwt.decode(
-            token,
-            JWT_SECRET,
-            algorithms=["HS256"],
-            audience=["fastapi-users:auth"],
-        )
-        assert "exp" in payload
-        assert payload["exp"] > time.time()
-        assert payload["exp"] <= time.time() + JWT_LIFETIME_SECONDS + 10
-
-    def test_tampered_token_not_readable(self):
-        """read_token on a tampered JWT must return None (not raise)."""
-        from core.users import get_jwt_strategy
-
-        strategy = get_jwt_strategy()
-        user = self._make_user()
-        token = asyncio.run(strategy.write_token(user))
-
-        parts = token.split(".")
-        sig = parts[2]
-        mid = len(sig) // 2
-        tampered_c = "A" if sig[mid] != "A" else "B"
-        tampered = f"{parts[0]}.{parts[1]}.{sig[:mid]}{tampered_c}{sig[mid + 1 :]}"
-
-        # read_token with None user_manager returns None for bad tokens
-        result = asyncio.run(strategy.read_token(tampered, None))
-        assert result is None
-
-    def test_expired_token_rejected(self):
-        """A token with a past exp must be rejected by read_token."""
-        import jwt as pyjwt
-
-        from core.users import JWT_SECRET, get_jwt_strategy
-
-        payload = {
-            "sub": str(uuid.uuid4()),
-            "aud": ["fastapi-users:auth"],
-            "exp": int(time.time()) - 60,
-        }
-        expired_token = pyjwt.encode(payload, JWT_SECRET, algorithm="HS256")
-
-        strategy = get_jwt_strategy()
-        result = asyncio.run(strategy.read_token(expired_token, None))
-        assert result is None
-
-    def test_garbage_token_rejected(self):
-        """Nonsense strings must return None, not raise."""
-        from core.users import get_jwt_strategy
-
-        strategy = get_jwt_strategy()
-        for bad in ("", "not.a.jwt", "abc"):
-            assert asyncio.run(strategy.read_token(bad, None)) is None
 
 
 # ── AUTH_ENABLED / AUTH_BYPASS derivation ─────────────────────────────────────
@@ -313,6 +204,27 @@ def test_admin_route_refuses_anonymous_callers_without_the_flag(tmp_path):
 # ── get_current_user / require_admin dependencies ─────────────────────────────
 
 
+async def _account(email: str = "ada@example.com", *, is_superuser: bool = False) -> User:
+    """An account row, as a redeemed link or an administrator leaves one."""
+    account = User(id=uuid.uuid4(), email=email, name=email.split("@")[0], is_superuser=is_superuser)
+    async with async_session_maker() as session:
+        async with session.begin():
+            session.add(account)
+    return account
+
+
+def _request(cookie: str | None = None) -> Request:
+    """A request carrying `cookie` as the auth_token cookie, as a browser sends it."""
+    headers = [(b"cookie", f"auth_token={cookie}".encode())] if cookie else []
+    return Request({"type": "http", "method": "GET", "path": "/", "headers": headers})
+
+
+async def _signed_in(account: User) -> Request:
+    """A request from a browser that has just signed `account` in."""
+    token, _ = await sessions.open_session(account, user_agent=None, ip=None)
+    return _request(token)
+
+
 class TestAuthDependencies:
     def test_get_current_user_auth_disabled_returns_anonymous(self):
         from core.users import get_current_user
@@ -359,37 +271,77 @@ class TestAuthDependencies:
                 asyncio.run(get_current_user(request))
         assert exc_info.value.status_code == 401
 
-    def test_require_admin_non_admin_raises_403(self, tmp_path):
-        """A valid token for a non-superuser must yield 403 from require_admin."""
-        import jwt as pyjwt
+    async def test_get_current_user_session_cookie_returns_its_account(self):
+        from core.users import get_current_user
+
+        ada = await _account()
+        with patch("core.users.AUTH_BYPASS", False):
+            user = await get_current_user(await _signed_in(ada))
+        assert (user["id"], user["email"], user["role"], user["is_superuser"]) == (
+            str(ada.id),
+            "ada@example.com",
+            "user",
+            False,
+        )
+
+    async def test_get_optional_user_without_a_cookie_is_nobody(self):
+        from core.users import get_optional_user
+
+        with patch("core.users.AUTH_BYPASS", False):
+            assert await get_optional_user(_request()) is None
+
+    async def test_get_optional_user_session_cookie_returns_its_account(self):
+        from core.users import get_optional_user
+
+        ada = await _account()
+        with patch("core.users.AUTH_BYPASS", False):
+            user = await get_optional_user(await _signed_in(ada))
+        assert user is not None
+        assert (user["id"], user["role"]) == (str(ada.id), "user")
+
+    async def test_get_current_user_deactivated_account_raises_401(self):
+        """Deactivating ends the session the cookie names, so the next request
+        it rides on is nobody's."""
         from fastapi import HTTPException
 
-        from core.users import JWT_SECRET, require_admin
+        from core.users import get_current_user
 
-        # Build a valid JWT for a regular (non-superuser) user
-        uid = uuid.uuid4()
-        payload = {
-            "sub": str(uid),
-            "aud": ["fastapi-users:auth"],
-            "exp": int(time.time()) + 3600,
-        }
-        token = pyjwt.encode(payload, JWT_SECRET, algorithm="HS256")
-
-        request = MagicMock()
-        request.cookies = {"auth_token": token}
-
-        # Patch _read_user_from_request so we don't need a real DB
-        non_admin_user = MagicMock()
-        non_admin_user.is_active = True
-        non_admin_user.is_superuser = False
-
-        async def _fake_read(req):
-            return non_admin_user
-
-        with patch("core.users.AUTH_BYPASS", False), patch("core.users._read_user_from_request", _fake_read):
+        ada = await _account()
+        request = await _signed_in(ada)
+        await sessions.deactivate_account(ada.id)
+        with patch("core.users.AUTH_BYPASS", False):
             with pytest.raises(HTTPException) as exc_info:
-                asyncio.run(require_admin(request))
+                await get_current_user(request)
+        assert exc_info.value.status_code == 401
+
+    async def test_require_admin_non_admin_raises_403(self):
+        """A live session for an ordinary account is signed in, and still 403."""
+        from fastapi import HTTPException
+
+        from core.users import require_admin
+
+        ada = await _account()
+        with patch("core.users.AUTH_BYPASS", False):
+            with pytest.raises(HTTPException) as exc_info:
+                await require_admin(await _signed_in(ada))
         assert exc_info.value.status_code == 403
+
+    async def test_require_admin_superuser_account_raises_403(self):
+        """is_superuser grants nothing: an administrator is a Cloudflare Access
+        identity or the anonymous admin, never a row, so an account flagged as
+        one is refused like any other and reported as an ordinary user."""
+        from fastapi import HTTPException
+
+        from core.users import get_current_user, require_admin
+
+        root = await _account("root@example.com", is_superuser=True)
+        request = await _signed_in(root)
+        with patch("core.users.AUTH_BYPASS", False):
+            with pytest.raises(HTTPException) as exc_info:
+                await require_admin(request)
+            user = await get_current_user(request)
+        assert exc_info.value.status_code == 403
+        assert (user["email"], user["role"], user["is_superuser"]) == ("root@example.com", "user", False)
 
 
 # ── Shared DB fixture ─────────────────────────────────────────────────────────
@@ -454,7 +406,7 @@ class TestNodeOwnership:
         pass
 
     async def test_set_and_clear_node_owner(self):
-        from core.auth import get_node_owner, list_node_owners, set_node_owner
+        from core.auth import list_node_owners
 
         await register_node_row("node-1")
         await register_node_row("node-2")
@@ -467,7 +419,7 @@ class TestNodeOwnership:
         assert "node-1" not in await list_node_owners()
 
     async def test_set_node_owner_updates_existing_owner(self):
-        from core.auth import get_node_owner, get_user_nodes, set_node_owner
+        from core.auth import get_user_nodes
 
         await register_node_row("reassigned-node")
         await set_node_owner("reassigned-node", "user-1")
@@ -480,30 +432,26 @@ class TestNodeOwnership:
         """Owner and address are one row, so a reassignment clears the address,
         its confirmation, its bounce and the challenge in the write that sets
         the owner, rather than leaving a caller to remember a second one."""
-        from core.auth import set_node_owner
-
         await _claimed("claimed-node", "user-A")
 
         await set_node_owner("claimed-node", "user-B")
 
         claim, challenge = await _claim_and_challenge("claimed-node")
+        assert claim is not None
         assert (claim.user_id, claim.email, claim.verified, claim.undeliverable) == ("user-B", None, False, False)
         assert challenge is None
 
     async def test_assigning_the_owner_a_node_already_has_changes_nothing(self):
-        from core.auth import set_node_owner
-
         await _claimed("claimed-node", "user-A")
 
         await set_node_owner("claimed-node", "user-A")
 
         claim, challenge = await _claim_and_challenge("claimed-node")
+        assert claim is not None
         assert (claim.user_id, claim.email, claim.verified) == ("user-A", "ada@example.com", True)
         assert challenge is not None
 
     async def test_clearing_the_owner_leaves_the_node_unclaimed(self):
-        from core.auth import set_node_owner
-
         await _claimed("claimed-node", "user-A")
 
         await set_node_owner("claimed-node", None)
@@ -515,8 +463,87 @@ class TestNodeOwnership:
         so that nobody meets it as a 500."""
         from sqlalchemy.exc import IntegrityError
 
-        from core.auth import get_node_owner, set_node_owner
-
         with pytest.raises(IntegrityError):
             await set_node_owner("never-registered", "user-A")
         assert await get_node_owner("never-registered") is None
+
+
+# ── Who a sign-in link is issued to ───────────────────────────────────────────
+
+
+@pytest.fixture
+def writes():
+    """Every INSERT, UPDATE and DELETE the app's engine sends, in order."""
+    from core.users import engine
+
+    seen: list[str] = []
+
+    def _record(_conn, _cursor, statement, _parameters, _context, _executemany):
+        if statement.lstrip().split(None, 1)[0].upper() in ("INSERT", "UPDATE", "DELETE"):
+            seen.append(statement)
+
+    event.listen(engine.sync_engine, "before_cursor_execute", _record)
+    yield seen
+    event.remove(engine.sync_engine, "before_cursor_execute", _record)
+
+
+async def _links() -> list[MagicLink]:
+    async with async_session_maker() as session:
+        return list(await session.scalars(select(MagicLink)))
+
+
+@pytest.mark.parametrize(
+    ("stored", "asked"),
+    [
+        pytest.param("ada@example.com", "ada@example.com", id="same-address"),
+        pytest.param("ada@example.com", "  Ada@Example.COM  ", id="asked-unnormalised"),
+        pytest.param("Ada@Example.com", "ada@example.com", id="stored-in-capitals"),
+    ],
+)
+async def test_a_deactivated_account_is_issued_no_sign_in_link(stored, asked, writes):
+    """Refused before anything is written, so the request leaves no trace."""
+    ada = await _account(stored)
+    await sessions.deactivate_account(ada.id)
+    writes.clear()
+
+    assert await create_magic_link(asked) is None
+
+    assert writes == []
+    assert await _links() == []
+
+
+async def test_a_deactivated_account_is_still_issued_a_claim_link():
+    """Declining a node that names the address takes no account, so the link
+    offering that must still go out. The click that would bind the node is what
+    refuses a deactivated account."""
+    ada = await _account()
+    await sessions.deactivate_account(ada.id)
+
+    token = await create_magic_link("ada@example.com", intent=INTENT_CLAIM, node_id="ret1a2b3c4d")
+
+    assert token is not None
+    (link,) = await _links()
+    assert (link.email, link.intent, link.node_id) == ("ada@example.com", INTENT_CLAIM, "ret1a2b3c4d")
+
+
+@pytest.mark.parametrize("has_account", [pytest.param(True, id="active-account"), pytest.param(False, id="no-account")])
+async def test_an_active_account_or_an_unknown_address_is_issued_a_sign_in_link(has_account):
+    if has_account:
+        await _account()
+
+    token = await create_magic_link("ada@example.com")
+
+    assert token is not None
+    (link,) = await _links()
+    assert (link.email, link.intent) == ("ada@example.com", INTENT_SIGNIN)
+
+
+async def test_a_reactivated_account_is_issued_a_sign_in_link_again():
+    """Read at each request, not remembered from the last one."""
+    ada = await _account()
+    await sessions.deactivate_account(ada.id)
+    assert await create_magic_link("ada@example.com") is None
+
+    await sessions.reactivate_account(ada.id)
+
+    assert await create_magic_link("ada@example.com") is not None

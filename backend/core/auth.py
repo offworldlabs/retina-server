@@ -1,11 +1,11 @@
-"""Domain-specific auth helpers: node ownership and emailed links.
+"""Domain-specific auth helpers: who owns which node, and emailed links.
 
 All data is stored in the shared SQLite database (users.db) via SQLAlchemy
 async sessions.
 
-JWT, user storage, and session management are handled by fastapi-users
-(see core/users.py). This module contains only the business logic that
-has no equivalent in a general-purpose auth library.
+Accounts and the dependencies that say who a request is live in core/users.py,
+and the sessions a redeemed sign-in link opens in core/sessions.py. Ownership
+is only read here: services/node_claim_store.py is what writes it.
 """
 
 import hashlib
@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from sqlalchemy import delete, select, update
 
 from core.nodes import NodeClaim
-from core.users import MagicLink, async_session_maker, normalise_email
+from core.users import MagicLink, _account_at, async_session_maker, normalise_email
 
 logger = logging.getLogger(__name__)
 
@@ -47,32 +47,13 @@ INTENT_SIGNIN = "signin"
 # cleared together.
 
 
-async def get_node_owner(node_id: str) -> str | None:
-    async with async_session_maker() as session:
-        return (
-            await session.execute(select(NodeClaim.user_id).where(NodeClaim.node_id == node_id))
-        ).scalar_one_or_none()
-
-
 async def list_node_owners() -> dict[str, str]:
     async with async_session_maker() as session:
         result = await session.execute(
             select(NodeClaim.node_id, NodeClaim.user_id).where(NodeClaim.user_id.is_not(None))
         )
-        return dict(result.tuples().all())
-
-
-async def set_node_owner(node_id: str, user_id: str | None) -> None:
-    """Assign or clear the owner in a transaction of its own.
-
-    services/node_claim_store.set_owner is the write, and says what a change of
-    owner clears. The node must be registered, or this raises IntegrityError.
-    """
-    from services.node_claim_store import set_owner
-
-    async with async_session_maker() as session:
-        async with session.begin():
-            await set_owner(session, node_id, user_id)
+        # The WHERE already drops unowned rows; the `if` is for the type checker.
+        return {node_id: user_id for node_id, user_id in result.tuples() if user_id is not None}
 
 
 async def get_user_nodes(user_id: str) -> list[str]:
@@ -93,10 +74,16 @@ async def create_magic_link(
 ) -> str | None:
     """Issue a link for an address under one intent, returning the token to mail.
 
-    Returns None when the address already holds the maximum number of
-    outstanding links **of that intent**. Callers must answer their own request
-    identically either way: whether a link went out is exactly what an attacker
-    wants told.
+    Returns None when no link is issued: for a sign-in link to an address whose
+    account is deactivated, before anything is written, and when the address
+    already holds the maximum number of outstanding links **of that intent**.
+    Callers must answer their own request identically either way: whether a
+    link went out is exactly what an attacker wants told.
+
+    A claim link goes out whatever state the account is in. It is how the
+    person at the address declines a node that names them, which takes no
+    account, and the click that would bind the node refuses a deactivated
+    account by itself (services/node_claiming.py).
 
     `node_id` is what a claim link is about, and is meaningless for a sign-in.
     `now` is for a caller that records the same expiry elsewhere, so the two
@@ -108,6 +95,14 @@ async def create_magic_link(
 
     async with async_session_maker() as session:
         async with session.begin():
+            # Looked up the way redeeming the link looks it up, so the two
+            # agree on which account an address is. Redeeming would refuse the
+            # link anyway; refusing it here means it never reaches a mailbox.
+            if intent == INTENT_SIGNIN:
+                account = await _account_at(session, email)
+                if account is not None and not account.is_active:
+                    logger.info("Not issuing a sign-in link to a deactivated account")
+                    return None
             # Expired rows for this address go now rather than on a timer.
             # Nothing else sweeps this table, and the alternative is a row per
             # unredeemed request kept for ever. Every intent at once, since a
