@@ -46,13 +46,34 @@ export const signIn = vi.fn((user: FakeUser) => setAuth({ user, loading: false }
 
 export const logout = vi.fn(async () => ({ redirected: false }));
 
+/** A sign-out a test holds in flight, which whenSignedOut waits for. */
+let heldSignOut: Promise<void> | null = null;
+
+/** Holds a sign-out in flight until the returned function settles it. */
+export function holdSignOut(): () => void {
+  let settle: () => void = () => {};
+  const held = new Promise<void>((resolve) => (settle = resolve));
+  heldSignOut = held;
+  return () => {
+    if (heldSignOut === held) heldSignOut = null;
+    settle();
+  };
+}
+
+/** As the real whenSignedOut: resolves once no sign-out is in flight. */
+export const whenSignedOut = vi.fn(async () => {
+  while (heldSignOut) await heldSignOut;
+});
+
 export function resetAuth() {
   state = SIGNED_OUT;
+  heldSignOut = null;
   signIn.mockClear();
   logout.mockClear();
+  whenSignedOut.mockClear();
 }
 
 export function useFakeAuth() {
   const { user, loading } = useSyncExternalStore(subscribe, () => state);
-  return { user, loading, signIn, logout };
+  return { user, loading, signIn, logout, whenSignedOut };
 }

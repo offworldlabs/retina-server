@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { HttpError, UnauthorizedError } from "@retina/shared";
-import { describeFailure } from "../utils/requestFailure";
+import { describeFailure, linkUnspent } from "../utils/requestFailure";
 
 const http = (status: number) => new HttpError(status, "", null);
 
@@ -156,4 +156,40 @@ describe("describeFailure with messages", () => {
       "Too many attempts from this network. Wait a minute, then try again.",
     );
   });
+});
+
+/** A failure of every kind describeFailure tells apart. */
+const EVERY_KIND: [string, unknown][] = [
+  ["a 429", http(429)],
+  ["a 422", http(422)],
+  ["a 503", http(503)],
+  ["a 502", http(502)],
+  ["a 500", http(500)],
+  ["a 401", new UnauthorizedError()],
+  ["a 403", http(403)],
+  ["a timeout", new DOMException("No response within 10000 ms", "TimeoutError")],
+  ["an abort", new DOMException("The operation was aborted", "AbortError")],
+  ["a dropped connection", new TypeError("Failed to fetch")],
+  ["anything else", "boom"],
+];
+
+describe("linkUnspent", () => {
+  // The preview reads a one-time link; only the press spends it.
+  it.each(EVERY_KIND)("calls a link unspent after %s met a request that only reads it", (_case, err) => {
+    expect(linkUnspent(describeFailure(err), { spends: false })).toBe(true);
+  });
+
+  // nginx's 429 refuses the request before the app, which spends the token,
+  // sees it.
+  it("calls a link unspent after a 429 met a request that spends it", () => {
+    expect(linkUnspent(describeFailure(http(429)), { spends: true })).toBe(true);
+  });
+
+  // Any other failure may have come after the app spent the token.
+  it.each(EVERY_KIND.filter(([name]) => name !== "a 429"))(
+    "cannot call a link unspent after %s met a request that spends it",
+    (_case, err) => {
+      expect(linkUnspent(describeFailure(err), { spends: true })).toBe(false);
+    },
+  );
 });

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 
 import { useAuth } from "../context/AuthContext";
@@ -48,20 +48,16 @@ export default function RequireAuth({ isAdmin, children }: RequireAuthProps) {
 /** The admin console's answer to a caller who is signed in but is not an
  *  administrator: which account they hold, and the two ways on from here. */
 function AccessDenied({ email }: { email: string }) {
-  const { logout } = useAuth();
-  const [leaving, setLeaving] = useState(false);
+  // Pending from the provider's own flag, as the header's account menu is, so
+  // a sign-out that menu started shows here too.
+  const { logout, signingOut } = useAuth();
 
-  const signOut = async () => {
-    setLeaving(true);
-    try {
-      // No `leave`: once the session is gone the guard sends the caller to this
-      // console's sign-in card, where an administrator's account gets in. A
-      // request that fails is the provider's to report, and it clears the
-      // identity either way.
-      await logout();
-    } finally {
-      setLeaving(false);
-    }
+  // No `leave`: once the session is gone the guard sends the caller to this
+  // console's sign-in card, where an administrator's account gets in. A request
+  // that fails is the provider's to report, and it clears the identity either
+  // way.
+  const signOut = () => {
+    if (!signingOut) logout();
   };
 
   return (
@@ -79,8 +75,8 @@ function AccessDenied({ email }: { email: string }) {
             <a className="btn btn-primary" href={appConsoleUrl(window.location.host, window.location.protocol)}>
               Go to the Retina console
             </a>
-            <button type="button" className="btn btn-secondary" onClick={signOut} disabled={leaving}>
-              {leaving ? "Signing out…" : "Sign out"}
+            <button type="button" className="btn btn-secondary" onClick={signOut} disabled={signingOut}>
+              {signingOut ? "Signing out…" : "Sign out"}
             </button>
           </div>
         </div>

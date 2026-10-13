@@ -102,3 +102,17 @@ export function describeFailure(
     retryable: !FINAL.has(kind),
   };
 }
+
+/**
+ * Whether a one-time link is unspent for certain after `failure`, for the
+ * cards that redeem one (the sign-in link, the claim link).
+ *
+ * Only when nothing that spends it can have run: a request that only reads the
+ * link (`spends: false`) never does, and nginx's 429 refuses a request before
+ * the app sees it. Any other failure of a request that spends it may have
+ * reached the app, which spends the token first; if it did, a retry meets the
+ * dead-link answer and says so.
+ */
+export function linkUnspent(failure: RequestFailure, { spends }: { spends: boolean }): boolean {
+  return !spends || failure.kind === "throttled";
+}

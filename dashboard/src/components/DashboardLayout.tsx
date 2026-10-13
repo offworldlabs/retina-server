@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { useLocation } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import Header from "./Header";
@@ -31,7 +31,6 @@ type DashboardLayoutProps = {
 export default function DashboardLayout({ isAdmin, children, title, nav = true }: DashboardLayoutProps) {
   const { pathname } = useLocation();
   const { user } = useAuth();
-  const routes = useConsoleRoutes(isAdmin);
   const routed = title === undefined;
   const segments = pathname.split("/").filter(Boolean);
   const fullPath = segments.length ? `/${segments.join("/")}` : "/";
@@ -87,6 +86,13 @@ export default function DashboardLayout({ isAdmin, children, title, nav = true }
     };
   }, [menuOpen]);
 
+  const header = {
+    isAdmin,
+    menuOpen,
+    onMenu: nav ? () => setMenuOpen(!menuOpen) : undefined,
+    menuButtonRef: menuButton,
+  };
+
   return (
     <div className={`dashboard${collapsed ? " sidebar-collapsed" : ""}${menuOpen ? " menu-open" : ""}`}>
       <Sidebar
@@ -98,13 +104,7 @@ export default function DashboardLayout({ isAdmin, children, title, nav = true }
       />
       {menuOpen && <div className="sidebar-scrim" onClick={() => setMenuOpen(false)} />}
       <div className="main-area">
-        <Header
-          title={title ?? pageTitle(pathname, routes)}
-          isAdmin={isAdmin}
-          menuOpen={menuOpen}
-          onMenu={nav ? () => setMenuOpen(!menuOpen) : undefined}
-          menuButtonRef={menuButton}
-        />
+        {routed ? <RoutedHeader {...header} /> : <Header {...header} title={title} />}
         <div ref={content} className={`content${flush ? " flush" : ""}`}>
           {/* Keyed on the path, which names the page: the query string and hash
               are state within it. Remounted, page and all, when the signed-in
@@ -123,4 +123,13 @@ export default function DashboardLayout({ isAdmin, children, title, nav = true }
       </div>
     </div>
   );
+}
+
+/** The header of the page at this address, under that page's own title. Its
+ *  own component so that only it asks the route table for one: a layout that
+ *  names what it holds, as the admin console's refusal does, builds none. */
+function RoutedHeader({ isAdmin, ...props }: Omit<ComponentProps<typeof Header>, "title"> & { isAdmin: boolean }) {
+  const { pathname } = useLocation();
+  const routes = useConsoleRoutes(isAdmin);
+  return <Header {...props} isAdmin={isAdmin} title={pageTitle(pathname, routes)} />;
 }

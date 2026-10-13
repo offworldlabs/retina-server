@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from "vite
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { Link, MemoryRouter, Route, Routes, useLocation, useNavigationType } from "react-router-dom";
 import AuthLinkPage from "../pages/AuthLinkPage";
-import { resetAuth, setAuth, signIn } from "./fakeAuth";
+import { holdSignOut, resetAuth, setAuth, signIn } from "./fakeAuth";
 
 /**
  * The page the mailed link opens.
@@ -143,6 +143,26 @@ describe("the sign-in link page", () => {
     expect(posts).toHaveLength(1);
     expect(posts[0][0]).toBe("/api/auth/magic-link/consume");
     expect(JSON.parse(posts[0][1].body)).toEqual({ token: "tok-abc" });
+  });
+
+  // A sign-out's answer deletes the session cookie, whichever session holds it
+  // by then, so one that landed after the redemption would end the session it
+  // opens.
+  it("does not redeem until a sign-out still in flight has settled", async () => {
+    const { fetchMock } = server();
+    const settleSignOut = holdSignOut();
+    openLink();
+    await pressSignIn();
+    await act(settle);
+
+    expect(screen.getByText("Signing you in…")).toBeInTheDocument();
+    expect(calls(fetchMock, "POST")).toHaveLength(0);
+
+    await act(async () => settleSignOut());
+
+    expect(await screen.findByText("Dashboard")).toBeInTheDocument();
+    expect(calls(fetchMock, "POST")).toHaveLength(1);
+    expect(signIn).toHaveBeenCalledWith(USER);
   });
 
   it("adopts the identity the redemption answered with, then routes to the app", async () => {

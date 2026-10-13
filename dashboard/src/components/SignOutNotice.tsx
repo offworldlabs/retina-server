@@ -23,15 +23,18 @@ interface SignOutNoticeProps {
  */
 export default function SignOutNotice({ failure, repeated, pending, onRetry, onDismiss }: SignOutNoticeProps) {
   const retry = useRef<HTMLButtonElement>(null);
+  const dismiss = useRef<HTMLButtonElement>(null);
 
   // The Sign out item that had focus went with the account menu, which drops
   // focus on the page itself, and Tab would resume from the header rather than
   // reach this. Taken only when nothing holds it: a page that has put focus
-  // somewhere since, such as the login card's field, keeps it.
+  // somewhere since, such as the login card's field, keeps it. Taken again
+  // when a retry is refused for good, which takes Try again from under it;
+  // Dismiss has it when there is no Try again.
   useEffect(() => {
     const active = document.activeElement;
-    if (!active || active === document.body) retry.current?.focus();
-  }, []);
+    if (!active || active === document.body) (retry.current ?? dismiss.current)?.focus();
+  }, [failure.retryable]);
 
   return (
     <div className="signout-notice" role="alert">
@@ -56,23 +59,34 @@ export default function SignOutNotice({ failure, repeated, pending, onRetry, onD
           You are signed out on this device, but the server {repeated ? "still has not confirmed" : "did not confirm"}{" "}
           it, so your session may still be active: reloading the page could sign you back in. {failure.message}
         </p>
-        <div className="signout-notice-actions">
-          <button
-            ref={retry}
-            type="button"
-            className="btn btn-secondary btn-sm"
-            // Not `disabled`, which would drop the focus a keyboard user has on
-            // it for as long as the request takes.
-            aria-disabled={pending || undefined}
-            onClick={() => {
-              if (!pending) onRetry();
-            }}
-          >
-            {pending ? "Trying again…" : "Try again"}
-          </button>
-        </div>
+        {/* Only where trying again can help: a refusal for good would meet
+            the same answer. */}
+        {failure.retryable && (
+          <div className="signout-notice-actions">
+            <button
+              ref={retry}
+              type="button"
+              className="btn btn-secondary btn-sm"
+              // Not `disabled`, which would drop the focus a keyboard user has
+              // on it for as long as the request takes.
+              aria-disabled={pending || undefined}
+              onClick={() => {
+                if (!pending) onRetry();
+              }}
+            >
+              {pending ? "Trying again…" : "Try again"}
+            </button>
+          </div>
+        )}
       </div>
-      <button type="button" className="signout-notice-dismiss" aria-label="Dismiss" title="Dismiss" onClick={onDismiss}>
+      <button
+        ref={dismiss}
+        type="button"
+        className="signout-notice-dismiss"
+        aria-label="Dismiss"
+        title="Dismiss"
+        onClick={onDismiss}
+      >
         <svg
           viewBox="0 0 24 24"
           fill="none"
