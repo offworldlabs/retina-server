@@ -118,6 +118,10 @@ services:
     # the Dockerfile CMD changes.
     command: ["/bin/bash", "/app/deploy/start.sh"]
     restart: unless-stopped
+    # Docker's default 10 s is shorter than the app's shutdown: it records a
+    # mail mid-send (up to 15 s per HTTP phase) and finishes its other work, and
+    # start.sh waits for it. A SIGKILL first would send that mail twice.
+    stop_grace_period: 30s
     logging:
       driver: json-file
       options:

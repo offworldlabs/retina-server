@@ -97,6 +97,11 @@ are in [`arc-display.md`](arc-display.md).
   `feed_gc` (stale-store GC on its own 5 s timer, deliberately not tied to the
   feed build), `solver` workers, `analytics_refresh`, archive lifecycle,
   snapshots, `health_monitor` + `heartbeat` (see [`alerting.md`](alerting.md)).
+- **`services/mail_outbox.py`** — outbound mail. Sign-in and node-claim links
+  are queued in the `mail_outbox` table and sent by a worker inside the app,
+  with backoff and retry; `services/mail_events.py` pulls hard bounces and
+  complaints from an optional Cloudflare Queue (see the runbook, "Outbound
+  mail").
 - **`core/state.py`** — the in-memory world: connected nodes, tracks, aircraft,
   arc buffers, WebSocket client sets, latest JSON payloads.
 - **`core/users.py` + `core/auth.py`** — sign-in sessions (server-side, in
@@ -162,7 +167,9 @@ default.
 - **Snapshots.** State is serialized to disk every 60s and restored on boot
   (trust scores, reputations, accuracy samples, node identities).
 - **SQLite** (`data/users.db`) — users, and node claims: who owns each node and
-  the address it was claimed with.
+  the address it was claimed with. Also the mail outbox and the claim rate-limit
+  counters. The outbox's bodies are encrypted under `data/mail-outbox.key`,
+  which the daily object store backup does not copy.
 - **Object store.** S3-compatible: Backblaze B2, with R2 until the move (see
   the runbook). It holds the coverage/track Parquet archives (`archive/`,
   `tracks/`, uploaded after a day and pruned locally), the daily `users.db`
