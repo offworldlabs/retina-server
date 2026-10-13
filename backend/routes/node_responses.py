@@ -67,6 +67,7 @@ this API answers in FastAPI's `{"detail": ...}`, which its own callers parse.
 | `409` | The frame names a `config_version` this server never issued, or the node already has an owner |
 | `413` | The body exceeded the cap for its path |
 | `429` | Rate limited |
+| `503` | `mail_unavailable`: this server cannot send mail, so nothing was sent and nothing was recorded |
 
 One refusal does not carry `Error`, and it is the only one: the `409` on
 `PUT /v1/nodes/claim` answers with `ClaimResponse` instead. Nothing the node can
@@ -244,6 +245,33 @@ UNAUTHORIZED_CLAIM = _response(
     "not re-register, for the reason detection and heartbeat give on their own 401s.",
     retry=RETRY_NEVER,
     terminal=True,
+)
+
+# The `Retry-After` on a claim refused because this server cannot send mail.
+# Not a countdown to anything: mail comes back when somebody configures it on
+# the server, which nothing the node does can hasten and nothing here can
+# predict. Five minutes paces a node that retries on its own without leaving a
+# person at a setup page waiting long once it is fixed, and a node offers its
+# address again at every configuration sync anyway.
+MAIL_UNAVAILABLE_RETRY_AFTER_S = 300
+
+MAIL_UNAVAILABLE = _response(
+    "`mail_unavailable`: this server cannot send mail, so it did not start the claim, and recorded "
+    "nothing, neither an address nor a link. The claim stands as it did before the call. `pending` "
+    "would have somebody watch an inbox nothing is coming to, so say instead that the server cannot "
+    "send mail right now, and send the request again after `Retry-After`. Not terminal: it clears once "
+    "mail is configured on the server, and asking again costs nothing in the meantime.",
+    retry=RETRY_AFTER_HEADER,
+    headers=RETRY_AFTER,
+)
+
+MAIL_UNAVAILABLE_RESEND = _response(
+    "`mail_unavailable`: this server cannot send mail, so nothing was sent and nothing changed. A "
+    "link already sent, if one is still live, keeps working. Say that the server cannot send mail "
+    "right now, and ask again after `Retry-After`. Not terminal: it clears once mail is configured "
+    "on the server, and asking again costs nothing in the meantime.",
+    retry=RETRY_AFTER_HEADER,
+    headers=RETRY_AFTER,
 )
 
 ALREADY_CLAIMED = {

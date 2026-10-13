@@ -216,7 +216,7 @@ write would send mail on every configuration sync.
 | --- | --- |
 | No address given | Node runs unowned indefinitely. An address can be offered at any later point. |
 | Mail never arrives or is never clicked | Node runs. Address on file unverified, grants nothing; the mail can be requested again. |
-| Hard bounce | The outstanding challenge is dropped, so the node reads unclaimed again, and the address is flagged undeliverable so its UI can say the address does not exist rather than "check your inbox". Re-sending to that same address is refused; nominating a different one clears the flag and proceeds normally. |
+| Hard bounce | The outstanding challenge is dropped, so the node reads unclaimed again, and the address is flagged undeliverable so its UI can say the address does not exist rather than "check your inbox". Re-sending to that same address is refused; nominating a different one clears the flag and proceeds normally. Shipped, from both sides of the send: a hard bounce or a suppressed recipient in the send API's answer marks the address at once, and a bounce or complaint reported later arrives through Cloudflare's Email Sending event subscription, a Cloudflare Queue the server pulls. |
 | Link expires | Verification fails with a clear reason. The address stays on file and a fresh challenge can be requested. |
 | Address typed wrongly and it belongs to someone real | The recipient gets a claim request naming the node, with a decline. Declining returns the node to unowned without support involvement. |
 | Claimed by the wrong person and accepted | Release by that person, or an administrator. |
@@ -259,6 +259,15 @@ known to work, which is the distinction that matters when support is trying to
 reach someone. Continuing to mail dead addresses and accumulating complaints is
 also one of the main ways a sending domain's reputation degrades, and when it
 does the failure is not confined to claiming.
+
+As shipped, mail goes through a durable outbox in the database rather than
+straight to the provider. A send that fails is retried with backoff for as long
+as the link it carries is still good, and a restart does not lose it. A node is
+told 503 `mail_unavailable` rather than `pending` when this server cannot send
+mail at all, since `pending` would have someone watch an inbox nothing is coming
+to. Hard bounces and suppressed recipients in the send response, and bounces
+and complaints from Cloudflare's Email Sending event subscription
+(a Cloudflare Queue the server pulls), mark the address undeliverable.
 
 ## The magic-link dependency
 
