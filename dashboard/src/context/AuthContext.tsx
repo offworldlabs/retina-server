@@ -5,7 +5,8 @@ import SignOutNotice from "../components/SignOutNotice";
 import { describeFailure, type RequestFailure } from "../utils/requestFailure";
 
 /** How a sign-out ended. `failure` is set when the server did not confirm it,
- *  in which case this device is signed out all the same. */
+ *  in which case this device is signed out all the same, unless it adopted
+ *  another session while the request was out. */
 export interface SignOutResult {
   redirected: boolean;
   failure: RequestFailure | null;
@@ -27,6 +28,9 @@ export interface AuthContextValue {
   /** Sends the sign-out again, for the notice's Try again. */
   retrySignOut: () => Promise<SignOutResult>;
   dismissSignOutFailure: () => void;
+  /** Resolves once no sign-out is in flight. A page that opens a session waits
+   *  on it before it sends the request. */
+  whenSignedOut: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -51,7 +55,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // How many sends in a row the server has left unconfirmed, so the notice can
   // say a retry failed too rather than redraw the same words.
   const [unconfirmed, setUnconfirmed] = useState(0);
-  const inFlight = useRef<Promise<SignOutResult> | null>(null);
+  // Counts the sessions signIn has adopted, so a sign-out can tell when it
+  // answers whether the session it was sent to end is still the one here.
+  const adopted = useRef(0);
+  // The sign-out in flight, and the session it was sent to end.
+  const inFlight = useRef<{ attempt: Promise<SignOutResult>; session: number } | null>(null);
 
   // Resolves { redirected, failure } so a caller knows not to route over a
   // navigation that is still in flight. `leave` runs in the same tick the
@@ -64,9 +72,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // out; keeping the session on screen would read as the click having done
   // nothing, so the notice says what is true instead: this device is signed
   // out, and the server may still hold the session.
+  //
+  // A session adopted while the request was out is the exception. The request
+  // was sent to end the one before, and its answer says nothing about the new
+  // one, so that stays, and so does the page it is on, without a notice. The
+  // pages that open a session wait for a sign-out in flight before they ask
+  // (whenSignedOut), so this is the second line, for a caller that does not.
   const send = useCallback(
     async (leave?: () => void): Promise<SignOutResult> => {
       setSigningOut(true);
+      const session = adopted.current;
       let answer: { redirect?: unknown } | null = null;
       let failure: RequestFailure | null = null;
       try {
@@ -87,6 +102,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         return { redirected: true, failure: null };
       }
       setSigningOut(false);
+      if (adopted.current !== session) return { redirected: false, failure };
       setSignOutFailure(failure);
       setUnconfirmed((n) => (failure ? n + 1 : 0));
       try {
@@ -100,14 +116,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   // One sign-out at a time: a second call while one is in flight answers with
-  // the first rather than sending the request again.
+  // the first rather than sending the request again. Not when a session has
+  // been adopted since the first was sent: that one leaves the new session
+  // alone, so the new session's own goes out once it has settled.
   const logout = useCallback(
     (leave?: () => void) => {
-      if (inFlight.current) return inFlight.current;
-      const attempt = send(leave);
-      inFlight.current = attempt;
+      const pending = inFlight.current;
+      if (pending?.session === adopted.current) return pending.attempt;
+      const go = () => send(leave);
+      const attempt = pending ? pending.attempt.then(go, go) : go();
+      inFlight.current = { attempt, session: adopted.current };
       const settle = () => {
-        if (inFlight.current === attempt) inFlight.current = null;
+        if (inFlight.current?.attempt === attempt) inFlight.current = null;
       };
       attempt.then(settle, settle);
       return attempt;
@@ -115,8 +135,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [send],
   );
 
+  // A sign-out's answer deletes the session cookie, whichever session holds it
+  // when the answer lands, so one that landed after a sign-in's would end the
+  // session the sign-in opened. A page about to open one waits on this first.
+  // Looped, since another sign-out may have been queued behind the one waited
+  // for.
+  const whenSignedOut = useCallback(async () => {
+    while (inFlight.current) await inFlight.current.attempt.catch(() => {});
+  }, []);
+
   const retrySignOut = useCallback(() => logout(), [logout]);
-  const dismissSignOutFailure = useCallback(() => setSignOutFailure(null), []);
+  // The count goes with the notice: a later sign-out left unconfirmed is news,
+  // not a repeat of one the person has already put away.
+  const dismissSignOutFailure = useCallback(() => {
+    setSignOutFailure(null);
+    setUnconfirmed(0);
+  }, []);
 
   // signIn adopts an identity the caller already holds. The magic-link
   // redemption answers with the user it just signed in, so there is nothing to
@@ -126,6 +160,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // whatever an earlier sign-out left unconfirmed, so the notice goes with it.
   const signIn = useCallback(
     (next: CurrentUser) => {
+      adopted.current += 1;
       setSignOutFailure(null);
       setUnconfirmed(0);
       setUser(next);
@@ -155,6 +190,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signOutFailure,
       retrySignOut,
       dismissSignOutFailure,
+      whenSignedOut,
     }),
     [
       user,
@@ -167,6 +203,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signOutFailure,
       retrySignOut,
       dismissSignOutFailure,
+      whenSignedOut,
     ],
   );
 

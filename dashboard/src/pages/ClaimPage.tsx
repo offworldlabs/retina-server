@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { api } from "../api/client";
 import LoginBack from "../components/LoginBack";
 import { useAuth } from "../context/AuthContext";
-import { describeFailure, type RequestFailure } from "../utils/requestFailure";
+import { describeFailure, linkUnspent, type RequestFailure } from "../utils/requestFailure";
 
 /** What the page is showing. `asking` and `failed` are the states with buttons:
  *  every other one is terminal and says why. */
@@ -28,16 +28,34 @@ const BOUND_REDIRECT_MS = 1200;
  *  The node is named before either button is pressed. Somebody who was mailed
  *  this because a stranger mistyped an address needs to be declining a thing
  *  they can see, not a token.
+ *
+ *  Keyed by token, as the sign-in link's page is, so another link starts from
+ *  nothing rather than inheriting the last one's node, or its answer.
  */
 export default function ClaimPage() {
   const { token = "" } = useParams();
+  return <Claim key={token} token={token} />;
+}
+
+function Claim({ token }: { token: string }) {
   const navigate = useNavigate();
-  const { user, loading: identifying, signIn } = useAuth();
+  const { user, loading: identifying, signIn, whenSignedOut } = useAuth();
   const [stage, setStage] = useState<Stage>("loading");
   const [nodeRef, setNodeRef] = useState<string | null>(null);
   const [trouble, setTrouble] = useState<Trouble | null>(null);
   // Counts the reads Try again has asked for, so each one runs the preview anew.
   const [reads, setReads] = useState(0);
+  // False once the person has left the card, or another link has replaced it,
+  // so an answer still in flight is dropped: a confirm's would sign in from
+  // under the page or the question that is there instead.
+  const mounted = useRef(false);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -86,13 +104,19 @@ export default function ClaimPage() {
   async function confirm() {
     setStage("working");
     try {
+      // After any sign-out in flight: its answer deletes the session cookie,
+      // and landing after this one's would end the session this opens.
+      await whenSignedOut();
+      if (!mounted.current) return;
       const { user } = await api.consumeClaim(token);
+      if (!mounted.current) return;
       // The answer carries the identity the session now has, so the app is
       // told directly; left to discover it, the guard would go on treating a
       // fresh session as signed out until a reload.
       signIn(user);
       setStage("bound");
     } catch (e) {
+      if (!mounted.current) return;
       const failure = describeFailure(e);
       // 409 is the one refusal worth distinguishing: the link was real and the
       // node was claimed by somebody else while it sat in the inbox, which is
@@ -107,8 +131,10 @@ export default function ClaimPage() {
     setStage("working");
     try {
       await api.declineClaim(token);
+      if (!mounted.current) return;
       setStage("declined");
     } catch (e) {
+      if (!mounted.current) return;
       const failure = describeFailure(e);
       if (failure.status === 400) setStage("invalid");
       else fail("decline", failure);
@@ -128,8 +154,11 @@ export default function ClaimPage() {
     <div className="login-page">
       <div className="login-card">
         {/* Claim links are mailed for the app host, as sign-in links are, so
-            this card is never on the admin console. */}
-        <LoginBack isAdmin={false} />
+            this card is never on the admin console. None while a confirm or
+            a decline is in flight, as the sign-in link's card offers none
+            while it signs in: the request goes on whether the person stays
+            or not, and this card is where its answer is said. */}
+        {stage !== "working" && <LoginBack isAdmin={false} />}
         <div className="logo">◉</div>
         <h1>Retina</h1>
 
@@ -194,14 +223,10 @@ export default function ClaimPage() {
             </p>
             {trouble.failure.retryable ? (
               <>
-                {/* Unspent for certain only when nothing that spends it can
-                    have run: the preview reads the link, and nginx's 429
-                    refuses an answer before the app sees it. A confirm or a
-                    decline that failed otherwise may have reached the app,
-                    which spends the token first; if it did, the retry meets
-                    the dead-link answer and says so. */}
+                {/* A confirm and a decline both spend the link; the preview
+                    only reads it. */}
                 <p className="login-note">
-                  {trouble.step === "preview" || trouble.failure.kind === "throttled"
+                  {linkUnspent(trouble.failure, { spends: trouble.step !== "preview" })
                     ? "Your link has not been used."
                     : "Your link may still work."}
                 </p>

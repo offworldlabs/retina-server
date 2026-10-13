@@ -216,6 +216,35 @@ describe("a sign-out the server does not confirm", () => {
   });
 });
 
+describe("a sign-out the server refuses for good", () => {
+  // The same request would meet the same answer, so there is nothing to try
+  // again: Dismiss is the way on, and takes the focus Try again would have.
+  it("offers no Try again, and gives Dismiss the focus", async () => {
+    stubServer(status(403));
+    renderConsole();
+    await signOut();
+
+    const notice = await screen.findByRole("alert");
+    expect(notice).toHaveTextContent("You are signed out on this device, but the server did not confirm it");
+    expect(notice).toHaveTextContent(describeFailure({ status: 403 }).message);
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Dismiss" })).toHaveFocus();
+  });
+
+  it("takes Try again away once a retry is refused for good, and keeps the focus in the notice", async () => {
+    stubServer(status(500), status(403));
+    renderConsole();
+    await signOut();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Try again" }));
+
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(describeFailure({ status: 403 }).message));
+    expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Dismiss" })).toHaveFocus();
+    expect(signOutsSent()).toBe(2);
+  });
+});
+
 describe("the notice's Try again", () => {
   it("sends the sign-out again, and goes once it is confirmed", async () => {
     stubServer(status(500), ok);
@@ -282,6 +311,24 @@ describe("dismissing the notice", () => {
 
     expect(screen.queryByRole("alert")).toBeNull();
     expect(signOutsSent()).toBe(1);
+  });
+
+  // The next unconfirmed sign-out is news, not a repeat of one the person has
+  // already put away.
+  it("starts the count afresh, so the next unconfirmed sign-out is not called a repeat", async () => {
+    stubServer(status(500));
+    renderProbe();
+    await waitFor(() => expect(screen.getByLabelText("identity")).toHaveTextContent("Ada"));
+    fireEvent.click(screen.getByRole("button", { name: "Sign out twice" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign out twice" }));
+
+    const notice = await screen.findByRole("alert");
+    expect(notice).toHaveTextContent("the server did not confirm it");
+    expect(notice).not.toHaveTextContent("still has not confirmed");
+    expect(signOutsSent()).toBe(2);
   });
 });
 
@@ -355,6 +402,83 @@ describe("the provider's sign-out", () => {
 
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByLabelText("identity")).toHaveTextContent("Ada");
+  });
+});
+
+const GRACE = { id: "u2", name: "Grace", email: "grace@example.com", role: "user" };
+
+/** Signs out, and adopts another session while the request is still out, as a
+ *  sign-in link or a claim redeemed meanwhile would. */
+function Switcher() {
+  const { user, logout, signIn, signingOut } = useAuth();
+  const [left, setLeft] = useState(false);
+  return (
+    <>
+      <output aria-label="identity">{user ? user.name : "nobody"}</output>
+      <output aria-label="signing out">{String(signingOut)}</output>
+      <output aria-label="route">{left ? "left" : "stayed"}</output>
+      <button onClick={() => void logout(() => setLeft(true))}>Sign out</button>
+      <button onClick={() => signIn(GRACE)}>Adopt Grace</button>
+    </>
+  );
+}
+
+describe("a session adopted while a sign-out is in flight", () => {
+  it.each([
+    ["confirms it", () => json(200, { ok: true })],
+    ["does not confirm it", () => json(500, null)],
+  ])("is kept when the sign-out answers after it and %s", async (_case, reply) => {
+    let answer: (r: Response) => void = () => {};
+    stubServer(() => new Promise((resolve) => (answer = resolve)), ok);
+    render(
+      <AuthProvider>
+        <Switcher />
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByLabelText("identity")).toHaveTextContent("Ada"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    fireEvent.click(screen.getByRole("button", { name: "Adopt Grace" }));
+    answer(reply());
+    await waitFor(() => expect(screen.getByLabelText("signing out")).toHaveTextContent("false"));
+
+    // The request was sent to end Ada's session, and says nothing of Grace's:
+    // no identity dropped, no route change, no notice.
+    expect(screen.getByLabelText("identity")).toHaveTextContent("Grace");
+    expect(screen.getByLabelText("route")).toHaveTextContent("stayed");
+    expect(screen.queryByRole("alert")).toBeNull();
+
+    // And Grace's own sign-out goes out and lands.
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(screen.getByLabelText("identity")).toHaveTextContent("nobody"));
+    expect(screen.getByLabelText("route")).toHaveTextContent("left");
+    expect(signOutsSent()).toBe(2);
+  });
+
+  // The request still out was sent to end Ada's session, so answering Grace's
+  // sign-out with it would leave her signed in.
+  it("sends the new session's own sign-out once the old one has settled", async () => {
+    let answer: (r: Response) => void = () => {};
+    stubServer(() => new Promise((resolve) => (answer = resolve)), ok);
+    render(
+      <AuthProvider>
+        <Switcher />
+      </AuthProvider>,
+    );
+    await waitFor(() => expect(screen.getByLabelText("identity")).toHaveTextContent("Ada"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    fireEvent.click(screen.getByRole("button", { name: "Adopt Grace" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    // One at a time still: Grace's waits for Ada's.
+    expect(signOutsSent()).toBe(1);
+
+    answer(json(200, { ok: true }));
+
+    await waitFor(() => expect(screen.getByLabelText("identity")).toHaveTextContent("nobody"));
+    expect(screen.getByLabelText("route")).toHaveTextContent("left");
+    expect(screen.getByLabelText("signing out")).toHaveTextContent("false");
+    expect(signOutsSent()).toBe(2);
   });
 });
 

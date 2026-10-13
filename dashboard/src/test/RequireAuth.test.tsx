@@ -1,25 +1,45 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, Routes, Route, useLocation } from "react-router-dom";
 
 import App from "../App";
 import RequireAuth from "../components/RequireAuth";
 import { ThemeProvider } from "../context/ThemeContext";
+import { useConsoleRoutes } from "../routes";
 import { appConsoleUrl } from "../utils/siblings";
 import { stubMatchMedia } from "./matchMedia";
 
 type User = { id?: string; name?: string; email?: string; role?: string };
+type SignOut = (leave?: () => void) => Promise<{ redirected: boolean }>;
 
 const state = vi.hoisted(() => ({
   auth: {
     user: null as User | null,
     loading: false,
     syntheticFleet: false,
-    logout: (async () => ({ redirected: false })) as (leave?: () => void) => Promise<{ redirected: boolean }>,
+    signingOut: false,
+    logout: (async () => ({ redirected: false })) as SignOut,
   },
+  listeners: new Set<() => void>(),
 }));
 
-vi.mock("../context/AuthContext", () => ({ useAuth: () => state.auth }));
+// Read as a store, so that a change made while a page is up redraws whoever
+// reads it, as the provider's does.
+vi.mock("../context/AuthContext", async () => {
+  const { useSyncExternalStore } = await import("react");
+  const subscribe = (listener: () => void) => {
+    state.listeners.add(listener);
+    return () => {
+      state.listeners.delete(listener);
+    };
+  };
+  return { useAuth: () => useSyncExternalStore(subscribe, () => state.auth) };
+});
+// Passed through, and counted.
+vi.mock("../routes", async (importOriginal) => {
+  const routes = await importOriginal<typeof import("../routes")>();
+  return { ...routes, useConsoleRoutes: vi.fn(routes.useConsoleRoutes) };
+});
 // App resolves its surface once, at module scope; the cases that render it
 // below are all on the admin console.
 vi.mock("../utils/surface", async (importOriginal) => ({
@@ -28,8 +48,22 @@ vi.mock("../utils/surface", async (importOriginal) => ({
 }));
 vi.mock("../pages/admin/NodeManagementPage", () => ({ default: () => <div>node list</div> }));
 
-function signIn(user: User | null, logout = vi.fn(async () => ({ redirected: false }))) {
-  state.auth = { user, loading: false, syntheticFleet: false, logout };
+function setAuth(next: Partial<typeof state.auth>) {
+  state.auth = { ...state.auth, ...next };
+  for (const listener of state.listeners) listener();
+}
+
+/** Signs `user` in. Its sign-out is pending until `logout` settles, as the
+ *  provider's is, whoever started it. */
+function signIn(user: User | null, logout: Mock<SignOut> = vi.fn(async () => ({ redirected: false }))) {
+  const send: SignOut = (leave) => {
+    setAuth({ signingOut: true });
+    const sent = leave ? logout(leave) : logout();
+    const settle = () => setAuth({ signingOut: false });
+    sent.then(settle, settle);
+    return sent;
+  };
+  state.auth = { user, loading: false, syntheticFleet: false, signingOut: false, logout: send };
   return logout;
 }
 
@@ -142,6 +176,7 @@ describe("the admin console's refusal", () => {
   beforeEach(() => {
     stubMatchMedia();
     signIn(owner);
+    vi.mocked(useConsoleRoutes).mockClear();
   });
 
   it("is drawn in the console's chrome, under its own title", () => {
@@ -188,6 +223,31 @@ describe("the admin console's refusal", () => {
     expect(logout).toHaveBeenCalledTimes(1);
     await act(async () => answer({ redirected: false }));
     expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled();
+  });
+
+  // The header's menu signs out too, and the provider sends one sign-out at a
+  // time, so the refusal's button reads the provider's pending state rather
+  // than only its own clicks.
+  it("shows a sign-out the header's menu started as pending", async () => {
+    let answer = (_: { redirected: boolean }) => {};
+    const logout = signIn(owner, vi.fn(() => new Promise<{ redirected: boolean }>((resolve) => (answer = resolve))));
+    renderAt("/nodes", true);
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Account: Grace" }), { key: "Enter" });
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
+
+    expect(screen.getByRole("button", { name: "Signing out…" })).toBeDisabled();
+    expect(logout).toHaveBeenCalledTimes(1);
+    await act(async () => answer({ redirected: false }));
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled();
+  });
+
+  // It names itself, and draws none of the console's pages, so there is
+  // nothing to read the route table for.
+  it("builds no route table for its title", () => {
+    renderAt("/nodes", true);
+    expect(screen.getByRole("heading", { name: "Access Denied" })).toBeInTheDocument();
+    expect(useConsoleRoutes).not.toHaveBeenCalled();
   });
 
   // Every entry would lead to the same refusal, and the narrow screen's Menu

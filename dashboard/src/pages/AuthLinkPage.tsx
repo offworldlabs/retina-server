@@ -4,7 +4,7 @@ import { useAuth } from "../context/AuthContext";
 import { api } from "../api/client";
 import { useFetch } from "../hooks/usePolling";
 import { signInNext } from "../utils/signInNext";
-import { describeFailure, type RequestFailure } from "../utils/requestFailure";
+import { describeFailure, linkUnspent, type RequestFailure } from "../utils/requestFailure";
 import LoginPage from "./LoginPage";
 import LoginBack from "../components/LoginBack";
 
@@ -54,7 +54,7 @@ function SignInLink({ token, isAdmin }: { token: string; isAdmin: boolean }) {
   // on the admin console, which the mailed link never opens on.
   const next = isAdmin ? null : signInNext(searchParams.get("next"));
   const destination = next ?? "/";
-  const { user, loading: identifying, signIn } = useAuth();
+  const { user, loading: identifying, signIn, whenSignedOut } = useAuth();
   const preview = useFetch<Preview>(
     () =>
       api.previewMagicLink(token).then(
@@ -90,6 +90,10 @@ function SignInLink({ token, isAdmin }: { token: string; isAdmin: boolean }) {
     redeeming.current = true;
     setRedemption({ stage: "signing-in" });
     try {
+      // After any sign-out in flight: its answer deletes the session cookie,
+      // and landing after this one's would end the session this opens.
+      await whenSignedOut();
+      if (!mounted.current) return;
       // The server replaces any session the browser already holds.
       const { user: signedIn } = await api.consumeMagicLink(token);
       if (!mounted.current) return;
@@ -147,12 +151,9 @@ function SignInLink({ token, isAdmin }: { token: string; isAdmin: boolean }) {
   }
 
   if (stage === "failed" && failure) {
-    // Unspent for certain only when nothing that spends it can have run: the
-    // preview reads the link, and nginx's 429 refuses a redemption before the
-    // app sees it. Any other failed redemption may have reached the app, which
-    // spends the token before it opens the session; if it did, the retry meets
-    // the dead-link answer and says so.
-    const unspent = redemption === null || failure.kind === "throttled";
+    // A failed press is a redemption; with none, the preview failed, which
+    // only reads the link.
+    const unspent = linkUnspent(failure, { spends: redemption !== null });
     return (
       <Card isAdmin={isAdmin}>
         <p className="login-error" role="alert">

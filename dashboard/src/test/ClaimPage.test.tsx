@@ -1,11 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter, Route, Routes, useLocation, useNavigationType } from "react-router-dom";
+import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate, useNavigationType } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "@retina/shared";
 
 import { api } from "../api/client";
 import ClaimPage from "../pages/ClaimPage";
-import { resetAuth, setAuth, signIn } from "./fakeAuth";
+import { holdSignOut, resetAuth, setAuth, signIn } from "./fakeAuth";
 
 vi.mock("../context/AuthContext", async () => ({ useAuth: (await import("./fakeAuth")).useFakeAuth }));
 
@@ -39,6 +39,43 @@ function renderAt(token = "tok") {
         <Route path="/map" element={<div>map page</div>} />
       </Routes>
       <Where />
+    </MemoryRouter>,
+  );
+}
+
+/** The claim, opened from the map, with the browser's own Back beside it: the
+ *  one way off the card that the card cannot take away. */
+function renderFromTheMap(token = "tok") {
+  function BrowserBack() {
+    const navigate = useNavigate();
+    return (
+      <button type="button" onClick={() => navigate(-1)}>
+        browser back
+      </button>
+    );
+  }
+  return render(
+    <MemoryRouter initialEntries={["/map", `/auth/claim/${token}`]} initialIndex={1}>
+      <BrowserBack />
+      <Routes>
+        <Route path="/auth/claim/:token" element={<ClaimPage />} />
+        <Route path="/overview" element={<div>dashboard</div>} />
+        <Route path="/map" element={<div>map page</div>} />
+      </Routes>
+      <Where />
+    </MemoryRouter>,
+  );
+}
+
+/** Claim link A, with a way to open claim link B in the same page. */
+function renderThenAnother() {
+  return render(
+    <MemoryRouter initialEntries={["/auth/claim/tok-a"]}>
+      <Link to="/auth/claim/tok-b">the other link</Link>
+      <Routes>
+        <Route path="/auth/claim/:token" element={<ClaimPage />} />
+        <Route path="/overview" element={<div>dashboard</div>} />
+      </Routes>
     </MemoryRouter>,
   );
 }
@@ -118,8 +155,8 @@ describe("ClaimPage", () => {
 
     fireEvent.click(confirmButton());
 
-    expect(api.consumeClaim).toHaveBeenCalledWith("abc");
     expect(await screen.findByText(/is yours/i)).toBeInTheDocument();
+    expect(api.consumeClaim).toHaveBeenCalledWith("abc");
   });
 
   it("signs the browser in as the account the click created", async () => {
@@ -241,6 +278,156 @@ describe("the ways off the claim card", () => {
 
     expect(screen.getByText("Checking the link…")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Back to the map" })).toBeInTheDocument();
+  });
+});
+
+describe("a claim still in flight", () => {
+  const user = { id: "u-1", email: "ada@example.com" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetAuth();
+    vi.mocked(api.claimPreview).mockResolvedValue({ node_ref: NODE });
+  });
+
+  // As on the sign-in link's card while it signs in: the request runs whether
+  // or not the person stays, and this card is where its outcome is said.
+  it.each([
+    ["a confirm", () => vi.mocked(api.consumeClaim).mockReturnValue(new Promise(() => {})), confirmButton],
+    ["a decline", () => vi.mocked(api.declineClaim).mockReturnValue(new Promise(() => {})), declineButton],
+  ])("offers no way off the card while %s is in flight", async (_case, pend, button) => {
+    pend();
+    renderAt();
+    await screen.findByText(new RegExp(NODE));
+
+    fireEvent.click(button());
+
+    expect(screen.getByText("One moment…")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Back to the map" })).not.toBeInTheDocument();
+  });
+
+  it("offers it again once the answer is in", async () => {
+    vi.mocked(api.consumeClaim).mockRejectedValue(new HttpError(500, "", null));
+    renderAt();
+    await screen.findByText(new RegExp(NODE));
+
+    fireEvent.click(confirmButton());
+
+    expect(await screen.findByRole("button", { name: "Try again" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Back to the map" })).toBeInTheDocument();
+  });
+
+  // The browser's Back still leaves. The session the server opened is then not
+  // adopted from under whatever page the person went to.
+  it("does not sign in when the confirm answers after the person has gone", async () => {
+    let answer: (body: { node_ref: string; user: typeof user }) => void = () => {};
+    vi.mocked(api.consumeClaim).mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    renderFromTheMap();
+    await screen.findByText(new RegExp(NODE));
+
+    fireEvent.click(confirmButton());
+    fireEvent.click(screen.getByRole("button", { name: "browser back" }));
+    expect(screen.getByText("map page")).toBeInTheDocument();
+
+    await act(async () => answer({ node_ref: NODE, user }));
+
+    expect(signIn).not.toHaveBeenCalled();
+    expect(screen.getByText("map page")).toBeInTheDocument();
+    expect(location()).toHaveTextContent("POP /map");
+  });
+
+  // A sign-out's answer deletes the session cookie, whichever session holds it
+  // by then, so one that landed after the claim would end the session it opens.
+  it("does not confirm until a sign-out still in flight has settled", async () => {
+    const settleSignOut = holdSignOut();
+    vi.mocked(api.consumeClaim).mockResolvedValue({ node_ref: NODE, user });
+    renderAt("abc");
+    await screen.findByText(new RegExp(NODE));
+
+    fireEvent.click(confirmButton());
+    await act(async () => {});
+
+    expect(screen.getByText("One moment…")).toBeInTheDocument();
+    expect(api.consumeClaim).not.toHaveBeenCalled();
+
+    await act(async () => settleSignOut());
+
+    expect(api.consumeClaim).toHaveBeenCalledWith("abc");
+    expect(await screen.findByText(/is yours/i)).toBeInTheDocument();
+    expect(signIn).toHaveBeenCalledWith(user);
+  });
+
+  it("sends nothing when the person leaves before a sign-out in flight has settled", async () => {
+    const settleSignOut = holdSignOut();
+    renderFromTheMap();
+    await screen.findByText(new RegExp(NODE));
+
+    fireEvent.click(confirmButton());
+    fireEvent.click(screen.getByRole("button", { name: "browser back" }));
+    await act(async () => settleSignOut());
+
+    expect(api.consumeClaim).not.toHaveBeenCalled();
+    expect(signIn).not.toHaveBeenCalled();
+    expect(screen.getByText("map page")).toBeInTheDocument();
+  });
+
+  it("leaves the page the person went to alone when the decline answers after them", async () => {
+    let fail: (err: unknown) => void = () => {};
+    vi.mocked(api.declineClaim).mockReturnValue(new Promise((_resolve, reject) => (fail = reject)));
+    renderFromTheMap();
+    await screen.findByText(new RegExp(NODE));
+
+    fireEvent.click(declineButton());
+    fireEvent.click(screen.getByRole("button", { name: "browser back" }));
+    await act(async () => fail(new HttpError(500, "", null)));
+
+    expect(screen.getByText("map page")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(location()).toHaveTextContent("POP /map");
+  });
+});
+
+describe("another claim link opened in the same page", () => {
+  const user = { id: "u-1", email: "ada@example.com" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetAuth();
+    vi.mocked(api.claimPreview).mockImplementation(async (token: string) => ({ node_ref: `node-${token}` }));
+  });
+
+  it("leaves the second link's question alone when the first link's confirm answers late", async () => {
+    let answerFirst: (body: { node_ref: string; user: typeof user }) => void = () => {};
+    vi.mocked(api.consumeClaim).mockReturnValue(new Promise((resolve) => (answerFirst = resolve)));
+    renderThenAnother();
+    await screen.findByText(/node-tok-a/);
+
+    fireEvent.click(confirmButton());
+    await act(async () => {});
+    expect(api.consumeClaim).toHaveBeenCalledWith("tok-a");
+    fireEvent.click(screen.getByText("the other link"));
+    await screen.findByText(/node-tok-b/);
+
+    await act(async () => answerFirst({ node_ref: "node-tok-a", user }));
+
+    expect(signIn).not.toHaveBeenCalled();
+    expect(screen.queryByText(/is yours/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/node-tok-b/)).toBeInTheDocument();
+    expect(confirmButton()).toBeInTheDocument();
+  });
+
+  it("starts the second link from nothing, rather than from the first link's answer", async () => {
+    vi.mocked(api.declineClaim).mockResolvedValue({ ok: true });
+    renderThenAnother();
+    await screen.findByText(/node-tok-a/);
+    fireEvent.click(declineButton());
+    await screen.findByText(/not connected to this address/i);
+
+    vi.mocked(api.claimPreview).mockReturnValue(new Promise(() => {}));
+    fireEvent.click(screen.getByText("the other link"));
+
+    expect(screen.getByText("Checking the link…")).toBeInTheDocument();
+    expect(screen.queryByText(/not connected to this address/i)).not.toBeInTheDocument();
   });
 });
 
