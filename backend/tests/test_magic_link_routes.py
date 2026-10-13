@@ -4,24 +4,46 @@ The invariant most of these exist to protect: /api/auth/magic-link answers the
 same way for an address that owns receivers and one that has never been seen,
 so it cannot be used to find out which addresses do. tests/test_magic_links.py
 covers the token store underneath.
+
+The mail takes its real path: the route queues it in the outbox table and the
+app's own outbox worker, started by the lifespan, sends it. Only
+services.mail.deliver is replaced, so nothing leaves the process.
 """
 
+import asyncio
+import json
+import logging
+import sqlite3
+import threading
 import time
 import uuid
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 
 import routes.auth as _auth
 from core import users
-from core.auth import create_magic_link
+from core.auth import (
+    _MAX_OUTSTANDING_MAGIC_LINKS,
+    INTENT_SIGNIN,
+    MAGIC_LINK_EXPIRY_S,
+    create_magic_link,
+    peek_magic_link,
+)
+from core.database import DATABASE_URL
 from main import app
+from services import mail, mail_outbox, mail_templates
 from services.claim_links import INTENT_CLAIM
+
+_DB = Path(make_url(DATABASE_URL).database or "")
 
 
 @pytest.fixture()
@@ -42,18 +64,116 @@ def _mail_configured(monkeypatch):
     monkeypatch.setenv("CLOUDFLARE_EMAIL_TOKEN", "t")
     monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acct123")
     monkeypatch.setenv("HOST_APP", "app.retina.fm")
+    # The lifespan runs the bounce-feed task as well, which would pull from a
+    # real queue if a backend/.env named one.
+    monkeypatch.delenv("CLOUDFLARE_EMAIL_EVENTS_QUEUE_ID", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_EMAIL_EVENTS_TOKEN", raising=False)
+
+
+def _rows(table: str) -> list[dict]:
+    with closing(sqlite3.connect(_DB)) as con:
+        con.row_factory = sqlite3.Row
+        return [dict(row) for row in con.execute(f"SELECT * FROM {table} ORDER BY rowid")]
+
+
+def _empty_outbox() -> None:
+    with closing(sqlite3.connect(_DB)) as con:
+        con.execute("DELETE FROM mail_outbox")
+        con.commit()
+
+
+class Outbox:
+    """The sign-in mail a test queued, and what the app's outbox worker sent.
+
+    `deliver` stands in for services.mail.deliver, which the worker looks up for
+    each send. The worker sends on a thread of its own once the response has
+    gone, so a test asks for what was sent with `delivered`, which waits for the
+    worker rather than reading a list that may not have caught up yet.
+    """
+
+    def __init__(self) -> None:
+        self._changed = threading.Condition()
+        self._sent: list[mail.Message] = []
+        self._passes = 0
+        self._pass_of_last_send = 0
+
+    def deliver(self, message: mail.Message) -> mail.Delivery:
+        with self._changed:
+            self._sent.append(message)
+            self._pass_of_last_send = self._passes
+            message_id = f"test-{len(self._sent)}"
+            self._changed.notify_all()
+        return mail.Delivery(mail.SENT, "delivered", message_id=message_id)
+
+    def pass_ended(self) -> None:
+        """The worker has taken everything due, recorded it, and is about to wait."""
+        with self._changed:
+            self._passes += 1
+            self._changed.notify_all()
+
+    @staticmethod
+    def queued() -> int:
+        """Sign-in rows written during this test, whatever became of them.
+
+        Exact once a test client's call has returned: the route queues the row
+        after it answers, but within the request, which the client waits out.
+        """
+        return sum(row["kind"] == mail_outbox.KIND_SIGN_IN for row in _rows("mail_outbox"))
+
+    def delivered(self, timeout: float = 10.0) -> list[mail.Message]:
+        """What was sent, once every row queued so far has been sent and settled.
+
+        Nothing queued means nothing to send, so that answers at once. A row
+        that never goes fails the wait, and one sent twice is an extra message.
+        """
+        expected = self.queued()
+
+        def settled() -> bool:
+            if len(self._sent) < expected:
+                return False
+            # The pass that sent the last one records it before it ends.
+            return expected == 0 or self._passes > self._pass_of_last_send
+
+        with self._changed:
+            assert self._changed.wait_for(settled, timeout), (
+                f"{len(self._sent)} of {expected} queued sign-in mails sent within {timeout:.0f}s"
+            )
+            return list(self._sent)
+
+    def idle(self, timeout: float = 10.0) -> None:
+        """Wait until the worker has finished a pass and is waiting for work."""
+        with self._changed:
+            assert self._changed.wait_for(lambda: self._passes > 0, timeout), "the outbox worker never ran"
 
 
 @pytest.fixture(autouse=True)
-def sent(monkeypatch):
-    """Record what would have been mailed, without a thread or a socket."""
-    posted = []
-    monkeypatch.setattr(
-        _auth.mail,
-        "send_in_background",
-        lambda to, subject, body: posted.append((to, subject, body)),
-    )
-    return posted
+def sent(monkeypatch, tmp_path, _clean_db):
+    """The outbox, empty and this test's own, sending to an Outbox.
+
+    Emptied here because nothing else empties it between tests, and a row left
+    over would be sent to this test's stand-in. The key goes in tmp_path rather
+    than beside the shared test database.
+    """
+    _empty_outbox()
+    monkeypatch.setattr(mail_outbox, "_key_path", lambda: tmp_path / mail_outbox.KEY_FILE_NAME)
+    monkeypatch.setattr(mail_outbox, "_fernets", {})
+    outbox = Outbox()
+    monkeypatch.setattr(mail, "deliver", outbox.deliver)
+    until_due = mail_outbox._until_due
+
+    async def reporting(*args):
+        wait = await until_due(*args)
+        outbox.pass_ended()
+        return wait
+
+    monkeypatch.setattr(mail_outbox, "_until_due", reporting)
+    yield outbox
+    # A bare router has no worker, so what it queued is still there.
+    _empty_outbox()
+
+
+def _token(message: mail.Message) -> str:
+    return message.text.split("/auth/link/")[1].split()[0].split("?")[0]
 
 
 @pytest.fixture(autouse=True)
@@ -68,39 +188,141 @@ def _clear_source_quota():
 # ── Requesting a link ─────────────────────────────────────────────────────────
 
 
+def _answer(response) -> tuple:
+    """Everything a caller can read off a response, byte for byte."""
+    return response.status_code, response.headers.raw, response.content
+
+
+async def _post_as_a_server_would(application, payload: dict, events: list[str]) -> tuple[int, bytes]:
+    """POST `payload` to the sign-in route by raw ASGI, and note in `events`
+    the moment the response is complete.
+
+    A test client hands back the response only once the application returns,
+    so it cannot tell an answer that waited on some work from one that went
+    first. Here the last `http.response.body` message is seen as it is sent.
+    As uvicorn does, `receive` says `http.disconnect` once the response is
+    complete, and the call returns when the application does.
+    """
+    body = json.dumps(payload).encode()
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "https",
+        "path": "/api/auth/magic-link",
+        "raw_path": b"/api/auth/magic-link",
+        "root_path": "",
+        "query_string": b"",
+        "headers": [
+            (b"host", b"app.retina.fm"),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode()),
+        ],
+        "client": ("192.0.2.1", 50000),
+        "server": ("app.retina.fm", 443),
+    }
+    answered = asyncio.Event()
+    asked = False
+    status = 0
+    chunks: list[bytes] = []
+
+    async def receive():
+        nonlocal asked
+        if not asked:
+            asked = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        await answered.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        nonlocal status
+        if message["type"] == "http.response.start":
+            status = message["status"]
+        elif message["type"] == "http.response.body":
+            chunks.append(message.get("body", b""))
+            if not message.get("more_body", False):
+                events.append("answered")
+                answered.set()
+
+    await application(scope, receive, send)
+    return status, b"".join(chunks)
+
+
 class TestRequestMagicLink:
     def test_accepts_and_mails_a_link(self, client, sent):
         r = client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
         assert r.status_code == 202
-        assert len(sent) == 1
-        to, subject, body = sent[0]
-        assert to == "owner@example.com"
-        assert "/auth/link/" in body
+        (message,) = sent.delivered()
+        assert message.to == "owner@example.com"
+        assert "/auth/link/" in message.text
 
     def test_the_mail_reads_as_written(self, client, sent):
         client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
-        _, subject, body = sent[0]
-        token = body.split("/auth/link/")[1].split()[0]
-        assert subject == "Sign in to RETINA"
-        assert body == (
+        (message,) = sent.delivered()
+        link = f"https://app.retina.fm/auth/link/{_token(message)}"
+        assert message.subject == "Sign in to RETINA"
+        assert message.text == (
             "A request has been made to sign in to RETINA with this email address.\n\n"
             "Click this link to log in:\n"
-            f"https://app.retina.fm/auth/link/{token}\n\n"
+            f"{link}\n\n"
             "The link works once and expires in 15 minutes.\n\n"
             "If this wasn't you, you may safely ignore this email."
         )
+        assert message.html == mail_templates.sign_in(link).html
+
+    def test_the_mail_goes_through_the_outbox_and_is_sent_once(self, client, sent):
+        """One row, sent once by the lifespan's worker, both parts carrying the
+        one live link, and nothing of the link left in the row once it is sent."""
+        r = client.post("/api/auth/magic-link", json={"email": "owner@example.com", "next": "/settings"})
+        assert r.status_code == 202
+
+        (message,) = sent.delivered()
+        token = _token(message)
+        link = f"https://app.retina.fm/auth/link/{token}?next=/settings"
+        rendered = mail_templates.sign_in(link)
+        assert message == mail.Message(
+            to="owner@example.com", subject=rendered.subject, text=rendered.text, html=rendered.html
+        )
+        assert link in message.text.splitlines()
+        # The button and the link written out beneath it.
+        assert message.html.count(f'href="{link}"') == 2
+
+        (row,) = _rows("mail_outbox")
+        assert row["kind"] == mail_outbox.KIND_SIGN_IN
+        assert row["recipient"] == "owner@example.com"
+        assert row["status"] == row["outcome"] == "sent"
+        assert row["attempts"] == 1
+        assert row["message_id"] == "test-1"
+        assert row["body"] is None
+        assert token not in json.dumps(row)
+
+        # The mail dies with its link, both from one clock reading.
+        (issued,) = _rows("magic_links")
+        assert row["created_at"] == issued["created_at"]
+        assert row["expires_at"] == issued["expires_at"] == issued["created_at"] + MAGIC_LINK_EXPIRY_S
+        assert client.get(f"/api/auth/magic-link/{token}").json() == {"email": "owner@example.com"}
+
+    def test_the_request_wakes_the_worker(self, sent, monkeypatch):
+        """Idle, the worker would not look again for two minutes, so mail that
+        goes within seconds went because the request woke it."""
+        monkeypatch.setattr(mail_outbox, "IDLE_WAIT_S", 120.0)
+        with TestClient(app, raise_server_exceptions=False) as client:
+            sent.idle()
+            r = client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
+            assert r.status_code == 202
+            (message,) = sent.delivered(timeout=10.0)
+        assert message.to == "owner@example.com"
 
     def test_the_mailed_link_carries_the_token_and_nothing_else_does(self, client, sent):
         client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
-        _, _, body = sent[0]
-        token = body.split("/auth/link/")[1].split()[0]
-        assert len(token) > 20
+        (message,) = sent.delivered()
+        assert len(_token(message)) > 20
 
     def test_the_response_body_never_carries_the_token(self, client, sent):
         r = client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
-        _, _, body = sent[0]
-        token = body.split("/auth/link/")[1].split()[0]
-        assert token not in r.text
+        (message,) = sent.delivered()
+        assert _token(message) not in r.text
 
     def test_the_link_host_comes_from_configuration_not_the_request(self, client, sent, monkeypatch):
         """Otherwise: ask for a link to somebody else's address with a forged
@@ -112,17 +334,19 @@ class TestRequestMagicLink:
             json={"email": "victim@example.com"},
             headers={"Host": "evil.example.com"},
         )
-        _, _, body = sent[0]
-        assert "https://app.retina.fm/auth/link/" in body
-        assert "evil.example.com" not in body
+        (message,) = sent.delivered()
+        for part in (message.text, message.html):
+            assert "https://app.retina.fm/auth/link/" in part
+            assert "evil.example.com" not in part
 
     def test_the_link_lands_at_the_consoles_root(self, client, sent, monkeypatch):
         """HOST_APP serves the console at /, and it has no page under /dash/."""
         monkeypatch.setenv("HOST_APP", "app.retina.fm")
         client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
-        _, _, body = sent[0]
-        assert "https://app.retina.fm/auth/link/" in body
-        assert "/dash/" not in body
+        (message,) = sent.delivered()
+        for part in (message.text, message.html):
+            assert "https://app.retina.fm/auth/link/" in part
+            assert "/dash/" not in part
 
     def test_an_unknown_address_gets_the_same_answer_as_a_known_one(self, client):
         """The whole point. A differing status, body or shape here says which
@@ -133,49 +357,264 @@ class TestRequestMagicLink:
         assert first.status_code == second.status_code == 202
         assert first.json() == second.json()
 
+    async def test_every_caller_gets_the_same_bytes(self, client, sent):
+        """An address nobody has seen, one with an account, one holding every
+        link it may, and a caller past its quota: nothing in the four answers
+        tells them apart, though only the first two are mailed."""
+        await users.get_or_create_magic_link_user("known@example.com")
+        for _ in range(_MAX_OUTSTANDING_MAGIC_LINKS):
+            await create_magic_link("capped@example.com")
+
+        def ask(address: str):
+            return client.post("/api/auth/magic-link", json={"email": address})
+
+        answers = {name: ask(f"{name}@example.com") for name in ("unknown", "known", "capped")}
+        assert sent.queued() == 2
+        # The rest of this source's quota, so the next request is past it.
+        fillers = _auth._MAX_MAGIC_LINK_REQUESTS_PER_SOURCE - len(answers)
+        for _ in range(fillers):
+            ask("filler@example.com")
+        answers["over-quota"] = ask("late@example.com")
+        assert sent.queued() == 2 + fillers
+
+        assert answers["unknown"].status_code == 202
+        assert answers["unknown"].json() == {"status": "accepted"}
+        for name, answer in answers.items():
+            assert _answer(answer) == _answer(answers["unknown"]), name
+        assert sorted(message.to for message in sent.delivered()) == sorted(
+            ["unknown@example.com", "known@example.com"] + ["filler@example.com"] * fillers
+        )
+
+    @pytest.mark.parametrize("withdrawal_fails", [False, True], ids=["withdrawn", "withdrawal-fails"])
+    def test_a_mail_that_cannot_be_queued_is_answered_as_one_that_was(
+        self, client, sent, monkeypatch, caplog, withdrawal_fails
+    ):
+        """A different answer would say the address was given a token. The
+        link is killed, since no mail carries it, and the log says what failed
+        without the link, even when the exception quotes it."""
+        caplog.set_level(logging.INFO)
+        minted: list[str] = []
+        create = _auth.create_magic_link
+
+        async def recording(email, **kwargs):
+            token = await create(email, **kwargs)
+            minted.append(token)
+            return token
+
+        monkeypatch.setattr(_auth, "create_magic_link", recording)
+        queued = client.post("/api/auth/magic-link", json={"email": "someone@example.com"})
+
+        async def refusing(_session, message, **_kwargs):
+            raise RuntimeError(f"cannot queue {message.text}")
+
+        async def unkillable(handle):
+            raise RuntimeError(f"cannot withdraw {handle}")
+
+        monkeypatch.setattr(mail_outbox, "enqueue", refusing)
+        if withdrawal_fails:
+            monkeypatch.setattr(_auth, "invalidate_magic_link", unkillable)
+        failed = client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
+
+        assert _answer(failed) == _answer(queued)
+        token = minted[1]
+        assert token not in caplog.text
+        assert "cannot queue" not in caplog.text
+        assert "Could not queue a sign-in mail (RuntimeError); withdrawing its link" in caplog.text
+        (message,) = sent.delivered()
+        assert message.to == "someone@example.com"
+        assert [row["recipient"] for row in _rows("mail_outbox")] == ["someone@example.com"]
+        if withdrawal_fails:
+            assert "cannot withdraw" not in caplog.text
+            assert "Could not withdraw an unsent sign-in link (RuntimeError)" in caplog.text
+        else:
+            assert client.get(f"/api/auth/magic-link/{token}").status_code == 404
+            assert [row["email"] for row in _rows("magic_links")] == ["someone@example.com"]
+
     def test_a_capped_address_still_gets_202(self, client, sent):
         """Reaching the outstanding-link cap must not be visible either: it
         would say the address had been asked for before."""
         with patch.object(_auth, "create_magic_link", return_value=None):
             r = client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
         assert r.status_code == 202
-        assert sent == []
+        assert sent.delivered() == []
 
     def test_a_malformed_address_is_rejected(self, client, sent):
         r = client.post("/api/auth/magic-link", json={"email": "not-an-address"})
         assert r.status_code == 422
-        assert sent == []
+        assert sent.delivered() == []
 
-    def test_unavailable_when_the_link_host_is_unknown(self, client, monkeypatch, sent):
-        """Without HOST_APP the only other source of a host is the request, and
-        the caller controls that. Refusing beats mailing a link to wherever the
-        Host header said. Checked before a token is minted, so nothing is left
-        behind."""
-        monkeypatch.delenv("HOST_APP", raising=False)
+    @pytest.mark.parametrize("cause", ["no-transport", "no-host-app", "unusable-key"])
+    def test_unavailable_refuses_before_minting_or_queueing(self, client, sent, monkeypatch, tmp_path, caplog, cause):
+        """About the deployment, never the address, so it is safe to say. Without
+        HOST_APP the only other source of a host is the request, and the caller
+        controls that: refusing beats mailing a link to wherever the Host header
+        said. Checked before a token is minted, so nothing is left behind."""
+        if cause == "no-transport":
+            monkeypatch.delenv("MAIL_TRANSPORT")
+            reason = "mail is not configured"
+        elif cause == "no-host-app":
+            monkeypatch.delenv("HOST_APP")
+            reason = "HOST_APP is not set"
+        else:
+            key = tmp_path / "unusable" / mail_outbox.KEY_FILE_NAME
+            key.parent.mkdir()
+            key.write_text("not a key")
+            monkeypatch.setattr(mail_outbox, "_key_path", lambda: key)
+            reason = "the outbox key is unusable"
+
         r = client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
+
         assert r.status_code == 503
-        assert sent == []
-
-    @pytest.mark.asyncio
-    async def test_a_refused_request_mints_no_token(self, client, monkeypatch):
-        from sqlalchemy import select
-
-        from core.users import MagicLink, async_session_maker
-
-        monkeypatch.delenv("HOST_APP", raising=False)
-        client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
-        async with async_session_maker() as session:
-            assert (await session.execute(select(MagicLink))).scalars().all() == []
-
-    def test_unavailable_when_mail_is_not_configured(self, client, monkeypatch, sent):
-        monkeypatch.delenv("MAIL_TRANSPORT", raising=False)
-        r = client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
-        assert r.status_code == 503
-        assert sent == []
+        assert r.json() == {"detail": "Sign-in by email is unavailable"}
+        assert f"Sign-in by email is unavailable: {reason}" in caplog.text
+        assert _rows("magic_links") == []
+        assert _rows("mail_outbox") == []
+        assert sent.delivered() == []
 
     def test_no_session_cookie_is_set_by_asking(self, client):
         r = client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
         assert "auth_token" not in r.cookies
+
+
+@pytest.mark.asyncio
+class TestTheAnswerGoesFirst:
+    """How long the request takes is as easy to read as what it says.
+
+    Minting a link writes rows, an address at its cap writes none, and a
+    deactivated account none either, once core/auth.py refuses one. So the
+    response is complete before anything looks at the address. Driven through
+    the whole app, its middleware included, since what a caller can time is
+    the last message the server is handed.
+    """
+
+    @staticmethod
+    async def _make(kind: str, address: str) -> None:
+        if kind in ("known", "deactivated"):
+            user = await users.get_or_create_magic_link_user(address)
+            if kind == "deactivated":
+                async with users.async_session_maker() as session:
+                    await session.execute(update(users.User).where(users.User.id == user.id).values(is_active=False))
+                    await session.commit()
+        elif kind == "capped":
+            for _ in range(_MAX_OUTSTANDING_MAGIC_LINKS):
+                await create_magic_link(address)
+
+    @staticmethod
+    def _record_minting(monkeypatch, events: list[str]) -> list[str | None]:
+        """Note in `events` when a link is asked for, and return what each ask minted."""
+        minted: list[str | None] = []
+        create = _auth.create_magic_link
+
+        async def minting(email, **kwargs):
+            events.append("minting")
+            token = await create(email, **kwargs)
+            minted.append(token)
+            return token
+
+        monkeypatch.setattr(_auth, "create_magic_link", minting)
+        return minted
+
+    @pytest.mark.parametrize("kind", ["fresh", "known", "capped", "deactivated"])
+    async def test_the_response_is_complete_before_the_address_is_looked_at(self, sent, monkeypatch, kind):
+        address = f"{kind}@example.com"
+        await self._make(kind, address)
+        events: list[str] = []
+        minted = self._record_minting(monkeypatch, events)
+
+        status, body = await _post_as_a_server_would(app, {"email": address}, events)
+
+        assert (status, body) == (202, b'{"status":"accepted"}')
+        assert events == ["answered", "minting"]
+        # Done all the same by the time the call returns, which is what a
+        # server's graceful shutdown waits for. Whether a deactivated account
+        # is mailed is core/auth.py's to decide; the order above is the point.
+        (token,) = minted
+        if kind in ("fresh", "known"):
+            assert token is not None
+        elif kind == "capped":
+            assert token is None
+        if token is None:
+            assert sent.queued() == 0
+        else:
+            assert sent.queued() == 1
+            link = await peek_magic_link(token, intent=INTENT_SIGNIN)
+            assert link is not None
+            assert link.email == address
+
+    async def test_the_address_waits_until_the_server_has_the_whole_answer(self, sent, monkeypatch):
+        """Not only until the route has handed it on. A middleware can take the
+        last message at once and pass it on later, as BaseHTTPMiddleware does
+        through a stream; this one does that and nothing else, so the order
+        cannot come from how its tasks happen to be scheduled."""
+        events: list[str] = []
+        minted = self._record_minting(monkeypatch, events)
+        router_app = FastAPI()
+        router_app.include_router(_auth.router)
+
+        async def passing_on_later(scope, receive, send):
+            held: asyncio.Queue = asyncio.Queue()
+
+            async def pass_on():
+                while True:
+                    message = await held.get()
+                    await send(message)
+                    if message["type"] == "http.response.body" and not message.get("more_body", False):
+                        return
+
+            passing = asyncio.create_task(pass_on())
+            await router_app(scope, receive, held.put)
+            await passing
+
+        status, body = await _post_as_a_server_would(passing_on_later, {"email": "owner@example.com"}, events)
+
+        assert (status, body) == (202, b'{"status":"accepted"}')
+        assert events == ["answered", "minting"]
+        (token,) = minted
+        assert token is not None
+        assert sent.queued() == 1
+
+    @pytest.mark.parametrize("failing", ["mint", "queue"])
+    async def test_a_failure_after_the_answer_is_logged_and_kept_from_the_server(
+        self, sent, monkeypatch, caplog, failing
+    ):
+        """Nobody hears of it but the log, which says what failed without the
+        address or the link, even when the exception quotes them. Through a
+        bare router, since the app's BaseHTTPMiddleware swallows whatever
+        escapes after the answer and would hide an escape here. A link minted
+        for a mail that could not be queued is withdrawn."""
+        caplog.set_level(logging.INFO)
+        minted: list[str] = []
+        create = _auth.create_magic_link
+
+        async def minting(email, **kwargs):
+            if failing == "mint":
+                raise OperationalError(f"INSERT {email}", {}, Exception("database is locked"))
+            token = await create(email, **kwargs)
+            minted.append(token)
+            return token
+
+        async def refusing(_session, message, **_kwargs):
+            raise RuntimeError(f"cannot queue to {message.to}: {message.text}")
+
+        monkeypatch.setattr(_auth, "create_magic_link", minting)
+        monkeypatch.setattr(mail_outbox, "enqueue", refusing)
+        application = FastAPI()
+        application.include_router(_auth.router)
+
+        status, body = await _post_as_a_server_would(application, {"email": "someone@example.com"}, [])
+
+        assert (status, body) == (202, b'{"status":"accepted"}')
+        errors = [record.getMessage() for record in caplog.records if record.levelno >= logging.ERROR]
+        assert errors == [
+            "Could not issue a sign-in link (OperationalError)"
+            if failing == "mint"
+            else "Could not queue a sign-in mail (RuntimeError); withdrawing its link"
+        ]
+        assert len(minted) == (failing == "queue")
+        for leaked in ["someone@example.com", "database is locked", "cannot queue", *minted]:
+            assert leaked not in caplog.text
+        assert _rows("mail_outbox") == []
+        assert _rows("magic_links") == []
 
 
 class TestSignInDestination:
@@ -186,8 +625,11 @@ class TestSignInDestination:
 
     @staticmethod
     def _link(sent):
-        _, _, body = sent[0]
-        return next(line for line in body.splitlines() if "/auth/link/" in line)
+        """The link the mail carries, the same in both parts."""
+        (message,) = sent.delivered()
+        link = next(line for line in message.text.splitlines() if "/auth/link/" in line)
+        assert f'href="{link}"' in message.html
+        return link
 
     @pytest.mark.parametrize("path", ["/settings", "/nodes/ret-0042", "/sim/physics", "/data/2026/09/17"])
     def test_the_link_carries_it(self, client, sent, path):
@@ -223,7 +665,7 @@ class TestSignInDestination:
         page they wanted, not the sign-in."""
         r = client.post("/api/auth/magic-link", json={"email": "owner@example.com", "next": path})
         assert r.status_code == 202
-        assert len(sent) == 1
+        assert len(sent.delivered()) == 1
         assert "?" not in self._link(sent)
 
     def test_it_does_not_change_the_answer(self, client):
@@ -238,10 +680,10 @@ class TestSourceQuota:
     def test_beyond_the_quota_nothing_is_mailed(self, client, sent):
         for _ in range(_auth._MAX_MAGIC_LINK_REQUESTS_PER_SOURCE):
             client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
-        before = len(sent)
+        before = len(sent.delivered())
         r = client.post("/api/auth/magic-link", json={"email": "someone@example.com"})
         assert r.status_code == 202, "the quota must not be visible in the response"
-        assert len(sent) == before
+        assert len(sent.delivered()) == before
 
     def test_a_full_source_table_refuses_new_sources(self, client, sent, monkeypatch):
         """The table is bounded, or a flood from many addresses grows it until
@@ -249,15 +691,15 @@ class TestSourceQuota:
         monkeypatch.setattr(_auth, "_MAX_MAGIC_LINK_SOURCES", 0)
         r = client.post("/api/auth/magic-link", json={"email": "owner@example.com"})
         assert r.status_code == 202
-        assert sent == []
+        assert sent.delivered() == []
 
     def test_the_quota_counts_requests_not_addresses(self, client, sent):
         """Otherwise it bounds nothing: the abuse is mailing many strangers."""
         for i in range(_auth._MAX_MAGIC_LINK_REQUESTS_PER_SOURCE):
             client.post("/api/auth/magic-link", json={"email": f"target{i}@example.com"})
-        before = len(sent)
+        before = len(sent.delivered())
         client.post("/api/auth/magic-link", json={"email": "one-more@example.com"})
-        assert len(sent) == before
+        assert len(sent.delivered()) == before
 
 
 def _peer(application, source, *, trusted_proxy=False):
@@ -288,12 +730,13 @@ class TestSourceDerivation:
 
     @staticmethod
     def _mailed(caller, sent, **kwargs):
-        """Whether asking for a link got one, without reading the response: the
-        answer is 202 either way, which is the point of the endpoint."""
-        before = len(sent)
+        """Whether asking for a link got one queued, without reading the
+        response: the answer is 202 either way, which is the point of the
+        endpoint. Queued rather than sent, since a bare router runs no worker."""
+        before = sent.queued()
         response = caller.post("/api/auth/magic-link", json={"email": "owner@example.com"}, **kwargs)
         assert response.status_code == 202
-        return len(sent) > before
+        return sent.queued() > before
 
     def test_a_forwarding_header_from_an_untrusted_peer_buys_no_quota(self, router_app, sent, monkeypatch):
         monkeypatch.setattr(_auth, "_MAX_MAGIC_LINK_REQUESTS_PER_SOURCE", 1)
