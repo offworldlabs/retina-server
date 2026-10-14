@@ -1,14 +1,16 @@
 """Authentication routes: sign-in by emailed link, session, node ownership.
 
 Sign-in is a link mailed to the address (services/mail.py); there is no
-password and no third-party provider. JWT issuance and cookie management are
-fully delegated to fastapi-users' JWTStrategy + CookieTransport.
+password and no third-party provider. A redeemed link opens a session held on
+the server (core/sessions.py), whose token is the auth_token cookie, and a
+signed-in account can list its sessions and end them here.
 """
 
 import logging
 import os
 import re
 import threading
+from dataclasses import replace
 from ipaddress import IPv6Address, ip_address, ip_network
 from time import monotonic
 from urllib.parse import urlencode
@@ -17,17 +19,17 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, EmailStr
 
-from core import state
+from core import sessions, state
 from core.auth import INTENT_SIGNIN, consume_magic_link, create_magic_link, get_user_nodes, peek_magic_link
 from core.node_ids import POLLED_BLAH2, system_of
 from core.users import (
     ACCESS_LOGOUT_PATH,
     ANONYMOUS_USER,
-    JWT_LIFETIME_SECONDS,
     MagicLinkRefused,
+    User,
+    UserSession,
     async_session_maker,
     get_current_user,
-    get_jwt_strategy,
     get_or_create_magic_link_user,
     has_access_session,
     record_visit,
@@ -59,6 +61,10 @@ def _client_source(request: Request) -> str:
     client address and uvicorn trusts only the configured proxy peer. IPv6
     addresses in one /64 share a quota, including privacy-address rotation.
     This is an admission limit rather than an identity; mobile clients may roam.
+
+    Finer than sessions.coarse_ip on purpose, so keep the two apart: that one
+    is a label kept on file, coarse so no address is stored, where a /24 or a
+    /48 here would put unrelated callers in one quota.
     """
     host = request.client.host if request.client else None
     if not host:
@@ -74,26 +80,45 @@ def _client_source(request: Request) -> str:
     return str(address)
 
 
-async def _open_session(user, **extra) -> JSONResponse:
-    """Answer with the signed-in user, and the fastapi-users JWT in the auth_token cookie.
+def _client_network(request: Request) -> str | None:
+    """The network the caller is in, as a session records it: never the address itself."""
+    return sessions.coarse_ip(request.client.host if request.client else None)
+
+
+async def _open_session(user, request: Request, **extra) -> JSONResponse:
+    """Answer with the signed-in user, and a new session's token in the auth_token cookie.
 
     Opening a session is itself a visit, and the answer carries it. Recorded
-    once the token exists, so a sign-in that fails leaves no visit behind.
+    once the session exists, so a sign-in that fails leaves no visit behind.
+    Raises InactiveAccount, having written nothing, for an account deactivated
+    since the caller last checked it.
     """
-    strategy = get_jwt_strategy()
-    token = await strategy.write_token(user)
+    token, session = await sessions.open_session(
+        user, user_agent=request.headers.get("user-agent"), ip=_client_network(request)
+    )
     await record_visit(user)
     response = JSONResponse({"user": _session_user(user_to_dict(user)), **extra})
-    response.set_cookie(
-        "auth_token",
-        token,
-        max_age=JWT_LIFETIME_SECONDS,
-        httponly=True,
-        secure=True,
-        samesite="lax",
-        path="/",
-    )
+    sessions.set_session_cookie(response, token, session)
     return response
+
+
+async def _exchange_legacy_cookie(
+    request: Request, response: Response, resolved: sessions.Resolved
+) -> sessions.Resolved | None:
+    """Swap a JWT cookie nobody has exchanged yet for a session, and set the new cookie on `response`.
+
+    Returns what the cookie resolves to from now on, or None when the exchange
+    opened nothing: another request exchanged or signed out the same cookie
+    first, or the account was deactivated or signed out everywhere since.
+    """
+    exchanged = await sessions.exchange_legacy(
+        resolved, user_agent=request.headers.get("user-agent"), ip=_client_network(request)
+    )
+    if exchanged is None:
+        return None
+    token, session = exchanged
+    sessions.set_session_cookie(response, token, session)
+    return replace(resolved, session=session)
 
 
 # ── Magic links ───────────────────────────────────────────────────────────────
@@ -254,12 +279,13 @@ async def consume_magic_link_route(body: MagicLinkConsume, request: Request):
 
     try:
         user = await get_or_create_magic_link_user(email)
-    except MagicLinkRefused:
-        # Same answer as a token that never existed. A distinct one would say
-        # which addresses are privileged, and the link is spent either way.
+        return await _open_session(user, request)
+    except (MagicLinkRefused, sessions.InactiveAccount):
+        # A deactivated account, refused before the session or, deactivated in
+        # between, by it. Same answer as a token that never existed. A distinct
+        # one would say which addresses are deactivated, and the link is spent
+        # either way.
         raise HTTPException(status_code=400, detail=_DEAD_LINK) from None
-
-    return await _open_session(user)
 
 
 # ── Claiming a node ───────────────────────────────────────────────────────────
@@ -285,7 +311,7 @@ async def preview_claim_link(token: str):
 
 
 @router.post("/claim/consume")
-async def consume_claim_link(body: ClaimToken):
+async def consume_claim_link(body: ClaimToken, request: Request):
     """Redeem a claim link: bind the node, and sign the clicker in.
 
     A POST rather than the GET the mail links to. Mail providers and security
@@ -300,7 +326,13 @@ async def consume_claim_link(body: ClaimToken):
         # links cannot be used to learn which ones were ever real.
         raise HTTPException(status_code=400, detail="That link is no longer valid")
 
-    return await _open_session(user, node_ref=node_ref)
+    try:
+        return await _open_session(user, request, node_ref=node_ref)
+    except sessions.InactiveAccount:
+        # Deactivated after the node was bound, which is answered as an account
+        # deactivated before is. Deactivation leaves an account's nodes with
+        # it, as for an owner deactivated just after a claim.
+        raise HTTPException(status_code=400, detail="That link is no longer valid") from None
 
 
 @router.post("/claim/decline")
@@ -351,8 +383,20 @@ async def _remove_polled_radar(node_id: str, user_id: str) -> bool:
 
 
 @router.get("/me")
-async def me(request: Request):
+async def me(request: Request, response: Response):
     user_dict = await get_current_user(request)
+    resolved = await sessions.resolve_request(request)
+    if resolved is not None and resolved.session is None:
+        # A JWT cookie from before sessions, which every page load brings here
+        # first: swapped for a session, so that signing out can end it. The
+        # answer is the same either way, so a swap that cannot write (a locked
+        # database, a full disk) is dropped and the next page load tries again.
+        # A cookie another request has just exchanged keeps working as an alias
+        # of the session that one opened.
+        try:
+            await _exchange_legacy_cookie(request, response, resolved)
+        except Exception:
+            logger.warning("Could not exchange a legacy cookie for a session", exc_info=True)
     # Delegated rather than short-circuiting on AUTH_BYPASS, so this agrees with
     # what require_admin decided: a verified Access assertion outranks the
     # bypass, and answering "Admin (no auth)" while the admin routes attribute a
@@ -365,22 +409,108 @@ async def me(request: Request):
 async def logout(request: Request):
     """End the session, and say so when the app cannot end it alone.
 
-    Deleting auth_token is the whole job for a cookie session. On the admin
-    hostnames it is not: identity comes from an Access assertion Cloudflare
-    re-injects from a cookie on its own domain, which this app can neither read
-    nor delete, so the next request would be verified and admitted again. The
-    caller is handed the edge's logout path to visit instead, because only a
-    top-level navigation there clears it.
+    Ending the auth_token's session on the server, so that no copy of the
+    cookie works either, and deleting the cookie is the whole job for a cookie
+    session. On the admin hostnames it is not: identity comes from an Access
+    assertion Cloudflare re-injects from a cookie on its own domain, which this
+    app can neither read nor delete, so the next request would be verified and
+    admitted again. The caller is handed the edge's logout path to visit
+    instead, because only a top-level navigation there clears it.
 
     Both credentials are cleared rather than whichever one authenticated this
     request: a person may hold an Access session and an auth_token at once.
     """
-    body = {"ok": True}
+    body: dict[str, bool | str] = {"ok": True}
     if await has_access_session(request):
         body["redirect"] = ACCESS_LOGOUT_PATH
+    resolved = await sessions.resolve_request(request)
+    if resolved is not None:
+        await sessions.end(resolved)
     response = JSONResponse(body)
-    response.delete_cookie("auth_token", path="/")
+    sessions.clear_session_cookie(response)
     return response
+
+
+async def _signed_in_session(request: Request, response: Response) -> tuple[User, UserSession]:
+    """The account the auth_token cookie signs in, and the session it is. 401 if none.
+
+    The cookie's alone: an Access identity or the anonymous admin holds no
+    session here to list or end. A JWT cookie nobody has exchanged is exchanged
+    first, so there is always a session to call current, and 503 if that
+    exchange cannot be written.
+    """
+    resolved = await sessions.resolve_request(request)
+    if resolved is not None and resolved.session is None:
+        try:
+            exchanged = await _exchange_legacy_cookie(request, response, resolved)
+        except Exception:
+            # Logged and dropped as in me(), but these routes need the session
+            # it would have opened. A 401 would read as signed out, where the
+            # cookie still signs in and the retry exchanges it.
+            logger.warning("Could not exchange a legacy cookie for a session", exc_info=True)
+            raise HTTPException(
+                status_code=503, detail="Sessions are temporarily unavailable", headers={"Retry-After": "5"}
+            ) from None
+        # None when another request exchanged or signed out the same cookie
+        # first. Resolved again, as it may now alias the session that one opened.
+        resolved = exchanged or await sessions.resolve(request.cookies.get(sessions.COOKIE_NAME))
+    if resolved is None or resolved.session is None:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    await record_visit(resolved.user)
+    return resolved.user, resolved.session
+
+
+@router.get("/me/sessions")
+async def my_sessions(request: Request, response: Response):
+    """The caller's signed-in browsers, the most recently used first.
+
+    Enough to tell one's own devices apart and end the ones that should not be
+    signed in: a label for the browser and the network it was in, never the
+    token or its hash. `id` is what a revocation names, and `current` marks the
+    session asking.
+    """
+    user, current = await _signed_in_session(request, response)
+    return [
+        {
+            "id": row.id,
+            "created_at": row.created_at.timestamp(),
+            "last_used_at": row.last_used_at.timestamp(),
+            "expires_at": row.expires_at.timestamp(),
+            "user_agent": row.user_agent,
+            "ip": row.ip,
+            "current": row.id == current.id,
+        }
+        for row in await sessions.list_sessions(user.id)
+    ]
+
+
+@router.delete("/me/sessions/{session_id}")
+async def revoke_my_session(session_id: str, request: Request, response: Response):
+    """Sign one of the caller's sessions out.
+
+    Another account's session answers as one that does not exist. Ending the
+    caller's own is signing out, so its cookie goes as well.
+    """
+    user, current = await _signed_in_session(request, response)
+    if not await sessions.revoke_session(user.id, session_id):
+        # Answered rather than raised, so that a cookie exchanged on the way in
+        # still reaches the browser.
+        response.status_code = 404
+        return {"detail": "Session not found"}
+    if session_id == current.id:
+        sessions.clear_session_cookie(response)
+    return {"ok": True}
+
+
+@router.post("/me/sessions/revoke-others")
+async def revoke_my_other_sessions(request: Request, response: Response):
+    """Sign the caller out everywhere but here, answering how many sessions ended.
+
+    Every JWT cookie the account still has out goes with them, including the
+    one this session was exchanged from (core/sessions.py, revoke_other_sessions).
+    """
+    user, current = await _signed_in_session(request, response)
+    return {"revoked": await sessions.revoke_other_sessions(user.id, current.id)}
 
 
 # ── Node ownership self-service ───────────────────────────────────────────────

@@ -359,7 +359,7 @@ def test_migrate_boots_when_the_revision_cannot_be_read(tmp_path):
     assert "database is locked" in result.stdout
 
 
-_APP_STACK = ("fastapi", "fastapi_users", "fastapi_users_db_sqlalchemy", "pydantic", "starlette")
+_APP_STACK = ("fastapi", "pydantic", "starlette")
 
 
 def test_migrate_imports_nothing_of_the_app(tmp_path):
@@ -635,3 +635,54 @@ def test_0021_round_trips_an_existing_account(tmp_path):
     # SQLite rewrites the table to drop a column, so the unique index that
     # keeps one account per address has to come back with it.
     assert ("ix_user_email", 1) in _query(db, "SELECT name, \"unique\" FROM pragma_index_list('user')")
+
+
+# ── 0022: user_sessions and retired_legacy_tokens ────────────────────────────
+
+
+def test_0022_round_trips_an_existing_account(tmp_path):
+    """Both tables hang off the account and go with it, and an account from
+    before them is untouched by a downgrade and an upgrade again."""
+    import sqlite3
+
+    account = "4f8e2c1a-6b3d-4e5f-9a7b-0c1d2e3f4a5b"
+    db = tmp_path / "sessions.db"
+    up = _alembic("upgrade", "0021", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    con = sqlite3.connect(db)
+    con.execute(
+        'INSERT INTO "user" (id, email, hashed_password, is_active, is_superuser, is_verified) '
+        f"VALUES ('{account}', 'ada@example.com', 'x', 1, 0, 1)"
+    )
+    con.commit()
+    con.close()
+
+    tables = (
+        "SELECT name FROM sqlite_master WHERE type = 'table' "
+        "AND name IN ('user_sessions', 'retired_legacy_tokens') ORDER BY name"
+    )
+    up = _alembic("upgrade", "0022", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    assert _query(db, tables) == [("retired_legacy_tokens",), ("user_sessions",)]
+    foreign_keys = "SELECT \"table\", on_delete FROM pragma_foreign_key_list('{}')"
+    for table in ("user_sessions", "retired_legacy_tokens"):
+        assert _query(db, foreign_keys.format(table)) == [("user", "CASCADE")]
+    # A session on file, so the downgrade drops a table with a row in it.
+    con = sqlite3.connect(db)
+    con.execute(
+        "INSERT INTO user_sessions (id, user_id, token_hash, created_at, last_used_at, expires_at) "
+        f"VALUES ('s1', '{account}', '{'0' * 64}', '2026-10-01 12:00:00', '2026-10-01 12:00:00', '2026-10-08 12:00:00')"
+    )
+    con.commit()
+    con.close()
+
+    down = _alembic("downgrade", "0021", db_path=db)
+    assert down.returncode == 0, down.stdout + down.stderr
+    assert _query(db, tables) == []
+    assert _query(db, 'SELECT id, email FROM "user"') == [(account, "ada@example.com")]
+
+    again = _alembic("upgrade", "0022", db_path=db)
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert _query(db, tables) == [("retired_legacy_tokens",), ("user_sessions",)]
+    assert _query(db, "SELECT COUNT(*) FROM user_sessions") == [(0,)]
+    assert _query(db, 'SELECT id, email FROM "user"') == [(account, "ada@example.com")]
