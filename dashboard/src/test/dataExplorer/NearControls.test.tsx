@@ -11,7 +11,7 @@ import {
 
 const TODAY = "2026-09-17";
 
-function setup(over: Partial<ExplorerFilters> = {}) {
+function setup(over: Partial<ExplorerFilters> = {}, centreName?: string) {
   const onChange = vi.fn();
   const onToggleMap = vi.fn();
   const onRadiusChange = vi.fn();
@@ -23,6 +23,8 @@ function setup(over: Partial<ExplorerFilters> = {}) {
       mapOpen={false}
       onToggleMap={onToggleMap}
       onChange={onChange}
+      positions={centreName ? "exact" : undefined}
+      centreName={centreName}
     />,
   );
   return { onChange, onToggleMap, onRadiusChange, view };
@@ -114,5 +116,56 @@ describe("NearControls", () => {
     const { onToggleMap } = setup();
     fireEvent.click(screen.getByRole("button", { name: "Map" }));
     expect(onToggleMap).toHaveBeenCalled();
+  });
+});
+
+describe("NearControls, centred on one of the owner's nodes", () => {
+  const ROOF = { node: "nderoof00000001", km: 25 };
+
+  it("shows the node by name in place of its coordinates", () => {
+    setup({ near: ROOF }, "Roof");
+    expect(screen.getByTestId("de-near-node")).toHaveTextContent("Roof");
+    expect(screen.queryByLabelText("centre latitude")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("centre longitude")).not.toBeInTheDocument();
+    expect(km()).toHaveValue(25);
+    // The label still names the field it sits over.
+    expect(screen.getByLabelText(/Near \(exact node position\)/)).toBe(km());
+  });
+
+  it("falls back to the node's id when it has no name to show", () => {
+    setup({ near: ROOF });
+    expect(screen.getByTestId("de-near-node")).toHaveTextContent("nderoof00000001");
+  });
+
+  it("keeps the centre on the node when the radius changes", () => {
+    const { onChange } = setup({ near: ROOF }, "Roof");
+    type(km(), "40");
+    expect(nearFrom(onChange)).toEqual({ node: "nderoof00000001", km: 40 });
+  });
+
+  it("does not rewrite the query string when the radius is left as it was", () => {
+    const { onChange } = setup({ near: ROOF }, "Roof");
+    fireEvent.blur(km());
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("takes the centre off, and offers the coordinate fields again", () => {
+    const { onChange, view } = setup({ near: ROOF }, "Roof");
+    fireEvent.click(screen.getByRole("button", { name: "Clear the centre" }));
+    expect(nearFrom(onChange)).toBeNull();
+
+    view.rerender(
+      <NearControls
+        filters={defaultFilters(TODAY)}
+        radiusKm={25}
+        onRadiusChange={vi.fn()}
+        mapOpen={false}
+        onToggleMap={vi.fn()}
+        onChange={vi.fn()}
+        positions="exact"
+      />,
+    );
+    expect(lat()).toHaveValue(null);
+    expect(lon()).toHaveValue(null);
   });
 });

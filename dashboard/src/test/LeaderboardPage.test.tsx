@@ -14,7 +14,7 @@ const ADA = { id: "u1", email: "ada@example.com", name: "Ada" };
 const BOB = { id: "u2", email: "bob@example.com", name: "Bob" };
 
 /** A published row. The miss-detection fields are absent, which is the shape
- *  /api/admin/leaderboard sends a caller with no session. */
+ *  /api/radar/leaderboard sends a caller with no session. */
 const publicRow = {
   node_ref: "ret-abc",
   name: "ret-abc",
@@ -398,7 +398,7 @@ describe("the owner's nodes across a change of identity", () => {
     await adaOnScreen();
     const fetch = serve(fleet(10), [owned("ret-6")]);
     act(() => setAuth({ user: null }));
-    await waitFor(() => expect(paths(fetch)).toContainEqual(expect.stringContaining("/api/admin/leaderboard")));
+    await waitFor(() => expect(paths(fetch)).toContainEqual(expect.stringContaining("/api/radar/leaderboard")));
     await screen.findByRole("heading", { name: "Rankings" });
     expect(screen.queryByRole("heading", { name: "Your nodes" })).not.toBeInTheDocument();
     expect(screen.queryByText("Yours")).not.toBeInTheDocument();

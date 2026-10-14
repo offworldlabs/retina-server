@@ -20,18 +20,16 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, EmailStr
 from starlette.types import Receive
 
-from core import sessions, state
+from core import sessions
 from core.auth import (
     INTENT_SIGNIN,
     MAGIC_LINK_EXPIRY_S,
     _hash_token,
     consume_magic_link,
     create_magic_link,
-    get_user_nodes,
     invalidate_magic_link,
     peek_magic_link,
 )
-from core.node_ids import POLLED_BLAH2, system_of
 from core.users import (
     ACCESS_LOGOUT_PATH,
     ANONYMOUS_USER,
@@ -46,19 +44,13 @@ from core.users import (
     user_to_dict,
 )
 from routes.sim_ingest import synthetic_fleet_enabled
-from services import blah2_poller, mail, mail_outbox, mail_templates, polled_registration, publication
-from services.node_claim_store import claim_addresses
+from services import mail, mail_outbox, mail_templates, polled_registration
 from services.node_claiming import (
     ClaimOutcome,
     complete_claim,
     decline_claim,
     preview_claim,
-    release_node,
 )
-from services.node_config import carrier_hz, position_status
-from services.node_refs import owner_identity, public_name
-from services.polled_radars import owner_views, remove_polled_radar
-from services.tasks.aircraft_flush import owner_bytes
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -401,37 +393,6 @@ async def decline_claim_link(body: ClaimToken):
     return {"ok": True}
 
 
-@router.delete("/me/nodes/{node_id}/claim")
-async def release_my_node(node_id: str, request: Request):
-    """Hand a node back, so its next owner can claim it, or remove a polled radar.
-
-    Guarded the same way every owner-scoped route here is, so a node somebody
-    else owns answers exactly as one that does not exist. A polled radar is
-    removed rather than handed back, since nothing can claim one afterwards
-    (services/polled_radars.py, remove_polled_radar).
-    """
-    user = await _owned_node(request, node_id)
-    if system_of(node_id) == POLLED_BLAH2:
-        released = await _remove_polled_radar(node_id, user["id"])
-    else:
-        released = await release_node(node_id, user["id"])
-    if not released:
-        # Owned a moment ago and not now: a release that raced another release,
-        # or an administrator reassigning it. Either way it is gone, which is
-        # what was asked for.
-        raise HTTPException(status_code=404, detail="Node not found")
-    return {"ok": True}
-
-
-async def _remove_polled_radar(node_id: str, user_id: str) -> bool:
-    async with async_session_maker() as session:
-        async with session.begin():
-            if not await remove_polled_radar(session, node_id, user_id=user_id):
-                return False
-    polled_registration.let_go(node_id)
-    return True
-
-
 # ── Session endpoints ─────────────────────────────────────────────────────────
 
 
@@ -564,97 +525,3 @@ async def revoke_my_other_sessions(request: Request, response: Response):
     """
     user, current = await _signed_in_session(request, response)
     return {"revoked": await sessions.revoke_other_sessions(user.id, current.id)}
-
-
-# ── Node ownership self-service ───────────────────────────────────────────────
-
-
-async def _owned_node(request: Request, node_id: str) -> dict:
-    """The caller, having established they own `node_id`.  404 if they do not.
-
-    404 rather than 403, deliberately, and the same wording as a node that does
-    not exist: the two answers differ only in confirming the id is real, node
-    ids are guessable, and an id that resolves is already a hint about where a
-    receiver is.  The per-node analytics route makes the same trade for the same
-    reason.
-    """
-    user = await get_current_user(request)
-    if node_id not in await get_user_nodes(user["id"]):
-        raise HTTPException(status_code=404, detail="Node not found")
-    return user
-
-
-@router.get("/me/nodes")
-async def my_nodes(request: Request):
-    """The caller's own nodes, under both identifiers.
-
-    Authenticated and scoped to the owner, so the node_id is theirs to see and
-    stays. The ref rides along because every public surface is keyed on it, and
-    a consumer merging this list with one of those needs one key space rather
-    than the same node twice under two. It is null for a node with no published
-    handle, which is a node that appears on no public surface either.
-
-    `polled` is null but for a polled radar, whose address it carries: the
-    owner's to see, as claimed_with is.
-    """
-    user = await get_current_user(request)
-    node_ids = await get_user_nodes(user["id"])
-    out = []
-    with state.connected_nodes_lock:
-        snapshot = {nid: dict(state.connected_nodes.get(nid, {})) for nid in node_ids}
-    private = await publication.registered_private(node_ids)
-    # One query for the list rather than a lookup per node. The address is what
-    # the owner was mailed to claim the node with, so it is theirs to see; it is
-    # not published anywhere else.
-    claimed_with = await claim_addresses(node_ids)
-    async with async_session_maker() as session:
-        polled = await owner_views(session, [nid for nid in node_ids if system_of(nid) == POLLED_BLAH2])
-    for nid in node_ids:
-        info = snapshot.get(nid) or {}
-        cfg = info.get("config", {}) or {}
-        ref = owner_identity(nid)
-        radar = polled.get(nid)
-        status = info.get("status", "never_connected")
-        # The poller knows within a few polls, where the offline sweep waits out
-        # its threshold. Here rather than in connected_nodes, since the sweep
-        # logs a node going offline only when it is the one to mark it so.
-        # Liveness never says online on its own: it is the last the poller
-        # wrote, and stands still where nothing polls.
-        if radar is not None and radar["liveness"] == blah2_poller.UNREACHABLE:
-            status = "disconnected"
-        out.append(
-            {
-                "node_id": nid,
-                "node_ref": ref,
-                # The console names a node by its ref, so an unnamed node, or
-                # one whose name is a node id, is called by that instead.
-                "name": public_name(cfg.get("name"), ref, node_ids),
-                "status": status,
-                "last_heartbeat": info.get("last_heartbeat"),
-                # Here as well as on /api/radar/nodes, which leaves private nodes out.
-                "config_hash": info.get("config_hash"),
-                "is_synthetic": info.get("is_synthetic", False),
-                "rx_lat": cfg.get("rx_lat"),
-                "rx_lon": cfg.get("rx_lon"),
-                "position_status": position_status(cfg),
-                "frequency": carrier_hz(cfg),
-                "location_private": nid in private,
-                "claimed_with": claimed_with.get(nid),
-                "polled": radar,
-            }
-        )
-    return out
-
-
-@router.get("/me/aircraft")
-async def my_aircraft(request: Request):
-    """The owner feed's current frame: aircraft and arcs from the caller's nodes.
-
-    The snapshot /ws/aircraft/owner sends on connect, for a page that polls.
-    Filtered from the unredacted frame, because the public feed drops a private
-    node's single-node tracks, and a polled radar on probation counts as
-    private, so its owner would find nothing of their own there.
-    """
-    user = await get_current_user(request)
-    owned = set(await get_user_nodes(user["id"]))
-    return Response(content=owner_bytes(state.latest_aircraft_json, owned), media_type="application/json")

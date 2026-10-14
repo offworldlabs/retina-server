@@ -11,6 +11,7 @@ and its writers are worth keeping in one direction.
 """
 
 import logging
+from datetime import UTC, datetime
 from enum import StrEnum
 
 from sqlalchemy import select, update
@@ -150,6 +151,9 @@ async def complete_claim(token: str):
             if claim is None or claim.email != email:
                 return ClaimOutcome.INVALID, None, None
             claim.user_id = str(user.id)
+            # What the node recorded before this click was not theirs.
+            claim.owned_since = datetime.now(UTC)
+            claim.owned_since_user_id = claim.user_id
             # Spends the challenge as well as confirming the address, so the
             # link cannot be walked into twice. The same row as the binding, so
             # the two are one write.
