@@ -40,6 +40,8 @@ backend/data/*.json.migrated
 backend/data/users.db
 backend/data/users.db-shm
 backend/data/users.db-wal
+backend/data/mail-outbox.key
+backend/data/.mail-outbox.key.*
 .vscode/*
 .claude/*
 skills-lock.json

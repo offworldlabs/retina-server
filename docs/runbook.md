@@ -171,6 +171,10 @@ advertised. Get them from the DigitalOcean console or your own `~/.ssh/config`.
 | **Metrics endpoint** | `adm /api/admin/metrics` (defined below) |
 | **Dashboard** | `tst /api/test/dashboard` (defined below) |
 
+Deployed boxes log at INFO, so the log holds each node TCP connection's peer
+address (`services/tcp_handler.py`). Compose rotates it at 50 MB × 5 files
+(`docker-compose.yml`).
+
 `/api/admin/*` requires an administrator, and a request to localhost arrives
 below Cloudflare with no assertion for the origin to verify, so a bare `curl`
 answers 401. Define `adm` once per shell from a browser session on the console:
@@ -294,6 +298,89 @@ a revision that reaches a droplet undeclared is graded destructive.
 
 ---
 
+## Outbound mail
+
+Sign-in and node-claim links go through a durable outbox: the table
+`mail_outbox` in `backend/data/users.db`, drained by a worker inside the app. A
+failed send is retried with backoff, from about 10 s doubling to 5 min, at most
+8 attempts, and a link with under a minute to live is never sent. A restart
+loses nothing. Settled rows are kept 7 days.
+
+Final statuses are `sent`, `undeliverable` (hard bounce or suppressed recipient
+in the send answer), `rejected`, `failed` (8 attempts, or the body unreadable),
+`expired` and `cancelled` (replaced by a newer claim mail); `queued` and
+`settling` are still in flight. A `settling` row was sent or refused already
+and waits only on the step that records the outcome on its claim. If that step
+keeps failing, the row settles anyway once its link has died and it has been
+taken 17 times, with `last_error` starting "the claim handler never completed"
+and an ERROR naming the row id. To see where a mail went, read the status and
+`last_error`, never the body (a live body is the link itself, wiped on settle):
+
+```bash
+cd /opt/retina-server && docker compose exec -T server python3 - <<'PY'
+import sqlite3
+db = sqlite3.connect("file:/app/backend/data/users.db?mode=ro", uri=True)
+print(db.execute("SELECT status, COUNT(*) FROM mail_outbox GROUP BY status").fetchall())
+for row in db.execute(
+    "SELECT id, kind, status, attempts, datetime(created_at, 'unixepoch'), last_error "
+    "FROM mail_outbox WHERE status NOT IN ('sent', 'cancelled') ORDER BY id DESC LIMIT 20"
+):
+    print(row)
+PY
+```
+
+Bodies are encrypted with a Fernet key in `backend/data/mail-outbox.key`, created
+on first use beside `users.db` in the backend-data volume. The daily R2 backup
+copies `users.db` alone, so restoring without the key makes mail still queued
+settle `failed`; nothing else is lost.
+
+When no mail can leave (no `CLOUDFLARE_EMAIL_TOKEN`, no `HOST_APP`, an unusable
+key), `/v1/nodes/claim` and its resend answer 503 `mail_unavailable` with
+`Retry-After` and record nothing, so the node never shows a pending claim. Sign-in
+answers 503 "Sign-in by email is unavailable". The server log names the cause.
+A token, account or sending-domain refusal from Cloudflare (401, 403, 404) is
+retried like any failed send, and each attempt logs an ERROR with its code.
+
+### Bounce and complaint events
+
+Without a queue, bounces and suppressions in the send answer still mark the claim
+address undeliverable. The queue adds hard bounces and complaints reported
+after the send. Soft bounces and rejected-as-suppressed events change nothing: a
+suppression is not proof of a dead address.
+
+Run these with wrangler, once per environment, each with a queue of its own (a
+pulled event is gone for any other puller). Names in angle brackets are yours.
+
+1. Create the queue and its dead-letter queue. Retention defaults to 4 days, goes
+   up to 14 (1209600 s), and is fixed at 24 h on the Workers Free plan; events
+   wait that long while the server is down.
+   `wrangler queues create <queue> --message-retention-period-secs 1209600`
+   `wrangler queues create <dlq> --message-retention-period-secs 1209600`
+2. Add a pull consumer. An event the server fails to apply goes back on the queue
+   and, after `--message-retries` (default 3, at most 100), to the DLQ; without
+   a DLQ it is deleted. A DLQ nobody pulls keeps messages 4 days.
+   `wrangler queues consumer http add <queue> --message-retries 5 --dead-letter-queue <dlq>`
+3. Subscribe the sending domain (one domain per subscription). `--events` takes
+   the short names, as in Cloudflare's other examples; the delivered payload
+   type is the full `cf.email.sending.message.*` either way, and that is what
+   the server filters on.
+   `wrangler queues subscription create <queue> --source email.sending --zone-id <zone> --domain <sending domain> --events message.bounced,message.complained`
+   Check it with `wrangler queues subscription list <queue>`: it should show the
+   subscription with both events.
+4. Make an API token with Account > Queues > Edit (read and write; the server
+   writes to acknowledge).
+5. Set `CLOUDFLARE_EMAIL_EVENTS_QUEUE_ID` (from `wrangler queues list`) and
+   `CLOUDFLARE_EMAIL_EVENTS_TOKEN` in `backend/.env`; the account id is already
+   in `docker-compose.yml`. Restart the server.
+6. Check `docker compose logs server | grep "Mail events"`. `Mail events: on`
+   means it is pulling; `Mail events: off, since <names> not set` says what is
+   missing.
+
+Cloudflare signs nothing here, so the pull token and account id are the only
+trust. Keep the queue for this subscription alone.
+
+---
+
 ## Alert reference
 
 Alerts fire via webhook (`ALERT_WEBHOOK_URL`) with a per-alert-type cooldown of
@@ -340,8 +427,8 @@ not set` on a staging or test box with no destination, and `services/alerting.py
 warns when the format is `clickup_chat` and the token is absent, which is the
 case where the URL took and every alert 401s regardless.
 
-Do not look for `log_destination()`'s `Alerting enabled` line: it is logged at
-INFO, and the deployed stack emits no INFO at all (ClickUp 123zgec374r).
+`log_destination()` also logs an `Alerting enabled` line at INFO. It shows in
+`docker compose logs server` as a second signal that a destination is set.
 
 ---
 
@@ -768,7 +855,7 @@ df -h /opt/retina-server/backend/coverage_data && du -sh /opt/retina-server/back
 
 **What to clean first:**
 1. Old archive files — these are the biggest consumers. The `archive_lifecycle_task` background task should be rotating them, but it may not be running or its retention window may be too long.
-2. Log files: `docker compose logs` doesn't write to disk — check `/var/log` on the host.
+2. Log files: container logs are json-file, capped at 50 MB × 5 per service under `/var/lib/docker/containers`; also check `/var/log` on the host.
 3. `coverage_data/` subdirectories — each node accumulates coverage map data here.
 
 **If you need space immediately:**
