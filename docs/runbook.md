@@ -197,6 +197,10 @@ advertised. Get them from the DigitalOcean console or your own `~/.ssh/config`.
 | **Metrics endpoint** | `adm /api/admin/metrics` (defined below) |
 | **Dashboard** | `tst /api/test/dashboard` (defined below) |
 
+Deployed boxes log at INFO, so the log holds each node TCP connection's peer
+address (`services/tcp_handler.py`). Compose rotates it at 50 MB × 5 files
+(`docker-compose.yml`).
+
 `/api/admin/*` requires an administrator, and a request to localhost arrives
 below Cloudflare with no assertion for the origin to verify, so a bare `curl`
 answers 401. Define `adm` once per shell from a browser session on the console:
@@ -880,7 +884,7 @@ df -h /opt/retina-server/backend/coverage_data && du -sh /opt/retina-server/back
 
 **What to clean first:**
 1. Old archive files — these are the biggest consumers. The `archive_lifecycle_task` background task should be rotating them, but it may not be running or its retention window may be too long.
-2. Log files: `docker compose logs` doesn't write to disk — check `/var/log` on the host.
+2. Log files: container logs are json-file, capped at 50 MB × 5 per service under `/var/lib/docker/containers`; also check `/var/log` on the host.
 3. `coverage_data/` subdirectories — each node accumulates coverage map data here.
 
 **If you need space immediately:**

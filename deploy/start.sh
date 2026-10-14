@@ -260,6 +260,12 @@ while true; do
   # fleet container can POST ground-truth/ADS-B to the API over the compose
   # network (8000 stays unpublished, so it is still not exposed off-host).
   START=$(date +%s)
+  # Again as late as it can go: a stop since the check at the top has already
+  # run cleanup, which would leave a fresh uvicorn to boot into its shutdown.
+  if [ "$SHUTTING_DOWN" = "1" ]; then
+    echo "[supervisor] shutting down; not restarting uvicorn"
+    break
+  fi
   # Backgrounded + `wait` so our TERM/INT trap can interrupt promptly on
   # container stop (a plain foreground command would defer the trap).
   uvicorn main:app --host "${UVICORN_HOST:-127.0.0.1}" --port 8000 --workers 1 --log-level warning &

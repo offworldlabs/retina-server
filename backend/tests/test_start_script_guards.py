@@ -306,6 +306,25 @@ def test_a_stop_during_the_restart_backoff_starts_nothing(supervise, tmp_path):
     assert (tmp_path / "nginx.stopped").exists(), _log(tmp_path)
 
 
+def test_a_stop_just_before_uvicorn_restarts_starts_nothing(supervise, tmp_path):
+    # Past the check at the top of the loop, on a restart, the supervisor holds
+    # until the stop's trap has run, as a TERM landing there would.
+    window = (
+        '  if [ -e "$STATE/uvicorn.runs" ]; then\n'
+        '    touch "$STATE/restarting"\n'
+        '    until [ "$SHUTTING_DOWN" = 1 ]; do sleep 0.05; done\n'
+        "  fi\n"
+    )
+    start = "  START=$(date +%s)\n"
+    process = supervise((start, start + window), UVICORN_CRASHES="1")
+    _until(lambda: (tmp_path / "restarting").exists(), "the supervisor to be about to restart uvicorn")
+    runs = _runs(tmp_path)
+    process.send_signal(signal.SIGTERM)
+    assert process.wait(timeout=30) == 0, _log(tmp_path)
+    assert _runs(tmp_path) == runs, _log(tmp_path)
+    assert (tmp_path / "nginx.stopped").exists(), _log(tmp_path)
+
+
 def test_nginx_dying_still_recreates_the_container(supervise, tmp_path):
     process = supervise(NGINX_DIES="1")
     assert process.wait(timeout=30) == 1, _log(tmp_path)
