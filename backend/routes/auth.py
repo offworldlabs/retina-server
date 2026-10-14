@@ -61,6 +61,10 @@ def _client_source(request: Request) -> str:
     client address and uvicorn trusts only the configured proxy peer. IPv6
     addresses in one /64 share a quota, including privacy-address rotation.
     This is an admission limit rather than an identity; mobile clients may roam.
+
+    Finer than sessions.coarse_ip on purpose, so keep the two apart: that one
+    is a label kept on file, coarse so no address is stored, where a /24 or a
+    /48 here would put unrelated callers in one quota.
     """
     host = request.client.host if request.client else None
     if not host:
@@ -432,11 +436,21 @@ async def _signed_in_session(request: Request, response: Response) -> tuple[User
 
     The cookie's alone: an Access identity or the anonymous admin holds no
     session here to list or end. A JWT cookie nobody has exchanged is exchanged
-    first, so there is always a session to call current.
+    first, so there is always a session to call current, and 503 if that
+    exchange cannot be written.
     """
     resolved = await sessions.resolve_request(request)
     if resolved is not None and resolved.session is None:
-        exchanged = await _exchange_legacy_cookie(request, response, resolved)
+        try:
+            exchanged = await _exchange_legacy_cookie(request, response, resolved)
+        except Exception:
+            # Logged and dropped as in me(), but these routes need the session
+            # it would have opened. A 401 would read as signed out, where the
+            # cookie still signs in and the retry exchanges it.
+            logger.warning("Could not exchange a legacy cookie for a session", exc_info=True)
+            raise HTTPException(
+                status_code=503, detail="Sessions are temporarily unavailable", headers={"Retry-After": "5"}
+            ) from None
         # None when another request exchanged or signed out the same cookie
         # first. Resolved again, as it may now alias the session that one opened.
         resolved = exchanged or await sessions.resolve(request.cookies.get(sessions.COOKIE_NAME))

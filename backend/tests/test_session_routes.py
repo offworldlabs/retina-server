@@ -697,7 +697,8 @@ class TestSessionRoutesInNginx:
 
 class TestLegacyExchangeWithoutTheWriteLock:
     """The exchange on /api/auth/me is a courtesy: a write that cannot happen
-    leaves the answer as it was, and the next page load tries again."""
+    leaves the answer as it was, and the next page load tries again. The
+    session routes need the session it opens, so they ask for that retry."""
 
     @pytest.fixture(autouse=True)
     async def _impatient_writers(self):
@@ -741,6 +742,29 @@ class TestLegacyExchangeWithoutTheWriteLock:
         retried = _me(client, legacy)
 
         assert retried.status_code == 200
+        (fresh,) = _set_cookies(retried)
+        assert (await _session_of(fresh.value)).token_hash == _hash(fresh.value)
+        assert len(await _rows(UserSession)) == 1
+
+    @pytest.mark.parametrize(("method", "path"), SESSION_ROUTES)
+    async def test_a_session_route_asks_for_a_retry_while_the_database_is_locked(self, client, method, path):
+        legacy = _legacy_cookie(await _account())
+
+        with self._write_lock_held():
+            r = client.request(method, path, headers=_as(legacy))
+            sessions_written = await _rows(UserSession)
+            retired = await _rows(RetiredLegacyToken)
+
+        assert r.status_code == 503
+        assert r.headers["retry-after"] == "5"
+        assert r.json() == {"detail": "Sessions are temporarily unavailable"}
+        assert _set_cookies(r) == []
+        assert sessions_written == retired == []
+
+        retried = client.request(method, path, headers=_as(legacy))
+
+        # The revocation names a session nobody has (SESSION_ROUTES).
+        assert retried.status_code == (404 if method == "DELETE" else 200)
         (fresh,) = _set_cookies(retried)
         assert (await _session_of(fresh.value)).token_hash == _hash(fresh.value)
         assert len(await _rows(UserSession)) == 1
