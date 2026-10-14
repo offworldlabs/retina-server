@@ -19,10 +19,11 @@ import {
   ringRadii,
   unproject,
   VIEWPORT,
+  type Extent,
   type MapMode,
 } from "./mapProjection";
 import { distanceKm } from "../../../utils/geo";
-import type { RegistryNode } from "./nodes";
+import { centreOf, type Positions, type RegistryNode } from "./nodes";
 import type { ExplorerFilters } from "./urlState";
 
 /** Below this the ring is a dot and says nothing about where its edge is. */
@@ -30,6 +31,13 @@ const MIN_RING = 6;
 
 /** Half the crosshair's arm. */
 const PIN = 7;
+
+/** How near a node, in viewport units, a click on an owner's map counts as a
+ *  click on the node: a little past the ring drawn round a selected one. The
+ *  map never shows less than 80 km from top to bottom, so this is never under
+ *  3 km on the ground, more than a published position is moved by: a point
+ *  clicked outside it says less of where a node is than its listing does. */
+const SNAP = 12;
 
 interface Props {
   filters: ExplorerFilters;
@@ -42,17 +50,48 @@ interface Props {
    *  positions to draw. */
   loading?: boolean;
   onChange: (next: ExplorerFilters) => void;
+  /** What the nodes' positions are, which the map has to say: an owner's
+   *  exact positions are neither published nor displaced. */
+  positions?: Positions;
 }
 
 const decimals = (step: number) => (step < 1 ? 1 : 0);
 
-export function NodeMap({ filters, nodes, effective, radiusKm, loading, onChange }: Props) {
+/** The placed node nearest a point in the viewport, if one is within SNAP. */
+function nodeAt(placed: RegistryNode[], x: number, y: number, extent: Extent): RegistryNode | null {
+  let best: RegistryNode | null = null;
+  let bestDistance = SNAP;
+  for (const n of placed) {
+    const at = project(n.lat!, n.lon!, extent);
+    const distance = Math.hypot(at.x - x, at.y - y);
+    if (distance <= bestDistance) {
+      best = n;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+export function NodeMap({
+  filters,
+  nodes,
+  effective,
+  radiusKm,
+  loading,
+  onChange,
+  positions = "published",
+}: Props) {
   const [mode, setMode] = useState<MapMode>("fit");
+  const exact = positions === "exact";
+  // How a node with no coordinates is described: an owner's node has none on
+  // record, which is not the same as one withheld from the public.
+  const position = exact ? "position on record" : "published position";
 
   const all = useMemo(() => Array.from(nodes.values()), [nodes]);
   const placed = useMemo(() => all.filter((n) => n.lat !== null && n.lon !== null), [all]);
   const unplaced = all.length - placed.length;
-  const { near } = filters;
+  // Placed from the registry when the filter names a node rather than a point.
+  const near = useMemo(() => centreOf(filters.near, nodes), [filters.near, nodes]);
 
   // Only worth telling real from synthetic when both are on the map, and the
   // answer can flip after first paint as the fleet arrives.
@@ -71,7 +110,19 @@ export function NodeMap({ filters, nodes, effective, radiusKm, loading, onChange
   // view fitted to the whole fleet would put the ring somewhere off-screen.
   const centreOn = (lat: number, lon: number) => {
     setMode("centre");
-    setNear({ lat, lon, km: near?.km ?? radiusKm });
+    setNear({ lat, lon, km: filters.near?.km ?? radiusKm });
+  };
+
+  // An owner's node is centred on by name, so the link says which node and
+  // never where it is: its exact position is theirs alone. A published one is
+  // already public, and is centred on where it is published.
+  const centreOnNode = (n: RegistryNode) => {
+    if (exact) {
+      setMode("centre");
+      setNear({ node: n.id, km: filters.near?.km ?? radiusKm });
+    } else {
+      centreOn(n.lat!, n.lon!);
+    }
   };
 
   const labels = useMemo(() => {
@@ -90,7 +141,9 @@ export function NodeMap({ filters, nodes, effective, radiusKm, loading, onChange
         <p>
           {loading
             ? "Loading the fleet…"
-            : "No node publishes a position, so there is nothing to draw."}
+            : exact
+              ? "None of your nodes has a position on record, so there is nothing to draw."
+              : "No node publishes a position, so there is nothing to draw."}
         </p>
       </div>
     );
@@ -102,6 +155,14 @@ export function NodeMap({ filters, nodes, effective, radiusKm, loading, onChange
     if (!box.width || !box.height) return;
     const x = ((event.clientX - box.left) / box.width) * VIEWPORT.width;
     const y = ((event.clientY - box.top) / box.height) * VIEWPORT.height;
+    // On an owner's map a click that all but lands on a node is taken as one
+    // on it: as a point it would put that node's position in the link, to
+    // within a few metres when the view is zoomed in on it.
+    const hit = exact ? nodeAt(placed, x, y, extent) : null;
+    if (hit) {
+      centreOnNode(hit);
+      return;
+    }
     const { lat, lon } = unproject(x, y, extent);
     centreOn(lat, lon);
   };
@@ -114,7 +175,8 @@ export function NodeMap({ filters, nodes, effective, radiusKm, loading, onChange
     const from = near
       ? `\n${distanceKm(near.lat, near.lon, n.lat!, n.lon!).toFixed(1)} km from centre`
       : "";
-    return `${n.id}\n${n.lat!.toFixed(4)}, ${n.lon!.toFixed(4)} (published, ±${unc} km)${from}`;
+    const what = exact ? "exact" : `published, ±${unc} km`;
+    return `${n.id}\n${n.lat!.toFixed(4)}, ${n.lon!.toFixed(4)} (${what})${from}`;
   };
 
   return (
@@ -188,7 +250,7 @@ export function NodeMap({ filters, nodes, effective, radiusKm, loading, onChange
                     // Without this the map's own handler re-centres on the
                     // pixel under the marker instead of on the node.
                     event.stopPropagation();
-                    centreOn(n.lat!, n.lon!);
+                    centreOnNode(n);
                   }}
                   onKeyDown={(event) => {
                     // An SVG element synthesises no click from a key press, so
@@ -196,7 +258,7 @@ export function NodeMap({ filters, nodes, effective, radiusKm, loading, onChange
                     if (event.key !== "Enter" && event.key !== " ") return;
                     event.preventDefault();
                     event.stopPropagation();
-                    centreOn(n.lat!, n.lon!);
+                    centreOnNode(n);
                   }}
                 >
                   <title>{titleFor(n)}</title>
@@ -219,11 +281,17 @@ export function NodeMap({ filters, nodes, effective, radiusKm, loading, onChange
       </div>
 
       <div className="de-map-foot">
-        <span>
-          <b>Published</b> receiver positions, fuzzed by up to{" "}
-          {uncertainties.length ? Math.max(...(uncertainties as number[])) : "—"} km
-          (<code className="mono">location_uncertainty_km</code>); keep the radius well above it.
-        </span>
+        {exact ? (
+          <span>
+            <b>Exact</b> receiver positions of your own nodes, which only you are sent.
+          </span>
+        ) : (
+          <span>
+            <b>Published</b> receiver positions, fuzzed by up to{" "}
+            {uncertainties.length ? Math.max(...(uncertainties as number[])) : "—"} km
+            (<code className="mono">location_uncertainty_km</code>); keep the radius well above it.
+          </span>
+        )}
         <span>Click the map to set the centre · click a node to centre on it.</span>
         <span className="de-chipset">
           <button
@@ -244,10 +312,10 @@ export function NodeMap({ filters, nodes, effective, radiusKm, loading, onChange
             Around centre
           </button>
         </span>
-        <span>Nodes with no published position never match a location filter.</span>
+        <span>Nodes with no {position} never match a location filter.</span>
         {unplaced > 0 && (
           <span>
-            {unplaced} node{unplaced === 1 ? "" : "s"} without a published position.
+            {unplaced} node{unplaced === 1 ? "" : "s"} without a {position}.
           </span>
         )}
       </div>

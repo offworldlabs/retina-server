@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { api } from "../api/client";
+import { ownedNode } from "./fixtures/ownedNode";
 import NetworkHealthPage from "../pages/admin/NetworkHealthPage";
 import NodeManagementPage from "../pages/admin/NodeManagementPage";
 import NodeDetailPage from "../pages/user/NodeDetailPage";
@@ -26,6 +27,8 @@ vi.mock("../api/client", () => ({
     adminPolledRadars: vi.fn(),
   },
 }));
+// RF Environment reads the owner's nodes; signed out, it asks for none.
+vi.mock("../context/AuthContext", () => ({ useAuth: () => ({ user: null, loading: false }) }));
 vi.mock("recharts", async (importOriginal) => ({
   ...await importOriginal<typeof import("recharts")>(),
   ResponsiveContainer: () => null,
@@ -106,7 +109,7 @@ describe("a node's liveness", () => {
   });
 
   it("does not offer a node that never connected a local display", async () => {
-    vi.mocked(api.myNodes).mockResolvedValue([{ node_id: "ret1a2b3c4d", name: "Rooftop", status: "never_connected" }]);
+    vi.mocked(api.myNodes).mockResolvedValue([ownedNode({ node_id: "ret1a2b3c4d", name: "Rooftop", status: "never_connected" })]);
     render(<TunnelLinkPage />);
     const row = (await screen.findByText(/Rooftop/)).closest("tr") as HTMLElement;
     expect(within(row).getByText("Never connected")).toBeInTheDocument();

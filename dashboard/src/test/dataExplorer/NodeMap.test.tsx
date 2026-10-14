@@ -1,13 +1,17 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
+import { fitExtent, project, unproject } from "../../pages/user/dataExplorer/mapProjection";
 import { NodeMap } from "../../pages/user/dataExplorer/NodeMap";
-import type { RegistryNode } from "../../pages/user/dataExplorer/nodes";
+import type { Positions, RegistryNode } from "../../pages/user/dataExplorer/nodes";
 import {
   DEFAULT_RADIUS_KM,
   defaultFilters,
   type ExplorerFilters,
+  type NearNode,
+  type NearPoint,
 } from "../../pages/user/dataExplorer/urlState";
+import { distanceKm } from "../../utils/geo";
 
 const TODAY = "2026-09-17";
 
@@ -37,7 +41,7 @@ function sized(element: Element) {
   } as DOMRect);
 }
 
-function setup(over: Partial<ExplorerFilters> = {}, effective?: Set<string>) {
+function setup(over: Partial<ExplorerFilters> = {}, effective?: Set<string>, positions?: Positions) {
   const onChange = vi.fn();
   const filters = { ...defaultFilters(TODAY), ...over };
   const { container } = render(
@@ -47,12 +51,14 @@ function setup(over: Partial<ExplorerFilters> = {}, effective?: Set<string>) {
       effective={effective ?? new Set(REGISTRY.keys())}
       radiusKm={DEFAULT_RADIUS_KM}
       onChange={onChange}
+      positions={positions}
     />,
   );
   return { onChange, container };
 }
 
-const nearFrom = (onChange: ReturnType<typeof vi.fn>) => {
+/** The centre the map last set: a point, or one of an owner's nodes by id. */
+const nearFrom = (onChange: ReturnType<typeof vi.fn>): (Partial<NearPoint> & Partial<NearNode>) | null => {
   const { calls } = onChange.mock;
   return (calls[calls.length - 1][0] as ExplorerFilters).near;
 };
@@ -228,6 +234,84 @@ describe("NodeMap", () => {
 
   it("offers no centred view while there is no centre to build one around", () => {
     setup({ near: null });
+    expect(screen.getByRole("button", { name: /around centre/i })).toBeDisabled();
+  });
+});
+
+describe("NodeMap, on an owner's own nodes", () => {
+  // Where the London marker sits in the fitted frame, in the box's own units,
+  // which `sized` makes the click's.
+  const london = () => project(51.5074, -0.1278, fitExtent(Array.from(REGISTRY.values()))!);
+
+  it("centres on a node by naming it, and puts nothing of where it is in the filter", () => {
+    const { onChange } = setup({ near: { lat: 0, lon: 0, km: 25 } }, undefined, "exact");
+    fireEvent.click(screen.getByRole("button", { name: /Oxford/ }));
+    expect(nearFrom(onChange)).toEqual({ node: "ret-oxford", km: 25 });
+  });
+
+  it("names the node from the keyboard as well", () => {
+    const { onChange } = setup({ near: null }, undefined, "exact");
+    fireEvent.keyDown(screen.getByRole("button", { name: /London/ }), { key: "Enter" });
+    expect(nearFrom(onChange)).toEqual({ node: "ret-london", km: DEFAULT_RADIUS_KM });
+  });
+
+  it("takes a click that all but lands on a node as one on the node", () => {
+    const { onChange, container } = setup({ near: null }, undefined, "exact");
+    const svg = container.querySelector("svg")!;
+    sized(svg);
+    const { x, y } = london();
+    fireEvent.click(svg, { clientX: x + 6, clientY: y - 5 });
+    expect(nearFrom(onChange)).toEqual({ node: "ret-london", km: DEFAULT_RADIUS_KM });
+  });
+
+  it("places a point for a click well clear of every node", () => {
+    const { onChange, container } = setup({ near: null }, undefined, "exact");
+    const svg = container.querySelector("svg")!;
+    sized(svg);
+    const { x, y } = london();
+    fireEvent.click(svg, { clientX: x + 40, clientY: y });
+    expect(nearFrom(onChange)).toMatchObject({ km: DEFAULT_RADIUS_KM });
+    expect(nearFrom(onChange)).not.toHaveProperty("node");
+  });
+
+  it("leaves a published map's near miss as the point clicked", () => {
+    const { onChange, container } = setup({ near: null });
+    const svg = container.querySelector("svg")!;
+    sized(svg);
+    const { x, y } = london();
+    fireEvent.click(svg, { clientX: x + 6, clientY: y - 5 });
+    const clicked = unproject(x + 6, y - 5, fitExtent(Array.from(REGISTRY.values()))!);
+    expect(nearFrom(onChange)).toEqual({ lat: clicked.lat, lon: clicked.lon, km: DEFAULT_RADIUS_KM });
+  });
+
+  it("draws a centre on a node where the node is, and measures from it", () => {
+    const { container } = setup({ near: { node: "ret-london", km: 50 } }, undefined, "exact");
+    expect(container.querySelector(".de-map-ring")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /around centre/i })).toBeEnabled();
+    const oxford = screen.getByRole("button", { name: /Oxford/ });
+    expect(oxford.querySelector("title")!.textContent).toMatch(/\b(7\d|8\d)\.\d km from centre/);
+  });
+
+  it("places a point no nearer a node than 3 km, even zoomed in as far as the map goes", () => {
+    // Zoomed to the smallest radius there is, and centred on London, which then
+    // sits in the middle of the box. A click just past the snap is a point.
+    const { onChange, container } = setup({ near: { node: "ret-london", km: 2 } }, undefined, "exact");
+    fireEvent.click(screen.getByRole("button", { name: /around centre/i }));
+    const svg = container.querySelector("svg")!;
+    sized(svg);
+
+    fireEvent.click(svg, { clientX: 450 + 11, clientY: 150 });
+    expect(nearFrom(onChange)).toEqual({ node: "ret-london", km: 2 });
+
+    fireEvent.click(svg, { clientX: 450 + 13, clientY: 150 });
+    const point = nearFrom(onChange)!;
+    expect(point.node).toBeUndefined();
+    expect(distanceKm(point.lat!, point.lon!, 51.5074, -0.1278)).toBeGreaterThan(3);
+  });
+
+  it("draws nothing for a centre on a node it cannot place", () => {
+    const { container } = setup({ near: { node: "ret-nowhere", km: 50 } }, undefined, "exact");
+    expect(container.querySelector(".de-map-ring")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /around centre/i })).toBeDisabled();
   });
 });

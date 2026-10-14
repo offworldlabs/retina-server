@@ -156,6 +156,19 @@ describe("ResultsTree", () => {
     );
   });
 
+  it("links a file from the owner's own archive to the owner's route, and never the public one", () => {
+    setup({ ...ONE_DAY, source: "owner" });
+    expect(screen.getByRole("link", { name: "JSON" })).toHaveAttribute(
+      "href",
+      "/api/auth/me/archive/2026-09-17/ret-a/a.parquet",
+    );
+  });
+
+  it("marks a node on its group's head", () => {
+    setup({ ...ONE_DAY, marks: new Map([["ret-a", "private"]]) });
+    expect(screen.getByRole("button", { name: /^ret-a/ })).toHaveTextContent("Private");
+  });
+
   it("summarises what the filters matched", () => {
     setup();
     expect(screen.getByText("2 files · 2.0 KB")).toBeInTheDocument();

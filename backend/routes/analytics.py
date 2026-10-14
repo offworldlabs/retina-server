@@ -5,15 +5,13 @@ import time
 from collections import Counter
 
 import orjson
-from fastapi import APIRouter, Body, Header, HTTPException, Request
+from fastapi import APIRouter, Body, Header, HTTPException
 from fastapi.responses import Response
 from retina_analytics.trust import AdsReportEntry
 
 from core import state
-from core.auth import get_user_nodes
-from core.users import ANONYMOUS_USER, AUTH_BYPASS, read_user_from_token
 from services import node_bias
-from services.node_refs import id_for_identity, owner_identity, public_analytics, public_identity
+from services.node_refs import id_for_identity, public_analytics, public_identity
 from services.public_location import public_node_summary
 from services.publication import is_private, private_node_ids
 
@@ -22,89 +20,27 @@ _RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
 router = APIRouter(tags=["analytics"])
 
 
-async def _optional_owned_nodes(request: Request) -> set[str]:
-    """Node ids the caller owns, or the empty set — never a 401.
-
-    Both analytics routes are public surfaces that happen to be able to say more
-    to a logged-in owner.  A helper that raised on a missing or expired cookie
-    would turn the map into an authenticated surface for everyone whose session
-    lapsed, so every failure to identify a caller is the empty set here and the
-    route serves exactly what it serves an anonymous client.
-
-    Reads the cookie directly through ``read_user_from_token`` and honours
-    AUTH_BYPASS the same way the owner websocket in routes/streaming.py does:
-    the opted-in anonymous admin owns whatever rows are assigned to the all-zero
-    uuid, which on a real deployment is nothing.
-    """
-    if AUTH_BYPASS:
-        return set(await get_user_nodes(ANONYMOUS_USER["id"]))
-    user = await read_user_from_token(request.cookies.get("auth_token"))
-    if user is None or not user.is_active:
-        return set()
-    return set(await get_user_nodes(str(user.id)))
-
-
 @router.get("/api/radar/analytics")
-async def radar_analytics(request: Request, real_only: bool = False):
-    """The public per-node analytics map, plus the caller's own private nodes.
+async def radar_analytics(real_only: bool = False):
+    """The public per-node analytics map: the cached bytes as they are.
 
-    An owner who sets a node private loses it from this payload along with
-    everyone else, and this payload is where the map gets its node markers,
-    uncertainty discs and coverage polygons — so without this the switch also
-    hides the node from the one person entitled to see it, on their own
-    dashboard, with no way to get it back.
-
-    Their node comes back through ``public_node_summary``, the same fuzzed frame
-    an anonymous client would have received.  An owner is not an admin: they
-    already know where their own receiver is, so serving the truth here would
-    buy them nothing and would make this route a second, quieter place the
-    unfuzzed geometry is published from.
-
-    Everyone else gets the cached bytes as they are — the same object, not a
-    re-serialisation — so the unauthenticated path costs one identity check and
-    not a parse per request.  The check itself is skipped entirely when nothing
-    is private, which is the fleet most of the time.
+    The same answer for every caller, signed in or not. A node registered
+    private is in it for nobody, its owner included: the owner reads it,
+    unfuzzed, from GET /api/auth/me/analytics (routes/owner.py). One answer
+    also keeps the route one cached-bytes write, the same object rather than a
+    re-serialisation, and leaves nothing here for a cache to file under the
+    wrong caller.
     """
+    # Read for its failure alone: until a policy has been read this answers the
+    # retryable 503 the other policy-dependent reads do (main.py), and once one
+    # has, the cached bytes were built under it.
+    private_node_ids()
     cached = state.latest_analytics_real_bytes if real_only else state.latest_analytics_bytes
-    private = private_node_ids()
-    # By size, not truth: probation keeps the set truthy while holding nothing
-    # an owner could have registered (services/publication.PrivateNodeIds).
-    if not len(private):
-        return Response(content=cached, media_type="application/json")
-
-    owned_private = private & await _optional_owned_nodes(request)
-    if not owned_private:
-        return Response(content=cached, media_type="application/json")
-
-    payload = orjson.loads(cached)
-    nodes = payload.setdefault("nodes", {})
-    for nid in owned_private:
-        summary = state.node_analytics.get_node_summary(nid)
-        # A node the analytics manager has never seen answers with its own id
-        # and nothing else; adding that would put an empty marker on the map
-        # rather than tell the owner anything.
-        if summary.keys() == {"node_id"}:
-            continue
-        # Built fresh like the per-node route below, so it carries the same
-        # public handle the cached listing does — or the owner's own node is
-        # the one node on their map without a name.  Keyed on that handle too,
-        # because the cached bytes it is being merged into are: an id-keyed
-        # entry beside ref-keyed ones is the mapping this boundary withholds.
-        # owner_identity, not public_identity — a node this caller owns and that
-        # has no handle is a node left out of their own map, not a contribution
-        # dropped from a public feed, so it is not logged as one.
-        ref = owner_identity(nid)
-        if ref is None:
-            continue
-        nodes[ref] = {**public_node_summary(nid, summary), "node_ref": ref}
-    return Response(
-        content=orjson.dumps(payload, option=orjson.OPT_SERIALIZE_NUMPY),
-        media_type="application/json",
-    )
+    return Response(content=cached, media_type="application/json")
 
 
 @router.get("/api/radar/analytics/{node_ref}")
-async def radar_node_analytics(node_ref: str, request: Request):
+async def radar_node_analytics(node_ref: str):
     # Addressed in published identities: the path parameter is the handle the
     # listing publishes, never the private id behind it.
     #
@@ -114,14 +50,10 @@ async def radar_node_analytics(node_ref: str, request: Request):
     # answer confirms the existence this route is meant not to.  Same status
     # the cached listing produces by omission, so the two surfaces agree.
     #
-    # The node's owner is the exception, and gets the same fuzzed summary as
-    # the listing above rather than the truth, for the same reason.  The
-    # ownership lookup is behind the is_private check so a public node still
-    # costs no authentication work.
+    # The node's owner gets that 404 too, as the listing above leaves the node
+    # out for them: GET /api/auth/me/nodes/{node_id}/analytics is theirs.
     node_id = id_for_identity(node_ref)
-    if node_id is None:
-        raise HTTPException(status_code=404, detail="Node not found")
-    if is_private(node_id) and node_id not in await _optional_owned_nodes(request):
+    if node_id is None or is_private(node_id):
         raise HTTPException(status_code=404, detail="Node not found")
     summary = state.node_analytics.get_node_summary(node_id)
     if summary.keys() == {"node_id"}:
@@ -195,7 +127,9 @@ async def association_overlaps():
     coordinates, no grid, no extent.  Both ids are published as node_refs, as
     is every entry of ``registered_nodes``; the same is true of the copy
     ``/api/radar/association/status`` serves, which must stay in ref space or
-    the two payloads join on a shared pair to give the mapping away.
+    the two payloads join on a shared pair to give the mapping away.  A node
+    registered private is in neither: no zone that names it, no entry in
+    ``registered_nodes`` (services/tasks/analytics_refresh.py).
     A pair count and a gate width constrain the inter-node distance far too
     loosely to locate either node, so admin-gating this would cost the map its
     coverage layer and buy nothing.  If this payload ever grows a lat/lon (a
@@ -226,24 +160,30 @@ async def association_status():
     publishes the same pair list under refs, so every identifier here is a ref
     too: one payload naming a pair by id beside another naming it by ref is a
     join on a shared key, and the mapping comes out of it.
+
+    A node registered private is left out as it is from the overlaps payload:
+    no pending_tracks entry, no zone naming it, and not in the two counts,
+    which would otherwise say how many there are.
     """
     _a = state.node_associator
+    _private = private_node_ids()
     _pending = {
         ref: len(tracks)
         for nid, tracks in list(_a._pending_tracks.items())
-        if (ref := public_identity(nid)) is not None
+        if nid not in _private and (ref := public_identity(nid)) is not None
     }
+    _zones = [z for z in _a.get_overlap_summary() if z["node_a"] not in _private and z["node_b"] not in _private]
     # A zone names both of its nodes, so it survives only if both resolve, the
     # same rule the overlaps payload applies.
     _overlaps = []
-    for _z in _a.get_overlap_summary():
+    for _z in _zones:
         _ra, _rb = public_identity(_z["node_a"]), public_identity(_z["node_b"])
         if _ra is None or _rb is None:
             continue
         _overlaps.append({**_z, "node_a": _ra, "node_b": _rb})
     return {
-        "registered_nodes": len(_a.node_geometries),
-        "overlap_zones": len(_a.overlap_zones),
+        "registered_nodes": sum(1 for nid in list(_a.node_geometries) if nid not in _private),
+        "overlap_zones": len(_zones),
         # Node pairs that got no grid because the two nodes are in different
         # worlds (node_world above).  Read next to overlap_zones: on a fleet
         # of 50 synthetic nodes over the same city as 8 receivers it is the

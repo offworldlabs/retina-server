@@ -99,6 +99,8 @@ async def test_registration_writes_all_five_rows(node_session):
 
     claim = await node_session.get(NodeClaim, node_id)
     assert (claim.user_id, claim.email, claim.verified) == ("user-a", "ada@example.com", True)
+    # The owner's records of it start at registration (core/auth.py, get_user_tenures).
+    assert (claim.owned_since, claim.owned_since_user_id) == (NOW, "user-a")
 
     radar = await node_session.get(PolledRadar, node_id)
     assert radar.epoch == 1
