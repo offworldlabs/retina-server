@@ -71,11 +71,13 @@ import { IconScaleSync, iconZoomScale, useIconZoomScale } from "./iconScale";
 import ScaledCircleMarker from "./ScaledCircleMarker";
 
 import { api } from "../../api/client";
+import { PRIVATE_DESCRIPTION } from "../../components/LocationPrivacy";
 import { defaultFeedMode, type FeedMode } from "./feedMode";
 import { withCartoKey } from "./utils/basemap";
 import { TILES } from "./utils/tiles";
 import { useMapPreference } from "./useMapPreference";
 import { parseHash, useHashWriter, encodeLayers, decodeLayers } from "./useUrlHashState";
+import { releaseView, viewHeldFromHash } from "./hashHold";
 import { useKeyboardShortcuts } from "./useKeyboardShortcuts";
 import { trailToCsv, trailsToBulkCsv, downloadCsv } from "./trailExport";
 import { toast, copyToClipboard } from "./toast";
@@ -977,6 +979,13 @@ const NodeMarkersLayer = memo(function NodeMarkersLayer({ visibleNodes, onSelect
           <React.Fragment key={`site-node-${n.node_ref}`}>
             {i > 0 && <br />}
             <strong>{nodeLabel(n)}</strong><br />
+            {/* Only an owner's own node carries the flag (useNodes), so this
+                is its owner reading it.  Plain text in the popup's own ink, as
+                the Show/Hide control is: a theme-coloured badge would be wrong
+                on Leaflet's always-white popup in one of the two themes. */}
+            {n.location_private && (
+              <><span title={PRIVATE_DESCRIPTION}>Private: hidden from the public map</span><br /></>
+            )}
             {/* A declared beam is quoted ONLY for a synthetic node, whose
                 declared cone is what the simulator enforces before it emits a
                 detection and so is its detection area by definition.  For a
@@ -1057,11 +1066,14 @@ const CoverageLayer = memo(function CoverageLayer({ visibleNodes, showCoverage }
     // measured this yet" is drawn as empty space, which is what it is.
     if (!n.empirical_polygon || n.empirical_polygon.length < 3) return null;
     // Blurred edge as presentational honesty, not as the privacy mechanism:
-    // the coordinates underneath are already fuzzed server-side, and the
+    // a public node's coordinates are already fuzzed server-side, and its
     // polygon is approximate by construction anyway (a rigid translation of
-    // the calibrated shape onto a fuzzed anchor).  A 1.5 px stroke under the
-    // blur reads as a glow, i.e. as a boundary the data never established —
-    // so the outline goes and the fill alone carries the region.
+    // the calibrated shape onto a fuzzed anchor).  A signed-in owner's own
+    // nodes are the exception: they come from the owner API with the true
+    // receiver and the true polygon, and only that owner is shown them
+    // (nodeListing.ts).  A 1.5 px stroke under the blur reads as a glow, i.e.
+    // as a boundary the data never established — so the outline goes and the
+    // fill alone carries the region.
     return (
       <Polygon
         key={`coverage-${n.node_ref}`}
@@ -1132,7 +1144,12 @@ const FollowController = memo(function FollowController({ followSelected, select
       // fallback, Follow silently did nothing for them.
       const sm = smoothRef.current?.[selectedHex]
         ?? smoothRef.current?.[groundTruthKey(selectedHex)];
-      if (sm) map.panTo([sm.lat, sm.lon], { animate: false });
+      if (sm) {
+        // A view centred on the aircraft, which the hash may carry, even after
+        // a fit on the owner's nodes held the one before it (hashHold.ts).
+        releaseView(map);
+        map.panTo([sm.lat, sm.lon], { animate: false });
+      }
     }, 100);
     // A manual drag means the user wants to look elsewhere — disengage follow.
     // panTo({animate:false}) above doesn't fire dragstart, so this only
@@ -1157,6 +1174,10 @@ const HashSync = memo(function HashSync({ onMove, showRangeRings, selectedHex, s
   const { LANE_MN_ADSB } = usePalette();
   const map = useMapEvents({
     moveend: () => {
+      // A view a fit framed on the owner's true node positions stays out of
+      // the hash, and out of mapPosRef, which the toggles write it from
+      // (hashHold.ts).
+      if (viewHeldFromHash(map)) return;
       const c = map.getCenter();
       onMove?.({ lat: c.lat, lon: c.lng, z: map.getZoom() });
     },
@@ -1249,7 +1270,9 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
     detectionsRef,
   } = useAircraftFeed(ownerOnly, mode);
 
-  const allNodes = useNodes(mode);
+  // The owner's own nodes, private ones included, come from the owner API in
+  // place of their public entries; `user` is null where the owner view is off.
+  const allNodes = useNodes(mode, user);
   // In owner mode the map shows only the user's own nodes. The aircraft/arc
   // feed is already server-filtered; this filters the node markers/coverage to
   // match. Falls back to all nodes when the toggle is off.

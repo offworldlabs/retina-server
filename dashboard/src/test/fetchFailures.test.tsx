@@ -35,6 +35,8 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+const OWNER_NODES = "/api/auth/me/nodes";
+
 type Page = () => Promise<{ default: ComponentType }>;
 
 const PAGES: [string, Page, string][] = [
@@ -137,7 +139,13 @@ describe("a console page whose refresh fails", () => {
     "%s keeps what it showed and says how old it is",
     async (_, load, what, route, body, shown) => {
       vi.useFakeTimers();
-      answer = (path) => (path.startsWith(route) ? { status: 200, body } : { status: 500, body: {} });
+      // The owner's node list is not what these cases fail: Anomaly asks for it, and answers with none.
+      answer = (path) =>
+        path.startsWith(route)
+          ? { status: 200, body }
+          : path.startsWith(OWNER_NODES)
+            ? { status: 200, body: [] }
+            : { status: 500, body: {} };
       await renderPage(load);
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
@@ -160,7 +168,12 @@ describe("a console page whose refresh fails", () => {
   it("marks Anomaly's event table stale too, far below the notice", async () => {
     vi.useFakeTimers();
     const body = { summary: {}, by_type: {}, timeline: [], geographic_clusters: [], recent_events: [] };
-    answer = (path) => (path.startsWith("/api/radar/anomalies") ? { status: 200, body } : { status: 500, body: {} });
+    answer = (path) =>
+      path.startsWith("/api/radar/anomalies")
+        ? { status: 200, body }
+        : path.startsWith(OWNER_NODES)
+          ? { status: 200, body: [] }
+          : { status: 500, body: {} };
     await renderPage(() => import("../pages/user/AnomalyPage"));
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);

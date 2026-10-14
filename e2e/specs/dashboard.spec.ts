@@ -237,9 +237,10 @@ test.describe("Dashboard — login card (auth call held open)", () => {
 // Response shape is no longer assertable from here, because nothing in CI can
 // authenticate against this hostname. The backend suite covers it.
 test.describe("Dashboard — admin API refuses anonymous callers", () => {
-  // /api/admin/leaderboard is deliberately absent: it is the one route under
-  // this prefix that answers anyone, and api.spec.ts asserts what it publishes.
-  // What matters here is that opening it opened one route and not the prefix.
+  // A sample, not the list: every route under this prefix wants an
+  // administrator, which backend/tests/test_admin_prefix_gate.py holds over the
+  // whole route table. The leaderboard that once answered anyone here is
+  // /api/radar/leaderboard, and api.spec.ts asserts what it publishes.
   for (const path of ["/api/admin/events", "/api/admin/storage", "/api/admin/node-refs"]) {
     test(`GET ${path} refuses an anonymous caller`, async () => {
       const ctx = await playwrightRequest.newContext();

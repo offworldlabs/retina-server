@@ -158,3 +158,65 @@ describe("useArchiveScan", () => {
     expect(fetchMock.mock.calls[1][1]).toBeNull();
   });
 });
+
+describe("useArchiveScan, across the two archives", () => {
+  it("lists the archive it is asked to", async () => {
+    fetchMock.mockResolvedValue([file("2026-09-17")]);
+    renderHook(() => useArchiveScan(["2026-09-17"], null, "owner"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(fetchMock.mock.calls[0][3]).toBe("owner");
+  });
+
+  it("asks for nothing while it is held", async () => {
+    const { result } = renderHook(() => useArchiveScan(["2026-09-17"], null, null));
+    await act(async () => {});
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.current.entries.size).toBe(0);
+    expect(result.current.nodeIds.size).toBe(0);
+  });
+
+  it("keeps each archive's listings apart, and does not list one again on coming back", async () => {
+    fetchMock.mockImplementation((day: string, _ref: string | null, _signal: AbortSignal, source: string) =>
+      Promise.resolve([file(day, source === "owner" ? "nde-roof" : "ret-a")]),
+    );
+    const { result, rerender } = renderHook(({ source }) => useArchiveScan(["2026-09-17"], null, source), {
+      initialProps: { source: "owner" as "owner" | "public" },
+    });
+    await waitFor(() => expect(result.current.nodeIds).toEqual(new Set(["nde-roof"])));
+
+    rerender({ source: "public" });
+    await waitFor(() => expect(result.current.nodeIds).toEqual(new Set(["ret-a"])));
+    // The owner's listing is no answer for the network's, nor the other way.
+    expect(result.current.entries.get("2026-09-17|*").files.map((f) => f.node)).toEqual(["ret-a"]);
+
+    rerender({ source: "owner" });
+    expect(result.current.nodeIds).toEqual(new Set(["nde-roof"]));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // Which archive listed which key, whichever is on screen.
+    expect(result.current.listed.owner.has(file("2026-09-17", "nde-roof").key)).toBe(true);
+    expect(result.current.listed.public.has(file("2026-09-17", "ret-a").key)).toBe(true);
+    // One map of files across both, so a basket filled in one resolves in the other.
+    expect(result.current.files.size).toBe(2);
+  });
+
+  it("drops the archive it leaves mid-listing, and lists it afresh on coming back", async () => {
+    const gate = deferred<ArchiveFile[]>();
+    fetchMock.mockImplementationOnce((_d: string, _r: string | null, signal: AbortSignal) => {
+      signal.addEventListener("abort", () => gate.reject(new DOMException("aborted", "AbortError")));
+      return gate.promise;
+    });
+    fetchMock.mockImplementation((day: string) => Promise.resolve([file(day)]));
+    const { result, rerender } = renderHook(({ source }) => useArchiveScan(["2026-09-17"], null, source), {
+      initialProps: { source: "owner" as "owner" | "public" },
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    rerender({ source: "public" });
+    await waitFor(() => expect(result.current.entries.get("2026-09-17|*")?.status).toBe("done"));
+
+    rerender({ source: "owner" });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(fetchMock.mock.calls[2][3]).toBe("owner");
+    await waitFor(() => expect(result.current.entries.get("2026-09-17|*")?.status).toBe("done"));
+  });
+});

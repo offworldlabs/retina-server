@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { HttpError } from "@retina/shared";
 
 import { api } from "../api/client";
+import type { OwnedNode, PolledRadarLiveness } from "../types";
 import RadarPage from "../pages/user/RadarPage";
 
 const state = vi.hoisted(() => ({ auth: { polledRadarRegistration: true } }));
@@ -26,7 +27,7 @@ const RADAR = {
   location_private: true,
   claimed_with: null,
   polled: { address: "radar.example.com:3000", unprotected: false, liveness: "streaming", trust_state: "probation" },
-};
+} as OwnedNode;
 
 const PROBED = {
   address: "http://moved.example.com:3000",
@@ -93,14 +94,14 @@ describe("RadarPage", () => {
     ["stalled", "Answering, but sending no new frames"],
     ["unreachable", "Not answering"],
   ])("words %s liveness for the owner", async (liveness, words) => {
-    vi.mocked(api.myNodes).mockResolvedValue([{ ...RADAR, polled: { ...RADAR.polled, liveness } }]);
+    vi.mocked(api.myNodes).mockResolvedValue([{ ...RADAR, polled: { ...RADAR.polled, liveness: liveness as PolledRadarLiveness } }]);
     renderPage();
 
     expect(await reading("Liveness")).toHaveTextContent(words);
   });
 
   it("shows a liveness it has no words for as the poller wrote it", async () => {
-    vi.mocked(api.myNodes).mockResolvedValue([{ ...RADAR, polled: { ...RADAR.polled, liveness: "resolving" } }]);
+    vi.mocked(api.myNodes).mockResolvedValue([{ ...RADAR, polled: { ...RADAR.polled, liveness: "resolving" as PolledRadarLiveness } }]);
     renderPage();
 
     expect(await reading("Liveness")).toHaveTextContent("resolving");

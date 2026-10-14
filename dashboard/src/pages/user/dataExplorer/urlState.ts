@@ -4,6 +4,7 @@
  * already in circulation.
  */
 
+import type { Scope } from "../../../hooks/useScopeParam";
 import { addDays } from "./dates";
 
 export const TOD_START = "00:00";
@@ -20,15 +21,38 @@ export const DEFAULT_RADIUS_KM = 50;
 const NO_NODES = "nodes";
 const NO_NODES_VALUE = "none";
 
+/** Whose archive to list. Spelled as every other page spells it: the whole
+ *  network by name, and the owner's own nodes, the default, by its absence,
+ *  so a link from before there was a choice opens as it always did. */
+const SCOPE = "scope";
+const SCOPE_NETWORK = "network";
+
 const DEFAULT_RANGE_DAYS = 3;
 const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 const TOD_RANGE = /^(\d{2}:\d{2})-(\d{2}:\d{2})$/;
 
-export interface NearFilter {
+/** A radius filter measured from a point. */
+export interface NearPoint {
   lat: number;
   lon: number;
   km: number;
 }
+
+/** A radius filter measured from one of the signed-in owner's own nodes. The
+ *  link names the node and never says where it is: that position is the
+ *  owner's alone, and only their own list can place the node again. */
+export interface NearNode {
+  node: string;
+  km: number;
+}
+
+export type NearFilter = NearPoint | NearNode;
+
+export const isNearNode = (near: NearFilter | null): near is NearNode => near !== null && "node" in near;
+
+/** What a node in a `near` centre may be spelled as: an id, which never reads
+ *  as a number, so the two shapes of the parameter cannot be confused. */
+const NEAR_NODE = /^[A-Za-z_][\w.-]*$/;
 
 export interface ExplorerFilters {
   /** null means every node there is, including ones discovered later, rather
@@ -42,6 +66,10 @@ export interface ExplorerFilters {
   /** Stored bytes; 0 is off. */
   minSize: number;
   near: NearFilter | null;
+  /** "mine" is the default and is never written. A viewer with no nodes of
+   *  their own reads it as the whole network: it asks for the owner's view
+   *  where there is one, and does not promise there is. */
+  scope: Scope;
 }
 
 export function defaultFilters(today: string): ExplorerFilters {
@@ -53,6 +81,7 @@ export function defaultFilters(today: string): ExplorerFilters {
     todTo: TOD_END,
     minSize: 0,
     near: null,
+    scope: "mine",
   };
 }
 
@@ -76,13 +105,18 @@ export function readFilters(search: string, today: string): ExplorerFilters {
     f.todTo = tod[2];
   }
 
-  const near = String(q.get("near") || "").split(",").map(Number);
+  const nearParts = String(q.get("near") || "").split(",");
+  const near = nearParts.map(Number);
   if (near.length === 3 && near.every(Number.isFinite)) {
     f.near = { lat: near[0], lon: near[1], km: Math.max(MIN_RADIUS_KM, near[2]) };
+  } else if (near.length === 2 && NEAR_NODE.test(nearParts[0]) && nearParts[1] !== "" && Number.isFinite(near[1])) {
+    f.near = { node: nearParts[0], km: Math.max(MIN_RADIUS_KM, near[1]) };
   }
 
   const minSize = Number(q.get("minsize"));
   if (Number.isFinite(minSize) && minSize > 0) f.minSize = minSize;
+
+  if (q.get(SCOPE) === SCOPE_NETWORK) f.scope = "network";
 
   return f;
 }
@@ -97,9 +131,13 @@ export function writeFilters(f: ExplorerFilters): URLSearchParams {
   qs.set("from", f.from);
   qs.set("to", f.to);
   if (f.todFrom !== TOD_START || f.todTo !== TOD_END) qs.set("tod", `${f.todFrom}-${f.todTo}`);
-  // Four decimals, the same precision a click on the map quantises to, so the
-  // link and the map agree about where the centre is.
-  if (f.near) qs.set("near", `${f.near.lat.toFixed(4)},${f.near.lon.toFixed(4)},${f.near.km}`);
+  // A point to four decimals, the same precision a click on the map quantises
+  // to, so the link and the map agree about where the centre is. A node by
+  // its id alone.
+  if (isNearNode(f.near)) qs.set("near", `${f.near.node},${f.near.km}`);
+  else if (f.near) qs.set("near", `${f.near.lat.toFixed(4)},${f.near.lon.toFixed(4)},${f.near.km}`);
   if (f.minSize) qs.set("minsize", String(f.minSize));
+  // Last, so a link that names no scope keeps the shape it has always had.
+  if (f.scope === "network") qs.set(SCOPE, SCOPE_NETWORK);
   return qs;
 }

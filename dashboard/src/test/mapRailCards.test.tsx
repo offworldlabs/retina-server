@@ -10,7 +10,7 @@ import { MapThemeProvider } from "../pages/map/useMapTheme";
 describe("the aircraft list's header panels", () => {
   it("are shared cards", () => {
     const owner = render(
-      <NodeOwnerControl user={{ name: "Owner" }} ownedCount={1} ownerOnly={false} onToggle={() => {}} loading={false} />,
+      <NodeOwnerControl user={{ name: "Owner", email: "owner@example.com" }} ownedCount={1} ownerOnly={false} onToggle={() => {}} loading={false} />,
     );
     expect(owner.container.querySelector(".owner-panel")).toHaveClass("card");
 

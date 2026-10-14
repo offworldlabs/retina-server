@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DownloadBasket } from "../../pages/user/dataExplorer/DownloadBasket";
-import { curlLine, downloadUrl } from "../../pages/user/dataExplorer/download";
+import { curlLine, downloadUrl, SESSION_READ, SESSION_UNSET } from "../../pages/user/dataExplorer/download";
 import type { ArchiveFile } from "../../pages/user/dataExplorer/keys";
 import { COPY_FEEDBACK_MS } from "../../pages/user/dataExplorer/useCopy";
 
@@ -109,5 +109,41 @@ describe("DownloadBasket", () => {
     const { onClear } = setup();
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
     expect(onClear).toHaveBeenCalled();
+  });
+});
+
+describe("DownloadBasket, with files from the owner's own archive", () => {
+  const own = { ...file("nde-roof", "r.parquet"), source: "owner" as const };
+  const pub = { ...file("ret-a", "a.parquet"), source: "public" as const };
+
+  it("says the link needs the session when it is the only one", () => {
+    setup({ files: [own] });
+    expect(screen.getByTestId("de-basket-session")).toHaveTextContent("Its link needs your signed-in session");
+  });
+
+  it("says how many of the links need it in a mixed basket", () => {
+    setup({ files: [own, pub], manifestOpen: true });
+    expect(screen.getByTestId("de-basket-session")).toHaveTextContent("1 of 2 links need your signed-in session");
+    expect(screen.getByTestId("de-session-hint")).toHaveTextContent(
+      "asks for its value first (read -rs RETINA_SESSION) and forgets it once the downloads are done",
+    );
+    expect(screen.getByTestId("de-session-hint")).not.toHaveTextContent("export");
+    expect(screen.getByTestId("de-curl-excerpt").textContent).toContain('-b "auth_token=$RETINA_SESSION"');
+  });
+
+  it("copies a script that asks for the session before its first line and forgets it after its last", async () => {
+    setup({ files: [own, pub] });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Copy curl" }));
+    });
+    expect(writeText).toHaveBeenCalledWith(
+      ["{", SESSION_READ, curlLine(own), curlLine(pub), SESSION_UNSET, "}"].join("\n"),
+    );
+  });
+
+  it("says nothing of a session for public links alone", () => {
+    setup({ files: [pub], manifestOpen: true });
+    expect(screen.queryByTestId("de-basket-session")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("de-session-hint")).not.toBeInTheDocument();
   });
 });
