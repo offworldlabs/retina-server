@@ -700,6 +700,10 @@ def coarse_ip(host: str | None) -> str | None:
 
     A /24 for IPv4 and a /48 for IPv6, with an IPv4-mapped address taken as the
     IPv4 one. None for anything that is not an address.
+
+    Coarser than the magic-link quota's source (routes/auth.py, _client_source)
+    on purpose, so keep the two apart: that one keys an admission limit, which
+    wants one subscriber (an address or a /64), where this is kept on file.
     """
     if not host:
         return None
