@@ -406,7 +406,7 @@ def _refresh_analytics_and_nodes():
     with state.connected_nodes_lock:
         _nodes_snapshot = list(state.connected_nodes.items())
     # /api/radar/nodes is unauthenticated and this block is the whole of it:
-    # name, peer, RF config and a location.  A private node is omitted from the
+    # name, RF config and a location.  A private node is omitted from the
     # map entirely rather than listed with its location blanked — an entry that
     # says "a node exists here, details withheld" is still a disclosure, and the
     # counts below are taken from the same filtered snapshot so the totals do
@@ -434,6 +434,9 @@ def _refresh_analytics_and_nodes():
     # public_analytics takes the unfiltered fleet: a connected node with no row
     # is still a node whose id must not appear in someone else's name.
     _fleet_ids = {nid for nid, _ in _nodes_snapshot}
+    # `peer` stays in connected_nodes, where the bulk route reads it to tell
+    # the nodes it created (routes/radar.py), and is not published: for a node
+    # on the TCP protocol it is the address the connection came from.
     nodes_data = {
         "nodes": {
             ref: {
@@ -442,7 +445,6 @@ def _refresh_analytics_and_nodes():
                 "name": public_name(info.get("config", {}).get("name"), ref, _fleet_ids),
                 "config_hash": info.get("config_hash"),
                 "last_heartbeat": info.get("last_heartbeat"),
-                "peer": info.get("peer"),
                 "is_synthetic": info.get("is_synthetic", is_synthetic_node(nid)),
                 "capabilities": info.get("capabilities", {}),
                 "frequency": carrier_hz(info.get("config", {})),
@@ -462,11 +464,13 @@ def _refresh_analytics_and_nodes():
     state.latest_nodes_bytes = orjson.dumps(nodes_data, option=orjson.OPT_SERIALIZE_NUMPY)
 
     # Overlaps: only include zones with actual overlap to keep payload small.
-    # A zone names both of its nodes, so it survives only if both resolve: half
-    # a pair describes a baseline between a known node and an unnamed one.
+    # A zone names both of its nodes, so it survives only if both resolve and
+    # neither is private: half a pair describes a baseline between a known node
+    # and an unnamed one.  Same _private as the node listing above, so the two
+    # payloads leave out the same nodes.
     _overlaps = []
     for _z in state.node_associator.get_overlap_summary():
-        if not _z["has_overlap"]:
+        if not _z["has_overlap"] or _z["node_a"] in _private or _z["node_b"] in _private:
             continue
         _a, _b = public_identity(_z["node_a"]), public_identity(_z["node_b"])
         if _a is None or _b is None:
@@ -477,7 +481,7 @@ def _refresh_analytics_and_nodes():
     _registered = list(state.node_associator.node_geometries.keys())
     overlaps_data = {
         "overlaps": _overlaps,
-        "registered_nodes": [r for r in (public_identity(n) for n in _registered) if r],
+        "registered_nodes": [r for n in _registered if n not in _private and (r := public_identity(n))],
     }
     state.latest_overlaps_bytes = orjson.dumps(overlaps_data, option=orjson.OPT_SERIALIZE_NUMPY)
 

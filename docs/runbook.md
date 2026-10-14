@@ -791,7 +791,7 @@ working, so this alert means a reading well outside even that.
 
 **Check per-node miss rates:**
 ```bash
-adm /api/admin/leaderboard | python3 -c \
+adm /api/radar/leaderboard | python3 -c \
   "import sys,json; rows=json.load(sys.stdin)['leaderboard']; [print(r['node_ref'], r.get('miss_rate','?')) for r in rows]"
 ```
 

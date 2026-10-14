@@ -312,6 +312,70 @@ class TestPublicRecords:
         assert out == {"contributing_node_refs": ["nde1a2b3c4d00"]}
 
 
+class TestPublicAnalyticsWithholdsPrivateNodes:
+    """public_analytics names a private node nowhere, as it names a node with
+    no handle: a pair naming it goes, it leaves the blocked list, and prose
+    naming it is redacted. Its ref would say it exists and whom it sits beside."""
+
+    _PRIV = "ret1a2b3c4d"
+    _PUB = "ret2b3c4d5e"
+
+    def _cross(self, *ids: str) -> dict:
+        a, b = ids
+        return {"pair_overlaps": [{"node_a": a, "node_b": b, "overlap_ratio": 0.4}], "blocked_nodes": [a]}
+
+    @pytest.fixture()
+    def private(self, seed, monkeypatch):
+        seed(**{self._PRIV: "nde1a2b3c4d00", self._PUB: "nde2b3c4d5e00"})
+
+        def _private(*ids: str) -> None:
+            monkeypatch.setattr(node_refs, "private_node_ids", lambda: frozenset(ids))
+
+        return _private
+
+    def test_a_private_node_is_in_no_pair_and_not_blocked(self, private):
+        private(self._PRIV)
+        out = node_refs.public_analytics({}, self._cross(self._PRIV, self._PUB))
+        assert out["cross_node"] == {"pair_overlaps": [], "blocked_nodes": []}
+
+    def test_a_public_pair_is_still_named_by_its_refs(self, private):
+        private()
+        out = node_refs.public_analytics({}, self._cross(self._PRIV, self._PUB))
+        assert out["cross_node"]["pair_overlaps"][0]["node_a"] == "nde1a2b3c4d00"
+        assert out["cross_node"]["blocked_nodes"] == ["nde1a2b3c4d00"]
+
+    def test_prose_naming_it_is_redacted_and_its_own_summary_skipped(self, private):
+        private(self._PRIV)
+        reason = f"Inconsistent with trusted neighbour {self._PRIV} (overlap=0.00)"
+        summaries = {self._PUB: {"reputation": {"recent_penalties": [{"reason": reason}]}}, self._PRIV: {"metrics": {}}}
+        out = node_refs.public_analytics(summaries, {})
+        assert list(out["nodes"]) == ["nde2b3c4d5e00"]
+        assert out["nodes"]["nde2b3c4d5e00"]["reputation"]["recent_penalties"] == [
+            {"reason": "Inconsistent with trusted neighbour [unpublished node] (overlap=0.00)"}
+        ]
+
+    def test_a_private_synthetic_node_is_withheld_too(self, private):
+        """Another synthetic node publishes as itself and is left out of the
+        vocabulary; a private one is not left out of it."""
+        private("synth-quiet-01")
+        cross = self._cross("synth-quiet-01", "synth-loud-02")
+        cross["blocked_nodes"] = ["synth-quiet-01", "synth-loud-02"]
+        out = node_refs.public_analytics({}, cross, ["synth-quiet-01", "synth-loud-02"])
+        assert out["cross_node"] == {"pair_overlaps": [], "blocked_nodes": ["synth-loud-02"]}
+
+    def test_before_the_policy_is_known_no_node_is_named(self, seed, monkeypatch):
+        from services.publication import PublicationUnavailable
+
+        seed(**{self._PRIV: "nde1a2b3c4d00", self._PUB: "nde2b3c4d5e00"})
+
+        def unavailable():
+            raise PublicationUnavailable("not yet")
+
+        monkeypatch.setattr(node_refs, "private_node_ids", unavailable)
+        out = node_refs.public_analytics({self._PUB: {"metrics": {}}}, self._cross(self._PRIV, self._PUB))
+        assert out == {"nodes": {}, "cross_node": {"pair_overlaps": [], "blocked_nodes": []}}
+
+
 _MIRRORED = "ret0badcafe"
 
 

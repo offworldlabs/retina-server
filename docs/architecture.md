@@ -27,8 +27,9 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   their filters through the redirect. It reads `/api/data/archive`, which is
   unauthenticated, names each file by its node's `node_ref` (the store is keyed
   on `node_id` and the route translates both ways) and drops private nodes for
-  every caller, so a signed-in owner sees their own private nodes' files only
-  once an authenticated listing exists; the public route must not grow one.
+  every caller, their owner included. A signed-in owner reads their own nodes'
+  files, private ones too, from `/api/auth/me/archive`, each from when it became
+  theirs; no public route answers differently by session.
 - **admin** (`admin.retina.fm`) — the dashboard bundle again, built at a root and
   serving the admin route table, which `dashboard/src/utils/surface.ts` selects
   from the hostname. It keeps a name of its own because a Cloudflare Access
@@ -202,7 +203,12 @@ the edge would protect that hostname's HTML and nothing else; it is also why
 independent of `RETINA_ENV`, but only `docker-compose.local.yml` sets it. Node
 ownership maps
 `node_id → user_id`; the `/ws/aircraft/owner` feed and dashboard use it to scope
-data to a user's own nodes.
+data to a user's own nodes. An owner's records of a node (report, configuration
+history, events, SNR trend, archive) start when it became theirs
+(`node_claims.owned_since`): what it recorded for a previous owner is not shown
+to the next.
+The owner feed authenticates by the session cookie, and refuses a handshake from
+a page that is not the console's before reading it (`backend/core/origins.py`).
 
 ## Deploy
 

@@ -192,6 +192,8 @@ async def create_polled_radar(
                 verified=claim_verified,
                 undeliverable=False,
                 updated_at=now,
+                owned_since=now,
+                owned_since_user_id=owner_user_id,
             )
         )
         radar = PolledRadar(

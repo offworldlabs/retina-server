@@ -14,10 +14,26 @@ from retina_custody.models import NodeIdentity
 from config.constants import CHAIN_ENTRIES_MAX_PER_NODE, IQ_COMMITMENTS_MAX_PER_NODE
 from core import state
 from services.node_refs import id_for_identity, public_identity
+from services.publication import is_private, private_node_ids
 
 router = APIRouter(tags=["custody"])
 
 RADAR_API_KEY = os.getenv("RADAR_API_KEY", "")
+
+
+def _published_node(node_ref: str) -> str | None:
+    """The node a custody path parameter names, or None if it must answer as unknown.
+
+    None for a ref nothing publishes as, and for a node registered private: its
+    registration record is hardware identity and its chain is when it ran, and
+    any answer that differed from an unknown ref's would confirm the ref is in
+    use.  is_private answers True until the policy has been read, so until then
+    every ref answers as unknown.
+    """
+    node_id = id_for_identity(node_ref)
+    if node_id is None or is_private(node_id):
+        return None
+    return node_id
 
 
 # ── Request models ────────────────────────────────────────────────────────────
@@ -142,7 +158,14 @@ async def custody_status():
     # on node ids is the same disclosure as a field holding one, so the keys are
     # the published handle and a node with no handle is left out entirely;
     # registered_nodes counts the same filtered map so the total cannot
-    # reinstate what the listing dropped.
+    # reinstate what the listing dropped.  A node registered private is left
+    # out the same way, from all three blocks; the policy is read once so they
+    # agree.
+    private = private_node_ids()
+
+    def published(nid: str) -> str | None:
+        return None if nid in private else public_identity(nid)
+
     node_keys = {
         ref: {
             "fingerprint": ident.public_key_fingerprint,
@@ -151,7 +174,7 @@ async def custody_status():
             "registered_at": ident.registered_at,
         }
         for nid, ident in state.node_identities.items()
-        if (ref := public_identity(nid))
+        if (ref := published(nid))
     }
     body = orjson.dumps(
         {
@@ -164,10 +187,10 @@ async def custody_status():
                     "latest_verified": entries[-1].get("_verified") if entries else None,
                 }
                 for nid, entries in state.chain_entries.items()
-                if (ref := public_identity(nid))
+                if (ref := published(nid))
             },
             "iq_commitments": {
-                ref: len(captures) for nid, captures in state.iq_commitments.items() if (ref := public_identity(nid))
+                ref: len(captures) for nid, captures in state.iq_commitments.items() if (ref := published(nid))
             },
         }
     )
@@ -176,11 +199,11 @@ async def custody_status():
 
 @router.get("/api/custody/chain/{node_ref}")
 async def custody_node_chain(node_ref: str):
-    # An unresolvable ref gets the same answer as a node with no entries, and
-    # neither detail quotes what was asked for.
-    node_id = id_for_identity(node_ref)
+    # An unresolvable ref and a private node get the same answer as a node with
+    # no entries, and the detail does not quote what was asked for.
+    node_id = _published_node(node_ref)
     entries = state.chain_entries.get(node_id, []) if node_id else []
-    if not entries:
+    if node_id is None or not entries:
         raise HTTPException(status_code=404, detail="No chain entries for that node")
 
     identity = state.node_identities.get(node_id)
@@ -211,9 +234,11 @@ async def custody_node_chain(node_ref: str):
 
 @router.get("/api/custody/verify/{node_ref}")
 async def custody_verify_chain(node_ref: str):
-    node_id = id_for_identity(node_ref)
+    # Resolved like the chain route, so a private node's answer is an unknown
+    # ref's here too, ahead of the 400 for a missing key.
+    node_id = _published_node(node_ref)
     entries = state.chain_entries.get(node_id, []) if node_id else []
-    if not entries:
+    if node_id is None or not entries:
         raise HTTPException(status_code=404, detail="No chain entries for that node")
 
     if node_id not in state.node_identities:

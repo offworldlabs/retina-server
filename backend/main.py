@@ -100,6 +100,7 @@ from routes.node_responses import API_DESCRIPTION
 from routes.nodes import NODE_API_TAGS, NODE_BODY_LIMITS, install_error_handlers
 from routes.nodes import router as nodes_router
 from routes.output import router as output_router
+from routes.owner import router as owner_router
 from routes.polled_radar_registration import router as polled_radar_registration_router
 from routes.radar import router as radar_router
 from routes.reference import router as reference_router
@@ -510,6 +511,7 @@ for router in (
     test_router,
     custody_router,
     auth_router,
+    owner_router,
     admin_router,
     admin_infrastructure_router,
     admin_polled_radars_router,

@@ -1,16 +1,25 @@
+import { UnauthorizedError } from "@retina/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { onSessionEnded } from "../../api/client";
 import {
   cacheKey,
   type DayEntry,
   entryForScope,
   fetchDayListing,
+  filePath,
   horizon,
+  type Listed,
+  LISTING_TIMEOUT_MS,
   PAGE,
+  routeFor,
 } from "../../pages/user/dataExplorer/archive";
 
 const { requestMock } = vi.hoisted(() => ({ requestMock: vi.fn() }));
-vi.mock("@retina/shared", () => ({ request: requestMock }));
+vi.mock("@retina/shared", () => ({
+  request: requestMock,
+  UnauthorizedError: class UnauthorizedError extends Error {},
+}));
 
 const MODIFIED = "2026-09-17T14:00:00Z";
 
@@ -93,6 +102,12 @@ describe("fetchDayListing", () => {
     requestMock.mockRejectedValue(new Error("HTTP 503"));
     await expect(fetchDayListing("2026-09-17", null)).rejects.toThrow("HTTP 503");
   });
+
+  it("sends only the origin as the referrer, never the page's own address", async () => {
+    requestMock.mockResolvedValue({ files: [], total: 0 });
+    await fetchDayListing("2026-09-17", "ret-a");
+    expect(requestMock.mock.calls[0][1]).toMatchObject({ referrerPolicy: "strict-origin" });
+  });
 });
 
 describe("entryForScope", () => {
@@ -153,5 +168,62 @@ describe("horizon", () => {
       withFiles("2026-09-15"),
     ]);
     expect(horizon(cache, days, eff)).toBeNull();
+  });
+});
+
+describe("the owner's archive", () => {
+  it("is listed and paged from the owner's route with the public one's parameters", async () => {
+    requestMock
+      .mockResolvedValueOnce({ files: rows(10, "nderoof00000001"), total: 600 })
+      .mockResolvedValueOnce({ files: rows(5, "nderoof00000001"), total: 600 });
+    const files = await fetchDayListing("2026-09-17", "nderoof00000001", undefined, "owner");
+    expect(requestMock.mock.calls.map((c) => c[0])).toEqual([
+      "/api/auth/me/archive?date=2026%2F09%2F17&node_ref=nderoof00000001&limit=500&offset=0",
+      `/api/auth/me/archive?date=2026%2F09%2F17&node_ref=nderoof00000001&limit=500&offset=${PAGE}`,
+    ]);
+    expect(requestMock.mock.calls[0][1]).toMatchObject({ timeoutMs: LISTING_TIMEOUT_MS });
+    expect(files).toHaveLength(15);
+    expect(files[0].node).toBe("nderoof00000001");
+  });
+
+  it("ends the session on the page at once when the owner's route answers 401", async () => {
+    // The test document's page is the console's index, which a visitor may open,
+    // so the client tells the auth context rather than leaving for the login.
+    const told = vi.fn();
+    const stop = onSessionEnded(told);
+    requestMock.mockRejectedValue(new UnauthorizedError("Not authenticated"));
+    await expect(fetchDayListing("2026-09-17", null, undefined, "owner")).rejects.toBeInstanceOf(UnauthorizedError);
+    expect(told).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it("serves each file from its own route, the key appended as issued", () => {
+    const key = "year=2026/month=09/day=17/node_ref=nderoof00000001/part-0.parquet";
+    expect(filePath(key, "owner")).toBe(`/api/auth/me/archive/${key}`);
+    expect(filePath(key, "public")).toBe(`/api/data/archive/${key}`);
+  });
+});
+
+describe("routeFor", () => {
+  const listed = (pub: string[], owner: string[]): Listed => ({ public: new Set(pub), owner: new Set(owner) });
+
+  it("takes the archive on screen when it listed the key", () => {
+    expect(routeFor("k", listed(["k"], ["k"]), "owner")).toBe("owner");
+    expect(routeFor("k", listed(["k"], ["k"]), "public")).toBe("public");
+  });
+
+  it("keeps a key only the owner's archive listed on the owner's route, whichever is on screen", () => {
+    // A private node's file, ticked on the owner's view and still in the
+    // basket on the network's, which never served it.
+    expect(routeFor("k", listed([], ["k"]), "public")).toBe("owner");
+  });
+
+  it("prefers the public route for a key only it listed, which needs no session", () => {
+    expect(routeFor("k", listed(["k"], []), "owner")).toBe("public");
+  });
+
+  it("goes to the archive on screen for a key neither has listed", () => {
+    expect(routeFor("k", listed([], []), "owner")).toBe("owner");
+    expect(routeFor("k", listed([], []), "public")).toBe("public");
   });
 });
