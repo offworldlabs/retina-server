@@ -16,10 +16,10 @@ from pathlib import Path
 _admin_executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="admin-io")
 
 import orjson
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config.constants import (
@@ -29,21 +29,24 @@ from config.constants import (
     NODE_OFFLINE_THRESHOLD_S,
 )
 from core import state
-from core.auth import list_node_owners
+from core.auth import create_magic_link_in, list_node_owners, sweep_magic_links
 from core.node_ids import POLLED_BLAH2, system_of
-from core.nodes import Node
+from core.nodes import Node, NodeClaim, NodeClaimChallenge
 from core.runtime_config import runtime_path, write_runtime_file
 from core.task_registry import get_stale_tasks
 from core.users import (
     User,
+    accounts_by_id,
+    async_session_maker,
     get_async_session,
+    normalise_email,
     require_admin,
     user_to_dict,
 )
 from services import account_email
-from services.node_claim_store import set_owner
+from services.node_claim_store import claim_status, read_owner, set_owner
 from services.node_config import carrier_hz
-from services.node_refs import ref_to_id_map
+from services.node_refs import owner_identity, ref_to_id_map
 from services.node_report_store import all_reports
 from services.tasks import multinode_identity
 
@@ -132,22 +135,167 @@ def check_node_health():
 # ── Users ─────────────────────────────────────────────────────────────────────
 
 
+def _admin_user(user: User, node_count: int) -> dict:
+    """An account as the console's user pages show it: user_to_dict, whether
+    the address was ever proved, and how many nodes the account owns."""
+    return {**user_to_dict(user), "is_verified": user.is_verified, "node_count": node_count}
+
+
+async def _account(session: AsyncSession, user_id: str) -> User:
+    """The account `user_id` names. 404 for any id that is not an account's,
+    malformed or not, as admin_set_node_owner answers one."""
+    try:
+        account_id = uuid.UUID(user_id)
+    except ValueError:
+        raise HTTPException(404, "User not found") from None
+    account = await session.get(User, account_id)
+    if account is None:
+        raise HTTPException(404, "User not found")
+    return account
+
+
+# Far above any real table and inside every database's integer range, so an
+# offset past it is a 422 rather than a driver overflow.
+MAX_USER_OFFSET = 1_000_000_000
+
+
 @router.get("/users")
 async def list_users(
     request: Request,
+    q: str = "",
+    limit: int = Query(25, ge=1, le=200),
+    offset: int = Query(0, ge=0, le=MAX_USER_OFFSET),
     session: AsyncSession = Depends(get_async_session),
     _admin=Depends(require_admin),
 ):
-    """Every account, whether a redeemed link or an administrator connecting a
-    radar to the address made it.
+    """A page of accounts, newest first, and how many match in all.
+
+    Every account, whether a redeemed link or an administrator connecting a
+    radar to the address made it. `q` keeps the addresses that contain it, in
+    any case, with `%` and `_` matched as themselves. created_at is filled in
+    by the database to the second, so ties go by id and a page stays put.
 
     Nothing here sets is_superuser, and whatever a row holds there grants and
     refuses nothing: an administrator is a Cloudflare Access identity with no
-    row (core.users.require_admin). What an administrator can change about an
-    account is is_active, through the two routes below.
+    row (core.users.require_admin). An administrator can sign an account out
+    and back in (deactivate, reactivate), send it a sign-in link, start a
+    change of its address or delete it.
     """
-    result = await session.execute(select(User))
-    return [user_to_dict(u) for u in result.scalars().all()]
+    term = q.strip()
+    matching = [User.email.icontains(term, autoescape=True)] if term else []
+    total = await session.scalar(select(func.count()).select_from(User).where(*matching))
+    page = (
+        await session.scalars(
+            select(User).where(*matching).order_by(User.created_at.desc(), User.id).limit(limit).offset(offset)
+        )
+    ).all()
+    # One grouped query for the page rather than one per row.
+    counts: dict[str | None, int] = {}
+    if page:
+        rows = await session.execute(
+            select(NodeClaim.user_id, func.count())
+            .where(NodeClaim.user_id.in_([str(user.id) for user in page]))
+            .group_by(NodeClaim.user_id)
+        )
+        counts = {user_id: count for user_id, count in rows.tuples()}
+    return {"users": [_admin_user(user, counts.get(str(user.id), 0)) for user in page], "total": total or 0}
+
+
+@router.get("/users/{user_id}")
+async def get_user(
+    user_id: str,
+    session: AsyncSession = Depends(get_async_session),
+    _admin=Depends(require_admin),
+):
+    """One account, the nodes it owns, and the claims on other nodes that
+    carry its address: in progress, expired or bounced, so a claim that is
+    stuck can be read from the account's side."""
+    account = await _account(session, user_id)
+    email = normalise_email(account.email)
+    owned = set(await session.scalars(select(NodeClaim.node_id).where(NodeClaim.user_id == str(account.id))))
+    named = set(await session.scalars(select(NodeClaim.node_id).where(NodeClaim.email == email)))
+    named |= set(await session.scalars(select(NodeClaimChallenge.node_id).where(NodeClaimChallenge.email == email)))
+    now = time.time()
+    return {
+        "user": _admin_user(account, len(owned)),
+        "nodes": await _admin_claims(session, sorted(owned), now),
+        "claims": await _admin_claims(session, sorted(named - owned), now),
+    }
+
+
+@router.post("/users/{user_id}/sign-in-link", status_code=202)
+async def send_sign_in_link(
+    user_id: str,
+    session: AsyncSession = Depends(get_async_session),
+    admin=Depends(require_admin),
+):
+    """Mail the account a sign-in link, as its owner asking for one would.
+
+    The same link, mail and outbox as the self-service route, but answered
+    once the mail is queued: the caller is an administrator, so there is no
+    address oracle to hide and they are told what happened. Mail that cannot
+    leave is refused before a link is minted, as that route refuses it.
+
+    The link goes to the address the account has as it is minted, read again
+    under the write lock it is minted under, so a retired address is never
+    mailed, as the self-service route forwards one (routes/auth.py,
+    _mail_sign_in_link). A change of address confirmed meanwhile has either
+    committed before that read, and the link goes to the new address, or waits
+    for the link's commit and kills it with the rest of the old mailbox's links
+    (services/account_email.py).
+    """
+    from routes.auth import queue_sign_in_mail, sign_in_landing
+
+    account = await _account(session, user_id)
+    if not account.is_active:
+        raise HTTPException(409, "Account is deactivated")
+    landing = sign_in_landing()
+    now = time.time()
+    async with async_session_maker() as db:
+        async with db.begin():
+            # The write lock, before the account is read again.
+            await sweep_magic_links(db, account.email, now)
+            current = await db.get(User, account.id)
+            if current is None:
+                raise HTTPException(404, "User not found")
+            if not current.is_active:
+                raise HTTPException(409, "Account is deactivated")
+            email = normalise_email(current.email)
+            token = await create_magic_link_in(db, email, now=now)
+    if token is None:
+        raise HTTPException(429, "This address already holds the maximum number of outstanding sign-in links")
+    if not await queue_sign_in_mail(email, token, landing + token, now):
+        raise HTTPException(500, "Could not queue the sign-in mail")
+    log_event(
+        "user",
+        f"Sign-in link queued for account {account.id}",
+        "info",
+        {"user_id": str(account.id), "by": admin["email"]},
+    )
+    return {"status": "queued", "email": email}
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(user_id: str, admin=Depends(require_admin)):
+    """Delete an account as its owner deletes their own (services/accounts.py,
+    delete_account): every node it owns handed back as its owner's release
+    would, every session ended and its row gone. The core records it, naming
+    the administrator. The answer says how many nodes this call handed back.
+
+    404 for an id that is not an account's, malformed or not. 409 when claims
+    kept binding nodes to it while it was being deleted: it is still there,
+    still signs in and holds only those, and deleting it again finishes the job.
+    """
+    from core import sessions
+    from services import accounts
+
+    try:
+        released = await accounts.delete_account(user_id, by=admin["email"])
+    except sessions.AccountHoldsNodes:
+        raise HTTPException(409, "A node was claimed for this account while it was being deleted. Try again.") from None
+    if released is None:
+        raise HTTPException(404, "User not found")
+    return {"ok": True, "released": released}
 
 
 @router.post("/users/{user_id}/deactivate")
@@ -257,6 +405,71 @@ async def admin_list_node_owners(
     return result
 
 
+async def _admin_claims(session: AsyncSession, node_ids: list[str], now: float) -> list[dict]:
+    """Each node's claim as an administrator reads it, in the order given.
+
+    `status` is what the node itself is told (node_claim_store.claim_status);
+    the rest is what it is derived from, the challenge included whether or not
+    it has expired, and who the owner is.
+    """
+    if not node_ids:
+        return []
+    claims = {c.node_id: c for c in await session.scalars(select(NodeClaim).where(NodeClaim.node_id.in_(node_ids)))}
+    challenges = {
+        c.node_id: c
+        for c in await session.scalars(select(NodeClaimChallenge).where(NodeClaimChallenge.node_id.in_(node_ids)))
+    }
+    owners = await accounts_by_id(session, [c.user_id for c in claims.values() if c.user_id is not None])
+    result = []
+    for node_id in node_ids:
+        claim, challenge = claims.get(node_id), challenges.get(node_id)
+        owner = None
+        if claim is not None and claim.user_id is not None:
+            account = owners.get(claim.user_id)
+            owner = {
+                "user_id": claim.user_id,
+                "email": account.email if account else None,
+                "name": account.name if account else None,
+            }
+        result.append(
+            {
+                "node_id": node_id,
+                "node_ref": owner_identity(node_id),
+                "status": (await claim_status(session, node_id, now)).state,
+                "owner": owner,
+                "email": claim.email if claim else None,
+                "verified": bool(claim and claim.verified),
+                "undeliverable": bool(claim and claim.undeliverable),
+                "updated_at": claim.updated_at.timestamp() if claim and claim.updated_at else None,
+                "owned_since": claim.owned_since.timestamp() if claim and claim.owned_since else None,
+                "challenge": None
+                if challenge is None
+                else {
+                    "email": challenge.email,
+                    "created_at": challenge.created_at,
+                    "expires_at": challenge.expires_at,
+                    "expired": challenge.expires_at <= now,
+                },
+            }
+        )
+    return result
+
+
+@router.get("/nodes/{node_id}/claim")
+async def admin_node_claim(
+    node_id: str,
+    session: AsyncSession = Depends(get_async_session),
+    _admin=Depends(require_admin),
+):
+    """A node's owner, the address it was claimed with and its pending
+    challenge, which is what a stuck or bounced claim is diagnosed from.
+    404 for a node that never came through registration."""
+    if await session.get(Node, node_id) is None:
+        raise HTTPException(404, "Node not found")
+    [claim] = await _admin_claims(session, [node_id], time.time())
+    return claim
+
+
 @router.get("/node-reports")
 async def admin_node_reports(
     request: Request,
@@ -294,6 +507,7 @@ async def admin_set_node_owner(
         # Nothing can claim a polled radar afterwards, and the poller would
         # carry on polling it with nobody to answer for it.
         raise HTTPException(409, f"{node_id} is a polled radar: reassign it, or have its owner remove it")
+    user_id = None
     if body.user_id is not None:
         try:
             uid = uuid.UUID(body.user_id)
@@ -302,17 +516,22 @@ async def admin_set_node_owner(
         user = await session.get(User, uid)
         if not user:
             raise HTTPException(404, "User not found")
+        # The account's own id, not the spelling sent: node_claims is matched
+        # against it exactly, so an upper-case or undashed id would bind an
+        # owner that no read by account ever finds.
+        user_id = str(user.id)
     # The checks above and the write in one transaction. A changed owner takes
     # the address and any pending challenge with it; set_owner says why.
-    await set_owner(session, node_id, body.user_id)
+    previous = await read_owner(session, node_id)
+    await set_owner(session, node_id, user_id)
     await session.commit()
     log_event(
         "user",
-        f"Node {node_id} owner set to {body.user_id or '(unassigned)'}",
+        f"Node {node_id} owner set to {user_id or '(unassigned)'}",
         "info",
-        {"node_id": node_id, "user_id": body.user_id, "by": admin["email"]},
+        {"node_id": node_id, "user_id": user_id, "previous_user_id": previous, "by": admin["email"]},
     )
-    return {"ok": True, "node_id": node_id, "user_id": body.user_id}
+    return {"ok": True, "node_id": node_id, "user_id": user_id}
 
 
 @router.get("/node-refs")
@@ -457,8 +676,24 @@ async def admin_retire_stale_nodes(admin=Depends(require_admin)):
 
 
 @router.get("/events")
-async def list_events(limit: int = 200, _admin=Depends(require_admin)):
-    return list(_events)[:limit]
+async def list_events(limit: int = 200, user_id: str | None = None, _admin=Depends(require_admin)):
+    """The event log, newest first. With `user_id`, only the events about that
+    account: naming it as the account acted on, or as the owner a node had
+    before an assignment. Filtered before `limit` is applied."""
+    events = list(_events)
+    if user_id is not None:
+        # Any spelling of an account's id, as the user routes take; recorded ids are canonical.
+        try:
+            user_id = str(uuid.UUID(user_id))
+        except ValueError:
+            pass
+        events = [e for e in events if _names_account(e, user_id)]
+    return events[:limit]
+
+
+def _names_account(event: dict, user_id: str) -> bool:
+    meta = event.get("meta") or {}
+    return user_id in (meta.get("user_id"), meta.get("previous_user_id"))
 
 
 # ── Config ────────────────────────────────────────────────────────────────────

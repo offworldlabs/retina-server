@@ -371,3 +371,87 @@ export interface MyClaim {
   /** When the outstanding link lapses, in epoch seconds; null with none out. */
   expires_at: number | null;
 }
+
+/* ---- Admin: accounts and node claims ---- */
+
+/** An account as the API's user dict reports it, which is what deactivating
+ *  and reactivating one answer with. Times are epoch seconds. */
+export interface AdminAccount {
+  id: string;
+  email: string;
+  /** Empty until the owner sets one. */
+  name: string;
+  role: string;
+  is_superuser: boolean;
+  /** False once deactivated: no link signs it in and no session resolves to it. */
+  is_active: boolean;
+  created_at: number;
+  /** Null until its first visit. */
+  last_seen_at: number | null;
+}
+
+/** An account as the console's user pages list it. */
+export interface AdminUser extends AdminAccount {
+  /** Whether a link sent to the address has been redeemed. An account an
+   *  administrator made for a polled radar reads false until then. */
+  is_verified: boolean;
+  /** The nodes it owns. */
+  node_count: number;
+}
+
+/** One page of accounts, newest first, and how many match in all. */
+export interface AdminUserPage {
+  users: AdminUser[];
+  total: number;
+}
+
+/** What a node is told about its own claim. An expired link reads unclaimed. */
+export type AdminClaimStatus = "owned" | "pending" | "unclaimed";
+
+/** The claim link a node has out. Times are epoch seconds. */
+export interface AdminClaimChallenge {
+  /** Where the link was sent. */
+  email: string;
+  created_at: number;
+  expires_at: number;
+  /** As of the server's read; a page left open goes by expires_at. */
+  expired: boolean;
+}
+
+/** A node's claim as an administrator reads it: the status the node is told,
+ *  and the facts it is derived from. */
+export interface AdminClaim {
+  node_id: string;
+  /** Null for a node with no public handle. */
+  node_ref: string | null;
+  status: AdminClaimStatus;
+  owner: { user_id: string; email: string | null; name: string | null } | null;
+  /** The address on file for the claim, if any. */
+  email: string | null;
+  /** Whether a link to that address was redeemed. */
+  verified: boolean;
+  /** Mail to that address bounced for good. */
+  undeliverable: boolean;
+  updated_at: number | null;
+  owned_since: number | null;
+  challenge: AdminClaimChallenge | null;
+}
+
+/** One account, the nodes it owns, and the claims on other nodes that carry
+ *  its address: in progress, expired or bounced. */
+export interface AdminUserDetail {
+  user: AdminUser;
+  nodes: AdminClaim[];
+  claims: AdminClaim[];
+}
+
+/** One entry of the admin event log, newest first. */
+export interface AdminEvent {
+  /** Epoch seconds. */
+  ts: number;
+  category: string;
+  message: string;
+  severity: string;
+  /** Ids the event is about, such as user_id or node_id. */
+  meta?: Record<string, unknown>;
+}
