@@ -38,7 +38,7 @@ const userNav = (): NavSection[] => [
     title: "Data",
     items: [
       { to: "/data", label: "Data Explorer", icon: "database" },
-      { to: "/tunnel", label: "Tunnel Link", icon: "link" },
+      { to: "/node-sites", label: "Node Sites", icon: "link" },
     ],
   },
   {

@@ -8,6 +8,7 @@ import { StatusBadge } from "../../components/StatusBadge";
 import { usePolling } from "../../hooks/usePolling";
 import { useAuth } from "../../context/AuthContext";
 import type { OwnedNode } from "../../types";
+import { DISCORD_URL, WEBSITE_URL } from "../../utils/community";
 import { formatAvailability } from "../../utils/format";
 import { shortRef } from "../../utils/nodes";
 import { rankWindows } from "../../utils/rankWindows";
@@ -342,7 +343,7 @@ export default function LeaderboardPage() {
         <div className="card-body">
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
             <a
-              href="https://discord.gg/retina"
+              href={DISCORD_URL}
               target="_blank"
               rel="noopener noreferrer"
               className="btn btn-primary"
@@ -353,7 +354,7 @@ export default function LeaderboardPage() {
               Join Discord
             </a>
             <a
-              href="https://retina.fm"
+              href={WEBSITE_URL}
               target="_blank"
               rel="noopener noreferrer"
               className="btn btn-secondary"

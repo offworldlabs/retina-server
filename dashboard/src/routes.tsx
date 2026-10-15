@@ -21,7 +21,7 @@ const DataExplorerPage = lazy(() => import("./pages/user/DataExplorerPage"));
 const RFEnvironmentPage = lazy(() => import("./pages/user/RFEnvironmentPage"));
 const LeaderboardPage = lazy(() => import("./pages/user/LeaderboardPage"));
 const KnowledgeBasePage = lazy(() => import("./pages/user/KnowledgeBasePage"));
-const TunnelLinkPage = lazy(() => import("./pages/user/TunnelLinkPage"));
+const NodeSitesPage = lazy(() => import("./pages/user/NodeSitesPage"));
 const AnomalyPage = lazy(() => import("./pages/user/AnomalyPage"));
 const RegisterRadarPage = lazy(() => import("./pages/user/RegisterRadarPage"));
 const RadarPage = lazy(() => import("./pages/user/RadarPage"));
@@ -94,7 +94,9 @@ const userRoutes = (): ConsoleRoute[] => [
   { path: "/anomalies", title: "Anomaly Monitor", element: <AnomalyPage /> },
   { path: "/leaderboard", title: "Leaderboard", element: <LeaderboardPage /> },
   { path: "/knowledge", title: "Knowledge Base", element: <KnowledgeBasePage /> },
-  { path: "/tunnel", title: "Tunnel Link", element: <TunnelLinkPage /> },
+  { path: "/node-sites", title: "Node Sites", element: <NodeSitesPage /> },
+  // The page's old name, still in bookmarks.
+  { path: "/tunnel", to: "/node-sites" },
   // Still in bookmarks, and in sign-in links already mailed.
   { path: "/onboarding", to: "/overview" },
   { path: "/radars/new", title: "Add a Radar", element: <RegisterRadarPage /> },

@@ -1,9 +1,9 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../api/client";
 import type { OwnedNode } from "../types";
-import TunnelLinkPage from "../pages/user/TunnelLinkPage";
+import NodeSitesPage from "../pages/user/NodeSitesPage";
 
 vi.mock("../api/client", () => ({ api: { myNodes: vi.fn() } }));
 
@@ -17,14 +17,33 @@ const NODE = {
   is_synthetic: false,
 } as OwnedNode;
 
-describe("TunnelLinkPage", () => {
+describe("NodeSitesPage", () => {
   beforeEach(() => {
     vi.mocked(api.myNodes).mockReset();
   });
 
+  it("is named for what it does, with none of the tunnel controls it once faked", async () => {
+    vi.mocked(api.myNodes).mockResolvedValue([NODE, { ...NODE, node_id: "ret9f8e7d6c", node_ref: "nde9876543210", name: "Barn", status: "offline" }]);
+    render(<NodeSitesPage />);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Node Sites" })).toBeInTheDocument();
+    expect(screen.getByText("Rooftop")).toBeInTheDocument();
+    expect(screen.queryByText(/Enable Tunnel/i)).toBeNull();
+    expect(screen.queryByText(/Not Yet Available/i)).toBeNull();
+    expect(screen.queryByText(/Coming Soon/i)).toBeNull();
+    expect(screen.queryByTitle(/Coming soon/i)).toBeNull();
+    expect(screen.queryByText(/\[node-ip\]/)).toBeNull();
+    for (const header of ["Local Display", "Tunnel Status", "Actions"]) {
+      expect(screen.queryByRole("columnheader", { name: header })).toBeNull();
+    }
+    for (const row of screen.getAllByRole("row").slice(1)) {
+      expect(within(row).queryByRole("button")).toBeNull();
+    }
+  });
+
   it("links each node to the site its node_id names", async () => {
     vi.mocked(api.myNodes).mockResolvedValue([NODE]);
-    render(<TunnelLinkPage />);
+    render(<NodeSitesPage />);
     expect(await screen.findByRole("link", { name: /Rooftop/ })).toHaveAttribute(
       "href",
       "https://ret1a2b3c4d.retnode.com",
@@ -33,14 +52,32 @@ describe("TunnelLinkPage", () => {
 
   it("offers no link for a synthetic node, which has no site", async () => {
     vi.mocked(api.myNodes).mockResolvedValue([{ ...NODE, is_synthetic: true }]);
-    render(<TunnelLinkPage />);
+    render(<NodeSitesPage />);
     expect(await screen.findByText("Rooftop")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Rooftop/ })).toBeNull();
   });
 
+  it("lists a polled radar without a link, since the server polls it and it serves no site", async () => {
+    const radar = {
+      ...NODE,
+      node_id: "bla5e6f7a8b",
+      node_ref: "nde5555555555",
+      name: "Stock radar",
+      polled: { address: "radar.example.com:3000", unprotected: false, liveness: "streaming", trust_state: "probation" },
+    } as OwnedNode;
+    vi.mocked(api.myNodes).mockResolvedValue([NODE, radar]);
+    const { container } = render(<NodeSitesPage />);
+
+    expect(await screen.findByText("Stock radar")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Stock radar/ })).toBeNull();
+    expect(container.querySelector('a[href*="bla"]')).toBeNull();
+    expect(screen.getByRole("link", { name: /Rooftop/ })).toHaveAttribute("href", "https://ret1a2b3c4d.retnode.com");
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+  });
+
   it("labels a node with no name by its node_ref, never the id its site is named after", async () => {
     vi.mocked(api.myNodes).mockResolvedValue([{ ...NODE, name: null }]);
-    render(<TunnelLinkPage />);
+    render(<NodeSitesPage />);
     const link = await screen.findByRole("link", { name: /nde0123456789/ });
     expect(link).toHaveAttribute("href", "https://ret1a2b3c4d.retnode.com");
     expect(screen.queryByText("ret1a2b3c4d")).not.toBeInTheDocument();
@@ -48,7 +85,7 @@ describe("TunnelLinkPage", () => {
 
   it("finds a node by its node_ref", async () => {
     vi.mocked(api.myNodes).mockResolvedValue([NODE, { ...NODE, node_id: "ret9f8e7d6c", node_ref: "nde9876543210", name: "Barn" }]);
-    render(<TunnelLinkPage />);
+    render(<NodeSitesPage />);
     fireEvent.change(await screen.findByPlaceholderText("Search nodes…"), { target: { value: "nde98" } });
     expect(screen.getByText("Barn")).toBeInTheDocument();
     expect(screen.queryByText("Rooftop")).not.toBeInTheDocument();
@@ -62,9 +99,9 @@ describe("TunnelLinkPage", () => {
       name: `${i < 30 ? "Alpha" : "Beta"} ${String(i).padStart(2, "0")}`,
     }));
     vi.mocked(api.myNodes).mockResolvedValue(many);
-    render(<TunnelLinkPage />);
+    render(<NodeSitesPage />);
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Tunnel Link" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "Node Sites" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Next/ }));
     fireEvent.click(screen.getByRole("button", { name: /Next/ }));
     fireEvent.click(screen.getByRole("button", { name: /Next/ }));
