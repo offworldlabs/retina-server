@@ -158,6 +158,21 @@ class User(Base):
     provider: Mapped[str] = mapped_column(String(50), server_default="")
 
 
+def parse_account_id(user_id: str | uuid.UUID) -> uuid.UUID | None:
+    """An account id in any spelling uuid.UUID reads, or None for one that is
+    not a UUID at all.
+
+    str() of the result is the account's own spelling, the dashed lower-case
+    form "user".id holds and node_claims and the session tables match exactly.
+    """
+    if isinstance(user_id, uuid.UUID):
+        return user_id
+    try:
+        return uuid.UUID(user_id)
+    except ValueError:
+        return None
+
+
 class MagicLink(Base):
     """One outstanding emailed link: a sign-in, a node claim, or the
     confirmation of a new address for an account, told apart by `intent`.

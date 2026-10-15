@@ -13,6 +13,7 @@ has to see the rows first.
 import sqlite3
 from datetime import UTC, datetime
 
+import pytest
 from sqlalchemy import select
 
 from core.nodes import Node, NodeClaim, NodeClaimChallenge
@@ -27,6 +28,7 @@ from services.node_claim_store import (
     read_challenge,
     read_claim,
     set_claim_address,
+    set_owner,
 )
 
 ADA = "ada@example.com"
@@ -282,3 +284,88 @@ async def test_clearing_a_claim_leaves_no_row_and_no_challenge(seeded_node, node
 
 async def test_clearing_a_node_that_has_no_claim_is_not_an_error(seeded_node, node_session):
     await clear_claim(node_session, seeded_node.node_id)
+
+
+# ── set_owner and the spelling of an owner id ────────────────────────────────
+
+ADA_ID = "6f1c2b9e-3d4a-4c5b-8e7f-0a1b2c3d4e5f"
+BOB_ID = "0b7e9d2c-1a3f-4e6d-9c8b-7a6f5e4d3c2b"
+OWNED_SINCE = datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
+
+# Spellings uuid.UUID reads as one account. The first is the account's own.
+SPELLINGS = {
+    "own": lambda i: i,
+    "upper-undashed": lambda i: i.replace("-", "").upper(),
+    "braced": lambda i: f"{{{i}}}",
+}
+
+
+async def _owned_claim(session, node_id: str, owner: str, since_for: str) -> None:
+    """A claim Ada confirmed by clicking, with its owner ids written as given."""
+    session.add(
+        NodeClaim(
+            node_id=node_id,
+            user_id=owner,
+            email=ADA,
+            verified=True,
+            undeliverable=False,
+            declined=False,
+            updated_at=OWNED_SINCE,
+            owned_since=OWNED_SINCE,
+            owned_since_user_id=since_for,
+        )
+    )
+    await session.flush()
+
+
+async def _reread(session, node_id: str) -> NodeClaim:
+    session.expire_all()
+    row = await read_claim(session, node_id)
+    assert row is not None
+    return row
+
+
+@pytest.mark.parametrize("stored", SPELLINGS.values(), ids=SPELLINGS.keys())
+@pytest.mark.parametrize("given", SPELLINGS.values(), ids=SPELLINGS.keys())
+async def test_assigning_the_owner_it_has_in_any_spelling_keeps_the_claim(seeded_node, node_session, stored, given):
+    """Whatever spelling is on file and whichever is given, it is the same
+    account: the address it was claimed with, its confirmation and when it
+    was taken all stay, and only the ids take the account's own form."""
+    node_id = seeded_node.node_id
+    await _owned_claim(node_session, node_id, stored(ADA_ID), stored(ADA_ID))
+    await put_challenge(node_session, node_id, ADA, "handle-one", EXPIRES_AT)
+
+    await set_owner(node_session, node_id, given(ADA_ID))
+
+    row = await _reread(node_session, node_id)
+    assert (row.user_id, row.owned_since_user_id) == (ADA_ID, ADA_ID)
+    assert (row.email, row.verified, row.undeliverable, row.declined) == (ADA, True, False, False)
+    assert (row.updated_at, row.owned_since) == (OWNED_SINCE, OWNED_SINCE)
+    assert (await read_challenge(node_session, node_id)).handle == "handle-one"
+
+
+async def test_a_start_written_for_an_earlier_owner_keeps_naming_them(seeded_node, node_session):
+    """An owner moved by code that does not know owned_since_user_id leaves it
+    naming the owner before. Assigning the current owner again leaves it so,
+    in that account's own spelling, and the start stays theirs."""
+    node_id = seeded_node.node_id
+    await _owned_claim(node_session, node_id, ADA_ID.upper(), BOB_ID.upper())
+
+    await set_owner(node_session, node_id, ADA_ID)
+
+    row = await _reread(node_session, node_id)
+    assert (row.user_id, row.owned_since_user_id, row.owned_since) == (ADA_ID, BOB_ID, OWNED_SINCE)
+
+
+@pytest.mark.parametrize("given", SPELLINGS.values(), ids=SPELLINGS.keys())
+async def test_a_new_owner_is_stored_as_the_accounts_own_id(seeded_node, node_session, given):
+    """A change of owner in any spelling: the claim starts afresh, under the id
+    every read by account matches."""
+    node_id = seeded_node.node_id
+    await _owned_claim(node_session, node_id, ADA_ID, ADA_ID)
+
+    await set_owner(node_session, node_id, given(BOB_ID))
+
+    row = await _reread(node_session, node_id)
+    assert (row.user_id, row.owned_since_user_id, row.email, row.verified) == (BOB_ID, BOB_ID, None, False)
+    assert row.owned_since > OWNED_SINCE

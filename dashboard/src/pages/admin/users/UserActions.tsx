@@ -11,7 +11,8 @@ import "./users.css";
 export type { UserChange } from "./userChange";
 
 /** The sign-in link refusals whose detail says why in words an administrator
- *  can act on: deactivated, too many links out, no mail can leave. */
+ *  can act on: deactivated or another account's retired address, too many
+ *  links out, no mail can leave. */
 const EXPLAINED = new Set([409, 429, 503]);
 
 type Busy = "state" | "link" | null;
@@ -46,6 +47,10 @@ export function UserActions({ user, onChanged, onAction }: Props) {
   const email = useRef<HTMLButtonElement>(null);
   const remove = useRef<HTMLButtonElement>(null);
   const refocus = useRef<FocusTarget | null>(null);
+  // `busy` as the handlers read it. A second press can land before React has
+  // rendered the first one's state, when the button is still enabled and the
+  // handler still sees `busy` as it was; only a ref holds the change by then.
+  const inFlight = useRef(false);
   const promptId = useId();
 
   // A step that swaps or disables the focused button, or closes a dialog,
@@ -64,6 +69,7 @@ export function UserActions({ user, onChanged, onAction }: Props) {
   const idle = busy === null;
 
   function begin(next: Busy) {
+    inFlight.current = true;
     setBusy(next);
     setStatus(null);
     onAction?.();
@@ -76,6 +82,7 @@ export function UserActions({ user, onChanged, onAction }: Props) {
 
   /** Back to idle, focus to `then` once the buttons are enabled again. */
   function end(then: FocusTarget) {
+    inFlight.current = false;
     refocus.current = then;
     setBusy(null);
   }
@@ -90,6 +97,7 @@ export function UserActions({ user, onChanged, onAction }: Props) {
   }
 
   async function deactivate() {
+    if (inFlight.current) return;
     begin("state");
     try {
       const account = await api.adminDeactivateUser(user.id);
@@ -105,6 +113,7 @@ export function UserActions({ user, onChanged, onAction }: Props) {
   }
 
   async function reactivate() {
+    if (inFlight.current) return;
     begin("state");
     try {
       const account = await api.adminReactivateUser(user.id);
@@ -119,6 +128,7 @@ export function UserActions({ user, onChanged, onAction }: Props) {
   }
 
   async function sendLink() {
+    if (inFlight.current) return;
     begin("link");
     try {
       const sent = await api.adminSendSignInLink(user.id);

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { HttpError } from "@retina/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -170,6 +170,79 @@ describe("sending a sign-in link", () => {
 
     await waitFor(() => expect(onChanged).toHaveBeenCalledWith({ kind: "gone" }));
     expect(status()).toHaveTextContent("This account no longer exists.");
+  });
+});
+
+describe("a second press before the first one renders", () => {
+  /** Two presses that both land before React renders the first one's state,
+   *  as a double click can: the button is still enabled for the second. */
+  function pressTwice(target: HTMLElement) {
+    act(() => {
+      target.click();
+      target.click();
+    });
+  }
+
+  /** A request that stays in flight until `answer` is called. */
+  function held<T>() {
+    let answer: (value: T) => void = () => {};
+    const pending = new Promise<T>((resolve) => {
+      answer = resolve;
+    });
+    return { pending, answer: (value: T) => answer(value) };
+  }
+
+  it("deactivates once", async () => {
+    const request = held<AdminAccount>();
+    vi.mocked(api.adminDeactivateUser).mockReturnValue(request.pending);
+    const onChanged = vi.fn();
+    render(<UserActions user={ADA} onChanged={onChanged} />);
+    fireEvent.click(button("Deactivate"));
+
+    pressTwice(within(screen.getByRole("group", { name: /^Deactivate\?/ })).getByRole("button", { name: "Deactivate" }));
+
+    expect(api.adminDeactivateUser).toHaveBeenCalledTimes(1);
+    await act(async () => request.answer({ ...ACCOUNT, is_active: false }));
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    expect(button("Reactivate")).toBeEnabled();
+  });
+
+  it("reactivates once", async () => {
+    const request = held<AdminAccount>();
+    vi.mocked(api.adminReactivateUser).mockReturnValue(request.pending);
+    const onChanged = vi.fn();
+    render(<UserActions user={{ ...ADA, is_active: false }} onChanged={onChanged} />);
+
+    pressTwice(button("Reactivate"));
+
+    expect(api.adminReactivateUser).toHaveBeenCalledTimes(1);
+    await act(async () => request.answer({ ...ACCOUNT, is_active: true }));
+    expect(onChanged).toHaveBeenCalledTimes(1);
+    expect(button("Deactivate")).toBeEnabled();
+  });
+
+  it("sends one sign-in link", async () => {
+    const request = held<{ status: "queued"; email: string }>();
+    vi.mocked(api.adminSendSignInLink).mockReturnValue(request.pending);
+    render(<UserActions user={ADA} onChanged={vi.fn()} />);
+
+    pressTwice(button("Send sign-in link"));
+
+    expect(api.adminSendSignInLink).toHaveBeenCalledTimes(1);
+    await act(async () => request.answer({ status: "queued", email: "ada@example.com" }));
+    expect(status()).toHaveTextContent("Sign-in link queued for ada@example.com.");
+    expect(button("Send sign-in link")).toBeEnabled();
+  });
+
+  it("takes a press again once the first is answered", async () => {
+    vi.mocked(api.adminSendSignInLink).mockResolvedValue({ status: "queued", email: "ada@example.com" });
+    render(<UserActions user={ADA} onChanged={vi.fn()} />);
+
+    fireEvent.click(button("Send sign-in link"));
+    await waitFor(() => expect(button("Send sign-in link")).toBeEnabled());
+    fireEvent.click(button("Send sign-in link"));
+
+    await waitFor(() => expect(api.adminSendSignInLink).toHaveBeenCalledTimes(2));
   });
 });
 

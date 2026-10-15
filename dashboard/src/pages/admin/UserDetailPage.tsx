@@ -6,10 +6,11 @@ import { api } from "../../api/client";
 import { DataTable } from "../../components/DataTable";
 import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { Pager, clampPage } from "../../components/Pager";
+import { RelativeTime } from "../../components/RelativeTime";
 import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
 import type { AdminClaim, AdminUser } from "../../types";
-import { DASH, formatRelativeTime } from "../../utils/format";
+import { DASH } from "../../utils/format";
 import { severityTone } from "../../utils/severity";
 import { challengeExpired, claimBadge, describeChallenge } from "./claims/claimState";
 import { UserActions, type UserChange } from "./users/UserActions";
@@ -28,17 +29,6 @@ function backTarget(state: unknown): string {
 
 function count(n: number, noun: string): string {
   return `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
-}
-
-/** A moment as time ago, with the full date on hover. */
-function When({ at, none = DASH }: { at: number | null; none?: string }) {
-  if (!at) return <>{none}</>;
-  const when = new Date(at * 1000);
-  return (
-    <time dateTime={when.toISOString()} title={when.toLocaleString()}>
-      {formatRelativeTime(at)}
-    </time>
-  );
 }
 
 function StateBadges({ user }: { user: AdminUser }) {
@@ -96,7 +86,7 @@ function NodesCard({ nodes }: { nodes: AdminClaim[] }) {
               )}
             </td>
             <td data-label="Owned since">
-              <When at={claim.owned_since} />
+              <RelativeTime at={claim.owned_since} />
             </td>
           </tr>
         ))}
@@ -285,10 +275,10 @@ function UserDetail({ userId }: { userId: string }) {
         <StatCard
           size="small"
           label="Account created"
-          value={<When at={user.created_at} />}
+          value={<RelativeTime at={user.created_at} />}
           sub={user.created_at ? new Date(user.created_at * 1000).toLocaleDateString() : undefined}
         />
-        <StatCard size="small" label="Last visit" value={<When at={user.last_seen_at} none="Never" />} />
+        <StatCard size="small" label="Last visit" value={<RelativeTime at={user.last_seen_at} none="Never" />} />
         <StatCard label="Nodes" value={user.node_count.toLocaleString()} tone="accent" />
       </div>
 
