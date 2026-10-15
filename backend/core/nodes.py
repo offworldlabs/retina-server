@@ -98,6 +98,9 @@ class NodeContact(Base):
     Mutable, one row per node, unlike NodeConfig above. A frame references a
     configuration version for as long as the archive holds it, so personal data
     there could be neither corrected nor removed.
+
+    Every retirement erases it (services/node_retirement.py), though the nodes
+    row it hangs off stays, and a re-registration clears it too.
     """
 
     __tablename__ = "node_contacts"

@@ -17,8 +17,9 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   laptop keeps both fleets). The synthetic simulation fleet is on the admin
   console at `/sim`, which exists only where a fleet runs: the test droplet,
   and a local stack. Production and staging run none.
-- **console pages** — node ownership, the node claim page, metrics.
-  A session is required for all of it bar the routes listed in
+- **console pages** — your nodes and their data, the node claim page with
+  resend, the account page with name, sessions, address change and deletion,
+  metrics. A session is required for all of it bar the routes listed in
   `dashboard/src/utils/publicRoutes.ts`, which render to anyone and are backed
   only by endpoints that already publish. A caller with no session gets a nav
   holding those routes alone, so nothing on screen leads to the login card.
@@ -31,9 +32,9 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   files, private ones too, from `/api/auth/me/archive`, each from when it became
   theirs; no public route answers differently by session.
 - **admin** (`admin.retina.fm`) — the dashboard bundle again, built at a root and
-  serving the admin route table, which `dashboard/src/utils/surface.ts` selects
-  from the hostname. It keeps a name of its own because a Cloudflare Access
-  application can only be scoped to one.
+  serving the admin route table, user management among it, which
+  `dashboard/src/utils/surface.ts` selects from the hostname. It keeps a name of
+  its own because a Cloudflare Access application can only be scoped to one.
 - **Illuminator search** — not a surface of this repo. tower-finder-service owns
   both the API and the UI, and serves `towers.retina.fm` from its own edge. The
   vhosts here proxy `/api/towers`, `/api/elevation` and `/api/config` to it.
@@ -181,11 +182,18 @@ network (IPv4 /24, IPv6 /48). A session expires after 7 days without use. Use
 extends it, at most once an hour, and no session lives past 30 days; the cookie
 lasts to that 30-day end and the server enforces the idle limit. Signing out
 deletes the row, so a copied cookie stops working. A signed-in user can list
-their sessions and revoke one or all the others (API only for now), and an
-administrator can deactivate or reactivate an account. Deactivating ends all of
-its sessions, and reactivating brings none back. An open owner feed
-(`/ws/aircraft/owner`) is closed with 1008 as soon as its session ends or its
-account is deactivated, and re-checks its session every 30 s as a backstop.
+their sessions and revoke one or all the others on the account page, and can
+delete the account there. An administrator can deactivate or reactivate an
+account, mail it a sign-in link, start a change of its address or delete it.
+Deactivating ends all of its sessions, and reactivating brings none back;
+deleting ends them with the account. An open owner feed (`/ws/aircraft/owner`)
+is closed with 1008 as soon as its session ends or its account is deactivated
+or deleted, and re-checks its session every 30 s as a backstop.
+
+Changing the address mails a link to the new one, and the address changes when
+it is opened. The old address is retired to the account rather than freed: no
+other account can take it, and sign-in or claim mail for it goes to the current
+address.
 
 Cookies signed with `JWT_SECRET` before sessions existed are still read: a valid
 one is exchanged for a session on the console's next load. They lasted 7 days,

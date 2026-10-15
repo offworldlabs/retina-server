@@ -27,6 +27,18 @@ Retiring a node still held in the fleet registry is refused: it would be undone
 by the next registration anyway, and it would strip the custody chain of a live
 data source mid-session.  Held is registry presence rather than a live stream,
 so a receiver marked disconnected is still refused.
+
+Retirement erases the owner's contact details too (``node_contacts``).  They
+are there so a fault we can see has somewhere to go; a node that is gone has
+none to report, and the owner they name has no node left to clear them from.
+They are the one thing retirement drops from the database rather than from
+memory, and the functions here that retire hold no session, so erasing them is
+``erase_contacts``, a second step each caller takes once the retirement has
+gone through: the two admin routes and the disposable sweep's task.  A refused
+or failed retirement never reaches it, so its contact stays.  A removed polled
+radar is retired in the database instead
+(services.polled_radars.retire_polled_radar), which erases its contact in that
+same transaction.
 """
 
 import contextlib
@@ -34,8 +46,11 @@ import logging
 import time
 from datetime import datetime, timezone
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from config import constants
 from core import state
+from services import node_contact_store
 
 log = logging.getLogger(__name__)
 
@@ -105,7 +120,9 @@ def stale_node_ids() -> list[str]:
 
 def retire_node(node_id: str, *, force: bool = False) -> dict:
     """Drop every trace of ``node_id``: fleet registry, analytics, coverage
-    files, custody, and the cached pipeline.
+    files, custody, and the cached pipeline.  Its owner's contact details are
+    in the database rather than in any of those, so the caller erases them
+    with ``erase_contacts`` once this has returned.
 
     Returns a report of what was actually removed.  Raises NodeStillConnected
     if the node is still held in the fleet registry and ``force`` is not set,
@@ -281,6 +298,45 @@ def retire_stale_nodes() -> dict:
         "skipped": skipped,
         "failed": failed,
     }
+
+
+async def erase_contacts(session: AsyncSession, retired: list[dict]) -> list[str]:
+    """Erase the contact details of every node in ``retired``, the reports of
+    retirements that have gone through, and say on each whether any went.
+
+    ``contact_erased`` is true when the node held a contact row and false when
+    it held none.  Returns the ids whose contact may still be there, which is
+    none unless the erase failed.
+
+    A transaction of its own on ``session``, which must have nothing pending.
+    The stores retirement has already cleared are in memory and cannot roll
+    back with it, so a failure here leaves the retirement standing: it is
+    logged with the ids, and each report says ``contact_erased`` false and
+    carries ``contact_error``, so an administrator knows to finish it with
+    DELETE /api/admin/nodes/{node_id}/contact.  Raising would only lose that.
+    """
+    if not retired:
+        return []
+    node_ids = [report["node_id"] for report in retired]
+    try:
+        erased = await node_contact_store.delete_contacts(session, node_ids)
+        await session.commit()
+    except Exception as exc:
+        # A failed erase can leave the connection itself broken, and a rollback
+        # that fails as well must not turn the failure reported below into a
+        # raised one.
+        with contextlib.suppress(Exception):
+            await session.rollback()
+        log.exception("Could not erase the contact details of retired node(s) %s", ", ".join(node_ids))
+        for report in retired:
+            report["contact_erased"] = False
+            report["contact_error"] = repr(exc)
+        return node_ids
+    for report in retired:
+        report["contact_erased"] = report["node_id"] in erased
+    if erased:
+        log.info("Erased the contact details of retired node(s) %s", ", ".join(sorted(erased)))
+    return []
 
 
 def _parse_heartbeat(hb: object) -> datetime | None:

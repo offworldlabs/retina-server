@@ -337,7 +337,10 @@ settle `failed`; nothing else is lost.
 When no mail can leave (no `CLOUDFLARE_EMAIL_TOKEN`, no `HOST_APP`, an unusable
 key), `/v1/nodes/claim` and its resend answer 503 `mail_unavailable` with
 `Retry-After` and record nothing, so the node never shows a pending claim. Sign-in
-answers 503 "Sign-in by email is unavailable". The server log names the cause.
+answers 503 "Sign-in by email is unavailable". From the console, an address change
+(the account's own or an administrator's) answers 503 "Changing the address by
+email is unavailable", and a claim mail asked for again from the claim page or My
+Nodes answers 503 "Claiming by email is unavailable". The server log names the cause.
 A token, account or sending-domain refusal from Cloudflare (401, 403, 404) is
 retried like any failed send, and each attempt logs an ERROR with its code.
 

@@ -119,7 +119,9 @@ describe("the header's name off the table's own entries", () => {
     ["/onboarding", false, "My Nodes"],
     ["/overview/", false, "My Nodes"],
     ["/contribution", false, "Contribution"],
-    ["/tunnel", false, "Tunnel Link"],
+    ["/node-sites", false, "Node Sites"],
+    // Forwards to the page that took its name.
+    ["/tunnel", false, "Node Sites"],
   ])("names %s (admin: %s) %s", (path, isAdmin, title) => {
     expect(titleAt(path, isAdmin)).toBe(title);
   });
@@ -198,7 +200,7 @@ describe("the radar sandbox's entry", () => {
 describe("the sidebar's names for the renamed pages", () => {
   it.each([
     ["Contribution", "/contribution"],
-    ["Tunnel Link", "/tunnel"],
+    ["Node Sites", "/node-sites"],
   ])("calls the page %s, as its header does", (label, path) => {
     render(
       <MemoryRouter>
