@@ -20,23 +20,28 @@ import { stubMatchMedia } from "./matchMedia";
  * RequireAuth are used, with /api/auth/me answered by a stubbed fetch, since a
  * saved name has to reach the header through the shared identity and a
  * deletion has to end it the way a sign-out does. The console's own calls are
- * mocked.
+ * mocked, bar the page's own read of the account, which goes through the real
+ * client so that its 401 meets what ends a session.
  */
 
-vi.mock("../api/client", () => ({
-  api: {
-    logout: vi.fn(),
-    updateMe: vi.fn(),
-    deleteAccount: vi.fn(),
-    mySessions: vi.fn(),
-    revokeSession: vi.fn(),
-    revokeOtherSessions: vi.fn(),
-    requestEmailChange: vi.fn(),
-  },
-  adoptSession: vi.fn(() => 1),
-  currentSession: vi.fn(() => 0),
-  onSessionEnded: vi.fn(() => () => {}),
-}));
+vi.mock("../api/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/client")>();
+  return {
+    api: {
+      logout: vi.fn(),
+      me: vi.fn(actual.api.me),
+      updateMe: vi.fn(),
+      deleteAccount: vi.fn(),
+      mySessions: vi.fn(),
+      revokeSession: vi.fn(),
+      revokeOtherSessions: vi.fn(),
+      requestEmailChange: vi.fn(),
+    },
+    adoptSession: vi.fn(() => 1),
+    currentSession: vi.fn(() => 0),
+    onSessionEnded: vi.fn(() => () => {}),
+  };
+});
 
 const ADA = { id: "u-ada", name: "Ada", email: "ada@example.com", role: "user" };
 
@@ -73,7 +78,7 @@ function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
 
-/** Answers /api/auth/me, the only request that goes around the mocked client. */
+/** Answers /api/auth/me, the only request that reaches fetch. */
 function stubServer(user: Record<string, unknown> = ADA) {
   const fetchMock = vi.fn(async (url: string) => (url === "/api/auth/me" ? json(user) : json({ detail: "Not Found" }, 404)));
   vi.stubGlobal("fetch", fetchMock);
@@ -186,12 +191,15 @@ describe("the account kept in step with the server", () => {
   const meCalls = (fetchMock: ReturnType<typeof stubServer>) =>
     fetchMock.mock.calls.filter(([url]) => url === "/api/auth/me").length;
 
-  /** Answers /api/auth/me with whatever `server.me` is, or a failure. */
+  /** Answers /api/auth/me with whatever `server.me` is: the account, a
+   *  failure, or the 401 of a session that has ended. */
   function liveServer(first: Record<string, unknown>) {
-    const server = { me: first as Record<string, unknown> | "down" };
+    const server = { me: first as Record<string, unknown> | "down" | "ended" };
     const fetchMock = vi.fn(async (url: string) => {
       if (url !== "/api/auth/me") return json({ detail: "Not Found" }, 404);
-      return server.me === "down" ? json({ detail: "boom" }, 500) : json(server.me);
+      if (server.me === "down") return json({ detail: "boom" }, 500);
+      if (server.me === "ended") return json({ detail: "Not authenticated" }, 401);
+      return json(server.me);
     });
     vi.stubGlobal("fetch", fetchMock);
     return { server, fetchMock };
@@ -203,8 +211,18 @@ describe("the account kept in step with the server", () => {
     document.dispatchEvent(new Event("visibilitychange"));
   }
 
+  const realLocation = window.location;
+
+  /** Where the client reads the page from, to decide where a 401 sends it. */
+  function stubLocation(pathname: string) {
+    const loc = { pathname, hostname: "app.retina.fm", search: "", href: `https://app.retina.fm${pathname}` };
+    Object.defineProperty(window, "location", { value: loc, writable: true, configurable: true });
+    return loc;
+  }
+
   afterEach(() => {
     Reflect.deleteProperty(document, "visibilityState");
+    Object.defineProperty(window, "location", { value: realLocation, writable: true, configurable: true });
   });
 
   const shownAddress = () => within(card("Sign-in address")).getByText(/Sign-in links go to/);
@@ -330,6 +348,24 @@ describe("the account kept in step with the server", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     fireEvent.change(deleteField("ada@example.com"), { target: { value: "ada@example.com" } });
     expect(deleteButton()).toBeEnabled();
+  });
+
+  // The session revoked from another browser, or the account deleted by an
+  // administrator, while this page sat open: the read on coming back meets a
+  // 401, and the page goes to the login card with itself to return to, as
+  // any owner page does.
+  it("ends the session when a read finds it over, as an owner page's request does", async () => {
+    const { server, fetchMock } = liveServer(ADA);
+    const loc = stubLocation("/account");
+    await openAccount();
+    await waitFor(() => expect(meCalls(fetchMock)).toBe(2));
+    expect(loc.href).toBe("https://app.retina.fm/account");
+
+    server.me = "ended";
+    act(() => tab("visible"));
+
+    await waitFor(() => expect(loc.href).toBe("/login?next=%2Faccount"));
+    expect(meCalls(fetchMock)).toBe(3);
   });
 
   it("stops reading once the page has gone", async () => {
@@ -557,6 +593,7 @@ describe("changing the sign-in address", () => {
   it.each([
     [409, "That address belongs to another account"],
     [400, "That is already this account's address"],
+    [400, "That is not an email address"],
   ])("shows the server's own reason for a %i at the field", async (status, detail) => {
     vi.mocked(api.requestEmailChange).mockRejectedValue(httpError(status, detail));
     await openAccount();
@@ -585,14 +622,6 @@ describe("changing the sign-in address", () => {
     expect(field()).not.toHaveAttribute("aria-invalid");
     // The address stays, to send again.
     expect(field()).toHaveValue("new@example.com");
-  });
-
-  it("asks for a valid address when the server's 422 carries no sentence", async () => {
-    vi.mocked(api.requestEmailChange).mockRejectedValue(httpError(422, [{ msg: "value is not a valid email" }]));
-    await openAccount();
-    fireEvent.change(field(), { target: { value: "not an address" } });
-    fireEvent.click(send());
-    expect(await within(card("Sign-in address")).findByRole("alert")).toHaveTextContent("Enter a valid email address.");
   });
 });
 
@@ -920,6 +949,7 @@ describe("the account calls in the API client", () => {
   type Client = (typeof import("../api/client"))["api"];
 
   const calls: [string, string, string, (client: Client) => Promise<unknown>, unknown][] = [
+    ["me", "GET", "/api/auth/me", (c) => c.me(), undefined],
     ["updateMe", "PATCH", "/api/auth/me", (c) => c.updateMe({ name: "Ada" }), { name: "Ada" }],
     ["deleteAccount", "POST", "/api/auth/me/delete", (c) => c.deleteAccount("ada@example.com"), { email: "ada@example.com" }],
     ["mySessions", "GET", "/api/auth/me/sessions", (c) => c.mySessions(), undefined],

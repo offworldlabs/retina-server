@@ -156,9 +156,13 @@ export const api = {
       body: JSON.stringify({ token }),
     }),
 
-  // The signed-in account. updateMe resolves the user as /api/auth/me answers
-  // it; a name the server refuses (empty once trimmed, over 64 characters, or
-  // holding control characters) rejects 422 with the reason as its detail.
+  // The signed-in account. `me` reads it again for a page already open, as
+  // the account page does; unlike the shared useCurrentUser's probe it goes
+  // through the wrapper above, so a 401 ends the session as an owner route's
+  // does. updateMe resolves the user as /api/auth/me answers it; a name the
+  // server refuses (empty once trimmed, over 64 characters, or holding
+  // control characters) rejects 422 with the reason as its detail.
+  me: (): Promise<CurrentUser> => request("/api/auth/me"),
   updateMe: (patch: { name: string }): Promise<CurrentUser> =>
     request("/api/auth/me", { method: "PATCH", body: JSON.stringify(patch) }),
   // Resolves once every node the account owned is released, every session has
@@ -179,9 +183,9 @@ export const api = {
   // Moving the account to another sign-in address. The request mails a link to
   // the new address and resolves 202 with it normalised; the current address
   // signs in until the link is opened, and a later request kills the earlier
-  // link. Rejects 400 for an invalid address or the current one, 409 for an
-  // address another account holds or once held, and 429 or 503 as a sign-in
-  // link does.
+  // link. Rejects 400 for an invalid address or the current one, and 429 or
+  // 503 as a sign-in link does. An address another account holds or once held
+  // answers like a free one.
   requestEmailChange: (email: string): Promise<EmailChangeSent> =>
     request("/api/auth/me/email", { method: "POST", body: JSON.stringify({ email }) }),
   // These two take no session: the token in the mailed link is the proof. The
@@ -333,7 +337,8 @@ export const api = {
   adminUsers: () => request("/api/admin/users"),
   // For an owner who has lost their address: the owner's own address change,
   // started for them. The same confirmation goes to the new address; 404 for
-  // an unknown user, and 400, 409, 429 and 503 as requestEmailChange.
+  // an unknown user, 409 for an address another account holds or a deactivated
+  // account, and 400, 429 and 503 as requestEmailChange.
   adminChangeUserEmail: (userId: string, email: string): Promise<Pick<EmailChangeSent, "status" | "email">> =>
     request(`/api/admin/users/${encodeURIComponent(userId)}/email`, {
       method: "POST",

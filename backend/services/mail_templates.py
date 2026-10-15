@@ -253,7 +253,7 @@ def address_changed() -> Rendered:
     return Rendered(subject, text, markup)
 
 
-def address_taken() -> Rendered:
+def address_taken(*, former: str | None = None) -> Rendered:
     """The notice to an address another account asked to move to, sent instead
     of the link that would confirm it, because it signs in to an account already.
 
@@ -261,12 +261,25 @@ def address_taken() -> Rendered:
     it, and the request may be somebody fishing for whose the address is, which
     is why that account is told nothing either. It carries no link, as there is
     nothing to confirm.
+
+    `former` is the address asked for when it is one this account signed in
+    with before, and the notice has come to the account's current address
+    instead, as mail for a retired address does. It names that address, which
+    is the account's own, so the reader knows which of theirs was asked for.
     """
     subject = "Your address was not added to another RETINA account"
-    asked = "A request has been made to make this the address another RETINA account signs in with."
-    refused = (
-        "This address already signs in to a RETINA account, so it cannot be added to another one. Nothing has changed."
-    )
+    if former is None:
+        asked = "A request has been made to make this the address another RETINA account signs in with."
+        refused = (
+            "This address already signs in to a RETINA account, so it cannot be added to another one. "
+            "Nothing has changed."
+        )
+    else:
+        asked = (
+            f"A request has been made to make {former}, an address your RETINA account used to sign in with, "
+            "the address another RETINA account signs in with."
+        )
+        refused = "That address stays with your account, so it cannot be added to another one. Nothing has changed."
     ignore = "If this wasn't you, you may safely ignore this email."
     text = f"{asked}\n\n{refused}\n\n{ignore}"
     markup = _layout(title=subject, lead=asked, action=None, link=None, follow=refused, aside=ignore)
