@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { HttpError, request, type CurrentUser } from "@retina/shared";
+import { HttpError, type CurrentUser } from "@retina/shared";
 
 import { api } from "../../api/client";
 import { Notice } from "../../components/Notice";
@@ -63,7 +63,9 @@ function useFocusNext<T extends string>(targets: Record<T, () => HTMLElement | n
  *  into view and whenever its window regains focus, so a page left open across
  *  an address change made elsewhere, in another tab or beside it, stops naming
  *  the old one. The auth context is refreshed only by the confirm page, in its
- *  own tab. A read that fails changes nothing, and one read is out at a time:
+ *  own tab. Through the console's client, so a 401, the session ended or the
+ *  account deleted meanwhile, ends the session here as any owner request's
+ *  does. Any other failure changes nothing, and one read is out at a time:
  *  the focus and the visibility that arrive together are answered by one. */
 function useFreshAccount() {
   const { updateUser } = useAuth();
@@ -73,7 +75,7 @@ function useFreshAccount() {
     function read() {
       if (reading) return;
       reading = true;
-      request<CurrentUser>("/api/auth/me").then(
+      api.me().then(
         (fresh) => {
           reading = false;
           if (live) updateUser(fresh);
@@ -308,13 +310,13 @@ function ProfileCard({ user }: { user: CurrentUser }) {
 /* ── Sign-in address ─────────────────────────────────────────────────────── */
 
 /** What a failed address change says. A 400 (not an address, or the current
- *  one) carries the server's own reason. Another account's address is not a
- *  refusal here: the request is answered as for a free one. */
+ *  one) carries the server's own reason: the route takes any string and
+ *  answers those itself, so there is no 422 to word. Another account's
+ *  address is not a refusal here: the request is answered as for a free one. */
 function addressFailure(e: unknown): RequestFailure {
   const detail = serverDetail(e);
   return describeFailure(e, {
     ...(detail ? { refused: detail } : {}),
-    invalid: detail ?? "Enter a valid email address.",
     throttled: TOO_MANY_LINKS,
   });
 }

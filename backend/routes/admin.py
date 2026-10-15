@@ -211,7 +211,8 @@ async def change_user_address(user_id: str, body: AddressChange, admin=Depends(r
     to an address somebody has shown they read.
 
     404 for an id that is not an account's, malformed or not, as
-    deactivate_user answers one.
+    deactivate_user answers one. 409 with the reason for a deactivated
+    account, whose address does not change until it is reactivated.
     """
     try:
         requested = await account_email.request_change(user_id, body.email)
