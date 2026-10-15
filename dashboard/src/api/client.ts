@@ -1,14 +1,19 @@
-import { UnauthorizedError, request as sharedRequest, type RequestOptions } from "@retina/shared";
+import { UnauthorizedError, request as sharedRequest, type CurrentUser, type RequestOptions } from "@retina/shared";
 
 import { isPublicRoute } from "../utils/publicRoutes";
 import { signInNext } from "../utils/signInNext";
 import { isAdminHost } from "../utils/surface";
 import type {
+  AccountDeleted,
+  AccountSession,
   AircraftFrame,
   ArchiveListing,
+  ClaimMailSent,
   ConfigVersion,
   ConnectionCheck,
+  EmailChangeSent,
   Leaderboard,
+  MyClaim,
   NodeReport,
   OwnedNode,
   OwnerAnalytics,
@@ -151,6 +156,43 @@ export const api = {
       body: JSON.stringify({ token }),
     }),
 
+  // The signed-in account. updateMe resolves the user as /api/auth/me answers
+  // it; a name the server refuses (empty once trimmed, over 64 characters, or
+  // holding control characters) rejects 422 with the reason as its detail.
+  updateMe: (patch: { name: string }): Promise<CurrentUser> =>
+    request("/api/auth/me", { method: "PATCH", body: JSON.stringify(patch) }),
+  // Resolves once every node the account owned is released, every session has
+  // ended and the account is gone, with the session cookie cleared. Rejects 400
+  // when `email`, trimmed and in any case, is not the account's address.
+  deleteAccount: (email: string): Promise<AccountDeleted> =>
+    request("/api/auth/me/delete", { method: "POST", body: JSON.stringify({ email }) }),
+  // The account's signed-in browsers, the most recently used first.
+  mySessions: (): Promise<AccountSession[]> => request("/api/auth/me/sessions"),
+  // Rejects 404 for a session that is not the account's or has ended already.
+  // Ending the current one is signing this browser out.
+  revokeSession: (sessionId: string): Promise<{ ok: true }> =>
+    request(`/api/auth/me/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" }),
+  // Every session but the current one; resolves how many ended.
+  revokeOtherSessions: (): Promise<{ revoked: number }> =>
+    request("/api/auth/me/sessions/revoke-others", { method: "POST" }),
+
+  // Moving the account to another sign-in address. The request mails a link to
+  // the new address and resolves 202 with it normalised; the current address
+  // signs in until the link is opened, and a later request kills the earlier
+  // link. Rejects 400 for an invalid address or the current one, 409 for an
+  // address another account holds or once held, and 429 or 503 as a sign-in
+  // link does.
+  requestEmailChange: (email: string): Promise<EmailChangeSent> =>
+    request("/api/auth/me/email", { method: "POST", body: JSON.stringify({ email }) }),
+  // These two take no session: the token in the mailed link is the proof. The
+  // preview resolves {email} without spending it, and rejects 404 once it is no
+  // longer valid. Consuming resolves {email} and opens no session; it rejects
+  // 400 for a link no longer valid and 409 for an address taken meanwhile.
+  emailChangePreview: (token: string): Promise<{ email: string }> =>
+    request(`/api/auth/email-change/${encodeURIComponent(token)}`),
+  consumeEmailChange: (token: string): Promise<{ email: string }> =>
+    request("/api/auth/email-change/consume", { method: "POST", body: JSON.stringify({ token }) }),
+
   // Self-service node ownership. Each route below is the caller's own nodes
   // only: a node they do not own and one that does not exist both reject 404
   // with the same body.
@@ -247,6 +289,18 @@ export const api = {
     request("/api/auth/claim/consume", { method: "POST", body: JSON.stringify({ token }) }),
   declineClaim: (token) =>
     request("/api/auth/claim/decline", { method: "POST", body: JSON.stringify({ token }) }),
+  // The three resends below follow the node's own resend, rules and limits
+  // alike: 409 for a node owned by then, 429 and 503 as that one answers, and
+  // never resolved unless a mail was queued. By the claim link's token, which
+  // is the proof, so no session; 404 once the token is not the node's current
+  // challenge, or its address cannot be mailed.
+  resendClaimByToken: (token: string): Promise<ClaimMailSent> =>
+    request("/api/auth/claim/resend", { method: "POST", body: JSON.stringify({ token }) }),
+  // Open claims on nodes given one of the account's addresses, current or retired.
+  myClaims: (): Promise<MyClaim[]> => request("/api/auth/me/claims"),
+  // 404 for a node that is not an open claim of the account's.
+  resendMyClaim: (nodeRef: string): Promise<ClaimMailSent> =>
+    request(`/api/auth/me/claims/${encodeURIComponent(nodeRef)}/resend`, { method: "POST" }),
   releaseNode: (nodeId: string): Promise<{ ok: true }> =>
     request(`/api/auth/me/nodes/${encodeURIComponent(nodeId)}/claim`, { method: "DELETE" }),
 
@@ -277,6 +331,14 @@ export const api = {
 
   // Admin
   adminUsers: () => request("/api/admin/users"),
+  // For an owner who has lost their address: the owner's own address change,
+  // started for them. The same confirmation goes to the new address; 404 for
+  // an unknown user, and 400, 409, 429 and 503 as requestEmailChange.
+  adminChangeUserEmail: (userId: string, email: string): Promise<Pick<EmailChangeSent, "status" | "email">> =>
+    request(`/api/admin/users/${encodeURIComponent(userId)}/email`, {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
   adminEvents: (limit = 200) => request(`/api/admin/events?limit=${limit}`),
   adminNodeConfig: () => request("/api/admin/config/nodes"),
   adminTowerConfig: () => request("/api/admin/config/towers"),

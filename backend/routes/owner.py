@@ -9,9 +9,13 @@ services/owner_views.py and services/snr_series.py what is shown beyond it.
 Two answers name nodes by node_ref instead: the analytics map, keyed as the
 public one is, and the archive, whose keys are the public archive's
 (services/archive_access.py).
+
+The claims addressed to the caller are about nodes that are not theirs yet, so
+they name those by node_ref too, and say nothing else about them.
 """
 
 import asyncio
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated
@@ -19,15 +23,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from core import state
 from core.auth import get_user_nodes, get_user_tenures
-from core.node_ids import POLLED_BLAH2, system_of
-from core.users import async_session_maker, get_current_user
-from services import owner_nodes, owner_views, polled_registration
+from core.users import User, UserSession, get_async_session, get_current_user
+from routes.auth import _claim_mail_answer, _signed_in_session
+from services import accounts, claim_resend, owner_nodes, owner_views
 from services.archive_access import list_files, owner_scope, read_file
-from services.node_claiming import release_node
-from services.polled_radars import remove_polled_radar
 from services.snr_series import MAX_HOURS, snr_series_async
 from services.tasks.aircraft_flush import owner_bytes
 
@@ -36,6 +39,12 @@ router = APIRouter(prefix="/api/auth/me", tags=["auth"])
 #: The caller, for a route about all of their nodes. A dependency, as `Owned`
 #: is, so a signed-out caller is 401 before any query value is looked at.
 SignedIn = Annotated[dict, Depends(get_current_user)]
+
+#: The account the auth_token cookie signs in, and the session asking, through
+#: the check the session routes use (routes/auth.py). For the claims addressed
+#: to an account, which an Access identity or the anonymous admin has no
+#: address for.
+CookieAccount = Annotated[tuple[User, UserSession], Depends(_signed_in_session)]
 
 
 @dataclass(frozen=True)
@@ -149,28 +158,16 @@ async def release_my_node(owned: Owned):
 
     Guarded the same way every owner-scoped route here is, so a node somebody
     else owns answers exactly as one that does not exist. A polled radar is
-    removed rather than handed back, since nothing can claim one afterwards
-    (services/polled_radars.py, remove_polled_radar).
+    removed rather than handed back, since nothing can claim one afterwards.
+    Deleting an account hands its nodes back the same way
+    (services/accounts.py, release_owned_node).
     """
-    if system_of(owned.node_id) == POLLED_BLAH2:
-        released = await _remove_polled_radar(owned.node_id, owned.user["id"])
-    else:
-        released = await release_node(owned.node_id, owned.user["id"])
-    if not released:
+    if not await accounts.release_owned_node(owned.node_id, owned.user["id"]):
         # Owned a moment ago and not now: a release that raced another release,
         # or an administrator reassigning it. Either way it is gone, which is
         # what was asked for.
         raise HTTPException(status_code=404, detail="Node not found")
     return {"ok": True}
-
-
-async def _remove_polled_radar(node_id: str, user_id: str) -> bool:
-    async with async_session_maker() as session:
-        async with session.begin():
-            if not await remove_polled_radar(session, node_id, user_id=user_id):
-                return False
-    polled_registration.let_go(node_id)
-    return True
 
 
 @router.get("/aircraft")
@@ -185,6 +182,46 @@ async def my_aircraft(request: Request):
     user = await get_current_user(request)
     owned = set(await get_user_nodes(user["id"]))
     return Response(content=owner_bytes(state.latest_aircraft_json, owned), media_type="application/json")
+
+
+# ── Claims waiting on the caller ─────────────────────────────────────────────
+
+
+@router.get("/claims")
+async def my_claims(account: CookieAccount, session: AsyncSession = Depends(get_async_session)):
+    """The open claims addressed to the caller, at the address they have or one
+    they retired: nodes that named them, are not theirs yet, and were not
+    declined from that address.
+
+    Each by node_ref, with the address it was given, and whether a link is out
+    and until when. Nothing else about the node: what it is and where it is
+    become the caller's to see once a link binds it.
+    """
+    user, _ = account
+    return [
+        {
+            "node_ref": claim.node_ref,
+            "email": claim.email,
+            "pending": claim.expires_at is not None,
+            "expires_at": claim.expires_at,
+        }
+        for claim in await claim_resend.open_claims_for(session, user, time.time())
+    ]
+
+
+@router.post("/claims/{node_ref}/resend", status_code=202)
+async def resend_my_claim(
+    node_ref: str, account: CookieAccount, response: Response, session: AsyncSession = Depends(get_async_session)
+):
+    """Send one of those claims' mail again, under the node resend's rules and
+    against its allowance (services/claim_resend.py).
+
+    A claim that is not open, or not addressed to the caller, is one 404, so
+    another account's claim reads exactly as a node that does not exist.
+    """
+    user, _ = account
+    outcome = await claim_resend.resend_for_account(session, user, node_ref, time.time())
+    return _claim_mail_answer(response, outcome, not_found="Claim not found", owned="That node already has an owner")
 
 
 # ── What the owner is shown beyond the node itself ───────────────────────────
