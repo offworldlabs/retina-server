@@ -3,7 +3,8 @@
 Sign-in is a link mailed to the address (services/mail.py); there is no
 password and no third-party provider. A redeemed link opens a session held on
 the server (core/sessions.py), whose token is the auth_token cookie, and a
-signed-in account can list its sessions and end them here.
+signed-in account can list its sessions and end them here, and change the
+address it signs in with (services/account_email.py).
 """
 
 import logging
@@ -15,9 +16,10 @@ from ipaddress import IPv6Address, ip_address, ip_network
 from time import monotonic, time
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, EmailStr
+from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.types import Receive
 
 from core import sessions
@@ -26,9 +28,10 @@ from core.auth import (
     MAGIC_LINK_EXPIRY_S,
     _hash_token,
     consume_magic_link,
-    create_magic_link,
+    create_magic_link_in,
     invalidate_magic_link,
     peek_magic_link,
+    sweep_magic_links,
 )
 from core.users import (
     ACCESS_LOGOUT_PATH,
@@ -37,6 +40,8 @@ from core.users import (
     User,
     UserSession,
     async_session_maker,
+    forwarding_address,
+    get_async_session,
     get_current_user,
     get_or_create_magic_link_user,
     has_access_session,
@@ -44,7 +49,8 @@ from core.users import (
     user_to_dict,
 )
 from routes.sim_ingest import synthetic_fleet_enabled
-from services import mail, mail_outbox, mail_templates, polled_registration
+from services import account_email, claim_resend, mail, mail_outbox, mail_templates, polled_registration
+from services.claim_resend import Result
 from services.node_claiming import (
     ClaimOutcome,
     complete_claim,
@@ -232,6 +238,14 @@ async def _mail_sign_in_link(receive: Receive, email: str, landing: str, next_pa
     escape: past that middleware it vanishes without a word, and without it the
     server prints it whole. Only the type is logged, since what an exception
     says can quote the address, or the message and the link with it.
+
+    A retired address signs its account in, with a link minted for and mailed
+    to the address the account has now. The retired one is never mailed: it
+    may be dead, or somebody else's, by now. Where it goes is read under the
+    write lock the link is minted under, so a change of address confirmed
+    meanwhile has either committed before the read, which then sees it, or
+    waits for the link's commit and kills it with the rest of the old
+    mailbox's links (services/account_email.py).
     """
     try:
         while (await receive())["type"] != "http.disconnect":
@@ -239,7 +253,12 @@ async def _mail_sign_in_link(receive: Receive, email: str, landing: str, next_pa
         # One clock reading for both expiries, so the outbox never holds the
         # mail for longer than its link lives.
         now = time()
-        token = await create_magic_link(email, now=now)
+        async with async_session_maker() as session:
+            async with session.begin():
+                # The write lock, before where the mail goes is read.
+                await sweep_magic_links(session, email, now)
+                email = await forwarding_address(session, email) or email
+                token = await create_magic_link_in(session, email, now=now)
     except Exception as exc:
         logger.error("Could not issue a sign-in link (%s)", type(exc).__name__)
         return
@@ -301,8 +320,16 @@ async def preview_magic_link(token: str):
     redeems, so a scanner that renders the page and runs its script leaves the
     link alive. Reading it needs the same secret redeeming does, so it tells
     the holder nothing they could not learn by signing in.
+
+    A link for an address an account has retired reads as a dead one, as
+    redeeming refuses it (core/auth.py, consume_magic_link): the page would
+    otherwise offer a sign-in that fails at the press.
     """
     link = await peek_magic_link(token, intent=INTENT_SIGNIN)
+    if link is not None:
+        async with async_session_maker() as session:
+            if await forwarding_address(session, link.email) is not None:
+                link = None
     if link is None:
         raise HTTPException(status_code=404, detail=_DEAD_LINK)
     return {"email": link.email}
@@ -391,6 +418,55 @@ async def decline_claim_link(body: ClaimToken):
     if not await decline_claim(body.token):
         raise HTTPException(status_code=400, detail="That link is no longer valid")
     return {"ok": True}
+
+
+#: What a claim mail asked for again by a person is answered with, from the
+#: claim page here and from the dashboard (routes/owner.py). The console shows
+#: them as they are.
+_CANNOT_RENEW = "That link cannot be renewed"
+_CLAIM_TAKEN = "That node already belongs to someone else"
+_CLAIM_MAIL_LIMITED = "Too many claim mails have been asked for; try again later"
+_CLAIM_MAIL_UNAVAILABLE = "Claiming by email is unavailable"
+
+
+def _claim_mail_answer(response: Response, outcome: claim_resend.Outcome, *, not_found: str, owned: str) -> dict:
+    """A person's answer to asking for a claim mail again: 202 when one was
+    queued, and only then.
+
+    Set on `response` rather than raised, so that a cookie exchanged on the
+    way in still reaches the browser. Nothing to send is said as a claim that
+    is not there, in the caller's own words.
+    """
+    if outcome.result is Result.SENT:
+        response.status_code = 202
+        return {"status": "sent"}
+    if outcome.result is Result.OWNED:
+        response.status_code = 409
+        return {"detail": owned}
+    if outcome.result is Result.MAIL_UNAVAILABLE:
+        response.status_code = 503
+        return {"detail": _CLAIM_MAIL_UNAVAILABLE}
+    if outcome.refusal is not None:
+        response.status_code = 429
+        response.headers["Retry-After"] = str(outcome.refusal.retry_after_s)
+        return {"detail": _CLAIM_MAIL_LIMITED}
+    response.status_code = 404
+    return {"detail": not_found}
+
+
+@router.post("/claim/resend", status_code=202)
+async def resend_claim_link(body: ClaimToken, response: Response, session: AsyncSession = Depends(get_async_session)):
+    """Send a claim's mail again, for whoever holds a link one carried.
+
+    No sign-in: the link is the proof, as it is for the click. The claim page
+    offers this once the link has stopped working, and the mail goes to the
+    address the node gave, under the node resend's rules and against its
+    allowance (services/claim_resend.py). A link that is no longer its
+    claim's newest gets one answer however it came to be, as a dead link does
+    at the click.
+    """
+    outcome = await claim_resend.resend_by_link(session, body.token, time())
+    return _claim_mail_answer(response, outcome, not_found=_CANNOT_RENEW, owned=_CLAIM_TAKEN)
 
 
 # ── Session endpoints ─────────────────────────────────────────────────────────
@@ -525,3 +601,68 @@ async def revoke_my_other_sessions(request: Request, response: Response):
     """
     user, current = await _signed_in_session(request, response)
     return {"revoked": await sessions.revoke_other_sessions(user.id, current.id)}
+
+
+# ── Changing the account's address ────────────────────────────────────────────
+
+
+class AddressChangeRequest(BaseModel):
+    # A string rather than EmailStr: an address the core refuses is a 400 with
+    # its reason, as the console shows it, not a validation error.
+    email: str
+
+
+def _refused(response: Response, refused: account_email.Refused) -> dict:
+    """The answer a refusal gets, set on `response` rather than raised, so a
+    cookie exchanged on the way in still reaches the browser."""
+    response.status_code = refused.status_code
+    if refused.retry_after_s is not None:
+        response.headers["Retry-After"] = str(refused.retry_after_s)
+    return {"detail": refused.detail}
+
+
+@router.post("/me/email", status_code=202)
+async def request_address_change(body: AddressChangeRequest, request: Request, response: Response):
+    """Mail a link to a new address that makes it the one the caller signs in with.
+
+    The address changes when the link is opened, not now. A second request
+    replaces the first and kills its link. services/account_email.py says what
+    is refused, and with what. Another account's address is not: it is answered
+    as a free one is, so this cannot be asked whose an address is, as sign-in
+    cannot.
+    """
+    user, _current = await _signed_in_session(request, response)
+    try:
+        requested = await account_email.request_change(user.id, body.email, by_account=True)
+    except account_email.Refused as refused:
+        return _refused(response, refused)
+    return {"status": "sent", "email": requested.email, "expires_in": requested.expires_in}
+
+
+@router.get("/email-change/{token}")
+async def preview_address_change(token: str):
+    """Which address a change's link would make the account's, without spending it.
+
+    The landing page names it and waits for a press, as the sign-in page does,
+    so a scanner that renders the page leaves the link alive.
+    """
+    address = await account_email.preview(token)
+    if address is None:
+        raise HTTPException(status_code=404, detail=account_email.DEAD_LINK)
+    return {"email": address}
+
+
+@router.post("/email-change/consume")
+async def confirm_address_change(body: MagicLinkConsume):
+    """Open a change's link: the address becomes the account's, and the one it
+    replaces is retired to the account and told.
+
+    A POST, for the reason the sign-in consume is one. Opens no session: the
+    link proves the new address and nothing else, and whoever opened it signs
+    in with it as anybody does.
+    """
+    try:
+        address = await account_email.confirm(body.token)
+    except account_email.Refused as refused:
+        raise HTTPException(status_code=refused.status_code, detail=refused.detail) from None
+    return {"email": address}

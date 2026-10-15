@@ -3,6 +3,7 @@ import { Navigate, Routes, Route } from "react-router-dom";
 import LoginPage from "./pages/LoginPage";
 import AuthLinkPage from "./pages/AuthLinkPage";
 import ClaimPage from "./pages/ClaimPage";
+import EmailChangePage from "./pages/EmailChangePage";
 import DashboardLayout from "./components/DashboardLayout";
 import RequireAuth from "./components/RequireAuth";
 import { useConsoleRoutes, type ConsoleRoute } from "./routes";
@@ -33,11 +34,13 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage isAdmin={isAdminSite} />} />
-      {/* Both outside RequireAuth: whoever opens either link has no session
-          yet, and the guard would send them to the login card instead. The
-          claim link goes further and creates the account on the click. */}
+      {/* All outside RequireAuth: whoever opens a mailed link may have no
+          session yet, and the guard would send them to the login card
+          instead. The claim link goes further and creates the account on the
+          click; the address-change link opens no session at all. */}
       <Route path="/auth/link/:token" element={<AuthLinkPage isAdmin={isAdminSite} />} />
       <Route path="/auth/claim/:token" element={<ClaimPage />} />
+      <Route path="/auth/email/:token" element={<EmailChangePage />} />
       <Route
         path="/*"
         element={
