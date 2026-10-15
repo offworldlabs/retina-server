@@ -74,7 +74,13 @@ logger = logging.getLogger(__name__)
 
 KIND_SIGN_IN = "sign_in"
 KIND_CLAIM = "claim"
-_KINDS = (KIND_SIGN_IN, KIND_CLAIM)
+# The link that confirms an account's new address, the notice its old address
+# gets once it has, and the notice an address gets in place of that link when
+# it is another account's already (services/account_email.py).
+KIND_ADDRESS_CHANGE = "address_change"
+KIND_ADDRESS_NOTICE = "address_notice"
+KIND_ADDRESS_TAKEN = "address_taken"
+_KINDS = (KIND_SIGN_IN, KIND_CLAIM, KIND_ADDRESS_CHANGE, KIND_ADDRESS_NOTICE, KIND_ADDRESS_TAKEN)
 
 #: Sends of one message before it settles as failed.
 MAX_ATTEMPTS = 8
@@ -286,8 +292,9 @@ def unavailable() -> str | None:
     try:
         if not mail.is_configured():
             return "mail is not configured"
-        # Every mail this outbox carries is a link, so without a host there is
-        # nothing to send.
+        # Every mail a caller asks this before is a link, so without a host
+        # there is nothing to send. The one that carries none, the notice of a
+        # changed address, only follows a link that went.
         if mail.link_to("/") is None:
             return "HOST_APP is not set"
     except Exception:
@@ -323,9 +330,9 @@ async def enqueue(
     Call `wake` after the commit, not before it, or the worker can look before
     the row is there to find.
 
-    `expires_at` is when the link the mail carries dies. A mail that could not
-    go out with at least a minute of that left is not sent at all, and settles
-    as "expired".
+    `expires_at` is when the link the mail carries dies, or for a mail with no
+    link, when it stops being worth sending. A mail that could not go out with
+    at least a minute of that left is not sent at all, and settles as "expired".
 
     Raises OutboxKeyError when the key beside the database cannot be used: the
     mail is refused rather than stored where it could be read.
