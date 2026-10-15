@@ -44,6 +44,7 @@ from core.nodes import NodeClaim
 from core.users import (
     JWT_SECRET,
     MagicLink,
+    PendingAddressChange,
     RetiredAddress,
     RetiredLegacyToken,
     User,
@@ -52,7 +53,7 @@ from core.users import (
     forwarding_address,
     normalise_email,
 )
-from services import claim_links, mail_outbox
+from services import account_email, claim_links, mail_outbox
 from services.node_claim_store import drop_challenge, read_challenge
 
 logger = logging.getLogger(__name__)
@@ -648,8 +649,10 @@ async def remove_account(user_id: str | uuid.UUID, *, now: datetime | None = Non
     """Delete an account that owns no node, with everything it signs in by, in one transaction.
 
     The row and the sign-in links outstanding for its address go together, and
-    the row takes its sessions and the retirements of its JWT cookies with it
-    (ON DELETE CASCADE): a cookie naming an account that is gone resolves to
+    so does the link of a change of address it had waiting, which is keyed on
+    the new address rather than on the account. The row takes its sessions,
+    the retirements of its JWT cookies and that waiting change with it (ON
+    DELETE CASCADE): a cookie naming an account that is gone resolves to
     nobody either way. The address is nobody's afterwards. Claim links to it
     stay, as they are about a node rather than the account, and one clicked
     later makes a new account. Those to an address it retired go, with their
@@ -706,6 +709,13 @@ async def remove_account(user_id: str | uuid.UUID, *, now: datetime | None = Non
                 # mailbox holds.
                 await _withdraw_claim_links(db, [address])
             await db.execute(delete(MagicLink).where(MagicLink.email == address, MagicLink.intent == INTENT_SIGNIN))
+            # Before the row, whose cascade takes the change that names it.
+            waiting = select(PendingAddressChange.handle).where(PendingAddressChange.user_id == user_key)
+            await db.execute(
+                delete(MagicLink).where(
+                    MagicLink.token_hash.in_(waiting), MagicLink.intent == account_email.INTENT_EMAIL_CHANGE
+                )
+            )
             await db.execute(delete(User).where(User.id == account_id))
     _wake_watches(account_id)
     return True

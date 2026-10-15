@@ -385,6 +385,29 @@ def test_the_accounts_own_address_is_400_whatever_its_case(client):
     assert _change_links() == [] and _queue() == []
 
 
+def test_a_deactivated_accounts_address_does_not_change_until_it_is_reactivated(client):
+    """The administrator is told why, before anything is spent. The account
+    itself has no session left to ask with, and one that resolved just before
+    the deactivation is answered as signed out."""
+    cookie = _signed_in(client, ADA)
+    ada = _id_of(ADA)
+    path = f"/api/admin/users/{ada}/email"
+    asyncio.run(sessions.deactivate_account(ada))
+
+    refused = client.post(path, json={"email": NEW}, headers=AS_ADMIN)
+
+    assert (refused.status_code, refused.json()) == (409, {"detail": "Account is deactivated"})
+    assert _ask(client, cookie, NEW).status_code == 401
+    with pytest.raises(account_email.Refused) as by_account:
+        asyncio.run(account_email.request_change(ada, NEW, by_account=True))
+    assert (by_account.value.status_code, by_account.value.detail) == (401, "Not authenticated")
+    assert _change_links() == [] and _waiting() == [] and _queue() == [] and _counters() == []
+
+    asyncio.run(sessions.reactivate_account(ada))
+    assert client.post(path, json={"email": NEW}, headers=AS_ADMIN).status_code == 202
+    assert [row.recipient for row in _queue()] == [NEW]
+
+
 # ── Another account's address ────────────────────────────────────────────────
 
 
@@ -415,11 +438,14 @@ def test_another_accounts_address_is_answered_as_a_free_one_and_told_instead(cli
     assert (_id_of(GRACE), _id_of(ADA)) == (grace, ada)
 
 
-def test_an_address_another_account_retired_is_answered_as_a_free_one_and_sent_nothing(client):
-    """A retired address is never mailed, so it is not told either."""
+def test_an_address_another_account_retired_is_answered_as_a_free_one_and_told_where_that_account_is(client):
+    """A retired address is never mailed: its account is told at the address
+    it has now, as all mail for a retired address goes (core/users.py,
+    forwarding_address). The notice names the retired address, which is that
+    account's own, and nothing of the account that asked."""
     _change(client, _signed_in(client, GRACE), "grace.new@example.com")
     cookie = _signed_in(client, ADA)
-    queued = len(_queue())
+    ada = _id_of(ADA)
 
     r = _ask(client, cookie, GRACE)
 
@@ -427,7 +453,45 @@ def test_an_address_another_account_retired_is_answered_as_a_free_one_and_sent_n
     assert r.json() == {"status": "sent", "email": GRACE, "expires_in": 900}
     assert [link for link in _change_links() if link.email == GRACE] == []
     assert _waiting() == []
-    assert len(_queue()) == queued and _sent() == []
+    (notice,) = _sent()
+    rendered = mail_templates.address_taken(former=GRACE)
+    assert notice == mail.Message(
+        to="grace.new@example.com", subject=rendered.subject, text=rendered.text, html=rendered.html
+    )
+    assert notice.text.startswith(
+        f"A request has been made to make {GRACE}, an address your RETINA account used to sign in with,"
+    )
+    for part in (notice.subject, notice.text, notice.html):
+        assert ADA not in part.lower()
+        assert str(ada) not in part
+        assert "http" not in part
+    assert [(row.kind, row.recipient, row.status) for row in _queue()][-1] == (
+        mail_outbox.KIND_ADDRESS_TAKEN,
+        "grace.new@example.com",
+        "sent",
+    )
+
+
+def test_whoever_the_address_belongs_to_the_request_queues_one_mail_and_gets_one_answer(client):
+    """A free address is sent its link, one in use is told it cannot be added,
+    and so is one retired, at the address its account has now. One mail each,
+    queued in the request's own transaction, so neither the answer nor the
+    work behind it says which the address was."""
+    sign_in(client, "bob@example.com")
+    _change(client, _signed_in(client, GRACE), "grace.new@example.com")
+    cookie = _signed_in(client, ADA)
+
+    for address, kind, recipient in (
+        ("nobody@example.com", mail_outbox.KIND_ADDRESS_CHANGE, "nobody@example.com"),
+        ("bob@example.com", mail_outbox.KIND_ADDRESS_TAKEN, "bob@example.com"),
+        (GRACE, mail_outbox.KIND_ADDRESS_TAKEN, "grace.new@example.com"),
+    ):
+        before = len(_queue())
+
+        r = _ask(client, cookie, address)
+
+        assert (r.status_code, r.json()) == (202, {"status": "sent", "email": address, "expires_in": 900}), address
+        assert [(row.kind, row.recipient) for row in _queue()[before:]] == [(kind, recipient)], address
 
 
 def test_the_answer_says_nothing_of_whose_the_address_is(client):
@@ -583,6 +647,30 @@ def test_a_live_link_that_is_not_the_waiting_change_is_400(client):
     assert _account(ADA) is not None and _account(NEW) is None
 
 
+def test_deleting_the_account_kills_the_link_of_the_change_it_had_waiting(client):
+    """The link is keyed on the new address, not on the account, so the
+    account's row does not take it along: the deletion kills it itself.
+    Another account's waiting change is left as it was."""
+    _ask(client, _signed_in(client, GRACE), "grace.new@example.com")
+    cookie = _signed_in(client, ADA)
+    _ask(client, cookie, NEW)
+    links = {message.to: _token(message) for message in _sent()}
+
+    deleted = client.post("/api/auth/me/delete", json={"email": ADA}, headers=cookie)
+
+    assert deleted.status_code == 200
+    assert _account(ADA) is None
+    assert _link_rows(links[NEW]) == []
+    assert [link.email for link in _change_links()] == ["grace.new@example.com"]
+    assert _waiting() == [(str(_id_of(GRACE)), "grace.new@example.com")]
+    assert client.get(f"/api/auth/email-change/{links[NEW]}").status_code == 404
+    assert _confirm(client, links[NEW]).status_code == 400
+    assert _account(NEW) is None
+    assert client.get(f"/api/auth/email-change/{links['grace.new@example.com']}").json() == {
+        "email": "grace.new@example.com"
+    }
+
+
 # ── Read again under the write lock ──────────────────────────────────────────
 #
 # A request reads the account before it spends the limits, and whose the
@@ -672,6 +760,30 @@ def test_an_account_deleted_meanwhile_is_404_and_gets_no_link(client, monkeypatc
     assert (r.status_code, r.json()) == (404, {"detail": "User not found"})
     assert _change_links() == [] and _waiting() == [] and _queue() == []
     assert _account(ADA) is None and _account(NEW) is None
+
+
+@pytest.mark.parametrize("by", ["account", "administrator"])
+def test_an_account_deactivated_meanwhile_gets_no_link(client, monkeypatch, by):
+    """Deactivated while the request is under way, the account is refused by
+    the lock: the administrator 409 with the reason, the account as signed
+    out, since the deactivation ended its sessions. Nothing is minted, left
+    waiting or mailed."""
+    cookie = _signed_in(client, ADA)
+    ada = _id_of(ADA)
+
+    async def deactivated(_address):
+        assert await sessions.deactivate_account(ada) is not None
+
+    _meanwhile(monkeypatch, deactivated)
+
+    if by == "account":
+        r = _ask(client, cookie, NEW)
+        assert (r.status_code, r.json()) == (401, {"detail": "Not authenticated"})
+    else:
+        r = client.post(f"/api/admin/users/{ada}/email", json={"email": NEW}, headers=AS_ADMIN)
+        assert (r.status_code, r.json()) == (409, {"detail": "Account is deactivated"})
+    assert _change_links() == [] and _waiting() == [] and _queue() == []
+    assert _id_of(ADA) == ada and _account(NEW) is None
 
 
 # ── Opening the link ─────────────────────────────────────────────────────────

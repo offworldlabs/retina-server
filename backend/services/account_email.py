@@ -23,10 +23,14 @@ replaced. Confirming opens no session; it proves the new address and nothing
 else.
 
 An account asking for itself is never told whose an address is: another
-account's address gets the answer a free one does, and no link. That address,
-when it is the other account's own, is told it cannot be added instead. A
-free address holding as many links as it may gets that answer too, and
-nothing is sent, since a taken one never fills up.
+account's address gets the answer a free one does, and no link. The other
+account is told instead that the address cannot be added, at the address it
+has now, which is where mail for one it retired goes too. A free address
+holding as many links as it may gets that answer too, and nothing is sent,
+since a taken one never fills up.
+
+A deactivated account's address does not change: a request for one is
+refused before anything is spent, and its link would not confirm either.
 
 Every mail goes through the outbox in the transaction that makes it necessary
 (services/mail_outbox.py): the confirmation to the new address, the notice to
@@ -93,6 +97,8 @@ _ALREADY_THIS = "That is already this account's address"
 _RATE_LIMITED = "Too many address changes have been asked for; try again later"
 _UNAVAILABLE = "Changing the address by email is unavailable"
 _NO_ACCOUNT = "User not found"
+_DEACTIVATED = "Account is deactivated"
+_NOT_SIGNED_IN = "Not authenticated"
 
 # Sign-in's own grammar (routes/auth.py, MagicLinkRequest), since the new
 # address is what the account signs in with from now on.
@@ -121,6 +127,18 @@ class Requested:
     user_id: str
     email: str
     expires_in: int
+
+
+def _deactivated(*, by_account: bool) -> Refused:
+    """The refusal for an account that is deactivated.
+
+    409 for an administrator, who is told why. Asked `by_account`, it is the
+    account's own cookie that resolved before the deactivation ended every
+    session it had (core/sessions.py, deactivate_account): 401, as any route
+    behind the session answers a cookie that no longer signs in, so the
+    console ends the session.
+    """
+    return Refused(401, _NOT_SIGNED_IN) if by_account else Refused(409, _DEACTIVATED)
 
 
 def _account_id(user_id: str | uuid.UUID) -> uuid.UUID | None:
@@ -191,19 +209,21 @@ async def request_change(user_id: str | uuid.UUID, email: str, *, by_account: bo
     """Mail a link that makes `email` the account's address, replacing any
     change it had waiting. Raises Refused for every answer but that.
 
-    404 for an account that does not exist; 503 when no mail can leave, asked
-    before anything is written; 400 for something that is not an address, or
-    that is the account's address already; 429 past the limits. One of the
-    account's own retired addresses is free to it.
+    404 for an account that does not exist; 409 for one that is deactivated,
+    or 401 asked `by_account` (_deactivated); 503 when no mail can leave,
+    asked before anything is written; 400 for something that is not an
+    address, or that is the account's address already; 429 past the limits.
+    One of the account's own retired addresses is free to it.
 
     Another account's address, current or retired, is 409 for an
     administrator acting for the account. Asked `by_account`, by the account
     for itself, it is answered as a free address is, so that no signed-in
     account can ask whose an address is, as sign-in cannot be asked either.
     No link is minted, and the change the account had waiting goes as a new
-    request's link would replace it. An address that is the other account's
-    own is sent a notice that it cannot be added (_turn_away); one that
-    account retired is sent nothing, as a retired address never is.
+    request's link would replace it. The other account is sent a notice that
+    the address cannot be added (_turn_away), at the address it has now, the
+    one asked for or the one a retired address forwards to, so one mail is
+    queued whichever it was, as one is for a free address.
 
     A free address can hold as many live links of this kind as the link
     store allows (core/auth.py), which several accounts asking for it at once
@@ -229,6 +249,8 @@ async def request_change(user_id: str | uuid.UUID, email: str, *, by_account: bo
         account = await session.get(User, account_id)
         if account is None:
             raise Refused(404, _NO_ACCOUNT)
+        if not account.is_active:
+            raise _deactivated(by_account=by_account)
         # About this deployment, not about the address. The link is built on
         # the one reading of HOST_APP taken here.
         reason = mail_outbox.unavailable()
@@ -247,7 +269,7 @@ async def request_change(user_id: str | uuid.UUID, email: str, *, by_account: bo
     try:
         async with async_session_maker() as session:
             async with session.begin():
-                holder = await _hold(session, account_id, address)
+                holder = await _hold(session, account_id, address, by_account=by_account)
                 if holder is None:
                     await _send_link(session, user_key, address, landing, now, by_account=by_account)
                 elif by_account:
@@ -263,7 +285,7 @@ async def request_change(user_id: str | uuid.UUID, email: str, *, by_account: bo
     return Requested(user_id=user_key, email=address, expires_in=CHANGE_EXPIRY_S)
 
 
-async def _hold(session: AsyncSession, account_id: uuid.UUID, address: str) -> User | None:
+async def _hold(session: AsyncSession, account_id: uuid.UUID, address: str, *, by_account: bool) -> User | None:
     """Take SQLite's write lock on the account's row, check again what
     request_change checked before it spent the limits, and return the other
     account `address` belongs to, or None when it is free to this one.
@@ -271,17 +293,21 @@ async def _hold(session: AsyncSession, account_id: uuid.UUID, address: str) -> U
     pysqlite begins the transaction at its first write, so this UPDATE, which
     changes nothing, is what makes the reads after it hold until the commit.
     """
-    current = (
+    row = (
         await session.execute(
             update(User)
             .where(User.id == account_id)
             .values(email=User.email)
-            .returning(User.email)
+            .returning(User.email, User.is_active)
             .execution_options(synchronize_session=False)
         )
-    ).scalar_one_or_none()
-    if current is None:
+    ).one_or_none()
+    if row is None:
         raise Refused(404, _NO_ACCOUNT)
+    current, active = row
+    # Deactivated since it was read, which a confirmation would refuse anyway.
+    if not active:
+        raise _deactivated(by_account=by_account)
     # A change to this address the account confirmed since it asked.
     if normalise_email(current) == address:
         raise Refused(400, _ALREADY_THIS)
@@ -328,20 +354,24 @@ async def _turn_away(session: AsyncSession, user_key: str, holder: User, address
     link, in request_change's transaction.
 
     Its waiting change goes, as a link to a free address would replace it, so
-    a link it holds from before dies whichever address it asked for next. The
-    address is told when it is `holder`'s own, at the address as the account
-    holds it, and sent nothing when it is one `holder` retired.
+    a link it holds from before dies whichever address it asked for next.
+    `holder` is told, at the address as it holds it: the one asked for when
+    that is its own, and when it is one `holder` retired, the one it has now,
+    naming the retired one, as all mail for a retired address goes
+    (core/users.py, forwarding_address). So one notice is queued either way,
+    as one link is for a free address, and the work a request does cannot
+    tell a retired address from one in use or a free one.
     """
     await _drop_waiting(session, user_key)
-    if normalise_email(holder.email) == address:
-        rendered = mail_templates.address_taken()
-        await mail_outbox.enqueue(
-            session,
-            mail.Message(to=holder.email, subject=rendered.subject, text=rendered.text, html=rendered.html),
-            kind=mail_outbox.KIND_ADDRESS_TAKEN,
-            expires_at=now + _NOTICE_EXPIRY_S,
-            now=now,
-        )
+    former = None if normalise_email(holder.email) == address else address
+    rendered = mail_templates.address_taken(former=former)
+    await mail_outbox.enqueue(
+        session,
+        mail.Message(to=holder.email, subject=rendered.subject, text=rendered.text, html=rendered.html),
+        kind=mail_outbox.KIND_ADDRESS_TAKEN,
+        expires_at=now + _NOTICE_EXPIRY_S,
+        now=now,
+    )
     logger.info("Account %s asked for another account's address and was sent no link", user_key)
 
 
