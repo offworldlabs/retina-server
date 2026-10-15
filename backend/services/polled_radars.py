@@ -28,6 +28,7 @@ from services.node_auth import mint_node_ref
 from services.node_claim_store import clear_claim, read_owner
 from services.node_config import validate_config
 from services.node_config_store import active_config, config_fields, upsert_config
+from services.node_contact_store import delete_contact
 
 FEET_PER_METRE = 1 / 0.3048
 
@@ -343,10 +344,13 @@ async def retire_polled_radar(session: AsyncSession, node_id: str, *, actor: str
     answer for it. The node stays, retired, with the configurations its archived
     frames were filed against and the record of decisions about it. Its
     address, stored password and address history go, so the address registers
-    again as a new radar.
+    again as a new radar. Its owner's contact details go with the claim, in
+    the same transaction, as every retirement erases them
+    (services/node_retirement.py).
     """
     radar = await session.get(PolledRadar, node_id)
     await clear_claim(session, node_id)
+    await delete_contact(session, node_id)
     if radar is not None:
         await session.delete(radar)
     await session.execute(update(Node).where(Node.node_id == node_id).values(status="retired"))
