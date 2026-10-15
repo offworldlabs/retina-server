@@ -11,18 +11,37 @@ Run as a deployment runs, as tests/test_admin_users.py is.
 """
 
 import asyncio
+import sqlite3
 import time
 from collections import deque
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import event
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
+import main
 import routes.admin as admin
 from config.constants import EVENT_LOG_MAX
 from core import sessions, users
-from core.users import ACCESS_ASSERTION_HEADER, ANONYMOUS_USER, User, async_session_maker
+from core.nodes import NodeClaim
+from core.users import (
+    ACCESS_ASSERTION_HEADER,
+    ANONYMOUS_USER,
+    User,
+    _set_sqlite_pragmas,
+    async_session_maker,
+    get_async_session,
+)
 from services import claim_links, node_refs
 from services.node_claim_store import claim_status, mark_undeliverable, put_challenge, set_claim_address
 from services.node_claiming import complete_claim
+from tests.migration_helpers import _alembic
 from tests.ownership_helpers import register_node_row, set_node_owner
 
 OPERATOR = "operator@example.com"
@@ -275,3 +294,167 @@ class TestAnOwnerAssignedByAnySpellingOfTheId:
         after = _claim(client)
         assert after["owner"]["user_id"] == str(user.id)
         assert (after["email"], after["verified"], after["owned_since"]) == (ADA, True, before["owned_since"])
+
+
+# What the owner route stored for Ada while it kept the spelling it was sent:
+# her id upper case and undashed, in both owner columns.
+OWNED_SINCE = datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
+UPDATED_AT = datetime(2026, 9, 20, 10, 0, tzinfo=UTC)
+
+
+def _legacy(user_id: str) -> str:
+    return user_id.replace("-", "").upper()
+
+
+def _the_rest(claim: NodeClaim) -> tuple:
+    """Everything on a claim but its owner ids."""
+    return (claim.email, claim.verified, claim.undeliverable, claim.declined, claim.updated_at, claim.owned_since)
+
+
+async def _read_row(node_id: str = NODE) -> NodeClaim:
+    async with async_session_maker() as db:
+        row = await db.get(NodeClaim, node_id)
+        assert row is not None
+        return row
+
+
+@contextmanager
+def _serving(db: Path) -> Iterator[TestClient]:
+    """The app with every request's session on `db`, as conftest's node_client
+    serves node_session's. A connection per session rather than a pool: each
+    request runs on an event loop of its own, which a pooled connection would
+    outlive."""
+    engine = create_async_engine(f"sqlite+aiosqlite:///{db}", poolclass=NullPool)
+    event.listen(engine.sync_engine, "connect", _set_sqlite_pragmas)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+
+    async def _session():
+        async with maker() as session:
+            yield session
+
+    saved = dict(main.app.dependency_overrides)
+    main.app.dependency_overrides[get_async_session] = _session
+    client = TestClient(main.app, raise_server_exceptions=False)
+    try:
+        yield client
+    finally:
+        client.close()
+        main.app.dependency_overrides.clear()
+        main.app.dependency_overrides.update(saved)
+        asyncio.run(engine.dispose())
+
+
+def _at_0026_from_a_legacy_owner(db: Path, account_id: str) -> None:
+    """A database at 0025 holding Ada's account and NODE, owned by her under
+    the legacy spelling with the address she claimed it with, migrated to 0026."""
+    up = _alembic("upgrade", "0025", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+    con = sqlite3.connect(db)
+    try:
+        con.execute(
+            'INSERT INTO "user" (id, email, name, hashed_password, is_active, is_superuser, is_verified) '
+            "VALUES (?, ?, 'ada', 'x', 1, 0, 1)",
+            (account_id, ADA),
+        )
+        con.execute("INSERT INTO nodes (node_id, node_ref) VALUES (?, 'nde1a2b3c4d00')", (NODE,))
+        con.execute(
+            "INSERT INTO node_claims (node_id, user_id, email, verified, undeliverable, declined, updated_at, "
+            "owned_since, owned_since_user_id) VALUES (?, ?, ?, 1, 0, 0, ?, ?, ?)",
+            (
+                NODE,
+                _legacy(account_id),
+                ADA,
+                UPDATED_AT.replace(tzinfo=None).isoformat(sep=" "),
+                OWNED_SINCE.replace(tzinfo=None).isoformat(sep=" "),
+                _legacy(account_id),
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+    up = _alembic("upgrade", "0026", db_path=db)
+    assert up.returncode == 0, up.stdout + up.stderr
+
+
+class TestAnOwnerStoredInAnotherSpelling:
+    """What the owner route left before it stored the account's own id: the
+    node owned under a spelling that no read by account matches. Migration
+    0026 rewrites those ids, and set_owner reads one as the account it names,
+    so neither the reads nor a repeated assignment take it for somebody else."""
+
+    def test_assigning_that_account_again_keeps_the_claim(self, client, ref):
+        account = asyncio.run(users.get_or_create_magic_link_user(ADA))
+        user_id = str(account.id)
+
+        async def _legacy_claim() -> None:
+            async with async_session_maker() as db:
+                async with db.begin():
+                    db.add(
+                        NodeClaim(
+                            node_id=NODE,
+                            user_id=_legacy(user_id),
+                            email=ADA,
+                            verified=True,
+                            undeliverable=False,
+                            declined=False,
+                            updated_at=UPDATED_AT,
+                            owned_since=OWNED_SINCE,
+                            owned_since_user_id=_legacy(user_id),
+                        )
+                    )
+
+        asyncio.run(_legacy_claim())
+        before = asyncio.run(_read_row())
+
+        r = client.put(f"/api/admin/nodes/{NODE}/owner", json={"user_id": user_id}, headers=AS_ADMIN)
+
+        assert r.status_code == 200
+        after = asyncio.run(_read_row())
+        assert (after.user_id, after.owned_since_user_id) == (user_id, user_id)
+        assert _the_rest(after) == _the_rest(before) == (ADA, True, False, False, UPDATED_AT, OWNED_SINCE)
+        assert _claim(client)["owner"] == {"user_id": user_id, "email": ADA, "name": "ada"}
+        assert client.get(f"/api/admin/users/{user_id}", headers=AS_ADMIN).json()["user"]["node_count"] == 1
+
+    def test_after_0026_every_read_by_account_finds_the_node_and_assigning_it_again_keeps_it(self, tmp_path):
+        user_id = "6f1c2b9e-3d4a-4c5b-8e7f-0a1b2c3d4e5f"
+        db = tmp_path / "legacy.db"
+        _at_0026_from_a_legacy_owner(db, user_id)
+
+        with _serving(db) as client:
+            listed = client.get("/api/admin/users", headers=AS_ADMIN)
+            assert listed.status_code == 200, listed.text
+            assert [(u["id"], u["node_count"]) for u in listed.json()["users"]] == [(user_id, 1)]
+
+            account = client.get(f"/api/admin/users/{user_id}", headers=AS_ADMIN)
+            assert account.status_code == 200, account.text
+            assert account.json()["user"]["node_count"] == 1
+            assert [n["node_id"] for n in account.json()["nodes"]] == [NODE]
+            assert account.json()["claims"] == []
+
+            claim = client.get(f"/api/admin/nodes/{NODE}/claim", headers=AS_ADMIN)
+            assert claim.status_code == 200, claim.text
+            assert claim.json()["owner"] == {"user_id": user_id, "email": ADA, "name": "ada"}
+            assert claim.json()["status"] == "owned"
+
+            assigned = client.put(f"/api/admin/nodes/{NODE}/owner", json={"user_id": user_id}, headers=AS_ADMIN)
+            assert assigned.status_code == 200, assigned.text
+
+        con = sqlite3.connect(db)
+        try:
+            row = con.execute(
+                "SELECT user_id, owned_since_user_id, email, verified, undeliverable, declined, updated_at, "
+                "owned_since FROM node_claims WHERE node_id = ?",
+                (NODE,),
+            ).fetchone()
+        finally:
+            con.close()
+        assert row == (
+            user_id,
+            user_id,
+            ADA,
+            1,
+            0,
+            0,
+            UPDATED_AT.replace(tzinfo=None).isoformat(sep=" "),
+            OWNED_SINCE.replace(tzinfo=None).isoformat(sep=" "),
+        )

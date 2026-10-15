@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import time
-import uuid
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,8 +37,10 @@ from core.users import (
     User,
     accounts_by_id,
     async_session_maker,
+    forwarding_address,
     get_async_session,
     normalise_email,
+    parse_account_id,
     require_admin,
     user_to_dict,
 )
@@ -144,11 +145,8 @@ def _admin_user(user: User, node_count: int) -> dict:
 async def _account(session: AsyncSession, user_id: str) -> User:
     """The account `user_id` names. 404 for any id that is not an account's,
     malformed or not, as admin_set_node_owner answers one."""
-    try:
-        account_id = uuid.UUID(user_id)
-    except ValueError:
-        raise HTTPException(404, "User not found") from None
-    account = await session.get(User, account_id)
+    account_id = parse_account_id(user_id)
+    account = None if account_id is None else await session.get(User, account_id)
     if account is None:
         raise HTTPException(404, "User not found")
     return account
@@ -243,6 +241,11 @@ async def send_sign_in_link(
     committed before that read, and the link goes to the new address, or waits
     for the link's commit and kills it with the rest of the old mailbox's links
     (services/account_email.py).
+
+    409 for a deactivated account, and for an address that is another
+    account's retired one: a link for it would sign that account in, so none
+    is minted (core/auth.py, create_magic_link_in). 429 when the address
+    already holds as many outstanding links as it may.
     """
     from routes.auth import queue_sign_in_mail, sign_in_landing
 
@@ -261,6 +264,10 @@ async def send_sign_in_link(
             if not current.is_active:
                 raise HTTPException(409, "Account is deactivated")
             email = normalise_email(current.email)
+            # create_magic_link_in refuses this with the same None as the cap,
+            # so it is told apart here, under the same lock.
+            if await forwarding_address(db, email) is not None:
+                raise HTTPException(409, "This address is another account's retired address")
             token = await create_magic_link_in(db, email, now=now)
     if token is None:
         raise HTTPException(429, "This address already holds the maximum number of outstanding sign-in links")
@@ -509,11 +516,8 @@ async def admin_set_node_owner(
         raise HTTPException(409, f"{node_id} is a polled radar: reassign it, or have its owner remove it")
     user_id = None
     if body.user_id is not None:
-        try:
-            uid = uuid.UUID(body.user_id)
-        except ValueError as e:
-            raise HTTPException(404, "User not found") from e
-        user = await session.get(User, uid)
+        account_id = parse_account_id(body.user_id)
+        user = None if account_id is None else await session.get(User, account_id)
         if not user:
             raise HTTPException(404, "User not found")
         # The account's own id, not the spelling sent: node_claims is matched
@@ -683,10 +687,9 @@ async def list_events(limit: int = 200, user_id: str | None = None, _admin=Depen
     events = list(_events)
     if user_id is not None:
         # Any spelling of an account's id, as the user routes take; recorded ids are canonical.
-        try:
-            user_id = str(uuid.UUID(user_id))
-        except ValueError:
-            pass
+        account_id = parse_account_id(user_id)
+        if account_id is not None:
+            user_id = str(account_id)
         events = [e for e in events if _names_account(e, user_id)]
     return events[:limit]
 

@@ -526,6 +526,30 @@ class TestSignInLink:
         assert _rows(MailOutbox) == []
         assert _events(client) == []
 
+    def test_an_address_another_account_retired_is_409_and_says_so(self, client):
+        """An address stored as typed, before addresses were normalised, that
+        SQLite's lower(), which folds ASCII only, cannot match to its own
+        normalised form, resolves to the account that retired that form
+        instead. A link for it would sign that account in, so none is minted,
+        and the refusal says why rather than reading as the cap's 429."""
+        stored = make("ÉVE@example.com")
+        retiring = make("eve.new@example.com")
+
+        async def retire() -> None:
+            async with async_session_maker() as db:
+                async with db.begin():
+                    db.add(
+                        RetiredAddress(email="éve@example.com", user_id=str(retiring.id), retired_at=datetime.now(UTC))
+                    )
+
+        asyncio.run(retire())
+
+        r = _sign_in_link(client, stored.id)
+
+        assert r.status_code == 409
+        assert r.json() == {"detail": "This address is another account's retired address"}
+        self._nothing_minted_or_queued(client)
+
     @pytest.mark.parametrize("unset", ["HOST_APP", "MAIL_TRANSPORT"])
     def test_mail_that_cannot_leave_is_503_before_a_link_is_minted(self, client, account, monkeypatch, unset):
         monkeypatch.delenv(unset)
