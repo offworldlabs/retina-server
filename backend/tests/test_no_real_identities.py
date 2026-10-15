@@ -64,8 +64,6 @@ ALLOWED = {
     "ret000000ff",
     "retdeadbee2",
     "ret0123abcd",
-    # The dashboard's worked example of a node's own tunnel hostname.
-    "your-node.retnode.com",
     "ret0a1b2c3d",
     "ret5e6f7a8b",
     "ret9c0d1e2f",

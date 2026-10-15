@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { PublicationOptions } from "../../components/LocationPrivacy";
@@ -29,14 +29,7 @@ export default function RegisterRadarPage() {
       </p>
     </div>
   );
-  if (!polledRadarRegistration) {
-    return (
-      <>
-        {header}
-        <div className="empty-state">Registration of stock blah2 radars is not open yet.</div>
-      </>
-    );
-  }
+  if (!polledRadarRegistration) return <Navigate to="/overview" replace />;
 
   async function register() {
     if (!publication) return;
