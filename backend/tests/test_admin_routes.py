@@ -49,7 +49,7 @@ class TestUsers:
 
         asyncio.run(get_or_create_magic_link_user("never@example.com"))
 
-        listed = {u["email"]: u for u in client.get("/api/admin/users").json()}
+        listed = {u["email"]: u for u in client.get("/api/admin/users").json()["users"]}
         assert listed["never@example.com"]["last_seen_at"] is None
 
     def test_no_route_changes_a_role(self):
