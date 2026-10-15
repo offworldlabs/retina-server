@@ -760,8 +760,9 @@ known_follow_claims: int = 0
 # name finds only the read sites.  published counts actual publishes (binding
 # only, so it stays zero in shadow), publish_errors the ones that threw, and
 # publish_rms_rejected the solves binding would have published but for the
-# residual gate, publish_single_site those it withheld because every claim came
-# from one receive site.  solver_report.py's known_lane block reads them as a funnel.
+# residual gate, publish_weak_geometry those it withheld because the claim
+# set's delay loci barely cross at the aircraft.  solver_report.py's known_lane
+# block reads them as a funnel.
 known_lane_attempts: int = 0
 known_lane_truth_match: int = 0
 known_lane_ghost: int = 0
@@ -770,7 +771,7 @@ known_lane_no_converge: int = 0
 known_lane_published: int = 0
 known_lane_publish_errors: int = 0
 known_lane_publish_rms_rejected: int = 0
-known_lane_publish_single_site: int = 0
+known_lane_publish_weak_geometry: int = 0
 # Empirical-coverage calibration from the CLAIM lane (see
 # services/known_claiming._calibration_from_claim and services/calibration.py's
 # fourth rule).  recorded counts the points actually written; the five rejects

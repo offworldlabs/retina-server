@@ -507,7 +507,7 @@ class TestKnownLaneAndClaimsPassthrough:
             "publish_errors": 1,
             "reanchored": 0,
             "publish_rms_rejected": 2,
-            "publish_single_site": 0,
+            "publish_weak_geometry": 0,
             # Windowed, and empty here — these are since-boot counters bumped
             # directly, with no history records behind them.
             "position_error_km": {"median": None, "p90": None, "n": 0, "window_minutes": 10.0},
@@ -799,7 +799,7 @@ class TestEndpoint:
             "publish_errors",
             "reanchored",
             "publish_rms_rejected",
-            "publish_single_site",
+            "publish_weak_geometry",
             "position_error_km",
         }
         assert data["known_claims"].keys() == {
