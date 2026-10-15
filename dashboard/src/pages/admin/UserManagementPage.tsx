@@ -5,10 +5,11 @@ import { api } from "../../api/client";
 import { DataTable } from "../../components/DataTable";
 import { FetchNotice, nothingLoaded } from "../../components/Notice";
 import { Pager, clampPage } from "../../components/Pager";
+import { RelativeTime } from "../../components/RelativeTime";
 import { StatCard } from "../../components/StatCard";
 import { useFetch } from "../../hooks/usePolling";
 import type { AdminUser } from "../../types";
-import { DASH, formatRelativeTime } from "../../utils/format";
+import { DASH } from "../../utils/format";
 import { UserActions, type UserChange } from "./users/UserActions";
 import "./users/users.css";
 
@@ -29,16 +30,6 @@ function count(n: number, noun: string): string {
 /** The zero-based last page that holds any of `total` accounts. */
 function lastPage(total: number): number {
   return Math.max(0, Math.ceil(total / PAGE_SIZE) - 1);
-}
-
-function LastVisit({ at }: { at: number | null }) {
-  if (!at) return <>Never</>;
-  const when = new Date(at * 1000);
-  return (
-    <time dateTime={when.toISOString()} title={when.toLocaleString()}>
-      {formatRelativeTime(at)}
-    </time>
-  );
 }
 
 /** Whose row it is: the name as the link to the account's page and the
@@ -224,7 +215,7 @@ export default function UserManagementPage() {
                   {user.node_count}
                 </td>
                 <td data-label="Last visit">
-                  <LastVisit at={user.last_seen_at} />
+                  <RelativeTime at={user.last_seen_at} none="Never" />
                 </td>
                 <td data-label="Verified">
                   <span className={user.is_verified ? "badge online" : "badge warning"}>

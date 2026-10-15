@@ -4,9 +4,10 @@ import { HttpError } from "@retina/shared";
 
 import { api } from "../../../api/client";
 import { FetchNotice, Notice, nothingLoaded } from "../../../components/Notice";
+import { RelativeTime } from "../../../components/RelativeTime";
 import { useFetch } from "../../../hooks/usePolling";
 import type { AdminClaim, AdminClaimChallenge } from "../../../types";
-import { DASH, formatRelativeTime } from "../../../utils/format";
+import { DASH } from "../../../utils/format";
 import { challengeExpired, claimBadge, describeChallenge } from "./claimState";
 import { OwnerReassignDialog, type OwnerChange, type OwnerDialogMode } from "./OwnerReassignDialog";
 import "./claims.css";
@@ -38,17 +39,6 @@ async function readClaim(name: string): Promise<ClaimRead> {
     if (e instanceof HttpError && e.status === 404) return { kind: "unregistered" };
     throw e;
   }
-}
-
-/** A moment as time ago, with the full date on hover. */
-function When({ at }: { at: number | null }) {
-  if (!at) return <>{DASH}</>;
-  const when = new Date(at * 1000);
-  return (
-    <time dateTime={when.toISOString()} title={when.toLocaleString()}>
-      {formatRelativeTime(at)}
-    </time>
-  );
 }
 
 function Owner({ owner }: { owner: AdminClaim["owner"] }) {
@@ -103,13 +93,13 @@ function Facts({ claim }: { claim: AdminClaim }) {
         <tr>
           <td>Owned since</td>
           <td>
-            <When at={claim.owned_since} />
+            <RelativeTime at={claim.owned_since} />
           </td>
         </tr>
         <tr>
           <td>Last updated</td>
           <td>
-            <When at={claim.updated_at} />
+            <RelativeTime at={claim.updated_at} />
           </td>
         </tr>
         <tr>

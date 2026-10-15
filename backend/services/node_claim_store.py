@@ -29,6 +29,7 @@ from sqlalchemy import ColumnElement, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.nodes import Node, NodeClaim, NodeClaimChallenge
+from core.users import parse_account_id
 
 
 @dataclass(frozen=True)
@@ -305,6 +306,13 @@ async def clear_claim(session: AsyncSession, node_id: str) -> None:
     await session.execute(delete(NodeClaim).where(NodeClaim.node_id == node_id))
 
 
+def _owner_id(user_id: str) -> str:
+    """`user_id` in the account's own spelling, or as it is when it is not a
+    UUID, which names no account in any spelling."""
+    account_id = parse_account_id(user_id)
+    return user_id if account_id is None else str(account_id)
+
+
 async def set_owner(session: AsyncSession, node_id: str, user_id: str | None) -> None:
     """Assign or clear the node's owner, on somebody's behalf.
 
@@ -316,13 +324,28 @@ async def set_owner(session: AsyncSession, node_id: str, user_id: str | None) ->
     a node already has changes nothing, so it keeps the address that claimed
     it, and when they took it.
 
+    A `user_id` in any spelling uuid.UUID reads is stored as the account's
+    own, which every read by account matches exactly; one that is not a UUID
+    is stored as it is given. The owner on file is compared the same way, so
+    one stored in another spelling, as an assignment from before this took
+    care of it could leave, is the same owner: assigning them again keeps the
+    claim, and only puts its ids in that form.
+
     The node must be registered: an id that is not fails on the foreign key.
     """
-    row = await session.get(NodeClaim, node_id)
-    if row is not None and user_id is not None and row.user_id == user_id:
-        return
     if user_id is None:
         await clear_claim(session, node_id)
+        return
+    owner = _owner_id(user_id)
+    row = await session.get(NodeClaim, node_id)
+    if row is not None and row.user_id is not None and _owner_id(row.user_id) == owner:
+        row.user_id = owner
+        # It names the same owner, unless code that does not know the column
+        # has moved the owner since. Either way it takes the same form, so
+        # get_user_tenures still matches it.
+        if row.owned_since_user_id is not None:
+            row.owned_since_user_id = _owner_id(row.owned_since_user_id)
+        await session.flush()
         return
     # The link the challenge named needs no invalidating here: the bind re-reads
     # the address it was sent to, and finds it gone.
@@ -332,24 +355,24 @@ async def set_owner(session: AsyncSession, node_id: str, user_id: str | None) ->
         session.add(
             NodeClaim(
                 node_id=node_id,
-                user_id=user_id,
+                user_id=owner,
                 verified=False,
                 undeliverable=False,
                 declined=False,
                 updated_at=now,
                 owned_since=now,
-                owned_since_user_id=user_id,
+                owned_since_user_id=owner,
             )
         )
     else:
-        row.user_id = user_id
+        row.user_id = owner
         row.email = None
         row.verified = False
         row.undeliverable = False
         row.declined = False
         row.updated_at = now
         row.owned_since = now
-        row.owned_since_user_id = user_id
+        row.owned_since_user_id = owner
     await session.flush()
 
 
