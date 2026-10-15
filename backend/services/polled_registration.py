@@ -27,7 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config.constants import YAGI_MAX_RANGE_KM
 from core import secrets
 from core.nodes import Node, NodeClaim, NodeEvent, PolledRadar
-from core.users import User, accounts_by_id, get_or_create_admin_account, normalise_email
+from core.users import _account_at, accounts_by_id, get_or_create_admin_account, normalise_email
 from services import blah2_poller, node_pipeline, node_retirement, publication
 from services.blah2_probe import CONFIG_MAX_BYTES, CONFIG_PATH, Blah2Probe, Site, probe_blah2
 from services.node_claim_store import read_owner
@@ -382,15 +382,20 @@ async def check_connection(session: AsyncSession, raw: str, email: str, admin: d
     """What the radar at `raw` declares, and whether `email` has an account yet,
     for the administrator to confirm by eye. Saves nothing.
 
+    The account is the one connect would put the radar on, named by the address
+    it has: found as connecting finds it, whatever case an older account was
+    stored in, and through an address the account has retired.
+
     The probe draws on the administrator's own allowance: the account they name
     has not asked for anything.
     """
     _polling()
     email = normalise_email(email)
-    # Matched as sign-in matches it, whatever case an older account was stored in.
-    account = await session.scalar(select(User.id).where(func.lower(User.email) == email))
+    account = await _account_at(session, email)
     probed = await probe(session, raw, admin["id"])
-    return probed, {"email": email, "exists": account is not None}
+    if account is None:
+        return probed, {"email": email, "exists": False}
+    return probed, {"email": account.email, "exists": True}
 
 
 async def connect(

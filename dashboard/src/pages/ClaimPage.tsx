@@ -17,6 +17,16 @@ interface Trouble {
   failure: RequestFailure;
 }
 
+/** Where a request for a new link stands, on the card that says the old one is
+ *  dead. `sent` and `refused` end the offer; `failed` leaves it for another go. */
+type Renewal =
+  | { state: "idle" | "sending" | "sent" | "refused" }
+  | { state: "failed"; failure: RequestFailure };
+
+/** What a 429 on the renewal means: its limit is per node and can last up to an
+ *  hour, which the sign-in card's "wait a minute" would understate. */
+const TOO_MANY_LINKS = "Too many links have been asked for. Try again later.";
+
 /** How long the new owner reads that the node is theirs before it opens. */
 const BOUND_REDIRECT_MS = 1200;
 
@@ -45,6 +55,7 @@ function Claim({ token }: { token: string }) {
   const [trouble, setTrouble] = useState<Trouble | null>(null);
   // Counts the reads Try again has asked for, so each one runs the preview anew.
   const [reads, setReads] = useState(0);
+  const [renewal, setRenewal] = useState<Renewal>({ state: "idle" });
   // False once the person has left the card, or another link has replaced it,
   // so an answer still in flight is dropped: a confirm's would sign in from
   // under the page or the question that is there instead.
@@ -141,6 +152,23 @@ function Claim({ token }: { token: string }) {
     }
   }
 
+  async function renew() {
+    setRenewal({ state: "sending" });
+    try {
+      await api.resendClaimByToken(token);
+      if (!mounted.current) return;
+      setRenewal({ state: "sent" });
+    } catch (e) {
+      if (!mounted.current) return;
+      const failure = describeFailure(e, { throttled: TOO_MANY_LINKS });
+      // 404 is the server's word that this link cannot be renewed, the same
+      // answer however it came to be dead; 409 that the node has an owner now.
+      if (failure.status === 404) setRenewal({ state: "refused" });
+      else if (failure.status === 409) setStage("taken");
+      else setRenewal({ state: "failed", failure });
+    }
+  }
+
   function retry() {
     if (trouble?.step === "consume") confirm();
     else if (trouble?.step === "decline") decline();
@@ -149,6 +177,8 @@ function Claim({ token }: { token: string }) {
       setReads((n) => n + 1);
     }
   }
+
+  const offersRenewal = renewal.state === "idle" || renewal.state === "sending" || renewal.state === "failed";
 
   return (
     <div className="login-page">
@@ -248,8 +278,32 @@ function Claim({ token }: { token: string }) {
             <p className="login-error">
               That link is no longer valid. Links last fifteen minutes and work once.
             </p>
-            <p className="subtitle">Ask the node to send another, then use the newest email.</p>
-            <Link className="login-btn" to="/login">
+            {offersRenewal && (
+              <p className="subtitle">
+                Send a new link below, or ask for one from the node&apos;s setup page. Then use the newest email.
+              </p>
+            )}
+            {renewal.state === "sent" && (
+              <p className="login-note" role="status">
+                A new link is on its way to the address the node gave. It lasts fifteen minutes.
+              </p>
+            )}
+            {renewal.state === "refused" && (
+              <p className="login-error" role="status">
+                That link cannot be renewed. Ask for a new one from the node&apos;s setup page.
+              </p>
+            )}
+            {renewal.state === "failed" && (
+              <p className="login-error" role="alert">
+                {renewal.failure.message}
+              </p>
+            )}
+            {offersRenewal && (
+              <button className="login-btn" onClick={renew} disabled={renewal.state === "sending"}>
+                Send a new link
+              </button>
+            )}
+            <Link className={offersRenewal ? "login-btn secondary" : "login-btn"} to="/login">
               Sign in instead
             </Link>
           </>

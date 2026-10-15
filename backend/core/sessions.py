@@ -39,8 +39,22 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import set_committed_value
 
-from core.auth import _hash_token
-from core.users import JWT_SECRET, RetiredLegacyToken, User, UserSession, async_session_maker
+from core.auth import INTENT_SIGNIN, _hash_token
+from core.nodes import NodeClaim
+from core.users import (
+    JWT_SECRET,
+    MagicLink,
+    PendingAddressChange,
+    RetiredAddress,
+    RetiredLegacyToken,
+    User,
+    UserSession,
+    async_session_maker,
+    forwarding_address,
+    normalise_email,
+)
+from services import account_email, claim_links, mail_outbox
+from services.node_claim_store import drop_challenge, read_challenge
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +85,10 @@ _UNRESOLVED = object()
 
 class InactiveAccount(Exception):
     """The account is deactivated, or gone, so it may not hold a session."""
+
+
+class AccountHoldsNodes(Exception):
+    """A node still names the account as its owner, so the account may not be removed."""
 
 
 @dataclass(frozen=True)
@@ -625,6 +643,136 @@ async def reactivate_account(user_id: str | uuid.UUID) -> User | None:
                 return None
             user.is_active = True
     return user
+
+
+async def remove_account(user_id: str | uuid.UUID, *, now: datetime | None = None) -> bool:
+    """Delete an account that owns no node, with everything it signs in by, in one transaction.
+
+    The row and the sign-in links outstanding for its address go together, and
+    so does the link of a change of address it had waiting, which is keyed on
+    the new address rather than on the account. The row takes its sessions,
+    the retirements of its JWT cookies and that waiting change with it (ON
+    DELETE CASCADE): a cookie naming an account that is gone resolves to
+    nobody either way. The address is nobody's afterwards. Claim links to it
+    stay, as they are about a node rather than the account, and one clicked
+    later makes a new account. Those to an address it retired go, with their
+    claims' challenges and mail (_withdraw_forwarded_claims).
+
+    Another account may have retired the address before this one had it,
+    which a rollback across migration 0025 leaves, and that account's claim to
+    it goes too: this account won the address while it stood (core/users.py,
+    _account_at), and the stale row would hand it back, with the claim links in
+    this account's mailbox. Then the claim links to the address go as well. One
+    minted before this account had it was mailed to the other account's
+    address (services/claim_links.py, queue), so whoever holds it proved that
+    address and not this one, and with neither account left at it a click
+    would make an account there, verified and signed in. A link does not say
+    which mailbox it went to, so all of them go, and their nodes ask again.
+
+    Whether a node names it is read under the write lock, so the answer holds
+    to the commit. A claim that bound a node before the lock is seen, and
+    raises AccountHoldsNodes having changed nothing. One that binds after the
+    commit finds no account, as the claim checks the account again in its own
+    write (services/node_claiming.py, complete_claim).
+
+    False when there is no such account.
+    """
+    account_id = _user_uuid(user_id)
+    if account_id is None:
+        return False
+    now = _utcnow() if now is None else now
+    user_key = str(account_id)
+    async with async_session_maker() as db:
+        async with db.begin():
+            await _prune(db, now)
+            user = await db.get(User, account_id)
+            if user is None:
+                return False
+            if await db.scalar(select(NodeClaim.node_id).where(NodeClaim.user_id == user_key).limit(1)) is not None:
+                raise AccountHoldsNodes
+            # Before the row, which takes the retired addresses with it.
+            await _withdraw_forwarded_claims(db, user_key)
+            # Links and retired addresses are keyed on the normalised address
+            # (core/auth.py, create_magic_link), where an account's own row
+            # may not be.
+            address = normalise_email(user.email)
+            # Another account's retirement of it, which ON DELETE CASCADE
+            # does not reach. Left, it would find that account again for the
+            # address the moment this one is gone.
+            retired_by = (
+                await db.execute(
+                    delete(RetiredAddress).where(RetiredAddress.email == address).returning(RetiredAddress.user_id)
+                )
+            ).scalar_one_or_none()
+            if retired_by is not None and retired_by != user_key:
+                # And the claim links on it, some of which that account's
+                # mailbox holds.
+                await _withdraw_claim_links(db, [address])
+            await db.execute(delete(MagicLink).where(MagicLink.email == address, MagicLink.intent == INTENT_SIGNIN))
+            # Before the row, whose cascade takes the change that names it.
+            waiting = select(PendingAddressChange.handle).where(PendingAddressChange.user_id == user_key)
+            await db.execute(
+                delete(MagicLink).where(
+                    MagicLink.token_hash.in_(waiting), MagicLink.intent == account_email.INTENT_EMAIL_CHANGE
+                )
+            )
+            await db.execute(delete(User).where(User.id == account_id))
+    _wake_watches(account_id)
+    return True
+
+
+async def _withdraw_forwarded_claims(db: AsyncSession, user_key: str) -> None:
+    """Kill every claim link still out for an address the account retired and
+    is mailed for, in remove_account's transaction (_withdraw_claim_links).
+
+    Their mail went to the address the account has now (services/claim_links.py,
+    queue), so whoever holds one proved that address and not the one the link
+    names. While the account stands, a click binds the node to it. Once it is
+    gone, nothing ties the two addresses together, and a click would make an
+    account at the retired one, verified, owning the node and signed in. The
+    links to the account's own address are left: whoever clicks one proved it.
+    So are those to a retired address another account has as its own, which
+    is mailed itself (core/users.py, forwarding_address).
+    """
+    retired = (await db.execute(select(RetiredAddress.email).where(RetiredAddress.user_id == user_key))).scalars()
+    forwarded = [email for email in retired.all() if await forwarding_address(db, email) is not None]
+    await _withdraw_claim_links(db, forwarded)
+
+
+async def _withdraw_claim_links(db: AsyncSession, addresses: list[str]) -> None:
+    """Kill every claim link still out for `addresses`, in remove_account's
+    transaction, and with it the challenge it was for and the claim mail
+    queued to carry it.
+
+    The steps an address change takes for the links in the old mailbox
+    (services/account_email.py, _withdraw_claims). A node waiting on one reads
+    unclaimed with its address on file, so whoever is at it can ask again, and
+    that mail goes to the address itself, which is nobody's once the account
+    is gone. A node whose challenge is another link by now keeps it, and the
+    mail queued for it.
+    """
+    if not addresses:
+        return
+    links = (
+        await db.execute(
+            select(MagicLink.token_hash, MagicLink.node_id).where(
+                MagicLink.email.in_(addresses),
+                MagicLink.intent == claim_links.INTENT_CLAIM,
+                MagicLink.used_at.is_(None),
+            )
+        )
+    ).all()
+    for handle, node_id in links:
+        await claim_links.invalidate_in(db, handle)
+        if node_id is None:
+            continue
+        challenge = await read_challenge(db, node_id)
+        if challenge is not None and challenge.handle == handle:
+            # Every claim mail queued for the node carries this challenge's
+            # link, since a new challenge cancels the mail queued for the one
+            # it replaces.
+            await mail_outbox.cancel(db, node_id=node_id)
+            await drop_challenge(db, node_id)
 
 
 def set_session_cookie(response: Response, token: str, session: UserSession, *, now: datetime | None = None) -> None:

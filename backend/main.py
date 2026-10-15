@@ -88,6 +88,7 @@ from config.constants import REPUTATION_PENALTY_SCALE
 from core import state
 from core.env_parsing import parse_comma_list
 from pipeline.passive_radar import DEFAULT_NODE_CONFIG, PassiveRadarPipeline
+from routes.account import router as account_router
 from routes.admin import router as admin_router
 from routes.admin_infrastructure import router as admin_infrastructure_router
 from routes.admin_polled_radars import router as admin_polled_radars_router
@@ -511,6 +512,7 @@ for router in (
     test_router,
     custody_router,
     auth_router,
+    account_router,
     owner_router,
     admin_router,
     admin_infrastructure_router,
