@@ -47,6 +47,7 @@ const EventsPage = lazy(() => import("./pages/admin/EventsPage"));
 const StoragePage = lazy(() => import("./pages/admin/StoragePage"));
 const CustodyPage = lazy(() => import("./pages/admin/CustodyPage"));
 const UserManagementPage = lazy(() => import("./pages/admin/UserManagementPage"));
+const UserDetailPage = lazy(() => import("./pages/admin/UserDetailPage"));
 const ConfigPage = lazy(() => import("./pages/admin/ConfigPage"));
 const SystemMetricsPage = lazy(() => import("./pages/admin/SystemMetricsPage"));
 const InfrastructurePage = lazy(() => import("./pages/admin/InfrastructurePage"));
@@ -122,6 +123,7 @@ const adminRoutes = (syntheticFleet: boolean): ConsoleRoute[] => [
   { path: "/storage", title: "Data & Storage", element: <StoragePage /> },
   { path: "/custody", title: "Chain of Custody", element: <CustodyPage /> },
   { path: "/users", title: "User Management", element: <UserManagementPage /> },
+  { path: "/users/:userId", title: "User Detail", element: <UserDetailPage /> },
   { path: "/config", title: "Configuration", element: <ConfigPage /> },
   { path: "/system", title: "System Metrics", element: <SystemMetricsPage /> },
   { path: "/infrastructure", title: "Infrastructure", element: <InfrastructurePage /> },

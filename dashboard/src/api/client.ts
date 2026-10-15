@@ -6,6 +6,11 @@ import { isAdminHost } from "../utils/surface";
 import type {
   AccountDeleted,
   AccountSession,
+  AdminAccount,
+  AdminClaim,
+  AdminEvent,
+  AdminUserDetail,
+  AdminUserPage,
   AircraftFrame,
   ArchiveListing,
   ClaimMailSent,
@@ -333,8 +338,36 @@ export const api = {
   // Leaderboard (user-facing)
   leaderboard: (): Promise<Leaderboard> => request("/api/radar/leaderboard"),
 
-  // Admin
-  adminUsers: () => request("/api/admin/users"),
+  // Admin: accounts. A page of them newest first, `q` keeping the addresses
+  // that contain it in any case; the server takes 1 to 200 a page.
+  adminUsers: (params: { q?: string; limit?: number; offset?: number } = {}): Promise<AdminUserPage> => {
+    const query = new URLSearchParams();
+    if (params.q) query.set("q", params.q);
+    if (params.limit !== undefined) query.set("limit", String(params.limit));
+    if (params.offset !== undefined) query.set("offset", String(params.offset));
+    const qs = query.toString();
+    return request(`/api/admin/users${qs ? `?${qs}` : ""}`);
+  },
+  // Each of these rejects 404 "User not found" for an id that is no account's.
+  adminUser: (userId: string): Promise<AdminUserDetail> =>
+    request(`/api/admin/users/${encodeURIComponent(userId)}`),
+  // Deactivating ends every session the account holds.
+  adminDeactivateUser: (userId: string): Promise<AdminAccount> =>
+    request(`/api/admin/users/${encodeURIComponent(userId)}/deactivate`, { method: "POST" }),
+  adminReactivateUser: (userId: string): Promise<AdminAccount> =>
+    request(`/api/admin/users/${encodeURIComponent(userId)}/reactivate`, { method: "POST" }),
+  // Resolves once the mail is queued. Refused 409 for a deactivated account,
+  // 429 while it holds too many links and 503 when no mail can leave, each
+  // with a detail that says so.
+  adminSendSignInLink: (userId: string): Promise<{ status: "queued"; email: string }> =>
+    request(`/api/admin/users/${encodeURIComponent(userId)}/sign-in-link`, { method: "POST" }),
+  // The account's own deletion, done for it: every node it owned released,
+  // every session ended and the account gone; resolves how many nodes were
+  // released. Rejects 409, with the account still there and signing in, when
+  // a node was claimed for it while it was being deleted, which a second try
+  // finishes.
+  adminDeleteUser: (userId: string): Promise<AccountDeleted> =>
+    request(`/api/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" }),
   // For an owner who has lost their address: the owner's own address change,
   // started for them. The same confirmation goes to the new address; 404 for
   // an unknown user, 409 for an address another account holds or a deactivated
@@ -344,7 +377,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ email }),
     }),
-  adminEvents: (limit = 200) => request(`/api/admin/events?limit=${limit}`),
+  // The log, newest first; with a user id, only the events about that account.
+  adminEvents: (limit = 200, userId: string | null = null): Promise<AdminEvent[]> => {
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (userId) query.set("user_id", userId);
+    return request(`/api/admin/events?${query}`);
+  },
   adminNodeConfig: () => request("/api/admin/config/nodes"),
   adminTowerConfig: () => request("/api/admin/config/towers"),
   adminUpdateNodeConfig: (config) =>
@@ -376,11 +414,20 @@ export const api = {
   // Admin: node ownership
   adminNodeOwners: () => request("/api/admin/node-owners"),
   adminNodeContacts: () => request("/api/admin/node-contacts"),
-  adminSetNodeOwner: (nodeId, userId) =>
+  // A null user unassigns the node, which a polled radar refuses 409. A node
+  // or account that does not exist rejects 404.
+  adminSetNodeOwner: (
+    nodeId: string,
+    userId: string | null,
+  ): Promise<{ ok: true; node_id: string; user_id: string | null }> =>
     request(`/api/admin/nodes/${encodeURIComponent(nodeId)}/owner`, {
       method: "PUT",
       body: JSON.stringify({ user_id: userId }),
     }),
+  // The owner, the address on file and the claim link out, which a stuck or
+  // bounced claim is read from; 404 "Node not found" for an unregistered id.
+  adminNodeClaim: (nodeId: string): Promise<AdminClaim> =>
+    request(`/api/admin/nodes/${encodeURIComponent(nodeId)}/claim`),
 
   // Admin: polled radars and the trust decision on each. The epoch is the one
   // the page showed; the server refuses it with a 409 once the radar has moved on.
