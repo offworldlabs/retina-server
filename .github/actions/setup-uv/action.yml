@@ -12,7 +12,7 @@ runs:
         [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
           echo "::error::Expected one UV_VERSION in the Dockerfile, found: '$version'"; exit 1; }
         echo "version=$version" >> "$GITHUB_OUTPUT"
-    - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+    - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       with:
         version: ${{ steps.uv.outputs.version }}
         # uv installs the tree in 2-3s cold or warm, so a cache saves nothing
