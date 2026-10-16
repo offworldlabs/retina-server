@@ -182,15 +182,21 @@ async def register_node(
     if refusal is not None:
         return _render(refusal)
 
+    # The session is for MENDER_SOURCE=mirror and shadow, which read the mirror
+    # tables through it; the limiter above stays ahead of that read as well.
     try:
-        device = await lookup_device(request.node_id)
-    except MenderUnreachable:
+        device = await lookup_device(request.node_id, session)
+    except MenderUnreachable as exc:
         # The one alert that distinguishes "could not ask" from "does not know".
         # Both are this same 403 on the wire, but only one of them means every
-        # enrolment in the fleet is blocked. There is no transaction open here,
-        # so nothing is pending that this could alert ahead of.
-        send_alert("mender_unreachable", f"registration for {request.node_id} could not reach Mender")
+        # enrolment in the fleet is blocked. Nothing has been written yet, so
+        # nothing is pending that this could alert ahead of. The reason is what
+        # tells an operator a stale mirror from Mender being down.
+        send_alert("mender_unreachable", f"registration for {request.node_id} could not reach Mender: {exc}")
         return _refuse()
+    # A mirror entry the last snapshot could not store cleanly arrives as
+    # "ambiguous": refused here like any device not accepted, without the
+    # alert, since it blocks this node and not the fleet.
     if device is None or device.auth_status != "accepted":
         return _refuse()
 
