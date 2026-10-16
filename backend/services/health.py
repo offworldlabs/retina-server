@@ -13,7 +13,10 @@ includes enough context (e.g. the task name) to distinguish distinct problems.
 
 import logging
 import os
-import resource
+try:
+    import resource
+except ImportError:  # Windows has no resource module
+    resource = None
 import shutil
 import sys
 import time

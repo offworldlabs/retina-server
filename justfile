@@ -198,8 +198,8 @@ up profile="local":
     ( cd "{{be}}" && RETINA_ENV=dev AUTH_ALLOW_ANONYMOUS_ADMIN=1 SYNTHETIC_FLEET_ENABLED=1 "{{venv}}/bin/uvicorn" main:app --reload ) \
         > "{{run}}/backend.log" 2>&1 &
 
-    echo "→ waiting for backend TCP ingest on :3012 (max 30s) ..."
-    ok=0; for _ in $(seq 1 30); do nc -z 127.0.0.1 3012 2>/dev/null && { ok=1; break; }; sleep 1; done
+    echo "→ waiting for backend TCP ingest on :3012 (max 90s) ..."
+    ok=0; for _ in $(seq 1 90); do (echo > /dev/tcp/127.0.0.1/3012) 2>/dev/null && { ok=1; break; }; sleep 1; done
     if [ "$ok" != 1 ]; then
         echo "✗ backend never opened :3012 — see {{run}}/backend.log. Cleaning up."
         pkill -f 'uvicorn main:app' 2>/dev/null || true
