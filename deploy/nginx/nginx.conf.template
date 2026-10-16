@@ -85,6 +85,13 @@ server {
         # RETINA_INCLUDE snippets/api.conf
     }
 
+    # mender-auto-accept pushes a whole-fleet snapshot here, up to 2 MiB; the
+    # default 1 MiB body cap would cut it off. Same zone and proxy as /api/.
+    location = /api/internal/mender/snapshot {
+        # RETINA_INCLUDE snippets/api.conf
+        client_max_body_size 2m;
+    }
+
     location /api/auth/ {
         # RETINA_INCLUDE snippets/auth.conf
     }
@@ -177,6 +184,13 @@ server {
     }
     # RETINA_ENDIF
 
+    # The sender may target this host: it takes /api/ paths through the
+    # catch-all below, which keeps nginx's 1 MiB body cap.
+    location = /api/internal/mender/snapshot {
+        # RETINA_INCLUDE snippets/api.conf
+        client_max_body_size 2m;
+    }
+
     location / {
         # RETINA_INCLUDE snippets/api.conf
     }
@@ -211,6 +225,13 @@ server {
     # API requests → FastAPI backend
     location /api/ {
         # RETINA_INCLUDE snippets/api.conf
+    }
+
+    # mender-auto-accept pushes a whole-fleet snapshot here, up to 2 MiB; the
+    # default 1 MiB body cap would cut it off. Same zone and proxy as /api/.
+    location = /api/internal/mender/snapshot {
+        # RETINA_INCLUDE snippets/api.conf
+        client_max_body_size 2m;
     }
 
     # This vhost serves the sign-in pages, so the credential-grade rate limit
@@ -268,6 +289,13 @@ server {
 
     location /api/ {
         # RETINA_INCLUDE snippets/api.conf
+    }
+
+    # mender-auto-accept pushes a whole-fleet snapshot here, up to 2 MiB; the
+    # default 1 MiB body cap would cut it off. Same zone and proxy as /api/.
+    location = /api/internal/mender/snapshot {
+        # RETINA_INCLUDE snippets/api.conf
+        client_max_body_size 2m;
     }
 
     # This vhost answers /api/ from the monolith, which still carries reachable
