@@ -12,22 +12,25 @@ dead token against, so the revocation is asserted through `bearer_node`, which
 is the predicate every authenticated endpoint resolves through anyway.
 """
 
+import logging
 import sqlite3
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock
 
+import httpx
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, delete, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import NullPool
 from starlette.requests import Request
 
 from core import state
+from core.mender_mirror import SYNC_STATE_ID, MenderDevice, MenderSyncState
 from core.nodes import Node, NodeConfig, NodeToken
 from routes import node_register
-from services import alerting, node_auth, publication
+from services import alerting, mender, node_auth, publication
 from services.node_rate_limits import REGISTRATION_LIMITS, registration_limiter
 
 NODE_ID = "ret1a2b3c4d"
@@ -125,6 +128,14 @@ def _isolate_process_state():
     registration_limiter.reset()
     yield
     registration_limiter.reset()
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_mender_source(monkeypatch):
+    """Every test here starts on the API, whatever the shell exported: lookup_device
+    reads MENDER_SOURCE per call, so an ambient value would switch the whole file."""
+    monkeypatch.delenv("MENDER_SOURCE", raising=False)
+    monkeypatch.delenv("MENDER_MIRROR_MAX_AGE_S", raising=False)
 
 
 # ── The happy path ───────────────────────────────────────────────────────────
@@ -329,6 +340,17 @@ def test_mender_unreachable_raises_the_alert(node_client, mender_down, alerts):
 
     assert _register(node_client, UNREACHABLE_ID).status_code == 403
     assert [a[0] for a in alerts] == ["mender_unreachable"]
+
+
+def test_the_unreachable_alert_carries_the_reason(node_client, mender_down, alerts):
+    """What tells an operator Mender being down from a stale mirror or a typo."""
+    mender_down()
+
+    _register(node_client, UNREACHABLE_ID)
+
+    assert alerts == [
+        ("mender_unreachable", f"registration for {UNREACHABLE_ID} could not reach Mender: no route", None)
+    ]
 
 
 def test_an_unknown_device_raises_no_alert(node_client, unknown_in_mender, alerts):
@@ -628,3 +650,399 @@ class TestRegistrationPublicationCache:
         assert response.status_code == 500
         assert _committed(node_session, "SELECT publication FROM nodes") == [("private",)]
         assert publication.is_private(NODE_ID)
+
+
+# ── MENDER_SOURCE ────────────────────────────────────────────────────────────
+#
+# The mirror is seeded straight into node_session's migrated database, so these
+# do not depend on the snapshot route.
+
+# conftest's accepted_in_mender key, so a mirror row built from it agrees with
+# what that fixture serves.
+MENDER_PUBKEY = "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n"
+# The mirror's clock, frozen: ages are rounded up, so on a real clock a
+# snapshot seeded 1000 s old reads as 1001 s once the request is slow.
+NOW = datetime(2026, 10, 16, 12, 0, tzinfo=UTC)
+SHARED = "node_id shared by 2 devices"
+
+
+@pytest.fixture(autouse=True)
+def _frozen_mirror_clock(monkeypatch):
+    monkeypatch.setattr(mender, "_now", lambda: NOW)
+
+
+def _mender_must_not_be_asked(monkeypatch) -> list[httpx.Request]:
+    """Record every request to Mender, answered 500 so one cannot pass for an answer."""
+    calls: list[httpx.Request] = []
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(500, json={"error": "the mirror read asked Mender"})
+
+    monkeypatch.setattr(mender, "_transport", httpx.MockTransport(_handler))
+    return calls
+
+
+def _mirror_row(
+    node_id: str = NODE_ID,
+    auth_status: str = "accepted",
+    *,
+    present: bool = True,
+    mender_device_id: str | None = None,
+    snapshot_issue: str | None = None,
+) -> MenderDevice:
+    """The device accepted_in_mender describes, as the snapshot route would store it."""
+    accepted = auth_status == "accepted"
+    return MenderDevice(
+        mender_device_id=mender_device_id or ("b7e2" if node_id == NODE_ID else f"dev-{node_id}"),
+        node_id=node_id,
+        auth_status=auth_status,
+        auth_set_id="as-1" if accepted else None,
+        auth_set_pubkey=MENDER_PUBKEY if accepted else None,
+        auth_set_fingerprint=mender._fingerprint(MENDER_PUBKEY) if accepted else None,
+        last_confirmed_at=NOW,
+        present=present,
+        snapshot_issue=snapshot_issue,
+    )
+
+
+async def _seed_mirror(session, *devices: MenderDevice, age_s: float | None = 0.0) -> None:
+    """Mirror rows and a sync state whose last snapshot is age_s old at NOW,
+    committed; negative is ahead of NOW. age_s=None leaves the state out: no
+    snapshot has ever arrived."""
+    session.add_all(devices)
+    if age_s is not None:
+        received = NOW - timedelta(seconds=age_s)
+        session.add(
+            MenderSyncState(
+                id=SYNC_STATE_ID,
+                last_snapshot_at=received,
+                generated_at=received - timedelta(seconds=1),
+                device_count=len(devices),
+                source="mender-auto-accept@test",
+            )
+        )
+    await session.commit()
+
+
+async def _age_snapshot(session, age_s: float) -> None:
+    await session.execute(update(MenderSyncState).values(last_snapshot_at=NOW - timedelta(seconds=age_s)))
+    await session.commit()
+
+
+def _unreachable(node_id: str, reason: str) -> tuple[str, str, None]:
+    return ("mender_unreachable", f"registration for {node_id} could not reach Mender: {reason}", None)
+
+
+class TestMirrorSource:
+    """MENDER_SOURCE=mirror: answered from mender_devices, with no Mender call
+    and no MENDER_PAT. Every test here fails if Mender is asked."""
+
+    @pytest.fixture(autouse=True)
+    def _mirror(self, monkeypatch):
+        monkeypatch.setenv("MENDER_SOURCE", "mirror")
+        monkeypatch.delenv("MENDER_PAT", raising=False)
+        calls = _mender_must_not_be_asked(monkeypatch)
+        yield
+        assert calls == [], "mirror mode asked Mender"
+
+    async def test_an_accepted_device_registers(self, node_client, node_session, alerts, monkeypatch):
+        calls = _mender_must_not_be_asked(monkeypatch)
+        await _seed_mirror(node_session, _mirror_row())
+
+        response = _register(node_client)
+
+        assert response.status_code == 200
+        assert _committed(node_session, "SELECT node_id FROM nodes") == [(NODE_ID,)]
+        assert alerts == []
+        assert calls == []
+
+    @pytest.mark.parametrize("auth_status", ["pending", "rejected", "ambiguous"])
+    async def test_a_device_not_accepted_is_refused_without_an_alert(
+        self, node_client, node_session, alerts, auth_status
+    ):
+        await _seed_mirror(node_session, _mirror_row(auth_status=auth_status))
+
+        assert _register(node_client).status_code == 403
+        assert alerts == []
+        assert _committed(node_session, "SELECT count(*) FROM nodes") == [(0,)]
+
+    async def test_an_unknown_device_is_refused_without_an_alert(self, node_client, node_session, alerts):
+        await _seed_mirror(node_session, _mirror_row(OTHER_ID))
+
+        assert _register(node_client).status_code == 403
+        assert alerts == []
+
+    async def test_a_device_gone_from_the_fleet_is_refused(self, node_client, node_session, alerts):
+        """Decommissioned in Mender: kept with present false, and refused."""
+        await _seed_mirror(node_session, _mirror_row(present=False))
+
+        assert _register(node_client).status_code == 403
+        assert alerts == []
+        assert _committed(node_session, "SELECT count(*) FROM nodes") == [(0,)]
+
+    # A device the snapshot kept with an issue refuses its node_id alone, as
+    # ambiguous: no mender_unreachable, which says the whole fleet is blocked.
+
+    async def test_an_entry_with_an_issue_is_refused_without_an_alert(self, node_client, node_session, alerts):
+        """Accepted, with its auth set, and still refused: the issue is what decides."""
+        await _seed_mirror(node_session, _mirror_row(snapshot_issue="auth_set_pubkey too long"))
+
+        assert _register(node_client).status_code == 403
+        assert alerts == []
+        assert _committed(node_session, "SELECT count(*) FROM nodes") == [(0,)]
+
+    async def test_two_flagged_devices_sharing_the_node_id_are_refused_without_an_alert(
+        self, node_client, node_session, alerts
+    ):
+        await _seed_mirror(
+            node_session,
+            _mirror_row(snapshot_issue=SHARED),
+            _mirror_row(mender_device_id="c9f3", snapshot_issue=SHARED),
+        )
+
+        assert _register(node_client).status_code == 403
+        assert alerts == []
+        assert _committed(node_session, "SELECT count(*) FROM nodes") == [(0,)]
+
+    async def test_a_flagged_device_beside_a_clean_one_is_refused_without_an_alert(
+        self, node_client, node_session, alerts
+    ):
+        """The clean device is not chosen over the flagged one."""
+        await _seed_mirror(
+            node_session,
+            _mirror_row(),
+            _mirror_row(mender_device_id="c9f3", snapshot_issue="accepted without an auth set"),
+        )
+
+        assert _register(node_client).status_code == 403
+        assert alerts == []
+        assert _committed(node_session, "SELECT count(*) FROM nodes") == [(0,)]
+
+    async def test_a_clean_device_registers_beside_flagged_ones_for_other_node_ids(
+        self, node_client, node_session, alerts
+    ):
+        await _seed_mirror(
+            node_session,
+            _mirror_row(),
+            _mirror_row(OTHER_ID, snapshot_issue=SHARED),
+            _mirror_row(OTHER_ID, mender_device_id="c9f3", snapshot_issue=SHARED),
+        )
+
+        assert _register(node_client).status_code == 200
+        assert _register(node_client, OTHER_ID).status_code == 403
+        assert _committed(node_session, "SELECT node_id FROM nodes") == [(NODE_ID,)]
+        assert alerts == []
+
+    async def test_no_snapshot_yet_is_refused_and_alerted_as_a_stale_mirror(self, node_client, node_session, alerts):
+        await _seed_mirror(node_session, _mirror_row(), age_s=None)
+
+        assert _register(node_client).status_code == 403
+        assert alerts == [_unreachable(NODE_ID, "mirror stale (no snapshot yet)")]
+
+    async def test_a_stale_snapshot_is_refused_and_alerted_with_its_age(self, node_client, node_session, alerts):
+        """The auto-accept host being down: an accepted row in a stale mirror is
+        not an answer."""
+        await _seed_mirror(node_session, _mirror_row(), age_s=1000)
+
+        assert _register(node_client).status_code == 403
+        assert alerts == [_unreachable(NODE_ID, "mirror stale (last snapshot 1000 s ago, limit 300 s)")]
+
+    async def test_a_snapshot_from_the_future_is_refused_and_alerted_as_stale(self, node_client, node_session, alerts):
+        """This server's clock stepped back past the last push, so how long ago
+        it was is no longer known, and a dead mirror could pass for fresh."""
+        await _seed_mirror(node_session, _mirror_row(), age_s=-31)
+
+        assert _register(node_client).status_code == 403
+        assert alerts == [
+            _unreachable(NODE_ID, "mirror stale (last snapshot is 31 s in the future, the server clock went back)")
+        ]
+        assert _committed(node_session, "SELECT count(*) FROM nodes") == [(0,)]
+
+    async def test_a_snapshot_up_to_30_s_ahead_is_fresh(self, node_client, node_session, alerts):
+        """Clock jitter, not a step back."""
+        await _seed_mirror(node_session, _mirror_row(), age_s=-30)
+
+        assert _register(node_client).status_code == 200
+        assert alerts == []
+
+    async def test_registration_resumes_once_a_new_snapshot_lands(self, node_client, node_session, alerts):
+        await _seed_mirror(node_session, _mirror_row(), age_s=1000)
+        assert _register(node_client).status_code == 403
+
+        await _age_snapshot(node_session, 0)
+
+        assert _register(node_client).status_code == 200
+        assert [a[0] for a in alerts] == ["mender_unreachable"]
+
+    async def test_a_malformed_max_age_is_refused_and_alerted(self, node_client, node_session, alerts, monkeypatch):
+        monkeypatch.setenv("MENDER_MIRROR_MAX_AGE_S", "five minutes")
+        await _seed_mirror(node_session, _mirror_row())
+
+        assert _register(node_client).status_code == 403
+        assert alerts == [
+            _unreachable(NODE_ID, "mirror stale (MENDER_MIRROR_MAX_AGE_S='five minutes' is not a number)")
+        ]
+
+    async def test_every_mirror_refusal_shares_one_body(self, node_client, node_session):
+        """Unknown, not accepted, flagged and stale are one answer, as they are from the API."""
+        await _seed_mirror(
+            node_session, _mirror_row(PENDING_ID, "pending"), _mirror_row(OTHER_ID, snapshot_issue=SHARED)
+        )
+        unknown = _register(node_client, UNKNOWN_ID)
+        pending = _register(node_client, PENDING_ID)
+        flagged = _register(node_client, OTHER_ID)
+        await _age_snapshot(node_session, 1000)
+        stale = _register(node_client)
+
+        refusals = [unknown, pending, flagged, stale]
+        assert {r.status_code for r in refusals} == {403}
+        assert len({r.content for r in refusals}) == 1
+        assert all(int(r.headers["retry-after"]) > 0 for r in refusals)
+
+    async def test_the_rate_limiter_fires_before_the_mirror_is_read(
+        self, node_client, node_session, alerts, monkeypatch
+    ):
+        """D26 in mirror mode. The mirror is emptied once the allowance is spent,
+        so a handler that read it anyway would raise mender_unreachable as well
+        as show up in the count."""
+        reads: list[str] = []
+        lookup_mirror = mender._lookup_mirror
+
+        async def _counted(node_id, session):
+            reads.append(node_id)
+            return await lookup_mirror(node_id, session)
+
+        monkeypatch.setattr(mender, "_lookup_mirror", _counted)
+        await _seed_mirror(node_session, _mirror_row())
+        for _ in range(HOURLY_LIMIT):
+            assert _register(node_client).status_code == 200
+        assert reads == [NODE_ID] * HOURLY_LIMIT
+        await node_session.execute(delete(MenderSyncState))
+        await node_session.commit()
+
+        limited = _register(node_client)
+
+        assert limited.status_code == 403
+        assert reads == [NODE_ID] * HOURLY_LIMIT
+        # Not `alerts == []`: the re-registrations above each raise a hold.
+        assert "mender_unreachable" not in [a[0] for a in alerts]
+
+
+class TestShadowSource:
+    """MENDER_SOURCE=shadow: the API decides and alerts as in api; the mirror is
+    read after it and compared only in the log."""
+
+    @pytest.fixture(autouse=True)
+    def _shadow(self, monkeypatch, caplog):
+        monkeypatch.setenv("MENDER_SOURCE", "shadow")
+        with caplog.at_level(logging.INFO, logger=mender.logger.name):
+            yield
+
+    @staticmethod
+    def _shadow_lines(caplog) -> list[tuple[int, str]]:
+        return [(r.levelno, r.getMessage()) for r in caplog.records if "mender shadow" in r.getMessage()]
+
+    async def test_agreement_registers_and_is_logged(self, node_client, node_session, accepted_in_mender, caplog):
+        accepted_in_mender(NODE_ID)
+        await _seed_mirror(node_session, _mirror_row())
+
+        assert _register(node_client).status_code == 200
+        assert self._shadow_lines(caplog) == [(logging.INFO, f"mender shadow agrees for {NODE_ID}")]
+
+    async def test_a_mirror_that_accepts_cannot_admit_what_the_api_refuses(
+        self, node_client, node_session, pending_in_mender, alerts, caplog
+    ):
+        pending_in_mender(NODE_ID)
+        await _seed_mirror(node_session, _mirror_row())
+
+        assert _register(node_client).status_code == 403
+        assert alerts == []
+        [(level, line)] = self._shadow_lines(caplog)
+        assert level == logging.WARNING
+        assert line.startswith(f"mender shadow disagrees for {NODE_ID}: api=pending ")
+
+    async def test_a_mirror_that_refuses_cannot_refuse_what_the_api_accepts(
+        self, node_client, node_session, accepted_in_mender, caplog
+    ):
+        accepted_in_mender(NODE_ID)
+        await _seed_mirror(node_session, _mirror_row(auth_status="pending"))
+
+        assert _register(node_client).status_code == 200
+        [(level, line)] = self._shadow_lines(caplog)
+        assert level == logging.WARNING
+        assert line.startswith(f"mender shadow disagrees for {NODE_ID}: api=accepted ")
+        assert " mirror=pending " in line
+
+    async def test_a_flagged_mirror_entry_is_a_disagreement_and_the_api_admits(
+        self, node_client, node_session, accepted_in_mender, alerts, caplog
+    ):
+        """The row matches the API's answer but for its issue, which in mirror
+        mode would refuse this node."""
+        accepted_in_mender(NODE_ID)
+        await _seed_mirror(node_session, _mirror_row(snapshot_issue=SHARED))
+
+        assert _register(node_client).status_code == 200
+        assert alerts == []
+        [(level, line)] = self._shadow_lines(caplog)
+        assert level == logging.WARNING
+        assert line.startswith(f"mender shadow disagrees for {NODE_ID}: api=accepted device=b7e2 set=as-1 ")
+        assert line.endswith(" mirror=ambiguous device=b7e2 set=None fp=None")
+
+    async def test_a_stale_mirror_is_logged_and_registration_goes_ahead(
+        self, node_client, node_session, accepted_in_mender, alerts, caplog
+    ):
+        accepted_in_mender(NODE_ID)
+        await _seed_mirror(node_session, _mirror_row(), age_s=None)
+
+        assert _register(node_client).status_code == 200
+        assert alerts == []
+        assert self._shadow_lines(caplog) == [
+            (logging.WARNING, f"mender shadow could not read the mirror for {NODE_ID}: mirror stale (no snapshot yet)")
+        ]
+
+    async def test_a_failed_mirror_read_leaves_the_registration_writable(
+        self, node_client, node_session, accepted_in_mender, caplog
+    ):
+        """The mirror is read through the request's own session, which then
+        carries the registration's writes: a database error in the read must
+        not cost the commit."""
+        accepted_in_mender(NODE_ID)
+        await node_session.execute(text("DROP TABLE mender_sync_state"))
+        await node_session.commit()
+
+        assert _register(node_client).status_code == 200
+        assert _committed(node_session, "SELECT count(*) FROM node_tokens WHERE revoked_at IS NULL") == [(1,)]
+        assert self._shadow_lines(caplog) == [
+            (
+                logging.WARNING,
+                f"mender shadow could not read the mirror for {NODE_ID}: "
+                "mirror unreadable: no such table: mender_sync_state",
+            )
+        ]
+
+    async def test_mender_down_alerts_as_in_api(self, node_client, node_session, mender_down, alerts, caplog):
+        mender_down()
+        await _seed_mirror(node_session, _mirror_row(UNREACHABLE_ID))
+
+        assert _register(node_client, UNREACHABLE_ID).status_code == 403
+        assert alerts == [_unreachable(UNREACHABLE_ID, "no route")]
+        assert self._shadow_lines(caplog) == []
+
+
+def test_an_unknown_source_is_refused_and_alerted_without_asking_mender(node_client, alerts, monkeypatch):
+    """A typo in MENDER_SOURCE fails closed rather than falling back to a mode."""
+    monkeypatch.setenv("MENDER_SOURCE", "mirrror")
+    calls = _mender_must_not_be_asked(monkeypatch)
+
+    assert _register(node_client).status_code == 403
+    assert alerts == [_unreachable(NODE_ID, "unknown MENDER_SOURCE 'mirrror'")]
+    assert calls == []
+
+
+@pytest.mark.parametrize("raw", ["", "API ", " Api\n"], ids=["empty", "upper-trailing", "mixed"])
+def test_the_api_is_the_source_whatever_its_spelling(node_client, accepted_in_mender, monkeypatch, raw):
+    monkeypatch.setenv("MENDER_SOURCE", raw)
+    accepted_in_mender(NODE_ID)
+
+    assert _register(node_client).status_code == 200
