@@ -50,6 +50,13 @@ os.environ["NODE_FORCE_RETIRE_PREFIXES"] = ""
 # session and have a stray background task post real frames to the real
 # target with the real key.
 os.environ["DETECTION_MIRROR_URL"] = ""
+# services.mender reads these per call (lookup_device, the mirror freshness gate),
+# so a developer's exported or backend/.env value would reach the tests: with
+# MENDER_SOURCE=mirror the fixture lookups go to an empty mirror instead of the
+# stubbed API. Assigned blank so the defaults apply ("api", the stock max age).
+os.environ["MENDER_SOURCE"] = ""
+os.environ["MENDER_SYNC_TOKEN"] = ""
+os.environ["MENDER_MIRROR_MAX_AGE_S"] = ""
 # The suite has no identity provider to authenticate against, so the route tests
 # reach the admin endpoints through core.users' anonymous-admin bypass. That is an
 # explicit opt-in and no longer follows from RETINA_ENV=test, so ask for it here.
@@ -100,13 +107,16 @@ os.environ.setdefault("RETINA_SCHEMA_SOURCE", "create_all")
 
 @pytest.fixture(autouse=True)
 def _clean_db():
-    """Truncate auth and node tables before each test.
+    """Truncate auth, node and Mender mirror tables before each test.
 
     asyncio.run() leaves no current event loop behind, so a sync test cannot
     call asyncio.get_event_loop(). Async tests get theirs from pytest-asyncio.
     """
     from sqlalchemy import delete
 
+    # Importing the mirror models also registers their tables for
+    # create_db_and_tables below.
+    from core.mender_mirror import MenderDevice, MenderSyncState
     from core.nodes import (
         Node,
         NodeClaim,
@@ -152,6 +162,10 @@ def _clean_db():
             await session.execute(delete(NodeClaimChallenge))
             await session.execute(delete(NodeClaim))
             await session.execute(delete(Node))
+            # The Mender mirror: no keys to anything, but a snapshot left
+            # behind would make the next test's mirror fresh.
+            await session.execute(delete(MenderDevice))
+            await session.execute(delete(MenderSyncState))
             await session.commit()
 
     asyncio.run(_setup())

@@ -384,6 +384,139 @@ trust. Keep the queue for this subscription alone.
 
 ---
 
+## Mender mirror
+
+mender-auto-accept, on the central host that holds the Mender token, pushes the
+whole Mender fleet to each server every 30 s. The server keeps it in the
+`mender_devices` table and, in `mirror` mode, answers registration from it
+instead of calling Mender, so the Mender token no longer sits on the droplets.
+The contract is in [`mender-snapshot.md`](mender-snapshot.md).
+
+`MENDER_SOURCE` in `backend/.env` picks where registration asks:
+
+| Value | Registration asks | Notes |
+|---|---|---|
+| `api` (default) | Mender, live, with `MENDER_PAT` | Unchanged from before the mirror |
+| `shadow` | Mender, live; the mirror is also read and compared | Disagreements are logged, the live answer decides |
+| `mirror` | `mender_devices` only | Refuses with `mender_unreachable` when the mirror is stale: no snapshot, or the last one older than `MENDER_MIRROR_MAX_AGE_S` (default 300 s); the other reasons are under `mender_unreachable` below |
+
+Case and surrounding spaces are ignored, and blank means `api`. Any other value
+refuses registration and raises `mender_unreachable`.
+`MENDER_PAT`, `MENDER_SERVER` and `MENDER_TIMEOUT_S` are only read in `api` and
+`shadow`, and go at step 7 below.
+
+A device the server could not store cleanly is kept with an issue (the
+`snapshot_issue` column), for example a `node_id` that two devices claim. The
+Fleet page marks the row `not usable` and shows the issue, and registration
+refuses that `node_id` alone, logging `mender mirror refuses <node_id> as
+ambiguous: ...` at WARNING, with the ids quoted. The rest of the push is
+applied. The 200 reply counts these as `rejected`. A device's issue is logged as
+a WARNING only when it is new or has changed since the last push, so a standing
+issue does not repeat every 30 s; the log carries at most 20 such lines per push
+and then one line with the number left. Refused pushes (401) are logged as a
+WARNING at once and then at most once a minute, with the count held back and the
+last client address. What is checked and what is stored is in
+[`mender-snapshot.md`](mender-snapshot.md).
+
+The test environment stays on `api`. Give it a `MENDER_SYNC_TOKEN` and a third
+target in `RETINA_SYNC_TARGETS` only if you want it fed.
+
+After any change to `backend/.env`, `docker compose up -d server` applies it;
+`docker compose restart` does not re-read the file.
+
+### Cutover
+
+Prod and staging, in order. Steps 1 to 6 are reversible.
+
+1. Ship the release with `MENDER_SOURCE=api` (the default). Nothing changes yet.
+   nginx refuses a request to localhost, so the check runs inside the server
+   container, as `deploy/wait-for-health.sh` does. Define `snap_status` once per
+   shell, in `/opt/retina-server`; it POSTs with no token and prints the status:
+   ```bash
+   snap_status() { docker compose exec -T server python3 -c "import http.client as h; c = h.HTTPConnection('localhost', 8000); c.request('POST', '/api/internal/mender/snapshot', b''); print(c.getresponse().status)"; }
+   ```
+   With no token set it answers 404:
+   ```bash
+   snap_status
+   # 404
+   ```
+2. Mint one sync token per environment and set it by hand. Never reuse one
+   across environments, and keep it out of tickets and chat.
+   ```bash
+   openssl rand -hex 32
+   vi /opt/retina-server/backend/.env      # MENDER_SYNC_TOKEN=<token>
+   docker compose up -d server
+   snap_status
+   # 401 now: configured, and this request carried no token
+   ```
+   To see the route as the sender does, through Cloudflare and nginx, use the
+   public API host (`API_HOST` as set for `tst`) with a browser User-Agent, or
+   Cloudflare answers 403 with `error code: 1010`:
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}\n' -A 'Mozilla/5.0' -X POST "https://${API_HOST}/api/internal/mender/snapshot"
+   # 401
+   ```
+   A token shorter than 32 characters counts as unset: both checks keep
+   answering 404 and the log has an ERROR line naming `MENDER_SYNC_TOKEN`, once
+   and then at most once a minute with the count held back.
+3. Ship node-infra with the targets. On the central host, add one `url=token`
+   pair per environment to `RETINA_SYNC_TARGETS` in the auto-accept `.env`
+   (format in node-infra's README). The timer starts the service every 30 s, so
+   the next run picks it up. Check the pushes land:
+   ```bash
+   # On the central host
+   journalctl -u mender-auto-accept.service --since '5 min ago'
+   ```
+   Then open the admin console's Fleet page. The header line should show a last
+   snapshot seconds old from `mender-auto-accept@<host>` with the device count,
+   and no stale banner.
+4. Shadow. On prod and staging set `MENDER_SOURCE=shadow` and run
+   `docker compose up -d server`. Read what it finds:
+   ```bash
+   docker compose logs server | grep 'mender shadow'
+   docker compose logs server | grep 'mender shadow' | grep -v 'shadow agrees'
+   ```
+   `agrees for <node_id>` is INFO. `disagrees for <node_id>: api=... mirror=...`
+   and `could not read the mirror for <node_id>: <reason>` are WARNING; find the
+   cause of every one before moving on. A node the mirror refuses as ambiguous
+   also has a `mender mirror refuses` line. Stay in shadow for at least three
+   days and at least one real registration or reflash, which is the only case
+   that exercises the comparison. A node that never re-registers proves nothing.
+5. Set `MENDER_SOURCE=mirror` on staging and `docker compose up -d server`.
+   Register or reflash a staging node and confirm it is accepted, and
+   that no `mender_unreachable` arrives.
+6. Same on prod.
+7. Remove the Mender token from the servers. This needs the follow-up change
+   that deletes the api and shadow code. After it ships, delete `MENDER_PAT`,
+   `MENDER_SERVER` and `MENDER_TIMEOUT_S` from `backend/.env` on each droplet,
+   run `docker compose up -d server`, and check
+   `grep MENDER_PAT /opt/retina-server/backend/.env` finds nothing.
+8. In the Mender UI revoke the old Personal Access Token and create a new one for
+   the auto-accept host only, in that host's `MENDER_PAT`.
+
+Rollback before step 7: set `MENDER_SOURCE=api` in `backend/.env` and run
+`docker compose up -d server`. From step 7 the PAT is gone from the servers, so
+the way back is a redeploy of the release that still has the api code plus a new
+`MENDER_PAT`.
+
+### Running the sender
+
+- An empty fleet from Mender is pushed as it is. Registration then fails closed
+  for every node, because no device is present, and `mender_snapshot_count_drop`
+  fires. Look at the Mender account before blaming the sender.
+- Targets are pushed one after another, and each one that does not answer holds
+  the sweep for at least its 10 s timeout. With several dead targets a sweep can
+  run past the 30 s timer, and the live targets are pushed later than usual.
+- Keep chrony (or another NTP client) running on the central host. A clock more
+  than 300 s fast gets every push refused with 422 (`generated_at` in the future),
+  and the mirror goes stale. A clock stepped back makes every push a 409 until it
+  catches up with the last stored `generated_at`.
+- A 403 with `error code: 1010` in the sender's log is Cloudflare's browser
+  integrity check, not the server. See "Cloudflare" in
+  [`mender-snapshot.md`](mender-snapshot.md).
+
+---
+
 ## Alert reference
 
 Alerts fire via webhook (`ALERT_WEBHOOK_URL`) with a per-alert-type cooldown of
@@ -432,6 +565,82 @@ case where the URL took and every alert 401s regardless.
 
 `log_destination()` also logs an `Alerting enabled` line at INFO. It shows in
 `docker compose logs server` as a second signal that a destination is set.
+
+---
+
+### `mender_unreachable`
+
+**Trigger:** Registration could not get an answer about a device from its
+Mender source, so the node is refused. The message carries the reason. Nodes
+already registered keep streaming.
+
+| Reason in the message | Cause |
+|---|---|
+| `mirror stale (no snapshot yet)` | `mirror` mode and no snapshot has ever arrived |
+| `mirror stale (last snapshot 412 s ago, limit 300 s)` | Pushes stopped; the age is the time since the last accepted push |
+| `mirror stale (last snapshot is 95 s in the future, the server clock went back)` | The last push is stamped more than 30 s ahead of this server's clock, which stepped back since. Fix the clock; the next accepted push clears it |
+| `mirror stale (MENDER_MIRROR_MAX_AGE_S='five minutes' is not a number)` | `MENDER_MIRROR_MAX_AGE_S` is not a positive number of seconds. Registration refuses rather than fall back to 300 s. Fix it in `backend/.env` |
+| `mirror unreadable: <driver message>` | The mirror table could not be read, for example the migration has not run. The message is the database driver's |
+| `unknown MENDER_SOURCE 'x'` | The value is not `api`, `shadow` or `mirror` |
+| a Mender HTTP error or timeout | `api` or `shadow`: Mender is down, or `MENDER_PAT` is wrong, expired or revoked |
+
+**Check, mirror stale:** the sender runs on the central host, not on a droplet.
+On that host:
+```bash
+systemctl list-timers mender-auto-accept.timer
+systemctl status mender-auto-accept.service
+journalctl -u mender-auto-accept.service --since '10 min ago'
+```
+No recent runs means the timer is stopped: `systemctl enable --now
+mender-auto-accept.timer`. Runs with a failing push show the status: 401 is a
+token that does not match the server's `MENDER_SYNC_TOKEN`, 404 a server with
+no usable token, 413 a fleet over 2 MiB, 422 a body whose envelope the server
+refused (the central host's clock more than 300 s ahead of the server gives this
+too), 403 with error 1010 Cloudflare's browser integrity check, a connection
+error a route or network problem. A bad single device does not give 422: it is
+counted as `rejected` in the 200 reply. If Mender itself cannot be read, the
+sender pushes nothing and the mirror goes stale. If the host is fine, check the server end:
+```bash
+docker compose logs server | grep -i mender | tail -20
+```
+Registration recovers on the next accepted push, within 30 s. The Fleet page
+shows the same reason under its banner.
+
+**Check, unknown value:** fix `MENDER_SOURCE` in `backend/.env` and run
+`docker compose up -d server`.
+
+---
+
+### `mender_snapshot_source_changed`
+
+**Trigger:** An accepted push carried a `source` different from the stored one.
+Sent after the snapshot was applied.
+
+Normally the sender is the same host every time, so this is either a
+deliberate change (a new central host, a renamed sender) or someone else holding
+the sync token. Treat it as a leak until shown otherwise:
+```bash
+# Compare the mirror with hosted Mender (devices, statuses, node ids)
+adm /api/admin/fleet | head -c 2000
+```
+If the change was not yours, rotate `MENDER_SYNC_TOKEN` on the server and on the
+auto-accept host (steps in [`mender-snapshot.md`](mender-snapshot.md)). The next
+real push replaces a forged snapshot, unless the forged one was stamped up to
+300 s ahead, in which case real pushes answer 409 until their clock passes it.
+
+---
+
+### `mender_snapshot_count_drop`
+
+**Trigger:** An accepted push lists more than 20% fewer devices than the
+previous one. Sent after the snapshot was applied.
+
+A bulk decommission in Mender does this once, and the new count becomes the
+baseline. Otherwise treat it as a leak, and do the same as for
+`mender_snapshot_source_changed`: compare with hosted Mender, then rotate the
+token on both ends. While the mirror holds a forged short list, the missing
+devices are `present=false` and cannot register; the next real push restores
+them.
 
 ---
 

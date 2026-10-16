@@ -97,6 +97,7 @@ from routes.archive import router as archive_router
 from routes.auth import router as auth_router
 from routes.custody import router as custody_router
 from routes.health import router as health_router
+from routes.mender_sync import router as mender_sync_router
 from routes.node_responses import API_DESCRIPTION
 from routes.nodes import NODE_API_TAGS, NODE_BODY_LIMITS, install_error_handlers
 from routes.nodes import router as nodes_router
@@ -520,6 +521,7 @@ for router in (
     polled_radar_registration_router,
     output_router,
     nodes_router,
+    mender_sync_router,
     reference_router,
 ):
     app.include_router(router)
