@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { towerFinderUrl } from "../utils/siblings";
+import { appConsoleUrl, towerFinderUrl } from "../utils/siblings";
 
 describe("towerFinderUrl", () => {
   it("is absolute from either surface, and stays in the environment", () => {
@@ -20,5 +20,27 @@ describe("towerFinderUrl", () => {
 
   it("falls back to production from a dev server with no surface in its name", () => {
     expect(towerFinderUrl("localhost:5174", "http:")).toBe("https://towers.retina.fm/");
+  });
+});
+
+describe("appConsoleUrl", () => {
+  it("leads from the admin console to the app in the same environment", () => {
+    expect(appConsoleUrl("admin.retina.fm", "https:")).toBe("https://app.retina.fm/");
+    expect(appConsoleUrl("staging-admin.retina.fm", "https:")).toBe("https://staging-app.retina.fm/");
+    expect(appConsoleUrl("test-admin.retina.fm", "https:")).toBe("https://test-app.retina.fm/");
+  });
+
+  it("keeps the scheme and the port of the page it is linked from", () => {
+    expect(appConsoleUrl("admin.localhost:8080", "http:")).toBe("http://app.localhost:8080/");
+  });
+
+  // Only the first label is the surface: a domain that happens to contain the
+  // word stays as it is.
+  it("swaps the surface label alone", () => {
+    expect(appConsoleUrl("admin.admin-tools.example", "https:")).toBe("https://app.admin-tools.example/");
+  });
+
+  it("falls back to production from a dev server with no surface in its name", () => {
+    expect(appConsoleUrl("localhost:5174", "http:")).toBe("https://app.retina.fm/");
   });
 });

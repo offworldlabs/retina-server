@@ -1,5 +1,9 @@
 import { useLocation, useNavigate } from "react-router-dom";
 
+interface LoginBackProps {
+  isAdmin?: boolean;
+}
+
 /**
  * The way off a sign-in card.
  *
@@ -8,7 +12,7 @@ import { useLocation, useNavigate } from "react-router-dom";
  * sign-in link, and it marks the entry, so popping back lands on something the
  * visitor can see. Anyone else goes to the map.
  */
-export default function LoginBack({ isAdmin }) {
+export default function LoginBack({ isAdmin = false }: LoginBackProps) {
   const navigate = useNavigate();
   const location = useLocation();
 

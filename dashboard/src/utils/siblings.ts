@@ -31,3 +31,12 @@ function siblingOrigin(role: string, host: string, protocol: string): string {
 export function towerFinderUrl(host: string, protocol: string): string {
   return `${siblingOrigin("towers", host, protocol)}/`;
 }
+
+/**
+ * The app console's front page, for a caller the admin console turns away. This
+ * bundle serves it too, but under its own hostname, which picks the surface, so
+ * a relative link would only lead back to the admin console.
+ */
+export function appConsoleUrl(host: string, protocol: string): string {
+  return `${siblingOrigin("app", host, protocol)}/`;
+}
