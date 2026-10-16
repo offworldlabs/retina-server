@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 import core.users as users
 import routes.test as test_routes
 from main import app
+from tests.route_helpers import served_endpoints
 
 KEY = test_routes._RADAR_API_KEY
 
@@ -56,9 +57,9 @@ def no_bypass(monkeypatch):
 def test_every_read_the_router_serves_is_listed_here():
     """A new read route is gated or deliberately not, never by omission."""
     served = {
-        r.path
-        for r in app.routes
-        if r.path.startswith(("/api/test/", "/api/simulation/")) and "GET" in getattr(r, "methods", ())
+        path
+        for path, methods in served_endpoints(app)
+        if path.startswith(("/api/test/", "/api/simulation/")) and "GET" in methods
     }
     assert served == set(READS) | OTHER_READS
 

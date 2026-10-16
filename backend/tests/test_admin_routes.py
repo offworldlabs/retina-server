@@ -8,6 +8,7 @@ import pytest
 from core import state
 from main import app
 from services.tasks import multinode_identity
+from tests.route_helpers import served_paths, served_routes
 
 # ── Events ────────────────────────────────────────────────────────────────────
 
@@ -56,7 +57,7 @@ class TestUsers:
 
     def test_no_route_changes_a_role(self):
         """Administrators are Access identities, never rows; see list_users."""
-        assert [r.path for r in app.routes if getattr(r, "path", "").endswith("/role")] == []
+        assert [path for path in served_paths(app) if path.endswith("/role")] == []
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -781,7 +782,7 @@ class TestNodeContacts:
 
         gated = {
             route.path
-            for route in app.routes
+            for route in served_routes(app)
             if getattr(route, "dependant", None)
             and any(dep.call is require_admin for dep in route.dependant.dependencies)
         }
@@ -834,7 +835,7 @@ class TestNodeRefs:
 
         gated = {
             route.path
-            for route in app.routes
+            for route in served_routes(app)
             if getattr(route, "dependant", None)
             and any(dep.call is require_admin for dep in route.dependant.dependencies)
         }

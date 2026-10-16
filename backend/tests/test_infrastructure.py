@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from clients import digitalocean as do
 from routes import admin_infrastructure as route
 from services import infrastructure as infra
+from tests.route_helpers import served_routes
 
 
 def _series(mode, values):
@@ -374,7 +375,7 @@ def test_the_route_is_gated_on_require_admin():
 
     gated = {
         route.path
-        for route in app.routes
+        for route in served_routes(app)
         if getattr(route, "dependant", None) and any(dep.call is require_admin for dep in route.dependant.dependencies)
     }
 
