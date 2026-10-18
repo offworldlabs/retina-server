@@ -164,6 +164,14 @@ ALLOWED_DIVERGENCE = (
     # known lane at its binding default: its fleet already relays that traffic
     # and polls the service from the same address. See docker-compose.prod.yml.
     ("test", r"^services\.server\.environment\.(ADSB_FALLBACK_ENABLED|KNOWN_LANE_MODE)$"),
+    # Staging runs the known lane in binding one step ahead of production,
+    # which still shadows: the rehearsal of production's own switch, on the
+    # same mirrored real nodes (see docker-compose.staging.yml). TEMPORARY:
+    # remove this entry in the change that moves docker-compose.prod.yml to
+    # binding, so the two overlays are compared on this key again. The
+    # fallback flag is not included; staging stays production's rehearsal
+    # there.
+    ("staging", r"^services\.server\.environment\.KNOWN_LANE_MODE$"),
     # Compose records the file list it was assembled from.
     r"^name$",
     r"^services\.[^.]+\.(build|image)\.?.*labels.*$",

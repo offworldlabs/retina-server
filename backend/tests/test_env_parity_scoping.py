@@ -113,20 +113,25 @@ class TestMailTransport:
 
 
 class TestAdsbClaimFallback:
-    """Production and staging run the adsb-service claim fallback, in shadow.
+    """Production and staging run the adsb-service claim fallback.
 
     The test droplet alone leaves it off and the lane at its binding default:
     its fleet already relays the same traffic and shares the service's
-    per-address budget. Staging must stay production's rehearsal on both keys.
+    per-address budget. Staging must stay production's rehearsal on the
+    fallback flag. On the lane's mode it runs one step ahead, in binding while
+    production still shadows, under an allowance that goes when production
+    follows.
     """
 
     @pytest.mark.parametrize("key", ["ADSB_FALLBACK_ENABLED", "KNOWN_LANE_MODE"])
     def test_the_test_droplet_may_diverge(self, parity, key):
         assert parity.allowed(f"services.server.environment.{key}", "test")
 
-    @pytest.mark.parametrize("key", ["ADSB_FALLBACK_ENABLED", "KNOWN_LANE_MODE"])
-    def test_staging_may_not(self, parity, key):
-        assert not parity.allowed(f"services.server.environment.{key}", "staging")
+    def test_staging_may_not_diverge_on_the_fallback(self, parity):
+        assert not parity.allowed("services.server.environment.ADSB_FALLBACK_ENABLED", "staging")
+
+    def test_staging_binds_ahead_of_production(self, parity):
+        assert parity.allowed("services.server.environment.KNOWN_LANE_MODE", "staging")
 
     def test_neighbouring_keys_stay_compared(self, parity):
         for key in ("ADSB_SEED_MODE", "KNOWN_LANE_MODE_X", "ADSB_FALLBACK_ENABLED_X"):
