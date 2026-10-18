@@ -54,10 +54,24 @@ services:
       # console has no /sim page, exactly as on production. The test droplet is
       # the one environment that sets it (docker-compose.test.yml).
       #
-      # The adsb-service claim fallback, in shadow, exactly as production runs
-      # it; see docker-compose.prod.yml.
+      # The adsb-service claim fallback, exactly as production runs it; see
+      # docker-compose.prod.yml.
       - ADSB_FALLBACK_ENABLED=1
-      - KNOWN_LANE_MODE=shadow
+      # The known lane BINDS here, one step ahead of production, which still
+      # shadows. Shadow was the measuring stage: the lane claimed, calibrated
+      # and solved but published nothing, and its measured error is now in.
+      # On production, 2026-10-01, the drawn single-node arcs sat a median
+      # 1.49 km (p95 31.5 km) from the aircraft while the lane's withheld
+      # truth_match solves measured 0.49 km (p95 1.72 km); since #671 a solve
+      # whose loci barely cross is withheld too. Staging mirrors production's
+      # real nodes, so this is the rehearsal of production's own switch: the
+      # map here shows what app.retina.fm will show once
+      # docker-compose.prod.yml follows and the staging-only parity allowance
+      # in deploy/check-env-parity.py is removed with it. Binding is lane-wide:
+      # it also draws claims the fallback made from adsb-service fixes
+      # (adsb_single_node / adsb_multi_node) for nodes that send no ADS-B of
+      # their own.
+      - KNOWN_LANE_MODE=binding
       # Labels alerts, and a variable of its own rather than a reading of
       # RETINA_ENV above: this box names itself `staging` in an alert while still
       # running the `test` guards. See services/alerting.py.

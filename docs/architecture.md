@@ -132,7 +132,7 @@ gitignored `backend/.env`; unset = the safe default):
 | `ASSOC_CLAIM_MODE` | `off/shadow/active` | `off` | `active` | top-down tracklet claiming from global tracks |
 | `FOV_MODE` | `off/shadow/active` | `off` | `active` | learned empirical FOV as association grid + solver beam gate |
 | `ADSB_SEED_MODE` | `off/shadow/active` | `off` | `active` | ADS-B-seeded detection assignment: verified lit tracklets leave dark pairing, re-emitted as `mn-adsb-*` seeded solves |
-| `KNOWN_LANE_MODE` | `off/shadow/binding` | `binding` | `shadow` | identity-first known-target claiming: per-frame detections bound to live ADS-B hexes (`state.known_claims`) leave the dark pool before the tracker/association ever see them |
+| `KNOWN_LANE_MODE` | `off/shadow/binding` | `binding` | `binding` (production: `shadow`) | identity-first known-target claiming: per-frame detections bound to live ADS-B hexes (`state.known_claims`) leave the dark pool before the tracker/association ever see them |
 | `ADSB_FALLBACK_ENABLED` | unset/`1` | unset | `1` | adsb-service polled for claim candidates where real nodes send no ADS-B of their own (`services/tasks/adsb_fallback.py`) |
 | `NODE_TRACKS_MODE` | `off/live` | `off` | `live` | a node that sends its own tracks (node API 1.6.0) is tracked on them in place of the server's tracker; set in `docker-compose.yml`, so every environment runs `live` |
 | `TRACK_SMOOTHER` | `kf/ewma/off` | `kf` | `kf` | display smoothing for multinode tracks (`ewma` is the rollback) |
