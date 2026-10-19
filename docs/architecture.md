@@ -31,6 +31,17 @@ All of them are one SPA, the console (`dashboard/`), served at the root.
   every caller, their owner included. A signed-in owner reads their own nodes'
   files, private ones too, from `/api/auth/me/archive`, each from when it became
   theirs; no public route answers differently by session.
+- **tracks archive** — the published solves, read back for the map's archive
+  mode. `/api/data/tracks` takes a window of at most 60 minutes, an optional
+  bbox and a fleet (`real` by default, `synthetic`, or `all` to add mixed and
+  no-contributor solves), and returns up to 50,000 rows by frame time, with
+  `truncated` past that. Contributors go out as `node_refs`, the refs the live
+  feed published them under at the time, or the ones they resolve to now where
+  the row stored none; a solve with a private or probation node, or a real
+  node with no published identity, is dropped, not redacted.
+  `/api/data/tracks/availability` counts rows per hour over at most 92 days
+  from Parquet footers alone; the counts are network-wide, so they can include
+  rows the tracks route withholds. Both sit behind nginx's per-IP `api` zone.
 - **admin** (`admin.retina.fm`) — the dashboard bundle again, built at a root and
   serving the admin route table, user management among it, which
   `dashboard/src/utils/surface.ts` selects from the hostname. It keeps a name of
@@ -95,6 +106,12 @@ are in [`arc-display.md`](arc-display.md).
   is served from one admin-only route (`GET /api/admin/node-refs`) and exists
   so the dashboard can name a node to an operator and link to its own site,
   which is `<node_id>.retnode.com`.
+- **`routes/tracks_archive.py`** — archive routes; `services/track_writer.py`
+  stores solves with track key, lane, position sigma, anomaly flags, node kind,
+  solve count and the refs their contributors were published under, one row
+  group per kind. `tracks_store.py` serves them off the event loop, caching up
+  to `TRACKS_CACHE_MAX_BYTES` (256 MiB default), and classifies older files by
+  contributor ids (`services/node_kind.py`).
 - **`services/tasks/`** — background async tasks: `aircraft_flush` (broadcast),
   `feed_gc` (stale-store GC on its own 5 s timer, deliberately not tied to the
   feed build), `solver` workers, `analytics_refresh`, archive lifecycle,

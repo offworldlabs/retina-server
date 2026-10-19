@@ -113,6 +113,7 @@ from routes.sim_ingest import synthetic_fleet_enabled
 from routes.stats import router as stats_router
 from routes.streaming import router as streaming_router
 from routes.test import router as test_router
+from routes.tracks_archive import router as tracks_archive_router
 from services import blah2_poller, detection_mirror, mail_events, mail_outbox, publication, registry_mirror
 from services.alerting import log_destination
 from services.runtime_coverage import start as _start_coverage
@@ -528,6 +529,7 @@ for router in (
     analytics_router,
     streaming_router,
     archive_router,
+    tracks_archive_router,
     test_router,
     custody_router,
     auth_router,

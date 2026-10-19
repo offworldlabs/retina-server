@@ -37,7 +37,7 @@ from retina_geolocator.bistatic_models import bistatic_delay, bistatic_doppler
 from retina_geolocator.multinode_solver import _lla_to_enu_km, solve_multinode
 
 from core import state
-from services import track_filter
+from services import node_auth, node_refs, track_filter
 from services.tasks import displacement_caps as caps_mod
 from services.tasks import known_lane
 
@@ -449,12 +449,32 @@ class TestModeGating:
         entry = state.multinode_tracks[key]
         assert entry["adsb_hex"] == HEX
         assert entry["solve_count"] == 1
-        # Archived for the Parquet stream like any published solve.
-        assert len(state.track_archive_buffer) == 1
+        # Archived for the Parquet stream like any published solve, under the
+        # same key; the live entry does not carry it.
+        (archived,) = state.track_archive_buffer
+        assert archived["track_key"] == key
+        assert "track_key" not in entry
+        assert "contributing_node_refs" not in entry
         (rec,) = _known_records()
         assert rec["published"] is True
         assert rec["solve_key"] == key
         assert rec["solver_hex"] is not None
+
+    def test_binding_stamps_the_published_refs_on_the_archive_copy_only(self, monkeypatch):
+        """Each contributor is archived under what the live feed publishes it
+        as, in contributor order: node_a under the ref it was mirrored with,
+        node_b, which has none, as an empty slot."""
+        mirrored_ref = node_auth.mint_node_ref()
+        monkeypatch.setitem(state.connected_nodes, "node_a", {"node_ref": mirrored_ref})
+        _install(_mk_claims(["node_a", "node_b"]))
+        _run(_stub_solve(), mode="binding")
+
+        (archived,) = state.track_archive_buffer
+        ids = archived["contributing_node_ids"]
+        assert sorted(ids) == ["node_a", "node_b"]
+        assert archived["contributing_node_refs"] == [mirrored_ref if n == "node_a" else "" for n in ids]
+        assert archived["contributing_node_refs"] == [node_refs.owner_identity(n) or "" for n in ids]
+        assert "contributing_node_refs" not in state.multinode_tracks[f"mn-adsb-{HEX}"]
 
     def test_binding_supersedes_the_regular_pipelines_entry(self):
         """Same key as the regular tagged path (mn-adsb-*), so a known-lane

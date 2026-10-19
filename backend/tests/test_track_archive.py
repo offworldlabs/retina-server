@@ -38,6 +38,28 @@ def test_write_failure_retries_old_batch_before_new_records(archive, monkeypatch
     assert ta.flush_track_archive_buffer() is None
 
 
+def test_flush_writes_the_stamped_identity_columns(archive):
+    state.track_archive_buffer.extend(
+        [
+            {"solve_ts_ms": 1, "track_key": "mn-dark-a", "contributing_node_ids": ["node-a", "synth-b"]},
+            {
+                "solve_ts_ms": 2,
+                "track_key": "mn-dark-b",
+                "follow_lane": True,
+                "contributing_node_ids": ["synth-a", "synth-b"],
+            },
+            {"solve_ts_ms": 3, "track_key": "mn-adsb-abc123", "contributing_node_ids": ["node-a", "node-b"]},
+        ]
+    )
+    key = ta.flush_track_archive_buffer()
+    rows = pq.read_table(archive / key, columns=["solve_ts_ms", "track_key", "lane", "node_kind"]).to_pylist()
+    assert rows == [
+        {"solve_ts_ms": 3, "track_key": "mn-adsb-abc123", "lane": "known", "node_kind": "real"},
+        {"solve_ts_ms": 2, "track_key": "mn-dark-b", "lane": "follow", "node_kind": "synthetic"},
+        {"solve_ts_ms": 1, "track_key": "mn-dark-a", "lane": "dark", "node_kind": "mixed"},
+    ]
+
+
 def test_directory_failure_retains_batch(archive):
     archive.rmdir()
     archive.write_text("not a directory")
