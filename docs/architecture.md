@@ -163,8 +163,12 @@ default.
   (trust scores, reputations, accuracy samples, node identities).
 - **SQLite** (`data/users.db`) — users, and node claims: who owns each node and
   the address it was claimed with.
-- **R2 (Cloudflare).** Archived coverage/track Parquet is offloaded to the
-  `retina-server-archive` bucket and pruned locally (see the runbook).
+- **Object store.** S3-compatible: Backblaze B2, with R2 until the move (see
+  the runbook). It holds the coverage/track Parquet archives (`archive/`,
+  `tracks/`, uploaded after a day and pruned locally), the daily `users.db`
+  backups (`backups/users-db/`, 30 days) and the state snapshot
+  (`snapshots/state_snapshot.json`). Configured by `OBJECT_STORE_*`, with the
+  client in `backend/services/object_store.py`; the bucket comes from env.
 
 ## Auth model
 
