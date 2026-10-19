@@ -70,7 +70,7 @@ import time
 
 from config.constants import FT_TO_M
 from core import state
-from services import dark_follow, node_sites, track_filter
+from services import dark_follow, node_refs, node_sites, track_filter
 from services.geo import haversine_km, offset_latlon_m
 from services.id_utils import normalize_hex_key
 from services.known_claiming import KNOWN_CLAIM_MAX_FIX_AGE_S
@@ -514,6 +514,11 @@ def _publish(hexn: str, s_in: dict, result: dict) -> str:
         state.multinode_tracks[key] = smoothed
 
     archive_record = dict(smoothed)
+    archive_record["track_key"] = key
+    # As the regular path stamps them: the refs the live feed publishes now.
+    archive_record["contributing_node_refs"] = [
+        node_refs.owner_identity(n) or "" for n in archive_record.get("contributing_node_ids") or []
+    ]
     archive_record["solve_ts_ms"] = int(time.time() * 1000)
     state.track_archive_buffer.append(archive_record)
     return key

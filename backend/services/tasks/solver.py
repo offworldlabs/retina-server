@@ -16,7 +16,7 @@ from config.constants import (
     N2_TRACK_ASSOCIATION,
 )
 from core import state
-from services import dark_follow, track_filter
+from services import dark_follow, node_refs, track_filter
 
 # Beam-coverage geometry, used to reject solver results whose range or (at
 # n=2) bearing fall outside a contributing node's detection area.  This
@@ -2367,6 +2367,17 @@ def _process_solver_item(
         # solve_ts_ms records when the solve completed (server wallclock) so
         # analysts can measure end-to-end latency vs. result["timestamp_ms"].
         archive_record = dict(result)
+        # The key, the follow marker and the contributors' refs go on the
+        # archive copy only, for the writer's track_key, lane and
+        # contributing_node_refs columns (services/track_writer.py). The refs
+        # are the ones the live feed publishes now, so the archive can serve
+        # the row after a mirrored node disconnects.
+        archive_record["track_key"] = key
+        if isinstance(s_in, dict) and (s_in.get("follow_key") or s_in.get("lane") == "dark_follow"):
+            archive_record["follow_lane"] = True
+        archive_record["contributing_node_refs"] = [
+            node_refs.owner_identity(n) or "" for n in archive_record.get("contributing_node_ids") or []
+        ]
         archive_record["solve_ts_ms"] = int(time.time() * 1000)
         state.track_archive_buffer.append(archive_record)
         # The re-solve claim, taken here and nowhere else: this aircraft is now
