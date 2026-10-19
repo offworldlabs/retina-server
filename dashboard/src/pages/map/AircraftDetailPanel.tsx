@@ -1,4 +1,5 @@
 import { DASH } from "../../utils/format";
+import { formatLocalClock, formatUtcClock } from "./archiveTimeline";
 import { POSITION_SOURCE_ARC_ONLY, POSITION_SOURCE_ADSB_SINGLE, POSITION_SOURCE_ADSB_MULTI } from "./constants";
 import { classifyHex, emergencySquawkLabel } from "./hexInfo";
 import { trailToCsv, downloadCsv } from "./trailExport";
@@ -13,8 +14,12 @@ import { usePalette } from "./useMapTheme";
  * `detectingNodes` — and the private node id is never published, so the
  * default keeps the panel usable on its own (in a test, say) and names an
  * unknown node rather than echoing an identifier it cannot resolve.
+ *
+ * `archive` is set while the map replays the archive. A replayed solve sits
+ * where it was measured, with no dead reckoning, so the panel quotes when
+ * that was ("Solved") rather than how many seconds ago it was last heard.
  */
-export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError, detectingNodes = [], nodeLabelFor = (_nodeRef) => "unlisted node" }) {
+export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, computeError, detectingNodes = [], nodeLabelFor = (_nodeRef) => "unlisted node", archive = false }) {
   const { ANOMALY, DRONE, LANE_MN_ADSB } = usePalette();
   if (!ac) return null;
 
@@ -93,6 +98,7 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
   // `!ac.type && !ac.flight` heuristic classified ordinary radar tracks
   // (which usually have neither) as "Ground truth only".
   const isTruthOnly = Boolean(ac._isTruth);
+  const solvedAtMs = archive && typeof ac.frame_ts_ms === "number" ? ac.frame_ts_ms : null;
 
   return (
     <div className="detail-panel">
@@ -258,6 +264,13 @@ export default function AircraftDetailPanel({ ac, onClose, groundTruth, trails, 
         {isMultinode && (
           <div className="detail-section">
             <div className="detail-section-title">Multi-node</div>
+            {solvedAtMs !== null && (
+              <Field
+                label="Solved"
+                value={`${formatUtcClock(solvedAtMs)} UTC \u00b7 local ${formatLocalClock(solvedAtMs)}`}
+                title={new Date(solvedAtMs).toISOString()}
+              />
+            )}
             <Field label="Nodes" value={ac.n_nodes} />
             <Field label="RMS Delay" value={`${ac.rms_delay ?? "\u2014"} \u03bcs`} />
             <Field label="RMS Doppler" value={`${ac.rms_doppler ?? "\u2014"} Hz`} />
@@ -419,11 +432,11 @@ function formatUncertaintyRadius(m) {
   return `${Math.round(m / 10) * 10} m`;
 }
 
-function Field({ label, value }) {
+function Field({ label, value, title = undefined }) {
   return (
     <div className="detail-field">
       <span className="detail-label">{label}</span>
-      <span className="detail-value">{value}</span>
+      <span className="detail-value" title={title}>{value}</span>
     </div>
   );
 }
