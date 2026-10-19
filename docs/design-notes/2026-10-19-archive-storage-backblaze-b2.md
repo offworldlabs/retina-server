@@ -45,19 +45,30 @@ one upload per archive file, one snapshot upload per minute, one listing per day
 Egress is near zero (the snapshot restore path and the backfill script are the
 only readers), so R2's free egress buys nothing here.
 
-Indicative list prices, to be re-checked against both vendors' pricing pages
-before the decision is final:
+List prices as of 2026-10-19. R2 figures were read from Cloudflare's
+[R2 pricing page](https://developers.cloudflare.com/r2/pricing/). B2 figures
+come from Backblaze's [pricing page](https://www.backblaze.com/cloud-storage/pricing)
+as indexed by search, plus third-party 2026 write-ups; the page itself could not
+be fetched from the environment this note was written in, so **confirm the B2
+column on the live page before the decision is final**.
 
-| | Cloudflare R2 | Backblaze B2 |
+| | Cloudflare R2 (Standard) | Backblaze B2 |
 |---|---|---|
-| Storage | $0.015 / GB-month | $0.006 / GB-month |
-| Writes (PUT, LIST, DELETE) | $4.50 per million after 1 M free / month | Free |
-| Reads (GET) | $0.36 per million after 10 M free / month | 2,500 free / day, then $0.004 per 10,000 |
-| Egress | Free | Free up to 3× average stored volume / month, then $0.01 / GB |
+| Storage | $0.015 / GB-month; first 10 GB-month free | $6.95 / TB-month ($0.00695 / GB-month); raised from $6.00 in 2026 |
+| Writes, lists, deletes | Class A: $4.50 per million after 1 M free / month | Free (Class A, B and C API calls carry no fee since the 2026 change) |
+| Reads | Class B: $0.36 per million after 10 M free / month | Free, with one exception: a "Class D" group of calls has 2,500 free / day, then $0.004 per 10,000. Which S3 calls fall in Class D was not confirmed; older Backblaze help pages put GET and HEAD in a metered Class B with the same allowance |
+| Egress | Free | Free up to 3× average monthly stored volume, then $0.01 / GB; unused allowance does not roll over |
+| Minimum charge | None | None found; pay-as-you-go. (B2 also offers annual capacity pricing and an "Overdrive" tier at $15 / TB-month, neither relevant here) |
+| Rounding | Usage rounds up to the next GB-month / next million operations | Not stated in the sources read |
+
+The storage ratio is therefore about 2.2:1 in B2's favour (0.015 vs 0.00695),
+not the 2.5:1 the $6 / TB figure would have given.
 
 Operation counts for this workload are small. The state snapshot is the largest:
-about 43,000 PUTs a month, within R2's free tier and free on B2. The saving is
-the storage line, so it scales with how much archive we hold. **Before deciding,
+about 43,000 PUTs a month, within R2's free tier and free on B2. The one
+possible read charge on B2 is the snapshot restore (one GET, rare) and the
+backfill script, both far inside 2,500 calls a day. The saving is the storage
+line, so it scales with how much archive we hold. **Before deciding,
 record the current R2 bucket size and monthly growth** (Cloudflare dashboard, or
 `rclone size` with the R2 remote); that number turns the ratio above into a
 dollar figure. The archive is retained indefinitely, so it only grows.
