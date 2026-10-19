@@ -89,18 +89,18 @@ def save_snapshot() -> None:
     size = os.path.getsize(_SNAPSHOT_PATH)
     logging.info("State snapshot saved (%d bytes, sha256=%s)", size, checksum[:12])
 
-    # Replicate to R2 for durability across container recreates
-    from services.r2_client import is_enabled as r2_enabled
-    from services.r2_client import upload_file
+    # Replicate to the object store for durability across container recreates
+    from services.object_store import is_enabled as store_enabled
+    from services.object_store import upload_file
 
-    if r2_enabled():
+    if store_enabled():
         if upload_file("snapshots/state_snapshot.json", _SNAPSHOT_PATH):
-            logging.info("State snapshot replicated to R2")
+            logging.info("State snapshot replicated to the object store")
         else:
-            logging.warning("State snapshot R2 replication failed")
+            logging.warning("State snapshot replication to the object store failed")
             send_alert(
-                "r2_replication_failed",
-                "State snapshot R2 replication failed — backup is stale",
+                "object_store_replication_failed",
+                "State snapshot replication to the object store failed — backup is stale",
                 {},
             )
 
@@ -208,7 +208,7 @@ def restore_snapshot() -> bool:
                 # Legacy schema 1: bare payload with a .sha256 side file that
                 # was written non-atomically — verify when present, but a
                 # mismatch here may be the old crash window rather than
-                # corruption, so log loudly and still refuse (the R2 fallback
+                # corruption, so log loudly and still refuse (the object store fallback
                 # below gets a chance).
                 sha_path = _SNAPSHOT_PATH + ".sha256"
                 if os.path.exists(sha_path):
@@ -227,33 +227,33 @@ def restore_snapshot() -> bool:
         except Exception:
             logging.exception("Failed to read local state snapshot")
 
-    # Fall back to R2 if local snapshot is missing or corrupt
+    # Fall back to the object store if local snapshot is missing or corrupt
     if snap is None:
-        from services.r2_client import download_bytes
-        from services.r2_client import is_enabled as r2_enabled
+        from services.object_store import download_bytes
+        from services.object_store import is_enabled as store_enabled
 
-        if r2_enabled():
-            logging.info("Trying R2 for state snapshot...")
+        if store_enabled():
+            logging.info("Trying the object store for state snapshot...")
             data = download_bytes("snapshots/state_snapshot.json")
             if data:
                 try:
                     snap = json.loads(data)
-                    # Schema-2 envelope replicated to R2: verify and unwrap.
+                    # Schema-2 envelope replicated to the object store: verify and unwrap.
                     if isinstance(snap, dict) and "payload" in snap and "sha256" in snap:
                         actual = hashlib.sha256(snap["payload"].encode()).hexdigest()
                         if actual != snap["sha256"]:
-                            logging.error("R2 state snapshot checksum mismatch — ignoring")
+                            logging.error("Object store state snapshot checksum mismatch — ignoring")
                             snap = None
                         else:
                             snap = json.loads(snap["payload"])
                     if snap is not None:
-                        logging.info("State snapshot loaded from R2")
+                        logging.info("State snapshot loaded from the object store")
                 except Exception:
-                    logging.exception("Failed to parse R2 state snapshot")
+                    logging.exception("Failed to parse object store state snapshot")
                     snap = None
 
     if snap is None:
-        logging.info("No state snapshot found (checked local + R2)")
+        logging.info("No state snapshot found (checked local + object store)")
         return False
 
     saved_at = snap.get("saved_at", 0)

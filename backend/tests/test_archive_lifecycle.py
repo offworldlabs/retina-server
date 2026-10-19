@@ -1,7 +1,7 @@
-"""Tests for archive lifecycle: offload to R2 + local disk cleanup.
+"""Tests for archive lifecycle: offload to the object store + local disk cleanup.
 
 Two suites:
-  1. TestArchiveLifecycleMoto  — integration tests using moto to mock S3/R2.
+  1. TestArchiveLifecycleMoto  — integration tests using moto to mock S3.
   2. Unit test classes         — error-path and edge-case tests using
                                  unittest.mock only (no real or mocked S3).
 """
@@ -17,6 +17,7 @@ import boto3
 from moto import mock_aws
 
 from config.constants import ARCHIVE_OFFLOAD_AGE_DAYS
+from tests.object_store_env import FAKE_AWS_ENV, store_env
 
 # Tests that exercise the deletion phase patch this value into the lifecycle
 # module — the production default is 0 (disabled), so we use a fixed positive
@@ -30,16 +31,6 @@ def _patch_retention(value: int = _TEST_RETENTION_DAYS):
 
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
-
-_FAKE_R2_ENV = {
-    "R2_ACCOUNT_ID": "testaccount",
-    "R2_ACCESS_KEY_ID": "AKIATEST",
-    "R2_SECRET_ACCESS_KEY": "testsecret",
-    "R2_BUCKET": "retina-data",
-    "AWS_DEFAULT_REGION": "us-east-1",
-    "AWS_ACCESS_KEY_ID": "AKIATEST",
-    "AWS_SECRET_ACCESS_KEY": "testsecret",
-}
 
 
 def _make_bucket(bucket: str = "retina-data"):
@@ -74,7 +65,7 @@ def _make_archive_file(archive_dir: Path, age_days: float = 0.0, name: str = "da
 
 
 class TestArchiveLifecycleMoto(unittest.TestCase):
-    """Archive lifecycle integration tests using moto to mock S3/R2."""
+    """Archive lifecycle integration tests using moto to mock S3."""
 
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -92,19 +83,8 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         # coverage_data/tracks on the test host.
         alc._TRACKS_DIR = self._tracks_dir
 
-        self._env_patcher = unittest.mock.patch.dict(os.environ, _FAKE_R2_ENV, clear=False)
-        self._env_patcher.start()
-
-        import services.r2_client as r2
-
-        self._r2 = r2
-        self._orig_enabled = r2._ENABLED
-        self._orig_bucket = r2._BUCKET
-        self._orig_endpoint = r2._ENDPOINT_URL
-        r2._ENABLED = True
-        r2._BUCKET = "retina-data"
-        r2._ENDPOINT_URL = None
-        r2._clear_cache()
+        self.enterContext(store_env(FAKE_AWS_ENV))
+        self.enterContext(mock_aws())
 
     def tearDown(self):
         import services.tasks.archive_lifecycle as alc
@@ -112,16 +92,9 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         alc._ARCHIVE_DIR = self._orig_archive_dir
         alc._TRACKS_DIR = self._orig_tracks_dir
 
-        self._r2._ENABLED = self._orig_enabled
-        self._r2._BUCKET = self._orig_bucket
-        self._r2._ENDPOINT_URL = self._orig_endpoint
-        self._r2._clear_cache()
-
-        self._env_patcher.stop()
         self._tmpdir.cleanup()
 
-    @mock_aws
-    def test_old_file_is_uploaded_to_r2(self):
+    def test_old_file_is_uploaded_to_object_store(self):
         _make_bucket()
         _create_archive_file(self._archive_dir, age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1)
         from services.tasks.archive_lifecycle import run_archive_lifecycle
@@ -130,8 +103,7 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         self.assertGreater(stats["uploaded"], 0)
         self.assertEqual(stats["errors"], 0)
 
-    @mock_aws
-    def test_uploaded_file_content_in_r2(self):
+    def test_uploaded_file_content_in_object_store(self):
         _make_bucket()
         payload = b'{"node": "test", "detections": []}'
         _create_archive_file(
@@ -139,7 +111,7 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
             age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1,
             content=payload,
         )
-        from services.r2_client import download_bytes, list_keys
+        from services.object_store import download_bytes, list_keys
         from services.tasks.archive_lifecycle import run_archive_lifecycle
 
         run_archive_lifecycle()
@@ -148,7 +120,6 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         stored = download_bytes(keys[0])
         self.assertEqual(stored, payload)
 
-    @mock_aws
     def test_fresh_file_not_uploaded(self):
         _make_bucket()
         _create_archive_file(self._archive_dir, age_days=0.5)
@@ -157,7 +128,6 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         stats = run_archive_lifecycle()
         self.assertEqual(stats["uploaded"], 0)
 
-    @mock_aws
     def test_very_old_file_deleted_locally(self):
         _make_bucket()
         f = _create_archive_file(self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1)
@@ -168,7 +138,6 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         self.assertFalse(f.exists())
         self.assertGreater(stats["deleted"], 0)
 
-    @mock_aws
     def test_file_within_retention_not_deleted(self):
         _make_bucket()
         f = _create_archive_file(self._archive_dir, age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1)
@@ -178,11 +147,10 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
             run_archive_lifecycle()
         self.assertTrue(f.exists())
 
-    @mock_aws
     def test_old_file_uploaded_then_deleted(self):
         _make_bucket()
         f = _create_archive_file(self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1)
-        from services.r2_client import list_keys
+        from services.object_store import list_keys
         from services.tasks.archive_lifecycle import run_archive_lifecycle
 
         with _patch_retention():
@@ -192,7 +160,6 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         self.assertFalse(f.exists())
         self.assertEqual(len(list_keys("archive/")), 1)
 
-    @mock_aws
     def test_empty_dirs_pruned_after_delete(self):
         _make_bucket()
         f = _create_archive_file(self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1)
@@ -202,16 +169,15 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
             run_archive_lifecycle()
         self.assertFalse(f.parent.exists())
 
-    def test_no_upload_when_r2_disabled(self):
-        """When R2 is disabled, no upload happens AND no local deletion either.
+    def test_no_upload_when_object_store_disabled(self):
+        """When the object store is disabled, no upload happens AND no local deletion either.
 
         Local files are only deleted once they have an .uploaded sentinel,
-        which is only written after a confirmed R2 upload. Without R2, the
+        which is only written after a confirmed upload. Without the object store, the
         sentinel never appears, so the file must stay on disk indefinitely —
         otherwise we'd silently drop data with no backup at all.
         """
-        self._r2._ENABLED = False
-        self._r2._clear_cache()
+        self.enterContext(store_env({}))
         f_old = _create_archive_file(self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1)
         from services.tasks.archive_lifecycle import run_archive_lifecycle
 
@@ -221,10 +187,9 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         self.assertEqual(stats["deleted"], 0)
         self.assertTrue(
             f_old.exists(),
-            "file must NOT be deleted when R2 never confirmed the upload",
+            "file must NOT be deleted when the object store never confirmed the upload",
         )
 
-    @mock_aws
     def test_empty_archive_dir_returns_zero_stats(self):
         _make_bucket()
         from services.tasks.archive_lifecycle import run_archive_lifecycle
@@ -232,7 +197,6 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         stats = run_archive_lifecycle()
         self.assertEqual(stats, {"uploaded": 0, "deleted": 0, "errors": 0, "skipped": 0})
 
-    @mock_aws
     def test_upload_cap_respected(self):
         _make_bucket()
         import services.tasks.archive_lifecycle as alc
@@ -260,16 +224,15 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         os.utime(f, (mtime, mtime))
         return f
 
-    @mock_aws
     def test_tracks_parquet_uploaded_under_tracks_prefix(self):
-        """Track Parquet in tracks/ must be offloaded under the 'tracks/' R2 prefix.
+        """Track Parquet in tracks/ must be offloaded under the 'tracks/' object store prefix.
 
         The old iterator only walked archive/, so tracks/ Parquet accumulated
         on disk forever. It must now be swept like the detection archive.
         """
         _make_bucket()
         self._make_tracks_parquet(age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1)
-        from services.r2_client import list_keys
+        from services.object_store import list_keys
         from services.tasks.archive_lifecycle import run_archive_lifecycle
 
         stats = run_archive_lifecycle()
@@ -278,9 +241,8 @@ class TestArchiveLifecycleMoto(unittest.TestCase):
         self.assertEqual(len(keys), 1)
         self.assertTrue(keys[0].startswith("tracks/year=2026/"))
 
-    @mock_aws
     def test_tracks_parquet_deleted_past_retention(self):
-        """Track Parquet past retention is deleted locally once confirmed in R2."""
+        """Track Parquet past retention is deleted locally once confirmed in the object store."""
         _make_bucket()
         f = self._make_tracks_parquet(age_days=_TEST_RETENTION_DAYS + 1)
         from services.tasks.archive_lifecycle import run_archive_lifecycle
@@ -311,19 +273,19 @@ class _ArchiveUnitTestBase(unittest.TestCase):
     def tearDown(self):
         self._tmpdir.cleanup()
 
-    def _run(self, r2_enabled: bool = True, upload_return: bool = True):
-        """Run archive lifecycle with r2_client fully mocked.
+    def _run(self, store_enabled: bool = True, upload_return: bool = True):
+        """Run archive lifecycle with the object store fully mocked.
 
-        Defaults reflect the happy path (R2 reachable, uploads succeed) so a
+        Defaults reflect the happy path (object store reachable, uploads succeed) so a
         test exercising the deletion phase doesn't have to repeat that setup.
-        Tests of the R2-disabled or upload-failure paths pass explicit args.
+        Tests of the object-store-disabled or upload-failure paths pass explicit args.
         """
         with (
             unittest.mock.patch("services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir),
             unittest.mock.patch("services.tasks.archive_lifecycle._TRACKS_DIR", new=self._tracks_dir),
         ):
-            with unittest.mock.patch("services.r2_client.is_enabled", return_value=r2_enabled):
-                with unittest.mock.patch("services.r2_client.upload_file", return_value=upload_return):
+            with unittest.mock.patch("services.object_store.is_enabled", return_value=store_enabled):
+                with unittest.mock.patch("services.object_store.upload_file", return_value=upload_return):
                     from services.tasks.archive_lifecycle import run_archive_lifecycle
 
                     return run_archive_lifecycle()
@@ -347,8 +309,8 @@ class TestRunArchiveLifecycleEmptyDir(unittest.TestCase):
             ):
                 from services.tasks.archive_lifecycle import run_archive_lifecycle
 
-                with unittest.mock.patch("services.r2_client.is_enabled", return_value=False):
-                    with unittest.mock.patch("services.r2_client.upload_file", return_value=False):
+                with unittest.mock.patch("services.object_store.is_enabled", return_value=False):
+                    with unittest.mock.patch("services.object_store.upload_file", return_value=False):
                         stats = run_archive_lifecycle()
 
         self.assertEqual(stats, {"uploaded": 0, "deleted": 0, "errors": 0, "skipped": 0})
@@ -397,10 +359,10 @@ class TestRunArchiveLifecycleOSError(_ArchiveUnitTestBase):
         self.assertEqual(stats["deleted"], 0)
 
     def test_upload_failure_increments_errors(self):
-        """When r2_upload() returns False (upload failed silently), errors is incremented."""
+        """When store_upload() returns False (upload failed silently), errors is incremented."""
         _make_archive_file(self._archive_dir, age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1)
 
-        stats = self._run(r2_enabled=True, upload_return=False)
+        stats = self._run(store_enabled=True, upload_return=False)
 
         self.assertGreater(stats["errors"], 0)
         self.assertEqual(stats["uploaded"], 0)
@@ -490,7 +452,7 @@ class TestIterArchiveFiles(_ArchiveUnitTestBase):
     def _collect(self):
         """Return just the file paths yielded for the archive/ root.
 
-        _iter_archive_files now yields (file, root_dir, r2_prefix) tuples and
+        _iter_archive_files now yields (file, root_dir, store_prefix) tuples and
         sweeps both roots; these tests only assert on archive/ files, so we
         point tracks/ at an empty temp dir and unwrap the file from each tuple.
         """
@@ -576,21 +538,21 @@ class TestRetentionDisabled(_ArchiveUnitTestBase):
 
 
 class TestUploadSentinel(_ArchiveUnitTestBase):
-    """Sentinel file (.uploaded) gates local deletion on confirmed R2 upload."""
+    """Sentinel file (.uploaded) gates local deletion on confirmed upload."""
 
     def test_sentinel_created_on_successful_upload(self):
         f = _make_archive_file(self._archive_dir, age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1)
 
-        stats = self._run(r2_enabled=True, upload_return=True)
+        stats = self._run(store_enabled=True, upload_return=True)
 
         self.assertEqual(stats["uploaded"], 1)
         sentinel = f.with_name(f.name + ".uploaded")
-        self.assertTrue(sentinel.exists(), "sentinel must be written after R2 upload")
+        self.assertTrue(sentinel.exists(), "sentinel must be written after the upload")
 
     def test_sentinel_not_created_on_failed_upload(self):
         f = _make_archive_file(self._archive_dir, age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1)
 
-        stats = self._run(r2_enabled=True, upload_return=False)
+        stats = self._run(store_enabled=True, upload_return=False)
 
         self.assertEqual(stats["uploaded"], 0)
         self.assertGreater(stats["errors"], 0)
@@ -598,14 +560,14 @@ class TestUploadSentinel(_ArchiveUnitTestBase):
         self.assertFalse(sentinel.exists(), "sentinel must NOT exist on upload failure")
 
     def test_existing_sentinel_skips_re_upload(self):
-        """A second cycle must not waste an R2 PUT on a file already uploaded."""
+        """A second cycle must not waste a PUT on a file already uploaded."""
         f = _make_archive_file(self._archive_dir, age_days=ARCHIVE_OFFLOAD_AGE_DAYS + 1)
         f.with_name(f.name + ".uploaded").touch()
 
         with (
             unittest.mock.patch("services.tasks.archive_lifecycle._ARCHIVE_DIR", new=self._archive_dir),
-            unittest.mock.patch("services.r2_client.is_enabled", return_value=True),
-            unittest.mock.patch("services.r2_client.upload_file", return_value=True) as mock_upload,
+            unittest.mock.patch("services.object_store.is_enabled", return_value=True),
+            unittest.mock.patch("services.object_store.upload_file", return_value=True) as mock_upload,
         ):
             from services.tasks.archive_lifecycle import run_archive_lifecycle
 
@@ -618,10 +580,10 @@ class TestUploadSentinel(_ArchiveUnitTestBase):
         """A file past retention but lacking a sentinel must NOT be deleted."""
         f = _make_archive_file(self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1)
 
-        # R2 disabled — sentinel will never be created, simulating a deployment
-        # where R2 is misconfigured but RETENTION_DAYS was set positive.
+        # Store disabled — sentinel will never be created, simulating a deployment
+        # where the object store is misconfigured but RETENTION_DAYS was set positive.
         with _patch_retention():
-            stats = self._run(r2_enabled=False, upload_return=False)
+            stats = self._run(store_enabled=False, upload_return=False)
 
         self.assertEqual(stats["deleted"], 0)
         self.assertTrue(f.exists(), "file without sentinel must survive lifecycle")
@@ -631,7 +593,7 @@ class TestUploadSentinel(_ArchiveUnitTestBase):
         f = _make_archive_file(self._archive_dir, age_days=_TEST_RETENTION_DAYS + 1)
 
         with _patch_retention():
-            stats = self._run(r2_enabled=True, upload_return=True)
+            stats = self._run(store_enabled=True, upload_return=True)
 
         self.assertEqual(stats["deleted"], 1)
         self.assertFalse(f.exists())
