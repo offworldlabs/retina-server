@@ -70,7 +70,7 @@ import time
 
 from config.constants import FT_TO_M
 from core import state
-from services import dark_follow, solve_geometry, track_filter
+from services import dark_follow, solve_geometry, solver_input_purity, track_filter
 from services.geo import haversine_km, offset_latlon_m
 from services.id_utils import normalize_hex_key
 from services.known_claiming import KNOWN_CLAIM_MAX_FIX_AGE_S
@@ -735,6 +735,12 @@ def run_known_lane_pass(solve_fn, node_cfgs: dict | None = None, mode: str | Non
         claims = _select_claims(dq, now_ms)
         if not claims:
             continue
+        # One node kind per solve (services/solver_input_purity.py): a hex
+        # the synthetic fleet and real nodes both claim solves on the real
+        # ones alone when two of them have it, never on the union.
+        claims = solver_input_purity.restrict_claims(claims)
+        if len(claims) < 2:
+            continue
         newest_ts = max(int(c["ts_ms"]) for c in claims.values())
         if _last_attempt_ts_ms.get(hexn, -1) >= newest_ts:
             continue
@@ -936,6 +942,8 @@ def run_dark_follow_pass(solve_fn, node_cfgs: dict | None = None, mode: str | No
         # Drop the node rather than the key: the remaining nodes are still a
         # solve if there are two of them.
         claims = {nid: c for nid, c in claims.items() if nid in node_cfgs}
+        # And to one node kind, as the ADS-B pass above.
+        claims = solver_input_purity.restrict_claims(claims)
         if len(claims) < 2:
             continue
         newest_ts = max(int(c["ts_ms"]) for c in claims.values())

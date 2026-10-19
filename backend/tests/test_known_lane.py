@@ -295,6 +295,44 @@ class TestRealSolve:
         (rec,) = _known_records()
         assert rec["n_nodes"] == 3
 
+    def test_a_hex_both_kinds_claim_solves_on_the_real_nodes_alone(self):
+        """The synthetic fleet claiming the same hex as two real nodes (the
+        test droplet's fleet shares their metro and their live-seeded
+        aircraft) does not join their solve: services/solver_input_purity
+        cuts the claims to one kind, real first, so the published node count
+        is real-node evidence.  Geometry is node_a/node_b's, re-registered
+        under fleet-prefixed ids for the synthetic pair."""
+        synth_cfgs = {"synth-GVL-0001": NODE_CFGS["node_c"], "synth-GVL-0002": NODE_CFGS["node_a"]}
+        NODE_CFGS.update(synth_cfgs)
+        try:
+            _install(_mk_claims(["node_a", "synth-GVL-0001", "node_b", "synth-GVL-0002"]))
+            attempts = known_lane.run_known_lane_pass(solve_multinode, {**NODE_CFGS}, mode="shadow")
+        finally:
+            for nid in synth_cfgs:
+                NODE_CFGS.pop(nid, None)
+
+        assert attempts == 1
+        assert state.known_claims_kind_split == 1
+        (rec,) = _known_records()
+        assert rec["n_nodes"] == 2
+        assert set(rec["contributing_node_ids"]) == {"node_a", "node_b"}
+
+    def test_one_real_claim_leaves_the_hex_to_the_fleet(self):
+        """A lone real node cannot solve by itself, so the fleet's claims keep
+        the hex rather than nothing solving at all."""
+        synth_cfgs = {"synth-GVL-0001": NODE_CFGS["node_b"], "synth-GVL-0002": NODE_CFGS["node_c"]}
+        NODE_CFGS.update(synth_cfgs)
+        try:
+            _install(_mk_claims(["node_a", "synth-GVL-0001", "synth-GVL-0002"]))
+            attempts = known_lane.run_known_lane_pass(solve_multinode, {**NODE_CFGS}, mode="shadow")
+        finally:
+            for nid in synth_cfgs:
+                NODE_CFGS.pop(nid, None)
+
+        assert attempts == 1
+        (rec,) = _known_records()
+        assert set(rec["contributing_node_ids"]) == set(synth_cfgs)
+
 
 class TestClassification:
     def test_displaced_solve_is_a_ghost_and_still_sampled(self):

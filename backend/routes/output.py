@@ -97,7 +97,14 @@ async def solver_aircraft(
             ac
             for ac in data.get("aircraft", [])
             if ac.get("node_ref") in real_refs
-            or (ac.get("multinode") and any(ref in real_refs for ref in ac.get("contributing_node_refs", [])))
+            or (
+                # Every contributor real, not any: a solve the synthetic fleet
+                # joined is not real-node evidence (aircraft_flush's real-only
+                # feed applies the same rule).
+                ac.get("multinode")
+                and bool(ac.get("contributing_node_refs"))
+                and all(ref in real_refs for ref in ac.get("contributing_node_refs", []))
+            )
         ]
     else:
         aircraft_list = data.get("aircraft", [])
