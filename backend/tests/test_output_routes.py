@@ -84,8 +84,12 @@ class TestSolverAircraft:
             state.latest_aircraft_json_public = {}
 
     def test_solver_aircraft_multinode_real(self, client):
-        """Multinode aircraft with at least one real contributing node passes real_only filter."""
+        """real_only keeps a multinode solve only when EVERY contributing node
+        is real: one the synthetic fleet joined is not real-node evidence
+        (the solver no longer builds such solves — solver_input_purity — and
+        the feed holds the same line for anything that still carries one)."""
         state.connected_nodes["test-real-1"] = {"is_synthetic": False, "status": "active"}
+        state.connected_nodes["test-real-2"] = {"is_synthetic": False, "status": "active"}
         state.latest_aircraft_json_public = {
             "aircraft": [
                 {
@@ -96,14 +100,23 @@ class TestSolverAircraft:
                     "multinode": True,
                     "contributing_node_refs": ["synth-node-1", "test-real-1"],
                 },
+                {
+                    "hex": "MULTI02",
+                    "lat": 33.46,
+                    "lon": -112.08,
+                    "node_ref": "test-real-1",
+                    "multinode": True,
+                    "contributing_node_refs": ["test-real-1", "test-real-2"],
+                },
             ]
         }
         try:
             r = client.get("/api/v1/solver/aircraft?real_only=true")
             assert r.status_code == 200
-            assert r.json()["count"] == 1
+            assert [a["hex"] for a in r.json()["aircraft"]] == ["MULTI02"]
         finally:
             state.latest_aircraft_json_public = {}
+            state.connected_nodes.pop("test-real-2", None)
 
     def test_real_only_matches_a_registered_node_by_its_ref(self, client):
         """The filter holds node_ids and the feed holds refs, so it translates.
