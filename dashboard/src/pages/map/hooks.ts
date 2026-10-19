@@ -50,6 +50,24 @@ async function sessionHolds(): Promise<boolean> {
   }
 }
 
+/** A frame handed to the feed instead of a socket message (archive replay). */
+export interface InjectedFrame {
+  now: number;                 // seconds since epoch: the frame's clock (the replay instant)
+  aircraft: any[];
+  ground_truth?: Record<string, unknown>;
+  ground_truth_meta?: Record<string, unknown>;
+  anomaly_hexes?: string[];
+  detecting_nodes?: Record<string, unknown>;
+  detection_arcs?: any[];
+  /** Clear every store before ingesting this frame (a seek). */
+  reset?: boolean;
+}
+
+export interface FeedSource {
+  /** Start delivering frames; returns the unsubscribe. */
+  subscribe(onFrame: (frame: InjectedFrame) => void): () => void;
+}
+
 /**
  * Manages the WebSocket connection to /ws/aircraft with auto-reconnect,
  * plus an HTTP polling fallback when WS is unavailable.
@@ -69,10 +87,26 @@ async function sessionHolds(): Promise<boolean> {
  * every dependency list below — a different mode is a different feed, and the
  * socket has to be reopened onto it rather than left streaming the one the
  * page opened with.
+ *
+ * `source` stands in for the socket and the poll (archive replay, see
+ * replay/). While one is set, no socket opens, nothing is polled and
+ * `connected` stays false; each frame it delivers is ingested as a socket
+ * message would be, but on the frame's own clock (`now`), so trails, arcs and
+ * detections age against the replay instant rather than the wall clock. A
+ * different source, or none, is a different scope, like a different mode.
+ *
+ * `resetEpoch` counts the times the stores were emptied: every scope change,
+ * and every injected frame that asks for it (a seek).
  */
-export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedMode()) {
+export function useAircraftFeed(
+  ownerOnly = false,
+  mode: FeedMode = defaultFeedMode(),
+  source: FeedSource | null = null,
+) {
   const [aircraft, setAircraft] = useState([]);
   const [connected, setConnected] = useState(false);
+  const [resetEpoch, setResetEpoch] = useState(0);
+  const injected = source != null;
 
   const trailsRef = useRef({});
   const groundTruthRef = useRef({});
@@ -126,10 +160,11 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
   // Prune trails for aircraft gone > 5 minutes — keeps memory bounded over long sessions
   const trailPruneRef = useRef(0);
 
-  // Shared trail update logic used by both WS and HTTP polling
-  const updateTrails = useCallback((newAircraft) => {
+  // Shared trail update logic used by both WS and HTTP polling. `nowS` is the
+  // feed's clock in seconds: the wall clock live, the frame's in replay, so a
+  // replayed trail hours old is pruned against the replay instant.
+  const updateTrails = useCallback((newAircraft, nowS = Date.now() / 1000) => {
     const trails = trailsRef.current;
-    const now = Date.now() / 1000;
     for (const ac of newAircraft) {
       if (!validLatLon(ac.lat, ac.lon)) continue;
       const hex = ac.hex;
@@ -143,7 +178,7 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
           Math.abs(last[0] - ac.lat) > 0.00005 ||
           Math.abs(last[1] - ac.lon) > 0.00005
         ) {
-          trails[hex] = [...existing, [ac.lat, ac.lon, ac.alt_baro || 0, now]].slice(-MAX_TRAIL_POINTS);
+          trails[hex] = [...existing, [ac.lat, ac.lon, ac.alt_baro || 0, nowS]].slice(-MAX_TRAIL_POINTS);
         }
       }
     }
@@ -152,7 +187,7 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
     if (trailPruneRef.current >= 60) {
       trailPruneRef.current = 0;
       const activeHexes = new Set(newAircraft.map((ac) => ac.hex));
-      const cutoff = now - 300; // 5 minutes
+      const cutoff = nowS - 300; // 5 minutes
       for (const hex of Object.keys(trails)) {
         if (activeHexes.has(hex)) continue;
         const trail = trails[hex];
@@ -163,9 +198,13 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
     setTrailTick((t) => t + 1);
   }, []);
 
-  // Shared history + state update
+  // Shared history + state update. `nowMs` is the clock every store is stamped
+  // and aged on; `fromSource` marks a frame from an injected source.
   const ingestAircraft = useCallback(
-    (rawAircraft, groundTruth, groundTruthMeta, anomalyHexes, rawDetectingNodes, rawArcs) => {
+    (
+      rawAircraft, groundTruth, groundTruthMeta, anomalyHexes, rawDetectingNodes, rawArcs,
+      nowMs = Date.now(), fromSource = false,
+    ) => {
       // A synthetic page reads the unfiltered feed, because the real-only one
       // carries no synthetic fleet to show, so the real nodes come off here
       // instead. Everything node-attributed goes together or the map contradicts
@@ -184,8 +223,14 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
         ? syntheticDetectingNodes(rawDetectingNodes)
         : rawDetectingNodes;
 
-      historyRef.current.push({ aircraft: newAircraft, ts: Date.now() });
-      if (historyRef.current.length > MAX_HISTORY) historyRef.current.shift();
+      // The ring is the live feed's pause buffer, and an injected frame stays
+      // out of it. In archive replay the archive is the history and the live
+      // PlaybackBar is hidden, and 150 replay frames of up to 500 aircraft
+      // carrying 400-point trails would hold hundreds of MB.
+      if (!fromSource) {
+        historyRef.current.push({ aircraft: newAircraft, ts: nowMs });
+        if (historyRef.current.length > MAX_HISTORY) historyRef.current.shift();
+      }
 
       if (!pausedRef.current) setAircraft(newAircraft);
       if (groundTruth && typeof groundTruth === "object") {
@@ -207,7 +252,6 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
       // changed delay lays a new ellipse at new geometry, which is the
       // trail.  Also prunes entries older than ARC_MAX_AGE_MS (already
       // faded to zero opacity in the renderer) to keep the buffer bounded.
-      const now = Date.now();
       const ARC_MAX_AGE_MS = ARC_TOTAL_LIFE_MS;
       // Aircraft entries carry at most ONE arc per hex (the feed dedups to a
       // single winner); the top-level detection_arcs channel carries every
@@ -218,7 +262,7 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
       upsertArcEntries(
         arcsBufferRef.current,
         [...newAircraft, ...(detectionArcs || []).filter((a) => a.hex)],
-        now,
+        nowMs,
         ARC_MAX_AGE_MS,
       );
 
@@ -226,13 +270,30 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
       // GT debug panel).  Unions per-aircraft signals with the top-level
       // detecting_nodes feed key — see detections.ts.
       updateDetections(
-        detectionsRef.current, newAircraft, detectingNodes, now, ARC_MAX_AGE_MS,
+        detectionsRef.current, newAircraft, detectingNodes, nowMs, ARC_MAX_AGE_MS,
       );
 
-      updateTrails(newAircraft);
+      updateTrails(newAircraft, nowMs / 1000);
     },
     [updateTrails, mode],
   );
+
+  // Empties every store the feed accumulates: on a scope change, and before
+  // an injected frame that asks for it (a seek in archive replay).
+  const clearStores = useCallback(() => {
+    setAircraft([]);
+    trailsRef.current = {};
+    groundTruthRef.current = {};
+    groundTruthMetaRef.current = {};
+    anomalyHexesRef.current = new Set();
+    arcsBufferRef.current = {};
+    detectionsRef.current = {};
+    historyRef.current = [];
+    trailPruneRef.current = 0;
+    setTrailTick((t) => t + 1);
+    setGroundTruthTick((t) => t + 1);
+    setResetEpoch((e) => e + 1);
+  }, []);
 
   // --- WebSocket connection with reconnect ---
   const connectWs = useCallback(() => {
@@ -303,21 +364,30 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
   useEffect(() => {
     // Feed scope owns all accumulated state, including optional channels the
     // next feed may never send. Reconnects within the same scope keep history.
-    setAircraft([]);
+    clearStores();
     setConnected(false);
-    trailsRef.current = {};
-    groundTruthRef.current = {};
-    groundTruthMetaRef.current = {};
-    anomalyHexesRef.current = new Set();
-    arcsBufferRef.current = {};
-    detectionsRef.current = {};
-    historyRef.current = [];
     pausedRef.current = false;
-    trailPruneRef.current = 0;
     reconnectAttempts.current = 0;
     policyCloses.current = 0;
-    setTrailTick((t) => t + 1);
-    setGroundTruthTick((t) => t + 1);
+    if (source) {
+      // The source is the whole feed for this scope: no socket opens (an old
+      // one's queued callbacks stay ignored) and nothing is polled. A frame it
+      // delivers after the scope ended is dropped.
+      wsClosedRef.current = true;
+      const scope = feedScope.current;
+      const unsubscribe = source.subscribe((frame) => {
+        if (scope !== feedScope.current) return;
+        if (frame.reset) clearStores();
+        ingestAircraft(
+          frame.aircraft || [], frame.ground_truth, frame.ground_truth_meta, frame.anomaly_hexes,
+          frame.detecting_nodes, frame.detection_arcs, frame.now * 1000, true,
+        );
+      });
+      return () => {
+        feedScope.current += 1;
+        unsubscribe();
+      };
+    }
     wsClosedRef.current = false;
     connectWs();
     return () => {
@@ -333,14 +403,16 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
         wsRef.current = null;
       }
     };
-  }, [connectWs]);
+  }, [clearStores, connectWs, ingestAircraft, source]);
 
   // --- Zombie-connection watchdog ---
   // Server sends aircraft data every ~2s. If we've had no message for 12s while
   // the WS appears OPEN, the connection is a zombie (server dropped us, TCP
   // still "open" with no FIN — onclose never fires). Force-close to trigger
-  // the reconnect path and restart HTTP polling fallback.
+  // the reconnect path and restart HTTP polling fallback. An injected source
+  // has no socket to watch.
   useEffect(() => {
+    if (injected) return;
     const WATCHDOG_MS = 12_000;
     const id = setInterval(() => {
       const ws = wsRef.current;
@@ -351,11 +423,13 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
       }
     }, 5_000);
     return () => clearInterval(id);
-  }, []);
+  }, [injected]);
 
   // --- HTTP polling fallback ---
   useEffect(() => {
     if (connected) return;
+    // An injected source replaces the live feed, the fallback included.
+    if (injected) return;
     // No HTTP fallback in owner mode: the public aircraft.json is unfiltered,
     // so polling it would leak other nodes' data. Wait for the WS to reconnect.
     if (ownerOnly) return;
@@ -386,7 +460,7 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
       clearInterval(interval);
       controller.abort();
     };
-  }, [connected, ingestAircraft, ownerOnly, mode]);
+  }, [connected, injected, ingestAircraft, ownerOnly, mode]);
 
   return {
     aircraft,
@@ -401,6 +475,7 @@ export function useAircraftFeed(ownerOnly = false, mode: FeedMode = defaultFeedM
     setPaused,
     arcsBufferRef,
     detectionsRef,
+    resetEpoch,
   };
 }
 

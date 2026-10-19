@@ -1,4 +1,5 @@
 import { useEffect, useRef, useMemo, useState, useCallback } from "react";
+import { mapNowMs } from "./archiveDisplay";
 import { PLANE_PATH, getAircraftColor } from "./icons";
 import { POSITION_SOURCE_ARC_ONLY, POSITION_SOURCE_ADSB_SINGLE, POSITION_SOURCE_ADSB_MULTI } from "./constants";
 import { classifyHex } from "./hexInfo";
@@ -29,6 +30,9 @@ export default function AircraftListPanel({
   onTogglePin,
   userLoc,
   header,
+  // The map's clock for row ages: null on the live map (the wall clock), the
+  // replay instant in archive mode, where entries are aged against it.
+  clockMs = null,
 }) {
   const palette = usePalette();
   const { INK_SUBTLE, NODE } = palette;
@@ -117,7 +121,7 @@ export default function AircraftListPanel({
   const offsetY      = startIdx * ROW_HEIGHT;
 
   const pinSet = pinned instanceof Set ? pinned : new Set(pinned || []);
-  const nowMs = Date.now();
+  const nowMs = mapNowMs(clockMs);
   const formatAge = (ac) => {
     // `seen` is seconds since last update (tar1090 convention). Some objects
     // carry `last_seen_ts` (ms) — handle both.
@@ -134,12 +138,10 @@ export default function AircraftListPanel({
   return (
     <div className={`aircraft-list-panel${collapsed ? " collapsed" : ""}`}>
       <div className="al-header">
+        {/* Kept when collapsed: the narrow rail clips it to nothing, and on a
+            phone it labels the chip that opens the list. */}
         <div className="al-title">
-          {!collapsed && (
-            <>
-              Aircraft <span className="al-count">{filtered.length}</span>
-            </>
-          )}
+          Aircraft <span className="al-count">{filtered.length}</span>
         </div>
         <button
           className="al-collapse-btn"

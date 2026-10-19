@@ -10,7 +10,7 @@
    not hold: the rule follows derived values, so each new use of
    selectedTrail or history would reopen it. Moving the stores into state or
    useSyncExternalStore is a redesign of the hot path, not a lint fix. */
-import React, { useEffect, useRef, useState, useCallback, useMemo, memo } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo, memo, useSyncExternalStore } from "react";
 import {
   MapContainer,
   TileLayer,
@@ -30,7 +30,6 @@ import {
   GT_FEED_STALE_MS,
   GT_PRUNE_GRACE_MS,
   POSITION_SOURCE_ARC_ONLY,
-  ARC_DR_MAX_S,
   TRAIL_SMOOTH_K,
   TRAIL_SOLVE_SIGMA_FALLBACK_M,
   SOLVE_TRAIL_MAX_POINTS,
@@ -87,7 +86,21 @@ import { defaultFeedMode, type FeedMode } from "./feedMode";
 import { withCartoKey } from "./utils/basemap";
 import { TILES } from "./utils/tiles";
 import { useMapPreference } from "./useMapPreference";
-import { parseHash, useHashWriter, encodeLayers, decodeLayers } from "./useUrlHashState";
+import { parseHash, useHashWriter, useArchiveHash, encodeLayers, decodeLayers } from "./useUrlHashState";
+import { useArchiveReplay } from "./replay/useArchiveReplay";
+import { useTrackAvailability } from "./replay/useTrackAvailability";
+import ArchiveBar from "./ArchiveBar";
+import {
+  archiveAvailable,
+  archiveClockMs as archiveClockOf,
+  archiveEntryMs,
+  archiveTrailBuffer,
+  displayPose,
+  isArchiveMode,
+  mapNowMs,
+  skipInitialFit as skipInitialFitFor,
+  solveTrailTsS,
+} from "./archiveDisplay";
 import { releaseView, viewHeldFromHash } from "./hashHold";
 import { useKeyboardShortcuts } from "./useKeyboardShortcuts";
 import { trailToCsv, trailsToBulkCsv, downloadCsv } from "./trailExport";
@@ -760,6 +773,9 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftR
       solve lands: the icon dead-reckons out of the disc, and that separation
       is the extrapolation made visible.
 
+      `clockRef` holds the archive clock in archive replay (null live), so the
+      icon gate below ages a replayed solve against the replay instant.
+
       68%, not 95%, since 2026-09-06: dark solve error is heavy-tailed, so a
       95% ring on a GOOD solve is ~8x its median error and a viewport of them
       is a wash.  The 95% figure stays in the detail panel.
@@ -782,7 +798,7 @@ const AircraftTrailsLayer = memo(function AircraftTrailsLayer({ visibleAircraftR
       ── */
 const _uncertaintyCanvas = typeof window !== "undefined" ? L.canvas({ padding: 0.5, pane: DEBUG_PASSIVE_PANE }) : null;
 
-const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircraftRef, colorByAlt, selectedHexRef }) {
+const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircraftRef, colorByAlt, selectedHexRef, clockRef }) {
   const map = useMap();
   const circlesRef = useRef(new Map()); // hex → L.circle
 
@@ -790,7 +806,7 @@ const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircr
     ensureDebugPanes(map);
     const circles = circlesRef.current;
     const tick = () => {
-      const markerNow = Date.now();
+      const markerNow = mapNowMs(clockRef?.current);
       const live = new Set();
       for (const ac of visibleAircraftRef.current || []) {
         if (!ac.hex) continue;
@@ -857,7 +873,7 @@ const SolveUncertaintyLayer = memo(function SolveUncertaintyLayer({ visibleAircr
       for (const circle of circles.values()) circle.remove();
       circles.clear();
     };
-  }, [map, visibleAircraftRef, colorByAlt, selectedHexRef]);
+  }, [map, visibleAircraftRef, colorByAlt, selectedHexRef, clockRef]);
 
   return null;
 });
@@ -1223,6 +1239,47 @@ const HashSync = memo(function HashSync({ onMove, showRangeRings, selectedHex, s
 
 /* ── Main component ───────────────────────────────────────────── */
 
+/** The animation loop rebuilds the React display array once per this many
+ *  frames (2 Hz at 60 fps); positions move every frame, imperatively. */
+const DISPLAY_EVERY_FRAMES = 30;
+/** Points kept per hex in the frontend trail buffer: 30 s of the live 2 Hz
+ *  sample, or the last 60 points of a replayed entry's own trail. */
+const FRONTEND_TRAIL_MAX_POINTS = 60;
+
+/**
+ * Whether an entry's trail goes in the per-solve buffer (solveTrailsRef): a
+ * DARK multinode solve that states where the solve was.  Restricted to this
+ * one lane on purpose: single-node sources get WORSE under a centred window —
+ * an arc-only track's position is the arc midpoint, which teleports along the
+ * locus between detections, and the capture measured solver_single_node
+ * deviation p90 8 m → 16 m at k=3 (the average smears across the jumps
+ * instead of following them).  adsb_assisted solves are excluded because
+ * their position is already anchored by a transponder fix, so there is
+ * nothing to average down.
+ */
+function feedsSolveTrail(ac): boolean {
+  return ac.position_source === "multinode_solve" && !ac.adsb_assisted
+    && validLatLon(ac.solve_lat, ac.solve_lon);
+}
+
+// Must match the phone block in LiveAircraftMap.css.
+const PHONE_QUERY = "(max-width: 600px)";
+
+function subscribePhone(onChange: () => void) {
+  if (typeof window.matchMedia !== "function") return () => {};
+  const query = window.matchMedia(PHONE_QUERY);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+
+const isPhone = () => typeof window.matchMedia === "function" && window.matchMedia(PHONE_QUERY).matches;
+
+/** Whether the map is laid out for a phone, following the window as it is
+ *  resized or turned. False where there is no matchMedia. */
+function usePhoneLayout(): boolean {
+  return useSyncExternalStore(subscribePhone, isPhone, () => false);
+}
+
 /**
  * `feed` is the page's fleet. Unset, the hostname decides, which is what /map
  * does; the admin console's /sim passes "synthetic" (feedMode.ts). `ownerView`
@@ -1265,6 +1322,31 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   const { user, ownedNodeRefs, loading: authLoading, syntheticFleet } = auth;
   const ownedSet = useMemo(() => new Set(ownedNodeRefs), [ownedNodeRefs]);
 
+  /* ── Archive mode ───────────────────────────────────────────── */
+  // A `t` in the hash replays the archive around that instant through the same
+  // feed hook, in place of the socket: the replay's frames are ingested as
+  // socket messages would be, so the icons, lanes, trails, discs and panel are
+  // the live map's own. /sim has no archive (the explorer is a real-fleet
+  // feature), so a `t` there is ignored. The archive has no owner view either:
+  // its frames are the public real fleet whatever the owner toggle says.
+  const archiveHash = useArchiveHash();
+  const { setArchive } = archiveHash;
+  const archive = isArchiveMode(mode, archiveHash.t);
+  const replay = useArchiveReplay({
+    active: archive,
+    t: archiveHash.t,
+    spanMin: archiveHash.span,
+    rev: archiveHash.rev,
+  });
+  const availability = useTrackAvailability({ active: archive, clockMs: replay.clockMs });
+  // The map's clock. Null live, where everything reads the wall clock exactly
+  // as it always has. In archive mode, the instant of the frame the stores
+  // hold: every store is stamped with it, so everything that ages an entry
+  // (the drift gate, the stale sweep, the teleport guard, list ages) reads it.
+  // Render-phase readers take this value; the animation loop and the effects
+  // read archiveClockRef, which an effect keeps in step below.
+  const archiveClockMs = archiveClockOf(archive, replay.frameNowMs, replay.clockMs);
+
   /* ── Data feeds ─────────────────────────────────────────────── */
   const {
     aircraft,
@@ -1279,7 +1361,8 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
     setPaused: setFeedPaused,
     arcsBufferRef,
     detectionsRef,
-  } = useAircraftFeed(ownerOnly, mode);
+    resetEpoch,
+  } = useAircraftFeed(ownerOnly, mode, archive ? replay.source : null);
 
   // The owner's own nodes, private ones included, come from the owner API in
   // place of their public entries; `user` is null where the owner view is off.
@@ -1324,6 +1407,10 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
     () => (initialHash.layers ? decodeLayers(initialHash.layers) : null),
     [initialHash],
   );
+  // A sighting link names the place as well as the time, and the first data's
+  // fit must not move the camera off it. Decided at mount, as FitBounds reads
+  // it; a live link keeps its fit.
+  const [skipInitialFit] = useState(() => skipInitialFitFor(archive, initialHash));
 
   const [displayAircraft, setDisplayAircraft] = useState([]);
   const [showCoverage, setShowCoverage] = useMapPreference("layer.coverage", initialLayers?.coverage ?? false);
@@ -1359,7 +1446,21 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   const pausedLoopRef = useRef(false);
   // Controlled slider position for the playback bar; null = live end.
   const [seekIndex, setSeekIndex] = useState(null);
+  // The live pause belongs to the live feed. Entering or leaving the archive
+  // drops it, so the replay starts unfrozen and the live feed comes back
+  // running; in archive mode Space and the toolbar drive the replay instead.
+  const [seenArchive, setSeenArchive] = useState(archive);
+  if (archive !== seenArchive) {
+    setSeenArchive(archive);
+    setPaused(false);
+    setSeekIndex(null);
+  }
   const [sidebarCollapsed, setSidebarCollapsed] = useMapPreference("sidebar.collapsed", false);
+  // On a phone the list is a sheet over the map rather than a rail beside
+  // it, so it starts closed on every visit and leaves the rail's stored
+  // choice alone.
+  const phone = usePhoneLayout();
+  const [listSheetOpen, setListSheetOpen] = useState(false);
   const [viewport, setViewport] = useState(null);
   const [showAnomaliesOnly, setShowAnomaliesOnly] = useState(false);
   const [showIlluminators, setShowIlluminators] = useMapPreference("layer.illuminators", initialLayers?.illuminators ?? false);
@@ -1470,9 +1571,51 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
     };
   }
 
+  /* ── Archive: the clock the loop and the effects read ───────── */
+  // Declared before every effect that reads it, so a frame and its clock that
+  // land in one commit are ingested on that clock. Null live.
+  const archiveClockRef = useRef(null);
+  useEffect(() => {
+    archiveClockRef.current = archiveClockMs;
+  }, [archiveClockMs]);
+  // The archive never engages the live pause, which also froze the animation
+  // loop: one carried in from the live map would leave the replay frozen.
+  useEffect(() => {
+    if (archive) pausedLoopRef.current = false;
+  }, [archive]);
+
+  /* ── Forget every per-hex store when the feed's stores reset ──
+     The feed empties its own stores on a scope change (archive entered or
+     left) and before a replayed frame that asks for it (a seek); resetEpoch
+     counts those. These stores are the map's half of the same state, and they
+     go with it, so nothing from another instant (a fix, a glide, a trail
+     point, a cached LatLng) survives into the next one. Declared before the
+     fix ingest below, so a seek's frame lands in empty stores within the same
+     commit. `archive` is a dependency too, so the flip itself clears them
+     before the loop can read old fixes on the new clock.
+     The marker registry is left alone: it is kept by the mounted markers
+     themselves, and one still mounted across the reset must keep being moved.
+     A live map resets only at mount, onto stores that are already empty. */
+  useEffect(() => {
+    const hadFixes = Object.keys(fixesRef.current).length > 0;
+    fixesRef.current = {};
+    smoothRef.current = {};
+    svgElemsRef.current = {};
+    svgMissRef.current = {};
+    latLngCacheRef.current = {};
+    frontendTrailsRef.current = {};
+    lastTrailSampleRef.current = {};
+    solveTrailsRef.current = {};
+    // Rebuild the display on the loop's next frame rather than at its usual
+    // 2 Hz, so markers from before the reset are gone at once.
+    if (hadFixes) rafFrameRef.current = DISPLAY_EVERY_FRAMES - 1;
+  }, [resetEpoch, archive]);
+
   /* ── Record server fixes when new WS data arrives ───────────── */
   useEffect(() => {
-    const now = Date.now();
+    const archiveClock = archiveClockRef.current;
+    const archiveMode = archiveClock != null;
+    const now = mapNowMs(archiveClock);
     // Shared spherical helper — this held one of the map's five distance
     // implementations (equirect at 111.32); <1% apart, but one is enough.
     const distKm = distanceKm;
@@ -1522,16 +1665,27 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
         _updatedAt: now,
       };
 
-      // Per-solve buffer for DARK multinode tracks (see solveTrailsRef).
-      // Restricted to this one lane on purpose: single-node sources get WORSE
-      // under a centred window — an arc-only track's position is the arc
-      // midpoint, which teleports along the locus between detections, and the
-      // capture measured solver_single_node deviation p90 8 m → 16 m at k=3
-      // (the average smears across the jumps instead of following them).
-      // adsb_assisted solves are excluded because their position is already
-      // anchored by a transponder fix, so there is nothing to average down.
-      if (ac.position_source === "multinode_solve" && !ac.adsb_assisted
-          && validLatLon(ac.solve_lat, ac.solve_lon)) {
+      // Per-solve buffer for DARK multinode tracks (see solveTrailsRef and
+      // feedsSolveTrail for why only that lane).
+      const darkSolve = feedsSolveTrail(ac);
+      // In replay every entry carries its track's archived trail, the solve
+      // epochs up to the clock, and the hex's buffer IS that trail: the dark
+      // lane's in the solve buffer, every other lane's in the frontend buffer
+      // (which the loop no longer samples in replay). So one frame shows the
+      // whole trail, at a paused link and on the first frame after a seek,
+      // where adding a point per frame drew nothing until two had landed and
+      // lost it all again at every reset. The trail ends at the current solve
+      // and never runs past the clock, so nothing is pushed on top of it and
+      // nothing the buffer held is kept.
+      const archivedTrail = archiveMode && ac.position_source === "multinode_solve"
+        && Array.isArray(ac.recent_positions) ? ac.recent_positions : null;
+      if (archivedTrail) {
+        if (darkSolve) {
+          solveTrailsRef.current[ac.hex] = archiveTrailBuffer(archivedTrail, SOLVE_TRAIL_MAX_POINTS, ac.pos_sigma_m);
+        } else {
+          frontendTrailsRef.current[ac.hex] = archiveTrailBuffer(archivedTrail, FRONTEND_TRAIL_MAX_POINTS);
+        }
+      } else if (darkSolve) {
         let solves = solveTrailsRef.current[ac.hex];
         if (!solves) {
           // A hard turn makes the solver mint a new dark key for an aircraft
@@ -1565,9 +1719,12 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
           // fallback is applied inside smoothTrailPositions to the jump gate
           // alone (TRAIL_SOLVE_SIGMA_FALLBACK_M).
           const sigma = typeof ac.pos_sigma_m === "number" && ac.pos_sigma_m > 0 ? ac.pos_sigma_m : undefined;
+          // Stamped with the solve's own epoch in replay, which the archive
+          // row carries; live, with the time it arrived, as always.
+          const tsS = solveTrailTsS(ac, now, archiveMode);
           solves.push(sigma === undefined
-            ? [ac.solve_lat, ac.solve_lon, now / 1000]
-            : [ac.solve_lat, ac.solve_lon, now / 1000, sigma]);
+            ? [ac.solve_lat, ac.solve_lon, tsS]
+            : [ac.solve_lat, ac.solve_lon, tsS, sigma]);
           if (solves.length > SOLVE_TRAIL_MAX_POINTS) solves.shift();
         }
       }
@@ -1580,10 +1737,10 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
     sweepStaleRadar(allStoresRef.current, now, STALE_AIRCRAFT_MS);
   }, [aircraft]);
 
-  /* ── Continuous 60fps glide loop (dead-reckoning + exponential smoothing) ── */
+  /* ── Continuous 60fps glide loop (dead-reckoning + exponential smoothing) ──
+     In archive replay the same loop runs on the replay's clock and draws each
+     icon exactly at its fix: no dead reckoning, no glide (displayPose). */
   useEffect(() => {
-    const DEG_PER_M = 1 / 111_320;
-    const KNOTS_TO_MS = 0.514444;
     // Smoothing time constant: lower = snappier, higher = more glide (seconds)
     const TAU = 0.55;
 
@@ -1601,46 +1758,30 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
       prevTsRef.current = ts;
       const alpha = dt > 0 ? 1 - Math.exp(-dt / TAU) : 1;
 
-      const now = Date.now();
+      const archiveClock = archiveClockRef.current;
+      const archiveMode = archiveClock != null;
+      const now = mapNowMs(archiveClock);
+      // The DOM lookup's retry clock is the browser's, not the data's: on the
+      // replay clock a paused replay would never retry a miss. Live it is the
+      // same reading as `now`.
+      const wallNow = archiveMode ? Date.now() : now;
       const fixes = fixesRef.current;
       for (const fix of Object.values(fixes)) {
         // Store key, not the display hex — ground-truth objects are namespaced
         // so a radar track sharing their ICAO hex can't overwrite them.
         const key = fix._key || fix.hex;
-        // Arc-only tracks get a much shorter dead-reckoning window: their
-        // backend position is the arc midpoint, so a 60 s glide walks them
-        // 7–11 km off the measured locus (see ARC_DR_MAX_S in constants.ts).
-        const drCapS =
-          fix.position_source === POSITION_SOURCE_ARC_ONLY ? ARC_DR_MAX_S : 60;
-        const elapsed = Math.min((now - fix._fixTs) / 1000, drCapS);
-        const gs = fix.gs || 0;
-
-        // 1. Dead-reckon the physics target
-        let targetLat = fix._fixLat;
-        let targetLon = fix._fixLon;
-        if (elapsed > 0 && gs > 0) {
-          const gs_m_s = gs * KNOTS_TO_MS;
-          const track_rad = (fix.track || 0) * (Math.PI / 180);
-          const cos_lat = Math.cos(fix._fixLat * (Math.PI / 180)) || 1e-9;
-          targetLat = fix._fixLat + gs_m_s * Math.cos(track_rad) * DEG_PER_M * elapsed;
-          targetLon = fix._fixLon + (gs_m_s * Math.sin(track_rad)) / (111_320 * cos_lat) * elapsed;
-        }
-
-        // 2. Exponential smoothing toward the target (glide / inertia effect)
+        // Live: dead-reckon the fix, then ease toward it (displayPose; arc-only
+        // tracks get the much shorter ARC_DR_MAX_S window, since their backend
+        // position is the arc midpoint and a 60 s glide walks them 7–11 km off
+        // the measured locus). Archive: the fix itself.
+        // The smooth entry is mutated in place — avoids 412 short-lived object
+        // creations per frame — and displayPose reads `prev` before writing it.
         const prev = smoothRef.current[key];
-        const sLat = prev ? prev.lat + (targetLat - prev.lat) * alpha : targetLat;
-        const sLon = prev ? prev.lon + (targetLon - prev.lon) * alpha : targetLon;
-
-        // Smooth heading with wrap-around handling
-        const targetTrack = fix.track || 0;
-        const prevTrack = prev ? prev.track : targetTrack;
-        const dTrack = ((targetTrack - prevTrack + 540) % 360) - 180;
-        const sTrack = (prevTrack + dTrack * alpha + 360) % 360;
-
-        // Mutate smooth entry in place — avoids 412 short-lived object creations per frame
-        const sm = smoothRef.current[key];
-        if (sm) { sm.lat = sLat; sm.lon = sLon; sm.track = sTrack; }
-        else     smoothRef.current[key] = { lat: sLat, lon: sLon, track: sTrack };
+        const sm = prev ?? (smoothRef.current[key] = { lat: 0, lon: 0, track: 0 });
+        displayPose(fix, prev, now, alpha, archiveMode, sm);
+        const sLat = sm.lat;
+        const sLon = sm.lon;
+        const sTrack = sm.track;
 
         // Update rotation directly on the DOM — avoids setIcon() every frame.
         // Ground-truth objects render on a canvas layer with no divIcon, and
@@ -1657,13 +1798,13 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
             svgEl = null;
             delete svgElemsRef.current[key];
             const retryAt = svgMissRef.current[key] || 0;
-            if (now >= retryAt) {
+            if (wallNow >= retryAt) {
               svgEl = document.querySelector(`.ac-hex-${CSS.escape(key)} svg`);
               if (svgEl) {
                 svgElemsRef.current[key] = svgEl;
                 delete svgMissRef.current[key];
               } else {
-                svgMissRef.current[key] = now + 2000;
+                svgMissRef.current[key] = wallNow + 2000;
               }
             }
           }
@@ -1688,18 +1829,22 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
         // (every 500 ms).  This is the source for the trail polyline on
         // arc-only tracks whose backend recent_positions stays at 1 point
         // because the arc midpoint doesn't move between detections.
-        const lastSample = lastTrailSampleRef.current[key] || 0;
-        if (now - lastSample >= 500) {
-          lastTrailSampleRef.current[key] = now;
-          let trail = frontendTrailsRef.current[key];
-          if (!trail) { trail = []; frontendTrailsRef.current[key] = trail; }
-          trail.push([sLat, sLon, now / 1000]);
-          if (trail.length > 60) trail.shift();
+        // Off in replay, where the icon does not glide: the fix ingest fills
+        // this buffer from each replayed entry's own trail instead.
+        if (!archiveMode) {
+          const lastSample = lastTrailSampleRef.current[key] || 0;
+          if (now - lastSample >= 500) {
+            lastTrailSampleRef.current[key] = now;
+            let trail = frontendTrailsRef.current[key];
+            if (!trail) { trail = []; frontendTrailsRef.current[key] = trail; }
+            trail.push([sLat, sLon, now / 1000]);
+            if (trail.length > FRONTEND_TRAIL_MAX_POINTS) trail.shift();
+          }
         }
       }
 
       // Build React display array at 2fps only — avoids ~25k spread-object allocations/s at 60fps.
-      rafFrameRef.current = (rafFrameRef.current + 1) % 30;
+      rafFrameRef.current = (rafFrameRef.current + 1) % DISPLAY_EVERY_FRAMES;
       if (rafFrameRef.current === 0) {
         // Truth objects age out here (render-loop driven) because their
         // arrival-driven prune never fires once the feed stops — stale blue
@@ -1752,7 +1897,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   /* ── Derived: truth-only aircraft ───────────────────────────── */
   /* ── Feed ground-truth objects into fixesRef so the 60fps loop dead-reckons them ── */
   useEffect(() => {
-    const now = Date.now();
+    const now = mapNowMs(archiveClockRef.current);
     const activeGtKeys = applyGroundTruthFixes(
       fixesRef.current, groundTruthRef.current, groundTruthMetaRef.current, now,
     );
@@ -1788,10 +1933,11 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
     () => filteredAircraft.filter((ac) => ac.hex === selectedHex || isAircraftInViewport(ac, viewport)),
     [filteredAircraft, selectedHex, viewport],
   );
-  // Wall clock for the drift gate (hideDrIcon), read ONCE per render rather
-  // than per aircraft — this component re-renders at the 2 Hz displayAircraft
-  // cadence, which is also the hide/revive latency.
-  const markerNow = Date.now();
+  // Clock for the drift gate (hideDrIcon), read ONCE per render rather than
+  // per aircraft — this component re-renders at the 2 Hz displayAircraft
+  // cadence, which is also the hide/revive latency. The wall clock live, the
+  // replay's frame clock in archive mode.
+  const markerNow = mapNowMs(archiveClockMs);
   // Ref mirrors for the imperative layers: their effects read data inside
   // their own tick instead of keying on these 2 Hz array identities, which
   // used to tear every Leaflet object down twice a second.
@@ -1827,25 +1973,56 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
       : [];
   }, [selectedHex, selectedFeedTrail, viewport]);
 
+  // In replay, the frame's own entry for the selection: null live, and when the
+  // frame has no such track (see selectedTrail).
+  const archiveSelectedEntry = useMemo(
+    () => (archive && selectedHex ? aircraft.find((ac) => ac.hex === selectedHex) ?? null : null),
+    [archive, selectedHex, aircraft],
+  );
+
   // { body, head }: `body` is the solid gradient trail, `head` the dashed
   // continuation to the live icon.  `head` is only ever non-empty for a dark
   // multinode selection, where it carries the newest floor(k/2) solves that
   // the centred average cannot reach yet (see AircraftTrailsLayer).
   const selectedTrail = useMemo(() => {
     if (!selectedHex) return { body: [], head: [] };
-    // smoothRef is updated at 60fps (vs displayedAircraftRef which is only 2fps)
-    // so the trail tip connects exactly to the current smoothed position.
-    // A truth-only selection has no radar entry under its bare hex; fall back
-    // to the namespaced ground-truth key so its trail tip still tracks.
-    const animated = smoothRef.current[selectedHex] ?? smoothRef.current[groundTruthKey(selectedHex)];
-    const tip = animated?.lat && animated?.lon ? [animated.lat, animated.lon] : null;
+    let tip;
+    let solveBuf;
+    let frontTrail;
+    if (archive) {
+      // Replay draws the selection from the frame this render holds: its
+      // entry's own trail, mapped as the fix ingest maps it into the buffers,
+      // and its position, where replay draws the icon. The buffers and the
+      // icon's pose are filled after the render (the fix ingest, the loop), so
+      // here they still hold the frame before, and after a reset (a link, a
+      // long or a backward seek) that is nothing, or another instant. A track
+      // the frame does not hold has no trail. The frontend buffer adds
+      // nothing to the feed's trail below: in replay it holds the same
+      // points, never newer.
+      const ac = archiveSelectedEntry;
+      if (!ac) return { body: [], head: [] };
+      tip = validLatLon(ac.lat, ac.lon) ? [ac.lat, ac.lon] : null;
+      solveBuf = feedsSolveTrail(ac) && Array.isArray(ac.recent_positions)
+        ? archiveTrailBuffer(ac.recent_positions, SOLVE_TRAIL_MAX_POINTS, ac.pos_sigma_m)
+        : null;
+      frontTrail = null;
+    } else {
+      // smoothRef is updated at 60fps (vs displayedAircraftRef which is only 2fps)
+      // so the trail tip connects exactly to the current smoothed position.
+      // A truth-only selection has no radar entry under its bare hex; fall back
+      // to the namespaced ground-truth key so its trail tip still tracks.
+      const animated = smoothRef.current[selectedHex] ?? smoothRef.current[groundTruthKey(selectedHex)];
+      tip = animated?.lat && animated?.lon ? [animated.lat, animated.lon] : null;
+      solveBuf = solveTrailsRef.current[selectedHex];
+      frontTrail =
+        frontendTrailsRef.current[selectedHex] ?? frontendTrailsRef.current[groundTruthKey(selectedHex)];
+    }
 
     // Dark multinode: draw the SOLVE path, averaged, exactly as the unselected
     // trails do — and nothing else.  The backend's recent_positions are the
     // dead-reckoned 1 Hz flushes (re-anchor step p90 116 m) and the frontend
     // buffer is the icon's glide path, so splicing either one in would put the
     // two error sources this substrate exists to remove back into the line.
-    const solveBuf = solveTrailsRef.current[selectedHex];
     if (solveBuf && solveBuf.length >= 2) {
       const { smoothed, head } = smoothTrailPositions(solveBuf, { k: TRAIL_SMOOTH_K, sigmaFallbackM: TRAIL_SOLVE_SIGMA_FALLBACK_M });
       const tail = [
@@ -1880,8 +2057,6 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
     // the "doubled head".  The old dedup only dropped a frontend sample
     // COINCIDENT with the backend tail, which a dead-reckoned tail almost
     // never is, so it fired essentially never.
-    const frontTrail =
-      frontendTrailsRef.current[selectedHex] ?? frontendTrailsRef.current[groundTruthKey(selectedHex)];
     if (frontTrail && frontTrail.length) {
       for (const [lat, lon, ts] of frontTrail) {
         if (ts <= lastBackTs) continue;
@@ -1897,7 +2072,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
       }
     }
     return { body: pts, head: [] };
-  }, [selectedHex, visibleTrailEntries]);
+  }, [selectedHex, visibleTrailEntries, archive, archiveSelectedEntry]);
 
   const selectedAc = selectedHex
     ? radarAircraft.find((ac) => ac.hex === selectedHex) || truthOnlyAircraft.find((ac) => ac.hex === selectedHex)
@@ -1906,11 +2081,12 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
   // Nodes with a live detection of the selected simulated object — read from
   // the detection-presence oracle (per-aircraft signals ∪ the detecting_nodes
   // feed key).  trailTick advances on every ingest, so this refreshes at the
-  // feed cadence without its own timer.
+  // feed cadence without its own timer. Aged on the map's clock, the one the
+  // detections were stamped with.
   const selectedTruthDetectingNodes = useMemo(() => {
     if (!selectedAc?._isTruth) return [];
     return detectingNodeRefsFor(
-      detectionsRef.current, selectedAc.hex, Date.now(), ARC_TOTAL_LIFE_MS,
+      detectionsRef.current, selectedAc.hex, markerNow, ARC_TOTAL_LIFE_MS,
     );
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAc, trailTick]);
@@ -1944,6 +2120,13 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
       setDisplayAircraft(historyRef.current[index].aircraft);
     }
   }
+
+  // Archive entry and exit both go through the hash, which is the archive
+  // mode's single source: entry sets `t`, and leaving drops it, which drops
+  // the replay's source so the feed reopens its socket.
+  const openArchive = useCallback(() => setArchive(archiveEntryMs(Date.now())), [setArchive]);
+  const jumpToNow = useCallback(() => setArchive(null), [setArchive]);
+  const { togglePlay: toggleReplay } = replay;
 
   // Selecting never moves the camera, from any entry point — icon, ground-truth
   // dot, arc, list row.  A click on an aircraft asks to inspect it, not to
@@ -2073,7 +2256,8 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
       if (searchQuery) { setSearchQuery(""); return; }
       setSelectedHex(null);
     },
-    " ": () => handleTogglePause(),
+    // The replay's play/pause in archive mode, where the live pause never engages.
+    " ": () => (archive ? toggleReplay() : handleTogglePause()),
     f: () => setShowFilters((v) => !v),
     l: () => setShowLabels((v) => !v),
     t: () => setShowTrails((v) => !v),
@@ -2089,7 +2273,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
     p: () => { if (selectedHex) { togglePinned(selectedHex); toast(pinnedSet.has(selectedHex) ? "Unpinned" : "Pinned"); } },
     m: () => locateMe(),
     n: () => { setSoundOn((v) => { toast(v ? "Sound off" : "Sound on"); return !v; }); },
-  }), [truthAvailable, showShortcutHelp, searchQuery, handleTogglePause, exportSelectedTrail, exportAllTrails, locateMe, selectedHex, togglePinned, pinnedSet, setSoundOn, setShowLabels, setShowTrails, setShowCoverage, setShowIlluminators, setShowGroundTruth, setColorByAlt, setShowStats, setShowRangeRings, setShowArcs]);
+  }), [truthAvailable, showShortcutHelp, searchQuery, archive, toggleReplay, handleTogglePause, exportSelectedTrail, exportAllTrails, locateMe, selectedHex, togglePinned, pinnedSet, setSoundOn, setShowLabels, setShowTrails, setShowCoverage, setShowIlluminators, setShowGroundTruth, setColorByAlt, setShowStats, setShowRangeRings, setShowArcs]);
   useKeyboardShortcuts(shortcutMap);
 
   function computeError(hex, ac) {
@@ -2133,7 +2317,12 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
     <div className={"live-map-container" + (showLabels ? "" : " tf-hide-error-labels")}>
       <Toolbar
         connected={connected}
-        paused={paused}
+        // In archive mode the pill reads ARCHIVE and the pause button is the
+        // replay's play/pause, so `paused` is the replay's.
+        archive={archive}
+        paused={archive ? !replay.playing : paused}
+        atLiveEdge={replay.atLiveEdge}
+        onOpenArchive={archiveAvailable(mode) && !archive ? openArchive : undefined}
         aircraftCount={radarAircraft.length + (showGroundTruth ? truthOnlyAircraft.length : 0)}
         anomalyCount={anomalyCount}
         showCoverage={showCoverage}
@@ -2174,7 +2363,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
         onLocate={locateMe}
         onExportAll={exportAllTrails}
         onShowHelp={() => setShowShortcutHelp(true)}
-        onTogglePause={handleTogglePause}
+        onTogglePause={archive ? toggleReplay : handleTogglePause}
         onFit={() => setFocusNonce((n) => n + 1)}
         filters={filters}
         onFiltersChange={setFilters}
@@ -2186,8 +2375,8 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
           truthOnly={showGroundTruth ? truthOnlyAircraft : []}
           selectedHex={selectedHex}
           onSelect={handleSelectAircraft}
-          collapsed={sidebarCollapsed}
-          onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
+          collapsed={phone ? !listSheetOpen : sidebarCollapsed}
+          onToggleCollapse={() => (phone ? setListSheetOpen((v) => !v) : setSidebarCollapsed((v) => !v))}
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
           searchInputRef={searchInputRef}
@@ -2196,6 +2385,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
           pinned={pinnedSet}
           onTogglePin={togglePinned}
           userLoc={userLoc}
+          clockMs={archiveClockMs}
           header={
             <>
               <NodeOwnerControl
@@ -2211,6 +2401,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
                 anomalyCount={anomalyCount}
                 visible={showStats}
                 onToggle={() => setShowStats((v) => !v)}
+                clockMs={archiveClockMs}
               />
             </>
           }
@@ -2222,7 +2413,8 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
             showGroundTruth={showGroundTruth}
             truthClasses={truthClassesPresent}
             showIlluminators={showIlluminators}
-            hasPlayback={paused && historyRef.current.length > 0}
+            hasPlayback={!archive && paused && historyRef.current.length > 0}
+            hasArchive={archive}
           />
           <MapContainer
             center={[initialHash.lat ?? 34.85, initialHash.lon ?? -82.39]}
@@ -2259,7 +2451,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
             <InvalidateSizeOnResize />
             <WorldWrap />
             <MapClickClear onClear={handleMapClick} />
-            <FitBounds aircraft={radarAircraft} nodes={nodes} selectedHex={selectedHex} focusNonce={focusNonce} />
+            <FitBounds aircraft={radarAircraft} nodes={nodes} selectedHex={selectedHex} focusNonce={focusNonce} skipInitialFit={skipInitialFit} />
             <FollowController followSelected={followSelected} selectedHex={selectedHex} smoothRef={smoothRef} onDisengage={() => setFollowSelected(false)} />
 
             {/* Coverage zones — memoized, only re-renders on nodes/showCoverage change */}
@@ -2486,7 +2678,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
 
             {/* 68% position-uncertainty disc around each multi-node solve. */}
             {showUncertainty && (
-              <SolveUncertaintyLayer visibleAircraftRef={visibleAircraftRef} colorByAlt={colorByAlt} selectedHexRef={selectedHexRef} />
+              <SolveUncertaintyLayer visibleAircraftRef={visibleAircraftRef} colorByAlt={colorByAlt} selectedHexRef={selectedHexRef} clockRef={archiveClockRef} />
             )}
 
             {/* Selected trail — gradient fade; dashed for arc-type tracks */}
@@ -2649,12 +2841,37 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
 
           <ShortcutHelp visible={showShortcutHelp} truthAvailable={truthAvailable} onClose={() => setShowShortcutHelp(false)} />
 
-          {paused && historyRef.current.length > 0 && (
+          {!archive && paused && historyRef.current.length > 0 && (
             <PlaybackBar
               history={historyRef.current}
               value={seekIndex ?? historyRef.current.length - 1}
               onSeek={handleHistorySeek}
               formatSecondsAgo={formatSecondsAgo}
+            />
+          )}
+
+          {/* Where the live PlaybackBar sits: in archive mode the archive is
+              the history, and this bar its scrubber. */}
+          {archive && (
+            <ArchiveBar
+              clockMs={replay.clockMs}
+              playing={replay.playing}
+              atLiveEdge={replay.atLiveEdge}
+              clamp={replay.clamp}
+              rate={replay.rate}
+              windowRange={replay.windowRange}
+              status={replay.status}
+              error={replay.error}
+              truncated={replay.truncated}
+              count={replay.count}
+              trackCount={replay.trackCount}
+              availability={availability}
+              onTogglePlay={toggleReplay}
+              onStep={replay.step}
+              onRate={replay.setRate}
+              onSeek={replay.seek}
+              onJumpToNow={jumpToNow}
+              onRetry={replay.retry}
             />
           )}
         </div>
@@ -2668,6 +2885,7 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
             computeError={computeError}
             detectingNodes={selectedTruthDetectingNodes}
             nodeLabelFor={nodeLabelFor}
+            archive={archive}
           />
         )}
       </div>
