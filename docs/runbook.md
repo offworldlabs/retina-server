@@ -1076,6 +1076,14 @@ then on prod. Run the commands on the box in `/opt/retina-server`
   default the bucket only grows.
   ([lifecycle rules](https://www.backblaze.com/docs/cloud-storage-lifecycle-rules),
   [S3 DeleteObject](https://www.backblaze.com/apidocs/s3-delete-object))
+- Under Caps & Alerts, raise the daily caps before step 2. With the free-tier
+  caps an upload past the storage cap fails with 403 `storage_cap_exceeded`, and
+  a read past the Class B cap with 403 `download_cap_exceeded`, until the
+  counters reset at 00:00 GMT. The storage cap must clear the R2 bucket's size.
+  The app mostly uploads and lists, but every read (GET or HEAD) is Class B,
+  including the state snapshot recovery when the local copy is missing, so a
+  Class B cap that a copy or a check script has used up fails exactly then.
+  ([caps](https://www.backblaze.com/docs/cloud-storage-data-caps-and-alerts))
 - Create an application key restricted to that bucket, with "Read and Write"
   access. That key cannot list other buckets (no `listAllBucketNames`), which
   neither the app nor rclone with `no_check_bucket` needs.
@@ -1114,12 +1122,17 @@ read -rs RCLONE_CONFIG_B2_SECRET_ACCESS_KEY && export RCLONE_CONFIG_B2_SECRET_AC
 ```
 Copy and compare:
 ```bash
-rclone copy r2:<r2-bucket> b2:<b2-bucket> --fast-list --transfers 48 --checkers 48 --progress
+rclone copy r2:<r2-bucket> b2:<b2-bucket> --fast-list --transfers 192 --checkers 64 \
+  --s3-no-head --update --use-server-modtime --progress
 rclone check r2:<r2-bucket> b2:<b2-bucket> --one-way --fast-list
 ```
-`check` compares MD5 where R2 has one and sizes for objects the app uploaded in
-parts. A live server keeps rewriting `snapshots/state_snapshot.json` in R2, so
-`check` may report it as different until step 4.
+The archive is many small files, so the copy is bound by round trips, not
+bandwidth, and wants many transfers. `--s3-no-head` and `--use-server-modtime`
+stop rclone from reading every object back from B2 (one Class B call each);
+`check` then compares MD5 from listings, where R2 has one, and sizes for objects
+the app uploaded in parts. A live server keeps rewriting
+`snapshots/state_snapshot.json` in R2, so `check` may report it as different
+until step 4.
 
 **3. Set the env**, staging first, then prod:
 - With an editor (not `echo ... >>`, which puts the secret in the shell history),
@@ -1143,7 +1156,7 @@ parts. A live server keeps rewriting `snapshots/state_snapshot.json` in R2, so
 
 **4. Final copy**, right after the switch:
 ```bash
-rclone copy --update --use-server-modtime --fast-list r2:<r2-bucket> b2:<b2-bucket>
+rclone copy --update --use-server-modtime --s3-no-head --fast-list r2:<r2-bucket> b2:<b2-bucket>
 ```
 Not `rclone sync`: it deletes from B2 everything that is not in R2, and that
 now includes what the app has written to B2 since the switch. `--update` skips
