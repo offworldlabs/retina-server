@@ -1076,10 +1076,9 @@ then on prod. Run the commands on the box in `/opt/retina-server`
   default the bucket only grows.
   ([lifecycle rules](https://www.backblaze.com/docs/cloud-storage-lifecycle-rules),
   [S3 DeleteObject](https://www.backblaze.com/apidocs/s3-delete-object))
-- Create an application key restricted to that bucket, with read and write
-  access (`listFiles`, `readFiles`, `writeFiles`, `deleteFiles`; deletes need both
-  `writeFiles` and `deleteFiles`, and S3 clients need `listAllBucketNames` on a
-  bucket-restricted key).
+- Create an application key restricted to that bucket, with "Read and Write"
+  access. That key cannot list other buckets (no `listAllBucketNames`), which
+  neither the app nor rclone with `no_check_bucket` needs.
 - `keyID` goes to `OBJECT_STORE_ACCESS_KEY_ID` and `applicationKey` to
   `OBJECT_STORE_SECRET_ACCESS_KEY`. The `applicationKey` is shown only once, and
   the master application key does not work with the S3 API.
@@ -1089,15 +1088,20 @@ then on prod. Run the commands on the box in `/opt/retina-server`
 
 **2. Copy the existing objects**, with rclone from any machine. Define both
 remotes in environment variables, so nothing lands in a config file or the shell
-history. Use a read-only R2 API token and the B2 migration key. Set the
-non-secret values first:
+history. Use a read-only R2 API token and the B2 migration key. B2 goes through
+its S3 API, like the app, so both sides expose MD5 and `rclone check` compares
+content. Set the non-secret values first:
 ```bash
 export RCLONE_CONFIG_R2_TYPE=s3
 export RCLONE_CONFIG_R2_PROVIDER=Cloudflare
 export RCLONE_CONFIG_R2_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
 export RCLONE_CONFIG_R2_REGION=auto
 export RCLONE_CONFIG_R2_NO_CHECK_BUCKET=true
-export RCLONE_CONFIG_B2_TYPE=b2
+export RCLONE_CONFIG_B2_TYPE=s3
+export RCLONE_CONFIG_B2_PROVIDER=Other
+export RCLONE_CONFIG_B2_ENDPOINT=https://s3.<region>.backblazeb2.com
+export RCLONE_CONFIG_B2_REGION=<region>
+export RCLONE_CONFIG_B2_NO_CHECK_BUCKET=true
 ```
 Then read the four credentials. Each `read` waits for one line and echoes
 nothing: the R2 token's access key id and secret, then the migration key's keyID
@@ -1105,16 +1109,17 @@ and applicationKey. Keep this shell open through step 5.
 ```bash
 read -rs RCLONE_CONFIG_R2_ACCESS_KEY_ID && export RCLONE_CONFIG_R2_ACCESS_KEY_ID
 read -rs RCLONE_CONFIG_R2_SECRET_ACCESS_KEY && export RCLONE_CONFIG_R2_SECRET_ACCESS_KEY
-read -rs RCLONE_CONFIG_B2_ACCOUNT && export RCLONE_CONFIG_B2_ACCOUNT
-read -rs RCLONE_CONFIG_B2_KEY && export RCLONE_CONFIG_B2_KEY
+read -rs RCLONE_CONFIG_B2_ACCESS_KEY_ID && export RCLONE_CONFIG_B2_ACCESS_KEY_ID
+read -rs RCLONE_CONFIG_B2_SECRET_ACCESS_KEY && export RCLONE_CONFIG_B2_SECRET_ACCESS_KEY
 ```
 Copy and compare:
 ```bash
-rclone copy r2:<r2-bucket> b2:<b2-bucket> --progress
-rclone check r2:<r2-bucket> b2:<b2-bucket> --one-way --size-only
+rclone copy r2:<r2-bucket> b2:<b2-bucket> --fast-list --transfers 48 --checkers 48 --progress
+rclone check r2:<r2-bucket> b2:<b2-bucket> --one-way --fast-list
 ```
-R2 exposes MD5 and B2 SHA1, so the two share no hash; `check` compares sizes
-only. Add `--download` instead of `--size-only` for a full byte comparison.
+`check` compares MD5 where R2 has one and sizes for objects the app uploaded in
+parts. A live server keeps rewriting `snapshots/state_snapshot.json` in R2, so
+`check` may report it as different until step 4.
 
 **3. Set the env**, staging first, then prod:
 - With an editor (not `echo ... >>`, which puts the secret in the shell history),
@@ -1126,7 +1131,7 @@ only. Add `--download` instead of `--size-only` for a full byte comparison.
   name is set, and deleting the `OBJECT_STORE_*` lines is the rollback until step 6.
   R2 does not have what the app wrote to B2 after the switch, so before deleting
   them copy it back, with an R2 token that can write:
-  `rclone copy --update b2:<b2-bucket> r2:<r2-bucket>`.
+  `rclone copy --update --use-server-modtime b2:<b2-bucket> r2:<r2-bucket>`.
 - Recreate the server so it rereads `backend/.env`:
   ```bash
   cd /opt/retina-server && docker compose up -d
@@ -1138,19 +1143,21 @@ only. Add `--download` instead of `--size-only` for a full byte comparison.
 
 **4. Final copy**, right after the switch:
 ```bash
-rclone copy --update r2:<r2-bucket> b2:<b2-bucket>
+rclone copy --update --use-server-modtime --fast-list r2:<r2-bucket> b2:<b2-bucket>
 ```
 Not `rclone sync`: it deletes from B2 everything that is not in R2, and that
 now includes what the app has written to B2 since the switch. `--update` skips
 files that are newer on B2, so R2's last state snapshot or today's `users.db`
-backup does not overwrite the newer copy.
+backup does not overwrite the newer copy. `--use-server-modtime` compares upload
+times from the listing instead of fetching each object's metadata, and still
+copies what R2 received or rewrote after step 2.
 
 **5. Verify:**
 - The check script passes in each environment.
-- `rclone check r2:<r2-bucket> b2:<b2-bucket> --one-way --size-only` reports
+- `rclone check r2:<r2-bucket> b2:<b2-bucket> --one-way --fast-list` reports
   nothing missing. It may report `snapshots/state_snapshot.json`, and the current
-  day's `backups/users-db/` key, as a different size: B2 holds the newer copy, so
-  leave it alone.
+  day's `backups/users-db/` key, as different: B2 holds the newer copy, so leave
+  it alone.
 - The next day, the day's `backups/users-db/` key is on B2:
   `rclone lsf b2:<b2-bucket>/backups/users-db/ | tail -1`.
 - New `archive/` keys appear after the lifecycle's next cycles.
@@ -1158,7 +1165,7 @@ backup does not overwrite the newer copy.
 
 Then drop the credentials from the shell:
 ```bash
-unset RCLONE_CONFIG_R2_ACCESS_KEY_ID RCLONE_CONFIG_R2_SECRET_ACCESS_KEY RCLONE_CONFIG_B2_ACCOUNT RCLONE_CONFIG_B2_KEY
+unset RCLONE_CONFIG_R2_ACCESS_KEY_ID RCLONE_CONFIG_R2_SECRET_ACCESS_KEY RCLONE_CONFIG_B2_ACCESS_KEY_ID RCLONE_CONFIG_B2_SECRET_ACCESS_KEY
 ```
 
 **6. Revoke R2:**
