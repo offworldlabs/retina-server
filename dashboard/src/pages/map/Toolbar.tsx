@@ -1,5 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { AT_LIVE_EDGE_TITLE } from "./replay/useArchiveReplay";
+
 /**
  * Two rows in one bar.
  *
@@ -62,6 +64,9 @@ export default function Toolbar({
   onShowHelp,
   onTogglePause,
   onFit,
+  archive = false,
+  atLiveEdge = false,
+  onOpenArchive = undefined,
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const actionsRef = useRef<HTMLDivElement>(null);
@@ -104,19 +109,33 @@ export default function Toolbar({
   const themeLabel =
     tileTheme === "positron" ? "Light" : tileTheme === "voyager" ? "Muted" : "OSM";
 
+  // A paused replay at the live edge has nothing to play; Jump to now goes further.
+  const playBlocked = archive && paused && atLiveEdge;
+
   return (
     <div className="live-map-toolbar">
       <div className="toolbar-row-status">
-        <span className={`badge connection-badge ${connected ? "online" : "warning"}`}>
-          {connected ? (paused ? "PAUSED" : "LIVE") : "POLL"}
+        {/* Archive outranks the connection: a replay is not the feed, whatever
+            state the socket behind it is in. */}
+        <span
+          className={`badge connection-badge ${archive ? "archive" : connected ? "online" : "warning"}`}
+        >
+          {archive ? "ARCHIVE" : connected ? (paused ? "PAUSED" : "LIVE") : "POLL"}
         </span>
         <span className="aircraft-count">{aircraftCount} aircraft</span>
 
         <div className="toolbar-spacer" />
 
         <div className="toolbar-actions" ref={actionsRef}>
-          <button className="btn btn-secondary toggle-btn" aria-pressed={paused} onClick={onTogglePause}>
-            {paused ? "▶ Resume" : "⏸ Pause"}
+          <button
+            className="btn btn-secondary toggle-btn"
+            aria-pressed={paused}
+            aria-label={archive ? (paused ? "Play replay" : "Pause replay") : undefined}
+            title={playBlocked ? AT_LIVE_EDGE_TITLE : undefined}
+            disabled={playBlocked}
+            onClick={onTogglePause}
+          >
+            {paused ? (archive ? "▶ Play" : "▶ Resume") : "⏸ Pause"}
           </button>
           <button className="btn btn-secondary toggle-btn" onClick={onFit} title="Fit the view to everything on the map">
             ◎ Fit
@@ -143,6 +162,11 @@ export default function Toolbar({
               <button role="menuitem" onClick={run(onShare)}>
                 Copy link to this view
               </button>
+              {onOpenArchive && !archive && (
+                <button role="menuitem" onClick={run(onOpenArchive)}>
+                  Open archive <span className="menu-hint">1 h ago</span>
+                </button>
+              )}
               <button role="menuitem" onClick={run(onExportAll)}>
                 Export trails as CSV <span className="menu-hint">⇧X</span>
               </button>
