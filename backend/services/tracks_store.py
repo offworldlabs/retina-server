@@ -24,7 +24,9 @@ What a window reads:
 
 A file can vanish at any moment (the lifecycle deletes uploaded ones); one
 that does is skipped quietly. One that cannot be read is skipped, with one
-warning per version of the file.
+warning per version of the file (or per row group that fails), whatever the
+cache keeps: the versions already warned about are remembered apart from it,
+up to _WARNED_MAX of them.
 
 Cache: one LRU holds decoded row groups (counted by their Arrow buffers),
 footer summaries and per-day hour counts (counted by estimate), and evicts
@@ -57,8 +59,8 @@ import pyarrow.compute
 import pyarrow.parquet as pq
 
 from config.constants import TRACKS_CACHE_MAX_BYTES, TRACKS_PARTITION_SLACK_MS, TRACKS_ROW_CAP
-from services.node_kind import is_synthetic_node, node_kind
-from services.node_refs import public_identity
+from services import node_refs
+from services.node_kind import node_kind
 from services.tasks import track_archive
 from services.track_writer import SCHEMA
 
@@ -195,13 +197,22 @@ class _Cache:
 
 _cache = _Cache()
 
+# The file versions and row groups already warned about, the longest unused
+# dropped first past _WARNED_MAX. Kept out of _cache, whose bound can be 0 and
+# whose evictions would otherwise bring a warning back on every poll.
+_WARNED_MAX = 4096
+_warned_lock = threading.Lock()
+_warned: OrderedDict[tuple, None] = OrderedDict()
+
 _pool_lock = threading.Lock()
 _pool: ThreadPoolExecutor | None = None
 
 
 def _reset_for_tests() -> None:
-    """Drop every cached footer, row group and day. Tests only."""
+    """Drop every cached footer, row group and day, and every warning given. Tests only."""
     _cache.clear()
+    with _warned_lock:
+        _warned.clear()
 
 
 def _map[T, R](fn: Callable[[T], R], items: list[T]) -> list[R]:
@@ -218,9 +229,14 @@ def _map[T, R](fn: Callable[[T], R], items: list[T]) -> list[R]:
 
 def _warn_once(key: tuple, message: str, *args: object) -> None:
     """Log a warning the first time ``key`` (a file version, or one of its row groups) fails."""
-    if _cache.get(("warned", *key)) is _MISS:
-        _cache.put(("warned", *key), True, 512 + len(key[0]))
-        logger.warning(message, *args, exc_info=True)
+    with _warned_lock:
+        if key in _warned:
+            _warned.move_to_end(key)
+            return
+        _warned[key] = None
+        while len(_warned) > _WARNED_MAX:
+            _warned.popitem(last=False)
+    logger.warning(message, *args, exc_info=True)
 
 
 # ── Listing ──────────────────────────────────────────────────────────────────
@@ -434,19 +450,16 @@ def _published_refs(ids: str | None, stored: str | None, private: Container[str]
     ``stored`` is the row's contributing_node_refs: the refs the live feed
     published its contributors under when it was archived, which outlive a
     mirrored node's connection. They are split on "," untrimmed, and the row
-    is dropped unless they line up one to one with the ids, with a ref equal
-    to its own id only for a synthetic id (the one id that is its own
-    handle). That last rule keeps a real id from going out as a ref, as it
-    would from a synthetic id holding a comma before it.
+    is dropped unless they line up one to one with the ids. A row without
+    them (null, or a file from before the column) has an empty slot per id,
+    as does a contributor that had no published identity when the row was
+    archived (the registry could not be read, or the node registered later).
 
-    A row without stored refs (null, or a file from before the column)
-    resolves each id now through public_identity and is dropped if any has
-    none. So on test and staging such a row is served for a mirrored node only
+    Each contributor then goes out as node_refs.contributor_handle gives it
+    for its slot, the rule the live feed publishes contributors by, and the
+    row is dropped if any has none. An empty slot is resolved now, so on test
+    and staging a row without stored refs is served for a mirrored node only
     while that node is connected.
-
-    An empty slot is a contributor that had no published identity when the
-    row was archived, as when the registry could not be read or the node
-    registered later. It is resolved now in the same way.
     """
     contributors = [node for node in ids.split(",") if node] if ids else []
     if any(node in private for node in contributors):
@@ -459,13 +472,9 @@ def _published_refs(ids: str | None, stored: str | None, private: Container[str]
         if len(slots) != len(contributors):
             return None
     refs = []
-    for node, ref in zip(contributors, slots):
-        if not ref:
-            resolved = public_identity(node)
-            if resolved is None:
-                return None
-            ref = resolved
-        elif (ref == node) != is_synthetic_node(node):
+    for node, slot in zip(contributors, slots):
+        ref = node_refs.contributor_handle(node, slot or None)
+        if ref is None:
             return None
         refs.append(ref)
     return tuple(refs)
@@ -595,12 +604,36 @@ def query_tracks(
 
 # ── Availability ─────────────────────────────────────────────────────────────
 
-# Per hour: rows of every kind, rows proven real, rows proven synthetic, and
-# rows whose kind the footer does not prove.
-_ALL, _REAL, _SYNTHETIC, _UNPROVEN = range(4)
+
+class _Tally(NamedTuple):
+    """One hour's rows: of every kind, proven real, proven synthetic, and in
+    row groups whose kind the footer does not prove."""
+
+    rows: int = 0
+    real: int = 0
+    synthetic: int = 0
+    unproven: int = 0
+
+    @classmethod
+    def of(cls, group: _Group) -> _Tally:
+        if not group.proven:
+            return cls(rows=group.rows, unproven=group.rows)
+        if group.kind == "real":
+            return cls(rows=group.rows, real=group.rows)
+        if group.kind == "synthetic":
+            return cls(rows=group.rows, synthetic=group.rows)
+        return cls(rows=group.rows)
+
+    def plus(self, other: _Tally) -> _Tally:
+        return _Tally(
+            self.rows + other.rows,
+            self.real + other.real,
+            self.synthetic + other.synthetic,
+            self.unproven + other.unproven,
+        )
 
 
-def _hour_counts(root: str, day: date) -> dict[int, tuple[int, int, int, int]]:
+def _hour_counts(root: str, day: date) -> dict[int, _Tally]:
     """One partition's rows per hour of their earliest solve, from footers and names alone.
 
     A row group counts in the hour of its solve_ts_ms minimum, or of its file's
@@ -625,22 +658,14 @@ def _hour_counts(root: str, day: date) -> dict[int, tuple[int, int, int, int]]:
     footers = _map(_footer, files)
     complete = len(files) == len(listed) and all(g is not None for g in footers)
     day_start = _ms(datetime(day.year, day.month, day.day, tzinfo=UTC))
-    counts: dict[int, list[int]] = {}
+    hours: dict[int, _Tally] = {}
     for file, groups in zip(files, footers):
         for group in groups or ():
             if group.rows == 0:
                 continue
             first = group.ts_min if group.ts_min is not None else file.flushed_ms
             hour = ((first if first is not None else day_start) // _HOUR_MS) * _HOUR_MS
-            tally = counts.setdefault(hour, [0, 0, 0, 0])
-            tally[_ALL] += group.rows
-            if not group.proven:
-                tally[_UNPROVEN] += group.rows
-            elif group.kind == "real":
-                tally[_REAL] += group.rows
-            elif group.kind == "synthetic":
-                tally[_SYNTHETIC] += group.rows
-    hours = {hour: (a, r, s, u) for hour, (a, r, s, u) in counts.items()}
+            hours[hour] = hours.get(hour, _Tally()).plus(_Tally.of(group))
     # A file that vanished or failed to read leaves the counts short; they are
     # kept only when every listed file was counted, so a retry can fill them.
     if complete:
@@ -673,20 +698,18 @@ def hourly_availability(first_day: date, last_day: date, *, fleet: str = "real")
     start = _ms(datetime(first_day.year, first_day.month, first_day.day, tzinfo=UTC))
     end = _ms(datetime(last_day.year, last_day.month, last_day.day, tzinfo=UTC)) + _DAY_MS
     after = last_day + timedelta(days=1) if last_day < date.max else last_day
-    totals: dict[int, list[int]] = {}
+    totals: dict[int, _Tally] = {}
     for day in _days(first_day, after):
         for hour, tally in _hour_counts(root, day).items():
             if start <= hour < end:
-                running = totals.setdefault(hour, [0, 0, 0, 0])
-                for i in range(4):
-                    running[i] += tally[i]
+                totals[hour] = totals.get(hour, _Tally()).plus(tally)
     hours = []
     for hour in sorted(totals):
         tally = totals[hour]
         if fleet == "all":
-            count, unclassified = tally[_ALL], 0
+            count, unclassified = tally.rows, 0
         else:
-            count, unclassified = tally[_REAL if fleet == "real" else _SYNTHETIC], tally[_UNPROVEN]
+            count, unclassified = (tally.real if fleet == "real" else tally.synthetic), tally.unproven
         if count + unclassified > 0:
             hours.append({"start_ms": hour, "count": count, "unclassified": unclassified})
     return {
