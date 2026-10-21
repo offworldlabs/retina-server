@@ -495,6 +495,11 @@ describe("errors", () => {
     [new HttpError(422, "Unprocessable Entity", { detail: "the range is capped at 92 days" }), "the range is capped at 92 days"],
     [new DOMException("No response within 15000 ms", "TimeoutError"), "timed out"],
     [new TypeError("Failed to fetch"), "network error"],
+    [new HttpError(429, "Too Many Requests", null), "too many requests"],
+    [new HttpError(400, "Bad Request", { detail: "to must not be before from" }), "to must not be before from"],
+    [new HttpError(404, "Not Found", { detail: "Not Found" }), "HTTP 404"],
+    [new HttpError(502, "Bad Gateway", null), "HTTP 502"],
+    [new Error("boom"), "unexpected error"],
   ])("say %s as %j", async (err, message) => {
     const { result } = setup();
     await fail(calls[0], err);

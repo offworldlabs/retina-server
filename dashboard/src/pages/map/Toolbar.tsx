@@ -127,22 +127,16 @@ export default function Toolbar({
         <div className="toolbar-spacer" />
 
         <div className="toolbar-actions" ref={actionsRef}>
-          {archive ? (
-            <button
-              className="btn btn-secondary toggle-btn"
-              aria-pressed={paused}
-              aria-label={paused ? "Play replay" : "Pause replay"}
-              title={playBlocked ? AT_LIVE_EDGE_TITLE : undefined}
-              disabled={playBlocked}
-              onClick={onTogglePause}
-            >
-              {paused ? "▶ Play" : "⏸ Pause"}
-            </button>
-          ) : (
-            <button className="btn btn-secondary toggle-btn" aria-pressed={paused} onClick={onTogglePause}>
-              {paused ? "▶ Resume" : "⏸ Pause"}
-            </button>
-          )}
+          <button
+            className="btn btn-secondary toggle-btn"
+            aria-pressed={paused}
+            aria-label={archive ? (paused ? "Play replay" : "Pause replay") : undefined}
+            title={playBlocked ? AT_LIVE_EDGE_TITLE : undefined}
+            disabled={playBlocked}
+            onClick={onTogglePause}
+          >
+            {paused ? (archive ? "▶ Play" : "▶ Resume") : "⏸ Pause"}
+          </button>
           <button className="btn btn-secondary toggle-btn" onClick={onFit} title="Fit the view to everything on the map">
             ◎ Fit
           </button>

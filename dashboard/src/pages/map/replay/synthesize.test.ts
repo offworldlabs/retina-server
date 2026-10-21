@@ -678,6 +678,56 @@ describe("synthesizeFrame: rule 5, recent_positions", () => {
   });
 });
 
+/* ---- a trail's array across frames ------------------------------ */
+
+// The map rebuilds a track's trail buffer only when the entry carries a
+// different trail array, so the array must change exactly when the row does.
+describe("synthesizeFrame: a trail's array across frames", () => {
+  // Track a solves every second (published at +0.5 s), track b every two (at +0.6 s).
+  const a = run(10);
+  const b = Array.from({ length: 5 }, (_, k) =>
+    row({ track_key: "mn-dark-b", frame_ts_ms: T0 + k * 2000 + 100, solve_ts_ms: T0 + k * 2000 + 600, lat: 35.5 + k * 0.001 }),
+  );
+  const hexA = multinodeHexFromKey("mn-dark-test");
+  const hexB = multinodeHexFromKey("mn-dark-b");
+  const trailOf = (index: ReplayIndex, clock: number, hex: string) => entryOf(synthesizeFrame(index, clock), hex)!.recent_positions;
+
+  it("is the same array while the track's row is unchanged", () => {
+    const index = buildReplayIndex(response([...a, ...b]));
+    const first = trailOf(index, T0 + 3_600, hexA);
+    expect(first).toEqual(a.slice(0, 4).map(pointOf));
+    expect(trailOf(index, T0 + 3_850, hexA)).toBe(first);
+    expect(trailOf(index, T0 + 4_499, hexA)).toBe(first);
+  });
+
+  it("is a new array when the row changes, for that track alone, and the old one is left as it was", () => {
+    const index = buildReplayIndex(response([...a, ...b]));
+    const before = synthesizeFrame(index, T0 + 4_700);
+    const after = synthesizeFrame(index, T0 + 5_550);
+    // a moved from row 4 to row 5; b is on row 2 at both clocks.
+    expect(entryOf(after, hexA)!.recent_positions).not.toBe(entryOf(before, hexA)!.recent_positions);
+    expect(entryOf(after, hexA)!.recent_positions).toEqual(a.slice(0, 6).map(pointOf));
+    expect(entryOf(before, hexA)!.recent_positions).toEqual(a.slice(0, 5).map(pointOf));
+    expect(entryOf(after, hexB)!.recent_positions).toBe(entryOf(before, hexB)!.recent_positions);
+    // Back to row 4, as a seek back lands: a trail equal to the first, cut afresh.
+    const back = trailOf(index, T0 + 4_700, hexA);
+    expect(back).toEqual(a.slice(0, 5).map(pointOf));
+    expect(back).not.toBe(entryOf(after, hexA)!.recent_positions);
+  });
+
+  it("is a new array from the next window's index, while the index before keeps its own", () => {
+    const resp = response([...a, ...b]);
+    const first = buildReplayIndex(resp);
+    const old = trailOf(first, T0 + 3_600, hexA);
+    const next = buildReplayIndex(resp, first);
+    const fresh = trailOf(next, T0 + 3_600, hexA);
+    expect(fresh).not.toBe(old);
+    expect(fresh).toEqual(old);
+    expect(trailOf(next, T0 + 3_850, hexA)).toBe(fresh);
+    expect(trailOf(first, T0 + 3_850, hexA)).toBe(old);
+  });
+});
+
 /* ---- rule 6: the frame ------------------------------------------ */
 
 describe("synthesizeFrame: rule 6, the frame", () => {

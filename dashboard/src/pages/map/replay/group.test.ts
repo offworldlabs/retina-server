@@ -308,6 +308,23 @@ describe("groupTrackRows: rule 4, a linked track keeps the key of the window bef
     );
   const mintedOf = (rows: TrackRow[]) => mintedRowsOf(groupTrackRows(rows), rows);
   const keysOf = (rows: TrackRow[], previous?: MintedRows) => groupTrackRows(rows, previous).map((g) => g.key);
+  /** Several targets' rows in the API's order. */
+  const merged = (...targets: TrackRow[][]) =>
+    targets.flat().sort((x, y) => x.frame_ts_ms - y.frame_ts_ms || x.solve_ts_ms - y.solve_ts_ms);
+  /** A window before whose linked tracks held these rows, each under its key. */
+  const heldBefore = (...held: [string, TrackRow][]) =>
+    mintedRowsOf(
+      held.map(([key], i) => ({ key, linked: true, rows: [i] })),
+      held.map(([, r]) => r),
+    );
+  /** Groups `rows` against `previous`, checking no two tracks share a key; `keyOf` names the track holding a row. */
+  const carried = (rows: TrackRow[], previous: MintedRows) => {
+    const groups = groupTrackRows(rows, previous);
+    const keys = groups.map((g) => g.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    const keyOf = (r: TrackRow) => groups.find((g) => g.rows.some((i) => rows[i] === r))?.key;
+    return { groups, keyOf };
+  };
 
   it("carries the key into a window that shares a row with the one before, and on into one that shares a row only with that", () => {
     const rows = chain(10);
@@ -376,6 +393,100 @@ describe("groupTrackRows: rule 4, a linked track keeps the key of the window bef
     const first = mintedRowsOf([{ key: "mn-dark-server", linked: true, rows: [0, 1, 2] }], rows);
     const next = [row({ track_key: "mn-dark-server", lane: "dark", lat: 30 }), ...rows];
     expect(keysOf(next, first)).toEqual(["mn-dark-server", mintedDarkKey(rows[0])]);
+  });
+
+  it("refuses a claim on a key a server-keyed track holds: each keeps its key", () => {
+    // The window before linked the target's rows under k0; this one has the
+    // server's track under k0 and the target's later rows, which mint their own.
+    const rows = chain(4);
+    const k0 = mintedDarkKey(rows[0]);
+    const server = row({ track_key: k0, lane: "dark", lat: 30 });
+    const { groups, keyOf } = carried([server, ...rows.slice(1)], mintedOf(rows.slice(0, 3)));
+    expect(groups).toHaveLength(2);
+    expect([keyOf(server), keyOf(rows[1])]).toEqual([k0, mintedDarkKey(rows[1])]);
+  });
+
+  // In the tests below, the window before held a key this window mints under
+  // another target's rows. A single grouping gives that only through two solves
+  // of one frame that round to one key: its keys come from its tracks' first
+  // rows, and the track minting the key here holds that row first, so it asks
+  // for its own key. Keys carried over several windows (a seek back) give it
+  // plainly, so `previous` is built by hand.
+
+  it.each([
+    ["the track leaving the key starts first", 0, 500],
+    ["the track taking the key starts first", 500, 0],
+  ])("gives a key its holder leaves in the same pass to the track asking for it: %s", (_order, aMs, cMs) => {
+    // Two targets 16 km apart. A minted ka and asks for a key no track holds; C asks for ka.
+    const a = chain(3, T0 + aMs, 34.85);
+    const c = chain(3, T0 + cMs, 35.0);
+    const ka = mintedDarkKey(a[0]);
+    const { groups, keyOf } = carried(merged(a, c), heldBefore(["mn-dark-prev", a[1]], [ka, c[1]]));
+    expect(groups).toHaveLength(2);
+    // Claims are made in track order, so the two cases make them in opposite orders.
+    expect(groups[0].key).toBe(keyOf(aMs < cMs ? a[0] : c[0]));
+    expect([keyOf(a[0]), keyOf(c[0])]).toEqual(["mn-dark-prev", ka]);
+  });
+
+  it.each([
+    [0, 500, 1_000],
+    [0, 1_000, 500],
+    [500, 0, 1_000],
+    [500, 1_000, 0],
+    [1_000, 0, 500],
+    [1_000, 500, 0],
+  ])("hands keys down a chain of three whatever order the tracks start in (%i, %i, %i ms)", (xMs, yMs, zMs) => {
+    // X asks for a free key, Y for X's, Z for Y's.
+    const x = chain(3, T0 + xMs, 34.85);
+    const y = chain(3, T0 + yMs, 35.0);
+    const z = chain(3, T0 + zMs, 35.15);
+    const [kx, ky] = [mintedDarkKey(x[0]), mintedDarkKey(y[0])];
+    const { groups, keyOf } = carried(merged(x, y, z), heldBefore(["mn-dark-prev", x[1]], [kx, y[1]], [ky, z[1]]));
+    expect(groups).toHaveLength(3);
+    expect([keyOf(x[0]), keyOf(y[0]), keyOf(z[0])]).toEqual(["mn-dark-prev", kx, ky]);
+  });
+
+  it("swaps the keys of two tracks that ask for each other's", () => {
+    const a = chain(3, T0, 34.85);
+    const b = chain(3, T0 + 500, 35.0);
+    const [ka, kb] = [mintedDarkKey(a[0]), mintedDarkKey(b[0])];
+    const { groups, keyOf } = carried(merged(a, b), heldBefore([kb, a[1]], [ka, b[1]]));
+    expect(groups).toHaveLength(2);
+    expect([keyOf(a[0]), keyOf(b[0])]).toEqual([kb, ka]);
+  });
+
+  it("rotates the keys of three tracks whose claims form a cycle", () => {
+    const a = chain(3, T0, 34.85);
+    const b = chain(3, T0 + 500, 35.0);
+    const c = chain(3, T0 + 1_000, 35.15);
+    const [ka, kb, kc] = [mintedDarkKey(a[0]), mintedDarkKey(b[0]), mintedDarkKey(c[0])];
+    const { groups, keyOf } = carried(merged(a, b, c), heldBefore([kb, a[1]], [kc, b[1]], [ka, c[1]]));
+    expect(groups).toHaveLength(3);
+    expect([keyOf(a[0]), keyOf(b[0]), keyOf(c[0])]).toEqual([kb, kc, ka]);
+  });
+
+  it("refuses a claim on a key a linked track holds and asks nothing for", () => {
+    const a = chain(3, T0, 34.85);
+    const c = chain(3, T0 + 500, 35.0);
+    const ka = mintedDarkKey(a[0]);
+    const { groups, keyOf } = carried(merged(a, c), heldBefore([ka, c[1]]));
+    expect(groups).toHaveLength(2);
+    expect([keyOf(a[0]), keyOf(c[0])]).toEqual([ka, mintedDarkKey(c[0])]);
+  });
+
+  it.each([
+    ["a server-keyed track", true],
+    ["a linked track that asks for nothing", false],
+  ])("refuses every claim of a chain whose last key is held by %s", (_tail, serverKeyed) => {
+    // D asks for C's key, C for A's, A for B's; B stays where it is.
+    const b = serverKeyed ? [row({ track_key: "mn-dark-server", lane: "dark", lat: 30 })] : chain(3, T0 + 1_500, 35.45);
+    const a = chain(3, T0, 34.85);
+    const c = chain(3, T0 + 500, 35.0);
+    const d = chain(3, T0 + 1_000, 35.15);
+    const [ka, kb, kc, kd] = [a, b, c, d].map((t) => t[0].track_key ?? mintedDarkKey(t[0]));
+    const { groups, keyOf } = carried(merged(a, b, c, d), heldBefore([kb, a[1]], [ka, c[1]], [kc, d[1]]));
+    expect(groups).toHaveLength(4);
+    expect([keyOf(a[0]), keyOf(b[0]), keyOf(c[0]), keyOf(d[0])]).toEqual([ka, kb, kc, kd]);
   });
 
   it("holds each linked row as frame time, lat and lon under its track's key, sorted by frame time: 28 bytes a row", () => {
