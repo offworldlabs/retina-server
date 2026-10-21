@@ -1262,6 +1262,17 @@ function feedsSolveTrail(ac): boolean {
     && validLatLon(ac.solve_lat, ac.solve_lon);
 }
 
+/**
+ * The archived trail, and the sigma on its last point, that a replay trail
+ * buffer was built from, keyed by the buffer. Replay hands a track the same
+ * trail array while its row is unchanged (synthesizeFrame), so a hex whose
+ * buffer was built from the entry's own trail and sigma keeps it. Keyed by the
+ * buffer rather than the hex, the record goes wherever the buffer goes: a
+ * reset, forgetTrack and snapTrack drop both at once, and the next frame
+ * rebuilds.
+ */
+const archivedTrailSources = new WeakMap<object, { trail: unknown; sigma: unknown }>();
+
 // Must match the phone block in LiveAircraftMap.css.
 const PHONE_QUERY = "(max-width: 600px)";
 
@@ -1676,14 +1687,21 @@ function AircraftMapScope({ mode, ownerOnly, restoreSelection, auth, onOwnerChan
       // where adding a point per frame drew nothing until two had landed and
       // lost it all again at every reset. The trail ends at the current solve
       // and never runs past the clock, so nothing is pushed on top of it and
-      // nothing the buffer held is kept.
+      // nothing the buffer held is kept. A buffer already built from this
+      // very trail (the track's row has not moved) stands, rather than every
+      // track's being rebuilt on every tick (see archivedTrailSources).
       const archivedTrail = archiveMode && ac.position_source === "multinode_solve"
         && Array.isArray(ac.recent_positions) ? ac.recent_positions : null;
       if (archivedTrail) {
-        if (darkSolve) {
-          solveTrailsRef.current[ac.hex] = archiveTrailBuffer(archivedTrail, SOLVE_TRAIL_MAX_POINTS, ac.pos_sigma_m);
-        } else {
-          frontendTrailsRef.current[ac.hex] = archiveTrailBuffer(archivedTrail, FRONTEND_TRAIL_MAX_POINTS);
+        const store = darkSolve ? solveTrailsRef.current : frontendTrailsRef.current;
+        const sigma = darkSolve ? ac.pos_sigma_m : undefined;
+        const builtFrom = store[ac.hex] && archivedTrailSources.get(store[ac.hex]);
+        if (!builtFrom || builtFrom.trail !== archivedTrail || builtFrom.sigma !== sigma) {
+          const buf = darkSolve
+            ? archiveTrailBuffer(archivedTrail, SOLVE_TRAIL_MAX_POINTS, sigma)
+            : archiveTrailBuffer(archivedTrail, FRONTEND_TRAIL_MAX_POINTS);
+          archivedTrailSources.set(buf, { trail: archivedTrail, sigma });
+          store[ac.hex] = buf;
         }
       } else if (darkSolve) {
         let solves = solveTrailsRef.current[ac.hex];

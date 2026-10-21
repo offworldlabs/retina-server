@@ -665,6 +665,63 @@ describe("trails in replay", () => {
     expect(Object.keys(buffers().solve)).toHaveLength(1);
   });
 
+  it("keeps the buffer of a track whose row has not moved and rebuilds the one whose row has, stepping on 1 s at a time", async () => {
+    tracksBody = KNOWN;
+    await openArchiveAt(T_LONG, "", KNOWN_INDEX);
+    const requests = tracksRequests().length;
+    const held = () => ({ ...buffers().solve, ...buffers().frontend });
+    let prevFrame = knownFrameAt(T_LONG);
+    let prev = held();
+    const kept: Record<string, number> = {};
+    const rebuilt: Record<string, number> = {};
+    for (let s = 1; s <= 8; s++) {
+      const t = T_LONG + s * 1000;
+      await seekTo(t);
+      const frame = knownFrameAt(t);
+      expectBuffersOf(frame);
+      const now = held();
+      for (const ac of frame.aircraft) {
+        const was = prevFrame.aircraft.find((p) => p.hex === ac.hex)!;
+        if (was.frame_ts_ms === ac.frame_ts_ms && was.solve_ts_ms === ac.solve_ts_ms) {
+          expect(now[ac.hex], `${ac.hex} at +${s} s`).toBe(prev[ac.hex]);
+          kept[ac.hex] = (kept[ac.hex] ?? 0) + 1;
+        } else {
+          expect(now[ac.hex], `${ac.hex} at +${s} s`).not.toBe(prev[ac.hex]);
+          rebuilt[ac.hex] = (rebuilt[ac.hex] ?? 0) + 1;
+        }
+      }
+      prevFrame = frame;
+      prev = now;
+    }
+    // Both happened to each track, the dark lane's and the known one's, all from one loaded window.
+    const hexes = prevFrame.aircraft.map((ac) => ac.hex).sort();
+    expect(hexes).toHaveLength(2);
+    expect(Object.keys(kept).sort()).toEqual(hexes);
+    expect(Object.keys(rebuilt).sort()).toEqual(hexes);
+    expect(tracksRequests()).toHaveLength(requests);
+  });
+
+  it("rebuilds every buffer after a reset, though the frame hands back the trail a buffer was built from", async () => {
+    tracksBody = KNOWN;
+    const dark = knownFrameAt(T_LONG).aircraft.find((ac) => !ac.adsb_assisted)!;
+    await openArchiveAt(T_LONG, "", KNOWN_INDEX);
+    const requests = tracksRequests().length;
+    const first = buffers().solve[dark.hex];
+    expect(first).toHaveLength(SOLVE_TRAIL_MAX_POINTS);
+
+    // Back to before the dark track's first solve (a reset), where the frame
+    // leaves it out, then on to T_LONG again (another): the index in use
+    // hands the dark track the very trail its first buffer was built from.
+    const before = floorSecond(Math.min(...KNOWN.rows.filter((r) => r.lane === "dark").map((r) => r.frame_ts_ms)) - 5_000);
+    await seekTo(before);
+    expect(buffers().solve[dark.hex]).toBeUndefined();
+    await seekTo(T_LONG);
+    expect(tracksRequests()).toHaveLength(requests);
+    expectBuffersOf(knownFrameAt(T_LONG));
+    expect(buffers().solve[dark.hex]).not.toBe(first);
+    expect(buffers().solve[dark.hex]).toEqual(first);
+  });
+
   it("never draws less of a selected track's trail than the deep link drew, stepping on 1 s at a time", async () => {
     tracksBody = KNOWN;
     for (const assisted of [false, true]) {

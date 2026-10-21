@@ -8,10 +8,10 @@
 /*  state through useSyncExternalStore and drives it from effects.    */
 /* ------------------------------------------------------------------ */
 
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { HttpError } from "@retina/shared";
+import { useEffect, useMemo } from "react";
 
 import { api } from "../../../api/client";
+import { describeFailure, type FailureKind, type RequestFailure } from "../../../utils/requestFailure";
 import type { FeedSource, InjectedFrame } from "../hooks";
 import {
   ARCHIVE_SPAN_DEFAULT_MIN,
@@ -21,15 +21,17 @@ import {
 } from "../useUrlHashState";
 import { ADSB_EXPIRY_MS, DARK_EXPIRY_MS, buildReplayIndex, synthesizeFrame, type ReplayIndex } from "./synthesize";
 import type { TracksResponse } from "./types";
+import { useStoreSession } from "./useStoreSession";
 
 export type ReplayRate = 1 | 5 | 20;
 export type LoadStatus = "idle" | "loading" | "ready" | "error";
 
-export interface ArchiveError {
-  kind: "invalid" | "unavailable" | "network" | "other";
-  status?: number;
-  message: string;
-}
+/**
+ * Why the window asked for is not shown: a failed request, read as the rest of
+ * the app reads one, or a stretch too dense to show. Never an abort, which
+ * only means a newer request took its place.
+ */
+export type ArchiveError = RequestFailure & { kind: Exclude<FailureKind, "aborted"> };
 
 /**
  * A link or a seek asked for an instant the archive cannot show (past the live
@@ -136,6 +138,16 @@ const MINUTE_MS = 60_000;
 export const NARROW_FLOOR_MS = 2 * MINUTE_MS;
 /** What the bar says when even NARROW_FLOOR_MS around the clock is cut short of it. */
 export const TOO_DENSE_MESSAGE = "Too many solves around this instant to show.";
+/** What the bar says for an answer whose body the index cannot be built from. */
+export const UNREADABLE_MESSAGE = "The archive sent a window the map could not read.";
+const UNREADABLE: ArchiveError = {
+  kind: "unexpected",
+  status: null,
+  message: UNREADABLE_MESSAGE,
+  retryable: true,
+};
+/** No answer failed (no status), and asking again gets the same cut window (not retryable). */
+const TOO_DENSE: ArchiveError = { kind: "invalid", status: null, message: TOO_DENSE_MESSAGE, retryable: false };
 
 interface Range {
   readonly from: number;
@@ -236,24 +248,25 @@ function servesLoaded(loaded: Loaded, clock: number): boolean {
   return clock >= loaded.range.from && clock <= loaded.end && clock < loaded.window.to;
 }
 
-function isAbort(err: unknown): boolean {
-  return (err as { name?: unknown } | null)?.name === "AbortError";
+/**
+ * The archive routes' own reason for turning a request down: the string
+ * `detail` of a 400 or a 422. Other answers' details only restate the status.
+ * Read structurally, as describeFailure reads the status.
+ */
+export function validationDetail(err: unknown): string | null {
+  const { status, body } = (err ?? {}) as { status?: unknown; body?: unknown };
+  if (status !== 400 && status !== 422) return null;
+  const detail = (body as { detail?: unknown } | null)?.detail;
+  return typeof detail === "string" && detail ? detail : null;
 }
 
-/** What the bar says about a failed window request. */
-export function archiveErrorOf(err: unknown): ArchiveError {
-  if (err instanceof HttpError) {
-    const { status } = err;
-    if (status === 400 || status === 422) {
-      const detail = (err.body as { detail?: unknown } | null)?.detail;
-      return { kind: "invalid", status, message: typeof detail === "string" ? detail : err.message };
-    }
-    if (status === 503) return { kind: "unavailable", status, message: err.message };
-    return { kind: "other", status, message: err.message };
-  }
-  // Read structurally: a DOMException (a timeout) need not be an Error of this realm.
-  const message = (err as { message?: unknown } | null)?.message;
-  return { kind: "network", message: typeof message === "string" && message ? message : "Network error" };
+/** A failed window request as the bar reports it; null for an abort, which is no failure. */
+export function archiveErrorOf(err: unknown): ArchiveError | null {
+  const detail = validationDetail(err);
+  // describeFailure reads a 422 as invalid and a 400 as refused; either way the route said why.
+  const failure = describeFailure(err, detail === null ? undefined : { invalid: detail, refused: detail });
+  if (failure.kind === "aborted") return null;
+  return { ...failure, kind: failure.kind };
 }
 
 function sameSnapshot(a: Snapshot, b: Snapshot): boolean {
@@ -323,7 +336,7 @@ class ReplaySession {
 
   /* ---------------- React's side ---------------- */
 
-  subscribeState = (onChange: () => void): (() => void) => {
+  subscribe = (onChange: () => void): (() => void) => {
     this.watchers.add(onChange);
     return () => {
       this.watchers.delete(onChange);
@@ -661,7 +674,7 @@ class ReplaySession {
     if (next >= radius) {
       this.abortInflight();
       this.status = "error";
-      this.error = { kind: "other", message: TOO_DENSE_MESSAGE };
+      this.error = TOO_DENSE;
       this.stop(true);
       return;
     }
@@ -741,8 +754,10 @@ class ReplaySession {
       // The index in use hands its legacy tracks' keys on, so a track running
       // on into this window keeps its hex (and the map its selection and trail).
       index = buildReplayIndex(resp, this.loaded?.index ?? null);
-    } catch (err) {
-      this.failed(gen, err);
+    } catch {
+      // The server answered, so this is not a failed request: it is a body the index cannot be built from.
+      this.inflight = null;
+      this.fail(UNREADABLE);
       return;
     }
     this.inflight = null;
@@ -771,13 +786,18 @@ class ReplaySession {
   private failed(gen: number, err: unknown): void {
     if (gen !== this.gen) return;
     this.inflight = null;
-    if (isAbort(err)) {
+    const error = archiveErrorOf(err);
+    if (!error) {
       this.settle();
       this.publish();
       return;
     }
+    this.fail(error);
+  }
+
+  private fail(error: ArchiveError): void {
     this.status = "error";
-    this.error = archiveErrorOf(err);
+    this.error = error;
     this.stop(true);
     this.publish();
   }
@@ -838,7 +858,6 @@ class ReplaySession {
   }
 }
 
-const noWatch = () => () => {};
 const NOOP = () => {};
 const IDLE_ACTIONS = {
   togglePlay: NOOP,
@@ -869,14 +888,10 @@ export function useArchiveReplay({
   spanMin: number;
   rev: number;
 }): ArchiveReplay {
-  const [session, setSession] = useState<ReplaySession | null>(() => (active ? new ReplaySession(t, spanMin) : null));
   // One session per stay in archive mode, made when it starts and dropped when
   // it ends; its source is the feed's for exactly that long.
-  if (active !== (session !== null)) setSession(active ? new ReplaySession(t, spanMin) : null);
+  const [session, snapshot] = useStoreSession(active, () => new ReplaySession(t, spanMin), IDLE_SNAPSHOT);
 
-  const snapshot = useSyncExternalStore(session?.subscribeState ?? noWatch, session?.getSnapshot ?? idleSnapshot);
-
-  useEffect(() => (session ? session.dispose : undefined), [session]);
   // `t` moves only with `rev`, and a new rev with the same `t` is still a new link.
   useEffect(() => {
     session?.sync(rev, t, spanMin);
@@ -912,7 +927,3 @@ const IDLE_SNAPSHOT: Snapshot = {
   count: 0,
   trackCount: 0,
 };
-
-function idleSnapshot(): Snapshot {
-  return IDLE_SNAPSHOT;
-}

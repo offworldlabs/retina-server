@@ -17,13 +17,11 @@ import {
   formatUtcHm,
   formatUtcInput,
   parseUtcInput,
-  type AvailabilityHourLike,
 } from "./archiveTimeline";
-import { ARCHIVE_LAG_MS, AT_LIVE_EDGE_TITLE } from "./replay/useArchiveReplay";
+import { ARCHIVE_LAG_MS, AT_LIVE_EDGE_TITLE, UNREADABLE_MESSAGE } from "./replay/useArchiveReplay";
+import type { ArchiveClamp, ArchiveError, LoadStatus, ReplayRate } from "./replay/useArchiveReplay";
+import type { TrackAvailability } from "./replay/useTrackAvailability";
 import "./ArchiveBar.css";
-
-type Rate = 1 | 5 | 20;
-type LoadStatus = "idle" | "loading" | "ready" | "error";
 
 export interface ArchiveBarProps {
   clockMs: number;
@@ -31,30 +29,24 @@ export interface ArchiveBarProps {
   /** The clock is at the live edge, where play has nothing to show. */
   atLiveEdge?: boolean;
   /** The link or seek that put the clock where it is asked for another instant. */
-  clamp?: { by: "link" | "seek"; askedMs: number } | null;
-  rate: Rate;
+  clamp?: ArchiveClamp | null;
+  rate: ReplayRate;
   windowRange: { from: number; to: number } | null;
   status: LoadStatus;
-  error: { kind: string; status?: number; message: string } | null;
+  error: ArchiveError | null;
   truncated: boolean;
   count: number;
   trackCount: number;
-  availability: {
-    hours: AvailabilityHourLike[];
-    range: { from: string; to: string } | null;
-    status: LoadStatus;
-    error: string | null;
-    onViewCenter(centerMs: number): void;
-  };
+  availability: TrackAvailability;
   onTogglePlay(): void;
   onStep(deltaS: number): void;
-  onRate(r: Rate): void;
+  onRate(r: ReplayRate): void;
   onSeek(ms: number): void;
   onJumpToNow(): void;
   onRetry(): void;
 }
 
-const RATES: Rate[] = [1, 5, 20];
+const RATES: ReplayRate[] = [1, 5, 20];
 const SECOND_MS = 1000;
 const num = new Intl.NumberFormat("en-US");
 const plural = (n: number, word: string) => `${num.format(n)} ${word}${n === 1 ? "" : "s"}`;
@@ -66,24 +58,39 @@ interface Notice {
   retry?: boolean;
 }
 
-function errorText(error: ArchiveBarProps["error"]): string {
-  const message = error?.message?.trim() ?? "";
-  switch (error?.kind) {
+function errorText(error: ArchiveError | null): string {
+  if (!error) return "Archive request failed.";
+  const { kind, status } = error;
+  switch (kind) {
     case "invalid":
-      return message || "The archive did not accept this window.";
+    case "refused":
+      // The route's own reason where it gave one, or that the stretch is too
+      // dense to show; otherwise the app's line for the status.
+      return error.message.trim() || "The archive did not accept this window.";
+    case "throttled":
+      return "Too many requests to the archive. Wait a minute, then retry.";
     case "unavailable":
-      return `The archive is unavailable right now (${error.status ?? 503}).`;
-    case "network":
+      return `The archive is unavailable right now (${status ?? 503}).`;
+    case "unreachable":
       return "Couldn't reach the archive.";
+    case "timeout":
+      return "The archive didn't answer in time.";
+    case "unexpected":
+      // A window the server sent and the map could not read says so; any other unexpected failure is the generic line.
+      if (status === null && error.message === UNREADABLE_MESSAGE) return error.message;
+      return status === null ? "Archive request failed." : `Archive request failed (${status}).`;
+    case "server":
+    case "unauthorized":
+      return status === null ? "Archive request failed." : `Archive request failed (${status}).`;
     default: {
-      const status = error?.status != null ? ` (${error.status})` : "";
-      return message ? `Archive request failed${status}: ${message}` : `Archive request failed${status}.`;
+      const unhandled: never = kind;
+      return unhandled;
     }
   }
 }
 
 /** Why the clock is not where the link or seek asked, and where it is instead. */
-function clampText(clamp: NonNullable<ArchiveBarProps["clamp"]>, clockMs: number): string {
+function clampText(clamp: ArchiveClamp, clockMs: number): string {
   const asked = clamp.by === "link" ? "The link's time" : "That time";
   const why = clamp.askedMs > clockMs ? "is past the latest archived moment" : "is before the archive starts";
   // The time alone on the day asked for; the date too when the shown instant is on another.

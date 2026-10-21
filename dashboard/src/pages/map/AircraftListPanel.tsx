@@ -138,8 +138,9 @@ export default function AircraftListPanel({
   return (
     <div className={`aircraft-list-panel${collapsed ? " collapsed" : ""}`}>
       <div className="al-header">
-        {/* Kept when collapsed: the narrow rail clips it to nothing, and on a
-            phone it labels the chip that opens the list. */}
+        {/* Kept when collapsed: CSS hides it on the desktop rail, which takes it
+            out of the accessibility tree, and shows it on a phone, where it
+            labels the chip that opens the list. */}
         <div className="al-title">
           Aircraft <span className="al-count">{filtered.length}</span>
         </div>

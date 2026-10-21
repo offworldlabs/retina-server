@@ -103,18 +103,40 @@ function mintedKeyOf(minted: MintedRows, row: TrackRow): string | undefined {
   return undefined;
 }
 
+// Where a claim stands while carryKeys decides it.
+const UNDECIDED = 0;
+const ON_WALK = 1;
+const GRANTED = 2;
+const REFUSED = 3;
+
+interface KeyClaim {
+  track: GroupedTrack;
+  /** Processing position of the row that names the key. */
+  at: number;
+  /** The track of this grouping that holds the key before the pass, if any. */
+  holder: GroupedTrack | undefined;
+  state: number;
+}
+
 /**
  * Rule 4: a linked track that holds a row a linked track of `previous` held
- * takes that track's key. Its earliest such row (in processing order) names
- * the key it asks for, and of the tracks asking for one key the one whose row
- * comes first gets it; the others keep the key they minted. A key another track
- * of this grouping already holds is never taken, so no two tracks share one.
+ * asks for that track's key. Its earliest such row (in processing order) names
+ * the key, and of the tracks asking for one key the one whose row comes first
+ * claims it; the others keep the key they minted.
+ *
+ * A claim is granted when no track holds the key, when the claimant does, or
+ * when the holder is a linked track whose own claim is granted, so it moves
+ * off the key. Tracks whose claims form a cycle trade keys. A key held by a
+ * server-keyed track, or by a linked track that claims nothing or is refused,
+ * stays put, and every claim waiting on it is refused. The verdicts do not
+ * depend on the order claims are made in, and all granted claims apply at
+ * once, so no two tracks share a key.
  */
 function carryKeys(tracks: GroupedTrack[], rows: readonly TrackRow[], order: readonly number[], previous: MintedRows): void {
   const position = new Int32Array(rows.length);
   for (let p = 0; p < order.length; p++) position[order[p]] = p;
 
-  const claims = new Map<string, { track: GroupedTrack; at: number }>();
+  const claims = new Map<string, KeyClaim>();
   for (const track of tracks) {
     if (!track.linked) continue;
     // A track's rows are in processing order, so the first one found is its earliest.
@@ -122,16 +144,49 @@ function carryKeys(tracks: GroupedTrack[], rows: readonly TrackRow[], order: rea
       const key = mintedKeyOf(previous, rows[i]);
       if (key === undefined) continue;
       const claim = claims.get(key);
-      if (!claim || position[i] < claim.at) claims.set(key, { track, at: position[i] });
+      if (!claim || position[i] < claim.at) claims.set(key, { track, at: position[i], holder: undefined, state: UNDECIDED });
       break;
     }
   }
   if (claims.size === 0) return;
 
-  const held = new Set(tracks.map((t) => t.key));
-  for (const [key, { track }] of claims) {
-    if (key === track.key || !held.has(key)) track.key = key;
+  // Each track claims at most one key, each key has one claimant, and no two
+  // tracks share a key yet, so following claimant -> holder -> the holder's
+  // own claim walks a simple chain that ends or comes back to where it began.
+  const claimOf = new Map<GroupedTrack, KeyClaim>();
+  for (const claim of claims.values()) claimOf.set(claim.track, claim);
+  for (const track of tracks) {
+    const claim = claims.get(track.key);
+    if (claim) claim.holder = track;
   }
+
+  for (const start of claims.values()) {
+    if (start.state !== UNDECIDED) continue;
+    let verdict = GRANTED;
+    for (let claim = start; ; ) {
+      claim.state = ON_WALK;
+      const { holder } = claim;
+      if (holder === undefined || holder === claim.track) break;
+      // A server-keyed holder never claims, so it ends up here too.
+      const next = claimOf.get(holder);
+      if (next === undefined) {
+        verdict = REFUSED;
+        break;
+      }
+      if (next.state === ON_WALK) break; // back at `start`: a cycle
+      if (next.state !== UNDECIDED) {
+        verdict = next.state;
+        break;
+      }
+      claim = next;
+    }
+    // Every claim on the walk stands or falls with the one that ended it.
+    for (let claim: KeyClaim | undefined = start; claim?.state === ON_WALK; claim = claim.holder && claimOf.get(claim.holder)) {
+      claim.state = verdict;
+    }
+  }
+
+  for (const [key, claim] of claims) if (claim.state === GRANTED) claim.track.key = key;
 }
 
 interface LinkHead {
