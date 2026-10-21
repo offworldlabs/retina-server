@@ -122,7 +122,8 @@ def _seed() -> dict[str, str]:
 
 
 def rec(solve: datetime, ids=(PUB_A, PUB_B), *, frame: datetime | None = None, lat=34.85, lon=-82.39, **extra) -> dict:
-    """A record as the solver archives it; lat marks the row."""
+    """A record as the solver archives it; lat marks the row. A solve with no
+    contributor ids still counts its nodes, or the writer skips it."""
     return {
         "solve_ts_ms": ms_of(solve),
         "timestamp_ms": ms_of(frame if frame is not None else solve - timedelta(milliseconds=700)),
@@ -132,7 +133,7 @@ def rec(solve: datetime, ids=(PUB_A, PUB_B), *, frame: datetime | None = None, l
         "vel_east": 61.2,
         "vel_north": -108.4,
         "vel_up": 0.0,
-        "n_nodes": len(ids),
+        "n_nodes": len(ids) or 2,
         "contributing_node_ids": list(ids),
         "adsb_hex": None,
         "rms_delay": 0.41,
@@ -754,6 +755,48 @@ def test_stored_refs_that_do_not_line_up_with_the_ids_drop_the_row(api, root, re
     ]
     assert not re.search(r"ret[0-9a-f]{8}", response.text)
     assert "synth-" not in response.text
+
+
+def test_the_archive_and_the_live_feed_name_contributors_by_one_rule(api, root, refs, monkeypatch):
+    """node_refs.contributor_handle decides for both: swapped for a rule of its
+    own, the live feed and the archive follow it alike. Today's private set
+    still drops a row before the rule is asked about it."""
+    b = refs[PUB_B]
+    asked: list[tuple[str, str | None]] = []
+
+    def handle(node_id, recorded=None):
+        asked.append((node_id, recorded))
+        # Withholds a registered public node and names one with no identity.
+        return None if node_id == PUB_A else f"h({node_id}|{recorded})"
+
+    monkeypatch.setattr(node_refs, "contributor_handle", handle)
+
+    live = node_refs.substitute_identities(
+        {"aircraft": [{"hex": "c3c0de", "multinode": True, "contributing_node_ids": [PUB_A, PUB_B, NO_REF]}]}
+    )
+    assert live["aircraft"] == [
+        {"hex": "c3c0de", "multinode": True, "contributing_node_refs": [f"h({PUB_B}|None)", f"h({NO_REF}|None)"]}
+    ]
+
+    asked.clear()
+    write_new(
+        root,
+        at(10, 5),
+        [
+            rec(at(10, 1), (PUB_B, NO_REF), lat=1.0, contributing_node_refs=[b, ""]),
+            rec(at(10, 2), (PUB_A, PUB_B), lat=2.0),
+            rec(at(10, 3), (PRIV, NO_REF), lat=3.0, contributing_node_refs=["", ""]),
+            rec(at(10, 4), (SYN_A,), lat=4.0, contributing_node_refs=[SYN_A]),
+        ],
+    )
+    response = tracks(api, at(10), at(10, 30), fleet="all")
+    assert [(row["lat"], row["node_refs"]) for row in response.json()["rows"]] == [
+        (1.0, [f"h({PUB_B}|{b})", f"h({NO_REF}|None)"]),
+        (4.0, [f"h({SYN_A}|{SYN_A})"]),
+    ]
+    # Each slot as stored, an empty one as nothing recorded.
+    assert {(PUB_B, b), (NO_REF, None), (PUB_A, None), (SYN_A, SYN_A)} <= set(asked)
+    assert PRIV not in {node for node, _ in asked}
 
 
 def test_rows_without_stored_refs_resolve_their_ids_when_read(api, root, refs, monkeypatch):

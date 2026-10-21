@@ -2,14 +2,17 @@
 
 The route tests (tests/test_tracks_archive_route.py) cover the rules; these
 cover that the store returns plain Python values, that a warm cache answers
-without opening files, that the cache keeps to its byte bound, and that
-concurrent calls agree.
+without opening files, that the cache keeps to its byte bound, that a broken
+file warns once whatever the cache keeps, and that concurrent calls agree.
 """
 
+import logging
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
@@ -26,6 +29,7 @@ from tests.test_tracks_archive_route import (
     connect_mirrored,
     ms_of,
     old,
+    partition,
     rec,
     write_new,
     write_old,
@@ -196,12 +200,71 @@ def test_an_entry_larger_than_the_bound_is_not_kept(monkeypatch):
     assert (cache.get(("c",)), cache._bytes) == ("replaced", 70)
 
 
+def _store_warnings(caplog) -> list[str]:
+    return [r.getMessage() for r in caplog.records if r.name == "services.tracks_store"]
+
+
+@pytest.mark.parametrize("bound", [0, 4_000], ids=["nothing-cached", "evicting"])
+def test_a_broken_file_warns_once_per_version_whatever_the_cache_keeps(root, private, monkeypatch, caplog, bound):
+    monkeypatch.setattr(tracks_store, "TRACKS_CACHE_MAX_BYTES", bound)
+    for minute in range(10):
+        write_new(root, at(10, 5 + minute), [rec(at(10, minute), lat=float(minute))])
+    broken = partition(root, at(10)) / f"part-101600-{uuid.uuid4().hex}.parquet"
+    broken.write_bytes(b"not parquet at all")
+    lats = [float(m) for m in range(10)]
+
+    with caplog.at_level(logging.WARNING, logger="services.tracks_store"):
+        for _ in range(2):
+            assert [row["lat"] for row in query(private)["rows"]] == lats
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            answers = list(pool.map(lambda _: query(private), range(16)))
+        assert all([row["lat"] for row in answer["rows"]] == lats for answer in answers)
+        warned = _store_warnings(caplog)
+        assert len(warned) == 1 and broken.name in warned[0]
+        # Nothing is kept, or the files' own entries no longer all fit.
+        assert tracks_store._cache._bytes <= bound
+        assert len(tracks_store._cache._entries) < 20
+
+        broken.write_bytes(b"still not parquet, and longer")
+        for _ in range(2):
+            assert [row["lat"] for row in query(private)["rows"]] == lats
+    warned = _store_warnings(caplog)
+    assert len(warned) == 2 and broken.name in warned[1]
+
+
+def test_the_warnings_given_are_remembered_up_to_a_bound(root, monkeypatch, caplog):
+    """Past the bound the longest unused is forgotten, so it would warn again."""
+    monkeypatch.setattr(tracks_store, "_WARNED_MAX", 2)
+
+    def fail(name):
+        try:
+            raise OSError("cannot be read")
+        except OSError:
+            tracks_store._warn_once(("footer", name, 1, 1), "skipping %s", name)
+
+    with caplog.at_level(logging.WARNING, logger="services.tracks_store"):
+        for name in "abacab":
+            fail(name)
+    assert _store_warnings(caplog) == ["skipping a", "skipping b", "skipping c", "skipping b"]
+    assert list(tracks_store._warned) == [("footer", "a", 1, 1), ("footer", "b", 1, 1)]
+
+
+def test_pairs_tell_null_ids_and_null_refs_apart_and_map_each_row_back():
+    """Every mix of null and set ids and refs, across chunks, and "" apart from null."""
+    ids = pa.chunked_array([["a", None, "a", None, "b"], [None, "a", "b", "a", None]], pa.string())
+    refs = pa.chunked_array([[None, "x", "x", None, None], ["x", None, "", "x", None]], pa.string())
+    rows = list(zip(ids.to_pylist(), refs.to_pylist()))
+    pairs, index = tracks_store._pairs(ids, refs)
+    assert len(pairs) == len(set(pairs)) == len(set(rows)) == 6
+    assert [pairs[i] for i in index.to_pylist()] == rows
+
+
 def test_concurrent_calls_agree(root, private, monkeypatch):
     # Small enough that entries are evicted while the calls run.
     monkeypatch.setattr(tracks_store, "TRACKS_CACHE_MAX_BYTES", 20_000)
     _fleets(root)
     for minute in range(10):
-        write_new(root, at(10, 11 + minute), [rec(at(10, 10, minute), (SYN_A,), lat=100.0 + minute)])
+        write_new(root, at(10, 11 + minute), [rec(at(10, 10, minute), (SYN_A,), lat=60.0 + minute)])
     expected = query(private, fleet="all")
     tracks_store._reset_for_tests()
     with ThreadPoolExecutor(max_workers=8) as pool:
