@@ -6,12 +6,13 @@
 /*  were not archived yet when they were first asked for.             */
 /* ------------------------------------------------------------------ */
 
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { HttpError } from "@retina/shared";
+import { useEffect, useMemo } from "react";
 
 import { api } from "../../../api/client";
+import { describeFailure } from "../../../utils/requestFailure";
 import type { AvailabilityHour, AvailabilityResponse } from "./types";
-import type { LoadStatus } from "./useArchiveReplay";
+import { validationDetail, type LoadStatus } from "./useArchiveReplay";
+import { useStoreSession } from "./useStoreSession";
 
 export interface TrackAvailability {
   /** Non-empty hours of the held range, ascending. */
@@ -120,18 +121,35 @@ function planFor({ day, radius, kind }: Need, base: DayRange | null, today: numb
   return { request: target, result: target, replace: true };
 }
 
-/** A short reason for the strip: "Couldn't load availability: <this>". */
-export function availabilityErrorOf(err: unknown): string {
-  if (err instanceof HttpError) {
-    const detail = (err.body as { detail?: unknown } | null)?.detail;
-    return typeof detail === "string" && detail ? detail : `HTTP ${err.status}`;
+/**
+ * A short reason for the strip: "Couldn't load availability: <this>". Null for
+ * an abort, which is no failure.
+ */
+export function availabilityErrorOf(err: unknown): string | null {
+  const { kind, status } = describeFailure(err);
+  const http = status === null ? null : `HTTP ${status}`;
+  switch (kind) {
+    case "aborted":
+      return null;
+    case "throttled":
+      return "too many requests";
+    case "timeout":
+      return "timed out";
+    case "invalid":
+    case "refused":
+      return validationDetail(err) ?? http ?? "refused";
+    case "unreachable":
+      return http ?? "network error";
+    case "unavailable":
+    case "server":
+    case "unauthorized":
+    case "unexpected":
+      return http ?? "unexpected error";
+    default: {
+      const unhandled: never = kind;
+      return unhandled;
+    }
   }
-  if ((err as { name?: unknown } | null)?.name === "TimeoutError") return "timed out";
-  return "network error";
-}
-
-function isAbort(err: unknown): boolean {
-  return (err as { name?: unknown } | null)?.name === "AbortError";
 }
 
 class AvailabilityStore {
@@ -276,12 +294,13 @@ class AvailabilityStore {
   private failed(gen: number, plan: Plan, err: unknown): void {
     if (gen !== this.gen) return;
     this.inflight = null;
-    if (isAbort(err)) {
+    const reason = availabilityErrorOf(err);
+    if (reason === null) {
       // A refresh never said it was loading, so there is nothing to undo.
       if (!plan.refresh) this.status = this.held ? "ready" : "idle";
     } else {
       this.status = "error";
-      this.error = availabilityErrorOf(err);
+      this.error = reason;
     }
     this.publish();
   }
@@ -302,13 +321,8 @@ class AvailabilityStore {
   }
 }
 
-const noWatch = () => () => {};
 const NOOP = () => {};
 const IDLE: Snapshot = { hours: [], range: null, status: "idle", error: null };
-
-function idleSnapshot(): Snapshot {
-  return IDLE;
-}
 
 /**
  * The availability strip's data. While `active`, holds the UTC days around the
@@ -318,13 +332,9 @@ function idleSnapshot(): Snapshot {
  * today's hours again as the clock plays into the hour they were fetched in.
  */
 export function useTrackAvailability({ active, clockMs }: { active: boolean; clockMs: number }): TrackAvailability {
-  const [store, setStore] = useState<AvailabilityStore | null>(() => (active ? new AvailabilityStore() : null));
-  if (active !== (store !== null)) setStore(active ? new AvailabilityStore() : null);
-
-  const snapshot = useSyncExternalStore(store?.subscribe ?? noWatch, store?.getSnapshot ?? idleSnapshot);
+  const [store, snapshot] = useStoreSession(active, () => new AvailabilityStore(), IDLE);
   const clockDay = dayOf(clockMs);
 
-  useEffect(() => (store ? store.dispose : undefined), [store]);
   useEffect(() => {
     if (Number.isFinite(clockDay)) store?.showDay(clockDay);
   }, [store, clockDay]);

@@ -1,9 +1,10 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import { HttpError } from "@retina/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import ArchiveBar, { type ArchiveBarProps } from "./ArchiveBar";
 import { parseUtcInput } from "./archiveTimeline";
-import { ARCHIVE_EARLIEST_MS, ARCHIVE_LAG_MS, AT_LIVE_EDGE_TITLE } from "./replay/useArchiveReplay";
+import { ARCHIVE_EARLIEST_MS, ARCHIVE_LAG_MS, AT_LIVE_EDGE_TITLE, UNREADABLE_MESSAGE, archiveErrorOf } from "./replay/useArchiveReplay";
 
 const at = (iso: string) => Date.parse(iso);
 const CLOCK = at("2026-10-18T20:14:05Z");
@@ -300,20 +301,30 @@ describe("ArchiveBar notices", () => {
     expect(notice("status")).toHaveTextContent("Loading the archive…");
   });
 
+  // Each through the hook's own reading of it, so the line is the one the bar shows for that answer.
   it.each([
-    [{ kind: "invalid", status: 422, message: "The window is capped at 60 minutes." }, "The window is capped at 60 minutes."],
-    [{ kind: "unavailable", status: 503, message: "Service Unavailable" }, "The archive is unavailable right now (503)."],
-    [{ kind: "network", message: "Failed to fetch" }, "Couldn't reach the archive."],
-    [{ kind: "other", status: 500, message: "boom" }, "Archive request failed (500): boom"],
-    [{ kind: "other", message: "aborted" }, "Archive request failed: aborted"],
-  ])("alerts a %o error with a Retry", async (error, text) => {
-    const { p } = await setup({ status: "error", error });
+    [new HttpError(422, "Unprocessable Entity", { detail: "The window is capped at 60 minutes." }), "The window is capped at 60 minutes."],
+    [new HttpError(400, "Bad Request", { detail: "to must be after from" }), "to must be after from"],
+    [new HttpError(429, "Too Many Requests", null), "Too many requests to the archive. Wait a minute, then retry."],
+    [new HttpError(503, "Service Unavailable", null), "The archive is unavailable right now (503)."],
+    [new TypeError("Failed to fetch"), "Couldn't reach the archive."],
+    [new HttpError(504, "Gateway Timeout", null), "Couldn't reach the archive."],
+    [new DOMException("No response within 30000 ms", "TimeoutError"), "The archive didn't answer in time."],
+    [new HttpError(500, "", null), "Archive request failed (500)."],
+    [new Error("boom"), "Archive request failed."],
+  ])("alerts %s with a Retry", async (err, text) => {
+    const { p } = await setup({ status: "error", error: archiveErrorOf(err) });
     const alert = notice("alert");
     expect(alert).toHaveTextContent(text);
     expect(alert).toHaveClass("archive-notice", "is-error");
     expect(screen.queryByRole("status")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(p.onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the message of an unexpected error that has no status", async () => {
+    await setup({ status: "error", error: { kind: "unexpected", status: null, message: UNREADABLE_MESSAGE, retryable: true } });
+    expect(notice("alert")).toHaveTextContent("The archive sent a window the map could not read.");
   });
 
   it("says where the replay stops when the window was truncated", async () => {
@@ -413,7 +424,7 @@ describe("ArchiveBar on a clamped link or seek (L2)", () => {
     expect(notice()).toHaveTextContent(past);
     rerender({ status: "loading" });
     expect(notice()).toHaveTextContent("Loading 19:59–20:29 UTC…");
-    rerender({ status: "error", error: { kind: "network", message: "Failed to fetch" } });
+    rerender({ status: "error", error: archiveErrorOf(new TypeError("Failed to fetch")) });
     expect(screen.getByRole("alert")).toHaveTextContent("Couldn't reach the archive.");
     expect(screen.queryByRole("status")).toBeNull();
     // Cleared: the window's own summary again.

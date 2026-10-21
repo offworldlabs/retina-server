@@ -2,6 +2,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAircraftFeed, type FeedSource, type InjectedFrame } from "./hooks";
 import type { FeedMode } from "./feedMode";
+import { mergeTrailPositions } from "./trails";
 
 vi.mock("../../utils/domains", () => ({ usesRealOnlyFeed: false }));
 vi.mock("../../context/AuthContext", () => ({ useAuth: () => ({ user: null, loading: false }) }));
@@ -316,5 +317,95 @@ describe("an injected frame source", () => {
     feed.emit(frame(T0 + 1, [solve("second", T0 + 1)]));
     expect(result.current.aircraft.map((ac) => ac.hex)).toEqual(["first"]);
     expect(Object.keys(result.current.trailsRef.current).sort()).toEqual(["first", "second"]);
+  });
+});
+
+describe("a trail handed the same recent_positions array again", () => {
+  type Point = [number, number, number, number];
+  const at = (lat: number, ts: number): Point => [lat, -1, 9000, ts];
+  /** A replayed track carrying `recent`: replay frames share that array while
+   *  the track's row is unchanged. */
+  const track = (hex: string, recent: Point[]) => ({
+    hex,
+    lat: recent[recent.length - 1][0],
+    lon: -1,
+    alt_baro: 9000,
+    recent_positions: recent,
+  });
+
+  it("keeps the trail it merged from that array, with the same points", () => {
+    const feed = manualSource();
+    const { result } = renderHook(() => useAircraftFeed(false, "real", feed.source));
+    const trail = () => result.current.trailsRef.current["mn1"];
+    feed.emit(frame(T0, [track("mn1", [at(51, T0 - 1), at(51.01, T0)])]));
+    // The next solve repeats the last position: merged, it adds no point.
+    const held = [at(51, T0 - 1), at(51.01, T0), at(51.01, T0 + 1)];
+    feed.emit(frame(T0 + 1, [track("mn1", held)]));
+    const merged = trail();
+    expect(merged).toEqual([at(51, T0 - 1), at(51.01, T0)]);
+    const tick = result.current.trailTick;
+
+    feed.emit(frame(T0 + 1.25, [track("mn1", held)]));
+    feed.emit(frame(T0 + 1.5, [track("mn1", held)]));
+    expect(trail()).toBe(merged);
+    expect(mergeTrailPositions(merged, held)).toEqual(merged);
+    // The map still hears of every frame.
+    expect(result.current.trailTick).toBe(tick + 2);
+  });
+
+  it("merges a new array, a new solve, into the kept trail", () => {
+    const feed = manualSource();
+    const { result } = renderHook(() => useAircraftFeed(false, "real", feed.source));
+    const trail = () => result.current.trailsRef.current["mn1"];
+    const first = [at(51, T0 - 1), at(51.01, T0)];
+    feed.emit(frame(T0, [track("mn1", first)]));
+    feed.emit(frame(T0 + 0.25, [track("mn1", first)]));
+    const kept = trail();
+
+    feed.emit(frame(T0 + 1, [track("mn1", [at(51.01, T0), at(51.02, T0 + 1)])]));
+    expect(trail()).not.toBe(kept);
+    expect(trail()).toEqual([at(51, T0 - 1), at(51.01, T0), at(51.02, T0 + 1)]);
+  });
+
+  it("rebuilds the trail from the frame's array after a reset frame", () => {
+    const feed = manualSource();
+    const { result } = renderHook(() => useAircraftFeed(false, "real", feed.source));
+    const trail = () => result.current.trailsRef.current["mn1"];
+    const later = [at(51.01, T0), at(51.02, T0 + 1)];
+    feed.emit(frame(T0 - 1, [track("mn1", [at(50.99, T0 - 2), at(51, T0 - 1)])]));
+    feed.emit(frame(T0 + 1, [track("mn1", later)]));
+    const before = trail();
+    expect(before).toHaveLength(4);
+
+    // A seek a moment back, onto the same row: the frame hands the same array.
+    feed.emit(frame(T0 + 0.9, [track("mn1", later)], { reset: true }));
+    const rebuilt = trail();
+    expect(rebuilt).not.toBe(before);
+    expect(rebuilt).toEqual(later);
+
+    feed.emit(frame(T0 + 1, [track("mn1", later)]));
+    expect(trail()).toBe(rebuilt);
+  });
+
+  it("still merges a fresh array with the same points, live or replayed", () => {
+    const recent = [at(51, T0 - 1), at(51.01, T0)];
+    const live = renderHook(() => useAircraftFeed(false, "real"));
+    const liveTrail = () => live.result.current.trailsRef.current["live1"];
+    act(() => Socket.instances[0].open());
+    act(() => Socket.instances[0].message({ aircraft: [track("live1", recent)] }));
+    const first = liveTrail();
+    act(() => Socket.instances[0].message({ aircraft: [track("live1", recent)] }));
+    expect(liveTrail()).not.toBe(first);
+    expect(liveTrail()).toEqual(recent);
+    live.unmount();
+
+    const feed = manualSource();
+    const { result } = renderHook(() => useAircraftFeed(false, "real", feed.source));
+    const trail = () => result.current.trailsRef.current["mn1"];
+    feed.emit(frame(T0, [track("mn1", recent)]));
+    const replayed = trail();
+    feed.emit(frame(T0 + 0.25, [track("mn1", recent.map((p) => [...p] as Point))]));
+    expect(trail()).not.toBe(replayed);
+    expect(trail()).toEqual(recent);
   });
 });

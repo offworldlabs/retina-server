@@ -110,6 +110,10 @@
   overflow: hidden;
 }
 
+.aircraft-list-panel.collapsed .al-title {
+  display: none;
+}
+
 .al-count {
   background: var(--accent-light);
   color: var(--accent-hover);
@@ -1318,6 +1322,10 @@
     padding: 0 0 0 12px;
     border-bottom: none;
     background: none;
+  }
+
+  .aircraft-list-panel.collapsed .al-title {
+    display: flex;
   }
 
   .aircraft-list-panel.collapsed .al-collapse-btn {

@@ -9,8 +9,9 @@
 import { Component, lazy, Suspense, useMemo, useState, type ReactNode } from "react";
 import type { TimelineChange } from "@edsc/timeline";
 
-import { availabilityRows, instantFromSpan, type AvailabilityHourLike } from "./archiveTimeline";
+import { availabilityRows, instantFromSpan } from "./archiveTimeline";
 import { ARCHIVE_LAG_MS } from "./replay/useArchiveReplay";
+import type { TrackAvailability } from "./replay/useTrackAvailability";
 
 // Its own chunk, as in the Data Explorer. Vite's CommonJS interop hands back
 // the component; Node's, under vitest, hands back `module.exports`, whose
@@ -33,13 +34,7 @@ const MAX_ZOOM = 2;
 export interface AvailabilityStripProps {
   clockMs: number;
   windowRange: { from: number; to: number } | null;
-  availability: {
-    hours: AvailabilityHourLike[];
-    status: "idle" | "loading" | "ready" | "error";
-    error: string | null;
-    /** The view settled on this instant at this zoom (see the zoom levels above). */
-    onViewCenter(centerMs: number, zoom?: number): void;
-  };
+  availability: Pick<TrackAvailability, "hours" | "status" | "error" | "onViewCenter">;
   onSeek(ms: number): void;
 }
 

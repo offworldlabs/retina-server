@@ -141,7 +141,7 @@ function cutAt(cut: number): TracksResponse {
   return { ...shifted(KEYED.known, cut - last), truncated: true, count: 50_000 };
 }
 
-const TOO_DENSE = { kind: "other", message: "Too many solves around this instant to show." };
+const TOO_DENSE = { kind: "invalid", message: "Too many solves around this instant to show." };
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -1402,20 +1402,36 @@ describe("a legacy track across windows (B7)", () => {
 
 describe("errors (R4)", () => {
   it.each([
-    [new HttpError(422, "Unprocessable Entity", { detail: "the window is capped at 60 minutes" }), { kind: "invalid", status: 422, message: "the window is capped at 60 minutes" }],
-    [new HttpError(422, "Unprocessable Entity", { detail: [{ msg: "bad" }] }), { kind: "invalid", status: 422, message: "422 Unprocessable Entity" }],
-    [new HttpError(400, "Bad Request", { detail: "to must be after from" }), { kind: "invalid", status: 400, message: "to must be after from" }],
-    [new HttpError(503, "Service Unavailable", null), { kind: "unavailable", status: 503, message: "503 Service Unavailable" }],
-    [new HttpError(500, "", null), { kind: "other", status: 500, message: "HTTP 500" }],
-    [new UnauthorizedError(), { kind: "other", status: 401, message: "401 Unauthorized" }],
-    [new DOMException("No response within 30000 ms", "TimeoutError"), { kind: "network", message: "No response within 30000 ms" }],
-    [new TypeError("Failed to fetch"), { kind: "network", message: "Failed to fetch" }],
-    [new Error("boom"), { kind: "network", message: "boom" }],
+    [new HttpError(422, "Unprocessable Entity", { detail: "the window is capped at 60 minutes" }), { kind: "invalid", status: 422, message: "the window is capped at 60 minutes", retryable: false }],
+    [new HttpError(422, "Unprocessable Entity", { detail: [{ msg: "bad" }] }), { kind: "invalid", status: 422, message: "The server could not accept that request.", retryable: false }],
+    [new HttpError(400, "Bad Request", { detail: "to must be after from" }), { kind: "refused", status: 400, message: "to must be after from", retryable: false }],
+    [new HttpError(503, "Service Unavailable", null), { kind: "unavailable", status: 503, message: "This service is unavailable right now. Try again later.", retryable: true }],
+    [new HttpError(500, "", null), { kind: "server", status: 500, message: "The server ran into a problem (HTTP 500). Try again in a moment.", retryable: true }],
+    [new UnauthorizedError(), { kind: "unauthorized", status: 401, message: "Your session has ended. Sign in again.", retryable: false }],
+    [new DOMException("No response within 30000 ms", "TimeoutError"), { kind: "timeout", status: null, message: "The server did not answer in time. Try again.", retryable: true }],
+    [new TypeError("Failed to fetch"), { kind: "unreachable", status: null, message: "Could not reach the server. Check your connection, then try again.", retryable: true }],
+    [new Error("boom"), { kind: "unexpected", status: null, message: "Something went wrong. Try again.", retryable: true }],
+    [new HttpError(429, "Too Many Requests", null), { kind: "throttled", status: 429, message: "Too many attempts from this network. Wait a minute, then try again.", retryable: true }],
+    [new HttpError(502, "Bad Gateway", null), { kind: "unreachable", status: 502, message: "Could not reach the server. Check your connection, then try again.", retryable: true }],
+    // Only a 400's or a 422's detail is the route's reason; a 404's restates the status.
+    [new HttpError(404, "Not Found", { detail: "Not Found" }), { kind: "refused", status: 404, message: "The server refused the request (HTTP 404).", retryable: false }],
   ])("reads %s as %o", async (err, expected) => {
     const { result } = setup();
     await fail(calls[0], err);
     expect(result.current).toMatchObject({ status: "error", playing: false, windowRange: R });
     expect(result.current.error).toEqual(expected);
+  });
+
+  it("reads an answer the index cannot be built from as an unreadable window, not an unreachable archive", async () => {
+    const { result } = setup();
+    await respond(calls[0], { ...KEYED.known, rows: [null] } as unknown as TracksResponse);
+    expect(result.current).toMatchObject({ status: "error", playing: false, windowRange: R });
+    expect(result.current.error).toEqual({
+      kind: "unexpected",
+      status: null,
+      message: "The archive sent a window the map could not read.",
+      retryable: true,
+    });
   });
 
   it("ignores an abort", async () => {
@@ -1448,6 +1464,27 @@ describe("errors (R4)", () => {
     expect(result.current).toMatchObject({ status: "loading", error: null, windowRange: R });
     await respond(calls[1]);
     expect(result.current).toMatchObject({ status: "ready", trackCount: 2 });
+  });
+
+  it("retries the window that failed, not the one in use nor one around where play has since taken the clock", async () => {
+    const { result } = await opened();
+    act(() => {
+      result.current.setRate(20);
+      result.current.play();
+    });
+    // At 20x the next window is asked for 5 min of replay before W's end, around the clock then.
+    await advance(30_000);
+    expect(calls).toHaveLength(2);
+    const failedWindow = calls[1].params;
+    expect(failedWindow).toEqual({ from: T - 5 * MIN, to: T + 25 * MIN, fleet: "real" });
+    // W still serves the clock, so play goes on while that window is out.
+    await advance(1_000);
+    const clock = T + 10 * MIN + 20_000;
+    await fail(calls[1], new HttpError(503, "Service Unavailable", null));
+    expect(result.current).toMatchObject({ status: "error", playing: false, clockMs: clock });
+    act(() => result.current.retry());
+    expect(calls).toHaveLength(3);
+    expect(calls[2].params).toEqual(failedWindow);
   });
 });
 

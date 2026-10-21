@@ -50,6 +50,17 @@ async function sessionHolds(): Promise<boolean> {
   }
 }
 
+/**
+ * The `recent_positions` array a feed trail was merged from, keyed by the
+ * trail. Replay hands a track the same array while its row is unchanged
+ * (synthesizeFrame), and merging that array again into the trail it made adds
+ * nothing: each of its points is either no newer than the trail's last point
+ * or at that point's position (mergeTrailPositions). So the trail is kept, not
+ * copied. Keyed by the trail, the record goes with it on a prune, an append or
+ * a reset. Live frames are parsed fresh, so they always merge.
+ */
+const trailMergedFrom = new WeakMap<object, unknown>();
+
 /** A frame handed to the feed instead of a socket message (archive replay). */
 export interface InjectedFrame {
   now: number;                 // seconds since epoch: the frame's clock (the replay instant)
@@ -169,7 +180,14 @@ export function useAircraftFeed(
       if (!validLatLon(ac.lat, ac.lon)) continue;
       const hex = ac.hex;
       if (ac.recent_positions && ac.recent_positions.length > 0) {
-        trails[hex] = mergeTrailPositions(trails[hex] || [], ac.recent_positions);
+        const held = trails[hex];
+        // Skipping relies on mergeTrailPositions giving the same trail when the same
+        // array is merged again, so a change there must keep that.
+        if (!held || trailMergedFrom.get(held) !== ac.recent_positions) {
+          const merged = mergeTrailPositions(held || [], ac.recent_positions);
+          trailMergedFrom.set(merged, ac.recent_positions);
+          trails[hex] = merged;
+        }
       } else {
         const existing = trails[hex] || [];
         const last = existing[existing.length - 1];
@@ -203,7 +221,7 @@ export function useAircraftFeed(
   const ingestAircraft = useCallback(
     (
       rawAircraft, groundTruth, groundTruthMeta, anomalyHexes, rawDetectingNodes, rawArcs,
-      nowMs = Date.now(), fromSource = false,
+      { nowMs = Date.now(), fromSource = false } = {},
     ) => {
       // A synthetic page reads the unfiltered feed, because the real-only one
       // carries no synthetic fleet to show, so the real nodes come off here
@@ -380,7 +398,7 @@ export function useAircraftFeed(
         if (frame.reset) clearStores();
         ingestAircraft(
           frame.aircraft || [], frame.ground_truth, frame.ground_truth_meta, frame.anomaly_hexes,
-          frame.detecting_nodes, frame.detection_arcs, frame.now * 1000, true,
+          frame.detecting_nodes, frame.detection_arcs, { nowMs: frame.now * 1000, fromSource: true },
         );
       });
       return () => {

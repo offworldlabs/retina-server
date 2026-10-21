@@ -8,6 +8,7 @@
 /* ------------------------------------------------------------------ */
 
 import { MAX_TRAIL_POINTS } from "../trails";
+import { KNOTS_PER_MS, M_PER_FT } from "../units";
 import { ADSB_KEY_PREFIX, groupTrackRows, mintedRowsOf, type MintedRows } from "./group";
 import { multinodeHexFromKey } from "./hex";
 import type { ReplayAircraft, ReplayFrame, TrackRow, TracksResponse } from "./types";
@@ -21,8 +22,6 @@ export const TRAIL_STALE_MS = 300_000;
 /** A row within this many degrees of the trail's last point in both lat and lon adds no point (append_track_history). */
 export const TRAIL_DEDUP_DEG = 0.00005;
 
-const M_PER_FT = 0.3048;
-const KT_PER_MS = 1.94384;
 const RAD_TO_DEG = 180 / Math.PI;
 
 export interface ReplayIndex {
@@ -86,6 +85,15 @@ interface IndexData extends ReplayIndex {
   readonly points: TrailPoint[];
   /** The linked tracks' rows and keys, which the next window's index carries on. */
   readonly minted: MintedRows;
+
+  /**
+   * Each track's trail as a frame last handed it out, and the row it was cut
+   * for (-1 before any): a frame showing the same row hands out the same
+   * array, so the map can skip rebuilding a trail that has not changed. One
+   * per track, and dropped with the index when the next window loads.
+   */
+  readonly trailRow: Int32Array;
+  readonly trails: (TrailPoint[] | undefined)[];
 }
 
 /**
@@ -232,7 +240,7 @@ export function buildReplayIndex(resp: TracksResponse, previous?: ReplayIndex | 
         // sqrt of the squares, not Math.hypot, which can differ from Python's
         // arithmetic in the last bit.
         const speed = Math.sqrt(ve * ve + vn * vn);
-        gs[k] = roundTo(speed * KT_PER_MS, 1);
+        gs[k] = roundTo(speed * KNOTS_PER_MS, 1);
         // Python's float % keeps the divisor's sign, so a heading is never
         // negative; + 0 turns a -0 into the 0 Python gives.
         const deg = (Math.atan2(ve, vn) * RAD_TO_DEG) % 360;
@@ -312,6 +320,8 @@ export function buildReplayIndex(resp: TracksResponse, previous?: ReplayIndex | 
     flights,
     points,
     minted,
+    trailRow: new Int32Array(trackCount).fill(-1),
+    trails: new Array(trackCount),
   };
   return index;
 }
@@ -321,12 +331,15 @@ export function buildReplayIndex(resp: TracksResponse, previous?: ReplayIndex | 
  * /ws/aircraft/live publishes.
  *
  * Each track contributes its latest row published by `clockMs`, provided that
- * row's solve epoch is within the track's expiry of the clock. Pure: the same
- * index and clock give the same frame.
+ * row's solve epoch is within the track's expiry of the clock. The same index
+ * and clock give an equal frame. A track's `recent_positions` is the array
+ * this index last handed out for it when that was cut for the same row, so
+ * frames share it: read it, never edit it in place. It is not frozen, which
+ * would put every reader's filter and slice on V8's slow path.
  */
 export function synthesizeFrame(index: ReplayIndex, clockMs: number): ReplayFrame {
   const ix = index as IndexData;
-  const { publishedAt, frameTs, trackStart, points } = ix;
+  const { publishedAt, frameTs, trackStart, points, trailRow, trails } = ix;
   const aircraft: ReplayAircraft[] = [];
   const anomalyHexes: string[] = [];
 
@@ -382,7 +395,11 @@ export function synthesizeFrame(index: ReplayIndex, clockMs: number): ReplayFram
       entry.adsb_hex = adsbHex;
     }
     if (!Number.isNaN(ix.sigma[r])) entry.pos_sigma_m = ix.sigma[r];
-    entry.recent_positions = points.slice(ix.trailFrom[r], ix.trailTo[r]);
+    if (trailRow[t] !== r) {
+      trails[t] = points.slice(ix.trailFrom[r], ix.trailTo[r]);
+      trailRow[t] = r;
+    }
+    entry.recent_positions = trails[t];
 
     aircraft.push(entry);
     if (anomalous) anomalyHexes.push(hex);

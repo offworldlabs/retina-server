@@ -13,6 +13,7 @@ import { ARC_DR_MAX_S, POSITION_SOURCE_ARC_ONLY } from "./constants";
 import type { FeedMode } from "./feedMode";
 import type { SolveTrailPoint } from "./trails";
 import type { TrailPoint } from "./types";
+import { MS_PER_KNOT } from "./units";
 
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
@@ -20,7 +21,6 @@ const HOUR_MS = 60 * MINUTE_MS;
 /** Longest a fix is dead-reckoned live, in seconds (arc-only tracks get ARC_DR_MAX_S). */
 export const DR_MAX_S = 60;
 const DEG_PER_M = 1 / 111_320;
-const KNOTS_TO_MS = 0.514444;
 
 /** The archive replays the real fleet; /sim stays live, and a `t` in its hash is ignored. */
 export function archiveAvailable(mode: FeedMode): boolean {
@@ -156,7 +156,7 @@ export function displayPose(
   let targetLat = fix._fixLat;
   let targetLon = fix._fixLon;
   if (elapsed > 0 && gs > 0) {
-    const gsMs = gs * KNOTS_TO_MS;
+    const gsMs = gs * MS_PER_KNOT;
     const trackRad = (fix.track || 0) * (Math.PI / 180);
     const cosLat = Math.cos(fix._fixLat * (Math.PI / 180)) || 1e-9;
     targetLat = fix._fixLat + gsMs * Math.cos(trackRad) * DEG_PER_M * elapsed;
