@@ -109,9 +109,10 @@ are in [`arc-display.md`](arc-display.md).
 - **`routes/tracks_archive.py`** — archive routes; `services/track_writer.py`
   stores solves with track key, lane, position sigma, anomaly flags, node kind,
   solve count and the refs their contributors were published under, one row
-  group per kind. `tracks_store.py` serves them off the event loop, caching up
-  to `TRACKS_CACHE_MAX_BYTES` (256 MiB default), and classifies older files by
-  contributor ids (`services/node_kind.py`).
+  group per kind. New rows take the node kind from the handshake verdict
+  (`node_world` in `core/state.py`); older rows fall back to the contributor
+  id prefix (`services/node_kind.py`). `tracks_store.py` serves them off the
+  event loop, caching up to `TRACKS_CACHE_MAX_BYTES` (256 MiB default).
 - **`services/tasks/`** — background async tasks: `aircraft_flush` (broadcast),
   `feed_gc` (stale-store GC on its own 5 s timer, deliberately not tied to the
   feed build), `solver` workers, `analytics_refresh`, archive lifecycle,

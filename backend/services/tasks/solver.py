@@ -27,6 +27,7 @@ from services.geo import bearing_deg, bistatic_differential_km, node_beam_params
 from services.geo import haversine_km as _haversine_km
 from services.id_utils import multinode_hex_from_key
 from services.node_config import position_status
+from services.node_kind import node_kind
 from services.tasks import displacement_caps, multinode_identity, solve_history, solver_pool
 
 # Worker-thread lifecycle, owned by start_solver_workers / stop_solver_workers.
@@ -1489,6 +1490,26 @@ def fov_gate_verdict(fov, n_nodes: int, brg: float, dist_km: float, range_rule_p
     return range_rule_pass or fov_pass
 
 
+def stamp_archive_contributors(archive_record: dict) -> None:
+    """Stamp a solve's archive copy with its contributors' fleet and refs.
+
+    For the writer's node_kind and contributing_node_refs columns
+    (services/track_writer.py), both from the contributing_node_ids the copy
+    carries, at both append sites (_process_solver_item, known_lane._publish).
+
+    node_kind takes the handshake verdict (state.node_world), as the live
+    feed's fleet split does, rather than the id prefix. The refs are what the
+    live feed publishes each contributor as, so the archive can serve the row
+    after a mirrored node disconnects. They come from node_refs' maps as they
+    stand (cached_owner_identity), which never reads the registry or waits on
+    its lock from a solver thread; a contributor the maps do not hold is an
+    empty slot, resolved when the row is read.
+    """
+    ids = archive_record.get("contributing_node_ids") or []
+    archive_record["node_kind"] = node_kind(ids, is_synthetic=lambda n: state.node_world(n) == "sim")
+    archive_record["contributing_node_refs"] = [node_refs.cached_owner_identity(n) or "" for n in ids]
+
+
 def _process_solver_item(
     item: tuple,
     solve_fn,
@@ -2367,17 +2388,14 @@ def _process_solver_item(
         # solve_ts_ms records when the solve completed (server wallclock) so
         # analysts can measure end-to-end latency vs. result["timestamp_ms"].
         archive_record = dict(result)
-        # The key, the follow marker and the contributors' refs go on the
-        # archive copy only, for the writer's track_key, lane and
-        # contributing_node_refs columns (services/track_writer.py). The refs
-        # are the ones the live feed publishes now, so the archive can serve
-        # the row after a mirrored node disconnects.
+        # The key, the follow marker and the contributors' fleet and refs go
+        # on the archive copy only, for the writer's track_key, lane,
+        # node_kind and contributing_node_refs columns
+        # (services/track_writer.py).
         archive_record["track_key"] = key
         if isinstance(s_in, dict) and (s_in.get("follow_key") or s_in.get("lane") == "dark_follow"):
             archive_record["follow_lane"] = True
-        archive_record["contributing_node_refs"] = [
-            node_refs.owner_identity(n) or "" for n in archive_record.get("contributing_node_ids") or []
-        ]
+        stamp_archive_contributors(archive_record)
         archive_record["solve_ts_ms"] = int(time.time() * 1000)
         state.track_archive_buffer.append(archive_record)
         # The re-solve claim, taken here and nowhere else: this aircraft is now

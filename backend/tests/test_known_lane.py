@@ -29,6 +29,7 @@ the displacement gate would have said.  Pinned here:
 Style follows test_solver_worker.py / test_solver_anchor.py.
 """
 
+import threading
 import time
 from collections import deque
 
@@ -473,8 +474,63 @@ class TestModeGating:
         ids = archived["contributing_node_ids"]
         assert sorted(ids) == ["node_a", "node_b"]
         assert archived["contributing_node_refs"] == [mirrored_ref if n == "node_a" else "" for n in ids]
-        assert archived["contributing_node_refs"] == [node_refs.owner_identity(n) or "" for n in ids]
+        assert archived["contributing_node_refs"] == [node_refs.cached_owner_identity(n) or "" for n in ids]
         assert "contributing_node_refs" not in state.multinode_tracks[f"mn-adsb-{HEX}"]
+
+    @pytest.mark.parametrize(
+        ("ids", "verdicts", "kind"),
+        [
+            (("node_a", "node_b"), (True, True), "synthetic"),
+            (("synth-a", "synth-b"), (False, False), "real"),
+            (("node_a", "node_b"), (True, False), "mixed"),
+        ],
+    )
+    def test_binding_stamps_the_handshake_fleet_on_the_archive_copy_only(self, monkeypatch, ids, verdicts, kind):
+        """The fleet is each contributor's handshake verdict (state.node_world),
+        the one the live feed splits by, and not its id prefix: every case here
+        is one the prefix would file differently."""
+        for node, geometry, verdict in zip(ids, ("node_a", "node_b"), verdicts):
+            monkeypatch.setitem(NODE_CFGS, node, NODE_CFGS[geometry])
+            monkeypatch.setitem(state.connected_nodes, node, {"is_synthetic": verdict})
+        _install(_mk_claims(list(ids)))
+        _run(_stub_solve(), mode="binding")
+
+        (archived,) = state.track_archive_buffer
+        assert sorted(archived["contributing_node_ids"]) == sorted(ids)
+        assert archived["node_kind"] == kind
+        assert "node_kind" not in state.multinode_tracks[f"mn-adsb-{HEX}"]
+
+    def test_binding_does_not_wait_on_a_registry_refresh(self, monkeypatch):
+        """The refs are stamped from node_refs' maps as they stand: a refresh
+        holding the lock across a slow registry read must not hold up the
+        publish, which runs on a solver thread."""
+        entered, release = threading.Event(), threading.Event()
+
+        def _slow_load():
+            entered.set()
+            release.wait(timeout=30)
+            return {}, {}
+
+        monkeypatch.setattr(node_refs, "_load", _slow_load)
+        monkeypatch.setattr(node_refs, "_expires_at", 0.0)
+        _install(_mk_claims(["node_a", "node_b"]))
+        refresher = threading.Thread(target=node_refs.ref_for, args=("ret1a2b3c4d",))
+        publisher = threading.Thread(target=_run, args=(_stub_solve(),), kwargs={"mode": "binding"})
+        refresher.start()
+        try:
+            assert entered.wait(timeout=10)
+            publisher.start()
+            publisher.join(timeout=5)
+            assert not publisher.is_alive(), "the publish waited on the registry refresh"
+        finally:
+            release.set()
+            refresher.join(timeout=10)
+            if publisher.ident is not None:
+                publisher.join(timeout=10)
+
+        assert state.known_lane_published == 1
+        (archived,) = state.track_archive_buffer
+        assert archived["contributing_node_refs"] == ["", ""]
 
     def test_binding_supersedes_the_regular_pipelines_entry(self):
         """Same key as the regular tagged path (mn-adsb-*), so a known-lane

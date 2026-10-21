@@ -19,12 +19,24 @@ def archive(tmp_path, monkeypatch):
     return tmp_path
 
 
+def _rec(solve_ts_ms: int, **extra) -> dict:
+    """A record the writer archives, known by its solve_ts_ms."""
+    return {
+        "solve_ts_ms": solve_ts_ms,
+        "timestamp_ms": 1_700_000_000_000,
+        "lat": 34.85,
+        "lon": -82.39,
+        "n_nodes": 2,
+        **extra,
+    }
+
+
 def test_write_failure_retries_old_batch_before_new_records(archive, monkeypatch):
     writer = ta.write_tracks_parquet
-    state.track_archive_buffer.extend([{"solve_ts_ms": 1}, {"solve_ts_ms": 2}])
+    state.track_archive_buffer.extend([_rec(1), _rec(2)])
 
     def fail(**kwargs):
-        state.track_archive_buffer.append({"solve_ts_ms": 3})
+        state.track_archive_buffer.append(_rec(3))
         raise OSError("disk full")
 
     monkeypatch.setattr(ta, "write_tracks_parquet", fail)
@@ -41,14 +53,9 @@ def test_write_failure_retries_old_batch_before_new_records(archive, monkeypatch
 def test_flush_writes_the_stamped_identity_columns(archive):
     state.track_archive_buffer.extend(
         [
-            {"solve_ts_ms": 1, "track_key": "mn-dark-a", "contributing_node_ids": ["node-a", "synth-b"]},
-            {
-                "solve_ts_ms": 2,
-                "track_key": "mn-dark-b",
-                "follow_lane": True,
-                "contributing_node_ids": ["synth-a", "synth-b"],
-            },
-            {"solve_ts_ms": 3, "track_key": "mn-adsb-abc123", "contributing_node_ids": ["node-a", "node-b"]},
+            _rec(1, track_key="mn-dark-a", contributing_node_ids=["node-a", "synth-b"]),
+            _rec(2, track_key="mn-dark-b", follow_lane=True, contributing_node_ids=["synth-a", "synth-b"]),
+            _rec(3, track_key="mn-adsb-abc123", contributing_node_ids=["node-a", "node-b"]),
         ]
     )
     key = ta.flush_track_archive_buffer()
@@ -63,7 +70,7 @@ def test_flush_writes_the_stamped_identity_columns(archive):
 def test_directory_failure_retains_batch(archive):
     archive.rmdir()
     archive.write_text("not a directory")
-    state.track_archive_buffer.append({"solve_ts_ms": 4})
+    state.track_archive_buffer.append(_rec(4))
     with pytest.raises(OSError):
         ta.flush_track_archive_buffer()
     archive.unlink()
@@ -73,29 +80,29 @@ def test_directory_failure_retains_batch(archive):
 
 def test_repeated_failures_do_not_grow_pending_batch(archive, monkeypatch):
     writer = ta.write_tracks_parquet
-    state.track_archive_buffer.extend({"solve_ts_ms": n} for n in range(3))
+    state.track_archive_buffer.extend(_rec(n) for n in range(1, 4))
 
     def fail(**kwargs):
         raise OSError("disk full")
 
     monkeypatch.setattr(ta, "write_tracks_parquet", fail)
-    for n in range(3, 10):
+    for n in range(4, 11):
         with pytest.raises(OSError):
             ta.flush_track_archive_buffer()
-        state.track_archive_buffer.append({"solve_ts_ms": n})
+        state.track_archive_buffer.append(_rec(n))
     monkeypatch.setattr(ta, "write_tracks_parquet", writer)
     retry_key = ta.flush_track_archive_buffer()
     new_key = ta.flush_track_archive_buffer()
-    assert pq.read_table(archive / retry_key).column("solve_ts_ms").to_pylist() == [0, 1, 2]
+    assert pq.read_table(archive / retry_key).column("solve_ts_ms").to_pylist() == [1, 2, 3]
     # The producer retains its existing bounded, newest-records policy.
-    assert pq.read_table(archive / new_key).column("solve_ts_ms").to_pylist() == [7, 8, 9]
+    assert pq.read_table(archive / new_key).column("solve_ts_ms").to_pylist() == [8, 9, 10]
 
 
 @pytest.mark.asyncio
 async def test_failed_flush_does_not_advance_success_health(archive, monkeypatch):
     monkeypatch.setattr(state, "task_last_success", {"track_archive_flush": 123.0})
     monkeypatch.setattr(state, "task_error_counts", defaultdict(int))
-    state.track_archive_buffer.append({"solve_ts_ms": 1})
+    state.track_archive_buffer.append(_rec(1))
     sleeps = 0
 
     async def sleep(interval):
