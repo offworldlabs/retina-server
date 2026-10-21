@@ -514,6 +514,9 @@ def _publish(hexn: str, s_in: dict, result: dict) -> str:
         state.multinode_tracks[key] = smoothed
 
     archive_record = dict(smoothed)
+    archive_record["track_key"] = key
+    # As the regular path stamps them: the contributors' fleet and refs.
+    solver_mod.stamp_archive_contributors(archive_record)
     archive_record["solve_ts_ms"] = int(time.time() * 1000)
     state.track_archive_buffer.append(archive_record)
     return key
