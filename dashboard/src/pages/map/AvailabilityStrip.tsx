@@ -7,9 +7,10 @@
  */
 
 import { Component, lazy, Suspense, useMemo, useState, type ReactNode } from "react";
-import type { TimelineChange } from "@edsc/timeline";
+import type { TimelineChange, TimelineRow } from "@edsc/timeline";
 
-import { availabilityRows, instantFromSpan } from "./archiveTimeline";
+import { HOUR_MS, availabilityRows, instantFromSpan, mergeIntervals } from "./archiveTimeline";
+import type { AvailabilityHour } from "./replay/types";
 import { ARCHIVE_LAG_MS } from "./replay/useArchiveReplay";
 import type { TrackAvailability } from "./replay/useTrackAvailability";
 
@@ -30,6 +31,20 @@ const EDSCTimeline = lazy(() =>
 const INITIAL_ZOOM = 1;
 const MIN_ZOOM = 0;
 const MAX_ZOOM = 2;
+
+/** The archive's rows, with the hours kept only in cold storage drawn on a row of their own rather than among the warm solves. */
+function stripRows(hours: AvailabilityHour[]): TimelineRow[] {
+  const cold = hours.filter((h) => h.cold === true);
+  if (cold.length === 0) return availabilityRows(hours);
+  const [solves, ...rest] = availabilityRows(hours.map((h) => (h.cold === true ? { ...h, count: 0 } : h)));
+  const coldRow: TimelineRow = {
+    id: "cold",
+    title: "Cold storage",
+    color: "var(--text-secondary)",
+    intervals: mergeIntervals(cold.map((h): [number, number] => [h.start_ms, h.start_ms + HOUR_MS])),
+  };
+  return [solves, coldRow, ...rest];
+}
 
 export interface AvailabilityStripProps {
   clockMs: number;
@@ -80,7 +95,8 @@ export default function AvailabilityStrip({ clockMs, windowRange, availability, 
   };
 
   const { hours } = availability;
-  const rows = useMemo(() => availabilityRows(hours ?? []), [hours]);
+  const rows = useMemo(() => stripRows(hours ?? []), [hours]);
+  const hasCold = useMemo(() => (hours ?? []).some((h) => h.cold === true), [hours]);
   const from = windowRange?.from;
   const to = windowRange?.to;
   const temporalRange = useMemo(
@@ -133,6 +149,11 @@ export default function AvailabilityStrip({ clockMs, windowRange, availability, 
           <li>
             <span className="archive-swatch is-solves" aria-hidden="true" /> Solves
           </li>
+          {hasCold && (
+            <li>
+              <span className="archive-swatch is-cold" aria-hidden="true" /> Cold storage
+            </li>
+          )}
           <li>
             <span className="archive-swatch is-unclassified" aria-hidden="true" /> Unclassified (fleet unknown)
           </li>
